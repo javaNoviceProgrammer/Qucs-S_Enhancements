@@ -146,6 +146,10 @@ public:
   QVector<DataX*>& mutable_axes(){return cPointsX;} // HACK
 
   void clear(){ScrPoints.resize(0);}
+  // Drops everything that came from a dataset (axes, dependent values, curve
+  // count). Every failure path of loadDatFile() goes through this so that a
+  // partial load never leaves stale pointers for getAxisLimits()/calcData().
+  void clearData();
   void resizeScrPoints(size_t s){assert(s>=ScrPoints.size()); ScrPoints.resize(s); linesInvalidate();}
   iterator begin(){return ScrPoints.begin();}
   iterator end(){return ScrPoints.end();}

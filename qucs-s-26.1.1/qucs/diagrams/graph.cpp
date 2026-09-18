@@ -49,12 +49,19 @@ Graph::Graph(Diagram const* d, const QString& _Line) :
 
 Graph::~Graph()
 {
+  clearData();
+  qDeleteAll(Markers);
+}
+
+void Graph::clearData()
+{
   if (cPointsY != nullptr) {
     delete[] cPointsY;
     cPointsY = nullptr;
   }
   qDeleteAll(cPointsX);
-  qDeleteAll(Markers);
+  cPointsX.clear();
+  countY = 0;
 }
 
 // ---------------------------------------------------------------------

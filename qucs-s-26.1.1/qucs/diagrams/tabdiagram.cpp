@@ -257,7 +257,9 @@ int TabDiagram::calcDiagram()
 
 
     startWriting = int(xAxis.limit_min + 0.5); // when to reach visible area
-    py = g->cPointsY - 2;
+    // py is stepped forward before its first use; offsetting a null
+    // pointer is undefined behaviour, so only pre-decrement real data.
+    py = g->cPointsY ? g->cPointsY - 2 : nullptr;
     if(g->axis(0)) {
 
       if (!g->cPointsY) {   // no data points

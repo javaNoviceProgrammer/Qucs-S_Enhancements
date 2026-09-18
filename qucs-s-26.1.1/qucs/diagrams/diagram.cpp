@@ -38,7 +38,11 @@
 # include <ieeefp.h>
 #endif
 
+#include <algorithm>
+#include <climits>
 #include <clocale>
+#include <cstring>
+#include <new>
 
 #include "diagram.h"
 #include "main.h"
@@ -523,6 +527,7 @@ void Diagram::calcData(Graph *g) {
     double *pz = g->cPointsY;
     if (!pz) return;
     if (g->numAxes() < 1) return;
+    if (g->count(0) < 1 || g->countY < 1) return;   // nothing to draw
 
     int i, z, Counter = 2;
     int Size = ((2 * (g->count(0)) + 1) * g->countY) + 10;
@@ -568,9 +573,12 @@ void Diagram::calcData(Graph *g) {
                     if (Counter >= 2)   // clipping only if an axis is manual
                         clip(p);
                 }
-                if ((p - 3)->isStrokeEnd() && !(p - 3)->isBranchEnd())
+                // Look-behinds must stay inside the buffer: a branch with a
+                // single sample has only two entries before p.
+                const auto filled = p - g->begin();
+                if (filled >= 3 && (p - 3)->isStrokeEnd() && !(p - 3)->isBranchEnd())
                     p -= 3;  // no single point after "no stroke"
-                else if ((p - 2)->isBranchEnd() && !(p - 1)->isGraphEnd()) {
+                else if (filled >= 2 && (p - 2)->isBranchEnd() && !(p - 1)->isGraphEnd()) {
                     if ((!(p - 1)->isPt()))
                         --p; // erase last hidden point
                 }
@@ -655,7 +663,7 @@ void Diagram::getAxisLimits(Graph *pg) {
     int z;
     double x, y, *p;
     DataX const *pD = pg->axis(0);
-    if (pD == nullptr) return;
+    if (pD == nullptr || pD->Points == nullptr || pD->count <= 0) return;  // no data
 
     if (Name[0] != 'C') {   // not for location curves
         p = pD->Points;
@@ -670,7 +678,7 @@ void Diagram::getAxisLimits(Graph *pg) {
 
     if (Name == "Rect3D") {
         DataX const *pDy = pg->axis(1);
-        if (pDy) {
+        if (pDy && pDy->Points) {
             p = pDy->Points;
             for (z = pDy->count; z > 0; z--) { // check y coordinates (2. dimension)
                 y = *(p++);
@@ -859,13 +867,9 @@ int Graph::loadDatFile(const QString &fileName) {
             return 1;    // dataset unchanged -> no update necessary
     qDebug() << "Loading data from " << Info.canonicalFilePath();
 
-    qDeleteAll(g->mutable_axes());
-    g->mutable_axes().clear();
-    g->countY = 0;
-    if (g->cPointsY != nullptr) {
-        delete[] g->cPointsY;
-        g->cPointsY = nullptr;
-    }
+    // Whatever happens below, the graph must never be left with stale or
+    // half-initialised data: every failure exit goes through clearData().
+    g->clearData();
     if (Variable.isEmpty()) return 0;
 
 #if 0 // FIXME encapsulation. implement digital waves later.
@@ -892,9 +896,13 @@ int Graph::loadDatFile(const QString &fileName) {
     QByteArray FileContent;
     FileContent = file.readAll();
     file.close();
+    // An empty QByteArray hands out a shared read-only buffer; writing the
+    // terminator into it (below) would fault. Nothing to parse anyway.
+    if (FileContent.isEmpty()) return 0;
     char *FileString = FileContent.data();
     if (!FileString) return 0;
-    char *pPos = FileString + FileContent.size() - 1;
+    char *const FileEnd = FileString + FileContent.size();  // the terminating NUL
+    char *pPos = FileEnd - 1;
     if (*pPos > ' ') if (*pPos != '>') return 0;
     *pPos = 0;
 
@@ -903,17 +911,21 @@ int Graph::loadDatFile(const QString &fileName) {
     // look for variable name in data file  ****************************
     bool isIndep = false;
     Variable = "dep " + Variable + " ";
+    const QByteArray VariableLatin1 = Variable.toLatin1();
     // "pFile" is used through-out the whole function and must NOT used
     // for other purposes!
-    char *pFile = strstr(FileString, Variable.toLatin1());
+    char *pFile = strstr(FileString, VariableLatin1.constData());
     while (pFile) {
-        if (*(pFile - 1) == '<')     // is dependent variable ?
+        // A match can sit at the very start of the buffer: never look
+        // behind its beginning.
+        const ptrdiff_t offset = pFile - FileString;
+        if (offset >= 1 && *(pFile - 1) == '<')     // is dependent variable ?
             break;
-        else if (strncmp(pFile - 3, "<in", 3) == 0) {  // is independent variable ?
+        else if (offset >= 3 && strncmp(pFile - 3, "<in", 3) == 0) {  // is independent variable ?
             isIndep = true;
             break;
         }
-        pFile = strstr(pFile + 4, Variable.toLatin1());
+        pFile = strstr(pFile + 4, VariableLatin1.constData());
     }
 
     if (!pFile) return 0;   // data not found
@@ -937,6 +949,14 @@ int Graph::loadDatFile(const QString &fileName) {
         }
     }
 
+    // A sample occupies at least two bytes in the file ("0\n"), so this is
+    // the largest number of values the remainder of the file can hold. Any
+    // header that claims more is corrupt; refusing it up front also keeps
+    // absurd counts away from new[] (upstream #1539).
+    auto fitsInFile = [&](long long n) {
+        return n > 0 && n <= static_cast<long long>(FileEnd - pFile) / 2 + 1;
+    };
+
     // *****************************************************************
     // get independent variable ****************************************
     bool ok = true;
@@ -944,18 +964,27 @@ int Graph::loadDatFile(const QString &fileName) {
     int counting = 0;
     if (isIndep) {    // create independent variable by myself ?
         counting = Line.toInt(&ok);  // get number of values
-        g->mutable_axes().push_back(new DataX("number", 0, counting));
-        if (!ok) return 0;
-
-        p = new double[counting];  // memory of new independent variable
+        if (!ok || !fitsInFile(counting)) {
+            g->clearData();
+            return 0;
+        }
+        p = new (std::nothrow) double[counting];  // memory of new independent variable
+        if (!p) {
+            g->clearData();
+            return 0;
+        }
+        g->mutable_axes().push_back(new DataX("number", p, counting));
         g->countY = 1;
-        g->mutable_axes().back()->Points = p;
         for (int z = 1; z <= counting; z++) *(p++) = double(z);
         auto Axis = g->mutable_axes().back();
         Axis->min(1.);
         Axis->max(double(counting));
     } else {  // ...................................
         // get independent variables from data file
+        if (g->numAxes() == 0) {   // "<dep name>" without any sweep variable
+            g->clearData();
+            return 0;
+        }
         g->countY = 1;
 #if 0 // FIXME: we do not have a Name.
         DataX *bLast = 0;
@@ -976,7 +1005,10 @@ int Graph::loadDatFile(const QString &fileName) {
             else if(pD == bLast)  pa = &yAxis;   // y axis for Rect3D
 #endif
             counting = loadIndepVarData(pD->Var, FileString, mutable_axis(ii));
-            if (counting <= 0) return 0;
+            if (counting <= 0 || g->countY > INT_MAX / counting) {
+                g->clearData();
+                return 0;
+            }
 
             g->countY *= counting;
         }
@@ -986,8 +1018,19 @@ int Graph::loadDatFile(const QString &fileName) {
 
     // *****************************************************************
     // get dependent variables *****************************************
-    counting *= g->countY;
-    p = new double[2 * counting]; // memory for dependent variables
+    // countY x counting is the total number of samples, one per point of
+    // every sweep dimension.
+    const long long total = static_cast<long long>(counting) * g->countY;
+    if (!fitsInFile(total) || total > INT_MAX / 2) {
+        g->clearData();
+        return 0;
+    }
+    counting = static_cast<int>(total);
+    p = new (std::nothrow) double[2 * static_cast<size_t>(counting)]; // memory for dependent variables
+    if (!p) {
+        g->clearData();
+        return 0;
+    }
     g->cPointsY = p;
 #if 0 // FIXME: what does this do?!
     if(g->yAxisNo == 0)  pa = &yAxis;   // for which axis
@@ -1005,19 +1048,29 @@ int Graph::loadDatFile(const QString &fileName) {
             pEnd = nullptr;
             while ((*pPos) && (*pPos <= ' ')) pPos++; // find start of next number
             x = strtod(pPos, &pEnd);  // real part
-            pPos = pEnd + 1;
-            if (*pEnd < ' ')   // is there an imaginary part ?
+            if (pEnd == pPos) {
+                // Not a number: the block holds fewer samples than its
+                // header promised, or it is corrupt. Never walk past it.
+                g->clearData();
+                return 0;
+            }
+            if (*pEnd < ' ') {  // no imaginary part (or end of buffer)
                 y = 0.0;
-            else {
+                pPos = pEnd;    // the whitespace skip above resumes from here
+            } else {
+                pPos = pEnd + 1;
                 if (((*pEnd != '+') && (*pEnd != '-')) || (*pPos != 'j')) {
-                    delete[] g->cPointsY;
-                    g->cPointsY = nullptr;
+                    g->clearData();
                     return 0;
                 }
                 *pPos = *pEnd;  // overwrite 'j' with sign
                 pEnd = nullptr;
                 y = strtod(pPos, &pEnd); // imaginary part
                 *pPos = 'j';   // write back old character
+                if (pEnd == pPos) {
+                    g->clearData();
+                    return 0;
+                }
                 pPos = pEnd;
             }
             *(p++) = x;
@@ -1050,30 +1103,47 @@ int Graph::loadDatFile(const QString &fileName) {
 
     } else {  // of "if not digital"
 
-        char *pc = (char *) p;
-        pEnd = pc + 2 * (counting - 1) * sizeof(double);
+        // Digital variables (e.g. 100ZX0) are stored as NUL-terminated bit
+        // vector strings packed into the double buffer. The buffer was
+        // obtained with new[], so it is grown by hand; the old code
+        // realloc()ed it, which is undefined behaviour.
+        size_t capacity = 2 * static_cast<size_t>(counting) * sizeof(double);
+        size_t used = 0;
+        char *pc = reinterpret_cast<char *>(g->cPointsY);
+        auto reserve = [&](size_t extra) -> bool {
+            if (used + extra <= capacity) return true;
+            const size_t newCapacity = std::max(capacity * 2, used + extra + 1024);
+            const size_t doubles = (newCapacity + sizeof(double) - 1) / sizeof(double);
+            double *bigger = new (std::nothrow) double[doubles];
+            if (!bigger) return false;
+            memcpy(bigger, g->cPointsY, used);
+            delete[] g->cPointsY;
+            g->cPointsY = bigger;
+            pc = reinterpret_cast<char *>(bigger);
+            capacity = doubles * sizeof(double);
+            return true;
+        };
         // for digital variables (e.g. 100ZX0):
         for (int z = counting; z > 0; z--) {
 
             while ((*pPos) && (*pPos <= ' ')) pPos++; // find start of next bit vector
             if (*pPos == 0) {
-                delete[] g->cPointsY;
-                g->cPointsY = nullptr;
+                g->clearData();
                 return 0;
             }
 
             while (*pPos > ' ') {    // copy bit vector
-                *(pc++) = *(pPos++);
-                if (pEnd <= pc) {
-                    counting = pc - (char *) g->cPointsY;
-                    pc = (char *) realloc(g->cPointsY, counting + 1024);
-                    pEnd = pc;
-                    g->cPointsY = (double *) pEnd;
-                    pc += counting;
-                    pEnd += counting + 1020;
+                if (!reserve(1)) {
+                    g->clearData();
+                    return 0;
                 }
+                pc[used++] = *(pPos++);
             }
-            *(pc++) = 0;   // terminate each vector with NULL
+            if (!reserve(1)) {
+                g->clearData();
+                return 0;
+            }
+            pc[used++] = 0;   // terminate each vector with NULL
         }
 
     }  // of "if not digital"
@@ -1094,18 +1164,30 @@ int Graph::loadIndepVarData(const QString &Variable,
        to change the locale to the default. */
     setlocale(LC_NUMERIC, "C");
 
+    // (Points, count) must stay consistent: callers trust that a non-null
+    // Points holds exactly count values, so a failed load leaves both empty.
+    if (pD->Points) {
+        delete[] pD->Points;
+        pD->Points = nullptr;
+    }
+    pD->count = 0;
+
     Line = "dep " + Variable + " ";
+    const QByteArray LineLatin1 = Line.toLatin1();
     // "pFile" is used through-out the whole function and must NOT used
     // for other purposes!
-    char *pFile = strstr(FileString, Line.toLatin1());
+    char *pFile = strstr(FileString, LineLatin1.constData());
     while (pFile) {
-        if (*(pFile - 1) == '<')     // is dependent variable ?
+        // A match can sit at the very start of the buffer: never look
+        // behind its beginning.
+        const ptrdiff_t offset = pFile - FileString;
+        if (offset >= 1 && *(pFile - 1) == '<')     // is dependent variable ?
             break;
-        else if (strncmp(pFile - 3, "<in", 3) == 0) {  // is independent variable ?
+        else if (offset >= 3 && strncmp(pFile - 3, "<in", 3) == 0) {  // is independent variable ?
             isIndep = true;
             break;
         }
-        pFile = strstr(pFile + 4, Line.toLatin1());
+        pFile = strstr(pFile + 4, LineLatin1.constData());
     }
 
     if (!pFile) return -1;   // data not found
@@ -1121,7 +1203,8 @@ int Graph::loadIndepVarData(const QString &Variable,
     if (!isIndep) {           // dependent variable can also be used...
         if (Line.indexOf(' ') >= 0) return -1; // ...if only one dependency
         Line = "<indep " + Line + " ";
-        pPos = strstr(FileString, Line.toLatin1());
+        const QByteArray IndepLatin1 = Line.toLatin1();
+        pPos = strstr(FileString, IndepLatin1.constData());
         if (!pPos) return -1;
         pPos += Line.length();
         pEnd = strchr(pPos, '>');
@@ -1134,9 +1217,13 @@ int Graph::loadIndepVarData(const QString &Variable,
 
     bool ok;
     int n = Line.toInt(&ok);  // number of values
-    if (!ok) return -1;
+    // A sample occupies at least two bytes in the file ("0\n"), so a count
+    // that cannot fit into the rest of the file is corrupt. Refusing it here
+    // also keeps negative or absurd counts away from new[] (upstream #1539).
+    if (!ok || n <= 0 || static_cast<size_t>(n) > strlen(pFile) / 2 + 1) return -1;
 
-    double *p = new double[n];     // memory for new independent variable
+    double *p = new (std::nothrow) double[n];     // memory for new independent variable
+    if (!p) return -1;
 //  DataX *pD = pg->mutable_axes().back();
     pD->Points = p;
     pD->count = n;
@@ -1151,14 +1238,17 @@ int Graph::loadIndepVarData(const QString &Variable,
         pEnd = 0;
         x = strtod(pPos, &pEnd);  // real part
 
-        if (*pEnd > ' ')  // drop imaginary part because
-            while (*pEnd > ' ') pEnd++; // Complex number on X-axis has no sense
-
         if (pPos == pEnd) {
+            // Not a number: fewer values than the header claims, or the
+            // token is garbage. Either way the block is unusable.
             delete[] pD->Points;
             pD->Points = nullptr;
+            pD->count = 0;
             return -1;
         }
+
+        if (*pEnd > ' ')  // drop imaginary part because
+            while (*pEnd > ' ') pEnd++; // Complex number on X-axis has no sense
 
         *(p++) = x;
 #if 0 // this is not location curve code
