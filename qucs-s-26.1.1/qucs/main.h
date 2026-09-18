@@ -26,6 +26,8 @@
 #include <QColor>
 #include <QStringList>
 #include <QDir>
+#include <QtGlobal>
+#include <QMessageLogContext>
 
 
 class QucsApp;
@@ -120,6 +122,6 @@ extern VersionTriplet QucsVersion;
 
 bool loadSettings();
 bool saveApplSettings();
-void qucsMessageOutput(QtMsgType type, const char *msg);
+void qucsMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg);
 
 #endif // ifndef QUCS_MAIN_H

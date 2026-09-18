@@ -148,7 +148,7 @@ SET(QUCS_SRCS
   settings.cpp
   imagewriter.cpp printerwriter.cpp projectView.cpp
   symbolwidget.cpp wire_planner.cpp
-  qucsshortcutmanager.cpp
+  qucsshortcutmanager.cpp globals.cpp
 )
 
 SET(QUCS_HDRS
@@ -241,7 +241,7 @@ IF(APPLE)
     # set where in the bundle to put the icns file
     SET_SOURCE_FILES_PROPERTIES(${CMAKE_CURRENT_SOURCE_DIR}/bitmaps/qucs.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     # include the icns file in the target
-    SET(QUCS_SRCS ${QUCS_SRCS} ${CMAKE_CURRENT_SOURCE_DIR}/bitmaps/qucs.icns)
+    SET(APP_EXTRA_SRCS ${APP_EXTRA_SRCS} ${CMAKE_CURRENT_SOURCE_DIR}/bitmaps/qucs.icns)
 
     # This tells cmake where to place the translations inside the bundle
     #SET_SOURCE_FILES_PROPERTIES( ${LANG_SRCS} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/lang )
@@ -253,21 +253,40 @@ set(app_icon_resource_windows "${CMAKE_CURRENT_SOURCE_DIR}/qucs_icon.rc")
 #
 #  CMake's way of creating an executable
 #
+#
+# Everything except the entry point is compiled once into an object library
+# that the application and the unit tests (tests/) link identically.
+#
+set(QUCS_CORE_SRCS ${QUCS_SRCS})
+list(REMOVE_ITEM QUCS_CORE_SRCS main.cpp)
+add_library(qucs-core OBJECT ${QUCS_HDRS} ${QUCS_CORE_SRCS} ${QUCS_MOC_SRCS})
+set(QUCS_LINK_LIBRARIES
+    components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat
+    Qt6::Core  Qt6::Gui  Qt6::Widgets Qt6::Svg  Qt6::SvgWidgets Qt6::Xml  Qt6::PrintSupport )
+target_link_libraries(qucs-core PUBLIC ${QUCS_LINK_LIBRARIES})
+set_target_properties(qucs-core PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
+
 ADD_EXECUTABLE( ${QUCS_NAME} MACOSX_BUNDLE WIN32
-  ${QUCS_HDRS}
-  ${QUCS_SRCS}
-  ${QUCS_MOC_SRCS}
+  main.cpp
+  $<TARGET_OBJECTS:qucs-core>
   ${RESOURCES_SRCS}
+  ${APP_EXTRA_SRCS}
   ${app_icon_resource_windows}
  )
 
 #
 # Tell CMake which libraries we need to link our executable against.
 #
-TARGET_LINK_LIBRARIES( ${QUCS_NAME}
-    components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat
-    Qt6::Core  Qt6::Gui  Qt6::Widgets Qt6::Svg  Qt6::SvgWidgets Qt6::Xml  Qt6::PrintSupport )
+TARGET_LINK_LIBRARIES( ${QUCS_NAME} ${QUCS_LINK_LIBRARIES} )
 SET_TARGET_PROPERTIES(${QUCS_NAME} PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
+
+#
+# Unit tests (QtTest); run with `ctest --test-dir build --output-on-failure`.
+#
+option(QUCS_BUILD_TESTS "Build the qucs-s unit tests" ON)
+if(QUCS_BUILD_TESTS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt)
+  add_subdirectory(tests)
+endif()
 #
 # Prepare the installation
 #
