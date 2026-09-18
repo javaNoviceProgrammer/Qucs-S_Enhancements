@@ -56,6 +56,8 @@ public:
     ~ExternSimDialog();
 
     bool wasSimulated() const { return a_wasSimulated; }
+    /// The schematic this dialog simulates.
+    Schematic* schematic() const { return a_schematic; }
     bool hasError() const { return a_hasError; }
 
 private:

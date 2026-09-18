@@ -139,13 +139,39 @@ Ordered by leverage: each workstream makes the next one safer to do.
 
 Target the *classes* from §1, not the individual issues.
 
-**Progress:** 1.1 and 1.2 are done (`qucs/diagrams/diagram.cpp`,
-`graph.cpp`, `tabdiagram.cpp`). The loader now refuses sample counts that
-cannot fit in the file, never walks past the buffer, uses `nothrow` `new[]`,
-leaves a graph completely empty on any failure (`Graph::clearData()`), and
-`calcData` bounds-checks its look-behinds. Guarded by the blocking `hostile`
-smoke suite in CI (21 cases, including a one-sample dataset and 2·10⁹-sample
-headers). Verified against real ngspice AC/transient output.
+**Progress:**
+
+- 1.1 / 1.2 done (`qucs/diagrams/diagram.cpp`, `graph.cpp`, `tabdiagram.cpp`).
+  The loader refuses sample counts that cannot fit in the file, never walks
+  past the buffer, uses `nothrow` `new[]`, leaves a graph completely empty on
+  any failure (`Graph::clearData()`), and `calcData` bounds-checks its
+  look-behinds. Guarded by the blocking `hostile` smoke suite in CI (21
+  cases). Verified against real ngspice AC/transient output.
+- 1.3 done. `Schematic` now owns its elements for real: `deleteAllElements()`
+  / `deleteSymbolPaintings()` run on undo, redo, reload and in the destructor
+  (previously every undo leaked the whole document and closing a tab leaked
+  it too), and `signalDocumentRebuilt(Schematic*)` tells holders of element
+  pointers to let go. `MouseActions::forgetDocumentElements()` drops the
+  element under the mouse, the active diagram and the dragged selection and
+  aborts an in-flight drag; the three drag handlers that dereferenced
+  `focusElement` blindly now bail out cleanly. The tuner remembers component
+  and property *names* and re-binds after a rebuild (or drops the row), and
+  detaches when the tuned document is closed. Also found on the way: an undo
+  depth of 0 (allowed by the settings dialog) made every document open read
+  freed memory — clamped now — and a "wrong document version" prompt blocked
+  headless runs forever. Guarded by `qucs/tests/test_schematic_lifetime`
+  (QtTest, runs under ASan in CI).
+- 1.5 done. `QucsApp::currentSchematic()` (a `qobject_cast`) replaces all 27
+  C-style casts of the current tab; every call site handles the text-document
+  case. `slotAfterSpiceSimulation` now acts on the schematic the dialog
+  simulated instead of whatever tab is current. The 24 remaining indirect
+  casts are all inside `isTextDocument()` branches.
+- Infrastructure that fell out of 1.3: the core sources are an object
+  library (`qucs-core`) shared by the executable and `qucs/tests/`; the
+  globals moved from `main.cpp` to `globals.cpp`; and the top-level CMake no
+  longer forces Release, so Debug builds (asserts, `-Wall -Wextra`, debug
+  output) work for the first time — CI's sanitizer job is now genuinely
+  Debug.
 
 | # | Task | Where | Notes |
 |---|---|---|---|
