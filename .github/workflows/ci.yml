@@ -64,6 +64,10 @@ jobs:
             -DGIT="${GITHUB_SHA::7}"
 
       - name: Build
+        # The build runs the freshly built qucsator_rf to generate
+        # qucsdefs.h; LeakSanitizer (on by default on Linux) would fail it.
+        env:
+          ASAN_OPTIONS: detect_leaks=0
         run: cmake --build build --parallel
 
       - name: Smoke test · load and render every ngspice example
