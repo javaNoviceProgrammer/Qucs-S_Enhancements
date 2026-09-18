@@ -419,6 +419,16 @@ bool TextDoc::reload()
  * \brief TextDoc::save saves the current document and it settings
  * \return true/false if the document was opened with success
  */
+bool TextDoc::writeTo(const QString& path)
+{
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly))
+    return false;
+  QTextStream stream(&file);
+  stream << toPlainText();
+  return true;
+}
+
 int TextDoc::save ()
 {
   saveSettings ();

@@ -157,6 +157,7 @@ SET(QUCS_SRCS
   imagewriter.cpp printerwriter.cpp projectView.cpp
   symbolwidget.cpp wire_planner.cpp
   qucsshortcutmanager.cpp globals.cpp
+  autosave.cpp crashhandler.cpp
 )
 
 SET(QUCS_HDRS
@@ -182,6 +183,9 @@ textdoc.h
 wire.h
 wirelabel.h
 wire_planner.h
+autosave.h
+crashhandler.h
+qucs_assert.h
 )
 
 #

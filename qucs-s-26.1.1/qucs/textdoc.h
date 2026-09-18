@@ -57,6 +57,7 @@ public:
   bool  reload ();
   bool  hasFileChangedOnDisk() const;
   int   save ();
+  bool  writeTo(const QString& path) override;
   virtual double zoomBy (double zoom) override;
   virtual void showNoZoom () override;
   void  becomeCurrent (bool);

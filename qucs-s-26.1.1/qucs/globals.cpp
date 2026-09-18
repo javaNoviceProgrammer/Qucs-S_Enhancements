@@ -27,6 +27,7 @@
 #include "main.h"
 #include "settings.h"
 #include "misc.h"
+#include "crashhandler.h"
 #include "extsimkernels/spicecompat.h"
 
 tQucsSettings QucsSettings;
@@ -217,6 +218,7 @@ bool saveApplSettings()
  */
 void qucsMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
+    qucs_s::crash::noteMessage(type, msg);   // kept for the crash report
     QByteArray localMsg = msg.toLocal8Bit();
     const char *file = context.file ? context.file : "";
     const char *function = context.function ? context.function : "";

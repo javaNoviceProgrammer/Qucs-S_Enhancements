@@ -52,6 +52,17 @@ example), `simulate` (netlist → ngspice → dataset → render; needs `ngspice
 `PATH`) and `hostile` (render a fixture against damaged datasets). Everything
 runs headless through the CLI modes of `qucs-s`; no window is opened.
 
+## Crash reports and recovery
+
+If the app dies, a report is written to the application-data directory
+(`~/Library/Application Support/qucs-s/crash-reports/` on macOS,
+`~/.local/share/qucs-s/crash-reports/` on Linux) with the version, commit,
+signal, a backtrace and the last log lines, and modified documents are
+autosaved. The next start says so and offers to restore them. Modified
+documents are autosaved every two minutes anyway (`AutosaveInterval` in the
+settings file, seconds; 0 disables). Please attach the report when filing a
+crash.
+
 ## Continuous integration
 
 | Workflow | Trigger | What it does |

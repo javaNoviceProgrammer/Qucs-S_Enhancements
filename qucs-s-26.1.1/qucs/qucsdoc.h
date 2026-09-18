@@ -33,6 +33,9 @@ public:
   virtual void  setName(const QString&) {};
   virtual bool  load() { return true; };
   virtual int   save() { return 0; };
+  /** Writes the current content to \a path without changing the document's
+      name, modified state or undo history. Used by autosave. */
+  virtual bool  writeTo(const QString& path) { Q_UNUSED(path); return false; }
   virtual void  print(QPrinter*, QPainter*, bool, bool) {};
   virtual void  becomeCurrent(bool) {};
   virtual double zoomBy(double) { return 1.0; };

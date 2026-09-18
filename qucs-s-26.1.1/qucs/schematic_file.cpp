@@ -660,14 +660,19 @@ int Schematic::saveSymbolJSON()
 
 // -------------------------------------------------------------
 // Returns the number of subcircuit ports.
-int Schematic::saveDocument()
+bool Schematic::writeTo(const QString& path)
 {
-  QFile file(a_DocName);
-  if(!file.open(QIODevice::WriteOnly)) {
-    QMessageBox::critical(nullptr, QObject::tr("Error"),
-    QObject::tr("Cannot save document!"));
-    return -1;
-  }
+  return writeDocument(path);
+}
+
+// Serialises the document (or, for a .sym document, only its symbol) into
+// the given file. Everything that saveDocument() does beyond that - the
+// Verilog-A symbol exports - is not part of writing the document itself.
+bool Schematic::writeDocument(const QString& path)
+{
+  QFile file(path);
+  if(!file.open(QIODevice::WriteOnly))
+    return false;
 
   QTextStream stream(&file);
 
@@ -682,7 +687,7 @@ int Schematic::saveDocument()
       }
       stream << "</Symbol>\n";
       file.close();
-      return 0;
+      return true;
   }
 
   stream << "<Properties>\n";
@@ -746,6 +751,16 @@ int Schematic::saveDocument()
   stream << "</Paintings>\n";
 
   file.close();
+  return true;
+}
+
+int Schematic::saveDocument()
+{
+  if(!writeDocument(a_DocName)) {
+    QMessageBox::critical(nullptr, QObject::tr("Error"),
+    QObject::tr("Cannot save document!"));
+    return -1;
+  }
 
   // additionally save symbol C++ code if in a symbol drawing and the
   // associated file is a Verilog-A file

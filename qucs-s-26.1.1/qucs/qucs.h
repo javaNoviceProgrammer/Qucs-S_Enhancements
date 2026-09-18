@@ -66,6 +66,8 @@ class QModelIndex;
 class QPushButton;
 class QTextEdit;
 class QFrame;
+class QTimer;
+namespace qucs_s { namespace autosave { struct Entry; } }
 
 class SymbolWidget;
 
@@ -103,7 +105,9 @@ public:
   bool closeAllFiles(int exceptTab = -1);
   bool closeAllLeft(int);
   bool closeAllRight(int);
-  bool gotoPage(const QString &, bool reloadPage = false); // to load a document
+  /// Loads a document into a tab. With \a checkDataNames the user is asked to
+  /// rename dataset/display files that do not match the schematic's name.
+  bool gotoPage(const QString &, bool reloadPage = false, bool checkDataNames = true);
   QucsDoc *getDoc(int No = -1);
   QucsDoc *findDoc(QString, int *Pos = 0);
   /// The open text document with this file name, or nullptr if it is not
@@ -205,6 +209,14 @@ public slots:
   /// reload): drop cached pointers and abandon any drag in progress.
   void slotDocumentRebuilt(Schematic *doc);
 
+  /// Writes an autosave copy of every modified document. Returns how many
+  /// were written. With \a emergency set it is running inside the crash
+  /// handler and must not touch the UI.
+  int autosaveAll(bool emergency = false);
+  /// Offers to restore documents left behind by a previous session
+  /// (autosave copies), and reports a crash of that session if there was one.
+  void recoverPreviousSession(bool crashedLastTime);
+
 private slots:
   void slotMenuProjOpen();
   void slotMenuProjDel();
@@ -258,6 +270,7 @@ private slots:
   void slotLastTab();
 
   void slotSwitchToTab(int index);
+  void slotAutosave();
 
 signals:
   void signalKillEmAll();
@@ -557,6 +570,12 @@ private:
   void runPostSimCommands(Schematic* sch);
 
   QString lastExportFilename;
+  QTimer *autosaveTimer = nullptr;
+
+public:
+  /// Opens the autosaved copies as their original documents, marked
+  /// modified, without asking. recoverPreviousSession() asks first.
+  void restoreAutosaved(const QList<qucs_s::autosave::Entry> &entries);
 };
 
 /** \brief Provide a template to declare singleton classes.

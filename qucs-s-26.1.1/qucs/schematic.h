@@ -219,6 +219,7 @@ public:
   bool    paste(QTextStream*, std::list<Element*>*);
   bool    load();
   int     save();
+  bool    writeTo(const QString& path) override;
   int     saveSymbolCpp (void);
   int     saveSymbolJSON (void);
   int     savePropsJSON (void);
@@ -559,6 +560,7 @@ public:
 
 private:
   int  saveDocument();
+  bool writeDocument(const QString& path);   // the serialisation part of saveDocument()
 
   bool loadProperties(QTextStream*);
   void simpleInsertComponent(Component*);
