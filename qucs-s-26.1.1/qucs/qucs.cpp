@@ -711,6 +711,11 @@ bool QucsApp::populateLibTreeFromDir(const QString &LibDirPath, QList<QTreeWidge
 // ---------------------------------------------------------------
 // Returns a pointer to the QucsDoc object whose number is "No".
 // If No < 0 then a pointer to the current document is returned.
+Schematic *QucsApp::currentSchematic() const
+{
+  return qobject_cast<Schematic *>(DocumentTab->currentWidget());
+}
+
 QucsDoc* QucsApp::getDoc(int No)
 {
   QWidget *w;
@@ -2461,7 +2466,8 @@ void QucsApp::slotIntoHierarchy()
 {
   slotHideEdit(); // disable text edit of component property
 
-  Schematic *Doc = (Schematic*)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr) { return; }
   Component *pc = Doc->searchSelSubcircuit();
   if(pc == nullptr) { return; }
 
@@ -2855,7 +2861,7 @@ void QucsApp::slotAfterSimulation(int Status, SimMessage *sim)
 
   if(!isTextDocument (sim->DocWidget)) {
     //((Schematic*)sim->DocWidget)->viewport()->update();
-    ((Schematic*)DocumentTab->currentWidget())->viewport()->update();
+    if (Schematic *Doc = currentSchematic()) Doc->viewport()->update();
   }
 
   // Kill the simulation process, otherwise we have 200+++ sims in the background
@@ -3167,10 +3173,10 @@ void QucsApp::slotSelectSubcircuit(const QModelIndex &idx)
 void QucsApp::slotSelectLibComponent(QTreeWidgetItem *item)
 {
     // get the current document
-    Schematic *Doc = (Schematic*)DocumentTab->currentWidget();
+    Schematic *Doc = currentSchematic();
 
     // if the current document is a schematic activate the paste
-    if(!isTextDocument(Doc))
+    if(Doc != nullptr)
     {
         // if there's not a higher level item, this is a top level item,
         // not a component item so return
@@ -3369,7 +3375,8 @@ void QucsApp::slotSymbolEdit()
     slotChangePage(TDoc->getDocName(),TDoc->getDataDisplay());
 
     // set 'DataDisplay' document of symbol file to original text file
-    Schematic *SDoc = (Schematic*)DocumentTab->currentWidget();
+    Schematic *SDoc = currentSchematic();
+    if (SDoc == nullptr) return;
     SDoc->setDataDisplay(Info.fileName());
 
     // change into symbol mode
@@ -3432,7 +3439,8 @@ void QucsApp::slot2PortMatching()
   Marker *pm = (Marker*)view->focusElement;
 
   QString DataSet;
-  Schematic *Doc = (Schematic*)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr) return;
   int z = pm->pGraph->Var.indexOf(':');
   if(z <= 0)  DataSet = Doc->getDataSet();
   else  DataSet = pm->pGraph->Var.mid(z+1);
@@ -3514,8 +3522,9 @@ void QucsApp::slot2PortMatching()
 // Is called if the "edit" action is clicked on right mouse button menu.
 void QucsApp::slotEditElement()
 {
-  if(view->focusMEvent)
-    view->editElement((Schematic*)DocumentTab->currentWidget(), view->focusMEvent);
+  Schematic *Doc = currentSchematic();
+  if(view->focusMEvent && Doc != nullptr)
+    view->editElement(Doc, view->focusMEvent);
 }
 
 // -----------------------------------------------------------
@@ -3866,11 +3875,14 @@ void QucsApp::slotSaveCdlNetlist()
 
 void QucsApp::slotAfterSpiceSimulation(ExternSimDialog *SimDlg)
 {
-    Schematic *sch = (Schematic*)DocumentTab->currentWidget();
     disconnect(SimDlg,SIGNAL(simulated(ExternSimDialog *)),
                this,SLOT(slotAfterSpiceSimulation(ExternSimDialog *)));
     disconnect(SimDlg,SIGNAL(warnings()),this,SLOT(slotShowWarnings()));
     disconnect(SimDlg,SIGNAL(success()),this,SLOT(slotResetWarnings()));
+    // The schematic that was simulated, which is not necessarily the one
+    // in the current tab: the user may have switched tabs meanwhile.
+    Schematic *sch = SimDlg->schematic();
+    if (sch == nullptr) return;
     if (TuningMode && SimDlg->hasError()) {
         SimDlg->show();
         return;
@@ -3911,8 +3923,7 @@ void QucsApp::slotAfterSpiceSimulation(ExternSimDialog *SimDlg)
 
 void QucsApp::slotBuildVAModule()
 {
-    if (!isTextDocument(DocumentTab->currentWidget())) {
-        Schematic *Sch = (Schematic*)DocumentTab->currentWidget();
+    if (Schematic *Sch = currentSchematic()) {
 
         QFileInfo inf(Sch->getDocName());
         QString filename = QFileDialog::getSaveFileName(this,tr("Save Verilog-A module"),

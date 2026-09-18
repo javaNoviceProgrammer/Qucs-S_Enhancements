@@ -80,7 +80,15 @@ bool QucsApp::performToggleAction(bool on, QAction *Action,
                                   pToggleFunc Function, pMouseFunc MouseMove,
                                   pMouseFunc2 MousePress) {
   slotHideEdit(); // disable text edit of component property
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr) { // a text document is current
+    if (Action) {
+      Action->blockSignals(true);
+      Action->setChecked(false);
+      Action->blockSignals(false);
+    }
+    return false;
+  }
 
   // Perform toggle release clean up.
   if (!on) {
@@ -371,7 +379,9 @@ void QucsApp::slotSelect(bool on) {
   }
 
   // goto to insertWire mode if ESC pressed during wiring
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   if (MouseMoveAction == &MouseActions::MMoveWire2) {
     MouseMoveAction = &MouseActions::MMoveWire1;
     MousePressAction = &MouseActions::MPressWire1;
@@ -570,7 +580,9 @@ void QucsApp::slotInsertPort(bool on) {
   if (view->selElem)
     delete view->selElem; // delete previously selected component
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   if (Doc->getSymbolMode()) {
     view->selElem = new PortSymbol();
   } else {
@@ -584,12 +596,14 @@ void QucsApp::slotInsertPort(bool on) {
 // --------------------------------------------------------------
 // Is called, when "Undo"-Button is pressed.
 void QucsApp::slotEditUndo() {
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
-  if (isTextDocument(Doc)) {
-    ((TextDoc *)Doc)->viewport()->setFocus();
-    ((TextDoc *)Doc)->undo();
+  if (TextDoc *Text = qobject_cast<TextDoc *>(DocumentTab->currentWidget())) {
+    Text->viewport()->setFocus();
+    Text->undo();
     return;
   }
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
 
   slotHideEdit(); // disable text edit of component property
 
@@ -600,12 +614,14 @@ void QucsApp::slotEditUndo() {
 // --------------------------------------------------------------
 // Is called, when "Undo"-Button is pressed.
 void QucsApp::slotEditRedo() {
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
-  if (isTextDocument(Doc)) {
-    ((TextDoc *)Doc)->viewport()->setFocus();
-    ((TextDoc *)Doc)->redo();
+  if (TextDoc *Text = qobject_cast<TextDoc *>(DocumentTab->currentWidget())) {
+    Text->viewport()->setFocus();
+    Text->redo();
     return;
   }
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
 
   slotHideEdit(); // disable text edit of component property
 
@@ -618,7 +634,9 @@ void QucsApp::slotEditRedo() {
 void QucsApp::slotAlignTop() {
   slotHideEdit(); // disable text edit of component property
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   if (!Doc->aligning(0))
     QMessageBox::information(this, tr("Info"),
                              tr("At least two elements must be selected !"));
@@ -630,7 +648,9 @@ void QucsApp::slotAlignTop() {
 void QucsApp::slotAlignBottom() {
   slotHideEdit(); // disable text edit of component property
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   if (!Doc->aligning(1))
     QMessageBox::information(this, tr("Info"),
                              tr("At least two elements must be selected !"));
@@ -642,7 +662,9 @@ void QucsApp::slotAlignBottom() {
 void QucsApp::slotAlignLeft() {
   slotHideEdit(); // disable text edit of component property
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   if (!Doc->aligning(2))
     QMessageBox::information(this, tr("Info"),
                              tr("At least two elements must be selected !"));
@@ -654,7 +676,9 @@ void QucsApp::slotAlignLeft() {
 void QucsApp::slotAlignRight() {
   slotHideEdit(); // disable text edit of component property
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   if (!Doc->aligning(3))
     QMessageBox::information(this, tr("Info"),
                              tr("At least two elements must be selected !"));
@@ -666,7 +690,9 @@ void QucsApp::slotAlignRight() {
 void QucsApp::slotDistribHoriz() {
   slotHideEdit(); // disable text edit of component property
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   Doc->distributeHorizontal();
   Doc->viewport()->update();
 }
@@ -676,7 +702,9 @@ void QucsApp::slotDistribHoriz() {
 void QucsApp::slotDistribVert() {
   slotHideEdit(); // disable text edit of component property
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   Doc->distributeVertical();
   Doc->viewport()->update();
 }
@@ -686,7 +714,9 @@ void QucsApp::slotDistribVert() {
 void QucsApp::slotCenterHorizontal() {
   slotHideEdit(); // disable text edit of component property
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   if (!Doc->aligning(4))
     QMessageBox::information(this, tr("Info"),
                              tr("At least two elements must be selected !"));
@@ -698,7 +728,9 @@ void QucsApp::slotCenterHorizontal() {
 void QucsApp::slotCenterVertical() {
   slotHideEdit(); // disable text edit of component property
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   if (!Doc->aligning(5))
     QMessageBox::information(this, tr("Info"),
                              tr("At least two elements must be selected !"));
@@ -729,7 +761,9 @@ void QucsApp::slotSelectAll() {
 void QucsApp::slotSelectMarker() {
   slotHideEdit(); // disable text edit of component property
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   Doc->selectMarkers();
   Doc->viewport()->update();
 }
@@ -983,8 +1017,7 @@ void QucsApp::launchTool(const QString &prog, const QString &progDesc,
 
 void QucsApp::slotCallRFLayout() {
   QString input_file, netlist_file, odir;
-  if (!isTextDocument(DocumentTab->currentWidget())) {
-    Schematic *sch = (Schematic *)DocumentTab->currentWidget();
+  if (Schematic *sch = currentSchematic()) {
     if (sch->fileSuffix() == "dpl") {
       QMessageBox::critical(this, tr("Error"),
                             tr("Layouting of display pages is not supported!"));
@@ -1172,7 +1205,9 @@ void QucsApp::slotCursorLeft(bool left) {
   if (!editText->isHidden())
     return; // for edit of component property ?
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   const auto selection = Doc->currentSelection();
 
   const auto totalCount = selection.components.size() + selection.wires.size() +
@@ -1259,7 +1294,9 @@ void QucsApp::slotCursorUp(bool up) {
     return;
   }
 
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   const auto selection = Doc->currentSelection();
 
   const auto totalCount = selection.components.size() + selection.wires.size() +
@@ -1297,7 +1334,9 @@ void QucsApp::slotCursorUp(bool up) {
 // In "view->MAx3" is the number of the current property.
 void QucsApp::slotApplyCompText() {
   QFont f = QucsSettings.font;
-  Schematic *Doc = (Schematic *)DocumentTab->currentWidget();
+  Schematic *Doc = currentSchematic();
+  if (Doc == nullptr)
+    return;
   f.setPointSizeF(Doc->getScale() * float(f.pointSize()));
   editText->setFont(f);
 
@@ -1429,8 +1468,7 @@ void QucsApp::slotImportData() {
     if (isTextDocument(DocumentTab->currentWidget())) {
       TextDoc *doc = (TextDoc *)DocumentTab->currentWidget();
       dname = doc->getDocName();
-    } else {
-      Schematic *doc = (Schematic *)DocumentTab->currentWidget();
+    } else if (Schematic *doc = currentSchematic()) {
       dname = doc->getDocName();
     }
     QFileInfo inf(dname);
