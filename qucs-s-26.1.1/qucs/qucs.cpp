@@ -48,6 +48,9 @@
 #include "qucs.h"
 #include "qucsdoc.h"
 #include "textdoc.h"
+#include "autosave.h"
+#include "crashhandler.h"
+#include <QTimer>
 #include "schematic.h"
 #include "mouseactions.h"
 #include "messagedock.h"
@@ -261,6 +264,93 @@ QucsApp::QucsApp(bool netlist2Console) :
   }
 
 //  fillLibrariesTreeView();
+
+  // Periodic autosave of modified documents (0 disables).
+  const int autosaveSeconds = _settings::Get().item<int>("AutosaveInterval");
+  if (autosaveSeconds > 0) {
+    autosaveTimer = new QTimer(this);
+    autosaveTimer->setInterval(autosaveSeconds * 1000);
+    connect(autosaveTimer, SIGNAL(timeout()), this, SLOT(slotAutosave()));
+    autosaveTimer->start();
+  }
+}
+
+int QucsApp::autosaveAll(bool emergency)
+{
+  int written = 0;
+  for (int i = 0; i < DocumentTab->count(); ++i) {
+    QucsDoc *doc = getDoc(i);
+    if (doc == nullptr || !doc->getDocChanged())
+      continue;
+    if (!qucs_s::autosave::write(doc, i).isEmpty())
+      ++written;
+  }
+  if (!emergency && written > 0)
+    statusBar()->showMessage(tr("Autosaved %n document(s).", "", written), 3000);
+  return written;
+}
+
+void QucsApp::slotAutosave()
+{
+  autosaveAll(false);
+}
+
+void QucsApp::recoverPreviousSession(bool crashedLastTime)
+{
+  const QList<qucs_s::autosave::Entry> entries = qucs_s::autosave::pending();
+  if (entries.isEmpty() && !crashedLastTime)
+    return;
+
+  QString text;
+  if (crashedLastTime) {
+    text += tr("Qucs-S did not exit cleanly the last time it ran.");
+    const QString report = qucs_s::crash::latestReport();
+    if (!report.isEmpty())
+      text += "\n" + tr("A crash report was written to:\n%1").arg(report);
+    text += "\n\n";
+  }
+  if (entries.isEmpty()) {
+    QMessageBox::information(this, tr("Previous session"), text.trimmed());
+    return;
+  }
+
+  text += tr("Unsaved changes were found for the following documents:") + "\n";
+  for (const auto &e : entries)
+    text += "  \u2022 " + (e.untitled ? tr("untitled") : QDir::toNativeSeparators(e.original))
+          + "   (" + e.when.toString(Qt::ISODate).replace('T', ' ') + ")\n";
+  text += "\n" + tr("Do you want to restore them? \"No\" discards the autosaved copies.");
+
+  const auto answer = QMessageBox::question(this, tr("Recover documents"), text,
+                                            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+  if (answer == QMessageBox::Yes)
+    restoreAutosaved(entries);
+  qucs_s::autosave::clear();
+}
+
+void QucsApp::restoreAutosaved(const QList<qucs_s::autosave::Entry> &entries)
+{
+  for (const auto &e : entries) {
+    // Open the copy like any file (without the dataset-name check: the copy
+    // has a hash name), then give it back its real identity and mark it
+    // modified. The user decides whether to save it.
+    if (!gotoPage(e.path, false, false))
+      continue;
+    QucsDoc *doc = getDoc();
+    if (doc == nullptr)
+      continue;
+    const int index = DocumentTab->currentIndex();
+    if (e.untitled) {
+      doc->setName(QString());
+      DocumentTab->setTabText(index, tr("untitled"));
+    } else {
+      doc->setName(e.original);
+      DocumentTab->setTabText(index, QFileInfo(e.original).fileName());
+      if (auto *sch = qobject_cast<Schematic *>(DocumentTab->widget(index)))
+        sch->setFileInfo(e.original);
+    }
+    doc->setDocChanged(true);
+    setDocumentTabChanged(index, true);
+  }
 }
 
 QucsApp::~QucsApp()
@@ -1719,7 +1809,7 @@ void QucsApp::slotTextNew()
 // --------------------------------------------------------------
 // Changes to the document "Name". If already open then it goes to it
 // directly, otherwise it loads it.
-bool QucsApp::gotoPage(const QString& Name, bool reloadPage)
+bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames)
 {
   int No = DocumentTab->currentIndex();
 
@@ -1782,7 +1872,7 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage)
     sch->setIsSymbolOnly(true);
   } else if (is_sch) {
       Schematic *sch = (Schematic *)d;
-      if (sch->checkDplAndDatNames()) sch->setChanged(true,true);
+      if (checkDataNames && sch->checkDplAndDatNames()) sch->setChanged(true,true);
   }
 
   // if only an untitled document was open -> close it
@@ -1828,6 +1918,7 @@ bool QucsApp::saveFile(QucsDoc *Doc)
 
   int Result = Doc->save();
   if(Result < 0)  return false;
+  qucs_s::autosave::remove(Doc->getDocName());
 
   // It's assumed that *.sym files contain *only* a symbol
   // definition. We don't want these files to be subject
@@ -1968,8 +2059,11 @@ bool QucsApp::saveAs()
   DocumentTab->setTabText(DocumentTab->indexOf(w), misc::properFileName(s));
   lastDirOpenSave = Info.absolutePath();  // remember last directory and file
 
+  const int tabIndex = DocumentTab->indexOf(w);
   n = Doc->save();   // SAVE
   if(n < 0)  return false;
+  qucs_s::autosave::removeUntitled(tabIndex, !isTextDocument(w));   // it was untitled before
+  qucs_s::autosave::remove(s);
 
   // It's assumed that *.sym files contain *only* a symbol
   // definition. We don't want these files to be subject
@@ -2069,7 +2163,13 @@ void QucsApp::closeFile(int index)
 
     slotHideEdit(); // disable text edit of component property
 
+    if (index < 0)
+      index = DocumentTab->currentIndex();
     QucsDoc *Doc = getDoc(index);
+    if (Doc == nullptr)
+      return;
+    const QString closingName = Doc->getDocName();
+    const bool closingSchematic = !isTextDocument(DocumentTab->widget(index));
     if(Doc->getDocChanged()) {
       switch(QMessageBox::warning(this,tr("Closing Qucs document"),
         tr("The document contains unsaved changes!\n")+
@@ -2085,6 +2185,11 @@ void QucsApp::closeFile(int index)
     DocumentTab->removeTab(index);
     view->forgetDocumentElements();
     delete Doc;
+    // Saved or discarded on purpose: the autosave copy is obsolete.
+    if (closingName.isEmpty())
+      qucs_s::autosave::removeUntitled(index, closingSchematic);
+    else
+      qucs_s::autosave::remove(closingName);
 
     if(DocumentTab->count() < 1) { // if no document left, create an untitled
       Schematic *d = new Schematic(this, "");

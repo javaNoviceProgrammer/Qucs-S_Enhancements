@@ -181,6 +181,31 @@ Target the *classes* from §1, not the individual issues.
   case. `slotAfterSpiceSimulation` now acts on the schematic the dialog
   simulated instead of whatever tab is current. The 24 remaining indirect
   casts are all inside `isTextDocument()` branches.
+- 1.4 done. `ExternSimDialog` is `WA_DeleteOnClose` (one was leaked per
+  simulation - per slider step when tuning - for the life of the document;
+  the dangling-pointer half was already covered by the dialog being a child
+  of the schematic). `SimMessage` keeps its document in a `QPointer` and the
+  post-simulation code checks it, so closing a document during a Qucsator
+  or ASCO run no longer dereferences a freed widget.
+- 1.6 done. `QUCS_ASSERT` (`qucs/qucs_assert.h`) replaces all 110 `assert()`
+  calls in the application: identical in Debug, and in Release it logs the
+  violated invariant (file:line) instead of vanishing - the log is also part
+  of the crash report. Release builds compile with `-Wall -Wextra` again (the
+  two clang-only cosmetic categories are silenced); the warnings that were
+  hidden turned up an uninitialised `hasY1` in the diagram readout, three
+  unchecked file opens, `PTRDIFF_MIN` used as a float bound, and a few
+  deprecated captures - all fixed. 8 Qt-deprecation notices remain.
+- 1.7 done. `qucs/crashhandler.*` catches fatal signals and uncaught
+  exceptions, writes `crash-<time>.txt` (version, commit, Qt, OS, signal,
+  backtrace, last 64 log lines) under the app-data directory, autosaves
+  modified documents, then lets the OS crash report happen; a session marker
+  detects an unclean exit. `qucs/autosave.*` keeps an atomic copy of every
+  modified document (2-minute timer, `AutosaveInterval` setting; 0 disables)
+  with a `.meta` sidecar, removed on save/close/clean exit. On the next start
+  the user is told about the crash and offered the documents, which reopen
+  under their original names marked modified. `QucsDoc::writeTo()` serialises
+  a document anywhere without touching its state. Covered by
+  `qucs/tests/test_autosave` including two real crashes in child processes.
 - Infrastructure that fell out of 1.3: the core sources are an object
   library (`qucs-core`) shared by the executable and `qucs/tests/`; the
   globals moved from `main.cpp` to `globals.cpp`; and the top-level CMake no

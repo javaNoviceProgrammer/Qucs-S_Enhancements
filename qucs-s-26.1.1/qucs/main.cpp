@@ -50,6 +50,8 @@
 #include "settings.h"
 #include "module.h"
 #include "misc.h"
+#include "autosave.h"
+#include "crashhandler.h"
 
 
 #include "extsimkernels/ngspice.h"
@@ -1035,11 +1037,24 @@ int main(int argc, char *argv[])
         }
     }
 
+    // From here on a crash writes a report and rescues modified documents.
+    const bool crashedLastTime = qucs_s::crash::markSessionStart();
+    qucs_s::crash::install([] {
+        if (QucsMain != nullptr)
+            QucsMain->autosaveAll(/*emergency=*/true);
+    });
+
     QucsMain = new QucsApp(netlist2Console);
     //1a.setMainWidget(QucsMain);
 
     QucsMain->show();
+    QucsMain->recoverPreviousSession(crashedLastTime);
     int result = app.exec();
     //saveApplSettings(QucsMain);
+
+    // A clean exit: every document was saved or discarded by the user, so
+    // the autosave copies are stale, and the session marker comes down.
+    qucs_s::autosave::clear();
+    qucs_s::crash::markSessionEnd();
     return result;
 }

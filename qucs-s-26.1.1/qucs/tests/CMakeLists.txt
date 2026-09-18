@@ -30,3 +30,4 @@ endfunction()
 
 qucs_add_test(test_schematic_lifetime)
 qucs_add_test(test_crash_reports)
+qucs_add_test(test_autosave)
