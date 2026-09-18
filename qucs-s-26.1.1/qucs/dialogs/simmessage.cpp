@@ -68,9 +68,9 @@ SimMessage::SimMessage(QWidget *w, QWidget *parent)
   QucsDoc *Doc;
   DocWidget = w;
   if(QucsApp::isTextDocument(DocWidget))
-    Doc = (QucsDoc*) ((TextDoc*)DocWidget);
+    Doc = (QucsDoc*) (qobject_cast<TextDoc*>(DocWidget));
   else
-    Doc = (QucsDoc*) ((Schematic*)DocWidget);
+    Doc = (QucsDoc*) schematicDoc();
 
   DocName = Doc->getDocName();
   DataDisplay = Doc->getDataDisplay();
@@ -184,7 +184,7 @@ bool SimMessage::startProcess()
 
   if(!QucsApp::isTextDocument(DocWidget)) {
     SimPorts =
-       ((Schematic*)DocWidget)->prepareNetlist(Stream, Collect, ErrText);
+       schematicDoc()->prepareNetlist(Stream, Collect, ErrText);
     if(SimPorts < -5) {
       NetlistFile.close();
       ErrText->appendPlainText(tr("ERROR: Cannot simulate a text file!"));
@@ -370,7 +370,7 @@ void SimMessage::startSimulator()
   // Simulate text window.
   if(QucsApp::isTextDocument(DocWidget)) {
 
-    TextDoc * Doc = (TextDoc*)DocWidget;
+    TextDoc * Doc = qobject_cast<TextDoc*>(DocWidget);
 
     // Take VHDL file in memory as it could contain unsaved changes.
     Stream << Doc->toPlainText();
@@ -460,8 +460,8 @@ void SimMessage::startSimulator()
     }
     Stream << '\n';
 
-    isVerilog = ((Schematic*)DocWidget)->getIsVerilog();
-    SimTime = ((Schematic*)DocWidget)->createNetlist(Stream, SimPorts);
+    isVerilog = schematicDoc()->getIsVerilog();
+    SimTime = schematicDoc()->createNetlist(Stream, SimPorts);
     if(SimTime.length()>0&&SimTime.at(0) == '\xA7') {
       NetlistFile.close();
       ErrText->insertPlainText(SimTime.mid(1));
@@ -534,7 +534,7 @@ void SimMessage::startSimulator()
           }
       } // vaComponents not empty
 
-      if((SimOpt = findOptimization((Schematic*)DocWidget))) {
+      if((SimOpt = findOptimization(schematicDoc()))) {
       ((Optimize_Sim*)SimOpt)->createASCOnetlist();
 
         Program = QucsSettings.AscoBinDir.canonicalPath();
@@ -854,7 +854,8 @@ void SimMessage::FinishSimulation(int Status)
         ifile.close();
       }
       if(((Optimize_Sim*)SimOpt)->loadASCOout())
-        ((Schematic*)DocWidget)->setChanged(true,true);
+        if (Schematic *sch = schematicDoc())   // unless the document was closed meanwhile
+          sch->setChanged(true,true);
     }
   }
 
@@ -890,6 +891,11 @@ void SimMessage::AbortSim()
  *
  *  Useful for creating only one SimMessage dialog
  */
+Schematic *SimMessage::schematicDoc() const
+{
+  return qobject_cast<Schematic*>(DocWidget.data());
+}
+
 void SimMessage::setDocWidget(QWidget *w)
 {
     this->DocWidget = w;
@@ -897,9 +903,9 @@ void SimMessage::setDocWidget(QWidget *w)
     QucsDoc *Doc;
     DocWidget = w;
     if(QucsApp::isTextDocument(DocWidget))
-      Doc = (QucsDoc*) ((TextDoc*)DocWidget);
+      Doc = (QucsDoc*) (qobject_cast<TextDoc*>(DocWidget));
     else
-      Doc = (QucsDoc*) ((Schematic*)DocWidget);
+      Doc = (QucsDoc*) schematicDoc();
 
     DocName = Doc->getDocName();
     DataDisplay = Doc->getDataDisplay();

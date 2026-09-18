@@ -2828,16 +2828,14 @@ void QucsApp::slotAfterSimulation(int Status, SimMessage *sim)
   if(sim->ErrText->document()->lineCount() > 1)   // were there warnings ?
     slotShowWarnings();
 
-  int i=0;
-  QWidget *w;  // search, if page is still open
-  while((w=DocumentTab->widget(i++)) != nullptr)
-    if(w == sim->DocWidget)
-      break;
+  // Is the page still open? DocWidget is a QPointer and goes null when
+  // the document is destroyed.
+  QWidget *w = sim->DocWidget;
 
   if(sim->showBias == 0) {  // paint dc bias into schematic ?
     sim->slotClose();   // close and delete simulation window
     if(w) {  // schematic still open ?
-      SweepDialog *Dia = new SweepDialog((Schematic*)sim->DocWidget);
+      SweepDialog *Dia = new SweepDialog(sim->schematicDoc());
 
       // silence warning about unused variable.
       Q_UNUSED(Dia)
@@ -2867,7 +2865,7 @@ void QucsApp::slotAfterSimulation(int Status, SimMessage *sim)
                 CompChoose->setCurrentIndex(idx);   // switch to diagrams
                 slotSetCompView (idx);
                 // load recent simulation data (if document is still open)
-                ((Schematic*)sim->DocWidget)->reloadGraphs();
+                if (Schematic *sch = sim->schematicDoc()) sch->reloadGraphs();
             }
         }
     }
@@ -2886,7 +2884,7 @@ void QucsApp::slotAfterSimulation(int Status, SimMessage *sim)
 
   // Run the CMD blocks (system commands) present on the schematic
   if (!isTextDocument(sim->DocWidget)) {
-    runPostSimCommands((Schematic*)sim->DocWidget);
+    runPostSimCommands(sim->schematicDoc());
   }
 
 }
