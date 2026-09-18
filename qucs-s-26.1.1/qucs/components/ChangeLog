@@ -1,0 +1,662 @@
+2011-04-05  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (getComponentFromName): Fixing wrong rotation /
+	mirror bug of SPICE file components.
+
+2011-03-12  Stefan Jahn  <stefan@lkcc.org>
+
+	* hicumL0V1p3.cpp (hicumL0V1p3): Added new HICUM/L0 v1.3 model.
+
+2011-03-11  Stefan Jahn  <stefan@lkcc.org>
+
+	* ctline.cpp (CoupledTLine): Ideal coupled transmission line
+	added.
+
+	* hybrid.cpp (Hybrid): New hybrid model added.
+
+	* tunneldiode.cpp (TunnelDiode): Added tunnel diode model.
+
+2010-10-23  Stefan Jahn  <stefan@lkcc.org>
+
+	* hicumL0V1p2g.cpp (hicumL0V1p2g): Added new HICUM/L0 v1.2g model.
+
+2010-05-02  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (paint): Allowing sub- and superscript texts in
+	subcircuit symbols.
+
+2010-04-22  Stefan Jahn  <stefan@lkcc.org>
+
+	* subcirport.cpp (vhdlCode): Don't use 'outsig or 0', use just a
+	buffer without or'ing to avoid signal changes ('Z' or '0' ->
+	'X'!).
+
+2010-03-29  Stefan Jahn  <stefan@lkcc.org>
+
+	* digi_source.cpp (vhdlCode,verilogCode): Simplified code for
+	truth table simulation.
+
+	* diode.cpp (createSymbol): Added 'US' symbol.  It's according to
+	IEEE 315 section 16.3 "Rectifier."
+
+2010-03-27  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (vhdlCode): Fixed XNOR implementation for VHDL
+	code.  XNOR itself not supported by VHDL std_logic (only bit) so
+	far.
+
+2010-03-26  Stefan Jahn  <stefan@lkcc.org>
+
+	* hicumL2V2p24.cpp (hicumL2V2p24): Added new HICUM/L2 v2.24 model.
+
+2009-11-08  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (getComponentFromName): Using new module interface
+	for instantiating components currently loaded.
+
+2009-10-27  Stefan Jahn  <stefan@lkcc.org>
+
+	* vafile.cpp (VerilogA_File_Info): Added new class parsing ports
+	and module name of a Verilog-A file.
+
+2009-10-23  Stefan Jahn  <stefan@lkcc.org>
+
+	* verilogfile.cpp (Verilog_File_Info): Added class for parsing
+	port information from Verilog-HDL code/files.
+
+2009-10-19  Stefan Jahn  <stefan@lkcc.org>
+
+	* vhdlfile.cpp (VHDL_File_Info): Allowing function to read VHDL
+	file information directly from files.
+
+2009-10-06  Stefan Jahn  <stefan@lkcc.org>
+
+	* vhdlfile.cpp (VHDL_File_Info): Implemented class which parses
+	VHDL ports and generics as well as the appropriate data types.
+
+2009-09-20  Stefan Jahn  <stefan@lkcc.org>
+
+	* nigbt.cpp (nigbt): Added new NIGBT model component.
+
+2009-05-04  Stefan Jahn  <stefan@lkcc.org>
+
+	* equation.cpp (verilogCode, vhdlCode): Added code for equations.
+
+2009-04-29  Stefan Jahn  <stefan@lkcc.org>
+
+	* jk_flipflop.cpp, d_flipflop.cpp (verilogCode): Fixed malformed
+	statement without or zero delay time specified.
+
+	* vhdlfile.cpp (createSymbol): Fixed bug in VHDL generic parser
+	which led to unnamed properties.
+
+2009-04-19  Stefan Jahn  <stefan@lkcc.org>
+
+	* pad2bit.cpp (vhdlCode, verilogCode): Reformulation of C code
+	into VHDL and Verilog.  Thus, both immediate as well as subcircuit
+	parameters, can be interpreted.
+
+2009-04-18  Stefan Jahn  <stefan@lkcc.org>
+
+	* logical_buf.cpp (vhdlCode, verilogCode): Using new
+	Verilog_Delay() and VHDL_Delay() functions producing delay time
+	identifiers.
+
+2009-04-17  Stefan Jahn  <stefan@lkcc.org>
+
+	* subcircuit.cpp (verilogCode): Passing subcircuit parameters to
+	Verilog-HDL subcircuits.
+
+2009-04-13  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (paint): Made simulation boxes and component texts
+	somewhat aware of the right-to-left translations like Arabic and
+	Hebrew.
+
+2009-04-09  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (load): Start backward compatibility code when
+	loading diodes for one less property.  Necessary to allow
+	converted diodes from qucsconv (-of qucslib) to be correctly
+	inserted into schematic.
+
+2009-04-08  Stefan Jahn  <stefan@lkcc.org>
+
+	* vhdlfile.cpp (parseGenerics): Parsing additionally the generic
+	map and make it available as properties.
+
+2009-04-07  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp: Added transfer function scaling factor property
+	to digital models.
+
+	* subcircuit.cpp (vhdlCode): Added subcircuit parameters in VHDL
+	using the generic map() feature.
+
+	* phototransistor.cpp (createSymbol): Fixed symbol painting.
+
+2009-04-01  Stefan Jahn  <stefan@lkcc.org>
+
+	* rlcg.cpp (RLCG): Added new transmission line defined by RLCG
+	loads.
+
+2009-03-29  Stefan Jahn  <stefan@lkcc.org>
+
+	* relais.cpp (Relais): Added marks to visualize input voltage
+	polarity.
+
+	* phototransistor.cpp (phototransistor): Added new phototransistor
+	model.  Thanks to Mike!
+
+2009-03-18  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (load): Fixed bug in loading RFEDD with more than
+	4 parameters specified.
+
+2009-03-15  Stefan Jahn  <stefan@lkcc.org>
+
+	* msrstub.cpp (MSrstub): New component: microstrip radial stub.
+
+2009-03-14  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (createSymbol): Fixed DIN symbol for basic XNOR
+	gate component.
+
+2009-03-10  Stefan Jahn  <stefan@lkcc.org>
+
+	* vhdlfile.cpp (loadFile): Extracting signal types and passing
+	them to port specifications.
+
+2009-03-03  Stefan Jahn  <stefan@lkcc.org>
+
+	* Makefile.am (libcomponents_a_SOURCES): Added many new digital
+	primitives.  Thanks a lot to Mike Brinson for the huge effort.
+
+2008-11-08  Stefan Jahn  <stefan@lkcc.org>
+
+	* logical_buf.cpp (Logical_Buf): Added new digital buffer
+	component.
+
+2008-10-31  Stefan Jahn  <stefan@lkcc.org>
+
+	* EKV26pMOS.cpp, EKV26nMOS.cpp: Removed these files.
+
+	* EKV26MOS.cpp (info_pmos): Changing default values for PMOS type
+	model.
+
+2008-10-28  Stefan Jahn  <stefan@lkcc.org>
+
+	* diode.cpp (createSymbol): Added 'Varactor' symbol mode.
+
+2008-10-11  Stefan Jahn  <stefan@lkcc.org>
+
+	* rectline.cpp (RectLine): Added 'Material' parameter.
+
+2008-10-09  Stefan Jahn  <stefan@lkcc.org>
+
+	* photodiode.cpp (photodiode): Added new photodiode model.  Thanks
+	to Mike Brinson!
+
+2008-10-02  Stefan Jahn  <stefan@lkcc.org>
+
+	* hicumL2V2p23.cpp (hicumL2V2p23): Added new HICUM/L2 v2.23 model.
+
+2008-09-28  Stefan Jahn  <stefan@lkcc.org>
+
+	* EKV26pMOS.cpp (EKV26pMOS): Added new property 'Xpart'.
+
+2008-09-20  Stefan Jahn  <stefan@lkcc.org>
+
+	* hic0p2_full.cpp (hic0p2_full): Added new HICUM/L0 v1.2 model.
+
+2008-06-26  Stefan Jahn  <stefan@lkcc.org>
+
+	* rectline.cpp (RectLine): Added new rectangular waveguide
+	provided by Bastien.
+
+2008-06-14  Stefan Jahn  <stefan@lkcc.org>
+
+	* EKV26pMOS.cpp (EKV26pMOS), EKV26nMOS.cpp (EKV26nMOS): Added new
+	EPFL-EKV MOSFET V2.6 models.  Thanks to Mike Brinson!
+
+2008-04-01  Stefan Jahn  <stefan@lkcc.org>
+
+	* MESFET.cpp (MESFET): Added new MESFET Verilog-A device.  Thanks
+	to Mike Brinson!
+
+2008-03-31  Stefan Jahn  <stefan@lkcc.org>
+
+	* sp_sim.cpp (recreate), param_sweep.cpp (recreate), tr_sim.cpp
+	(recreate), ac_sim.cpp (recreate): Fixed graphical bug (property
+	display) when changing from lin/log to const/list by cursor keys.
+
+2008-02-21  Stefan Jahn  <stefan@lkcc.org>
+
+	* rfedd2p.cpp (RFedd2P): Added new 2-port RF-EDD also containing
+	H-, G- and A-parameters.
+
+2008-02-17  Stefan Jahn  <stefan@lkcc.org>
+
+	* rfedd.cpp (RFedd): Added preliminary implementation of an
+	equation defined RF device.
+
+2008-02-08  Stefan Jahn  <stefan@lkcc.org>
+
+	* potentiometer.cpp (potentiometer): Added new Potentiometer
+	Verilog-A model.  Thanks to Mike!
+
+2008-01-25  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (getComponentFromName): Fixed loading/undo/redo of
+	thyristor component.
+
+2008-01-21  Stefan Jahn  <stefan@lkcc.org>
+
+	* hic0_full.cpp (hic0_full): Added HICUM L0 v1.12 component.
+
+2008-01-19  Stefan Jahn  <stefan@lkcc.org>
+
+	* log_amp.cpp (log_amp): Added new Logarithmic Amplifier verilog
+	device.  Thanks to Mike Brinson!
+
+2008-01-16  Stefan Jahn  <stefan@lkcc.org>
+
+	* diac.cpp (Diac): Added some more properties.
+
+2008-01-02  Stefan Jahn  <stefan@lkcc.org>
+
+	* triac.cpp (Triac), thyristor.cpp (Thyristor), diac.cpp (Diac):
+	Added new components.
+
+2007-12-26  Stefan Jahn  <stefan@lkcc.org>
+
+	* hic2_full.cpp (hic2_full): Added units to property descriptions.
+	Fixed default symbol (npn).
+
+2007-12-20  Stefan Jahn  <stefan@lkcc.org>
+
+	* hic2_full.h (class hic2_full): Added HICUM L2 v2.22 component.
+
+2007-12-13  Stefan Jahn  <stefan@lkcc.org>
+
+	* mod_amp.cpp (mod_amp): Added new Modular OpAmp verilog device.
+	Thanks to Mike Brinson!
+
+2007-10-23  Stefan Jahn  <stefan@lkcc.org>
+
+	* ifile.cpp (iFile): Added new file based current source.
+
+2007-10-22  Stefan Jahn  <stefan@lkcc.org>
+
+	* HBT_X.cpp (HBT_X), hicumL2p1.cpp (createSymbol): Cosmetic
+	changes on the schematic symbol.
+
+2007-10-21  Stefan Jahn  <stefan@lkcc.org>
+
+	* vfile.cpp (vFile): Added new voltage gain and delay time
+	properties.
+
+2007-09-17  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (load): Fixed a bug due to one or more '=' in
+	equations while loading a component.
+
+2007-08-15  Stefan Jahn  <stefan@lkcc.org>
+
+	* subcircuit.cpp (createSymbol): Remove unused ports for symbol
+	painting algorithm.  It comes to unused ports when the port
+	numbering does not start with 1 or a number is missing in a row of
+	numbers.
+
+	* component.cpp (analyseLine): Mark really used subcircuit ports
+	while loading a symbol.
+
+2007-08-13  Stefan Jahn  <stefan@lkcc.org>
+
+	* vfile.cpp (vFile): New component: file based voltage source.
+	Thanks a lot to Gunther!
+
+2007-05-30  Stefan Jahn  <stefan@lkcc.org>
+
+	* spicefile.cpp, spicedialog.cpp: Tested code for all three SPICE
+	preprocessors.  Made small modicfications for spiceprm as well as
+	for Win32.
+
+2007-05-29  Stefan Jahn  <stefan@lkcc.org>
+
+	* spicedialog.cpp (loadSpiceNetList): Added selection box for
+	SPICE preprocessors.  The preprocessor is run before the actual
+	SPICE to Qucs conversion.
+
+	* spicefile.cpp (recreateSubNetlist): Added preprocessor call if
+	necessary.
+
+2007-05-10  Stefan Jahn  <stefan@lkcc.org>
+
+	* vhdlfile.cpp (getSubcircuitFile), verilogfile.cpp
+	(getSubcircuitFile), subcircuit.cpp (netlist), spicefile.cpp
+	(recreateSubNetlist): Using new file name mangling functions.
+
+	* libcomp.cpp (loadSection): Additionally loading the file include
+	references.
+	(createSubNetlist): Also put file includes into the netlist
+	stream.
+
+2007-05-09  Stefan Jahn  <stefan@lkcc.org>
+
+	* libcomp.cpp: Enabled library component to emit analog as well as
+	digital netlist code.
+
+2007-05-08  Stefan Jahn  <stefan@lkcc.org>
+
+	* verilogfile.cpp, vhdlfile.cpp, spicefile.cpp (createSubNetlist):
+	File components can now create the netlist parts on their own.
+
+2007-04-19  Stefan Jahn  <stefan@lkcc.org>
+
+	* eqndefined.cpp (EqnDefined): Added new equation defined
+	device.  Icon still missing.
+
+	* hicumL2p1.cpp (hicumL2p1): Added description for the 'fbc' and
+	'krbi' properties.
+
+2007-04-15  Stefan Jahn  <stefan@lkcc.org>
+
+	* iexp.cpp (iExp), vexp.cpp (vExp): Added exponential voltage and
+	current pulse sources.  Thanks to Gunther.
+
+2007-04-11  Stefan Jahn  <stefan@lkcc.org>
+
+	* verilogfile.cpp (loadFile): Filtering /* ... */ Verilog comments
+	when extracting the ports of a module.
+
+	* rs_flipflop.cpp (RS_FlipFlop), jk_flipflop.cpp (JK_FlipFlop):
+	Using the overline property for the NQ output.  So no more
+	confusion about the symbol when mirroring about the X-axis.
+
+	* rs_flipflop.cpp, jk_flipflop.cpp, d_flipflop.cpp (vhdlCode):
+	Checking the 'time' property for the correct format.
+
+	* component.cpp (paint): Using the new 'over' and 'under'
+	properties to draw over- as well as underlined texts.
+
+2007-04-05  Stefan Jahn  <stefan@lkcc.org>
+
+	* jk_flipflop.cpp, d_flipflop.cpp (verilogCode): Initialized
+	register value.
+
+	* HBT_X.cpp (HBT_X): Fixed description of the BVceo property.
+
+2007-04-01  Stefan Jahn  <stefan@lkcc.org>
+
+	* jk_flipflop.cpp, rs_flipflop.cpp (verilogCode): Implemented
+	Verilog code for RS- and JK-flipsflops.
+
+2007-03-31  Stefan Jahn  <stefan@lkcc.org>
+
+	* d_flipflop.cpp (verilogCode): Removed initial value for
+	D-flipflop output register.
+
+	* verilogfile.h: Added new component.  Can handle external
+	verilog files.  Can be used as subcircuit.
+
+2007-03-30  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (verilogCode): Also added the "assign"
+	alternative for better "synthesizability" for gate primitives.
+
+2007-03-28  Stefan Jahn  <stefan@lkcc.org>
+
+	* digi_source.cpp (verilogCode): Ensured that register name
+	of each digital source is unique.
+
+	* d_flipflop.cpp (verilogCode): Fixed Verilog code of
+	D-flipflop.  Is working now, can be used as template for
+	other flipflops.
+
+2007-03-26  Stefan Jahn  <stefan@lkcc.org>
+
+	* digi_sim.cpp (Digi_Sim): Can select between VHDL and Verilog
+	netlist format.
+
+	* component.cpp (get_Verilog_Code): Gate components and digital
+	sources now working with Verilog HDL.
+
+2007-03-25  Stefan Jahn  <stefan@lkcc.org>
+
+	* component.cpp (verilogHDL_Code): New virtual function which
+	is used to produce Verilog HDL code.
+
+	* d_flipflop.cpp (verilogHDL_Code): Added the first Verilog HDL
+	code.  Provided by Ozgur.
+
+2007-03-06  Stefan Jahn  <stefan@lkcc.org>
+
+	* twistedpair.cpp (TwistedPair): Added some new properties
+	necessary for the loss and noise models.
+
+2007-02-04  Stefan Jahn  <stefan@lkcc.org>
+
+	* mscross.cpp (MScross): Added microstrip model selectors
+	to the properties of the microstrip cross.
+
+2006-10-29  Stefan Jahn  <stefan@lkcc.org>
+
+	* hicumL2p1.h (class hicumL2p1): Added HICUM L2 v2.1 model.
+
+	* HBT_X.h (class HBT_X): Added FBH HBT device model.
+
+2006-09-24  Stefan Jahn  <stefan@lkcc.org>
+
+	* tr_sim.cpp (TR_Sim): Added 'MaxStep' property.
+
+2006-09-03  Stefan Jahn  <stefan@lkcc.org>
+
+	* opt_sim.cpp (createASCOFiles): Fixed a bug occuring when
+	trying to use ASCO on Win32.
+
+2006-08-30  Stefan Jahn  <stefan@lkcc.org>
+
+	* opt_sim.cpp (loadASCOout): Evaluate output file of ASCO and
+	puts final values into initial values of the component.
+	(createASCOnetlist): Modifies netlist for use with ASCO.
+
+2006-08-21  Stefan Jahn  <stefan@lkcc.org>
+
+	* opt_sim.cpp (createASCOFiles): Moved this function here from
+	the optimization dialog.  Netlist creation fixed.  Properties
+	are saves properly now (translation independent).
+
+	* optimizedialog.cpp (OptimizeDialog): Improved and finished
+	the dialog for now.
+
+2006-08-20  Stefan Jahn  <stefan@lkcc.org>
+
+	* optimizedialog.cpp (createASCOFiles): Added the DE properteries
+	to the dialog and implemented the creation of the configuration
+	files used by ASCO.
+
+2006-08-19  Stefan Jahn  <stefan@lkcc.org>
+
+	* vrect.cpp (vRect), irect.cpp (iRect): Added new properties
+	for delay, rise and fall time.
+
+2006-07-23  Stefan Jahn  <stefan@lkcc.org>
+
+	* tr_sim.cpp (TR_Sim): Added new property 'initialDC'.
+
+2006-07-02  Stefan Jahn  <stefan@lkcc.org>
+
+	* dc_sim.cpp (DC_Sim), tr_sim.cpp (TR_Sim): Allow choosing
+	'GolubSVD' as equation solver.
+
+2006-05-22  Stefan Jahn  <stefan@lkcc.org>
+
+	* tline.cpp (TLine): Changed default value of 'Alpha' to "0 dB".
+
+2006-04-27  Stefan Jahn  <stefan@lkcc.org>
+
+	* sparamfile.cpp (SParamFile): Added new 'duringDC' property.
+
+2006-01-31  Stefan Jahn  <stefan@lkcc.org>
+
+	* coaxialline.cpp (CoaxialLine): Applied some useful default
+	values.  Fixed typo in property description.
+
+2006-01-30  Stefan Jahn  <stefan@lkcc.org>
+
+	* volt_ac.cpp (Volt_ac): Changed property description from 'rms
+	voltage' into 'peak voltage'.
+
+	* coaxialline.cpp (CoaxialLine): Renamed 'mu' into 'mur'.
+
+2006-01-29  Stefan Jahn  <stefan@lkcc.org>
+
+	* sp_sim.cpp (SP_Sim): New properties: saveCVs and saveAll.
+
+	* resistor.cpp (Resistor): Added new properties: Tc1, Tc2 and
+	Tnom.
+
+2006-01-14  Stefan Jahn  <stefan@lkcc.org>
+
+	* d_flipflop.cpp, jk_flipflop.cpp, rs_flipflop.cpp: Including
+	<stdlib.h> for strtod() definition.
+
+2006-01-10  Stefan Jahn  <stefan@lkcc.org>
+
+	* jk_flipflop.cpp (JK_FlipFlop), rs_flipflop.cpp (RS_FlipFlop),
+	d_flipflop.cpp (D_FlipFlop): Slightly modified the schematic
+	symbols.
+
+2005-12-18  Stefan Jahn  <stefan@lkcc.org>
+
+	* bjtsub.cpp, bjt.cpp, jfet.cpp, mosfet.cpp, mosfet_sub.cpp:
+	Added temperature and area model parameters.
+
+2005-12-12  Stefan Jahn  <stefan@lkcc.org>
+
+	* diode.cpp (Diode): Added new temperature and area model
+	parameters.
+
+2005-05-21  Stefan Jahn  <stefan@lkcc.org>
+
+	* spicedialog.cpp (loadSpiceNetList): Closing stdin of
+	qucsconv process.
+
+2005-05-15  Stefan Jahn  <stefan@lkcc.org>
+
+	* diode.cpp (Diode): Added 'Bv' and 'Ibv' properties.
+
+2004-11-11  Stefan Jahn  <stefan@lkcc.org>
+
+	* ac_sim.cpp (AC_Sim), dc_sim.cpp (DC_Sim): Incorporate linebreak
+	in the component text if necessary (french translation used
+	really loooong words).
+
+2004-10-11  Stefan Jahn  <stefan@lkcc.org>
+
+	* param_sweep.cpp (Param_Sweep), sp_sim.cpp (SP_Sim),
+	tr_sim.cpp (TR_Sim), hb_sim.cpp (HB_Sim): Fixed error in
+	word wrapping.
+
+2004-08-31  Stefan Jahn  <jahn@mwt.ee.tu-berlin.de>
+
+	* component.cpp (paint): Using font metrics to calculate
+	y-spacing for visible component properties.
+
+2004-08-30  Stefan Jahn  <jahn@mwt.ee.tu-berlin.de>
+
+	* componentdialog.cpp (slotSelectProperty): Fixed bug when
+	longer descriptions without white spaces occur.
+
+2004-08-24  Stefan Jahn  <stefan@lkcc.org>
+
+	* componentdialog.cpp (correctDesc): New private function which
+	is able to detect the special combox-box items in the component
+	dialog.
+
+	* isolator.cpp (Isolator), attenuator.cpp (Attenuator),
+	msline.cpp (MSline): Added 'Temp' property for noise analysis.
+
+2004-08-16  Stefan Jahn  <stefan@lkcc.org>
+
+	* msopen.cpp (MSopen): Added 'Model' property.
+
+2004-08-03  Stefan Jahn  <stefan@lkcc.org>
+
+	* mosfet_depl.cpp (MOSFET_depl), mosfet.cpp (MOSFET): Added
+	model properties.
+
+2004-08-01  Stefan Jahn  <stefan@lkcc.org>
+
+	* diode.cpp (Diode): Added some more new component
+	properties.
+
+2004-07-31  Stefan Jahn  <stefan@lkcc.org>
+
+	* diode.cpp (Diode): Added flicker noise parameters to
+	component properties.
+
+2004-07-28  Stefan Jahn  <stefan@lkcc.org>
+
+	* bjt.cpp (BJT): Added noise model parameters to the list
+	of component properties.
+
+2004-07-26  Stefan Jahn  <stefan@lkcc.org>
+
+	* bjtsub.cpp (BJTsub), bjt.cpp (BJT): Added model parameters.
+
+	* jfet.cpp (JFET): Added noise model parameters.
+
+2004-07-12  Stefan Jahn  <stefan@lkcc.org>
+
+	* sp_sim.cpp (SP_Sim): Inserting line break in component 
+	description if necessary and senseful.
+
+2004-07-04  Stefan Jahn  <stefan@lkcc.org>
+
+	* resistor.cpp (Resistor): Added 'Temp' property.
+
+2004-07-01  Stefan Jahn  <stefan@lkcc.org>
+
+	* componentdialog.cpp (ComponentDialog): Allowing ',' to be
+	typed into property dialogs (for equations).
+
+2004-06-27  Stefan Jahn  <stefan@lkcc.org>
+
+	* resistor.cpp (Resistor): Fixed typo in 'european'.
+
+	* dc_sim.cpp (DC_Sim): Renamed 'showOPs' property into
+	'saveOPs'.
+
+2004-06-09  Stefan Jahn  <stefan@lkcc.org>
+
+	* diode.cpp (Diode): Added 'Rs' and 'Tt' to diode parameters.
+	Changed some parameter names as done in the simulator.
+
+	* component.cpp (getComponentFromName): Made JFET component
+	loadable.
+
+2004-05-02  Stefan Jahn  <stefan@lkcc.org>
+
+	* diode.cpp (Diode): Added more properties to the diode
+	model.
+
+2004-04-30  Michael Margraf  <michael.margraf@alumni.tu-berlin.de>
+
+	* fixed behaviour of combo box in component dialog
+
+2004-02-09  Stefan Jahn  <stefan@lkcc.org>
+
+	* diode.cpp (Diode): Added new 'n' property to diode model.
+
+2004-02-03  Stefan Jahn  <stefan@lkcc.org>
+
+	* substrate.cpp, symtrafo.cpp, transformer.cpp: Fixed some
+	typos in the property descriptions.
+
+	* diode.cpp (Diode): Added 'Is' property to diode component.
+
+2004-01-21  Stefan Jahn  <stefan@lkcc.org>
+
+	* componentdialog.cpp:  Added translatable strings.

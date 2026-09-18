@@ -1,0 +1,490 @@
+<Qucs Library 2.1.0 "Thyristor">
+
+<Component 2N1595>
+  <Description>
+2N1595 50V 1.6A SCR device
+  </Description>
+  <Model>
+.Def:Thyristor_2N1595 _net0 _net1 _net2
+Sub:X1 _net0 _net1 _net2 gnd Type="n2N1595_cir"
+.Def:End
+  </Model>
+  <ModelIncludes "2N1595.cir.lst">
+  <Spice>* Qucs 2.1.0  Thyristor_2N1595.sch
+
+* Motorola 2N1595 50 Volt 1.6 Amp SCR
+*    TERMINALS:  A G K
+.SUBCKT X2N1595  1 2 3
+QP  6 4 1  POUT 
+QN  4 6 5  NOUT 
+RF  6 4    10MEG
+RR  1 4    6.66MEG
+RGK 6 5    210
+RG  2 6    92.9
+RK  3 5    80M
+DF  6 4    ZF
+DR  1 4    ZR
+DGK 6 5    ZGK
+.MODEL ZF   D (IS=.64F IBV=1U BV=50 RS=1.5MEG)
+.MODEL ZR   D (IS=.64F IBV=1U BV=66.6)
+.MODEL ZGK  D (IS=.64F IBV=1U BV=10)
+.MODEL POUT PNP (IS=640F BF=1 CJE=335P)
+.MODEL NOUT NPN (IS=640F BF=100 RC=.32
++ CJE=335P CJC=67P TF=143N TR=17U)
+.ENDS
+
+
+.SUBCKT Thyristor_2N1595  gnd _net0 _net1 _net2 
+X1 _net0 _net1 _net2 X2N1595
+.ENDS
+  </Spice>
+  <Symbol>
+    <Line 9 6 -18 0 #000080 2 1>
+    <Line 9 -6 -18 0 #000080 2 1>
+    <Line 0 30 0 -24 #000080 2 1>
+    <Line 0 -6 0 -24 #000080 2 1>
+    <Line 0 6 -9 -12 #000080 2 1>
+    <Line 0 6 9 -12 #000080 2 1>
+    <Line -20 10 11 0 #000080 2 1>
+    <Line -9 10 4 -4 #000080 2 1>
+    <.ID 20 -16 X>
+    <.PortSym 0 -30 1 0>
+    <.PortSym 0 30 3 0>
+    <.PortSym -20 10 2 0>
+  </Symbol>
+</Component>
+
+<Component 2N6397>
+  <Description>
+2N6397 400V 12A SCR device
+  </Description>
+  <Model>
+.Def:Thyristor_2N6397 _net1 _net2 _net0
+Sub:X1 _net1 _net2 _net0 gnd Type="n2N6397_cir"
+.Def:End
+  </Model>
+  <ModelIncludes "2N6397.cir.lst">
+  <Spice>* Qucs 2.1.0  Thyristor_2N6397.sch
+
+.SUBCKT X2N6397 1 2 3
+Q1 2 4 1 QPSCR AREA=.67 
+Q2 4 2 3 QNSCR AREA=.67
+Q3 5 4 1 QPSCR AREA=.33 
+Q4 4 5 3 QNSCR AREA=.33
+RBN 2 5 40
+.MODEL QNSCR NPN(TF=400NS TR=1.6US CJC=50PF CJE=175PF XTB=2.5
++ IS=1E-15 ISE=3E-9 NE=2 BF=100 BR=25 ISC=3E-9 NC=2 )
+.MODEL QPSCR PNP(TF=90NS TR=180NS CJC=50PF CJE=80PF XTB=2.5
++ IS=1E-15 ISE=3E-9 NE=2 BF=50 BR=25 ISC=3E-9 NC=2 RE=.03)
+.ENDS
+
+
+.SUBCKT Thyristor_2N6397  gnd _net1 _net2 _net0 
+X1 _net1 _net2 _net0 X2N6397
+.ENDS
+  </Spice>
+  <Symbol>
+    <Line 9 6 -18 0 #000080 2 1>
+    <Line 9 -6 -18 0 #000080 2 1>
+    <Line 0 30 0 -24 #000080 2 1>
+    <Line 0 -6 0 -24 #000080 2 1>
+    <Line 0 6 -9 -12 #000080 2 1>
+    <Line 0 6 9 -12 #000080 2 1>
+    <Line -20 10 11 0 #000080 2 1>
+    <Line -9 10 4 -4 #000080 2 1>
+    <.ID 20 -16 X>
+    <.PortSym 0 -30 1 0>
+    <.PortSym 0 30 3 0>
+    <.PortSym -20 10 2 0>
+  </Symbol>
+</Component>
+
+<Component DB3>
+  <Description>
+DB3 32V diac device
+  </Description>
+  <Model>
+.Def:Thyristor_DB3 _net0 _net1
+Sub:X2 _net0 _net1 gnd Type="DB3_ST_sub"
+.Def:End
+  </Model>
+  <ModelIncludes "DB3_ST.sub.lst">
+  <Spice>* Qucs 2.1.0  Thyristor_DB3.sch
+
+*********************************************************************
+* 				Standard DIACs definition			    *
+*********************************************************************
+.SUBCKT XDB3 1 2
+* TERMINALS: MT2 MT1
+QN1 5 4 2 NOUT; OFF
+QN2 8 6 7 NOUT; OFF
+QP1 6 8 10 POUT; OFF
+QP2 4 5 9 POUT; OFF
+D1 7 9 DZ
+D2 2 10 DZ
+DF 4 3 DZ; OFF
+DR 6 3 DZ; OFF
+RF 4 3 1.13E+7
+RR 6 3 1.13E+7
+RT2 1 7 0.755
+RH 7 6 10k
+RH2 4 2 10k
+.MODEL DZ D (IS=321F RS=100 N=1.5 IBV=10N BV=30.3)
+.MODEL POUT PNP (IS=321F BF=100 CJE=134p TF=25.5U)
+.MODEL NOUT NPN (IS=321F BF=200 CJE=134p CJC=26.8p TF=1.7U)
+.ENDS
+
+
+.SUBCKT Thyristor_DB3  gnd _net0 _net1 
+X2 _net0 _net1 XDB3
+.ENDS
+  </Spice>
+  <Symbol>
+    <Line 0 6 0 24 #000080 2 1>
+    <Line 0 -30 0 24 #000080 2 1>
+    <Line -9 6 -9 -12 #000080 2 1>
+    <Line -9 6 9 -12 #000080 2 1>
+    <Line 9 -6 9 12 #000080 2 1>
+    <Line 9 -6 -9 12 #000080 2 1>
+    <Line 18 -6 -36 0 #000080 2 1>
+    <Line 18 6 -36 0 #000080 2 1>
+    <.ID 30 -46 SUB>
+    <.PortSym 0 30 2 0>
+    <.PortSym 0 -30 1 0>
+  </Symbol>
+</Component>
+
+<Component L6008L6>
+  <Description>
+L6008L6 Littlefuse 600V 8A device
+  </Description>
+  <Model>
+.Def:Thyristor_L6008L6 _net2 _net0 _net1
+Sub:X1 _net2 _net0 _net1 gnd Type="L6008L6_sub"
+.Def:End
+  </Model>
+  <ModelIncludes "L6008L6.sub.lst">
+  <Spice>* Qucs 2.1.0  Thyristor_L6008L6.sch
+
+*L6008L6 Littelfuse TRIAC;800V 8A
+*
+.SUBCKT XL6008L6   1  2  3
+*     TERMINALS: MT2 G MT1
+QN1  5 4 3  NOUT OFF
+QN2 11 6 7  NOUT OFF
+QP1 6 11 3  POUT OFF
+QP2  4 5 7  POUT OFF
+DF  4  5  DZ OFF
+DR  6 11  DZ OFF
+RF  4 6  40MEG
+RT2 1 7  61.6M
+RH  7 6  52.5
+RGP 8 3  120
+RG  2 8  58
+RS  8 4  12
+DN  9 2  DIN OFF
+RN  9 3  61.2
+GNN  6 7 9 3 55.4M
+GNP  4 5 9 3 70.5M
+DP 2 10  DIP OFF
+RP 10 3  35.6
+GP  7 6 10 3 37.3M
+.MODEL DIN  D (IS=76.4F)
+.MODEL DIP  D (IS=76.4F N=1.19)
+.MODEL DZ   D (IS=76.4F N=1.5 IBV=20U BV=800)
+.MODEL POUT PNP (IS=76.4F BF=5 CJE=1.68N TF=63.8U)
+.MODEL NOUT NPN (IS=76.4F BF=20 CJE=1.68N CJC=335P TF=4.25U)
+.ENDS
+*****
+
+.SUBCKT Thyristor_L6008L6  gnd _net2 _net0 _net1 
+X1 _net2 _net0 _net1 XL6008L6
+.ENDS
+  </Spice>
+  <Symbol>
+    <Line 0 6 0 24 #000080 2 1>
+    <Line 0 -30 0 24 #000080 2 1>
+    <Line 18 6 -36 0 #000080 2 1>
+    <Line -30 10 17 0 #000080 2 1>
+    <Line -13 10 4 -4 #000080 2 1>
+    <Line -9 6 -9 -12 #000080 2 1>
+    <Line -9 6 9 -12 #000080 2 1>
+    <Line 9 -6 9 12 #000080 2 1>
+    <Line 9 -6 -9 12 #000080 2 1>
+    <Line 18 -6 -36 0 #000080 2 1>
+    <.ID 30 -56 SUB>
+    <.PortSym 0 -30 1 0>
+    <.PortSym -30 10 2 0>
+    <.PortSym 0 30 3 0>
+  </Symbol>
+</Component>
+
+<Component Q5010L5>
+  <Description>
+Q5010L5 500V 10A Triac device
+  </Description>
+  <Model>
+.Def:Thyristor_Q5010L5 _net0 _net1 _net2
+Sub:X1 _net0 _net1 _net2 gnd Type="XQ5010L5_cir"
+.Def:End
+  </Model>
+  <ModelIncludes "XQ5010L5.cir.lst">
+  <Spice>* Qucs 2.1.0  Thyristor_Q5010L5.sch
+
+.SUBCKT XQ5010L5   1  2  3
+*     TERMINALS:  MT2 G MT1
+QN1  5 4 3  NOUT OFF
+QN2 11 6 7  NOUT OFF
+QP1 6 11 3  POUT OFF
+QP2  4 5 7  POUT OFF
+DF  4  5  DZ OFF
+DR  6 11  DZ OFF
+RF  4 6  10MEG
+RT2 1 7  49.3M
+RH  7 6  10.5
+RGP 8 3  12
+RG  2 8  5.8
+RS  8 4  3
+DN  9 2  DIN OFF
+RN  9 3  6.12
+GNN  6 7 9 3 0.277
+GNP  4 5 9 3 0.521
+DP 2 10  DIP OFF
+RP 10 3  3.56
+GP  7 6 10 3 4.29
+.MODEL DIN  D (IS=382F)
+.MODEL DIP  D (IS=382F N=1.19)
+.MODEL DZ   D (IS=382F N=1.5 IBV=50U BV=500)
+.MODEL POUT PNP (IS=382F BF=5 CJE=558P TF=76.5U)
+.MODEL NOUT NPN (IS=382F BF=20 CJE=558P CJC=112P TF=5.1U)
+.ENDS
+
+.SUBCKT Thyristor_Q5010L5  gnd _net0 _net1 _net2 
+X1 _net0 _net1 _net2 XQ5010L5
+.ENDS
+  </Spice>
+  <Symbol>
+    <Line 0 6 0 24 #000080 2 1>
+    <Line 0 -30 0 24 #000080 2 1>
+    <Line 18 6 -36 0 #000080 2 1>
+    <Line -30 10 17 0 #000080 2 1>
+    <Line -13 10 4 -4 #000080 2 1>
+    <Line -9 6 -9 -12 #000080 2 1>
+    <Line -9 6 9 -12 #000080 2 1>
+    <Line 9 -6 9 12 #000080 2 1>
+    <Line 9 -6 -9 12 #000080 2 1>
+    <Line 18 -6 -36 0 #000080 2 1>
+    <.ID 20 -16 X>
+    <.PortSym 0 -30 1 0>
+    <.PortSym -30 10 2 0>
+    <.PortSym 0 30 3 0>
+  </Symbol>
+</Component>
+
+<Component S8020L>
+  <Description>
+S8020 800V 20A SCR device
+  </Description>
+  <Model>
+.Def:Thyristor_S8020L _net0 _net1 _net2
+Sub:X1 _net0 _net1 _net2 gnd Type="S8020L_sub"
+.Def:End
+  </Model>
+  <ModelIncludes "S8020L.sub.lst">
+  <Spice>* Qucs 2.1.0  Thyristor_S8020L.sch
+
+*S8020L Littelfuse SCR;800V 20A
+*
+.SUBCKT XS8020L     1  2  3
+*       TERMINALS: A  G  K
+Qpnp    6          4  1 Pfor      OFF
+Qnpn    4          6  5 Nfor      OFF
+Rfor    6          4  500MEG
+Rrev    1          4  500MEG
+Rshort  6          5  20
+Rlat    2          6  2.64
+Ron     3          5  13.1m
+Dfor    6          4  Zbrk
+Drev    1          4  Zbrk
+Dgate   6          5  Zgate
+.MODEL  Zbrk       D  (IS=10F       IBV=1U    BV=800)
+.MODEL  Zgate      D  (IS=10F       IBV=100U  BV=10      VJ=0.3)
+.MODEL  Pfor       PNP(IS=10P       BF=3.0    CJE=200p   CJC=200p   TF=0.3U)
+.MODEL  Nfor       NPN(IS=10P       ISE=1E-9  BF=100.0   RC=13.6M   CJE=1000p   CJC=200p    TF=0.3U)
+.ENDS
+
+.SUBCKT Thyristor_S8020L  gnd _net0 _net1 _net2 
+X1 _net0 _net1 _net2 XS8020L
+.ENDS
+  </Spice>
+  <Symbol>
+    <Line 9 6 -18 0 #000080 2 1>
+    <Line 9 -6 -18 0 #000080 2 1>
+    <Line 0 30 0 -24 #000080 2 1>
+    <Line 0 -6 0 -24 #000080 2 1>
+    <Line 0 6 -9 -12 #000080 2 1>
+    <Line 0 6 9 -12 #000080 2 1>
+    <Line -20 10 11 0 #000080 2 1>
+    <Line -9 10 4 -4 #000080 2 1>
+    <.ID 20 -26 SUB>
+    <.PortSym 0 -30 1 0>
+    <.PortSym -20 10 2 0>
+    <.PortSym 0 30 3 0>
+  </Symbol>
+</Component>
+
+<Component TriacGeneric>
+  <Description>
+Generic triac model from ST microelectronics. This model works only with LTSpice compatibility option:
+============================
+* Vdrm : Repetitive forward off-state voltage
+* Ih   : Holding current 
+* Igt  : Gate trigger current 
+* Rt   : Dynamic on-state resistance
+* Standard : Differenciation between Snubberless and Standard TRIACs
+* (Standard=0 => Snubberless TRIACs, Standard=1 => Standard TRIACs)
+  </Description>
+  <Model>
+.Def:Thyristor_TriacGeneric _net0 _net1 _net2 Vdrm="400" Igt="20m" Ih="6m" Rt="0.10" Standard="1"
+Sub:X1 _net0 _net2 _net1 gnd Type="TriacST_orig_cir"
+.Def:End
+  </Model>
+  <ModelIncludes "TriacST_orig.cir.lst">
+  <Spice>
+.subckt Triac_ST A K G PARAMS:
++ Vdrm=400v     
++ Igt=20ma
++ Ih=6ma        
++ Rt=0.01
++ Standard=1
+*
+* Vdrm : Repetitive forward off-state voltage
+* Ih   : Holding current 
+* Igt  : Gate trigger current 
+* Rt   : Dynamic on-state resistance
+* Standard : Differenciation between Snubberless and Standard TRIACs
+* (Standard=0 => Snubberless TRIACs, Standard=1 => Standard TRIACs)
+*
+****************************
+* Power circuit *
+****************************
+*
+****************************
+*Switch circuit*
+****************************
+* Q1 & Q2 Conduction
+S_S3           A Plip1 positive 0 Smain
+*RS_S3         positive 0 1G
+D_DAK1         Plip1 Plip2 Dak 
+R_Rlip         Plip1 Plip2  1k
+V_Viak         Plip2 K DC 0 AC 0 
+*
+* Q3 & Q4 Conduction
+S_S4           A Plin1 negative 0 Smain
+*RS_S4         negative 0 1G
+D_DKA1         Plin2 Plin1 Dak 
+R_Rlin         Plin1 Plin2  1k 
+V_Vika         K Plin2 DC 0 AC 0  
+****************************
+*Gate circuit*
+****************************
+R_Rgk          G K  10G  
+D_DGKi         Pg2 G Dgk 
+D_DGKd         G Pg2 Dgk 
+V_Vig          Pg2 K DC 0 AC 0 
+R_Rlig         G Pg2  1k  
+*
+****************************
+*Interface circuit*
+****************************
+* positive pilot
+R_Rp              Controlp positive  2.2  
+C_Cp              0 positive  1u 
+E_IF15OR3         Controlp 0 VALUE {IF(  ( (V(CMDIG)>0.5) | (V(CMDILIH)>0.5) | (V(CMDVdrm)>0.5) ),400,0 )}
+* 
+* negative pilot
+R_Rn              Controln negative  2.2   
+C_Cn              0 negative  1u  
+E_IF14OR3         Controln 0 VALUE {IF(  ( (V(CMDIG)>0.5) | (V(CMDILIHN)>0.5) |  (V(CMDVdrm)>0.5) ),400,0 )}
+*
+****************************
+* Pilots circuit *
+****************************
+****************************
+* Pilot Gate     *
+****************************
+E_IF1IG             inIG 0 VALUE {IF(  ( ABS(I(V_Vig)) ) > (Igt-1u) ,1,0 )}
+E_MULT2MULT         CMDIG 0 VALUE {V(Q4)*V(inIG)}
+E_IF2Quadrant4      Q4 0 VALUE {IF(((I(V_Vig)>(Igt-0.000001))&((V(A)-V(K))<0)&(Standard==0)),0,1)}
+*
+****************************
+* Pilot IHIL     *
+****************************
+*
+E_IF10IL         inIL 0 VALUE {IF( ((I(V_Viak))>(Ih/2)),1,0 )}
+E_IF5IH          inIH 0 VALUE {IF( ((I(V_Viak))>(Ih/3)),1,0 )} 
+*
+* Flip_flop IHIL
+E_IF6DIHIL         SDIHIL 0 VALUE {IF((V(inIL)*V(inIH)+V(inIH)*(1-V(inIL))*(V(CMDILIH)) )>0.5,1,0)}
+C_CIHIL            CMDILIH 0  1n  
+R_RIHIL            SDIHIL CMDILIH  1K  
+R_RIHIL2           CMDILIH 0  100Meg  
+*
+****************************
+* Pilot IHILN    *
+****************************
+*
+E_IF11ILn           inILn 0 VALUE {IF( ((I(V_Vika))>(Ih/2)),1,0 )}
+E_IF3IHn            inIHn 0 VALUE {IF( ((I(V_Vika))>(Ih/3)),1,0 )} 
+* Flip_flop IHILn
+E_IF4DIHILN         SDIHILN 0 VALUE {IF((V(inILn)*V(inIHn)+V(inIHn)*(1-V(inILn))*(V(CMDILIHN)) )>0.5,1,0)}
+C_CIHILn            CMDILIHN 0  1n  
+R_RIHILn            SDIHILN CMDILIHN  1K  
+R_RIHILn2           CMDILIHN 0  100Meg  
+*
+****************************
+* Pilot VDRM     *
+****************************
+E_IF8Vdrm           inVdrm 0 VALUE {IF( (ABS(V(A)-V(K))>(Vdrm*1.3)),1,0 )}
+E_IF9IHVDRM         inIhVdrm 0 VALUE {IF( (I(V_Viak)>(Vdrm*1.3)/1.2meg)| (I(V_Vika)>(Vdrm*1.3)/1.2meg),1,0)}
+* Flip_flop VDRM
+E_IF7DVDRM          SDVDRM 0 VALUE {IF((V(inVdrm)+(1-V(inVdrm))*V(inIhVdrm)*V(CMDVdrm) )>0.5,1,0)}
+C_CVdrm             CMDVdrm 0  1n  
+R_RVdrm             SDVDRM CMDVdrm  100  
+R_RVdrm2            CMDVdrm 0  100Meg  
+*
+****************************
+* Switch Model *
+****************************
+.MODEL Smain VSWITCH Roff=1.2meg Ron={Rt} Voff=0 Von=100
+****************
+* Diodes Model *
+****************
+.MODEL  Dak D( Is=3E-12 Cjo=5pf) 
+.MODEL  Dgk D( Is=1E-16 Cjo=50pf Rs=5) 
+.ends 
+
+
+.SUBCKT Thyristor_TriacGeneric  gnd _net0 _net1 _net2 Vdrm=400 Igt=20m Ih=6m Rt=0.10 Standard=1 
+X1 _net0 _net2 _net1 Triac_ST Vdrm={Vdrm} Igt={Igt} Ih={Ih} Rt={Rt} Standard={Standard}
+.ENDS
+  </Spice>
+  <Symbol>
+    <.ID -20 44 SUB "1=Vdrm=400=Repetitive forward off-state voltage=" "1=Igt=20m=Gate trigger current =" "1=Ih=6m=Holding current =" "1=Rt=0.10=Dynamic on-state resistance=" "1=Standard=1=0 -- Snubberless TRIACs;1 -- Standard TRIACs=">
+    <.PortSym 0 -30 1 0 P1>
+    <Line 0 6 0 24 #000080 2 1>
+    <Line 0 -30 0 24 #000080 2 1>
+    <Line 18 6 -36 0 #000080 2 1>
+    <Line -30 10 17 0 #000080 2 1>
+    <Line -13 10 4 -4 #000080 2 1>
+    <Line -9 6 -9 -12 #000080 2 1>
+    <Line -9 6 9 -12 #000080 2 1>
+    <Line 9 -6 9 12 #000080 2 1>
+    <Line 9 -6 -9 12 #000080 2 1>
+    <Line 18 -6 -36 0 #000080 2 1>
+    <.PortSym 0 30 3 0 P3>
+    <.PortSym -30 10 2 0 P2>
+  </Symbol>
+</Component>
+
+
