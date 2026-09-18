@@ -1484,7 +1484,7 @@ int Schematic::adjustPortNumbers()
         // obtain VHDL information either from open text document or the
         // file directly
         VHDL_File_Info VInfo;
-        TextDoc *d = (TextDoc *) a_App->findDoc(Name);
+        TextDoc *d = a_App ? a_App->findTextDoc(Name) : nullptr;
         if (d)
             VInfo = VHDL_File_Info(d->document()->toPlainText());
         else
@@ -1550,7 +1550,7 @@ int Schematic::adjustPortNumbers()
         // obtain Verilog-HDL information either from open text document or the
         // file directly
         Verilog_File_Info VInfo;
-        TextDoc *d = (TextDoc *) a_App->findDoc(Name);
+        TextDoc *d = a_App ? a_App->findTextDoc(Name) : nullptr;
         if (d)
             VInfo = Verilog_File_Info(d->document()->toPlainText());
         else
@@ -1599,7 +1599,7 @@ int Schematic::adjustPortNumbers()
         // obtain Verilog-A information either from open text document or the
         // file directly
         VerilogA_File_Info VInfo;
-        TextDoc *d = (TextDoc *) a_App->findDoc(Name);
+        TextDoc *d = a_App ? a_App->findTextDoc(Name) : nullptr;
         if (d)
             VInfo = VerilogA_File_Info(d->toPlainText());
         else
@@ -1623,7 +1623,7 @@ int Schematic::adjustPortNumbers()
             Painting* pp = nullptr;
             for (auto* painting : a_SymbolPaints)
                 if (painting->Name == ".PortSym ")
-                    if (((PortSymbol *) pp)->numberStr == Str) {
+                    if (((PortSymbol *) painting)->numberStr == Str) {
                         pp = painting;
                         break;
                     }

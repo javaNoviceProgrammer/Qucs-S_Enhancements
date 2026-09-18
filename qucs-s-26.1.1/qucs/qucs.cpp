@@ -749,6 +749,14 @@ QucsDoc * QucsApp::findDoc (QString File, int * Pos)
   return 0;
 }
 
+TextDoc *QucsApp::findTextDoc(const QString &fileName)
+{
+  int pos = -1;
+  if (findDoc(fileName, &pos) == nullptr || pos < 0)
+    return nullptr;
+  return qobject_cast<TextDoc *>(DocumentTab->widget(pos));
+}
+
 // ---------------------------------------------------------------
 // Put the component groups into the ComboBox. It is possible to
 // only put the paintings in it, because of "symbol painting mode".
