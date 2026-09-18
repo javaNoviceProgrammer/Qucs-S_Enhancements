@@ -1,7 +1,8 @@
 # Continuous integration: a Debug build instrumented with AddressSanitizer and
-# UndefinedBehaviorSanitizer, followed by headless smoke tests over the shipped
-# examples (see scripts/ci/smoke-test.sh). Linux only, so it is cheap enough to
-# run on every push. Release packaging for all platforms lives in release.yml.
+# UndefinedBehaviorSanitizer, then the QtTest unit tests (qucs/tests) and the
+# headless smoke tests over the shipped examples (scripts/ci/smoke-test.sh).
+# Linux only, so it is cheap enough to run on every push. Release packaging
+# for all platforms lives in release.yml.
 name: CI
 
 on:
@@ -69,6 +70,9 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: cmake --build build --parallel
+
+      - name: Unit tests (QtTest, headless)
+        run: ctest --test-dir build --output-on-failure
 
       - name: Smoke test · load and render every ngspice example
         run: scripts/ci/smoke-test.sh load build/qucs/qucs-s "$SRC_DIR/examples" smoke-out

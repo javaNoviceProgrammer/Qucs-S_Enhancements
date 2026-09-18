@@ -143,6 +143,8 @@ tunerElement::tunerElement(QWidget *parent, Component *component, Property *pp, 
     //UI setup
     setAttribute(Qt::WA_DeleteOnClose);//This attribute forces the widget to be destroyed after closing
     prop = component->Props.at(selectedPropertyId);
+    componentName = component->Name;
+    propertyName = prop->Name;
     QGridLayout *gbox = new QGridLayout();
     setLayout(gbox);
     QLabel *tunerName = new QLabel(component->Name + ":" + prop->Name);
@@ -277,6 +279,17 @@ tunerElement::tunerElement(QWidget *parent, Component *component, Property *pp, 
     minValue = getMinValue(aux);
     numValue = getValue(aux);
     stepValue = getStep(aux);
+}
+
+bool tunerElement::rebind(Schematic *sch)
+{
+    Component *nc = sch->getComponentByName(componentName);
+    Property *np = nc ? nc->getProperty(propertyName) : nullptr;
+    if (np == nullptr)
+        return false;
+    c = nc;
+    prop = np;
+    return true;
 }
 
 Property* tunerElement::getElementProperty()
@@ -776,6 +789,39 @@ void TunerDialog::slotComponentDeleted(Component *c)
     if (currentElements.at(i)->c == c)
       slotRemoveTunerElement(currentElements.at(i));
   }
+}
+
+void TunerDialog::slotDocumentRebuilt(Schematic *sch)
+{
+    // The old Component*/Property* are gone. Bind every element to the
+    // same-named component in the new document, or drop it.
+    currentProps.clear();
+    for (int i = currentElements.count() - 1; i >= 0; --i) {
+        tunerElement *e = currentElements.at(i);
+        if (e->schematicName != sch->getDocName() || !e->rebind(sch)) {
+            currentElements.removeAt(i);
+            delete e;
+            continue;
+        }
+        currentProps.prepend(e->getElementProperty());
+    }
+    if (currentElements.isEmpty()) {
+        updateValues->setEnabled(false);
+        resetValues->setEnabled(false);
+        info->showMessage("Please select a component to tune");
+    }
+    adjustSize();
+    update();
+}
+
+void TunerDialog::slotDocumentDestroyed()
+{
+    currentProps.clear();
+    qDeleteAll(currentElements);
+    currentElements.clear();
+    updateValues->setEnabled(false);
+    resetValues->setEnabled(false);
+    valuesUpdated = true;   // nothing left to write back on close
 }
 
 void TunerDialog::slotRemoveTunerElement(tunerElement *e)
