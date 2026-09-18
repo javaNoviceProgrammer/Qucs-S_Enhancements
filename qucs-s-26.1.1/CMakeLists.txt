@@ -25,8 +25,12 @@ endif()
 
 message(STATUS "Configuring Qucs: VERSION ${PROJECT_VERSION}")
 
-set(GIT "")
-if(EXISTS ${CMAKE_SOURCE_DIR}/.git )
+# Commit hash shown in the About dialog. Can be passed in by CI (-DGIT=abc1234)
+# when the source tree is vendored without its own .git directory.
+if(NOT DEFINED GIT)
+  set(GIT "")
+endif()
+if(NOT GIT AND EXISTS ${CMAKE_SOURCE_DIR}/.git )
   find_package(Git)
   # Get the latest abbreviated commit hash of the working branch
   execute_process(
