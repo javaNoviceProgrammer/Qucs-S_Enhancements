@@ -2567,7 +2567,15 @@ void QucsApp::closeEvent(QCloseEvent* Event)
    if(closeAllFiles()) {
       emit signalKillEmAll();   // kill all subprocesses
       Event->accept();
-      qApp->quit();
+      // Quit only once this close event has been fully processed. Qt on
+      // macOS implements quit() as [NSApp terminate:], and the close event
+      // is itself delivered from inside AppKit's termination sequence
+      // (Cmd-Q, the application menu, or an earlier quit()). Re-entering
+      // terminate: from here makes AppKit call exit() directly, so
+      // QApplication::exec() never returns and nothing after it in main()
+      // runs: no aboutToQuit(), no clearing of the autosave copies, no
+      // session-end marker for the crash handler.
+      QTimer::singleShot(0, qApp, &QCoreApplication::quit);
    }
    else
       Event->ignore();

@@ -206,6 +206,16 @@ Target the *classes* from §1, not the individual issues.
   under their original names marked modified. `QucsDoc::writeTo()` serialises
   a document anywhere without touching its state. Covered by
   `qucs/tests/test_autosave` including two real crashes in child processes.
+  Verifying the macOS bundle found a quit bug that predates all of this:
+  `QucsApp::closeEvent` called `qApp->quit()` from inside the close event.
+  Qt on macOS implements `quit()` as `[NSApp terminate:]`, and Cmd-Q, the
+  application menu and `slotFileQuit` all deliver that close event from
+  within AppKit's termination sequence, so the nested `terminate:` made
+  AppKit call `exit()` directly - `QApplication::exec()` never returned,
+  `aboutToQuit` never fired, and nothing after `exec()` in `main()` ran
+  (confirmed with a breakpoint on `exit`). The quit is now deferred to the
+  next event-loop pass; every quit path (Cmd-Q, application menu, window
+  close button) exits through `main()` with status 0.
 - Infrastructure that fell out of 1.3: the core sources are an object
   library (`qucs-core`) shared by the executable and `qucs/tests/`; the
   globals moved from `main.cpp` to `globals.cpp`; and the top-level CMake no
