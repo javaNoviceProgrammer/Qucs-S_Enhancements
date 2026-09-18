@@ -1,5 +1,9 @@
-SET(CMAKE_BUILD_TYPE Release)
 cmake_minimum_required(VERSION 3.10)
+# Default to an optimised build, but let -DCMAKE_BUILD_TYPE=Debug through
+# (it used to be overridden unconditionally, so no Debug build was possible).
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 PROJECT(qucs-suite CXX)
 
 set(QUCS_NAME "qucs-s")
