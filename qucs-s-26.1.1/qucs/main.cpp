@@ -559,7 +559,11 @@ int doXyceNetlist(QString schematicFileName, QString netlistFileName, bool netli
 int doPrint(QString schematicFileName, QString printFile,
     QString page, int dpi, QString color, QString orientation)
 {
-    QucsSettings.DefaultSimulator = spicecompat::simQucsator;
+    // Rendering does not depend on a simulator, but component registration
+    // is filtered by DefaultSimulator (see Module::registerComponent). With
+    // simNotSpecified every component passes the filter, so schematics that
+    // contain SPICE-only or Qucsator-only devices can be printed alike.
+    QucsSettings.DefaultSimulator = spicecompat::simNotSpecified;
     Module::registerModules();
     QScopedPointer<Schematic> schematic(openSchematic(schematicFileName));
     if (!schematic)
