@@ -15,9 +15,9 @@
 #             headless, convert to a Qucs dataset and render the schematic so
 #             the diagrams load the data (Graph::loadDatFile / calcData).
 #   hostile   Render a fixture schematic against generated, deliberately
-#             damaged datasets. Needs no ngspice. Documents the crash class
-#             behind upstream #1711 / #1539; cases are expected to fail until
-#             WS1.1 of ENHANCEMENT_PROPOSAL.md lands.
+#             damaged datasets. Needs no ngspice. Regression guard for the
+#             crash class behind upstream #1711 / #1539 (fixed in WS1.1 of
+#             ENHANCEMENT_PROPOSAL.md).
 #
 # Exit code is non-zero if any test in the suite failed. Per-test logs are
 # written to <out-dir>/<suite>/.
@@ -162,7 +162,8 @@ gen_dataset() {
     for (i = 0; i < nv; i++) printf "%.6e\n", sin(i / 10.0)
     print "</dep>"
     print "<dep i_out time>"
-    for (i = 0; i < ni; i++) printf "%.6e%+.6ej\n", cos(i / 10.0), sin(i / 10.0)
+    # Qucs writes complex samples as "re+jim" / "re-jim".
+    for (i = 0; i < ni; i++) { im = sin(i / 10.0); printf "%.6e%sj%.6e\n", cos(i / 10.0), (im < 0 ? "-" : "+"), (im < 0 ? -im : im) }
     print "</dep>"
   }' >"$f"
 }
