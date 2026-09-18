@@ -269,43 +269,17 @@ jobs:
         if: ${{ matrix.enabled }}
         run: cmake --build build --parallel
 
-      - name: Assemble app bundle
+      - name: Package app bundle and DMG
         if: ${{ matrix.enabled }}
         run: |
-          APP=build/qucs/qucs-s.app
-          BIN=$APP/Contents/MacOS/bin
-          RES=$APP/Contents/MacOS/share/qucs-s
-          mkdir -p "$BIN" "$RES/examples" "$RES/library" "$RES/symbols" "$RES/lang"
-          for tool in qucs-activefilter/qucs-sactivefilter qucs-attenuator/qucs-sattenuator \
-                      qucs-filter/qucs-sfilter qucs-powercombining/qucs-spowercombining \
-                      qucs-s-spar-viewer/qucs-sspar-viewer qucs-transcalc/qucs-strans rxcalc/rxcalc; do
-            cp -pR "build/$tool.app" "$BIN/"
-          done
-          cp -p build/qucsator_rf/src/qucsator_rf build/qucsator_rf/src/converter/qucsconv_rf "$BIN/"
-          cp -pR "$SRC_DIR"/examples/* "$RES/examples/"
-          cp -p  "$SRC_DIR"/library/*.lib "$SRC_DIR"/library/*.blacklist "$RES/library/"
-          cp -pR "$SRC_DIR"/library/symbols/* "$RES/symbols/"
-          cp -p  build/translations/*.qm "$RES/lang/"
-          macdeployqt "$APP"
-          for a in "$BIN"/*.app; do macdeployqt "$a"; done
-          strip "$BIN/qucsator_rf" "$BIN/qucsconv_rf"
-          codesign --force --deep --sign - "$APP"
-
-      - name: Create DMG
-        if: ${{ matrix.enabled }}
-        run: |
-          npm install --global create-dmg
-          # create-dmg exits non-zero when it cannot code-sign with a real
-          # identity, but still writes the image.
-          create-dmg build/qucs/qucs-s.app build/qucs/ || true
-          mv build/qucs/*.dmg "${{ needs.setup.outputs.base }}-macos-${{ matrix.label }}.dmg"
-          ls -la ./*.dmg
+          scripts/package-macos.sh build dist "${{ needs.setup.outputs.base }}-macos-${{ matrix.label }}"
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         if: ${{ matrix.enabled }}
         with:
           name: macos-${{ matrix.label }}
-          path: ${{ needs.setup.outputs.base }}-macos-${{ matrix.label }}.dmg
+          path: dist/${{ needs.setup.outputs.base }}-macos-${{ matrix.label }}.dmg
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------

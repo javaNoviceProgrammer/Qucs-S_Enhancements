@@ -23,8 +23,16 @@ cmake -S qucs-s-26.1.1 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREF
 cmake --build build --parallel
 ```
 
-The app is then at `build/qucs/qucs-s.app`. Any directory matching `build*/`
-is git-ignored.
+The app is then at `build/qucs/qucs-s.app`, but it still points at the
+Homebrew Qt and has no libraries, examples or tool apps inside. To get a
+self-contained bundle you can run anywhere (and a `.dmg`):
+
+```bash
+scripts/package-macos.sh build bin/macos/apple-silicon
+```
+
+This is the same script the Release workflow uses. Any directory matching
+`build*/` is git-ignored, as are the bundles under `bin/`.
 
 ### Sanitizer build and smoke tests
 
