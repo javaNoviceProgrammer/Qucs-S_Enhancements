@@ -26,6 +26,7 @@
 #include "multi_point.h"
 #include "one_point.h"
 #include "schematic.h"
+#include "qucs_assert.h"
 
 
 Arrow::Arrow() : headStyle(ArrowHeadStyle::empty), headHeight(20.0), headWidth(8.0), headWingLength(sqrt(headWidth*headWidth + headHeight*headHeight)), headAngle(atan2(headWidth, headHeight))
@@ -58,7 +59,7 @@ void Arrow::paint(QPainter* painter) {
       painter->drawConvexPolygon(QPolygon(QList{headLeftWing, arrowTip, headRightWing}));
     break;
     default:
-      assert(false);
+      QUCS_ASSERT(false);
   }
 
   if (isSelected) {

@@ -21,6 +21,7 @@
 #include "misc.h"
 
 #include <numbers>
+#include "qucs_assert.h"
 
 
 EllipseArc::EllipseArc()
@@ -266,7 +267,7 @@ void EllipseArc::MouseMoving(const QPoint& onGrid, Schematic* sch, const QPoint&
       sch->PostPaintEvent(_Arc, x1, y1, x2 - x1, y2 - y1, arcStartAngle, arcLengthAngle);
       break;
     default:
-      assert(false);
+      QUCS_ASSERT(false);
   }
 
   // paint cursor symbol
@@ -290,7 +291,7 @@ bool EllipseArc::MousePressing(Schematic*)
       drawingState = DrawingState::idle;
       break;
     default:
-      assert(false);
+      QUCS_ASSERT(false);
   }
   updateCenter();
   return drawingState == DrawingState::idle;

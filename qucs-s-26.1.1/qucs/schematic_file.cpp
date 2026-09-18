@@ -829,27 +829,30 @@ int Schematic::saveDocument()
 
 
 
-      // Append _sym.json into _props.json, save into _symbol.json
+      // Append _sym.json into _props.json, save into _symbol.json. This
+      // is an auxiliary export: the document itself is already written, so
+      // a problem here is reported but does not fail the save.
       QFile f1(QucsSettings.QucsWorkDir.filePath(fileBase()+"_props.json"));
       QFile f2(QucsSettings.QucsWorkDir.filePath(fileBase()+"_sym.json"));
-      f1.open(QIODevice::ReadOnly | QIODevice::Text);
-      f2.open(QIODevice::ReadOnly | QIODevice::Text);
-
-      QString dat1 = QString(f1.readAll());
-      QString dat2 = QString(f2.readAll());
-      QString finalJSON = dat1.append(dat2);
-
-      // remove joining point
-      finalJSON = finalJSON.replace("}{", "");
-
       QFile f3(QucsSettings.QucsWorkDir.filePath(fileBase()+"_symbol.json"));
-      f3.open(QIODevice::WriteOnly | QIODevice::Text);
-      QTextStream out(&f3);
-      out << finalJSON;
+      if (!f1.open(QIODevice::ReadOnly | QIODevice::Text) ||
+          !f2.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("Warning"),
+                             tr("Cannot read the generated symbol JSON files."));
+      } else if (!f3.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("Warning"),
+                             tr("Cannot write %1.").arg(f3.fileName()));
+      } else {
+        QString dat1 = QString(f1.readAll());
+        QString dat2 = QString(f2.readAll());
+        QString finalJSON = dat1.append(dat2);
 
-      f1.close();
-      f2.close();
-      f3.close();
+        // remove joining point
+        finalJSON = finalJSON.replace("}{", "");
+
+        QTextStream out(&f3);
+        out << finalJSON;
+      }
 
       // TODO choose icon, default to something or provided png
 

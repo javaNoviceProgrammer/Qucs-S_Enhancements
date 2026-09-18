@@ -37,6 +37,7 @@
 #include <stdlib.h>
 
 #include "misc.h"
+#include "qucs_assert.h"
 
 static double default_Z0=50;
 
@@ -110,7 +111,7 @@ void Marker::initText(int datapoints_before_branch)
     return;
   }
 
-  assert(diag());
+  QUCS_ASSERT(diag());
   Axis const *pa = pGraph->yAxisNo == 0
                  ? &(diag()->yAxis)
                  : &(diag()->zAxis);
@@ -274,7 +275,7 @@ void Marker::createText()
       }
   }
 
-  assert(diag());
+  QUCS_ASSERT(diag());
   Text += diag()->extraMarkerText(this);
 
   Axis const *pa;
@@ -294,7 +295,7 @@ void Marker::createText()
 void Marker::makeInvalid()
 {
   fCX = fCY = -1e3; // invalid coordinates
-  assert(diag());
+  QUCS_ASSERT(diag());
   diag()->finishMarkerCoordinates(fCX, fCY); // leave to diagram
   cx = int(fCX+0.5);
   cy = int(fCY+0.5);

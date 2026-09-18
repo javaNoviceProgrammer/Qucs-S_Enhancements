@@ -13,4 +13,9 @@ add_library(geometry STATIC
     )
 
 add_executable(test_geometry test_geometry.cpp)
+if(NOT MSVC)
+  # The checks are assert()s, which a Release build compiles out, leaving the
+  # expected-value constants unused.
+  target_compile_options(test_geometry PRIVATE -Wno-unused-const-variable)
+endif()
 add_test(NAME GeometryTest COMMAND test_geometry)

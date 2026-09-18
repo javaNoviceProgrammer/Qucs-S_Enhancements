@@ -21,6 +21,7 @@
 #include "node.h"
 
 #include <QPainter>
+#include "qucs_assert.h"
 
 Wire::Wire(int _x1, int _y1, int _x2, int _y2)
 {
@@ -141,7 +142,7 @@ void Wire::setName(const QString& Name_, const QString& Value_, int root_x, int 
   // just merely a guard against legacy usage, it may be freely removed
   // after some time.
   // Added on 2025-06-12.
-  assert(!(Name_.isEmpty() && Value_.isEmpty()));
+  QUCS_ASSERT(!(Name_.isEmpty() && Value_.isEmpty()));
 
   if(!hasLabel()) {
     if (y1 == y2)
@@ -311,7 +312,7 @@ bool Wire::setP2(const QPoint& new_p2)
 
 void Wire::connectPort1(Node* n)
 {
-  assert(n != nullptr);
+  QUCS_ASSERT(n != nullptr);
 
   if (n == Port1) {
     return;
@@ -328,7 +329,7 @@ void Wire::connectPort1(Node* n)
 
 void Wire::connectPort2(Node* n)
 {
-  assert(n != nullptr);
+  QUCS_ASSERT(n != nullptr);
 
   if (n == Port2) {
     return;

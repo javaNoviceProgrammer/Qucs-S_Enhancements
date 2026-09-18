@@ -56,6 +56,7 @@
 
 #include <climits>
 #include <cstdlib>
+#include "qucs_assert.h"
 
 #define MIN_SELECT_SIZE 5.0
 
@@ -1291,7 +1292,7 @@ void MouseActions::MPressMarker(Schematic *Doc, QMouseEvent *, float fX, float f
     Marker *pm = Doc->setMarker(MAx1, MAy1);
 
     if (pm) {
-        assert(pm->diag());
+        QUCS_ASSERT(pm->diag());
         Doc->enlargeView(pm);
     }
     Doc->viewport()->update();

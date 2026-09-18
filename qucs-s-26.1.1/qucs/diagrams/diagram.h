@@ -23,6 +23,7 @@
 
 #include <QTextStream>
 #include <QList>
+#include "qucs_assert.h"
 
 #define MIN_SCROLLBAR_SIZE 8
 
@@ -33,7 +34,7 @@
 #define  FIT_MEMORY_SIZE  \
   if(p >= p_end) {     \
     int pos = p - g->begin(); \
-    assert(pos<Size); \
+    QUCS_ASSERT(pos<Size); \
     Size += 256;        \
     g->resizeScrPoints(Size); \
     p = g->begin() + pos; \

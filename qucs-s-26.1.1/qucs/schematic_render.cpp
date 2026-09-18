@@ -51,6 +51,7 @@
  See method description for example usage.
 */
 #include "schematic.h"
+#include "qucs_assert.h"
 
 QRect Schematic::modelRect()
 {
@@ -150,10 +151,10 @@ double Schematic::renderModel(const double offeredScale, QRect newModel, const Q
     // of this method. It may break the state and lead to hard-to-find bugs.
     // Pass the desired model bounds or scale as the argument to this method.
 
-    assert(modelPoint.x() >= newModel.left() && modelPoint.x() <= newModel.right());
-    assert(modelPoint.y() >= newModel.top() && modelPoint.y() <= newModel.bottom());
-    assert(viewportPoint.x() >= 0 && viewportPoint.x() < viewport()->width());
-    assert(viewportPoint.y() >= 0 && viewportPoint.y() < viewport()->height());
+    QUCS_ASSERT(modelPoint.x() >= newModel.left() && modelPoint.x() <= newModel.right());
+    QUCS_ASSERT(modelPoint.y() >= newModel.top() && modelPoint.y() <= newModel.bottom());
+    QUCS_ASSERT(viewportPoint.x() >= 0 && viewportPoint.x() < viewport()->width());
+    QUCS_ASSERT(viewportPoint.y() >= 0 && viewportPoint.y() < viewport()->height());
 
     // Maybe there is no need to do anything
     const double newScale = clipScale(offeredScale);

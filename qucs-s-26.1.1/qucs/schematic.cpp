@@ -33,6 +33,7 @@
 #include "textdoc.h"
 
 #include "misc.h"
+#include "qucs_assert.h"
 
 // just dummies for empty lists
 std::list<Wire*> SymbolWires;
@@ -632,7 +633,7 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
         // BUG: Obtaining the diagram type by name is marked as a bug elsewhere (to be solved separately).
         // TODO: Currently only rectangular diagrams are supported.
         if (diagram->getSelected(xpos, ypos) && diagram->Name == "Rect") {
-            bool hasY1, hasY2 = false;
+            bool hasY1 = false, hasY2 = false;
             for (auto graph: diagram->Graphs) {
                 hasY1 |= graph->yAxisNo == 0;
                 hasY2 |= graph->yAxisNo == 1;
@@ -1888,7 +1889,7 @@ void Schematic::contentsWheelEvent(QWheelEvent *Event)
 // area accordingly.
 void Schematic::scrollUp(int step)
 {
-    assert(step >= 0);
+    QUCS_ASSERT(step >= 0);
 
     // Y-axis is directed "from top to bottom": the higher a point is
     // located, the smaller its y-coordinate and vice versa. Keep this in mind
@@ -1921,7 +1922,7 @@ void Schematic::scrollUp(int step)
 // area accordingly.
 void Schematic::scrollDown(int step)
 {
-    assert(step >= 0);
+    QUCS_ASSERT(step >= 0);
 
     // Y-axis is directed "from top to bottom": the lower a point is
     // located, the bigger its y-coordinate and vice versa. Keep this in mind
@@ -1955,7 +1956,7 @@ void Schematic::scrollDown(int step)
 // area accordingly.
 void Schematic::scrollLeft(int step)
 {
-    assert(step >= 0);
+    QUCS_ASSERT(step >= 0);
 
     // X-axis is directed "from left to right": the more to the left a point is
     // located, the smaller its x-coordinate and vice versa. Keep this in mind
@@ -1988,7 +1989,7 @@ void Schematic::scrollLeft(int step)
 // view area accordingly.
 void Schematic::scrollRight(int step)
 {
-    assert(step >= 0);
+    QUCS_ASSERT(step >= 0);
 
     // X-axis is directed "from left to right": the more to the right a point is
     // located, the bigger its x-coordinate and vice versa. Keep this in mind

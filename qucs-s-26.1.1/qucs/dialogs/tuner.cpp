@@ -56,7 +56,10 @@ tunerElement::tunerElement(QWidget *parent, Component *component, Property *pp, 
     QStringList ScaleFactorList;
     ScaleFactorList << "f" << "p" << "n" << "u" << "m" << "" << "k" << "M" << "G";
     int magnitudeIndex = 5;//No scaling
-    float minValueValidator = PTRDIFF_MIN;
+    // Validator bounds: effectively unbounded. (These were PTRDIFF_MIN/MAX,
+    // integers that do not convert exactly to floating point.)
+    double minValueValidator = -1e300;
+    const double maxValueValidator = 1e300;
     bool has_unit = true;
 
     // ************************************** HANDLE PROPERTY VALUE **************************************
@@ -167,7 +170,7 @@ tunerElement::tunerElement(QWidget *parent, Component *component, Property *pp, 
     maxLabel->setLineWidth(5);
     gbox->addWidget(maxLabel, 1, 0);
     maximum = new QLineEdit();
-    auto* maximumValidator = new QDoubleValidator(minValueValidator, PTRDIFF_MAX, 2, this);
+    auto* maximumValidator = new QDoubleValidator(minValueValidator, maxValueValidator, 2, this);
     maximumValidator->setLocale(cDoubleLocale);
     maximum->setValidator(maximumValidator);//Prevent the user from entering text
     MaxUnitsCombobox = new QComboBox(this);
@@ -201,7 +204,7 @@ tunerElement::tunerElement(QWidget *parent, Component *component, Property *pp, 
     valLabel->setLineWidth(5);
     gbox->addWidget(valLabel, 5, 0);
     value = new QLineEdit();
-    auto* valueValidator = new QDoubleValidator(minValueValidator, PTRDIFF_MAX, 2, this);
+    auto* valueValidator = new QDoubleValidator(minValueValidator, maxValueValidator, 2, this);
     valueValidator->setLocale(cDoubleLocale);
     value->setValidator(valueValidator);//Prevent the user from entering text
     ValueUnitsCombobox = new QComboBox(this);
@@ -214,7 +217,7 @@ tunerElement::tunerElement(QWidget *parent, Component *component, Property *pp, 
     stepLabel->setLineWidth(5);
     gbox->addWidget(stepLabel, 6, 0);
     step = new QLineEdit();
-    auto* stepValidator = new QDoubleValidator(0, PTRDIFF_MAX, 2, this);
+    auto* stepValidator = new QDoubleValidator(0, maxValueValidator, 2, this);
     stepValidator->setLocale(cDoubleLocale);
     step->setValidator(stepValidator);//Prevent the user from entering text
     StepUnitsCombobox = new QComboBox(this);
