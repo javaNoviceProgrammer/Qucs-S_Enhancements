@@ -1,2 +1,11 @@
 # macOS Finder metadata
 .DS_Store
+
+# Local build trees (cmake -B build / build-asan)
+build/
+build-*/
+
+# Downloaded release bundles (scripts/fetch-binaries.sh); keep the skeleton
+bin/**
+!bin/**/
+!bin/**/.gitkeep

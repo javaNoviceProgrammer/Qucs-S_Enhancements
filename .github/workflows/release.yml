@@ -1,0 +1,475 @@
+# Builds redistributable bundles of the enhanced Qucs-S for every platform and
+# publishes them as a GitHub Release. Adapted from upstream's deploy.yml with
+# the source rooted at $SRC_DIR and one Qt version for every artifact.
+#
+# Triggers
+#   * workflow_dispatch  – pick the platforms you want; publishes to the rolling
+#                          "continuous" pre-release unless "publish" is off.
+#   * push of a tag v*   – builds every platform and publishes a release named
+#                          after the tag.
+#
+# Cost note: this repository is private, so Actions minutes are metered and
+# macOS counts 10x, Windows 2x. ARM builds additionally need ARM runners,
+# which GitHub only provides free to public repositories; they are off by
+# default and can be enabled per run (dispatch inputs) or for tag builds by
+# setting the repository variable BUILD_ARM=true.
+#
+# Fetch the results into bin/ with:  scripts/fetch-binaries.sh [tag]
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      macos_apple_silicon:
+        description: 'macOS (Apple Silicon) .dmg'
+        type: boolean
+        default: true
+      macos_intel:
+        description: 'macOS (Intel) .dmg'
+        type: boolean
+        default: true
+      linux_intel:
+        description: 'Linux x86_64 AppImage'
+        type: boolean
+        default: true
+      windows_intel:
+        description: 'Windows x64 .zip + installer'
+        type: boolean
+        default: true
+      linux_arm:
+        description: 'Linux arm64 AppImage (needs ARM runner)'
+        type: boolean
+        default: false
+      windows_arm:
+        description: 'Windows arm64 .zip + installer (needs ARM runner)'
+        type: boolean
+        default: false
+      publish:
+        description: 'Publish to the "continuous" pre-release'
+        type: boolean
+        default: true
+  push:
+    tags:
+      - 'v[0-9]*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  SRC_DIR: qucs-s-26.1.1
+  QT_VERSION: 6.10.3
+  NGSPICE_URL: https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/46/ngspice-46_64.7z
+
+jobs:
+  # ---------------------------------------------------------------------------
+  setup:
+    name: Resolve version and platforms
+    runs-on: ubuntu-latest
+    outputs:
+      version:   ${{ steps.v.outputs.version }}
+      base:      ${{ steps.v.outputs.base }}
+      tag:       ${{ steps.v.outputs.tag }}
+      macos_apple_silicon: ${{ steps.p.outputs.macos_apple_silicon }}
+      macos_intel:   ${{ steps.p.outputs.macos_intel }}
+      linux_intel:   ${{ steps.p.outputs.linux_intel }}
+      windows_intel: ${{ steps.p.outputs.windows_intel }}
+      linux_arm:     ${{ steps.p.outputs.linux_arm }}
+      windows_arm:   ${{ steps.p.outputs.windows_arm }}
+      publish:       ${{ steps.p.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          # The version baked into the app must stay a plain triplet
+          # (VersionTriplet parses it); the commit goes into the file names
+          # and into the About dialog via -DGIT.
+          VERSION="$(tr -d '[:space:]' < "$SRC_DIR/VERSION")"
+          SHORT="${GITHUB_SHA::7}"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+            BASE="qucs-s-${TAG#v}"
+          else
+            TAG="continuous"
+            BASE="qucs-s-${VERSION}-${SHORT}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE"       >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "Version $VERSION, artifact base $BASE, release tag $TAG"
+      - id: p
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "macos_apple_silicon=${{ inputs.macos_apple_silicon }}" >> "$GITHUB_OUTPUT"
+            echo "macos_intel=${{ inputs.macos_intel }}"     >> "$GITHUB_OUTPUT"
+            echo "linux_intel=${{ inputs.linux_intel }}"     >> "$GITHUB_OUTPUT"
+            echo "windows_intel=${{ inputs.windows_intel }}" >> "$GITHUB_OUTPUT"
+            echo "linux_arm=${{ inputs.linux_arm }}"         >> "$GITHUB_OUTPUT"
+            echo "windows_arm=${{ inputs.windows_arm }}"     >> "$GITHUB_OUTPUT"
+            echo "publish=${{ inputs.publish }}"             >> "$GITHUB_OUTPUT"
+          else
+            for k in macos_apple_silicon macos_intel linux_intel windows_intel publish; do
+              echo "$k=true" >> "$GITHUB_OUTPUT"
+            done
+            echo "linux_arm=${{ vars.BUILD_ARM == 'true' }}"   >> "$GITHUB_OUTPUT"
+            echo "windows_arm=${{ vars.BUILD_ARM == 'true' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------------------
+  linux:
+    name: Linux ${{ matrix.label }}
+    needs: setup
+    if: needs.setup.outputs.linux_intel == 'true' || needs.setup.outputs.linux_arm == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: intel
+            os: ubuntu-22.04
+            enabled: ${{ needs.setup.outputs.linux_intel == 'true' }}
+            qt_host: linux
+            qt_arch: linux_gcc_64
+            deploy_arch: x86_64
+          - label: arm
+            os: ubuntu-22.04-arm
+            enabled: ${{ needs.setup.outputs.linux_arm == 'true' }}
+            qt_host: linux_arm64
+            qt_arch: linux_gcc_arm64
+            deploy_arch: aarch64
+    steps:
+      - name: Skip (platform not selected)
+        if: ${{ !matrix.enabled }}
+        run: echo "linux/${{ matrix.label }} not selected" && exit 0
+
+      - uses: actions/checkout@v4
+        if: ${{ matrix.enabled }}
+
+      - name: Install build dependencies
+        if: ${{ matrix.enabled }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build flex bison gperf dos2unix gcc-12 g++-12 \
+            libglx-dev libgl1-mesa-dev libcups2-dev fuse libfuse2 wget
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 --slave /usr/bin/g++ g++ /usr/bin/g++-12
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        if: ${{ matrix.enabled }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: qtcharts
+          cache: true
+          install-deps: true
+
+      - name: Configure
+        if: ${{ matrix.enabled }}
+        run: |
+          cmake -S "$SRC_DIR" -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/AppDir/usr" \
+            -DCI_VERSION="${{ needs.setup.outputs.version }}" \
+            -DGIT="${GITHUB_SHA::7}"
+
+      - name: Build and install
+        if: ${{ matrix.enabled }}
+        run: |
+          cmake --build build --parallel
+          cmake --build build --target install
+
+      - name: Create AppImage
+        if: ${{ matrix.enabled }}
+        run: |
+          A=${{ matrix.deploy_arch }}
+          wget -q --tries=3 --wait=5 "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$A.AppImage"
+          wget -q --tries=3 --wait=5 "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-$A.AppImage"
+          chmod +x linuxdeploy-*.AppImage
+          ./linuxdeploy-$A.AppImage --appdir AppDir \
+            --desktop-file=AppDir/usr/share/applications/qucs-s.desktop \
+            --icon-file=AppDir/usr/share/icons/hicolor/256x256/apps/qucs-s.png \
+            --plugin=qt --output appimage
+          rm linuxdeploy-*.AppImage
+          mv ./*.AppImage "${{ needs.setup.outputs.base }}-linux-${{ matrix.label }}.AppImage"
+          ls -la ./*.AppImage
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ matrix.enabled }}
+        with:
+          name: linux-${{ matrix.label }}
+          path: ${{ needs.setup.outputs.base }}-linux-${{ matrix.label }}.AppImage
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macOS ${{ matrix.label }}
+    needs: setup
+    if: needs.setup.outputs.macos_apple_silicon == 'true' || needs.setup.outputs.macos_intel == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: apple-silicon
+            os: macos-15
+            enabled: ${{ needs.setup.outputs.macos_apple_silicon == 'true' }}
+            cmake_arch: arm64
+          - label: intel
+            os: macos-15-intel
+            enabled: ${{ needs.setup.outputs.macos_intel == 'true' }}
+            cmake_arch: x86_64
+    env:
+      # Qt 6.10 supports macOS 13 and newer.
+      DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - name: Skip (platform not selected)
+        if: ${{ !matrix.enabled }}
+        run: echo "macos/${{ matrix.label }} not selected" && exit 0
+
+      - uses: actions/checkout@v4
+        if: ${{ matrix.enabled }}
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        if: ${{ matrix.enabled }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install build dependencies
+        if: ${{ matrix.enabled }}
+        run: |
+          brew install ninja gperf dos2unix bison flex
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin"  >> "$GITHUB_PATH"
+
+      - name: Configure
+        if: ${{ matrix.enabled }}
+        run: |
+          cmake -S "$SRC_DIR" -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
+            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.cmake_arch }}" \
+            -DCI_VERSION="${{ needs.setup.outputs.version }}" \
+            -DGIT="${GITHUB_SHA::7}"
+
+      - name: Build
+        if: ${{ matrix.enabled }}
+        run: cmake --build build --parallel
+
+      - name: Assemble app bundle
+        if: ${{ matrix.enabled }}
+        run: |
+          APP=build/qucs/qucs-s.app
+          BIN=$APP/Contents/MacOS/bin
+          RES=$APP/Contents/MacOS/share/qucs-s
+          mkdir -p "$BIN" "$RES/examples" "$RES/library" "$RES/symbols" "$RES/lang"
+          for tool in qucs-activefilter/qucs-sactivefilter qucs-attenuator/qucs-sattenuator \
+                      qucs-filter/qucs-sfilter qucs-powercombining/qucs-spowercombining \
+                      qucs-s-spar-viewer/qucs-sspar-viewer qucs-transcalc/qucs-strans rxcalc/rxcalc; do
+            cp -pR "build/$tool.app" "$BIN/"
+          done
+          cp -p build/qucsator_rf/src/qucsator_rf build/qucsator_rf/src/converter/qucsconv_rf "$BIN/"
+          cp -pR "$SRC_DIR"/examples/* "$RES/examples/"
+          cp -p  "$SRC_DIR"/library/*.lib "$SRC_DIR"/library/*.blacklist "$RES/library/"
+          cp -pR "$SRC_DIR"/library/symbols/* "$RES/symbols/"
+          cp -p  build/translations/*.qm "$RES/lang/"
+          macdeployqt "$APP"
+          for a in "$BIN"/*.app; do macdeployqt "$a"; done
+          strip "$BIN/qucsator_rf" "$BIN/qucsconv_rf"
+          codesign --force --deep --sign - "$APP"
+
+      - name: Create DMG
+        if: ${{ matrix.enabled }}
+        run: |
+          npm install --global create-dmg
+          # create-dmg exits non-zero when it cannot code-sign with a real
+          # identity, but still writes the image.
+          create-dmg build/qucs/qucs-s.app build/qucs/ || true
+          mv build/qucs/*.dmg "${{ needs.setup.outputs.base }}-macos-${{ matrix.label }}.dmg"
+          ls -la ./*.dmg
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ matrix.enabled }}
+        with:
+          name: macos-${{ matrix.label }}
+          path: ${{ needs.setup.outputs.base }}-macos-${{ matrix.label }}.dmg
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows ${{ matrix.label }}
+    needs: setup
+    if: needs.setup.outputs.windows_intel == 'true' || needs.setup.outputs.windows_arm == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: intel
+            os: windows-2022
+            enabled: ${{ needs.setup.outputs.windows_intel == 'true' }}
+            msystem: ucrt64
+          - label: arm
+            os: windows-11-arm
+            enabled: ${{ needs.setup.outputs.windows_arm == 'true' }}
+            msystem: clangarm64
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Skip (platform not selected)
+        if: ${{ !matrix.enabled }}
+        shell: pwsh
+        run: Write-Host "windows/${{ matrix.label }} not selected"
+
+      - name: Keep LF line endings
+        if: ${{ matrix.enabled }}
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@v4
+        if: ${{ matrix.enabled }}
+
+      - name: Set up MSYS2 (${{ matrix.msystem }})
+        if: ${{ matrix.enabled }}
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          cache: true
+          install: bison flex dos2unix curl zip p7zip
+          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p make:p ninja:p gperf:p
+
+      - name: Configure and build
+        if: ${{ matrix.enabled }}
+        run: |
+          # Install prefix must be <src>/build/qucs-suite: contrib/InnoSetup/qucs.iss
+          # resolves ..\..\build\qucs-suite relative to its own location.
+          cmake -S "$SRC_DIR" -B "$SRC_DIR/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$SRC_DIR/build/qucs-suite" \
+            -DCI_VERSION="${{ needs.setup.outputs.version }}" \
+            -DGIT="${GITHUB_SHA::7}"
+          cmake --build "$SRC_DIR/build" --parallel
+          cmake --build "$SRC_DIR/build" --target install
+          strip "$SRC_DIR"/build/qucs-suite/bin/*.exe
+
+      - name: Deploy Qt and runtime DLLs
+        if: ${{ matrix.enabled }}
+        run: |
+          bin="$SRC_DIR/build/qucs-suite/bin"
+          for exe in qucs-s qucs-sactivefilter qucs-sattenuator qucs-sfilter \
+                     qucs-spowercombining qucs-strans qucs-sspar-viewer rxcalc; do
+            if [ -f "$bin/$exe.exe" ]; then
+              windeployqt.exe "$bin/$exe.exe" --svg --no-translations --no-system-d3d-compiler --no-network
+            else
+              echo "::warning::$exe.exe not found in $bin"
+            fi
+          done
+          # Non-Qt DLLs from the MSYS2 environment (libstdc++, libgcc, winpthread, ...)
+          for f in $(ldd "$bin/qucs-s.exe" | awk '($3 ~ /\/${{ matrix.msystem }}\/bin\//) {print $3}'); do
+            case "$(basename "$f")" in Qt6*) ;; *) cp -f "$f" "$bin/";; esac
+          done
+
+      - name: Bundle ngspice
+        if: ${{ matrix.enabled }}
+        run: |
+          curl -sL --retry 3 --retry-delay 5 -o ngspice.7z "$NGSPICE_URL"
+          7z x ngspice.7z -ongspice >/dev/null
+          suite="$SRC_DIR/build/qucs-suite"
+          mkdir -p "$suite/lib/ngspice"
+          cp -rf ngspice/Spice64/bin/   "$suite/"
+          cp -rf ngspice/Spice64/lib/   "$suite/"
+          cp -rf ngspice/Spice64/share/ "$suite/"
+
+      - name: Create zip
+        if: ${{ matrix.enabled }}
+        run: |
+          suite="$SRC_DIR/build/qucs-suite"
+          mkdir -p "$suite/misc"
+          cp -rf "$SRC_DIR/contrib/InnoSetup/misc" "$suite/"
+          (cd "$suite" && zip -qr "$GITHUB_WORKSPACE/${{ needs.setup.outputs.base }}-windows-${{ matrix.label }}.zip" ./bin ./share ./lib ./misc)
+          ls -la "$GITHUB_WORKSPACE"/*.zip
+
+      - name: Create installer (Inno Setup)
+        if: ${{ matrix.enabled }}
+        shell: pwsh
+        run: |
+          # The .iss names its output {APPNAME}-{RELEASE}-setup.exe; keep the
+          # display name and rename the file to match the other artifacts.
+          ISCC.exe /Qp /O"${{ github.workspace }}" /DAPPNAME=Qucs-S /DRELEASE="${{ needs.setup.outputs.version }}-${{ matrix.label }}" "${{ github.workspace }}\${{ env.SRC_DIR }}\contrib\InnoSetup\qucs.iss"
+          $built = Get-ChildItem "${{ github.workspace }}\Qucs-S-*-setup.exe" | Select-Object -First 1
+          Rename-Item $built.FullName "${{ needs.setup.outputs.base }}-windows-${{ matrix.label }}-setup.exe"
+          Get-ChildItem "${{ github.workspace }}\*.exe"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ matrix.enabled }}
+        with:
+          name: windows-${{ matrix.label }}
+          path: |
+            ${{ needs.setup.outputs.base }}-windows-${{ matrix.label }}.zip
+            ${{ needs.setup.outputs.base }}-windows-${{ matrix.label }}-setup.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish GitHub release
+    needs: [setup, linux, macos, windows]
+    # Run when nothing failed; skipped platform jobs are fine.
+    if: >-
+      always() && !cancelled()
+      && needs.setup.outputs.publish == 'true'
+      && needs.linux.result   != 'failure'
+      && needs.macos.result   != 'failure'
+      && needs.windows.result != 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd artifacts
+          ls -la
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create or replace release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TITLE="Qucs-S enhanced ${TAG}"
+            EXTRA=(--generate-notes)
+          else
+            TITLE="Continuous build (${GITHUB_SHA::7})"
+            EXTRA=(--prerelease --notes "Automated build of commit ${GITHUB_SHA} from ${GITHUB_REF_NAME}. Replaced on every publish; use a tag for a permanent release.")
+            # The rolling pre-release is recreated so its tag follows the commit.
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            fi
+          fi
+          gh release create "$TAG" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" --title "$TITLE" --target "$GITHUB_SHA" "${EXTRA[@]}"
+          echo "Published $TAG with:"; ls artifacts
