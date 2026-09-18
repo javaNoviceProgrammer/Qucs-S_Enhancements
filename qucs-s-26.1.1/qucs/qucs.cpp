@@ -2391,8 +2391,14 @@ int QucsApp::addDocumentTab(QFrame* widget, const QString& title)
 // --------------------------------------------------------------
 void QucsApp::setDocumentTabChanged(int index, bool changed)
 {
+  if (index < 0 || index >= DocumentTab->count())
+    return;   // no such tab (e.g. the document is being closed)
 #ifdef __APPLE__
-  ((QLabel *)DocumentTab->tabBar()->tabButton(index, QTabBar::RightSide))->setText(changed ? "\u26AB" : " ");
+  // The "modified" marker is a QLabel installed by addDocumentTab(); a tab
+  // added another way has none, and a stale index yields nullptr. Both
+  // used to be dereferenced blindly (segfault on every text tab close).
+  if (auto *label = qobject_cast<QLabel *>(DocumentTab->tabBar()->tabButton(index, QTabBar::RightSide)))
+    label->setText(changed ? "\u26AB" : " ");
 #else
     if (changed) {
         DocumentTab->setTabIcon(index,QIcon(":bitmaps/svg/filesave.svg"));
@@ -3548,7 +3554,15 @@ void QucsApp::slotHideEdit()
 // set document tab icon to smallsave_xpm or empty_xpm
 void QucsApp::slotFileChanged(bool changed)
 {
-  setDocumentTabChanged(DocumentTab->currentIndex(), changed);
+  // Mark the tab of the document that emitted the signal, not whatever tab
+  // happens to be current: a document being destroyed or a background
+  // document may emit it too.
+  int index = -1;
+  if (auto *doc = qobject_cast<QWidget *>(sender()))
+    index = DocumentTab->indexOf(doc);
+  if (index < 0)
+    return;
+  setDocumentTabChanged(index, changed);
 }
 
 // -----------------------------------------------------------
