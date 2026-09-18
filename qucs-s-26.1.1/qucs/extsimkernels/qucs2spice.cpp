@@ -148,7 +148,7 @@ QString qucs2spice::convert_header(QString line)
     return s;
 }
 
-QString qucs2spice::convert_diode(QString line,bool xyce)
+QString qucs2spice::convert_diode(QString line, [[maybe_unused]] bool xyce)
 {
     QString s="";
     QStringList lst = line.split(" ", Qt::SkipEmptyParts);

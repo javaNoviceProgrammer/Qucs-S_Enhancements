@@ -20,6 +20,7 @@
 #include "wire.h"
 
 #include <QPainter>
+#include "qucs_assert.h"
 
 Node::Node(int x, int y)
   : DType("")
@@ -70,7 +71,7 @@ void Node::setName(const QString& name, const QString& value, int x, int y)
   // just merely a guard against legacy usage, it may be freely removed
   // after some time.
   // Added on 2025-06-12.
-  assert(!(name.isEmpty() && value.isEmpty()));
+  QUCS_ASSERT(!(name.isEmpty() && value.isEmpty()));
 
   if (!hasLabel()) {
     acquireLabel(std::make_unique<WireLabel>(name, cx, cy, x, y));

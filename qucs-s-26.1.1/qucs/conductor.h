@@ -4,6 +4,7 @@
 
 #include "element.h"
 #include "wirelabel.h"
+#include "qucs_assert.h"
 
 
 /** \class Conductor
@@ -35,7 +36,7 @@ public:
   void acquireLabel(std::unique_ptr<WireLabel>&& new_label)
   {
     if (new_label != nullptr) {
-      assert(new_label->owner() == nullptr);
+      QUCS_ASSERT(new_label->owner() == nullptr);
       new_label->setOwner(this);
     }
     m_label = std::move(new_label);
@@ -44,7 +45,7 @@ public:
   void acquireLabel(WireLabel* new_label)
   {
     if (new_label != nullptr) {
-      assert(new_label->owner() == nullptr);
+      QUCS_ASSERT(new_label->owner() == nullptr);
       new_label->setOwner(this);
     }
     m_label.reset(new_label);

@@ -24,6 +24,7 @@
 #include <QGridLayout>
 #include <QComboBox>
 #include <QCheckBox>
+#include "qucs_assert.h"
 
 
 MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
@@ -77,7 +78,7 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
   g->addWidget(lblIndicator, 3, 0);
   g->addWidget(IndicatorBox, 3, 1);
 
-  assert(pMarker->diag());
+  QUCS_ASSERT(pMarker->diag());
   if(pMarker->diag()->Name=="Smith") // BUG
   {
       //S parameter also displayed as Z, need Z0 here
@@ -122,7 +123,7 @@ void MarkerDialog::slotAcceptValues()
     pMarker->Precision = tmp;
     changed = true;
   }
-  assert(pMarker->diag());
+  QUCS_ASSERT(pMarker->diag());
   if(pMarker->diag()->Name=="Smith") // BUG: need generic MarkerDialog.
 	{
 			double SrcImp = SourceImpedance->text().toDouble();

@@ -124,7 +124,7 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     // versions.
     // It makes sense to put all the DIN A standard formats together, so a function is needed to
     // decouple the frame index from the frame combobox
-    auto addFrameItem = [this](QComboBox* cb, const QString& text, int code) {
+    auto addFrameItem = [](QComboBox* cb, const QString& text, int code) {
         cb->addItem(text);
         int idx = cb->count() - 1;
         cb->setItemData(idx, code, Qt::UserRole); // code == a_showFrame / <showFrame>

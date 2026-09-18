@@ -32,6 +32,7 @@
 #include "smithdiagram.h"
 #include "misc.h"
 #include "../dialogs/matchdialog.h" // For r2z function
+#include "qucs_assert.h"
 
 
 SmithDiagram::SmithDiagram(int _cx, int _cy, bool ImpMode) : Diagram(_cx, _cy)
@@ -129,12 +130,12 @@ Element* SmithDiagram::info_y(QString& Name, char* &BitmapFile, bool getNewOne)
 
 QString SmithDiagram::extraMarkerText(Marker const* m) const
 {
-  assert(m);
+  QUCS_ASSERT(m);
   Graph const* pGraph = m->graph();
-  assert(pGraph);
+  QUCS_ASSERT(pGraph);
   std::vector<double> const& Pos = m->varPos();
   unsigned nVarPos = pGraph->numAxes();
-  assert(nVarPos == Pos.size());
+  QUCS_ASSERT(nVarPos == Pos.size());
   double Zr, Zi;
   double Z0 = m->Z0;
   double Precision = m->precision(); // hmmm

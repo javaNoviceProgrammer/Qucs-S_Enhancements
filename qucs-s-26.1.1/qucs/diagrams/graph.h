@@ -25,6 +25,7 @@
 #include <cmath>
 #include <QColor>
 #include <QDateTime>
+#include "qucs_assert.h"
 
 
 typedef enum{
@@ -150,7 +151,7 @@ public:
   // count). Every failure path of loadDatFile() goes through this so that a
   // partial load never leaves stale pointers for getAxisLimits()/calcData().
   void clearData();
-  void resizeScrPoints(size_t s){assert(s>=ScrPoints.size()); ScrPoints.resize(s); linesInvalidate();}
+  void resizeScrPoints(size_t s){QUCS_ASSERT(s>=ScrPoints.size()); ScrPoints.resize(s); linesInvalidate();}
   iterator begin(){return ScrPoints.begin();}
   iterator end(){return ScrPoints.end();}
   const_iterator begin() const{return ScrPoints.begin();}

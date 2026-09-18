@@ -86,6 +86,7 @@
 #include "symbolwidget.h"
 #include "diagram.h"
 #include "extsimkernels/CdlSettingsDialog.h"
+#include "qucs_assert.h"
 
 QucsApp::QucsApp(bool netlist2Console) :
   a_netlist2Console(netlist2Console)
@@ -2358,7 +2359,7 @@ void QucsApp::updatePortNumber(QucsDoc *currDoc, int No)
     if(isTextDocument (w))  continue;
 
     Schematic* Doc = dynamic_cast<Schematic*>(w);
-    assert(Doc != nullptr);
+    QUCS_ASSERT(Doc != nullptr);
 
     // Possibly there are components which need to be recreated by calling
     // Schematic::recreateComponent on them. But there is a pitfall: invocation
@@ -2562,7 +2563,7 @@ void QucsApp::slotTune(bool checked)
         }
 
         Schematic* d(dynamic_cast<Schematic*>(w));
-        assert(d);
+        QUCS_ASSERT(d);
 
         bool found = false;
         bool digi_found = false;

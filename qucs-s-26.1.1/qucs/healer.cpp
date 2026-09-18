@@ -12,6 +12,7 @@
 #include <memory>
 #include <ranges>
 #include <set>
+#include "qucs_assert.h"
 
 
 template<>
@@ -105,7 +106,7 @@ QPoint GenericPort::center() const
         case PortType::WireTwo:
             return m_wire->P2();
     }
-    assert(false);
+    QUCS_ASSERT(false);
 }
 
 
@@ -155,13 +156,13 @@ Node* GenericPort::replaceNodeWith(Node* new_node)
             return old_node;
         }
     }
-    assert(false);
+    QUCS_ASSERT(false);
 }
 
 
 void GenericPort::moveCenterTo(const QPoint& coords)
 {
-    assert(isOfWire());
+    QUCS_ASSERT(isOfWire());
     auto* wire = hostWire();
 
     switch (m_portType) {
@@ -174,7 +175,7 @@ void GenericPort::moveCenterTo(const QPoint& coords)
         return;
 
     default:
-        assert(false);
+        QUCS_ASSERT(false);
     }
 }
 
@@ -287,12 +288,12 @@ bool isSpecialCase(const JointStateAssessor& jsa)
     if (single_wire_port_loc == jsa.uniqueLocations().end()) return false;
 
     const auto other_loc = std::ranges::find_if(jsa.uniqueLocations(), [single_wire_port_loc](auto loc) { return loc != *single_wire_port_loc; });
-    assert(other_loc != jsa.uniqueLocations().end());
+    QUCS_ASSERT(other_loc != jsa.uniqueLocations().end());
 
     if (jsa.onlyWirePortsAt(*other_loc)) return false;
 
     Wire* single_wire = jsa.portLocations().lower_bound(*single_wire_port_loc)->second->hostWire();
-    assert(single_wire != nullptr);
+    QUCS_ASSERT(single_wire != nullptr);
 
     const QPoint p1 = single_wire->P1();
     const QPoint p2 = single_wire->P2();
@@ -376,7 +377,7 @@ vector<Healer::HealingAction> Healer::HealerImpl::planHealing() const
 
 vector<Healer::HealingAction> Healer::HealerImpl::processMisplacedNodeCase(Node* node, const JointStateAssessor& jsa) const
 {
-    assert(jsa.isOnlyNodeMisplaced());
+    QUCS_ASSERT(jsa.isOnlyNodeMisplaced());
     vector<HealingAction> actions;
 
     if (m_affectedCount != 0) {
@@ -412,7 +413,7 @@ vector<Healer::HealingAction> Healer::HealerImpl::processMisplacedNodeCase(Node*
 
 vector<Healer::HealingAction> Healer::HealerImpl::processSpecialCase(Node* node, const JointStateAssessor& jsa) const
 {
-    assert(jsa.uniqueLocations().size() == 2);
+    QUCS_ASSERT(jsa.uniqueLocations().size() == 2);
 
     GenericPort* single_wire_port = nullptr;
     for (const auto& [location, port] : jsa.portLocations()) {
@@ -421,10 +422,10 @@ vector<Healer::HealingAction> Healer::HealerImpl::processSpecialCase(Node* node,
             break;
         }
     }
-    assert(single_wire_port != nullptr);
+    QUCS_ASSERT(single_wire_port != nullptr);
 
     const auto other_loc = std::ranges::find_if(jsa.uniqueLocations(), [single_wire_port](auto loc) { return loc != single_wire_port->center(); });
-    assert(other_loc != jsa.uniqueLocations().end());
+    QUCS_ASSERT(other_loc != jsa.uniqueLocations().end());
 
     vector<HealingAction> actions;
     if (node->center() != *other_loc) {
@@ -438,7 +439,7 @@ vector<Healer::HealingAction> Healer::HealerImpl::processSpecialCase(Node* node,
 
 vector<Healer::HealingAction> Healer::HealerImpl::processReshapingCase(Node* node, const JointStateAssessor& jsa) const
 {
-    assert(jsa.uniqueLocations().size() == 2);
+    QUCS_ASSERT(jsa.uniqueLocations().size() == 2);
 
     const auto other_loc = std::ranges::find_if(jsa.uniqueLocations(), [node](auto loc) { return loc != node->center(); });
 

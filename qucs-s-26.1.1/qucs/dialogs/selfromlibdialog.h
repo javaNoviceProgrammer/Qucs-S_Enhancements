@@ -10,7 +10,7 @@ class QPushButton;
 class QListWidget;
 class Component;
 class QPlainTextEdit;
-class ComponentLibrary;
+struct ComponentLibrary;
 class SymbolWidget;
 
 class SelFromLibDialog : public QDialog {

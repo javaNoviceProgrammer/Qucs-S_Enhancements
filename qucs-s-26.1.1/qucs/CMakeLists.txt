@@ -98,7 +98,8 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
     else()
         add_compile_options(-Wall -Wextra -O0 -g)
         if (CMAKE_CXX_COMPILER_ID MATCHES "^AppleClang$|^Clang$")
-            add_compile_options(-Wno-ignored-attributes)
+            add_compile_options(-Wno-ignored-attributes
+                -Wno-inconsistent-missing-override -Wno-overloaded-virtual)
         endif()
     endif()
 elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -108,7 +109,14 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
         add_compile_options(/permissive- /Zc:__cplusplus /Zc:preprocessor /MP /vmg)
         add_link_options(/OPT:REF /OPT:ICF)
     else()
-        add_compile_options(-w)
+        # Warnings used to be switched off entirely (-w) in release builds,
+        # hiding e.g. uninitialised reads. Keep them visible; the two
+        # clang-only categories below are cosmetic and drown everything else.
+        add_compile_options(-Wall -Wextra)
+        if (CMAKE_CXX_COMPILER_ID MATCHES "^AppleClang$|^Clang$")
+            add_compile_options(-Wno-ignored-attributes
+                -Wno-inconsistent-missing-override -Wno-overloaded-virtual)
+        endif()
     endif()
 endif()
 

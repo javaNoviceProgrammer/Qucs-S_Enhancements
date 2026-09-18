@@ -26,6 +26,7 @@
 #include <QDebug>
 #include <QPainterPath>
 #include <QtAlgorithms>
+#include "qucs_assert.h"
 
 class Diagram;
 
@@ -365,12 +366,12 @@ void Graph::ScrPt::setScr(float x, float y) {
 
 void Graph::ScrPt::setIndep(double x)
 {
-  assert(ScrX>=0);
+  QUCS_ASSERT(ScrX>=0);
   indep = x;
 }
 void Graph::ScrPt::setDep(double x)
 {
-  assert(ScrX>=0);
+  QUCS_ASSERT(ScrX>=0);
   dep = x;
 }
 float Graph::ScrPt::getScrX() const
@@ -386,12 +387,12 @@ float Graph::ScrPt::getScrY() const
 }
 double Graph::ScrPt::getIndep() const
 {
-  assert(ScrX>=0);
+  QUCS_ASSERT(ScrX>=0);
   return indep;
 }
 double Graph::ScrPt::getDep() const
 {
-  assert(ScrX>=0);
+  QUCS_ASSERT(ScrX>=0);
   return dep;
 }
 

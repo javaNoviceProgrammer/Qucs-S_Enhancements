@@ -59,6 +59,7 @@
 #include <QPainter>
 #include <QDebug>
 #include <QtAlgorithms>
+#include "qucs_assert.h"
 
 Diagram::Diagram(int _cx, int _cy) {
     cx = _cx;
@@ -373,7 +374,7 @@ Marker *Diagram::setMarker(int x, int y) {
         for (Graph *pg: Graphs) {
             int n = pg->getSelected(x - cx, cy - y); // sic!
             if (n >= 0) {
-                assert(pg->parentDiagram() == this);
+                QUCS_ASSERT(pg->parentDiagram() == this);
                 Marker *pm = new Marker(pg, n, x - cx, y - cy);
                 pg->Markers.append(pm);
                 return pm;
@@ -546,7 +547,7 @@ void Diagram::calcData(Graph *g) {
     p_end += Size - 9;   // limit of buffer
     p->setStrokeEnd();
     ++p;
-    assert(p != g->end());
+    QUCS_ASSERT(p != g->end());
 
     Axis *pa;
     if (g->yAxisNo == 0) pa = &yAxis;
@@ -604,7 +605,7 @@ for(int zz=0; zz<z; zz+=2)
                         ++p;
                 }
                 (p++)->setBranchEnd();
-                assert(p != g->end());
+                QUCS_ASSERT(p != g->end());
             }
             (p++)->setGraphEnd();
 /*qDebug("\n******");
@@ -1509,7 +1510,7 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
             // load markers of the diagram
             pg = Graphs.last();
             if (!pg) return false;
-            assert(pg->parentDiagram() == this);
+            QUCS_ASSERT(pg->parentDiagram() == this);
             Marker *pm = new Marker(pg);
             if (!pm->load(s)) {
                 delete pm;

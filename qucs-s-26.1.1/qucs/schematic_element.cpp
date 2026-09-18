@@ -32,6 +32,7 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include "qucs_assert.h"
 
 struct Schematic::HealingParams
 {
@@ -98,7 +99,7 @@ namespace invariants {
 bool noOrphanNodes(const std::list<Node*>* nodes)
 {
     for (auto* n : *nodes) {
-        assert(n->conn_count() > 0);
+        QUCS_ASSERT(n->conn_count() > 0);
     }
     return true;
 }
@@ -454,9 +455,9 @@ Wire* merge_wires_at_node(Node* node) {
     auto* extended_wire = node->anyWire();
     auto* dissapearing_wire = node->other_than(extended_wire);
 
-    assert(node->is_connected(extended_wire));
-    assert(node->is_connected(dissapearing_wire));
-    assert(is_redundant(node));
+    QUCS_ASSERT(node->is_connected(extended_wire));
+    QUCS_ASSERT(node->is_connected(dissapearing_wire));
+    QUCS_ASSERT(is_redundant(node));
 
     // First of all, let's deal with labels. Label of node, if present, has
     // priority over wire labels.
@@ -510,9 +511,9 @@ bool Schematic::optimizeWires() {
     while (auto* redundant_node = internal::find_redundant_node(a_Nodes)) {
         auto* obsolete_wire = internal::merge_wires_at_node(redundant_node);
 
-        assert(obsolete_wire->Port1 == nullptr);
-        assert(obsolete_wire->Port2 == nullptr);
-        assert(redundant_node->conn_count() == 0);
+        QUCS_ASSERT(obsolete_wire->Port1 == nullptr);
+        QUCS_ASSERT(obsolete_wire->Port2 == nullptr);
+        QUCS_ASSERT(redundant_node->conn_count() == 0);
 
         a_Wires->remove(obsolete_wire);
         delete obsolete_wire;
@@ -576,7 +577,7 @@ Wire* Schematic::selectedWire(int x, int y)
 Wire* Schematic::splitWire(Wire *source_wire, Node *splitter_node)
 {
     // It's definetely abnormal usage if the node doesn't lie on the wire
-    assert(qucs_s::geom::is_between(splitter_node, source_wire->P1(), source_wire->P2()));
+    QUCS_ASSERT(qucs_s::geom::is_between(splitter_node, source_wire->P1(), source_wire->P2()));
 
     // Create new wire
     Wire *new_wire = new Wire(splitter_node, source_wire->Port2);
@@ -1328,9 +1329,9 @@ bool Schematic::deleteElements()
     }
 
     optimizeWires();
-    assert(invariants::allComponentsAreConsistent(a_Components));
-    assert(invariants::allWiresAreConsistent(a_Wires));
-    assert(invariants::noOrphanNodes(a_Nodes));
+    QUCS_ASSERT(invariants::allComponentsAreConsistent(a_Components));
+    QUCS_ASSERT(invariants::allWiresAreConsistent(a_Wires));
+    QUCS_ASSERT(invariants::noOrphanNodes(a_Nodes));
 
     for (auto* diagram : selection.diagrams) {
         a_Diagrams->remove(diagram);
@@ -1484,7 +1485,7 @@ public:
         case 5:  // center vertically
             return e->moveCenter(0, m_bounds.center().y() - e->boundingRect().center().y());
         default:
-            assert(false);
+            QUCS_ASSERT(false);
             return false;
     }
     }
@@ -1751,7 +1752,7 @@ bool Schematic::rotateElements(Selection selection, bool doHeal)
 
     const bool in_place = count == 1;
     const auto bounds = internal::total_br(selection);
-    assert(bounds.has_value());
+    QUCS_ASSERT(bounds.has_value());
 
     const auto rotc = setOnGrid(bounds->center());
 
@@ -1812,7 +1813,7 @@ bool Schematic::mirrorXComponents(Selection selection, bool doHeal)
 
     const auto in_place = count == 1;
     const auto bounds = internal::total_br(selection);
-    assert(bounds.has_value());
+    QUCS_ASSERT(bounds.has_value());
 
     const auto axis = static_cast<int>(bounds->top() + std::round(bounds->height() / 2.0));
 
@@ -1864,7 +1865,7 @@ bool Schematic::mirrorYComponents(Selection selection, bool doHeal)
 
     const auto in_place = count == 1;
     const auto bounds = internal::total_br(selection);
-    assert(bounds.has_value());
+    QUCS_ASSERT(bounds.has_value());
 
     const auto axis = static_cast<int>(bounds->left() + std::round(bounds->width() / 2.0));
 
@@ -2254,7 +2255,7 @@ void Schematic::detachComp(Component *c, bool remove_orphans, bool keepNodeLabel
     auto compStatus = disconnectComp(c, remove_orphans, keepNodeLabel);
 
     // loop over all ports, and delete if orphan
-    for (size_t i = 0; i < c->Ports.size(); ++i) {
+    for (qsizetype i = 0; i < c->Ports.size(); ++i) {
         if (compStatus.ports[i].removed) {
             delete c->Ports[i]->Connection;
         }
@@ -2306,7 +2307,7 @@ void Schematic::decoupleComp(Component* component, bool keepNodeLabel)
     auto compStatus = disconnectComp(component, /*remove_orphans=*/true, keepNodeLabel);
 
     // Loop over all ports, and create new (isolated) nodes for all ports that got disconnected
-    for (size_t i = 0; i < component->Ports.size(); ++i) {
+    for (qsizetype i = 0; i < component->Ports.size(); ++i) {
         if (compStatus.ports[i].disconnected) {
             Node* new_node = createNode(portPos[i]);
             new_node->connect(component);
@@ -2415,7 +2416,6 @@ int Schematic::placeNodeLabel(WireLabel *pl)
 // labeled element.
 Element* Schematic::getWireLabel(Node *pn_)
 {
-    Wire *pw;
     Node *pNode;
     std::list<Node*> Cons;
 
@@ -2551,8 +2551,8 @@ Wire* find_wire(const Node* a, const Node* b, It begin, It end) {
 
 std::pair<bool,Node*> Schematic::installWire(Wire* wire)
 {
-    assert(wire->Port1 == nullptr);
-    assert(wire->Port2 == nullptr);
+    QUCS_ASSERT(wire->Port1 == nullptr);
+    QUCS_ASSERT(wire->Port2 == nullptr);
 
     // Prevent crashes on zero-length wires
     if (wire->P1() == wire->P2()) {
@@ -2688,7 +2688,7 @@ std::pair<bool,Node*> Schematic::installWire(Wire* wire)
     }
 
     // safety net
-    assert(wire_label == nullptr);
+    QUCS_ASSERT(wire_label == nullptr);
     return result;
  }
 
@@ -2760,9 +2760,9 @@ void Schematic::displayMutations() {
 }
 
 bool Schematic::heal(const HealingParams* params) {
-    assert(invariants::allComponentsAreConsistent(a_Components));
-    assert(invariants::allWiresAreConsistent(a_Wires));
-    assert(invariants::noOrphanNodes(a_Nodes));
+    QUCS_ASSERT(invariants::allComponentsAreConsistent(a_Components));
+    QUCS_ASSERT(invariants::allWiresAreConsistent(a_Wires));
+    QUCS_ASSERT(invariants::noOrphanNodes(a_Nodes));
 
     bool thereWereChanges = false;
 
@@ -2871,19 +2871,19 @@ bool Schematic::heal(const HealingParams* params) {
     // Baked
     //
 
-    assert(invariants::allComponentsAreConsistent(a_Components));
-    assert(invariants::allWiresAreConsistent(a_Wires));
-    assert(invariants::noOrphanNodes(a_Nodes));
-    assert(invariants::noSamePlaceNodes(a_Nodes));
-    assert(invariants::noZeroLenWires(a_Wires));
-    assert(invariants::noNodesOnWires(a_Nodes, a_Wires));
-    assert(invariants::noDuplicateWires(a_Wires));
-    assert(invariants::geometryIsInOrder(a_Components, a_Wires));
+    QUCS_ASSERT(invariants::allComponentsAreConsistent(a_Components));
+    QUCS_ASSERT(invariants::allWiresAreConsistent(a_Wires));
+    QUCS_ASSERT(invariants::noOrphanNodes(a_Nodes));
+    QUCS_ASSERT(invariants::noSamePlaceNodes(a_Nodes));
+    QUCS_ASSERT(invariants::noZeroLenWires(a_Wires));
+    QUCS_ASSERT(invariants::noNodesOnWires(a_Nodes, a_Wires));
+    QUCS_ASSERT(invariants::noDuplicateWires(a_Wires));
+    QUCS_ASSERT(invariants::geometryIsInOrder(a_Components, a_Wires));
     return thereWereChanges;
 }
 
 void Schematic::dumbConnectWithWire(const QPoint& a, const QPoint& b) noexcept {
-    assert(a != b);
+    QUCS_ASSERT(a != b);
     auto points = a_wirePlanner.plan(a, b);
 
     // Take points by pairs

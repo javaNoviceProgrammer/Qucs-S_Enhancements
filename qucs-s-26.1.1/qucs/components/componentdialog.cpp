@@ -90,7 +90,7 @@ public:
     setLayout(layout);
 
     if (func)
-      connect(mButton, &QPushButton::released, [=]() { if (dialog) (dialog->*func)(mEdit); });    
+      connect(mButton, &QPushButton::released, [=, this]() { if (dialog) (dialog->*func)(mEdit); });    
   }
   ~CompoundWidget()
   {
@@ -187,7 +187,7 @@ class ParamLineEdit : public QLineEdit, public ParamWidget
       setValidator(validator);
       
       if (func)
-        connect(this, &QLineEdit::textEdited, [=]() { if (dialog) (dialog->*func)(mParam); });
+        connect(this, &QLineEdit::textEdited, [=, this]() { if (dialog) (dialog->*func)(mParam); });
     }
 
     void setEnabled(bool enabled) override
@@ -227,7 +227,7 @@ class ParamCombo : public QComboBox, public ParamWidget
       layout->addWidget(this, layout->rowCount() - 1, 1);
       
       if (func)
-        connect(this, &QComboBox::currentTextChanged, [=]() { if (dialog) (dialog->*func)(mParam); });
+        connect(this, &QComboBox::currentTextChanged, [=, this]() { if (dialog) (dialog->*func)(mParam); });
     }
 
     void setEnabled(bool enabled) override
@@ -449,7 +449,7 @@ ComponentDialog::ComponentDialog(Component* schematicComponent, Schematic* schem
       sweepTypeEnabledParams["lin"] = QStringList{"Sim", "Type", "Param", "Start", "Stop", "Step", "Points"};    
       sweepTypeEnabledParams["log"] = QStringList{"Sim", "Type", "Param", "Start", "Stop", "Step", "Points"};
       sweepTypeEnabledParams["list"] = QStringList{"Sim", "Type", "Param", "Values"};
-      sweepTypeSpecialLabels[qMakePair(QString("log"),QString("Step"))] = {"Points per decade"};
+      sweepTypeSpecialLabels[qMakePair(QString("log"),QString("Step"))] = "Points per decade";
 
       // Setup the widgets as per the stored type.
       sweepParamWidget["Sim"]->setOptions(getSimulationList(false));
@@ -521,7 +521,7 @@ ComponentDialog::ComponentDialog(Component* schematicComponent, Schematic* schem
 
     // Try to move the cursor to the editable cell if any cell is clicked.
     connect(propertyTable, &QTableWidget::cellClicked, 
-                [=](int row, int column) { (void)column; propertyTable->setCurrentCell(row, 1); } );
+                [=, this](int row, int column) { (void)column; propertyTable->setCurrentCell(row, 1); } );
   }
 
   // Add the dialog button widgets.

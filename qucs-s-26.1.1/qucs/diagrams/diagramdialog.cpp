@@ -54,6 +54,7 @@
 // Variable completion
 #include <QCompleter>
 #include <QStringListModel>
+#include "qucs_assert.h"
 
 #define CROSS3D_SIZE 30
 #define WIDGET3D_SIZE 2 * CROSS3D_SIZE
@@ -115,7 +116,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   copyDiagramGraphs(); // make a copy of all graphs
   if (parent) {
     const Schematic *s = dynamic_cast<const Schematic *>(parent);
-    assert(s);
+    QUCS_ASSERT(s);
     QFileInfo Info(s->getDocName());
     defaultDataSet = Info.absolutePath() + QDir::separator() + s->getDataSet();
   } else {
@@ -1173,7 +1174,7 @@ void DiagramDialog::slotTakeVar(QTableWidgetItem *Item) {
       if (PropertyBox->count() >= GRAPHSTYLE_ARROW)
         PropertyBox->setCurrentIndex(GRAPHSTYLE_ARROW);
     g->Style = toGraphStyle(PropertyBox->currentIndex());
-    assert(g->Style != GRAPHSTYLE_INVALID);
+    QUCS_ASSERT(g->Style != GRAPHSTYLE_INVALID);
     if (yAxisBox) {
       g->yAxisNo = yAxisBox->currentIndex();
       yAxisBox->setEnabled(true);
@@ -1387,7 +1388,7 @@ void DiagramDialog::slotDeleteGraph() {
  * \see slotTakeVar(), SelectGraph(), updateGraphListItem()
  */
 void DiagramDialog::slotNewGraph() {
-  assert(Diag);
+  QUCS_ASSERT(Diag);
   if (GraphInput->text().isEmpty())
     return;
 
@@ -1400,7 +1401,7 @@ void DiagramDialog::slotNewGraph() {
     g->Color = misc::getWidgetBackgroundColor(ColorButt);
     g->Thick = thicknessSpin->value();
     g->Style = toGraphStyle(PropertyBox->currentIndex());
-    assert(g->Style != GRAPHSTYLE_INVALID);
+    QUCS_ASSERT(g->Style != GRAPHSTYLE_INVALID);
     if (yAxisBox) {
       g->yAxisNo = yAxisBox->currentIndex();
     } else if (Diag->Name == "Rect3D") {
@@ -1827,7 +1828,7 @@ void DiagramDialog::slotSetGraphStyle(int style) {
 
   Graph *g = Graphs.at(i).get();
   g->Style = toGraphStyle(style);
-  assert(g->Style != GRAPHSTYLE_INVALID);
+  QUCS_ASSERT(g->Style != GRAPHSTYLE_INVALID);
 
   updateGraphListItem(i); // Update table display
   changed = true;
