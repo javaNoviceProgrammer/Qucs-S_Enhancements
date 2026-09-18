@@ -1,0 +1,91 @@
+# Continuous integration: a Debug build instrumented with AddressSanitizer and
+# UndefinedBehaviorSanitizer, followed by headless smoke tests over the shipped
+# examples (see scripts/ci/smoke-test.sh). Linux only, so it is cheap enough to
+# run on every push. Release packaging for all platforms lives in release.yml.
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+      - 'bin/**'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'bin/**'
+      - 'LICENSE'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SRC_DIR: qucs-s-26.1.1
+  # Never use the distro Qt on Ubuntu 24.04 (6.4.2): its QProcess crashes on
+  # every start because of the forkfd_pidfd bug (upstream #1543, QTBUG-98951).
+  QT_VERSION: 6.10.3
+
+jobs:
+  linux-asan:
+    name: Linux · Debug + ASan/UBSan · smoke tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build flex bison gperf dos2unix \
+            libglx-dev libgl1-mesa-dev libcups2-dev \
+            ngspice fonts-dejavu-core
+          ngspice --version | sed -n '2p'
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: qtcharts
+          cache: true
+          install-deps: true
+
+      - name: Configure (Debug, ASan + UBSan)
+        run: |
+          cmake -S "$SRC_DIR" -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DGIT="${GITHUB_SHA::7}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Smoke test · load and render every ngspice example
+        run: scripts/ci/smoke-test.sh load build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
+
+      - name: Smoke test · netlist → ngspice → dataset → render
+        run: scripts/ci/smoke-test.sh simulate build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
+
+      # Known to fail on the unmodified 26.1.1 dataset loader (five distinct
+      # crashes, see ENHANCEMENT_PROPOSAL.md §1.2). Kept visible, not blocking,
+      # until WS1.1 lands; then drop continue-on-error so regressions block.
+      - name: Smoke test · hostile datasets (known failing until WS1.1)
+        continue-on-error: true
+        run: scripts/ci/smoke-test.sh hostile build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
+
+      - name: Upload smoke-test logs and renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-output
+          path: |
+            smoke-out/**/*.log
+            smoke-out/**/*.png
+          retention-days: 14
+          if-no-files-found: ignore
