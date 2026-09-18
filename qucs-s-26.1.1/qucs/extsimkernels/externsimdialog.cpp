@@ -38,6 +38,13 @@ ExternSimDialog::ExternSimDialog(Schematic* sch, bool netlist2Console, bool netl
     a_hasError(false),
     a_netlist2Console(netlist2Console)
 {
+    // One dialog is created per simulation (per slider step when tuning)
+    // and, being a child of the schematic, it used to live until the
+    // document was closed - console text, kernels and all. Free it when it
+    // closes. The netlist-only instance is stack allocated and never shown.
+    if (!netlist_mode)
+        setAttribute(Qt::WA_DeleteOnClose);
+
     const QString workdir(QucsSettings.S4Qworkdir);
 
     QSettings settings("qucs", "qucs_s");

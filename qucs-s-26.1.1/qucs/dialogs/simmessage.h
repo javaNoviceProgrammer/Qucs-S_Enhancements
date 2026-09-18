@@ -19,6 +19,7 @@
 #define SIMMESSAGE_H
 
 #include <QDialog>
+#include <QPointer>
 #include <QProcess>
 #include <QStringList>
 #include <QFile>
@@ -82,7 +83,11 @@ private:
   Component * findOptimization(Schematic *);
 
 public:
-  QWidget *DocWidget;
+  // The document being simulated. It can be closed while the simulator
+  // runs (SimMessage is owned by the application, not by the document),
+  // so this becomes null instead of dangling.
+  QPointer<QWidget> DocWidget;
+  Schematic *schematicDoc() const;   // DocWidget as a schematic, or nullptr
   int showBias;
   bool SimOpenDpl;
   bool SimRunScript;
