@@ -139,6 +139,14 @@ Ordered by leverage: each workstream makes the next one safer to do.
 
 Target the *classes* from §1, not the individual issues.
 
+**Progress:** 1.1 and 1.2 are done (`qucs/diagrams/diagram.cpp`,
+`graph.cpp`, `tabdiagram.cpp`). The loader now refuses sample counts that
+cannot fit in the file, never walks past the buffer, uses `nothrow` `new[]`,
+leaves a graph completely empty on any failure (`Graph::clearData()`), and
+`calcData` bounds-checks its look-behinds. Guarded by the blocking `hostile`
+smoke suite in CI (21 cases, including a one-sample dataset and 2·10⁹-sample
+headers). Verified against real ngspice AC/transient output.
+
 | # | Task | Where | Notes |
 |---|---|---|---|
 | 1.1 | Rewrite the `.dat` reader as a bounds-checked parser with a defined error result. Reject/skip a variable whose sample count ≠ header, never read past the buffer, replace the `new[]`/`realloc` mix. | `qucs/diagrams/diagram.cpp` `Graph::loadDatFile`, `loadIndepVarData` | Unblocks #1711 and the whole "plotting crashes" class. Keep the parse in a standalone class so it can be unit-tested without Qt widgets. |

@@ -48,8 +48,8 @@ runs headless through the CLI modes of `qucs-s`; no window is opened.
 | [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, then the `load`, `simulate` and `hostile` smoke suites. Logs and renders are uploaded as an artifact. |
 | [Release](.github/workflows/release.yml) | manual (*Actions → Release → Run workflow*) or a `v*` tag | Release bundles per platform, published as a GitHub Release. |
 
-The `hostile` suite is marked `continue-on-error` until the dataset loader is
-fixed (WS1.1 in the proposal); it currently exposes five distinct crashes.
+The `hostile` suite is the regression guard for the dataset-loader crashes
+fixed in WS1.1; it is blocking.
 
 ### Release bundles
 

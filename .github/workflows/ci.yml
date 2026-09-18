@@ -76,11 +76,9 @@ jobs:
       - name: Smoke test · netlist → ngspice → dataset → render
         run: scripts/ci/smoke-test.sh simulate build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
 
-      # Known to fail on the unmodified 26.1.1 dataset loader (five distinct
-      # crashes, see ENHANCEMENT_PROPOSAL.md §1.2). Kept visible, not blocking,
-      # until WS1.1 lands; then drop continue-on-error so regressions block.
-      - name: Smoke test · hostile datasets (known failing until WS1.1)
-        continue-on-error: true
+      # Regression guard for the dataset-loader crashes fixed in WS1.1
+      # (ENHANCEMENT_PROPOSAL.md §1.2): blocking, must stay green.
+      - name: Smoke test · hostile datasets
         run: scripts/ci/smoke-test.sh hostile build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
 
       - name: Upload smoke-test logs and renders
