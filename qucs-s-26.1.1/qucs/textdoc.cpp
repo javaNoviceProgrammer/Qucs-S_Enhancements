@@ -102,6 +102,10 @@ TextDoc::TextDoc(QucsApp *App_, const QString& Name_) : QPlainTextEdit(), QucsDo
  */
 TextDoc::~TextDoc()
 {
+  // Detaching the highlighter edits the QTextDocument, which would emit
+  // textChanged() -> slotSetChanged() -> signalFileChanged() into the
+  // application while this object is half destroyed.
+  disconnect(this, SIGNAL(textChanged()), this, SLOT(slotSetChanged()));
   delete syntaxHighlight;
 }
 
