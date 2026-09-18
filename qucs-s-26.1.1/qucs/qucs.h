@@ -33,6 +33,7 @@
 
 class QucsDoc;
 class Schematic;
+class TextDoc;
 class SimMessage;
 class MouseActions;
 class SearchDialog;
@@ -105,6 +106,9 @@ public:
   bool gotoPage(const QString &, bool reloadPage = false); // to load a document
   QucsDoc *getDoc(int No = -1);
   QucsDoc *findDoc(QString, int *Pos = 0);
+  /// The open text document with this file name, or nullptr if it is not
+  /// open or the open document with that name is a schematic.
+  TextDoc *findTextDoc(const QString &fileName);
   /// The schematic shown in the current tab, or nullptr when the tab holds
   /// a text document (or there is no tab). Use this instead of casting
   /// DocumentTab->currentWidget().
