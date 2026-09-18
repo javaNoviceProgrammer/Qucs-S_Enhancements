@@ -1,0 +1,109 @@
+name: windows
+
+on:
+  push:
+    branches: [ "develop", "release/*" ]
+    tags:
+        - '[0-9]+.[0-9]+.[0-9]+*'
+  pull_request:
+    branches: [ "develop", "release/*" ]
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+  
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read_version.outputs.version }}
+      short_hash: ${{ steps.read_version.outputs.short_hash }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Read version from file
+      id: read_version
+      run: |
+        if [ "${{ github.ref_type }}" == "tag" ]; then
+          VERSION=${{ github.ref_name }}
+          SHORT_HASH=""
+        else 
+          MAJOR_MINOR=$(cut -d. -f1-2 VERSION)
+          VERSION="${MAJOR_MINOR}.99"
+          # Get the short hash of the current commit
+          COMMIT_HASH=$(echo ${{ github.sha }} | cut -c1-7)
+          SHORT_HASH="-$COMMIT_HASH"
+        fi
+        
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        
+        echo "SHORT_HASH=$SHORT_HASH" >> $GITHUB_ENV
+        echo "short_hash=$SHORT_HASH" >> $GITHUB_OUTPUT
+        
+    - name: Print version and hash
+      run: |
+        echo "Qucs-S version is ${{ env.VERSION }}"
+        echo "Qucs-S short hash is ${{ env.SHORT_HASH }}"
+        
+  build-windows:
+    runs-on: windows-latest
+    needs: setup
+    strategy:
+      fail-fast: false
+    steps:
+    - name: Disable autocrlf
+      shell: pwsh
+      run: |
+        git config --global core.autocrlf false
+        git config --global core.eol lf
+        
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    - name: Install gperf using Chocolatey
+      shell: pwsh
+      run: |
+        choco install gperf winflexbison3 -y
+        
+    - name: '⚙️ Install CMake'
+      uses: lukka/get-cmake@latest
+    
+    - name: Build with cmake
+      shell: pwsh
+      run: |
+        cmake.exe -B build/ -G "Ninja" -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+        cmake.exe --build build/ --parallel --config ${{env.BUILD_TYPE}}
+        
+  build-windows-msys2:
+    runs-on: windows-latest
+    needs: setup
+    strategy:
+      fail-fast: false
+    defaults:
+      run:
+         shell: msys2 {0}
+    steps:
+    - name: Disable autocrlf
+      shell: pwsh
+      run: |
+        git config --global core.autocrlf false
+        git config --global core.eol lf
+        
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: ucrt64
+        cache: true
+        update: true
+        install: bison flex dos2unix zip p7zip
+        pacboy: cmake:p gcc:p make:p ninja:p gperf:p
+          
+    - name: Build with cmake
+      run: |
+        cmake.exe -B build/ -G "Ninja" -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+        cmake.exe --build build/ --parallel --config ${{env.BUILD_TYPE}}
+    

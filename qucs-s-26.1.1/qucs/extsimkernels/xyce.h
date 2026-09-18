@@ -1,0 +1,82 @@
+/***************************************************************************
+                               xyce.h
+                             ----------------
+    begin                : Fri Jan 16 2015
+    copyright            : (C) 2015 by Vadim Kuznetsov
+    email                : ra3xdh@gmail.com
+ ***************************************************************************/
+
+/***************************************************************************
+ *                                                                         *
+ *   This program is free software; you can redistribute it and/or modify  *
+ *   it under the terms of the GNU General Public License as published by  *
+ *   the Free Software Foundation; either version 2 of the License, or     *
+ *   (at your option) any later version.                                   *
+ *                                                                         *
+ ***************************************************************************/
+
+#ifndef XYCE_H
+#define XYCE_H
+
+#include <QObject>
+#include <QString>
+#include <QStringList>
+#include <QTextStream>
+#include "abstractspicekernel.h"
+
+/*!
+  \file xyce.h
+  \brief Declaration of the Xyce class
+*/
+
+/*!
+ * \brief The Xyce class responsible for execution of Xyce simulator.
+ */
+class Xyce : public AbstractSpiceKernel
+{
+    Q_OBJECT
+
+private:
+    bool a_Noisesim;
+
+    QStringList a_simulationsQueue;
+    QStringList a_netlistQueue;
+
+    void nextSimulation();
+
+    /// @brief Overwrites the .res file for power sweep simulations.
+    /// The power sources for Xyce are obtained from a AC Voltage source, so the power settings
+    /// in the "Sweep Parameters" box are converted into voltages for the Xyce netlist generation.
+    /// When Qucs-S loads the data, it looks for the sweep variables in the .res files. Since the Xyce netlist
+    /// was defined with voltages, the .res files contains voltage values.
+    /// This function "hijacks" the ,res file to show the same power sweep settings as in the "Sweep Parameter" block
+    /// @note This method is called in slotFinished(), once the simulation is complete, but before convertToQucsData()
+    void overwriteResFileWithPowerValues();
+
+public:
+    void determineUsedSimulations(QStringList *sim_lst = nullptr);
+    explicit Xyce(Schematic* schematic, QObject *parent = 0);
+
+    void SaveNetlist(QString filename, bool netlist2Console);
+    void setParallel(bool par);
+    bool waitEndOfSimulation();
+
+protected:
+    void createNetlist(
+            QTextStream& stream,
+            QStringList& simulations,
+            QStringList& vars,
+            QStringList& outputs);
+
+    QSet<QString> getLabelledNets(spicecompat::SpiceDialect dialect = spicecompat::SPICEXyce) override;
+    QSet<QString> getActiveLabelledNets(spicecompat::SpiceDialect dialect = spicecompat::SPICEXyce) override;
+protected slots:
+    void slotFinished();
+    void slotProcessOutput();
+
+public slots:
+    void slotSimulate();
+
+};
+
+#endif // XYCE_H
