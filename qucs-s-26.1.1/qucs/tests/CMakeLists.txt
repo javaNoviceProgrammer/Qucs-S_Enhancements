@@ -29,3 +29,4 @@ function(qucs_add_test name)
 endfunction()
 
 qucs_add_test(test_schematic_lifetime)
+qucs_add_test(test_crash_reports)

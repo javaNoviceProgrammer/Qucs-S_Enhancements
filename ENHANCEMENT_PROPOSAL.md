@@ -119,6 +119,21 @@ silently in the shipped binaries and corrupt state until something else
 crashes — typically far from the cause, which is why upstream often cannot
 reproduce.
 
+### 1.5b What the crash reports on this Mac say
+
+`~/Library/Logs/DiagnosticReports` held nine `qucs-s` reports from one
+session with the upstream 26.1.99 continuous build (2026-09-17). They are
+two bugs, and neither is in the dataset loader:
+
+| Reports | Crashed in | Cause | Status |
+|---|---|---|---|
+| 8 | `QLabel::setText` ← `QucsApp::setDocumentTabChanged` ← `TextDoc::slotSetChanged` ← `TextDoc::~TextDoc` | **macOS only.** Destroying a text tab's syntax highlighter emits a "modified" notification (Qt 6.10); the `#ifdef __APPLE__` branch of `setDocumentTabChanged` C-casts `tabButton(currentIndex())` to `QLabel*` and calls it — null once the tab is gone. Linux/Windows use `setTabIcon`, which tolerates it, so upstream cannot reproduce. `slotFileChanged` also marked whatever tab was *current*, not the emitter's. | Fixed: bounds/null checks, `sender()`-based tab lookup, highlighter detached before the document emits. `test_crash_reports::modifiedSignalFromADocumentWithoutATabIsIgnored` reproduces the exact signature on the old code. |
+| 1 | `Schematic::adjustPortNumbers` +8864 ← `save` ← Save All | **All platforms, still in upstream `current`.** The Verilog-A branch compares `((PortSymbol*)pp)->numberStr` with `pp` still `nullptr` (the loop variable is `painting`). Saving any Verilog-A module schematic with port symbols crashes deterministically. Confirmed by disassembling the installed binary at the reported offset (loop-invariant pointer = `0x50` = `&nullptr->numberStr.size`). | Fixed (one identifier); worth an upstream PR. `test_crash_reports::savingAVerilogASymbolSchematicDoesNotCrash` reproduces it on the old code. |
+
+The session was evidently Verilog-A work (editing `.va` text tabs, then
+saving the module schematic), which the WS3 items around headless
+robustness and the text editor should keep in mind.
+
 ### 1.6 Root cause E — platform / toolchain
 
 - The Intel-Mac release binary is built against **Qt 6.2.4** (2022) while the
