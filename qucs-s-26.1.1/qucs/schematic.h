@@ -141,6 +141,12 @@ public:
   bool  mirrorXComponents(Selection selection, bool doHeal=true);
   bool  mirrorYComponents(Selection selection, bool doHeal=true);
 
+  /** Deletes every element of the document (components, wires, nodes,
+      diagrams, paintings) and empties the lists. The symbol is untouched. */
+  void deleteAllElements();
+  /** Deletes the subcircuit symbol paintings and empties the list. */
+  void deleteSymbolPaintings();
+
   QPoint setOnGrid(const QPoint& p);
   void  setOnGrid(int&, int&);
   bool  elementsOnGrid();
@@ -322,6 +328,10 @@ signals:
   void signalRedoState(bool);
   void signalFileChanged(bool);
   void signalComponentDeleted(Component *);
+  /** Emitted after the whole document was replaced (undo, redo, reload).
+      Every Element* obtained from this schematic before the signal is
+      invalid; holders must drop or re-resolve their pointers. */
+  void signalDocumentRebuilt(Schematic *);
 
 protected:
   // overloaded function to get actions of user

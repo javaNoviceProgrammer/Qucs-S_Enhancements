@@ -54,6 +54,13 @@ public:
 
   Element *selElem;  // component/diagram/painting selected in IconView
   Element *focusElement;
+
+  /** Drops every pointer cached from the document (the element under
+      the mouse, the active diagram, the selection being dragged). Call it
+      when the document's elements were destroyed - undo, redo, reload,
+      close. Elements floating in a paste operation live outside the
+      document and are kept. */
+  void forgetDocumentElements();
   QMouseEvent *focusMEvent;
 
   int  MAx1, MAy1,MAx2, MAy2, MAx3, MAy3;  // cache for mouse movements
@@ -142,6 +149,9 @@ public:
 
   // Helper functions
   QPoint updateMouseMove(Schematic*, QMouseEvent*, bool onGrid=true);
+  /** Leaves a drag whose target element no longer exists and returns to
+      plain selection. */
+  void abortToSelectMode(Schematic*);
 };
 
 #endif

@@ -120,10 +120,39 @@ Schematic::Schematic(QucsApp *App_, const QString &Name_) :
         connect(this, SIGNAL(signalUndoState(bool)), App_, SLOT(slotUpdateUndo(bool)));
         connect(this, SIGNAL(signalRedoState(bool)), App_, SLOT(slotUpdateRedo(bool)));
         connect(this, SIGNAL(signalFileChanged(bool)), App_, SLOT(slotFileChanged(bool)));
+        connect(this, SIGNAL(signalDocumentRebuilt(Schematic*)), App_, SLOT(slotDocumentRebuilt(Schematic*)));
     }
 }
 
-Schematic::~Schematic() {}
+Schematic::~Schematic()
+{
+    deleteAllElements();
+    deleteSymbolPaintings();
+    qDeleteAll(a_undoAction);
+    qDeleteAll(a_undoSymbol);
+}
+
+void Schematic::deleteAllElements()
+{
+    // Wires and components refer to nodes only through raw pointers and
+    // nodes own nothing, so the order of destruction does not matter.
+    for (auto* pc : a_DocComps) delete pc;
+    for (auto* pw : a_DocWires) delete pw;
+    for (auto* pn : a_DocNodes) delete pn;
+    for (auto* pd : a_DocDiags) delete pd;
+    for (auto* pp : a_DocPaints) delete pp;
+    a_DocComps.clear();
+    a_DocWires.clear();
+    a_DocNodes.clear();
+    a_DocDiags.clear();
+    a_DocPaints.clear();
+}
+
+void Schematic::deleteSymbolPaintings()
+{
+    for (auto* pp : a_SymbolPaints) delete pp;
+    a_SymbolPaints.clear();
+}
 
 // ---------------------------------------------------
 bool Schematic::createSubcircuitSymbol()
@@ -175,16 +204,19 @@ void Schematic::becomeCurrent(bool update)
 {
     emit signalCursorPosChanged(0, 0, "");
 
-    // update appropriate menu entry
-    if (a_symbolMode) {
-        a_App->symEdit->setText(tr("Edit Schematic"));
-        a_App->symEdit->setStatusTip(tr("Edits the schematic"));
-        a_App->symEdit->setWhatsThis(tr("Edit Schematic\n\nEdits the schematic"));
-    } else {
-        a_App->symEdit->setText(tr("Edit Circuit Symbol"));
-        a_App->symEdit->setStatusTip(tr("Edits the symbol for this schematic"));
-        a_App->symEdit->setWhatsThis(
-            tr("Edit Circuit Symbol\n\nEdits the symbol for this schematic"));
+    // update appropriate menu entry (there is none without an application,
+    // e.g. in the command-line modes and in the unit tests)
+    if (a_App != nullptr) {
+        if (a_symbolMode) {
+            a_App->symEdit->setText(tr("Edit Schematic"));
+            a_App->symEdit->setStatusTip(tr("Edits the schematic"));
+            a_App->symEdit->setWhatsThis(tr("Edit Schematic\n\nEdits the schematic"));
+        } else {
+            a_App->symEdit->setText(tr("Edit Circuit Symbol"));
+            a_App->symEdit->setStatusTip(tr("Edits the symbol for this schematic"));
+            a_App->symEdit->setWhatsThis(
+                tr("Edit Circuit Symbol\n\nEdits the symbol for this schematic"));
+        }
     }
 
     if (a_symbolMode) {
@@ -263,8 +295,10 @@ void Schematic::setChanged(bool c, bool fillStack, char Op)
         emit signalUndoState(true);
         emit signalRedoState(false);
 
+        // The current state must always stay on the stack, whatever the
+        // configured depth is (0 would pop the entry just pushed).
         while (static_cast<unsigned int>(a_undoSymbol.size())
-               > QucsSettings.maxUndo) { // "while..." because
+               > std::max(1u, QucsSettings.maxUndo)) { // "while..." because
             delete a_undoSymbol.first();
             a_undoSymbol.pop_front();
             a_undoSymbolIdx--;
@@ -294,7 +328,7 @@ void Schematic::setChanged(bool c, bool fillStack, char Op)
     emit signalRedoState(false);
 
     while (static_cast<unsigned int>(a_undoAction.size())
-           > QucsSettings.maxUndo) { // "while..." because
+           > std::max(1u, QucsSettings.maxUndo)) { // "while..." because
         delete a_undoAction.first();   // "maxUndo" could be decreased meanwhile
         a_undoAction.pop_front();
         a_undoActionIdx--;
@@ -1320,14 +1354,12 @@ bool Schematic::paste(QTextStream *stream, std::list<Element*> *pe)
 // Loads this Qucs document.
 bool Schematic::load()
 {
-    a_DocComps.clear();
-    a_DocWires.clear();
-    a_DocNodes.clear();
-    a_DocDiags.clear();
-    a_DocPaints.clear();
-    a_SymbolPaints.clear();
+    deleteAllElements();
+    deleteSymbolPaintings();
 
-    if (!loadDocument())
+    const bool loaded = loadDocument();
+    emit signalDocumentRebuilt(this);
+    if (!loaded)
         return false;
     a_lastSaved = QDateTime::currentDateTime();
 

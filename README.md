@@ -36,6 +36,9 @@ cmake --build build-asan --parallel --target qucs-s
 scripts/ci/smoke-test.sh hostile build-asan/qucs/qucs-s.app/Contents/MacOS/qucs-s qucs-s-26.1.1/examples /tmp/smoke
 ```
 
+Unit tests live in `qucs-s-26.1.1/qucs/tests/` (QtTest, headless) and run with
+`ctest --test-dir build-asan --output-on-failure`.
+
 `scripts/ci/smoke-test.sh` has three suites — `load` (render every ngspice
 example), `simulate` (netlist → ngspice → dataset → render; needs `ngspice` on
 `PATH`) and `hostile` (render a fixture against damaged datasets). Everything
@@ -45,7 +48,7 @@ runs headless through the CLI modes of `qucs-s`; no window is opened.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, then the `load`, `simulate` and `hostile` smoke suites. Logs and renders are uploaded as an artifact. |
+| [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, the unit tests, then the `load`, `simulate` and `hostile` smoke suites. Logs and renders are uploaded as an artifact. |
 | [Release](.github/workflows/release.yml) | manual (*Actions → Release → Run workflow*) or a `v*` tag | Release bundles per platform, published as a GitHub Release. |
 
 The `hostile` suite is the regression guard for the dataset-loader crashes

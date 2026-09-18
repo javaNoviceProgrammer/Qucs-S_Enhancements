@@ -1199,18 +1199,25 @@ bool Schematic::loadDocument()
 
   Line = Line.mid(16, Line.length()-17);
   if(!misc::checkVersion(Line)) { // wrong version number ?
+    if (QucsMain == nullptr) {
+      // Command line and tests: nobody can answer a dialog, and a modal
+      // box would block forever. Warn and try to open the file anyway.
+      qWarning() << "Schematic::loadDocument:"
+                 << QObject::tr("Wrong document version") << Line
+                 << "in" << a_DocName << "- trying to open it anyway";
+    } else {
+      QMessageBox::StandardButton result;
+      result = QMessageBox::warning(nullptr,
+                                    QObject::tr("Warning"),
+                                    QObject::tr("Wrong document version \n") +
+                                                a_DocName + "\n" +
+                                    QObject::tr("Try to open it anyway?"),
+                                    QMessageBox::Yes|QMessageBox::No);
 
-    QMessageBox::StandardButton result;
-    result = QMessageBox::warning(nullptr,
-                                  QObject::tr("Warning"),
-                                  QObject::tr("Wrong document version \n") +
-                                              a_DocName + "\n" +
-                                  QObject::tr("Try to open it anyway?"),
-                                  QMessageBox::Yes|QMessageBox::No);
-
-    if (result==QMessageBox::No) {
-        file.close();
-        return false;
+      if (result==QMessageBox::No) {
+          file.close();
+          return false;
+      }
     }
 
     //QMessageBox::critical(0, QObject::tr("Error"),
@@ -1313,30 +1320,28 @@ QString Schematic::createSymbolUndoString(char Op)
 // Used for "undo" function.
 bool Schematic::rebuild(QString *s)
 {
-  a_DocWires.clear();	// delete whole document
-  a_DocNodes.clear();
-  a_DocComps.clear();
-  a_DocDiags.clear();
-  a_DocPaints.clear();
+  deleteAllElements();	// delete whole document
 
   QString Line;
   QTextStream stream(s, QIODevice::ReadOnly);
   Line = stream.readLine();  // skip identity byte
 
   // read content *************************
-  if(!loadComponents(&stream))  return false;
-  if(!loadWires(&stream))  return false;
-  if (!loadDiagrams(&stream, &a_DocDiags)) return false;
-  if (!loadPaintings(&stream, &a_DocPaints)) return false;
+  const bool ok = loadComponents(&stream)
+               && loadWires(&stream)
+               && loadDiagrams(&stream, &a_DocDiags)
+               && loadPaintings(&stream, &a_DocPaints);
 
-  return true;
+  // Whoever cached pointers into the old document must let go of them now.
+  emit signalDocumentRebuilt(this);
+  return ok;
 }
 
 // -------------------------------------------------------------
 // Same as "rebuild(QString *s)" but for symbol edit mode.
 bool Schematic::rebuildSymbol(QString *s)
 {
-  a_SymbolPaints.clear();	// delete whole document
+  deleteSymbolPaintings();	// delete whole document
 
   QString Line;
   QTextStream stream(s, QIODevice::ReadOnly);
@@ -1347,9 +1352,10 @@ bool Schematic::rebuildSymbol(QString *s)
   Line = stream.readLine();  // skip wires
   Line = stream.readLine();  // skip diagrams
 
-  if (!loadPaintings(&stream, &a_SymbolPaints)) return false;
+  const bool ok = loadPaintings(&stream, &a_SymbolPaints);
 
-  return true;
+  emit signalDocumentRebuilt(this);
+  return ok;
 }
 
 

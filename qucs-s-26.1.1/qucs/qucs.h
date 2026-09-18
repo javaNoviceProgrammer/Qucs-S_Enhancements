@@ -105,6 +105,10 @@ public:
   bool gotoPage(const QString &, bool reloadPage = false); // to load a document
   QucsDoc *getDoc(int No = -1);
   QucsDoc *findDoc(QString, int *Pos = 0);
+  /// The schematic shown in the current tab, or nullptr when the tab holds
+  /// a text document (or there is no tab). Use this instead of casting
+  /// DocumentTab->currentWidget().
+  Schematic *currentSchematic() const;
   QString fileType(const QString &);
   static bool isTextDocument(QWidget *);
 
@@ -193,6 +197,9 @@ public slots:
   void slotSimulate(QWidget *w = nullptr);
   void slotSimulateWithSpice();
   void slotTune(bool checked);
+  /// Every element of \a doc was destroyed and recreated (undo, redo,
+  /// reload): drop cached pointers and abandon any drag in progress.
+  void slotDocumentRebuilt(Schematic *doc);
 
 private slots:
   void slotMenuProjOpen();

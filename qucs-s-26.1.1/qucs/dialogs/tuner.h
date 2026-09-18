@@ -65,6 +65,12 @@ class tunerElement : public QWidget
         float numValue;
         Component *c;
         QString schematicName;
+        QString componentName;   // to find the component again after an undo/reload
+        QString propertyName;
+
+        /** Points the element at the component/property of a rebuilt
+            document. Returns false if they no longer exist. */
+        bool rebind(Schematic *sch);
 
         virtual ~tunerElement();
     signals:
@@ -120,6 +126,11 @@ signals:
 public slots:
     void slotResetTunerDialog();
     void slotComponentDeleted(Component *);
+    /// The tuned document was rebuilt (undo, redo, reload): every element
+    /// re-resolves its component by name or is removed.
+    void slotDocumentRebuilt(Schematic *);
+    /// The tuned document is being destroyed: forget everything.
+    void slotDocumentDestroyed();
 protected:
     virtual void showEvent(QShowEvent *);
 

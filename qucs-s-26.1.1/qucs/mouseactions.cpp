@@ -108,6 +108,35 @@ MouseActions::~MouseActions()
 }
 
 // -----------------------------------------------------------
+void MouseActions::forgetDocumentElements()
+{
+    focusElement = nullptr;
+    pActiveDiagram = nullptr;
+    const bool pasting = QucsMain != nullptr
+        && (QucsMain->MouseMoveAction == &MouseActions::MMovePaste
+            || QucsMain->MouseMoveAction == &MouseActions::MMovePaste2
+            || QucsMain->MouseReleaseAction == &MouseActions::MReleasePaste);
+    if (!pasting) {
+        // movingElements only ever holds pasted (floating) elements, so it
+        // is left alone; the dragged selection refers to the document.
+        movingState = {};
+    }
+}
+
+// -----------------------------------------------------------
+void MouseActions::abortToSelectMode(Schematic *Doc)
+{
+    QucsMain->MouseMoveAction = nullptr;
+    QucsMain->MousePressAction = &MouseActions::MPressSelect;
+    QucsMain->MouseReleaseAction = &MouseActions::MReleaseSelect;
+    QucsMain->MouseDoubleClickAction = &MouseActions::MDoubleClickSelect;
+    if (Doc) {
+        Doc->releaseKeyboard(); // allow keyboard inputs again
+        Doc->viewport()->update();
+    }
+}
+
+// -----------------------------------------------------------
 void MouseActions::setPainter(Schematic *Doc)
 {
     // contents to viewport transformation
@@ -311,6 +340,10 @@ void MouseActions::MMoveResizePainting(Schematic *Doc, QMouseEvent *Event)
 {
     setPainter(Doc);
 
+    if (focusElement == nullptr) {   // painting vanished (undo/reload)
+        abortToSelectMode(Doc);
+        return;
+    }
     auto inModel = Doc->contentsToModel(Event->pos());
     MAx1 = inModel.x();
     MAy1 = inModel.y();
@@ -1498,6 +1531,11 @@ void MouseActions::MReleaseResizeDiagram(Schematic *Doc, QMouseEvent *Event)
     if (Event->button() != Qt::LeftButton)
         return;
 
+    if (focusElement == nullptr) {   // diagram vanished (undo/reload)
+        abortToSelectMode(Doc);
+        return;
+    }
+
     MAx3 = focusElement->cx;
     MAy3 = focusElement->cy;
     if (MAx2 < 0) { // resize diagram
@@ -1700,6 +1738,11 @@ void MouseActions::MReleaseMoveText(Schematic *Doc, QMouseEvent *Event)
 {
     if (Event->button() != Qt::LeftButton)
         return;
+
+    if (focusElement == nullptr) {   // component vanished (undo/reload)
+        abortToSelectMode(Doc);
+        return;
+    }
 
     QucsMain->MouseMoveAction = &MouseActions::MMoveMoveTextB;
     QucsMain->MouseReleaseAction = nullptr;

@@ -2069,6 +2069,7 @@ void QucsApp::closeFile(int index)
     }
 
     DocumentTab->removeTab(index);
+    view->forgetDocumentElements();
     delete Doc;
 
     if(DocumentTab->count() < 1) { // if no document left, create an untitled
@@ -2584,6 +2585,9 @@ void QucsApp::slotTune(bool checked)
         // inform the Tuner Dialog when a component is deleted
         connect(d, SIGNAL(signalComponentDeleted(Component *)),
                 tunerDia, SLOT(slotComponentDeleted(Component *)));
+        connect(d, SIGNAL(signalDocumentRebuilt(Schematic *)),
+                tunerDia, SLOT(slotDocumentRebuilt(Schematic *)));
+        connect(d, SIGNAL(destroyed()), tunerDia, SLOT(slotDocumentDestroyed()));
 
         slotHideEdit(); // disable text edit of component property
         simulateToolbar->setEnabled(false); // disable workToolbar to preserve TuneMouseAction
@@ -2752,6 +2756,44 @@ void QucsApp::slotSimulate(QWidget *w)
 
 // ------------------------------------------------------------------------
 // Is called after the simulation process terminates.
+void QucsApp::slotDocumentRebuilt(Schematic *doc)
+{
+  view->forgetDocumentElements();
+
+  if (doc != DocumentTab->currentWidget())
+    return;
+
+  // A drag that started on an element which no longer exists cannot be
+  // completed. Paste keeps its floating elements and continues; every
+  // other in-flight release handler is replaced by plain selection.
+  const bool pasting = MouseMoveAction == &MouseActions::MMovePaste
+                    || MouseMoveAction == &MouseActions::MMovePaste2
+                    || MouseReleaseAction == &MouseActions::MReleasePaste;
+  const bool dragging = MouseReleaseAction != nullptr
+                     && MouseReleaseAction != &MouseActions::MReleaseSelect
+                     && MouseReleaseAction != &MouseActions::MReleaseActivate
+                     && MouseReleaseAction != &MouseActions::MReleaseZoomIn;
+  if (!pasting && (dragging || MouseMoveAction == &MouseActions::MMoveMoveTextB
+                            || MouseMoveAction == &MouseActions::MMoveResizePainting)) {
+    view->abortToSelectMode(doc);
+    if (TuningMode) {
+      MousePressAction = &MouseActions::MPressTune;
+      MouseReleaseAction = nullptr;
+    } else {
+      // keep the toolbar in step with the handlers
+      if (activeAction != nullptr && activeAction != select) {
+        activeAction->blockSignals(true);
+        activeAction->setChecked(false);
+        activeAction->blockSignals(false);
+      }
+      activeAction = select;
+      select->blockSignals(true);
+      select->setChecked(true);
+      select->blockSignals(false);
+    }
+  }
+}
+
 void QucsApp::slotAfterSimulation(int Status, SimMessage *sim)
 {
 

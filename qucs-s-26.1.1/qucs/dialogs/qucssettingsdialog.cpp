@@ -120,7 +120,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     LanguageCombo->addItems(appLanguages);
     appSettingsGrid->addWidget(LanguageCombo, 1, 1);
 
-    val200 = new QIntValidator(0, 200, this);
+    val200 = new QIntValidator(1, 200, this);   // an undo depth of 0 is not usable
     appSettingsGrid->addWidget(new QLabel(tr("Maximum undo operations:"), appSettingsTab) ,2, 0);
     undoNumEdit = new QLineEdit(appSettingsTab);
     undoNumEdit->setValidator(val200);
