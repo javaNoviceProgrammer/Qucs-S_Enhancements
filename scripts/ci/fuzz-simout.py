@@ -135,8 +135,11 @@ def corpus_entries(work, harness, timeout):
             print(f"  skip  {sch.name}: baseline conversion failed (rc={rc})", file=sys.stderr)
             continue
         named = set(m.group(1).split())
+        sims = {n.split(".")[1] for n in named}          # spice4qucs.<sim>.<...>
         files = [f for f in sorted(simout.glob("spice4qucs.*"))
-                 if f.name in named or ".cir." in f.name]
+                 if f.name in named
+                 or (".cir." in f.name and f.name.split(".")[1] in sims)   # its sweep/noise side file
+                 or f.name == "spice4qucs.cir.dc_op"]
         if files:
             entries.append((sch, simout, files))
     return entries
