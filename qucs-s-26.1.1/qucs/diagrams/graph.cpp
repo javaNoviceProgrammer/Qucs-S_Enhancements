@@ -131,8 +131,7 @@ bool Graph::load(const QString& _s)
   bool ok;
   QString s = _s;
 
-  if(s.at(0) != '<') return false;
-  if(s.at(s.length()-1) != '>') return false;
+  if (s.length() < 2 || !s.startsWith('<') || !s.endsWith('>')) return false;
   s = s.mid(1, s.length()-2);   // cut off start and end character
 
   Var = s.section('"',1,1);  // Var

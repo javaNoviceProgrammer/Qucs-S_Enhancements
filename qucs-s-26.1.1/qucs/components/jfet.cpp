@@ -127,7 +127,7 @@ QString JFET::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat::
 
     QString par_str = form_spice_param_list(spice_incompat,spice_tr);
 
-    QString jfet_type = getProperty("Type")->Value.at(0).toUpper();
+    QString jfet_type = getProperty("Type")->Value.left(1).toUpper();
 
     if (getProperty("UseGlobTemp")->Value == "yes") {
       s += QStringLiteral(" JMOD_%1 %2\n").arg(Name).arg(getProperty("Area")->Value);

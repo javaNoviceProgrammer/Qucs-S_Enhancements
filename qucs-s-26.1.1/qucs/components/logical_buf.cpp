@@ -90,7 +90,7 @@ void Logical_Buf::createSymbol()
 {
   int xr;
 
-  if(Props.back()->Value.at(0) == 'D') {  // DIN symbol
+  if(Props.back()->Value.startsWith('D')) {  // DIN symbol
     Lines.append(new qucs::Line( 15,-20, 15, 20,QPen(Qt::darkBlue,2)));
     Lines.append(new qucs::Line(-15,-20, 15,-20,QPen(Qt::darkBlue,2)));
     Lines.append(new qucs::Line(-15, 20, 15, 20,QPen(Qt::darkBlue,2)));

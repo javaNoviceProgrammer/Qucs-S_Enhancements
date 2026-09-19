@@ -22,6 +22,7 @@
 #include <QInputDialog>
 #include <QMargins>
 #include <QPainter>
+#include "misc.h"
 
 namespace helper {
 
@@ -155,11 +156,11 @@ bool PortSymbol::load(const QString& s)
 
   QString n;
   n  = s.section(' ',1,1);    // cx
-  cx = n.toInt(&ok);
+  cx = misc::clampCoordinate(n.toInt(&ok));
   if(!ok) return false;
 
   n  = s.section(' ',2,2);    // cy
-  cy = n.toInt(&ok);
+  cy = misc::clampCoordinate(n.toInt(&ok));
   if(!ok) return false;
 
   numberStr  = s.section(' ',3,3);    // number

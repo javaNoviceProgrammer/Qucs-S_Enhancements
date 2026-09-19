@@ -109,7 +109,7 @@ void MOSFET::createSymbol()
     Lines.append(new qucs::Line( -1,  0, -6,  5,QPen(Qt::darkBlue,2)));
   }
 
-  if((Props.at(1)->Value.trimmed().at(0) == '-') ==
+  if((Props.at(1)->Value.trimmed().startsWith('-')) ==
      (Props.at(0)->Value == "nfet"))
     Lines.append(new qucs::Line(-10, -8,-10,  8,QPen(Qt::darkBlue,2)));
   else
@@ -176,7 +176,7 @@ QString MOSFET::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat
 
     QString par_str = form_spice_param_list(spice_incompat,spice_tr);
 
-    QString mosfet_type = getProperty("Type")->Value.at(0).toUpper();
+    QString mosfet_type = getProperty("Type")->Value.left(1).toUpper();
 
     auto l = spicecompat::normalize_value(getProperty("L")->Value);
     auto w = spicecompat::normalize_value(getProperty("W")->Value);

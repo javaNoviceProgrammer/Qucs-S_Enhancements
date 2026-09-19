@@ -117,11 +117,10 @@ bool Schematic::loadIntoNothing(QTextStream *stream)
   QString Line, cstr;
   while(!stream->atEnd()) {
     Line = stream->readLine();
-    if(Line.at(0) == '<') if(Line.at(1) == '/') return true;
+    if(Line.startsWith("</")) return true;
   }
 
-  QMessageBox::critical(nullptr, QObject::tr("Error"),
-  QObject::tr("Format Error:\n'Painting' field is not closed!"));
+  misc::reportError(QObject::tr("Format Error:\n'Painting' field is not closed!"));
   return false;
 }
 
@@ -235,8 +234,7 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
   QString s = PACKAGE_VERSION;
   Line = Line.mid(16, Line.length()-17);
   if(Line != s) {  // wrong version number ?
-    QMessageBox::critical(nullptr, QObject::tr("Error"),
-                 QObject::tr("Wrong document version: ")+Line);
+    misc::reportError(QObject::tr("Wrong document version: ")+Line);
     return false;
   }
   // read content in symbol edit mode *************************
@@ -255,8 +253,7 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
       if(Line == "<Paintings>") {
         if(!loadPaintings(stream, (std::list<Painting*>*)pe)) return false; }
       else {
-        QMessageBox::critical(nullptr, QObject::tr("Error"),
-        QObject::tr("Clipboard Format Error:\nUnknown field!"));
+        misc::reportError(QObject::tr("Clipboard Format Error:\nUnknown field!"));
         return false;
       }
     }
@@ -277,8 +274,7 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
     if(Line == "<Paintings>") {
       if(!loadPaintings(stream, (std::list<Painting*>*)pe)) return false; }
     else {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("Clipboard Format Error:\nUnknown field!"));
+      misc::reportError(QObject::tr("Clipboard Format Error:\nUnknown field!"));
       return false;
     }
   }
@@ -307,8 +303,7 @@ int Schematic::saveSymbolCpp (void)
   QFile file (cppfile);
 
   if (!file.open (QIODevice::WriteOnly)) {
-    QMessageBox::critical (nullptr, QObject::tr("Error"),
-    QObject::tr("Cannot save C++ file \"%1\"!").arg(cppfile));
+    misc::reportError(QObject::tr("Cannot save C++ file \"%1\"!").arg(cppfile));
     return -1;
   }
 
@@ -381,8 +376,7 @@ int Schematic::savePropsJSON()
 
   QFile vafile(vafilename);
   if (!vafile.open (QIODevice::ReadOnly)) {
-    QMessageBox::critical (nullptr, QObject::tr("Error"),
-                          QObject::tr("Cannot open Verilog-A file \"%1\"!").arg(vafilename));
+    misc::reportError(QObject::tr("Cannot open Verilog-A file \"%1\"!").arg(vafilename));
     return -1;
   }
 
@@ -419,8 +413,7 @@ int Schematic::savePropsJSON()
     QFile file (jsonfile);
 
     if (!file.open (QIODevice::WriteOnly)) {
-      QMessageBox::critical (nullptr, QObject::tr("Error"),
-                            QObject::tr("Cannot save JSON props file \"%1\"!").arg(jsonfile));
+      misc::reportError(QObject::tr("Cannot save JSON props file \"%1\"!").arg(jsonfile));
       return -1;
     }
 
@@ -456,8 +449,7 @@ int Schematic::savePropsJSON()
 
     QLibrary osdilib (osdifile);
     if (!osdilib.load()){
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-                            QObject::tr("No valid osdi file. Re-compile verilog-a file first!"));
+      misc::reportError(QObject::tr("No valid osdi file. Re-compile verilog-a file first!"));
       return -1;
     }
 
@@ -539,8 +531,7 @@ int Schematic::savePropsJSON()
     QFile file (jsonfile);
 
     if (!file.open (QIODevice::WriteOnly)) {
-      QMessageBox::critical (nullptr, QObject::tr("Error"),
-                            QObject::tr("Cannot save JSON props file \"%1\"!").arg(jsonfile));
+      misc::reportError(QObject::tr("Cannot save JSON props file \"%1\"!").arg(jsonfile));
       return -1;
     }
 
@@ -585,8 +576,7 @@ int Schematic::saveSymbolJSON()
   QFile file (jsonfile);
 
   if (!file.open (QIODevice::WriteOnly)) {
-    QMessageBox::critical (nullptr, QObject::tr("Error"),
-		   QObject::tr("Cannot save JSON symbol file \"%1\"!").arg(jsonfile));
+    misc::reportError(QObject::tr("Cannot save JSON symbol file \"%1\"!").arg(jsonfile));
     return -1;
   }
 
@@ -757,8 +747,7 @@ bool Schematic::writeDocument(const QString& path)
 int Schematic::saveDocument()
 {
   if(!writeDocument(a_DocName)) {
-    QMessageBox::critical(nullptr, QObject::tr("Error"),
-    QObject::tr("Cannot save document!"));
+    misc::reportError(QObject::tr("Cannot save document!"));
     return -1;
   }
 
@@ -884,18 +873,16 @@ bool Schematic::loadProperties(QTextStream *stream)
   QString Line, cstr, nstr;
   while(!stream->atEnd()) {
     Line = stream->readLine();
-    if(Line.at(0) == '<') if(Line.at(1) == '/') return true;  // field end ?
+    if(Line.startsWith("</")) return true;  // field end ?
     Line = Line.trimmed();
     if(Line.isEmpty()) continue;
 
     if(Line.at(0) != '<') {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("Format Error:\nWrong property field limiter!"));
+      misc::reportError(QObject::tr("Format Error:\nWrong property field limiter!"));
       return false;
     }
     if(Line.at(Line.length()-1) != '>') {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("Format Error:\nWrong property field limiter!"));
+      misc::reportError(QObject::tr("Format Error:\nWrong property field limiter!"));
       return false;
     }
     Line = Line.mid(1, Line.length()-2);   // cut off start and end character
@@ -912,8 +899,8 @@ bool Schematic::loadProperties(QTextStream *stream)
       a_tmpViewY1 = nstr.section(',',6,6).toInt(&ok); }}}}}
     }
     else if(cstr == "Grid") {
-      a_GridX = nstr.section(',',0,0).toInt(&ok); if(ok) {
-      a_GridY = nstr.section(',',1,1).toInt(&ok); if(ok) {
+      setGridX(nstr.section(',',0,0).toInt(&ok)); if(ok) {
+      setGridY(nstr.section(',',1,1).toInt(&ok)); if(ok) {
       if(nstr.section(',',2,2).toInt(&ok) == 0) a_GridOn = false;
       else a_GridOn = true; }}
     }
@@ -939,19 +926,16 @@ bool Schematic::loadProperties(QTextStream *stream)
     else if(cstr == "FrameText2") misc::convert2Unicode(a_Frame_Text2 = nstr);
     else if(cstr == "FrameText3") misc::convert2Unicode(a_Frame_Text3 = nstr);
     else {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("Format Error:\nUnknown property: ")+cstr);
+      misc::reportError(QObject::tr("Format Error:\nUnknown property: ")+cstr);
       return false;
     }
     if(!ok) {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("Format Error:\nNumber expected in property field!"));
+      misc::reportError(QObject::tr("Format Error:\nNumber expected in property field!"));
       return false;
     }
   }
 
-  QMessageBox::critical(nullptr, QObject::tr("Error"),
-               QObject::tr("Format Error:\n'Property' field is not closed!"));
+  misc::reportError(QObject::tr("Format Error:\n'Property' field is not closed!"));
   return false;
 }
 
@@ -981,7 +965,7 @@ bool Schematic::loadComponents(QTextStream *stream, std::list<Component*> *List)
   Component *c;
   while(!stream->atEnd()) {
     Line = stream->readLine();
-    if(Line.at(0) == '<') if(Line.at(1) == '/') return true;
+    if(Line.startsWith("</")) return true;
     Line = Line.trimmed();
     if(Line.isEmpty()) continue;
 
@@ -999,8 +983,7 @@ bool Schematic::loadComponents(QTextStream *stream, std::list<Component*> *List)
     else  simpleInsertComponent(c);
   }
 
-  QMessageBox::critical(0, QObject::tr("Error"),
-	   QObject::tr("Format Error:\n'Component' field is not closed!"));
+  misc::reportError(QObject::tr("Format Error:\n'Component' field is not closed!"));
   return false;
 }
 
@@ -1032,14 +1015,13 @@ bool Schematic::loadWires(QTextStream *stream, std::list<Element*> *List)
   QString Line;
   while(!stream->atEnd()) {
     Line = stream->readLine();
-    if(Line.at(0) == '<') if(Line.at(1) == '/') return true;
+    if(Line.startsWith("</")) return true;
     Line = Line.trimmed();
     if(Line.isEmpty()) continue;
 
     w = new Wire();
     if(!w->load(Line)) {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("Format Error:\nWrong 'wire' line format!"));
+      misc::reportError(QObject::tr("Format Error:\nWrong 'wire' line format!"));
       delete w;
       return false;
     }
@@ -1076,8 +1058,7 @@ bool Schematic::loadWires(QTextStream *stream, std::list<Element*> *List)
     }
   }
 
-  QMessageBox::critical(nullptr, QObject::tr("Error"),
-  QObject::tr("Format Error:\n'Wire' field is not closed!"));
+  misc::reportError(QObject::tr("Format Error:\n'Wire' field is not closed!"));
   return false;
 }
 
@@ -1088,7 +1069,7 @@ bool Schematic::loadDiagrams(QTextStream *stream, std::list<Diagram*> *List)
   QString Line, cstr;
   while(!stream->atEnd()) {
     Line = stream->readLine();
-    if(Line.at(0) == '<') if(Line.at(1) == '/') return true;
+    if(Line.startsWith("</")) return true;
     Line = Line.trimmed();
     if(Line.isEmpty()) continue;
 
@@ -1105,22 +1086,19 @@ bool Schematic::loadDiagrams(QTextStream *stream, std::list<Diagram*> *List)
     else if(cstr == "<Time") d = new TimingDiagram();
     else if(cstr == "<Truth") d = new TruthDiagram();
     else {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("Format Error:\nUnknown diagram!"));
+      misc::reportError(QObject::tr("Format Error:\nUnknown diagram!"));
       return false;
     }
 
     if(!d->load(Line, stream)) {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("Format Error:\nWrong 'diagram' line format!"));
+      misc::reportError(QObject::tr("Format Error:\nWrong 'diagram' line format!"));
       delete d;
       return false;
     }
     List->push_back(d);
   }
 
-  QMessageBox::critical(nullptr, QObject::tr("Error"),
-  QObject::tr("Format Error:\n'Diagram' field is not closed!"));
+  misc::reportError(QObject::tr("Format Error:\n'Diagram' field is not closed!"));
   return false;
 }
 
@@ -1133,13 +1111,12 @@ bool Schematic::loadPaintings(QTextStream *stream, std::list<Painting*> *List)
     Line = stream->readLine();
     if (Line.trimmed().isEmpty()) continue;
 
-    if(Line.at(0) == '<') if(Line.at(1) == '/') return true;
+    if(Line.startsWith("</")) return true;
 
     Line = Line.trimmed();
     if(Line.isEmpty()) continue;
     if( (Line.at(0) != '<') || (Line.at(Line.length()-1) != '>')) {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("Format Error:\nWrong 'painting' line delimiter!"));
+      misc::reportError(QObject::tr("Format Error:\nWrong 'painting' line delimiter!"));
       return false;
     }
     Line = Line.mid(1, Line.length()-2);  // cut off start and end character
@@ -1155,22 +1132,19 @@ bool Schematic::loadPaintings(QTextStream *stream, std::list<Painting*> *List)
     else if(cstr == "Ellipse") p = new qucs::Ellipse();
     else if(cstr == "ImagePainting") p = new ImagePainting();
     else {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("Format Error:\nUnknown painting!"));
+      misc::reportError(QObject::tr("Format Error:\nUnknown painting!"));
       return false;
     }
 
     if(!p->load(Line)) {
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-        QObject::tr("Format Error:\nWrong 'painting' line format!"));
+      misc::reportError(QObject::tr("Format Error:\nWrong 'painting' line format!"));
       delete p;
       return false;
     }
     List->push_back(p);
   }
 
-  QMessageBox::critical(nullptr, QObject::tr("Error"),
-  QObject::tr("Format Error:\n'Painting' field is not closed!"));
+  misc::reportError(QObject::tr("Format Error:\n'Painting' field is not closed!"));
   return false;
 }
 
@@ -1184,8 +1158,7 @@ bool Schematic::loadDocument()
   if(!file.open(QIODevice::ReadOnly)) {
     /// \todo implement unified error/warning handling GUI and CLI
     if (QucsMain != nullptr)
-      QMessageBox::critical(nullptr, QObject::tr("Error"),
-                 QObject::tr("Cannot load document: ")+a_DocName);
+      misc::reportError(QObject::tr("Cannot load document: ")+a_DocName);
     else
       qCritical() << "Schematic::loadDocument:"
                   << QObject::tr("Cannot load document: ")+a_DocName;
@@ -1210,8 +1183,7 @@ bool Schematic::loadDocument()
 
   if(Line.left(16) != "<Qucs Schematic ") {  // wrong file type ?
     file.close();
-    QMessageBox::critical(nullptr, QObject::tr("Error"),
-    QObject::tr("Wrong document type: ")+a_DocName);
+    misc::reportError(QObject::tr("Wrong document type: ")+a_DocName);
     return false;
   }
 
@@ -1238,8 +1210,7 @@ bool Schematic::loadDocument()
       }
     }
 
-    //QMessageBox::critical(0, QObject::tr("Error"),
-        // QObject::tr("Wrong document version: ")+Line);
+    //misc::reportError(// QObject::tr("Wrong document version: ")+Line);
   }
 
   // read content *************************
@@ -1273,8 +1244,7 @@ bool Schematic::loadDocument()
     }
     else {
        qDebug() << Line;
-       QMessageBox::critical(nullptr, QObject::tr("Error"),
-      QObject::tr("File Format Error:\nUnknown field!"));
+       misc::reportError(QObject::tr("File Format Error:\nUnknown field!"));
       file.close();
       return false;
     }
@@ -1921,7 +1891,7 @@ void Schematic::createSubNetlistPlain(QTextStream *stream, QPlainTextEdit *ErrTe
       if(!a_isAnalog) {
         if (a_isVerilog) {
           a_Signals.remove(*it_name); // remove node name
-          switch(pc->Props.at(1)->Value.at(0).toLatin1()) {
+          switch(pc->Props.at(1)->Value.isEmpty() ? '\0' : pc->Props.at(1)->Value.at(0).toLatin1()) {
             case 'a':
               InOutPorts.append(*it_name);
               break;
@@ -1935,7 +1905,7 @@ void Schematic::createSubNetlistPlain(QTextStream *stream, QPlainTextEdit *ErrTe
         else {
           // remove node name of output port
           a_Signals.remove(*it_name);
-          switch(pc->Props.at(1)->Value.at(0).toLatin1()) {
+          switch(pc->Props.at(1)->Value.isEmpty() ? '\0' : pc->Props.at(1)->Value.at(0).toLatin1()) {
             case 'a':
               (*it_name) += " : inout"; // attribute "analog" is "inout"
               break;

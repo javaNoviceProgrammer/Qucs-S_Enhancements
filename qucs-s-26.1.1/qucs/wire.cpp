@@ -22,6 +22,7 @@
 
 #include <QPainter>
 #include "qucs_assert.h"
+#include "misc.h"
 
 Wire::Wire(int _x1, int _y1, int _x2, int _y2)
 {
@@ -178,25 +179,24 @@ bool Wire::load(const QString& _s)
   bool ok;
   QString s = _s;
 
-  if(s.at(0) != '<') return false;
-  if(s.at(s.length()-1) != '>') return false;
+  if (s.length() < 2 || !s.startsWith('<') || !s.endsWith('>')) return false;
   s = s.mid(1, s.length()-2);   // cut off start and end character
 
   QString n;
   n  = s.section(' ',0,0);    // x1
-  x1 = n.toInt(&ok);
+  x1 = misc::clampCoordinate(n.toInt(&ok));
   if(!ok) return false;
 
   n  = s.section(' ',1,1);    // y1
-  y1 = n.toInt(&ok);
+  y1 = misc::clampCoordinate(n.toInt(&ok));
   if(!ok) return false;
 
   n  = s.section(' ',2,2);    // x2
-  x2 = n.toInt(&ok);
+  x2 = misc::clampCoordinate(n.toInt(&ok));
   if(!ok) return false;
 
   n  = s.section(' ',3,3);    // y2
-  y2 = n.toInt(&ok);
+  y2 = misc::clampCoordinate(n.toInt(&ok));
   if(!ok) return false;
 
   // Quick fix for ra3xdh#1273 (25.03.25)
@@ -217,13 +217,13 @@ bool Wire::load(const QString& _s)
 
   n = s.section('"',1,1);
   if(!n.isEmpty()) {     // is wire labeled ?
-    int nx = s.section(' ',5,5).toInt(&ok);   // x coordinate
+    int nx = misc::clampCoordinate(s.section(' ',5,5).toInt(&ok));   // x coordinate
     if(!ok) return false;
 
-    int ny = s.section(' ',6,6).toInt(&ok);   // y coordinate
+    int ny = misc::clampCoordinate(s.section(' ',6,6).toInt(&ok));   // y coordinate
     if(!ok) return false;
 
-    int delta = s.section(' ',7,7).toInt(&ok);// delta for x/y root coordinate
+    int delta = misc::clampCoordinate(s.section(' ',7,7).toInt(&ok));// delta for x/y root coordinate
     if(!ok) return false;
 
     setName(delta, nx, ny, n, s.section('"',3,3));  // Wire Label

@@ -1370,30 +1370,29 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
     bool ok;
     QString s = Line;
 
-    if (s.at(0) != '<') return false;
-    if (s.at(s.length() - 1) != '>') return false;
+    if (s.length() < 2 || !s.startsWith('<') || !s.endsWith('>')) return false;
     s = s.mid(1, s.length() - 2);   // cut off start and end character
 
     QString n;
     n = s.section(' ', 1, 1);    // cx
-    cx = n.toInt(&ok);
+    cx = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     n = s.section(' ', 2, 2);    // cy
-    cy = n.toInt(&ok);
+    cy = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     n = s.section(' ', 3, 3);    // x2
-    x2 = n.toInt(&ok);
+    x2 = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     n = s.section(' ', 4, 4);    // y2
-    y2 = n.toInt(&ok);
+    y2 = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     char c;
     n = s.section(' ', 5, 5);    // GridOn
-    c = n.at(0).toLatin1() - '0';
+    c = misc::charAt(n, 0, '0').toLatin1() - '0';
     xAxis.GridOn = yAxis.GridOn = (c & 1) != 0;
     hideLines = (c & 2) != 0;
 
@@ -1407,13 +1406,13 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
     if (!ok) return false;
 
     n = s.section(' ', 8, 8);    // xlog, ylog
-    xAxis.log = n.at(0) != '0';
-    c = n.at(1).toLatin1();
+    xAxis.log = misc::charAt(n, 0, '0') != '0';
+    c = misc::charAt(n, 1, '0').toLatin1();
     yAxis.log = ((c - '0') & 1) == 1;
     zAxis.log = ((c - '0') & 2) == 2;
 
     n = s.section(' ', 9, 9);   // xAxis.autoScale
-    if (n.at(0) != '"') {      // backward compatible
+    if (misc::charAt(n, 0, '"') != '"') {      // backward compatible
         if (n == "1") xAxis.autoScale = true;
         else xAxis.autoScale = false;
 
@@ -1462,7 +1461,7 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
         if (!ok) return false;
 
         n = s.section(' ', 21, 21); // rotX
-        if (n.at(0) != '"') {      // backward compatible
+        if (misc::charAt(n, 0, '"') != '"') {      // backward compatible
             rotX = n.toInt(&ok);
             if (!ok) return false;
 
@@ -1475,11 +1474,11 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
             if (!ok) return false;
 
             n = s.section(' ', 24, 24);
-            if (n.at(0) != '"') {
+            if (misc::charAt(n, 0, '"') != '"') {
                 if (n == "1") engineeringNotation = true;
                 else engineeringNotation = false;
                 n = s.section(' ', 25, 25);
-                if (n.at(0) != '"') {
+                if (misc::charAt(n, 0, '"') != '"') {
                     yAxis.Units = n.toInt(&ok);
                     if (!ok) return false;
 
@@ -1508,8 +1507,8 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
 
             // .......................................................
             // load markers of the diagram
+            if (Graphs.isEmpty()) return false;   // a marker before any graph
             pg = Graphs.last();
-            if (!pg) return false;
             QUCS_ASSERT(pg->parentDiagram() == this);
             Marker *pm = new Marker(pg);
             if (!pm->load(s)) {

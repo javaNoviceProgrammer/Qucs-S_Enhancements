@@ -48,6 +48,18 @@ namespace misc {
   bool    Verilog_Delay(QString&, const QString&);
   QString Verilog_Param(const QString);
   bool    checkVersion(QString&);
+  void    reportError(const QString& text);
+  /// Coordinates read from a file are limited to this range so that the
+  /// arithmetic done on them afterwards (bounding boxes, margins, zoom,
+  /// printing scale) cannot overflow int. 16.7 M units is far beyond any
+  /// schematic; only damaged files get clamped.
+  constexpr int MaxCoordinate = 1 << 24;
+  inline int clampCoordinate(int v)
+  { return v < -MaxCoordinate ? -MaxCoordinate : (v > MaxCoordinate ? MaxCoordinate : v); }
+  /// s[i], or def when the string is shorter: for fields parsed out of a
+  /// file, where at() would index past the end.
+  inline QChar charAt(const QString& s, qsizetype i, QChar def = QChar())
+  { return i < s.size() ? s.at(i) : def; }
   QString expandEnvVars(const QString&);
 
   inline const QColor getWidgetForegroundColor(const QWidget *q)

@@ -941,8 +941,7 @@ bool Component::load(const QString &_s) {
     int ttx, tty, tmp;
     QString s = _s;
 
-    if (s.at(0) != '<') return false;
-    if (s.at(s.length() - 1) != '>') return false;
+    if (s.length() < 2 || !s.startsWith('<') || !s.endsWith('>')) return false;
     s = s.mid(1, s.length() - 2);   // cut off start and end character
 
     QString n;
@@ -960,19 +959,19 @@ bool Component::load(const QString &_s) {
         showName = true;
 
     n = s.section(' ', 3, 3);    // cx
-    cx = n.toInt(&ok);
+    cx = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     n = s.section(' ', 4, 4);    // cy
-    cy = n.toInt(&ok);
+    cy = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     n = s.section(' ', 5, 5);    // tx
-    ttx = n.toInt(&ok);
+    ttx = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     n = s.section(' ', 6, 6);    // ty
-    tty = n.toInt(&ok);
+    tty = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     if (Model.at(0) != '.') {  // is simulation component (dc, ac, ...) ?
@@ -984,6 +983,7 @@ bool Component::load(const QString &_s) {
         n = s.section(' ', 8, 8);    // rotated
         tmp = n.toInt(&ok);
         if (!ok) return false;
+        tmp = ((tmp % 4) + 4) % 4;   // a quarter-turn count, not a loop bound
         if (rotated > tmp)  // necessary because of historical flaw in ...
             tmp += 4;        // ... components like "volt_dc"
         for (int z = rotated; z < tmp; z++) rotate();
@@ -1104,8 +1104,8 @@ bool Component::load(const QString &_s) {
         }
         (*p1)->Value = n;
 
-        n = s.section('"', z, z);    // display
-        (*p1)->display = (n.at(1) == '1');
+        n = s.section('"', z, z);    // display: " 1 " or " 0 ", if the
+        (*p1)->display = n.trimmed().startsWith('1');   // quotes balance
     }
 
     return true;
@@ -1318,33 +1318,33 @@ bool Component::getIntegers(const QString &s, int *i1, int *i2, int *i3,
 
     if (!i1) return true;
     n = s.section(' ', 1, 1);
-    *i1 = n.toInt(&ok);
+    *i1 = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     if (!i2) return true;
     n = s.section(' ', 2, 2);
-    *i2 = n.toInt(&ok);
+    *i2 = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     if (!i3) return true;
     n = s.section(' ', 3, 3);
-    *i3 = n.toInt(&ok);
+    *i3 = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     if (i4) {
         n = s.section(' ', 4, 4);
-        *i4 = n.toInt(&ok);
+        *i4 = misc::clampCoordinate(n.toInt(&ok));
         if (!ok) return false;
     }
 
     if (!i5) return true;
     n = s.section(' ', 5, 5);
-    *i5 = n.toInt(&ok);
+    *i5 = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     if (!i6) return true;
     n = s.section(' ', 6, 6);
-    *i6 = n.toInt(&ok);
+    *i6 = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     return true;
@@ -1686,7 +1686,7 @@ void GateComponent::createSymbol() {
     z = 0;
     if (Model.at(0) == 'N') z = 1;
 
-    if (Props.back()->Value.at(0) == 'D') {  // DIN symbol
+    if (Props.back()->Value.startsWith('D')) {  // DIN symbol
         xl = -15;
         xr = 15;
         Lines.append(new qucs::Line(15, -y, 15, y, QPen(Qt::darkBlue, 2)));
@@ -1765,9 +1765,8 @@ Component *getComponentFromName(QString &Line, Schematic *p) {
     Component *c = nullptr;
 
     Line = Line.trimmed();
-    if (Line.at(0) != '<') {
-        QMessageBox::critical(0, QObject::tr("Error"),
-                              QObject::tr("Format Error:\nWrong line start!"));
+    if (!Line.startsWith('<')) {
+        misc::reportError(QObject::tr("Format Error:\nWrong line start!"));
         return 0;
     }
 
@@ -1812,8 +1811,7 @@ Component *getComponentFromName(QString &Line, Schematic *p) {
     }
 
     if (!c->load(Line)) {
-        QMessageBox::critical(0, QObject::tr("Error"),
-                              QObject::tr("Format Error:\nWrong 'component' line format!"));
+        misc::reportError(QObject::tr("Format Error:\nWrong 'component' line format!"));
         delete c;
         return 0;
     }
