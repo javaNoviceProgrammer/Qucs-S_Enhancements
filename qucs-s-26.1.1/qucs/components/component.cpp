@@ -1030,7 +1030,9 @@ bool Component::load(const QString &_s) {
             }
 
             if (Model == "Diode") {
-                if (counts < 56) {  // backward compatible
+                // backward compatible; with no value at all, counts >> 1 is 0
+                // and counts - 1 below would step the iterator before begin()
+                if (counts >= 2 && counts < 56) {
                     counts >>= 1;
                     p1 = Props.begin();
                     std::advance(p1,std::min<int>(counts-1, std::distance(p1, Props.end())));
