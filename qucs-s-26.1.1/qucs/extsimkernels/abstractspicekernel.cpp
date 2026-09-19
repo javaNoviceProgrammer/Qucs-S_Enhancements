@@ -629,9 +629,12 @@ void AbstractSpiceKernel::parseFourierOutput(QString ngspice_file, QList<QList<d
                 QString ss = lin.section(sep,2,2,QString::SectionSkipEmpty);
                 if (ss.endsWith(',')) ss.chop(1);
                 Nharm = ss.toInt();
-                while (!ngsp_data.readLine().contains(QRegularExpression("Harmonic\\s+Frequency")));
+                // Skip to the table header; a file cut off before it must
+                // not spin on readLine() at the end of the stream.
+                while (!ngsp_data.atEnd() && !ngsp_data.readLine().contains(QRegularExpression("Harmonic\\s+Frequency")));
                 if (QucsSettings.DefaultSimulator != spicecompat::simXyce) lin = ngsp_data.readLine(); // dummy line
-                for (int i=0;i<Nharm;i++) {
+                for (int i=0;i<Nharm && !ngsp_data.atEnd();i++) {
+                    if (firstgroup && i >= sim_points.count()) break;   // more harmonics than the first group had
                     lin = ngsp_data.readLine();
                     if (!firstgroup) {
                         sim_point.clear();
@@ -826,7 +829,7 @@ void AbstractSpiceKernel::parseDC_OPoutputXY(QString xyce_file)
             QStringList nods = lines.at(0).split(QRegularExpression("\\s"), Qt::SkipEmptyParts);
             QStringList vals = lines.at(1).split(QRegularExpression("\\s"), Qt::SkipEmptyParts);
             QStringList::iterator n,v;
-            for(n = nods.begin(),v = vals.begin();n!=nods.end()||v!=vals.end();n++,v++) {
+            for(n = nods.begin(),v = vals.begin();n!=nods.end()&&v!=vals.end();n++,v++) {
                 if ((*n).startsWith("I(")) {
                     (*n).remove(0,2).chop(1);
                     (*n) += "#branch";  // Ngspice compatible
@@ -1126,6 +1129,7 @@ void AbstractSpiceKernel::parseXYCESTDOutput(QString std_file, QList<QList<doubl
             continue;
         } else {
             QStringList val_lst = lin.split(" ", Qt::SkipEmptyParts);
+            if (val_lst.count() < var_list.count() + 1) continue;   // short or non-data line
             QList<double> sim_point;
             for (int i = 1; i <= var_list.count(); i++ ) {
                 if (isComplex && i != 1) {
