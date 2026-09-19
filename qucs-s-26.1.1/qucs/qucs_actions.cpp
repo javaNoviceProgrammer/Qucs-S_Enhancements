@@ -33,6 +33,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QMutableHashIterator>
 #include <QProcess>
 #include <QRegularExpressionValidator>
@@ -1890,6 +1891,131 @@ void QucsApp::buildWithOpenVAF() {
 
   // shot the message docks
   messageDock->msgDock->show();
+}
+
+/*!
+ * \brief "Build All..." on the Verilog-A row of the project tree: compile
+ *        every .va file of the project with OpenVAF, one after the other,
+ *        into the message dock. Needs the OpenVAF path from the application
+ *        settings.
+ */
+void QucsApp::slotCMenuBuildAllVerilogA() {
+  if (a_vaBuilder != nullptr) {
+    QMessageBox::information(this, tr("Build All"),
+                             tr("A Verilog-A build is already running."));
+    return;
+  }
+
+  const QString openVAF = QucsSettings.OpenVAFExecutable.trimmed();
+  if (openVAF.isEmpty() || !QFileInfo(openVAF).isExecutable()) {
+    QMessageBox box(QMessageBox::Warning, tr("Build All"),
+                    openVAF.isEmpty()
+                      ? tr("The OpenVAF executable is not set.")
+                      : tr("The OpenVAF executable is not usable:\n%1").arg(openVAF),
+                    QMessageBox::Cancel, this);
+    box.setInformativeText(tr("Set \"OpenVAF Path\" under Application Settings, Locations."));
+    QPushButton *settings = box.addButton(tr("Open Settings..."), QMessageBox::ActionRole);
+    box.exec();
+    if (box.clickedButton() == settings)
+      slotApplSettings();
+    return;
+  }
+
+  const QDir project(QucsSettings.QucsWorkDir.absolutePath());
+  const QStringList vaFiles = project.entryList({"*.va"}, QDir::Files, QDir::Name);
+  if (vaFiles.isEmpty()) {
+    QMessageBox::information(this, tr("Build All"),
+                             tr("The project contains no Verilog-A (.va) files."));
+    return;
+  }
+
+  // Modified .va documents would be compiled as last saved; say so.
+  QStringList unsaved;
+  for (const QString& name : vaFiles) {
+    if (TextDoc *doc = findTextDoc(project.filePath(name)))
+      if (doc->getDocChanged()) unsaved.append(name);
+  }
+  if (!unsaved.isEmpty()) {
+    const auto answer = QMessageBox::question(this, tr("Build All"),
+        tr("These files have unsaved changes and will be compiled as saved on disk:\n%1\n\nContinue?")
+          .arg(unsaved.join("\n")),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes) return;
+  }
+
+  messageDock->reset();
+  messageDock->builderTabs->setTabText(0, tr("OpenVAF"));
+  messageDock->msgDock->setWindowTitle(tr("OpenVAF Dock"));
+  messageDock->admsOutput->appendPlainText(
+      tr("Building %n Verilog-A file(s) in %1", "", vaFiles.size()).arg(project.absolutePath()));
+  messageDock->msgDock->show();
+
+  a_vaBuildQueue.clear();
+  for (const QString& name : vaFiles)
+    a_vaBuildQueue.append(project.filePath(name));
+  a_vaBuildTotal = vaFiles.size();
+  a_vaBuildFailed = 0;
+  startNextVerilogABuild();
+}
+
+// Compiles the next queued file, or writes the summary when the queue is
+// empty. The compiler runs asynchronously: its output streams into the
+// dock and the GUI stays responsive (a model can take a while to compile).
+void QucsApp::startNextVerilogABuild() {
+  if (a_vaBuildQueue.isEmpty()) {
+    const int built = a_vaBuildTotal - a_vaBuildFailed;
+    messageDock->admsOutput->appendPlainText(
+        a_vaBuildFailed == 0
+          ? tr("\nDone: %n file(s) compiled.", "", built)
+          : tr("\nDone: %1 of %2 compiled, %3 failed.").arg(built).arg(a_vaBuildTotal).arg(a_vaBuildFailed));
+    messageDock->builderTabs->setTabIcon(0, QPixmap(a_vaBuildFailed != 0 ? ":/bitmaps/svg/error.svg"
+                                                                         : ":/bitmaps/svg/ok_apply.svg"));
+    Content->refresh();   // the .osdi files
+    return;
+  }
+
+  const QString vaFile = a_vaBuildQueue.takeFirst();
+  const QString openVAF = QucsSettings.OpenVAFExecutable.trimmed();
+  messageDock->admsOutput->appendPlainText(QStringLiteral("\n%1 %2").arg(openVAF, vaFile));
+
+  a_vaBuilder = new QProcess(this);
+  a_vaBuilder->setProcessChannelMode(QProcess::MergedChannels);
+  a_vaBuilder->setWorkingDirectory(QFileInfo(vaFile).absolutePath());
+  connect(a_vaBuilder, &QProcess::readyRead, this, &QucsApp::slotVerilogABuildOutput);
+  connect(a_vaBuilder, &QProcess::finished, this, &QucsApp::slotVerilogABuildFinished);
+  connect(a_vaBuilder, &QProcess::errorOccurred, this, &QucsApp::slotVerilogABuildError);
+  a_vaBuilder->start(openVAF, {vaFile});
+}
+
+void QucsApp::slotVerilogABuildOutput() {
+  if (a_vaBuilder == nullptr) return;
+  const QString out = QString::fromLocal8Bit(a_vaBuilder->readAll()).trimmed();
+  if (!out.isEmpty())
+    messageDock->admsOutput->appendPlainText(out);
+}
+
+void QucsApp::slotVerilogABuildFinished(int exitCode, QProcess::ExitStatus status) {
+  slotVerilogABuildOutput();
+  if (status != QProcess::NormalExit || exitCode != 0) {
+    a_vaBuildFailed++;
+    messageDock->admsOutput->appendPlainText(
+        status == QProcess::NormalExit ? tr("OpenVAF exited with code %1").arg(exitCode)
+                                       : tr("OpenVAF crashed"));
+  }
+  a_vaBuilder->deleteLater();
+  a_vaBuilder = nullptr;
+  startNextVerilogABuild();
+}
+
+void QucsApp::slotVerilogABuildError(QProcess::ProcessError error) {
+  // finished() does not follow a start failure; account for it here.
+  if (error != QProcess::FailedToStart || a_vaBuilder == nullptr) return;
+  a_vaBuildFailed++;
+  messageDock->admsOutput->appendPlainText(
+      tr("OpenVAF could not be started: %1").arg(a_vaBuilder->errorString()));
+  a_vaBuilder->deleteLater();
+  a_vaBuilder = nullptr;
+  startNextVerilogABuild();
 }
 
 // ----------------------------------------------------------

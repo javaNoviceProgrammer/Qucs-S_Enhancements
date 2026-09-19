@@ -1296,6 +1296,14 @@ void QucsApp::initCursorMenu()
   APPEND_MENU(ActionCMenuInsert, slotCMenuInsert, "Insert")
 
 #undef APPEND_MENU
+
+  // The "Verilog-A" category row gets its own menu.
+  ContentVerilogAMenu = new QMenu(this);
+  ActionCMenuBuildAllVerilogA = new QAction(tr("Build All..."), ContentVerilogAMenu);
+  ActionCMenuBuildAllVerilogA->setStatusTip(tr("Compile every Verilog-A file of the project with OpenVAF"));
+  connect(ActionCMenuBuildAllVerilogA, SIGNAL(triggered()), SLOT(slotCMenuBuildAllVerilogA()));
+  ContentVerilogAMenu->addAction(ActionCMenuBuildAllVerilogA);
+
   connect(Content, SIGNAL(customContextMenuRequested(const QPoint&)), SLOT(slotShowContentMenu(const QPoint&)));
 }
 
@@ -1304,6 +1312,13 @@ void QucsApp::initCursorMenu()
 void QucsApp::slotShowContentMenu(const QPoint& pos)
 {
   QModelIndex idx = Content->indexAt(pos);
+  if (idx.isValid() && !idx.parent().isValid()) {   // a category row
+    if (Content->categoryOf(idx) == ProjectView::VerilogA) {
+      ActionCMenuBuildAllVerilogA->setEnabled(a_vaBuilder == nullptr);
+      ContentVerilogAMenu->popup(Content->viewport()->mapToGlobal(pos));   // pos is viewport-relative
+    }
+    return;
+  }
   if (idx.isValid() && idx.parent().isValid()) {
     QItemSelectionModel *selectionModel = Content->selectionModel();
     bool multipleSelected = selectionModel->selectedRows().count() > 1;
@@ -1316,7 +1331,7 @@ void QucsApp::slotShowContentMenu(const QPoint& pos)
     ActionCMenuCopy->setEnabled(!multipleSelected);
     ActionCMenuRename->setEnabled(!multipleSelected);
 
-    ContentMenu->popup(Content->mapToGlobal(pos));
+    ContentMenu->popup(Content->viewport()->mapToGlobal(pos));
   }
 }
 

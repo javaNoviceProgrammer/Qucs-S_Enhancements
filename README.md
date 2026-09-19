@@ -6,6 +6,19 @@ Using Claude Code to enhance the Qucs-S circuit simulator interface.
 - [ENHANCEMENT_PROPOSAL.md](ENHANCEMENT_PROPOSAL.md) — crash root causes and the plan
 - `qucs-s-26.1.1/` — vendored upstream source (ra3xdh/qucs_s 26.1.1) with our changes
 
+## What is different from upstream
+
+- **Crash hardening** (WS1 of the proposal): the dataset and schematic
+  loaders and the simulator-output parsers survive damaged input, the app
+  keeps autosave copies and writes a crash report with a backtrace, and the
+  next start offers to restore what was open.
+- **Verilog-A "Build All..."**: right-click the *Verilog-A* row in the
+  Content panel to compile every `.va` file of the project with OpenVAF (the
+  executable set under *Application Settings → Locations → OpenVAF Path*),
+  one after the other, with the compiler output in the message dock and a
+  pass/fail tally at the end. Files with unsaved changes are compiled as last
+  saved, after a confirmation.
+
 ## Building locally
 
 Dependencies: CMake, Ninja, Qt 6 (with QtCharts), flex, bison ≥ 3, gperf,
