@@ -270,6 +270,9 @@ def main():
     ap.add_argument("--modes", default="n,p", help="comma-separated: n (netlist), p (render)")
     ap.add_argument("--reproduce", help="run the modes on this file instead of generating mutants")
     ap.add_argument("--keep", action="store_true", help="keep mutants that passed")
+    ap.add_argument("--data-share", type=float, default=1 / 3, metavar="P",
+                    help="share of mutants drawn from schematics that have a dataset; half of "
+                         "those damage the dataset (default 1/3)")
     ap.add_argument("--extra", action="append", default=[], metavar="DIR",
                     help="add the .sch files under DIR to the pool (e.g. the simulate suite's "
                          "work directory, whose schematics have datasets next to them)")
@@ -314,9 +317,9 @@ def main():
     for i in range(args.count):
         # Datasets and display files travel with the schematic so that the
         # render mode also exercises the dataset -> diagram path. One mutant
-        # in three takes a schematic that has a dataset, and half of those
-        # damage the dataset instead of the schematic.
-        if with_data and rng.randrange(3) == 0:
+        # in three (--data-share) takes a schematic that has a dataset, and
+        # half of those damage the dataset instead of the schematic.
+        if with_data and rng.random() < args.data_share:
             src = rng.choice(with_data)
             victim_src = rng.choice(datasets(src)) if rng.randrange(2) == 0 else src
         else:
