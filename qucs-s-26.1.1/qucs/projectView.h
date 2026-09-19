@@ -35,8 +35,16 @@ class ProjectView : public QTreeView
 {
   Q_OBJECT
 public:
+  // Top-level rows of the tree, in the order refresh() creates them.
+  enum Category { Datasets = 0, DataDisplays, Verilog, VerilogA, VHDL,
+                  Octave, Schematics, Symbols, SPICE, Others };
+
   ProjectView (QWidget *parent);
   virtual ~ProjectView ();
+
+  /// The category a tree index belongs to (its own row for a top-level
+  /// item, the parent's row for a file), or -1 for an invalid index.
+  int categoryOf(const QModelIndex& idx) const;
 
   QStandardItemModel *model() { return m_model; };
 

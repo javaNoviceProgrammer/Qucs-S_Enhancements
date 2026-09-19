@@ -50,6 +50,12 @@ ProjectView::~ProjectView()
   delete m_model;
 }
 
+int ProjectView::categoryOf(const QModelIndex& idx) const
+{
+  if (!idx.isValid()) return -1;
+  return idx.parent().isValid() ? idx.parent().row() : idx.row();
+}
+
 void
 ProjectView::setProjPath(const QString &path)
 {

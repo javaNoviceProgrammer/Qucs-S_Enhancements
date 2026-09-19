@@ -34,6 +34,7 @@ qucs_add_test(test_crash_reports)
 qucs_add_test(test_autosave)
 qucs_add_test(test_loader)
 qucs_add_test(test_simout)
+qucs_add_test(test_build_all_va)
 
 # Not a test: the driver scripts/ci/fuzz-simout.py runs over damaged
 # simulator output (see simout_harness.cpp).

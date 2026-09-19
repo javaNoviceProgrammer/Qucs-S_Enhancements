@@ -309,6 +309,12 @@ existing demand.
 
 - **Crash recovery / autosave** (from WS1.7) surfaced as a feature: periodic
   autosave, "Recover unsaved documents" on launch.
+- *Done:* **Verilog-A "Build All..."** on the Content panel's Verilog-A row:
+  compiles every `.va` of the project with the OpenVAF from the settings,
+  sequentially and asynchronously (the GUI stays responsive), output and a
+  pass/fail tally in the message dock, `.osdi` files appear in the tree.
+  Points at the settings when OpenVAF is not configured. Covered by
+  `qucs/tests/test_build_all_va` with a stand-in compiler.
 - **Explicit light/dark theme toggle** (#1725). The `hasDarkTheme` flag
   already exists in `QucsSettings`; components draw with hard-coded
   `Qt::darkBlue` pens, so this needs a small palette-indirection layer in

@@ -23,6 +23,7 @@
 #include <QFileSystemModel>
 #include <QHash>
 #include <QMainWindow>
+#include <QProcess>
 #include <QSortFilterProxyModel>
 #include <QStack>
 #include <QString>
@@ -117,6 +118,8 @@ public:
   /// a text document (or there is no tab). Use this instead of casting
   /// DocumentTab->currentWidget().
   Schematic *currentSchematic() const;
+  ProjectView *projectView() const { return Content; }
+  MessageDock *messages() const { return messageDock; }
   QString fileType(const QString &);
   static bool isTextDocument(QWidget *);
 
@@ -191,6 +194,11 @@ public slots:
 
   // for menu that appears by right click in content ListView
   void slotShowContentMenu(const QPoint &);
+
+  void slotCMenuBuildAllVerilogA();
+  void slotVerilogABuildOutput();
+  void slotVerilogABuildFinished(int exitCode, QProcess::ExitStatus status);
+  void slotVerilogABuildError(QProcess::ProcessError error);
 
   void slotCMenuOpen();
   void slotCMenuCopy();
@@ -287,10 +295,20 @@ public:
 
   // menu appearing by right mouse button click on content listview
   QMenu *ContentMenu;
+  // ...and on its "Verilog-A" category row
+  QMenu *ContentVerilogAMenu;
 
   // corresponding actions
   QAction *ActionCMenuOpen, *ActionCMenuCopy, *ActionCMenuRename,
-      *ActionCMenuDelete, *ActionCMenuInsert;
+      *ActionCMenuDelete, *ActionCMenuInsert, *ActionCMenuBuildAllVerilogA;
+
+  // "Build All..." for Verilog-A: the files still to compile with OpenVAF,
+  // the running compiler, and the tally for the summary line.
+  QStringList a_vaBuildQueue;
+  QProcess *a_vaBuilder = nullptr;
+  int a_vaBuildTotal = 0;
+  int a_vaBuildFailed = 0;
+  void startNextVerilogABuild();
 
   QAction *fileNew, *textNew, *symNew, *fileNewDpl, *fileOpen, *fileSave,
       *fileSaveAs, *fileSaveAll, *fileClose, *fileCloseOthers,
