@@ -83,6 +83,7 @@ private slots:
         QucsApp app(false);
         QucsMain = &app;
         app.projectView()->setProjPath(project);
+        app.projectView()->setExpanded(app.projectView()->model()->index(ProjectView::VerilogA, 0), true);
         QCOMPARE(children(app.projectView(), ProjectView::VerilogA), QStringList({"broken.va", "good.va"}));
 
         QVERIFY(QMetaObject::invokeMethod(&app, "slotCMenuBuildAllVerilogA"));
@@ -103,8 +104,10 @@ private slots:
         QVERIFY(QFileInfo::exists(project + "/good.osdi"));
         QVERIFY(!QFileInfo::exists(project + "/broken.osdi"));
 
-        // The tree was refreshed: the new .osdi shows up under "Others".
+        // The tree was refreshed: the new .osdi shows up under "Others", and
+        // the row the user was working in stayed open.
         QVERIFY(children(app.projectView(), ProjectView::Others).contains("good.osdi"));
+        QVERIFY(app.projectView()->isExpanded(app.projectView()->model()->index(ProjectView::VerilogA, 0)));
         QucsMain = nullptr;
     }
 
