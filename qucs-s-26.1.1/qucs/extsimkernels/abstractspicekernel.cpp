@@ -490,20 +490,7 @@ void AbstractSpiceKernel::parseNgSpiceSimOutput(QString ngspice_file, QList< QLi
             continue;
         }
         if (lin=="Variables:") {
-            var_list.clear();
-            QString indep_var = ngsp_data.readLine().section(sep,1,1,QString::SectionSkipEmpty);
-            var_list.append(indep_var);
-
-            for (int i=1;i<NumVars;i++) {
-                lin = ngsp_data.readLine();
-                QString dep_var = lin.section(sep,1,1,QString::SectionSkipEmpty);
-                var_list.append(dep_var);
-                if (lin.contains("dims=")) {
-                  extra_vars.append(dep_var); // XSPICE digital node or scalar
-                  QString tail = lin.section("dims=",1,1,QString::SectionSkipEmpty);
-                  extra_vars_dims.append(tail.toInt());
-                }
-            }
+            readVariableNames(ngsp_data, NumVars, var_list, extra_vars, extra_vars_dims);
             continue;
         }
         if (lin=="Values:") {
@@ -897,7 +884,9 @@ void AbstractSpiceKernel::parseSTEPOutput(QString ngspice_file,
         if (lin.isEmpty()) continue;
         if (lin.contains("Plotname:")&&  // skip operating point
             (lin.contains("DC operating point"))) {
-            for(bool t = false; !t; t = (ngsp_data.readLine().startsWith("Plotname:")));
+            // ...up to the next plot; readLine() at the end of the file
+            // returns an empty string forever, so stop there too.
+            for(bool t = false; !t && !ngsp_data.atEnd(); t = (ngsp_data.readLine().startsWith("Plotname:")));
         }
         if (!header_parsed) {
             if (lin.contains("Flags")&&lin.contains("complex")) { // output consists of
@@ -913,20 +902,7 @@ void AbstractSpiceKernel::parseSTEPOutput(QString ngspice_file,
                 continue;
             }
             if (lin=="Variables:") {
-                var_list.clear();
-                QString indep_var = ngsp_data.readLine().section(sep,1,1,QString::SectionSkipEmpty);
-                var_list.append(indep_var);
-
-                for (int i=1;i<NumVars;i++) {
-                    lin = ngsp_data.readLine();
-                    QString dep_var = lin.section(sep,1,1,QString::SectionSkipEmpty);
-                    var_list.append(dep_var);
-                    if (lin.contains("dims=")) {
-                      extra_vars.append(dep_var); // XSPICE digital node or scalar
-                      QString tail = lin.section("dims=",1,1,QString::SectionSkipEmpty);
-                      extra_vars_dims.append(tail.toInt());
-                    }
-                }
+                readVariableNames(ngsp_data, NumVars, var_list, extra_vars, extra_vars_dims);
                 header_parsed = true;
                 continue;
             }
@@ -1003,12 +979,47 @@ void AbstractSpiceKernel::parsePrnOutput(const QString &ngspice_file,
     }
 }
 
+/*!
+ * \brief AbstractSpiceKernel::readVariableNames Read the "Variables:" block
+ *        of a raw file: one line "<index> <name> <type> [dims=...]" per
+ *        variable. The block ends where the file does, whatever "No.
+ *        Variables" claimed; NumVars is set to the number actually read, so
+ *        that every sample row and the name list agree.
+ */
+void AbstractSpiceKernel::readVariableNames(QTextStream &ngsp_data, int &NumVars, QStringList &var_list,
+                                            QStringList &extra_vars, QList<int> &extra_vars_dims)
+{
+    const QRegularExpression sep("[ \t,]");
+    var_list.clear();
+    for (int i = 0; i < NumVars && !ngsp_data.atEnd(); i++) {
+        const QString lin = ngsp_data.readLine();
+        const QString var = lin.section(sep, 1, 1, QString::SectionSkipEmpty);
+        var_list.append(var);
+        if (i > 0 && lin.contains("dims=")) {
+            extra_vars.append(var); // XSPICE digital node or scalar
+            QString tail = lin.section("dims=", 1, 1, QString::SectionSkipEmpty);
+            extra_vars_dims.append(tail.toInt());
+        }
+    }
+    NumVars = var_list.count();
+}
+
+/*!
+ * \brief AbstractSpiceKernel::extractBinSamples Read NumPoints rows of
+ *        NumVars doubles (twice that for complex data) from the binary
+ *        section. A file that ends early yields only its complete rows.
+ */
 void AbstractSpiceKernel::extractBinSamples(QDataStream &dbl, QList<QList<double> > &sim_points,
                                             int NumPoints, int NumVars, bool isComplex)
 {
-    int cnt = NumPoints;
+    if (NumVars < 1) return;
+    const qint64 bytesPerPoint = qint64(NumVars) * (isComplex ? 2 : 1) * qint64(sizeof(double));
+    const qint64 available = dbl.device()->size() - dbl.device()->pos();
+    if (available < bytesPerPoint) return;
+    int cnt = qMin(qint64(NumPoints), available / bytesPerPoint);
     while (cnt>0) {
         QList<double> sim_point;
+        sim_point.reserve(1 + (NumVars - 1) * (isComplex ? 2 : 1));
         double re,im;
         dbl>>re; // Indep. variable
         sim_point.append(re);
@@ -1024,6 +1035,7 @@ void AbstractSpiceKernel::extractBinSamples(QDataStream &dbl, QList<QList<double
                 sim_point.append(re); // Re
             }
         }
+        if (dbl.status() != QDataStream::Ok) break;   // short read: drop the row
         sim_points.append(sim_point);
         cnt--;
     }
@@ -1041,15 +1053,17 @@ bool AbstractSpiceKernel::extractASCIISamples(QString &lin, QTextStream &ngsp_da
     //double indep_val = lin.split(sep,QString::SkipEmptyParts).at(1).toDouble(&ok); // only real indep vars
     if (!ok) return false;
     sim_point.append(indep_val);
+    // Only a complete row is kept: the conversion indexes every row by the
+    // number of variables.
     for (int i=0;i<NumVars;i++) {
+        if (ngsp_data.atEnd()) return false;
         if (isComplex) {
             QStringList lst = ngsp_data.readLine().split(sep, Qt::SkipEmptyParts);
-            if (lst.count()==2) {
-                double re_dep_val = lst.at(0).toDouble();  // for complex sim results
-                double im_dep_val = lst.at(1).toDouble();  // imaginary part follows
-                sim_point.append(re_dep_val);              // real part
-                sim_point.append(im_dep_val);
-            }
+            if (lst.count()!=2) return false;
+            double re_dep_val = lst.at(0).toDouble();  // for complex sim results
+            double im_dep_val = lst.at(1).toDouble();  // imaginary part follows
+            sim_point.append(re_dep_val);              // real part
+            sim_point.append(im_dep_val);
         } else {
             double dep_val = ngsp_data.readLine().remove(sep).toDouble();
             sim_point.append(dep_val);
@@ -1396,6 +1410,16 @@ void AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
             }
         }
         if (var_list.isEmpty()) continue; // nothing to convert
+        // Every row below is indexed by the number of variables; a parser
+        // handed a damaged file can produce shorter ones. Drop those.
+        {
+            const qsizetype rowSize = isComplex ? 2 * var_list.count() - 1 : var_list.count();
+            const qsizetype before = sim_points.count();
+            sim_points.removeIf([rowSize](const QList<double>& row) { return row.count() < rowSize; });
+            if (sim_points.count() != before)
+                qWarning() << "convertToQucsData:" << (before - sim_points.count())
+                           << "incomplete sample row(s) dropped from" << ngspice_output_filename;
+        }
         normalizeVarsNames(var_list, dataset_prefix, isCustomPrefix);
         // prepend indep to extra_vars and extra_vars_dims
         extra_vars.prepend(var_list.first());
@@ -1500,6 +1524,7 @@ void AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
                       int indep_cnt = sim_points.count()/swp_var_val.count();
                       idx = idx + (indep_cnt - var_length - 1);
                       count = 0;
+                      if (idx < -1) break;   // inconsistent dims= in a damaged file
                       continue;
                     }
                   } else if (idx >= var_length){

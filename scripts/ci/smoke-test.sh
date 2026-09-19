@@ -102,6 +102,15 @@ SIM_SET=(
   "General Electronics/chargepump.sch"
   "General Electronics/Active Filters/active_bp.sch"
   "Devices/gyrator.sch"
+  # One per simulator-output format the parsers know (see fuzz-simout.py):
+  "RF/Amplifiers/Q2N2222A/BJT-swp.sch"              # parameter sweep: _swp.plot + .cir.res
+  "Devices/diode_dblswp_qucs.sch"                   # DC sweep
+  "RF/Amplifiers/Q2N2222A/BJT-noise.sch"            # .cir.noise + swept .raw
+  "NGspice features/sensitivityACandDC.sch"         # .sens.prn, .sens.dc.prn
+  "RF/Amplifiers/Distortion simulations/Distortion.sch"  # disto*.plot
+  "Devices/CV_curve.sch"                            # custom nutmeg script: custom1.plot
+  "RF/Miscellaneous/giacoletto.sch"                 # S-parameters: sp1.plot
+  "NGspice features/par_sweep_test.sch"             # AC sweep + plain TR
 )
 
 # simulate_one <sch-in-examples> -> copies the whole example directory
@@ -122,6 +131,7 @@ simulate_one() {
   ds="$ds.ngspice"
   run "$name.netlist"  120 "$QUCS" -n --ngspice -i "$sch" -o "$work/out.net"   || return
   run "$name.simulate" 300 "$QUCS" -n --ngspice --run -i "$sch" -o "$work/$ds" || return
+  stash_simulator_outputs "$name" "$work" "$(basename "$sch")"
   if ! grep -q '^<dep ' "$work/$ds" 2>/dev/null; then
     fail=$((fail+1)); failed_names+=("$name.dataset")
     printf '  FAIL  %-60s dataset has no dependent variables\n' "$name.dataset"
@@ -142,6 +152,18 @@ simulate_one() {
   done < <(grep -oE '"ngspice/[^"]+"' "$sch" | tr -d '"' | sed 's#^ngspice/##' | sort -u)
   [ $missing -gt 0 ] && echo "::warning::$rel: $missing diagram trace(s) not found in dataset (ngspice version?)"
   return 0
+}
+
+# The raw simulator outputs are the corpus for scripts/ci/fuzz-simout.py.
+# A Debug build leaves them in the kernel's work directory (Release removes
+# them); that directory is printed by Ngspice::slotSimulate() in Debug.
+stash_simulator_outputs() {
+  local name="$1" work="$2" schname="$3"
+  local simdir; simdir="$(grep -o 'Debug: "[^"]*" ([^)]*slotSimulate' "$OUT/$name.simulate.log" | head -1 | sed 's/^Debug: "//; s/".*$//')"
+  [ -n "$simdir" ] && [ -d "$simdir" ] || return 0
+  mkdir -p "$work/simout"
+  cp "$simdir"/spice4qucs.* "$work/simout/" 2>/dev/null || return 0
+  echo "$schname" > "$work/simout/schematic.txt"
 }
 
 suite_simulate() {

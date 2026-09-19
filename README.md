@@ -65,6 +65,16 @@ directory with the mutant, its dataset and the log:
 python3 scripts/ci/fuzz-sch.py build-asan/qucs/qucs-s.app/Contents/MacOS/qucs-s qucs-s-26.1.1/examples /tmp/fuzz --count 500 --seed 7 --extra /tmp/smoke/simulate/work
 ```
 
+`scripts/ci/fuzz-simout.py` does the same to the simulator's output: the
+`simulate` suite (with a Debug build) stashes the real ngspice files of every
+circuit it ran under `<work>/<circuit>/simout/`, and the fuzzer damages one
+of them per mutant and runs `qucs/tests/simout_harness`, which converts them
+to a Qucs dataset exactly as the GUI does after a simulation:
+
+```bash
+python3 scripts/ci/fuzz-simout.py build-asan/qucs/tests/simout_harness /tmp/smoke/simulate/work /tmp/fuzz-simout --count 500 --seed 7
+```
+
 ## Crash reports and recovery
 
 If the app dies, a report is written to the application-data directory
@@ -80,7 +90,7 @@ crash.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, the unit tests, the `load`, `simulate` and `hostile` smoke suites, then 150 fuzzed schematics and datasets. Logs, renders and any fuzz findings are uploaded as an artifact. |
+| [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, the unit tests, the `load`, `simulate` and `hostile` smoke suites, then 150 fuzzed schematics/datasets and 150 fuzzed simulator outputs. Logs, renders and any fuzz findings are uploaded as an artifact. |
 | [Release](.github/workflows/release.yml) | manual (*Actions → Release → Run workflow*) or a `v*` tag | Release bundles per platform, published as a GitHub Release. |
 
 The `hostile` suite is the regression guard for the dataset-loader crashes

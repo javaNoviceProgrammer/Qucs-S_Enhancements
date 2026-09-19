@@ -251,6 +251,23 @@ Target the *classes* from §1, not the individual issues.
   now writes the file the renderer looks for and fails if the render log
   does not show the dataset being loaded; the fuzzer's `--extra` mode then
   mutates those real datasets as well as the schematics.
+- 1.9 (new): the simulator-output parsers (`AbstractSpiceKernel::parse*`,
+  `convertToQucsData`) - the code behind every "Simulate" click and the
+  home of upstream #1526 / #5 - got the same treatment.
+  `qucs/tests/simout_harness` converts a directory of ngspice output files
+  exactly as the GUI does (its baseline output is byte-identical to the
+  CLI's datasets for all 14 corpus circuits), `scripts/ci/fuzz-simout.py`
+  damages one file per mutant, and the `simulate` suite now covers every
+  format the parsers know (parameter sweeps with `.cir.res`, noise,
+  sensitivity, distortion, custom nutmeg scripts, S-parameters) and stashes
+  the raw files as the corpus. First finding: a raw file whose header says
+  `No. Variables: 2147483647` looped two billion times on an empty stream,
+  and an operating-point plot without a following plot spun forever at EOF;
+  a truncated binary section produced short rows that the conversion then
+  indexed past the end. The parsers are now bounded by what the file really
+  contains, keep only complete rows, and the conversion drops any short row
+  before indexing. `qucs/tests/test_simout` covers it (three of its cases
+  hang on the pre-fix code). 3,300 mutants clean so far.
 - Infrastructure that fell out of 1.3: the core sources are an object
   library (`qucs-core`) shared by the executable and `qucs/tests/`; the
   globals moved from `main.cpp` to `globals.cpp`; and the top-level CMake no
@@ -268,6 +285,7 @@ Target the *classes* from §1, not the individual issues.
 | 1.6 | Keep invariant checks alive in Release: replace `assert()` with a `QUCS_CHECK(cond)` macro that logs + returns gracefully in Release and aborts in Debug. Remove `-w`; fix or explicitly silence the warnings it hides. | `qucs/CMakeLists.txt:111`, all `assert(` sites | Converts silent corruption into logged, recoverable failures. |
 | 1.7 | Add a crash-time safety net: install a signal handler / `std::set_terminate` that writes an autosave of every dirty document to the temp dir plus a backtrace, and offer recovery on next launch. | `qucs/main.cpp` | Doesn't fix crashes, but stops them costing work — and gives you stack traces from users. |
 | 1.8 | Fuzz the schematic loader: mutate the shipped examples, push every mutant through `-n` and `-p` under the sanitizers, fix what falls over, keep a seeded run in CI. | `scripts/ci/fuzz-sch.py`, the `load()` functions of every element class | The parsers are hand-written `section()`/`at()` code with no length checks; fuzzing finds these in minutes. |
+| 1.9 | Fuzz the simulator-output parsers: harness `convertToQucsData` over a directory of real ngspice output, mutate the files, keep a seeded run in CI. | `qucs/tests/simout_harness.cpp`, `scripts/ci/fuzz-simout.py`, `extsimkernels/abstractspicekernel.cpp` | Header counts in raw files were trusted as loop bounds; this is where "voluminous output crashes" (#5) and "noise analysis crashes" (#1526) live. |
 
 ### WS2 — Engineering infrastructure
 

@@ -52,6 +52,8 @@ private:
 
     void normalizeVarsNames(QStringList &var_list, const QString &dataset_prefix, bool isCustom = false);
     int checkRawOutupt(QString ngspice_file, QStringList &values);
+    void readVariableNames(QTextStream &ngsp_data, int &NumVars, QStringList &var_list,
+                           QStringList &extra_vars, QList<int> &extra_vars_dims);
     void extractBinSamples(QDataStream &dbl, QList< QList<double> > &sim_points,
                            int NumPoints, int NumVars, bool isComplex);
     bool extractASCIISamples(QString &lin, QTextStream &ngsp_data, QList< QList<double> > &sim_points,
