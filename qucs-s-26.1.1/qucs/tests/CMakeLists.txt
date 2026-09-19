@@ -33,3 +33,14 @@ qucs_add_test(test_schematic_lifetime)
 qucs_add_test(test_crash_reports)
 qucs_add_test(test_autosave)
 qucs_add_test(test_loader)
+qucs_add_test(test_simout)
+
+# Not a test: the driver scripts/ci/fuzz-simout.py runs over damaged
+# simulator output (see simout_harness.cpp).
+add_executable(simout_harness
+  simout_harness.cpp
+  $<TARGET_OBJECTS:qucs-core>
+  ${CMAKE_CURRENT_SOURCE_DIR}/../qucs.qrc)
+target_include_directories(simout_harness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_compile_definitions(simout_harness PRIVATE HAVE_CONFIG_H)
+target_link_libraries(simout_harness ${QUCS_LINK_LIBRARIES})

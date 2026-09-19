@@ -93,6 +93,12 @@ jobs:
       - name: Fuzz · mutated example schematics and datasets
         run: python3 scripts/ci/fuzz-sch.py build/qucs/qucs-s "$SRC_DIR/examples" smoke-out/fuzz --count 150 --seed 1 --timeout 120 --extra smoke-out/simulate/work
 
+      # Damaged ngspice output (the raw files the simulate suite stashed)
+      # through the parsers behind every "Simulate" click, via the harness
+      # in qucs/tests/simout_harness.cpp.
+      - name: Fuzz · mutated simulator output
+        run: python3 scripts/ci/fuzz-simout.py build/qucs/tests/simout_harness smoke-out/simulate/work smoke-out/fuzz-simout --count 150 --seed 1 --timeout 120
+
       - name: Upload smoke-test logs and renders
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,5 +108,6 @@ jobs:
             smoke-out/**/*.log
             smoke-out/**/*.png
             smoke-out/fuzz/findings/**
+            smoke-out/fuzz-simout/findings/**
           retention-days: 14
           if-no-files-found: ignore
