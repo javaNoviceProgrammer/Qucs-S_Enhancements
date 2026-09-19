@@ -32,7 +32,13 @@ scripts/package-macos.sh build bin/macos/apple-silicon
 ```
 
 This is the same script the Release workflow uses. Any directory matching
-`build*/` is git-ignored, as are the bundles under `bin/`.
+`build*/` is git-ignored, as are the bundles under `bin/`. The bundle also
+carries Qt's offscreen platform plugin, so its binary works headless too -
+the smoke suites run against it unchanged:
+
+```bash
+scripts/ci/smoke-test.sh simulate bin/macos/apple-silicon/qucs-s-*.app/Contents/MacOS/qucs-s qucs-s-26.1.1/examples /tmp/smoke
+```
 
 ### Sanitizer build and smoke tests
 
