@@ -84,12 +84,12 @@ bool GraphicText::load(const QString &s)
 
     QString n;
     n = s.section(' ', 1, 1); // x1
-    x1 = n.toInt(&ok);
+    x1 = misc::clampCoordinate(n.toInt(&ok));
     if (!ok)
         return false;
 
     n = s.section(' ', 2, 2); // y1
-    y1 = n.toInt(&ok);
+    y1 = misc::clampCoordinate(n.toInt(&ok));
     if (!ok)
         return false;
 

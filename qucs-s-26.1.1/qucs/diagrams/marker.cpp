@@ -528,8 +528,7 @@ bool Marker::load(const QString& Line)
   bool ok;
   QString s = Line;
 
-  if(s.at(0) != '<') return false;
-  if(s.at(s.length()-1) != '>') return false;
+  if (s.length() < 2 || !s.startsWith('<') || !s.endsWith('>')) return false;
   s = s.mid(1, s.length()-2);   // cut off start and end character
 
   if(s.section(' ',0,0) != "Mkr") return false;
@@ -549,11 +548,11 @@ bool Marker::load(const QString& Line)
   } while(j >= 0);
 
   n  = s.section(' ',2,2);    // x1
-  x1 = n.toInt(&ok);
+  x1 = misc::clampCoordinate(n.toInt(&ok));
   if(!ok) return false;
 
   n  = s.section(' ',3,3);    // y1
-  y1 = n.toInt(&ok);
+  y1 = misc::clampCoordinate(n.toInt(&ok));
   if(!ok) return false;
 
   n  = s.section(' ',4,4);      // Precision

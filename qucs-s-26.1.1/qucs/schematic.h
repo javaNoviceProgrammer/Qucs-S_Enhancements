@@ -33,6 +33,7 @@
 
 #include "qt3_compat/q3scrollview.h"
 #include <QVector>
+#include <algorithm>
 #include <QStringList>
 
 class QTextStream;
@@ -252,9 +253,11 @@ public:
   int getViewX1() const { return a_ViewX1; }
   int getViewY1() const { return a_ViewY1; }
   int getGridX() const { return a_GridX; }
-  void setGridX(int value) { a_GridX = value; }
+  // setOnGrid() divides by the grid: never let it reach 0 (a damaged file,
+  // or an emptied field in the document-settings dialog).
+  void setGridX(int value) { a_GridX = std::max(1, value); }
   int getGridY() const { return a_GridY; }
-  void setGridY(int value) { a_GridY = value; }
+  void setGridY(int value) { a_GridY = std::max(1, value); }
   void setGridColor(const QColor& color) { a_GridColor = color; }
   QColor getGridColor() const { return a_GridColor; }
   bool getSymbolMode() const { return a_symbolMode; }

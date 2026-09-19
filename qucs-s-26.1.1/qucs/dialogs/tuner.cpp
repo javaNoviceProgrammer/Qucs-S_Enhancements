@@ -35,7 +35,7 @@ bool isPropertyTunable(Component* propertyOwner, Property* property) {
     return false;
   }
 
-  if (!property->Value.at(0).isNumber()) {
+  if (property->Value.isEmpty() || !property->Value.at(0).isNumber()) {
     return false; // String
   }
   // Check if the value contains symbols *, /, -, +

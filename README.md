@@ -52,6 +52,16 @@ example), `simulate` (netlist → ngspice → dataset → render; needs `ngspice
 `PATH`) and `hostile` (render a fixture against damaged datasets). Everything
 runs headless through the CLI modes of `qucs-s`; no window is opened.
 
+`scripts/ci/fuzz-sch.py` mutates the example schematics (truncation, dropped
+fields, unbalanced quotes, absurd numbers, missing terminators, random bytes)
+and pushes every mutant through the netlister (`-n`) and the renderer (`-p`).
+A mutant may be rejected, but must never crash, hang or trip a sanitizer.
+Runs are seeded and reproducible; findings are kept with the mutant and log:
+
+```bash
+python3 scripts/ci/fuzz-sch.py build-asan/qucs/qucs-s.app/Contents/MacOS/qucs-s qucs-s-26.1.1/examples /tmp/fuzz --count 500 --seed 7
+```
+
 ## Crash reports and recovery
 
 If the app dies, a report is written to the application-data directory
@@ -67,7 +77,7 @@ crash.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, the unit tests, then the `load`, `simulate` and `hostile` smoke suites. Logs and renders are uploaded as an artifact. |
+| [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, the unit tests, the `load`, `simulate` and `hostile` smoke suites, then 150 fuzzed schematics. Logs, renders and any fuzz findings are uploaded as an artifact. |
 | [Release](.github/workflows/release.yml) | manual (*Actions → Release → Run workflow*) or a `v*` tag | Release bundles per platform, published as a GitHub Release. |
 
 The `hostile` suite is the regression guard for the dataset-loader crashes

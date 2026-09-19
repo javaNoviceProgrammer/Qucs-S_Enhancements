@@ -188,9 +188,11 @@ int Subcircuit::loadSymbol(const QString &DocName) {
     }
 
     Line = Line.trimmed();
-    if (Line.at(0) != '<')
+    if (Line.isEmpty())
+      continue;
+    if (!Line.startsWith('<'))
       return -5;
-    if (Line.at(Line.length() - 1) != '>')
+    if (!Line.endsWith('>'))
       return -6;
     Line = Line.mid(1, Line.length() - 2); // cut off start and end character
     Result = analyseLine(Line, 1);

@@ -91,7 +91,7 @@ void MScross::createSymbol()
   Lines.append(new qucs::Line(  8,-18,  8, -8,QPen(Qt::darkBlue,2)));
   Lines.append(new qucs::Line( -8,-18,  8,-18,QPen(Qt::darkBlue,2)));
 
-  if(Props.back()->Value.at(0) != 'n') {
+  if(!Props.back()->Value.startsWith('n')) {
     Texts.append(new Text(-26,  3, "1"));
     Texts.append(new Text(-10,-30, "2"));
     Texts.append(new Text( 21,-13, "3"));

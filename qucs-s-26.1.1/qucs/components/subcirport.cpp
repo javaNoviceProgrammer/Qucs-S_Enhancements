@@ -46,7 +46,7 @@ void SubCirPort::createSymbol()
   x1 = -27; y1 = -8;
   x2 =   0; y2 =  8;
 
-  if(Props.at(1)->Value.at(0) == 'a') {
+  if(Props.at(1)->Value.startsWith('a')) {
     Arcs.append(new qucs::Arc(-25, -6, 12, 12,  0, 16*360,QPen(Qt::darkBlue,2)));
     Lines.append(new qucs::Line(-13,  0,  0,  0,QPen(Qt::darkBlue,2)));
   }

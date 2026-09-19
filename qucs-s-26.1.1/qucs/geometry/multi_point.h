@@ -42,8 +42,9 @@ namespace qucs_s::geom {
 inline constexpr double distance(PointLike auto&& point_a, PointLike auto&& point_b) noexcept {
     using ::internal::get_x;
     using ::internal::get_y;
-    const auto dx = get_x(point_a) - get_x(point_b);
-    const auto dy = get_y(point_a) - get_y(point_b);
+    // In double: with int coordinates dx * dx overflows from |dx| > 46340.
+    const double dx = get_x(point_a) - get_x(point_b);
+    const double dy = get_y(point_a) - get_y(point_b);
     return std::sqrt(dx * dx + dy * dy);
 }
 

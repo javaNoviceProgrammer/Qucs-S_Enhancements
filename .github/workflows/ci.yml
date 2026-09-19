@@ -85,6 +85,12 @@ jobs:
       - name: Smoke test · hostile datasets
         run: scripts/ci/smoke-test.sh hostile build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
 
+      # Damaged schematics through the loader, netlister and renderer. A
+      # fixed seed makes the run reproducible; failures keep the mutant under
+      # smoke-out/fuzz/findings/ (see scripts/ci/fuzz-sch.py).
+      - name: Fuzz · mutated example schematics
+        run: python3 scripts/ci/fuzz-sch.py build/qucs/qucs-s "$SRC_DIR/examples" smoke-out/fuzz --count 150 --seed 1 --timeout 120
+
       - name: Upload smoke-test logs and renders
         if: always()
         uses: actions/upload-artifact@v4
@@ -93,5 +99,6 @@ jobs:
           path: |
             smoke-out/**/*.log
             smoke-out/**/*.png
+            smoke-out/fuzz/findings/**
           retention-days: 14
           if-no-files-found: ignore

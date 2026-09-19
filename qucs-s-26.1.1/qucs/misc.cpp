@@ -530,18 +530,26 @@ bool misc::checkVersion(QString& Line)
   return true;
 }
 
+// Reports an error from loading or saving a document. While the GUI is
+// running it is shown to the user; from the command line and in tests a
+// modal box would wait forever for a click, so it goes to the log instead.
+void misc::reportError(const QString& text)
+{
+  if (QucsMain != nullptr)
+    QMessageBox::critical(nullptr, QObject::tr("Error"), text);
+  else
+    qCritical().noquote() << text;
+}
+
 // a small class to handle the application version string
 //   loosely modeled after the standard Semantic Versioning...
 VersionTriplet::VersionTriplet(const QString& version) {
-  // TODO should be likely made more robust...
-  if (version.isEmpty()) {
-    major = minor = patch = 0;
-  } else {
-    QStringList vl = version.split('.');
-    major = vl.at(0).toUInt();
-    minor = vl.at(1).toUInt();
-    patch = vl.at(2).toUInt();
-  }
+  // Missing components ("26.1", "abc", "") and non-numeric ones read as 0;
+  // value() is safe where at() would index past the end.
+  const QStringList vl = version.trimmed().split('.');
+  major = vl.value(0).toUInt();
+  minor = vl.value(1).toUInt();
+  patch = vl.value(2).toUInt();
 }
 
 QStringList misc::parseCmdArgs(const QString &program)

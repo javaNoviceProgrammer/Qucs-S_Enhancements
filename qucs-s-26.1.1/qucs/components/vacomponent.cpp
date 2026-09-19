@@ -22,6 +22,7 @@
 #include <QFile>
 #include <QTextStream>
 #include <QMessageBox>
+#include "misc.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -331,8 +332,7 @@ QJsonObject getJsonObject(QString filename)
     // Try to open the JSON file
     QFile file(filename);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QMessageBox::critical(0, QObject::tr("Error"),
-                              QObject::tr("Symbol file not found: %1").arg(filename));
+        misc::reportError(QObject::tr("Symbol file not found: %1").arg(filename));
         throw std::runtime_error("File not found");
     }
 
@@ -355,8 +355,7 @@ QJsonObject getJsonObject(QString filename)
 
 
     if(error.error != QJsonParseError::NoError) {
-        QMessageBox::critical(0, QObject::tr("Error"),
-                              QObject::tr("Symbol file not found: %1").arg(filename));
+        misc::reportError(QObject::tr("Symbol file not found: %1").arg(filename));
         throw std::runtime_error("Json parse error");
     }
 

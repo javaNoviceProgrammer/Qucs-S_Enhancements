@@ -182,12 +182,12 @@ void Diode::createSymbol()
 {
   auto pp = getProperty("Symbol");
   if (pp == nullptr) return;
-  if(pp->Value.at(0) == 'V') {
+  if(pp->Value.startsWith('V')) {
     Lines.append(new qucs::Line(-30,  0, -9,  0,QPen(Qt::darkBlue,2)));
     Lines.append(new qucs::Line( -6,  0, 30,  0,QPen(Qt::darkBlue,2)));
     Lines.append(new qucs::Line( -9, -9, -9,  9,QPen(Qt::darkBlue,2)));
   }
-  else if(pp->Value.at(0) == 'U') {
+  else if(pp->Value.startsWith('U')) {
     Lines.append(new qucs::Line(-30,  0, -6,  0,QPen(Qt::darkBlue,2)));
     Lines.append(new qucs::Line(  6,  0, 30,  0,QPen(Qt::darkBlue,2)));
   }
@@ -199,7 +199,7 @@ void Diode::createSymbol()
   Lines.append(new qucs::Line( -6,  0,  6, -9,QPen(Qt::darkBlue,2)));
   Lines.append(new qucs::Line( -6,  0,  6,  9,QPen(Qt::darkBlue,2)));
 
-  if(pp->Value.at(0) == 'S') {
+  if(pp->Value.startsWith('S')) {
     //Lines.append(new qucs::Line( -6, -9,-12,-12,QPen(Qt::darkBlue,2)));
     //Lines.append(new qucs::Line( -6,  9,  0, 12,QPen(Qt::darkBlue,2)));
     Lines.append(new qucs::Line( -6, -9, -10, -9,QPen(Qt::darkBlue,2)));
@@ -207,7 +207,7 @@ void Diode::createSymbol()
     Lines.append(new qucs::Line( -10, -9, -10, -7,QPen(Qt::darkBlue,2)));
     Lines.append(new qucs::Line( -2, 9, -2, 7,QPen(Qt::darkBlue,2)));
   }
-  else if(pp->Value.at(0) == 'Z') {
+  else if(pp->Value.startsWith('Z')) {
     Lines.append(new qucs::Line( -6, 9, -1, 9,QPen(Qt::darkBlue,2)));
   }
 

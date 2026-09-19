@@ -88,16 +88,16 @@ bool ImagePainting::load(const QString& s) {
   if (parts[0] != "ImagePainting") return false;
 
   bool ok;
-  x1 = parts[1].toInt(&ok);
+  x1 = misc::clampCoordinate(parts[1].toInt(&ok));
   if (!ok) return false;
 
-  y1 = parts[2].toInt(&ok);
+  y1 = misc::clampCoordinate(parts[2].toInt(&ok));
   if (!ok) return false;
 
-  x2 = parts[3].toInt(&ok);
+  x2 = misc::clampCoordinate(parts[3].toInt(&ok));
   if (!ok) return false;
 
-  y2 = parts[4].toInt(&ok);
+  y2 = misc::clampCoordinate(parts[4].toInt(&ok));
   if (!ok) return false;
 
   // The base64 image data is in part 5

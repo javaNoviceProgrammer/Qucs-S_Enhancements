@@ -216,6 +216,34 @@ Target the *classes* from §1, not the individual issues.
   (confirmed with a breakpoint on `exit`). The quit is now deferred to the
   next event-loop pass; every quit path (Cmd-Q, application menu, window
   close button) exits through `main()` with status 0.
+- 1.8 (new, from fuzzing): `scripts/ci/fuzz-sch.py` mutates the example
+  schematics and runs every mutant through the netlister and the renderer
+  under ASan/UBSan; 150 seeded mutants run on every CI push. The first
+  3,500 mutants found seven classes of damage the loader could not take:
+  - a two-part version header (`<Qucs Schematic 26.1>`) indexed past the
+    end of the split list in `VersionTriplet`;
+  - blank lines or a lone `<` inside any section were indexed at `[0]`/`[1]`
+    before the length was checked (six loaders, `Component::load`,
+    `Wire::load`, `Diagram::load`, `Marker::load`, `Graph::load`);
+  - an emptied property value (`""`) was read with `at(0)` in twelve
+    component classes and in `Diagram::load`'s optional fields;
+  - a missing quote shifted the property/display fields so the display flag
+    was read past its end;
+  - a marker line before any graph called `QList::last()` on an empty list;
+  - coordinates near `INT_MAX` overflowed the bounding-box, margin and
+    distance arithmetic (Qt 6.11 asserts on it in Debug; `distance()`
+    overflowed for any wire longer than 46,340 units); every coordinate
+    read from a file is now clamped to `misc::MaxCoordinate` and distances
+    are computed in double;
+  - the rotation field was used as a loop bound (`rotate()` 2^31 times), and
+    a zero grid size reached `setOnGrid()`'s integer division (also from an
+    emptied field in the document-settings dialog).
+  In Debug builds each of these aborted; in Release they read out of bounds,
+  wrapped, or hung. Separately, thirty-four `QMessageBox::critical` calls in
+  the load/save paths went through `misc::reportError`, which logs instead
+  when there is no GUI: a truncated file used to hang `qucs-s -n`/`-p`
+  forever on a dialog nobody could click. `qucs/tests/test_loader` covers
+  every class; the pre-fix loader aborts on it.
 - Infrastructure that fell out of 1.3: the core sources are an object
   library (`qucs-core`) shared by the executable and `qucs/tests/`; the
   globals moved from `main.cpp` to `globals.cpp`; and the top-level CMake no
@@ -232,6 +260,7 @@ Target the *classes* from §1, not the individual issues.
 | 1.5 | Replace the 27 C-style `(Schematic*)currentWidget()` casts with a single `Schematic* QucsApp::currentSchematic()` helper that returns `nullptr` for text docs; audit each call site for the null case. | `qucs/qucs.cpp`, `qucs_actions.cpp`, `qucs_init.cpp` | Mechanical, low risk, closes an entire class. |
 | 1.6 | Keep invariant checks alive in Release: replace `assert()` with a `QUCS_CHECK(cond)` macro that logs + returns gracefully in Release and aborts in Debug. Remove `-w`; fix or explicitly silence the warnings it hides. | `qucs/CMakeLists.txt:111`, all `assert(` sites | Converts silent corruption into logged, recoverable failures. |
 | 1.7 | Add a crash-time safety net: install a signal handler / `std::set_terminate` that writes an autosave of every dirty document to the temp dir plus a backtrace, and offer recovery on next launch. | `qucs/main.cpp` | Doesn't fix crashes, but stops them costing work — and gives you stack traces from users. |
+| 1.8 | Fuzz the schematic loader: mutate the shipped examples, push every mutant through `-n` and `-p` under the sanitizers, fix what falls over, keep a seeded run in CI. | `scripts/ci/fuzz-sch.py`, the `load()` functions of every element class | The parsers are hand-written `section()`/`at()` code with no length checks; fuzzing finds these in minutes. |
 
 ### WS2 — Engineering infrastructure
 
