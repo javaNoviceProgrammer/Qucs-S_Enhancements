@@ -78,6 +78,23 @@ for nested in "$bin"/*.app; do
 done
 strip "$bin/qucsator_rf" "$bin/qucsconv_rf" 2>/dev/null || true
 
+# macdeployqt ships only the cocoa platform plugin. Add the offscreen one
+# so the bundled binary can also run headless (qucs-s -n / -p with
+# QT_QPA_PLATFORM=offscreen), which is what the smoke tests and scripted
+# use need. Its Qt dependencies are already in the bundle.
+plugins_src="$(dirname "$(command -v macdeployqt)")/../share/qt/plugins/platforms"
+[ -d "$plugins_src" ] || plugins_src="$(qmake -query QT_INSTALL_PLUGINS 2>/dev/null)/platforms"
+if [ -f "$plugins_src/libqoffscreen.dylib" ]; then
+  cp -p "$plugins_src/libqoffscreen.dylib" "$app/Contents/PlugIns/platforms/"
+  # Point its Qt dependencies into the bundle, as macdeployqt did for cocoa.
+  for fw in $(otool -L "$app/Contents/PlugIns/platforms/libqoffscreen.dylib" | grep -o '@rpath/Qt[A-Za-z]*\.framework[^ ]*'); do
+    install_name_tool -change "$fw" "@executable_path/../Frameworks/${fw#@rpath/}" \
+      "$app/Contents/PlugIns/platforms/libqoffscreen.dylib"
+  done
+else
+  echo "    warning: offscreen platform plugin not found next to macdeployqt; headless use of the bundle will not work" >&2
+fi
+
 # macdeployqt rewrites what depends on what, but leaves the install name
 # (LC_ID_DYLIB) of some third-party libraries (brotli, webp, ...) pointing
 # at the Homebrew path they were copied from. Harmless for loading, but

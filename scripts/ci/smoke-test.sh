@@ -28,7 +28,7 @@ QUCS="${2:?qucs-s executable}"
 EXAMPLES="${3:?examples dir}"
 OUT="${4:?output dir}"
 
-export QT_QPA_PLATFORM=offscreen
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 # Memory errors are what we are after; Qt itself leaks at exit and would
 # drown the signal. Enable leak detection deliberately once WS1.3 lands.
 export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:abort_on_error=1:symbolize=1:allocator_may_return_null=1}"
