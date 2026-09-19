@@ -55,11 +55,14 @@ runs headless through the CLI modes of `qucs-s`; no window is opened.
 `scripts/ci/fuzz-sch.py` mutates the example schematics (truncation, dropped
 fields, unbalanced quotes, absurd numbers, missing terminators, random bytes)
 and pushes every mutant through the netlister (`-n`) and the renderer (`-p`).
-A mutant may be rejected, but must never crash, hang or trip a sanitizer.
-Runs are seeded and reproducible; findings are kept with the mutant and log:
+With `--extra <dir>` it also takes schematics that have a dataset next to
+them - the `simulate` suite's work directory - and damages the dataset one
+time in six. A mutant may be rejected, but must never crash, hang or trip a
+sanitizer. Runs are seeded and reproducible; each finding is kept as a
+directory with the mutant, its dataset and the log:
 
 ```bash
-python3 scripts/ci/fuzz-sch.py build-asan/qucs/qucs-s.app/Contents/MacOS/qucs-s qucs-s-26.1.1/examples /tmp/fuzz --count 500 --seed 7
+python3 scripts/ci/fuzz-sch.py build-asan/qucs/qucs-s.app/Contents/MacOS/qucs-s qucs-s-26.1.1/examples /tmp/fuzz --count 500 --seed 7 --extra /tmp/smoke/simulate/work
 ```
 
 ## Crash reports and recovery
@@ -77,7 +80,7 @@ crash.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, the unit tests, the `load`, `simulate` and `hostile` smoke suites, then 150 fuzzed schematics. Logs, renders and any fuzz findings are uploaded as an artifact. |
+| [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, the unit tests, the `load`, `simulate` and `hostile` smoke suites, then 150 fuzzed schematics and datasets. Logs, renders and any fuzz findings are uploaded as an artifact. |
 | [Release](.github/workflows/release.yml) | manual (*Actions → Release → Run workflow*) or a `v*` tag | Release bundles per platform, published as a GitHub Release. |
 
 The `hostile` suite is the regression guard for the dataset-loader crashes

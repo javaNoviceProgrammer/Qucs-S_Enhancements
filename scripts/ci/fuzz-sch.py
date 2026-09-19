@@ -2,18 +2,20 @@
 """
 Mutation fuzzer for the qucs-s schematic loader and netlister.
 
-Takes the shipped example schematics, damages them the way corrupted saves,
-hand edits and files from newer versions do (truncation, dropped or
-duplicated lines, unbalanced quotes and brackets, absurd numbers, missing
-section terminators, random bytes) and runs the headless CLI modes of
-qucs-s on every mutant:
+Takes the shipped example schematics (and, one time in three, the dataset
+shipped next to one), damages them the way corrupted saves, hand edits and
+files from newer versions do (truncation, dropped or duplicated lines,
+unbalanced quotes and brackets, absurd numbers, missing section
+terminators, random bytes) and runs the headless CLI modes of qucs-s on
+every mutant:
 
     qucs-s -n --ngspice -i mutant.sch -o mutant.net     (load + netlist)
     qucs-s -p -i mutant.sch -o mutant.png               (load + render)
 
 A mutant may be rejected with an error; it must never crash, trip a
 sanitizer or hang. Every finding is kept under <out-dir>/findings/ with
-the mutant, the log and a one-line signature, and the run exits non-zero.
+the mutant directory (schematic, dataset, log) and a one-line signature,
+and the run exits non-zero. Re-run one with --reproduce <that .sch>.
 
 The random sequence is seeded, so a given (seed, count, example set) is
 reproducible: re-run with the seed printed in the summary.
@@ -21,7 +23,7 @@ reproducible: re-run with the seed printed in the summary.
 Usage:
     fuzz-sch.py <qucs-s-executable> <examples-dir> <out-dir>
                 [--count N] [--seed S] [--timeout SEC] [--modes n,p]
-                [--reproduce mutant.sch]
+                [--extra DIR ...] [--keep] [--reproduce mutant.sch]
 """
 import argparse
 import hashlib
@@ -268,6 +270,9 @@ def main():
     ap.add_argument("--modes", default="n,p", help="comma-separated: n (netlist), p (render)")
     ap.add_argument("--reproduce", help="run the modes on this file instead of generating mutants")
     ap.add_argument("--keep", action="store_true", help="keep mutants that passed")
+    ap.add_argument("--extra", action="append", default=[], metavar="DIR",
+                    help="add the .sch files under DIR to the pool (e.g. the simulate suite's "
+                         "work directory, whose schematics have datasets next to them)")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -282,39 +287,61 @@ def main():
         failed = False
         for mode in modes:
             bad, rc, log = run_one(args.qucs, mode, sch, out / f"repro-{mode}", args.timeout)
+            (out / f"repro-{mode}.log").write_text(log)
             print(f"{'FAIL' if bad else 'ok  '} {mode} rc={rc} {signature(log, rc) if bad else ''}")
             failed |= bool(bad)
         return 1 if failed else 0
 
-    examples = sorted(p for p in Path(args.examples).rglob("*.sch") if "OpenVAF" not in p.parts)
+    examples = sorted(p for p in Path(args.examples).rglob("*.sch")
+                      if p.is_file() and "OpenVAF" not in p.parts)
+    for extra in args.extra:
+        examples += sorted(p for p in Path(extra).rglob("*.sch") if p.is_file())
     if not examples:
         print("no example schematics found", file=sys.stderr)
         return 2
+    # Datasets sit next to their schematic as <name>.dat or, converted from a
+    # simulator's output, <name>.dat.<simulator>.
+    def datasets(sch):
+        return sorted(p for p in sch.parent.glob(sch.stem + ".dat*") if p.is_file())
+    with_data = [p for p in examples if datasets(p)]
     rng = random.Random(args.seed)
-    print(f"== fuzz-sch: {args.count} mutants of {len(examples)} examples, seed {args.seed}, modes {modes}")
+    print(f"== fuzz-sch: {args.count} mutants of {len(examples)} examples "
+          f"({len(with_data)} with a dataset), seed {args.seed}, modes {modes}")
 
     total_runs = 0
     arithmetic = 0
     seen = {}
     for i in range(args.count):
-        src = rng.choice(examples)
-        text = src.read_text(encoding="utf-8", errors="replace")
-        mutated, ops = mutate(text, rng)
-        stem = f"m{i:05d}-{src.stem[:24]}"
-        sch = mutants / f"{stem}.sch"
-        sch.write_text(mutated, encoding="latin-1", errors="replace")
         # Datasets and display files travel with the schematic so that the
-        # render mode also exercises the dataset -> diagram path.
-        for suffix in (".dat", ".dpl"):
-            side = src.with_suffix(suffix)
+        # render mode also exercises the dataset -> diagram path. One mutant
+        # in three takes a schematic that has a dataset, and half of those
+        # damage the dataset instead of the schematic.
+        if with_data and rng.randrange(3) == 0:
+            src = rng.choice(with_data)
+            victim_src = rng.choice(datasets(src)) if rng.randrange(2) == 0 else src
+        else:
+            src = rng.choice(examples)
+            victim_src = src
+        # Each mutant lives in its own directory under the example's own file
+        # names, so that the schematic's DataSet/DataDisplay properties
+        # resolve to the copies (mutated or pristine) next to it.
+        stem = f"m{i:05d}-{src.stem[:24]}"
+        mdir = mutants / stem
+        mdir.mkdir(exist_ok=True)
+        for side in [src] + datasets(src) + [src.with_suffix(".dpl")]:
             if side.exists():
-                shutil.copy(side, mutants / f"{stem}{suffix}")
-        (mutants / f"{stem}.ops").write_text(f"{src}\n{ops}\n")
+                shutil.copy(side, mdir / side.name)
+        sch = mdir / src.name
+        victim = mdir / victim_src.name
+        mutated, ops = mutate(victim.read_text(encoding="utf-8", errors="replace"), rng)
+        victim.write_text(mutated, encoding="latin-1", errors="replace")
+        ops = f"{'sch' if victim_src == src else 'dat'}:{ops}"
+        (mdir / "mutant.ops").write_text(f"{src}\n{ops}\n")
 
         failed_here = False
         for mode in modes:
             total_runs += 1
-            bad, rc, log = run_one(args.qucs, mode, sch, mutants / stem, args.timeout)
+            bad, rc, log = run_one(args.qucs, mode, sch, mdir / "out", args.timeout)
             if not bad:
                 if is_arithmetic_only(log):
                     arithmetic += 1
@@ -328,14 +355,13 @@ def main():
             seen.setdefault(key, []).append(stem)
             fdir = findings / key
             fdir.mkdir(exist_ok=True)
-            shutil.copy(sch, fdir / f"{stem}.sch")
-            (fdir / f"{stem}.{mode}.log").write_text(log)
+            shutil.copytree(mdir, fdir / stem, dirs_exist_ok=True)
+            (fdir / stem / f"{mode}.log").write_text(log)
             (fdir / "signature.txt").write_text(f"{mode}: {sig}\n{frame_hint(log)}\nfrom {src}\nops {ops}\n")
             print(f"  FAIL  {stem} [{mode}] rc={rc}  {sig}{'  ' + frame_hint(log) if frame_hint(log) else ''}"
                   f"{'' if first else '  (dup of ' + key + ')'}")
         if not failed_here and not args.keep:
-            for f in mutants.glob(f"{stem}.*"):
-                f.unlink()
+            shutil.rmtree(mdir, ignore_errors=True)
 
     n_fail = sum(len(v) for v in seen.values())
     print(f"== fuzz-sch: {total_runs} runs, {n_fail} failures in {len(seen)} distinct signature(s), "

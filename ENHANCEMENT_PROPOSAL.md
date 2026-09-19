@@ -244,6 +244,13 @@ Target the *classes* from §1, not the individual issues.
   when there is no GUI: a truncated file used to hang `qucs-s -n`/`-p`
   forever on a dialog nobody could click. `qucs/tests/test_loader` covers
   every class; the pre-fix loader aborts on it.
+  Wiring datasets into the fuzzer exposed a gap in the `simulate` smoke
+  suite: it wrote the converted ngspice output as `<name>.dat`, while a
+  diagram trace named `ngspice/...` is loaded from `<name>.dat.ngspice`
+  (what the GUI writes), so its render step had never loaded any data. It
+  now writes the file the renderer looks for and fails if the render log
+  does not show the dataset being loaded; the fuzzer's `--extra` mode then
+  mutates those real datasets as well as the schematics.
 - Infrastructure that fell out of 1.3: the core sources are an object
   library (`qucs-core`) shared by the executable and `qucs/tests/`; the
   globals moved from `main.cpp` to `globals.cpp`; and the top-level CMake no

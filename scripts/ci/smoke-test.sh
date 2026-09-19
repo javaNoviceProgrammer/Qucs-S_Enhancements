@@ -117,6 +117,9 @@ simulate_one() {
   local ds; ds="$(grep -o '<DataSet=[^>]*' "$sch" | head -1 | cut -d= -f2)"
   [ -n "$ds" ] || ds="$(basename "$src" .sch).dat"
 
+  # The GUI writes the converted ngspice output as <DataSet>.ngspice, and
+  # that is the file a diagram trace named "ngspice/..." is loaded from.
+  ds="$ds.ngspice"
   run "$name.netlist"  120 "$QUCS" -n --ngspice -i "$sch" -o "$work/out.net"   || return
   run "$name.simulate" 300 "$QUCS" -n --ngspice --run -i "$sch" -o "$work/$ds" || return
   if ! grep -q '^<dep ' "$work/$ds" 2>/dev/null; then
@@ -125,6 +128,13 @@ simulate_one() {
     return 1
   fi
   run "$name.render"   120 "$QUCS" -p -i "$sch" -o "$work/render.png"        || return
+  # (Only verifiable with a Debug build: Release compiles qDebug() out.)
+  local rlog="$OUT/$name.render.log"
+  if grep -q '"ngspice/' "$sch" && grep -q '^Debug:' "$rlog" && ! grep -q "Loading data from .*$ds" "$rlog"; then
+    fail=$((fail+1)); failed_names+=("$name.render.data")
+    printf '  FAIL  %-60s render did not load the dataset\n' "$name.render.data"
+    return 1
+  fi
   # Not a failure, but worth knowing: do the diagram traces resolve?
   local missing=0 var
   while IFS= read -r var; do

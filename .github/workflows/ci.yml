@@ -85,11 +85,13 @@ jobs:
       - name: Smoke test · hostile datasets
         run: scripts/ci/smoke-test.sh hostile build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
 
-      # Damaged schematics through the loader, netlister and renderer. A
-      # fixed seed makes the run reproducible; failures keep the mutant under
-      # smoke-out/fuzz/findings/ (see scripts/ci/fuzz-sch.py).
-      - name: Fuzz · mutated example schematics
-        run: python3 scripts/ci/fuzz-sch.py build/qucs/qucs-s "$SRC_DIR/examples" smoke-out/fuzz --count 150 --seed 1 --timeout 120
+      # Damaged schematics and datasets through the loader, netlister and
+      # renderer; the simulate suite's work directory supplies schematics
+      # with real ngspice datasets next to them. A fixed seed makes the run
+      # reproducible; failures keep the mutant under smoke-out/fuzz/findings/
+      # (see scripts/ci/fuzz-sch.py).
+      - name: Fuzz · mutated example schematics and datasets
+        run: python3 scripts/ci/fuzz-sch.py build/qucs/qucs-s "$SRC_DIR/examples" smoke-out/fuzz --count 150 --seed 1 --timeout 120 --extra smoke-out/simulate/work
 
       - name: Upload smoke-test logs and renders
         if: always()
