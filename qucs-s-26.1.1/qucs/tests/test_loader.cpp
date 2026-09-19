@@ -173,6 +173,13 @@ private slots:
         QTest::newRow("unbalanced")    << "<R R1 1 100 100 15 -26 0 1 \"1 kOhm\" 1 \"26.85 0 \"0.0\" 0>";
         QTest::newRow("quote-at-end")  << "<R R1 1 100 100 15 -26 0 1 \"1 kOhm\" 1 \">";
         QTest::newRow("just-brackets") << "<>";
+        // The Diode's old-file compatibility shift stepped an iterator
+        // before begin() when the line carried no value at all.
+        QTest::newRow("diode-no-props")  << "<Diode D1 1 0 0 -26 13 0 0>";
+        QTest::newRow("diode-one-quote") << "<Diode D1 1 0 0 -26 13 0 0 \"1e-15 A>";
+        QTest::newRow("diode-one-value") << "<Diode D1 1 0 0 -26 13 0 0 \"1e-15 A\" 1>";
+        QTest::newRow("and-no-props")    << "<AND Y1 1 0 0 -26 20 0 0>";
+        QTest::newRow("buf-no-props")    << "<Buf Y1 1 0 0 -26 20 0 0>";
         // The rotation field was used as a loop bound: 2^31 rotate() calls.
         QTest::newRow("huge-rotation") << "<R R1 1 100 100 15 -26 0 2147483647 \"1 kOhm\" 1>";
         QTest::newRow("neg-rotation")  << "<R R1 1 100 100 15 -26 0 -2147483648 \"1 kOhm\" 1>";

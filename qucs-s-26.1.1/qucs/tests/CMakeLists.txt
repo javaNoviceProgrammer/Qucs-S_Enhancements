@@ -24,7 +24,8 @@ function(qucs_add_test name)
   target_link_libraries(${name} ${QUCS_LINK_LIBRARIES} Qt6::Test)
   add_test(NAME ${name} COMMAND ${name})
   set_tests_properties(${name} PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0"
+    # UBSan only prints by default; make a report fail the test.
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
     TIMEOUT 300)
 endfunction()
 
