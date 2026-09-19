@@ -78,6 +78,14 @@ ProjectView::setProjPath(const QString &path)
 void
 ProjectView::refresh()
 {
+  // Keep the categories the user has opened; the first fill shows Schematics.
+  QList<int> expanded;
+  for (int row = 0; row < m_model->rowCount(); ++row)
+    if (isExpanded(m_model->index(row, 0)))
+      expanded.append(row);
+  if (m_model->rowCount() == 0)
+    expanded.append(Schematics);
+
   m_model->clear();
 
   QStringList header;
@@ -95,7 +103,8 @@ ProjectView::refresh()
   appendRow(m_model->invisibleRootItem(), tr("SPICE"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("Others"), QString(""));
 
-  setExpanded(m_model->index(6, 0), true);
+  for (int row : expanded)
+    setExpanded(m_model->index(row, 0), true);
 
   if (!m_valid) {
     return;
