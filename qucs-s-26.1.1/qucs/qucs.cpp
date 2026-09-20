@@ -3249,6 +3249,30 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
 
 
 // ---------------------------------------------------------
+void QucsApp::openDroppedFiles(const QStringList &files)
+{
+  if (files.isEmpty()) return;
+  // Not now: the widget the files were dropped on may be the untitled
+  // document that opening the first file closes.
+  QTimer::singleShot(0, this, [this, files] {
+    for (const QString &file : files)
+      openDroppedFile(file);
+  });
+}
+
+void QucsApp::openDroppedFile(const QString &file)
+{
+  const QFileInfo info(file);
+  if (!info.isFile()) return;
+  static const QStringList qucsDocuments = {"sch", "dpl", "sym", "v", "va", "vhd", "vhdl", "m", "oct", "net"};
+  const QString ext = info.suffix().toLower();
+  if (qucsDocuments.contains(ext) || !misc::isTextFile(info.absoluteFilePath()))
+    openFileFromProjectView(info, QString());   // its viewer, or the user's / the system's handler
+  else
+    editFile(info.absoluteFilePath());          // the text editor from the settings
+}
+
+// ---------------------------------------------------------
 // Is called when the mouse is clicked within the Content QListView.
 void QucsApp::slotSelectSubcircuit(const QModelIndex &idx)
 {
@@ -4348,6 +4372,35 @@ ContextMenuTabWidget::ContextMenuTabWidget(QucsApp *parent) : QTabWidget(parent)
   App = parent;
   setContextMenuPolicy(Qt::CustomContextMenu);
   connect(this, SIGNAL(customContextMenuRequested(const QPoint&)), this, SLOT(showContextMenu(const QPoint&)));
+  setAcceptDrops(true);
+}
+
+void ContextMenuTabWidget::dragEnterEvent(QDragEnterEvent *event)
+{
+  if (misc::localFiles(event->mimeData()).isEmpty()) {
+    event->ignore();
+    return;
+  }
+  event->setDropAction(Qt::CopyAction);
+  event->accept();
+}
+
+void ContextMenuTabWidget::dragMoveEvent(QDragMoveEvent *event)
+{
+  event->setDropAction(Qt::CopyAction);
+  event->accept();
+}
+
+void ContextMenuTabWidget::dropEvent(QDropEvent *event)
+{
+  const QStringList files = misc::localFiles(event->mimeData());
+  if (files.isEmpty() || App == nullptr) {
+    event->ignore();
+    return;
+  }
+  event->setDropAction(Qt::CopyAction);
+  event->accept();
+  App->openDroppedFiles(files);
 }
 
 void ContextMenuTabWidget::showContextMenu(const QPoint& point)

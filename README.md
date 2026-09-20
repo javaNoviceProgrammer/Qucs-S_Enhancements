@@ -24,6 +24,11 @@ Using Claude Code to enhance the Qucs-S circuit simulator interface.
   subcircuit insertion work on them. A new *Osdi* category lists the
   compiled `.osdi` models; ngspice loads all of them, wherever they are in
   the project, and Build All compiles the `.va` files wherever they are.
+- **Drag and drop from the Content panel**: drag one or more files onto the
+  document area (a schematic, a text document, the tab bar) to open them —
+  schematics, data displays and symbols in their views, Verilog-A and other
+  text files in the text editor, anything else the way a double-click would.
+  Files dragged in from a file manager open the same way.
 
 ## Building locally
 

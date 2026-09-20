@@ -2064,12 +2064,10 @@ void Schematic::contentsDropEvent(QDropEvent *Event)
     if (urls.isEmpty()) {
       return;
     }
+    Event->setDropAction(Qt::CopyAction);
+    Event->accept();
 
-           // do not close untitled document to avoid segfault
-    QucsDoc *d = QucsMain->getDoc(0);
-    bool changed = d->getDocChanged();
-    d->setDocChanged(true);
-
+    QStringList toOpen;
     for (const QUrl &url : urls) {
       QString filePath = QDir::toNativeSeparators(url.toLocalFile());
       QString lower = filePath.toLower();
@@ -2096,11 +2094,12 @@ void Schematic::contentsDropEvent(QDropEvent *Event)
         setChanged(true, true);
         continue; // allow dropping multiple images at once
       }
-      // For non-image files, fallback to original page opening behavior
-      a_App->gotoPage(filePath);
+      // Any other file is opened in its viewer, once this event is over
+      // (this schematic may be the untitled document that gets closed).
+      toOpen.append(filePath);
     }
 
-    d->setDocChanged(changed);
+    if (a_App) a_App->openDroppedFiles(toOpen);
     return;
   }
 

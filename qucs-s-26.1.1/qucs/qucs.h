@@ -120,6 +120,14 @@ public:
   Schematic *currentSchematic() const;
   ProjectView *projectView() const { return Content; }
   MessageDock *messages() const { return messageDock; }
+  /// Opens files dropped on the document area (from the Content panel or a
+  /// file manager), each in its viewer: schematics, data displays and
+  /// symbols in the schematic view, Qucs text documents and any other text
+  /// file in the text editor, the rest as a double-click in the Content
+  /// panel would. Deferred to the event loop, so the tab the drop landed on
+  /// may be closed by it (an untitled, unchanged document).
+  void openDroppedFiles(const QStringList &files);
+  void openDroppedFile(const QString &file);
   QString fileType(const QString &);
   static bool isTextDocument(QWidget *);
 
@@ -628,6 +636,13 @@ public:
   ContextMenuTabWidget(QucsApp *parent = 0);
 public slots:
   void showContextMenu(const QPoint &point);
+
+protected:
+  // Files dropped on the tab bar, or on the empty area when no document
+  // is open, are opened; the documents handle drops on themselves.
+  void dragEnterEvent(QDragEnterEvent *event) override;
+  void dragMoveEvent(QDragMoveEvent *event) override;
+  void dropEvent(QDropEvent *event) override;
 
 private:
   int contextTabIndex; // index of tab where context menu was opened
