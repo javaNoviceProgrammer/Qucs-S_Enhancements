@@ -1060,7 +1060,10 @@ void QucsApp::slotSetCompView (int index)
       if (Infos) {
         /// \todo warning: expression result unused, can we rewrite this?
         //(void) *((*it)->info) (Name, File, false);
-        Component* c = (Component*)Infos(Name, File, true);
+        // The info function returns an Element: a Component, or a
+        // Painting for the symbol-editing categories; Element's
+        // destructor is virtual, so delete it as what it is.
+        Element* c = Infos(Name, File, true);
         if (c) delete c;
         QString icon_path = misc::getIconPath(QString (File));
         QListWidgetItem *icon = new QListWidgetItem(Name);
