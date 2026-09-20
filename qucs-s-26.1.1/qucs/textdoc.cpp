@@ -19,7 +19,10 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 # include <config.h>
 #endif
 #include <QAction>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QTextStream>
 #include <QPainter>
 #include <qpalette.h>
@@ -621,6 +624,38 @@ void TextDoc::wheelEvent(QWheelEvent* event)
   else {
     QPlainTextEdit::wheelEvent(event);
   }
+}
+
+void TextDoc::dragEnterEvent(QDragEnterEvent* event)
+{
+  if (misc::localFiles(event->mimeData()).isEmpty()) {
+    QPlainTextEdit::dragEnterEvent(event);
+    return;
+  }
+  event->setDropAction(Qt::CopyAction);
+  event->accept();
+}
+
+void TextDoc::dragMoveEvent(QDragMoveEvent* event)
+{
+  if (misc::localFiles(event->mimeData()).isEmpty()) {
+    QPlainTextEdit::dragMoveEvent(event);
+    return;
+  }
+  event->setDropAction(Qt::CopyAction);
+  event->accept();
+}
+
+void TextDoc::dropEvent(QDropEvent* event)
+{
+  const QStringList files = misc::localFiles(event->mimeData());
+  if (files.isEmpty() || a_App == nullptr) {
+    QPlainTextEdit::dropEvent(event);
+    return;
+  }
+  event->setDropAction(Qt::CopyAction);
+  event->accept();
+  a_App->openDroppedFiles(files);
 }
 
 /*!

@@ -27,6 +27,7 @@
 #include <QTreeView>
 #include <QString>
 #include <QStandardItem>
+#include <QUrl>
 
 
 class QStandardItemModel;
@@ -48,6 +49,10 @@ public:
 
   QStandardItemModel *model() { return m_model; };
 
+  /// The files of the selected rows as file:// URLs: what a drag out of
+  /// the panel carries (category rows are never part of it).
+  QList<QUrl> selectedFileUrls() const;
+
   //data related
   void setProjPath(const QString &);
   /// Lists every file of the project, from its directory and any
@@ -57,6 +62,9 @@ public:
 
 signals:
   void filesSelected(const QStringList&);
+
+protected:
+  void startDrag(Qt::DropActions supportedActions) override;
 
 private:
   QStandardItemModel *m_model;
@@ -75,8 +83,8 @@ private:
     auto* col0 = new QStandardItem(data0);
     auto* col1 = new QStandardItem(data1);
 
-    col0->setFlags(col0->flags() & ~Qt::ItemIsSelectable);
-    col1->setFlags(col1->flags() & ~Qt::ItemIsSelectable);
+    col0->setFlags(col0->flags() & ~(Qt::ItemIsSelectable | Qt::ItemIsDragEnabled));
+    col1->setFlags(col1->flags() & ~(Qt::ItemIsSelectable | Qt::ItemIsDragEnabled));
 
     QList<QStandardItem*> row{ col0, col1 };
     parent->appendRow(row);

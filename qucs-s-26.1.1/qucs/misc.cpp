@@ -35,6 +35,8 @@
 #include <QRegularExpression>
 #include <QFileInfo>
 #include <QDir>
+#include <QMimeData>
+#include <QUrl>
 #include <algorithm>
 
 #include <QtWidgets>
@@ -395,6 +397,24 @@ QStringList misc::projectFiles(const QDir& root, const QStringList& nameFilters)
     if (int c = a.compare(b, Qt::CaseInsensitive)) return c < 0;
     return a < b;
   });
+  return files;
+}
+
+// #########################################################################
+bool misc::isTextFile(const QString& path)
+{
+  QFile f(path);
+  if (!f.open(QIODevice::ReadOnly)) return false;
+  return !f.read(8192).contains('\0');
+}
+
+// #########################################################################
+QStringList misc::localFiles(const QMimeData* data)
+{
+  QStringList files;
+  if (data == nullptr || !data->hasUrls()) return files;
+  for (const QUrl& url : data->urls())
+    if (url.isLocalFile()) files.append(QDir::toNativeSeparators(url.toLocalFile()));
   return files;
 }
 

@@ -27,6 +27,7 @@
 #define Q_UINT32 uint32_t
 
 class QDir;
+class QMimeData;
 class Schematic;
 
 namespace misc {
@@ -49,6 +50,12 @@ namespace misc {
   /// ("*.va") only matching names are returned. Sorted with the root's
   /// own files first, then directory by directory.
   QStringList projectFiles(const QDir& root, const QStringList& nameFilters = QStringList());
+  /// Whether the file looks like text: readable and no NUL byte in its
+  /// first 8 KiB. Decides what a dropped file of unknown type opens with.
+  bool    isTextFile(const QString& path);
+  /// The local files a drag carries (file:// URLs), empty for any other
+  /// kind of drag.
+  QStringList localFiles(const QMimeData* data);
   bool    VHDL_Time(QString&, const QString&);
   bool    VHDL_Delay(QString&, const QString&);
   bool    Verilog_Time(QString&, const QString&);

@@ -327,6 +327,22 @@ existing demand.
   ngspice netlister `pre_osdi`s every `.osdi` of the tree and Build All
   compiles every `.va` of the tree, so the panel and the simulator agree
   on what belongs to the project.
+- *Done:* **Drag and drop from the Content panel into the document area.**
+  `ProjectView` is a drag source whose drag carries the selected files as
+  `file://` URLs (so anything that takes files from a file manager takes
+  them). Drops are accepted by the tab widget (tab bar / empty area), by
+  `TextDoc` (which otherwise pasted the path as text) and by `Schematic`
+  (which already took file-manager drops). All three hand the files to
+  `QucsApp::openDroppedFiles()`, which opens each in its viewer via
+  `openDroppedFile()`: `.sch/.dpl/.sym` and the Qucs text document types
+  through the Content-panel path (`gotoPage`), other text files (probe: no
+  NUL in the first 8 KiB) through the text editor from the settings,
+  binaries through the user's file-type handlers. Opening is deferred to
+  the event loop because the drop target may be the untitled document that
+  opening the first file closes — the upstream schematic handler worked
+  around that by temporarily marking the document changed; done
+  synchronously it is a use-after-free that `test_drop_open` catches under
+  ASan. Verified end to end on macOS with CGEvent drags.
 - **Explicit light/dark theme toggle** (#1725). The `hasDarkTheme` flag
   already exists in `QucsSettings`; components draw with hard-coded
   `Qt::darkBlue` pens, so this needs a small palette-indirection layer in

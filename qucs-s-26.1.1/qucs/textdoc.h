@@ -69,6 +69,11 @@ public:
   QString getModuleName (void);
 
   virtual void wheelEvent(QWheelEvent* event) override;
+  // Files dropped on the editor are opened in their own tabs; other drags
+  // (text) are handled by the editor as usual.
+  void dragEnterEvent(QDragEnterEvent* event) override;
+  void dragMoveEvent(QDragMoveEvent* event) override;
+  void dropEvent(QDropEvent* event) override;
 
   bool simulation;   // simulation or module
   QString Library;   // library this document belongs to
