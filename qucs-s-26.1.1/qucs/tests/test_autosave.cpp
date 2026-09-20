@@ -270,7 +270,10 @@ static int crashChild(const QString& mode, const QString& reports, const QString
     crash::noteMessage(QtWarningMsg, "last words");
     if (mode == "--crash-throw")
         throw std::runtime_error("boom");
-    volatile int* p = nullptr;
+    // An unmapped, non-null address: a null dereference is what UBSan's
+    // null check reports (and, with halt_on_error, exits on) before the CPU
+    // ever faults, so the handler under test would never run.
+    volatile int* p = reinterpret_cast<volatile int*>(0x10);
     return *p;   // SIGSEGV
 }
 
