@@ -28,6 +28,22 @@ struct MainGuard {
     ~MainGuard() { QucsMain = nullptr; }
 };
 
+// The listing mode is global; put it back whatever happens.
+struct TreeViewGuard {
+    bool saved = QucsSettings.ContentTreeView;
+    ~TreeViewGuard() { QucsSettings.ContentTreeView = saved; }
+};
+
+// Whether a menu holding this action is popped up right now. Checked
+// synchronously: popup() shows the menu at once, and on the offscreen
+// platform a popup does not survive the next round of event processing.
+static bool menuShowing(QObject* root, QAction* action)
+{
+    for (QMenu* m : root->findChildren<QMenu*>())
+        if (m->isVisible() && m->actions().contains(action)) return true;
+    return false;
+}
+
 class TestBuildAllVerilogA : public QObject
 {
     Q_OBJECT
@@ -144,6 +160,7 @@ private slots:
     // URLs) see through the folder rows.
     void treeViewShowsFoldersAsSubtrees()
     {
+        TreeViewGuard mode;
         QucsSettings.ContentTreeView = true;
         QucsApp app(false);
         MainGuard guard(&app);
@@ -198,7 +215,6 @@ private slots:
         QVERIFY(!QucsSettings.ContentTreeView);
         QCOMPARE(children(view, ProjectView::VerilogA), QStringList({"broken.va", "good.va", "models/deep.va"}));
         QCOMPARE(view->exportSchematic(), QStringList({"models/nested/sub.sch"}));
-        QucsSettings.ContentTreeView = false;
     }
 
     // The panel's context menu offers the two listings everywhere: on the
@@ -206,6 +222,7 @@ private slots:
     // the tree and the setting.
     void contextMenuTogglesTheView()
     {
+        TreeViewGuard mode;
         QucsSettings.ContentTreeView = false;
         QucsApp app(false);
         MainGuard guard(&app);
@@ -231,26 +248,38 @@ private slots:
         const QPoint empty(10, view->viewport()->height() - 2);
         QVERIFY(!view->indexAt(empty).isValid());
         QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, empty)));
-        QTRY_VERIFY(viewMenu->menuAction()->isVisible());
+        QVERIFY(menuShowing(&app, viewMenu->menuAction()));
         QVERIFY(flat->isChecked());
         QVERIFY(!tree->isChecked());
-        QMenu* shown = nullptr;
-        for (QMenu* m : app.findChildren<QMenu*>())
-            if (m->isVisible() && m->actions().contains(viewMenu->menuAction())) shown = m;
-        QVERIFY(shown != nullptr);
-        shown->hide();
+        for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
 
         tree->trigger();
         QVERIFY(QucsSettings.ContentTreeView);
         QVERIFY(row(view->model()->item(ProjectView::VerilogA, 0), "models") != nullptr);
 
-        // A category row other than Verilog-A shows the panel menu with it.
+        // A category row other than Verilog-A shows the panel menu with it,
+        // and the mode entries reflect the current listing.
         QStandardItemModel* m = view->model();
-        const QPoint onOthers = view->visualRect(m->index(ProjectView::Others, 0)).center();
+        const QModelIndex others = m->index(ProjectView::Others, 0);
+        view->scrollTo(others);
+        const QPoint onOthers = view->visualRect(others).center();
+        QCOMPARE(view->indexAt(onOthers), others);
         QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, onOthers)));
-        QTRY_VERIFY(std::any_of(app.findChildren<QMenu*>().begin(), app.findChildren<QMenu*>().end(),
-                                [&](QMenu* mm) { return mm->isVisible() && mm->actions().contains(viewMenu->menuAction()); }));
+        QVERIFY(menuShowing(&app, viewMenu->menuAction()));
         QVERIFY(tree->isChecked());
+        QVERIFY(!flat->isChecked());
+        for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
+
+        // A folder row too.
+        const QModelIndex folder = row(m->item(ProjectView::VerilogA, 0), "models")->index();
+        view->scrollTo(folder);
+        const QPoint onFolder = view->visualRect(folder).center();
+        QCOMPARE(view->indexAt(onFolder), folder);
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, onFolder)));
+        QVERIFY(menuShowing(&app, viewMenu->menuAction()));
+        QMenu* fileMenu = menuWithAction(&app, "Open");
+        QVERIFY(fileMenu != nullptr);
+        QVERIFY(!fileMenu->isVisible());   // a folder is not a file: no Open/Rename/Delete
         for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
 
         flat->trigger();
@@ -361,19 +390,19 @@ private slots:
         // customContextMenuRequested() carries viewport coordinates.
         const QPoint onCategory = view->visualRect(va).center();
         QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, onCategory)));
-        QTRY_VERIFY(buildMenu->isVisible());
+        QVERIFY(buildMenu->isVisible());
         buildMenu->hide();
 
         const QModelIndex sch = m->index(ProjectView::Schematics, 0);
         const QPoint onOther = view->visualRect(sch).center();
         QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, onOther)));
-        QTest::qWait(100);
         QVERIFY(!buildMenu->isVisible());
+        for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
 
         const QPoint onFile = view->visualRect(m->index(0, 0, va)).center();
         QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, onFile)));
-        QTest::qWait(100);
         QVERIFY(!buildMenu->isVisible());
+        QVERIFY(menuWithAction(&app, "Open")->isVisible());   // the file menu
         for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
     }
 
