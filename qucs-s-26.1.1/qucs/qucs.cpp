@@ -51,6 +51,7 @@
 #include "autosave.h"
 #include "crashhandler.h"
 #include <QTimer>
+#include <QStandardPaths>
 #include <QActionGroup>
 #include "schematic.h"
 #include "mouseactions.h"
@@ -1628,9 +1629,26 @@ void QucsApp::slotButtonProjNew()
   if(!projDir.mkdir(name)) {
     QMessageBox::information(this, tr("Info"),
         tr("Cannot create project directory !"));
+  } else {
+    // ...with its folder for temporary files
+    QDir(projDir.filePath(name)).mkdir(QLatin1String(misc::ScratchFolder));
   }
   if(open) {
     openProject(QucsSettings.projsDir.filePath(name));
+  }
+}
+
+// The open project's Scratch folder takes the temporary files (netlists,
+// simulator output, logs) instead of the cache directory; the simulation
+// kernels ask misc::scratchDir(), the rest goes through tempFilesDir.
+void QucsApp::useProjectScratch(bool on)
+{
+  if (on) {
+    const QString scratch = QucsSettings.QucsWorkDir.absoluteFilePath(QLatin1String(misc::ScratchFolder));
+    QDir().mkpath(scratch);
+    QucsSettings.tempFilesDir.setPath(scratch);
+  } else {
+    QucsSettings.tempFilesDir.setPath(QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
   }
 }
 
@@ -1667,6 +1685,7 @@ void QucsApp::openProject(const QString& Path)
 
   QucsSettings.QucsWorkDir.setPath(ProjDir.path());
   octave->adjustDirectory();
+  useProjectScratch(true);
 
   Content->setProjPath(QucsSettings.QucsWorkDir.absolutePath());
 
@@ -1739,6 +1758,7 @@ void QucsApp::slotMenuProjClose()
   setWindowTitle(windowTitle);
   QucsSettings.QucsWorkDir.setPath(QucsSettings.qucsWorkspaceDir.absolutePath());
   octave->adjustDirectory();
+  useProjectScratch(false);
 
   Content->setProjPath("");
 
@@ -3203,20 +3223,13 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
   QString extName = Info.suffix().toLower();
   QString absolutePath = Info.absoluteFilePath();
 
-   // Handle Qucs document types
-  if (extName == "sch" || extName == "dpl" || extName == "vhdl" ||
-      extName == "vhd" || extName == "v" || extName == "va" ||
-      extName == "m" || extName == "oct" || extName == "net" || extName == "sym") {
-
-    gotoPage(absolutePath);
-    updateRecentFilesList(absolutePath);
-    slotUpdateRecentFiles();
-
+  // Schematics, data displays and symbols: the schematic view.
+  if (extName == "sch" || extName == "dpl" || extName == "sym") {
+    openTextOrSchematicTab(absolutePath);
     // Special handling for subcircuits
     if (note.isEmpty() && extName == "sch") {
       return;
     }
-
     // Set selection mode if not in subcircuit
     select->blockSignals(true);
     select->setChecked(true);
@@ -3227,6 +3240,26 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
     MousePressAction = &MouseActions::MPressSelect;
     MouseReleaseAction = &MouseActions::MReleaseSelect;
     MouseDoubleClickAction = &MouseActions::MDoubleClickSelect;
+    return;
+  }
+
+  // A program the user registered for the suffix (Application Settings,
+  // File Types) wins over the defaults below; "qucs-editor" there means
+  // Qucs' own text editor.
+  const QString program = userProgramFor(extName);
+  if (!program.isEmpty()) {
+    if (program == QucsEditorProgram) {
+      openTextOrSchematicTab(absolutePath);
+    } else {
+      launchUserProgram(program, absolutePath);
+    }
+    return;
+  }
+
+  // The text documents Qucs edits itself: HDL and Verilog-A sources,
+  // Octave scripts, netlists, SPICE files.
+  if (textDocumentSuffixes().contains(extName)) {
+    openTextOrSchematicTab(absolutePath);
     return;
   }
 
@@ -3244,35 +3277,6 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
     return;
   }
 
-  // Try to find a user-defined program for the file extension
-  QStringList com;
-  QStringList::const_iterator it = QucsSettings.FileTypes.constBegin();
-  while (it != QucsSettings.FileTypes.constEnd()) {
-    if (extName == (*it).section('/', 0, 0)) {
-      QString progName = (*it).section('/', 1, 1);
-      com = progName.split(" ");
-      com << absolutePath;
-
-      QProcess *Program = new QProcess();
-      QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-      env.insert("PATH", env.value("PATH"));
-      Program->setProcessEnvironment(env);
-      QString cmd = com.at(0);
-      QStringList com_args = com;
-      com_args.removeAt(0);
-      Program->start(cmd, com_args);
-
-      if (Program->state() != QProcess::Running &&
-          Program->state() != QProcess::Starting) {
-        QMessageBox::critical(this, tr("Error"),
-                              tr("Cannot start \"%1\"!").arg(absolutePath));
-        delete Program;
-      }
-      return;
-    }
-    it++;
-  }
-
          // Fallback to system default handler
   QUrl fileUrl = QUrl::fromLocalFile(absolutePath);
   if (!QDesktopServices::openUrl(fileUrl)) {
@@ -3281,7 +3285,56 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
   }
 }
 
+// The suffixes of the files Qucs opens in its own text editor by default.
+const QStringList &QucsApp::textDocumentSuffixes()
+{
+  static const QStringList suffixes = {"v", "va", "vhd", "vhdl", "m", "oct", "net",
+                                       "cir", "ckt", "sp"};
+  return suffixes;
+}
 
+// The program registered for a suffix under Application Settings, File
+// Types ("suffix/program args"), or an empty string.
+QString QucsApp::userProgramFor(const QString &suffix) const
+{
+  for (const QString &entry : QucsSettings.FileTypes)
+    if (entry.section('/', 0, 0).toLower() == suffix)
+      return entry.section('/', 1).trimmed();   // the program may be a path with slashes
+  return QString();
+}
+
+// Opens a document in a tab (schematic view or text editor by suffix) and
+// notes it among the recent files.
+void QucsApp::openTextOrSchematicTab(const QString &absolutePath)
+{
+  gotoPage(absolutePath);
+  updateRecentFilesList(absolutePath);
+  slotUpdateRecentFiles();
+}
+
+// Starts a user-registered program ("prog arg arg") on a file.
+void QucsApp::launchUserProgram(const QString &program, const QString &absolutePath)
+{
+  QStringList com = program.split(" ", Qt::SkipEmptyParts);
+  if (com.isEmpty()) return;
+  com << absolutePath;
+
+  QProcess *Program = new QProcess();
+  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  env.insert("PATH", env.value("PATH"));
+  Program->setProcessEnvironment(env);
+  QString cmd = com.at(0);
+  QStringList com_args = com;
+  com_args.removeAt(0);
+  Program->start(cmd, com_args);
+
+  if (Program->state() != QProcess::Running &&
+      Program->state() != QProcess::Starting) {
+    QMessageBox::critical(this, tr("Error"),
+                          tr("Cannot start \"%1\"!").arg(absolutePath));
+    delete Program;
+  }
+}
 
 // ---------------------------------------------------------
 void QucsApp::openDroppedFiles(const QStringList &files)
@@ -3299,12 +3352,13 @@ void QucsApp::openDroppedFile(const QString &file)
 {
   const QFileInfo info(file);
   if (!info.isFile()) return;
-  static const QStringList qucsDocuments = {"sch", "dpl", "sym", "v", "va", "vhd", "vhdl", "m", "oct", "net"};
   const QString ext = info.suffix().toLower();
-  if (qucsDocuments.contains(ext) || !misc::isTextFile(info.absoluteFilePath()))
-    openFileFromProjectView(info, QString());   // its viewer, or the user's / the system's handler
+  const bool known = ext == "sch" || ext == "dpl" || ext == "sym"
+                     || textDocumentSuffixes().contains(ext) || !userProgramFor(ext).isEmpty();
+  if (known || !misc::isTextFile(info.absoluteFilePath()))
+    openFileFromProjectView(info, QString());   // its viewer, the user's or the system's handler
   else
-    editFile(info.absoluteFilePath());          // the text editor from the settings
+    editFile(info.absoluteFilePath());          // any other text: the text editor from the settings
 }
 
 // ---------------------------------------------------------
@@ -4132,6 +4186,10 @@ void QucsApp::slotAfterSpiceSimulation(ExternSimDialog *SimDlg)
 
     // Run post-simulation system commands
     runPostSimCommands(sch);
+
+    // The dataset and the Scratch files are new: show them (not on every
+    // tuner step, though).
+    if (!TuningMode) Content->refresh();
 }
 
 void QucsApp::slotBuildVAModule()

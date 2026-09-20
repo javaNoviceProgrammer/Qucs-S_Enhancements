@@ -20,6 +20,7 @@
 #endif
 
 #include "settings.h"
+#include "misc.h"
 #include "externsimdialog.h"
 #include "main.h"
 
@@ -45,7 +46,7 @@ ExternSimDialog::ExternSimDialog(Schematic* sch, bool netlist2Console, bool netl
     if (!netlist_mode)
         setAttribute(Qt::WA_DeleteOnClose);
 
-    const QString workdir(QucsSettings.S4Qworkdir);
+    const QString workdir(misc::scratchDir());
 
     QSettings settings("qucs", "qucs_s");
     restoreGeometry(settings.value("ExternSimDialog/geometry").toByteArray());

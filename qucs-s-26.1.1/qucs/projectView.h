@@ -37,8 +37,10 @@ class ProjectView : public QTreeView
   Q_OBJECT
 public:
   // Top-level rows of the tree, in the order refresh() creates them.
+  // Scratch holds whatever is in the project's Scratch folder (temporary
+  // files of the simulations), named relative to that folder.
   enum Category { Datasets = 0, DataDisplays, Verilog, VerilogA, Osdi, VHDL,
-                  Octave, Schematics, Symbols, SPICE, Others };
+                  Octave, Schematics, Symbols, SPICE, Others, Scratch };
 
   /// Item data: the file's path relative to the project ("models/bjt.va")
   /// on every file row, whatever the row shows; empty on category and

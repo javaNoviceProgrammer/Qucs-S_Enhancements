@@ -208,12 +208,13 @@ void ProjectView::appendFile(int category, const QString& path, const QString& n
   QStandardItem* cat = m_model->item(category, 0);
   if (cat == nullptr) return;
   QStandardItem* parent = cat;
-  QString shown = path;
+  // Named relative to the project, or to the Scratch folder under Scratch.
+  QString shown = category == Scratch ? path.section('/', 1) : path;
   if (treeView()) {
-    const int slash = path.lastIndexOf('/');
+    const int slash = shown.lastIndexOf('/');
     if (slash >= 0) {
-      parent = folderItem(cat, path.left(slash));
-      shown = path.mid(slash + 1);
+      parent = folderItem(cat, shown.left(slash));
+      shown = shown.mid(slash + 1);
     }
   }
   auto* name = new QStandardItem(shown);
@@ -248,6 +249,7 @@ ProjectView::refresh()
   appendRow(m_model->invisibleRootItem(), tr("Symbols"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("SPICE"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("Others"), QString(""));
+  appendRow(m_model->invisibleRootItem(), tr("Scratch"), QString(""));
 
   if (m_valid) {
     // put all files into "Content"-ListView: those of the project directory
@@ -255,12 +257,16 @@ ProjectView::refresh()
     // one directory arrive together, so a folder row's files come first,
     // then its sub-folders)
     const QDir workPath(m_projPath);
+    const QString scratchPrefix = QString::fromLatin1(misc::ScratchFolder) + QLatin1Char('/');
     for (const QString& fileName : misc::projectFiles(workPath)) {
       const QFileInfo info(workPath.filePath(fileName));
       const QString extName = info.suffix().toLower();
       const QString fullExtName = info.completeSuffix().toLower();
 
-      if(extName == "dat" || fullExtName == "dat.ngspice" ||
+      if(fileName.startsWith(scratchPrefix)) {
+        appendFile(Scratch, fileName);   // temporary files, whatever their type
+      }
+      else if(extName == "dat" || fullExtName == "dat.ngspice" ||
          fullExtName == "dat.xyce" || fullExtName == "dat.spopus" ) {
         appendFile(Datasets, fileName);
       }

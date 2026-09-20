@@ -401,6 +401,14 @@ QStringList misc::projectFiles(const QDir& root, const QStringList& nameFilters)
 }
 
 // #########################################################################
+QString misc::scratchDir()
+{
+  if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty())
+    return QDir::toNativeSeparators(QucsSettings.QucsWorkDir.absoluteFilePath(QLatin1String(ScratchFolder)));
+  return QucsSettings.S4Qworkdir;
+}
+
+// #########################################################################
 bool misc::isTextFile(const QString& path)
 {
   QFile f(path);

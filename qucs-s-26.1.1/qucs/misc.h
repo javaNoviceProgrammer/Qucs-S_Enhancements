@@ -50,6 +50,13 @@ namespace misc {
   /// ("*.va") only matching names are returned. Sorted with the root's
   /// own files first, then directory by directory.
   QStringList projectFiles(const QDir& root, const QStringList& nameFilters = QStringList());
+  /// The folder inside a project that takes its temporary files (netlists,
+  /// simulator output, logs), listed by the Content panel as "Scratch".
+  inline const char* const ScratchFolder = "Scratch";
+  /// Where a simulation writes its temporary files: the open project's
+  /// Scratch folder, otherwise (no project, headless) the simulator work
+  /// directory from the settings.
+  QString scratchDir();
   /// Whether the file looks like text: readable and no NUL byte in its
   /// first 8 KiB. Decides what a dropped file of unknown type opens with.
   bool    isTextFile(const QString& path);

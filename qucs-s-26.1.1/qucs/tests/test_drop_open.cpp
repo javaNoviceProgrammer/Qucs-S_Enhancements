@@ -92,7 +92,65 @@ private slots:
         write(project + "/circuit.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n</Components>\n");
         write(project + "/shape.sym", "<Qucs Schematic " PACKAGE_VERSION ">\n<Symbol>\n</Symbol>\n");
         write(project + "/model.osdi", QByteArray("\x7f" "ELF\0\0\0\0binary", 14));
+        write(project + "/netlist.cir", "* spice\n.end\n");
+        write(project + "/params.sp", "* spice\n.end\n");
+        write(project + "/readme.rst", "Read me\n");
         QucsSettings.QucsWorkDir.setPath(project);
+    }
+
+    // A program that records what it was asked to open, standing in for a
+    // user-registered external program.
+    QString recorder()
+    {
+        const QString path = dir.filePath("recorder.sh");
+        write(path, "#!/bin/sh\necho \"$@\" >> \"" + dir.filePath("recorder.log").toUtf8() + "\"\n");
+        QFile f(path);
+        f.setPermissions(f.permissions() | QFileDevice::ExeOwner | QFileDevice::ExeUser);
+        return path;
+    }
+
+    // SPICE files are Qucs text documents now: the built-in editor.
+    void spiceFilesOpenInTheTextEditor()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(QucsApp::textDocumentSuffixes().contains("cir"));
+        QVERIFY(QucsApp::textDocumentSuffixes().contains("sp"));
+        app.openDroppedFiles({project + "/netlist.cir", project + "/params.sp"});
+        QTRY_COMPARE(app.DocumentTab->count(), 2);
+        QCOMPARE(openDocs(app), QStringList({"netlist.cir", "params.sp"}));
+        QVERIFY(QucsApp::isTextDocument(app.DocumentTab->widget(0)));
+        QVERIFY(QucsApp::isTextDocument(app.DocumentTab->widget(1)));
+        app.closeAllFiles();
+    }
+
+    // Application Settings, File Types: a suffix registered with the
+    // program "qucs-editor" opens in the built-in editor whatever the
+    // external editor setting says; one registered with another program
+    // is handed to that program, even for a suffix Qucs would edit itself.
+    void registeredFileTypes()
+    {
+        struct Restore {
+            QString editor = QucsSettings.Editor;
+            QStringList types = QucsSettings.FileTypes;
+            ~Restore() { QucsSettings.Editor = editor; QucsSettings.FileTypes = types; }
+        } restore;
+        QucsSettings.Editor = "/usr/bin/true";   // an external editor: opens no tab
+        QucsSettings.FileTypes = {"rst/" + QString(QucsApp::QucsEditorProgram), "va/" + recorder() + " -x"};
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QCOMPARE(app.userProgramFor("rst"), QString("qucs-editor"));
+        QCOMPARE(app.userProgramFor("VA"), QString());   // suffixes are matched lower-case
+        QCOMPARE(app.userProgramFor("va"), recorder() + " -x");
+
+        app.openDroppedFiles({project + "/readme.rst", project + "/notes.txt", project + "/models/model.va"});
+        QTRY_COMPARE(openDocs(app), QStringList({"readme.rst"}));     // qucs-editor: a tab, notes.txt went to `true`
+        QVERIFY(QucsApp::isTextDocument(app.DocumentTab->widget(0)));
+        QTRY_VERIFY(QFileInfo::exists(dir.filePath("recorder.log")));   // model.va: the registered program
+        QFile log(dir.filePath("recorder.log"));
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(log.readAll()).trimmed(), "-x " + project + "/models/model.va");
+        app.closeAllFiles();
     }
 
     void theDragCarriesTheSelectedFilesAsUrls()
