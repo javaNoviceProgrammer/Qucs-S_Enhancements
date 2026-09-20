@@ -9,6 +9,7 @@
 #include <QTemporaryDir>
 #include <QPlainTextEdit>
 #include <QMenu>
+#include <algorithm>
 
 #include "config.h"
 #include "qucs.h"
@@ -60,11 +61,32 @@ class TestBuildAllVerilogA : public QObject
 
     static QStringList children(ProjectView* view, int category)
     {
+        return childrenOf(view->model()->item(category, 0));
+    }
+
+    static QStringList childrenOf(QStandardItem* parent)
+    {
         QStringList names;
-        QStandardItem* cat = view->model()->item(category, 0);
-        for (int i = 0; cat && i < cat->rowCount(); ++i)
-            names << cat->child(i, 0)->text();
+        for (int i = 0; parent && i < parent->rowCount(); ++i)
+            names << parent->child(i, 0)->text();
         return names;
+    }
+
+    // The row named `name` under `parent` (a folder or a file).
+    static QStandardItem* row(QStandardItem* parent, const QString& name)
+    {
+        for (int i = 0; parent && i < parent->rowCount(); ++i)
+            if (parent->child(i, 0)->text() == name) return parent->child(i, 0);
+        return nullptr;
+    }
+
+    // The QMenu holding an action with this text.
+    static QMenu* menuWithAction(QObject* root, const QString& text)
+    {
+        for (QMenu* m : root->findChildren<QMenu*>())
+            for (QAction* a : m->actions())
+                if (a->text() == text) return m;
+        return nullptr;
     }
 
 private slots:
@@ -73,6 +95,7 @@ private slots:
         QVERIFY(dir.isValid());
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         QucsSettings.maxUndo = 20;
+        QucsSettings.ContentTreeView = false;
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
         Module::registerModules();
 
@@ -113,6 +136,126 @@ private slots:
         for (int cat = 0; cat < view->model()->rowCount(); ++cat)
             for (const QString& name : children(view, cat))
                 QVERIFY2(!name.contains("secret"), qPrintable(name));
+    }
+
+    // The same project with folders as sub-trees: the rows show bare
+    // names, every file row still knows its project-relative path, and
+    // the consumers' lookups (category, file path, subcircuit list, drag
+    // URLs) see through the folder rows.
+    void treeViewShowsFoldersAsSubtrees()
+    {
+        QucsSettings.ContentTreeView = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        ProjectView* view = app.projectView();
+        view->setProjPath(project);
+        QStandardItemModel* m = view->model();
+
+        QStandardItem* va = m->item(ProjectView::VerilogA, 0);
+        QCOMPARE(childrenOf(va), QStringList({"broken.va", "good.va", "models"}));
+        QStandardItem* models = row(va, "models");
+        QVERIFY(models != nullptr);
+        QCOMPARE(childrenOf(models), QStringList({"deep.va"}));
+        QVERIFY(!(models->flags() & Qt::ItemIsSelectable));               // a folder row, like a category
+        QVERIFY(!(models->flags() & Qt::ItemIsDragEnabled));
+        QVERIFY(!models->icon().isNull());
+
+        const QModelIndex deep = models->child(0, 0)->index();
+        QCOMPARE(view->filePath(deep), QString("models/deep.va"));
+        QCOMPARE(view->filePath(models->index()), QString());
+        QCOMPARE(view->filePath(va->index()), QString());
+        QVERIFY(view->isFile(deep));
+        QVERIFY(!view->isFile(models->index()));
+        QCOMPARE(view->categoryOf(deep), int(ProjectView::VerilogA));
+        QCOMPARE(view->categoryOf(models->index()), int(ProjectView::VerilogA));
+
+        // Two levels down, with the note beside the file.
+        QStandardItem* sch = m->item(ProjectView::Schematics, 0);
+        QCOMPARE(childrenOf(sch), QStringList({"other.sch", "models"}));
+        QStandardItem* nested = row(row(sch, "models"), "nested");
+        QVERIFY(nested != nullptr);
+        QCOMPARE(childrenOf(nested), QStringList({"sub.sch"}));
+        QCOMPARE(nested->child(0, 1)->text(), QString("2-port"));
+        QCOMPARE(view->filePath(nested->child(0, 0)->index()), QString("models/nested/sub.sch"));
+        QCOMPARE(view->exportSchematic(), QStringList({"models/nested/sub.sch"}));
+
+        view->selectionModel()->select(deep, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        view->selectionModel()->select(models->index(), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        QCOMPARE(view->selectedFileUrls(), QList<QUrl>({QUrl::fromLocalFile(project + "/models/deep.va")}));
+
+        // Expanded folders survive a refresh (as after a build or a save).
+        view->setExpanded(va->index(), true);
+        view->setExpanded(models->index(), true);
+        view->refresh();
+        QStandardItem* modelsAgain = row(m->item(ProjectView::VerilogA, 0), "models");
+        QVERIFY(modelsAgain != nullptr);
+        QVERIFY(view->isExpanded(m->item(ProjectView::VerilogA, 0)->index()));
+        QVERIFY(view->isExpanded(modelsAgain->index()));
+        QVERIFY(!view->isExpanded(m->item(ProjectView::Others, 0)->index()));
+
+        // Back to the flat listing: the same files, "dir/name" rows again.
+        view->setTreeView(false);
+        QVERIFY(!QucsSettings.ContentTreeView);
+        QCOMPARE(children(view, ProjectView::VerilogA), QStringList({"broken.va", "good.va", "models/deep.va"}));
+        QCOMPARE(view->exportSchematic(), QStringList({"models/nested/sub.sch"}));
+        QucsSettings.ContentTreeView = false;
+    }
+
+    // The panel's context menu offers the two listings everywhere: on the
+    // empty area, on a category row, on a file row; picking one switches
+    // the tree and the setting.
+    void contextMenuTogglesTheView()
+    {
+        QucsSettings.ContentTreeView = false;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.projectView()->setProjPath(project);
+        app.show();
+        ProjectView* view = app.projectView();
+        view->expandAll();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+
+        QMenu* viewMenu = menuWithAction(&app, "Sub-trees per folder");
+        QVERIFY(viewMenu != nullptr);
+        QCOMPARE(viewMenu->title(), QString("Toggle hierarchy search view"));
+        QAction* flat = viewMenu->actions().at(0);
+        QAction* tree = viewMenu->actions().at(1);
+        QVERIFY(flat->isCheckable() && tree->isCheckable());
+        // ...as a sub-menu of the file menu, the Verilog-A menu and the panel menu.
+        int holders = 0;
+        for (QMenu* m : app.findChildren<QMenu*>())
+            if (m->actions().contains(viewMenu->menuAction())) ++holders;
+        QCOMPARE(holders, 3);
+
+        // The empty area below the rows.
+        const QPoint empty(10, view->viewport()->height() - 2);
+        QVERIFY(!view->indexAt(empty).isValid());
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, empty)));
+        QTRY_VERIFY(viewMenu->menuAction()->isVisible());
+        QVERIFY(flat->isChecked());
+        QVERIFY(!tree->isChecked());
+        QMenu* shown = nullptr;
+        for (QMenu* m : app.findChildren<QMenu*>())
+            if (m->isVisible() && m->actions().contains(viewMenu->menuAction())) shown = m;
+        QVERIFY(shown != nullptr);
+        shown->hide();
+
+        tree->trigger();
+        QVERIFY(QucsSettings.ContentTreeView);
+        QVERIFY(row(view->model()->item(ProjectView::VerilogA, 0), "models") != nullptr);
+
+        // A category row other than Verilog-A shows the panel menu with it.
+        QStandardItemModel* m = view->model();
+        const QPoint onOthers = view->visualRect(m->index(ProjectView::Others, 0)).center();
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, onOthers)));
+        QTRY_VERIFY(std::any_of(app.findChildren<QMenu*>().begin(), app.findChildren<QMenu*>().end(),
+                                [&](QMenu* mm) { return mm->isVisible() && mm->actions().contains(viewMenu->menuAction()); }));
+        QVERIFY(tree->isChecked());
+        for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
+
+        flat->trigger();
+        QVERIFY(!QucsSettings.ContentTreeView);
+        QCOMPARE(children(view, ProjectView::VerilogA), QStringList({"broken.va", "good.va", "models/deep.va"}));
     }
 
     void projectFilesHelper()

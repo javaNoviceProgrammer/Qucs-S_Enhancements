@@ -204,6 +204,7 @@ public slots:
   void slotShowContentMenu(const QPoint &);
 
   void slotCMenuBuildAllVerilogA();
+  void slotCMenuContentView(QAction *mode);
   void slotVerilogABuildOutput();
   void slotVerilogABuildFinished(int exitCode, QProcess::ExitStatus status);
   void slotVerilogABuildError(QProcess::ProcessError error);
@@ -301,14 +302,20 @@ public:
   SymbolWidget *Symbol;
   QPushButton *btnShowModel;
 
-  // menu appearing by right mouse button click on content listview
+  // menu appearing by right mouse button click on a file in the content
+  // listview, ...
   QMenu *ContentMenu;
-  // ...and on its "Verilog-A" category row
+  // ...on its "Verilog-A" category row, ...
   QMenu *ContentVerilogAMenu;
+  // ...and anywhere else in it (other categories, folders, empty area)
+  QMenu *ContentPanelMenu;
+  // the "Toggle hierarchy search view" sub-menu of all three
+  QMenu *ContentViewMenu;
 
   // corresponding actions
   QAction *ActionCMenuOpen, *ActionCMenuCopy, *ActionCMenuRename,
-      *ActionCMenuDelete, *ActionCMenuInsert, *ActionCMenuBuildAllVerilogA;
+      *ActionCMenuDelete, *ActionCMenuInsert, *ActionCMenuBuildAllVerilogA,
+      *ActionCMenuViewFlat, *ActionCMenuViewTree;
 
   // "Build All" for Verilog-A: the files still to compile with OpenVAF,
   // the running compiler, and the tally for the summary line.

@@ -20,10 +20,13 @@ Using Claude Code to enhance the Qucs-S circuit simulator interface.
   saved, after a confirmation.
 - **Content panel sees the whole project**: files in subdirectories of the
   project (at any depth, hidden directories excluded) are listed under
-  their category as `sub/dir/name.ext`, and open, copy, rename, delete and
-  subcircuit insertion work on them. A new *Osdi* category lists the
-  compiled `.osdi` models; ngspice loads all of them, wherever they are in
-  the project, and Build All compiles the `.va` files wherever they are.
+  their category, either as `sub/dir/name.ext` rows or as sub-trees with
+  one folder row per directory — right-click anywhere in the panel,
+  *Toggle hierarchy search view*, to switch; the choice is remembered.
+  Open, copy, rename, delete, drag and subcircuit insertion work on them in
+  both listings. A new *Osdi* category lists the compiled `.osdi` models;
+  ngspice loads all of them, wherever they are in the project, and Build
+  All compiles the `.va` files wherever they are.
 - **Drag and drop from the Content panel**: drag one or more files onto the
   document area (a schematic, a text document, the tab bar) to open them —
   schematics, data displays and symbols in their views, Verilog-A and other

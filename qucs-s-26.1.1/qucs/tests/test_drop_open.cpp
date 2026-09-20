@@ -80,6 +80,7 @@ private slots:
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         QucsSettings.maxUndo = 20;
         QucsSettings.Editor = "qucs";          // the built-in text editor
+        QucsSettings.ContentTreeView = false;
         QucsSettings.FileTypes = {"osdi/true"}; // a harmless handler for the binary file
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
         Module::registerModules();

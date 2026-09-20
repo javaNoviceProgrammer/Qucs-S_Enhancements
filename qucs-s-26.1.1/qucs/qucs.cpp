@@ -51,6 +51,7 @@
 #include "autosave.h"
 #include "crashhandler.h"
 #include <QTimer>
+#include <QActionGroup>
 #include "schematic.h"
 #include "mouseactions.h"
 #include "messagedock.h"
@@ -1297,14 +1298,43 @@ void QucsApp::initCursorMenu()
 
 #undef APPEND_MENU
 
+  // How files in subdirectories are shown, from any row of the panel (and
+  // from the empty area below the rows).
+  ContentViewMenu = new QMenu(tr("Toggle hierarchy search view"), this);
+  ContentViewMenu->setStatusTip(tr("How files in subdirectories of the project are listed"));
+  auto *viewModes = new QActionGroup(this);
+  viewModes->setExclusive(true);
+  ActionCMenuViewFlat = new QAction(tr("Folder in the name (\"models/bjt.va\")"), viewModes);
+  ActionCMenuViewFlat->setCheckable(true);
+  ActionCMenuViewTree = new QAction(tr("Sub-trees per folder"), viewModes);
+  ActionCMenuViewTree->setCheckable(true);
+  ContentViewMenu->addAction(ActionCMenuViewFlat);
+  ContentViewMenu->addAction(ActionCMenuViewTree);
+  connect(viewModes, SIGNAL(triggered(QAction*)), SLOT(slotCMenuContentView(QAction*)));
+  ContentMenu->addSeparator();
+  ContentMenu->addMenu(ContentViewMenu);
+
   // The "Verilog-A" category row gets its own menu.
   ContentVerilogAMenu = new QMenu(this);
   ActionCMenuBuildAllVerilogA = new QAction(tr("Build All"), ContentVerilogAMenu);
   ActionCMenuBuildAllVerilogA->setStatusTip(tr("Compile every Verilog-A file of the project with OpenVAF"));
   connect(ActionCMenuBuildAllVerilogA, SIGNAL(triggered()), SLOT(slotCMenuBuildAllVerilogA()));
   ContentVerilogAMenu->addAction(ActionCMenuBuildAllVerilogA);
+  ContentVerilogAMenu->addSeparator();
+  ContentVerilogAMenu->addMenu(ContentViewMenu);
+
+  // Any other category row, a folder row, or no row at all.
+  ContentPanelMenu = new QMenu(this);
+  ContentPanelMenu->addMenu(ContentViewMenu);
 
   connect(Content, SIGNAL(customContextMenuRequested(const QPoint&)), SLOT(slotShowContentMenu(const QPoint&)));
+}
+
+// Flat or tree listing of the project's subdirectories, chosen from the
+// Content panel's menu; kept in the settings.
+void QucsApp::slotCMenuContentView(QAction *mode)
+{
+  Content->setTreeView(mode == ActionCMenuViewTree);
 }
 
 // ----------------------------------------------------------
@@ -1312,14 +1342,19 @@ void QucsApp::initCursorMenu()
 void QucsApp::slotShowContentMenu(const QPoint& pos)
 {
   QModelIndex idx = Content->indexAt(pos);
-  if (idx.isValid() && !idx.parent().isValid()) {   // a category row
-    if (Content->categoryOf(idx) == ProjectView::VerilogA) {
+  (ProjectView::treeView() ? ActionCMenuViewTree : ActionCMenuViewFlat)->setChecked(true);
+  const QPoint where = Content->viewport()->mapToGlobal(pos);   // pos is viewport-relative
+
+  if (!Content->isFile(idx)) {   // a category row, a folder row, or the empty area
+    if (idx.isValid() && !idx.parent().isValid() && Content->categoryOf(idx) == ProjectView::VerilogA) {
       ActionCMenuBuildAllVerilogA->setEnabled(a_vaBuilder == nullptr);
-      ContentVerilogAMenu->popup(Content->viewport()->mapToGlobal(pos));   // pos is viewport-relative
+      ContentVerilogAMenu->popup(where);
+    } else {
+      ContentPanelMenu->popup(where);
     }
     return;
   }
-  if (idx.isValid() && idx.parent().isValid()) {
+  {
     QItemSelectionModel *selectionModel = Content->selectionModel();
     bool multipleSelected = selectionModel->selectedRows().count() > 1;
 
@@ -1331,7 +1366,7 @@ void QucsApp::slotShowContentMenu(const QPoint& pos)
     ActionCMenuCopy->setEnabled(!multipleSelected);
     ActionCMenuRename->setEnabled(!multipleSelected);
 
-    ContentMenu->popup(Content->viewport()->mapToGlobal(pos));
+    ContentMenu->popup(where);
   }
 }
 
@@ -1369,10 +1404,10 @@ void QucsApp::slotCMenuCopy()
 {
   QModelIndex idx = Content->currentIndex();
 
-  //test the item is valid
-  if (!idx.isValid() || !idx.parent().isValid()) { return; }
+  //test the item is a file
+  QString filename = Content->filePath(idx);   // relative to the project
+  if (filename.isEmpty()) { return; }
 
-  QString filename = idx.sibling(idx.row(), 0).data().toString();   // relative to the project
   QDir dir(QucsSettings.QucsWorkDir);
   QString file(dir.filePath(filename));
   QFileInfo fileinfo(file);
@@ -1439,10 +1474,10 @@ void QucsApp::slotCMenuRename()
 {
   QModelIndex idx = Content->currentIndex();
 
-  //test the item is valid
-  if (!idx.isValid() || !idx.parent().isValid()) { return; }
+  //test the item is a file
+  QString filename = Content->filePath(idx);   // relative to the project
+  if (filename.isEmpty()) { return; }
 
-  QString filename = idx.sibling(idx.row(), 0).data().toString();   // relative to the project
   QString file(QucsSettings.QucsWorkDir.filePath(filename));
   QFileInfo fileinfo(file);
   // Renaming keeps the file where it is, which may be a subdirectory.
@@ -1485,8 +1520,8 @@ void QucsApp::slotCMenuDelete()
          // We only want column 0 items (file names)
   QSet<QString> filesToDelete; // Use QSet to avoid duplicates
   for (const QModelIndex &index : selected) {
-    if (index.column() == 0 && index.parent().isValid()) {
-      QString filename = index.sibling(index.row(), 0).data().toString();
+    const QString filename = Content->filePath(index);
+    if (index.column() == 0 && !filename.isEmpty()) {
       filesToDelete.insert(filename);
     }
   }
@@ -3133,8 +3168,8 @@ void QucsApp::slotOpenContent(const QModelIndex &idx)
 
      // We only want column 0 items (file names)
     for (const QModelIndex &index : selected) {
-      if (index.column() == 0 && index.parent().isValid()) {
-        QString filename = index.sibling(index.row(), 0).data().toString();
+      const QString filename = Content->filePath(index);
+      if (index.column() == 0 && !filename.isEmpty()) {
         QString note = index.sibling(index.row(), 1).data().toString();
         QFileInfo Info(QucsSettings.QucsWorkDir.filePath(filename));
 
@@ -3148,11 +3183,11 @@ void QucsApp::slotOpenContent(const QModelIndex &idx)
     return;
   }
 
-  if (!idx.isValid() || !idx.parent().isValid()) {
-    return;
+  const QString filename = Content->filePath(idx);
+  if (filename.isEmpty()) {
+    return;   // a category or folder row
   }
 
-  QString filename = idx.sibling(idx.row(), 0).data().toString();
   QString note = idx.sibling(idx.row(), 1).data().toString();
   QFileInfo Info(QucsSettings.QucsWorkDir.filePath(filename));
   openFileFromProjectView(Info, note);
@@ -3285,23 +3320,24 @@ void QucsApp::slotSelectSubcircuit(const QModelIndex &idx)
 
   bool isVHDL = false;
   bool isVerilog = false;
-  QModelIndex parentIdx = idx.parent();
-  if(!parentIdx.isValid()) { return; }
+  QString filename = Content->filePath(idx);   // relative to the project
+  if(filename.isEmpty()) { return; }            // a category or folder row
 
-  QString category = parentIdx.data().toString();
-
-  if(category == tr("Schematics")) {
+  switch (Content->categoryOf(idx)) {
+  case ProjectView::Schematics:
     if(idx.sibling(idx.row(), 1).data().toString().isEmpty())
       return;   // return, if not a subcircuit
-  }
-  else if(category == tr("VHDL"))
+    break;
+  case ProjectView::VHDL:
     isVHDL = true;
-  else if(category == tr("Verilog"))
+    break;
+  case ProjectView::Verilog:
     isVerilog = true;
-  else
+    break;
+  default:
     return;
+  }
 
-  QString filename = idx.sibling(idx.row(), 0).data().toString();
   QString note = idx.sibling(idx.row(), 1).data().toString();
   int idx_pag = DocumentTab->currentIndex();
   QString tab_titl = "";
@@ -3327,7 +3363,7 @@ void QucsApp::slotSelectSubcircuit(const QModelIndex &idx)
     Comp = new Verilog_File();
   else
     Comp = new Subcircuit();
-  Comp->Props.first()->Value = idx.sibling(idx.row(), 0).data().toString();
+  Comp->Props.first()->Value = filename;
   Comp->recreate();
   view->selElem = Comp;
 

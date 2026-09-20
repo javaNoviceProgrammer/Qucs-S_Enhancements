@@ -110,6 +110,7 @@ struct tQucsSettings {
   bool hasDarkTheme;
   bool fullTraceName;
   bool alwaysPrefixDataset;
+  bool ContentTreeView;   // Content panel: subdirectories as sub-trees (true) or "dir/name" rows (false)
 
   bool firstRun;
 };
