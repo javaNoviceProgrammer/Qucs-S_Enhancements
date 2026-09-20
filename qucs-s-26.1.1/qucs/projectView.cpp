@@ -24,6 +24,7 @@
 #include "projectView.h"
 #include "schematic.h"
 #include "misc.h"
+#include "main.h"
 
 #include <QString>
 #include <QStringList>
@@ -31,8 +32,10 @@
 #include <QStandardItemModel>
 #include <QDebug>
 #include <QDrag>
+#include <QFileIconProvider>
 #include <QMimeData>
 #include <QPainter>
+#include <functional>
 
 ProjectView::ProjectView(QWidget *parent)
   : QTreeView(parent)
@@ -40,11 +43,10 @@ ProjectView::ProjectView(QWidget *parent)
   m_projPath = QString();
   m_projPath = QString();
   m_valid = false;
-  m_model = new QStandardItemModel(8, 2, this);
-
-  refresh();
+  m_model = new QStandardItemModel(0, 2, this);
 
   this->setModel(m_model);
+  refresh();
   this->setEditTriggers(QAbstractItemView::NoEditTriggers);
   this->setSelectionMode(QAbstractItemView::ExtendedSelection); // Allow multiple selection
   // Files can be dragged out (onto the document area, which opens them);
@@ -61,7 +63,27 @@ ProjectView::~ProjectView()
 int ProjectView::categoryOf(const QModelIndex& idx) const
 {
   if (!idx.isValid()) return -1;
-  return idx.parent().isValid() ? idx.parent().row() : idx.row();
+  QModelIndex top = idx;
+  while (top.parent().isValid()) top = top.parent();
+  return top.row();
+}
+
+QString ProjectView::filePath(const QModelIndex& idx) const
+{
+  if (!idx.isValid()) return QString();
+  return idx.sibling(idx.row(), 0).data(FilePathRole).toString();
+}
+
+bool ProjectView::treeView()
+{
+  return QucsSettings.ContentTreeView;
+}
+
+void ProjectView::setTreeView(bool on)
+{
+  if (QucsSettings.ContentTreeView == on) return;
+  QucsSettings.ContentTreeView = on;
+  refresh();
 }
 
 QList<QUrl> ProjectView::selectedFileUrls() const
@@ -70,8 +92,9 @@ QList<QUrl> ProjectView::selectedFileUrls() const
   if (!m_valid || selectionModel() == nullptr) return urls;
   const QDir project(m_projPath);
   for (const QModelIndex& idx : selectionModel()->selectedIndexes()) {
-    if (idx.column() != 0 || !idx.parent().isValid()) continue;   // a category row, or the note
-    const QUrl url = QUrl::fromLocalFile(project.absoluteFilePath(idx.data().toString()));
+    const QString path = filePath(idx);
+    if (idx.column() != 0 || path.isEmpty()) continue;   // a category or folder row, or the note
+    const QUrl url = QUrl::fromLocalFile(project.absoluteFilePath(path));
     if (!urls.contains(url)) urls.append(url);
   }
   return urls;
@@ -129,15 +152,84 @@ ProjectView::setProjPath(const QString &path)
     setExpanded(m_model->index(Schematics, 0), true);
 }
 
+QString ProjectView::rowKey(const QModelIndex& idx) const
+{
+  if (!idx.isValid() || isFile(idx)) return QString();
+  QString key;
+  for (QModelIndex i = idx; i.parent().isValid(); i = i.parent())
+    key.prepend('/' + i.sibling(i.row(), 0).data().toString());
+  return QStringLiteral("cat:%1").arg(categoryOf(idx)) + key;
+}
+
+void ProjectView::collectExpanded(const QModelIndex& parent, QStringList& keys) const
+{
+  for (int row = 0; row < m_model->rowCount(parent); ++row) {
+    const QModelIndex idx = m_model->index(row, 0, parent);
+    if (isFile(idx)) continue;
+    if (isExpanded(idx)) keys.append(rowKey(idx));
+    collectExpanded(idx, keys);
+  }
+}
+
+void ProjectView::restoreExpanded(const QModelIndex& parent, const QStringList& keys)
+{
+  for (int row = 0; row < m_model->rowCount(parent); ++row) {
+    const QModelIndex idx = m_model->index(row, 0, parent);
+    if (isFile(idx)) continue;
+    if (keys.contains(rowKey(idx))) setExpanded(idx, true);
+    restoreExpanded(idx, keys);
+  }
+}
+
+QStandardItem* ProjectView::folderItem(QStandardItem* category, const QString& dir)
+{
+  QStandardItem* parent = category;
+  if (dir.isEmpty()) return parent;
+  static const QIcon folderIcon = QFileIconProvider().icon(QFileIconProvider::Folder);
+  for (const QString& name : dir.split('/', Qt::SkipEmptyParts)) {
+    QStandardItem* found = nullptr;
+    for (int row = 0; row < parent->rowCount() && !found; ++row) {
+      QStandardItem* child = parent->child(row, 0);
+      if (child->data(FilePathRole).toString().isEmpty() && child->text() == name)
+        found = child;
+    }
+    if (!found) {
+      appendRow(parent, name, QString());
+      found = parent->child(parent->rowCount() - 1, 0);
+      found->setIcon(folderIcon);
+    }
+    parent = found;
+  }
+  return parent;
+}
+
+void ProjectView::appendFile(int category, const QString& path, const QString& note)
+{
+  QStandardItem* cat = m_model->item(category, 0);
+  if (cat == nullptr) return;
+  QStandardItem* parent = cat;
+  QString shown = path;
+  if (treeView()) {
+    const int slash = path.lastIndexOf('/');
+    if (slash >= 0) {
+      parent = folderItem(cat, path.left(slash));
+      shown = path.mid(slash + 1);
+    }
+  }
+  auto* name = new QStandardItem(shown);
+  name->setData(path, FilePathRole);
+  QList<QStandardItem*> row{ name };
+  if (!note.isEmpty()) row.append(new QStandardItem(note));
+  parent->appendRow(row);
+}
+
 // refresh using projectPath
 void
 ProjectView::refresh()
 {
-  // Keep the categories the user has opened.
-  QList<int> expanded;
-  for (int row = 0; row < m_model->rowCount(); ++row)
-    if (isExpanded(m_model->index(row, 0)))
-      expanded.append(row);
+  // Keep the categories and folders the user has opened.
+  QStringList expanded;
+  collectExpanded(QModelIndex(), expanded);
 
   m_model->clear();
 
@@ -157,79 +249,76 @@ ProjectView::refresh()
   appendRow(m_model->invisibleRootItem(), tr("SPICE"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("Others"), QString(""));
 
-  for (int row : expanded)
-    setExpanded(m_model->index(row, 0), true);
+  if (m_valid) {
+    // put all files into "Content"-ListView: those of the project directory
+    // and of any subdirectory, named relative to the project (the files of
+    // one directory arrive together, so a folder row's files come first,
+    // then its sub-folders)
+    const QDir workPath(m_projPath);
+    for (const QString& fileName : misc::projectFiles(workPath)) {
+      const QFileInfo info(workPath.filePath(fileName));
+      const QString extName = info.suffix().toLower();
+      const QString fullExtName = info.completeSuffix().toLower();
 
-  if (!m_valid) {
-    return;
-  }
-
-  // put all files into "Content"-ListView: those of the project directory
-  // and of any subdirectory, named relative to the project
-  const QDir workPath(m_projPath);
-  for (const QString& fileName : misc::projectFiles(workPath)) {
-    const QFileInfo info(workPath.filePath(fileName));
-    const QString extName = info.suffix().toLower();
-    const QString fullExtName = info.completeSuffix().toLower();
-
-    QList<QStandardItem *> columnData;
-    columnData.append(new QStandardItem(fileName));
-
-    if(extName == "dat" || fullExtName == "dat.ngspice" ||
-       fullExtName == "dat.xyce" || fullExtName == "dat.spopus" ) {
-      appendChild(Datasets, columnData);
-    }
-    else if(extName == "dpl") {
-      appendChild(DataDisplays, columnData);
-    }
-    else if(extName == "v") {
-      appendChild(Verilog, columnData);
-    }
-    else if(extName == "va") {
-      appendChild(VerilogA, columnData);
-    }
-    else if(extName == "osdi") {
-      appendChild(Osdi, columnData);
-    }
-    else if((extName == "vhdl") || (extName == "vhd")) {
-      appendChild(VHDL, columnData);
-    }
-    else if((extName == "m") || (extName == "oct")) {
-      appendChild(Octave, columnData);
-    }
-    else if(extName == "sch") {
-      // test if it's a valid schematic file
-      int n = Schematic::testFile(info.filePath());
-      if(n >= 0) {
-        if(n > 0) { // is a subcircuit
-          columnData.append(new QStandardItem(QString::number(n)+tr("-port")));
-        }
-        appendChild(Schematics, columnData);
-      } else {
-        qDeleteAll(columnData);
+      if(extName == "dat" || fullExtName == "dat.ngspice" ||
+         fullExtName == "dat.xyce" || fullExtName == "dat.spopus" ) {
+        appendFile(Datasets, fileName);
       }
-    } else if (extName == "sym") {
-        appendChild(Symbols,columnData);
-    } else if ((extName == "cir") || (extName=="ckt") ||
-             (extName=="sp")) {
-        appendChild(SPICE,columnData);
-    }
-    else {
-      appendChild(Others, columnData);
+      else if(extName == "dpl") {
+        appendFile(DataDisplays, fileName);
+      }
+      else if(extName == "v") {
+        appendFile(Verilog, fileName);
+      }
+      else if(extName == "va") {
+        appendFile(VerilogA, fileName);
+      }
+      else if(extName == "osdi") {
+        appendFile(Osdi, fileName);
+      }
+      else if((extName == "vhdl") || (extName == "vhd")) {
+        appendFile(VHDL, fileName);
+      }
+      else if((extName == "m") || (extName == "oct")) {
+        appendFile(Octave, fileName);
+      }
+      else if(extName == "sch") {
+        // test if it's a valid schematic file
+        int n = Schematic::testFile(info.filePath());
+        if(n >= 0) {
+          // a subcircuit gets its port count as the note
+          appendFile(Schematics, fileName, n > 0 ? QString::number(n)+tr("-port") : QString());
+        }
+      } else if (extName == "sym") {
+          appendFile(Symbols, fileName);
+      } else if ((extName == "cir") || (extName=="ckt") ||
+               (extName=="sp")) {
+          appendFile(SPICE, fileName);
+      }
+      else {
+        appendFile(Others, fileName);
+      }
     }
   }
 
+  restoreExpanded(QModelIndex(), expanded);
   resizeColumnToContents(0);
 }
 
 QStringList ProjectView::exportSchematic()
 {
   QStringList list;
-  QStandardItem *item = m_model->item(Schematics, 0);
-  for (int i = 0; i < item->rowCount(); ++i) {
-    if (item->child(i,1)) {
-      list.append(item->child(i,0)->text());
+  // Every file row below the Schematics category, through the folder rows.
+  std::function<void(QStandardItem*)> collect = [&](QStandardItem* parent) {
+    for (int i = 0; i < parent->rowCount(); ++i) {
+      QStandardItem* item = parent->child(i, 0);
+      const QString path = item->data(FilePathRole).toString();
+      if (path.isEmpty())
+        collect(item);                       // a folder
+      else if (parent->child(i, 1))
+        list.append(path);                   // a subcircuit (it has a note)
     }
-  }
+  };
+  collect(m_model->item(Schematics, 0));
   return list;
 }

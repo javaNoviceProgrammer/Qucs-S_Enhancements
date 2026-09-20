@@ -113,6 +113,7 @@ bool loadSettings()
     QucsSettings.TextAntiAliasing = _settings::Get().item<bool>("TextAntiAliasing");
     QucsSettings.fullTraceName = _settings::Get().item<bool>("fullTraceName");
     QucsSettings.alwaysPrefixDataset = _settings::Get().item<bool>("alwaysPrefixDataset");
+    QucsSettings.ContentTreeView = _settings::Get().item<bool>("ContentTreeView");
     QucsSettings.RecentProjects = _settings::Get().item<QString>("RecentProjects").split("*", Qt::SkipEmptyParts);
     QucsSettings.RecentDocs = _settings::Get().item<QString>("RecentDocs").split("*", Qt::SkipEmptyParts);
     QucsSettings.numRecentDocs = QucsSettings.RecentDocs.count();
@@ -188,6 +189,7 @@ bool saveApplSettings()
     qs.setItem<bool>("TextAntiAliasing", QucsSettings.TextAntiAliasing);
     qs.setItem<bool>("fullTraceName",QucsSettings.fullTraceName);
     qs.setItem<bool>("alwaysPrefixDataset",QucsSettings.alwaysPrefixDataset);
+    qs.setItem<bool>("ContentTreeView",QucsSettings.ContentTreeView);
 
     // Copy the list of directory paths in which Qucs should
     // search for subcircuit schematics from qucsPathList

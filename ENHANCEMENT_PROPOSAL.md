@@ -327,6 +327,16 @@ existing demand.
   ngspice netlister `pre_osdi`s every `.osdi` of the tree and Build All
   compiles every `.va` of the tree, so the panel and the simulator agree
   on what belongs to the project.
+  Two listings, switched from the panel's context menu (*Toggle hierarchy
+  search view*, offered on file rows, category rows, folder rows and the
+  empty area) and kept in the settings (`ContentTreeView`): the flat
+  `dir/name` rows, or a sub-tree per directory under each category. To
+  make that possible every file row carries its project-relative path in
+  `ProjectView::FilePathRole`, and the consumers in `QucsApp` (open,
+  duplicate, rename, delete, insert subcircuit, drag) ask
+  `ProjectView::filePath()/isFile()/categoryOf()` instead of reading the
+  row text and assuming the parent is the category. Expanded rows
+  (categories and folders) are remembered across refreshes by path.
 - *Done:* **Drag and drop from the Content panel into the document area.**
   `ProjectView` is a drag source whose drag carries the selected files as
   `file://` URLs (so anything that takes files from a file manager takes

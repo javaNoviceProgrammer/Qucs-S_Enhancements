@@ -40,12 +40,26 @@ public:
   enum Category { Datasets = 0, DataDisplays, Verilog, VerilogA, Osdi, VHDL,
                   Octave, Schematics, Symbols, SPICE, Others };
 
+  /// Item data: the file's path relative to the project ("models/bjt.va")
+  /// on every file row, whatever the row shows; empty on category and
+  /// folder rows.
+  enum { FilePathRole = Qt::UserRole + 1 };
+
   ProjectView (QWidget *parent);
   virtual ~ProjectView ();
 
-  /// The category a tree index belongs to (its own row for a top-level
-  /// item, the parent's row for a file), or -1 for an invalid index.
+  /// The category a tree index belongs to (the top-level ancestor's row,
+  /// its own row for a category), or -1 for an invalid index.
   int categoryOf(const QModelIndex& idx) const;
+  /// The project-relative path of a file row, empty for any other row.
+  QString filePath(const QModelIndex& idx) const;
+  bool isFile(const QModelIndex& idx) const { return !filePath(idx).isEmpty(); }
+
+  /// Whether files in subdirectories are shown as sub-trees of their
+  /// category (folder rows) rather than as "dir/name" rows. Follows
+  /// QucsSettings.ContentTreeView; refresh() applies it.
+  static bool treeView();
+  void setTreeView(bool on);
 
   QStandardItemModel *model() { return m_model; };
 
@@ -56,8 +70,11 @@ public:
   //data related
   void setProjPath(const QString &);
   /// Lists every file of the project, from its directory and any
-  /// subdirectory (as "sub/dir/name.ext"), under its category.
+  /// subdirectory, under its category: as "sub/dir/name.ext" rows, or as
+  /// sub-trees of folder rows (treeView()). The rows that were expanded
+  /// stay expanded.
   void refresh();
+  /// The project-relative paths of the subcircuit schematics.
   QStringList exportSchematic();
 
 signals:
@@ -73,12 +90,18 @@ private:
   QString m_projPath;
   QString m_projName;
 
-  inline void appendChild(int category, const QList<QStandardItem*>& data) {
-    if (auto *item = m_model->item(category, 0)) {
-      item->appendRow(data);
-    }
-  }
+  /// Adds a file row (path relative to the project, optional note) under
+  /// its category, inside the folder rows of its directory in tree view.
+  void appendFile(int category, const QString& path, const QString& note = QString());
+  /// The folder row for a directory under a category (created on demand).
+  QStandardItem* folderItem(QStandardItem* category, const QString& dir);
+  /// "cat:<row>[/<dir>]" for a category or folder row: what the expanded
+  /// state is remembered by across refreshes.
+  QString rowKey(const QModelIndex& idx) const;
+  void collectExpanded(const QModelIndex& parent, QStringList& keys) const;
+  void restoreExpanded(const QModelIndex& parent, const QStringList& keys);
 
+  /// A category or folder row: not selectable, not draggable.
   inline void appendRow(QStandardItem* parent, const QString& data0, const QString& data1) {
     auto* col0 = new QStandardItem(data0);
     auto* col1 = new QStandardItem(data1);
