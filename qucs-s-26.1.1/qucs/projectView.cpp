@@ -30,6 +30,9 @@
 #include <QDir>
 #include <QStandardItemModel>
 #include <QDebug>
+#include <QDrag>
+#include <QMimeData>
+#include <QPainter>
 
 ProjectView::ProjectView(QWidget *parent)
   : QTreeView(parent)
@@ -44,6 +47,10 @@ ProjectView::ProjectView(QWidget *parent)
   this->setModel(m_model);
   this->setEditTriggers(QAbstractItemView::NoEditTriggers);
   this->setSelectionMode(QAbstractItemView::ExtendedSelection); // Allow multiple selection
+  // Files can be dragged out (onto the document area, which opens them);
+  // nothing can be dropped in.
+  this->setDragEnabled(true);
+  this->setDragDropMode(QAbstractItemView::DragOnly);
 }
 
 ProjectView::~ProjectView()
@@ -55,6 +62,50 @@ int ProjectView::categoryOf(const QModelIndex& idx) const
 {
   if (!idx.isValid()) return -1;
   return idx.parent().isValid() ? idx.parent().row() : idx.row();
+}
+
+QList<QUrl> ProjectView::selectedFileUrls() const
+{
+  QList<QUrl> urls;
+  if (!m_valid || selectionModel() == nullptr) return urls;
+  const QDir project(m_projPath);
+  for (const QModelIndex& idx : selectionModel()->selectedIndexes()) {
+    if (idx.column() != 0 || !idx.parent().isValid()) continue;   // a category row, or the note
+    const QUrl url = QUrl::fromLocalFile(project.absoluteFilePath(idx.data().toString()));
+    if (!urls.contains(url)) urls.append(url);
+  }
+  return urls;
+}
+
+// The drag carries the files as URLs, like a drag out of a file manager,
+// so every drop target that takes files takes them.
+void ProjectView::startDrag(Qt::DropActions)
+{
+  const QList<QUrl> urls = selectedFileUrls();
+  if (urls.isEmpty()) return;
+
+  auto* data = new QMimeData;
+  data->setUrls(urls);
+  auto* drag = new QDrag(this);
+  drag->setMimeData(data);
+
+  // The names under the cursor while dragging.
+  QStringList names;
+  for (const QUrl& url : urls) names.append(QFileInfo(url.toLocalFile()).fileName());
+  if (names.size() > 3) names = QStringList(names.mid(0, 3)) << tr("... (%n files)", "", names.size());
+  const QFontMetrics fm(font());
+  int width = 0;
+  for (const QString& n : names) width = std::max(width, fm.horizontalAdvance(n));
+  QPixmap pixmap(width + 8, names.size() * fm.height() + 4);
+  pixmap.fill(palette().color(QPalette::Highlight));
+  QPainter painter(&pixmap);
+  painter.setPen(palette().color(QPalette::HighlightedText));
+  for (int i = 0; i < names.size(); ++i)
+    painter.drawText(4, 2 + i * fm.height() + fm.ascent(), names.at(i));
+  painter.end();
+  drag->setPixmap(pixmap);
+
+  drag->exec(Qt::CopyAction);
 }
 
 void
@@ -73,19 +124,20 @@ ProjectView::setProjPath(const QString &path)
     }
   }
   refresh();
+  // A freshly opened project shows its schematics.
+  if (m_valid)
+    setExpanded(m_model->index(Schematics, 0), true);
 }
 
 // refresh using projectPath
 void
 ProjectView::refresh()
 {
-  // Keep the categories the user has opened; the first fill shows Schematics.
+  // Keep the categories the user has opened.
   QList<int> expanded;
   for (int row = 0; row < m_model->rowCount(); ++row)
     if (isExpanded(m_model->index(row, 0)))
       expanded.append(row);
-  if (m_model->rowCount() == 0)
-    expanded.append(Schematics);
 
   m_model->clear();
 

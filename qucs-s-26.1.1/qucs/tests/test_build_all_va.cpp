@@ -100,6 +100,8 @@ private slots:
         MainGuard guard(&app);
         ProjectView* view = app.projectView();
         view->setProjPath(project);
+        QVERIFY(view->isExpanded(view->model()->index(ProjectView::Schematics, 0)));   // open on arrival
+        QVERIFY(!view->isExpanded(view->model()->index(ProjectView::VerilogA, 0)));
         QCOMPARE(children(view, ProjectView::VerilogA), QStringList({"broken.va", "good.va", "models/deep.va"}));
         QCOMPARE(children(view, ProjectView::Schematics), QStringList({"other.sch", "models/nested/sub.sch"}));
         // The subcircuit in the subdirectory got its port count.
