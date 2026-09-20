@@ -26,6 +26,7 @@
 
 #define Q_UINT32 uint32_t
 
+class QDir;
 class Schematic;
 
 namespace misc {
@@ -42,6 +43,12 @@ namespace misc {
   QString properName(const QString&);
   QString properAbsFileName(const QString&, Schematic* sch = nullptr);
   QString properFileName(const QString&);
+  /// The files of a project: every regular file below root, at any depth,
+  /// as paths relative to root ("models/bjt.va"). Hidden directories and
+  /// symbolic links to directories are not entered. With nameFilters
+  /// ("*.va") only matching names are returned. Sorted with the root's
+  /// own files first, then directory by directory.
+  QStringList projectFiles(const QDir& root, const QStringList& nameFilters = QStringList());
   bool    VHDL_Time(QString&, const QString&);
   bool    VHDL_Delay(QString&, const QString&);
   bool    Verilog_Time(QString&, const QString&);

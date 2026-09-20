@@ -309,12 +309,24 @@ existing demand.
 
 - **Crash recovery / autosave** (from WS1.7) surfaced as a feature: periodic
   autosave, "Recover unsaved documents" on launch.
-- *Done:* **Verilog-A "Build All..."** on the Content panel's Verilog-A row:
+- *Done:* **Verilog-A "Build All"** on the Content panel's Verilog-A row:
   compiles every `.va` of the project with the OpenVAF from the settings,
   sequentially and asynchronously (the GUI stays responsive), output and a
   pass/fail tally in the message dock, `.osdi` files appear in the tree.
   Points at the settings when OpenVAF is not configured. Covered by
   `qucs/tests/test_build_all_va` with a stand-in compiler.
+- *Done:* **Content panel lists the whole project tree.** Upstream only
+  showed the files in the project directory itself. `misc::projectFiles()`
+  walks the subdirectories (no hidden directories, no symlinked ones) and
+  the tree shows `sub/dir/name.ext` under the category, root files first.
+  Everything that took the row text as a file name relative to the project
+  still does (open, delete, subcircuit insert); copy and rename keep the
+  file in its subdirectory, and `misc::properAbsFileName()` resolves such a
+  relative path against the project so an inserted `sub/x.sch` netlists
+  from any schematic. New *Osdi* category for the compiled models; the
+  ngspice netlister `pre_osdi`s every `.osdi` of the tree and Build All
+  compiles every `.va` of the tree, so the panel and the simulator agree
+  on what belongs to the project.
 - **Explicit light/dark theme toggle** (#1725). The `hasDarkTheme` flag
   already exists in `QucsSettings`; components draw with hard-coded
   `Qt::darkBlue` pens, so this needs a small palette-indirection layer in

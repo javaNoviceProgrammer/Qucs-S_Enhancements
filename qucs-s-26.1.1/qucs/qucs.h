@@ -302,7 +302,7 @@ public:
   QAction *ActionCMenuOpen, *ActionCMenuCopy, *ActionCMenuRename,
       *ActionCMenuDelete, *ActionCMenuInsert, *ActionCMenuBuildAllVerilogA;
 
-  // "Build All..." for Verilog-A: the files still to compile with OpenVAF,
+  // "Build All" for Verilog-A: the files still to compile with OpenVAF,
   // the running compiler, and the tally for the summary line.
   QStringList a_vaBuildQueue;
   QProcess *a_vaBuilder = nullptr;

@@ -52,6 +52,7 @@
 #include "dialogs/matchdialog.h"
 #include "dialogs/searchdialog.h"
 #include "main.h"
+#include "misc.h"
 #include "messagedock.h"
 #include "module.h"
 #include "mouseactions.h"
@@ -1894,10 +1895,10 @@ void QucsApp::buildWithOpenVAF() {
 }
 
 /*!
- * \brief "Build All..." on the Verilog-A row of the project tree: compile
- *        every .va file of the project with OpenVAF, one after the other,
- *        into the message dock. Needs the OpenVAF path from the application
- *        settings.
+ * \brief "Build All" on the Verilog-A row of the project tree: compile
+ *        every .va file of the project (in any subdirectory) with OpenVAF,
+ *        one after the other, into the message dock. Needs the OpenVAF path
+ *        from the application settings.
  */
 void QucsApp::slotCMenuBuildAllVerilogA() {
   if (a_vaBuilder != nullptr) {
@@ -1922,7 +1923,7 @@ void QucsApp::slotCMenuBuildAllVerilogA() {
   }
 
   const QDir project(QucsSettings.QucsWorkDir.absolutePath());
-  const QStringList vaFiles = project.entryList({"*.va"}, QDir::Files, QDir::Name);
+  const QStringList vaFiles = misc::projectFiles(project, {"*.va"});   // relative paths
   if (vaFiles.isEmpty()) {
     QMessageBox::information(this, tr("Build All"),
                              tr("The project contains no Verilog-A (.va) files."));

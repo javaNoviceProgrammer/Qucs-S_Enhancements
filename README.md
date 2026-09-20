@@ -12,12 +12,18 @@ Using Claude Code to enhance the Qucs-S circuit simulator interface.
   loaders and the simulator-output parsers survive damaged input, the app
   keeps autosave copies and writes a crash report with a backtrace, and the
   next start offers to restore what was open.
-- **Verilog-A "Build All..."**: right-click the *Verilog-A* row in the
+- **Verilog-A "Build All"**: right-click the *Verilog-A* row in the
   Content panel to compile every `.va` file of the project with OpenVAF (the
   executable set under *Application Settings → Locations → OpenVAF Path*),
   one after the other, with the compiler output in the message dock and a
   pass/fail tally at the end. Files with unsaved changes are compiled as last
   saved, after a confirmation.
+- **Content panel sees the whole project**: files in subdirectories of the
+  project (at any depth, hidden directories excluded) are listed under
+  their category as `sub/dir/name.ext`, and open, copy, rename, delete and
+  subcircuit insertion work on them. A new *Osdi* category lists the
+  compiled `.osdi` models; ngspice loads all of them, wherever they are in
+  the project, and Build All compiles the `.va` files wherever they are.
 
 ## Building locally
 
