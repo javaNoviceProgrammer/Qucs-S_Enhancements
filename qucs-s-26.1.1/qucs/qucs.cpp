@@ -1299,7 +1299,7 @@ void QucsApp::initCursorMenu()
 
   // The "Verilog-A" category row gets its own menu.
   ContentVerilogAMenu = new QMenu(this);
-  ActionCMenuBuildAllVerilogA = new QAction(tr("Build All..."), ContentVerilogAMenu);
+  ActionCMenuBuildAllVerilogA = new QAction(tr("Build All"), ContentVerilogAMenu);
   ActionCMenuBuildAllVerilogA->setStatusTip(tr("Compile every Verilog-A file of the project with OpenVAF"));
   connect(ActionCMenuBuildAllVerilogA, SIGNAL(triggered()), SLOT(slotCMenuBuildAllVerilogA()));
   ContentVerilogAMenu->addAction(ActionCMenuBuildAllVerilogA);
@@ -1372,10 +1372,12 @@ void QucsApp::slotCMenuCopy()
   //test the item is valid
   if (!idx.isValid() || !idx.parent().isValid()) { return; }
 
-  QString filename = idx.sibling(idx.row(), 0).data().toString();
+  QString filename = idx.sibling(idx.row(), 0).data().toString();   // relative to the project
   QDir dir(QucsSettings.QucsWorkDir);
   QString file(dir.filePath(filename));
   QFileInfo fileinfo(file);
+  // The copy goes next to the original, which may be in a subdirectory.
+  const QString subdir = QFileInfo(filename).path() == "." ? QString() : QFileInfo(filename).path() + "/";
 
   //check changed file save
   int z = 0; //search if the doc is loaded
@@ -1394,7 +1396,7 @@ void QucsApp::slotCMenuCopy()
   QString suffix = fileinfo.suffix();
   QString base = fileinfo.completeBaseName();
   if(base.isEmpty()) {
-    base = filename;
+    base = fileinfo.fileName();
   }
 
   bool exists = true;   //generate unique name
@@ -1403,7 +1405,7 @@ void QucsApp::slotCMenuCopy()
   while (exists) {
     ++i;
     defaultName = base + "_copy" + QString::number(i) + "." + suffix;
-    exists = QFile::exists(dir.filePath(defaultName));
+    exists = QFile::exists(dir.filePath(subdir + defaultName));
   }
 
   bool ok;
@@ -1414,12 +1416,12 @@ void QucsApp::slotCMenuCopy()
       s += QStringLiteral(".") + suffix;
     }
 
-    if (QFile::exists(dir.filePath(s))) {  //check New Name exists
+    if (QFile::exists(dir.filePath(subdir + s))) {  //check New Name exists
       QMessageBox::critical(this, tr("error"), tr("Cannot copy file to identical name: %1").arg(filename));
       return;
     }
 
-    if (!QFile::copy(dir.filePath(filename), dir.filePath(s))) {
+    if (!QFile::copy(dir.filePath(filename), dir.filePath(subdir + s))) {
       QMessageBox::critical(this, tr("Error"), tr("Cannot copy schematic: %1").arg(filename));
       return;
     }
@@ -1440,9 +1442,11 @@ void QucsApp::slotCMenuRename()
   //test the item is valid
   if (!idx.isValid() || !idx.parent().isValid()) { return; }
 
-  QString filename = idx.sibling(idx.row(), 0).data().toString();
+  QString filename = idx.sibling(idx.row(), 0).data().toString();   // relative to the project
   QString file(QucsSettings.QucsWorkDir.filePath(filename));
   QFileInfo fileinfo(file);
+  // Renaming keeps the file where it is, which may be a subdirectory.
+  const QString subdir = QFileInfo(filename).path() == "." ? QString() : QFileInfo(filename).path() + "/";
 
   if (findDoc(file)) {
     QMessageBox::critical(this, tr("Error"),
@@ -1453,7 +1457,7 @@ void QucsApp::slotCMenuRename()
   QString suffix = fileinfo.suffix();
   QString base = fileinfo.completeBaseName();
   if(base.isEmpty()) {
-    base = filename;
+    base = fileinfo.fileName();
   }
 
   bool ok;
@@ -1464,7 +1468,7 @@ void QucsApp::slotCMenuRename()
       s += QStringLiteral(".") + suffix;
     }
     QDir dir(QucsSettings.QucsWorkDir.path());
-    if(!dir.rename(filename, s)) {
+    if(!dir.rename(filename, subdir + s)) {
       QMessageBox::critical(this, tr("Error"), tr("Cannot rename file: %1").arg(filename));
       return;
     }
@@ -3278,7 +3282,7 @@ void QucsApp::slotSelectSubcircuit(const QModelIndex &idx)
   int idx_pag = DocumentTab->currentIndex();
   QString tab_titl = "";
   if (idx_pag>=0) tab_titl = DocumentTab->tabText(idx_pag);
-  if (filename == tab_titl ) return; // Forbid to paste subcircuit into itself.
+  if (QFileInfo(filename).fileName() == tab_titl ) return; // Forbid to paste subcircuit into itself.
 
   // delete previously selected elements
   if(view->selElem != nullptr)  delete view->selElem;

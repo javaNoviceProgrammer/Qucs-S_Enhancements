@@ -35,6 +35,7 @@
 #include <QRegularExpression>
 #include <QFileInfo>
 #include <QDir>
+#include <algorithm>
 
 #include <QtWidgets>
 
@@ -341,6 +342,11 @@ QString misc::properAbsFileName(const QString& filename, Schematic* sch)
     if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
   }
 
+  // A path relative to the project directory (the Content panel refers to
+  // files in subdirectories that way), then the bare name in the usual places.
+  fileInfo.setFile(QucsSettings.QucsWorkDir.filePath(fName));
+  if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
+
   fName = fileInfo.fileName();
 
   fileInfo.setFile(QucsSettings.QucsWorkDir.filePath(fName));
@@ -359,6 +365,37 @@ QString misc::properFileName(const QString& Name)
 {
   QFileInfo Info(Name);
   return Info.fileName();
+}
+
+// #########################################################################
+namespace {
+// QDirIterator would also walk hidden directories, so recurse by hand:
+// no hidden entries, and no symbolic links to directories (cycles).
+void collectProjectFiles(const QDir& base, const QDir& dir, const QStringList& nameFilters, QStringList& files)
+{
+  for (const QFileInfo& fi : dir.entryInfoList(nameFilters, QDir::Files, QDir::Unsorted))
+    files.append(base.relativeFilePath(fi.filePath()));
+  for (const QFileInfo& fi : dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Unsorted))
+    collectProjectFiles(base, QDir(fi.filePath()), nameFilters, files);
+}
+} // namespace
+
+QStringList misc::projectFiles(const QDir& root, const QStringList& nameFilters)
+{
+  const QDir base(root.absolutePath());
+  QStringList files;
+  collectProjectFiles(base, base, nameFilters, files);
+
+  // Sorted by directory first, so the root's files come first and the
+  // files of one subdirectory stay together.
+  std::sort(files.begin(), files.end(), [](const QString& a, const QString& b) {
+    const QStringView dirA = QStringView(a).left(std::max<qsizetype>(a.lastIndexOf('/'), 0));
+    const QStringView dirB = QStringView(b).left(std::max<qsizetype>(b.lastIndexOf('/'), 0));
+    if (int c = dirA.compare(dirB, Qt::CaseInsensitive)) return c < 0;
+    if (int c = a.compare(b, Qt::CaseInsensitive)) return c < 0;
+    return a < b;
+  });
+  return files;
 }
 
 // #########################################################################

@@ -36,7 +36,7 @@ class ProjectView : public QTreeView
   Q_OBJECT
 public:
   // Top-level rows of the tree, in the order refresh() creates them.
-  enum Category { Datasets = 0, DataDisplays, Verilog, VerilogA, VHDL,
+  enum Category { Datasets = 0, DataDisplays, Verilog, VerilogA, Osdi, VHDL,
                   Octave, Schematics, Symbols, SPICE, Others };
 
   ProjectView (QWidget *parent);
@@ -50,6 +50,8 @@ public:
 
   //data related
   void setProjPath(const QString &);
+  /// Lists every file of the project, from its directory and any
+  /// subdirectory (as "sub/dir/name.ext"), under its category.
   void refresh();
   QStringList exportSchematic();
 

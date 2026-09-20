@@ -117,13 +117,11 @@ void Ngspice::createNetlist(
 
     if (QucsMain != nullptr) { // if not run from CLI
         if (!QucsMain->ProjName.isEmpty()) {
-            // always load osdi from the project directory
-            QStringList osdi_ext;
-            osdi_ext<<"*.osdi";
-            QStringList osdi_files = QucsSettings.QucsWorkDir.entryList(osdi_ext,QDir::Files);
+            // always load osdi from the project directory (and its
+            // subdirectories, which the Content panel lists as well)
+            const QStringList osdi_files = misc::projectFiles(QucsSettings.QucsWorkDir, {"*.osdi"});
             for(const auto &file : osdi_files) {
-                QString abs_file = QucsSettings.QucsWorkDir.absolutePath() +
-                        QDir::separator() + file;
+                QString abs_file = QucsSettings.QucsWorkDir.absoluteFilePath(file);
                 stream<<QStringLiteral("pre_osdi '%1'\n").arg(abs_file);
             }
         }

@@ -23,6 +23,7 @@
 
 #include "projectView.h"
 #include "schematic.h"
+#include "misc.h"
 
 #include <QString>
 #include <QStringList>
@@ -96,6 +97,7 @@ ProjectView::refresh()
   appendRow(m_model->invisibleRootItem(), tr("Data Displays"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("Verilog"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("Verilog-A"), QString(""));
+  appendRow(m_model->invisibleRootItem(), tr("Osdi"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("VHDL"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("Octave"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("Schematics"), QString(""));
@@ -110,58 +112,58 @@ ProjectView::refresh()
     return;
   }
 
-  // put all files into "Content"-ListView
-  QDir workPath(m_projPath);
-  QStringList files = workPath.entryList(QStringList() << "*", QDir::Files, QDir::Name);
-  QStringList::iterator it;
-  QString extName, fileName, fullExtName;
-  QList<QStandardItem *> columnData;
+  // put all files into "Content"-ListView: those of the project directory
+  // and of any subdirectory, named relative to the project
+  const QDir workPath(m_projPath);
+  for (const QString& fileName : misc::projectFiles(workPath)) {
+    const QFileInfo info(workPath.filePath(fileName));
+    const QString extName = info.suffix().toLower();
+    const QString fullExtName = info.completeSuffix().toLower();
 
-
-  for(it = files.begin(); it != files.end(); ++it) {
-    fileName = (*it).toLatin1();
-    extName = QFileInfo(workPath.filePath(fileName)).suffix().toLower();
-    fullExtName = QFileInfo(workPath.filePath(fileName)).completeSuffix().toLower();
-
-    columnData.clear();
+    QList<QStandardItem *> columnData;
     columnData.append(new QStandardItem(fileName));
 
     if(extName == "dat" || fullExtName == "dat.ngspice" ||
        fullExtName == "dat.xyce" || fullExtName == "dat.spopus" ) {
-      appendChild(0, columnData);
+      appendChild(Datasets, columnData);
     }
     else if(extName == "dpl") {
-      appendChild(1, columnData);
+      appendChild(DataDisplays, columnData);
     }
     else if(extName == "v") {
-      appendChild(2, columnData);
+      appendChild(Verilog, columnData);
     }
     else if(extName == "va") {
-      appendChild(3, columnData);
+      appendChild(VerilogA, columnData);
+    }
+    else if(extName == "osdi") {
+      appendChild(Osdi, columnData);
     }
     else if((extName == "vhdl") || (extName == "vhd")) {
-      appendChild(4, columnData);
+      appendChild(VHDL, columnData);
     }
     else if((extName == "m") || (extName == "oct")) {
-      appendChild(5, columnData);
+      appendChild(Octave, columnData);
     }
     else if(extName == "sch") {
       // test if it's a valid schematic file
-      int n = Schematic::testFile(workPath.filePath(fileName));
+      int n = Schematic::testFile(info.filePath());
       if(n >= 0) {
         if(n > 0) { // is a subcircuit
           columnData.append(new QStandardItem(QString::number(n)+tr("-port")));
         }
-        appendChild(6, columnData);
+        appendChild(Schematics, columnData);
+      } else {
+        qDeleteAll(columnData);
       }
     } else if (extName == "sym") {
-        appendChild(7,columnData);
+        appendChild(Symbols,columnData);
     } else if ((extName == "cir") || (extName=="ckt") ||
              (extName=="sp")) {
-        appendChild(8,columnData);
+        appendChild(SPICE,columnData);
     }
     else {
-      appendChild(9, columnData);
+      appendChild(Others, columnData);
     }
   }
 
@@ -171,7 +173,7 @@ ProjectView::refresh()
 QStringList ProjectView::exportSchematic()
 {
   QStringList list;
-  QStandardItem *item = m_model->item(6, 0);
+  QStandardItem *item = m_model->item(Schematics, 0);
   for (int i = 0; i < item->rowCount(); ++i) {
     if (item->child(i,1)) {
       list.append(item->child(i,0)->text());
