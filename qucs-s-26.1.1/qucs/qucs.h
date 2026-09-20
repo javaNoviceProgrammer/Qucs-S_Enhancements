@@ -120,6 +120,17 @@ public:
   Schematic *currentSchematic() const;
   ProjectView *projectView() const { return Content; }
   MessageDock *messages() const { return messageDock; }
+  /// The program name that, registered for a suffix under Application
+  /// Settings, File Types, opens the file in Qucs' own text editor.
+  static constexpr const char *QucsEditorProgram = "qucs-editor";
+  /// The suffixes Qucs opens in its own text editor by default.
+  static const QStringList &textDocumentSuffixes();
+  /// The program registered for a suffix under File Types, or empty.
+  QString userProgramFor(const QString &suffix) const;
+  /// Opens the project directory (".../name_prj"): closes the open
+  /// documents, points the work directory, the Content panel and the
+  /// Scratch folder at it.
+  void openProject(const QString &);
   /// Opens files dropped on the document area (from the Content panel or a
   /// file manager), each in its viewer: schematics, data displays and
   /// symbols in the schematic view, Qucs text documents and any other text
@@ -378,7 +389,6 @@ private:
   void printCurrentDocument(bool);
   bool saveFile(QucsDoc *Doc = 0);
   bool saveAs();
-  void openProject(const QString &);
   bool deleteProject(const QString &);
   void updatePortNumber(QucsDoc *, int);
   int fillComboBox(bool);
@@ -439,6 +449,9 @@ private:
   void initStatusBar(); // setup the statusbar
 
   void openFileFromProjectView(const QFileInfo &Info, const QString &note);
+  void openTextOrSchematicTab(const QString &absolutePath);
+  void launchUserProgram(const QString &program, const QString &absolutePath);
+  void useProjectScratch(bool on);
 
   QAction *helpAboutApp, *helpAboutQt, *viewBrowseDock, *viewOctaveDock;
 

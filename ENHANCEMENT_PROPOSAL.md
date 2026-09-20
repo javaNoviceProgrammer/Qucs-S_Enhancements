@@ -337,6 +337,24 @@ existing demand.
   `ProjectView::filePath()/isFile()/categoryOf()` instead of reading the
   row text and assuming the parent is the category. Expanded rows
   (categories and folders) are remembered across refreshes by path.
+- *Done:* **Scratch folder per project.** `misc::scratchDir()` is the
+  open project's `Scratch/` (created by `QucsApp::useProjectScratch()` on
+  open, and by project creation) and the settings' `S4Q_workdir` otherwise,
+  so headless runs and the CI smoke suites are unchanged. The SPICE kernels,
+  the ngspice `.spiceinit`, the simulation dialog and the netlist viewer
+  ask it; `tempFilesDir` (qucsator, `log.txt`) is pointed at the same
+  folder while the project is open. The Content panel lists `Scratch/`
+  under its own last category, named relative to the folder, and refreshes
+  after a simulation (not per tuner step). Release builds still delete the
+  raw simulator output after conversion, as upstream does, so Scratch
+  typically shows the netlist and the log.
+- *Done:* **File types.** `.cir/.ckt/.sp` are Qucs text documents
+  (`QucsApp::textDocumentSuffixes()`); a File Types entry wins over the
+  defaults for anything but schematics/displays/symbols; the program
+  `qucs-editor` (`QucsApp::QucsEditorProgram`, a button in the dialog)
+  means the built-in editor; the program is everything after the first
+  `/` of the entry, so absolute paths work (upstream's `section('/',1,1)`
+  cut them). Drops use the same dispatch.
 - *Done:* **Drag and drop from the Content panel into the document area.**
   `ProjectView` is a drag source whose drag carries the selected files as
   `file://` URLs (so anything that takes files from a file manager takes

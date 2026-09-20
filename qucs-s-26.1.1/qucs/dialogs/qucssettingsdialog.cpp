@@ -324,8 +324,9 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     QGridLayout *fileTypesGrid = new QGridLayout(fileTypesTab);
 
     QLabel *note = new QLabel(
-        tr("Register filename extensions here in order to\nopen files with an appropriate program."));
-    fileTypesGrid->addWidget(note,0,0,1,2);
+        tr("Register filename extensions here in order to\nopen files with an appropriate program.\n"
+           "The program \"%1\" is the text editor built into Qucs.").arg(QucsApp::QucsEditorProgram));
+    fileTypesGrid->addWidget(note,0,0,1,3);
 
     // the fileTypesTableWidget displays information on the file types
     fileTypesTableWidget = new QTableWidget(fileTypesTab);
@@ -345,7 +346,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     fileTypesTableWidget->horizontalHeader()->setSectionsClickable(false); // no action when clicking on the header
     fileTypesTableWidget->verticalHeader()->hide();
     connect(fileTypesTableWidget, SIGNAL(cellClicked(int,int)), SLOT(slotTableClicked(int,int)));
-    fileTypesGrid->addWidget(fileTypesTableWidget,1,0,3,1);
+    fileTypesGrid->addWidget(fileTypesTableWidget,1,0,4,1);
 
     // fill listview with already registered file extensions
     QStringList::Iterator it = QucsSettings.FileTypes.begin();
@@ -354,7 +355,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
         int row = fileTypesTableWidget->rowCount();
         fileTypesTableWidget->setRowCount(row+1);
         QTableWidgetItem *suffix = new QTableWidgetItem(QString((*it).section('/',0,0)));
-        QTableWidgetItem *program = new QTableWidgetItem(QString((*it).section('/',1,1)));
+        QTableWidgetItem *program = new QTableWidgetItem(QString((*it).section('/',1)));   // may be a path
         suffix->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         program->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         fileTypesTableWidget->setItem(row, 0, suffix);
@@ -372,16 +373,25 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     QLabel *l6 = new QLabel(tr("Program:"), fileTypesTab);
     fileTypesGrid->addWidget(l6,2,1);
     Input_Program = new QLineEdit(fileTypesTab);
+    Input_Program->setPlaceholderText(tr("program [arguments], or %1").arg(QucsApp::QucsEditorProgram));
     fileTypesGrid->addWidget(Input_Program,2,2);
 
+    // The built-in editor, one click away.
+    QPushButton *QucsEditorButt = new QPushButton(tr("Qucs editor"));
+    QucsEditorButt->setToolTip(tr("Open files with this suffix in the text editor built into Qucs"));
+    fileTypesGrid->addWidget(QucsEditorButt,3,2);
+    connect(QucsEditorButt, &QPushButton::clicked, this, [this] {
+        Input_Program->setText(QucsApp::QucsEditorProgram);
+    });
+
     QPushButton *AddButt = new QPushButton(tr("Set"));
-    fileTypesGrid->addWidget(AddButt,3,1);
+    fileTypesGrid->addWidget(AddButt,4,1);
     connect(AddButt, SIGNAL(clicked()), SLOT(slotAddFileType()));
     QPushButton *RemoveButt = new QPushButton(tr("Remove"));
-    fileTypesGrid->addWidget(RemoveButt,3,2);
+    fileTypesGrid->addWidget(RemoveButt,4,2);
     connect(RemoveButt, SIGNAL(clicked()), SLOT(slotRemoveFileType()));
 
-    fileTypesGrid->setRowStretch(3,4);
+    fileTypesGrid->setRowStretch(4,4);
     t->addTab(fileTypesTab, tr("File Types"));
 
     // ...........................................................

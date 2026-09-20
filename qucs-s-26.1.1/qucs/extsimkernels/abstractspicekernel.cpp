@@ -71,7 +71,7 @@ AbstractSpiceKernel::AbstractSpiceKernel(Schematic *schematic, QObject *parent) 
     // Enforce dataset prefix from config:
     a_needsPrefix = QucsSettings.alwaysPrefixDataset;
 
-    a_workdir = QucsSettings.S4Qworkdir;
+    a_workdir = misc::scratchDir();
     QFileInfo inf(a_workdir);
     if (!inf.exists()) {
         QDir dir;
