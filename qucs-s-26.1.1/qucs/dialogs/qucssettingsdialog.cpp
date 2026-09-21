@@ -706,20 +706,15 @@ void QucsSettingsDialog::slotApply()
     {
         QucsSettings.BGColor = BGColorButton->palette().color(BGColorButton->backgroundRole());
 
-        int No=0;
-        QWidget *w;
-
-        while((w=App->DocumentTab->widget(No++)) != 0) {
-          QWidget *vp;
-          if(QucsApp::isTextDocument(w)) {
-            vp = ((TextDoc*)w)->viewport();
-          } else {
-            vp = ((Schematic*)w)->viewport();
+        for (QucsDoc *doc : App->allDocuments()) {   // in every pane
+          if (TextDoc *text = dynamic_cast<TextDoc*>(doc)) {
+            text->applyDocumentColors();
+          } else if (Schematic *sch = dynamic_cast<Schematic*>(doc)) {
+            QWidget *vp = sch->viewport();
+            QPalette p = vp->palette();
+            p.setColor(vp->backgroundRole(), QucsSettings.BGColor);
+            vp->setPalette(p);
           }
-          QPalette p = vp->palette();
-          p.setColor(vp->backgroundRole(), QucsSettings.BGColor);
-          vp->setPalette(p);
-
         }
         changed = true;
     }

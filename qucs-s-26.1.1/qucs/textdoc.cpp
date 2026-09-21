@@ -62,13 +62,7 @@ TextDoc::TextDoc(QucsApp *App_, const QString& Name_) : QPlainTextEdit(), QucsDo
   viewport()->setFocus();
 
   setWordWrapMode(QTextOption::NoWrap);
-  misc::setWidgetBackgroundColor(viewport(),QucsSettings.BGColor);
-  // Set black text if light background
-  QPalette p = palette();
-  if(QucsSettings.BGColor.value() > 127) {
-    p.setColor(QPalette::Text, Qt::black);
-    setPalette(p);
-  }
+  applyDocumentColors();
   connect(this, SIGNAL(textChanged()), SLOT(slotSetChanged()));
   connect(this, SIGNAL(cursorPositionChanged()),
           SLOT(slotCursorPosChanged()));
@@ -678,6 +672,23 @@ void TextDoc::highlightCurrentLine()
     }
 
     setExtraSelections(extraSelections);
+}
+
+/*!
+ * \brief The document's colours: the document background from the
+ * settings, and black or white text to suit it - the same in the light
+ * and the dark theme, like the schematic's. As a style sheet, not a
+ * palette: the main window has a style sheet, and Qt's style-sheet style
+ * puts the application palette back on every widget it polishes (each
+ * time the editor is shown), which took a palette set here away and made
+ * the editor follow the theme's base colour.
+ */
+void TextDoc::applyDocumentColors()
+{
+  const QColor bg = QucsSettings.BGColor.isValid() ? QucsSettings.BGColor : QColor(Qt::white);
+  const QColor fg = bg.value() > 127 ? QColor(Qt::black) : QColor(Qt::white);
+  setStyleSheet(QStringLiteral("QPlainTextEdit { background-color: %1; color: %2; }")
+                    .arg(bg.name(), fg.name()));
 }
 
 void TextDoc::refreshLanguage()

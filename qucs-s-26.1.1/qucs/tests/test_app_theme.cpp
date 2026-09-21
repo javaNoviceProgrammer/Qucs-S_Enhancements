@@ -21,6 +21,7 @@
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
 #include "dialogs/qucssettingsdialog.h"
+#include "textdoc.h"
 
 using namespace qucs_s::apptheme;
 
@@ -68,6 +69,7 @@ private slots:
         QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
         QucsSettings.firstRun = false;
         QucsSettings.Theme = System;
+        QucsSettings.BGColor = QColor(255, 250, 225);   // the document background, as shipped
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
         Module::registerModules();
         systemWindow = QApplication::palette().color(QPalette::Window);
@@ -160,6 +162,50 @@ private slots:
         QucsSettings.Theme = Dark;
         saveApplSettings();
         QCOMPARE(_settings::Get().item<int>("Theme"), int(Dark));
+    }
+
+    void theTextEditorKeepsItsBackgroundInTheDarkTheme()
+    {
+        // The editor shows the document background from the settings,
+        // whatever the theme - like the schematic. (The main window has a
+        // style sheet, and the style-sheet style used to put the theme's
+        // base colour back on the editor each time it was shown.)
+        ThemeGuard guard;
+        QucsApp app(false);
+        MainGuard mainGuard(&app);
+        app.resize(900, 600);
+        app.show();
+        const QString file = dir.filePath("colours.txt");
+        { QFile f(file); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("line one\nline two\n"); }
+        QVERIFY(app.gotoPage(file, false, false));
+        TextDoc* doc = qobject_cast<TextDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        auto background = [&] {
+            QCoreApplication::processEvents();
+            const QImage img = doc->viewport()->grab().toImage();
+            return img.pixelColor(img.width() - 4, img.height() - 4);   // below the last line
+        };
+        const QColor paper = QucsSettings.BGColor;
+        QCOMPARE(background(), paper);
+        apply(Dark);
+        QTest::qWait(50);
+        QVERIFY(isDark());
+        QCOMPARE(background(), paper);
+        // Dark text on the light paper, not the theme's light text.
+        const QImage img = doc->viewport()->grab().toImage();
+        int darkPixels = 0;
+        for (int y = 0; y < qMin(img.height(), 20); ++y)
+            for (int x = 0; x < qMin(img.width(), 80); ++x)
+                if (img.pixelColor(x, y).value() < 0x40) ++darkPixels;
+        QVERIFY(darkPixels > 0);
+        // A new document background from the settings reaches an open editor.
+        struct BgGuard { QColor c = QucsSettings.BGColor; ~BgGuard() { QucsSettings.BGColor = c; } } bgGuard;
+        QucsSettings.BGColor = QColor(0x20, 0x20, 0x40);
+        doc->applyDocumentColors();
+        QCOMPARE(background(), QColor(0x20, 0x20, 0x40));
+        apply(System);
+        QTest::qWait(50);
+        QCOMPARE(background(), QColor(0x20, 0x20, 0x40));
     }
 
     void theSettingsDialogHasTheThemeChoice()
