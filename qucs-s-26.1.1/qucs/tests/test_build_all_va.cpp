@@ -22,6 +22,7 @@
 #include "projectView.h"
 #include "extsimkernels/spicecompat.h"
 #include "extsimkernels/ngspice.h"
+#include "isolated_settings.h"
 
 // QucsMain must not outlive the QucsApp of a test that fails half-way.
 struct MainGuard {
@@ -117,6 +118,7 @@ private slots:
     void initTestCase()
     {
         QVERIFY(dir.isValid());
+        useIsolatedSettings(dir.filePath("settings"));
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         // QucsApp lists the simulators it can find and puts up a modal
         // error box when there is none: name one that exists.

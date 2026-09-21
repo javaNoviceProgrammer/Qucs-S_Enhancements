@@ -22,6 +22,14 @@
 #include "paintings/painting.h"
 #include "extsimkernels/spicecompat.h"
 
+#if defined(__SANITIZE_ADDRESS__)
+#  define LIFETIME_TEST_ASAN 1
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define LIFETIME_TEST_ASAN 1
+#  endif
+#endif
+
 class TestSchematicLifetime : public QObject
 {
     Q_OBJECT
@@ -37,6 +45,21 @@ class TestSchematicLifetime : public QObject
         for (auto* w : sch.a_DocWires) w->isSelected = true;
         for (auto* d : sch.a_DocDiags) d->isSelected = true;
         for (auto* p : sch.a_DocPaints) p->isSelected = true;
+    }
+
+    // Whether a component that was freed is still listed - by address, which
+    // only means something while freed memory is not handed out again at
+    // once: under ASan (quarantine) it is not, so the check holds there,
+    // and the plain build may well place the new component where the old
+    // one was, so there it is not made.
+    static bool listsAddress(const Schematic& sch, const Component* freed)
+    {
+#ifdef LIFETIME_TEST_ASAN
+        return std::find(sch.a_DocComps.begin(), sch.a_DocComps.end(), freed) != sch.a_DocComps.end();
+#else
+        Q_UNUSED(sch); Q_UNUSED(freed);
+        return false;
+#endif
     }
 
 private slots:
@@ -136,8 +159,7 @@ private slots:
         Component* const after = sch.getComponentByName(name);
         QVERIFY(after != nullptr);
         QCOMPARE(after->Name, name);
-        QVERIFY(std::find(sch.a_DocComps.begin(), sch.a_DocComps.end(), before)
-                == sch.a_DocComps.end());
+        QVERIFY(!listsAddress(sch, before));
     }
 
     void repeatedUndoRedoIsStable()
@@ -168,8 +190,7 @@ private slots:
         QVERIFY(sch.load());
         QCOMPARE(rebuilt.count(), 1);
         QCOMPARE(sch.a_DocComps.size(), comps);
-        QVERIFY(std::find(sch.a_DocComps.begin(), sch.a_DocComps.end(), before)
-                == sch.a_DocComps.end());
+        QVERIFY(!listsAddress(sch, before));
     }
 
     void deleteAllElementsEmptiesTheDocument()

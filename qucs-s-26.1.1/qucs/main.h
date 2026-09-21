@@ -111,6 +111,7 @@ struct tQucsSettings {
   bool fullTraceName;
   bool alwaysPrefixDataset;
   bool ContentTreeView;   // Content panel: subdirectories as sub-trees (true) or "dir/name" rows (false)
+  bool SimulationConsoleDock = true;   // simulator output in the Simulation dock (true) or in a separate window (false)
 
   bool firstRun;
 };

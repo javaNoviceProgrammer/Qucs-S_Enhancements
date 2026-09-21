@@ -16,6 +16,7 @@
 #include "misc.h"
 #include "components/component.h"
 #include "extsimkernels/spicecompat.h"
+#include "isolated_settings.h"
 
 namespace {
 struct MainGuard {
@@ -61,6 +62,7 @@ private slots:
     void initTestCase()
     {
         QVERIFY(dir.isValid());
+        useIsolatedSettings(dir.filePath("settings"));
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         // QucsApp lists the simulators it can find and puts up a modal
         // error box when there is none: name one that exists.

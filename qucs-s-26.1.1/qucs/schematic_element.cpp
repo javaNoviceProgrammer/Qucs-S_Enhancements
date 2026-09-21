@@ -40,20 +40,32 @@ struct Schematic::HealingParams
     qucs_s::wire::Planner::PlanType m_wire_plan = qucs_s::wire::Planner::PlanType::Straight;
 };
 
-const Schematic::HealingParams mousyMutationParams{
-    .m_healer_params = {
-        .allowWireReshaping = _settings::Get().item<bool>("AllowFlexibleWires"),
-        .allowWireRelaying = false,
-        .wireRelayingDepth = 2
-    }
-};
+// Read from the settings when first needed rather than at start-up: as
+// globals these opened the settings store before main(), ahead of the
+// application object (hence a font warning at every start) and of any
+// choice of store the process makes - the tests keep theirs apart.
+static const Schematic::HealingParams& mousyMutationParams()
+{
+    static const Schematic::HealingParams params{
+        .m_healer_params = {
+            .allowWireReshaping = _settings::Get().item<bool>("AllowFlexibleWires"),
+            .allowWireRelaying = false,
+            .wireRelayingDepth = 2
+        }
+    };
+    return params;
+}
 
-const Schematic::HealingParams keyboardMutationParams{
-    .m_healer_params = {
-        .allowWireReshaping = _settings::Get().item<bool>("AllowFlexibleWires"),
-        .allowWireRelaying = false
-    }
-};
+static const Schematic::HealingParams& keyboardMutationParams()
+{
+    static const Schematic::HealingParams params{
+        .m_healer_params = {
+            .allowWireReshaping = _settings::Get().item<bool>("AllowFlexibleWires"),
+            .allowWireRelaying = false
+        }
+    };
+    return params;
+}
 
 constexpr Schematic::HealingParams noninteractiveMutationParams{
     .m_healer_params = {.allowWireReshaping = false, .allowWireRelaying = false, .wireRelayingDepth = 3}
@@ -2751,7 +2763,7 @@ public:
 }
 
 void Schematic::displayMutations() {
-    qucs_s::Healer healer{a_Components, a_Wires, mousyMutationParams.m_healer_params};
+    qucs_s::Healer healer{a_Components, a_Wires, mousyMutationParams().m_healer_params};
     internal::ChangesPainter p{this};
 
     for (auto& mutation : healer.planHealing()) {
@@ -2900,14 +2912,14 @@ void Schematic::dumbConnectWithWire(const QPoint& a, const QPoint& b) noexcept {
 
 bool Schematic::healAfterMousyMutation()
 {
-    auto params_copy = std::make_unique<HealingParams>(mousyMutationParams);
+    auto params_copy = std::make_unique<HealingParams>(mousyMutationParams());
     params_copy->m_wire_plan = a_wirePlanner.planType();
     return heal(params_copy.get());
 }
 
 bool Schematic::healAfterKeyboardMutation()
 {
-    return heal(&keyboardMutationParams);
+    return heal(&keyboardMutationParams());
 }
 
 // vim:ts=8:sw=2:noet

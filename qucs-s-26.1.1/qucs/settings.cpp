@@ -6,7 +6,7 @@
 #include "extsimkernels/spicecompat.h"
 
 settingsManager::settingsManager()
-    :QSettings("qucs", "qucs_s")
+    :QucsSettingsFile()
 {
     // qDebug() << this << " created " << organizationName() << " " << applicationName();
 
@@ -82,6 +82,7 @@ void settingsManager::initDefaults()
     m_Defaults["TextAntiAliasing"] = false;
     m_Defaults["fullTraceName"] = false;
     m_Defaults["ContentTreeView"] = false;
+    m_Defaults["SimulationConsoleDock"] = true;
     m_Defaults["NgspiceCompatMode"] = spicecompat::NgspDefault;
     m_Defaults["AllowFlexibleWires"] = false;
     m_Defaults["AllowLayingWiresAnew"] = false;

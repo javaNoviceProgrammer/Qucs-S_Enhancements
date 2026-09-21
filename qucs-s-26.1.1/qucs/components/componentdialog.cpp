@@ -834,7 +834,7 @@ void ComponentDialog::writeEquation()
 // Applies all changes and closes the dialog.
 void ComponentDialog::slotOKButton()
 {
-  QSettings settings("qucs","qucs_s");
+  QucsSettingsFile settings;
   settings.setValue("ComponentDialog/geometry", saveGeometry());
 
   slotApplyButton();

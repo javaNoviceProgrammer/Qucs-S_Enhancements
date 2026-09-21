@@ -1026,11 +1026,8 @@ void QucsApp::initMenuBar() {
   // viewMenu->setCheckable(true);
   viewMenu->addAction(viewBrowseDock);
   viewMenu->addAction(viewOctaveDock);
-  // The simulation console dock keeps its own show/hide action in sync.
-  QAction *viewSimConsole = simConsole->dock()->toggleViewAction();
-  viewSimConsole->setText(tr("&Simulation Console"));
-  viewSimConsole->setStatusTip(tr("Shows/hides the simulation console dock"));
-  viewMenu->addAction(viewSimConsole);
+  // Shows/hides the simulation console, in its dock or its window.
+  viewMenu->addAction(simConsole->viewAction());
 
   helpMenu = new QMenu(tr("&Help")); // menuBar entry helpMenu
   helpMenu->addAction(helpIndex);
@@ -1157,6 +1154,10 @@ void QucsApp::initToolBar() {
   workToolbar->addAction(insPort);
   // workToolbar->addSeparator();    // <<<=======================
 
+  // The simulation toolbar starts a second row: with the simulator
+  // combo box it is the widest, and on one row it is the first to be
+  // pushed out of sight or into the overflow menu when the window is narrow.
+  this->addToolBarBreak();
   simulateToolbar = new QToolBar(tr("Simulate"));
   this->addToolBar(simulateToolbar);
   simulateToolbar->addWidget(reinterpret_cast<QWidget *>(simulatorsCombobox));

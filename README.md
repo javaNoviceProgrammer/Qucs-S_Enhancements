@@ -90,7 +90,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Clear*; it comes up with the first simulation and can be shown or hidden
   from *View → Simulation Console*. A second Simulate while one is running
   is refused (the console says so); closing the schematic being simulated
-  stops its run (upstream #235).
+  stops its run (upstream #235). Those who prefer the separate window get
+  it back under *Simulation → Simulators Settings → Simulation console*:
+  the same console in a window of its own, which no longer blocks the
+  application either. The simulation toolbar (simulator choice, Simulate,
+  Tune, …) starts a second row of toolbars.
 - **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
   can show a legend — a sample of each graph's line (colour, thickness,
   style or symbol) with its variable — in a corner of its choice:
@@ -253,7 +257,12 @@ ctest --test-dir build-asan --output-on-failure
 scripts/ci/smoke-test.sh hostile build-asan/qucs/qucs-s.app/Contents/MacOS/qucs-s qucs-s-26.1.1/examples /tmp/smoke
 ```
 
-Unit tests live in `qucs-s-26.1.1/qucs/tests/` (QtTest, headless).
+Unit tests live in `qucs-s-26.1.1/qucs/tests/` (QtTest, headless). They keep
+their settings in a file under their temporary directory
+(`tests/isolated_settings.h`), so a test run never touches your own Qucs-S
+preferences; the application offers the same for trying a build out:
+`QUCS_SETTINGS_DIR=<dir> qucs-s` keeps that run's settings in
+`<dir>/qucs/qucs_s.ini`.
 
 `scripts/ci/smoke-test.sh` has three suites — `load` (render every ngspice
 example), `simulate` (netlist → ngspice → dataset → render; needs `ngspice` on

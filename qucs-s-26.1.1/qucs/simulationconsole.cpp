@@ -1,5 +1,5 @@
 /*
- * simulationconsole.cpp - the dockable simulation console
+ * simulationconsole.cpp - the simulation console, in a dock or a window
  *
  * This file is part of Qucs-S.
  *
@@ -12,30 +12,44 @@
 #include "simulationconsole.h"
 
 #include "qucs.h"
+#include "main.h"
+#include "settings.h"
 #include "schematic.h"
 #include "messagedock.h"
 #include "extsimkernels/simulationrun.h"
 
+#include <QAction>
 #include <QApplication>
+#include <QDialog>
 #include <QDockWidget>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QSplitter>
 #include <QStyle>
 #include <QVBoxLayout>
 
+namespace {
+// The window's size and position, under the key the old dialog used.
+const char* const WindowGeometryKey = "ExternSimDialog/geometry";
+}
+
 SimulationConsole::SimulationConsole(QucsApp* app)
     : QWidget(),
       a_dock(new QDockWidget(tr("Simulation"), app)),
+      a_window(new QDialog(app)),
+      a_viewAction(new QAction(tr("&Simulation Console"), this)),
       a_console(new QPlainTextEdit(this)),
       a_statusLog(new QListWidget(this)),
       a_progress(new QProgressBar(this)),
       a_buttonStop(new QPushButton(tr("Stop"), this)),
       a_buttonSaveNetlist(new QPushButton(tr("Save netlist"), this)),
-      a_buttonClear(new QPushButton(tr("Clear"), this))
+      a_buttonClear(new QPushButton(tr("Clear"), this)),
+      a_buttonClose(new QPushButton(tr("Close"), this))
 {
     QFont font;
     font.setFamily("monospace");
@@ -61,6 +75,7 @@ SimulationConsole::SimulationConsole(QucsApp* app)
     buttons->addWidget(a_buttonClear);
     buttons->addStretch();
     buttons->addWidget(a_progress, 1);
+    buttons->addWidget(a_buttonClose);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 4, 4, 4);
@@ -72,15 +87,49 @@ SimulationConsole::SimulationConsole(QucsApp* app)
     connect(a_buttonClear, &QPushButton::clicked, this, &SimulationConsole::clear);
     setRunning(false);
 
+    // The dock host: at the bottom, sharing the space with the
+    // build-message dock as tabs rather than stacking two docks there.
     a_dock->setObjectName(QStringLiteral("SimulationConsoleDock"));
-    a_dock->setWidget(this);
     a_dock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
     app->addDockWidget(Qt::BottomDockWidgetArea, a_dock);
-    // Share the bottom with the build-message dock as tabs rather than
-    // stacking two docks there.
     if (app->messages() != nullptr && app->messages()->msgDock != nullptr)
         app->tabifyDockWidget(app->messages()->msgDock, a_dock);
     a_dock->hide();   // until the first simulation, or View > Simulation Console
+    a_dock->installEventFilter(this);
+
+    // The window host: the classic simulation dialog, not modal any more.
+    a_window->setObjectName(QStringLiteral("SimulationConsoleWindow"));
+    a_window->setWindowTitle(tr("Simulate with external simulator"));
+    a_window->setMinimumWidth(500);
+    a_window->setSizeGripEnabled(true);
+    auto* windowLayout = new QVBoxLayout(a_window);
+    windowLayout->setContentsMargins(6, 6, 6, 6);
+    a_window->resize(720, 420);
+    a_window->restoreGeometry(QucsSettingsFile().value(QLatin1String(WindowGeometryKey)).toByteArray());
+    a_window->installEventFilter(this);
+    connect(a_buttonClose, &QPushButton::clicked, a_window, &QWidget::hide);
+
+    a_viewAction->setCheckable(true);
+    a_viewAction->setStatusTip(tr("Shows/hides the simulation console"));
+    connect(a_viewAction, &QAction::triggered, this, &SimulationConsole::slotToggleView);
+
+    // Into the host the setting names.
+    if (QucsSettings.SimulationConsoleDock)
+        a_dock->setWidget(this);
+    else
+        windowLayout->addWidget(this);
+    a_buttonClose->setVisible(!QucsSettings.SimulationConsoleDock);
+    syncViewAction();
+}
+
+bool SimulationConsole::inDock() const
+{
+    return a_dock->widget() == this;
+}
+
+QWidget* SimulationConsole::host() const
+{
+    return inDock() ? static_cast<QWidget*>(a_dock) : static_cast<QWidget*>(a_window);
 }
 
 bool SimulationConsole::isRunning() const
@@ -88,7 +137,7 @@ bool SimulationConsole::isRunning() const
     return !a_run.isNull() && a_run->isRunning();
 }
 
-SimulationRun* SimulationConsole::startRun(Schematic* schematic, bool showDockNow)
+SimulationRun* SimulationConsole::startRun(Schematic* schematic, bool showConsoleNow)
 {
     if (!a_run.isNull()) {
         // A run is still going, or its result is still being handled.
@@ -96,7 +145,7 @@ SimulationRun* SimulationConsole::startRun(Schematic* schematic, bool showDockNo
                                          tr("A simulation is already running; stop it or wait for it to finish."));
         a_statusLog->addItem(item);
         a_statusLog->scrollToBottom();
-        if (showDockNow) showDock();
+        if (showConsoleNow) showConsole();
         return nullptr;
     }
     a_run = new SimulationRun(schematic, false, this);
@@ -106,14 +155,39 @@ SimulationRun* SimulationConsole::startRun(Schematic* schematic, bool showDockNo
     // A closed document takes its run down with it.
     connect(schematic, &QObject::destroyed, a_run, &SimulationRun::stop);
     setRunning(true);
-    if (showDockNow) showDock();
+    if (showConsoleNow) showConsole();
     return a_run;
 }
 
-void SimulationConsole::showDock()
+void SimulationConsole::showConsole()
 {
-    a_dock->show();
-    a_dock->raise();
+    QWidget* h = host();
+    h->show();
+    h->raise();
+    if (h == a_window) a_window->activateWindow();
+}
+
+void SimulationConsole::applyHostSetting()
+{
+    const bool toDock = QucsSettings.SimulationConsoleDock;
+    if (toDock == inDock()) {
+        a_buttonClose->setVisible(!toDock);
+        return;
+    }
+    const bool wasShown = !host()->isHidden();
+    if (toDock) {
+        a_window->hide();
+        a_window->layout()->removeWidget(this);
+        a_dock->setWidget(this);        // reparents and shows the console
+    } else {
+        a_dock->hide();
+        a_dock->setWidget(nullptr);     // hides the console as it lets go
+        a_window->layout()->addWidget(this);
+        setVisible(true);
+    }
+    a_buttonClose->setVisible(!toDock);
+    if (wasShown) showConsole();
+    syncViewAction();
 }
 
 void SimulationConsole::clear()
@@ -123,6 +197,35 @@ void SimulationConsole::clear()
     a_progress->setValue(0);
 }
 
+bool SimulationConsole::eventFilter(QObject* watched, QEvent* event)
+{
+    // The hosts are deleted with the main window, the console with one of
+    // them; a host's last Hide, on its way out, is not of interest.
+    if (!a_dock.isNull() && !a_window.isNull()
+        && (watched == a_dock || watched == a_window)
+        && (event->type() == QEvent::Show || event->type() == QEvent::Hide)) {
+        if (watched == a_window && event->type() == QEvent::Hide)
+            QucsSettingsFile().setValue(QLatin1String(WindowGeometryKey), a_window->saveGeometry());
+        syncViewAction();
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void SimulationConsole::slotToggleView(bool show)
+{
+    if (show)
+        showConsole();
+    else
+        host()->hide();
+}
+
+void SimulationConsole::syncViewAction()
+{
+    // As a dock's own toggle action does: checked unless explicitly hidden
+    // (a dock behind another tab is not hidden).
+    a_viewAction->setChecked(!host()->isHidden());
+}
+
 void SimulationConsole::slotRunStarted()
 {
     setRunning(true);
@@ -130,10 +233,9 @@ void SimulationConsole::slotRunStarted()
 
 void SimulationConsole::slotRunSimulated(SimulationRun* run)
 {
-    // QucsApp handles the result in its own slot (connected before this
-    // one is reached? no: connection order is creation order, so the app's
-    // handler, connected after startRun(), runs after this). Free the run
-    // once every handler is done.
+    // QucsApp handles the result in its own slot (connected after
+    // startRun(), so it runs after this one). Free the run once every
+    // handler is done.
     setRunning(false);
     if (run == a_run) {
         run->deleteLater();

@@ -42,7 +42,10 @@ MessageDock::MessageDock(QucsApp *App_): QWidget()
 {
 
     builderTabs = new QTabWidget();
-    builderTabs->setTabPosition(QTabWidget::South);
+    // Tabs at the top: the dock shares the bottom of the main window with
+    // the simulation console, and the tab bar that switches between the two
+    // docks sits below - tabs at the bottom here would stack two tab bars.
+    builderTabs->setTabPosition(QTabWidget::North);
 
     // 1) add a dock for the adms messages
     admsOutput = new QPlainTextEdit();

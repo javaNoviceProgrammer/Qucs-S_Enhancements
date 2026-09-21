@@ -1,18 +1,25 @@
 /*
- * The simulation console (#235): a simulation runs in a dock instead of a
- * modal dialog. The dock appears with the run, the application stays
+ * The simulation console (#235): a simulation runs in a dock, or in the
+ * classic window when the simulator settings say so, instead of a modal
+ * dialog. The console appears with the run, the application stays
  * responsive, Stop ends the run, a second run is refused while the first
- * is going, and closing the simulated document takes the run down safely.
+ * is going, closing the simulated document takes the run down safely, and
+ * the console can move between its two hosts with a run in progress.
  * A script stands in for the simulator so that timing is under control;
  * the last case uses the real ngspice when it is installed.
  */
 #include <QtTest>
 #include <QTemporaryDir>
+#include <QAction>
+#include <QDialog>
 #include <QDockWidget>
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QStandardPaths>
+#include <QTabWidget>
+#include <QToolBar>
 
 #include "config.h"
 #include "qucs.h"
@@ -21,13 +28,23 @@
 #include "main.h"
 #include "misc.h"
 #include "simulationconsole.h"
+#include "messagedock.h"
 #include "extsimkernels/simulationrun.h"
 #include "extsimkernels/spicecompat.h"
+#include "extsimkernels/simsettingsdialog.h"
+#include "settings.h"
+#include "isolated_settings.h"
 
 namespace {
 struct MainGuard {
     explicit MainGuard(QucsApp* app) { QucsMain = app; }
     ~MainGuard() { QucsMain = nullptr; }
+};
+
+// Restores the dock/window choice a case changes.
+struct HostGuard {
+    bool saved = QucsSettings.SimulationConsoleDock;
+    ~HostGuard() { QucsSettings.SimulationConsoleDock = saved; }
 };
 
 QStringList statusLines(SimulationConsole* c)
@@ -75,6 +92,7 @@ private slots:
     void initTestCase()
     {
         QVERIFY(dir.isValid());
+        useIsolatedSettings(dir.filePath("settings"));
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         QucsSettings.maxUndo = 20;
         QucsSettings.firstRun = false;   // else QucsApp goes looking for ngspice and resets its path
@@ -122,12 +140,22 @@ private slots:
         QVERIFY(console->console()->toPlainText().contains("Simulation finished"));
         QVERIFY(!button(console, "Stop")->isEnabled());
         QVERIFY(QFileInfo::exists(dir.filePath("work/log.txt")));   // the log, as before
-        // For a look at the dock: QUCS_TEST_GRAB=<dir> saves a picture of it.
+        // For a look at the dock: QUCS_TEST_GRAB=<dir> saves a picture of it,
+        // and one of the main window with the build-message dock up as well,
+        // for the two docks' tab bars.
         const QString grabDir = qEnvironmentVariable("QUCS_TEST_GRAB");
         if (!grabDir.isEmpty()) {
             console->dock()->resize(900, 260);
             QTest::qWait(50);
             console->dock()->grab().save(grabDir + "/simulation-console.png");
+            app.messages()->msgDock->show();
+            console->showConsole();
+            app.resize(1200, 760);
+            QTest::qWait(100);
+            app.grab().save(grabDir + "/main-window.png");
+            app.messages()->msgDock->raise();
+            QTest::qWait(100);
+            app.grab().save(grabDir + "/main-window-messages.png");
         }
         app.closeAllFiles();
     }
@@ -207,6 +235,148 @@ private slots:
         QVERIFY(statusLines(console).join("\n").contains("Failed to start"));
         QTRY_VERIFY(console->currentRun() == nullptr);
         app.closeAllFiles();
+    }
+
+    void theWindowHostIsUsedWhenChosen()
+    {
+        resetSchematic();
+        QucsSettings.NgspiceExecutable = fakeSimulator;
+        HostGuard hostGuard;
+        QucsSettings.SimulationConsoleDock = false;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(sch));
+        SimulationConsole* console = app.simulationConsole();
+        QVERIFY(!console->inDock());
+        QCOMPARE(console->host(), static_cast<QWidget*>(console->window()));
+        QVERIFY(console->dock()->widget() == nullptr);
+        QVERIFY(!console->window()->isVisible());
+        QVERIFY(!console->dock()->isVisible());
+        QVERIFY(!console->viewAction()->isChecked());
+
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotSimulateWithSpice"));
+        QVERIFY(console->window()->isVisible());         // the window came up with the run
+        QVERIFY(!console->dock()->isVisible());
+        QVERIFY(console->viewAction()->isChecked());
+        QVERIFY(console->isRunning());
+        QVERIFY(!console->window()->isModal());           // unlike the old dialog
+        QVERIFY(app.isEnabled());
+        QTRY_VERIFY(console->console()->toPlainText().contains("fake ngspice"));
+
+        // Closing the window does not stop the simulation...
+        QVERIFY(!button(console, "Close")->isHidden());
+        button(console, "Close")->click();
+        QVERIFY(!console->window()->isVisible());
+        QVERIFY(!console->viewAction()->isChecked());
+        QVERIFY(console->isRunning());
+        // ...and View > Simulation Console brings it back.
+        console->viewAction()->trigger();
+        QVERIFY(console->window()->isVisible());
+        QVERIFY(console->viewAction()->isChecked());
+
+        QTRY_VERIFY_WITH_TIMEOUT(!console->isRunning(), 15000);
+        QVERIFY(statusLines(console).filter("successful").size() == 1);
+        QVERIFY(console->window()->isVisible());          // stays up, as the old dialog did
+        app.closeAllFiles();
+    }
+
+    void switchingTheHostMovesTheConsoleWithItsRun()
+    {
+        resetSchematic();
+        QucsSettings.NgspiceExecutable = fakeSimulator;
+        HostGuard hostGuard;
+        QucsSettings.SimulationConsoleDock = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(sch));
+        SimulationConsole* console = app.simulationConsole();
+        QVERIFY(console->inDock());
+        QVERIFY(button(console, "Close")->isHidden());     // the dock has its own
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotSimulateWithSpice"));
+        QVERIFY(console->dock()->isVisible());
+        SimulationRun* run = console->currentRun();
+        QVERIFY(run != nullptr);
+
+        // As QucsApp does once the simulator settings were applied.
+        QucsSettings.SimulationConsoleDock = false;
+        console->applyHostSetting();
+        QVERIFY(!console->inDock());
+        QCOMPARE(console->parentWidget(), static_cast<QWidget*>(console->window()));
+        QVERIFY(console->window()->isVisible());          // it was up, so it stays up
+        QVERIFY(!console->dock()->isVisible());
+        QVERIFY(console->isVisible());
+        QVERIFY(!button(console, "Close")->isHidden());
+        QVERIFY(console->viewAction()->isChecked());
+        QCOMPARE(console->currentRun(), run);             // the run came along
+        QVERIFY(console->isRunning());
+
+        // ...and back into the dock.
+        QucsSettings.SimulationConsoleDock = true;
+        console->applyHostSetting();
+        QVERIFY(console->inDock());
+        QCOMPARE(console->dock()->widget(), static_cast<QWidget*>(console));
+        QVERIFY(console->dock()->isVisible());
+        QVERIFY(!console->window()->isVisible());
+        QVERIFY(console->isVisible());
+        QVERIFY(button(console, "Close")->isHidden());
+        QCOMPARE(console->currentRun(), run);
+        QTRY_VERIFY_WITH_TIMEOUT(!console->isRunning(), 15000);
+        QVERIFY(statusLines(console).filter("successful").size() == 1);
+        app.closeAllFiles();
+    }
+
+    void theSettingsDialogOffersTheChoice()
+    {
+        HostGuard hostGuard;
+        QucsSettings.SimulationConsoleDock = true;
+        {
+            SimSettingsDialog dlg;
+            auto* tabs = dlg.findChild<QTabWidget*>();
+            QVERIFY(tabs != nullptr);
+            QStringList titles;
+            for (int i = 0; i < tabs->count(); ++i) titles << tabs->tabText(i);
+            QVERIFY2(titles.contains("Simulation console"), qPrintable(titles.join(" | ")));
+            QVERIFY(titles.contains("Simulators"));
+            auto* dockChoice = dlg.findChild<QRadioButton*>("rbConsoleDock");
+            auto* windowChoice = dlg.findChild<QRadioButton*>("rbConsoleWindow");
+            QVERIFY(dockChoice != nullptr && windowChoice != nullptr);
+            QVERIFY(dockChoice->isChecked());
+            windowChoice->setChecked(true);
+            QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));   // "Apply changes"
+            QCOMPARE(dlg.result(), static_cast<int>(QDialog::Accepted));
+            QVERIFY(!QucsSettings.SimulationConsoleDock);
+            QVERIFY(!_settings::Get().item<bool>("SimulationConsoleDock"));   // saved
+        }
+        {
+            SimSettingsDialog dlg;                       // opens on the current choice
+            QVERIFY(dlg.findChild<QRadioButton*>("rbConsoleWindow")->isChecked());
+            dlg.findChild<QRadioButton*>("rbConsoleDock")->setChecked(true);
+            dlg.reject();                                // Cancel leaves it alone
+            QVERIFY(!QucsSettings.SimulationConsoleDock);
+        }
+    }
+
+    // Not the console, but the simulation toolbar next to it: it starts a
+    // second row of toolbars.
+    void theSimulationToolbarStartsASecondRow()
+    {
+        QucsSettings.NgspiceExecutable = fakeSimulator;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QToolBar* simulateBar = nullptr;
+        QToolBar* fileBar = nullptr;
+        for (QToolBar* t : app.findChildren<QToolBar*>()) {
+            if (t->windowTitle() == "Simulate") simulateBar = t;
+            if (t->windowTitle() == "File") fileBar = t;
+        }
+        QVERIFY(simulateBar != nullptr && fileBar != nullptr);
+        QCOMPARE(app.toolBarArea(simulateBar), Qt::TopToolBarArea);
+        QVERIFY(app.toolBarBreak(simulateBar));
+        QVERIFY(!app.toolBarBreak(fileBar));
     }
 
     void theRealSimulatorWritesTheDataset()
