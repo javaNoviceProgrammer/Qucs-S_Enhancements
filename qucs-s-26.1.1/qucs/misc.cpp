@@ -370,13 +370,17 @@ QString misc::properFileName(const QString& Name)
 // #########################################################################
 namespace {
 // QDirIterator would also walk hidden directories, so recurse by hand:
-// no hidden entries, and no symbolic links to directories (cycles).
+// no hidden entries (dot names, checked here as well - Qt 6.10 on macOS
+// let a ".hidden" directory through the QDir filter), and no symbolic
+// links to directories (cycles).
 void collectProjectFiles(const QDir& base, const QDir& dir, const QStringList& nameFilters, QStringList& files)
 {
   for (const QFileInfo& fi : dir.entryInfoList(nameFilters, QDir::Files, QDir::Unsorted))
-    files.append(base.relativeFilePath(fi.filePath()));
+    if (!fi.fileName().startsWith(QLatin1Char('.')))
+      files.append(base.relativeFilePath(fi.filePath()));
   for (const QFileInfo& fi : dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Unsorted))
-    collectProjectFiles(base, QDir(fi.filePath()), nameFilters, files);
+    if (!fi.fileName().startsWith(QLatin1Char('.')))
+      collectProjectFiles(base, QDir(fi.filePath()), nameFilters, files);
 }
 } // namespace
 
