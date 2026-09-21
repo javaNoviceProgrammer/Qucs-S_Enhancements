@@ -21,7 +21,7 @@ Using Claude Code to enhance the Qucs-S circuit simulator interface.
 - **Content panel sees the whole project**: files in subdirectories of the
   project (at any depth, hidden directories excluded) are listed under
   their category, either as `sub/dir/name.ext` rows or as sub-trees with
-  one folder row per directory — right-click anywhere in the panel,
+  one folder row per directory — right-click the empty area of the panel,
   *Toggle hierarchy search view*, to switch; the choice is remembered.
   Open, copy, rename, delete, drag and subcircuit insertion work on them in
   both listings. A new *Osdi* category lists the compiled `.osdi` models;

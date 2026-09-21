@@ -327,9 +327,9 @@ existing demand.
   ngspice netlister `pre_osdi`s every `.osdi` of the tree and Build All
   compiles every `.va` of the tree, so the panel and the simulator agree
   on what belongs to the project.
-  Two listings, switched from the panel's context menu (*Toggle hierarchy
-  search view*, offered on file rows, category rows, folder rows and the
-  empty area) and kept in the settings (`ContentTreeView`): the flat
+  Two listings, switched from the context menu of the panel's empty area
+  (*Toggle hierarchy search view*; rows keep their own menus) and kept in
+  the settings (`ContentTreeView`): the flat
   `dir/name` rows, or a sub-tree per directory under each category. To
   make that possible every file row carries its project-relative path in
   `ProjectView::FilePathRole`, and the consumers in `QucsApp` (open,
