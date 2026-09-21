@@ -166,6 +166,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   follows them when they change. The schematic's own colours — document
   background, grid — stay the settings above it on the same tab, and the
   text editor is black on white in either theme.
+- **Net highlighting**: select a wire and its whole electrical net lights
+  up — every wire and node reached through junctions, through wire labels
+  of the same name (a `Vout` here joins a `Vout` there) and through ground
+  symbols — as an orange glow under the wires, for as long as the
+  selection lasts. Several selected wires light their nets together.
+  Exports and prints never show it.
 - **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
   can show a legend — a sample of each graph's line (colour, thickness,
   style or symbol) with its variable — in a corner of its choice:

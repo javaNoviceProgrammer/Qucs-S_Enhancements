@@ -34,6 +34,7 @@
 #include "qt3_compat/q3scrollview.h"
 #include <QVector>
 #include <algorithm>
+#include <unordered_set>
 #include <QStringList>
 
 class QTextStream;
@@ -451,6 +452,23 @@ private:
   */
   double renderModel(double scale, QRect newModelBounds, QPoint modelPlaneCoords, QPoint viewportCoords);
   void drawElements(QPainter* painter);
+
+public:
+  /// The electrical net of the selected wires: every wire and node
+  /// reached from them through nodes, through labels of the same name
+  /// (a "Vout" here joins a "Vout" there) and through ground symbols
+  /// (all grounds are one net). Empty when no wire is selected. Painted
+  /// as a glow under the wires and nodes while the selection lasts.
+  struct Net {
+    std::unordered_set<Wire*> wires;
+    std::unordered_set<Node*> nodes;
+    bool empty() const { return wires.empty() && nodes.empty(); }
+  };
+  Net selectedNet() const;
+  /// The net a wire belongs to, whether it is selected or not.
+  Net netOf(Wire* wire) const;
+private:
+  void drawNetHighlight(QPainter* painter, const Net& net);
   void drawDcBiasPoints(QPainter* painter);
   void drawPostPaintEvents(QPainter* painter);
   void paintFrame(QPainter* painter);

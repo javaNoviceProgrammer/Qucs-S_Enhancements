@@ -555,10 +555,15 @@ existing demand.
 **Medium (weeks each)**
 
 - **Auto-placement of DC-bias labels** to avoid overlaps (#1692).
-- **Net highlighting**: hover or click a wire and highlight the entire
-  electrical net. The `Node`↔`Wire`↔`Port` graph makes this a simple
-  flood-fill; it needs hover events, which the `Q3ScrollView` canvas does
-  not currently emit.
+- *Done (click, not hover):* **Net highlighting.** `Schematic::netOf(Wire*)`
+  flood-fills the `Node`↔`Wire` graph and, in rounds, joins what labels
+  of the same name and ground symbols connect; `selectedNet()` is the
+  union over the selected wires, and `drawElements()` paints it as a
+  translucent orange glow under the wires and nodes (not in symbol mode,
+  and `paintSchToViewpainter()` - exports, prints - never). Computed per
+  repaint (a few hundred wires at most), so no selection hook is needed.
+  Hover stays out until the canvas emits it. `qucs/tests/test_net_highlight`
+  covers the three joins, the selection union and the rendered glow.
 - **ERC pre-flight panel**: today `Ngspice::slotSimulate` prints "No ground
   found" into the console *after* you press Simulate. Run the same checks
   (plus floating ports, unconnected pins, duplicate refdes) live and show
