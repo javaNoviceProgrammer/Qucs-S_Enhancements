@@ -457,14 +457,18 @@ existing demand.
   `PYTHON_BASIC_REPL=1`. The program goes with the console (hang-up,
   then kill; `waitpid` so no zombie is left).
   `qucs/tests/test_process_console` drives `/bin/sh` and `python3`.
-- *Done:* **Content panel refreshes by itself.** `ProjectView` keeps a
-  `QFileSystemWatcher` on the project directory and every listed
-  subdirectory (re-pointed by each `refresh()`); `directoryChanged`
-  arms a 700 ms single-shot timer, which refreshes - or waits while a
-  simulation runs, whose scratch files would refresh every moment. A
-  *Refresh* action sits on the panel's four context menus (empty area,
-  file, Verilog-A category, any other category/folder - the last is
-  new). Every file row now has its note cell, empty or not: a row short
+- *Done:* **Content panel refreshes by itself.** `ProjectView` polls: a
+  repeating timer (`QucsSettings.ContentRefreshSeconds`, off with
+  `ContentAutoRefresh`, both under *Application Settings → Settings*)
+  compares `listingSignature()` - every project file with size and
+  mtime - with that of the listing shown and rebuilds only on a
+  difference, never while a simulation runs, a popup is open or a drag
+  is going. (A first version watched the directories with a
+  `QFileSystemWatcher` and re-pointed it after each refresh; on the
+  user's machine that refreshed without end and made the panel
+  unusable, so the change check and the user-set interval replaced
+  it.) A *Refresh* action sits on the empty area's menu only. Every
+  file row now has its note cell, empty or not: a row short
   of a cell in the two-column model had Qt's accessible-table layer
   asking for the missing cell, losing count of the rows and crashing on
   the next expand while an assistive client was attached.

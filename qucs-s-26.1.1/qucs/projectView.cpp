@@ -30,8 +30,8 @@
 
 #include <QString>
 #include <QStringList>
+#include <QApplication>
 #include <QDir>
-#include <QFileSystemWatcher>
 #include <QStandardItemModel>
 #include <QTimer>
 #include <QDebug>
@@ -48,21 +48,11 @@ ProjectView::ProjectView(QWidget *parent)
   m_projPath = QString();
   m_valid = false;
   m_model = new QStandardItemModel(0, 2, this);
-  // Changes in the project's directories come in bursts (a simulation
-  // writes several files); one refresh a moment after the last.
-  m_watcher = new QFileSystemWatcher(this);
-  m_refreshTimer = new QTimer(this);
-  m_refreshTimer->setSingleShot(true);
-  m_refreshTimer->setInterval(700);
-  connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, &ProjectView::scheduleRefresh);
-  connect(m_refreshTimer, &QTimer::timeout, this, [this] {
-    if (QucsMain != nullptr && QucsMain->simulationConsole() != nullptr
-        && QucsMain->simulationConsole()->isRunning()) {
-      m_refreshTimer->start();   // not while the simulator is writing
-      return;
-    }
-    refresh();
-  });
+  // Every so many seconds, a look at the project's files; the panel is
+  // rebuilt only when they differ from what it shows.
+  m_pollTimer = new QTimer(this);
+  connect(m_pollTimer, &QTimer::timeout, this, &ProjectView::refreshIfChanged);
+  applyRefreshSettings();
 
   this->setModel(m_model);
   refresh();
@@ -333,36 +323,49 @@ ProjectView::refresh()
 
   restoreExpanded(QModelIndex(), expanded);
   resizeColumnToContents(0);
-  watchProjectDirectories();
+  m_signature = listingSignature();
 }
 
-void ProjectView::scheduleRefresh()
+QString ProjectView::listingSignature() const
 {
-  m_refreshTimer->start();
+  if (!m_valid) return QString();
+  const QDir workPath(m_projPath);
+  QString signature;
+  for (const QString& fileName : misc::projectFiles(workPath)) {
+    const QFileInfo info(workPath.filePath(fileName));
+    signature += fileName + QLatin1Char('|') + QString::number(info.size()) + QLatin1Char('|')
+                 + QString::number(info.lastModified().toMSecsSinceEpoch()) + QLatin1Char('\n');
+  }
+  return signature;
 }
 
-QStringList ProjectView::watchedDirectories() const
+void ProjectView::applyRefreshSettings()
 {
-  return m_watcher->directories();
+  const int seconds = qBound(1, QucsSettings.ContentRefreshSeconds, 3600);
+  m_pollTimer->setInterval(seconds * 1000);
+  if (QucsSettings.ContentAutoRefresh)
+    m_pollTimer->start();
+  else
+    m_pollTimer->stop();
 }
 
-void ProjectView::watchProjectDirectories()
+bool ProjectView::autoRefreshEnabled() const
 {
-  const QStringList before = m_watcher->directories();
-  if (!before.isEmpty()) m_watcher->removePaths(before);
+  return m_pollTimer->isActive();
+}
+
+void ProjectView::refreshIfChanged()
+{
   if (!m_valid) return;
-  // The project directory and every subdirectory the listing covers
-  // (misc::projectFiles() skips hidden ones and symbolic links too).
-  QStringList dirs{m_projPath};
-  std::function<void(const QDir&)> walk = [&](const QDir& d) {
-    // no QDir::Hidden: hidden directories are left out, and not entered
-    for (const QFileInfo& info : d.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name)) {
-      dirs << info.absoluteFilePath();
-      walk(QDir(info.absoluteFilePath()));
-    }
-  };
-  walk(QDir(m_projPath));
-  m_watcher->addPaths(dirs);
+  // Not while the simulator is writing its scratch files (the run's end
+  // refreshes the panel anyway), not under an open menu, whose actions
+  // refer to the rows as they are, and not during a drag from the panel.
+  if (QucsMain != nullptr && QucsMain->simulationConsole() != nullptr
+      && QucsMain->simulationConsole()->isRunning())
+    return;
+  if (QApplication::activePopupWidget() != nullptr || state() == DraggingState)
+    return;
+  if (listingSignature() != m_signature) refresh();
 }
 
 QStringList ProjectView::exportSchematic()

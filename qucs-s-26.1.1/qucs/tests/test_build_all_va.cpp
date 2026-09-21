@@ -23,6 +23,10 @@
 #include "extsimkernels/spicecompat.h"
 #include "extsimkernels/ngspice.h"
 #include "isolated_settings.h"
+#include "settings.h"
+#include "dialogs/qucssettingsdialog.h"
+#include <QCheckBox>
+#include <QSpinBox>
 
 // QucsMain must not outlive the QucsApp of a test that fails half-way.
 struct MainGuard {
@@ -273,9 +277,9 @@ private slots:
         QVERIFY(QucsSettings.ContentTreeView);
         QVERIFY(row(view->model()->item(ProjectView::VerilogA, 0), "models") != nullptr);
 
-        // Rows get no such menu: a category other than Verilog-A shows the
-        // category menu (Refresh only), a folder the same (it is not a file
-        // either), a file shows the file menu without it.
+        // Rows get no such menu: a category other than Verilog-A shows none,
+        // a folder shows none (it is not a file either), a file shows the
+        // file menu without it.
         QStandardItemModel* m = view->model();
         const QModelIndex others = m->index(ProjectView::Others, 0);
         view->scrollTo(others);
@@ -283,14 +287,7 @@ private slots:
         QCOMPARE(view->indexAt(onOthers), others);
         QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, onOthers)));
         QVERIFY(!menuShowing(&app, viewMenu->menuAction()));
-        QVERIFY(anyMenuShowing(&app));
-        for (QMenu* menu : app.findChildren<QMenu*>()) {
-            if (!menu->isVisible()) continue;
-            QStringList texts;
-            for (QAction* a : menu->actions()) texts << a->text();
-            QCOMPARE(texts, QStringList{"Refresh"});
-        }
-        for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
+        QVERIFY(!anyMenuShowing(&app));
 
         const QModelIndex folder = row(m->item(ProjectView::VerilogA, 0), "models")->index();
         view->scrollTo(folder);
@@ -459,41 +456,52 @@ private slots:
         QCOMPARE(app.projectView()->categoryOf(QModelIndex()), -1);
     }
 
-    // The panel lists files that appear, go or move by themselves - it
-    // watches the project's directories - and Refresh is on every one of
-    // its menus for when it should not have to.
-    void filesAppearByThemselvesAndRefreshIsOnEveryMenu()
+    // Every few seconds the panel looks at the project's files and lists
+    // them again when one came, went or changed - at the interval from
+    // the settings, or not at all when turned off there. Refresh, by hand,
+    // is on the panel's own menu (the empty area) and nowhere else.
+    void filesAppearByThemselvesAtTheSetInterval()
     {
         TreeViewGuard mode;
         QucsSettings.ContentTreeView = false;
+        struct RefreshGuard {
+            bool on = QucsSettings.ContentAutoRefresh;
+            int seconds = QucsSettings.ContentRefreshSeconds;
+            ~RefreshGuard() { QucsSettings.ContentAutoRefresh = on; QucsSettings.ContentRefreshSeconds = seconds; }
+        } refreshGuard;
+        QucsSettings.ContentAutoRefresh = true;
+        QucsSettings.ContentRefreshSeconds = 1;
         QucsApp app(false);
         MainGuard guard(&app);
         ProjectView* view = app.projectView();
         view->setProjPath(project);
+        QVERIFY(view->autoRefreshEnabled());
         QCOMPARE(children(view, ProjectView::VerilogA), QStringList({"broken.va", "good.va", "models/deep.va"}));
-        // The project directory and its subdirectories are watched; hidden
-        // ones are not.
-        const QStringList watched = view->watchedDirectories();
-        QVERIFY2(watched.contains(project), qPrintable(watched.join(", ")));
-        QVERIFY(watched.contains(project + "/models"));
-        QVERIFY(watched.contains(project + "/models/nested"));
-        QVERIFY(!watched.contains(project + "/.hidden"));
 
         // A file written by something else - the Terminal dock, a script.
         write(project + "/late.va", "module late(p, n);\nendmodule\n");
         QTRY_VERIFY_WITH_TIMEOUT(children(view, ProjectView::VerilogA).contains("late.va"), 5000);
-        // A new directory, then a file in it: the directory is watched as
-        // soon as it is listed, so the file is noticed too.
+        // A new directory with a file in it.
         QVERIFY(QDir().mkpath(project + "/extra"));
-        QTRY_VERIFY_WITH_TIMEOUT(view->watchedDirectories().contains(project + "/extra"), 5000);
         write(project + "/extra/x.va", "module x(p, n);\nendmodule\n");
         QTRY_VERIFY_WITH_TIMEOUT(children(view, ProjectView::VerilogA).contains("extra/x.va"), 5000);
         // Gone again.
         QVERIFY(QFile::remove(project + "/late.va"));
         QTRY_VERIFY_WITH_TIMEOUT(!children(view, ProjectView::VerilogA).contains("late.va"), 5000);
+        // Nothing changed: the panel is left alone (the listing keeps its
+        // signature; a rebuild would produce fresh items).
+        QStandardItem* before = view->model()->item(ProjectView::VerilogA, 0);
+        QTest::qWait(2500);
+        QCOMPARE(view->model()->item(ProjectView::VerilogA, 0), before);
 
-        // Refresh, by hand: on the panel's menu, the file menu, the
-        // Verilog-A menu and the category menu.
+        // Turned off: a new file is not noticed...
+        QucsSettings.ContentAutoRefresh = false;
+        view->applyRefreshSettings();
+        QVERIFY(!view->autoRefreshEnabled());
+        write(project + "/unseen.va", "module unseen(p, n);\nendmodule\n");
+        QTest::qWait(2500);
+        QVERIFY(!children(view, ProjectView::VerilogA).contains("unseen.va"));
+        // ...until Refresh, which is on the panel menu only.
         QAction* refresh = nullptr;
         for (QAction* a : app.findChildren<QAction*>())
             if (a->text() == "Refresh") { refresh = a; break; }
@@ -501,17 +509,59 @@ private slots:
         int holders = 0;
         for (QMenu* m : app.findChildren<QMenu*>())
             if (m->actions().contains(refresh)) ++holders;
-        QCOMPARE(holders, 4);
-        QVERIFY(menuWithAction(&app, "Open")->actions().contains(refresh));
-        QVERIFY(menuWithAction(&app, "Build All")->actions().contains(refresh));
-        QVERIFY(menuWithAction(&app, "Sub-trees per folder") != nullptr);
-        // Removing a file with the watcher's refresh not yet due: Refresh
-        // lists the project as it is now.
+        QCOMPARE(holders, 1);
+        QVERIFY(!menuWithAction(&app, "Open")->actions().contains(refresh));
+        QVERIFY(!menuWithAction(&app, "Build All")->actions().contains(refresh));
+        QMenu* panelMenu = menuWithAction(&app, "Refresh");
+        QVERIFY(panelMenu->actions().contains(menuWithAction(&app, "Sub-trees per folder")->menuAction()));
+        refresh->trigger();
+        QVERIFY(children(view, ProjectView::VerilogA).contains("unseen.va"));
+
+        // Back on, with a longer interval: the timer follows.
+        QucsSettings.ContentAutoRefresh = true;
+        QucsSettings.ContentRefreshSeconds = 60;
+        view->applyRefreshSettings();
+        QVERIFY(view->autoRefreshEnabled());
+
+        QVERIFY(QFile::remove(project + "/unseen.va"));
         QVERIFY(QFile::remove(project + "/extra/x.va"));
         QVERIFY(QDir(project + "/extra").removeRecursively());
         refresh->trigger();
         QCOMPARE(children(view, ProjectView::VerilogA), QStringList({"broken.va", "good.va", "models/deep.va"}));
-        QTRY_VERIFY_WITH_TIMEOUT(!view->watchedDirectories().contains(project + "/extra"), 5000);
+    }
+
+    void theSettingsDialogHasTheRefreshControls()
+    {
+        struct RefreshGuard {
+            bool on = QucsSettings.ContentAutoRefresh;
+            int seconds = QucsSettings.ContentRefreshSeconds;
+            ~RefreshGuard() { QucsSettings.ContentAutoRefresh = on; QucsSettings.ContentRefreshSeconds = seconds; }
+        } refreshGuard;
+        QucsSettings.ContentAutoRefresh = true;
+        QucsSettings.ContentRefreshSeconds = 3;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QucsSettingsDialog dlg(&app);
+        QCheckBox* on = nullptr;
+        QSpinBox* seconds = nullptr;
+        for (QCheckBox* c : dlg.findChildren<QCheckBox*>())
+            if (c->toolTip().contains("Content panel")) on = c;
+        for (QSpinBox* sp : dlg.findChildren<QSpinBox*>())
+            if (sp->toolTip().contains("project's files are looked at")) seconds = sp;
+        QVERIFY(on != nullptr && seconds != nullptr);
+        QVERIFY(on->isChecked());
+        QCOMPARE(seconds->value(), 3);
+        QVERIFY(seconds->isEnabled());
+        on->setChecked(false);
+        QVERIFY(!seconds->isEnabled());              // nothing to set an interval for
+        on->setChecked(true);
+        seconds->setValue(15);
+        QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));
+        QVERIFY(QucsSettings.ContentAutoRefresh);
+        QCOMPARE(QucsSettings.ContentRefreshSeconds, 15);
+        QCOMPARE(_settings::Get().item<int>("ContentRefreshSeconds"), 15);   // saved
+        app.projectView()->applyRefreshSettings();   // as QucsApp does after the dialog
+        QVERIFY(app.projectView()->autoRefreshEnabled());
     }
 };
 
