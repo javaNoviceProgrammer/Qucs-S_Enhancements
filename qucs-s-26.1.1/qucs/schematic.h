@@ -227,6 +227,12 @@ public:
   void    becomeCurrent(bool);
   bool    undo();
   bool    redo();
+  /// Moving the selection with the cursor keys is one undo step however
+  /// many key presses it takes; while it is the latest step, Escape takes
+  /// it back (the selection returns to where it was). A mouse press or any
+  /// other edit ends the sequence.
+  void    noteKeyboardMove();
+  bool    cancelKeyboardMove();
 
   void scrollUp(int);
   void scrollDown(int);
@@ -321,6 +327,7 @@ private:
 
   int a_undoActionIdx;
   QVector<QString *> a_undoAction;
+  bool a_keyboardMoveOpen = false;   // the top undo entry is an unfinished cursor-key move
   int a_undoSymbolIdx;
   QVector<QString *> a_undoSymbol;    // undo stack for circuit symbol
 

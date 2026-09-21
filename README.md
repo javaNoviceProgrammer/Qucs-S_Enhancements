@@ -47,6 +47,10 @@ Using Claude Code to enhance the Qucs-S circuit simulator interface.
   built-in editor; a suffix registered with any program takes precedence
   over the defaults, and a program path may contain slashes (upstream cut
   it at the first one).
+- **Cursor-key moves are undoable and cancellable**: moving the selection
+  with the arrow keys marks the document modified, is one undo step for the
+  whole sequence, and Escape takes it back while it is the latest change
+  (upstream #1525; upstream recorded neither).
 - **Drag and drop from the Content panel**: drag one or more files onto the
   document area (a schematic, a text document, the tab bar) to open them —
   schematics, data displays and symbols in their views, Verilog-A and other

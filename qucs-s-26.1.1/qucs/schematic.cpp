@@ -321,6 +321,14 @@ void Schematic::setChanged(bool c, bool fillStack, char Op)
             a_undoActionIdx--;
         }
     }
+    // ...and one for a sequence of cursor-key moves: the previous step of
+    // the sequence is replaced by the state after this key press
+    if (Op == 'k' && a_keyboardMoveOpen && a_undoAction.at(a_undoActionIdx)->at(0) == Op) {
+        delete a_undoAction.last();
+        a_undoAction.pop_back();
+        a_undoActionIdx--;
+    }
+    a_keyboardMoveOpen = (Op == 'k');
 
     a_undoAction.append(new QString(createUndoString(Op)));
     a_undoActionIdx++;
@@ -690,6 +698,7 @@ void Schematic::contentsMousePressEvent(QMouseEvent *Event)
 {
     a_App->editText->setHidden(true); // disable text edit of component property
     this->setFocus();
+    a_keyboardMoveOpen = false;   // the cursor-key move, if any, is done
     if (    a_App->MouseReleaseAction == &MouseActions::MReleasePaste
         ||  a_App->MouseReleaseAction == &MouseActions::MReleaseMoveFree) {
         return;
@@ -1714,8 +1723,23 @@ int Schematic::orderSymbolPorts()
 }
 
 // ---------------------------------------------------
+void Schematic::noteKeyboardMove()
+{
+    setChanged(true, true, 'k');
+}
+
+bool Schematic::cancelKeyboardMove()
+{
+    if (a_symbolMode || !a_keyboardMoveOpen || a_undoActionIdx <= 0
+        || a_undoAction.at(a_undoActionIdx)->at(0) != 'k')
+        return false;
+    a_keyboardMoveOpen = false;
+    return undo();
+}
+
 bool Schematic::undo()
 {
+    a_keyboardMoveOpen = false;
     if (a_symbolMode) {
         if (a_undoSymbolIdx == 0) {
             return false;
@@ -1764,6 +1788,7 @@ bool Schematic::undo()
 // ---------------------------------------------------
 bool Schematic::redo()
 {
+    a_keyboardMoveOpen = false;
     if (a_symbolMode) {
         if (a_undoSymbolIdx == a_undoSymbol.size() - 1) {
             return false;
