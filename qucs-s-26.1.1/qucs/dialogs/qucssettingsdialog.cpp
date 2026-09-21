@@ -707,9 +707,7 @@ void QucsSettingsDialog::slotApply()
         QucsSettings.BGColor = BGColorButton->palette().color(BGColorButton->backgroundRole());
 
         for (QucsDoc *doc : App->allDocuments()) {   // in every pane
-          if (TextDoc *text = dynamic_cast<TextDoc*>(doc)) {
-            text->applyDocumentColors();
-          } else if (Schematic *sch = dynamic_cast<Schematic*>(doc)) {
+          if (Schematic *sch = dynamic_cast<Schematic*>(doc)) {   // the text editor stays white
             QWidget *vp = sch->viewport();
             QPalette p = vp->palette();
             p.setColor(vp->backgroundRole(), QucsSettings.BGColor);

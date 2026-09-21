@@ -675,20 +675,18 @@ void TextDoc::highlightCurrentLine()
 }
 
 /*!
- * \brief The document's colours: the document background from the
- * settings, and black or white text to suit it - the same in the light
- * and the dark theme, like the schematic's. As a style sheet, not a
- * palette: the main window has a style sheet, and Qt's style-sheet style
- * puts the application palette back on every widget it polishes (each
- * time the editor is shown), which took a palette set here away and made
- * the editor follow the theme's base colour.
+ * \brief The editor's colours: black text on white, in the light and the
+ * dark theme alike, and independent of the schematic's document
+ * background (which earlier versions meant to use here but never showed:
+ * see below). As a style sheet, not a palette: the main window has a
+ * style sheet, and Qt's style-sheet style puts the application palette
+ * back on every widget it polishes (each time the editor is shown), which
+ * took a palette set here away and made the editor follow the theme's
+ * base colour.
  */
 void TextDoc::applyDocumentColors()
 {
-  const QColor bg = QucsSettings.BGColor.isValid() ? QucsSettings.BGColor : QColor(Qt::white);
-  const QColor fg = bg.value() > 127 ? QColor(Qt::black) : QColor(Qt::white);
-  setStyleSheet(QStringLiteral("QPlainTextEdit { background-color: %1; color: %2; }")
-                    .arg(bg.name(), fg.name()));
+  setStyleSheet(QStringLiteral("QPlainTextEdit { background-color: #ffffff; color: #000000; }"));
 }
 
 void TextDoc::refreshLanguage()
