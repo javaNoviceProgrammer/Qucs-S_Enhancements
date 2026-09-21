@@ -22,6 +22,9 @@
 #include "textdoc.h"
 
 #include <QDockWidget>
+#include <QListWidget>
+#include <QStyle>
+#include "schematic.h"
 #include <QTextBlock>
 #include <QDebug>
 
@@ -59,6 +62,13 @@ MessageDock::MessageDock(QucsApp *App_): QWidget()
     cppOutput->setReadOnly(true);
 
     builderTabs->insertTab(1,cppOutput,tr("Compiler"));
+
+    // 3) what the electrical rule check found
+    problems = new QListWidget();
+    problems->setToolTip(tr("What the check of the schematic found; click a row to see the place."));
+    connect(problems, &QListWidget::itemClicked, this, &MessageDock::slotProblemChosen);
+    connect(problems, &QListWidget::itemActivated, this, &MessageDock::slotProblemChosen);
+    builderTabs->insertTab(2, problems, tr("Problems"));
 
     msgDock = new QDockWidget(tr("admsXml Dock"));
     msgDock->setWidget(builderTabs);
@@ -254,3 +264,41 @@ void MessageDock::slotCursor()
 
 
 
+
+void MessageDock::showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& issues, bool raise)
+{
+    a_problemsDoc = doc;
+    a_issues = issues;
+    problems->clear();
+    const QIcon error = style()->standardIcon(QStyle::SP_MessageBoxCritical);
+    const QIcon warning = style()->standardIcon(QStyle::SP_MessageBoxWarning);
+    for (const qucs_s::erc::Issue& issue : issues) {
+        auto* item = new QListWidgetItem(issue.severity == qucs_s::erc::Severity::Error ? error : warning,
+                                         issue.message, problems);
+        item->setToolTip(tr("at %1, %2").arg(issue.where.x()).arg(issue.where.y()));
+    }
+    if (issues.isEmpty()) {
+        auto* item = new QListWidgetItem(style()->standardIcon(QStyle::SP_DialogApplyButton),
+                                         tr("No problems found."), problems);
+        item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+    }
+    const int errors = qucs_s::erc::errorCount(issues);
+    builderTabs->setTabText(2, issues.isEmpty() ? tr("Problems") : tr("Problems (%1)").arg(issues.size()));
+    builderTabs->setTabIcon(2, errors > 0 ? error : (issues.isEmpty() ? QIcon() : warning));
+    if (raise) {
+        builderTabs->setCurrentWidget(problems);
+        msgDock->show();
+        msgDock->raise();
+    }
+}
+
+Schematic* MessageDock::problemsDocument() const
+{
+    return a_problemsDoc.data();
+}
+
+void MessageDock::slotProblemChosen()
+{
+    const int row = problems->currentRow();
+    if (row >= 0 && row < a_issues.size()) emit locateRequested(row);
+}

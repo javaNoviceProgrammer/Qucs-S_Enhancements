@@ -659,6 +659,7 @@ void QucsApp::initView()
   // ............................................
 
   messageDock = new MessageDock(this);
+  connect(messageDock, &MessageDock::locateRequested, this, &QucsApp::slotLocateProblem);
   simConsole = new SimulationConsole(this);
   connect(simConsole, &SimulationConsole::saveNetlistRequested, this, &QucsApp::slotSaveNetlist);
 
@@ -4186,6 +4187,11 @@ void QucsApp::slotSimulateWithSpice()
             if (schematic->getDocName().isEmpty())
                 return;   // not saved after all: nothing to simulate (and no Scratch/untitled)
         }
+        // The pre-flight check: what the simulator would fail on is
+        // listed on the Problems tab; errors bring the tab up. The run
+        // goes ahead regardless (the simulator has the last word).
+        if (!TuningMode)
+            checkSchematic(schematic, false);
         // The run goes to the simulation console (a dock, not a modal
         // dialog): the console is brought up for an ordinary simulation,
         // left alone for DC bias display and tuner steps.

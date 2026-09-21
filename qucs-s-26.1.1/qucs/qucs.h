@@ -583,7 +583,7 @@ public:
       *editMove, *editActivate, *wire, *editDelete, *setMarker,
       *setDiagramLimits, *resetDiagramLimits, *showGrid, *onGrid, *moveText,
       *helpIndex, *helpGetStart, *callEditor, *callFilter, *callLine,
-      *callActiveFilter, *showMsg, *showNet, *alignTop, *alignBottom,
+      *callActiveFilter, *showMsg, *showNet, *checkSchematicAction, *alignTop, *alignBottom,
       *alignLeft, *alignRight, *distrHor, *distrVert, *selectAll, *callMatch,
       *changeProps, *addToProj, *editFind, *insEntity, *selectMarker,
       *createLib, *callConverter, *graph2csv, *callAtt, *centerHor, *centerVert,
@@ -637,8 +637,17 @@ public slots:
   void slotSelectMarker();
   void slotShowLastMsg();
   void slotShowLastNetlist();
+  /// Simulation > Check Schematic: the electrical rule check of the
+  /// schematic in front, listed on the Problems tab of the message dock.
+  void slotCheckSchematic();
+  /// A row of the Problems tab: selects the component (if one is meant)
+  /// and centres the schematic on the place.
+  void slotLocateProblem(int index);
 private:
   QString a_lastSimulatedDoc;   // for currentScratchDir()
+  /// Runs the check on \a doc and shows the result; the dock comes up
+  /// when there are errors (always when \a always). Returns the error count.
+  int checkSchematic(Schematic* doc, bool always);
 public slots:
   void slotCallEditor();
   void slotCallFilter();
