@@ -130,6 +130,10 @@ public:
     void parseResFile(QString resfile, QString &var, QStringList &values);
     void convertToQucsData(const QString &qucs_dataset);
     QString getOutput();
+    /// The simulator process's own account of its last error, and the
+    /// command it was started with (for the messages of a failed start).
+    QString processErrorString() const;
+    QString simulatorCommand() const { return a_simulator_cmd; }
 
     virtual void setSimulatorCmd(QString cmd);
     virtual void setSimulatorParameters(QString parameters);
@@ -152,7 +156,9 @@ protected slots:
 
 public slots:
     virtual void slotSimulate();
-    void killThemAll();
+    /// Kills the simulator process (and, in a kernel that runs several,
+    /// drops the ones still queued).
+    virtual void killThemAll();
     void slotErrors(QProcess::ProcessError err);
 
 };

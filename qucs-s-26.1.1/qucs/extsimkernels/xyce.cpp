@@ -487,6 +487,14 @@ void Xyce::slotProcessOutput()
 /*!
  * \brief Xyce::nextSimulation Execute the next simulation from queue.
  */
+void Xyce::killThemAll()
+{
+    // Stopping means stopping: the netlists still queued would otherwise
+    // start one after the other as each killed process "finishes".
+    a_netlistQueue.clear();
+    AbstractSpiceKernel::killThemAll();
+}
+
 void Xyce::nextSimulation()
 {
     if (!a_netlistQueue.isEmpty()) {

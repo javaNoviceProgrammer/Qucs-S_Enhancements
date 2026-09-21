@@ -82,6 +82,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   built-in editor; a suffix registered with any program takes precedence
   over the defaults, and a program path may contain slashes (upstream cut
   it at the first one).
+- **Embedded simulation console**: a simulation runs in a *Simulation*
+  dock at the bottom of the window (tabbed with the build messages) instead
+  of the modal "Simulate with external simulator" dialog, so the schematic
+  stays usable while ngspice/Xyce work. The dock has the simulator's
+  output, a status list, a progress bar, *Stop*, *Save netlist* and
+  *Clear*; it comes up with the first simulation and can be shown or hidden
+  from *View → Simulation Console*. A second Simulate while one is running
+  is refused (the console says so); closing the schematic being simulated
+  stops its run (upstream #235).
 - **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
   can show a legend — a sample of each graph's line (colour, thickness,
   style or symbol) with its variable — in a corner of its choice:

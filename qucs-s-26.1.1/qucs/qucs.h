@@ -44,7 +44,8 @@ class ProjectView;
 class ContextMenuTabWidget;
 class TunerDialog;
 class tunerElement;
-class ExternSimDialog;
+class SimulationRun;
+class SimulationConsole;
 
 class QLabel;
 class QAction;
@@ -120,6 +121,7 @@ public:
   Schematic *currentSchematic() const;
   ProjectView *projectView() const { return Content; }
   MessageDock *messages() const { return messageDock; }
+  SimulationConsole *simulationConsole() const { return simConsole; }
   /// The program name that, registered for a suffix under Application
   /// Settings, File Types, opens the file in Qucs' own text editor.
   static constexpr const char *QucsEditorProgram = "qucs-editor";
@@ -276,7 +278,7 @@ private slots:
   void slotSaveNetlist();
   void slotSaveCdlNetlist();
   void slotCdlSettings();
-  void slotAfterSpiceSimulation(ExternSimDialog *SimDlg);
+  void slotAfterSpiceSimulation(SimulationRun *run);
   void slotBuildVAModule();
   /*void slotBuildXSPICEIfs(int mode = 0);
   void slotEDDtoIFS();
@@ -373,6 +375,8 @@ private:
   QDockWidget *octDock;
   OctaveWindow *octave;
   MessageDock *messageDock;
+  // the simulation console dock (the external simulators' output)
+  SimulationConsole *simConsole;
 
   QListView *Projects;
   ProjectView *Content;

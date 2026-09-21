@@ -62,6 +62,10 @@ private slots:
     {
         QVERIFY(dir.isValid());
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        // QucsApp lists the simulators it can find and puts up a modal
+        // error box when there is none: name one that exists.
+        QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
+        QucsSettings.firstRun = false;
         QucsSettings.maxUndo = 20;
         QucsSettings.ContentTreeView = false;
         QucsSettings.S4Qworkdir = dir.filePath("cache-workdir");

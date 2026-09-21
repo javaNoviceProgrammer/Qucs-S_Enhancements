@@ -152,7 +152,7 @@ SET(QUCS_SRCS
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
   mouseactions.cpp qucs_actions.cpp	schematic_file.cpp
   wirelabel.cpp node.cpp qucs_init.cpp
-  syntax.cpp misc.cpp messagedock.cpp
+  syntax.cpp misc.cpp messagedock.cpp simulationconsole.cpp
   settings.cpp
   imagewriter.cpp printerwriter.cpp projectView.cpp
   symbolwidget.cpp wire_planner.cpp
@@ -166,6 +166,7 @@ conductor.h
 healer.h
 main.h
 messagedock.h
+simulationconsole.h
 misc.h
 mnemo.h
 module.h
@@ -197,6 +198,7 @@ SET(QUCS_MOC_HDRS
   schematic.h
   textdoc.h
   messagedock.h
+  simulationconsole.h
   projectView.h
   symbolwidget.h
 )

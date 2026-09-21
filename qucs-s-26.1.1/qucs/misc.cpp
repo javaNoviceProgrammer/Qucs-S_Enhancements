@@ -754,6 +754,7 @@ QString misc::wildcardToRegularExpression(const QString &wc_str, const bool enab
 
 bool misc::simulatorExists(const QString &exe_file)
 {
+    if (exe_file.trimmed().isEmpty()) return false;   // "$PATH/" would be a directory
     if (QFile::exists(exe_file)) return true; // absolute path
 
     QFileInfo inf(exe_file); // try to find exe in $PATH
@@ -773,6 +774,7 @@ bool misc::simulatorExists(const QString &exe_file)
 
 QString misc::unwrapExePath(const QString &exe_file)
 {
+    if (exe_file.trimmed().isEmpty()) return exe_file;
     if (QFile::exists(exe_file)) return exe_file; // absolute path
 
     QFileInfo inf(exe_file); // try to find exe in $PATH

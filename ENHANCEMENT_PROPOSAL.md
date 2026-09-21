@@ -408,9 +408,29 @@ existing demand.
   (`Module::registerModules`), so a `.sch` for another backend fails to
   resolve components. Fix: register *all* components once and filter the
   palette view instead of the registry.
-- **Embedded, dockable simulation console** (#235) instead of the modal
-  `ExternSimDialog`; the `MessageDock` widget is already there to host it.
-  This also removes the modal-vs-non-modal split that causes 1.4.
+- *Done:* **Embedded, dockable simulation console** (#235).
+  `ExternSimDialog` became `SimulationRun` (`extsimkernels/simulationrun.*`):
+  the same netlist → process → output-check → dataset-conversion logic, as
+  a plain QObject that holds the schematic in a `QPointer` and writes into
+  whatever widgets it is attached to. `SimulationConsole`
+  (`qucs/simulationconsole.*`) is the dock — console, status list,
+  progress bar, Stop / Save netlist / Clear — tabified with the message
+  dock and toggled from *View → Simulation Console*. `QucsApp::
+  slotSimulateWithSpice()` asks the console for a run (refused, with a
+  status entry, while one is in progress), connects the result handler
+  and starts it; the dock is raised for an ordinary simulation and left
+  alone for DC-bias display and tuner steps, and shown on a tuner error.
+  Since nothing is modal any more: the run is deleted after its result is
+  handled, a failed process start ends the run (there is no `finished()`
+  after it), `stop()` kills the process and marks the run as having no
+  result, a closed schematic stops its run through `destroyed`, and
+  `Xyce::killThemAll()` drops its queued netlists so Stop actually stops.
+  `misc::simulatorExists()` / `unwrapExePath()` treat an empty path as
+  absent (they used to resolve "" to the first directory on `$PATH`, which
+  made a missing SPICE OPUS "exist" and could switch the default simulator
+  to it). `qucs/tests/test_simulation_console` drives it with a scripted
+  simulator (dock shown, app responsive, refusal, Stop, close-while-
+  running, failed start) and with the real ngspice when installed.
 
 **Medium (weeks each)**
 
