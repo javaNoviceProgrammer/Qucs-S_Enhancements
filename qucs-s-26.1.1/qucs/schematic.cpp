@@ -1026,6 +1026,11 @@ double Schematic::zoomBy(double s)
     return renderModel(newScale, model, centerPoint, vpCenter);
 }
 
+void Schematic::centerOn(const QPoint& modelPoint)
+{
+    renderModel(a_Scale, includePoint(modelRect(), modelPoint), modelPoint, viewportRect().center());
+}
+
 // ---------------------------------------------------
 void Schematic::showAll()
 {

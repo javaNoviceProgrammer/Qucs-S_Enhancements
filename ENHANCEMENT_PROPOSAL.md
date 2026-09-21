@@ -564,10 +564,21 @@ existing demand.
   repaint (a few hundred wires at most), so no selection hook is needed.
   Hover stays out until the canvas emits it. `qucs/tests/test_net_highlight`
   covers the three joins, the selection union and the rendered glow.
-- **ERC pre-flight panel**: today `Ngspice::slotSimulate` prints "No ground
-  found" into the console *after* you press Simulate. Run the same checks
-  (plus floating ports, unconnected pins, duplicate refdes) live and show
-  them in a problems pane with click-to-locate.
+- *Done:* **ERC pre-flight panel.** `qucs_s::erc::check(Schematic*)`
+  (`qucs/erc.*`) walks the components and nodes: open pins (a node with
+  the pin alone), loose wire ends (a node with one wire, no component and
+  no label on it or its wire), a name used twice, and - for circuits
+  without ports - no ground and no simulation block; errors first.
+  `MessageDock` got a *Problems* tab (`showProblems()`, icons, count in
+  the tab title, `locateRequested` on a click) and `QucsApp` the
+  *Check Schematic* action (F10, `Sim.Check`), `checkSchematic()` before
+  every non-tuner run (the tab comes up on errors), and
+  `slotLocateProblem()` (the pane and tab of the document, the component
+  at the issue's place selected, `Schematic::centerOn()`). A survey over
+  the 217 shipped examples (`QUCS_ERC_SURVEY=1 test_erc`) finds no
+  errors; its warnings are real open pins and ends. `qucs/tests/test_erc`
+  covers every check, a clean example, the action, the tab, the click and
+  the pre-flight.
 - **Unit-aware property editor**: a single inline editor that understands
   SI suffixes, validates against the property's `spicecompat::Simulator`
   mask, and shows the description tooltip — replacing the two-column

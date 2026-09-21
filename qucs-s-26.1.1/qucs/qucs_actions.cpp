@@ -54,6 +54,7 @@
 #include "main.h"
 #include "misc.h"
 #include "messagedock.h"
+#include "erc.h"
 #include "module.h"
 #include "mouseactions.h"
 #include "node.h"
@@ -857,6 +858,47 @@ QString QucsApp::currentScratchDir() const {
   if (w != nullptr && !isTextDocument(w))
     return misc::scratchDirFor(static_cast<Schematic *>(w)->getDocName());
   return misc::scratchDirFor(a_lastSimulatedDoc);
+}
+
+// ------------------------------------------------------------------------
+int QucsApp::checkSchematic(Schematic *doc, bool always) {
+  if (doc == nullptr) return 0;
+  const QList<qucs_s::erc::Issue> issues = qucs_s::erc::check(doc);
+  const int errors = qucs_s::erc::errorCount(issues);
+  messageDock->showProblems(doc, issues, always || errors > 0);
+  return errors;
+}
+
+void QucsApp::slotCheckSchematic() {
+  Schematic *doc = currentSchematic();
+  if (doc == nullptr) {
+    QMessageBox::information(this, tr("Check Schematic"), tr("Not a schematic tab!"));
+    return;
+  }
+  checkSchematic(doc, true);
+}
+
+void QucsApp::slotLocateProblem(int index) {
+  Schematic *doc = messageDock->problemsDocument();
+  const QList<qucs_s::erc::Issue> &issues = messageDock->issues();
+  if (doc == nullptr || index < 0 || index >= issues.size()) return;
+  const qucs_s::erc::Issue &issue = issues.at(index);
+  // The document in front, the component selected, the place in the middle.
+  if (DocumentTab->indexOf(doc) < 0) activatePaneOf(doc);
+  if (DocumentTab->currentWidget() != doc) {
+    DocumentTab->setCurrentWidget(doc);
+    slotChangeView();
+  }
+  doc->deselectElements(nullptr);
+  if (!issue.component.isEmpty()) {
+    // The one at the place, when the name is not unique (that being the problem).
+    Component *chosen = nullptr;
+    for (Component *c : doc->a_DocComps)
+      if (c->Name == issue.component && (chosen == nullptr || QPoint(c->cx, c->cy) == issue.where)) chosen = c;
+    if (chosen != nullptr) chosen->isSelected = true;
+  }
+  doc->centerOn(issue.where);
+  doc->viewport()->update();
 }
 
 // ------------------------------------------------------------------------

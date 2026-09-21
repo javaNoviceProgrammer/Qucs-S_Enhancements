@@ -808,6 +808,14 @@ void QucsApp::initActions() {
       tr("Show Last Netlist\n\nShows the netlist of the last simulation"));
   connect(showNet, SIGNAL(triggered()), SLOT(slotShowLastNetlist()));
 
+  checkSchematicAction = new QAction(tr("Check Schematic"), this);
+  checkSchematicAction->setShortcut(Qt::Key_F10);
+  checkSchematicAction->setStatusTip(tr("Checks the schematic for what a simulation would fail on"));
+  checkSchematicAction->setWhatsThis(
+      tr("Check Schematic\n\nLists unconnected pins and wire ends, duplicate names, "
+         "a missing ground or simulation on the Problems tab; a click shows the place"));
+  connect(checkSchematicAction, &QAction::triggered, this, &QucsApp::slotCheckSchematic);
+
   simSettings = new QAction(tr("Simulators Settings..."), this);
   connect(simSettings, SIGNAL(triggered()), SLOT(slotSimSettings()));
   buildVAModule =
@@ -1022,6 +1030,7 @@ void QucsApp::initMenuBar() {
   simMenu->addAction(tune);
   simMenu->addAction(dpl_sch);
   simMenu->addAction(dcbias);
+  simMenu->addAction(checkSchematicAction);
   simMenu->addAction(showMsg);
   simMenu->addAction(showNet);
   simMenu->addAction(save_netlist);
@@ -1637,6 +1646,9 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("Sim.Netlist", "Simulation", "Show Last Netlist", showNet,
                       QKeySequence(Qt::Key_F6));
+
+  mgr.registerCommand("Sim.Check", "Simulation", "Check Schematic", checkSchematicAction,
+                      QKeySequence(Qt::Key_F10));
 
   mgr.registerCommand("Sim.ResetLimits", "Simulation", "Reset Diagram Limits",
                       resetDiagramLimits,

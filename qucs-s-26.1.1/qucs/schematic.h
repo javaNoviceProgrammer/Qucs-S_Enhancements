@@ -177,6 +177,9 @@ public:
   void zoomAroundPoint(double scaleChange, QPoint coords, bool viewportRelative);
   double zoomBy(double);
   void  showAll();
+  /// Scrolls so that \a modelPoint sits at the centre of the viewport, at
+  /// the current scale (the model is widened if the point is outside it).
+  void centerOn(const QPoint& modelPoint);
   void zoomToSelection();
   void  showNoZoom();
   void  enlargeView(const Element* e);

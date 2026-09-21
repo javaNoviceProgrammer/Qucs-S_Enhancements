@@ -166,6 +166,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   follows them when they change. The schematic's own colours — document
   background, grid — stay the settings above it on the same tab, and the
   text editor is black on white in either theme.
+- **Check Schematic** (*Simulation → Check Schematic*, F10): an electrical
+  rule check before the simulator sees the circuit — component pins and
+  wire ends connected to nothing (a wire end carrying a label is a named
+  net, not a problem), two components of one name, no ground, no
+  simulation block — listed on a *Problems* tab of the message dock with
+  error/warning icons; a click on a row selects the component and centres
+  the schematic on the place. Every simulation runs the check first and
+  brings the tab up when there are errors (the run goes ahead anyway; the
+  simulator has the last word). Subcircuits (schematics with ports) are
+  not asked for a ground or a simulation.
 - **Net highlighting**: select a wire and its whole electrical net lights
   up — every wire and node reached through junctions, through wire labels
   of the same name (a `Vout` here joins a `Vout` there) and through ground
