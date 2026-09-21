@@ -97,6 +97,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   simulation, blocks until closed and stops a simulation still running
   when it is closed. The simulation toolbar (simulator choice, Simulate,
   Tune, …) starts a second row of toolbars.
+- **Terminal and Python Shell docks** (*View → Terminal*, *View → Python
+  Shell*): a shell — `$SHELL` as a login shell on macOS/Linux, PowerShell
+  on Windows — and a Python interpreter, each in a dock next to the
+  simulation console, started when the dock is first shown. On Unix the
+  program runs on a pseudo-terminal, so prompts, echo and Ctrl-C work as
+  in a terminal window; the output is shown as plain text (escape
+  sequences dropped, carriage returns and backspaces applied), so
+  full-screen programs are not for it. A command line below the output
+  with a history (Up/Down), *Interrupt*, *Restart*, *Clear* and *Project
+  dir* (a `cd` / `os.chdir` to the open project). The interpreter is the
+  one under *Application Settings → Locations → Python Path*, or `python3`
+  on `PATH` when that is empty.
 - **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
   can show a legend — a sample of each graph's line (colour, thickness,
   style or symbol) with its variable — in a corner of its choice:

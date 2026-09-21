@@ -46,6 +46,7 @@ class TunerDialog;
 class tunerElement;
 class SimulationRun;
 class SimulationConsole;
+class ProcessConsole;
 
 class QLabel;
 class QAction;
@@ -122,6 +123,21 @@ public:
   ProjectView *projectView() const { return Content; }
   MessageDock *messages() const { return messageDock; }
   SimulationConsole *simulationConsole() const { return simConsole; }
+  /// The Terminal dock's shell and the Python Shell dock's interpreter.
+  ProcessConsole *terminalConsole() const { return terminal; }
+  ProcessConsole *pythonConsole() const { return pythonShell; }
+  QDockWidget *terminalDockWidget() const { return terminalDock; }
+  QDockWidget *pythonDockWidget() const { return pythonDock; }
+  /// The shell the Terminal dock runs: $SHELL (or /bin/sh) as a login
+  /// shell on Unix, PowerShell on Windows.
+  static QString shellProgram();
+  static QStringList shellArguments();
+  /// The interpreter the Python Shell dock runs: the one set under
+  /// Application Settings, Locations, else python3 (or python) on PATH.
+  static QString pythonProgram();
+  /// Points the docks at the programs the settings name now (they take
+  /// effect at the next Restart).
+  void updateConsolePrograms();
   /// The program name that, registered for a suffix under Application
   /// Settings, File Types, opens the file in Qucs' own text editor.
   static constexpr const char *QucsEditorProgram = "qucs-editor";
@@ -377,6 +393,10 @@ private:
   MessageDock *messageDock;
   // the simulation console dock (the external simulators' output)
   SimulationConsole *simConsole;
+  QDockWidget *terminalDock;
+  ProcessConsole *terminal;
+  QDockWidget *pythonDock;
+  ProcessConsole *pythonShell;
 
   QListView *Projects;
   ProjectView *Content;

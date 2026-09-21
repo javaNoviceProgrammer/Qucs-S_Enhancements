@@ -80,6 +80,7 @@
 #include "dialogs/displaydialog.h"
 #include "extsimkernels/simulationrun.h"
 #include "simulationconsole.h"
+#include "processconsole.h"
 #include "dialogs/tuner.h"
 #include "octave_window.h"
 #include "printerwriter.h"
@@ -670,6 +671,30 @@ void QucsApp::initView()
   messageDock = new MessageDock(this);
   simConsole = new SimulationConsole(this);
   connect(simConsole, &SimulationConsole::saveNetlistRequested, this, &QucsApp::slotSaveNetlist);
+
+  // The Terminal and Python Shell docks: tabs next to the simulation
+  // console, hidden until asked for; their programs start when the dock
+  // is first shown.
+  terminal = new ProcessConsole;
+  terminal->setChangeDirectoryCommand(QStringLiteral("cd %1"), ProcessConsole::ShellQuoting);
+  terminalDock = new QDockWidget(tr("Terminal"), this);
+  terminalDock->setObjectName(QStringLiteral("TerminalDock"));
+  terminalDock->setWidget(terminal);
+  terminalDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
+  addDockWidget(Qt::BottomDockWidgetArea, terminalDock);
+  tabifyDockWidget(simConsole->dock(), terminalDock);
+  terminalDock->hide();
+
+  pythonShell = new ProcessConsole;
+  pythonShell->setChangeDirectoryCommand(QStringLiteral("import os; os.chdir(%1)"), ProcessConsole::PythonQuoting);
+  pythonDock = new QDockWidget(tr("Python Shell"), this);
+  pythonDock->setObjectName(QStringLiteral("PythonShellDock"));
+  pythonDock->setWidget(pythonShell);
+  pythonDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
+  addDockWidget(Qt::BottomDockWidgetArea, pythonDock);
+  tabifyDockWidget(terminalDock, pythonDock);
+  pythonDock->hide();
+  updateConsolePrograms();
 
     // initial projects directory model
     a_homeDirModel = new QucsFileSystemModel(this);
@@ -2497,6 +2522,44 @@ void QucsApp::slotApplSettings()
 
   QucsSettingsDialog *d = new QucsSettingsDialog(this);
   d->exec();
+  updateConsolePrograms();   // the Python interpreter may have changed
+}
+
+// --------------------------------------------------------------
+QString QucsApp::shellProgram()
+{
+#ifdef Q_OS_WIN
+  return QStringLiteral("powershell.exe");
+#else
+  const QString shell = qEnvironmentVariable("SHELL");
+  if (!shell.isEmpty() && QFileInfo(shell).isExecutable()) return shell;
+  return QStringLiteral("/bin/sh");
+#endif
+}
+
+QStringList QucsApp::shellArguments()
+{
+#ifdef Q_OS_WIN
+  return {QStringLiteral("-NoLogo"), QStringLiteral("-Command"), QStringLiteral("-")};
+#else
+  return {QStringLiteral("-l")};   // a login shell: the user's PATH and profile
+#endif
+}
+
+QString QucsApp::pythonProgram()
+{
+  const QString chosen = QucsSettings.PythonExecutable.trimmed();
+  if (!chosen.isEmpty()) return chosen;
+  QString found = QStandardPaths::findExecutable(QStringLiteral("python3"));
+  if (found.isEmpty()) found = QStandardPaths::findExecutable(QStringLiteral("python"));
+  return found.isEmpty() ? QStringLiteral("python3") : found;
+}
+
+void QucsApp::updateConsolePrograms()
+{
+  terminal->setProgram(shellProgram(), shellArguments());
+  pythonShell->setProgram(pythonProgram(), {QStringLiteral("-i"), QStringLiteral("-u")},
+                          {QStringLiteral("PYTHON_BASIC_REPL=1"), QStringLiteral("PYTHONIOENCODING=utf-8")});
 }
 
 // --------------------------------------------------------------

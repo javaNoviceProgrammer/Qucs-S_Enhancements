@@ -152,7 +152,7 @@ SET(QUCS_SRCS
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
   mouseactions.cpp qucs_actions.cpp	schematic_file.cpp
   wirelabel.cpp node.cpp qucs_init.cpp
-  syntax.cpp misc.cpp messagedock.cpp simulationconsole.cpp
+  syntax.cpp misc.cpp messagedock.cpp simulationconsole.cpp processconsole.cpp
   settings.cpp
   imagewriter.cpp printerwriter.cpp projectView.cpp
   symbolwidget.cpp wire_planner.cpp
@@ -167,6 +167,7 @@ healer.h
 main.h
 messagedock.h
 simulationconsole.h
+processconsole.h
 misc.h
 mnemo.h
 module.h
@@ -199,6 +200,7 @@ SET(QUCS_MOC_HDRS
   textdoc.h
   messagedock.h
   simulationconsole.h
+  processconsole.h
   projectView.h
   symbolwidget.h
 )
@@ -277,6 +279,10 @@ add_library(qucs-core OBJECT ${QUCS_HDRS} ${QUCS_CORE_SRCS} ${QUCS_MOC_SRCS})
 set(QUCS_LINK_LIBRARIES
     components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat
     Qt6::Core  Qt6::Gui  Qt6::Widgets Qt6::Svg  Qt6::SvgWidgets Qt6::Xml  Qt6::PrintSupport )
+if(UNIX AND NOT APPLE)
+  # forkpty() for the Terminal and Python Shell docks (processconsole.cpp)
+  list(APPEND QUCS_LINK_LIBRARIES util)
+endif()
 target_link_libraries(qucs-core PUBLIC ${QUCS_LINK_LIBRARIES})
 set_target_properties(qucs-core PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
 

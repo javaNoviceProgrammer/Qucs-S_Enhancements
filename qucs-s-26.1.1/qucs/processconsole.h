@@ -64,6 +64,7 @@ signals:
     void finished(int exitCode);
 
 private:
+    void endProcess();   // stop() without the finished() signal
     void cleanUp();
 #ifdef Q_OS_WIN
     QProcess* a_process = nullptr;
@@ -95,6 +96,10 @@ class ProcessConsole : public QWidget
     Q_OBJECT
 public:
     explicit ProcessConsole(QWidget* parent = nullptr);
+    ~ProcessConsole() override;
+
+    /// How the "Project dir" command quotes its path.
+    enum Quoting { ShellQuoting, PythonQuoting };
 
     /// What start() runs. The program is started when the console is
     /// first shown, or by Restart.
@@ -104,9 +109,9 @@ public:
     /// when a project is open, otherwise the home directory.
     void setWorkingDirectory(const QString& dir);
     /// The program's command for changing its directory, with %1 for the
-    /// quoted path - "cd %1", or "import os; os.chdir(%1)" - behind the
-    /// "Project dir" button. Empty hides the button.
-    void setChangeDirectoryCommand(const QString& command);
+    /// path quoted the given way - "cd %1", or "import os; os.chdir(%1)" -
+    /// behind the "Project dir" button. Empty hides the button.
+    void setChangeDirectoryCommand(const QString& command, Quoting quoting = ShellQuoting);
 
     QString program() const { return a_program; }
     bool isRunning() const;
@@ -169,6 +174,7 @@ private:
     QStringList a_env;
     QString a_workDir;
     QString a_cdCommand;
+    Quoting a_cdQuoting = ShellQuoting;
 
     QStringList a_history;
     int a_historyPos = 0;
