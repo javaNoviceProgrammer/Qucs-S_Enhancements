@@ -4183,6 +4183,8 @@ void QucsApp::slotSimulateWithSpice()
                       "not possible. Save schematic first!"));
             slotFileSaveAs();
             schematic->setShowBias(biasState);
+            if (schematic->getDocName().isEmpty())
+                return;   // not saved after all: nothing to simulate (and no Scratch/untitled)
         }
         // The run goes to the simulation console (a dock, not a modal
         // dialog): the console is brought up for an ordinary simulation,
