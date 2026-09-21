@@ -381,7 +381,7 @@ set the repository variable `BUILD_ARM=false` to leave ARM out of tag builds.
 | Platform | Runner |
 |---|---|
 | macOS Apple Silicon | `macos-15` |
-| macOS Intel | `macos-15-intel` |
+| macOS Intel | `macos-15-intel`, newest Xcode on the image (its default Apple clang 17 crashes on one source file for x86_64) |
 | Linux x86_64 | `ubuntu-22.04` (AppImage runs on anything as new as that) |
 | Linux arm64 | `ubuntu-24.04-arm` (Qt's arm64 binaries need glibc 2.38, so the AppImage does too) |
 | Windows x64 | `windows-2022`, MSYS2 ucrt64 |
