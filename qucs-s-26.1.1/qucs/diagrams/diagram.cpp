@@ -92,6 +92,7 @@ Diagram::Diagram(int _cx, int _cy) {
     hideLines = true;  // hide invisible lines
 
     engineeringNotation = true;
+    legendPos = LegendOff;
 
     Type = isDiagram;
     isSelected = false;
@@ -146,6 +147,8 @@ void Diagram::paintDiagram(QPainter *painter) {
         painter->restore();
     }
 
+    paintLegend(painter);
+
     if (isSelected) {
         QRectF bounds(0, -y2, x2, y2);
         painter->setPen(QPen(Qt::darkGray, 3));
@@ -155,6 +158,74 @@ void Diagram::paintDiagram(QPainter *painter) {
         misc::draw_resize_handle(painter, bounds.bottomLeft());
         misc::draw_resize_handle(painter, bounds.bottomRight());
         misc::draw_resize_handle(painter, bounds.topRight());
+    }
+    painter->restore();
+}
+
+/*!
+   The legend: one row per graph with a sample of its line (colour,
+   thickness, style or symbol) and its variable, in a box in the corner
+   chosen by legendPos. Drawn in the diagram's own coordinates (origin at
+   the lower left corner, y downwards), after the graphs and the axis
+   texts, so it lies on top of them.
+*/
+void Diagram::paintLegend(QPainter *painter) {
+    if (legendPos == LegendOff || Graphs.isEmpty()) return;
+
+    const QFontMetricsF fm(painter->font());
+    const qreal pad = 4.0, sample = 20.0, gap = 6.0, margin = 6.0;
+    const qreal rowHeight = fm.height();
+    qreal textWidth = 0.0;
+    for (Graph *pg: Graphs)
+        textWidth = std::max(textWidth, fm.horizontalAdvance(pg->Var));
+    const qreal width = pad + sample + gap + textWidth + pad;
+    const qreal height = pad + Graphs.size() * rowHeight + pad;
+
+    const bool left = legendPos == LegendTopLeft || legendPos == LegendBottomLeft;
+    const bool top = legendPos == LegendTopLeft || legendPos == LegendTopRight;
+    const qreal x = left ? margin : x2 - margin - width;
+    const qreal y = top ? -y2 + margin : -margin - height;
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setPen(QPen(Qt::darkGray, 1));
+    painter->setBrush(QColor(255, 255, 255, 230));
+    painter->drawRect(QRectF(x, y, width, height));
+
+    qreal rowTop = y + pad;
+    for (Graph *pg: Graphs) {
+        const qreal mid = rowTop + rowHeight / 2.0;
+        const qreal x0 = x + pad, x1 = x0 + sample;
+        QPen pen(pg->Color, pg->Thick);
+        pen.setCapStyle(Qt::RoundCap);
+        switch (pg->Style) {   // the same patterns Graph::drawLines() uses
+        case GRAPHSTYLE_DASH:     pen.setDashPattern({10.0, 6.0}); break;
+        case GRAPHSTYLE_DOT:      pen.setDashPattern({2.0, 4.0});  break;
+        case GRAPHSTYLE_LONGDASH: pen.setDashPattern({24.0, 8.0}); break;
+        default: break;
+        }
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        switch (pg->Style) {
+        case GRAPHSTYLE_STAR:
+            painter->drawLine(QPointF(x0 + sample / 2 - 4, mid - 4), QPointF(x0 + sample / 2 + 4, mid + 4));
+            painter->drawLine(QPointF(x0 + sample / 2 - 4, mid + 4), QPointF(x0 + sample / 2 + 4, mid - 4));
+            painter->drawLine(QPointF(x0 + sample / 2, mid - 5), QPointF(x0 + sample / 2, mid + 5));
+            break;
+        case GRAPHSTYLE_CIRCLE:
+            painter->drawEllipse(QPointF(x0 + sample / 2, mid), 4.0, 4.0);
+            break;
+        case GRAPHSTYLE_ARROW:
+            painter->drawLine(QPointF(x0 + sample / 2, mid + 6), QPointF(x0 + sample / 2, mid - 6));
+            painter->drawLine(QPointF(x0 + sample / 2 - 3, mid - 2), QPointF(x0 + sample / 2, mid - 6));
+            painter->drawLine(QPointF(x0 + sample / 2 + 3, mid - 2), QPointF(x0 + sample / 2, mid - 6));
+            break;
+        default:
+            painter->drawLine(QPointF(x0, mid), QPointF(x1, mid));
+        }
+        painter->setPen(Qt::black);
+        painter->drawText(QPointF(x1 + gap, rowTop + fm.ascent()), pg->Var);
+        rowTop += rowHeight;
     }
     painter->restore();
 }
@@ -1353,7 +1424,8 @@ QString Diagram::save() {
     else s += " 0 ";
 
     s += QString::number(yAxis.Units) + " "
-         + QString::number(zAxis.Units);
+         + QString::number(zAxis.Units) + " "
+         + QString::number(legendPos);
 
     // labels can contain spaces -> must be last items in the line
     s += " \"" + xAxis.Label + "\" \"" + yAxis.Label + "\" \"" + zAxis.Label + "\">\n";
@@ -1485,6 +1557,12 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
                     n = s.section(' ', 26, 26);
                     zAxis.Units = n.toInt(&ok);
                     if (!ok) return false;
+
+                    n = s.section(' ', 27, 27);   // legend position (absent in older files)
+                    if (misc::charAt(n, 0, '"') != '"') {
+                        const int pos = n.toInt(&ok);
+                        legendPos = ok && pos >= LegendOff && pos <= LegendBottomRight ? pos : LegendOff;
+                    }
                 }
             }
         }

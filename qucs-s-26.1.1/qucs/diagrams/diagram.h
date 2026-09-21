@@ -156,6 +156,13 @@ public:
   int State;  // to remember which resize area was touched
   bool engineeringNotation;
 
+  /// Where the legend (a colour/style sample and the variable of every
+  /// graph) is drawn: LegendOff, or a corner of the diagram.
+  enum LegendPosition { LegendOff = 0, LegendTopLeft, LegendTopRight,
+                        LegendBottomLeft, LegendBottomRight };
+  int legendPos;
+  void paintLegend(QPainter* painter);
+
   bool hideLines;       // for "Rect3D": hide invisible lines ?
   int rotX, rotY, rotZ; // for "Rect3D": rotation around x, y and z axis
 

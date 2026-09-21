@@ -82,6 +82,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   built-in editor; a suffix registered with any program takes precedence
   over the defaults, and a program path may contain slashes (upstream cut
   it at the first one).
+- **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
+  can show a legend — a sample of each graph's line (colour, thickness,
+  style or symbol) with its variable — in a corner of its choice:
+  *Edit Diagram Properties → Properties → Legend*. Off by default; the
+  position is saved with the diagram, and files without it load as before
+  (upstream #1719).
 - **Cursor-key moves are undoable and cancellable**: moving the selection
   with the arrow keys marks the document modified, is one undo step for the
   whole sequence, and Escape takes it back while it is the latest change
