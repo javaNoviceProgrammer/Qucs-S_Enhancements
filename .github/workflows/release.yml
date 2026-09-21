@@ -62,9 +62,6 @@ permissions:
 env:
   SRC_DIR: qucs-s-26.1.1
   QT_VERSION: 6.10.3
-  # SourceForge keeps only the newest ngspice release folder, so a pinned
-  # URL goes stale; the bundling step falls back to the newest one it finds.
-  NGSPICE_URL: https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/47/ngspice-47_64.7z
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -380,36 +377,15 @@ jobs:
             case "$(basename "$f")" in Qt6*) ;; *) cp -f "$f" "$bin/";; esac
           done
 
-      - name: Bundle ngspice
-        if: ${{ matrix.enabled }}
-        run: |
-          fetch() { curl -sfL --retry 3 --retry-delay 5 -o ngspice.7z "$1" && 7z t ngspice.7z >/dev/null; }
-          url="$NGSPICE_URL"
-          if ! fetch "$url"; then
-            # The pinned release is gone (SourceForge keeps the newest only):
-            # take the newest folder listed.
-            ver="$(curl -sL https://sourceforge.net/projects/ngspice/files/ng-spice-rework/ \
-                   | grep -o 'ng-spice-rework/[0-9][0-9.]*/' | grep -o '[0-9][0-9.]*' | sort -V | tail -1)"
-            [ -n "$ver" ] || { echo "no ngspice release found on SourceForge" >&2; exit 1; }
-            url="https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/$ver/ngspice-${ver}_64.7z"
-            echo "pinned ngspice not available; using $url"
-            fetch "$url" || { echo "cannot download $url" >&2; exit 1; }
-          fi
-          echo "ngspice from $url"
-          7z x ngspice.7z -ongspice >/dev/null
-          suite="$SRC_DIR/build/qucs-suite"
-          mkdir -p "$suite/lib/ngspice"
-          cp -rf ngspice/Spice64/bin/   "$suite/"
-          cp -rf ngspice/Spice64/lib/   "$suite/"
-          cp -rf ngspice/Spice64/share/ "$suite/"
-
       - name: Create zip
         if: ${{ matrix.enabled }}
         run: |
           suite="$SRC_DIR/build/qucs-suite"
           mkdir -p "$suite/misc"
           cp -rf "$SRC_DIR/contrib/InnoSetup/misc" "$suite/"
-          (cd "$suite" && zip -qr "$GITHUB_WORKSPACE/${{ needs.setup.outputs.base }}-windows-${{ matrix.label }}.zip" ./bin ./share ./lib ./misc)
+          # lib/ only exists when something (ngspice, once) was put there
+          dirs=(); for d in bin share lib misc; do [ -d "$suite/$d" ] && dirs+=("./$d"); done
+          (cd "$suite" && zip -qr "$GITHUB_WORKSPACE/${{ needs.setup.outputs.base }}-windows-${{ matrix.label }}.zip" "${dirs[@]}")
           ls -la "$GITHUB_WORKSPACE"/*.zip
 
       - name: Create installer (Inno Setup)
