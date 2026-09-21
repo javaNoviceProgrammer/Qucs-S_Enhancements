@@ -193,7 +193,7 @@ private slots:
         QCOMPARE(childrenOf(models), QStringList({"deep.va"}));
         QVERIFY(!(models->flags() & Qt::ItemIsSelectable));               // a folder row, like a category
         QVERIFY(!(models->flags() & Qt::ItemIsDragEnabled));
-        QVERIFY(!models->icon().isNull());
+        QVERIFY(models->icon().isNull());   // a plain row unless QucsSettings.ContentFolderIcons
 
         const QModelIndex deep = models->child(0, 0)->index();
         QCOMPARE(view->filePath(deep), QString("models/deep.va"));
@@ -545,7 +545,7 @@ private slots:
         QCheckBox* on = nullptr;
         QSpinBox* seconds = nullptr;
         for (QCheckBox* c : dlg.findChildren<QCheckBox*>())
-            if (c->toolTip().contains("Content panel")) on = c;
+            if (c->toolTip().contains("listed again")) on = c;   // the auto-refresh switch
         for (QSpinBox* sp : dlg.findChildren<QSpinBox*>())
             if (sp->toolTip().contains("project's files are looked at")) seconds = sp;
         QVERIFY(on != nullptr && seconds != nullptr);

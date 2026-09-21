@@ -18,6 +18,9 @@
 #include "projectView.h"
 #include "textdoc.h"
 #include "simulationconsole.h"
+#include "settings.h"
+#include "dialogs/qucssettingsdialog.h"
+#include <QCheckBox>
 #include "extsimkernels/ngspice.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -287,6 +290,56 @@ private slots:
         QCOMPARE(app.fileType("svg"), QString("image"));
         for (const QString& f : {"analyse.py", "tools/helper.pyw", "logo.png", "figures/gain.svg", "Photo.JPEG", "notes.pdf", "Scratch/plot.png"})
             QVERIFY(QFile::remove(project + "/" + f));
+    }
+
+    // The folder rows of the sub-trees are plain by default; a setting
+    // (Application Settings > Settings) puts a folder icon on them, and
+    // applying it rebuilds the listing.
+    void folderRowsHaveNoIconUnlessAsked()
+    {
+        struct Guard {
+            bool icons = QucsSettings.ContentFolderIcons, tree = QucsSettings.ContentTreeView;
+            ~Guard() { QucsSettings.ContentFolderIcons = icons; QucsSettings.ContentTreeView = tree; }
+        } guard;
+        write(project + "/models/nested/deep.va", "module deep(p, n);\nendmodule\n");
+        QCOMPARE(_settings::Get().itemDefault<bool>("ContentFolderIcons"), false);
+        QucsSettings.ContentFolderIcons = false;
+        QucsSettings.ContentTreeView = true;
+
+        QucsApp app(false);
+        MainGuard mainGuard(&app);
+        ProjectView* view = app.projectView();
+        view->setProjPath(project);
+        view->setTreeView(true);
+        QStandardItemModel* m = view->model();
+        QStandardItem* models = m->item(ProjectView::VerilogA, 0)->child(0, 0);
+        QVERIFY(models != nullptr);
+        QCOMPARE(models->text(), QString("models"));
+        QVERIFY(models->icon().isNull());                       // plain
+        QVERIFY(models->child(0, 0)->icon().isNull());         // "nested" too
+
+        QucsSettingsDialog dlg(&app);
+        QCheckBox* icons = nullptr;
+        for (QCheckBox* c : dlg.findChildren<QCheckBox*>())
+            if (c->toolTip().contains("folder icon")) icons = c;
+        QVERIFY(icons != nullptr);
+        QVERIFY(!icons->isChecked());
+        icons->setChecked(true);
+        QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));
+        QVERIFY(QucsSettings.ContentFolderIcons);
+        QCOMPARE(_settings::Get().item<bool>("ContentFolderIcons"), true);   // saved
+        QVERIFY(!childrenOf(m->item(ProjectView::VerilogA, 0)).isEmpty());   // Apply did not close the project
+        view->applyRefreshSettings();   // as QucsApp does after the dialog: rebuilt with icons
+        models = m->item(ProjectView::VerilogA, 0)->child(0, 0);
+        QVERIFY(models != nullptr);
+        QVERIFY(!models->icon().isNull());
+        QVERIFY(!models->child(0, 0)->icon().isNull());
+
+        QucsSettings.ContentFolderIcons = false;
+        view->applyRefreshSettings();
+        QVERIFY(m->item(ProjectView::VerilogA, 0)->child(0, 0)->icon().isNull());
+        QVERIFY(QFile::remove(project + "/models/nested/deep.va"));
+        QDir(project).rmpath("models/nested");
     }
 };
 
