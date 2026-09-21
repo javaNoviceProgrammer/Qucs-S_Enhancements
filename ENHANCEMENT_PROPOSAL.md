@@ -299,6 +299,15 @@ Without this, WS1 regresses.
 | 2.4 | Pin one Qt version across all release artifacts (currently 6.2.4 vs 6.10.3 on macOS). Detect the Qt 6.4 `forkfd_pidfd` bug at startup and show a clear message instead of crashing on Simulate. | |
 | 2.5 | Enable `-Wall -Wextra` in Release and fix the warning backlog incrementally (clang-tidy `bugprone-*` and `cppcoreguidelines-owning-memory` as a starting profile). | |
 
+- 2.1 done: `ci.yml` builds Release on macOS (`macos-15`, with the unit
+  tests under the offscreen platform) and on Windows (`windows-2022`,
+  MSYS2 ucrt64, GCC) on every push besides the Linux ASan job. Prompted by
+  the first `v26.1.2` release run, where five platform-only breaks
+  (runner glibc, files hidden by upstream's `.gitignore`, MinGW's
+  `open()`, an Apple clang crash, a stale download) surfaced together.
+- 2.2, 2.3 done (the ASan job, `qucs/tests/`, the fuzzers). 2.4: one Qt
+  (6.10.3) on every platform.
+
 ### WS3 — UI/UX enhancements
 
 This is the stated purpose of the repo. Items are ordered by (user demand ×
