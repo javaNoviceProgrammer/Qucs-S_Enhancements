@@ -49,7 +49,8 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
     a_btnSetXyce(new QPushButton(tr("Select ..."))),
     a_btnSetQucsator(new QPushButton(tr("Select ..."))),
     a_rbConsoleDock(new QRadioButton(tr("in the Simulation dock of the main window"))),
-    a_rbConsoleWindow(new QRadioButton(tr("in a separate window")))
+    a_rbConsoleWindow(new QRadioButton(tr("in a separate window"))),
+    a_rbConsoleLegacy(new QRadioButton(tr("in the legacy window, which blocks the application until closed")))
 {
     qDebug()<<QucsSettings.DefaultSimulator;
 
@@ -138,19 +139,24 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
     QVBoxLayout *consoleChoice = new QVBoxLayout;
     consoleChoice->addWidget(a_rbConsoleDock);
     consoleChoice->addWidget(a_rbConsoleWindow);
+    consoleChoice->addWidget(a_rbConsoleLegacy);
     gbp3->setLayout(consoleChoice);
     consoleLayout->addWidget(gbp3);
     a_rbConsoleDock->setObjectName(QStringLiteral("rbConsoleDock"));
     a_rbConsoleWindow->setObjectName(QStringLiteral("rbConsoleWindow"));
-    if (QucsSettings.SimulationConsoleDock)
-        a_rbConsoleDock->setChecked(true);
-    else
-        a_rbConsoleWindow->setChecked(true);
+    a_rbConsoleLegacy->setObjectName(QStringLiteral("rbConsoleLegacy"));
+    switch (QucsSettings.SimulationConsoleHost) {
+    case tQucsSettings::SimConsoleWindow:       a_rbConsoleWindow->setChecked(true); break;
+    case tQucsSettings::SimConsoleLegacyWindow: a_rbConsoleLegacy->setChecked(true); break;
+    default:                                    a_rbConsoleDock->setChecked(true);   break;
+    }
     QLabel *consoleNote = new QLabel(
         tr("The dock shares the bottom of the main window with the build messages "
            "and can be shown or hidden with View > Simulation Console. "
-           "The window is the simulation dialog of earlier versions; it no longer "
-           "blocks the application while the simulator runs."), consoleTab);
+           "The separate window shows the same console; the simulation runs in the "
+           "background and the schematic stays usable. The legacy window is the "
+           "simulation dialog of earlier versions: it opens with every simulation, "
+           "and closing it stops a simulation still running."), consoleTab);
     consoleNote->setWordWrap(true);
     consoleLayout->addWidget(consoleNote);
     consoleLayout->addStretch(1);
@@ -179,7 +185,9 @@ void SimSettingsDialog::slotApply()
     qs.setItem<QString>("NgspiceParams", a_edtNgspiceSimParam->text());
     qs.setItem<QString>("XyceParams", a_edtXyceSimParam->text());
     qs.setItem<QString>("SpopusParams", a_edtSpopusSimParam->text());
-    QucsSettings.SimulationConsoleDock = a_rbConsoleDock->isChecked();
+    QucsSettings.SimulationConsoleHost = a_rbConsoleLegacy->isChecked() ? tQucsSettings::SimConsoleLegacyWindow
+                                       : a_rbConsoleWindow->isChecked() ? tQucsSettings::SimConsoleWindow
+                                                                        : tQucsSettings::SimConsoleDock;
     accept();
     saveApplSettings();
   }

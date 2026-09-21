@@ -111,7 +111,10 @@ struct tQucsSettings {
   bool fullTraceName;
   bool alwaysPrefixDataset;
   bool ContentTreeView;   // Content panel: subdirectories as sub-trees (true) or "dir/name" rows (false)
-  bool SimulationConsoleDock = true;   // simulator output in the Simulation dock (true) or in a separate window (false)
+  // Where the simulator's output goes: the Simulation dock, a window of
+  // its own, or the legacy window that blocks the application until closed.
+  enum SimConsoleHost { SimConsoleDock = 0, SimConsoleWindow = 1, SimConsoleLegacyWindow = 2 };
+  int SimulationConsoleHost = SimConsoleDock;
 
   bool firstRun;
 };
