@@ -96,6 +96,7 @@ SimulationConsole::SimulationConsole(QucsApp* app)
         app->tabifyDockWidget(app->messages()->msgDock, a_dock);
     a_dock->hide();   // until the first simulation, or View > Simulation Console
     a_dock->installEventFilter(this);
+    a_dockObject = a_dock;
 
     // The window host: the simulation dialog of earlier versions - run
     // modally in the legacy mode, a window of its own otherwise.
@@ -108,6 +109,7 @@ SimulationConsole::SimulationConsole(QucsApp* app)
     a_window->resize(720, 420);
     a_window->restoreGeometry(QucsSettingsFile().value(QLatin1String(WindowGeometryKey)).toByteArray());
     a_window->installEventFilter(this);
+    a_windowObject = a_window;
     // Close / Exit, Escape and the title bar all end in reject(): the
     // window hides, and in the legacy mode the run is stopped with it.
     connect(a_buttonClose, &QPushButton::clicked, a_window, &QDialog::reject);
@@ -235,10 +237,14 @@ void SimulationConsole::clear()
 bool SimulationConsole::eventFilter(QObject* watched, QEvent* event)
 {
     // The hosts are deleted with the main window, the console with one of
-    // them; a host's last Hide, on its way out, is not of interest.
-    if (!a_dock.isNull() && !a_window.isNull()
-        && (watched == a_dock || watched == a_window)
-        && (event->type() == QEvent::Show || event->type() == QEvent::Hide)) {
+    // them. A host on its way out sends a last Hide: by then the other
+    // host may be gone already (its QPointer is null), or the watched one
+    // is no longer the dock or dialog it was (its destructor has reached
+    // QWidget, so qobject_cast fails) - either way, not of interest.
+    if ((event->type() == QEvent::Show || event->type() == QEvent::Hide)
+        && (watched == a_dockObject || watched == a_windowObject)
+        && !a_dock.isNull() && !a_window.isNull()
+        && (qobject_cast<QDockWidget*>(watched) != nullptr || qobject_cast<QDialog*>(watched) != nullptr)) {
         if (watched == a_window && event->type() == QEvent::Hide)
             QucsSettingsFile().setValue(QLatin1String(WindowGeometryKey), a_window->saveGeometry());
         syncViewAction();

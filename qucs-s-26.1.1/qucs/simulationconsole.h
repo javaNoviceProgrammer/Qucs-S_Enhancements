@@ -116,9 +116,14 @@ private:
 
     // Children of the main window, which deletes them before the console
     // when the console is in the one deleted last: QPointers, so that the
-    // Hide event of a host going down can be told apart from a real one.
+    // Hide event of a host going down can be told apart from a real one,
+    // and their QObject identities for the event filter to compare
+    // without a downcast (a host half-destroyed is no dock or dialog any
+    // more, which the vptr sanitizer would report).
     QPointer<QDockWidget> a_dock;
     QPointer<QDialog> a_window;
+    QObject* a_dockObject = nullptr;
+    QObject* a_windowObject = nullptr;
     QAction* a_viewAction;
     QPlainTextEdit* a_console;
     QListWidget* a_statusLog;
