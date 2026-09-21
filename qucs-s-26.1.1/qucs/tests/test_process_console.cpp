@@ -12,6 +12,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QStandardPaths>
+#include <QRegularExpression>
 
 #include "config.h"
 #include "qucs.h"
@@ -38,6 +39,16 @@ QPushButton* button(QWidget* w, const QString& text)
     for (QPushButton* b : w->findChildren<QPushButton*>())
         if (b->text() == text) return b;
     return nullptr;
+}
+
+// Whether a line of the console's text is `wanted`, allowing the shell's
+// prompt in front of it: when two lines of input are echoed back to back
+// (the Project-dir command, then "pwd"), the prompt the shell prints
+// between them lands on the line the second answer starts on ("$ /home/me").
+bool aLineIs(const QString& text, const QString& wanted)
+{
+    const QRegularExpression line(QStringLiteral(R"((^|\n)(\S*[$%#>] )?)") + QRegularExpression::escape(wanted) + QStringLiteral(R"(\n)"));
+    return text.contains(line);
 }
 } // namespace
 
@@ -177,7 +188,7 @@ private slots:
         // project directory - see QucsApp.)
         button(&console, "Project dir")->click();
         console.sendLine("pwd");
-        QTRY_VERIFY2_WITH_TIMEOUT(console.outputText().contains("\n" + QDir::homePath() + "\n"),
+        QTRY_VERIFY2_WITH_TIMEOUT(aLineIs(console.outputText(), QDir::homePath()),
                                   qPrintable(console.outputText()), 10000);
         // Quoting: a path with a space and a quote.
         QCOMPARE(ProcessConsole::quotedForShell("/a b/it's"), QString("'/a b/it'\\''s'"));
