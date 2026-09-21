@@ -233,6 +233,9 @@ public:
   /// other edit ends the sequence.
   void    noteKeyboardMove();
   bool    cancelKeyboardMove();
+  /// Ends the current cursor-key move sequence (a mouse press does this):
+  /// the next arrow key starts a new undo step, Escape no longer reverts.
+  void    endKeyboardMove() { a_keyboardMoveOpen = false; }
 
   void scrollUp(int);
   void scrollDown(int);
