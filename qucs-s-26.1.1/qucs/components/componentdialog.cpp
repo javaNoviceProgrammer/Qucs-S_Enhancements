@@ -387,6 +387,21 @@ ComponentDialog::ComponentDialog(Component* schematicComponent, Schematic* schem
       editorLayout->addWidget(eqnSimCombo, 2);
     }
     
+    // The .OPTIONS section keeps the Xyce option package out of the
+    // option lines: a field of its own, so that the first property (which
+    // the file format and the netlist count on being the package) is not
+    // an option the user typed.
+    if (component->Model == "SpiceOptions")
+    {
+      QHBoxLayout* packageLayout = new QHBoxLayout;
+      packageLayout->addWidget(new QLabel(tr("Xyce option package:")));
+      xycePackageEdit = new QLineEdit();
+      xycePackageEdit->setToolTip(tr("The package the options belong to when the simulator is Xyce "
+                                     "(DEVICE, TIMEINT, NONLIN, ...); ngspice ignores it."));
+      packageLayout->addWidget(xycePackageEdit, 1);
+      editorLayout->addLayout(packageLayout);
+    }
+
     QFont font("Courier", 10);   
     eqnEditor = new QTextEdit();
     eqnEditor->setFont(font);
@@ -773,6 +788,9 @@ void ComponentDialog::updateEqnEditor()
     else if (eqnExportCheck && property->Name == "Export")
       eqnExportCheck->setCheckState(property->Value == "yes" ? Qt::Checked : Qt::Unchecked);
 
+    else if (xycePackageEdit && property->Name == "XyceOptionPackage")
+      xycePackageEdit->setText(property->Value);
+
     else
       eqnList.append(property->Name + " = " + property->Value + "\n");
   }
@@ -813,6 +831,15 @@ void ComponentDialog::writeEquation()
   if (eqnSimCombo)
     component->Props.append(new Property("Simulation", eqnSimCombo->currentText(), true, "Simulation name"));
 
+  // .OPTIONS: the package first, as the file format has it (DEVICE when
+  // the field was left empty).
+  if (xycePackageEdit)
+  {
+    const QString package = xycePackageEdit->text().trimmed();
+    component->Props.append(new Property("XyceOptionPackage", package.isEmpty() ? QStringLiteral("DEVICE") : package,
+                                         false, QObject::tr("Xyce option package name")));
+  }
+
   QString text = eqnEditor->document()->toPlainText();
   QStringList lines = text.split('\n', Qt::SkipEmptyParts);
   
@@ -821,6 +848,10 @@ void ComponentDialog::writeEquation()
     QString LHS = line.section('=',0,0).trimmed();
     QString RHS = line.section('=',1).trimmed();
     if (!LHS.isEmpty() && !RHS.isEmpty()) {
+      if (xycePackageEdit && LHS == "XyceOptionPackage") {   // typed as a line anyway: it is the package
+        component->Props.first()->Value = RHS;
+        continue;
+      }
       component->Props.append(new Property(LHS, RHS, true));
     }
   }

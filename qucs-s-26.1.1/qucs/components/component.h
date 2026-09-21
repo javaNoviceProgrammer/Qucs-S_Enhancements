@@ -71,7 +71,7 @@ public:
   bool    mirrorX() noexcept override;
   bool    mirrorY() noexcept override;
   QString save();
-  bool    load(const QString&);
+  virtual bool load(const QString&);
 
   // helper function that sets the node of the port to the same center as the port
   bool setNodePortCenter(Port* p);

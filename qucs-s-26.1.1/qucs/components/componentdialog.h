@@ -74,6 +74,7 @@ private:
   QTextEdit* eqnEditor;
   QComboBox* eqnSimCombo = nullptr;
   QCheckBox* eqnExportCheck = nullptr;
+  QLineEdit* xycePackageEdit = nullptr;  // .OPTIONS: the Xyce option package
   QCheckBox* cmdConsoleCheck = nullptr;  // CMD console toggle
   QCheckBox* cmdHoldCheck = nullptr;     // CMD hold toggle
 

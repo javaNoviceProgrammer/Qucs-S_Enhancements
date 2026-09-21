@@ -71,21 +71,48 @@ Element* SpiceOptions::info(QString& Name, char* &BitmapFile, bool getNewOne)
   return 0;
 }
 
+bool SpiceOptions::load(const QString& s)
+{
+  if (!Component::load(s)) return false;
+  // The first value is the package name; one with "=" in it is an option
+  // that a file saved without the package line put there.
+  if (!Props.isEmpty() && Props.first()->Name == QLatin1String("XyceOptionPackage")
+      && Props.first()->Value.contains(QLatin1Char('='))) {
+    const QString option = Props.first()->Value;
+    Props.first()->Value = QStringLiteral("DEVICE");
+    Props.insert(1, new Property(option.section('=', 0, 0).trimmed(), option.section('=', 1).trimmed(), true));
+  }
+  return true;
+}
+
 QString SpiceOptions::getExpression(spicecompat::SpiceDialect dialect /* = spicecompat::SPICEDefault */)
 {
     if (isActive != COMP_IS_ACTIVE || dialect == spicecompat::CDL) return QString();
 
+    // The Xyce option package is the property of that name, wherever it
+    // is - the equation editor rebuilds the list from its lines, so it is
+    // not always the first one (it used to be taken as the first, and the
+    // first option line was then dropped from the netlist).
+    QString package = QStringLiteral("DEVICE");
+    QList<Property*> options;
+    for (Property* p : Props) {
+        if (p->Name == QLatin1String("XyceOptionPackage")) {
+            if (!p->Value.trimmed().isEmpty()) package = p->Value.trimmed();
+            continue;
+        }
+        options.append(p);
+    }
+
     QString s;
-    s.clear();
     if (dialect == spicecompat::SPICEXyce) {
-        s += QStringLiteral(".OPTIONS %1 ").arg(Props.at(0)->Value);
-        for (int i=1;i<Props.count();i++) {
-            s += QStringLiteral(" %1 = %2 ").arg(Props.at(i)->Name).arg(Props.at(i)->Value);
+        s += QStringLiteral(".OPTIONS %1 ").arg(package);
+        for (Property* p : options) {
+            s += QStringLiteral(" %1 = %2 ").arg(p->Name).arg(p->Value);
         }
         s += "\n";
     } else {
-        for (int i=1;i<Props.count();i++) {
-            s += QStringLiteral(".OPTION %1 = %2\n").arg(Props.at(i)->Name).arg(Props.at(i)->Value);
+        for (Property* p : options) {
+            s += QStringLiteral(".OPTION %1 = %2\n").arg(p->Name).arg(p->Value);
         }
     }
     return s;

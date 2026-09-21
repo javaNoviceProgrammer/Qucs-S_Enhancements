@@ -197,6 +197,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Edit Diagram Properties → Properties → Legend*. Off by default; the
   position is saved with the diagram, and files without it load as before
   (upstream #1719).
+- **`.OPTIONS` keeps every line**: the first option of a `.OPTIONS`
+  section was dropped from the ngspice netlist (or taken for the Xyce
+  option package) once the section had been edited — the netlister and
+  the file format take the first property for the Xyce package, and the
+  equation editor rebuilt the properties from its lines without it. The
+  package now has a field of its own in the properties dialog, the
+  netlister finds it by name, and a schematic saved with the problem
+  loads right (the misplaced option is put back).
 - **Cursor-key moves are undoable and cancellable**: moving the selection
   with the arrow keys marks the document modified, is one undo step for the
   whole sequence, and Escape takes it back while it is the latest change

@@ -30,6 +30,10 @@ public:
   static Element* info(QString&, char* &, bool getNewOne=false);
   static void splitEqn(QString &eqn, QStringList &tokens);
   QString getExpression(spicecompat::SpiceDialect dialect = spicecompat::SPICEDefault);
+  /// The Xyce option package (the first property) and the options after
+  /// it; a file whose first value is itself an option (written while the
+  /// editor dropped the package) is put right.
+  bool load(const QString&) override;
 
 protected:
   QString vhdlCode(int) { return QString(); }
