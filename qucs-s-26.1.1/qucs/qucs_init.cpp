@@ -1028,6 +1028,18 @@ void QucsApp::initMenuBar() {
   viewMenu->addAction(viewOctaveDock);
   // Shows/hides the simulation console, in its dock or its window.
   viewMenu->addAction(simConsole->viewAction());
+  // Showing a dock that shares its place with others as a tab also
+  // brings it to the front.
+  QAction *viewTerminal = terminalDock->toggleViewAction();
+  viewTerminal->setText(tr("&Terminal"));
+  viewTerminal->setStatusTip(tr("Shows/hides the Terminal dock, a shell"));
+  connect(viewTerminal, &QAction::triggered, this, [this](bool on) { if (on) terminalDock->raise(); });
+  viewMenu->addAction(viewTerminal);
+  QAction *viewPython = pythonDock->toggleViewAction();
+  viewPython->setText(tr("&Python Shell"));
+  viewPython->setStatusTip(tr("Shows/hides the Python Shell dock"));
+  connect(viewPython, &QAction::triggered, this, [this](bool on) { if (on) pythonDock->raise(); });
+  viewMenu->addAction(viewPython);
 
   helpMenu = new QMenu(tr("&Help")); // menuBar entry helpMenu
   helpMenu->addAction(helpIndex);

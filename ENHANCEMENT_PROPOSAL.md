@@ -442,6 +442,22 @@ existing demand.
   dock's own tabs moved to its top so that the two docks' tab bar below
   does not sit under another tab bar.
 
+- *Done:* **Terminal and Python Shell docks.** `ProcessConsole`
+  (`qucs/processconsole.*`) is a console around an interactive program:
+  `ConsoleProcess` runs it on a pseudo-terminal (`forkpty`, a
+  `QSocketNotifier` on the master, `TERM=dumb`; `QProcess` on pipes on
+  Windows), the widget shows the byte stream as text through a small
+  state machine (escape sequences dropped, `\r` starts the line over,
+  `\b` takes a character back), and a line edit with a history sends the
+  input. `QucsApp` puts two of them in docks tabified with the simulation
+  console, hidden until *View → Terminal* / *Python Shell*, each starting
+  its program on first show: `$SHELL -l` (or `/bin/sh`; PowerShell on
+  Windows) and `QucsSettings.PythonExecutable` (*Application Settings →
+  Locations → Python Path*) or `python3` on `PATH`, with
+  `PYTHON_BASIC_REPL=1`. The program goes with the console (hang-up,
+  then kill; `waitpid` so no zombie is left).
+  `qucs/tests/test_process_console` drives `/bin/sh` and `python3`.
+
 **Medium (weeks each)**
 
 - **Auto-placement of DC-bias labels** to avoid overlaps (#1692).

@@ -40,6 +40,7 @@ qucs_add_test(test_project_scratch)
 qucs_add_test(test_keyboard_move)
 qucs_add_test(test_diagram_legend)
 qucs_add_test(test_simulation_console)
+qucs_add_test(test_process_console)
 
 # Not a test: the driver scripts/ci/fuzz-simout.py runs over damaged
 # simulator output (see simout_harness.cpp).
