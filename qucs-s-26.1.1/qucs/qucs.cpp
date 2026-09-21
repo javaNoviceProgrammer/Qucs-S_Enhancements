@@ -3266,8 +3266,9 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
     return;
   }
 
-  // Handle data files
-  if (extName == "dat") {
+  // Handle data files and other text formats: the text editor from the
+  // settings (the built-in one by default)
+  if (extName == "dat" || textFileSuffixes().contains(extName)) {
     editFile(absolutePath);
     return;
   }
@@ -3293,6 +3294,29 @@ const QStringList &QucsApp::textDocumentSuffixes()
 {
   static const QStringList suffixes = {"v", "va", "vhd", "vhdl", "m", "oct", "net",
                                        "cir", "ckt", "sp"};
+  return suffixes;
+}
+
+// Other text formats that open in the text editor from the settings (the
+// built-in one unless an external editor is configured) rather than with
+// the system's application for the suffix.
+const QStringList &QucsApp::textFileSuffixes()
+{
+  static const QStringList suffixes = {
+    // plain text and documentation
+    "txt", "text", "md", "markdown", "rst", "tex", "bib", "log", "readme",
+    // data and configuration
+    "csv", "tsv", "json", "xml", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties",
+    // scripts and source code
+    "py", "apml", "sh", "bash", "zsh", "bat", "cmd", "ps1", "pl", "rb", "lua", "tcl", "jl", "r",
+    "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx", "js", "ts", "java", "go", "rs", "cs",
+    "cmake", "mk", "make", "ninja", "gnuplot", "gp", "plt",
+    // SPICE and HDL side files
+    "lib", "mod", "inc", "spi", "spc", "sub", "sv", "svh", "vh", "ucf", "xdc", "sdc",
+    // simulator output (ngspice raw plots are text with a text header),
+    // the per-simulator datasets (name.dat.ngspice, .xyce, .spopus)
+    "plot", "raw", "prn", "res", "noise", "print", "dc_op", "ngspice", "xyce", "spopus",
+  };
   return suffixes;
 }
 
@@ -3356,8 +3380,9 @@ void QucsApp::openDroppedFile(const QString &file)
   const QFileInfo info(file);
   if (!info.isFile()) return;
   const QString ext = info.suffix().toLower();
-  const bool known = ext == "sch" || ext == "dpl" || ext == "sym"
-                     || textDocumentSuffixes().contains(ext) || !userProgramFor(ext).isEmpty();
+  const bool known = ext == "sch" || ext == "dpl" || ext == "sym" || ext == "dat"
+                     || textDocumentSuffixes().contains(ext) || textFileSuffixes().contains(ext)
+                     || !userProgramFor(ext).isEmpty();
   if (known || !misc::isTextFile(info.absoluteFilePath()))
     openFileFromProjectView(info, QString());   // its viewer, the user's or the system's handler
   else

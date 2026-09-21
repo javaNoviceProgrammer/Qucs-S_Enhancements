@@ -123,14 +123,23 @@ public:
   /// The program name that, registered for a suffix under Application
   /// Settings, File Types, opens the file in Qucs' own text editor.
   static constexpr const char *QucsEditorProgram = "qucs-editor";
-  /// The suffixes Qucs opens in its own text editor by default.
+  /// The suffixes Qucs opens in its own text editor by default (its own
+  /// document types: HDL, Verilog-A, Octave, netlists, SPICE).
   static const QStringList &textDocumentSuffixes();
+  /// Other text formats, opened with the text editor from the settings
+  /// (the built-in one unless an external editor is configured).
+  static const QStringList &textFileSuffixes();
   /// The program registered for a suffix under File Types, or empty.
   QString userProgramFor(const QString &suffix) const;
   /// Opens the project directory (".../name_prj"): closes the open
   /// documents, points the work directory, the Content panel and the
   /// Scratch folder at it.
   void openProject(const QString &);
+  /// Opens a file the way a double-click in the Content panel does: by its
+  /// suffix, in the schematic view, the text editor, a registered program
+  /// or the system's application. \a note is the panel's note column
+  /// ("2-port" for a subcircuit schematic).
+  void openFileFromProjectView(const QFileInfo &Info, const QString &note);
   /// Opens files dropped on the document area (from the Content panel or a
   /// file manager), each in its viewer: schematics, data displays and
   /// symbols in the schematic view, Qucs text documents and any other text
@@ -448,7 +457,6 @@ private:
   void initToolBar();   // creates the toolbars
   void initStatusBar(); // setup the statusbar
 
-  void openFileFromProjectView(const QFileInfo &Info, const QString &note);
   void openTextOrSchematicTab(const QString &absolutePath);
   void launchUserProgram(const QString &program, const QString &absolutePath);
   void useProjectScratch(bool on);

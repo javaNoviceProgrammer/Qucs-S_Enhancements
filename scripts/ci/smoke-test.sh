@@ -155,8 +155,9 @@ simulate_one() {
 }
 
 # The raw simulator outputs are the corpus for scripts/ci/fuzz-simout.py.
-# A Debug build leaves them in the kernel's work directory (Release removes
-# them); that directory is printed by Ngspice::slotSimulate() in Debug.
+# They stay in the kernel's work directory after a run; that directory is
+# printed by Ngspice::slotSimulate() in Debug builds only, so the stash
+# needs one.
 stash_simulator_outputs() {
   local name="$1" work="$2" schname="$3"
   local simdir; simdir="$(grep -o 'Debug: "[^"]*" ([^)]*slotSimulate' "$OUT/$name.simulate.log" | head -1 | sed 's/^Debug: "//; s/".*$//')"
