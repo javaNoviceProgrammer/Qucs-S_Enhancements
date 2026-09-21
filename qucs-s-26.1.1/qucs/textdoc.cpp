@@ -655,7 +655,7 @@ void TextDoc::dropEvent(QDropEvent* event)
   }
   event->setDropAction(Qt::CopyAction);
   event->accept();
-  a_App->openDroppedFiles(files);
+  a_App->openDroppedFiles(files, this);
 }
 
 /*!

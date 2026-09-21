@@ -457,6 +457,23 @@ existing demand.
   `PYTHON_BASIC_REPL=1`. The program goes with the console (hang-up,
   then kill; `waitpid` so no zombie is left).
   `qucs/tests/test_process_console` drives `/bin/sh` and `python3`.
+- *Done:* **Editor panes (up to 2x2).** The central widget is a vertical
+  `QSplitter` of row `QSplitter`s of `PaneWidget`s (a marker bar over a
+  `ContextMenuTabWidget`); `QucsApp::DocumentTab` is the *active* pane,
+  so the ~150 existing uses of it keep working on the pane where the
+  user is, and `qucs_panes.cpp` adds what must span panes: `panes()`,
+  `paneOf()`, `allDocuments()`, `setActivePane()` (called from
+  `QApplication::focusChanged`, a press on a pane's tab bar, the tab
+  context menu, a drop, and `gotoPage()` when the file is open in
+  another pane). `findDoc()`, `closeAllFiles()`, `slotFileSaveAll()`,
+  `autosaveAll()` and the modified-marker update walk every pane; a new
+  pane starts with the usual untitled placeholder, which goes when a
+  document arrives (`dropPlaceholder()`), and a pane whose last document
+  closes is removed (`closeFile()`, `moveDocument()`). Actions under
+  *View → Panes* and shortcuts through the shortcut manager
+  (`View.SplitRight` …). `qucs/tests/test_panes` covers the grid, where
+  documents open, moves, closes, focus/click activation, drops and the
+  spanning operations.
 
 **Medium (weeks each)**
 

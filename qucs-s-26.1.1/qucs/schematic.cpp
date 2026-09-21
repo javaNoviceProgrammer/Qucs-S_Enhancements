@@ -2124,7 +2124,7 @@ void Schematic::contentsDropEvent(QDropEvent *Event)
       toOpen.append(filePath);
     }
 
-    if (a_App) a_App->openDroppedFiles(toOpen);
+    if (a_App) a_App->openDroppedFiles(toOpen, this);
     return;
   }
 
