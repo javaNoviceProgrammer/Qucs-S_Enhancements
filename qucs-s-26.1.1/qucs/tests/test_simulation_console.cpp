@@ -12,6 +12,8 @@
 #include <QTemporaryDir>
 #include <QAction>
 #include <QDialog>
+#include <QElapsedTimer>
+#include <QTimer>
 #include <QDockWidget>
 #include <QListWidget>
 #include <QPlainTextEdit>
@@ -43,8 +45,8 @@ struct MainGuard {
 
 // Restores the dock/window choice a case changes.
 struct HostGuard {
-    bool saved = QucsSettings.SimulationConsoleDock;
-    ~HostGuard() { QucsSettings.SimulationConsoleDock = saved; }
+    int saved = QucsSettings.SimulationConsoleHost;
+    ~HostGuard() { QucsSettings.SimulationConsoleHost = saved; }
 };
 
 QStringList statusLines(SimulationConsole* c)
@@ -242,7 +244,7 @@ private slots:
         resetSchematic();
         QucsSettings.NgspiceExecutable = fakeSimulator;
         HostGuard hostGuard;
-        QucsSettings.SimulationConsoleDock = false;
+        QucsSettings.SimulationConsoleHost = tQucsSettings::SimConsoleWindow;
         QucsApp app(false);
         MainGuard guard(&app);
         app.show();
@@ -287,7 +289,7 @@ private slots:
         resetSchematic();
         QucsSettings.NgspiceExecutable = fakeSimulator;
         HostGuard hostGuard;
-        QucsSettings.SimulationConsoleDock = true;
+        QucsSettings.SimulationConsoleHost = tQucsSettings::SimConsoleDock;
         QucsApp app(false);
         MainGuard guard(&app);
         app.show();
@@ -302,7 +304,7 @@ private slots:
         QVERIFY(run != nullptr);
 
         // As QucsApp does once the simulator settings were applied.
-        QucsSettings.SimulationConsoleDock = false;
+        QucsSettings.SimulationConsoleHost = tQucsSettings::SimConsoleWindow;
         console->applyHostSetting();
         QVERIFY(!console->inDock());
         QCOMPARE(console->parentWidget(), static_cast<QWidget*>(console->window()));
@@ -315,7 +317,7 @@ private slots:
         QVERIFY(console->isRunning());
 
         // ...and back into the dock.
-        QucsSettings.SimulationConsoleDock = true;
+        QucsSettings.SimulationConsoleHost = tQucsSettings::SimConsoleDock;
         console->applyHostSetting();
         QVERIFY(console->inDock());
         QCOMPARE(console->dock()->widget(), static_cast<QWidget*>(console));
@@ -332,7 +334,7 @@ private slots:
     void theSettingsDialogOffersTheChoice()
     {
         HostGuard hostGuard;
-        QucsSettings.SimulationConsoleDock = true;
+        QucsSettings.SimulationConsoleHost = tQucsSettings::SimConsoleDock;
         {
             SimSettingsDialog dlg;
             auto* tabs = dlg.findChild<QTabWidget*>();
@@ -343,21 +345,81 @@ private slots:
             QVERIFY(titles.contains("Simulators"));
             auto* dockChoice = dlg.findChild<QRadioButton*>("rbConsoleDock");
             auto* windowChoice = dlg.findChild<QRadioButton*>("rbConsoleWindow");
-            QVERIFY(dockChoice != nullptr && windowChoice != nullptr);
+            auto* legacyChoice = dlg.findChild<QRadioButton*>("rbConsoleLegacy");
+            QVERIFY(dockChoice != nullptr && windowChoice != nullptr && legacyChoice != nullptr);
             QVERIFY(dockChoice->isChecked());
             windowChoice->setChecked(true);
             QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));   // "Apply changes"
             QCOMPARE(dlg.result(), static_cast<int>(QDialog::Accepted));
-            QVERIFY(!QucsSettings.SimulationConsoleDock);
-            QVERIFY(!_settings::Get().item<bool>("SimulationConsoleDock"));   // saved
+            QCOMPARE(QucsSettings.SimulationConsoleHost, static_cast<int>(tQucsSettings::SimConsoleWindow));
+            QCOMPARE(_settings::Get().item<int>("SimulationConsoleHost"), 1);   // saved
         }
         {
             SimSettingsDialog dlg;                       // opens on the current choice
             QVERIFY(dlg.findChild<QRadioButton*>("rbConsoleWindow")->isChecked());
+            dlg.findChild<QRadioButton*>("rbConsoleLegacy")->setChecked(true);
+            QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));
+            QCOMPARE(QucsSettings.SimulationConsoleHost, static_cast<int>(tQucsSettings::SimConsoleLegacyWindow));
+        }
+        {
+            SimSettingsDialog dlg;
+            QVERIFY(dlg.findChild<QRadioButton*>("rbConsoleLegacy")->isChecked());
             dlg.findChild<QRadioButton*>("rbConsoleDock")->setChecked(true);
             dlg.reject();                                // Cancel leaves it alone
-            QVERIFY(!QucsSettings.SimulationConsoleDock);
+            QCOMPARE(QucsSettings.SimulationConsoleHost, static_cast<int>(tQucsSettings::SimConsoleLegacyWindow));
         }
+    }
+
+    void theLegacyWindowIsModalAndTakesTheRunDownWhenClosed()
+    {
+        resetSchematic();
+        QucsSettings.NgspiceExecutable = fakeSimulator;
+        HostGuard hostGuard;
+        QucsSettings.SimulationConsoleHost = tQucsSettings::SimConsoleLegacyWindow;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(sch));
+        SimulationConsole* console = app.simulationConsole();
+        QVERIFY(!console->inDock());
+        QVERIFY(console->isLegacyWindow());
+        QCOMPARE(button(console, "Exit")->text(), QString("Exit"));   // not "Close"
+
+        // Simulate blocks in the window until it is closed; look in from a
+        // timer, then press Exit while the fake simulator is still going.
+        bool seen = false, modal = false, running = false, appBlocked = false;
+        QTimer::singleShot(800, &app, [&] {
+            seen = console->window()->isVisible();
+            modal = console->window()->isModal();
+            running = console->isRunning() && console->console()->toPlainText().contains("fake ngspice");
+            appBlocked = QApplication::activeModalWidget() == console->window();
+            button(console, "Exit")->click();
+        });
+        QElapsedTimer clock;
+        clock.start();
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotSimulateWithSpice"));   // returns after Exit
+        QVERIFY(seen);
+        QVERIFY(modal);
+        QVERIFY(running);
+        QVERIFY(appBlocked);
+        QVERIFY(clock.elapsed() < 2500);                  // Exit ended it, not the 3 s script
+        QVERIFY(!console->window()->isVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(!console->isRunning(), 5000);
+        QVERIFY(statusLines(console).join("\n").contains("stopped"));
+        QTRY_VERIFY(console->currentRun() == nullptr);
+
+        // Without Exit: the window stays up after the run, as it used to,
+        // and the run completes.
+        QTimer::singleShot(4500, &app, [&] {
+            seen = console->window()->isVisible() && !console->isRunning()
+                   && statusLines(console).filter("successful").size() == 1;
+            button(console, "Exit")->click();
+        });
+        seen = false;
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotSimulateWithSpice"));
+        QVERIFY(seen);
+        app.closeAllFiles();
     }
 
     // Not the console, but the simulation toolbar next to it: it starts a

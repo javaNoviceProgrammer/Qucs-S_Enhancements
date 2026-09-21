@@ -4065,6 +4065,7 @@ void QucsApp::slotSimulateWithSpice()
         connect(run, &SimulationRun::warnings, this, &QucsApp::slotShowWarnings);
         connect(run, &SimulationRun::success, this, &QucsApp::slotResetWarnings);
         run->start();
+        simConsole->runLegacyWindow();   // legacy mode: modal until closed
     }
     else
     {

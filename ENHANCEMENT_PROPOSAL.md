@@ -431,11 +431,14 @@ existing demand.
   to it). `qucs/tests/test_simulation_console` drives it with a scripted
   simulator (dock shown, app responsive, refusal, Stop, close-while-
   running, failed start) and with the real ngspice when installed.
-  The console has two hosts: the dock, or the classic window
-  (`QucsSettings.SimulationConsoleDock`, chosen on the *Simulation
-  console* tab of the simulator settings); `applyHostSetting()` moves the
-  widget between them, run and all, and *View → Simulation Console* is
-  one checkable action for whichever host is current. The build-message
+  The console has two hosts, in three modes: the dock, a window of its
+  own, or the legacy window, run modally with `QDialog::exec()` from
+  `slotSimulateWithSpice()` once the run was started and stopping the
+  run when closed (`QucsSettings.SimulationConsoleHost`, chosen on the
+  *Simulation console* tab of the simulator settings);
+  `applyHostSetting()` moves the widget between the hosts, run and all,
+  and *View → Simulation Console* is one checkable action for whichever
+  host is current. The build-message
   dock's own tabs moved to its top so that the two docks' tab bar below
   does not sit under another tab bar.
 

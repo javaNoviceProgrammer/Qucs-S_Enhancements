@@ -55,9 +55,11 @@ private:
     QPushButton *a_btnSetQucsator;
 
     // Where the simulator's output goes: the Simulation dock in the main
-    // window, or a separate window (QucsSettings.SimulationConsoleDock).
+    // window, a separate window, or the legacy window that blocks the
+    // application until closed (QucsSettings.SimulationConsoleHost).
     QRadioButton *a_rbConsoleDock;
     QRadioButton *a_rbConsoleWindow;
+    QRadioButton *a_rbConsoleLegacy;
 
 public:
     explicit SimSettingsDialog(QWidget *parent = 0);

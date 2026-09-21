@@ -63,11 +63,11 @@ SimulationConsole::SimulationConsole(QucsApp* app)
     a_progress->setRange(0, 100);
     a_progress->setValue(0);
 
-    auto* split = new QSplitter(Qt::Horizontal, this);
-    split->addWidget(a_console);
-    split->addWidget(a_statusLog);
-    split->setStretchFactor(0, 3);
-    split->setStretchFactor(1, 2);
+    a_split = new QSplitter(Qt::Horizontal, this);
+    a_split->addWidget(a_console);
+    a_split->addWidget(a_statusLog);
+    a_split->setStretchFactor(0, 3);
+    a_split->setStretchFactor(1, 2);
 
     auto* buttons = new QHBoxLayout;
     buttons->addWidget(a_buttonStop);
@@ -79,7 +79,7 @@ SimulationConsole::SimulationConsole(QucsApp* app)
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 4, 4, 4);
-    layout->addWidget(split, 1);
+    layout->addWidget(a_split, 1);
     layout->addLayout(buttons);
 
     connect(a_buttonStop, &QPushButton::clicked, this, &SimulationConsole::slotStop);
@@ -97,7 +97,8 @@ SimulationConsole::SimulationConsole(QucsApp* app)
     a_dock->hide();   // until the first simulation, or View > Simulation Console
     a_dock->installEventFilter(this);
 
-    // The window host: the classic simulation dialog, not modal any more.
+    // The window host: the simulation dialog of earlier versions - run
+    // modally in the legacy mode, a window of its own otherwise.
     a_window->setObjectName(QStringLiteral("SimulationConsoleWindow"));
     a_window->setWindowTitle(tr("Simulate with external simulator"));
     a_window->setMinimumWidth(500);
@@ -107,24 +108,32 @@ SimulationConsole::SimulationConsole(QucsApp* app)
     a_window->resize(720, 420);
     a_window->restoreGeometry(QucsSettingsFile().value(QLatin1String(WindowGeometryKey)).toByteArray());
     a_window->installEventFilter(this);
-    connect(a_buttonClose, &QPushButton::clicked, a_window, &QWidget::hide);
+    // Close / Exit, Escape and the title bar all end in reject(): the
+    // window hides, and in the legacy mode the run is stopped with it.
+    connect(a_buttonClose, &QPushButton::clicked, a_window, &QDialog::reject);
+    connect(a_window, &QDialog::finished, this, &SimulationConsole::slotWindowFinished);
 
     a_viewAction->setCheckable(true);
     a_viewAction->setStatusTip(tr("Shows/hides the simulation console"));
     connect(a_viewAction, &QAction::triggered, this, &SimulationConsole::slotToggleView);
 
     // Into the host the setting names.
-    if (QucsSettings.SimulationConsoleDock)
+    if (QucsSettings.SimulationConsoleHost == tQucsSettings::SimConsoleDock)
         a_dock->setWidget(this);
     else
         windowLayout->addWidget(this);
-    a_buttonClose->setVisible(!QucsSettings.SimulationConsoleDock);
+    setUpWindow();
     syncViewAction();
 }
 
 bool SimulationConsole::inDock() const
 {
     return a_dock->widget() == this;
+}
+
+bool SimulationConsole::isLegacyWindow() const
+{
+    return !inDock() && QucsSettings.SimulationConsoleHost == tQucsSettings::SimConsoleLegacyWindow;
 }
 
 QWidget* SimulationConsole::host() const
@@ -155,8 +164,18 @@ SimulationRun* SimulationConsole::startRun(Schematic* schematic, bool showConsol
     // A closed document takes its run down with it.
     connect(schematic, &QObject::destroyed, a_run, &SimulationRun::stop);
     setRunning(true);
-    if (showConsoleNow) showConsole();
+    if (isLegacyWindow())
+        a_legacyShowPending = showConsoleNow;   // runLegacyWindow(), once the run goes
+    else if (showConsoleNow)
+        showConsole();
     return a_run;
+}
+
+void SimulationConsole::runLegacyWindow()
+{
+    if (!isLegacyWindow() || !a_legacyShowPending) return;
+    a_legacyShowPending = false;
+    a_window->exec();   // until closed; slotWindowFinished() stops a run still going
 }
 
 void SimulationConsole::showConsole()
@@ -169,9 +188,9 @@ void SimulationConsole::showConsole()
 
 void SimulationConsole::applyHostSetting()
 {
-    const bool toDock = QucsSettings.SimulationConsoleDock;
+    const bool toDock = QucsSettings.SimulationConsoleHost == tQucsSettings::SimConsoleDock;
     if (toDock == inDock()) {
-        a_buttonClose->setVisible(!toDock);
+        setUpWindow();   // plain or legacy window
         return;
     }
     const bool wasShown = !host()->isHidden();
@@ -185,9 +204,25 @@ void SimulationConsole::applyHostSetting()
         a_window->layout()->addWidget(this);
         setVisible(true);
     }
-    a_buttonClose->setVisible(!toDock);
+    setUpWindow();
     if (wasShown) showConsole();
     syncViewAction();
+}
+
+void SimulationConsole::setUpWindow()
+{
+    const bool legacy = isLegacyWindow();
+    a_buttonClose->setVisible(!inDock());
+    a_buttonClose->setText(legacy ? tr("Exit") : tr("Close"));
+    // The legacy dialog had the status list under the console.
+    a_split->setOrientation(legacy ? Qt::Vertical : Qt::Horizontal);
+    if (!legacy) a_legacyShowPending = false;
+}
+
+void SimulationConsole::slotWindowFinished()
+{
+    // The legacy dialog took the simulation down with it.
+    if (isLegacyWindow() && isRunning()) a_run->stop();
 }
 
 void SimulationConsole::clear()

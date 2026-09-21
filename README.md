@@ -90,10 +90,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Clear*; it comes up with the first simulation and can be shown or hidden
   from *View → Simulation Console*. A second Simulate while one is running
   is refused (the console says so); closing the schematic being simulated
-  stops its run (upstream #235). Those who prefer the separate window get
-  it back under *Simulation → Simulators Settings → Simulation console*:
-  the same console in a window of its own, which no longer blocks the
-  application either. The simulation toolbar (simulator choice, Simulate,
+  stops its run (upstream #235). *Simulation → Simulators Settings →
+  Simulation console* offers two alternatives: the same console in a
+  separate window that does not block the application either, or the
+  legacy window — the dialog of earlier versions, which opens with every
+  simulation, blocks until closed and stops a simulation still running
+  when it is closed. The simulation toolbar (simulator choice, Simulate,
   Tune, …) starts a second row of toolbars.
 - **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
   can show a legend — a sample of each graph's line (colour, thickness,

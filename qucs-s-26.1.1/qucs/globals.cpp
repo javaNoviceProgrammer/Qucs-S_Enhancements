@@ -114,7 +114,13 @@ bool loadSettings()
     QucsSettings.fullTraceName = _settings::Get().item<bool>("fullTraceName");
     QucsSettings.alwaysPrefixDataset = _settings::Get().item<bool>("alwaysPrefixDataset");
     QucsSettings.ContentTreeView = _settings::Get().item<bool>("ContentTreeView");
-    QucsSettings.SimulationConsoleDock = _settings::Get().item<bool>("SimulationConsoleDock");
+    QucsSettings.SimulationConsoleHost = _settings::Get().item<int>("SimulationConsoleHost");
+    if (!settings.contains("SimulationConsoleHost") && settings.contains("SimulationConsoleDock")
+        && !settings.value("SimulationConsoleDock").toBool())   // the earlier two-way setting
+        QucsSettings.SimulationConsoleHost = tQucsSettings::SimConsoleWindow;
+    if (QucsSettings.SimulationConsoleHost < tQucsSettings::SimConsoleDock
+        || QucsSettings.SimulationConsoleHost > tQucsSettings::SimConsoleLegacyWindow)
+        QucsSettings.SimulationConsoleHost = tQucsSettings::SimConsoleDock;
     QucsSettings.RecentProjects = _settings::Get().item<QString>("RecentProjects").split("*", Qt::SkipEmptyParts);
     QucsSettings.RecentDocs = _settings::Get().item<QString>("RecentDocs").split("*", Qt::SkipEmptyParts);
     QucsSettings.numRecentDocs = QucsSettings.RecentDocs.count();
@@ -191,7 +197,7 @@ bool saveApplSettings()
     qs.setItem<bool>("fullTraceName",QucsSettings.fullTraceName);
     qs.setItem<bool>("alwaysPrefixDataset",QucsSettings.alwaysPrefixDataset);
     qs.setItem<bool>("ContentTreeView",QucsSettings.ContentTreeView);
-    qs.setItem<bool>("SimulationConsoleDock",QucsSettings.SimulationConsoleDock);
+    qs.setItem<int>("SimulationConsoleHost",QucsSettings.SimulationConsoleHost);
 
     // Copy the list of directory paths in which Qucs should
     // search for subcircuit schematics from qucsPathList
