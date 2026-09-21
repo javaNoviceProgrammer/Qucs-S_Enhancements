@@ -8,11 +8,11 @@
 #   * push of a tag v*   – builds every platform and publishes a release named
 #                          after the tag.
 #
-# Cost note: this repository is private, so Actions minutes are metered and
-# macOS counts 10x, Windows 2x. ARM builds additionally need ARM runners,
-# which GitHub only provides free to public repositories; they are off by
-# default and can be enabled per run (dispatch inputs) or for tag builds by
-# setting the repository variable BUILD_ARM=true.
+# The bundles are release assets only: nothing built here is ever committed
+# to the repository (bin/ is git-ignored). The repository is public, so the
+# standard and the ARM runners are free; every platform is on by default and
+# can be deselected per run (dispatch inputs). Set the repository variable
+# BUILD_ARM=false to leave the ARM builds out of tag builds.
 #
 # Fetch the results into bin/ with:  scripts/fetch-binaries.sh [tag]
 name: Release
@@ -37,13 +37,13 @@ on:
         type: boolean
         default: true
       linux_arm:
-        description: 'Linux arm64 AppImage (needs ARM runner)'
+        description: 'Linux arm64 AppImage'
         type: boolean
-        default: false
+        default: true
       windows_arm:
-        description: 'Windows arm64 .zip + installer (needs ARM runner)'
+        description: 'Windows arm64 .zip + installer'
         type: boolean
-        default: false
+        default: true
       publish:
         description: 'Publish to the "continuous" pre-release'
         type: boolean
@@ -114,8 +114,8 @@ jobs:
             for k in macos_apple_silicon macos_intel linux_intel windows_intel publish; do
               echo "$k=true" >> "$GITHUB_OUTPUT"
             done
-            echo "linux_arm=${{ vars.BUILD_ARM == 'true' }}"   >> "$GITHUB_OUTPUT"
-            echo "windows_arm=${{ vars.BUILD_ARM == 'true' }}" >> "$GITHUB_OUTPUT"
+            echo "linux_arm=${{ vars.BUILD_ARM != 'false' }}"   >> "$GITHUB_OUTPUT"
+            echo "windows_arm=${{ vars.BUILD_ARM != 'false' }}" >> "$GITHUB_OUTPUT"
           fi
 
   # ---------------------------------------------------------------------------
