@@ -24,6 +24,8 @@
 iFile::iFile()
 {
   Description = QObject::tr("file based current source");
+  // The SPICE form is an XSPICE "filesource": ngspice and SpiceOpus only.
+  Simulator = spicecompat::simNgspice | spicecompat::simSpiceOpus | spicecompat::simQucsator;
 
   Ellipses.append(new qucs::Ellips(-12,-12, 24, 24, QPen(Qt::darkBlue,2)));
   // pins

@@ -120,7 +120,13 @@ QString Relais::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat
     misc::str2num(val,Vh,unit,fac);
     Vh *= fac;
 
-    QString Ron = spicecompat::normalize_value(Props.at(2)->Value);
+    // Qucsator takes Ron = 0 (the default) as an ideal contact; SPICE takes
+    // 1/Ron, and the operating point of a closed relay fails. The smallest
+    // value the time-controlled switch defaults to serves as the floor.
+    double RonNum;
+    misc::str2num(Props.at(2)->Value, RonNum, unit, fac);
+    RonNum *= fac;
+    QString Ron = RonNum > 0.0 ? spicecompat::normalize_value(Props.at(2)->Value) : QStringLiteral("1e-9");
     QString Roff = spicecompat::normalize_value(Props.at(3)->Value);
 
     if (getProperty("Type")->Value == "SPST") {
@@ -135,7 +141,9 @@ QString Relais::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat
       s += " " + model + " OFF\n";
 
       if (dialect == spicecompat::SPICEXyce) {
-        s += QStringLiteral(".MODEL %1 vswitch von=%2 voff=%3 ron=%4 roff=%5 \n").arg(model).arg(Vt).arg(Vt-Vh).arg(Ron).arg(Roff);
+        // Xyce's vswitch is on above VON and off below VOFF: the same band
+        // as SPICE's sw with vt and vh, Vt-Vh .. Vt+Vh.
+        s += QStringLiteral(".MODEL %1 vswitch von=%2 voff=%3 ron=%4 roff=%5 \n").arg(model).arg(Vt+Vh).arg(Vt-Vh).arg(Ron).arg(Roff);
       } else {
         s += QStringLiteral(".MODEL %1 sw vt=%2 vh=%3 ron=%4 roff=%5 \n").arg(model).arg(Vt).arg(Vh).arg(Ron).arg(Roff);
       }

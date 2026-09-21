@@ -25,6 +25,8 @@ namespace spicecompat {
      bool check_nodename(QString &node);
      QString getDefaultSimulatorName(int simulator);
      QString getSpiceLibPath(const QString &lib);
+     QString togglingPWL(const QStringList& durations, const QString& firstLevel, const QString& otherLevel,
+                         double maxTransition, bool repeat);
 
      enum Simulator : int {
          simNotSpecified = 0b00000000,

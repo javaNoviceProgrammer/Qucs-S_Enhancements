@@ -199,85 +199,14 @@ QString Digi_Source::spice_netlist(spicecompat::SpiceDialect dialect /* = spicec
   QString port = spicecompat::normalize_node_name(Ports.at(0)->Connection->Name);
   s += " " + port + " 0 "; // node names
 
-  QString V    = spicecompat::normalize_value(getProperty("V")->Value);
-  QString init = spicecompat::normalize_value(getProperty("init")->Value);
+  const QString V = spicecompat::normalize_value(getProperty("V")->Value);
+  const bool low = getProperty("init")->Value == "low";
+  const QString first = low ? QStringLiteral("0") : V;
+  const QString other = low ? V : QStringLiteral("0");
 
-  QString times = spicecompat::normalize_value(getProperty("times")->Value);
-  QStringList timesList = times.split(";");
-
-  double time = 0;
-  double fallingTime = 0;
-  double risingTime = 0;
-
-  double fac, timeValue;
-  double changingTime;
-  QString unit;
-  misc::str2num(timesList[0].toLower(),changingTime,unit,fac);
-  changingTime *= fac / 100; // rise and fall times
-
-  QString oddValue, evenValue;
-  if (init == "{LOW}") {
-    oddValue = V;
-    evenValue = "0";
-  } else {
-    oddValue = "0";
-    evenValue = V;
-  }
-
-  s += QStringLiteral("DC %1 PWL(0 ").arg(evenValue);
-  s += evenValue;
-
-  for (int i = 0; i < timesList.size(); i++) {
-    QString timeStep = timesList[i].toLower();
-    misc::str2num(timeStep,timeValue,unit,fac);
-    timeValue *= fac;
-
-    if (i == 0) {
-      // first time step
-      s += QStringLiteral(" %1 %2").arg(timeValue).arg(evenValue);
-      time += timeValue;
-
-    } else {
-      if (i % 2 == 1) {
-        // times of odd time step
-        risingTime = time + changingTime;
-        time += timeValue;
-
-        s += QStringLiteral(" %1 %2 %3 %2")
-                      .arg(risingTime)
-                      .arg(oddValue)
-                      .arg(time)
-                      .toUpper();
-        // last time step
-        if (timeStep == timesList.last().toLower()) {
-            fallingTime = time + changingTime;
-            s += QStringLiteral(" %1 0 %2 0")
-                          .arg(fallingTime)
-                          .arg(fallingTime + changingTime)
-                          .toUpper();
-        }
-      } else {
-        // times of even time step
-        fallingTime = time + changingTime;
-        time += timeValue;
-        s += QStringLiteral(" %1 %2 %3 %2")
-                      .arg(fallingTime)
-                      .arg(evenValue)
-                      .arg(time)
-                      .toUpper();
-        // last time step
-        if (timeStep == timesList.last().toLower()) {
-            fallingTime = time + changingTime;
-            s += QStringLiteral(" %1 0 %2 0")
-                     .arg(fallingTime)
-                     .arg(fallingTime + changingTime)
-                     .toUpper();
-        }
-      }
-    }
-  }
-
-  s += ")\n";
-
+  // The list is how long each level lasts, and the pattern repeats
+  // forever (qucsator's digisource, and the VHDL/Verilog of this source).
+  const QStringList times = getProperty("times")->Value.split(';', Qt::SkipEmptyParts);
+  s += QStringLiteral("DC %1 %2\n").arg(first, spicecompat::togglingPWL(times, first, other, 0.0, true));
   return s;
 }

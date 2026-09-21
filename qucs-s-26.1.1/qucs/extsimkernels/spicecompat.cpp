@@ -3,6 +3,7 @@
 #include "misc.h"
 
 #include <QDebug>
+#include <algorithm>
 #include <QRegularExpression>
 
 /*!
@@ -31,16 +32,23 @@ QString spicecompat::check_refdes(QString &Name,QString &SpiceModel)
  */
 QString spicecompat::normalize_value(QString Value)
 {
-    const QRegularExpression r_pattern("^[0-9]+.*Ohm$");
+    const QRegularExpression r_pattern("^[+-]?[0-9]+.*Ohm$");
     const QRegularExpression p_pattern("^[+-]*[0-9]+.*dBm$");
-    const QRegularExpression c_pattern("^[0-9]+.*F$");
-    const QRegularExpression l_pattern("^[0-9]+.*H$");
-    const QRegularExpression v_pattern("^[0-9]+.*V$");
-    const QRegularExpression i_pattern("^[0-9]+.*A$");
-    const QRegularExpression hz_pattern("^[0-9]+.*Hz$");
-    const QRegularExpression s_pattern("^[0-9]+.*S$");
-    const QRegularExpression sec_pattern("^[0-9]+.*s$");
+    const QRegularExpression c_pattern("^[+-]?[0-9]+.*F$");
+    const QRegularExpression l_pattern("^[+-]?[0-9]+.*H$");
+    const QRegularExpression v_pattern("^[+-]?[0-9]+.*V$");
+    const QRegularExpression i_pattern("^[+-]?[0-9]+.*A$");
+    const QRegularExpression hz_pattern("^[+-]?[0-9]+.*Hz$");
+    const QRegularExpression s_pattern("^[+-]?[0-9]+.*S$");
+    const QRegularExpression sec_pattern("^[+-]?[0-9]+.*s$");
     const QRegularExpression var_pattern("^[A-Za-z].*$");
+    // A number with a Qucs scale prefix and no unit (or the length unit m,
+    // which no branch above knows): "10M", "4.7k", "10 cm".
+    const QRegularExpression bare_pattern("^([+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)([TGMkcmunpf])m?$");
+    // An expression that starts with a digit (2*R1, 1e3/f0): SPICE only
+    // evaluates it inside braces. A sign in front, or after the exponent
+    // of a number, is not an operator.
+    const QRegularExpression expr_pattern("^[+-]?[0-9.].*(?:[*/^(]|(?<![eE^*/(+-])[+-])");
 
     QString s = Value.remove(' ');
     if (s.startsWith('\'')&&s.endsWith('\'')) return Value; // Expression detected
@@ -71,7 +79,14 @@ QString spicecompat::normalize_value(QString Value)
         s.replace("M","Meg");
     } else if (p_pattern.match(s).hasMatch()) {
         s.remove("dBm");
+    } else if (const QRegularExpressionMatch bare = bare_pattern.match(s); bare.hasMatch()) {
+        // Qucs reads M as mega and c as centi (misc::str2num); SPICE reads M
+        // as milli and knows no c.
+        const QString prefix = bare.captured(2);
+        s = bare.captured(1) + (prefix == "M" ? QStringLiteral("Meg") : prefix == "c" ? QStringLiteral("e-2") : prefix);
     } else if (var_pattern.match(s).hasMatch()) {
+        s = "{" + s + "}";
+    } else if (!s.startsWith('{') && expr_pattern.match(s).hasMatch()) {
         s = "{" + s + "}";
     }
 
@@ -419,6 +434,55 @@ QString spicecompat::getSpiceLibPath(const QString &lib)
   return f;
 }
 
+/*!
+ * \brief spicecompat::togglingPWL A PWL source that toggles between two
+ *        levels, each entry of \a durations being how long the current level
+ *        lasts (Qucs digital source and time-controlled switch semantics):
+ *        \a firstLevel for the first entry, \a otherLevel for the second, and
+ *        so on, and a change to the other level when the last entry ends.
+ *        Each change takes the smaller of a hundredth of the shortest entry
+ *        and \a maxTransition, ending at the nominal time. With \a repeat
+ *        the pattern starts over after the last entry, "r=0" for ngspice
+ *        and Xyce: the period then begins with the first level again, which
+ *        for an odd count means no change at the end.
+ * \return "PWL(...)" and, when repeating, " r=0".
+ */
+QString spicecompat::togglingPWL(const QStringList& durations, const QString& firstLevel,
+                                 const QString& otherLevel, double maxTransition, bool repeat)
+{
+    QList<double> d;
+    for (const QString& entry : durations) {
+        double number = 0.0, factor = 1.0;
+        QString unit;
+        misc::str2num(entry.trimmed(), number, unit, factor);
+        if (number * factor > 0.0) d.append(number * factor);
+    }
+    if (d.isEmpty()) return QStringLiteral("PWL(0 %1)").arg(firstLevel);
+
+    double shortest = d.first();
+    for (double x : d) shortest = std::min(shortest, x);
+    double delta = shortest / 100.0;
+    if (maxTransition > 0.0) delta = std::min(delta, maxTransition);
+
+    const auto num = [](double x) { return QString::number(x, 'g', 12); };
+    QString s = QStringLiteral("PWL(0 %1").arg(firstLevel);
+    double t = 0.0;
+    for (int k = 0; k < d.size(); ++k) {
+        const QString level = (k % 2 == 0) ? firstLevel : otherLevel;
+        const bool last = k + 1 == d.size();
+        QString next = (k % 2 == 0) ? otherLevel : firstLevel;
+        if (last && repeat) next = firstLevel;   // the next period begins with the first level
+        const double tEnd = t + d.at(k);
+        if (next != level)
+            s += QStringLiteral(" %1 %2 %3 %4").arg(num(tEnd - delta), level, num(tEnd), next);
+        else
+            s += QStringLiteral(" %1 %2").arg(num(tEnd), level);
+        t = tEnd;
+    }
+    s += ")";
+    if (repeat) s += " r=0";
+    return s;
+}
 
 int spicecompat::strToMSlineModel(const QString &model)
 {
