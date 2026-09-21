@@ -157,7 +157,7 @@ SET(QUCS_SRCS
   imagewriter.cpp printerwriter.cpp projectView.cpp
   symbolwidget.cpp wire_planner.cpp
   qucsshortcutmanager.cpp globals.cpp
-  autosave.cpp crashhandler.cpp
+  autosave.cpp crashhandler.cpp shellenvironment.cpp
 )
 
 SET(QUCS_HDRS
@@ -168,6 +168,7 @@ main.h
 messagedock.h
 simulationconsole.h
 processconsole.h
+shellenvironment.h
 misc.h
 mnemo.h
 module.h

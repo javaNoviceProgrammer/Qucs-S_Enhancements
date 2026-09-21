@@ -457,6 +457,17 @@ existing demand.
   `PYTHON_BASIC_REPL=1`. The program goes with the console (hang-up,
   then kill; `waitpid` so no zombie is left).
   `qucs/tests/test_process_console` drives `/bin/sh` and `python3`.
+- *Done:* **Login-shell environment at start** (`qucs/shellenvironment.*`).
+  `importLoginShellEnvironment()` runs `$SHELL -l -i -c "printf marker;
+  exec env -0"` (stdin from /dev/null, killed at a timeout; then `-l`
+  alone if that said nothing), parses the NUL-separated dump after the
+  marker (a profile's greeting cannot corrupt it), and `qputenv`s what
+  the process lacks: PATH merged (`mergedPath()`: the process's own
+  directories first, then the shell's in order), shell-session names
+  skipped, existing values untouched. Called in `main()` before the GUI
+  starts (the CLI modes are left alone), off with `QUCS_NO_SHELL_ENV`.
+  `qucs/tests/test_shell_environment` covers the parsing, the merge, a
+  scripted shell, a hanging one and the real ones.
 - *Done:* **Content panel refreshes by itself.** `ProjectView` polls: a
   repeating timer (`QucsSettings.ContentRefreshSeconds`, off with
   `ContentAutoRefresh`, both under *Application Settings → Settings*)
