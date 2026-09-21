@@ -407,6 +407,25 @@ QString misc::scratchDir()
 }
 
 // #########################################################################
+QString misc::scratchDirFor(const QString& docName)
+{
+  const QString root = scratchDir();
+  if (QucsMain == nullptr || QucsMain->ProjName.isEmpty()) return root;
+  QString name;
+  if (!docName.isEmpty()) {
+    const QFileInfo info(docName);
+    QString relative = QDir::fromNativeSeparators(QucsSettings.QucsWorkDir.relativeFilePath(info.absoluteFilePath()));
+    if (relative.startsWith(QLatin1String("../")) || QDir::isAbsolutePath(relative))
+      relative = info.fileName();   // not inside the project
+    name = relative;
+    const int dot = name.lastIndexOf(QLatin1Char('.'));
+    if (dot > name.lastIndexOf(QLatin1Char('/'))) name.truncate(dot);   // drop the extension
+  }
+  if (name.isEmpty() || name == QLatin1String(".")) name = QStringLiteral("untitled");
+  return QDir::toNativeSeparators(root + QLatin1Char('/') + name);
+}
+
+// #########################################################################
 bool misc::isTextFile(const QString& path)
 {
   QFile f(path);

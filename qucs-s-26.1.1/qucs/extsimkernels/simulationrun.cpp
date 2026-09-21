@@ -49,7 +49,7 @@ SimulationRun::SimulationRun(Schematic* sch, bool netlist2Console, QObject* pare
     a_netlist2Console(netlist2Console),
     a_running(false)
 {
-    const QString workdir(misc::scratchDir());
+    const QString workdir(misc::scratchDirFor(sch != nullptr ? sch->getDocName() : QString()));
     QFileInfo inf(workdir);
     if (!inf.exists()) {
         QDir dir;
@@ -318,7 +318,8 @@ void SimulationRun::saveNetlist()
 void SimulationRun::saveLog()
 {
     if (a_console == nullptr) return;
-    QString filename = QucsSettings.tempFilesDir.filePath("log.txt");
+    // Next to the schematic's netlist and raw output, in its Scratch folder.
+    QString filename = misc::scratchDirFor(a_schematic != nullptr ? a_schematic->getDocName() : QString()) + QDir::separator() + "log.txt";
     QFile log(filename);
     if (log.open(QIODevice::WriteOnly)) {
         QTextStream ts_log(&log);

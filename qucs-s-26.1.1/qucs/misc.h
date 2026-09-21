@@ -57,6 +57,15 @@ namespace misc {
   /// Scratch folder, otherwise (no project, headless) the simulator work
   /// directory from the settings.
   QString scratchDir();
+  /// Where the simulations of one schematic write their temporary files:
+  /// a folder of the schematic's name (its path relative to the project,
+  /// without the extension - "amp" for amp.sch, "sub/amp" for sub/amp.sch)
+  /// inside scratchDir(), so every simulated schematic has a folder of
+  /// its own and a new run of the same schematic updates the same folder.
+  /// "untitled" for a schematic without a name; a schematic outside the
+  /// project gets its base name. Without a project it is scratchDir()
+  /// itself, as headless runs expect.
+  QString scratchDirFor(const QString& docName);
   /// Whether the file looks like text: readable and no NUL byte in its
   /// first 8 KiB. Decides what a dropped file of unknown type opens with.
   bool    isTextFile(const QString& path);
