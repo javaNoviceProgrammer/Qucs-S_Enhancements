@@ -741,6 +741,13 @@ void QucsApp::initActions() {
                                     .constData()));
   connect(save_netlist, SIGNAL(triggered()), SLOT(slotSaveNetlist()));
 
+  generateNetlist = new QAction(tr("Generate Netlist"), this);
+  generateNetlist->setStatusTip(tr("Writes the netlist into the schematic's Scratch folder and opens it"));
+  generateNetlist->setWhatsThis(
+      tr("Generate Netlist\n\nCreates the SPICE netlist of the schematic as a simulation would, "
+         "saves it as spice4qucs.cir in the schematic's folder under Scratch and opens it"));
+  connect(generateNetlist, &QAction::triggered, this, &QucsApp::slotGenerateNetlist);
+
   saveCdlNetlist = new QAction(tr("Save CDL netlist"), this);
   saveCdlNetlist->setStatusTip(tr("Save CDL netlist"));
   saveCdlNetlist->setWhatsThis(
@@ -1034,6 +1041,7 @@ void QucsApp::initMenuBar() {
   simMenu->addAction(showMsg);
   simMenu->addAction(showNet);
   simMenu->addAction(save_netlist);
+  simMenu->addAction(generateNetlist);
   simMenu->addSeparator();
   simMenu->addAction(saveCdlNetlist);
   simMenu->addAction(cdlSettings);
@@ -1649,6 +1657,9 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("Sim.Check", "Simulation", "Check Schematic", checkSchematicAction,
                       QKeySequence(Qt::Key_F10));
+
+  mgr.registerCommand("Sim.GenerateNetlist", "Simulation", "Generate Netlist", generateNetlist,
+                      QKeySequence());
 
   mgr.registerCommand("Sim.ResetLimits", "Simulation", "Reset Diagram Limits",
                       resetDiagramLimits,

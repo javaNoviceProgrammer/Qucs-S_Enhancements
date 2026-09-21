@@ -91,6 +91,13 @@ signals:
     void warnings();
     void success();
 
+public:
+    /// Writes the netlist of the schematic to \a filename (a SPICE
+    /// simulator's: ngspice, SPICE OPUS or Xyce) without asking anything;
+    /// false when the simulator is not one of those or the file was not
+    /// written.
+    bool writeNetlist(const QString& filename);
+
 public slots:
     void saveNetlist();
     void start();

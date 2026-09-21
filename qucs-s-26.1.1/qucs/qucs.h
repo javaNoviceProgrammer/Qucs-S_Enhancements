@@ -335,6 +335,9 @@ private slots:
   void slotFileChanged(bool);
   void slotSimSettings();
   void slotSaveNetlist();
+  /// Simulation > Generate Netlist: writes the schematic's netlist into
+  /// its Scratch folder (spice4qucs.cir, as a run would) and opens it.
+  void slotGenerateNetlist();
   void slotSaveCdlNetlist();
   void slotCdlSettings();
   void slotAfterSpiceSimulation(SimulationRun *run);
@@ -413,7 +416,7 @@ public:
       *fileSettings, *filePrint, *fileQuit, *projNew, *projOpen, *projDel,
       *projClose, *applSettings, *refreshSchPath, *editCut, *editCopy, *magAll,
       *magSel, *magOne, *magMinus, *filePrintFit, *tune, *symEdit, *intoH,
-      *popH, *simulate, *save_netlist, *dpl_sch, *undo, *redo, *dcbias,
+      *popH, *simulate, *save_netlist, *generateNetlist, *dpl_sch, *undo, *redo, *dcbias,
       *saveCdlNetlist, *cdlSettings;
 
   // Navigate tabs

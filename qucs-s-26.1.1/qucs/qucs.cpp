@@ -4235,6 +4235,53 @@ void QucsApp::slotSaveNetlist()
     }
 }
 
+void QucsApp::slotGenerateNetlist()
+{
+    Schematic* schematic = currentSchematic();
+    if (schematic == nullptr)
+    {
+        QMessageBox::information(this, tr("Generate netlist"), tr("Not a schematic tab!"));
+        return;
+    }
+    if (QucsSettings.DefaultSimulator == spicecompat::simQucsator)
+    {
+        QMessageBox::information(
+                this,
+                tr("Generate netlist"),
+                tr("This action is supported only for SPICE simulators!"));
+        return;
+    }
+    if (schematic->getDocName().isEmpty())
+    {
+        QMessageBox::warning(
+                this,
+                tr("Generate netlist"),
+                tr("Schematic not saved! The netlist goes to the schematic's "
+                   "Scratch folder. Save schematic first!"));
+        slotFileSaveAs();
+        if (schematic->getDocName().isEmpty())
+            return;
+    }
+
+    // What a run would flag, listed first (the netlist is written regardless).
+    checkSchematic(schematic, false);
+
+    const QString folder = misc::scratchDirFor(schematic->getDocName());
+    QDir().mkpath(folder);
+    const QString filename = QDir::toNativeSeparators(folder + "/spice4qucs.cir");
+    SimulationRun run(schematic, false);   // netlist only: nothing attached
+    if (!run.writeNetlist(filename))
+    {
+        QMessageBox::critical(this, tr("Generate netlist"),
+                              tr("Could not write the netlist to %1").arg(filename));
+        return;
+    }
+    a_lastSimulatedDoc = schematic->getDocName();   // Show Last Netlist finds it
+    slotUpdateTreeview();                            // the Scratch category shows it
+    editFile(filename, /*reloadFile=*/true);
+    statusBar()->showMessage(tr("Netlist written to %1").arg(filename), 4000);
+}
+
 void QucsApp::slotCdlSettings()
 {
     std::unique_ptr<CdlSettingsDialog> dlg(new CdlSettingsDialog(this));
