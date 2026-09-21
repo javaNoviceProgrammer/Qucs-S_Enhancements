@@ -128,14 +128,12 @@ private slots:
         QCOMPARE(positions(doc), before);
         QVERIFY(app.select->isChecked());
 
-        // A new sequence after a mouse press is its own step: Escape takes
-        // back only the second one.
+        // A new sequence after a mouse press (which ends the sequence with
+        // endKeyboardMove()) is its own step: Escape takes back only the
+        // second one.
         selectAll(doc);
         QVERIFY(QMetaObject::invokeMethod(&app, "slotCursorUp", Q_ARG(bool, true)));
-        QMouseEvent press(QEvent::MouseButtonPress, QPointF(1, 1), QPointF(1, 1), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-        QApplication::sendEvent(doc->viewport(), &press);
-        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(1, 1), QPointF(1, 1), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
-        QApplication::sendEvent(doc->viewport(), &release);
+        doc->endKeyboardMove();
         selectAll(doc);
         QVERIFY(QMetaObject::invokeMethod(&app, "slotCursorUp", Q_ARG(bool, true)));
         const int gy = doc->getGridY();

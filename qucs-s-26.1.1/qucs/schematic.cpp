@@ -698,7 +698,7 @@ void Schematic::contentsMousePressEvent(QMouseEvent *Event)
 {
     a_App->editText->setHidden(true); // disable text edit of component property
     this->setFocus();
-    a_keyboardMoveOpen = false;   // the cursor-key move, if any, is done
+    endKeyboardMove();   // the cursor-key move, if any, is done
     if (    a_App->MouseReleaseAction == &MouseActions::MReleasePaste
         ||  a_App->MouseReleaseAction == &MouseActions::MReleaseMoveFree) {
         return;
