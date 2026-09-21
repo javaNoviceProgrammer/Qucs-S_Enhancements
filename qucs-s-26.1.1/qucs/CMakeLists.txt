@@ -150,7 +150,7 @@ SET(QUCS_SRCS
   textdoc.cpp  main.cpp	schematic.cpp
   mnemo.cpp	qucs.cpp healer.cpp
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
-  mouseactions.cpp qucs_actions.cpp	schematic_file.cpp
+  mouseactions.cpp qucs_actions.cpp	qucs_panes.cpp schematic_file.cpp
   wirelabel.cpp node.cpp qucs_init.cpp
   syntax.cpp misc.cpp messagedock.cpp simulationconsole.cpp processconsole.cpp
   settings.cpp

@@ -282,8 +282,11 @@ QucsApp::QucsApp(bool netlist2Console) :
 int QucsApp::autosaveAll(bool emergency)
 {
   int written = 0;
-  for (int i = 0; i < DocumentTab->count(); ++i) {
-    QucsDoc *doc = getDoc(i);
+  // The index names an untitled document's autosave copy: its position
+  // over all panes, as removeUntitled() is given too.
+  const QList<QucsDoc *> docs = allDocuments();
+  for (int i = 0; i < docs.size(); ++i) {
+    QucsDoc *doc = docs.at(i);
     if (doc == nullptr || !doc->getDocChanged())
       continue;
     if (!qucs_s::autosave::write(doc, i).isEmpty())
@@ -359,6 +362,9 @@ void QucsApp::restoreAutosaved(const QList<qucs_s::autosave::Entry> &entries)
 
 QucsApp::~QucsApp()
 {
+  // The focus moves about as the widgets go; not our concern any more
+  // (and the slot must not run on a half-destroyed window).
+  disconnect(qApp, &QApplication::focusChanged, this, nullptr);
   Module::unregisterModules ();
 }
 
@@ -382,24 +388,8 @@ void QucsApp::initView()
   setStyleSheet("QToolButton { padding: 0px; }");
 #endif
 
-  DocumentTab = new ContextMenuTabWidget(this);
-#if __APPLE__
-  DocumentTab->setDocumentMode(true);
-#endif
-  setCentralWidget(DocumentTab);
-
-  connect(DocumentTab,
-          SIGNAL(currentChanged(int)), SLOT(slotChangeView()));
-
-  // Give every tab a close button, and connect the button's signal to
-  // slotFileClose
-  DocumentTab->setTabsClosable(true);
-  connect(DocumentTab,
-          SIGNAL(tabCloseRequested(int)), SLOT(slotFileClose(int)));
-#ifdef HAVE_QTABWIDGET_SETMOVABLE
-  // make tabs draggable if supported
-  DocumentTab->setMovable (true);
-#endif
+  // The documents' panes (qucs_panes.cpp): one to begin with, DocumentTab.
+  initPaneArea();
 
   dock = new QDockWidget(tr("Main Dock"),this);
   TabView = new QTabWidget(dock);
@@ -859,23 +849,23 @@ QucsDoc* QucsApp::getDoc(int No)
 // Returns a pointer to the QucsDoc object whose file name is "Name".
 QucsDoc * QucsApp::findDoc (QString File, int * Pos)
 {
-  QucsDoc * d;
-  int No = 0;
   File = QDir::toNativeSeparators (File);
-  while ((d = getDoc (No++)) != nullptr)
-    if (QDir::toNativeSeparators (d->getDocName()) == File) {
-      if (Pos) *Pos = No - 1;
-      return d;
+  for (ContextMenuTabWidget *pane : panes())
+    for (int i = 0; i < pane->count(); ++i) {
+      QWidget *w = pane->widget(i);
+      QucsDoc *d = isTextDocument(w) ? static_cast<QucsDoc *>(static_cast<TextDoc *>(w))
+                                     : static_cast<QucsDoc *>(static_cast<Schematic *>(w));
+      if (QDir::toNativeSeparators (d->getDocName()) == File) {
+        if (Pos) *Pos = i;
+        return d;
+      }
     }
   return 0;
 }
 
 TextDoc *QucsApp::findTextDoc(const QString &fileName)
 {
-  int pos = -1;
-  if (findDoc(fileName, &pos) == nullptr || pos < 0)
-    return nullptr;
-  return qobject_cast<TextDoc *>(DocumentTab->widget(pos));
+  return qobject_cast<TextDoc *>(documentWidget(findDoc(fileName)));
 }
 
 // ---------------------------------------------------------------
@@ -1448,6 +1438,7 @@ void QucsApp::slotCMenuCopy()
   int z = 0; //search if the doc is loaded
   QucsDoc *d = findDoc(file, &z);
   if (d != nullptr && d->getDocChanged()) {
+    activatePaneOf(documentWidget(d));
     DocumentTab->setCurrentIndex(z);
     int ret = QMessageBox::question(this, tr("Copying Qucs document"),
         tr("The document contains unsaved changes!\n") +
@@ -1921,6 +1912,7 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
 
   if(d) {   // open page found ?
     d->becomeCurrent(true);
+    activatePaneOf(documentWidget(d));   // in whichever pane it is
     DocumentTab->setCurrentIndex(i);  // make new document the current
     // if reloadPage is set AND it's a textDocument AND it has changed on disk -> reload
     if (reloadPage) {
@@ -2162,10 +2154,10 @@ bool QucsApp::saveAs()
   DocumentTab->setTabText(DocumentTab->indexOf(w), misc::properFileName(s));
   lastDirOpenSave = Info.absolutePath();  // remember last directory and file
 
-  const int tabIndex = DocumentTab->indexOf(w);
+  const int docIndex = allDocuments().indexOf(Doc);   // as autosaveAll() numbers it
   n = Doc->save();   // SAVE
   if(n < 0)  return false;
-  qucs_s::autosave::removeUntitled(tabIndex, !isTextDocument(w));   // it was untitled before
+  qucs_s::autosave::removeUntitled(docIndex, !isTextDocument(w));   // it was untitled before
   qucs_s::autosave::remove(s);
 
   // It's assumed that *.sym files contain *only* a symbol
@@ -2213,14 +2205,30 @@ void QucsApp::slotFileSaveAll()
   slotHideEdit(); // disable text edit of component property
   DocumentTab->blockSignals(true);   // no user interaction during the time
 
-  int No=0;
-  QucsDoc *Doc;  // search, if page is already loaded
-  while((Doc=getDoc(No++)) != nullptr) {
-    if(Doc->getDocName().isEmpty())  // make document the current ?
-      DocumentTab->setCurrentIndex(No-1);
-    if (saveFile(Doc)) { // Hack! TODO: Maybe it's better to let slotFileChanged()
-      setDocumentTabChanged(No-1, false); // know about Tab number?
+  // Every document in every pane. An untitled one is made current (its
+  // pane active) for the Save-as dialog; the active pane is restored after.
+  ContextMenuTabWidget *activeBefore = DocumentTab;
+  const int currentBefore = DocumentTab->currentIndex();
+  for (ContextMenuTabWidget *pane : panes()) {
+    pane->blockSignals(true);
+    for (int i = 0; i < pane->count(); ++i) {
+      QWidget *w = pane->widget(i);
+      QucsDoc *Doc = isTextDocument(w) ? static_cast<QucsDoc *>(static_cast<TextDoc *>(w))
+                                       : static_cast<QucsDoc *>(static_cast<Schematic *>(w));
+      if(Doc->getDocName().isEmpty()) {  // make document the current ?
+        setActivePane(pane);
+        pane->setCurrentIndex(i);
+      }
+      if (saveFile(Doc)) { // Hack! TODO: Maybe it's better to let slotFileChanged()
+        setDocumentChanged(w, false); // know about Tab number?
+      }
     }
+    pane->blockSignals(false);
+  }
+  if (panes().contains(activeBefore)) {
+    setActivePane(activeBefore);
+    if (currentBefore >= 0 && currentBefore < activeBefore->count())
+      activeBefore->setCurrentIndex(currentBefore);
   }
 
   DocumentTab->blockSignals(false);
@@ -2285,19 +2293,24 @@ void QucsApp::closeFile(int index)
       }
     }
 
+    const int docIndex = allDocuments().indexOf(Doc);   // as autosaveAll() numbers it
     DocumentTab->removeTab(index);
     view->forgetDocumentElements();
     delete Doc;
     // Saved or discarded on purpose: the autosave copy is obsolete.
     if (closingName.isEmpty())
-      qucs_s::autosave::removeUntitled(index, closingSchematic);
+      qucs_s::autosave::removeUntitled(docIndex, closingSchematic);
     else
       qucs_s::autosave::remove(closingName);
 
-    if(DocumentTab->count() < 1) { // if no document left, create an untitled
-      Schematic *d = new Schematic(this, "");
-      addDocumentTab(d);
-      DocumentTab->setCurrentIndex(0);
+    if(DocumentTab->count() < 1) { // if no document left ...
+      if (panes().size() > 1) {    // ... the pane goes, a neighbour takes over
+        removePane(DocumentTab);
+      } else {                     // ... create an untitled
+        Schematic *d = new Schematic(this, "");
+        addDocumentTab(d);
+        DocumentTab->setCurrentIndex(0);
+      }
     }
 
     statusBar()->showMessage(tr("Ready."));
@@ -2306,17 +2319,42 @@ void QucsApp::closeFile(int index)
 
 bool QucsApp::closeAllFiles(int exceptTab)
 {
-  if (DocumentTab->count() == 0) {
+  // Every document in every pane, but the one to keep (a tab of the
+  // active pane). The panes left empty go too, except the keeper's -
+  // or, with nothing kept, the active one, where the caller's untitled
+  // document then opens.
+  QucsDoc *docToKeep = exceptTab >= 0 ? getDoc(exceptTab) : nullptr;
+  const QList<QucsDoc *> docs = allDocuments();
+  if (docs.isEmpty()) {
     return true;  // no documents to close
   }
 
-  // Use closeTabsRange to close all tabs (from 0 to last tab)
-  bool result = closeTabsRange(0, DocumentTab->count() - 1, exceptTab);
+  SaveDialog *sd = new SaveDialog(this);
+  sd->setApp(this);
+  for (QucsDoc *doc : docs)
+    if (doc->getDocChanged() && doc != docToKeep)
+      sd->addUnsavedDoc(doc);
+  int Result = SaveDialog::DontSave;
+  if(!sd->isEmpty())
+    Result = sd->exec();
+  delete sd;
+  if(Result == SaveDialog::AbortClosing)
+    return false;
 
-  if (result) {
-    switchEditMode(true);   // set schematic edit mode
-  }
-  return result;
+  for (QucsDoc *doc : docs)
+    if (doc != docToKeep)
+      delete doc;
+
+  ContextMenuTabWidget *stay = docToKeep != nullptr ? paneOf(documentWidget(docToKeep)) : DocumentTab;
+  const QList<ContextMenuTabWidget *> all = panes();
+  if (stay == nullptr || !all.contains(stay)) stay = all.first();
+  for (ContextMenuTabWidget *pane : all)
+    if (pane != stay && pane->count() == 0)
+      removePane(pane);
+  setActivePane(stay);
+
+  switchEditMode(true);   // set schematic edit mode
+  return true;
 }
 
 
@@ -2624,10 +2662,15 @@ void QucsApp::updatePortNumber(QucsDoc *currDoc, int No)
 // --------------------------------------------------------------
 int QucsApp::addDocumentTab(QFrame* widget, const QString& title)
 {
-  int index = DocumentTab->addTab(widget, title.isEmpty() ? tr("untitled") : title);
+  return addDocumentTabTo(DocumentTab, widget, title);
+}
+
+int QucsApp::addDocumentTabTo(ContextMenuTabWidget* pane, QFrame* widget, const QString& title)
+{
+  int index = pane->addTab(widget, title.isEmpty() ? tr("untitled") : title);
 #if __APPLE__
   widget->setFrameStyle(QFrame::NoFrame);
-  QTabBar* tabBar = DocumentTab->tabBar();
+  QTabBar* tabBar = pane->tabBar();
   QLabel* modifiedLabel = new QLabel(" ", tabBar);
   modifiedLabel->setFixedWidth(10);
   tabBar->setTabButton(index, QTabBar::RightSide, modifiedLabel);
@@ -2636,6 +2679,16 @@ int QucsApp::addDocumentTab(QFrame* widget, const QString& title)
 }
 
 // --------------------------------------------------------------
+void QucsApp::setDocumentChanged(QWidget *document, bool changed)
+{
+  ContextMenuTabWidget *pane = paneOf(document);
+  if (pane == nullptr) return;   // e.g. the document is being closed
+  ContextMenuTabWidget *active = DocumentTab;
+  DocumentTab = pane;            // setDocumentTabChanged() works on the active pane
+  setDocumentTabChanged(pane->indexOf(document), changed);
+  DocumentTab = active;
+}
+
 void QucsApp::setDocumentTabChanged(int index, bool changed)
 {
   if (index < 0 || index >= DocumentTab->count())
@@ -2895,9 +2948,9 @@ QWidget *QucsApp::getSchematicWidget(QucsDoc *Doc)
 
     if (d)
     {
-        // schematic already loaded
+        // schematic already loaded (in whichever pane)
         // this should be the simulation schematic of this data display
-        w = DocumentTab->widget(z);
+        w = documentWidget(d);
     }
     else
     {
@@ -3165,8 +3218,10 @@ void QucsApp::slotChangePage(const QString& DocName, const QString& DataDisplay)
   int z = 0;  // search, if page is already loaded
   QucsDoc * d = findDoc (Name, &z);
 
-  if(d)
+  if(d) {
+    activatePaneOf(documentWidget(d));   // in whichever pane it is
     DocumentTab->setCurrentIndex(z);
+  }
   else {   // no open page found ?
     QString ext = QucsDoc::fileSuffix (DataDisplay);
 
@@ -3428,9 +3483,10 @@ void QucsApp::launchUserProgram(const QString &program, const QString &absoluteP
 }
 
 // ---------------------------------------------------------
-void QucsApp::openDroppedFiles(const QStringList &files)
+void QucsApp::openDroppedFiles(const QStringList &files, QWidget *target)
 {
   if (files.isEmpty()) return;
+  if (target != nullptr) activatePaneOf(target);   // they open where they were dropped
   // Not now: the widget the files were dropped on may be the untitled
   // document that opening the first file closes.
   QTimer::singleShot(0, this, [this, files] {
@@ -3894,12 +3950,8 @@ void QucsApp::slotFileChanged(bool changed)
   // Mark the tab of the document that emitted the signal, not whatever tab
   // happens to be current: a document being destroyed or a background
   // document may emit it too.
-  int index = -1;
   if (auto *doc = qobject_cast<QWidget *>(sender()))
-    index = DocumentTab->indexOf(doc);
-  if (index < 0)
-    return;
-  setDocumentTabChanged(index, changed);
+    setDocumentChanged(doc, changed);
 }
 
 // -----------------------------------------------------------
@@ -4575,7 +4627,7 @@ void ContextMenuTabWidget::dropEvent(QDropEvent *event)
   }
   event->setDropAction(Qt::CopyAction);
   event->accept();
-  App->openDroppedFiles(files);
+  App->openDroppedFiles(files, this);
 }
 
 void ContextMenuTabWidget::showContextMenu(const QPoint& point)
@@ -4587,6 +4639,7 @@ void ContextMenuTabWidget::showContextMenu(const QPoint& point)
 
   contextTabIndex = tabBar()->tabAt(point);
   qDebug() << "contextTabIndex =" << contextTabIndex;
+  App->setActivePane(this);   // the menu's actions work on the active pane
   if (contextTabIndex >= 0) { // clicked over a tab
     QMenu menu(this);
 
@@ -4602,6 +4655,8 @@ void ContextMenuTabWidget::showContextMenu(const QPoint& point)
     APPEND_MENU(ActionCxMenuCloseOthers, slotCxMenuCloseLeft, "Close all to the left")
     APPEND_MENU(ActionCxMenuCloseOthers, slotCxMenuCloseRight, "Close all to the right")
     APPEND_MENU(ActionCxMenuCloseAll, slotCxMenuCloseAll, "Close all")
+    menu.addSeparator();
+    APPEND_MENU(ActionCxMenuMoveToPane, slotCxMenuMoveToNextPane, "Move to next pane")
     menu.addSeparator();
     APPEND_MENU(ActionCxMenuCopyPath, slotCxMenuCopyPath, "Copy full path")
     APPEND_MENU(ActionCxMenuOpenFolder, slotCxMenuOpenFolder, "Open containing folder")
@@ -4638,6 +4693,14 @@ void ContextMenuTabWidget::slotCxMenuCloseRight()
 void ContextMenuTabWidget::slotCxMenuCloseAll()
 {
   App->slotFileCloseAll();
+}
+
+void ContextMenuTabWidget::slotCxMenuMoveToNextPane()
+{
+  // The document under the menu goes to the next pane (a new one to the
+  // right, or below, when this is the only pane).
+  setCurrentIndex(contextTabIndex);
+  App->slotMoveDocumentToNextPane();
 }
 
 void ContextMenuTabWidget::slotCxMenuCopyPath()

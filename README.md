@@ -109,6 +109,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   dir* (a `cd` / `os.chdir` to the open project). The interpreter is the
   one under *Application Settings → Locations → Python Path*, or `python3`
   on `PATH` when that is empty.
+- **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
+  grid — a schematic next to its netlist, two schematics to compare.
+  *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,
+  empty pane; a pane's thin coloured top edge marks the active one, which
+  is where files open (from the Content panel, the menus, or a drop) and
+  which follows clicks and keyboard focus. *Move Document to Next Pane*
+  (also on a tab's context menu; with a single pane it splits first),
+  *Next Pane* (Ctrl+`) and *Close Pane* (its documents go to a
+  neighbour); a pane whose last document is closed goes by itself. Save
+  All, Close All and Find span every pane.
 - **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
   can show a legend — a sample of each graph's line (colour, thickness,
   style or symbol) with its variable — in a corner of its choice:

@@ -53,6 +53,8 @@ class QAction;
 class QLineEdit;
 class QComboBox;
 class QTabWidget;
+class QSplitter;
+class PaneWidget;
 class QDir;
 class QMouseEvent;
 class QCloseEvent;
@@ -104,6 +106,7 @@ class QucsApp : public QMainWindow {
 public:
   QucsApp(bool netlist2Console);
   ~QucsApp();
+  bool eventFilter(QObject *watched, QEvent *event) override;
   bool closeTabsRange(int startTab, int stopTab, int exceptTab = -1);
   bool closeAllFiles(int exceptTab = -1);
   bool closeAllLeft(int);
@@ -111,7 +114,11 @@ public:
   /// Loads a document into a tab. With \a checkDataNames the user is asked to
   /// rename dataset/display files that do not match the schematic's name.
   bool gotoPage(const QString &, bool reloadPage = false, bool checkDataNames = true);
+  /// The document in tab \a No of the active pane; the current one for
+  /// No < 0.
   QucsDoc *getDoc(int No = -1);
+  /// The open document with this file name, in any pane; \a Pos gets its
+  /// tab index within its pane (paneOf() names the pane).
   QucsDoc *findDoc(QString, int *Pos = 0);
   /// The open text document with this file name, or nullptr if it is not
   /// open or the open document with that name is a schematic.
@@ -120,6 +127,31 @@ public:
   /// a text document (or there is no tab). Use this instead of casting
   /// DocumentTab->currentWidget().
   Schematic *currentSchematic() const;
+
+  // --- Editor panes. Documents open in tab widgets ("panes") laid out in
+  // up to a 2x2 grid; DocumentTab is the active pane, where documents
+  // open and the actions apply. A pane is a ContextMenuTabWidget inside a
+  // PaneWidget (which draws the active-pane marker) inside a row
+  // QSplitter inside the vertical splitter that is the central widget.
+  ContextMenuTabWidget *activePane() const { return DocumentTab; }
+  /// The panes, row by row, left to right.
+  QList<ContextMenuTabWidget *> panes() const;
+  /// The pane a document widget is in, or nullptr.
+  ContextMenuTabWidget *paneOf(QWidget *document) const;
+  /// Makes a pane the active one (the UI follows its current document).
+  void setActivePane(ContextMenuTabWidget *pane);
+  /// Makes the pane holding this widget the active one.
+  void activatePaneOf(QWidget *widget);
+  /// All open documents, pane by pane, in tab order.
+  QList<QucsDoc *> allDocuments() const;
+  /// The widget a document is shown in (a Schematic or a TextDoc).
+  static QWidget *documentWidget(QucsDoc *doc);
+  bool canSplitRight() const;
+  bool canSplitDown() const;
+  bool canClosePane() const { return panes().size() > 1; }
+  /// Moves a document to another pane, keeping its tab title and marker.
+  void moveDocument(QWidget *document, ContextMenuTabWidget *to);
+
   ProjectView *projectView() const { return Content; }
   MessageDock *messages() const { return messageDock; }
   SimulationConsole *simulationConsole() const { return simConsole; }
@@ -164,7 +196,9 @@ public:
   /// file in the text editor, the rest as a double-click in the Content
   /// panel would. Deferred to the event loop, so the tab the drop landed on
   /// may be closed by it (an untitled, unchanged document).
-  void openDroppedFiles(const QStringList &files);
+  /// Opens files dropped on \a target (a document or a pane's tabs) - in
+  /// the pane the target is in; the active pane when there is no target.
+  void openDroppedFiles(const QStringList &files, QWidget *target = nullptr);
   void openDroppedFile(const QString &file);
   QString fileType(const QString &);
   static bool isTextDocument(QWidget *);
@@ -208,6 +242,12 @@ public slots:
   void slotFileCloseAllRight(); // close all documents to the right of the
                                 // current one
   void slotFileCloseAll();      //  close all documents
+  // Panes (View > Panes, and the tab context menu)
+  void slotSplitPaneRight();    //  a new pane to the right of the active one
+  void slotSplitPaneDown();     //  a new row of panes below
+  void slotClosePane();         //  the active pane's documents go to a neighbour
+  void slotMoveDocumentToNextPane();   // the current document, to the next pane (splitting first if there is one pane)
+  void slotNextPane();          //  the next pane becomes active
   void slotFileExamples();      // show the examples in a file browser
   void slotHelpTutorial();      // Open a pdf tutorial
   void slotHelpReport();        // Open a pdf report
@@ -332,7 +372,8 @@ signals:
 
 public:
   MouseActions *view;
-  ContextMenuTabWidget *DocumentTab;
+  ContextMenuTabWidget *DocumentTab;   // the active pane
+  QSplitter *a_paneArea = nullptr;     // rows of panes (the central widget)
   QListWidget *CompComps;
   QTreeWidget *libTreeWidget;
   QTextEdit *CompDescr;
@@ -417,8 +458,20 @@ private:
   void initView();
   void initCursorMenu();
 
+  void initPaneArea();   // the central widget: one pane to begin with
+  void startPaneWithUntitled(ContextMenuTabWidget *pane);
+  void dropPlaceholder(ContextMenuTabWidget *pane, QWidget *keep);
+  ContextMenuTabWidget *createPane();
+  void removePane(ContextMenuTabWidget *pane);   // an empty pane; a neighbour becomes active
+  QSplitter *rowOf(ContextMenuTabWidget *pane) const;
+  PaneWidget *frameOf(ContextMenuTabWidget *pane) const;
+  void updatePaneActions();
+  void slotFocusChanged(QWidget *old, QWidget *now);
   int addDocumentTab(QFrame *widget, const QString &title = QString());
+  int addDocumentTabTo(ContextMenuTabWidget *pane, QFrame *widget, const QString &title = QString());
   void setDocumentTabChanged(int index, bool changed);
+  /// The modified marker of a document's tab, in whichever pane it is.
+  void setDocumentChanged(QWidget *document, bool changed);
   void printCurrentDocument(bool);
   bool saveFile(QucsDoc *Doc = 0);
   bool saveAs();
@@ -486,6 +539,8 @@ private:
   void useProjectScratch(bool on);
 
   QAction *helpAboutApp, *helpAboutQt, *viewBrowseDock, *viewOctaveDock;
+  QAction *splitPaneRight = nullptr, *splitPaneDown = nullptr, *closePaneAction = nullptr,
+          *moveDocumentToNextPane = nullptr, *nextPaneAction = nullptr;
 
   // menus contain the items of their menubar
   enum { MaxRecentFiles = 8, MaxRecentProjects = 8 };
@@ -707,6 +762,7 @@ private slots:
   void slotCxMenuCloseLeft();
   void slotCxMenuCopyPath();
   void slotCxMenuOpenFolder();
+  void slotCxMenuMoveToNextPane();
 };
 
 #endif /* QUCS_H */

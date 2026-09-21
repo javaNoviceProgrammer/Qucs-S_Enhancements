@@ -832,6 +832,24 @@ void QucsApp::initActions() {
   connect(viewOctaveDock, SIGNAL(toggled(bool)),
           SLOT(slotViewOctaveDock(bool)));
 
+  // Editor panes (qucs_panes.cpp)
+  splitPaneRight = new QAction(tr("Split &Right"), this);
+  splitPaneRight->setStatusTip(tr("Opens a new pane to the right of the active one"));
+  connect(splitPaneRight, SIGNAL(triggered()), SLOT(slotSplitPaneRight()));
+  splitPaneDown = new QAction(tr("Split &Down"), this);
+  splitPaneDown->setStatusTip(tr("Opens a new row of panes below"));
+  connect(splitPaneDown, SIGNAL(triggered()), SLOT(slotSplitPaneDown()));
+  closePaneAction = new QAction(tr("&Close Pane"), this);
+  closePaneAction->setStatusTip(tr("Closes the active pane; its documents move to a neighbouring pane"));
+  connect(closePaneAction, SIGNAL(triggered()), SLOT(slotClosePane()));
+  moveDocumentToNextPane = new QAction(tr("&Move Document to Next Pane"), this);
+  moveDocumentToNextPane->setStatusTip(tr("Moves the current document to the next pane, opening one if there is only one"));
+  connect(moveDocumentToNextPane, SIGNAL(triggered()), SLOT(slotMoveDocumentToNextPane()));
+  nextPaneAction = new QAction(tr("&Next Pane"), this);
+  nextPaneAction->setStatusTip(tr("Makes the next pane the active one"));
+  connect(nextPaneAction, SIGNAL(triggered()), SLOT(slotNextPane()));
+  updatePaneActions();
+
   helpIndex = new QAction(tr("Help Index..."), this);
   helpIndex->setShortcut(Qt::Key_F1);
   helpIndex->setStatusTip(tr("Index of Qucs Help"));
@@ -1040,6 +1058,14 @@ void QucsApp::initMenuBar() {
   viewPython->setStatusTip(tr("Shows/hides the Python Shell dock"));
   connect(viewPython, &QAction::triggered, this, [this](bool on) { if (on) pythonDock->raise(); });
   viewMenu->addAction(viewPython);
+  viewMenu->addSeparator();
+  QMenu *panesMenu = viewMenu->addMenu(tr("&Panes"));
+  panesMenu->addAction(splitPaneRight);
+  panesMenu->addAction(splitPaneDown);
+  panesMenu->addAction(closePaneAction);
+  panesMenu->addSeparator();
+  panesMenu->addAction(moveDocumentToNextPane);
+  panesMenu->addAction(nextPaneAction);
 
   helpMenu = new QMenu(tr("&Help")); // menuBar entry helpMenu
   helpMenu->addAction(helpIndex);
@@ -1642,6 +1668,16 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("View.Octave", "View", "Octave Window", viewOctaveDock,
                       QKeySequence());
+  mgr.registerCommand("View.SplitRight", "View", "Split Pane Right", splitPaneRight,
+                      QKeySequence(Qt::CTRL | Qt::Key_Backslash));
+  mgr.registerCommand("View.SplitDown", "View", "Split Pane Down", splitPaneDown,
+                      QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Backslash));
+  mgr.registerCommand("View.ClosePane", "View", "Close Pane", closePaneAction,
+                      QKeySequence());
+  mgr.registerCommand("View.MoveToNextPane", "View", "Move Document to Next Pane", moveDocumentToNextPane,
+                      QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Backslash));
+  mgr.registerCommand("View.NextPane", "View", "Next Pane", nextPaneAction,
+                      QKeySequence(Qt::CTRL | Qt::Key_QuoteLeft));
 
   //
   // HELP
