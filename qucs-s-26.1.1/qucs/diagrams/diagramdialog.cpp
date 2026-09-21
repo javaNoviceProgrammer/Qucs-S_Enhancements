@@ -519,6 +519,19 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     gp->addWidget(NotationBox, Row, 1);
     Row++;
 
+    // The legend: off, or in one of the corners (the order of the entries
+    // is that of Diagram::LegendPosition).
+    gp->addWidget(new QLabel(tr("Legend: "), Tab2), Row, 0);
+    LegendBox = new QComboBox(Tab2);
+    LegendBox->addItem(tr("none"));
+    LegendBox->addItem(tr("top left"));
+    LegendBox->addItem(tr("top right"));
+    LegendBox->addItem(tr("bottom left"));
+    LegendBox->addItem(tr("bottom right"));
+    LegendBox->setCurrentIndex(Diag->legendPos);
+    gp->addWidget(LegendBox, Row, 1);
+    Row++;
+
     // ...........................................................
     xLabel->setText(Diag->xAxis.Label);
     ylLabel->setText(Diag->yAxis.Label);
@@ -1475,6 +1488,11 @@ void DiagramDialog::slotApply() {
       Diag->engineeringNotation = notation;
     }
 
+    if (LegendBox && Diag->legendPos != LegendBox->currentIndex()) {
+      Diag->legendPos = LegendBox->currentIndex();
+      changed = true;
+    }
+
     if ((Diag->Name.left(4) == "Rect") || (Diag->Name == "Curve")) {
       auto yUnit = Diag->yAxis.Units;
       if (yUnit != LogUnitsY->currentIndex()) {
@@ -1637,7 +1655,8 @@ void DiagramDialog::slotApply() {
   Graphs.clear();
 
   Diag->loadGraphData(defaultDataSet);
-  ((Schematic *)parent())->viewport()->repaint();
+  if (auto *doc = qobject_cast<Schematic *>(parent()))   // none when used standalone
+    doc->viewport()->repaint();
   copyDiagramGraphs();
   if (changed)
     transfer = true; // changes have been applied ?

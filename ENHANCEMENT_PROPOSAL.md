@@ -379,8 +379,22 @@ existing demand.
   already exists in `QucsSettings`; components draw with hard-coded
   `Qt::darkBlue` pens, so this needs a small palette-indirection layer in
   `qucs::DrawingPrimitive::draw()`.
-- **Diagram legend** (#1719): rendered from `Diagram::Graphs` — the data is
-  already there; nothing draws it.
+- *Done:* **Diagram legend** (#1719). `Diagram::paintLegend()` draws, after
+  the graphs and axis texts, a framed white box in the corner chosen by
+  `Diagram::legendPos` (off / four corners) with one row per graph: a
+  sample of its line in its colour, thickness and dash pattern (or its
+  star/circle/arrow symbol) and its variable. It reaches every diagram
+  type that uses the base `paintDiagram()` (tabular and timing diagrams
+  override it), and the print/export paths, since they paint the same way.
+  The position is the 28th field of the diagram's save line, after the
+  units and before the quoted labels, read with the same "not a quoted
+  label → a newer field" guard the earlier extensions use, so older files
+  load unchanged and older Qucs-S ignores the field. The diagram dialog's
+  properties tab has a *Legend* box. `qucs/tests/test_diagram_legend`
+  checks default/save/load/compatibility, the rendering (pixel colours in
+  the chosen corner of an offscreen paint) and the dialog. Along the way
+  `DiagramDialog::slotApply()` lost an unchecked `(Schematic*)parent()`
+  cast.
 - *Done:* **Cancel keyboard move restores original position** (#1525).
   A cursor-key move now marks the document modified and is one undo step
   however many key presses it takes (`setChanged(..., 'k')` coalesces
