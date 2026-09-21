@@ -143,6 +143,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Next Pane* (Ctrl+`) and *Close Pane* (its documents go to a
   neighbour); a pane whose last document is closed goes by itself. Save
   All, Close All and Find span every pane.
+- **Theme** (*Application Settings → Appearance → Theme*): *System*,
+  *Dark* or *Light* for the application's windows, menus, docks and
+  dialogs. On macOS and Windows Qt asks the platform for the appearance,
+  so the native controls, title bars and menus follow; elsewhere (Linux,
+  and any platform that does not answer) a dark or light palette is put
+  on the application. *System* takes the platform's colours again and
+  follows them when they change. The schematic's own colours — document
+  background, grid — stay the settings above it on the same tab.
 - **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
   can show a legend — a sample of each graph's line (colour, thickness,
   style or symbol) with its variable — in a corner of its choice:

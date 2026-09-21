@@ -500,6 +500,23 @@ existing demand.
   (`View.SplitRight` …). `qucs/tests/test_panes` covers the grid, where
   documents open, moves, closes, focus/click activation, drops and the
   spanning operations.
+- *Done:* **Theme: System, Dark, Light** (`qucs/apptheme.*`, setting
+  `Theme`, *Application Settings → Appearance*). `apply()` asks the
+  platform through `QStyleHints::setColorScheme()` (Qt 6.8+; Cocoa and
+  Windows answer, and the native controls follow) and, when
+  `colorScheme()` does not come back as requested (Linux, the offscreen
+  platform), puts a spelled-out dark or light palette on the
+  application. *System* is `unsetColorScheme()` plus a palette with an
+  empty resolve mask, which makes Qt take every role from the platform
+  theme again — now and on later system changes — instead of restoring
+  a copy taken at start. Applied in `main()` after the saved style and
+  from the dialog's *Apply* (also when only the style changed, since a
+  style brings a palette of its own); `misc::isDarkTheme()` now reads
+  the application palette instead of leaking a `QLabel`.
+  `qucs/tests/test_app_theme` covers the bounds, both palettes, the
+  round trip to the system's look (resolve mask 0, no `AA_SetPalette`),
+  the platform-vs-palette decision, storage, and the dialog's combo
+  (choice, save, the main window following, *Default Values*).
 
 **Medium (weeks each)**
 

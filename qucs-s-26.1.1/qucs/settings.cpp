@@ -85,6 +85,7 @@ void settingsManager::initDefaults()
     m_Defaults["ContentAutoRefresh"] = true;
     m_Defaults["ContentRefreshSeconds"] = 3;
     m_Defaults["SimulationConsoleHost"] = 0;   // tQucsSettings::SimConsoleDock
+    m_Defaults["Theme"] = 0;   // qucs_s::apptheme::System
     m_Defaults["NgspiceCompatMode"] = spicecompat::NgspDefault;
     m_Defaults["AllowFlexibleWires"] = false;
     m_Defaults["AllowLayingWiresAnew"] = false;

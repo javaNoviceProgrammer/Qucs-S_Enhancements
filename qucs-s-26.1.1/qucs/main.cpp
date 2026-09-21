@@ -54,6 +54,7 @@
 #include "autosave.h"
 #include "crashhandler.h"
 #include "shellenvironment.h"
+#include "apptheme.h"
 
 
 #include "extsimkernels/ngspice.h"
@@ -718,6 +719,7 @@ int main(int argc, char *argv[])
         QApplication::setStyle(style);
     }
     /* restore saved style */
+    qucs_s::apptheme::apply(QucsSettings.Theme);
 
     QDir().mkpath(QucsSettings.qucsWorkspaceDir.absolutePath());
     QDir().mkpath(QucsSettings.tempFilesDir.absolutePath());
