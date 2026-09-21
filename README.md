@@ -178,7 +178,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the schematic on the place. Every simulation runs the check first and
   brings the tab up when there are errors (the run goes ahead anyway; the
   simulator has the last word). Subcircuits (schematics with ports) are
-  not asked for a ground or a simulation.
+  not asked for a ground or a simulation. *Check Schematic and
+  Subcircuits* runs it on the schematic in front and on every subcircuit
+  it uses, at any depth (open documents as they are, the others from
+  disk); a subcircuit's finding names its file and a click opens it
+  there. A *Hierarchy and Netlist* toolbar to the right of the simulation
+  toolbar holds *Go into Subcircuit*, *Pop out*, that check, *Generate
+  Netlist* and *Save netlist*.
 - **Net highlighting**: select a wire and its whole electrical net lights
   up — every wire and node reached through junctions, through wire labels
   of the same name (a `Vout` here joins a `Vout` there) and through ground

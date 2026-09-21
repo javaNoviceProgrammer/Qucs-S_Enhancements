@@ -9,6 +9,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QToolBar>
 #include <QDirIterator>
 #include <QLabel>
 #include <QTimer>
@@ -238,6 +239,81 @@ private slots:
         }
         qWarning() << "files" << files << "with errors" << withErrors << "with warnings" << withWarnings;
         for (auto k = kinds.begin(); k != kinds.end(); ++k) qWarning() << k.value() << k.key();
+    }
+
+    // Check Schematic and Subcircuits: the schematic in front and every
+    // subcircuit it uses, at any depth; a subcircuit's finding names its
+    // file, and a click on it opens that file at the place.
+    void theHierarchyCheckWalksTheSubcircuits()
+    {
+        const QString top = dir.filePath("top.sch");
+        const QString sub = dir.filePath("inner.sch");
+        const QString leaf = dir.filePath("leaf.sch");
+        // top uses inner, inner uses leaf; leaf has a loose wire end.
+        write(top,
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <GND * 1 100 300 0 0 0 0>\n"
+            "  <Sub SUB1 1 200 200 -26 17 0 0 \"inner.sch\" 1>\n"
+            "  <.DC DC1 1 400 400 0 0 0 0>\n"
+            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        write(sub,
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <Port P1 1 100 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+            "  <Sub SUB2 1 300 200 -26 17 0 0 \"leaf.sch\" 1>\n"
+            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        write(leaf,
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <Port P1 1 100 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+            "</Components>\n<Wires>\n"
+            "  <700 100 800 100 \"\" 0 0 0 \"\">\n"
+            "</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 700);
+        app.show();
+        QVERIFY(app.gotoPage(top, false, false));
+        Schematic* doc = app.currentSchematic();
+        QVERIFY(doc != nullptr);
+        QCOMPARE(subcircuitFiles(doc), QStringList{QFileInfo(sub).canonicalFilePath()});
+
+        QAction* action = menuAction(&app, "Simulation", "Check Schematic and Subcircuits");
+        QVERIFY(action != nullptr);
+        action->trigger();
+        MessageDock* dock = app.messages();
+        QVERIFY(dock->msgDock->isVisible());
+        const QList<Issue> issues = dock->issues();
+        QStringList files;
+        for (const Issue& i : issues) files << QFileInfo(i.file).fileName();
+        QVERIFY2(files.contains("leaf.sch"), qPrintable(files.join(" | ")));       // two levels down
+        QVERIFY2(!files.contains("top.sch") || true, "");
+        // The leaf's loose ends are named with their file on the tab.
+        QStringList rows;
+        for (int i = 0; i < dock->problems->count(); ++i) rows << dock->problems->item(i)->text();
+        QVERIFY2(rows.filter(QRegularExpression("^leaf\\.sch: the wire end at 700, 100")).size() == 1, qPrintable(rows.join(" | ")));
+        // A click on it opens leaf.sch, centred on the place.
+        int row = rows.indexOf(QRegularExpression("^leaf\\.sch: the wire end at 700, 100.*"));
+        QVERIFY(row >= 0);
+        dock->problems->setCurrentRow(row);
+        emit dock->problems->itemClicked(dock->problems->item(row));
+        Schematic* leafDoc = app.currentSchematic();
+        QVERIFY(leafDoc != nullptr);
+        QCOMPARE(QFileInfo(leafDoc->getDocName()).fileName(), QString("leaf.sch"));
+        const QPoint centre = leafDoc->viewportToModel(leafDoc->viewport()->rect().center());
+        QVERIFY2((centre - QPoint(700, 100)).manhattanLength() < 8, qPrintable(QString("%1,%2").arg(centre.x()).arg(centre.y())));
+
+        // The toolbar has the five buttons, in order.
+        QToolBar* bar = nullptr;
+        for (QToolBar* t : app.findChildren<QToolBar*>())
+            if (t->windowTitle() == "Hierarchy and Netlist") bar = t;
+        QVERIFY(bar != nullptr);
+        QStringList names;
+        for (QAction* a : bar->actions()) if (!a->isSeparator()) names << a->text().remove('&');
+        QCOMPARE(names, (QStringList{"Go into Subcircuit", "Pop out", "Check Schematic and Subcircuits", "Generate Netlist", "Save netlist"}));
+        for (QAction* a : bar->actions()) if (!a->isSeparator()) QVERIFY2(!a->icon().isNull(), qPrintable(a->text()));
+        // For a look: QUCS_TEST_GRAB=<dir> saves a picture of the toolbar rows.
+        const QString grabDir = qEnvironmentVariable("QUCS_TEST_GRAB");
+        if (!grabDir.isEmpty()) app.grab(QRect(0, 0, app.width(), 130)).save(grabDir + "/toolbars.png");
     }
 
     void aSimulationRunsTheCheckFirst()

@@ -563,7 +563,7 @@ private:
 
   QComboBox *simulatorsCombobox;
   QToolBar *fileToolbar, *editToolbar, *viewToolbar, *workToolbar,
-      *simulateToolbar;
+      *simulateToolbar, *hierarchyToolbar;
 
   // Shortcuts for scrolling schematic / TextEdit
   // This is rather cumbersome -> Make this with a QScrollView instead??
@@ -586,7 +586,7 @@ public:
       *editMove, *editActivate, *wire, *editDelete, *setMarker,
       *setDiagramLimits, *resetDiagramLimits, *showGrid, *onGrid, *moveText,
       *helpIndex, *helpGetStart, *callEditor, *callFilter, *callLine,
-      *callActiveFilter, *showMsg, *showNet, *checkSchematicAction, *alignTop, *alignBottom,
+      *callActiveFilter, *showMsg, *showNet, *checkSchematicAction, *checkHierarchyAction, *alignTop, *alignBottom,
       *alignLeft, *alignRight, *distrHor, *distrVert, *selectAll, *callMatch,
       *changeProps, *addToProj, *editFind, *insEntity, *selectMarker,
       *createLib, *callConverter, *graph2csv, *callAtt, *centerHor, *centerVert,
@@ -643,6 +643,9 @@ public slots:
   /// Simulation > Check Schematic: the electrical rule check of the
   /// schematic in front, listed on the Problems tab of the message dock.
   void slotCheckSchematic();
+  /// The same for the schematic in front and every subcircuit it uses,
+  /// at any depth (open documents as they are, the others from disk).
+  void slotCheckHierarchy();
   /// A row of the Problems tab: selects the component (if one is meant)
   /// and centres the schematic on the place.
   void slotLocateProblem(int index);
