@@ -25,11 +25,17 @@
 #ifndef __OPEN_H__
 #define __OPEN_H__
 
+// In namespace qucs: on MinGW <io.h> declares the C function open(),
+// which would hide a class of that name in the global namespace.
+namespace qucs {
+
 class open : public qucs::circuit
 {
  public:
   open ();
   void initSP (void);
 };
+
+} // namespace qucs
 
 #endif /* __OPEN_H__ */
