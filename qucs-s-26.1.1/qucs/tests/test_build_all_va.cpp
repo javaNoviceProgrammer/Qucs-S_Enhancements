@@ -273,9 +273,9 @@ private slots:
         QVERIFY(QucsSettings.ContentTreeView);
         QVERIFY(row(view->model()->item(ProjectView::VerilogA, 0), "models") != nullptr);
 
-        // Rows get no such menu: a category other than Verilog-A shows none,
-        // a folder shows none (it is not a file either), a file shows the
-        // file menu without it.
+        // Rows get no such menu: a category other than Verilog-A shows the
+        // category menu (Refresh only), a folder the same (it is not a file
+        // either), a file shows the file menu without it.
         QStandardItemModel* m = view->model();
         const QModelIndex others = m->index(ProjectView::Others, 0);
         view->scrollTo(others);
@@ -283,7 +283,14 @@ private slots:
         QCOMPARE(view->indexAt(onOthers), others);
         QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, onOthers)));
         QVERIFY(!menuShowing(&app, viewMenu->menuAction()));
-        QVERIFY(!anyMenuShowing(&app));
+        QVERIFY(anyMenuShowing(&app));
+        for (QMenu* menu : app.findChildren<QMenu*>()) {
+            if (!menu->isVisible()) continue;
+            QStringList texts;
+            for (QAction* a : menu->actions()) texts << a->text();
+            QCOMPARE(texts, QStringList{"Refresh"});
+        }
+        for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
 
         const QModelIndex folder = row(m->item(ProjectView::VerilogA, 0), "models")->index();
         view->scrollTo(folder);
@@ -450,6 +457,61 @@ private slots:
         QCOMPARE(app.projectView()->categoryOf(va), int(ProjectView::VerilogA));
         QCOMPARE(app.projectView()->categoryOf(m->index(0, 0, va)), int(ProjectView::VerilogA));   // a file
         QCOMPARE(app.projectView()->categoryOf(QModelIndex()), -1);
+    }
+
+    // The panel lists files that appear, go or move by themselves - it
+    // watches the project's directories - and Refresh is on every one of
+    // its menus for when it should not have to.
+    void filesAppearByThemselvesAndRefreshIsOnEveryMenu()
+    {
+        TreeViewGuard mode;
+        QucsSettings.ContentTreeView = false;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        ProjectView* view = app.projectView();
+        view->setProjPath(project);
+        QCOMPARE(children(view, ProjectView::VerilogA), QStringList({"broken.va", "good.va", "models/deep.va"}));
+        // The project directory and its subdirectories are watched; hidden
+        // ones are not.
+        const QStringList watched = view->watchedDirectories();
+        QVERIFY2(watched.contains(project), qPrintable(watched.join(", ")));
+        QVERIFY(watched.contains(project + "/models"));
+        QVERIFY(watched.contains(project + "/models/nested"));
+        QVERIFY(!watched.contains(project + "/.hidden"));
+
+        // A file written by something else - the Terminal dock, a script.
+        write(project + "/late.va", "module late(p, n);\nendmodule\n");
+        QTRY_VERIFY_WITH_TIMEOUT(children(view, ProjectView::VerilogA).contains("late.va"), 5000);
+        // A new directory, then a file in it: the directory is watched as
+        // soon as it is listed, so the file is noticed too.
+        QVERIFY(QDir().mkpath(project + "/extra"));
+        QTRY_VERIFY_WITH_TIMEOUT(view->watchedDirectories().contains(project + "/extra"), 5000);
+        write(project + "/extra/x.va", "module x(p, n);\nendmodule\n");
+        QTRY_VERIFY_WITH_TIMEOUT(children(view, ProjectView::VerilogA).contains("extra/x.va"), 5000);
+        // Gone again.
+        QVERIFY(QFile::remove(project + "/late.va"));
+        QTRY_VERIFY_WITH_TIMEOUT(!children(view, ProjectView::VerilogA).contains("late.va"), 5000);
+
+        // Refresh, by hand: on the panel's menu, the file menu, the
+        // Verilog-A menu and the category menu.
+        QAction* refresh = nullptr;
+        for (QAction* a : app.findChildren<QAction*>())
+            if (a->text() == "Refresh") { refresh = a; break; }
+        QVERIFY(refresh != nullptr);
+        int holders = 0;
+        for (QMenu* m : app.findChildren<QMenu*>())
+            if (m->actions().contains(refresh)) ++holders;
+        QCOMPARE(holders, 4);
+        QVERIFY(menuWithAction(&app, "Open")->actions().contains(refresh));
+        QVERIFY(menuWithAction(&app, "Build All")->actions().contains(refresh));
+        QVERIFY(menuWithAction(&app, "Sub-trees per folder") != nullptr);
+        // Removing a file with the watcher's refresh not yet due: Refresh
+        // lists the project as it is now.
+        QVERIFY(QFile::remove(project + "/extra/x.va"));
+        QVERIFY(QDir(project + "/extra").removeRecursively());
+        refresh->trigger();
+        QCOMPARE(children(view, ProjectView::VerilogA), QStringList({"broken.va", "good.va", "models/deep.va"}));
+        QTRY_VERIFY_WITH_TIMEOUT(!view->watchedDirectories().contains(project + "/extra"), 5000);
     }
 };
 

@@ -388,13 +388,14 @@ public:
   QMenu *ContentVerilogAMenu;
   // ...and on its empty area (the panel's own settings)
   QMenu *ContentPanelMenu;
+  QMenu *ContentCategoryMenu;   // any other category or folder row: Refresh
   // its "Toggle hierarchy search view" sub-menu
   QMenu *ContentViewMenu;
 
   // corresponding actions
   QAction *ActionCMenuOpen, *ActionCMenuCopy, *ActionCMenuRename,
       *ActionCMenuDelete, *ActionCMenuInsert, *ActionCMenuBuildAllVerilogA,
-      *ActionCMenuViewFlat, *ActionCMenuViewTree;
+      *ActionCMenuViewFlat, *ActionCMenuViewTree, *ActionCMenuRefresh;
 
   // "Build All" for Verilog-A: the files still to compile with OpenVAF,
   // the running compiler, and the tally for the summary line.

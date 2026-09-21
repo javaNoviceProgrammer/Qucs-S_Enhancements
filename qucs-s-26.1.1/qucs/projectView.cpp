@@ -25,11 +25,15 @@
 #include "schematic.h"
 #include "misc.h"
 #include "main.h"
+#include "qucs.h"
+#include "simulationconsole.h"
 
 #include <QString>
 #include <QStringList>
 #include <QDir>
+#include <QFileSystemWatcher>
 #include <QStandardItemModel>
+#include <QTimer>
 #include <QDebug>
 #include <QDrag>
 #include <QFileIconProvider>
@@ -44,6 +48,21 @@ ProjectView::ProjectView(QWidget *parent)
   m_projPath = QString();
   m_valid = false;
   m_model = new QStandardItemModel(0, 2, this);
+  // Changes in the project's directories come in bursts (a simulation
+  // writes several files); one refresh a moment after the last.
+  m_watcher = new QFileSystemWatcher(this);
+  m_refreshTimer = new QTimer(this);
+  m_refreshTimer->setSingleShot(true);
+  m_refreshTimer->setInterval(700);
+  connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, &ProjectView::scheduleRefresh);
+  connect(m_refreshTimer, &QTimer::timeout, this, [this] {
+    if (QucsMain != nullptr && QucsMain->simulationConsole() != nullptr
+        && QucsMain->simulationConsole()->isRunning()) {
+      m_refreshTimer->start();   // not while the simulator is writing
+      return;
+    }
+    refresh();
+  });
 
   this->setModel(m_model);
   refresh();
@@ -219,9 +238,14 @@ void ProjectView::appendFile(int category, const QString& path, const QString& n
   }
   auto* name = new QStandardItem(shown);
   name->setData(path, FilePathRole);
-  QList<QStandardItem*> row{ name };
-  if (!note.isEmpty()) row.append(new QStandardItem(note));
-  parent->appendRow(row);
+  // Every row has both cells, the note one empty when there is nothing to
+  // say: a row short of a cell in a two-column model leaves the
+  // accessibility layer with a table it cannot make sense of (Qt asks for
+  // the missing cell, then loses count of the rows, and has crashed on
+  // the next expand with an assistive client attached).
+  auto* noteItem = new QStandardItem(note);
+  noteItem->setFlags(noteItem->flags() & ~Qt::ItemIsDragEnabled);
+  parent->appendRow(QList<QStandardItem*>{ name, noteItem });
 }
 
 // refresh using projectPath
@@ -309,6 +333,36 @@ ProjectView::refresh()
 
   restoreExpanded(QModelIndex(), expanded);
   resizeColumnToContents(0);
+  watchProjectDirectories();
+}
+
+void ProjectView::scheduleRefresh()
+{
+  m_refreshTimer->start();
+}
+
+QStringList ProjectView::watchedDirectories() const
+{
+  return m_watcher->directories();
+}
+
+void ProjectView::watchProjectDirectories()
+{
+  const QStringList before = m_watcher->directories();
+  if (!before.isEmpty()) m_watcher->removePaths(before);
+  if (!m_valid) return;
+  // The project directory and every subdirectory the listing covers
+  // (misc::projectFiles() skips hidden ones and symbolic links too).
+  QStringList dirs{m_projPath};
+  std::function<void(const QDir&)> walk = [&](const QDir& d) {
+    // no QDir::Hidden: hidden directories are left out, and not entered
+    for (const QFileInfo& info : d.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name)) {
+      dirs << info.absoluteFilePath();
+      walk(QDir(info.absoluteFilePath()));
+    }
+  };
+  walk(QDir(m_projPath));
+  m_watcher->addPaths(dirs);
 }
 
 QStringList ProjectView::exportSchematic()
@@ -321,7 +375,7 @@ QStringList ProjectView::exportSchematic()
       const QString path = item->data(FilePathRole).toString();
       if (path.isEmpty())
         collect(item);                       // a folder
-      else if (parent->child(i, 1))
+      else if (parent->child(i, 1) != nullptr && !parent->child(i, 1)->text().isEmpty())
         list.append(path);                   // a subcircuit (it has a note)
     }
   };

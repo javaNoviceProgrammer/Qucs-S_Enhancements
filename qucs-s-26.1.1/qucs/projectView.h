@@ -31,6 +31,8 @@
 
 
 class QStandardItemModel;
+class QFileSystemWatcher;
+class QTimer;
 
 class ProjectView : public QTreeView
 {
@@ -74,8 +76,20 @@ public:
   /// Lists every file of the project, from its directory and any
   /// subdirectory, under its category: as "sub/dir/name.ext" rows, or as
   /// sub-trees of folder rows (treeView()). The rows that were expanded
-  /// stay expanded.
+  /// stay expanded. The project's directories are watched from then on:
+  /// a file appearing, going or being renamed - by the application, a
+  /// program in the Terminal dock, or anything else - refreshes the
+  /// panel again shortly after (scheduleRefresh()).
   void refresh();
+  /// The directories the panel watches for changes (the project's, and
+  /// every subdirectory it lists).
+  QStringList watchedDirectories() const;
+
+public slots:
+  /// A refresh soon, once the changes that prompted it have settled -
+  /// and after a running simulation, whose scratch files would prompt
+  /// one every moment.
+  void scheduleRefresh();
   /// The project-relative paths of the subcircuit schematics.
   QStringList exportSchematic();
 
@@ -91,6 +105,11 @@ private:
   bool m_valid;
   QString m_projPath;
   QString m_projName;
+  QFileSystemWatcher *m_watcher;
+  QTimer *m_refreshTimer;
+
+  /// Points the watcher at the project's directories (refresh()).
+  void watchProjectDirectories();
 
   /// Adds a file row (path relative to the project, optional note) under
   /// its category, inside the folder rows of its directory in tree view.

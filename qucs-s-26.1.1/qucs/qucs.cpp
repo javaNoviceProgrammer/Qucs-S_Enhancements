@@ -1334,15 +1334,32 @@ void QucsApp::initCursorMenu()
   ContentViewMenu->addAction(ActionCMenuViewTree);
   connect(viewModes, SIGNAL(triggered(QAction*)), SLOT(slotCMenuContentView(QAction*)));
 
+  // Lists the project's files again, from every menu of the panel. The
+  // panel watches the project's directories and refreshes by itself, for
+  // when it did not (a network drive, say).
+  ActionCMenuRefresh = new QAction(tr("Refresh"), this);
+  ActionCMenuRefresh->setStatusTip(tr("Lists the files of the project again"));
+  connect(ActionCMenuRefresh, SIGNAL(triggered()), SLOT(slotUpdateTreeview()));
+  ContentMenu->addSeparator();
+  ContentMenu->addAction(ActionCMenuRefresh);
+
   // The "Verilog-A" category row gets its own menu.
   ContentVerilogAMenu = new QMenu(this);
   ActionCMenuBuildAllVerilogA = new QAction(tr("Build All"), ContentVerilogAMenu);
   ActionCMenuBuildAllVerilogA->setStatusTip(tr("Compile every Verilog-A file of the project with OpenVAF"));
   connect(ActionCMenuBuildAllVerilogA, SIGNAL(triggered()), SLOT(slotCMenuBuildAllVerilogA()));
   ContentVerilogAMenu->addAction(ActionCMenuBuildAllVerilogA);
+  ContentVerilogAMenu->addSeparator();
+  ContentVerilogAMenu->addAction(ActionCMenuRefresh);
+
+  // Any other category or folder row.
+  ContentCategoryMenu = new QMenu(this);
+  ContentCategoryMenu->addAction(ActionCMenuRefresh);
 
   // The empty area of the panel: the panel's own settings.
   ContentPanelMenu = new QMenu(this);
+  ContentPanelMenu->addAction(ActionCMenuRefresh);
+  ContentPanelMenu->addSeparator();
   ContentPanelMenu->addMenu(ContentViewMenu);
 
   connect(Content, SIGNAL(customContextMenuRequested(const QPoint&)), SLOT(slotShowContentMenu(const QPoint&)));
@@ -1371,6 +1388,8 @@ void QucsApp::slotShowContentMenu(const QPoint& pos)
     if (!idx.parent().isValid() && Content->categoryOf(idx) == ProjectView::VerilogA) {
       ActionCMenuBuildAllVerilogA->setEnabled(a_vaBuilder == nullptr);
       ContentVerilogAMenu->popup(where);
+    } else {
+      ContentCategoryMenu->popup(where);
     }
     return;
   }

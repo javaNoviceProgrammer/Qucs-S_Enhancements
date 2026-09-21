@@ -457,6 +457,17 @@ existing demand.
   `PYTHON_BASIC_REPL=1`. The program goes with the console (hang-up,
   then kill; `waitpid` so no zombie is left).
   `qucs/tests/test_process_console` drives `/bin/sh` and `python3`.
+- *Done:* **Content panel refreshes by itself.** `ProjectView` keeps a
+  `QFileSystemWatcher` on the project directory and every listed
+  subdirectory (re-pointed by each `refresh()`); `directoryChanged`
+  arms a 700 ms single-shot timer, which refreshes - or waits while a
+  simulation runs, whose scratch files would refresh every moment. A
+  *Refresh* action sits on the panel's four context menus (empty area,
+  file, Verilog-A category, any other category/folder - the last is
+  new). Every file row now has its note cell, empty or not: a row short
+  of a cell in the two-column model had Qt's accessible-table layer
+  asking for the missing cell, losing count of the rows and crashing on
+  the next expand while an assistive client was attached.
 - *Done:* **Editor panes (up to 2x2).** The central widget is a vertical
   `QSplitter` of row `QSplitter`s of `PaneWidget`s (a marker bar over a
   `ContextMenuTabWidget`); `QucsApp::DocumentTab` is the *active* pane,

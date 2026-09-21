@@ -109,6 +109,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   dir* (a `cd` / `os.chdir` to the open project). The interpreter is the
   one under *Application Settings → Locations → Python Path*, or `python3`
   on `PATH` when that is empty.
+- **Content panel keeps itself current**: it watches the project's
+  directories and lists a file that appears, goes or is renamed — saved
+  by Qucs, written by a script in the Terminal dock, copied in by hand —
+  a moment later (not while a simulation is writing its scratch files;
+  then right after it). *Refresh* on every right-click menu of the panel
+  does it on the spot.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,
