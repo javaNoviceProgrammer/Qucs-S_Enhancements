@@ -46,12 +46,15 @@ class TestProcessConsole : public QObject
     Q_OBJECT
 
     QTemporaryDir dir;
+    // The shell under test: /bin/sh, or QUCS_TEST_SHELL (to try another).
+    QString shell = QStringLiteral("/bin/sh");
 
 private slots:
     void initTestCase()
     {
         QVERIFY(dir.isValid());
         useIsolatedSettings(dir.filePath("settings"));
+        if (!qEnvironmentVariable("QUCS_TEST_SHELL").isEmpty()) shell = qEnvironmentVariable("QUCS_TEST_SHELL");
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         QucsSettings.firstRun = false;
         QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
@@ -68,7 +71,7 @@ private slots:
     void theShellRunsCommandsAndKeepsItsState()
     {
         ProcessConsole console;
-        console.setProgram("/bin/sh", {});
+        console.setProgram(shell, {});
         console.setWorkingDirectory(dir.path());
         console.show();
         QVERIFY(QTest::qWaitForWindowExposed(&console));   // starts the shell
@@ -77,7 +80,7 @@ private slots:
         QVERIFY(pid > 0);
 
         console.sendLine("echo hello-$((1+2))");
-        QTRY_VERIFY_WITH_TIMEOUT(console.outputText().contains("hello-3"), 5000);
+        QTRY_VERIFY2_WITH_TIMEOUT(console.outputText().contains("hello-3"), qPrintable(console.outputText()), 5000);
         // The directory persists between commands: it is one shell.
         console.sendLine("cd / && pwd");
         QTRY_VERIFY_WITH_TIMEOUT(console.outputText().contains(QStringLiteral("\n/\n")), 5000);
@@ -117,7 +120,7 @@ private slots:
     void theInputLineHasAHistory()
     {
         ProcessConsole console;
-        console.setProgram("/bin/sh", {});
+        console.setProgram(shell, {});
         console.setWorkingDirectory(dir.path());
         console.show();
         QVERIFY(QTest::qWaitForWindowExposed(&console));
@@ -151,7 +154,7 @@ private slots:
         qint64 pid = -1;
         {
             ProcessConsole console;
-            console.setProgram("/bin/sh", {});
+            console.setProgram(shell, {});
             console.setWorkingDirectory(dir.path());
             QVERIFY(console.start());
             pid = console.process()->processId();
@@ -165,7 +168,7 @@ private slots:
     void theProjectDirectoryButtonChangesDirectory()
     {
         ProcessConsole console;
-        console.setProgram("/bin/sh", {});
+        console.setProgram(shell, {});
         console.setWorkingDirectory(dir.path());
         console.setChangeDirectoryCommand("cd %1", ProcessConsole::ShellQuoting);
         QVERIFY(console.start());
@@ -244,7 +247,7 @@ private slots:
         MainGuard guard(&app);
         app.show();
         QVERIFY(QTest::qWaitForWindowExposed(&app));
-        app.terminalConsole()->setProgram("/bin/sh", {});   // not the login shell of the account
+        app.terminalConsole()->setProgram(shell, {});   // not the login shell of the account
         app.terminalDockWidget()->toggleViewAction()->trigger();
         QVERIFY(app.terminalDockWidget()->isVisible());
         QTRY_VERIFY_WITH_TIMEOUT(app.terminalConsole()->isRunning(), 5000);

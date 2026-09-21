@@ -27,13 +27,13 @@
 #include <QPushButton>
 #include <QStandardPaths>
 #include <QTextCursor>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #ifdef Q_OS_WIN
 #include <QProcess>
 #else
 #include <QSocketNotifier>
-#include <QTimer>
 #include <cerrno>
 #include <csignal>
 #include <cstring>
@@ -369,8 +369,12 @@ ProcessConsole::ProcessConsole(QWidget* parent)
       a_buttonRestart(new QPushButton(tr("Restart"), this)),
       a_buttonClear(new QPushButton(tr("Clear"), this)),
       a_buttonProjectDir(new QPushButton(tr("Project dir"), this)),
+      a_pendingFlush(new QTimer(this)),
       a_decoder(QStringDecoder::Utf8)
 {
+    a_pendingFlush->setSingleShot(true);
+    a_pendingFlush->setInterval(1500);
+    connect(a_pendingFlush, &QTimer::timeout, this, &ProcessConsole::flushPendingInput);
     QFont font;
     font.setFamily("monospace");
     font.setStyleHint(QFont::Monospace);
@@ -477,6 +481,8 @@ bool ProcessConsole::start()
     a_decoder.resetState();
     a_escape = Plain;
     a_overwriteLine = false;
+    a_seenOutput = false;
+    a_pendingInput.clear();
     const QString dir = startDirectory();
     if (!a_process->start(a_program, a_args, dir, a_env)) {
         appendNote(tr("Could not start %1: %2").arg(a_program, a_process->errorString()));
@@ -520,7 +526,24 @@ void ProcessConsole::sendLine(const QString& line)
 #ifdef Q_OS_WIN
     appendOutput(line + QLatin1Char('\n'));   // no terminal to echo it
 #endif
-    a_process->write((line + QLatin1Char('\n')).toUtf8());
+    const QByteArray bytes = (line + QLatin1Char('\n')).toUtf8();
+    if (!a_seenOutput) {
+        // Not before the program is up and listening (see a_pendingInput).
+        a_pendingInput += bytes;
+        if (!a_pendingFlush->isActive()) a_pendingFlush->start();
+        return;
+    }
+    a_process->write(bytes);
+}
+
+void ProcessConsole::flushPendingInput()
+{
+    a_pendingFlush->stop();
+    a_seenOutput = true;
+    if (a_pendingInput.isEmpty() || !isRunning()) return;
+    const QByteArray bytes = a_pendingInput;
+    a_pendingInput.clear();
+    a_process->write(bytes);
 }
 
 void ProcessConsole::changeToProjectDirectory()
@@ -581,6 +604,7 @@ void ProcessConsole::showEvent(QShowEvent* event)
 void ProcessConsole::slotOutput(const QByteArray& data)
 {
     appendOutput(a_decoder.decode(data));
+    if (!a_seenOutput) flushPendingInput();   // it is up: what was typed meanwhile
 }
 
 void ProcessConsole::slotFinished(int exitCode)
