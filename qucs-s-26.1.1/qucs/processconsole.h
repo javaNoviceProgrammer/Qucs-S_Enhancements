@@ -180,6 +180,14 @@ private:
     int a_historyPos = 0;
     QString a_historyDraft;      // what was being typed before Up
 
+    // Input sent before the program has said anything is held back until
+    // it has (or for a moment): a shell flushes the terminal's input as it
+    // sets it up, and would lose a line written that early.
+    QByteArray a_pendingInput;
+    bool a_seenOutput = false;
+    QTimer* a_pendingFlush;
+    void flushPendingInput();
+
     QStringDecoder a_decoder;
     enum EscapeState { Plain, Escape, Csi, Osc, OscEscape };
     EscapeState a_escape = Plain;
