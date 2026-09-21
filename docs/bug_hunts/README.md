@@ -8,4 +8,4 @@ entry it closes.
 
 | date | area | report |
 |---|---|---|
-| 2026-09-21 | every built-in component and the netlist it generates (ngspice, Xyce, Qucsator) | [2026-09-21-component-netlists.md](2026-09-21-component-netlists.md) |
+| 2026-09-21 | every built-in component and the netlist it generates (ngspice, Xyce, Qucsator) | [2026-09-21-component-netlists.md](2026-09-21-component-netlists.md) — A/B fixed in `984660c` |

@@ -24,11 +24,17 @@ mode (the panel filters by simulator).
 Xyce is not installed here: Xyce findings are from reading the emitted text
 against the Xyce reference guide, and say so.
 
+*Status:* sections A and B were fixed in `984660c` (each entry says so);
+`qucs/tests/test_netlist_fixes` holds one case per fix. Sections C and D are
+open.
+
 ---
 
 ## A. Wrong netlists (the simulation runs, the answer is wrong)
 
 ### A1. 4-terminal transmission line: the two ports pair the wrong pins
+
+> **Fixed** in `984660c` — `T p1 p4 p2 p3`.
 
 `components/tline_4port.cpp` emits
 
@@ -56,6 +62,8 @@ common-mode offset, right pair loaded with 50 Ω:
 
 ### A2. Symmetric transformer: T1 and T2 are applied to the wrong windings
 
+> **Fixed** in `984660c` — W1 is pins 1 and 6 with T1, W2 pins 5 and 4 with T2.
+
 `components/symtrafo.cpp`: winding W1 is built from ports 4 and 3 (pins 5 and
 4, the **lower** left winding) with `RATIO = Props[0] = T1`; W2 from ports 0
 and 5 (pins 1 and 6, the **upper** winding) with `T2`. The symbol prints T1
@@ -74,6 +82,8 @@ Run with T1 = 2, T2 = 3, 1 V on the right winding:
 
 ### A3. 3 Mutual Inductors: K13 is given the value of k12
 
+> **Fixed** in `984660c`.
+
 `components/mutual2.cpp`:
 
 ```cpp
@@ -86,6 +96,8 @@ The k13 property never reaches SPICE. (L1/L2/L3 node pairs match qucsator's
 `mutual2.cpp`: L1 = 1–6, L2 = 5–4, L3 = 2–3.)
 
 ### A4. I(TRNOISE): RTSCAPT and RTSEMT are both the value of RTSAM
+
+> **Fixed** in `984660c` — properties 5 and 6; the current also flows with the arrow now.
 
 `spicecomponents/iTRNOISE.cpp` reads `Props.at(4)` three times:
 
@@ -103,6 +115,8 @@ Harmless for noise, but inconsistent.)
 
 ### A5. Xyce transient sensitivity: `.TRAN` arguments in the wrong order
 
+> **Fixed** in `984660c` — `.tran <step> <stop> <start>`.
+
 `spicecomponents/sp_sens_tr_xyce.cpp`:
 
 ```cpp
@@ -115,6 +129,8 @@ so the defaults produce `.tran 0 1M 5U`: initial step 0, output starting at
 (`tr_sim.cpp`) gets it right: `.tran <step> <stop> <start> <step>`.
 
 ### A6. Digital source: the pattern is played once, and ends low whatever `init` says
+
+> **Fixed** in `984660c` — `spicecompat::togglingPWL()` builds `PWL(...) r=0` with each change ending at its nominal time (exact period); checked in ngspice.
 
 Qucsator (`digisource.cpp`, `t = t − T·floor(t/T)`) and the VHDL/Verilog
 generators repeat the `times` list forever. `components/digi_source.cpp` emits
@@ -130,6 +146,8 @@ the tail then has to end at exactly T with the initial level.
 
 ### A7. Time-controlled switch: an even-numbered time list is not repeated
 
+> **Fixed** in `984660c` — same builder; even lists get `r=0`, the change is at most `MaxDuration`.
+
 Same class as A6. The `time` property says "even numbered lists are repeated"
 and `tswitch.cpp` does so; `components/switch.cpp` emits one pass:
 
@@ -142,6 +160,8 @@ time value (10 µs at 1 ms) — `MaxDuration` (1 µs default) and `Transition`
 are ignored, where qucsator uses min(smallest time/100, MaxDuration).
 
 ### A8. VDMOS: the model card pins the device temperature even with `UseGlobTemp = yes`
+
+> **Fixed** in `984660c` — `Temp` is excluded from the card.
 
 `components/vdmos.cpp` excludes `Type Thermal Mul UseGlobTemp LibName CompName`
 from the model card but not `Temp`, so every VDMOS card ends with
@@ -156,6 +176,8 @@ line as the instance default, and it wins over the circuit temperature:
 The diode, BJT, JFET and MOSFET netlisters all keep `Temp` out of the card.
 
 ### A9. Values without a unit: Qucs `M` is mega, SPICE `M` is milli
+
+> **Fixed** in `984660c` — a bare number with a Qucs prefix maps `M` → `Meg` and `c` → `e-2`; the unit forms accept a sign.
 
 `spicecompat::normalize_value` rewrites `M` → `Meg` only when it recognises a
 unit suffix (`Ohm`, `F`, `H`, `V`, `A`, `Hz`, `S`, `s`, `dBm`). A bare value
@@ -174,6 +196,8 @@ survived.
 
 ### A10. Values that are expressions and start with a digit are not braced
 
+> **Fixed** in `984660c` — braced like the letter-first ones.
+
 Same function: `Rload` becomes `{RLOAD}`, but `2*Rload` (no letter first)
 becomes `2*RLOAD`, and ngspice stops with "Error on line …". Users have to
 know to write `{2*Rload}` themselves.
@@ -183,6 +207,8 @@ know to write `{2*Rload}` themselves.
 ## B. Netlists the simulator refuses (with default properties)
 
 ### B1. Relay: default `Ron = 0` cannot be simulated
+
+> **Fixed** in `984660c` — `Ron ≤ 0` is netlisted as `1e-9` (the switch's default); Xyce's `von` is Vt + Vh.
 
 `.MODEL MOD_S1 sw vt=0.5 vh=0.1 ron=0 roff=1E12` — ngspice's switch takes
 1/Ron, and a closed relay makes the operating point fail ("Dynamic gmin
@@ -195,6 +221,8 @@ the same way.
 
 ### B2. VDMOS: `RQ=0.0 VQ=0.0` switch on quasi-saturation and break the OP
 
+> **Fixed** in `984660c` — RQ/VQ are emitted only when both are non-zero.
+
 The card always carries `RQ` and `VQ`. In ngspice, giving both (whatever the
 value) sets `VDMOSqsGiven`; with the default `Rd = 0` the drain conductance
 then becomes 1/0 and the operating point fails — the VDMOS placed from the
@@ -203,6 +231,8 @@ one parameter at a time: `RQ=0 VQ=0` alone fail, either alone is fine,
 `RQ=0 VQ=0 Rd=0.1` is fine. **Fix:** emit RQ/VQ only when both are non-zero.
 
 ### B3. JFET for Xyce: `UseGlobTemp={YES}` lands in the model card
+
+> **Fixed** in `984660c`.
 
 `components/jfet.cpp`, Xyce branch of the exclusion list: `"UseGLobTemp"`
 (capital L). The property is then netlisted like any other:
@@ -215,6 +245,8 @@ Xyce rejects unknown model parameters. The ngspice branch spells it right.
 *(Xyce not run here.)*
 
 ### B4. Components offered in Xyce mode whose netlist is XSPICE
+
+> **Fixed** in `984660c` — their `Simulator` masks drop Xyce.
 
 Registration filters the panel by `Component::Simulator`, and these carry the
 Xyce bit but emit XSPICE `A` devices and `.MODEL … filesource/s_xfer/pwl`

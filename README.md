@@ -205,6 +205,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   package now has a field of its own in the properties dialog, the
   netlister finds it by name, and a schematic saved with the problem
   loads right (the misplaced option is put back).
+- **Component netlists audited**: every built-in component was netlisted
+  in every flavour and run through ngspice
+  ([docs/bug_hunts/](docs/bug_hunts/README.md)). Fixed: the 4-terminal
+  transmission line paired the wrong pins as a port; the symmetric
+  transformer applied T1 and T2 to the wrong windings; the 3 mutual
+  inductors netlisted k12 for K13; I(TRNOISE) used RTSAM for all three RTS
+  times; the digital source and the time-controlled switch played their
+  pattern once instead of repeating it; the VDMOS card carried a `Temp`
+  that overrode the circuit temperature, and `RQ=0 VQ=0` that switched
+  quasi-saturation on and broke the operating point; a relay with the
+  default `Ron = 0` had no operating point; the Xyce JFET card contained
+  `UseGlobTemp`; the Xyce transient sensitivity had its `.TRAN` arguments
+  in the wrong order; XSPICE-based components were offered for Xyce. And
+  values follow Qucs notation now: a bare `10M` is 10 mega (SPICE read it
+  as milli), `10 cm` is 0.1, `-1 MOhm` keeps its sign, `2*Rload` is braced
+  so the simulator evaluates it.
 - **Cursor-key moves are undoable and cancellable**: moving the selection
   with the arrow keys marks the document modified, is one undo step for the
   whole sequence, and Escape takes it back while it is the latest change
