@@ -1302,8 +1302,8 @@ void QucsApp::initCursorMenu()
 
 #undef APPEND_MENU
 
-  // How files in subdirectories are shown, from any row of the panel (and
-  // from the empty area below the rows).
+  // How files in subdirectories are shown: from the empty area of the
+  // panel (below the rows).
   ContentViewMenu = new QMenu(tr("Toggle hierarchy search view"), this);
   ContentViewMenu->setStatusTip(tr("How files in subdirectories of the project are listed"));
   auto *viewModes = new QActionGroup(this);
@@ -1315,8 +1315,6 @@ void QucsApp::initCursorMenu()
   ContentViewMenu->addAction(ActionCMenuViewFlat);
   ContentViewMenu->addAction(ActionCMenuViewTree);
   connect(viewModes, SIGNAL(triggered(QAction*)), SLOT(slotCMenuContentView(QAction*)));
-  ContentMenu->addSeparator();
-  ContentMenu->addMenu(ContentViewMenu);
 
   // The "Verilog-A" category row gets its own menu.
   ContentVerilogAMenu = new QMenu(this);
@@ -1324,10 +1322,8 @@ void QucsApp::initCursorMenu()
   ActionCMenuBuildAllVerilogA->setStatusTip(tr("Compile every Verilog-A file of the project with OpenVAF"));
   connect(ActionCMenuBuildAllVerilogA, SIGNAL(triggered()), SLOT(slotCMenuBuildAllVerilogA()));
   ContentVerilogAMenu->addAction(ActionCMenuBuildAllVerilogA);
-  ContentVerilogAMenu->addSeparator();
-  ContentVerilogAMenu->addMenu(ContentViewMenu);
 
-  // Any other category row, a folder row, or no row at all.
+  // The empty area of the panel: the panel's own settings.
   ContentPanelMenu = new QMenu(this);
   ContentPanelMenu->addMenu(ContentViewMenu);
 
@@ -1349,12 +1345,14 @@ void QucsApp::slotShowContentMenu(const QPoint& pos)
   (ProjectView::treeView() ? ActionCMenuViewTree : ActionCMenuViewFlat)->setChecked(true);
   const QPoint where = Content->viewport()->mapToGlobal(pos);   // pos is viewport-relative
 
-  if (!Content->isFile(idx)) {   // a category row, a folder row, or the empty area
-    if (idx.isValid() && !idx.parent().isValid() && Content->categoryOf(idx) == ProjectView::VerilogA) {
+  if (!idx.isValid()) {          // the empty area: the panel's menu
+    ContentPanelMenu->popup(where);
+    return;
+  }
+  if (!Content->isFile(idx)) {   // a category or folder row
+    if (!idx.parent().isValid() && Content->categoryOf(idx) == ProjectView::VerilogA) {
       ActionCMenuBuildAllVerilogA->setEnabled(a_vaBuilder == nullptr);
       ContentVerilogAMenu->popup(where);
-    } else {
-      ContentPanelMenu->popup(where);
     }
     return;
   }

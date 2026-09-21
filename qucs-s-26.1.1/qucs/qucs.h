@@ -327,9 +327,9 @@ public:
   QMenu *ContentMenu;
   // ...on its "Verilog-A" category row, ...
   QMenu *ContentVerilogAMenu;
-  // ...and anywhere else in it (other categories, folders, empty area)
+  // ...and on its empty area (the panel's own settings)
   QMenu *ContentPanelMenu;
-  // the "Toggle hierarchy search view" sub-menu of all three
+  // its "Toggle hierarchy search view" sub-menu
   QMenu *ContentViewMenu;
 
   // corresponding actions
