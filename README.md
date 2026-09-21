@@ -159,7 +159,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   and any platform that does not answer) a dark or light palette is put
   on the application. *System* takes the platform's colours again and
   follows them when they change. The schematic's own colours — document
-  background, grid — stay the settings above it on the same tab.
+  background, grid — stay the settings above it on the same tab, and the
+  text editor is black on white in either theme.
 - **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
   can show a legend — a sample of each graph's line (colour, thickness,
   style or symbol) with its variable — in a corner of its choice:

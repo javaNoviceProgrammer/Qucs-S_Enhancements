@@ -166,8 +166,8 @@ private slots:
 
     void theTextEditorKeepsItsBackgroundInTheDarkTheme()
     {
-        // The editor shows the document background from the settings,
-        // whatever the theme - like the schematic. (The main window has a
+        // The editor is black on white whatever the theme, and whatever
+        // the schematic's document background. (The main window has a
         // style sheet, and the style-sheet style used to put the theme's
         // base colour back on the editor each time it was shown.)
         ThemeGuard guard;
@@ -185,7 +185,8 @@ private slots:
             const QImage img = doc->viewport()->grab().toImage();
             return img.pixelColor(img.width() - 4, img.height() - 4);   // below the last line
         };
-        const QColor paper = QucsSettings.BGColor;
+        const QColor paper(Qt::white);
+        QVERIFY(QucsSettings.BGColor != paper);   // the schematic's paper is another colour
         QCOMPARE(background(), paper);
         apply(Dark);
         QTest::qWait(50);
@@ -198,14 +199,14 @@ private slots:
             for (int x = 0; x < qMin(img.width(), 80); ++x)
                 if (img.pixelColor(x, y).value() < 0x40) ++darkPixels;
         QVERIFY(darkPixels > 0);
-        // A new document background from the settings reaches an open editor.
+        // The schematic's document background does not reach the editor.
         struct BgGuard { QColor c = QucsSettings.BGColor; ~BgGuard() { QucsSettings.BGColor = c; } } bgGuard;
         QucsSettings.BGColor = QColor(0x20, 0x20, 0x40);
         doc->applyDocumentColors();
-        QCOMPARE(background(), QColor(0x20, 0x20, 0x40));
+        QCOMPARE(background(), paper);
         apply(System);
         QTest::qWait(50);
-        QCOMPARE(background(), QColor(0x20, 0x20, 0x40));
+        QCOMPARE(background(), paper);
     }
 
     void theSettingsDialogHasTheThemeChoice()
