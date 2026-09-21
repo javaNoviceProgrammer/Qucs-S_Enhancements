@@ -204,6 +204,9 @@ public:
   static bool isTextDocument(QWidget *);
 
   QString ProjName; // name of the project, that is open
+  /// The Scratch folder of the schematic in front - or, with a text
+  /// document (a netlist, say) in front, of the last simulated schematic.
+  QString currentScratchDir() const;
   // QHash<QString,QString> schNameHash; // QHash for the schematic files lookup
   // QHash<QString,QString> spiceNameHash; // QHash for the spice files lookup
 
@@ -634,6 +637,9 @@ public slots:
   void slotSelectMarker();
   void slotShowLastMsg();
   void slotShowLastNetlist();
+private:
+  QString a_lastSimulatedDoc;   // for currentScratchDir()
+public slots:
   void slotCallEditor();
   void slotCallFilter();
   void slotCallActiveFilter();

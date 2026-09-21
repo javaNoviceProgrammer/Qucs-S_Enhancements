@@ -852,9 +852,17 @@ void QucsApp::editFile(const QString &File, bool reloadFile) {
 }
 
 // ------------------------------------------------------------------------
+QString QucsApp::currentScratchDir() const {
+  QWidget *w = DocumentTab->currentWidget();
+  if (w != nullptr && !isTextDocument(w))
+    return misc::scratchDirFor(static_cast<Schematic *>(w)->getDocName());
+  return misc::scratchDirFor(a_lastSimulatedDoc);
+}
+
+// ------------------------------------------------------------------------
 // Is called to show the output messages of the last simulation.
 void QucsApp::slotShowLastMsg() {
-  editFile(QucsSettings.tempFilesDir.filePath("log.txt"), /*reloadFile=*/true);
+  editFile(QDir::toNativeSeparators(currentScratchDir() + "/log.txt"), /*reloadFile=*/true);
 }
 
 // ------------------------------------------------------------------------
@@ -885,11 +893,11 @@ void QucsApp::slotShowLastNetlist() {
   case spicecompat::simNgspice:
   case spicecompat::simSpiceOpus:
     netlists.append(
-        QDir::toNativeSeparators(misc::scratchDir() + "/spice4qucs.cir"));
+        QDir::toNativeSeparators(currentScratchDir() + "/spice4qucs.cir"));
     break;
   case spicecompat::simXyce: // Xyce generates one netlist for every simulation
     for (const auto &sim : sim_lst) {
-      netlists.append(QDir::toNativeSeparators(misc::scratchDir() +
+      netlists.append(QDir::toNativeSeparators(currentScratchDir() +
                                                "/spice4qucs." + sim + ".cir"));
     }
     break;

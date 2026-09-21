@@ -67,15 +67,20 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   both listings. A new *Osdi* category lists the compiled `.osdi` models;
   ngspice loads all of them, wherever they are in the project, and Build
   All compiles the `.va` files wherever they are.
-- **A Scratch folder per project**: the temporary files of a simulation
-  (netlist, the raw simulator output such as `spice4qucs.ac1.plot`, log) go
-  to `Scratch/` inside the open project instead of the user's cache
-  directory, and stay there until the next run (upstream's release builds
-  deleted the raw output right after converting it). The folder is created
-  with the project (or when an older project is opened) and the Content
-  panel lists its contents under a *Scratch* category below *Others*.
-  Headless runs (`-n`, `--run`) keep using the simulator work directory
-  from the settings.
+- **A Scratch folder per project, a subfolder per schematic**: the
+  temporary files of a simulation (netlist, the raw simulator output such
+  as `spice4qucs.ac1.plot`, log) go to `Scratch/<schematic>/` inside the
+  open project — `Scratch/amp/` for `amp.sch`, `Scratch/sub/amp/` for
+  `sub/amp.sch` — instead of the user's cache directory, and stay there
+  until the next run of that schematic, which updates the same folder
+  (upstream's release builds deleted the raw output right after
+  converting it, and every run overwrote the last). *Simulation → Show
+  Last Netlist / Show Last Messages* open the files of the schematic in
+  front (with a netlist in front, of the schematic simulated last). The
+  folder is created with the project (or when an older project is opened)
+  and the Content panel lists its contents under a *Scratch* category
+  below *Others*. Headless runs (`-n`, `--run`) keep using the simulator
+  work directory from the settings, flat.
 - **Text editor defaults and file types**: `.cir`, `.ckt` and `.sp` files
   open in the built-in text editor like `.va` and the other Qucs text
   documents; plain-text formats (`.txt`, `.py`, `.md`, `.json`, `.csv`,

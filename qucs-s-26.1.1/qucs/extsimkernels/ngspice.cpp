@@ -62,7 +62,7 @@ Ngspice::Ngspice(Schematic* schematic, QObject *parent) :
         a_simulator_cmd = QucsSettings.NgspiceExecutable; //rely on $PATH
     }
     a_simulator_parameters = "";
-    a_spinit_name = QDir::toNativeSeparators(misc::scratchDir()+"/.spiceinit");
+    a_spinit_name = QDir::toNativeSeparators(a_workdir+"/.spiceinit");
 }
 
 /*!

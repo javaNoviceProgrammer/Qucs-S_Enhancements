@@ -337,6 +337,17 @@ existing demand.
   `ProjectView::filePath()/isFile()/categoryOf()` instead of reading the
   row text and assuming the parent is the category. Expanded rows
   (categories and folders) are remembered across refreshes by path.
+- *Done:* **Scratch subfolder per schematic.** `misc::scratchDirFor(doc)`
+  is `Scratch/<doc relative to the project, without extension>` while a
+  project is open (`untitled` for a nameless one, the base name for a
+  schematic outside the project) and `scratchDir()` itself otherwise, so
+  headless runs stay flat. `AbstractSpiceKernel` (its `a_workdir`, and
+  ngspice's `.spiceinit` in it), `SimulationRun` (the folder, `log.txt`)
+  and `QucsApp::currentScratchDir()` (Show Last Netlist / Messages: the
+  schematic in front, else the one simulated last) use it.
+  `test_project_scratch` runs a fake ngspice twice from a project and
+  checks the folder, the files, the two actions and that the second run
+  reuses the folder.
 - *Done:* **Scratch folder per project.** `misc::scratchDir()` is the
   open project's `Scratch/` (created by `QucsApp::useProjectScratch()` on
   open, and by project creation) and the settings' `S4Q_workdir` otherwise,

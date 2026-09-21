@@ -4186,6 +4186,7 @@ void QucsApp::slotSimulateWithSpice()
         SimulationRun *run = simConsole->startRun(schematic, !TuningMode && schematic->getShowBias() != 0);
         if (run == nullptr)
             return;   // another simulation is still running; the console says so
+        a_lastSimulatedDoc = schematic->getDocName();
         connect(run, &SimulationRun::simulated, this, &QucsApp::slotAfterSpiceSimulation);
         connect(run, &SimulationRun::warnings, this, &QucsApp::slotShowWarnings);
         connect(run, &SimulationRun::success, this, &QucsApp::slotResetWarnings);
