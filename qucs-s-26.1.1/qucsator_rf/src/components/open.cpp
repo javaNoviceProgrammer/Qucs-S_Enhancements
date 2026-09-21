@@ -29,7 +29,7 @@
 #include "component.h"
 #include "open.h"
 
-using namespace qucs;
+namespace qucs {
 
 open::open () : circuit (1) {
   type = CIR_OPEN;
@@ -39,3 +39,5 @@ void open::initSP (void) {
   allocMatrixS ();
   setS (NODE_1, NODE_1, 1);
 }
+
+} // namespace qucs
