@@ -485,10 +485,93 @@ void Schematic::drawContents(QPainter *p, int, int, int, int)
     drawPostPaintEvents(p);
 }
 
+Schematic::Net Schematic::netOf(Wire* start) const {
+    Net net;
+    if (start == nullptr) return net;
+    std::vector<Node*> todo;
+    auto reach = [&](Node* n) { if (n != nullptr && !net.nodes.count(n)) todo.push_back(n); };
+    net.wires.insert(start);
+    reach(start->Port1);
+    reach(start->Port2);
+
+    // Labels seen so far, and whether a ground is on the net: what joins
+    // wires that do not touch.
+    std::unordered_set<QString> labels;
+    bool grounded = false;
+    auto noteLabel = [&](const Conductor* c) {
+        if (c->hasLabel() && !c->label()->Name.isEmpty()) labels.insert(c->label()->Name);
+    };
+    noteLabel(start);
+
+    for (;;) {
+        while (!todo.empty()) {
+            Node* n = todo.back();
+            todo.pop_back();
+            if (!net.nodes.insert(n).second) continue;
+            noteLabel(n);
+            for (Wire* w : n->wires()) {
+                if (!net.wires.insert(w).second) continue;
+                noteLabel(w);
+                reach(w->Port1);
+                reach(w->Port2);
+            }
+            for (Component* c : n->components())
+                if (c->Model == QLatin1String("GND")) grounded = true;
+        }
+        // Bring in what the labels and the ground join; go round again
+        // when that reached something new.
+        const size_t before = net.nodes.size() + net.wires.size();
+        for (auto* w : *a_Wires) {
+            if (net.wires.count(w)) continue;
+            if (w->hasLabel() && labels.count(w->label()->Name)) { reach(w->Port1); reach(w->Port2); }
+        }
+        for (auto* n : *a_Nodes) {
+            if (net.nodes.count(n)) continue;
+            bool joins = n->hasLabel() && labels.count(n->label()->Name);
+            if (!joins && grounded)
+                for (Component* c : n->components())
+                    if (c->Model == QLatin1String("GND")) { joins = true; break; }
+            if (joins) reach(n);
+        }
+        if (todo.empty() && before == net.nodes.size() + net.wires.size()) break;
+    }
+    return net;
+}
+
+Schematic::Net Schematic::selectedNet() const {
+    Net net;
+    for (auto* wire : *a_Wires) {
+        if (!wire->isSelected || net.wires.count(wire)) continue;
+        Net part = netOf(wire);
+        net.wires.merge(part.wires);
+        net.nodes.merge(part.nodes);
+    }
+    return net;
+}
+
+void Schematic::drawNetHighlight(QPainter* painter, const Net& net) {
+    if (net.empty()) return;
+    painter->save();
+    // A translucent glow: readable on a light or a dark paper, and the
+    // wires paint over it as usual.
+    const QColor glow(255, 140, 0, 120);
+    painter->setPen(QPen(glow, 9, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    for (Wire* w : net.wires)
+        painter->drawLine(w->x1, w->y1, w->x2, w->y2);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(glow);
+    for (Node* n : net.nodes)
+        painter->drawEllipse(QPoint(n->x(), n->y()), 6, 6);
+    painter->restore();
+}
+
 void Schematic::drawElements(QPainter* painter) {
     for (auto* component : *a_Components) {
         component->paint(painter);
     }
+
+    if (!a_symbolMode)
+        drawNetHighlight(painter, selectedNet());
 
     for (auto* wire : *a_Wires) {
         wire->paint(painter);
