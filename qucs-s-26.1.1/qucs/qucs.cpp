@@ -1334,14 +1334,12 @@ void QucsApp::initCursorMenu()
   ContentViewMenu->addAction(ActionCMenuViewTree);
   connect(viewModes, SIGNAL(triggered(QAction*)), SLOT(slotCMenuContentView(QAction*)));
 
-  // Lists the project's files again, from every menu of the panel. The
-  // panel watches the project's directories and refreshes by itself, for
-  // when it did not (a network drive, say).
+  // Lists the project's files again - from the empty area of the panel.
+  // (The panel does it by itself every few seconds when a file came or
+  // went, unless that is turned off under Application Settings.)
   ActionCMenuRefresh = new QAction(tr("Refresh"), this);
   ActionCMenuRefresh->setStatusTip(tr("Lists the files of the project again"));
   connect(ActionCMenuRefresh, SIGNAL(triggered()), SLOT(slotUpdateTreeview()));
-  ContentMenu->addSeparator();
-  ContentMenu->addAction(ActionCMenuRefresh);
 
   // The "Verilog-A" category row gets its own menu.
   ContentVerilogAMenu = new QMenu(this);
@@ -1349,12 +1347,6 @@ void QucsApp::initCursorMenu()
   ActionCMenuBuildAllVerilogA->setStatusTip(tr("Compile every Verilog-A file of the project with OpenVAF"));
   connect(ActionCMenuBuildAllVerilogA, SIGNAL(triggered()), SLOT(slotCMenuBuildAllVerilogA()));
   ContentVerilogAMenu->addAction(ActionCMenuBuildAllVerilogA);
-  ContentVerilogAMenu->addSeparator();
-  ContentVerilogAMenu->addAction(ActionCMenuRefresh);
-
-  // Any other category or folder row.
-  ContentCategoryMenu = new QMenu(this);
-  ContentCategoryMenu->addAction(ActionCMenuRefresh);
 
   // The empty area of the panel: the panel's own settings.
   ContentPanelMenu = new QMenu(this);
@@ -1388,8 +1380,6 @@ void QucsApp::slotShowContentMenu(const QPoint& pos)
     if (!idx.parent().isValid() && Content->categoryOf(idx) == ProjectView::VerilogA) {
       ActionCMenuBuildAllVerilogA->setEnabled(a_vaBuilder == nullptr);
       ContentVerilogAMenu->popup(where);
-    } else {
-      ContentCategoryMenu->popup(where);
     }
     return;
   }
@@ -2580,6 +2570,7 @@ void QucsApp::slotApplSettings()
   QucsSettingsDialog *d = new QucsSettingsDialog(this);
   d->exec();
   updateConsolePrograms();   // the Python interpreter may have changed
+  Content->applyRefreshSettings();
 }
 
 // --------------------------------------------------------------

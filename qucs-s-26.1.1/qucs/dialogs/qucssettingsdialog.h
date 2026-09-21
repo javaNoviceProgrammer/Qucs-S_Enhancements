@@ -30,6 +30,7 @@
 
 class QLineEdit;
 class QCheckBox;
+class QSpinBox;
 class QVBoxLayout;
 class QPushButton;
 class QComboBox;
@@ -176,6 +177,8 @@ public:
 
     /// @brief Enables flexible wire routing
     QCheckBox *allowFlexibleWires;
+    QCheckBox *contentAutoRefresh;      ///< Content panel: look for new/removed files by itself.
+    QSpinBox *contentRefreshSeconds;    ///< ...every this many seconds.
 
     /// @brief Enables anti-aliasing for diagram graphs.
     QCheckBox *checkAntiAliasing;

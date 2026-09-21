@@ -48,6 +48,7 @@
 #include <QComboBox>
 #include <QMessageBox>
 #include <QCheckBox>
+#include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QHeaderView>
@@ -164,6 +165,21 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     connect(ShortcutButton, SIGNAL(clicked()),
         parent, SLOT(slotShortcutDialog()));
     appSettingsGrid->addWidget(ShortcutButton, 9, 1);
+
+    appSettingsGrid->addWidget(new QLabel(tr("Refresh the Content panel automatically:"), appSettingsTab), 10, 0);
+    contentAutoRefresh = new QCheckBox(appSettingsTab);
+    contentAutoRefresh->setToolTip(tr("Every few seconds the project's files are listed again, and the "
+                                      "Content panel is rebuilt when a file came, went or changed.\n"
+                                      "Off: only Qucs' own actions and Refresh on the panel's menu list them again."));
+    appSettingsGrid->addWidget(contentAutoRefresh, 10, 1);
+
+    appSettingsGrid->addWidget(new QLabel(tr("Content panel refresh interval (seconds):"), appSettingsTab), 11, 0);
+    contentRefreshSeconds = new QSpinBox(appSettingsTab);
+    contentRefreshSeconds->setRange(1, 3600);
+    contentRefreshSeconds->setToolTip(tr("How often the project's files are looked at; a large project on a slow "
+                                         "disk wants a longer interval."));
+    appSettingsGrid->addWidget(contentRefreshSeconds, 11, 1);
+    connect(contentAutoRefresh, &QCheckBox::toggled, contentRefreshSeconds, &QWidget::setEnabled);
 
     // ...........................................................
     // The appearance settings tab
@@ -563,6 +579,9 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     editorEdit->setText(QucsSettings.Editor);
     checkWiring->setChecked(QucsSettings.NodeWiring);
     allowFlexibleWires->setChecked(_settings::Get().item<bool>("AllowFlexibleWires"));
+    contentAutoRefresh->setChecked(QucsSettings.ContentAutoRefresh);
+    contentRefreshSeconds->setValue(QucsSettings.ContentRefreshSeconds);
+    contentRefreshSeconds->setEnabled(QucsSettings.ContentAutoRefresh);
 
     ShortcutButton->setText("Custom Shortcut");
 
@@ -788,6 +807,8 @@ void QucsSettingsDialog::slotApply()
     }
 
     _settings::Get().setItem("AllowFlexibleWires", allowFlexibleWires->isChecked());
+    QucsSettings.ContentAutoRefresh = contentAutoRefresh->isChecked();
+    QucsSettings.ContentRefreshSeconds = contentRefreshSeconds->value();
 
     QucsSettings.FileTypes.clear();
     for (int row=0; row < fileTypesTableWidget->rowCount(); row++)
@@ -992,6 +1013,8 @@ void QucsSettingsDialog::slotDefaultValues()
     editorEdit->setText(QucsSettings.BinDir + "qucs");
     checkWiring->setChecked(false);
     allowFlexibleWires->setChecked(_settings::Get().itemDefault<bool>("AllowFlexibleWires"));
+    contentAutoRefresh->setChecked(true);
+    contentRefreshSeconds->setValue(3);
     checkLoadFromFutureVersions->setChecked(false);
     checkAntiAliasing->setChecked(false);
     checkTextAntiAliasing->setChecked(true);

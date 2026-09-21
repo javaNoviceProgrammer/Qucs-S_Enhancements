@@ -112,6 +112,8 @@ struct tQucsSettings {
   bool fullTraceName;
   bool alwaysPrefixDataset;
   bool ContentTreeView;   // Content panel: subdirectories as sub-trees (true) or "dir/name" rows (false)
+  bool ContentAutoRefresh = true;   // Content panel: look for files that came or went, every ...
+  int ContentRefreshSeconds = 3;    // ... this many seconds
   // Where the simulator's output goes: the Simulation dock, a window of
   // its own, or the legacy window that blocks the application until closed.
   enum SimConsoleHost { SimConsoleDock = 0, SimConsoleWindow = 1, SimConsoleLegacyWindow = 2 };

@@ -115,6 +115,8 @@ bool loadSettings()
     QucsSettings.fullTraceName = _settings::Get().item<bool>("fullTraceName");
     QucsSettings.alwaysPrefixDataset = _settings::Get().item<bool>("alwaysPrefixDataset");
     QucsSettings.ContentTreeView = _settings::Get().item<bool>("ContentTreeView");
+    QucsSettings.ContentAutoRefresh = _settings::Get().item<bool>("ContentAutoRefresh");
+    QucsSettings.ContentRefreshSeconds = qBound(1, _settings::Get().item<int>("ContentRefreshSeconds"), 3600);
     QucsSettings.SimulationConsoleHost = _settings::Get().item<int>("SimulationConsoleHost");
     if (!settings.contains("SimulationConsoleHost") && settings.contains("SimulationConsoleDock")
         && !settings.value("SimulationConsoleDock").toBool())   // the earlier two-way setting
@@ -199,6 +201,8 @@ bool saveApplSettings()
     qs.setItem<bool>("fullTraceName",QucsSettings.fullTraceName);
     qs.setItem<bool>("alwaysPrefixDataset",QucsSettings.alwaysPrefixDataset);
     qs.setItem<bool>("ContentTreeView",QucsSettings.ContentTreeView);
+    qs.setItem<bool>("ContentAutoRefresh",QucsSettings.ContentAutoRefresh);
+    qs.setItem<int>("ContentRefreshSeconds",QucsSettings.ContentRefreshSeconds);
     qs.setItem<int>("SimulationConsoleHost",QucsSettings.SimulationConsoleHost);
 
     // Copy the list of directory paths in which Qucs should

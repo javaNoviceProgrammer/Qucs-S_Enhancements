@@ -31,7 +31,6 @@
 
 
 class QStandardItemModel;
-class QFileSystemWatcher;
 class QTimer;
 
 class ProjectView : public QTreeView
@@ -76,20 +75,22 @@ public:
   /// Lists every file of the project, from its directory and any
   /// subdirectory, under its category: as "sub/dir/name.ext" rows, or as
   /// sub-trees of folder rows (treeView()). The rows that were expanded
-  /// stay expanded. The project's directories are watched from then on:
-  /// a file appearing, going or being renamed - by the application, a
-  /// program in the Terminal dock, or anything else - refreshes the
-  /// panel again shortly after (scheduleRefresh()).
+  /// stay expanded.
   void refresh();
-  /// The directories the panel watches for changes (the project's, and
-  /// every subdirectory it lists).
-  QStringList watchedDirectories() const;
+  /// Automatic refresh, as the settings say (QucsSettings.ContentAutoRefresh,
+  /// ContentRefreshSeconds): every so many seconds the project's files are
+  /// listed again and, only when a file came, went or changed, the panel
+  /// is rebuilt. Called at start and after the settings were changed.
+  void applyRefreshSettings();
+  bool autoRefreshEnabled() const;
+  /// What the listing is compared by: every project file with its size
+  /// and modification time.
+  QString listingSignature() const;
 
 public slots:
-  /// A refresh soon, once the changes that prompted it have settled -
-  /// and after a running simulation, whose scratch files would prompt
-  /// one every moment.
-  void scheduleRefresh();
+  /// A refresh, if the project's files differ from what is shown - not
+  /// while a simulation is writing its scratch files.
+  void refreshIfChanged();
   /// The project-relative paths of the subcircuit schematics.
   QStringList exportSchematic();
 
@@ -105,11 +106,8 @@ private:
   bool m_valid;
   QString m_projPath;
   QString m_projName;
-  QFileSystemWatcher *m_watcher;
-  QTimer *m_refreshTimer;
-
-  /// Points the watcher at the project's directories (refresh()).
-  void watchProjectDirectories();
+  QTimer *m_pollTimer;
+  QString m_signature;   // listingSignature() of what is shown
 
   /// Adds a file row (path relative to the project, optional note) under
   /// its category, inside the folder rows of its directory in tree view.
