@@ -214,7 +214,7 @@ QStandardItem* ProjectView::folderItem(QStandardItem* category, const QString& d
     if (!found) {
       appendRow(parent, name, QString());
       found = parent->child(parent->rowCount() - 1, 0);
-      found->setIcon(folderIcon);
+      if (QucsSettings.ContentFolderIcons) found->setIcon(folderIcon);   // off by default: a plain row
     }
     parent = found;
   }
@@ -341,6 +341,7 @@ ProjectView::refresh()
   restoreExpanded(QModelIndex(), expanded);
   resizeColumnToContents(0);
   m_signature = listingSignature();
+  m_folderIcons = QucsSettings.ContentFolderIcons;
 }
 
 QString ProjectView::listingSignature() const
@@ -364,6 +365,7 @@ void ProjectView::applyRefreshSettings()
     m_pollTimer->start();
   else
     m_pollTimer->stop();
+  if (m_folderIcons != QucsSettings.ContentFolderIcons) refresh();   // the rows are built with it
 }
 
 bool ProjectView::autoRefreshEnabled() const

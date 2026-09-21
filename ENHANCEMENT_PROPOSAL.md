@@ -337,6 +337,14 @@ existing demand.
   `ProjectView::filePath()/isFile()/categoryOf()` instead of reading the
   row text and assuming the parent is the category. Expanded rows
   (categories and folders) are remembered across refreshes by path.
+- *Done:* **Folder icons in the Content panel are a setting**
+  (`ContentFolderIcons`, default off; *Application Settings → Settings*).
+  `ProjectView::folderItem()` sets the icon only when it is on, the
+  listing remembers what it was built with and
+  `applyRefreshSettings()` rebuilds it when that changed. Found on the
+  way: the dialog compared the workspace field (canonical path) with the
+  stored path verbatim, so with a workspace behind a symlink every Apply
+  closed the project; it compares canonically now.
 - *Done:* **Python and Images categories** in the Content panel
   (`ProjectView::Python`, `ProjectView::Images`, between SPICE and
   Others; `ProjectView::imageSuffixes()` is the list, also behind

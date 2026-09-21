@@ -183,6 +183,12 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     appSettingsGrid->addWidget(contentRefreshSeconds, 11, 1);
     connect(contentAutoRefresh, &QCheckBox::toggled, contentRefreshSeconds, &QWidget::setEnabled);
 
+    appSettingsGrid->addWidget(new QLabel(tr("Folder icons in the Content panel:"), appSettingsTab), 12, 0);
+    contentFolderIcons = new QCheckBox(appSettingsTab);
+    contentFolderIcons->setToolTip(tr("Show a folder icon on the folder rows of the Content panel's "
+                                      "sub-trees (Toggle hierarchy search view). Off: plain rows."));
+    appSettingsGrid->addWidget(contentFolderIcons, 12, 1);
+
     // ...........................................................
     // The appearance settings tab
     QWidget *appAppearanceTab = new QWidget(t);
@@ -595,6 +601,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     contentAutoRefresh->setChecked(QucsSettings.ContentAutoRefresh);
     contentRefreshSeconds->setValue(QucsSettings.ContentRefreshSeconds);
     contentRefreshSeconds->setEnabled(QucsSettings.ContentAutoRefresh);
+    contentFolderIcons->setChecked(QucsSettings.ContentFolderIcons);
 
     ShortcutButton->setText("Custom Shortcut");
 
@@ -692,7 +699,10 @@ void QucsSettingsDialog::slotApply()
     bool homeDirChanged = false;
 
     // check QucsHome is changed, will require to close all files and refresh tree
-    if (homeEdit->text() != QucsSettings.qucsWorkspaceDir.path()) {
+    // (the field shows the canonical path: compare canonically, or a workspace
+    // behind a symbolic link - /tmp, a linked home - is "changed" on every Apply)
+    if (QDir(homeEdit->text()).canonicalPath() != QucsSettings.qucsWorkspaceDir.canonicalPath()
+        && homeEdit->text() != QucsSettings.qucsWorkspaceDir.path()) {
       // close all open files, asking the user whether to save the modified ones
       // if user aborts closing, just return
       if(!App->closeAllFiles()) return;
@@ -826,6 +836,7 @@ void QucsSettingsDialog::slotApply()
     _settings::Get().setItem("AllowFlexibleWires", allowFlexibleWires->isChecked());
     QucsSettings.ContentAutoRefresh = contentAutoRefresh->isChecked();
     QucsSettings.ContentRefreshSeconds = contentRefreshSeconds->value();
+    QucsSettings.ContentFolderIcons = contentFolderIcons->isChecked();
 
     QucsSettings.FileTypes.clear();
     for (int row=0; row < fileTypesTableWidget->rowCount(); row++)
@@ -1032,6 +1043,7 @@ void QucsSettingsDialog::slotDefaultValues()
     allowFlexibleWires->setChecked(_settings::Get().itemDefault<bool>("AllowFlexibleWires"));
     contentAutoRefresh->setChecked(true);
     contentRefreshSeconds->setValue(3);
+    contentFolderIcons->setChecked(false);
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));
     checkLoadFromFutureVersions->setChecked(false);
     checkAntiAliasing->setChecked(false);

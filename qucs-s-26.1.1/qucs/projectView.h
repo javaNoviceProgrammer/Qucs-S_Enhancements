@@ -112,6 +112,7 @@ private:
   QString m_projName;
   QTimer *m_pollTimer;
   QString m_signature;   // listingSignature() of what is shown
+  bool m_folderIcons = false;   // QucsSettings.ContentFolderIcons the listing was built with
 
   /// Adds a file row (path relative to the project, optional note) under
   /// its category, inside the folder rows of its directory in tree view.

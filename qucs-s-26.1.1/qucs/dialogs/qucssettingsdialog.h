@@ -180,6 +180,9 @@ public:
     QCheckBox *contentAutoRefresh;      ///< Content panel: look for new/removed files by itself.
     QSpinBox *contentRefreshSeconds;    ///< ...every this many seconds.
 
+    /// @brief Folder icons on the Content panel's sub-tree folder rows.
+    QCheckBox *contentFolderIcons;
+
     /// @brief Enables anti-aliasing for diagram graphs.
     QCheckBox *checkAntiAliasing;
 

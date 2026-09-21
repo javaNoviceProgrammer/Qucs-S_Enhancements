@@ -63,6 +63,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   their category, either as `sub/dir/name.ext` rows or as sub-trees with
   one folder row per directory — right-click the empty area of the panel,
   *Toggle hierarchy search view*, to switch; the choice is remembered.
+  The folder rows are plain; *Application Settings → Settings → Folder
+  icons in the Content panel* puts a folder icon on them.
   Open, copy, rename, delete, drag and subcircuit insertion work on them in
   both listings. A new *Osdi* category lists the compiled `.osdi` models;
   ngspice loads all of them, wherever they are in the project, and Build
