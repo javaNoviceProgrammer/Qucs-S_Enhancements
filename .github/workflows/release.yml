@@ -253,6 +253,18 @@ jobs:
           modules: qtcharts
           cache: true
 
+      - name: Use the newest Xcode
+        # The image's default Xcode 16.4 (Apple clang 17) crashes on
+        # qucs-s-spar-viewer's Microstrip.cpp for x86_64 - reproducibly,
+        # and only for that target - so the Intel build takes the newest
+        # Xcode installed. The Apple Silicon build stays on the default.
+        if: ${{ matrix.enabled && matrix.label == 'intel' }}
+        run: |
+          newest="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$newest"
+          xcodebuild -version | head -1
+          clang++ --version | head -1
+
       - name: Install build dependencies
         if: ${{ matrix.enabled }}
         run: |
