@@ -364,6 +364,13 @@ void QucsApp::slotZoomIn(bool on) {
 }
 
 void QucsApp::slotEscape() {
+  // A move made with the cursor keys is taken back (#1525).
+  if (Schematic *doc = currentSchematic()) {
+    if (doc->cancelKeyboardMove()) {
+      doc->viewport()->update();
+      return;
+    }
+  }
   select->setChecked(true);
   slotSearchClear();
 }
@@ -1238,6 +1245,7 @@ void QucsApp::slotCursorLeft(bool left) {
   std::ranges::for_each(selection.wires, mover);
   std::ranges::for_each(selection.nodes, mover);
   Doc->healAfterKeyboardMutation();
+  Doc->noteKeyboardMove();   // modified, undoable, cancellable with Escape
   Doc->viewport()->update();
 }
 
@@ -1327,6 +1335,7 @@ void QucsApp::slotCursorUp(bool up) {
   std::ranges::for_each(selection.wires, mover);
   std::ranges::for_each(selection.nodes, mover);
   Doc->healAfterKeyboardMutation();
+  Doc->noteKeyboardMove();   // modified, undoable, cancellable with Escape
   Doc->viewport()->update();
 }
 

@@ -307,8 +307,8 @@ existing demand.
 
 **Quick wins (days each, no architectural change)**
 
-- **Crash recovery / autosave** (from WS1.7) surfaced as a feature: periodic
-  autosave, "Recover unsaved documents" on launch.
+- *Done (with WS1.7):* **Crash recovery / autosave**: periodic autosave,
+  "Recover unsaved documents" on launch.
 - *Done:* **Verilog-A "Build All"** on the Content panel's Verilog-A row:
   compiles every `.va` of the project with the OpenVAF from the settings,
   sequentially and asynchronously (the GUI stays responsive), output and a
@@ -381,7 +381,14 @@ existing demand.
   `qucs::DrawingPrimitive::draw()`.
 - **Diagram legend** (#1719): rendered from `Diagram::Graphs` — the data is
   already there; nothing draws it.
-- **Cancel keyboard move restores original position** (#1525).
+- *Done:* **Cancel keyboard move restores original position** (#1525).
+  A cursor-key move now marks the document modified and is one undo step
+  however many key presses it takes (`setChanged(..., 'k')` coalesces
+  like marker moves); while it is the latest step, Escape takes it back
+  (`Schematic::cancelKeyboardMove()`). A mouse press, another edit, undo
+  or redo closes the sequence. Upstream neither recorded the move nor
+  marked the document changed, so a keyboard-moved schematic could be
+  closed without a save prompt. `qucs/tests/test_keyboard_move` covers it.
 - **Open any file regardless of current simulator mode** (#1468): today the
   component palette is torn down and rebuilt on simulator switch
   (`Module::registerModules`), so a `.sch` for another backend fails to
