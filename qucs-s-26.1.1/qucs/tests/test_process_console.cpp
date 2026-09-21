@@ -172,11 +172,13 @@ private slots:
         console.setWorkingDirectory(dir.path());
         console.setChangeDirectoryCommand("cd %1", ProcessConsole::ShellQuoting);
         QVERIFY(console.start());
+        QTRY_VERIFY_WITH_TIMEOUT(!console.outputText().isEmpty(), 10000);   // the prompt: it is listening
         // No project open: the home directory. (With a project it is the
         // project directory - see QucsApp.)
         button(&console, "Project dir")->click();
         console.sendLine("pwd");
-        QTRY_VERIFY_WITH_TIMEOUT(console.outputText().contains("\n" + QDir::homePath() + "\n"), 5000);
+        QTRY_VERIFY2_WITH_TIMEOUT(console.outputText().contains("\n" + QDir::homePath() + "\n"),
+                                  qPrintable(console.outputText()), 10000);
         // Quoting: a path with a space and a quote.
         QCOMPARE(ProcessConsole::quotedForShell("/a b/it's"), QString("'/a b/it'\\''s'"));
         QCOMPARE(ProcessConsole::quotedForPython("C:\\x\\y \"q\""), QString("\"C:\\\\x\\\\y \\\"q\\\"\""));
@@ -252,7 +254,8 @@ private slots:
         QVERIFY(app.terminalDockWidget()->isVisible());
         QTRY_VERIFY_WITH_TIMEOUT(app.terminalConsole()->isRunning(), 5000);
         app.terminalConsole()->sendLine("pwd");
-        QTRY_VERIFY_WITH_TIMEOUT(app.terminalConsole()->outputText().contains("\n" + QDir::homePath() + "\n"), 5000);
+        QTRY_VERIFY2_WITH_TIMEOUT(app.terminalConsole()->outputText().contains("\n" + QDir::homePath() + "\n"),
+                                  qPrintable(app.terminalConsole()->outputText()), 10000);
         // For a look at it: QUCS_TEST_GRAB=<dir> saves a picture of the window.
         const QString grabDir = qEnvironmentVariable("QUCS_TEST_GRAB");
         if (!grabDir.isEmpty()) {

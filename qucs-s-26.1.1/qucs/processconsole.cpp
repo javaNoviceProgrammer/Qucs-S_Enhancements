@@ -373,7 +373,7 @@ ProcessConsole::ProcessConsole(QWidget* parent)
       a_decoder(QStringDecoder::Utf8)
 {
     a_pendingFlush->setSingleShot(true);
-    a_pendingFlush->setInterval(1500);
+    a_pendingFlush->setInterval(3000);   // a program that says nothing gets its input then
     connect(a_pendingFlush, &QTimer::timeout, this, &ProcessConsole::flushPendingInput);
     QFont font;
     font.setFamily("monospace");
