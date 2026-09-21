@@ -469,7 +469,10 @@ jobs:
             # The notes: the annotated tag's message, when it has one, with
             # the generated list of changes appended.
             EXTRA=(--generate-notes)
-            git fetch --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
+            # actions/checkout leaves refs/tags/<tag> pointing at the commit;
+            # a forced fetch brings the annotated tag object itself.
+            git fetch --no-tags --force origin "+refs/tags/${TAG}:refs/tags/${TAG}" || true
+            echo "tag object: $(git cat-file -t "$TAG" 2>/dev/null)"
             if [ "$(git cat-file -t "$TAG" 2>/dev/null)" = "tag" ]; then
               git tag -l --format='%(contents)' "$TAG" > tag-notes.md
               if [ -s tag-notes.md ]; then EXTRA+=(--notes-file tag-notes.md); fi
