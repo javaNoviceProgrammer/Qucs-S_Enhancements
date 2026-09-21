@@ -32,12 +32,15 @@ Every release carries one bundle per platform, built by the
 | macOS, Intel | `qucs-s-<ver>-macos-intel.dmg` | same |
 | Linux x86_64 | `qucs-s-<ver>-linux-intel.AppImage` | `chmod +x` and run; needs FUSE 2 (`libfuse2`) or `--appimage-extract` |
 | Linux arm64 | `qucs-s-<ver>-linux-arm.AppImage` | same; needs glibc 2.38 or newer (Ubuntu 24.04, Debian 13) |
-| Windows x64 | `...-windows-intel.zip` and `...-windows-intel-setup.exe` | ngspice is included |
-| Windows arm64 | `...-windows-arm.zip` and `...-windows-arm-setup.exe` | ngspice is included |
+| Windows x64 | `...-windows-intel.zip` and `...-windows-intel-setup.exe` | |
+| Windows arm64 | `...-windows-arm.zip` and `...-windows-arm-setup.exe` | |
 
-The macOS and Linux bundles do not include ngspice, as upstream's do not:
-install it separately (`brew install ngspice`, `apt install ngspice`, …) and
-point *Application Settings → Locations* at it if it is not on `PATH`.
+No bundle includes ngspice: install it separately (`brew install ngspice`,
+`apt install ngspice`, the Windows archive from
+[ngspice.sourceforge.io](https://ngspice.sourceforge.io/download.html), …)
+and point *Application Settings → Locations → Ngspice* at it if it is not
+on `PATH` — on Windows at `ngspice_con.exe`. Without it the bundled
+qucsator is the default simulator.
 
 The rolling **`continuous`** pre-release is replaced on every manual run of
 the workflow and follows `main` (its bundles carry the commit too:
