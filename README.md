@@ -396,6 +396,15 @@ to a Qucs dataset exactly as the GUI does after a simulation:
 python3 scripts/ci/fuzz-simout.py build-asan/qucs/tests/simout_harness /tmp/smoke/simulate/work /tmp/fuzz-simout --count 500 --seed 7
 ```
 
+`qucs/tests/test_netlist_audit` places every built-in component on a
+schematic and checks that it netlists in every flavour without a crash and
+survives a save/load and a properties-dialog Apply unchanged. With
+`QUCS_NETLIST_AUDIT=<dir>` it also writes the surveys (every component's
+netlists, and every property marked to show which ones the SPICE netlist
+ignores), and `scripts/netlist-audit.sh <build> <out>` runs the resulting
+decks through ngspice. What that turned up is written up in
+[docs/bug_hunts/](docs/bug_hunts/README.md).
+
 ## Crash reports and recovery
 
 If the app dies, a report is written to the application-data directory

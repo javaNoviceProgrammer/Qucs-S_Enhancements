@@ -455,6 +455,8 @@ QString misc::properName(const QString& Name)
   QFileInfo Info(s);
   if(Info.suffix() == "sch")
     s.chop(4);
+  if(s.isEmpty())   // a subcircuit without a file: nothing to name
+    return s;
   if(s.at(0) <= '9') if(s.at(0) >= '0')
     s = 'n' + s;
   s.replace(QRegularExpression("\\W"), "_"); // none [a-zA-Z0-9] into "_"
