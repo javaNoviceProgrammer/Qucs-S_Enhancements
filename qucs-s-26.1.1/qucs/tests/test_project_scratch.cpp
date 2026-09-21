@@ -285,7 +285,6 @@ private slots:
         QCOMPARE(view->filePath(m->item(ProjectView::Images, 0)->child(2, 0)->index()), QString("figures/gain.svg"));
         QCOMPARE(app.fileType("py"), QString("Python script"));
         QCOMPARE(app.fileType("svg"), QString("image"));
-
         for (const QString& f : {"analyse.py", "tools/helper.pyw", "logo.png", "figures/gain.svg", "Photo.JPEG", "notes.pdf", "Scratch/plot.png"})
             QVERIFY(QFile::remove(project + "/" + f));
     }
