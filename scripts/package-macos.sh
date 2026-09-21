@@ -106,17 +106,82 @@ find "$app" -path '*/Frameworks/*.dylib' -type f | while IFS= read -r lib; do
       install_name_tool -id "@rpath/$(basename "$lib")" "$lib" ;;
   esac
 done
+# The same for the frameworks it leaves alone (QtDBus, the QtQml ones).
+find "$app" -path '*/Frameworks/*.framework/Versions/*' -type f | while IFS= read -r lib; do
+  case "$(file -b "$lib" 2>/dev/null)" in Mach-O*) ;; *) continue ;; esac
+  id="$(otool -D "$lib" | sed -n '2p')"
+  case "$id" in
+    /opt/homebrew/*|/usr/local/Cellar/*|/usr/local/opt/*|*/Qt/*)
+      install_name_tool -id "@rpath/${lib#*/Frameworks/}" "$lib" ;;
+  esac
+done
+
+# Every Mach-O in the bundle: the executables, the nested apps, the
+# frameworks and the plugins.
+machos() {
+  find "$app" -type f \( -perm -u+x -o -name '*.dylib' -o -path '*.framework/Versions/*' \) \
+    | while IFS= read -r f; do
+        case "$(file -b "$f" 2>/dev/null)" in Mach-O*) printf '%s\n' "$f" ;; esac
+      done
+}
+
+# The build's rpath into the Homebrew Qt (CMake's, so the tree runs from
+# the build directory) stays on the binaries after macdeployqt. On a
+# machine without that Qt it is dead; on one with it, anything the bundle
+# does not resolve is looked up there - a plugin then loads that Qt next
+# to the bundled one ("Class ... is implemented in both", spurious casting
+# failures, crashes). Drop every such rpath.
+machos | while IFS= read -r bin_; do
+  otool -l "$bin_" | awk '/LC_RPATH/ {f=1} f && /path / {print $2; f=0}' | while IFS= read -r rp; do
+    case "$rp" in
+      /opt/homebrew/*|/usr/local/Cellar/*|/usr/local/opt/*|*/Qt/*)
+        install_name_tool -delete_rpath "$rp" "$bin_" ;;
+    esac
+  done
+done
+
+# Third-party dylibs macdeployqt copied still name each other through
+# @rpath (libwebp wants @rpath/libsharpyuv, brotlidec wants brotlicommon)
+# with an rpath of @loader_path/../lib, which is nowhere in a bundle. They
+# sit side by side in Contents/Frameworks: let @rpath mean that.
+find "$app" -path '*/Contents/Frameworks/*.dylib' -type f | while IFS= read -r lib; do
+  if otool -L "$lib" | tail -n +2 | awk '{print $1}' | grep -q '^@rpath/'; then
+    install_name_tool -add_rpath '@loader_path' "$lib" 2>/dev/null || true
+  fi
+done
+
+# A plugin that wants a Qt framework macdeployqt did not bring (the PDF
+# image format wants QtPdf, from qtwebengine) cannot load; leave it out
+# rather than have it find a Qt outside the bundle.
+find "$app" -path '*/Contents/PlugIns/*' -name '*.dylib' -type f | while IFS= read -r plugin; do
+  owner="${plugin%%/Contents/PlugIns/*}"   # the app (main or nested) the plugin belongs to
+  for fw in $(otool -L "$plugin" | tail -n +2 | awk '{print $1}' | grep '^@' | grep -o '[A-Za-z0-9_]*\.framework' | sort -u); do
+    if [ ! -d "$owner/Contents/Frameworks/$fw" ]; then
+      echo "    dropping plugin ${plugin#$app/Contents/} (needs $fw, not bundled)"
+      rm -f "$plugin"
+      break
+    fi
+  done
+done
 
 echo "==> Signing (ad hoc)"
 codesign --force --deep --sign - "$app"
 
-# Anything still pointing at a Homebrew or Qt install path would break on
-# another machine.
-if otool -L "$app/Contents/MacOS/qucs-s" | grep -qE '/opt/homebrew|/usr/local/(Cellar|opt)|/Qt/'; then
-  echo "error: qucs-s still links against an install path:" >&2
-  otool -L "$app/Contents/MacOS/qucs-s" | grep -E '/opt/homebrew|/usr/local/(Cellar|opt)|/Qt/' >&2
-  exit 1
-fi
+# Anything still pointing at a Homebrew or Qt install path - as a
+# dependency or as an rpath, in any binary of the bundle - would break
+# on another machine, or load a second Qt on this one.
+bad="$(machos | while IFS= read -r bin_; do
+  if otool -L "$bin_" | tail -n +2 | grep -qE '/opt/homebrew|/usr/local/(Cellar|opt)|/Qt/'; then
+    echo "error: ${bin_#$app/Contents/} still links against an install path:" >&2
+    otool -L "$bin_" | tail -n +2 | grep -E '/opt/homebrew|/usr/local/(Cellar|opt)|/Qt/' >&2
+    echo bad
+  fi
+  if otool -l "$bin_" | awk '/LC_RPATH/ {f=1} f && /path / {print $2; f=0}' | grep -qE '/opt/homebrew|/usr/local/(Cellar|opt)|/Qt/'; then
+    echo "error: ${bin_#$app/Contents/} keeps an rpath into an install path" >&2
+    echo bad
+  fi
+done)"
+[ -z "$bad" ] || exit 1
 
 echo "==> Creating $name.dmg"
 dmgroot="$stage/dmg"
