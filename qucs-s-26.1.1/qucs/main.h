@@ -88,6 +88,7 @@ struct tQucsSettings {
   QString S4Qworkdir;
   unsigned int NProcs; // Number of processors for Xyce
   QString OctaveExecutable; // OctaveExecutable location
+  QString PythonExecutable; // the Python shell dock's interpreter; empty: python3 on PATH
   QString QucsOctave; // OUCS_OCTAVE variable
   QString RFLayoutExecutable;
   bool ResolveSpicePrefix;

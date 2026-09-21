@@ -133,6 +133,9 @@ private slots:
     /// @brief Opens a file picker to set the Qucs-RFLayout executable path.
     void slotRFLayoutDirBrowse();
 
+    /// @brief Opens a file picker to set the Python interpreter of the Python shell dock.
+    void slotPythonBrowse();
+
     /// @brief Opens a directory picker to add a single path to the search list.
     void slotAddPath();
 
@@ -218,6 +221,7 @@ public:
     QLineEdit *octaveEdit;          ///< Octave executable path.
     QLineEdit *OpenVAFEdit;         ///< OpenVAF executable path.
     QLineEdit *RFLayoutEdit;        ///< Qucs-RFLayout executable path.
+    QLineEdit *pythonEdit;          ///< Python interpreter of the Python shell dock (empty: python3 on PATH).
     QLineEdit *graphLineWidthEdit;  ///< Default graph line thickness.
 
     /// @brief Table displaying registered file type suffix/program pairs.

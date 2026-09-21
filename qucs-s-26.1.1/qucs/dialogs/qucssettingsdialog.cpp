@@ -445,6 +445,16 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     stdPathsGrid->addWidget(RFLButt, 5, 2);
     connect(RFLButt, SIGNAL(clicked()), SLOT(slotRFLayoutDirBrowse()));
 
+    stdPathsGrid->addWidget(new QLabel(tr("Python Path:"), stdPathsGroup), 6, 0);
+    pythonEdit = new QLineEdit(locationsTab);
+    pythonEdit->setPlaceholderText(tr("python3 on PATH"));
+    pythonEdit->setToolTip(tr("The interpreter of the Python shell dock (View > Python Shell). "
+                              "Empty: python3 (or python) found on PATH."));
+    stdPathsGrid->addWidget(pythonEdit, 6, 1);
+    QPushButton *PythonButt = new QPushButton(tr("Browse"));
+    stdPathsGrid->addWidget(PythonButt, 6, 2);
+    connect(PythonButt, SIGNAL(clicked()), SLOT(slotPythonBrowse()));
+
     locationsGrid->addWidget(stdPathsGroup, 0, 0, 1, 3);
 
 
@@ -567,6 +577,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     octaveEdit->setText(QucsSettings.OctaveExecutable);
     OpenVAFEdit->setText(QucsSettings.OpenVAFExecutable);
     RFLayoutEdit->setText(QucsSettings.RFLayoutExecutable);
+    pythonEdit->setText(QucsSettings.PythonExecutable);
 
 
     resize(600, 200);
@@ -792,6 +803,7 @@ void QucsSettingsDialog::slotApply()
     QucsSettings.OctaveExecutable = octaveEdit->text();
     QucsSettings.OpenVAFExecutable = OpenVAFEdit->text();
     QucsSettings.RFLayoutExecutable = RFLayoutEdit->text();
+    QucsSettings.PythonExecutable = pythonEdit->text().trimmed();
 
     if (QucsSettings.IgnoreFutureVersion != checkLoadFromFutureVersions->isChecked())
     {
@@ -1171,6 +1183,15 @@ void QucsSettingsDialog::slotRFLayoutDirBrowse()
 
   if(!d.isEmpty())
     RFLayoutEdit->setText(d);
+}
+
+void QucsSettingsDialog::slotPythonBrowse()
+{
+  QString d = QFileDialog::getOpenFileName(this, tr("Select the Python interpreter"),
+                                           pythonEdit->text(), "All files (*)");
+
+  if(!d.isEmpty())
+    pythonEdit->setText(d);
 }
 
 void QucsSettingsDialog::slotAddPath()
