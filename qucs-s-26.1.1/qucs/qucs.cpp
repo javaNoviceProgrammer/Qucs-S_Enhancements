@@ -1421,6 +1421,10 @@ QString QucsApp::fileType (const QString& Ext)
     Type = tr("VHDL configuration");
   else if (Ext == "cfg")
     Type = tr("configuration");
+  else if (Ext == "py" || Ext == "pyw")
+    Type = tr("Python script");
+  else if (ProjectView::imageSuffixes().contains(Ext))
+    Type = tr("image");
   return Type;
 }
 

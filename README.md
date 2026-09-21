@@ -66,7 +66,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Open, copy, rename, delete, drag and subcircuit insertion work on them in
   both listings. A new *Osdi* category lists the compiled `.osdi` models;
   ngspice loads all of them, wherever they are in the project, and Build
-  All compiles the `.va` files wherever they are.
+  All compiles the `.va` files wherever they are. Two more categories sit
+  between *SPICE* and *Others*: *Python* (`.py`, `.pyw`; they open in the
+  text editor) and *Images* (`.png`, `.jpg`/`.jpeg`, `.svg`, `.gif`,
+  `.bmp`, `.tif`, `.webp` and the other formats Qt reads; they open with
+  the system's viewer). Files in *Scratch* stay under *Scratch*.
 - **A Scratch folder per project, a subfolder per schematic**: the
   temporary files of a simulation (netlist, the raw simulator output such
   as `spice4qucs.ac1.plot`, log) go to `Scratch/<schematic>/` inside the

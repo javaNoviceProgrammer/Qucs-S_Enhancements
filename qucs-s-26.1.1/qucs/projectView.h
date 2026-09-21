@@ -41,7 +41,11 @@ public:
   // Scratch holds whatever is in the project's Scratch folder (temporary
   // files of the simulations), named relative to that folder.
   enum Category { Datasets = 0, DataDisplays, Verilog, VerilogA, Osdi, VHDL,
-                  Octave, Schematics, Symbols, SPICE, Others, Scratch };
+                  Octave, Schematics, Symbols, SPICE, Python, Images, Others, Scratch };
+
+  /// The suffixes listed under Images (lower case): what QImageReader
+  /// can show plus SVG.
+  static const QStringList& imageSuffixes();
 
   /// Item data: the file's path relative to the project ("models/bjt.va")
   /// on every file row, whatever the row shows; empty on category and

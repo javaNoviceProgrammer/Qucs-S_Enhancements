@@ -69,6 +69,15 @@ ProjectView::~ProjectView()
   delete m_model;
 }
 
+const QStringList& ProjectView::imageSuffixes()
+{
+  static const QStringList suffixes = {
+    "png", "jpg", "jpeg", "jpe", "svg", "svgz", "gif", "bmp", "tif", "tiff", "webp",
+    "ico", "icns", "pbm", "pgm", "ppm", "xbm", "xpm", "heic", "heif", "jp2", "avif",
+  };
+  return suffixes;
+}
+
 int ProjectView::categoryOf(const QModelIndex& idx) const
 {
   if (!idx.isValid()) return -1;
@@ -262,6 +271,8 @@ ProjectView::refresh()
   appendRow(m_model->invisibleRootItem(), tr("Schematics"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("Symbols"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("SPICE"), QString(""));
+  appendRow(m_model->invisibleRootItem(), tr("Python"), QString(""));
+  appendRow(m_model->invisibleRootItem(), tr("Images"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("Others"), QString(""));
   appendRow(m_model->invisibleRootItem(), tr("Scratch"), QString(""));
 
@@ -314,6 +325,12 @@ ProjectView::refresh()
       } else if ((extName == "cir") || (extName=="ckt") ||
                (extName=="sp")) {
           appendFile(SPICE, fileName);
+      }
+      else if (extName == "py" || extName == "pyw") {
+        appendFile(Python, fileName);
+      }
+      else if (imageSuffixes().contains(extName)) {
+        appendFile(Images, fileName);
       }
       else {
         appendFile(Others, fileName);

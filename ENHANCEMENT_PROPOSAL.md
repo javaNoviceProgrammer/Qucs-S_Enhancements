@@ -337,6 +337,12 @@ existing demand.
   `ProjectView::filePath()/isFile()/categoryOf()` instead of reading the
   row text and assuming the parent is the category. Expanded rows
   (categories and folders) are remembered across refreshes by path.
+- *Done:* **Python and Images categories** in the Content panel
+  (`ProjectView::Python`, `ProjectView::Images`, between SPICE and
+  Others; `ProjectView::imageSuffixes()` is the list, also behind
+  `QucsApp::fileType()`). Scratch files are classified first, so an image
+  written by a simulation stays under Scratch. `test_project_scratch`
+  covers the order, the listing and the suffixes.
 - *Done:* **Scratch subfolder per schematic.** `misc::scratchDirFor(doc)`
   is `Scratch/<doc relative to the project, without extension>` while a
   project is open (`untitled` for a nameless one, the base name for a

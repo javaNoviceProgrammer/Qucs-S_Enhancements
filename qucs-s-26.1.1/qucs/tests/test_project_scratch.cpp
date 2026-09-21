@@ -254,6 +254,41 @@ private slots:
         view->setTreeView(false);
         QucsSettings.ContentTreeView = false;
     }
+
+    // Python scripts and images have categories of their own, between
+    // SPICE and Others; an image in Scratch stays under Scratch.
+    void pythonAndImagesHaveTheirOwnCategories()
+    {
+        write(project + "/analyse.py", "print(1)\n");
+        write(project + "/tools/helper.pyw", "\n");
+        write(project + "/logo.png", "not really a png\n");
+        write(project + "/figures/gain.svg", "<svg/>\n");
+        write(project + "/Photo.JPEG", "\n");
+        write(project + "/notes.pdf", "\n");   // not an image: Others
+        write(project + "/Scratch/plot.png", "\n");
+
+        QucsApp app(false);
+        MainGuard guard(&app);
+        ProjectView* view = app.projectView();
+        view->setProjPath(project);
+        QStandardItemModel* m = view->model();
+        QCOMPARE(ProjectView::Python, ProjectView::SPICE + 1);
+        QCOMPARE(ProjectView::Images, ProjectView::Python + 1);
+        QCOMPARE(ProjectView::Others, ProjectView::Images + 1);
+        QCOMPARE(m->item(ProjectView::Python, 0)->text(), QString("Python"));
+        QCOMPARE(m->item(ProjectView::Images, 0)->text(), QString("Images"));
+        QCOMPARE(childrenOf(m->item(ProjectView::Python, 0)), QStringList({"analyse.py", "tools/helper.pyw"}));
+        QCOMPARE(childrenOf(m->item(ProjectView::Images, 0)), QStringList({"logo.png", "Photo.JPEG", "figures/gain.svg"}));
+        QCOMPARE(childrenOf(m->item(ProjectView::Others, 0)), QStringList({"notes.pdf"}));
+        QVERIFY(childrenOf(m->item(ProjectView::Scratch, 0)).contains("plot.png"));
+        QVERIFY(!childrenOf(m->item(ProjectView::Images, 0)).contains("plot.png"));
+        QCOMPARE(view->filePath(m->item(ProjectView::Images, 0)->child(2, 0)->index()), QString("figures/gain.svg"));
+        QCOMPARE(app.fileType("py"), QString("Python script"));
+        QCOMPARE(app.fileType("svg"), QString("image"));
+
+        for (const QString& f : {"analyse.py", "tools/helper.pyw", "logo.png", "figures/gain.svg", "Photo.JPEG", "notes.pdf", "Scratch/plot.png"})
+            QVERIFY(QFile::remove(project + "/" + f));
+    }
 };
 
 int main(int argc, char** argv)
