@@ -34,12 +34,18 @@ struct Issue {
     QString message;    ///< "R1: pin 2 is connected to nothing"
     QPoint where;       ///< model coordinates of the place to show
     QString component;  ///< the component's name, when one is meant
+    QString file = QString();   ///< the schematic file the issue is in (its document name)
     bool operator==(const Issue& o) const
-    { return severity == o.severity && message == o.message && where == o.where && component == o.component; }
+    { return severity == o.severity && message == o.message && where == o.where && component == o.component && file == o.file; }
 };
 
-/// The issues of \a doc, errors first, in the order they were found.
+/// The issues of \a doc, errors first, in the order they were found;
+/// each carries the document's name as its file.
 QList<Issue> check(Schematic* doc);
+
+/// The subcircuit files \a doc uses directly (Subcircuit components, as
+/// absolute paths, each once).
+QStringList subcircuitFiles(Schematic* doc);
 
 /// How many of \a issues are errors.
 int errorCount(const QList<Issue>& issues);

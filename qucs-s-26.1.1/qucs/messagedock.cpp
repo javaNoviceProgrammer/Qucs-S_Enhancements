@@ -23,6 +23,7 @@
 
 #include <QDockWidget>
 #include <QListWidget>
+#include <QFileInfo>
 #include <QStyle>
 #include "schematic.h"
 #include <QTextBlock>
@@ -272,10 +273,15 @@ void MessageDock::showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& 
     problems->clear();
     const QIcon error = style()->standardIcon(QStyle::SP_MessageBoxCritical);
     const QIcon warning = style()->standardIcon(QStyle::SP_MessageBoxWarning);
+    const QString docName = doc != nullptr ? doc->getDocName() : QString();
     for (const qucs_s::erc::Issue& issue : issues) {
-        auto* item = new QListWidgetItem(issue.severity == qucs_s::erc::Severity::Error ? error : warning,
-                                         issue.message, problems);
-        item->setToolTip(tr("at %1, %2").arg(issue.where.x()).arg(issue.where.y()));
+        // An issue of a subcircuit names its file.
+        const QString text = issue.file.isEmpty() || issue.file == docName
+                                 ? issue.message
+                                 : QFileInfo(issue.file).fileName() + QStringLiteral(": ") + issue.message;
+        auto* item = new QListWidgetItem(issue.severity == qucs_s::erc::Severity::Error ? error : warning, text, problems);
+        item->setToolTip(tr("at %1, %2").arg(issue.where.x()).arg(issue.where.y())
+                         + (issue.file.isEmpty() ? QString() : QStringLiteral("\n") + issue.file));
     }
     if (issues.isEmpty()) {
         auto* item = new QListWidgetItem(style()->standardIcon(QStyle::SP_DialogApplyButton),

@@ -19,6 +19,7 @@
 
 #include <QCoreApplication>
 #include <QHash>
+#include <QStringList>
 #include <algorithm>
 
 namespace qucs_s::erc {
@@ -104,7 +105,21 @@ QList<Issue> check(Schematic* doc)
             warnings << Issue{Severity::Warning, tr("no simulation: no .AC, .TR, .DC, .SP, ... block"), where, QString()};
     }
 
-    return errors + warnings;
+    QList<Issue> all = errors + warnings;
+    for (Issue& i : all) i.file = doc->getDocName();
+    return all;
+}
+
+QStringList subcircuitFiles(Schematic* doc)
+{
+    QStringList files;
+    if (doc == nullptr) return files;
+    for (Component* c : doc->a_DocComps) {
+        if (c->Model != QLatin1String("Sub")) continue;
+        const QString file = c->getSubcircuitFile();
+        if (!file.isEmpty() && !files.contains(file)) files << file;
+    }
+    return files;
 }
 
 int errorCount(const QList<Issue>& issues)

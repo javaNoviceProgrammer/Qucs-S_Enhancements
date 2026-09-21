@@ -2806,7 +2806,10 @@ void QucsApp::slotIntoHierarchy()
   Schematic *Doc = currentSchematic();
   if (Doc == nullptr) { return; }
   Component *pc = Doc->searchSelSubcircuit();
-  if(pc == nullptr) { return; }
+  if(pc == nullptr) {
+    statusBar()->showMessage(tr("Select a subcircuit to go into first."), 3000);
+    return;
+  }
 
   QString s = pc->getSubcircuitFile();
   if(!gotoPage(s)) { return; }

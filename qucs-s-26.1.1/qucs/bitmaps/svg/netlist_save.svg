@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- a netlist page going down into a tray: save it where you like -->
+  <path d="M26 8h50l24 24v60H26z" fill="#fdfdfd" stroke="#4d4d4d" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M76 8v24h24" fill="#e6e6e6" stroke="#4d4d4d" stroke-width="4" stroke-linejoin="round"/>
+  <g stroke="#2b5fb8" stroke-width="6" stroke-linecap="round">
+    <line x1="38" y1="48" x2="72" y2="48"/>
+    <line x1="38" y1="64" x2="86" y2="64"/>
+    <line x1="38" y1="80" x2="64" y2="80"/>
+  </g>
+  <path d="M14 100v14a6 6 0 0 0 6 6h88a6 6 0 0 0 6-6v-14" fill="none" stroke="#4d4d4d" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M98 56v36M84 80l14 14 14-14" fill="none" stroke="#d9822b" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

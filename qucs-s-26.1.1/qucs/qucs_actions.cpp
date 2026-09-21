@@ -55,6 +55,9 @@
 #include "misc.h"
 #include "messagedock.h"
 #include "erc.h"
+#include <QSet>
+#include <memory>
+#include <algorithm>
 #include "module.h"
 #include "mouseactions.h"
 #include "node.h"
@@ -878,11 +881,56 @@ void QucsApp::slotCheckSchematic() {
   checkSchematic(doc, true);
 }
 
+void QucsApp::slotCheckHierarchy() {
+  Schematic *doc = currentSchematic();
+  if (doc == nullptr) {
+    QMessageBox::information(this, tr("Check Schematic"), tr("Not a schematic tab!"));
+    return;
+  }
+  QList<qucs_s::erc::Issue> all = qucs_s::erc::check(doc);
+  QSet<QString> visited{doc->getDocName()};
+  QStringList todo = qucs_s::erc::subcircuitFiles(doc);
+  while (!todo.isEmpty()) {
+    const QString file = todo.takeFirst();
+    if (visited.contains(file)) continue;
+    visited.insert(file);
+    // An open document as it is (unsaved changes included), the others
+    // read from disk and dropped again.
+    Schematic *sub = nullptr;
+    std::unique_ptr<Schematic> loaded;
+    if (QucsDoc *open = findDoc(file))
+      sub = dynamic_cast<Schematic *>(open);
+    if (sub == nullptr) {
+      loaded.reset(new Schematic(nullptr, file));
+      if (!loaded->load()) {
+        all << qucs_s::erc::Issue{qucs_s::erc::Severity::Error,
+                                  tr("the subcircuit file could not be loaded"), QPoint(), QString(), file};
+        continue;
+      }
+      sub = loaded.get();
+    }
+    all += qucs_s::erc::check(sub);
+    todo += qucs_s::erc::subcircuitFiles(sub);
+  }
+  // Errors first, whichever file they are in.
+  std::stable_sort(all.begin(), all.end(), [](const qucs_s::erc::Issue &a, const qucs_s::erc::Issue &b) {
+    return a.severity == qucs_s::erc::Severity::Error && b.severity != qucs_s::erc::Severity::Error;
+  });
+  messageDock->showProblems(doc, all, true);
+}
+
 void QucsApp::slotLocateProblem(int index) {
   Schematic *doc = messageDock->problemsDocument();
   const QList<qucs_s::erc::Issue> &issues = messageDock->issues();
   if (doc == nullptr || index < 0 || index >= issues.size()) return;
   const qucs_s::erc::Issue &issue = issues.at(index);
+  // An issue of a subcircuit: open that file (a tab it already has, or a
+  // new one) and look there.
+  if (!issue.file.isEmpty() && issue.file != doc->getDocName()) {
+    if (!gotoPage(issue.file)) return;
+    doc = currentSchematic();
+    if (doc == nullptr) return;
+  }
   // The document in front, the component selected, the place in the middle.
   if (DocumentTab->indexOf(doc) < 0) activatePaneOf(doc);
   if (DocumentTab->currentWidget() != doc) {

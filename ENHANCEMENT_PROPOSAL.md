@@ -585,7 +585,14 @@ existing demand.
   the 217 shipped examples (`QUCS_ERC_SURVEY=1 test_erc`) finds no
   errors; its warnings are real open pins and ends. `qucs/tests/test_erc`
   covers every check, a clean example, the action, the tab, the click and
-  the pre-flight.
+  the pre-flight. `Issue::file` names the schematic of a finding;
+  `QucsApp::slotCheckHierarchy()` walks `erc::subcircuitFiles()` (Sub
+  components) breadth-first with a visited set, using open documents and
+  loading the rest off-screen, and `slotLocateProblem()` opens another
+  file's issue with `gotoPage()`. The *Hierarchy and Netlist* toolbar
+  (right of the simulation toolbar) carries `intoH`, `popH`, this check,
+  *Generate Netlist* and *Save netlist* (two new icons,
+  `bitmaps/svg/netlist_*.svg`).
 - **Unit-aware property editor**: a single inline editor that understands
   SI suffixes, validates against the property's `spicecompat::Simulator`
   mask, and shows the description tooltip — replacing the two-column

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- a netlist page with a "make it" arrow -->
+  <path d="M26 8h50l24 24v88H26z" fill="#fdfdfd" stroke="#4d4d4d" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M76 8v24h24" fill="#e6e6e6" stroke="#4d4d4d" stroke-width="4" stroke-linejoin="round"/>
+  <g stroke="#2b5fb8" stroke-width="6" stroke-linecap="round">
+    <line x1="38" y1="48" x2="72" y2="48"/>
+    <line x1="38" y1="64" x2="86" y2="64"/>
+    <line x1="38" y1="80" x2="64" y2="80"/>
+    <line x1="38" y1="96" x2="80" y2="96"/>
+  </g>
+  <circle cx="98" cy="96" r="24" fill="#2e9e3e" stroke="#1b5e25" stroke-width="3"/>
+  <path d="M84 96h20M96 84l12 12-12 12" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

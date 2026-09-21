@@ -733,7 +733,7 @@ void QucsApp::initActions() {
       tr("Calculate DC bias\n\nCalculates DC bias and shows it"));
   connect(dcbias, SIGNAL(triggered()), SLOT(slotDCbias()));
 
-  save_netlist = new QAction(tr("Save netlist"), this);
+  save_netlist = new QAction(QIcon(":/bitmaps/svg/netlist_save.svg"), tr("Save netlist"), this);
   save_netlist->setStatusTip(tr("Save netlist"));
   save_netlist->setWhatsThis(tr(QString::fromUtf8("Save netlist to %1")
                                     .arg(a_netlist2Console ? "console" : "file")
@@ -741,7 +741,14 @@ void QucsApp::initActions() {
                                     .constData()));
   connect(save_netlist, SIGNAL(triggered()), SLOT(slotSaveNetlist()));
 
-  generateNetlist = new QAction(tr("Generate Netlist"), this);
+  checkHierarchyAction = new QAction(QIcon(":/bitmaps/svg/ok_apply.svg"), tr("Check Schematic and Subcircuits"), this);
+  checkHierarchyAction->setStatusTip(tr("Checks the schematic and every subcircuit it uses"));
+  checkHierarchyAction->setWhatsThis(
+      tr("Check Schematic and Subcircuits\n\nRuns the schematic check on the schematic in front "
+         "and on every subcircuit it uses, at any depth; the Problems tab names the file of each finding"));
+  connect(checkHierarchyAction, &QAction::triggered, this, &QucsApp::slotCheckHierarchy);
+
+  generateNetlist = new QAction(QIcon(":/bitmaps/svg/netlist_generate.svg"), tr("Generate Netlist"), this);
   generateNetlist->setStatusTip(tr("Writes the netlist into the schematic's Scratch folder and opens it"));
   generateNetlist->setWhatsThis(
       tr("Generate Netlist\n\nCreates the SPICE netlist of the schematic as a simulation would, "
@@ -1038,6 +1045,7 @@ void QucsApp::initMenuBar() {
   simMenu->addAction(dpl_sch);
   simMenu->addAction(dcbias);
   simMenu->addAction(checkSchematicAction);
+  simMenu->addAction(checkHierarchyAction);
   simMenu->addAction(showMsg);
   simMenu->addAction(showNet);
   simMenu->addAction(save_netlist);
@@ -1221,6 +1229,18 @@ void QucsApp::initToolBar() {
   simulateToolbar->addAction(dpl_sch);
   simulateToolbar->addAction(setMarker);
   simulateToolbar->addAction(setDiagramLimits);
+
+  // Hierarchy and netlist, to the right of the simulation toolbar: into
+  // the selected subcircuit and back up, the check of the whole
+  // hierarchy, the netlist into Scratch or to a file of one's choosing.
+  hierarchyToolbar = new QToolBar(tr("Hierarchy and Netlist"));
+  this->addToolBar(hierarchyToolbar);
+  hierarchyToolbar->addAction(intoH);
+  hierarchyToolbar->addAction(popH);
+  hierarchyToolbar->addSeparator();
+  hierarchyToolbar->addAction(checkHierarchyAction);
+  hierarchyToolbar->addAction(generateNetlist);
+  hierarchyToolbar->addAction(save_netlist);
 }
 
 // ----------------------------------------------------------
@@ -1660,6 +1680,9 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("Sim.GenerateNetlist", "Simulation", "Generate Netlist", generateNetlist,
                       QKeySequence());
+
+  mgr.registerCommand("Sim.CheckHierarchy", "Simulation", "Check Schematic and Subcircuits",
+                      checkHierarchyAction, QKeySequence());
 
   mgr.registerCommand("Sim.ResetLimits", "Simulation", "Reset Diagram Limits",
                       resetDiagramLimits,
