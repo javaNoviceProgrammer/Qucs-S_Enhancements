@@ -360,6 +360,17 @@ existing demand.
   `QucsApp::fileType()`). Scratch files are classified first, so an image
   written by a simulation stays under Scratch. `test_project_scratch`
   covers the order, the listing and the suffixes.
+- *Done:* **`.OPTIONS` first line dropped** (reported with a screenshot
+  of the editor). `SpiceOptions::getExpression()` looped from index 1
+  and the loader keeps index 0 for `XyceOptionPackage`, while
+  `ComponentDialog::writeEquation()` rebuilt `Props` from the lines, so
+  an edited section had an option at index 0. Now: the netlister takes
+  the package by name; the dialog shows the package in a `QLineEdit` and
+  puts it back first on Apply (DEVICE when empty; a `XyceOptionPackage =`
+  line typed anyway is taken as the package); `SpiceOptions::load()`
+  (`Component::load` made virtual) repairs a file whose first value
+  contains `=`. `qucs/tests/test_spice_options` covers the shipped
+  layout, an edited list, both file forms and the dialog round trip.
 - *Done:* **Generate Netlist** (`Sim.GenerateNetlist`, *Simulation*
   menu): `SimulationRun::writeNetlist(file)` writes the ngspice / SPICE
   OPUS / Xyce netlist without a dialog; `QucsApp::slotGenerateNetlist()`
