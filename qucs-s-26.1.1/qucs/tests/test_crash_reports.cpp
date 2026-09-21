@@ -22,6 +22,7 @@
 #include "misc.h"
 #include "paintings/portsymbol.h"
 #include "extsimkernels/spicecompat.h"
+#include "isolated_settings.h"
 
 class TestCrashReports : public QObject
 {
@@ -75,6 +76,7 @@ private slots:
     void initTestCase()
     {
         QVERIFY(dir.isValid());
+        useIsolatedSettings(dir.filePath("settings"));
         QucsSettings.DefaultSimulator = spicecompat::simNotSpecified;
         // QucsApp lists the simulators it can find and puts up a modal
         // error box when there is none: name one that exists.

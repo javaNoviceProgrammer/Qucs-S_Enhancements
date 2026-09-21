@@ -41,7 +41,7 @@ VersionTriplet QucsVersion; // Qucs version string
 // Loads the settings file and stores the settings.
 bool loadSettings()
 {
-    QSettings settings("qucs","qucs_s");
+    QucsSettingsFile settings;
 
     QucsSettings.DefaultSimulator = _settings::Get().item<int>("DefaultSimulator");
     QucsSettings.firstRun = _settings::Get().item<bool>("firstRun");
@@ -114,6 +114,7 @@ bool loadSettings()
     QucsSettings.fullTraceName = _settings::Get().item<bool>("fullTraceName");
     QucsSettings.alwaysPrefixDataset = _settings::Get().item<bool>("alwaysPrefixDataset");
     QucsSettings.ContentTreeView = _settings::Get().item<bool>("ContentTreeView");
+    QucsSettings.SimulationConsoleDock = _settings::Get().item<bool>("SimulationConsoleDock");
     QucsSettings.RecentProjects = _settings::Get().item<QString>("RecentProjects").split("*", Qt::SkipEmptyParts);
     QucsSettings.RecentDocs = _settings::Get().item<QString>("RecentDocs").split("*", Qt::SkipEmptyParts);
     QucsSettings.numRecentDocs = QucsSettings.RecentDocs.count();
@@ -139,7 +140,7 @@ bool loadSettings()
 // Saves the settings in the settings file.
 bool saveApplSettings()
 {
-    QSettings settings ("qucs","qucs_s");
+    QucsSettingsFile settings;
 
     // Note: It is not really necessary to take the following reference, but it
     // arguably makes the code slightly cleaner - thoughts? To be clear:
@@ -190,6 +191,7 @@ bool saveApplSettings()
     qs.setItem<bool>("fullTraceName",QucsSettings.fullTraceName);
     qs.setItem<bool>("alwaysPrefixDataset",QucsSettings.alwaysPrefixDataset);
     qs.setItem<bool>("ContentTreeView",QucsSettings.ContentTreeView);
+    qs.setItem<bool>("SimulationConsoleDock",QucsSettings.SimulationConsoleDock);
 
     // Copy the list of directory paths in which Qucs should
     // search for subcircuit schematics from qucsPathList

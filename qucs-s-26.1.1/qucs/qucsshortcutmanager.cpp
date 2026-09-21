@@ -29,6 +29,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
+#include "settings.h"
 
 // ----------------------------------------------------------------------------
 // QucsCommand Implementation
@@ -388,7 +389,7 @@ bool QucsShortcutManager::loadFromFile(const QString &filename) {
 }
 
 void QucsShortcutManager::saveToSettings() const {
-  QSettings settings("qucs", "qucs_s");
+  QucsSettingsFile settings;
   settings.beginGroup("Shortcuts");
 
   for (const auto &cmd : m_commands) {
@@ -401,7 +402,7 @@ void QucsShortcutManager::saveToSettings() const {
 }
 
 void QucsShortcutManager::loadFromSettings() {
-  QSettings settings("qucs", "qucs_s");
+  QucsSettingsFile settings;
   settings.beginGroup("Shortcuts");
 
   const QStringList keys = settings.allKeys();

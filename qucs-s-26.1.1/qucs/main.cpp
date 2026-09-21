@@ -29,6 +29,7 @@
 #include <iostream>
 
 #include <QApplication>
+#include <QSettings>
 #include <QString>
 #include <QStringList>
 //#include <QTextCodec>
@@ -696,6 +697,15 @@ int main(int argc, char *argv[])
     QString QucsWorkdirPath = QDir::homePath()+QDir::toNativeSeparators ("/QucsWorkspace");
     QucsSettings.qucsWorkspaceDir.setPath(QucsWorkdirPath);
     QucsSettings.QucsWorkDir.setPath(QucsSettings.qucsWorkspaceDir.canonicalPath());
+
+    // QUCS_SETTINGS_DIR=<dir>: this run keeps its settings in an INI file
+    // under <dir> instead of the user's own store - for trying a build out
+    // without touching one's preferences. Before the first use of the store.
+    const QString settingsDir = qEnvironmentVariable("QUCS_SETTINGS_DIR");
+    if (!settingsDir.isEmpty()) {
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir);
+    }
 
     // load existing settings (if any)
     loadSettings();

@@ -3965,7 +3965,7 @@ void QucsApp::updatePathList(QStringList newPathList)
 
 void QucsApp::updateRecentFilesList(QString s)
 {
-  QSettings* settings = new QSettings("qucs","qucs_s");
+  QSettings* settings = new QucsSettingsFile;
   QucsSettings.RecentDocs.removeAll(s);
   QucsSettings.RecentDocs.prepend(s);
   if (QucsSettings.RecentDocs.size() > MaxRecentFiles) {
@@ -3978,7 +3978,7 @@ void QucsApp::updateRecentFilesList(QString s)
 
 void QucsApp::updateRecentProjectsList()
 {
-  QSettings* settings = new QSettings("qucs","qucs_s");
+  QSettings* settings = new QucsSettingsFile;
   settings->setValue("RecentProjects",QucsSettings.RecentProjects.join("*"));
   delete settings;
   slotUpdateRecentProjects();
@@ -3986,7 +3986,7 @@ void QucsApp::updateRecentProjectsList()
 
 void QucsApp::updateRecentProjectsList(QString pathToProj)
 {
-  QSettings* settings = new QSettings("qucs","qucs_s");
+  QSettings* settings = new QucsSettingsFile;
   QucsSettings.RecentProjects.removeAll(pathToProj);
   QucsSettings.RecentProjects.prepend(pathToProj);
   if (QucsSettings.RecentProjects.size() > MaxRecentFiles) {
@@ -4020,6 +4020,7 @@ void QucsApp::slotSimSettings()
     SetDlg->exec();
     delete SetDlg;
     fillSimulatorsComboBox();
+    simConsole->applyHostSetting();   // dock or window, as chosen
 }
 
 void QucsApp::slotSimulateWithSpice()
@@ -4168,7 +4169,7 @@ void QucsApp::slotAfterSpiceSimulation(SimulationRun *run)
     Schematic *sch = run->schematic();
     if (sch == nullptr) return;
     if (TuningMode && run->hasError()) {
-        simConsole->showDock();
+        simConsole->showConsole();
         return;
     }
     if (run->wasSimulated()) {

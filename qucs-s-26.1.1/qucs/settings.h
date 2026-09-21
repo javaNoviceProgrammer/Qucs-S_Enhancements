@@ -3,7 +3,22 @@
 #include <QSettings>
 #include <qucs.h>
 
-class settingsManager : public QSettings
+/*!
+ * \brief The application's settings store, "qucs"/"qucs_s", opened the way
+ *        every part of the application should open it: in
+ *        QSettings::defaultFormat(), the platform's native store unless the
+ *        process chose another - the tests do, to keep their runs out of
+ *        the user's own preferences.
+ */
+class QucsSettingsFile : public QSettings
+{
+public:
+  explicit QucsSettingsFile(QObject* parent = nullptr)
+    : QSettings(QSettings::defaultFormat(), QSettings::UserScope,
+                QStringLiteral("qucs"), QStringLiteral("qucs_s"), parent) {}
+};
+
+class settingsManager : public QucsSettingsFile
 { 
     // Q_OBJECT
 

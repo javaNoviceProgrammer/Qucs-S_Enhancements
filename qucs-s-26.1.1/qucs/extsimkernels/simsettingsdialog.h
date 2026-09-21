@@ -54,6 +54,11 @@ private:
     QPushButton *a_btnSetXyce;
     QPushButton *a_btnSetQucsator;
 
+    // Where the simulator's output goes: the Simulation dock in the main
+    // window, or a separate window (QucsSettings.SimulationConsoleDock).
+    QRadioButton *a_rbConsoleDock;
+    QRadioButton *a_rbConsoleWindow;
+
 public:
     explicit SimSettingsDialog(QWidget *parent = 0);
 

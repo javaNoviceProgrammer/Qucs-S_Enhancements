@@ -47,7 +47,9 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
     a_btnSetNgspice(new QPushButton(tr("Select ..."))),
     a_btnSetSpOpus(new QPushButton(tr("Select ..."))),
     a_btnSetXyce(new QPushButton(tr("Select ..."))),
-    a_btnSetQucsator(new QPushButton(tr("Select ...")))
+    a_btnSetQucsator(new QPushButton(tr("Select ..."))),
+    a_rbConsoleDock(new QRadioButton(tr("in the Simulation dock of the main window"))),
+    a_rbConsoleWindow(new QRadioButton(tr("in a separate window")))
 {
     qDebug()<<QucsSettings.DefaultSimulator;
 
@@ -71,6 +73,13 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
     a_cbxCompatMode->setCurrentIndex(compat_mode);
 
     QVBoxLayout *top = new QVBoxLayout;
+    QTabWidget *tabs = new QTabWidget(this);
+    top->addWidget(tabs);
+
+    // Tab 1: the simulators.
+    QWidget *simulatorsTab = new QWidget(tabs);
+    QVBoxLayout *simulatorsLayout = new QVBoxLayout(simulatorsTab);
+    tabs->addTab(simulatorsTab, tr("Simulators"));
 
     QGroupBox *gbp1 = new QGroupBox(this);
     gbp1->setTitle(tr("SPICE settings"));
@@ -105,7 +114,7 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
     top2->addWidget(a_edtSpopusSimParam);
 
     gbp1->setLayout(top2);
-    top->addWidget(gbp1);
+    simulatorsLayout->addWidget(gbp1);
 
     QGroupBox *gbp2 = new QGroupBox;
     gbp2->setTitle(tr("Qucsator settings"));
@@ -117,7 +126,34 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
     top3->addLayout(h9);
     gbp2->setLayout(top3);
 
-    top->addWidget(gbp2);
+    simulatorsLayout->addWidget(gbp2);
+    simulatorsLayout->addStretch(1);
+
+    // Tab 2: the simulation console - a dock, or the classic window.
+    QWidget *consoleTab = new QWidget(tabs);
+    QVBoxLayout *consoleLayout = new QVBoxLayout(consoleTab);
+    tabs->addTab(consoleTab, tr("Simulation console"));
+
+    QGroupBox *gbp3 = new QGroupBox(tr("Show the simulator's output"), consoleTab);
+    QVBoxLayout *consoleChoice = new QVBoxLayout;
+    consoleChoice->addWidget(a_rbConsoleDock);
+    consoleChoice->addWidget(a_rbConsoleWindow);
+    gbp3->setLayout(consoleChoice);
+    consoleLayout->addWidget(gbp3);
+    a_rbConsoleDock->setObjectName(QStringLiteral("rbConsoleDock"));
+    a_rbConsoleWindow->setObjectName(QStringLiteral("rbConsoleWindow"));
+    if (QucsSettings.SimulationConsoleDock)
+        a_rbConsoleDock->setChecked(true);
+    else
+        a_rbConsoleWindow->setChecked(true);
+    QLabel *consoleNote = new QLabel(
+        tr("The dock shares the bottom of the main window with the build messages "
+           "and can be shown or hidden with View > Simulation Console. "
+           "The window is the simulation dialog of earlier versions; it no longer "
+           "blocks the application while the simulator runs."), consoleTab);
+    consoleNote->setWordWrap(true);
+    consoleLayout->addWidget(consoleNote);
+    consoleLayout->addStretch(1);
 
     QHBoxLayout *h3 = new QHBoxLayout;
     h3->addWidget(a_btnOK);
@@ -143,6 +179,7 @@ void SimSettingsDialog::slotApply()
     qs.setItem<QString>("NgspiceParams", a_edtNgspiceSimParam->text());
     qs.setItem<QString>("XyceParams", a_edtXyceSimParam->text());
     qs.setItem<QString>("SpopusParams", a_edtSpopusSimParam->text());
+    QucsSettings.SimulationConsoleDock = a_rbConsoleDock->isChecked();
     accept();
     saveApplSettings();
   }
