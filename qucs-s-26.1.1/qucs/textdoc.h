@@ -90,6 +90,7 @@ public:
   bool loadSettings (void);
   bool saveSettings (void);
   void refreshLanguage(void);
+  void applyDocumentColors();
 
   QMenu* createStandardContextMenu();
 
