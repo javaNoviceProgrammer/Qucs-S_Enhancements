@@ -109,6 +109,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   dir* (a `cd` / `os.chdir` to the open project). The interpreter is the
   one under *Application Settings → Locations → Python Path*, or `python3`
   on `PATH` when that is empty.
+- **The environment of your shell, even when started from the Finder or
+  the Dock**: a desktop start gets a bare environment (`PATH` without
+  Homebrew or `~/bin`, none of your exports), so simulators were not
+  found and variables like `SPICE_LIB_DIR` were missing. At start Qucs-S
+  now asks your login shell (`$SHELL -l -i`, so both the profile and the
+  rc file count; fish and zsh-that-starts-fish included) for its
+  environment and brings in what the process lacks — `PATH` is merged in
+  the shell's order, with anything given on the command line kept in
+  front; what the process already has is never replaced. It reports what
+  it added on stderr. `QUCS_NO_SHELL_ENV=1` turns it off. Windows starts
+  already carry the user's environment.
 - **Content panel keeps itself current**: every few seconds it looks at
   the project's files and, only when one came, went or changed — saved by
   Qucs, written by a script in the Terminal dock, copied in by hand —

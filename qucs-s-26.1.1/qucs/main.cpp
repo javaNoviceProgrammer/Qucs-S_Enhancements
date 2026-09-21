@@ -53,6 +53,7 @@
 #include "misc.h"
 #include "autosave.h"
 #include "crashhandler.h"
+#include "shellenvironment.h"
 
 
 #include "extsimkernels/ngspice.h"
@@ -1046,6 +1047,14 @@ int main(int argc, char *argv[])
             return doPrint(inputfile, outputfile, page, dpi, color, orientation);
         }
     }
+
+    // Started from the Finder, the Dock or a desktop menu, the process has
+    // a bare environment: bring in the login shell's (PATH, exports), as
+    // a terminal would have given, before anything looks for a program.
+    // QUCS_NO_SHELL_ENV=1 leaves the environment as it is.
+    const QStringList imported = qucs_s::shellenv::importLoginShellEnvironment();
+    if (!imported.isEmpty())
+        qInfo().noquote() << "environment from the login shell:" << imported.join(QLatin1String(", "));
 
     // From here on a crash writes a report and rescues modified documents.
     const bool crashedLastTime = qucs_s::crash::markSessionStart();
