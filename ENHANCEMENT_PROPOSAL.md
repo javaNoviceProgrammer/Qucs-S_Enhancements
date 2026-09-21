@@ -345,11 +345,15 @@ existing demand.
   ask it; `tempFilesDir` (qucsator, `log.txt`) is pointed at the same
   folder while the project is open. The Content panel lists `Scratch/`
   under its own last category, named relative to the folder, and refreshes
-  after a simulation (not per tuner step). Release builds still delete the
-  raw simulator output after conversion, as upstream does, so Scratch
-  typically shows the netlist and the log.
+  after a simulation (not per tuner step). The raw simulator output is no
+  longer deleted after conversion (upstream did that in release builds);
+  it is still removed before the next run of the same netlist.
 - *Done:* **File types.** `.cir/.ckt/.sp` are Qucs text documents
-  (`QucsApp::textDocumentSuffixes()`); a File Types entry wins over the
+  (`QucsApp::textDocumentSuffixes()`, always the built-in editor); plain
+  text formats (`QucsApp::textFileSuffixes()`: txt, py, md, json, csv,
+  shell and C/C++ sources, SPICE side files, ngspice raw plots, the
+  per-simulator datasets, ...) go through `editFile()`, i.e. the editor
+  from the settings; a File Types entry wins over the
   defaults for anything but schematics/displays/symbols; the program
   `qucs-editor` (`QucsApp::QucsEditorProgram`, a button in the dialog)
   means the built-in editor; the program is everything after the first

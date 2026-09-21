@@ -31,6 +31,7 @@ class KernelProbe : public Ngspice
 public:
     using Ngspice::Ngspice;
     QString workdir() const { return a_workdir; }
+    void setOutputs(const QStringList& files) { a_output_files = files; }
 };
 
 QStringList childrenOf(QStandardItem* parent)
@@ -111,6 +112,32 @@ private slots:
         QCOMPARE(misc::scratchDir(), QucsSettings.S4Qworkdir);
         QCOMPARE(QucsSettings.tempFilesDir.absolutePath(),
                  QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
+    }
+
+    // The raw simulator output is left in place after the conversion to a
+    // dataset (it used to be deleted in release builds), so the Scratch
+    // category can show it.
+    void rawOutputStaysAfterConversion()
+    {
+        const QString work = dir.filePath("keep");
+        QVERIFY(QDir().mkpath(work));
+        QByteArray raw = "Title: t\nDate: d\nPlotname: AC Analysis\nFlags: complex\nNo. Variables: 2\nNo. Points: 1\n"
+                         "Variables:\n\t0\tfrequency\tfrequency\n\t1\tv(out)\tvoltage\nBinary:\n";
+        QDataStream s(&raw, QIODevice::Append);
+        s.setByteOrder(QDataStream::LittleEndian);
+        s.setFloatingPointPrecision(QDataStream::DoublePrecision);
+        for (double v : {1.0, 0.0, 0.5, 0.25}) s << v;
+        write(work + "/spice4qucs.ac.plot", raw);
+
+        Module::registerModules();   // a QucsApp's destructor unregisters them
+        Schematic sch(nullptr, QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"));
+        QVERIFY(sch.load());
+        KernelProbe kernel(&sch);
+        kernel.setWorkdir(work);
+        kernel.setOutputs({"spice4qucs.ac.plot"});
+        kernel.convertToQucsData(work + "/out.dat");
+        QVERIFY(QFileInfo::exists(work + "/out.dat"));
+        QVERIFY(QFileInfo::exists(work + "/spice4qucs.ac.plot"));
     }
 
     // The Content panel: everything under Scratch/ is listed as "Scratch",

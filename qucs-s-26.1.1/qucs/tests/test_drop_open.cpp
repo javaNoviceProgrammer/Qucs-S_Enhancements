@@ -95,7 +95,33 @@ private slots:
         write(project + "/netlist.cir", "* spice\n.end\n");
         write(project + "/params.sp", "* spice\n.end\n");
         write(project + "/readme.rst", "Read me\n");
+        write(project + "/script.py", "print('hi')\n");
+        write(project + "/data.json", "{}\n");
         QucsSettings.QucsWorkDir.setPath(project);
+    }
+
+    // Plain text formats (.txt, .py, .json, ...) open in the text editor
+    // from the settings, the built-in one by default; Qucs' own text
+    // documents always in the built-in one.
+    void textFormatsOpenInTheTextEditor()
+    {
+        for (const char* s : {"txt", "py", "apml", "md", "json", "csv", "sh", "c", "plot", "ngspice"})
+            QVERIFY2(QucsApp::textFileSuffixes().contains(s), s);
+        for (const char* s : {"va", "cir", "sp", "ckt", "v", "vhdl", "m", "net"})
+            QVERIFY2(QucsApp::textDocumentSuffixes().contains(s), s);
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.openDroppedFiles({project + "/notes.txt", project + "/script.py", project + "/data.json"});
+        QTRY_COMPARE(app.DocumentTab->count(), 3);
+        QCOMPARE(openDocs(app), QStringList({"notes.txt", "script.py", "data.json"}));
+        for (int i = 0; i < 3; ++i) QVERIFY(QucsApp::isTextDocument(app.DocumentTab->widget(i)));
+        app.closeAllFiles();
+
+        // ...and by the Content panel's double-click path as well, which
+        // used to hand them to the system.
+        app.openFileFromProjectView(QFileInfo(project + "/script.py"), QString());
+        QCOMPARE(openDocs(app), QStringList({"script.py"}));
+        app.closeAllFiles();
     }
 
     // A program that records what it was asked to open, standing in for a
@@ -166,7 +192,11 @@ private slots:
         QVERIFY(m->flags(m->index(0, 0, va)) & Qt::ItemIsDragEnabled);    // files can
 
         view->selectionModel()->select(m->index(0, 0, va), QItemSelectionModel::Select | QItemSelectionModel::Rows);
-        view->selectionModel()->select(m->index(0, 0, others), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        QModelIndex notes;
+        for (int r = 0; r < m->rowCount(others); ++r)
+            if (m->index(r, 0, others).data().toString() == "notes.txt") notes = m->index(r, 0, others);
+        QVERIFY(notes.isValid());
+        view->selectionModel()->select(notes, QItemSelectionModel::Select | QItemSelectionModel::Rows);
         QList<QUrl> urls = view->selectedFileUrls();
         std::sort(urls.begin(), urls.end());
         QCOMPARE(urls, QList<QUrl>({QUrl::fromLocalFile(project + "/models/model.va"),

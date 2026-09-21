@@ -1568,9 +1568,9 @@ void AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
                              tr("Failed to create dataset file ") + qucs_dataset + "\n"
                              + tr("Check write permission of the directory ") + inf.path());
     }
-#ifdef NDEBUG
-    removeAllSimulatorOutputs();
-#endif
+    // The raw simulator output stays in the Scratch folder (it is removed
+    // before the next run of the same netlist), so it can be looked at from
+    // the Content panel.
 }
 
 /*!

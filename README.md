@@ -28,18 +28,25 @@ Using Claude Code to enhance the Qucs-S circuit simulator interface.
   ngspice loads all of them, wherever they are in the project, and Build
   All compiles the `.va` files wherever they are.
 - **A Scratch folder per project**: the temporary files of a simulation
-  (netlist, simulator output, log) go to `Scratch/` inside the open project
-  instead of the user's cache directory. The folder is created with the
-  project (or when an older project is opened) and the Content panel lists
-  its contents under a *Scratch* category below *Others*. Headless runs
-  (`-n`, `--run`) keep using the simulator work directory from the settings.
+  (netlist, the raw simulator output such as `spice4qucs.ac1.plot`, log) go
+  to `Scratch/` inside the open project instead of the user's cache
+  directory, and stay there until the next run (upstream's release builds
+  deleted the raw output right after converting it). The folder is created
+  with the project (or when an older project is opened) and the Content
+  panel lists its contents under a *Scratch* category below *Others*.
+  Headless runs (`-n`, `--run`) keep using the simulator work directory
+  from the settings.
 - **Text editor defaults and file types**: `.cir`, `.ckt` and `.sp` files
   open in the built-in text editor like `.va` and the other Qucs text
-  documents. Under *Application Settings → File Types* a suffix can be
-  registered with the program `qucs-editor` (there is a button for it) to
-  open it in the built-in editor; a suffix registered with any program now
-  takes precedence over the defaults, and a program path may contain
-  slashes (upstream cut it at the first one).
+  documents; plain-text formats (`.txt`, `.py`, `.md`, `.json`, `.csv`,
+  `.sh`, C/C++ sources, SPICE `.lib/.inc/.mod`, ngspice `.plot` files, the
+  per-simulator datasets, ... — see `QucsApp::textFileSuffixes()`) open in
+  the text editor from the settings, the built-in one by default. Under
+  *Application Settings → File Types* a suffix can be registered with the
+  program `qucs-editor` (there is a button for it) to open it in the
+  built-in editor; a suffix registered with any program takes precedence
+  over the defaults, and a program path may contain slashes (upstream cut
+  it at the first one).
 - **Drag and drop from the Content panel**: drag one or more files onto the
   document area (a schematic, a text document, the tab bar) to open them —
   schematics, data displays and symbols in their views, Verilog-A and other
