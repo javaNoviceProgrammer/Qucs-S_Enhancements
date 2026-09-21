@@ -435,7 +435,14 @@ jobs:
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
             TITLE="Qucs-S enhanced ${TAG}"
+            # The notes: the annotated tag's message, when it has one, with
+            # the generated list of changes appended.
             EXTRA=(--generate-notes)
+            git fetch --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
+            if [ "$(git cat-file -t "$TAG" 2>/dev/null)" = "tag" ]; then
+              git tag -l --format='%(contents)' "$TAG" > tag-notes.md
+              if [ -s tag-notes.md ]; then EXTRA+=(--notes-file tag-notes.md); fi
+            fi
           else
             TITLE="Continuous build (${GITHUB_SHA::7})"
             EXTRA=(--prerelease --notes "Automated build of commit ${GITHUB_SHA} from ${GITHUB_REF_NAME}. Replaced on every publish; use a tag for a permanent release.")

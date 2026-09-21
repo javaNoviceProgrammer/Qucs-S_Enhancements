@@ -12,6 +12,10 @@ with Claude Code, reviewed and driven by a human.
 
 Ready-made bundles for macOS, Linux and Windows are on the
 [Releases page](https://github.com/javaNoviceProgrammer/Qucs-S_Enhancements/releases).
+This build calls itself **26.1.2** (`qucs-s-26.1.1/VERSION`; the source
+directory keeps the name of the upstream version it started from). Documents
+it saves say `<Qucs Schematic 26.1.2>`; upstream 26.1.1 asks before opening a
+file from a newer version unless *Load documents from future versions* is on.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how the upstream code base is put together
 - [ENHANCEMENT_PROPOSAL.md](ENHANCEMENT_PROPOSAL.md) — crash root causes, the plan, and what has been done
@@ -24,10 +28,10 @@ Every release carries one bundle per platform, built by the
 
 | Platform | Bundle | Notes |
 |---|---|---|
-| macOS, Apple Silicon | `qucs-s-<ver>-<sha>-macos-apple-silicon.dmg` | ad-hoc signed, not notarised: on first launch right-click the app and choose *Open*, or `xattr -d com.apple.quarantine <app>` |
-| macOS, Intel | `qucs-s-<ver>-<sha>-macos-intel.dmg` | same |
-| Linux x86_64 | `qucs-s-<ver>-<sha>-linux-intel.AppImage` | `chmod +x` and run; needs FUSE 2 (`libfuse2`) or `--appimage-extract` |
-| Linux arm64 | `qucs-s-<ver>-<sha>-linux-arm.AppImage` | same |
+| macOS, Apple Silicon | `qucs-s-<ver>-macos-apple-silicon.dmg` | ad-hoc signed, not notarised: on first launch right-click the app and choose *Open*, or `xattr -d com.apple.quarantine <app>` |
+| macOS, Intel | `qucs-s-<ver>-macos-intel.dmg` | same |
+| Linux x86_64 | `qucs-s-<ver>-linux-intel.AppImage` | `chmod +x` and run; needs FUSE 2 (`libfuse2`) or `--appimage-extract` |
+| Linux arm64 | `qucs-s-<ver>-linux-arm.AppImage` | same |
 | Windows x64 | `...-windows-intel.zip` and `...-windows-intel-setup.exe` | ngspice is included |
 | Windows arm64 | `...-windows-arm.zip` and `...-windows-arm-setup.exe` | ngspice is included |
 
@@ -36,7 +40,8 @@ install it separately (`brew install ngspice`, `apt install ngspice`, …) and
 point *Application Settings → Locations* at it if it is not on `PATH`.
 
 The rolling **`continuous`** pre-release is replaced on every manual run of
-the workflow and follows `main`; tagged releases (`v*`) are permanent. A
+the workflow and follows `main` (its bundles carry the commit too:
+`qucs-s-<ver>-<sha>-...`); tagged releases (`v*`) are permanent. A
 `SHA256SUMS.txt` accompanies each release. Bundles live only on the Releases
 page — nothing built is committed to this repository (`bin/` is git-ignored;
 `scripts/fetch-binaries.sh` downloads a release into it).
@@ -359,8 +364,9 @@ fixed in WS1.1; it is blocking.
 Nothing either workflow builds goes into git: CI keeps logs as short-lived
 artifacts, and the Release workflow uploads the bundles as release assets
 only. A manual run publishes to the rolling `continuous` pre-release
-(replaced each time); a tag push (`git tag v26.1.1-1 && git push --tags`)
-publishes a permanent release named after the tag. All platforms, the ARM
+(replaced each time); a tag push (`git tag -a v26.1.2 && git push origin v26.1.2`)
+publishes a permanent release named after the tag, with the annotated tag's
+message as its notes and the generated change list below it. All platforms, the ARM
 ones included, are built by default; deselect any in the dispatch form, or
 set the repository variable `BUILD_ARM=false` to leave ARM out of tag builds.
 
@@ -378,7 +384,7 @@ directories (checksums verified; needs the GitHub CLI):
 
 ```bash
 scripts/fetch-binaries.sh              # latest "continuous" pre-release
-scripts/fetch-binaries.sh v26.1.1-1    # a tagged release
+scripts/fetch-binaries.sh v26.1.2      # a tagged release
 scripts/fetch-binaries.sh --run 12345  # artifacts of one workflow run
 ```
 
