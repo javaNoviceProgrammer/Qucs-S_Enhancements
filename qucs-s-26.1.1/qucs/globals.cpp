@@ -28,6 +28,7 @@
 #include "settings.h"
 #include "misc.h"
 #include "crashhandler.h"
+#include "apptheme.h"
 #include "extsimkernels/spicecompat.h"
 
 tQucsSettings QucsSettings;
@@ -124,6 +125,7 @@ bool loadSettings()
     if (QucsSettings.SimulationConsoleHost < tQucsSettings::SimConsoleDock
         || QucsSettings.SimulationConsoleHost > tQucsSettings::SimConsoleLegacyWindow)
         QucsSettings.SimulationConsoleHost = tQucsSettings::SimConsoleDock;
+    QucsSettings.Theme = qucs_s::apptheme::bounded(_settings::Get().item<int>("Theme"));
     QucsSettings.RecentProjects = _settings::Get().item<QString>("RecentProjects").split("*", Qt::SkipEmptyParts);
     QucsSettings.RecentDocs = _settings::Get().item<QString>("RecentDocs").split("*", Qt::SkipEmptyParts);
     QucsSettings.numRecentDocs = QucsSettings.RecentDocs.count();
@@ -204,6 +206,7 @@ bool saveApplSettings()
     qs.setItem<bool>("ContentAutoRefresh",QucsSettings.ContentAutoRefresh);
     qs.setItem<int>("ContentRefreshSeconds",QucsSettings.ContentRefreshSeconds);
     qs.setItem<int>("SimulationConsoleHost",QucsSettings.SimulationConsoleHost);
+    qs.setItem<int>("Theme",QucsSettings.Theme);
 
     // Copy the list of directory paths in which Qucs should
     // search for subcircuit schematics from qucsPathList

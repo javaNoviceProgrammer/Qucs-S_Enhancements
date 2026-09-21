@@ -43,6 +43,7 @@ qucs_add_test(test_simulation_console)
 qucs_add_test(test_process_console)
 qucs_add_test(test_panes)
 qucs_add_test(test_shell_environment)
+qucs_add_test(test_app_theme)
 
 # Not a test: the driver scripts/ci/fuzz-simout.py runs over damaged
 # simulator output (see simout_harness.cpp).

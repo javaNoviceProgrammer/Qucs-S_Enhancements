@@ -118,6 +118,9 @@ struct tQucsSettings {
   // its own, or the legacy window that blocks the application until closed.
   enum SimConsoleHost { SimConsoleDock = 0, SimConsoleWindow = 1, SimConsoleLegacyWindow = 2 };
   int SimulationConsoleHost = SimConsoleDock;
+  // The application's colours: the system's (0), dark (1) or light (2) -
+  // qucs_s::apptheme::Theme.
+  int Theme = 0;
 
   bool firstRun;
 };

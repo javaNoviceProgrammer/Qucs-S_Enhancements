@@ -25,6 +25,7 @@
 
 #include <cmath>
 #include "misc.h"
+#include "apptheme.h"
 #include "main.h"
 #include "qucs.h"
 #include "schematic.h"
@@ -63,11 +64,8 @@ QString misc::getWindowTitle()
 
 bool misc::isDarkTheme()
 {
-    QLabel *lbl = new QLabel("check dark");
-    int text_hsv = lbl->palette().color(QPalette::WindowText).value();
-    int bg_hsv = lbl->palette().color(QPalette::Window).value();
-    bool is_dark_theme = text_hsv > bg_hsv;
-    return is_dark_theme;
+    // The application's palette: the platform's, or the theme setting's.
+    return qucs_s::apptheme::isDark();
 }
 
 QString misc::getIconPath(const QString &file)

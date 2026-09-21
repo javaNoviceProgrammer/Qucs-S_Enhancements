@@ -35,6 +35,8 @@
 #include "textdoc.h"
 #include "schematic.h"
 #include "settings.h"
+#include "misc.h"
+#include "apptheme.h"
 
 #include <QWidget>
 #include <QLabel>
@@ -247,6 +249,17 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     if (index != -1) {
         StyleCombo->setCurrentIndex(index);
     }      
+
+    appAppearanceGrid->addWidget(new QLabel(tr("Theme:"), appSettingsTab), 10, 0);
+    ThemeCombo = new QComboBox(appSettingsTab);
+    ThemeCombo->addItem(tr("System"), qucs_s::apptheme::System);
+    ThemeCombo->addItem(tr("Dark"), qucs_s::apptheme::Dark);
+    ThemeCombo->addItem(tr("Light"), qucs_s::apptheme::Light);
+    ThemeCombo->setToolTip(tr("The colours of the application's windows, menus and dialogs: "
+                              "what the operating system shows, or dark or light regardless of it. "
+                              "The document background and grid colours above are separate settings."));
+    ThemeCombo->setCurrentIndex(ThemeCombo->findData(QucsSettings.Theme));
+    appAppearanceGrid->addWidget(ThemeCombo, 10, 1);
 
     t->addTab(appAppearanceTab, tr("Appearance"));
 
@@ -712,6 +725,7 @@ void QucsSettingsDialog::slotApply()
     }
 
     QString selectedStyle = StyleCombo->currentText();
+    bool styleChanged = false;
     if (_settings::Get().item<QString>("AppStyle") != selectedStyle )
     {
         QStyle* style = QStyleFactory::create(selectedStyle);
@@ -719,7 +733,17 @@ void QucsSettingsDialog::slotApply()
           QApplication::setStyle(style);
           _settings::Get().setItem<QString>("AppStyle",  selectedStyle);
           changed = true;  
+          styleChanged = true;
         } 
+    }
+
+    const int selectedTheme = ThemeCombo->currentData().toInt();
+    if (QucsSettings.Theme != selectedTheme || styleChanged)
+    {
+        QucsSettings.Theme = selectedTheme;
+        qucs_s::apptheme::apply(QucsSettings.Theme);   // after the style: a new style brings its own palette
+        QucsSettings.hasDarkTheme = misc::isDarkTheme();
+        changed = true;
     }
 
     // Update all open schematics with the new grid color.
@@ -1015,6 +1039,7 @@ void QucsSettingsDialog::slotDefaultValues()
     allowFlexibleWires->setChecked(_settings::Get().itemDefault<bool>("AllowFlexibleWires"));
     contentAutoRefresh->setChecked(true);
     contentRefreshSeconds->setValue(3);
+    ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));
     checkLoadFromFutureVersions->setChecked(false);
     checkAntiAliasing->setChecked(false);
     checkTextAntiAliasing->setChecked(true);
