@@ -78,7 +78,8 @@
 #include "dialogs/simmessage.h"
 #include "dialogs/exportdialog.h"
 #include "dialogs/displaydialog.h"
-#include "extsimkernels/externsimdialog.h"
+#include "extsimkernels/simulationrun.h"
+#include "simulationconsole.h"
 #include "dialogs/tuner.h"
 #include "octave_window.h"
 #include "printerwriter.h"
@@ -667,6 +668,8 @@ void QucsApp::initView()
   // ............................................
 
   messageDock = new MessageDock(this);
+  simConsole = new SimulationConsole(this);
+  connect(simConsole, &SimulationConsole::saveNetlistRequested, this, &QucsApp::slotSaveNetlist);
 
     // initial projects directory model
     a_homeDirModel = new QucsFileSystemModel(this);
@@ -4051,25 +4054,16 @@ void QucsApp::slotSimulateWithSpice()
             slotFileSaveAs();
             schematic->setShowBias(biasState);
         }
-        ExternSimDialog *SimDlg = new ExternSimDialog(schematic, false);
-        connect(SimDlg, SIGNAL(simulated(ExternSimDialog*)), this, SLOT(slotAfterSpiceSimulation(ExternSimDialog*)));
-        connect(SimDlg, SIGNAL(warnings()), this, SLOT(slotShowWarnings()));
-        connect(SimDlg, SIGNAL(success()), this, SLOT(slotResetWarnings()));
-
-        if (TuningMode || schematic->getShowBias() == 0)
-        {
-            SimDlg->slotStart();
-        }
-        else
-        {
-            SimDlg->exec();
-        }
-        /*disconnect(SimDlg, SIGNAL(simulated()), this, SLOT(slotAfterSpiceSimulation()));
-        disconnect(SimDlg, SIGNAL(warnings()), this, SLOT(slotShowWarnings()));
-        disconnect(SimDlg, SIGNAL(success()), this, SLOT(slotResetWarnings()));*/
-        /*if (SimDlg->wasSimulated && schematic->getSimOpenDpl())
-            if (schematic->getShowBias() < 1) slotChangePage(schematic->getDocName(), schematic->getDataDisplay());
-        delete SimDlg;*/
+        // The run goes to the simulation console (a dock, not a modal
+        // dialog): the console is brought up for an ordinary simulation,
+        // left alone for DC bias display and tuner steps.
+        SimulationRun *run = simConsole->startRun(schematic, !TuningMode && schematic->getShowBias() != 0);
+        if (run == nullptr)
+            return;   // another simulation is still running; the console says so
+        connect(run, &SimulationRun::simulated, this, &QucsApp::slotAfterSpiceSimulation);
+        connect(run, &SimulationRun::warnings, this, &QucsApp::slotShowWarnings);
+        connect(run, &SimulationRun::success, this, &QucsApp::slotResetWarnings);
+        run->start();
     }
     else
     {
@@ -4096,8 +4090,8 @@ void QucsApp::slotSaveNetlist()
         Schematic* schematic(dynamic_cast<Schematic*>(DocumentTab->currentWidget()));
         Q_ASSERT(schematic != nullptr);
 
-        ExternSimDialog simDlg(schematic, a_netlist2Console, true);
-        simDlg.slotSaveNetlist();
+        SimulationRun run(schematic, a_netlist2Console);   // netlist only: nothing attached
+        run.saveNetlist();
     }
 }
 
@@ -4166,21 +4160,18 @@ void QucsApp::slotSaveCdlNetlist()
     }
 }
 
-void QucsApp::slotAfterSpiceSimulation(ExternSimDialog *SimDlg)
+void QucsApp::slotAfterSpiceSimulation(SimulationRun *run)
 {
-    disconnect(SimDlg,SIGNAL(simulated(ExternSimDialog *)),
-               this,SLOT(slotAfterSpiceSimulation(ExternSimDialog *)));
-    disconnect(SimDlg,SIGNAL(warnings()),this,SLOT(slotShowWarnings()));
-    disconnect(SimDlg,SIGNAL(success()),this,SLOT(slotResetWarnings()));
     // The schematic that was simulated, which is not necessarily the one
-    // in the current tab: the user may have switched tabs meanwhile.
-    Schematic *sch = SimDlg->schematic();
+    // in the current tab: the user may have switched tabs meanwhile - or
+    // closed it, in which case there is nothing to show.
+    Schematic *sch = run->schematic();
     if (sch == nullptr) return;
-    if (TuningMode && SimDlg->hasError()) {
-        SimDlg->show();
+    if (TuningMode && run->hasError()) {
+        simConsole->showDock();
         return;
     }
-    if (SimDlg->wasSimulated()) {
+    if (run->wasSimulated()) {
         if(sch->getSimOpenDpl()) {
             if (sch->getShowBias() < 1) {
                 if (!TuningMode) {
@@ -4208,7 +4199,6 @@ void QucsApp::slotAfterSpiceSimulation(ExternSimDialog *SimDlg)
     if (TuningMode) {
         tunerDia->SimulationEnded();
     }
-    if (sch->getShowBias()>0 || QucsMain->TuningMode) SimDlg->close();
 
     // Run post-simulation system commands
     runPostSimCommands(sch);

@@ -24,6 +24,7 @@
 #include "misc.h"
 #include "octave_window.h"
 #include "qucs.h"
+#include "simulationconsole.h"
 
 #include <QAction>
 #include <QApplication>
@@ -1025,6 +1026,11 @@ void QucsApp::initMenuBar() {
   // viewMenu->setCheckable(true);
   viewMenu->addAction(viewBrowseDock);
   viewMenu->addAction(viewOctaveDock);
+  // The simulation console dock keeps its own show/hide action in sync.
+  QAction *viewSimConsole = simConsole->dock()->toggleViewAction();
+  viewSimConsole->setText(tr("&Simulation Console"));
+  viewSimConsole->setStatusTip(tr("Shows/hides the simulation console dock"));
+  viewMenu->addAction(viewSimConsole);
 
   helpMenu = new QMenu(tr("&Help")); // menuBar entry helpMenu
   helpMenu->addAction(helpIndex);

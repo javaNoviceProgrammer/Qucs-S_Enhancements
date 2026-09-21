@@ -6,6 +6,7 @@
  * output in the message dock. A fake compiler script stands in for OpenVAF.
  */
 #include <QtTest>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QPlainTextEdit>
 #include <QMenu>
@@ -117,6 +118,10 @@ private slots:
     {
         QVERIFY(dir.isValid());
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        // QucsApp lists the simulators it can find and puts up a modal
+        // error box when there is none: name one that exists.
+        QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
+        QucsSettings.firstRun = false;
         QucsSettings.maxUndo = 20;
         QucsSettings.ContentTreeView = false;
         QucsVersion = VersionTriplet(PACKAGE_VERSION);

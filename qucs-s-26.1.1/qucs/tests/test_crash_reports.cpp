@@ -10,6 +10,7 @@
  *     existed.
  */
 #include <QtTest>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 
 #include "config.h"
@@ -75,6 +76,10 @@ private slots:
     {
         QVERIFY(dir.isValid());
         QucsSettings.DefaultSimulator = spicecompat::simNotSpecified;
+        // QucsApp lists the simulators it can find and puts up a modal
+        // error box when there is none: name one that exists.
+        QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
+        QucsSettings.firstRun = false;
         QucsSettings.maxUndo = 20;
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
         Module::registerModules();

@@ -1699,6 +1699,11 @@ QString AbstractSpiceKernel::getOutput()
     return a_output;
 }
 
+QString AbstractSpiceKernel::processErrorString() const
+{
+    return a_simProcess->errorString();
+}
+
 /*!
  * \brief AbstractSpiceKernel::setSimulatorCmd Set simulator executable location
  * \param cmd Simulator executable absolute path. For example /usr/bin/ngspice
