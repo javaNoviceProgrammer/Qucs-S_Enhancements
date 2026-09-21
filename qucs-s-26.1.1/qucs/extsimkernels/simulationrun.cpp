@@ -274,6 +274,24 @@ void SimulationRun::stop()
     a_xyce->killThemAll();
 }
 
+bool SimulationRun::writeNetlist(const QString& filename)
+{
+    if (a_schematic.isNull() || filename.isEmpty()) return false;
+    switch (QucsSettings.DefaultSimulator)
+    {
+        case spicecompat::simNgspice:
+        case spicecompat::simSpiceOpus:
+            a_ngspice->SaveNetlist(filename, false);
+            break;
+        case spicecompat::simXyce:
+            a_xyce->SaveNetlist(filename, false);
+            break;
+        default:
+            return false;
+    }
+    return QFile::exists(filename);
+}
+
 void SimulationRun::saveNetlist()
 {
     if (a_schematic.isNull()) return;

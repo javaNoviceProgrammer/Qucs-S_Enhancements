@@ -360,6 +360,13 @@ existing demand.
   `QucsApp::fileType()`). Scratch files are classified first, so an image
   written by a simulation stays under Scratch. `test_project_scratch`
   covers the order, the listing and the suffixes.
+- *Done:* **Generate Netlist** (`Sim.GenerateNetlist`, *Simulation*
+  menu): `SimulationRun::writeNetlist(file)` writes the ngspice / SPICE
+  OPUS / Xyce netlist without a dialog; `QucsApp::slotGenerateNetlist()`
+  asks for a saved schematic, runs the ERC (non-blocking), writes
+  `Scratch/<schematic>/spice4qucs.cir`, refreshes the Content panel and
+  opens the file; qucsator is declined like *Save netlist* is. Covered in
+  `test_project_scratch`.
 - *Done:* **Scratch subfolder per schematic.** `misc::scratchDirFor(doc)`
   is `Scratch/<doc relative to the project, without extension>` while a
   project is open (`untitled` for a nameless one, the base name for a

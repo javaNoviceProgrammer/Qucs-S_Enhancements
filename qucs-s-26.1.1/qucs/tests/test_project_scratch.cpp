@@ -21,6 +21,9 @@
 #include "settings.h"
 #include "dialogs/qucssettingsdialog.h"
 #include <QCheckBox>
+#include <QMenu>
+#include <QMenuBar>
+#include <QAction>
 #include "extsimkernels/ngspice.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -195,6 +198,49 @@ private slots:
         QFile::remove(project + "/RCL_resonance.dat");
     }
 #endif
+
+    // Simulation > Generate Netlist: the netlist as a run would write it,
+    // into the schematic's Scratch folder, opened in the editor.
+    void generateNetlistWritesIntoTheSchematicsFolder()
+    {
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"),
+                            project + "/RCL_resonance.sch"));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.show();
+        app.openProject(project);
+        QVERIFY(app.gotoPage(project + "/RCL_resonance.sch", false, false));
+        QAction* action = nullptr;
+        for (QAction* m : app.menuBar()->actions()) {
+            if (m->text().remove('&') != "Simulation" || m->menu() == nullptr) continue;
+            for (QAction* a : m->menu()->actions())
+                if (a->text().remove('&') == "Generate Netlist") action = a;
+        }
+        QVERIFY(action != nullptr);
+        const QString netlist = project + "/Scratch/RCL_resonance/spice4qucs.cir";
+        QVERIFY(!QFileInfo::exists(netlist));
+
+        action->trigger();
+        QVERIFY(QFileInfo::exists(netlist));
+        QFile f(netlist);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QString text = QString::fromUtf8(f.readAll());
+        QVERIFY2(text.contains("L1 ") && text.contains("C1 ") && text.contains(".AC", Qt::CaseInsensitive),
+                 qPrintable(text.left(400)));
+        // Opened in the editor, in front.
+        TextDoc* doc = qobject_cast<TextDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        QCOMPARE(QDir::fromNativeSeparators(doc->getDocName()), netlist);
+        // Show Last Netlist, with the netlist in front, opens the same file.
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotShowLastNetlist"));
+        QCOMPARE(QDir::fromNativeSeparators(qobject_cast<TextDoc*>(app.DocumentTab->currentWidget())->getDocName()), netlist);
+        // Listed under Scratch.
+        QVERIFY(childrenOf(app.projectView()->model()->item(ProjectView::Scratch, 0)).contains("RCL_resonance/spice4qucs.cir"));
+
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
+        QVERIFY(QDir(project + "/Scratch/RCL_resonance").removeRecursively());
+        QVERIFY(QFile::remove(project + "/RCL_resonance.sch"));
+    }
 
     // The raw simulator output is left in place after the conversion to a
     // dataset (it used to be deleted in release builds), so the Scratch

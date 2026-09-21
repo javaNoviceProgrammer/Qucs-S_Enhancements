@@ -85,7 +85,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   (upstream's release builds deleted the raw output right after
   converting it, and every run overwrote the last). *Simulation → Show
   Last Netlist / Show Last Messages* open the files of the schematic in
-  front (with a netlist in front, of the schematic simulated last). The
+  front (with a netlist in front, of the schematic simulated last), and
+  *Simulation → Generate Netlist* writes the schematic's SPICE netlist
+  there as a run would — `spice4qucs.cir` — without simulating, runs
+  the schematic check first, and opens the file. The
   folder is created with the project (or when an older project is opened)
   and the Content panel lists its contents under a *Scratch* category
   below *Others*. Headless runs (`-n`, `--run`) keep using the simulator
