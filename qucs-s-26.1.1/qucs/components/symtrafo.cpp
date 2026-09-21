@@ -119,11 +119,14 @@ QString symTrafo::spice_netlist(spicecompat::SpiceDialect dialect)
   QString p1 = Ports.at(1)->Connection->Name;
   QString p2 = Ports.at(2)->Connection->Name;
 
-  QString s1p = Ports.at(4)->Connection->Name;
-  QString s1m = Ports.at(3)->Connection->Name;
+  // Winding 1 (ratio T1) is the upper one on the symbol, pins 1 and 6;
+  // winding 2 (ratio T2) the lower one, pins 5 and 4 - as qucsator's
+  // strafo has it.
+  QString s1p = Ports.at(0)->Connection->Name;
+  QString s1m = Ports.at(5)->Connection->Name;
 
-  QString s2p = Ports.at(0)->Connection->Name;
-  QString s2m = Ports.at(5)->Connection->Name;
+  QString s2p = Ports.at(4)->Connection->Name;
+  QString s2m = Ports.at(3)->Connection->Name;
 
   QString s;
   s = "X_" + Name + "_W1 ";

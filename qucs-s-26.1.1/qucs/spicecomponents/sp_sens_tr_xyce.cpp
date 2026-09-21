@@ -70,7 +70,8 @@ QString SpiceSENS_TR_Xyce::spice_netlist(spicecompat::SpiceDialect dialect /* = 
         QString start = spicecompat::normalize_value(Props.at(3)->Value);
         QString stop = spicecompat::normalize_value(Props.at(4)->Value);
         QString step = spicecompat::normalize_value(Props.at(5)->Value);
-        s = QStringLiteral(".tran %1 %2 %3").arg(start).arg(stop).arg(step);
+        // Xyce: .TRAN <initial step> <final time> <start time>
+        s = QStringLiteral(".tran %1 %2 %3").arg(step).arg(stop).arg(start);
         if (Props.at(6)->Value=="yes") s +="\n";
         else s += " uic\n";
         if (Props.at(2)->Value=="direct") s += ".options sensitivity direct=1 adjoint=0\n";

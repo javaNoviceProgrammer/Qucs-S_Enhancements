@@ -102,19 +102,18 @@ QString iTRNOISE::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecomp
     Q_UNUSED(dialect);
 
     QString s = spicecompat::check_refdes(Name,SpiceModel);
-    for (Port *p1 : Ports) {
-        QString nam = p1->Connection->Name;
-        if (nam=="gnd") nam = "0";
-        s += " "+ nam;   // node names
-    }
+    // The arrow points at pin 1: the current flows from pin 2 through the
+    // source to pin 1, so pin 2 is SPICE's n+ (as for Idc).
+    s += " " + spicecompat::normalize_node_name(Ports.at(1)->Connection->Name);
+    s += " " + spicecompat::normalize_node_name(Ports.at(0)->Connection->Name);
 
     QString Na= spicecompat::normalize_value(Props.at(0)->Value);
     QString Nt= spicecompat::normalize_value(Props.at(1)->Value);
     QString Nalpha= spicecompat::normalize_value(Props.at(2)->Value);
     QString Namp = spicecompat::normalize_value(Props.at(3)->Value);
     QString Rtsam = spicecompat::normalize_value(Props.at(4)->Value);
-    QString Rtscapt = spicecompat::normalize_value(Props.at(4)->Value);
-    QString Rtsemt = spicecompat::normalize_value(Props.at(4)->Value);
+    QString Rtscapt = spicecompat::normalize_value(Props.at(5)->Value);
+    QString Rtsemt = spicecompat::normalize_value(Props.at(6)->Value);
 
     s += QStringLiteral(" DC 0 AC 0 TRNOISE(%1 %2 %3 %4 %5  %6 %7) \n").arg(Na).arg(Nt).arg(Nalpha).arg(Namp).
                                 arg(Rtsam).arg(Rtscapt).arg(Rtsemt);

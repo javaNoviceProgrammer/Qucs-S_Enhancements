@@ -18,6 +18,17 @@
 #include "vdmos.h"
 #include "node.h"
 #include "extsimkernels/spicecompat.h"
+#include "misc.h"
+
+namespace {
+double numberOf(const QString& value)
+{
+    double number = 0.0, factor = 1.0;
+    QString unit;
+    misc::str2num(value, number, unit, factor);
+    return number * factor;
+}
+}
 
 
 VDMOS::VDMOS() {
@@ -180,8 +191,12 @@ QString VDMOS::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat:
 
 
     QStringList spice_incompat,spice_tr;
-    spice_incompat<<"Type"<<"Thermal"<<"Mul"
+    spice_incompat<<"Type"<<"Thermal"<<"Mul"<<"Temp"
                   <<"UseGlobTemp"<<"LibName"<<"CompName";
+    // RQ and VQ given (whatever the value) switch ngspice's quasi-saturation
+    // model on, and with Rd = 0 that divides by zero: only both non-zero go.
+    if (numberOf(getProperty("RQ")->Value) == 0.0 || numberOf(getProperty("VQ")->Value) == 0.0)
+        spice_incompat<<"RQ"<<"VQ";
     QString par_str = form_spice_param_list(spice_incompat,spice_tr);
 
     QString type = getProperty("Type")->Value;

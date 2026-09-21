@@ -24,7 +24,7 @@
 XAPWL::XAPWL()
 {
   Description = QObject::tr("PWL controlled voltage source:\nSeven line XSPICE specification. ");
-  Simulator = spicecompat::simSpice;
+  Simulator = spicecompat::simNgspice | spicecompat::simSpiceOpus;   // an XSPICE code model: not for Xyce
 
   Lines.append(new qucs::Line(-80,  0,-70,  0,QPen(Qt::darkBlue,2)));
   Lines.append(new qucs::Line( 80,  0, 70,  0,QPen(Qt::darkBlue,2)));

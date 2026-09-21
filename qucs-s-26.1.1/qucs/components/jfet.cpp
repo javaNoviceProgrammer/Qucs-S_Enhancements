@@ -114,7 +114,7 @@ QString JFET::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat::
     QStringList spice_incompat,spice_tr;
     if (dialect == spicecompat::SPICEXyce) {
         spice_incompat<<"Type"<<"Area"<<"Temp"<<"Ffe"<<"N"
-                     <<"Isr"<<"Nr"<<"M"<<"Xti"<<"Betatce"<<"Vt0tc"<<"UseGLobTemp"<<"LibName"<<"CompName";
+                     <<"Isr"<<"Nr"<<"M"<<"Xti"<<"Betatce"<<"Vt0tc"<<"UseGlobTemp"<<"LibName"<<"CompName";
                                   // spice-incompatible parameters
         spice_tr<<"Vt0"<<"VtO"; // parameters that need conversion of names
     } else {

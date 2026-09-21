@@ -95,9 +95,11 @@ QString TLine_4Port::spice_netlist(spicecompat::SpiceDialect dialect)
   QString zw = spicecompat::normalize_value(getProperty("Z")->Value);
   QString l = spicecompat::normalize_value(getProperty("L")->Value);
 
+  // SPICE: T n1+ n1- n2+ n2-. Port 1 is the left pair of pins (1 and 4),
+  // port 2 the right pair (2 and 3), as on the symbol and in qucsator.
   QString s = QString("T%1 %2 %3 %4 %5 Z0=%6 TD={%7/%8}\n")
                   .arg(Name)
-                  .arg(p1).arg(p3).arg(p2).arg(p4)
+                  .arg(p1).arg(p4).arg(p2).arg(p3)
                   .arg(zw).arg(l).arg(c0);
 
   return s;

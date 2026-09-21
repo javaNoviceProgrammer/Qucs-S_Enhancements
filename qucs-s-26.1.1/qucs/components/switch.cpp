@@ -119,12 +119,9 @@ QString Switch::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat
   QString port2 = spicecompat::normalize_node_name(Ports.at(1)->Connection->Name);
 
 
-  QString init = spicecompat::normalize_value(getProperty("init")->Value);
-  QString times = spicecompat::normalize_value(getProperty("time")->Value);
-  QStringList timesList = times.split(";");
+  const bool off = getProperty("init")->Value == "off";
   QString Ron = spicecompat::normalize_value(getProperty("Ron")->Value);
   QString Roff = spicecompat::normalize_value(getProperty("Roff")->Value);
-  QString Max_duration = spicecompat::normalize_value(getProperty("MaxDuration")->Value);
 
   if (getProperty("Type")->Value == "SPDT") {
     QString port3 = spicecompat::normalize_node_name(Ports.at(2)->Connection->Name);
@@ -133,63 +130,20 @@ QString Switch::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat
     s += QStringLiteral(" vt=0.5 vh=0.05 ron =%1 roff =%2\n").arg(Ron).arg(Roff);
   } else {
     s += QStringLiteral(" %1 %2 control_net%3 0 switch_model%3\n").arg(port1).arg(port2).arg(Name);
-
   }
 
-  double fac, timeValue, changingTime, maxDuration, firstTimeVal, time = 0.0;
+  // The control voltage: each entry of "time" is how long the current state
+  // lasts; a change takes a hundredth of the shortest entry, at most
+  // MaxDuration; an even-numbered list repeats (qucsator's tswitch).
+  const QStringList times = getProperty("time")->Value.split(';', Qt::SkipEmptyParts);
+  double maxDuration = 0.0, fac = 1.0;
   QString unit;
-
-  misc::str2num(timesList[0].toLower(), maxDuration,unit,fac);
-  maxDuration *= fac / 100;
-  misc::str2num(timesList[0].toLower(),firstTimeVal,unit,fac);
-  firstTimeVal *= fac / 100;
-
-  if (firstTimeVal > maxDuration){
-    changingTime = maxDuration;
-  }
-  else {
-    changingTime = firstTimeVal;
-  }
-
-  QString oddValue, evenValue;
-  if (init == "{OFF}") {
-    oddValue = "0";
-    evenValue = "1";
-  } else {
-    oddValue = "1";
-    evenValue = "0";
-  }
-
-  s += QStringLiteral("V%1 control_net%1 0 DC %2 PWL(0 %2").arg(Name).arg(oddValue);
-
-  for (int i = 0; i < timesList.size(); i++) {
-    QString timeStep = timesList[i].toLower();
-    misc::str2num(timeStep,timeValue,unit,fac);
-    timeValue *= fac;
-
-    if (i == 0) {
-        time += timeValue - changingTime;
-        s += QStringLiteral(" %1 %2").arg(time).arg(oddValue);
-        time += changingTime;
-        s += QStringLiteral(" %1 %2").arg(time).arg(evenValue);
-
-    } else {
-        if (i % 2 == 1) {
-            time += timeValue- changingTime;
-            s += QStringLiteral(" %1 %2").arg(time).arg(evenValue);
-            time += changingTime;
-            s += QStringLiteral(" %1 %2").arg(time).arg(oddValue);
-        }
-        else{
-            time += timeValue- changingTime;
-            s += QStringLiteral(" %1 %2").arg(time).arg(oddValue);
-            time += changingTime;
-            s += QStringLiteral(" %1 %2").arg(time).arg(evenValue);
-        }
-    }
-  }
-
-  s += ")\n";
+  misc::str2num(getProperty("MaxDuration")->Value, maxDuration, unit, fac);
+  maxDuration *= fac;
+  const QString first = off ? QStringLiteral("0") : QStringLiteral("1");
+  const QString other = off ? QStringLiteral("1") : QStringLiteral("0");
+  s += QStringLiteral("V%1 control_net%1 0 DC %2 %3\n").arg(Name, first,
+      spicecompat::togglingPWL(times, first, other, maxDuration, times.size() % 2 == 0));
 
   if (getProperty("Type")->Value == "SPST") {
     s += QStringLiteral(".model switch_model%1 sw vt =0.5 ron =%2 roff =%3\n").arg(Name).arg(Ron).arg(Roff);
