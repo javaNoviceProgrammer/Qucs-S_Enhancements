@@ -1,8 +1,10 @@
 # Continuous integration: a Debug build instrumented with AddressSanitizer and
 # UndefinedBehaviorSanitizer, then the QtTest unit tests (qucs/tests) and the
-# headless smoke tests over the shipped examples (scripts/ci/smoke-test.sh).
-# Linux only, so it is cheap enough to run on every push. Release packaging
-# for all platforms lives in release.yml.
+# headless smoke tests over the shipped examples (scripts/ci/smoke-test.sh),
+# on Linux; plus Release builds on macOS (with the unit tests) and Windows
+# (MSYS2), so a platform break shows on the push that made it and not on
+# release day (WS2.1 of ENHANCEMENT_PROPOSAL.md). Release packaging for all
+# platforms lives in release.yml.
 name: CI
 
 on:
@@ -111,3 +113,72 @@ jobs:
             smoke-out/fuzz-simout/findings/**
           retention-days: 14
           if-no-files-found: ignore
+
+  macos-build:
+    name: macOS · Release build · unit tests
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install build dependencies
+        run: |
+          brew install ninja gperf dos2unix bison flex
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin"  >> "$GITHUB_PATH"
+
+      - name: Configure (Release)
+        run: |
+          cmake -S "$SRC_DIR" -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGIT="${GITHUB_SHA::7}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Unit tests (QtTest, headless)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+  windows-build:
+    name: Windows · Release build (MSYS2 ucrt64)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Keep LF line endings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2 (ucrt64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ucrt64
+          update: true
+          cache: true
+          install: bison flex dos2unix
+          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p make:p ninja:p gperf:p
+
+      - name: Configure and build (Release)
+        run: |
+          cmake -S "$SRC_DIR" -B "$SRC_DIR/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGIT="${GITHUB_SHA::7}"
+          cmake --build "$SRC_DIR/build" --parallel
