@@ -31,7 +31,7 @@ Every release carries one bundle per platform, built by the
 | macOS, Apple Silicon | `qucs-s-<ver>-macos-apple-silicon.dmg` | ad-hoc signed, not notarised: on first launch right-click the app and choose *Open*, or `xattr -d com.apple.quarantine <app>` |
 | macOS, Intel | `qucs-s-<ver>-macos-intel.dmg` | same |
 | Linux x86_64 | `qucs-s-<ver>-linux-intel.AppImage` | `chmod +x` and run; needs FUSE 2 (`libfuse2`) or `--appimage-extract` |
-| Linux arm64 | `qucs-s-<ver>-linux-arm.AppImage` | same |
+| Linux arm64 | `qucs-s-<ver>-linux-arm.AppImage` | same; needs glibc 2.38 or newer (Ubuntu 24.04, Debian 13) |
 | Windows x64 | `...-windows-intel.zip` and `...-windows-intel-setup.exe` | ngspice is included |
 | Windows arm64 | `...-windows-arm.zip` and `...-windows-arm-setup.exe` | ngspice is included |
 
@@ -375,7 +375,7 @@ set the repository variable `BUILD_ARM=false` to leave ARM out of tag builds.
 | macOS Apple Silicon | `macos-15` |
 | macOS Intel | `macos-15-intel` |
 | Linux x86_64 | `ubuntu-22.04` (AppImage runs on anything as new as that) |
-| Linux arm64 | `ubuntu-22.04-arm` |
+| Linux arm64 | `ubuntu-24.04-arm` (Qt's arm64 binaries need glibc 2.38, so the AppImage does too) |
 | Windows x64 | `windows-2022`, MSYS2 ucrt64 |
 | Windows arm64 | `windows-11-arm`, MSYS2 clangarm64 |
 

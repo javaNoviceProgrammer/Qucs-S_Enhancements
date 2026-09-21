@@ -136,7 +136,9 @@ jobs:
             qt_arch: linux_gcc_64
             deploy_arch: x86_64
           - label: arm
-            os: ubuntu-22.04-arm
+            # Qt's arm64 Linux binaries want glibc 2.38: 22.04 (2.35) cannot
+            # even run their moc, so this AppImage needs a 24.04-class system.
+            os: ubuntu-24.04-arm
             enabled: ${{ needs.setup.outputs.linux_arm == 'true' }}
             qt_host: linux_arm64
             qt_arch: linux_gcc_arm64
@@ -155,7 +157,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ninja-build flex bison gperf dos2unix gcc-12 g++-12 \
-            libglx-dev libgl1-mesa-dev libcups2-dev fuse libfuse2 wget
+            libglx-dev libgl1-mesa-dev libcups2-dev fuse wget
+          # linuxdeploy runs as an AppImage: FUSE 2 is libfuse2t64 on 24.04
+          sudo apt-get install -y --no-install-recommends libfuse2t64 \
+            || sudo apt-get install -y --no-install-recommends libfuse2
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 --slave /usr/bin/g++ g++ /usr/bin/g++-12
 
       - name: Install Qt ${{ env.QT_VERSION }}
