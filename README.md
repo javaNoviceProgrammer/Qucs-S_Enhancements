@@ -235,6 +235,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   core (`share/qucs-s/spicelibrary`), and looked for its resources in the
   wrong place when kept under a directory named `bin`; both fixed, and
   the `simulate` smoke suite now runs circuits that include those files.
+- **A subcircuit's pin, its net and its symbol carry one name**: the
+  netlist calls a pin of a `.SUBCKT` after the net the port sits on, so
+  that is what the symbol now writes beside the pin — the label of the
+  net if it has one, instead of the port's refdes. And a port on a net
+  with no label of its own lends the net its name, so the pin reaches
+  the netlist as `in` or `P2` rather than as `_net7`
+  (`.Def:singleOPV P1 P2 P3 P4 P6`, where it used to be
+  `.Def:singleOPV _net4 _net0 _net9 _net3 _net7`). A name that some
+  other net already answers to is never borrowed — that would join two
+  nets that are not connected — and *Check Schematic* says so when it
+  happens.
 - **Images, and images on a symbol**: an image is placed from the
   *paintings* group of the component panel, pasted from the clipboard, or
   dropped on the schematic from a file manager, and it can now be in any

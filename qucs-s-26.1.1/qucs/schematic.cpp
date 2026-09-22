@@ -1753,10 +1753,11 @@ int Schematic::adjustPortNumbers()
                     }
                 }
 
+                const QString pinName = portPinName(pc);
                 if (pp) {
-                    ((PortSymbol *) pp)->setPortName(pc->Name);
+                    ((PortSymbol *) pp)->setPortName(pinName);
                 } else {
-                    a_SymbolPaints.push_back(new PortSymbol(x1, y2, Str, pc->Name));
+                    a_SymbolPaints.push_back(new PortSymbol(x1, y2, Str, pinName));
                     y2 += 40;
                 }
             }
@@ -1768,6 +1769,45 @@ int Schematic::adjustPortNumbers()
     });
 
     return countPort;
+}
+
+// The netlist calls a pin of a subcircuit after the net the port sits on
+// (see AbstractSpiceKernel::createSubNetlist), so that is what the symbol
+// writes beside the pin: the label of the net, or - for a net with no
+// label of its own, which the netlister then names after the port - the
+// port's name. Walks the net from the port's own node, so it works in
+// either view mode.
+QString Schematic::netLabelOf(Node* start) const
+{
+    if (start == nullptr) return QString();
+
+    std::unordered_set<const Node*> seen;
+    std::vector<Node*> todo{start};
+    while (!todo.empty()) {
+        Node* node = todo.back();
+        todo.pop_back();
+        if (node == nullptr || !seen.insert(node).second) continue;
+
+        if (node->hasLabel() && !node->label()->Name.isEmpty())
+            return node->label()->Name;
+
+        for (Wire* wire : node->wires()) {
+            if (wire->hasLabel() && !wire->label()->Name.isEmpty())
+                return wire->label()->Name;
+            todo.push_back(wire->Port1);
+            todo.push_back(wire->Port2);
+        }
+    }
+
+    return QString();
+}
+
+QString Schematic::portPinName(Component* port) const
+{
+    if (port == nullptr || port->Ports.isEmpty()) return QString();
+
+    const QString label = netLabelOf(port->Ports.first()->Connection);
+    return label.isEmpty() ? port->Name : label;
 }
 
 int Schematic::orderSymbolPorts()

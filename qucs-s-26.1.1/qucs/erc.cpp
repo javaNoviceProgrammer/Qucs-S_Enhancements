@@ -21,6 +21,7 @@
 
 #include <QCoreApplication>
 #include <QHash>
+#include <QSet>
 #include <QStringList>
 #include <algorithm>
 
@@ -118,6 +119,28 @@ QList<Issue> check(Schematic* doc)
                                                  : tr("%1: pin %2 is connected to nothing").arg(c->Name).arg(pin);
                 warnings << Issue{Severity::Warning, what, where, c->Name};
             }
+        }
+    }
+
+    // A subcircuit port on a net without a label lends its own name to
+    // that net, so the pin of the subcircuit is called after the port. A
+    // label of that name on some other net takes it first, and the pin
+    // reaches the netlist under a generated name instead.
+    if (port) {
+        QSet<QString> labels;
+        for (const Node* n : doc->a_DocNodes)
+            if (n->hasLabel()) labels.insert(n->label()->Name);
+        for (const Wire* w : doc->a_DocWires)
+            if (w->hasLabel()) labels.insert(w->label()->Name);
+
+        for (Component* c : doc->a_DocComps) {
+            if (!isPort(c) || !inCircuit(c) || c->Ports.isEmpty()) continue;
+            if (!doc->netLabelOf(c->Ports.first()->Connection).isEmpty()) continue;
+            if (!labels.contains(c->Name)) continue;
+
+            warnings << Issue{Severity::Warning,
+                              tr("%1: another net is labelled %1, so this pin gets a generated name").arg(c->Name),
+                              QPoint(c->cx, c->cy), c->Name};
         }
     }
 

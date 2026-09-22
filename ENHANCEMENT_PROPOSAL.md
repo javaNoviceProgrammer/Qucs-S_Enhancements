@@ -604,6 +604,25 @@ existing demand.
   (right of the simulation toolbar) carries `intoH`, `popH`, this check,
   *Generate Netlist* and *Save netlist* (two new icons,
   `bitmaps/svg/netlist_*.svg`).
+- *Done:* **One name for a subcircuit's pin, its net and its symbol.**
+  `AbstractSpiceKernel::createSubNetlist()` writes the `.SUBCKT` header
+  from `pc->Ports.first()->Connection->Name` — the net the port sits on
+  — while `Schematic::adjustPortNumbers()` wrote the port component's
+  refdes beside the pin, so the symbol and the netlist disagreed and an
+  unlabelled net reached the netlist as `_net7`. `Schematic::netLabelOf()`
+  walks the net from a node and returns its label;
+  `Schematic::portPinName()` is that label or, failing it, the port's
+  name, and the symbol pin takes it. `Schematic::nameUnlabelledPortNets()`
+  runs in `giveNodeNames()` between the two `throughAllNodes()` passes —
+  after the labelled nets have propagated, so a port node still unnamed
+  is on a net without a label anywhere — and gives that net the port's
+  name, skipping a name another net already answers to (which would join
+  two unconnected nets) and a name that is not a plain identifier. The
+  ERC warns about the skipped case. Over the shipped examples all 22
+  subcircuit definitions come out with named pins and no duplicated node.
+  `qucs/tests/test_symbol_pins` covers the label, the fallback, a label
+  elsewhere on the net, a renamed port, the netlist agreeing with the
+  symbol in each case, and the collision.
 - *Done:* **Images travel with the document, and reach the symbol.**
   `qucs_s::EmbeddedImage` (`qucs/embeddedimage.*`) holds the bytes of the
   file an image came from, its format, and the quarter turns and flip put
