@@ -194,19 +194,31 @@ private slots:
         doc.show();
         doc.showAll();
         QVERIFY(QTest::qWaitForWindowExposed(&doc));
-        const QImage canvas = doc.viewport()->grab().toImage();
-
-        Wire* w = longWire(doc);
-        QVERIFY(w != nullptr);
-        const QPoint middle = doc.modelToViewport(QPoint((w->x1 + w->x2) / 2, w->y1));
-        const QColor wire = canvas.pixelColor(middle);
-        QVERIFY2(ink::contrast(wire, kDark) >= 3.0, qPrintable(wire.name()));
-        QVERIFY(wire.blue() > wire.red());   // still blue
 
         QVERIFY(!doc.a_DocDiags.empty());
         const QRect d = doc.a_DocDiags.front()->boundingRect();
-        const QColor card = canvas.pixelColor(doc.modelToViewport(d.topLeft() + QPoint(3, 3)));
+        const QColor card = doc.viewport()->grab().toImage().pixelColor(doc.modelToViewport(d.topLeft() + QPoint(3, 3)));
         QCOMPARE(card, QColor(Qt::white));
+
+        // A wire, close enough for it to be several pixels wide (at the
+        // whole-sheet zoom it is under two, and which pixel of its
+        // antialiased edge a point lands on depends on the platform): its
+        // strongest pixel is the wire's own colour.
+        Wire* w = longWire(doc);
+        QVERIFY(w != nullptr);
+        const QPoint middle((w->x1 + w->x2) / 2, w->y1);
+        doc.zoomBy(3.0 / doc.getScale());
+        doc.centerOn(middle);
+        const QImage canvas = doc.viewport()->grab().toImage();
+        const QPoint at = doc.modelToViewport(middle);
+        QColor wire = kDark;
+        for (int dy = -3; dy <= 3; ++dy)
+            for (int dx = -3; dx <= 3; ++dx) {
+                const QColor c = canvas.pixelColor(at + QPoint(dx, dy));
+                if (ink::contrast(c, kDark) > ink::contrast(wire, kDark)) wire = c;
+            }
+        QVERIFY2(ink::contrast(wire, kDark) >= 3.0, qPrintable(wire.name()));
+        QVERIFY(wire.blue() > wire.red());   // still blue
 
         // Printed or exported: on white, dark blue as ever.
         const QRect all = doc.allBoundingRect();
