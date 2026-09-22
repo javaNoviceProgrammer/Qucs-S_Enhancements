@@ -618,6 +618,23 @@ existing demand.
   the platform-vs-palette decision, storage, and the dialog's combo
   (choice, save, the main window following, *Default Values*).
 
+- *Done:* **A grid setting for every schematic.** The grid's visibility
+  was only per document (`QucsDoc::a_GridOn`, the third field of the
+  file's `<Grid=...>`, toggled by *View > Show Grid (current document)*
+  and *Document Settings*). `QucsSettings.GridMode` (0 as each says, 1
+  always hidden, 2 always shown; *Appearance > Schematic grid*) and
+  `Schematic::gridShown()`, which `drawGrid()` asks, override it for
+  drawing only - the flag and the file stay as they are, snapping is
+  unchanged, and a data display (`.dpl`) keeps its own.
+  `QucsApp::applyGridSetting()` redraws every open schematic;
+  `updateGridAction()` makes *Show Grid* read "(all schematics)" and
+  turn the setting over (saved at once) while it overrides, and act on
+  the document otherwise; *Document Settings* says when its box is
+  overridden. `qucs/tests/test_grid_setting` covers what is drawn in
+  each mode (pixels of an empty canvas), data displays, the saved file,
+  the action in both roles and the settings dialog; `test_app_theme`'s
+  combo lookup no longer depends on the order of the dialog's combos.
+
 **Medium (weeks each)**
 
 - *Done:* **Auto-placement of DC-bias labels** to avoid overlaps (#1692).

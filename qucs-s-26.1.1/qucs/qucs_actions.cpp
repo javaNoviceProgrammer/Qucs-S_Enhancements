@@ -338,13 +338,21 @@ void QucsApp::slotResetDiagramLimits() {
 // -----------------------------------------------------------------------
 // Is called, when "show grid" action is triggered.
 void QucsApp::slotShowGrid() {
-  qDebug() << "slotShowGrid";
-  Schematic *schematic = static_cast<Schematic *>(DocumentTab->currentWidget());
-  if (!isTextDocument(schematic)) {
+  // The settings show or hide the grid of every schematic: the action
+  // turns that over (and the files stay as they are).
+  if (QucsSettings.GridMode != 0) {
+    QucsSettings.GridMode = QucsSettings.GridMode == 1 ? 2 : 1;
+    saveApplSettings();
+    applyGridSetting();
+    return;
+  }
+  Schematic *schematic = currentSchematic();
+  if (schematic != nullptr) {
     schematic->setGridOn(!schematic->getGridOn());
     schematic->setChanged(true);
     schematic->viewport()->repaint();
   }
+  updateGridAction();
 }
 
 // -----------------------------------------------------------------------

@@ -12,6 +12,7 @@
 #include "qucs.h"
 #include "findbar.h"
 #include "ink.h"
+#include "main.h"
 #include "schematic.h"
 #include "textdoc.h"
 #include "misc.h"
@@ -213,6 +214,29 @@ void QucsApp::applyPaper()
                qucs_s::ink::isDark(paper) ? QColor(235, 235, 235) : QColor(Qt::black));
     editText->setPalette(p);
   }
+}
+
+void QucsApp::applyGridSetting()
+{
+  for (QucsDoc *doc : allDocuments())
+    if (auto *sch = qobject_cast<Schematic *>(documentWidget(doc)))
+      sch->viewport()->update();
+  updateGridAction();
+}
+
+void QucsApp::updateGridAction()
+{
+  if (showGrid == nullptr) return;
+  if (QucsSettings.GridMode != 0) {
+    showGrid->setText(tr("Show Grid (all schematics)"));
+    showGrid->setStatusTip(tr("Show or hide the grid of every schematic (Application Settings > Appearance)."));
+    showGrid->setChecked(QucsSettings.GridMode == 2);
+    return;
+  }
+  showGrid->setText(tr("Show Grid (current document)"));
+  showGrid->setStatusTip(tr("Show or hide the grid for the current document."));
+  const Schematic *doc = currentSchematic();
+  showGrid->setChecked(doc != nullptr && doc->getGridOn());
 }
 
 FindBar *QucsApp::findBarOf(ContextMenuTabWidget *pane) const

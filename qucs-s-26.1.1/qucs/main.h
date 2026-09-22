@@ -120,6 +120,7 @@ struct tQucsSettings {
   bool ShowPinNames = true;
   bool ShowPinDirections = false;
   bool PaperFollowsTheme = false;   // the schematic paper is dark in the dark theme
+  int GridMode = 0;   // the grid of the schematics: 0 as each says, 1 always hidden, 2 always shown
   // Where the simulator's output goes: the Simulation dock, a window of
   // its own, or the legacy window that blocks the application until closed.
   enum SimConsoleHost { SimConsoleDock = 0, SimConsoleWindow = 1, SimConsoleLegacyWindow = 2 };

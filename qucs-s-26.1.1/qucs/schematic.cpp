@@ -1260,8 +1260,18 @@ void Schematic::setOnGrid(int &x, int &y)
     y -= y % a_GridY;
 }
 
+bool Schematic::gridShown() const {
+    if (QucsDoc::fileSuffix(getDocName()) == QLatin1String("dpl"))
+        return a_GridOn;
+    switch (QucsSettings.GridMode) {
+    case 1: return false;   // hidden in every schematic
+    case 2: return true;    // shown in every schematic
+    default: return a_GridOn;
+    }
+}
+
 void Schematic::drawGrid(QPainter* painter) {
-    if (!a_GridOn)
+    if (!gridShown())
         return;
 
     painter->save();

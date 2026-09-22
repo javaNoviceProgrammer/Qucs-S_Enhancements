@@ -88,6 +88,7 @@ void settingsManager::initDefaults()
     m_Defaults["ShowPinNames"] = true;
     m_Defaults["ShowPinDirections"] = false;
     m_Defaults["PaperFollowsTheme"] = false;
+    m_Defaults["GridMode"] = 0;
     m_Defaults["SimulationConsoleHost"] = 0;   // tQucsSettings::SimConsoleDock
     m_Defaults["Theme"] = 0;   // qucs_s::apptheme::System
     m_Defaults["NgspiceCompatMode"] = spicecompat::NgspDefault;

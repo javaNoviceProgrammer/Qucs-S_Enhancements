@@ -206,6 +206,7 @@ public:
     /// @brief Selects the application's theme: the system's, dark or light.
     QComboBox *ThemeCombo;
     QCheckBox *paperFollowsTheme;
+    QComboBox *gridModeCombo;
 
     /// @brief Opens the schematic font picker dialog.
     QPushButton *FontButton;

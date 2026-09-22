@@ -236,6 +236,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   — a name missing, given twice or "File", or a character the file
   cannot hold — and show what is wrong at its cell; Apply writes into
   the symbol and keeps the dialog open.
+- **One grid setting for every schematic**: *Application Settings →
+  Appearance → Schematic grid* — *As each schematic says* (the
+  default: each file keeps its own, as before), *Always hidden* or
+  *Always shown*. The override applies to every open schematic at
+  once, leaves the files as they are (they still carry their own flag,
+  for upstream Qucs-S and for anyone else), and elements still snap to
+  the grid; data displays keep their own. While it is on, *View → Show
+  Grid* (Alt+G) turns it over for all schematics instead of changing
+  the current file.
 - **Schematics on dark paper**: symbols, wires and texts are drawn in
   fixed colours meant for light paper — dark blue above all — and
   vanished on a dark background colour. They now fit the paper they are

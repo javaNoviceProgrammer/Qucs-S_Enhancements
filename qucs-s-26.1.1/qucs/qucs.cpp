@@ -2533,7 +2533,7 @@ void QucsApp::slotChangeView()
       changeSchematicSymbolMode(d);
     }
 
-    showGrid->setChecked(d->getGridOn());
+    updateGridAction();
   }
 
   Doc->becomeCurrent(true);
@@ -2584,7 +2584,7 @@ void QucsApp::slotFileSettings ()
 
     // TODO: It would be better to emit a signal to notify all subscribers
     // that the diagram settings have changed.
-    showGrid->setChecked(static_cast<Schematic*>(w)->getGridOn());
+    updateGridAction();
   }
 }
 
