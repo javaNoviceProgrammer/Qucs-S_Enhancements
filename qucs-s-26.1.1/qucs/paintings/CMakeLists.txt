@@ -20,6 +20,7 @@ paintings.h
 portsymbol.h
 rectangle.h
 imagepainting.h
+polylinepainting.h
 )
 
 SET(PAINTINGS_SRCS
@@ -28,7 +29,7 @@ graphicline.cpp	id_text.cpp
 graphictext.cpp	painting.cpp
 ellipse.cpp	graphictextdialog.cpp
 portsymbol.cpp ellipsearc.cpp
-rectangle.cpp filldialog.cpp imagepainting.cpp
+rectangle.cpp filldialog.cpp imagepainting.cpp polylinepainting.cpp
 id_dialog.cpp
 )
 

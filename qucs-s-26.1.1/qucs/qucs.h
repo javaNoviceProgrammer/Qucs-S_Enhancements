@@ -256,7 +256,12 @@ public slots:
   void slotHelpReport();        // Open a pdf report
   void slotHelpTechnical();     // Open a pdf technical document
   void slotFileClose(int);      // close the file with given index
+  Schematic* symbolDocument();  // the schematic the symbol commands work on
   void slotSymbolEdit();        // edit the symbol for the schematic
+  void slotSymbolRecreate();    // draw the symbol for the schematic anew
+  void slotSymbolPinOrder();    // set the order of the subcircuit's pins
+  void slotSymbolSaveAs();      // write the symbol into a .sym file
+  void slotSymbolLoad();        // take the symbol from a .sym file
   void slotFileSettings();      // open dialog to change file settings
   void slotFilePrint();         // print the current file
   void slotFilePrintFit();      // Print and fit to page
@@ -417,7 +422,8 @@ public:
       *projClose, *applSettings, *refreshSchPath, *editCut, *editCopy, *magAll,
       *magSel, *magOne, *magMinus, *filePrintFit, *tune, *symEdit, *intoH,
       *popH, *simulate, *save_netlist, *generateNetlist, *dpl_sch, *undo, *redo, *dcbias,
-      *saveCdlNetlist, *cdlSettings;
+      *saveCdlNetlist, *cdlSettings,
+      *symRecreate, *symPinOrder, *symSaveAs, *symLoad;
 
   // Navigate tabs
   QAction *TabFirstAction;    /// Action for raising the first document tab
@@ -551,7 +557,8 @@ private:
   // menus contain the items of their menubar
   enum { MaxRecentFiles = 8, MaxRecentProjects = 8 };
   QMenu *fileMenu, *editMenu, *insMenu, *projMenu, *recentProjMenu, *simMenu,
-      *viewMenu, *helpMenu, *alignMenu, *toolMenu, *recentFilesMenu, *cmMenu;
+      *viewMenu, *helpMenu, *alignMenu, *toolMenu, *recentFilesMenu, *cmMenu,
+      *symbolMenu;
   QAction *fileRecentAction[MaxRecentFiles];
   QAction *fileClearRecent;
 

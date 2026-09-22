@@ -184,6 +184,7 @@ int Subcircuit::loadSymbol(const QString &DocName) {
       x2 += 4;
       y1 -= 4;
       y2 += 4;
+      readPortDirections(FileString);
       return z; // return number of ports
     }
 
@@ -202,6 +203,36 @@ int Subcircuit::loadSymbol(const QString &DocName) {
   }
 
   return -8; // field not closed
+}
+
+// ---------------------------------------------------------------------
+// Which way each pin points. The symbol does not say; the schematic does,
+// in the Type property of its Port components, so read them from the
+// file that has just been parsed and put the direction on the port the
+// number names. Only the drawing uses it - the netlist asks the document
+// itself - so a file without them simply leaves every direction empty.
+void Subcircuit::readPortDirections(const QString& fileString) {
+  QTextStream stream(const_cast<QString*>(&fileString), QIODevice::ReadOnly);
+
+  QString line;
+  while (!stream.atEnd()) {   // find the components
+    line = stream.readLine();
+    if (line == "<Components>") break;
+  }
+
+  while (!stream.atEnd()) {
+    line = stream.readLine().trimmed();
+    if (line == "</Components>") break;
+    if (!line.startsWith("<Port ")) continue;
+
+    // <Port P1 1 100 100 -23 12 0 0 "1" 1 "analog" 0>
+    bool ok = false;
+    const int number = line.section('"', 1, 1).toInt(&ok);
+    if (!ok || number < 1 || number > Ports.count()) continue;
+
+    const QString type = line.section('"', 3, 3).trimmed();
+    if (!type.isEmpty()) Ports.at(number - 1)->Dir = type;
+  }
 }
 
 // -------------------------------------------------------

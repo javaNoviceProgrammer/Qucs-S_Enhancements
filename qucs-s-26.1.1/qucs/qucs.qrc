@@ -57,6 +57,8 @@
         <file>bitmaps/svg/truth.svg</file>
         <file>bitmaps/svg/timing.svg</file>
         <file>bitmaps/svg/line.svg</file>
+        <file>bitmaps/svg/polyline.svg</file>
+        <file>bitmaps/svg/filledpolyline.svg</file>
         <file>bitmaps/svg/arrow.svg</file>
         <file>bitmaps/svg/text.svg</file>
         <file>bitmaps/svg/ellipse.svg</file>

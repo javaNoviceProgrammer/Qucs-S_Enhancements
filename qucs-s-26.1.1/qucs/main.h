@@ -115,6 +115,10 @@ struct tQucsSettings {
   bool ContentFolderIcons = false;   // Content panel: a folder icon on the sub-trees' folder rows
   bool ContentAutoRefresh = true;   // Content panel: look for files that came or went, every ...
   int ContentRefreshSeconds = 3;    // ... this many seconds
+  // Symbols: write the name of each pin of a subcircuit inside its
+  // symbol, and mark which way the pin points (in, out, inout).
+  bool ShowPinNames = true;
+  bool ShowPinDirections = false;
   // Where the simulator's output goes: the Simulation dock, a window of
   // its own, or the legacy window that blocks the application until closed.
   enum SimConsoleHost { SimConsoleDock = 0, SimConsoleWindow = 1, SimConsoleLegacyWindow = 2 };

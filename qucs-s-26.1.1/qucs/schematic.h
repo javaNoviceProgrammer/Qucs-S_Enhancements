@@ -194,6 +194,10 @@ public:
   QString portPinName(Component* port) const;
   void  reloadGraphs();
   bool  createSubcircuitSymbol();
+  /// Throws the symbol's drawing away and lays the ports out around a
+  /// fresh box; the port numbers stay as the schematic has them.
+  bool  recreateSubcircuitSymbol();
+  void  buildDefaultSymbol(std::size_t port_count);
 
   /**
     @brief Given cordinates of a model point returns coordinates of this point
@@ -231,6 +235,11 @@ public:
   bool    load();
   int     save();
   bool    writeTo(const QString& path) override;
+  /// Writes the symbol of this schematic into its own file.
+  bool    saveSymbolToFile(const QString& path);
+  /// Takes the drawing of the symbol from another file; the ports stay.
+  /// Returns what went wrong, or an empty string.
+  QString loadSymbolFromFile(const QString& path);
   int     saveSymbolCpp (void);
   int     saveSymbolJSON (void);
   int     savePropsJSON (void);

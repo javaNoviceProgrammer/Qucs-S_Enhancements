@@ -449,6 +449,17 @@ QStringList misc::localFiles(const QMimeData* data)
 
 // #########################################################################
 // Takes a file name (with path) and replaces all special characters.
+QFont misc::pinFont()
+{
+  QFont font = QucsSettings.font;
+  if (font.pointSizeF() > 0.0)
+    font.setPointSizeF(std::max(5.0, font.pointSizeF() * 0.85));
+  else if (font.pixelSize() > 0)
+    font.setPixelSize(std::max(6, int(font.pixelSize() * 0.85)));
+  return font;
+}
+
+// #########################################################################
 QString misc::properName(const QString& Name)
 {
   QString s = Name;

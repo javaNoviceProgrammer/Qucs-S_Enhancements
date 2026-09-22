@@ -147,6 +147,16 @@ void SymbolWidget::paintEvent(QPaintEvent*)
     Painter.drawLine(cx+pl->x1, cy+pl->y1, cx+pl->x2, cy+pl->y2);
   }
 
+  // paint all polylines
+  for(qucs::Polyline *pl : Polylines) {
+    Painter.save();
+    Painter.translate(cx, cy);
+    Painter.setPen(pl->pen);
+    Painter.setBrush(pl->brush);
+    pl->draw(&Painter);
+    Painter.restore();
+  }
+
   // paint all arcs
   for(int i=0; i<Arcs.size(); i++) {
     qucs::Arc *pc = Arcs.at(i);
@@ -197,6 +207,8 @@ int SymbolWidget::createStandardSymbol(const QString& Lib_, const QString& Comp_
   Ellipses.clear();
   qDeleteAll(Images);
   Images.clear();
+  qDeleteAll(Polylines);
+  Polylines.clear();
   Texts.clear();
   PortNames.clear();
   LibraryPath = Lib_;
@@ -483,6 +495,8 @@ int SymbolWidget::setSymbol( QString& SymbolString,
   Ellipses.clear();
   qDeleteAll(Images);
   Images.clear();
+  qDeleteAll(Polylines);
+  Polylines.clear();
   Texts.clear();
   PortNames.clear();
   LibraryPath = Lib_;
@@ -546,6 +560,8 @@ int SymbolWidget::loadSymFile(const QString &file)
   Ellipses.clear();
   qDeleteAll(Images);
   Images.clear();
+  qDeleteAll(Polylines);
+  Polylines.clear();
   Texts.clear();
   PortNames.clear();
   Warning.clear();
@@ -721,6 +737,36 @@ int SymbolWidget::analyseLine(const QString& Row)
     if(i1+i3 > x2)  x2 = i1+i3;
     if(i2+i4 < y1)  y1 = i2+i4;
     if(i2+i4 > y2)  y2 = i2+i4;
+    return 1;
+  }
+  else if(s == "Polyline") {
+    // "Polyline n x1 y1 ... xn yn colour width style fill fillstyle filled closed"
+    bool ok = false;
+    const int count = Row.section(' ', 1, 1).toInt(&ok);
+    if(!ok || count < 2 || count > 4096) return -1;
+
+    std::vector<QPointF> points;
+    points.reserve(count);
+    for(int k = 0; k < count; k++) {
+      const int px = misc::clampCoordinate(Row.section(' ', 2 + 2 * k, 2 + 2 * k).toInt(&ok));
+      if(!ok) return -1;
+      const int py = misc::clampCoordinate(Row.section(' ', 3 + 2 * k, 3 + 2 * k).toInt(&ok));
+      if(!ok) return -1;
+      points.push_back(QPointF(px, py));
+
+      if(px < x1) x1 = px;  // keep track of component boundings
+      if(px > x2) x2 = px;
+      if(py < y1) y1 = py;
+      if(py > y2) y2 = py;
+    }
+
+    const int field = 2 + 2 * count;
+    if(!getPen(Row, Pen, field)) return -1;
+    if(!getBrush(Row, Brush, field + 3)) return -1;
+
+    auto* polyline = new qucs::Polyline(points, Pen, Brush);
+    polyline->closed = Row.section(' ', field + 6, field + 6).toInt() != 0;
+    Polylines.append(polyline);
     return 1;
   }
   else if(s == "ImagePainting") {

@@ -118,9 +118,34 @@ void PortSymbol::paint(QPainter *painter)
     painter->setPen(QPen(Qt::red,1));  // like open node
     painter->drawEllipse(circle_br);
 
+    // The name is laid out to one side of the circle; the mark for the
+    // port's direction goes to the other, which is the symbol's side.
+    if (angle == 90 || angle == 270) painter->rotate(-90.0);
+
+    // Which way the port points, when the setting asks for it
+    const QString dir = dirStr.toLower();
+    if (QucsSettings.ShowPinDirections
+        && (dir == QLatin1String("in") || dir == QLatin1String("out")
+            || dir == QLatin1String("inout"))) {
+      const int away = (angle == 180 || angle == 270) ? -1 : 1;
+      const QPoint tail(away * (portCircleRadius + 3), 0);
+      const QPoint head(away * (portCircleRadius + 10), 0);
+      const QPoint across(0, 3);
+
+      painter->setPen(QPen(Qt::darkGreen, 1));
+      painter->setBrush(QBrush(Qt::darkGreen));
+      if (dir == QLatin1String("inout")) {
+        const QPoint middle((tail + head) / 2);
+        painter->drawPolygon(QPolygon() << tail << (middle + across) << head << (middle - across));
+      } else if (dir == QLatin1String("in")) {
+        painter->drawPolygon(QPolygon() << tail << (head + across) << (head - across));
+      } else {
+        painter->drawPolygon(QPolygon() << head << (tail + across) << (tail - across));
+      }
+    }
+
     // Port name
     painter->setPen(Qt::black);
-    if (angle == 90 || angle == 270) painter->rotate(-90.0);
     painter->drawText(m_textOrigin.x(), m_textOrigin.y(), 1, 1, Qt::TextDontClip, nameStr.isEmpty() ? numberStr : nameStr);
     painter->restore();
   }
@@ -328,6 +353,14 @@ void PortSymbol::updateBounds()
   y1 = cy + br.top();
   x2 = cx + br.right();
   y2 = cy + br.bottom();
+}
+
+void PortSymbol::placeLike(const PortSymbol& other)
+{
+  cx = other.cx;
+  cy = other.cy;
+  angle = other.angle;
+  updateBounds();
 }
 
 void PortSymbol::setPortName(const QString& newName)

@@ -164,40 +164,105 @@ bool Schematic::createSubcircuitSymbol()
     // If a symbol does not yet exist, create one.
     if (a_SymbolPaints.size() != port_count) return false;
 
-    const int symbol_rect_half_height = 30 * ((port_count - 1) / 2) + 10;
-    const int symbol_rect_half_width = 20;
+    buildDefaultSymbol(port_count);
+    return true;
+}
 
-    {
-        int port_y = 10 - symbol_rect_half_height;
-        auto port_painting = a_SymbolPaints.begin();
-        bool put_on_left_side = true;
+// ---------------------------------------------------
+// Throws the symbol's drawing away and lays the ports out around a fresh
+// box. The ports themselves are kept - their numbers belong to the
+// schematic - and their names and directions are read again.
+bool Schematic::recreateSubcircuitSymbol()
+{
+    for (auto painting = a_SymbolPaints.begin(); painting != a_SymbolPaints.end();) {
+        if ((*painting)->Name == ".PortSym ") {
+            ++painting;
+            continue;
+        }
+        delete *painting;
+        painting = a_SymbolPaints.erase(painting);
+    }
 
-        for (std::size_t port_n = 0; port_n < port_count; port_n++) {
+    const std::size_t port_count = adjustPortNumbers();
+    if (port_count == 0) return false;
 
-            if (put_on_left_side) {
-                (*port_painting)->moveCenterTo(-10 - symbol_rect_half_width, port_y);
-                a_SymbolPaints.push_back(new GraphicLine(-10 - symbol_rect_half_width, port_y, -symbol_rect_half_width, port_y, QPen(Qt::darkBlue, 2)));
-            } else {
-                (*port_painting)->moveCenterTo(30, port_y);
-                (*port_painting)->mirrorY();
-                a_SymbolPaints.push_back(new GraphicLine(symbol_rect_half_width, port_y, symbol_rect_half_width + 10, port_y, QPen(Qt::darkBlue, 2)));
+    buildDefaultSymbol(port_count);
+    return true;
+}
 
-                port_y += 60;
-            }
+// ---------------------------------------------------
+// A box with the ports around it: inputs on the left and outputs on the
+// right when the pin directions are shown, left and right in turn
+// otherwise, and wide enough for the names the pins carry.
+void Schematic::buildDefaultSymbol(std::size_t port_count)
+{
+    if (port_count == 0) return;
 
-            port_painting++;
-            put_on_left_side = !put_on_left_side;
+    std::vector<PortSymbol*> ports;
+    ports.reserve(port_count);
+    for (auto* painting : a_SymbolPaints)
+        if (painting->Name == ".PortSym ") ports.push_back(static_cast<PortSymbol*>(painting));
+    if (ports.empty()) return;
+
+    // Which side each port goes on.
+    std::vector<PortSymbol*> left, right;
+    const bool bySide = QucsSettings.ShowPinDirections
+                        && std::any_of(ports.begin(), ports.end(), [](const PortSymbol* p) {
+                               const QString d = p->dirStr.toLower();
+                               return d == QLatin1String("in") || d == QLatin1String("out");
+                           });
+    bool onTheLeft = true;
+    for (PortSymbol* port : ports) {
+        const QString dir = port->dirStr.toLower();
+        if (bySide && dir == QLatin1String("in")) {
+            left.push_back(port);
+        } else if (bySide && dir == QLatin1String("out")) {
+            right.push_back(port);
+        } else {
+            (onTheLeft ? left : right).push_back(port);
+            onTheLeft = !onTheLeft;
         }
     }
 
-    a_SymbolPaints.push_front(new ID_Text(-20, symbol_rect_half_height + 4));
+    const int rows = int(std::max(left.size(), right.size()));
+    const int half_height = 30 * (rows - 1) + 10;
 
-    a_SymbolPaints.push_back(new GraphicLine(-symbol_rect_half_width, -symbol_rect_half_height, symbol_rect_half_width, -symbol_rect_half_height, QPen(Qt::darkBlue, 2)));
-    a_SymbolPaints.push_back(new GraphicLine(symbol_rect_half_width, -symbol_rect_half_height, symbol_rect_half_width, symbol_rect_half_height, QPen(Qt::darkBlue, 2)));
-    a_SymbolPaints.push_back(new GraphicLine(-symbol_rect_half_width, symbol_rect_half_height, symbol_rect_half_width, symbol_rect_half_height, QPen(Qt::darkBlue, 2)));
-    a_SymbolPaints.push_back(new GraphicLine(-symbol_rect_half_width, -symbol_rect_half_height, -symbol_rect_half_width, symbol_rect_half_height, QPen(Qt::darkBlue, 2)));
+    // Room for the names the pins are drawn with inside the box.
+    int half_width = 20;
+    if (QucsSettings.ShowPinNames) {
+        const QFontMetrics metrics(misc::pinFont(), nullptr);
+        const auto widest = [&metrics](const std::vector<PortSymbol*>& side) {
+            int width = 0;
+            for (const PortSymbol* port : side)
+                width = std::max(width, metrics.horizontalAdvance(
+                                            port->nameStr.isEmpty() ? port->numberStr : port->nameStr));
+            return width;
+        };
+        const int marks = QucsSettings.ShowPinDirections ? 2 * 12 : 0;
+        half_width = std::max(half_width, (widest(left) + widest(right) + marks + 24) / 2);
+        half_width = ((half_width + 4) / 5) * 5;   // keep the box on the grid
+    }
 
-    return true;
+    const auto place = [&](const std::vector<PortSymbol*>& side, bool isLeft) {
+        int port_y = 10 - half_height;
+        for (PortSymbol* port : side) {
+            const int edge = isLeft ? -half_width : half_width;
+            const int stub = isLeft ? edge - 10 : edge + 10;
+            port->moveCenterTo(stub, port_y);
+            if (!isLeft) port->mirrorY();
+            a_SymbolPaints.push_back(new GraphicLine(edge, port_y, stub, port_y, QPen(Qt::darkBlue, 2)));
+            port_y += 60;
+        }
+    };
+    place(left, true);
+    place(right, false);
+
+    a_SymbolPaints.push_front(new ID_Text(-half_width, half_height + 4));
+
+    a_SymbolPaints.push_back(new GraphicLine(-half_width, -half_height, half_width, -half_height, QPen(Qt::darkBlue, 2)));
+    a_SymbolPaints.push_back(new GraphicLine(half_width, -half_height, half_width, half_height, QPen(Qt::darkBlue, 2)));
+    a_SymbolPaints.push_back(new GraphicLine(-half_width, half_height, half_width, half_height, QPen(Qt::darkBlue, 2)));
+    a_SymbolPaints.push_back(new GraphicLine(-half_width, -half_height, -half_width, half_height, QPen(Qt::darkBlue, 2)));
 }
 
 // ---------------------------------------------------
@@ -1754,12 +1819,16 @@ int Schematic::adjustPortNumbers()
                 }
 
                 const QString pinName = portPinName(pc);
-                if (pp) {
-                    ((PortSymbol *) pp)->setPortName(pinName);
-                } else {
-                    a_SymbolPaints.push_back(new PortSymbol(x1, y2, Str, pinName));
+                // The second property of a port is its type; the symbol
+                // shows which way the pin points from it.
+                const QString pinDir = pc->Props.count() > 1 ? pc->Props.at(1)->Value : QString();
+                if (!pp) {
+                    pp = new PortSymbol(x1, y2, Str, pinName);
+                    a_SymbolPaints.push_back(pp);
                     y2 += 40;
                 }
+                ((PortSymbol *) pp)->setPortName(pinName);
+                ((PortSymbol *) pp)->dirStr = pinDir;
             }
         }
     }

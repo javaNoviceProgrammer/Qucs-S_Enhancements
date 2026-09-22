@@ -91,6 +91,7 @@ private:
   QList<qucs::Rect *> Rects;
   QList<qucs::Ellips *> Ellipses;
   QList<qucs::Image *> Images;
+  QList<qucs::Polyline *> Polylines;
   QList<Text *>  Texts;
   QMap<int, QString> PortNames;
 };

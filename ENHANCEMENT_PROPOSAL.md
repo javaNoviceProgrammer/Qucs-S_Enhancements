@@ -604,6 +604,36 @@ existing demand.
   (right of the simulation toolbar) carries `intoH`, `popH`, this check,
   *Generate Netlist* and *Save netlist* (two new icons,
   `bitmaps/svg/netlist_*.svg`).
+- *Done:* **A toolkit for a subcircuit's symbol.** `.PortSym` carries a
+  name that `Component::analyseLine()` used to drop; it now reaches
+  `Port::Name`, and `Subcircuit::readPortDirections()` reads the type of
+  each port component out of the subcircuit's own file into `Port::Dir`,
+  so an instance knows what its pins are called and which way they
+  point without any change to the file format. `Component::drawPins()`
+  writes the name just inside the end of the pin's stub - found from the
+  line that starts or ends at the port, so it fits whatever the symbol
+  is drawn like - and, under the second setting, a mark for the
+  direction; both follow the component's rotation and mirroring because
+  they are worked out from the transformed ports. `ShowPinNames` (on)
+  and `ShowPinDirections` (off) are settings.
+  `Schematic::buildDefaultSymbol()` replaces the fixed 40-wide box: it
+  sizes the box to the pin names (`misc::pinFont()`) and, with the
+  directions shown, puts the inputs on one side and the outputs on the
+  other; `recreateSubcircuitSymbol()` drives it again over an existing
+  symbol, which nothing could do before. `saveSymbolToFile()` and
+  `loadSymbolFromFile()` move a symbol between documents, matching the
+  incoming ports to this schematic's by number
+  (`PortSymbol::placeLike()`). `PinOrderDialog` (`dialogs/`) rewrites
+  the `Num` of the port components and the `numberStr` of the symbol's
+  pins together. `PolylinePainting` (`paintings/`) is a painting for
+  `qucs::Polyline`, the drawing primitive components already had:
+  clicking the last corner ends the run, the first one closes it, and
+  `Component::analyseLine()`/`SymbolWidget::analyseLine()` read it out
+  of a `<Symbol>` block, so it reaches the instances like a line.
+  Found on the way: `ImageWriter::noGuiPrint()` painted into a QImage it
+  never filled (the interactive export does), and `fillComponentsList()`
+  dereferenced the icon a painting is registered without.
+  `qucs/tests/test_symbol_tools` covers all six.
 - *Done:* **One name for a subcircuit's pin, its net and its symbol.**
   `AbstractSpiceKernel::createSubNetlist()` writes the `.SUBCKT` header
   from `pc->Ports.first()->Connection->Name` — the net the port sits on
