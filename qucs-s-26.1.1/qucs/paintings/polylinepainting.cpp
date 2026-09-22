@@ -120,27 +120,33 @@ bool PolylinePainting::load(const QString& s)
     m_points.push_back(QPoint(x, y));
   }
 
-  int field = 2 + 2 * count;
-  const QColor colour = misc::ColorFromString(s.section(' ', field, field));
+  // The pen and the brush come after the corners. (The field number is
+  // worked out before the call: which of two arguments a compiler
+  // evaluates first is not fixed, so "section(' ', ++field, field)"
+  // would read a different field on one compiler than on another.)
+  const int first = 2 + 2 * count;
+  const auto field = [&s, first](int n) { return s.section(' ', first + n, first + n); };
+
+  const QColor colour = misc::ColorFromString(field(0));
   if (!colour.isValid()) return false;
   m_pen.setColor(colour);
 
-  m_pen.setWidth(s.section(' ', ++field, field).toInt(&ok));
+  m_pen.setWidth(field(1).toInt(&ok));
   if (!ok) return false;
-  m_pen.setStyle((Qt::PenStyle)s.section(' ', ++field, field).toInt(&ok));
+  m_pen.setStyle((Qt::PenStyle)field(2).toInt(&ok));
   if (!ok) return false;
 
-  const QColor fill = misc::ColorFromString(s.section(' ', ++field, field));
+  const QColor fill = misc::ColorFromString(field(3));
   if (!fill.isValid()) return false;
   m_brush.setColor(fill);
-  m_brush.setStyle((Qt::BrushStyle)s.section(' ', ++field, field).toInt(&ok));
+  m_brush.setStyle((Qt::BrushStyle)field(4).toInt(&ok));
   if (!ok) return false;
 
-  m_filled = s.section(' ', ++field, field).toInt(&ok) != 0;
+  m_filled = field(5).toInt(&ok) != 0;
   if (!ok) return false;
   if (!m_filled) m_brush.setStyle(Qt::NoBrush);
 
-  const QString closed = s.section(' ', ++field, field);
+  const QString closed = field(6);
   m_closed = !closed.isEmpty() && closed.toInt() != 0;
 
   m_beingDrawn = false;
