@@ -29,6 +29,7 @@
 #include "wire.h"
 #include "paintings/paintings.h"
 #include "schematic.h"
+#include "ink.h"
 #include "settings.h"
 #include "textdoc.h"
 
@@ -106,7 +107,7 @@ Schematic::Schematic(QucsApp *App_, const QString &Name_) :
 
     setVScrollBarMode(Q3ScrollView::AlwaysOn);
     setHScrollBarMode(Q3ScrollView::AlwaysOn);
-    misc::setWidgetBackgroundColor(viewport(), QucsSettings.BGColor);
+    misc::setWidgetBackgroundColor(viewport(), misc::paperColor());
     viewport()->setMouseTracking(true);
     viewport()->setAcceptDrops(true); // enable drag'n drop
 
@@ -450,7 +451,7 @@ void Schematic::paintFrame(QPainter* painter) {
         return;
 
     painter->save();
-    painter->setPen(QPen(Qt::darkGray, 1));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray, 1)));
 
     // Width of stripe along frame border in column and row labels are placed
     const int frame_margin = painter->fontMetrics().lineSpacing() + 4;
@@ -535,6 +536,10 @@ void Schematic::drawContents(QPainter *p, int, int, int, int)
         .setFlag(QPainter::TextAntialiasing)
         .setFlag(QPainter::SmoothPixmapTransform);
     p->setRenderHints(renderHints);
+
+    // What is drawn on the canvas is drawn on its paper: on a dark one,
+    // the colours meant for light paper are fitted to it (ink.h).
+    const qucs_s::ink::Paper paper(viewport()->palette().color(viewport()->backgroundRole()));
 
     p->setFont(QucsSettings.font);
     drawGrid(p);
@@ -653,7 +658,16 @@ void Schematic::drawElements(QPainter* painter) {
     }
 
     for (auto* diagram : *a_Diagrams) {
-        diagram->paint(painter);
+        if (qucs_s::ink::darkPaper()) {
+            // On dark paper a diagram is a light card, drawn as it is
+            // printed: its axes, grid, texts and header bars keep their
+            // colours on it.
+            const qucs_s::ink::Paper card(Qt::white);
+            painter->fillRect(diagram->boundingRect(), Qt::white);
+            diagram->paint(painter);
+        } else {
+            diagram->paint(painter);
+        }
     }
 
     for (auto* painting : *a_Paintings) {
@@ -718,7 +732,7 @@ void Schematic::drawDcBiasPoints(QPainter* painter) {
             continue;
         const QRect box = bias.placements.at(i).box;
         const QPoint a = bias.labels.at(i).anchor;
-        painter->setPen(QPen(ink(i), 1));
+        painter->setPen(QPen(qucs_s::ink::on(ink(i)), 1));   // on the paper, unlike the boxes
         painter->drawLine(a, QPoint(qBound(box.left(), a.x(), box.right()),
                                     qBound(box.top(), a.y(), box.bottom())));
     }
@@ -743,9 +757,10 @@ void Schematic::drawPostPaintEvents(QPainter* painter) {
    * Paint actions can only be called from within the paint event, so they
    * are put into a QList (PostedPaintEvents) and processed here
    */
+    const QColor ink = qucs_s::ink::on(Qt::black);
     for (auto p : a_PostedPaintEvents) {
-        QPen pen(Qt::black);
-        painter->setPen(Qt::black);
+        QPen pen(ink);
+        painter->setPen(ink);
         switch (p.pe) {
         case _NotRop:
             painter->setCompositionMode(QPainter::RasterOp_SourceAndNotDestination);
@@ -756,7 +771,7 @@ void Schematic::drawPostPaintEvents(QPainter* painter) {
         case _SelectionRect:
             pen.setCosmetic(true);
             pen.setStyle(Qt::DashLine);
-            pen.setColor(QColor(50, 50, 50, 100));
+            pen.setColor(qucs_s::ink::on(QColor(50, 50, 50, 100)));
             painter->setPen(pen);
             painter->fillRect(p.x1, p.y1, p.x2, p.y2, QColor(200, 220, 240, 100));
             painter->drawRect(p.x1, p.y1, p.x2, p.y2);
@@ -777,11 +792,11 @@ void Schematic::drawPostPaintEvents(QPainter* painter) {
             painter->drawArc(p.x1, p.y1, p.x2, p.y2, p.a, p.b);
             break;
         case _DotLine:
-            painter->setPen(Qt::DotLine);
+            painter->setPen(QPen(ink, 1, Qt::DotLine));
             painter->drawLine(p.x1, p.y1, p.x2, p.y2);
             break;
         case _DotRect:
-            painter->setPen(Qt::DotLine);
+            painter->setPen(QPen(ink, 1, Qt::DotLine));
             painter->drawRect(p.x1, p.y1, p.x2, p.y2);
             break;
         case _Translate:; //painter2.translate(p.x1, p.y1);
@@ -1259,7 +1274,7 @@ void Schematic::drawGrid(QPainter* painter) {
     // A grid drawn with pen of 1.0 width reportedly looks good both
     // on standard and HiDPI displays.
     // See here for details https://github.com/ra3xdh/qucs_s/pull/524
-    painter->setPen(QPen{ a_GridColor, 1.0 });
+    painter->setPen(QPen{ qucs_s::ink::on(a_GridColor), 1.0 });
 
     {
         // Draw small cross at origin of coordinates

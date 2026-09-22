@@ -282,6 +282,14 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(QucsSettings.Theme));
     appAppearanceGrid->addWidget(ThemeCombo, 10, 1);
 
+    appAppearanceGrid->addWidget(new QLabel(tr("Dark schematic paper in the dark theme:"), appSettingsTab), 11, 0);
+    paperFollowsTheme = new QCheckBox(appSettingsTab);
+    paperFollowsTheme->setToolTip(tr("In the dark theme the schematic is drawn on dark paper instead of the "
+                                     "background colour above; symbols, wires and texts are lightened to "
+                                     "show on it. Prints and exports stay on white."));
+    paperFollowsTheme->setChecked(QucsSettings.PaperFollowsTheme);
+    appAppearanceGrid->addWidget(paperFollowsTheme, 11, 1);
+
     t->addTab(appAppearanceTab, tr("Appearance"));
 
     // ...........................................................
@@ -729,18 +737,17 @@ void QucsSettingsDialog::slotApply()
       // later below the file tree will be refreshed
     }
 
+    bool paperChanged = false;
     if(QucsSettings.BGColor != BGColorButton->palette().color(BGColorButton->backgroundRole()))
     {
         QucsSettings.BGColor = BGColorButton->palette().color(BGColorButton->backgroundRole());
-
-        for (QucsDoc *doc : App->allDocuments()) {   // in every pane
-          if (Schematic *sch = dynamic_cast<Schematic*>(doc)) {   // the text editor stays white
-            QWidget *vp = sch->viewport();
-            QPalette p = vp->palette();
-            p.setColor(vp->backgroundRole(), QucsSettings.BGColor);
-            vp->setPalette(p);
-          }
-        }
+        paperChanged = true;
+        changed = true;
+    }
+    if (QucsSettings.PaperFollowsTheme != paperFollowsTheme->isChecked())
+    {
+        QucsSettings.PaperFollowsTheme = paperFollowsTheme->isChecked();
+        paperChanged = true;
         changed = true;
     }
 
@@ -763,8 +770,10 @@ void QucsSettingsDialog::slotApply()
         QucsSettings.Theme = selectedTheme;
         qucs_s::apptheme::apply(QucsSettings.Theme);   // after the style: a new style brings its own palette
         QucsSettings.hasDarkTheme = misc::isDarkTheme();
+        paperChanged = true;   // the paper may follow the theme
         changed = true;
     }
+    if (paperChanged) App->applyPaper();   // every open schematic, in every pane
 
     // Update all open schematics with the new grid color.
     if (_settings::Get().item<QColor>("GridColor") != GridColorButton->palette().color(GridColorButton->backgroundRole())) {
@@ -1066,6 +1075,7 @@ void QucsSettingsDialog::slotDefaultValues()
     showPinNames->setChecked(true);
     showPinDirections->setChecked(false);
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));
+    paperFollowsTheme->setChecked(false);
     checkLoadFromFutureVersions->setChecked(false);
     checkAntiAliasing->setChecked(false);
     checkTextAntiAliasing->setChecked(true);

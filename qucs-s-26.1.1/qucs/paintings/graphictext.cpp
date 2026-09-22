@@ -21,6 +21,7 @@
 #include "mnemo.h"
 #include "one_point.h"
 #include "schematic.h"
+#include "ink.h"
 
 
 GraphicText::GraphicText()
@@ -41,12 +42,12 @@ void GraphicText::paint(QPainter* painter) {
     // Apply current transformation
     // Use combined transform to handle zooming
     painter->setTransform(getTransform(), /*combine=*/true);
-    painter->setPen(color);
+    painter->setPen(qucs_s::ink::on(color));
     // Calculate (local) textBox boundary
     QRectF textBox = getTextBounds(painter);
 
     if (isSelected) {
-        painter->setPen(QPen(Qt::darkGray, 3));
+        painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray, 3)));
         painter->drawRect(textBox);
     }
 

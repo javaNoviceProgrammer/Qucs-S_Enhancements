@@ -11,6 +11,7 @@
 
 #include "qucs.h"
 #include "findbar.h"
+#include "ink.h"
 #include "schematic.h"
 #include "textdoc.h"
 #include "misc.h"
@@ -194,6 +195,23 @@ void QucsApp::showDocument(QWidget *document)
   if (DocumentTab->currentWidget() != document) {
     DocumentTab->setCurrentWidget(document);
     slotChangeView();
+  }
+}
+
+void QucsApp::applyPaper()
+{
+  const QColor paper = misc::paperColor();
+  for (QucsDoc *doc : allDocuments())
+    if (auto *sch = qobject_cast<Schematic *>(documentWidget(doc))) {
+      misc::setWidgetBackgroundColor(sch->viewport(), paper);
+      sch->viewport()->update();
+    }
+  if (editText != nullptr) {
+    QPalette p = editText->palette();
+    p.setColor(editText->backgroundRole(), paper);
+    p.setColor(editText->foregroundRole(),
+               qucs_s::ink::isDark(paper) ? QColor(235, 235, 235) : QColor(Qt::black));
+    editText->setPalette(p);
   }
 }
 

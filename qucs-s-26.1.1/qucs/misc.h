@@ -123,6 +123,10 @@ namespace misc {
   QStringList parseCmdArgs(const QString &program);
   QString getIconPath(const QString &file);
   bool isDarkTheme();
+  /// The paper of the schematic canvas: the background colour from the
+  /// settings, or a dark one in the dark theme when the settings say the
+  /// paper follows the theme.
+  QColor paperColor();
   QString getWindowTitle();
   QString wildcardToRegularExpression(const QString &wc_str, const bool enableEscaping);
 

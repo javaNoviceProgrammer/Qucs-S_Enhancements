@@ -25,6 +25,7 @@
 
 #include <cmath>
 #include "misc.h"
+#include "ink.h"
 #include "apptheme.h"
 #include "main.h"
 #include "qucs.h"
@@ -66,6 +67,12 @@ bool misc::isDarkTheme()
 {
     // The application's palette: the platform's, or the theme setting's.
     return qucs_s::apptheme::isDark();
+}
+
+QColor misc::paperColor()
+{
+    if (QucsSettings.PaperFollowsTheme && isDarkTheme()) return qucs_s::ink::darkPaperColour();
+    return QucsSettings.BGColor.isValid() ? QucsSettings.BGColor : QColor(255, 250, 225);
 }
 
 QString misc::getIconPath(const QString &file)

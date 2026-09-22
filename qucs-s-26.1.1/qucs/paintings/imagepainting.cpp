@@ -24,6 +24,7 @@
 #include <QTransform>
 
 #include <cmath>
+#include "ink.h"
 
 namespace {
 //! The placeholder written for a painting that carries no image.
@@ -68,9 +69,9 @@ void ImagePainting::paint(QPainter* painter) {
 
     // Draw selection handles when selected
     if (isSelected) {
-      painter->setPen(QPen(Qt::darkGray, penWidth + 5));
+      painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray, penWidth + 5)));
       painter->drawRect(bounds);
-      painter->setPen(QPen(Qt::white, penWidth, penStyle));
+      painter->setPen(qucs_s::ink::on(QPen(Qt::white, penWidth, penStyle)));
       painter->drawRect(bounds);
 
       // Draw resize handles

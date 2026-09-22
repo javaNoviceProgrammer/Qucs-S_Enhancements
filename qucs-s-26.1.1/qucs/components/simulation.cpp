@@ -2,6 +2,7 @@
 #include "settings.h"
 #include <vector>
 #include <QPainter>
+#include "ink.h"
 
 namespace {
 const QPen wrongSimulatorPen{Qt::gray};
@@ -116,7 +117,7 @@ void SimulationComponent::drawSymbol(QPainter *p)
     const auto label_font = labelFont();
 
     p->save();
-    p->setPen(pen());
+    p->setPen(qucs_s::ink::on(pen()));
     p->setFont(label_font);
     QRect label_bounds;
     p->drawText(0, 0, 1, 1, Qt::TextDontClip, label_text, &label_bounds);

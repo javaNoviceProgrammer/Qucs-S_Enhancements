@@ -21,6 +21,7 @@
 
 #include <QPainter>
 #include "qucs_assert.h"
+#include "ink.h"
 
 Node::Node(int x, int y)
   : DType("")
@@ -36,24 +37,24 @@ void Node::paint(QPainter* painter) const {
   painter->save();
 
   if (isSelected) {
-      painter->setPen(QPen(Qt::darkGray, 5));
+      painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray, 5)));
       painter->drawEllipse(cx-5, cy-5, 10, 10);
   }
   else if (conn_count() == 1) {
       if (hasLabel()) {
-        painter->fillRect(cx-2, cy-2, 4, 4, Qt::darkBlue); // open but labeled
+        painter->fillRect(cx-2, cy-2, 4, 4, qucs_s::ink::on(Qt::darkBlue)); // open but labeled
       } else {
-        painter->setPen(QPen(Qt::red,1));  // node is open
+        painter->setPen(qucs_s::ink::on(QPen(Qt::red,1)));  // node is open
         painter->drawEllipse(cx-4, cy-4, 8, 8);
       }
   }
   else if (conn_count() > 2) {
-      painter->setBrush(Qt::darkBlue);  // more than 2 connections
-      painter->setPen(QPen(Qt::darkBlue,1));
+      painter->setBrush(qucs_s::ink::on(Qt::darkBlue));  // more than 2 connections
+      painter->setPen(qucs_s::ink::on(QPen(Qt::darkBlue,1)));
       painter->drawEllipse(cx-3, cy-3, 6, 6);
   }
   else if (m_wires.size() != 2) {
-      painter->fillRect(cx-2, cy-2, 4, 4, Qt::darkBlue);
+      painter->fillRect(cx-2, cy-2, 4, 4, qucs_s::ink::on(Qt::darkBlue));
   }
 
   painter->restore();

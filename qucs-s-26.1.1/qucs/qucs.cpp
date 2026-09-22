@@ -46,11 +46,14 @@
 
 #include "main.h"
 #include "qucs.h"
+#include "ink.h"
 #include "qucsdoc.h"
 #include "textdoc.h"
 #include "autosave.h"
 #include "crashhandler.h"
 #include <QTimer>
+#include <QGuiApplication>
+#include <QStyleHints>
 #include <QStandardPaths>
 #include <QActionGroup>
 #include "schematic.h"
@@ -407,9 +410,24 @@ void QucsApp::initView()
   editText->setFrame(false);
   editText->setHidden(true);
 
-  QPalette p = palette();
-  p.setColor(backgroundRole(), QucsSettings.BGColor);
-  editText->setPalette(p);
+  // The inline editor's colours: those of the paper it is shown on.
+  {
+    const QColor paper = misc::paperColor();
+    QPalette p = palette();
+    p.setColor(backgroundRole(), paper);
+    p.setColor(foregroundRole(), qucs_s::ink::isDark(paper) ? QColor(235, 235, 235) : QColor(Qt::black));
+    editText->setPalette(p);
+  }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+  // The system turning dark or light: a paper that follows the theme
+  // follows it (once the application's palette has changed).
+  connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this] {
+    QTimer::singleShot(0, this, [this] {
+      QucsSettings.hasDarkTheme = misc::isDarkTheme();
+      applyPaper();
+    });
+  });
+#endif
 
   connect(editText, SIGNAL(returnPressed()), SLOT(slotApplyCompText()));
   connect(editText, SIGNAL(textChanged(const QString&)),

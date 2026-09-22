@@ -121,6 +121,7 @@ bool loadSettings()
     QucsSettings.ContentRefreshSeconds = qBound(1, _settings::Get().item<int>("ContentRefreshSeconds"), 3600);
     QucsSettings.ShowPinNames = _settings::Get().item<bool>("ShowPinNames");
     QucsSettings.ShowPinDirections = _settings::Get().item<bool>("ShowPinDirections");
+    QucsSettings.PaperFollowsTheme = _settings::Get().item<bool>("PaperFollowsTheme");
     QucsSettings.SimulationConsoleHost = _settings::Get().item<int>("SimulationConsoleHost");
     if (!settings.contains("SimulationConsoleHost") && settings.contains("SimulationConsoleDock")
         && !settings.value("SimulationConsoleDock").toBool())   // the earlier two-way setting
@@ -211,6 +212,7 @@ bool saveApplSettings()
     qs.setItem<int>("ContentRefreshSeconds",QucsSettings.ContentRefreshSeconds);
     qs.setItem<bool>("ShowPinNames",QucsSettings.ShowPinNames);
     qs.setItem<bool>("ShowPinDirections",QucsSettings.ShowPinDirections);
+    qs.setItem<bool>("PaperFollowsTheme",QucsSettings.PaperFollowsTheme);
     qs.setItem<int>("SimulationConsoleHost",QucsSettings.SimulationConsoleHost);
     qs.setItem<int>("Theme",QucsSettings.Theme);
 

@@ -23,6 +23,7 @@
 #include <QMargins>
 #include <QString>
 #include <QPainter>
+#include "ink.h"
 
 WireLabel::WireLabel(const QString& _Name, int _cx, int _cy,
                      int _x1, int _y1)
@@ -60,10 +61,10 @@ void WireLabel::paint(QPainter *p) const {
   newFont.setWeight(isHighlighted ? QFont::Bold : QFont::Normal);
   p->setFont(newFont);
 
-  p->setPen(QPen{
+  p->setPen(qucs_s::ink::on(QPen{
     isHighlighted ? Qt::darkBlue : Qt::black,
     isHighlighted ? 3.0 : 1.0
-  });
+  }));
 
   QRect text_br;
   p->drawText(x1, y1, 1, 1, Qt::TextDontClip, Name, &text_br);
@@ -71,7 +72,7 @@ void WireLabel::paint(QPainter *p) const {
   bool right = text_br.right() < cx;
   bool bottom = text_br.bottom() < cy;
 
-  p->setPen(QPen{initValue.isEmpty() ? Qt::darkMagenta : Qt::red,0});
+  p->setPen(qucs_s::ink::on(QPen{initValue.isEmpty() ? Qt::darkMagenta : Qt::red,0}));
 
   text_br = text_br.marginsAdded(QMargins{3, 3, 3, 3});
   p->drawLine(cx, cy, right ? text_br.right() : text_br.left(), bottom ? text_br.bottom() : text_br.top());
@@ -99,7 +100,7 @@ void WireLabel::paint(QPainter *p) const {
 
   if(isSelected)
   {
-    p->setPen(QPen(Qt::darkGray,3));
+    p->setPen(qucs_s::ink::on(QPen(Qt::darkGray,3)));
     p->drawRoundedRect(QRect{{x1,y1}, textSize}, 4, 4);
   }
   p->restore();

@@ -214,6 +214,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   package now has a field of its own in the properties dialog, the
   netlister finds it by name, and a schematic saved with the problem
   loads right (the misplaced option is put back).
+- **Schematics on dark paper**: symbols, wires and texts are drawn in
+  fixed colours meant for light paper — dark blue above all — and
+  vanished on a dark background colour. They now fit the paper they are
+  drawn on: on dark paper a colour that would not show gets the
+  lightness it lacks and keeps its hue (dark blue becomes light blue,
+  black light grey, dark red pink), a colour that shows is left alone,
+  and a diagram is drawn as a light card, as it prints. On light paper,
+  and in every print and export, nothing changes. *Application
+  Settings → Appearance → Dark schematic paper in the dark theme*
+  (off by default) gives the canvas dark paper whenever the theme is
+  dark, and follows the system when it switches; a dark *Document
+  Background Color* of your own works the same way.
 - **DC bias labels find their own place** (upstream #1692): after
   *Calculate DC bias* every value used to be drawn at the same fixed
   offset from its node, whatever was there — on the symbol, across a
