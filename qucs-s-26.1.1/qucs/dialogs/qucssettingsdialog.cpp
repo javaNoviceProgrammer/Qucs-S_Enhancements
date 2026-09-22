@@ -189,6 +189,21 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                       "sub-trees (Toggle hierarchy search view). Off: plain rows."));
     appSettingsGrid->addWidget(contentFolderIcons, 12, 1);
 
+    appSettingsGrid->addWidget(new QLabel(tr("Pin names in subcircuit symbols:"), appSettingsTab), 13, 0);
+    showPinNames = new QCheckBox(appSettingsTab);
+    showPinNames->setToolTip(tr("Write the name of each pin inside the symbol of a subcircuit - the "
+                                "name the netlist gives that pin.\n"
+                                "Off: only what the symbol itself draws."));
+    appSettingsGrid->addWidget(showPinNames, 13, 1);
+
+    appSettingsGrid->addWidget(new QLabel(tr("Pin directions in subcircuit symbols:"), appSettingsTab), 14, 0);
+    showPinDirections = new QCheckBox(appSettingsTab);
+    showPinDirections->setToolTip(tr("Mark which way each pin points, from the type of the port it stands "
+                                     "for (in, out, inout).\n"
+                                     "A symbol drawn anew then puts the inputs on the left and the outputs "
+                                     "on the right."));
+    appSettingsGrid->addWidget(showPinDirections, 14, 1);
+
     // ...........................................................
     // The appearance settings tab
     QWidget *appAppearanceTab = new QWidget(t);
@@ -602,6 +617,8 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     contentRefreshSeconds->setValue(QucsSettings.ContentRefreshSeconds);
     contentRefreshSeconds->setEnabled(QucsSettings.ContentAutoRefresh);
     contentFolderIcons->setChecked(QucsSettings.ContentFolderIcons);
+    showPinNames->setChecked(QucsSettings.ShowPinNames);
+    showPinDirections->setChecked(QucsSettings.ShowPinDirections);
 
     ShortcutButton->setText("Custom Shortcut");
 
@@ -837,6 +854,8 @@ void QucsSettingsDialog::slotApply()
     QucsSettings.ContentAutoRefresh = contentAutoRefresh->isChecked();
     QucsSettings.ContentRefreshSeconds = contentRefreshSeconds->value();
     QucsSettings.ContentFolderIcons = contentFolderIcons->isChecked();
+    QucsSettings.ShowPinNames = showPinNames->isChecked();
+    QucsSettings.ShowPinDirections = showPinDirections->isChecked();
 
     QucsSettings.FileTypes.clear();
     for (int row=0; row < fileTypesTableWidget->rowCount(); row++)
@@ -1044,6 +1063,8 @@ void QucsSettingsDialog::slotDefaultValues()
     contentAutoRefresh->setChecked(true);
     contentRefreshSeconds->setValue(3);
     contentFolderIcons->setChecked(false);
+    showPinNames->setChecked(true);
+    showPinDirections->setChecked(false);
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));
     checkLoadFromFutureVersions->setChecked(false);
     checkAntiAliasing->setChecked(false);

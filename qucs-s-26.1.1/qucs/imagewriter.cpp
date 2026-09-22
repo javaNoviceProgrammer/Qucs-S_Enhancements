@@ -93,6 +93,9 @@ ImageWriter::noGuiPrint(QWidget *doc, const QString& printFile, const QString& c
     }
 
     QPainter* p = new QPainter(img);
+    // The image comes out of the allocator with whatever was in that
+    // memory; paint the paper first, as the interactive export does.
+    p->fillRect(img->rect(), Qt::white);
     sch->print(nullptr, p, true, true, bourder);
 
     img->save(printFile);

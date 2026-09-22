@@ -118,6 +118,8 @@ struct Polyline : DrawingPrimitive {
   std::vector<QPointF> points;
   QPen pen;
   QBrush brush;
+  //! Whether the last point joins the first: a polygon, not a polyline.
+  bool closed = false;
 
   Polyline(const std::vector<QPointF> &pts, QPen p = QPen{Qt::NoPen}, QBrush b = QBrush{Qt::NoBrush})
     : points(pts), pen{p}, brush{b} {};
@@ -136,6 +138,12 @@ struct Port {
   int   x, y;
   bool  avail;
   QString Type;
+  //! What the symbol calls this pin, from the .PortSym line it was read
+  //! from; empty for a component whose symbol is drawn in C++.
+  QString Name;
+  //! "in", "out", "inout" or "analog", as the subcircuit's port declares
+  //! it; empty when the symbol does not say.
+  QString Dir;
   Node *Connection;
 };
 

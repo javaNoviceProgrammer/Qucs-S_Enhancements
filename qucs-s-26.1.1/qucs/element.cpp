@@ -59,7 +59,8 @@ void Image::draw(QPainter* painter) const {
 }
 
 void Polyline::draw(QPainter* painter) const {
-    painter->drawPolyline(points.data(), points.size());
+    if (closed) painter->drawPolygon(points.data(), points.size());
+    else painter->drawPolyline(points.data(), points.size());
 }
 
 } // namespace qucs

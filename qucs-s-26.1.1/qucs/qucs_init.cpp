@@ -175,6 +175,33 @@ void QucsApp::initActions() {
       tr("Edit Circuit Symbol\n\nEdits the symbol for this schematic"));
   connect(symEdit, SIGNAL(triggered()), SLOT(slotSymbolEdit()));
 
+  symRecreate = new QAction(tr("&Recreate Circuit Symbol"), this);
+  symRecreate->setStatusTip(tr("Draws the symbol for this schematic anew"));
+  symRecreate->setWhatsThis(
+      tr("Recreate Circuit Symbol\n\nThrows the symbol's drawing away and "
+         "lays the ports out around a fresh box"));
+  connect(symRecreate, SIGNAL(triggered()), SLOT(slotSymbolRecreate()));
+
+  symPinOrder = new QAction(tr("&Pin Order..."), this);
+  symPinOrder->setStatusTip(tr("Sets the order of the pins of this subcircuit"));
+  symPinOrder->setWhatsThis(
+      tr("Pin Order\n\nSets which pin of the subcircuit comes first, second, ..."));
+  connect(symPinOrder, SIGNAL(triggered()), SLOT(slotSymbolPinOrder()));
+
+  symSaveAs = new QAction(tr("Sa&ve Symbol As..."), this);
+  symSaveAs->setStatusTip(tr("Saves this schematic's symbol as a symbol file"));
+  symSaveAs->setWhatsThis(
+      tr("Save Symbol As\n\nWrites the symbol of this schematic into a .sym "
+         "file, to be used by another schematic"));
+  connect(symSaveAs, SIGNAL(triggered()), SLOT(slotSymbolSaveAs()));
+
+  symLoad = new QAction(tr("&Load Symbol..."), this);
+  symLoad->setStatusTip(tr("Takes the symbol of this schematic from a file"));
+  symLoad->setWhatsThis(
+      tr("Load Symbol\n\nReplaces the drawing of this schematic's symbol with "
+         "the one in a .sym file or in another schematic; the ports stay"));
+  connect(symLoad, SIGNAL(triggered()), SLOT(slotSymbolLoad()));
+
   fileSettings = new QAction(tr("&Document Settings..."), this);
   fileSettings->setShortcut(tr("Ctrl+."));
   fileSettings->setStatusTip(tr("Document Settings"));
@@ -936,6 +963,13 @@ void QucsApp::initMenuBar() {
   fileMenu->addSeparator();
   fileMenu->addAction(fileSettings);
   fileMenu->addAction(symEdit);
+  symbolMenu = new QMenu(tr("S&ymbol"));
+  symbolMenu->addAction(symRecreate);
+  symbolMenu->addAction(symPinOrder);
+  symbolMenu->addSeparator();
+  symbolMenu->addAction(symSaveAs);
+  symbolMenu->addAction(symLoad);
+  fileMenu->addMenu(symbolMenu);
   fileMenu->addSeparator();
   fileMenu->addAction(applSettings);
   fileMenu->addAction(refreshSchPath);
@@ -1450,6 +1484,12 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("File.EditSymbol", "File", "Edit Circuit Symbol", symEdit,
                       QKeySequence(Qt::Key_F9));
+
+  mgr.registerCommand("File.RecreateSymbol", "File", "Recreate Circuit Symbol",
+                      symRecreate, QKeySequence());
+  mgr.registerCommand("File.PinOrder", "File", "Pin Order", symPinOrder, QKeySequence());
+  mgr.registerCommand("File.SaveSymbolAs", "File", "Save Symbol As", symSaveAs, QKeySequence());
+  mgr.registerCommand("File.LoadSymbol", "File", "Load Symbol", symLoad, QKeySequence());
 
   mgr.registerCommand("File.AppSettings", "File", "Application Settings",
                       applSettings, QKeySequence(Qt::CTRL | Qt::Key_Comma));

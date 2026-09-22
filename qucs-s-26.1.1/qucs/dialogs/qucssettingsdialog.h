@@ -182,6 +182,8 @@ public:
 
     /// @brief Folder icons on the Content panel's sub-tree folder rows.
     QCheckBox *contentFolderIcons;
+    QCheckBox *showPinNames;
+    QCheckBox *showPinDirections;
 
     /// @brief Enables anti-aliasing for diagram graphs.
     QCheckBox *checkAntiAliasing;

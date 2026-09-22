@@ -65,6 +65,7 @@
 #include "components/vhdlfile.h"
 #include "components/verilogfile.h"
 #include "components/subcircuit.h"
+#include "dialogs/pinorderdialog.h"
 #include "dialogs/savedialog.h"
 #include "dialogs/newprojdialog.h"
 #include "dialogs/settingsdialog.h"
@@ -1088,7 +1089,9 @@ void QucsApp::slotSetCompView (int index)
         QListWidgetItem *icon = new QListWidgetItem(Name);
         if (QFileInfo::exists(icon_path)) {
             icon->setIcon(QPixmap(icon_path));
-        } else {
+        } else if ((*it)->icon != nullptr) {
+            // A painting is registered without one; only components get
+            // an icon painted for them.
             icon->setIcon(*(*it)->icon);
         }
         icon->setToolTip(Name);
@@ -1147,7 +1150,7 @@ void QucsApp::slotSearchComponent(const QString &searchText)
             QListWidgetItem *icon = new QListWidgetItem(Name);
             if (QFileInfo::exists(icon_path)) {
                 icon->setIcon(QPixmap(icon_path));
-            } else {
+            } else if ((*modit)->icon != nullptr) {
                 icon->setIcon(*(*modit)->icon);
             }
             icon->setToolTip(it + ": " + Name);
@@ -3769,6 +3772,126 @@ bool QucsApp::isTextDocument(QWidget *w) {
 // Is called if the "symEdit" action is activated, i.e. if the user
 // switches between the two painting mode: Schematic and (subcircuit)
 // symbol.
+// -----------------------------------------------------------
+// The document whose symbol these commands work on: a schematic that is
+// a subcircuit, not a text document and not a symbol file of its own.
+Schematic* QucsApp::symbolDocument()
+{
+  QWidget* w = DocumentTab->currentWidget();
+  if (isTextDocument(w)) {
+    QMessageBox::information(this, tr("Symbol"),
+        tr("A text document has no circuit symbol of its own."));
+    return nullptr;
+  }
+
+  Schematic* Doc = (Schematic*)w;
+  if (Doc == nullptr) return nullptr;
+  if (Doc->getIsSymbolOnly()) {
+    QMessageBox::information(this, tr("Symbol"),
+        tr("This document is a symbol already; it has no schematic to read the ports from."));
+    return nullptr;
+  }
+  return Doc;
+}
+
+// -----------------------------------------------------------
+// Throws the symbol's drawing away and lays the ports out around a fresh
+// box. Switches into symbol mode first, so the result is on screen.
+void QucsApp::slotSymbolRecreate()
+{
+  Schematic* Doc = symbolDocument();
+  if (Doc == nullptr) return;
+
+  if (QMessageBox::question(this, tr("Recreate Circuit Symbol"),
+          tr("Everything drawn in the symbol is replaced by a box with the ports "
+             "around it. Go ahead?"),
+          QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+    return;
+
+  if (!Doc->getSymbolMode()) {
+    slotSymbolEdit();
+    Doc = currentSchematic();
+    if (Doc == nullptr || !Doc->getSymbolMode()) return;
+  }
+
+  if (!Doc->recreateSubcircuitSymbol()) {
+    QMessageBox::information(this, tr("Recreate Circuit Symbol"),
+        tr("This schematic has no ports, so it has no symbol to draw."));
+    return;
+  }
+
+  Doc->updateAllBoundingRect();
+  Doc->setChanged(true, true);
+  Doc->viewport()->update();
+}
+
+// -----------------------------------------------------------
+void QucsApp::slotSymbolPinOrder()
+{
+  Schematic* Doc = symbolDocument();
+  if (Doc == nullptr) return;
+
+  PinOrderDialog dialog(Doc, this);
+  if (dialog.exec() != QDialog::Accepted) return;
+  if (!dialog.changedAnything()) return;
+
+  Doc->setChanged(true, true);
+  Doc->viewport()->update();
+}
+
+// -----------------------------------------------------------
+// Writes the symbol of this schematic into a file of its own, so another
+// schematic can take it.
+void QucsApp::slotSymbolSaveAs()
+{
+  Schematic* Doc = symbolDocument();
+  if (Doc == nullptr) return;
+
+  QFileInfo info(Doc->getDocName());
+  const QString suggestion =
+      (info.path().isEmpty() ? QucsSettings.QucsWorkDir.path() : info.path())
+      + QDir::separator() + info.completeBaseName() + ".sym";
+
+  const QString file = QFileDialog::getSaveFileName(this, tr("Save Symbol As"), suggestion,
+                                                    tr("Symbol files") + " (*.sym)");
+  if (file.isEmpty()) return;
+
+  if (!Doc->saveSymbolToFile(file))
+    QMessageBox::critical(this, tr("Error"), tr("Cannot write \"%1\"!").arg(file));
+}
+
+// -----------------------------------------------------------
+// Replaces the drawing of this schematic's symbol with the one in
+// another file; this schematic's ports stay, moved to where that symbol
+// puts the port of the same number.
+void QucsApp::slotSymbolLoad()
+{
+  Schematic* Doc = symbolDocument();
+  if (Doc == nullptr) return;
+
+  QFileInfo info(Doc->getDocName());
+  const QString where = info.path().isEmpty() ? QucsSettings.QucsWorkDir.path() : info.path();
+  const QString file = QFileDialog::getOpenFileName(this, tr("Load Symbol"), where,
+      tr("Symbol and schematic files") + " (*.sym *.sch);;" + tr("All files") + " (*)");
+  if (file.isEmpty()) return;
+
+  if (!Doc->getSymbolMode()) {
+    slotSymbolEdit();
+    Doc = currentSchematic();
+    if (Doc == nullptr || !Doc->getSymbolMode()) return;
+  }
+
+  const QString trouble = Doc->loadSymbolFromFile(file);
+  if (!trouble.isEmpty()) {
+    QMessageBox::critical(this, tr("Error"), trouble);
+    return;
+  }
+
+  Doc->updateAllBoundingRect();
+  Doc->setChanged(true, true);
+  Doc->viewport()->update();
+}
+
 void QucsApp::slotSymbolEdit()
 {
   QWidget *w = DocumentTab->currentWidget();

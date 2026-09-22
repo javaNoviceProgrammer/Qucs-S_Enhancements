@@ -235,6 +235,28 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   core (`share/qucs-s/spicelibrary`), and looked for its resources in the
   wrong place when kept under a directory named `bin`; both fixed, and
   the `simulate` smoke suite now runs circuits that include those files.
+- **Making a subcircuit's symbol**: the instances of a subcircuit write
+  the name of every pin inside the symbol — the name the netlist gives
+  that pin — so a box no longer says only `sub`. *File → Symbol* holds
+  the rest: *Recreate Circuit Symbol* throws the drawing away and lays
+  the ports out around a fresh box, wide enough for the names it now
+  carries (there was no way to redraw it once a symbol existed);
+  *Pin Order…* says which pin is the first argument of the `.SUBCKT` and
+  the first pin of every instance; *Save Symbol As…* writes the symbol
+  into a `.sym` of its own and *Load Symbol…* takes one back, keeping
+  this schematic's ports and moving each to where that symbol puts the
+  port of its number. A *polyline* painting (open, or closed and filled)
+  joins the line, arc, ellipse and rectangle — click a corner at a time,
+  click the last one again to finish or the first one to close it — and,
+  like every other drawing, it reaches the instances of the subcircuit
+  and turns and mirrors with them. Under *Application Settings →
+  Settings*, *Pin names in subcircuit symbols* (on) and *Pin directions
+  in subcircuit symbols* (off): with the second, a mark on each pin says
+  which way it points — from the type of the port it stands for — and a
+  symbol drawn anew puts the inputs on the left and the outputs on the
+  right. Fixed on the way: a schematic exported to PNG from the command
+  line (`-p`) was painted over uninitialised memory, so its background
+  was whatever had been in it.
 - **A subcircuit's pin, its net and its symbol carry one name**: the
   netlist calls a pin of a `.SUBCKT` after the net the port sits on, so
   that is what the symbol now writes beside the pin — the label of the

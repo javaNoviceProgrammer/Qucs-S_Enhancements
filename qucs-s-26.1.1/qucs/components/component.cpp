@@ -46,6 +46,110 @@
  * \class Component
  * \brief The Component class implements a generic analog component
  */
+
+namespace {
+
+//! A font a little smaller than the one the properties use.
+QFont pinFont()
+{
+    QFont font = QucsSettings.font;
+    if (font.pointSizeF() > 0.0)
+        font.setPointSizeF(std::max(5.0, font.pointSizeF() * 0.85));
+    else if (font.pixelSize() > 0)
+        font.setPixelSize(std::max(6, int(font.pixelSize() * 0.85)));
+    return font;
+}
+
+//! The far end of the pin's stub. A symbol draws each pin as a short
+//! line from the port into the body, so the other end of that line is
+//! where the drawing starts; a symbol without one gets a usual stub.
+QPoint pinAnchor(const Port* port, const QList<qucs::Line*>& lines)
+{
+    for (const qucs::Line* line : lines) {
+        if (qRound(line->x1) == port->x && qRound(line->y1) == port->y)
+            return QPoint(qRound(line->x2), qRound(line->y2));
+        if (qRound(line->x2) == port->x && qRound(line->y2) == port->y)
+            return QPoint(qRound(line->x1), qRound(line->y1));
+    }
+    return QPoint();   // no stub: the caller falls back to the boundings
+}
+
+//! Which way is into the symbol from this pin: along its stub, or - for
+//! a pin drawn without one - towards the middle of the drawing. Either
+//! way it follows the component when that is turned or mirrored.
+QPoint inwards(const Port* port, const QPoint& anchor, const QRect& body)
+{
+    int dx = anchor.isNull() ? port->x - body.center().x() : anchor.x() - port->x;
+    int dy = anchor.isNull() ? port->y - body.center().y() : anchor.y() - port->y;
+    if (anchor.isNull()) { dx = -dx; dy = -dy; }   // towards the middle
+
+    if (std::abs(dx) >= std::abs(dy)) return QPoint(dx >= 0 ? 1 : -1, 0);
+    return QPoint(0, dy >= 0 ? 1 : -1);
+}
+
+//! Which way the pin points, as a small mark just inside the symbol:
+//! into it for an input, out of it for an output, a diamond for a port
+//! that is both. Returns how much room it took along the pin.
+int drawPinDirection(QPainter* painter, const QString& direction, const QPoint& at, const QPoint& in)
+{
+    const QString dir = direction.toLower();
+    const bool isIn = dir == QLatin1String("in");
+    const bool isOut = dir == QLatin1String("out");
+    const bool isBoth = dir == QLatin1String("inout");
+    if (!isIn && !isOut && !isBoth) return 0;
+
+    constexpr int gap = 3, length = 7, half = 3;
+    const QPoint near_(at + QPoint(gap * in.x(), gap * in.y()));
+    const QPoint far_(near_ + QPoint(length * in.x(), length * in.y()));
+    const QPoint across(half * in.y(), half * in.x());
+
+    painter->save();
+    painter->setPen(QPen(Qt::darkGreen, 1));
+    painter->setBrush(QBrush(Qt::darkGreen));
+    if (isBoth) {
+        const QPoint middle((near_ + far_) / 2);
+        painter->drawPolygon(QPolygon() << near_ << (middle + across) << far_ << (middle - across));
+    } else if (isIn) {
+        painter->drawPolygon(QPolygon() << far_ << (near_ + across) << (near_ - across));
+    } else {
+        painter->drawPolygon(QPolygon() << near_ << (far_ + across) << (far_ - across));
+    }
+    painter->restore();
+
+    return gap + length;
+}
+
+//! The pin's name, written just inside the symbol from the end of its
+//! stub.
+void drawPinName(QPainter* painter, const QPoint& from, const QPoint& in, const QString& text,
+                 int gap)
+{
+    const QFontMetrics metrics(painter->font(), nullptr);
+    const int w = metrics.horizontalAdvance(text) + 2;
+    const int h = metrics.height();
+    const QPoint at(from + QPoint(gap * in.x(), gap * in.y()));
+    gap = 0;
+
+    QRect where;
+    int flags = 0;
+    if (in.x() > 0) {          // the pin comes in from the left
+        where = QRect(at.x() + gap, at.y() - h / 2, w, h);
+        flags = Qt::AlignLeft | Qt::AlignVCenter;
+    } else if (in.x() < 0) {   // from the right
+        where = QRect(at.x() - gap - w, at.y() - h / 2, w, h);
+        flags = Qt::AlignRight | Qt::AlignVCenter;
+    } else if (in.y() > 0) {   // from above
+        where = QRect(at.x() - w / 2, at.y() + gap, w, h);
+        flags = Qt::AlignHCenter | Qt::AlignTop;
+    } else {                   // from below
+        where = QRect(at.x() - w / 2, at.y() - gap - h, w, h);
+        flags = Qt::AlignHCenter | Qt::AlignBottom;
+    }
+
+    painter->drawText(where, flags, text);
+}
+
+} // namespace
 Component::Component() {
     Type = isAnalogComponent;
 
@@ -284,6 +388,50 @@ void Component::drawSymbol(QPainter* p) {
     for (qucs::DrawingPrimitive *text: Texts) {
         draw_primitive(text, p);
     }
+
+    drawPins(p);
+}
+
+// The pins of a symbol that was read from a file (a subcircuit, a
+// library component) know what they are called and which way they
+// point; both are written into the drawing, under the settings.
+void Component::drawPins(QPainter* p) {
+    const bool names = QucsSettings.ShowPinNames;
+    const bool directions = QucsSettings.ShowPinDirections;
+    if (!names && !directions) return;
+
+    const QRect body{x1, y1, x2 - x1, y2 - y1};
+    if (body.isEmpty()) return;
+
+    p->save();
+    p->setPen(QPen(Qt::black, 1));
+    p->setFont(pinFont());
+
+    for (const Port* port : Ports) {
+        if (!port->avail) continue;
+        if (port->Name.isEmpty() && port->Dir.isEmpty()) continue;
+
+        const QPoint anchor = pinAnchor(port, Lines);
+        const QPoint in = inwards(port, anchor, body);
+        const QPoint at = anchor.isNull() ? QPoint(port->x + 10 * in.x(), port->y + 10 * in.y())
+                                          : anchor;
+
+        int gap = 3;
+        if (directions) {
+            const int took = drawPinDirection(p, port->Dir, at, in);
+            if (took > 0) gap = took + 2;
+        }
+
+        if (!names || port->Name.isEmpty()) continue;
+        // A symbol that writes the name itself does not need it twice.
+        const bool drawnAlready = std::any_of(Texts.begin(), Texts.end(),
+                                              [&](const Text* t) { return t->s == port->Name; });
+        if (drawnAlready) continue;
+
+        drawPinName(p, at, in, port->Name, gap);
+    }
+
+    p->restore();
 }
 
 // paint device icon for left panel list
@@ -1168,6 +1316,9 @@ int Component::analyseLine(const QString &Row, int numProps) {
         po->x = i1;
         po->y = i2;
         po->avail = true;
+        // ".PortSym cx cy number angle name": what the symbol calls the
+        // pin, which is what the netlist calls the net behind it.
+        po->Name = Row.section(' ', 5).trimmed();
 
         if (i1 < x1) x1 = i1;  // keep track of component boundings
         if (i1 > x2) x2 = i1;
@@ -1305,6 +1456,35 @@ int Component::analyseLine(const QString &Row, int numProps) {
         if (i1 + i3 > x2) x2 = i1 + i3;
         if (i2 + i4 < y1) y1 = i2 + i4;
         if (i2 + i4 > y2) y2 = i2 + i4;
+        return 1;
+    } else if (s == "Polyline") {
+        // "Polyline n x1 y1 ... xn yn colour width style fill fillstyle filled closed"
+        bool ok = false;
+        const int count = Row.section(' ', 1, 1).toInt(&ok);
+        if (!ok || count < 2 || count > 4096) return -1;
+
+        std::vector<QPointF> points;
+        points.reserve(count);
+        for (int k = 0; k < count; k++) {
+            const int px = misc::clampCoordinate(Row.section(' ', 2 + 2 * k, 2 + 2 * k).toInt(&ok));
+            if (!ok) return -1;
+            const int py = misc::clampCoordinate(Row.section(' ', 3 + 2 * k, 3 + 2 * k).toInt(&ok));
+            if (!ok) return -1;
+            points.push_back(QPointF(px, py));
+
+            if (px < x1) x1 = px;  // keep track of component boundings
+            if (px > x2) x2 = px;
+            if (py < y1) y1 = py;
+            if (py > y2) y2 = py;
+        }
+
+        const int field = 2 + 2 * count;
+        if (!getPen(Row, Pen, field)) return -1;
+        if (!getBrush(Row, Brush, field + 3)) return -1;
+
+        auto* polyline = new qucs::Polyline(points, Pen, Brush);
+        polyline->closed = Row.section(' ', field + 6, field + 6).toInt() != 0;
+        Polylines.append(polyline);
         return 1;
     } else if (s == "ImagePainting") {
         // The symbol carries the image itself, base64 of the file it was
@@ -1495,6 +1675,7 @@ void Component::copyComponent(Component *pc) {
     Arcs = pc->Arcs;
     Rects = pc->Rects;
     Ellipses = pc->Ellipses;
+    Polylines = pc->Polylines;
     Images = pc->Images;
     Texts = pc->Texts;
 }
@@ -1536,6 +1717,7 @@ QString Component::getSpiceSubstrateLine()
 void MultiViewComponent::recreate() {
     qDeleteAll(Images);
     Images.clear();
+    Polylines.clear();
     Ellipses.clear();
     Texts.clear();
     Ports.clear();

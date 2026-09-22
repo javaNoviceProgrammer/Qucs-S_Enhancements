@@ -18,6 +18,7 @@ set(DIALOGS_HDRS
     loaddialog.h
     matchdialog.h
     newprojdialog.h
+    pinorderdialog.h
     qucssettingsdialog.h
     qucsshortcutdialog.h
     savedialog.h
@@ -50,6 +51,7 @@ set(DIALOGS_SRCS
     matchdialog.cpp
     simmessage.cpp
     newprojdialog.cpp
+    pinorderdialog.cpp
     sweepdialog.cpp
     exportdialog.cpp
     loaddialog.cpp
@@ -72,6 +74,7 @@ set(DIALOGS_MOC_HDRS
     loaddialog.h
     matchdialog.h
     newprojdialog.h
+    pinorderdialog.h
     qucssettingsdialog.h
     savedialog.h
     searchdialog.h

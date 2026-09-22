@@ -49,7 +49,14 @@ public:
   bool Dialog(QWidget *Doc) override;
 
   QString numberStr, nameStr;
+  //! "in", "out", "inout" or "analog", from the Type of the port
+  //! component this symbol stands for. Worked out whenever the ports are
+  //! adjusted, not stored in the file, and only drawn when the setting
+  //! asks for it.
+  QString dirStr;
   void setPortName(const QString& newName);
+  //! Put this port where another one is, at the same angle.
+  void placeLike(const PortSymbol& other);
 private:
   int angle;
   QPoint m_textOrigin;

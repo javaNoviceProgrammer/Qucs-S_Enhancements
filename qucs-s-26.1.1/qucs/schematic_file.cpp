@@ -267,6 +267,92 @@ bool Schematic::isImageFilePath(const QString& path) {
 
 
 // -------------------------------------------------------------
+// Writes this schematic's symbol into a file of its own - the same shape
+// a ".sym" document is saved in - so that another schematic can take it.
+bool Schematic::saveSymbolToFile(const QString& path)
+{
+  QFile file(path);
+  if(!file.open(QIODevice::WriteOnly)) return false;
+
+  QTextStream stream(&file);
+  stream << "<Qucs Schematic " << PACKAGE_VERSION << ">\n";
+  stream << "<Symbol>\n";
+  for(auto* pp : a_SymbolPaints)
+    stream << "  <" << pp->save() << ">\n";
+  stream << "</Symbol>\n";
+  stream.flush();
+
+  const bool ok = file.error() == QFile::NoError;
+  file.close();
+  return ok;
+}
+
+// -------------------------------------------------------------
+// Replaces the drawing of this schematic's symbol with the one in
+// another file (a ".sym", or the symbol of a schematic). The ports stay
+// as this schematic has them - their numbers belong to it - but each
+// moves to where the file puts the port of the same number. Returns
+// what went wrong, or an empty string.
+QString Schematic::loadSymbolFromFile(const QString& path)
+{
+  QFile file(path);
+  if(!file.open(QIODevice::ReadOnly))
+    return QObject::tr("Cannot read \"%1\".").arg(path);
+
+  QString text = QString::fromUtf8(file.readAll());
+  file.close();
+
+  QTextStream stream(&text, QIODevice::ReadOnly);
+  QString line = stream.readLine().trimmed();
+  if(!line.startsWith("<Qucs Schematic "))
+    return QObject::tr("\"%1\" is not a Qucs-S document.").arg(path);
+
+  while(!stream.atEnd()) {
+    line = stream.readLine().trimmed();
+    if(line == "<Symbol>") break;
+  }
+  if(line != "<Symbol>")
+    return QObject::tr("\"%1\" holds no symbol.").arg(path);
+
+  std::list<Painting*> loaded;
+  if(!loadPaintings(&stream, &loaded)) {
+    for(auto* pp : loaded) delete pp;
+    return QObject::tr("The symbol in \"%1\" could not be read.").arg(path);
+  }
+  if(loaded.empty()) {
+    return QObject::tr("The symbol in \"%1\" is empty.").arg(path);
+  }
+
+  // Out with the old drawing, the ports excepted.
+  for(auto pp = a_SymbolPaints.begin(); pp != a_SymbolPaints.end();) {
+    if((*pp)->Name == ".PortSym ") { ++pp; continue; }
+    delete *pp;
+    pp = a_SymbolPaints.erase(pp);
+  }
+
+  for(Painting* pp : loaded) {
+    if(pp->Name != ".PortSym ") {
+      a_SymbolPaints.push_back(pp);
+      continue;
+    }
+    // A port of the incoming symbol places ours of the same number; one
+    // this schematic does not have is dropped, and one it has that the
+    // file does not place simply stays where it was.
+    const PortSymbol* incoming = static_cast<PortSymbol*>(pp);
+    for(auto* mine : a_SymbolPaints)
+      if(mine->Name == ".PortSym "
+         && static_cast<PortSymbol*>(mine)->numberStr == incoming->numberStr) {
+        static_cast<PortSymbol*>(mine)->placeLike(*incoming);
+        break;
+      }
+    delete pp;
+  }
+
+  adjustPortNumbers();   // the names and directions are this schematic's
+  return QString();
+}
+
+// -------------------------------------------------------------
 int Schematic::saveSymbolCpp (void)
 {
   QFileInfo info (a_DocName);
@@ -1102,6 +1188,7 @@ bool Schematic::loadPaintings(QTextStream *stream, std::list<Painting*> *List)
     else if(cstr == "Arrow") p = new Arrow();
     else if(cstr == "Ellipse") p = new qucs::Ellipse();
     else if(cstr == "ImagePainting") p = new ImagePainting();
+    else if(cstr == "Polyline") p = new PolylinePainting();
     else {
       misc::reportError(QObject::tr("Format Error:\nUnknown painting!"));
       return false;

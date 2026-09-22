@@ -136,6 +136,7 @@ protected:
   Schematic* containingSchematic;
 
   virtual void drawSymbol(QPainter* p);
+  void drawPins(QPainter* p);
   QString getSpiceSubstrateLine(); // get SPICE params for microstrips
 };
 

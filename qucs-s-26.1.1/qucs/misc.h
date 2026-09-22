@@ -42,6 +42,9 @@ namespace misc {
   void    convert2Unicode(QString&);
   void    convert2ASCII(QString&);
   QString properName(const QString&);
+  /// The font a symbol writes its pin names in: the application font, a
+  /// little smaller, so a name fits between two pins.
+  QFont pinFont();
   QString properAbsFileName(const QString&, Schematic* sch = nullptr);
   QString properFileName(const QString&);
   /// The files of a project: every regular file below root, at any depth,

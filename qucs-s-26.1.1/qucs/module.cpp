@@ -623,6 +623,7 @@ void Module::registerModules (void) {
   REGISTER_PAINT_2 (qucs::Rectangle, info, info_filled);
   REGISTER_PAINT_1 (EllipseArc);
   REGISTER_PAINT_1 (ImagePainting);
+  REGISTER_PAINT_2 (PolylinePainting, info, info_filled);
 
 }
 

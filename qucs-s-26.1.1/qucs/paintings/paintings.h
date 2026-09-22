@@ -31,5 +31,6 @@
 #include "ellipsearc.h"
 #include "id_text.h"
 #include "imagepainting.h"
+#include "polylinepainting.h"
 
 #endif
