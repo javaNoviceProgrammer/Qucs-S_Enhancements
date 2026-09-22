@@ -62,3 +62,4 @@ add_executable(simout_harness
 target_include_directories(simout_harness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_compile_definitions(simout_harness PRIVATE HAVE_CONFIG_H)
 target_link_libraries(simout_harness ${QUCS_LINK_LIBRARIES})
+qucs_add_test(test_simulator_modes)

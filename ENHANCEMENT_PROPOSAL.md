@@ -455,11 +455,32 @@ existing demand.
   or redo closes the sequence. Upstream neither recorded the move nor
   marked the document changed, so a keyboard-moved schematic could be
   closed without a save prompt. `qucs/tests/test_keyboard_move` covers it.
-- **Open any file regardless of current simulator mode** (#1468): today the
-  component palette is torn down and rebuilt on simulator switch
-  (`Module::registerModules`), so a `.sch` for another backend fails to
-  resolve components. Fix: register *all* components once and filter the
-  palette view instead of the registry.
+- *Done:* **Open any file regardless of current simulator mode** (#1468).
+  `Module::registerComponent()` put a component into `Module::Modules`
+  (the hash `getComponentFromName()` reads) only when its `Simulator`
+  mask covered the simulator in use, so a `.sch` for another backend
+  did not resolve: headless it failed to load, and the GUI asked, per
+  unknown part, whether to put an empty subcircuit in its place - which
+  the next save wrote over the part. `Schematic::rebuild()` (undo, redo)
+  reads the document the same way, so an undo after a simulator switch
+  lost those parts too. Now every component goes into the hash and only
+  the palette is filtered: a component for another simulator is kept in
+  `Module::Unlisted` (owned there, freed by `unregisterModules()`) and
+  put in no category; of two classes with one model name the first for
+  the simulator in use still reads it. `registerModule()` applies the
+  same filter to the equation blocks it registers (the *equations*
+  group offered the SPICE ones to Qucsator and `.CSPARAM` to Xyce).
+  Such a part is drawn with `WrongSimulatorPen`, the ERC reports it as
+  "not available for", and the SPICE netlister refuses the run, all as
+  before. The `-p` renderer's switch to `simNotSpecified`, added as a
+  workaround for this, stays so that a print has no grey parts.
+  Over the 247 shipped examples, ngspice refused 30, Xyce 32, SPICE OPUS
+  31 and Qucsator 93; now none (but `tunn.sch`, whose device exists only
+  after *Load Verilog-A module*). `qucs/tests/test_simulator_modes`
+  covers the palette, every component and every example under every
+  simulator, the shared model names, the file round trip, the
+  application opening one without a question, and undo after a switch;
+  five of its cases fail on the old registry.
 - *Done:* **Embedded, dockable simulation console** (#235).
   `ExternSimDialog` became `SimulationRun` (`extsimkernels/simulationrun.*`):
   the same netlist → process → output-check → dataset-conversion logic, as
