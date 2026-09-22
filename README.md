@@ -230,6 +230,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   terms and tapers) or are hidden under a SPICE simulator as Qucsator's
   (the DC block's settings, the AC block's Noise, the delay of the
   controlled sources, …), the way the transient block's already were.
+  Found on the way: the macOS bundle shipped without the SPICE
+  subcircuits of the transformer, relay, switch, coax line and magnetic
+  core (`share/qucs-s/spicelibrary`), and looked for its resources in the
+  wrong place when kept under a directory named `bin`; both fixed, and
+  the `simulate` smoke suite now runs circuits that include those files.
 - **Cursor-key moves are undoable and cancellable**: moving the selection
   with the arrow keys marks the document modified, is one undo step for the
   whole sequence, and Escape takes it back while it is the latest change

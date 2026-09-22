@@ -12,8 +12,8 @@
 #
 # What it does, mirroring upstream's deploy.yml:
 #   * copies the tool apps (filter, transcalc, ...) and qucsator into
-#     qucs-s.app/Contents/MacOS/bin, and examples/library/symbols/lang into
-#     Contents/MacOS/share/qucs-s (main.cpp resolves resources relative to
+#     qucs-s.app/Contents/MacOS/bin, and examples/library/symbols/spicelibrary/
+#     lang into Contents/MacOS/share/qucs-s (main.cpp resolves resources relative to
 #     the executable, so this layout is what the app expects);
 #   * runs macdeployqt on the main app and every nested app so the Qt
 #     frameworks and plugins travel with the bundle;
@@ -67,8 +67,17 @@ for tool in qucs-activefilter/qucs-sactivefilter qucs-attenuator/qucs-sattenuato
 done
 cp -p "$build/qucsator_rf/src/qucsator_rf" "$build/qucsator_rf/src/converter/qucsconv_rf" "$bin/"
 cp -pR "$src/examples/." "$res/examples/"
+# The library as library/CMakeLists.txt installs it: the .lib files, the
+# blacklist, the model directories some of them include, the symbols, and
+# the SPICE subcircuits of the transformer, relay, switch, coax and
+# magnetic core (spicelibrary - without it those components' netlists
+# point at a file that is not there).
 cp -p  "$src"/library/*.lib "$src"/library/*.blacklist "$res/library/"
+for models in TubesExtended BJT_Darlington Optocoupler DualGateMOSFET; do
+  cp -pR "$src/library/$models" "$res/library/"
+done
 cp -pR "$src/library/symbols/." "$res/symbols/"
+cp -pR "$src/library/spicelibrary" "$res/spicelibrary"
 cp -p  "$build"/translations/*.qm "$res/lang/" 2>/dev/null || echo "    warning: no translations found" >&2
 
 echo "==> Bundling Qt (macdeployqt)"
@@ -182,6 +191,15 @@ bad="$(machos | while IFS= read -r bin_; do
   fi
 done)"
 [ -z "$bad" ] || exit 1
+
+# The resources main.cpp looks for next to the executable; a component
+# whose netlist includes one of the spicelibrary files fails in the
+# simulator when it is missing.
+for want in examples/ngspice library/Ideal.lib library/BJT_Darlington symbols \
+            spicelibrary/xfmr.cir spicelibrary/spdt.cir spicelibrary/spdt_xyce.cir \
+            spicelibrary/coax.cir spicelibrary/core.cir spicelibrary/winding.cir; do
+  [ -e "$res/$want" ] || { echo "error: share/qucs-s/$want is missing from the bundle" >&2; exit 1; }
+done
 
 echo "==> Creating $name.dmg"
 dmgroot="$stage/dmg"

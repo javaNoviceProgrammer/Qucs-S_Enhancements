@@ -375,6 +375,24 @@ ngspice, Xyce and Qucsator settings.
 
 ---
 
+## F. Found while verifying the fixes
+
+* **The macOS bundle shipped without `share/qucs-s/spicelibrary`**
+  (`scripts/package-macos.sh` assembled the resource tree by hand and
+  copied examples, `.lib` files, symbols and translations only), so on macOS
+  the transformer, symmetric transformer, relay, SPDT switch, coax line,
+  winding and magnetic core netlisted an `.INCLUDE` of a file that was not
+  there, and ngspice stopped. Every release so far had it. The library's
+  model directories (`BJT_Darlington`, `Optocoupler`, …) were missing too.
+  *Fixed*: the packager copies what `library/CMakeLists.txt` installs and
+  refuses to package without those files; the `simulate` smoke suite runs
+  `Relay.sch` and `core_test.sch`, which include them.
+* **`main.cpp` cut the executable path at the first `/bin`** to find the
+  resources on macOS, so a bundle kept under any directory named `bin`
+  (`bin/macos/apple-silicon/…` here) looked for `share/qucs-s` far above
+  itself. *Fixed*: the directory of the executable, one up when that
+  directory is `bin` (the tools, a prefix install).
+
 ## Reproducing
 
 ```bash

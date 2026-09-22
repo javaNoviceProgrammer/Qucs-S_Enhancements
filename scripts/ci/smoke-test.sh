@@ -111,6 +111,8 @@ SIM_SET=(
   "Devices/CV_curve.sch"                            # custom nutmeg script: custom1.plot
   "RF/Miscellaneous/giacoletto.sch"                 # S-parameters: sp1.plot
   "NGspice features/par_sweep_test.sch"             # AC sweep + plain TR
+  "RF/Miscellaneous/Relay.sch"                      # includes spicelibrary/spdt.cir: the bundle must ship it
+  "MagneticCores/core_test.sch"                     # includes spicelibrary/winding.cir and core.cir
 )
 
 # simulate_one <sch-in-examples> -> copies the whole example directory
@@ -167,10 +169,31 @@ stash_simulator_outputs() {
   echo "$schname" > "$work/simout/schematic.txt"
 }
 
+# A build-tree binary has no share/qucs-s next to it, so the netlists of
+# the transformer, relay, switch, coax and magnetic core would include a
+# spicelibrary file that is not there. Put the source tree's in the place
+# main.cpp looks (next to the executable on macOS, one level up
+# elsewhere, "bin" stripped), unless something is there already - a
+# bundle is checked as it is.
+provide_spicelibrary() {
+  local bindir; bindir="$(cd "$(dirname "$QUCS")" && pwd)"
+  local base="$bindir"
+  case "$(uname)" in
+    Darwin) [ "$(basename "$bindir")" = bin ] && base="$(dirname "$bindir")" ;;
+    *)      base="$(dirname "$bindir")" ;;
+  esac
+  local res="$base/share/qucs-s"
+  [ -e "$res/spicelibrary" ] && return 0
+  local src; src="$(cd "$EXAMPLES/.." && pwd)/library/spicelibrary"
+  [ -d "$src" ] || return 0
+  mkdir -p "$res" && ln -s "$src" "$res/spicelibrary" && echo "   (spicelibrary of the source tree linked into $res)"
+}
+
 suite_simulate() {
   echo "== simulate: netlist -> ngspice -> dataset -> render"
   command -v ngspice >/dev/null || { echo "ngspice not found"; return 1; }
   ngspice --version 2>/dev/null | sed -n '2p'
+  provide_spicelibrary
   for rel in "${SIM_SET[@]}"; do simulate_one "$rel"; done
 }
 
