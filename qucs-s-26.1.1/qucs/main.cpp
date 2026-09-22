@@ -730,7 +730,12 @@ int main(int argc, char *argv[])
     QDir QucsDir;
     QString QucsApplicationPath = QCoreApplication::applicationDirPath();
 #ifdef __APPLE__
-    QucsDir = QDir(QucsApplicationPath.section("/bin",0,0));
+    // The resources sit next to the executable (qucs-s.app/Contents/MacOS/
+    // share) or, for the tools in Contents/MacOS/bin and for a plain
+    // prefix install (prefix/bin), one level up. Cutting the path at the
+    // first "/bin" took a "bin" anywhere above the bundle for that.
+    QucsDir = QDir(QucsApplicationPath);
+    if (QucsDir.dirName() == QLatin1String("bin")) QucsDir.cdUp();
 #else
     QucsDir = QDir(QucsApplicationPath);
     QucsDir.cdUp();
