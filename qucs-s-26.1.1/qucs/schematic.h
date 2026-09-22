@@ -30,6 +30,7 @@
 #include "qucsdoc.h"
 #include "wire_planner.h"
 #include "schematic_selection.h"
+#include "biaslabels.h"
 
 #include "qt3_compat/q3scrollview.h"
 #include <QVector>
@@ -485,6 +486,15 @@ public:
   Net selectedNet() const;
   /// The net a wire belongs to, whether it is selected or not.
   Net netOf(Wire* wire) const;
+
+  /// The DC bias labels on show (the values the nodes carry once the DC
+  /// bias is shown) and where each goes, for text of these metrics.
+  struct BiasLabels {
+    QList<qucs_s::bias::Label> labels;
+    QStringList texts;
+    QList<qucs_s::bias::Placement> placements;
+  };
+  BiasLabels layoutBiasLabels(const QFontMetrics& metrics) const;
 private:
   void drawNetHighlight(QPainter* painter, const Net& net);
   void drawDcBiasPoints(QPainter* painter);
