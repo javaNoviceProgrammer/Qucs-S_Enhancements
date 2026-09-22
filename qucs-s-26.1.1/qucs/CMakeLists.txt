@@ -159,6 +159,7 @@ SET(QUCS_SRCS
   qucsshortcutmanager.cpp globals.cpp
   autosave.cpp crashhandler.cpp shellenvironment.cpp apptheme.cpp erc.cpp
   embeddedimage.cpp componentsearch.cpp findbar.cpp biaslabels.cpp ink.cpp valuereading.cpp
+  systemopen.cpp
 )
 
 SET(QUCS_HDRS
@@ -169,6 +170,7 @@ findbar.h
 biaslabels.h
 ink.h
 valuereading.h
+systemopen.h
 conductor.h
 healer.h
 main.h
@@ -205,6 +207,7 @@ qucs_assert.h
 #
 SET(QUCS_MOC_HDRS
   octave_window.h
+  systemopen.h
   qucs.h
   schematic.h
   textdoc.h
@@ -246,6 +249,10 @@ if(UNIX AND NOT APPLE)
 
     SET(DESKTOP ${QUCS_NAME}.desktop )
     INSTALL( FILES ${DESKTOP} DESTINATION ${CMAKE_INSTALL_PREFIX}/share/applications)
+    # The file types the desktop entry names (update-mime-database picks
+    # them up; distribution packages run it).
+    INSTALL( FILES ${QUCS_NAME}-mime.xml DESTINATION ${CMAKE_INSTALL_PREFIX}/share/mime/packages
+             RENAME ${QUCS_NAME}.xml)
 endif()
 
 
@@ -310,6 +317,12 @@ ADD_EXECUTABLE( ${QUCS_NAME} MACOSX_BUNDLE WIN32
 #
 TARGET_LINK_LIBRARIES( ${QUCS_NAME} ${QUCS_LINK_LIBRARIES} )
 SET_TARGET_PROPERTIES(${QUCS_NAME} PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
+IF(APPLE)
+  # CMake's own template plus the document types: the Finder offers the
+  # application for schematics, data displays, symbols and netlists.
+  SET_TARGET_PROPERTIES(${QUCS_NAME} PROPERTIES
+    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/MacOSXBundleInfo.plist.in)
+ENDIF()
 
 #
 # Unit tests (QtTest); run with `ctest --test-dir build --output-on-failure`.

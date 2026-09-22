@@ -55,6 +55,7 @@
 #include "crashhandler.h"
 #include "shellenvironment.h"
 #include "apptheme.h"
+#include "systemopen.h"
 
 
 #include "extsimkernels/ngspice.h"
@@ -689,6 +690,10 @@ int main(int argc, char *argv[])
 
     // initially center the application
     QApplication app(argc, argv);
+    // From here on, what the system asks to open is kept for the main
+    // window: on macOS a document opened from the Finder or the Dock comes
+    // as an event, not an argument, and may come before there is a window.
+    qucs_s::systemopen::Receiver systemOpen;
     //QDesktopWidget *d = app.desktop();
     QucsSettings.font = QApplication::font();
     QucsSettings.appFont = QApplication::font();
@@ -703,10 +708,15 @@ int main(int argc, char *argv[])
     // QUCS_SETTINGS_DIR=<dir>: this run keeps its settings in an INI file
     // under <dir> instead of the user's own store - for trying a build out
     // without touching one's preferences. Before the first use of the store.
+    // Its crash reports, autosave copies and running-session marker are
+    // kept there too: a trial run that is killed must not have the user's
+    // own next start report an unclean exit, or offer its documents.
     const QString settingsDir = qEnvironmentVariable("QUCS_SETTINGS_DIR");
     if (!settingsDir.isEmpty()) {
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir);
+        qucs_s::crash::setReportDirectory(settingsDir + QStringLiteral("/crash-reports"));
+        qucs_s::autosave::setDirectory(settingsDir + QStringLiteral("/autosave"));
     }
 
     // load existing settings (if any)
@@ -1074,7 +1084,16 @@ int main(int argc, char *argv[])
     //1a.setMainWidget(QucsMain);
 
     QucsMain->show();
+    // The documents and project named on the command line: qucs-s FILE...,
+    // a desktop's file manager (qucs-s.desktop), Windows' file types (the
+    // installer). The -i of the batch modes is taken as one of them.
+    QStringList named = parser.positionalArguments();
+    if (!inputfile.isEmpty()) named.prepend(inputfile);
+    if (!named.isEmpty()) QucsMain->openFromSystem(named);
     QucsMain->recoverPreviousSession(crashedLastTime);
+    systemOpen.setTarget([](const QStringList &items) {
+        if (QucsMain != nullptr) QucsMain->openFromSystem(items);
+    });
     int result = app.exec();
     //saveApplSettings(QucsMain);
 

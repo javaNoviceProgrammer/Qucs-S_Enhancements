@@ -45,6 +45,7 @@ OutputBaseFilename={#APPNAME}-{#RELEASE}-setup
 Compression=lzma2/max
 SolidCompression=yes
 ChangesEnvironment=yes
+ChangesAssociations=yes
 UsePreviousAppDir=yes
 WizardStyle=modern
 SetupIconFile={#TREE}\misc\qucs.ico
@@ -66,6 +67,28 @@ Name: "{group}\Visit the Qucs Web Site"; Filename: "{app}\misc\website.url"
 Name: "{group}\Technical Online Documentation"; Filename: "{app}\misc\docsite.url"
 Name: "{group}\{cm:UninstallProgram,Qucs}"; Filename: "{uninstallexe}"
 Name: "{userdesktop}\Qucs-S"; Filename: "{app}\bin\qucs-s.exe"; IconFilename: "{app}\misc\qucs.ico"; WorkingDir: "{app}\bin"; Tasks: desktopicon
+
+; Schematics, data displays and symbols open in Qucs-S from the Explorer
+; (qucs-s.exe "FILE", see systemopen.h): the application is registered for
+; them - listed under "Open with", the handler when there is no other - and
+; never takes a file type over from another program.
+[Registry]
+Root: HKA; Subkey: "Software\Classes\.sch\OpenWithProgids"; ValueType: string; ValueName: "QucsS.Schematic"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\QucsS.Schematic"; ValueType: string; ValueName: ""; ValueData: "Qucs schematic"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\QucsS.Schematic\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\misc\qucs.ico"
+Root: HKA; Subkey: "Software\Classes\QucsS.Schematic\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\bin\qucs-s.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\.dpl\OpenWithProgids"; ValueType: string; ValueName: "QucsS.DataDisplay"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\QucsS.DataDisplay"; ValueType: string; ValueName: ""; ValueData: "Qucs data display"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\QucsS.DataDisplay\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\misc\qucs.ico"
+Root: HKA; Subkey: "Software\Classes\QucsS.DataDisplay\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\bin\qucs-s.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\.sym\OpenWithProgids"; ValueType: string; ValueName: "QucsS.Symbol"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\QucsS.Symbol"; ValueType: string; ValueName: ""; ValueData: "Qucs symbol"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\QucsS.Symbol\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\misc\qucs.ico"
+Root: HKA; Subkey: "Software\Classes\QucsS.Symbol\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\bin\qucs-s.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\Applications\qucs-s.exe"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Applications\qucs-s.exe\SupportedTypes"; ValueType: string; ValueName: ".sch"; ValueData: ""
+Root: HKA; Subkey: "Software\Classes\Applications\qucs-s.exe\SupportedTypes"; ValueType: string; ValueName: ".dpl"; ValueData: ""
+Root: HKA; Subkey: "Software\Classes\Applications\qucs-s.exe\SupportedTypes"; ValueType: string; ValueName: ".sym"; ValueData: ""
 
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);

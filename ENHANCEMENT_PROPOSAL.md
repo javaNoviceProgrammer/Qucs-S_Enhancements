@@ -427,6 +427,46 @@ existing demand.
   around that by temporarily marking the document changed; done
   synchronously it is a use-after-free that `test_drop_open` catches under
   ASan. Verified end to end on macOS with CGEvent drags.
+- *Done:* **Documents open from the system** (#973). Upstream opened the
+  arguments that do not start with `-` from the `QucsApp` constructor -
+  option values included (`--dpi 96` went looking for a file "96" and
+  warned it was read-only), and every
+  QtTest binary that builds a `QucsApp` opened its own command line
+  (run with a test function's name, it blocked on "cannot open"). On
+  macOS nothing opened at all from the Finder, the Dock or *Open With*:
+  the bundle declared no document types, and a document opened that way
+  arrives as a `QFileOpenEvent`, which nobody handled. Now
+  `QucsApp::openFromSystem()` is the one way in: paths or `file:` URLs
+  (`qucs_s::systemopen::localPath()`), a `*_prj` directory opens as the
+  project first, a document already open under another name of the same
+  file comes to the front, the untitled placeholder goes, the window is
+  raised, and what cannot be opened (missing, not a project, another URL
+  scheme) is said in one message. `main()` calls it with
+  `QCommandLineParser::positionalArguments()` (and `-i`) once the window
+  is up; a `qucs_s::systemopen::Receiver`, installed on the application
+  right after it exists, keeps `QFileOpenEvent`s until there is a target
+  and hands them over in batches, never under a modal dialog (the first
+  run's simulator notice, the crash recovery, "correct dataset names?").
+  The bundle gets its own `Info.plist` template
+  (`qucs/MacOSXBundleInfo.plist.in`): exported UTIs for the three Qucs
+  formats, `Default` for `.sch`/`.sym` (other programs use them), `Owner`
+  for `.dpl`, `Alternate` for netlists and Verilog-A. Linux: the desktop
+  entry lists the MIME types and takes `%F`; `qucs-s-mime.xml`, installed
+  as `share/mime/packages/qucs-s.xml`, defines them by extension and by
+  the `<Qucs Schematic` first line. Windows: the Inno Setup script
+  registers ProgIDs under `OpenWithProgids` and `SupportedTypes` (never an
+  extension's default) with `ChangesAssociations`. Checked on macOS
+  through Launch Services (`open -a`): a document at launch and a second
+  one handed to the running instance. The same check showed that a trial
+  run killed under `QUCS_SETTINGS_DIR` left its session marker in the
+  user's own application data - the next real start reported an unclean
+  exit - so that variable now also moves the crash reports and autosave
+  copies. `qucs/tests/test_system_open` covers the paths and URLs, the
+  documents, the project, the message, the receiver (before a target,
+  batching, under a modal dialog, other events untouched), a
+  `QFileOpenEvent` opening a document, and the three platforms' files
+  (the built `Info.plist`, the desktop entry against the MIME package and
+  real files' first lines, the installer's registry lines).
 - *Done:* **Explicit light/dark theme toggle** (#1725): the theme itself
   is the *Theme* setting below; what was left is the canvas.
   Components draw with hard-coded pens (`Qt::darkBlue` alone ~1900
