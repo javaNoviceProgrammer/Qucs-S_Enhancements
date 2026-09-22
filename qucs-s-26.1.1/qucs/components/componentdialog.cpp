@@ -29,6 +29,7 @@
 */
 
 #include "componentdialog.h"
+#include "valuereading.h"
 #include "main.h"
 #include "schematic.h"
 #include "settings.h"
@@ -532,6 +533,18 @@ ComponentDialog::ComponentDialog(Component* schematicComponent, Schematic* schem
     propertyTable->setSelectionMode(QAbstractItemView::SingleSelection);
     propertyTableLayout->addWidget(propertyTable, 2);
 
+    // What the value being edited says: its number with prefix and unit,
+    // an expression or a name, and what the SPICE netlist gets.
+    valueReading = new QLabel(propertyGroup);
+    valueReading->setWordWrap(true);
+    valueReading->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    valueReading->setMinimumHeight(2 * valueReading->fontMetrics().lineSpacing());
+    propertyTableLayout->addWidget(valueReading);
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget*, QWidget* now) {
+      if (auto* edit = qobject_cast<QLineEdit*>(now); edit && edit->property("qucsValueRow").isValid())
+        showReading(edit);
+    });
+
     updatePropertyTable(component);
 
     // Try to move the cursor to the editable cell if any cell is clicked.
@@ -744,6 +757,13 @@ void ComponentDialog::updatePropertyTable(const Component* updateComponent)
         propertyTable->setItem(row, 1, new QTableWidgetItem("", TextEditCell));
         propertyTable->openPersistentEditor(propertyTable->item(row, 1));
         propertyTable->item(row, 1)->setText(property->Value);
+        auto* edit = qobject_cast<QLineEdit*>(propertyTable->indexWidget(propertyTable->model()->index(row, 1)));
+        if (edit != nullptr && valueReading != nullptr) {
+          edit->setProperty("qucsValueRow", row);
+          connect(edit, &QLineEdit::textChanged, this, [this, edit] { showReading(edit); });
+          showReading(edit);   // the mark and the tooltip from the start
+          valueReading->clear();
+        }
       }    
 
       // Set check box and description.
@@ -752,6 +772,8 @@ void ComponentDialog::updatePropertyTable(const Component* updateComponent)
       propertyTable->item(row, 2)->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
       propertyTable->setItem(row, 3, new QTableWidgetItem(property->Description, LabelCell));
       propertyTable->item(row, 3)->setFlags(Qt::ItemIsEnabled);
+      propertyTable->item(row, 0)->setToolTip(property->Description);
+      propertyTable->item(row, 1)->setToolTip(property->Description);
 
       row++;
     }
@@ -1025,6 +1047,24 @@ void ComponentDialog::slotApplyButton()
     }
   }
   */
+}
+
+void ComponentDialog::showReading(QLineEdit* edit)
+{
+  const int row = edit->property("qucsValueRow").toInt();
+  if (valueReading == nullptr || row < 0 || row >= propertyTable->rowCount()) return;
+  const bool spice = QucsSettings.DefaultSimulator != spicecompat::simQucsator;
+  const qucs_s::units::Reading reading = qucs_s::units::read(edit->text());
+  const QString said = reading.describe(spice);
+  const QString name = propertyTable->item(row, 0) ? propertyTable->item(row, 0)->text() : QString();
+  valueReading->setText(said.isEmpty() ? QString() : name + ": " + said);
+
+  // A value that will not say what was meant shows it in the field too.
+  QPalette p = edit->palette();
+  p.setColor(QPalette::Text, reading.warning.isEmpty() ? palette().color(QPalette::Text) : QColor(0xc0, 0x60, 0x00));
+  edit->setPalette(p);
+  const QString description = propertyTable->item(row, 3) ? propertyTable->item(row, 3)->text() : QString();
+  edit->setToolTip(said.isEmpty() ? description : description.isEmpty() ? said : description + "\n" + said);
 }
 
 // -------------------------------------------------------------------------

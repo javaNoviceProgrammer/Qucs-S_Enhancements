@@ -71,6 +71,7 @@ private:
   QValidator* paramVal;
   
   QTableWidget* propertyTable;
+  QLabel* valueReading = nullptr;   // what the value being edited says (valuereading.h)
   QTextEdit* eqnEditor;
   QComboBox* eqnSimCombo = nullptr;
   QCheckBox* eqnExportCheck = nullptr;
@@ -120,6 +121,15 @@ private:
   void writeEquation();
 
   void simpleEditEqn(QLineEdit* lineEdit);
+  /// Shows under the table what the value in \a edit says, and marks
+  /// the field when it will not say what was meant.
+  void showReading(QLineEdit* edit);
+
+public:
+  /// The line under the property table (for the tests).
+  QLabel* valueReadingLabel() const { return valueReading; }
+  QTableWidget* propertiesTable() const { return propertyTable; }
+private:
 
   enum CELL_TYPE { LabelCell = 1000, TextEditCell, ComboBoxCell, CompoundCell, CheckBoxCell };
 };
