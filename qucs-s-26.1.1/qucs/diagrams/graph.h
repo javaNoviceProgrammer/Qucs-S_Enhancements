@@ -25,6 +25,7 @@
 #include <cmath>
 #include <QColor>
 #include <QDateTime>
+#include <QPolygonF>
 #include "qucs_assert.h"
 
 
@@ -186,6 +187,9 @@ private:
   Diagram const* diagram;
 
   mutable QList<QLineF> lines;
+  // The same points as one polyline per stroke: a dash pattern runs on
+  // along a polyline, while every line of drawLines() starts it afresh.
+  mutable QList<QPolygonF> strokes;
   mutable QDateTime     linesCalculated;
   void linesInvalidate() {linesCalculated = QDateTime();} //Set to 'null' date
 };

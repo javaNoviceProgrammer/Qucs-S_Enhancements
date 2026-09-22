@@ -647,9 +647,14 @@ void Diagram::calcData(Graph *g) {
                 }
                 // Look-behinds must stay inside the buffer: a branch with a
                 // single sample has only two entries before p.
+                // Offsets in points: upstream's float array had one float
+                // for a marker and two for a point, and its "p-3" / "p -= 3"
+                // were carried over unchanged - which erased every stroke
+                // of two points (a graph of two samples, the last segment
+                // back inside a clipped diagram).
                 const auto filled = p - g->begin();
-                if (filled >= 3 && (p - 3)->isStrokeEnd() && !(p - 3)->isBranchEnd())
-                    p -= 3;  // no single point after "no stroke"
+                if (filled >= 2 && (p - 2)->isStrokeEnd() && !(p - 2)->isBranchEnd())
+                    p -= 2;  // no single point after "no stroke"
                 else if (filled >= 2 && (p - 2)->isBranchEnd() && !(p - 1)->isGraphEnd()) {
                     if ((!(p - 1)->isPt()))
                         --p; // erase last hidden point

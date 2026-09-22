@@ -200,6 +200,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Edit Diagram Properties → Properties → Legend*. Off by default; the
   position is saved with the diagram, and files without it load as before
   (upstream #1719).
+- **Dashed and dotted graphs look dashed and dotted** (upstream #1723):
+  the pattern runs on along the whole curve. Upstream started it again at
+  every data point, so a graph whose points were closer together than a
+  dash - most simulations - came out solid. Also drawn now: a graph of
+  two samples, the first curve of a sweep with two samples a step, and the
+  last segment of a curve coming back inside a diagram with a fixed
+  range - all of which upstream silently dropped.
 - **`.OPTIONS` keeps every line, however it is written**: each line of
   the editor becomes a `.OPTION` line of the netlist, and a line may now
   be an option with no value at all (`noopiter`, `keepopinfo` and the
