@@ -15,6 +15,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "dc_sim.h"
+#include "extsimkernels/spicecompat.h"
 
 DC_Sim::DC_Sim()
 {
@@ -25,26 +26,31 @@ DC_Sim::DC_Sim()
   Name  = "DC";
   SpiceModel = ".OP";
 
-  Props.append(new Property("Temp", "26.85", false,
+  // Qucsator's settings; the SPICE simulators emit ".op" (an .OPTIONS
+  // section carries their tolerances and temperature), so these are not
+  // shown for them.
+  Property::Builder bld;
+  bld.hidden().simulator(spicecompat::simQucsator);
+  Props.append(bld.property("Temp", "26.85",
 		QObject::tr("simulation temperature in degree Celsius")));
-  Props.append(new Property("reltol", "0.001", false,
+  Props.append(bld.property("reltol", "0.001",
 		QObject::tr("relative tolerance for convergence")));
-  Props.append(new Property("abstol", "1 pA", false,
+  Props.append(bld.property("abstol", "1 pA",
 		QObject::tr("absolute tolerance for currents")));
-  Props.append(new Property("vntol", "1 uV", false,
+  Props.append(bld.property("vntol", "1 uV",
 		QObject::tr("absolute tolerance for voltages")));
-  Props.append(new Property("saveOPs", "no", false,
+  Props.append(bld.property("saveOPs", "no",
 		QObject::tr("put operating points into dataset")+
 		" [yes, no]"));
-  Props.append(new Property("MaxIter", "150", false,
+  Props.append(bld.property("MaxIter", "150",
 		QObject::tr("maximum number of iterations until error")));
-  Props.append(new Property("saveAll", "no", false,
+  Props.append(bld.property("saveAll", "no",
 	QObject::tr("save subcircuit nodes into dataset")+
 	" [yes, no]"));
-  Props.append(new Property("convHelper", "none", false,
+  Props.append(bld.property("convHelper", "none",
 	QObject::tr("preferred convergence algorithm")+
 	" [none, gMinStepping, SteepestDescent, LineSearch, Attenuation, SourceStepping]"));
-  Props.append(new Property("Solver", "CroutLU", false,
+  Props.append(bld.property("Solver", "CroutLU",
 	QObject::tr("method for solving the circuit matrix")+
 	" [CroutLU, DoolittleLU, HouseholderQR, HouseholderLQ, GolubSVD]"));
 }

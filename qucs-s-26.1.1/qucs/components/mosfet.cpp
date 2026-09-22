@@ -133,9 +133,12 @@ QString MOSFET::netlist()
     s += " "+p1->Connection->Name;   // node names
   s += " "+Ports.at(2)->Connection->Name;  // connect substrate to source
 
-  // output all properties
+  // output all properties, but not the ones of the GUI (the checker
+  // warns about them)
+  static const QStringList notForQucsator{"Symbol", "UseGlobTemp", "LibName", "CompName"};
   for(Property *p2 : Props)
-    s += " "+p2->Name+"=\""+p2->Value+"\"";
+    if (!notForQucsator.contains(p2->Name))
+      s += " "+p2->Name+"=\""+p2->Value+"\"";
 
   return s + '\n';
 }
@@ -145,16 +148,26 @@ QString MOSFET::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat
     QString s = spicecompat::check_refdes(Name,SpiceModel);
     QList<int> pin_seq;
     pin_seq<<1<<0<<2<<2; // Pin sequence: DGS; coonect substrate to source
+    // Rg, the gate resistance, has no level-1 model parameter: a resistor
+    // in series with the gate, when it is not zero.
+    double rg = 0.0, fac = 1.0;
+    QString unit;
+    misc::str2num(getProperty("Rg")->Value, rg, unit, fac);
+    const bool gateResistor = rg * fac > 0.0;
+    const QString gateNode = spicecompat::normalize_node_name(Ports.at(0)->Connection->Name);
     // output all node names
     for (int pin : pin_seq) {
         QString nam = Ports.at(pin)->Connection->Name;
         if (nam=="gnd") nam = "0";
+        if (pin == 0 && gateResistor) nam = Name + "_gate";
         s += " "+ nam;   // node names
     }
 
     QStringList spice_incompat,spice_tr;
     spice_incompat<<"Type"<<"Temp"<<"L"<<"W"<<"Ad"<<"As"<<"Pd"<<"Ps"
                  <<"Rg"<<"N"<<"Tt"<<"Nrd"<<"Nrs"<<"Ffe"<<"UseGlobTemp"<<"LibName"<<"CompName";
+    const QString squares = QStringLiteral(" Nrd=%1 Nrs=%2").arg(spicecompat::normalize_value(getProperty("Nrd")->Value),
+                                                                  spicecompat::normalize_value(getProperty("Nrs")->Value));
                               // spice-incompatible parameters
     if (dialect == spicecompat::SPICEXyce) {
         spice_tr<<"Vt0"<<"VtO"; // parameters that need conversion of names
@@ -164,7 +177,6 @@ QString MOSFET::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat
 
 
     QStringList check_defaults_list;
-    QString unit;
     check_defaults_list<<"Nsub"<<"Nss";
     for (const QString& parnam : check_defaults_list) { // Check some parameters for default value (zero)
         double val,fac;   // And reduce parameter list
@@ -186,12 +198,14 @@ QString MOSFET::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat
     auto ps = spicecompat::normalize_value(getProperty("Ps")->Value);
 
     if (getProperty("UseGlobTemp")->Value == "yes") {
-      s += QStringLiteral(" MMOD_%1 L=%2 W=%3 Ad=%4 As=%5 Pd=%6 Ps=%7\n")
-      .arg(Name).arg(l).arg(w).arg(ad).arg(as).arg(pd).arg(ps);
+      s += QStringLiteral(" MMOD_%1 L=%2 W=%3 Ad=%4 As=%5 Pd=%6 Ps=%7%8\n")
+      .arg(Name).arg(l).arg(w).arg(ad).arg(as).arg(pd).arg(ps).arg(squares);
     } else {
-      s += QStringLiteral(" MMOD_%1 L=%2 W=%3 Ad=%4 As=%5 Pd=%6 Ps=%7 Temp=%8\n")
-      .arg(Name).arg(l).arg(w).arg(ad).arg(as).arg(pd).arg(ps).arg(getProperty("Temp")->Value);
+      s += QStringLiteral(" MMOD_%1 L=%2 W=%3 Ad=%4 As=%5 Pd=%6 Ps=%7%8 Temp=%9\n")
+      .arg(Name).arg(l).arg(w).arg(ad).arg(as).arg(pd).arg(ps).arg(squares).arg(getProperty("Temp")->Value);
     }
+    if (gateResistor)
+      s += QStringLiteral("R%1_Rg %2 %1_gate %3\n").arg(Name, gateNode, spicecompat::normalize_value(getProperty("Rg")->Value));
 
     if (dialect != spicecompat::CDL)
     {

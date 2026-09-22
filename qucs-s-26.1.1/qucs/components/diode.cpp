@@ -53,7 +53,7 @@ Diode::Diode()
   Props.append(new Property("Af", "1.0", false,
 	QObject::tr("flicker noise exponent")));
   Props.append(new Property("Ffe", "1.0", false,
-	QObject::tr("flicker noise frequency exponent")));
+	QObject::tr("flicker noise frequency exponent"), Property::Type::Value, spicecompat::simQucsator));
   Props.append(new Property("Bv", "10", false,
 	QObject::tr("reverse breakdown voltage")));
   Props.append(new Property("Ibv", "1 mA", false,
@@ -119,12 +119,12 @@ QString Diode::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat:
     QStringList spice_incompat,spice_tr;
     if (dialect == spicecompat::SPICEXyce) {
         spice_tr<<"Tbv"<<"Tbv1"<<"Trs"<<"Trs1"; // parameters that need conversion of names
-        spice_incompat<<"Ttt1"<<"Ttt2"<<"Tm1"<<"Tm2"<<"Cp"<<"Isr"
-                     <<"Nr"<<"Ffe"<<"Temp"<<"Area"<<"Symbol"
+        spice_incompat<<"Ttt1"<<"Ttt2"<<"Tm1"<<"Tm2"<<"Cp"
+                     <<"Ffe"<<"Temp"<<"Area"<<"Symbol"
                      <<"UseGlobTemp"<<"LibName"<<"CompName"; // spice-incompatible parameters
     } else {
         spice_tr<<"Tbv"<<"Tcv";
-        spice_incompat<<"Cp"<<"Isr"<<"Nr"<<"Ffe"<<"Temp"<<"Area"<<"Symbol"
+        spice_incompat<<"Cp"<<"Ffe"<<"Temp"<<"Area"<<"Symbol"
                        <<"UseGlobTemp"<<"LibName"<<"CompName";
     }
 
@@ -158,6 +158,14 @@ QString Diode::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat:
     if (dialect != spicecompat::CDL)
     {
       s += QStringLiteral(".MODEL DMOD_%1 D (%2)\n").arg(Name).arg(par_str);
+      // Cp, the linear capacitance in parallel with the junction, has no
+      // model parameter: a capacitor across the diode.
+      double cp = 0.0, fac = 1.0;
+      QString unit;
+      misc::str2num(getProperty("Cp")->Value, cp, unit, fac);
+      if (cp * fac > 0.0)
+        s += QStringLiteral("C%1_Cp %2 %3 %4\n").arg(Name, s.section(' ', 1, 1), s.section(' ', 2, 2),
+                                                     spicecompat::normalize_value(getProperty("Cp")->Value));
     }
 
     return s;

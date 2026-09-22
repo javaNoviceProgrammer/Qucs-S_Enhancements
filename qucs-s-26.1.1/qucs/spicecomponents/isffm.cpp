@@ -50,19 +50,19 @@ iSffm::iSffm()
 
   tx = x1+4;
   ty = y2+4;
-  Model = "I";
+  Model = "iSffm";
   SpiceModel = "I";
   Name  = "I";
 
-  Props.append(new Property("I0", "0 ", true,
+  Props.append(new Property("I0", "0", true,
 		QObject::tr("offset current")));
-  Props.append(new Property("Ia", "1 ", true,
+  Props.append(new Property("Ia", "1", true,
 		QObject::tr("carrier current amplitude")));
-  Props.append(new Property("Fc", "1", true,
+  Props.append(new Property("Fc", "1k", true,
 		QObject::tr("carrier signal frequency")));
   Props.append(new Property("Mdi", "10", true,
 		QObject::tr("modulation index")));
-  Props.append(new Property("Fs", "500", true,
+  Props.append(new Property("Fs", "100", true,
 		QObject::tr("modulating signal frequency")));
 
   rotate();  // fix historical flaw

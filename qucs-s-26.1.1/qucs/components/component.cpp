@@ -23,6 +23,7 @@
 #include "sparamfile.h"
 #include "spicefile.h"
 #include "subcircuit.h"
+#include "spicecomponents/isffm.h"
 #include "main.h"
 #include "schematic.h"
 #include "module.h"
@@ -1504,6 +1505,7 @@ void MultiViewComponent::recreate() {
 GateComponent::GateComponent() {
     Type = isComponent;   // both analog and digital
     Name = "Y";
+    Simulator = spicecompat::simNgspice | spicecompat::simSpiceOpus | spicecompat::simQucsator;   // XSPICE digital device
 
     // the list order must be preserved !!!
     Props.append(new Property("in", "2", false,
@@ -1778,6 +1780,7 @@ Component *getComponentFromName(QString &Line, Schematic *p) {
     else if (cstr == "Eqn") c = new Equation();
     else if (cstr == "SPICE") c = new SpiceFile();
     else if (cstr == "Rus") c = new Resistor(false);  // backward compatible
+    else if (cstr == "I") c = new iSffm();   // I(SFFM) was saved as <I ...> up to 26.1.2
     else if (cstr.left(6) == "SPfile" && cstr != "SPfile") {
         // backward compatible
         c = new SParamFile();

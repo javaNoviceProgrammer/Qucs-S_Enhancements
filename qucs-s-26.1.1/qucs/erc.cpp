@@ -16,6 +16,8 @@
 #include "wire.h"
 #include "wirelabel.h"
 #include "components/component.h"
+#include "main.h"
+#include "extsimkernels/spicecompat.h"
 
 #include <QCoreApplication>
 #include <QHash>
@@ -33,6 +35,8 @@ bool isPort(const Component* c) { return c->Model == QLatin1String("Port"); }
 // Simulation blocks: .AC, .TR, .DC, .SP, .HB, ... (Model starts with a dot).
 bool isSimulation(const Component* c) { return c->Model.startsWith(QLatin1Char('.')); }
 bool inCircuit(const Component* c) { return c->isActive == COMP_IS_ACTIVE; }
+bool spiceSimulator(int simulator) { return (simulator & spicecompat::simSpice) != 0; }
+bool forSimulator(const Component* c, int simulator) { return (c->Simulator & simulator) == simulator; }
 
 // Whether a node has a name of its own (a label on it or on one of its
 // wires): a stub that ends there is a named net, not a loose end.
@@ -52,6 +56,9 @@ QList<Issue> check(Schematic* doc)
     if (doc == nullptr) return errors;
 
     bool ground = false, port = false, simulation = false;
+    // A circuit with a digital simulation block goes to the digital
+    // (VHDL/Verilog) flow whatever the simulator setting says.
+    const int simulator = doc->isDigitalCircuit() ? int(spicecompat::simNotSpecified) : QucsSettings.DefaultSimulator;
     QHash<QString, const Component*> byName;
     for (Component* c : doc->a_DocComps) {
         if (!inCircuit(c)) continue;
@@ -68,6 +75,35 @@ QList<Issue> check(Schematic* doc)
             } else {
                 byName.insert(c->Name, c);
             }
+        }
+
+        // What the simulator in use cannot take: the netlist would leave
+        // the component out, or carry text the simulator rejects.
+        if (simulator != spicecompat::simNotSpecified) {
+            const QString simName = spicecompat::getDefaultSimulatorName(simulator);
+            if (!forSimulator(c, simulator)) {
+                errors << Issue{Severity::Error, tr("%1: not available for %2").arg(c->Name, simName),
+                                QPoint(c->cx, c->cy), c->Name};
+            } else if (spiceSimulator(simulator) && c->SpiceModel.isEmpty() && !c->isEquation && !c->isProbe
+                       && !isGround(c)) {
+                errors << Issue{Severity::Error, tr("%1: has no SPICE model, %2 cannot simulate it").arg(c->Name, simName),
+                                QPoint(c->cx, c->cy), c->Name};
+            } else if (spiceSimulator(simulator) && c->Model == QLatin1String("EDD")
+                       && !c->Props.isEmpty() && c->Props.first()->Value == QLatin1String("implicit")) {
+                errors << Issue{Severity::Error,
+                                tr("%1: an implicit equation-defined device has no SPICE form (use the explicit type)").arg(c->Name),
+                                QPoint(c->cx, c->cy), c->Name};
+            }
+        }
+        // A winding refers to its magnetic core by name.
+        if (c->Model == QLatin1String("WINDING")) {
+            const QString core = c->getProperty("CORE") ? c->getProperty("CORE")->Value : QString();
+            const bool found = std::any_of(doc->a_DocComps.begin(), doc->a_DocComps.end(), [&](const Component* o) {
+                return o->Model == QLatin1String("CORE") && o->Name == core && inCircuit(o);
+            });
+            if (!found)
+                errors << Issue{Severity::Error, tr("%1: no magnetic core named %2 in the schematic").arg(c->Name, core),
+                                QPoint(c->cx, c->cy), c->Name};
         }
 
         // Pins connected to nothing.

@@ -39,6 +39,7 @@ jkff_SR::jkff_SR()
   Model = "jkff_SR";
   Name  = "Y";
   SpiceModel = "A";
+  Simulator = spicecompat::simNgspice | spicecompat::simSpiceOpus | spicecompat::simQucsator;   // XSPICE digital device
 }
 
 Component * jkff_SR::newOne()

@@ -254,6 +254,140 @@ private slots:
         QVERIFY2(!ngspice(c).contains("UseGlobTemp"), qPrintable(ngspice(c)));
     }
 
+    // C4: the properties the dialog shows for a SPICE simulator reach its
+    // netlist, or are marked Qucsator's. The diode's ISR/NR go in the card
+    // and Cp becomes a capacitor across it.
+    void diodeCarriesIsrNrAndCp()
+    {
+        Component* c = placed(doc, "<Diode D1 1 200 200 -26 13 0 0 \"1e-15 A\" 1 \"1\" 1 \"10 fF\" 1 \"0.5\" 0 \"0.7 V\" 0 \"0.5\" 0 \"2 pF\" 0 \"1e-12\" 0 \"2.0\" 0 \"0.0 Ohm\" 0 \"0.0 ps\" 0 \"0\" 0 \"0.0\" 0 \"1.0\" 0 \"1.0\" 0 \"10\" 0 \"1 mA\" 0 \"26.85\" 0 \"3.0\" 0 \"1.11\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"1.0\" 0 \"normal\" 0 \"yes\" 0 \"Generic\" 0 \"Generic\" 0>");
+        QVERIFY(c);
+        const QString s = ngspice(c);
+        QVERIFY2(s.contains("Isr=1E-12 Nr=2.0"), qPrintable(s));
+        QVERIFY2(s.contains("CD1_Cp n2 n1 2P\n"), qPrintable(s));
+        QVERIFY2(xyce(c).contains("Isr=1E-12 Nr=2.0"), qPrintable(xyce(c)));
+        QVERIFY2(!s.contains("Ffe"), qPrintable(s));
+        QCOMPARE(c->getProperty("Ffe")->simulators, spicecompat::simQucsator);
+        c->getProperty("Cp")->Value = "0.0 fF";
+        QVERIFY2(!ngspice(c).contains("_Cp"), qPrintable(ngspice(c)));
+    }
+
+    void jfetCarriesWhatNgspiceKnows()
+    {
+        Component* c = placed(doc, "<JFET T1 1 200 200 8 -26 0 0 \"nfet\" 1 \"-2.0 V\" 1 \"1e-4\" 1 \"0.0\" 1 \"0.0\" 0 \"0.0\" 0 \"1e-14\" 0 \"1.2\" 0 \"1e-14\" 0 \"2.0\" 0 \"0.0\" 0 \"0.0\" 0 \"1.0\" 0 \"0.5\" 0 \"0.5\" 0 \"0.0\" 0 \"1.0\" 0 \"1.0\" 0 \"26.85\" 0 \"3.5\" 0 \"0.0\" 0 \"0.01\" 0 \"26.85\" 0 \"1.0\" 0 \"yes\" 0 \"Generic\" 0 \"Generic\" 0>");
+        QVERIFY(c);
+        const QString s = ngspice(c);
+        QVERIFY2(s.contains("N=1.2 ") && s.contains("Xti=3.5 ") && s.contains("Betatce=0.01 "), qPrintable(s));
+        QVERIFY2(!s.contains("Isr=") && !s.contains("Nr=") && !s.contains("M="), qPrintable(s));
+        for (const char* p : {"Isr", "Nr", "M", "Ffe"}) QCOMPARE(c->getProperty(p)->simulators, spicecompat::simQucsator);
+        QVERIFY((c->getProperty("N")->simulators & spicecompat::simXyce) == 0);
+    }
+
+    void mosfetCarriesSquaresAndGateResistance()
+    {
+        Component* c = placed(doc, "<MOSFET T1 1 200 200 8 -26 0 0 \"nfet\" 1 \"1.0 V\" 1 \"2e-5\" 1 \"0.0\" 0 \"0.6 V\" 0 \"0.0\" 0 \"0.0 Ohm\" 0 \"0.0 Ohm\" 0 \"5 Ohm\" 0 \"1e-14 A\" 0 \"1.0\" 0 \"1 um\" 1 \"1 um\" 1 \"0.0\" 0 \"0.1 um\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0 F\" 0 \"0.0 F\" 0 \"0.8 V\" 0 \"0.5\" 0 \"0.5\" 0 \"0.0\" 0 \"0.33\" 0 \"0.0 ps\" 0 \"0.0\" 0 \"0.0\" 0 \"1\" 0 \"600.0\" 0 \"0.0\" 0 \"3\" 0 \"4\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0 m\" 0 \"0.0 m\" 0 \"0.0\" 0 \"1.0\" 0 \"1.0\" 0 \"26.85\" 0 \"26.85\" 0 \"yes\" 0 \"Generic\" 0 \"Generic\" 0>");
+        QVERIFY(c);
+        QString s = ngspice(c);
+        QVERIFY2(s.startsWith("MT1 n2 T1_gate n3 n4 MMOD_T1 L=1U W=1U Ad=0.0 As=0.0 Pd=0.0M Ps=0.0M Nrd=3 Nrs=4\n"), qPrintable(s));
+        QVERIFY2(s.contains("RT1_Rg n1 T1_gate 5\n"), qPrintable(s));
+        c->getProperty("Rg")->Value = "0";
+        s = ngspice(c);
+        QVERIFY2(s.startsWith("MT1 n2 n1 n3 n4 ") && !s.contains("_Rg"), qPrintable(s));
+        for (const char* p : {"N", "Tt", "Ffe"}) QCOMPARE(c->getProperty(p)->simulators, spicecompat::simQucsator);
+    }
+
+    void lossyLinesBecomeLtra()
+    {
+        Component* c = placed(doc, "<TLIN Line1 1 200 200 -26 16 0 0 \"50 Ohm\" 1 \"0.3\" 1 \"0 dB\" 0 \"26.85\" 0>");
+        QVERIFY(c);
+        QVERIFY2(ngspice(c).startsWith("TLine1 n1 0 n2 0 Z0=50 TD={0.3/299792458.0}"), qPrintable(ngspice(c)));
+        c->getProperty("Alpha")->Value = "20 dB";   // 20 dB/m: 2.303 Np/m, R' = 2 a Z0
+        QString s = ngspice(c);
+        QVERIFY2(s.startsWith("OLine1 n1 0 n2 0 LTRA_Line1\n"), qPrintable(s));
+        QVERIFY2(s.contains(".MODEL LTRA_Line1 LTRA(R={4.605170186*(50)} L={(50)/299792458.0} C={1/((50)*299792458.0)} LEN={0.3})"), qPrintable(s));
+        Component* d = placed(doc, "<TLIN4P Line2 1 200 300 -26 16 0 0 \"50 Ohm\" 1 \"0.3\" 1 \"20 dB\" 0 \"26.85\" 0>");
+        QVERIFY(d);
+        QVERIFY2(ngspice(d).startsWith("OLine2 n1 n4 n2 n3 LTRA_Line2\n"), qPrintable(ngspice(d)));
+    }
+
+    void potentiometerFollowsItsVerilogModel()
+    {
+        // LEVEL 1: the errors scale both parts; the contact resistance leads to the wiper.
+        Component* c = placed(doc, "<potentiometer POT1 1 300 100 -26 -60 0 0 \"10k\" 1 \"120\" 1 \"0\" 0 \"1\" 0 \"240.0\" 1 \"0.2\" 0 \"0.2\" 0 \"1\" 0 \"100\" 0 \"26.85\" 0 \"26.85\" 0>");
+        QVERIFY(c);
+        QString s = ngspice(c);
+        QVERIFY2(s.contains("RPOT1_c n2 _net_POT1_w 1\n"), qPrintable(s));
+        QVERIFY2(s.contains("RPOT1_1 n1 _net_POT1_w R='(0.000001+(120)/(240.0))*(10K)*(1+((0.2)+(0.2)*sin((120)*3.14159265358979/180))/100)'\n"), qPrintable(s));
+        QVERIFY2(s.contains("RPOT1_2 _net_POT1_w n3 R='(1.000001-(120)/(240.0))*(10K)*(1+((0.2)+(0.2)*sin((120)*3.14159265358979/180))/100)'\n"), qPrintable(s));
+        // LEVEL 2 with a taper: a resistor in parallel with the bottom part, no error scaling.
+        c->getProperty("LEVEL")->Value = "2";
+        c->getProperty("Taper_Coeff")->Value = "0.5";
+        c->getProperty("Contact_Res")->Value = "0";
+        s = ngspice(c);
+        QVERIFY2(!s.contains("RPOT1_c"), qPrintable(s));
+        QVERIFY2(s.contains("RPOT1_1 n1 n2 R='(0.000001+(120)/(240.0))*(10K)*1'\n"), qPrintable(s));
+        QVERIFY2(s.contains("RPOT1_tb n1 n2 R='(10K)*((0.5)+((0.2)+(0.2)*sin((120)*3.14159265358979/180))/100)'\n"), qPrintable(s));
+        c->getProperty("LEVEL")->Value = "3";
+        QVERIFY2(ngspice(c).contains("RPOT1_tt n2 n3 R='(10K)*"), qPrintable(ngspice(c)));
+    }
+
+    void qucsatorOnlySettingsAreMarkedSo()
+    {
+        Component* dc = placed(doc, "<.DC DC1 1 500 100 0 26 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>");
+        QVERIFY(dc);
+        for (const Property* p : dc->Props) QCOMPARE(p->simulators, spicecompat::simQucsator);
+        Component* ac = placed(doc, "<.AC AC1 1 500 200 0 45 0 0 \"lin\" 1 \"1 Hz\" 1 \"10 kHz\" 1 \"200\" 1 \"no\" 0>");
+        QVERIFY(ac);
+        QCOMPARE(ac->getProperty("Noise")->simulators, spicecompat::simQucsator);
+        QCOMPARE(ac->getProperty("Start")->simulators, spicecompat::simAll);
+        Component* g = placed(doc, "<VCCS SRC1 1 200 400 -26 16 0 0 \"1 S\" 1 \"0\" 0>");
+        QVERIFY(g);
+        QCOMPARE(g->getProperty("T")->simulators, spicecompat::simQucsator);
+    }
+
+    // D: I(SFFM) has a model name of its own, and its old file line still loads.
+    void sffmCurrentSourceKeepsLoading()
+    {
+        Component* c = placed(doc, "<I I1 1 200 500 44 -26 0 1 \"0\" 1 \"1\" 1 \"1k\" 1 \"10\" 1 \"100\" 1>");
+        QVERIFY(c);
+        QCOMPARE(c->Model, QString("iSffm"));
+        QVERIFY2(c->save().startsWith("<iSffm I1 "), qPrintable(c->save()));
+        QCOMPARE(ngspice(c).trimmed(), QString("I1 n1 n2 DC 0 SFFM(0 1 1K 10 100 ) AC 0"));
+        Component* d = Module::getComponent("iSffm");
+        QVERIFY(d);
+        QCOMPARE(d->getProperty("Fc")->Value, QString("1k"));
+        delete d;
+    }
+
+    // D: the 3-pin BJT and MOSFET keep the GUI's properties out of the
+    // Qucsator netlist, like the 4-pin ones.
+    void threePinTransistorsQucsatorLines()
+    {
+        Component* q = placed(doc, "<_BJT T1 1 200 200 8 -26 0 0 \"npn\" 1 \"1e-16\" 1 \"1\" 1 \"1\" 0 \"0\" 0 \"0\" 0 \"0\" 1 \"0\" 0 \"0\" 0 \"1.5\" 0 \"0\" 0 \"2\" 0 \"100\" 1 \"1\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0.75\" 0 \"0.33\" 0 \"0\" 0 \"0.75\" 0 \"0.33\" 0 \"1.0\" 0 \"0\" 0 \"0.75\" 0 \"0\" 0 \"0.5\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"0.0\" 0 \"1.0\" 0 \"1.0\" 0 \"0.0\" 0 \"1.0\" 0 \"1.0\" 0 \"0.0\" 0 \"0.0\" 0 \"3.0\" 0 \"1.11\" 0 \"26.85\" 0 \"1.0\" 0 \"yes\" 0 \"Generic\" 0 \"Generic\" 0>");
+        QVERIFY(q);
+        const QString s = q->getNetlist();
+        QVERIFY2(!s.contains("UseGlobTemp") && !s.contains("LibName") && s.contains("Area=\"1.0\""), qPrintable(s));
+    }
+
+    // D: the time switch and the relay use Xyce's VSWITCH, with a file of
+    // their SPDT subcircuit for it; the SPICE library device without a file
+    // includes nothing.
+    void xyceSwitchesAreVswitches()
+    {
+        Component* c = placed(doc, "<Switch S1 1 200 700 -26 11 0 0 \"off\" 0 \"1 ms\" 0 \"1e-9\" 0 \"1e12\" 0 \"26.85\" 0 \"1e-6\" 0 \"spline\" 0 \"SPST\" 1>");
+        QVERIFY(c);
+        QVERIFY2(xyce(c).contains(".model switch_modelS1 vswitch von=0.55 voff=0.45 ron=1E-9 roff=1E12\n"), qPrintable(xyce(c)));
+        QVERIFY2(ngspice(c).contains(".model switch_modelS1 sw vt =0.5 ron =1E-9 roff =1E12\n"), qPrintable(ngspice(c)));
+        QVERIFY2(c->getSpiceLibrary().contains("/spdt.cir\""), qPrintable(c->getSpiceLibrary()));
+        QucsSettings.DefaultSimulator = spicecompat::simXyce;
+        QVERIFY2(c->getSpiceLibrary().contains("/spdt_xyce.cir\""), qPrintable(c->getSpiceLibrary()));
+        QVERIFY(QFile::exists(QStringLiteral(QUCS_EXAMPLES_DIR "/../library/spicelibrary/spdt_xyce.cir")));
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+
+        Component* lib = placed(doc, "<SpLib X1 1 200 800 -26 21 0 0 \"\" 0 \"\" 0 \"auto\" 0 \"\" 0 \"\" 0>");
+        QVERIFY(lib);
+        QVERIFY2(lib->getSpiceLibrary().isEmpty(), qPrintable(lib->getSpiceLibrary()));
+    }
+
     // B4: XSPICE-based components are not offered to Xyce.
     void xspiceComponentsAreNotForXyce()
     {

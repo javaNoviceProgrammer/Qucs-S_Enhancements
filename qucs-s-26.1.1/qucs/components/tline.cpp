@@ -18,6 +18,8 @@
 #include "tline.h"
 #include "node.h"
 #include "extsimkernels/spicecompat.h"
+#include "misc.h"
+#include <cmath>
 
 
 TLine::TLine()
@@ -78,6 +80,28 @@ Element* TLine::info(QString& Name, char* &BitmapFile, bool getNewOne)
 }
 
 
+
+namespace {
+// Alpha, attenuation in dB per metre (qucsator reads dB as a power
+// ratio, and takes half its natural log): nepers per metre. Zero for a
+// lossless line.
+double nepersPerMetre(const QString& alpha)
+{
+    double dB = 0.0, fac = 1.0;
+    QString unit;
+    misc::str2num(alpha, dB, unit, fac);
+    return dB * fac > 0.0 ? dB * fac * std::log(10.0) / 20.0 : 0.0;
+}
+
+// A value normalized for SPICE, without the braces an expression got, so
+// that it can go inside a larger expression.
+QString unbraced(QString v)
+{
+    if (v.startsWith('{') && v.endsWith('}')) v = v.mid(1, v.size() - 2);
+    return v;
+}
+}
+
 QString TLine::spice_netlist(spicecompat::SpiceDialect dialect)
 {
   Q_UNUSED(dialect);
@@ -88,6 +112,16 @@ QString TLine::spice_netlist(spicecompat::SpiceDialect dialect)
 
   QString zw = spicecompat::normalize_value(getProperty("Z")->Value);
   QString l = spicecompat::normalize_value(getProperty("L")->Value);
+
+  // A lossy line (Alpha > 0) is an LTRA with the series resistance of
+  // the attenuation, R' = 2 a Z0, and L', C' of the ideal line (v = c).
+  const double a = nepersPerMetre(getProperty("Alpha")->Value);
+  if (a > 0.0) {
+    QString s = QString("O%1 %2 0 %3 0 LTRA_%1\n").arg(Name).arg(p1).arg(p2);
+    s += QString(".MODEL LTRA_%1 LTRA(R={%2*(%3)} L={(%3)/%4} C={1/((%3)*%4)} LEN={%5})\n")
+             .arg(Name).arg(QString::number(2.0 * a, 'g', 10)).arg(unbraced(zw)).arg(c0).arg(unbraced(l));
+    return s;
+  }
 
   QString s = QString("T%1 %2 0 %3 0 Z0=%4 TD={%5/%6}\n")
                   .arg(Name)

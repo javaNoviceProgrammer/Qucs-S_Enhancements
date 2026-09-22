@@ -41,7 +41,7 @@ AC_Sim::AC_Sim()
 			QObject::tr("number of simulation steps")));
   Props.append(new Property("Noise", "no", false,
 			QObject::tr("calculate noise voltages")+
-			" [yes, no]"));
+			" [yes, no]", Property::Type::Value, spicecompat::simQucsator));   // SPICE: the .NOISE block
 }
 
 AC_Sim::~AC_Sim()

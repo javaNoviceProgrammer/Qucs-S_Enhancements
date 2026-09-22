@@ -38,12 +38,14 @@ JFET::JFET() {
                               QObject::tr("parasitic source resistance")));
     Props.append(new Property("Is", "1e-14", false,
                               QObject::tr("gate-junction saturation current")));
+    // Of the SPICE JFETs, ngspice's has N, XTI and BETATCE; none has ISR,
+    // NR or M (Qucsator only).
     Props.append(new Property("N", "1.0", false,
-                              QObject::tr("gate-junction emission coefficient")));
+                              QObject::tr("gate-junction emission coefficient"), Property::Type::Value, spicecompat::Simulator(spicecompat::simQucsator | spicecompat::simNgspice | spicecompat::simSpiceOpus)));
     Props.append(new Property("Isr", "1e-14", false,
-                              QObject::tr("gate-junction recombination current parameter")));
+                              QObject::tr("gate-junction recombination current parameter"), Property::Type::Value, spicecompat::simQucsator));
     Props.append(new Property("Nr", "2.0", false,
-                              QObject::tr("Isr emission coefficient")));
+                              QObject::tr("Isr emission coefficient"), Property::Type::Value, spicecompat::simQucsator));
     Props.append(new Property("Cgs", "0.0", false,
                               QObject::tr("zero-bias gate-source junction capacitance")));
     Props.append(new Property("Cgd", "0.0", false,
@@ -53,21 +55,21 @@ JFET::JFET() {
     Props.append(new Property("Fc", "0.5", false,
                               QObject::tr("forward-bias junction capacitance coefficient")));
     Props.append(new Property("M", "0.5", false,
-                              QObject::tr("gate P-N grading coefficient")));
+                              QObject::tr("gate P-N grading coefficient"), Property::Type::Value, spicecompat::simQucsator));
     Props.append(new Property("Kf", "0.0", false,
                               QObject::tr("flicker noise coefficient")));
     Props.append(new Property("Af", "1.0", false,
                               QObject::tr("flicker noise exponent")));
     Props.append(new Property("Ffe", "1.0", false,
-                              QObject::tr("flicker noise frequency exponent")));
+                              QObject::tr("flicker noise frequency exponent"), Property::Type::Value, spicecompat::simQucsator));
     Props.append(new Property("Temp", "26.85", false,
                               QObject::tr("simulation temperature in degree Celsius")));
     Props.append(new Property("Xti", "3.0", false,
-                              QObject::tr("saturation current temperature exponent")));
+                              QObject::tr("saturation current temperature exponent"), Property::Type::Value, spicecompat::Simulator(spicecompat::simQucsator | spicecompat::simNgspice | spicecompat::simSpiceOpus)));
     Props.append(new Property("Vt0tc", "0.0", false,
                               QObject::tr("Vt0 temperature coefficient")));
     Props.append(new Property("Betatce", "0.0", false,
-                              QObject::tr("Beta exponential temperature coefficient")));
+                              QObject::tr("Beta exponential temperature coefficient"), Property::Type::Value, spicecompat::Simulator(spicecompat::simQucsator | spicecompat::simNgspice | spicecompat::simSpiceOpus)));
     Props.append(new Property("Tnom", "26.85", false,
                               QObject::tr("temperature at which parameters were extracted")));
     Props.append(new Property("Area", "1.0", false,
@@ -118,7 +120,7 @@ QString JFET::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat::
                                   // spice-incompatible parameters
         spice_tr<<"Vt0"<<"VtO"; // parameters that need conversion of names
     } else {
-        spice_incompat<<"Type"<<"Area"<<"Temp"<<"Ffe"<<"N"<<"Isr"<<"Nr"<<"M"<<"Xti"<<"Betatce"
+        spice_incompat<<"Type"<<"Area"<<"Temp"<<"Ffe"<<"Isr"<<"Nr"<<"M"
                      <<"UseGlobTemp"<<"LibName"<<"CompName";
                                   // spice-incompatible parameters
         spice_tr<<"Vt0tc"<<"Tcv"; // parameters that need conversion of names

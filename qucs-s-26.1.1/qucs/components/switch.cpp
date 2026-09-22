@@ -18,6 +18,7 @@
 #include "node.h"
 #include "misc.h"
 #include "extsimkernels/spicecompat.h"
+#include "main.h"
 #include <QDebug>
 
 Switch::Switch()
@@ -111,7 +112,6 @@ QString Switch::netlist()
 
 QString Switch::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat::SPICEDefault */)
 {
-  Q_UNUSED(dialect);
 
   QString s = spicecompat::check_refdes(Name,SpiceModel);
 
@@ -146,7 +146,10 @@ QString Switch::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat
       spicecompat::togglingPWL(times, first, other, maxDuration, times.size() % 2 == 0));
 
   if (getProperty("Type")->Value == "SPST") {
-    s += QStringLiteral(".model switch_model%1 sw vt =0.5 ron =%2 roff =%3\n").arg(Name).arg(Ron).arg(Roff);
+    if (dialect == spicecompat::SPICEXyce)   // Xyce: VSWITCH, on above VON, off below VOFF
+      s += QStringLiteral(".model switch_model%1 vswitch von=0.55 voff=0.45 ron=%2 roff=%3\n").arg(Name).arg(Ron).arg(Roff);
+    else
+      s += QStringLiteral(".model switch_model%1 sw vt =0.5 ron =%2 roff =%3\n").arg(Name).arg(Ron).arg(Roff);
   }
   return s;
 }
@@ -186,7 +189,8 @@ void Switch::createSymbol()
 
 QString Switch::getSpiceLibrary()
 {
-  QString f = spicecompat::getSpiceLibPath("spdt.cir");
+  // Xyce's switch model is VSWITCH, not SW: a file of its own.
+  QString f = spicecompat::getSpiceLibPath(QucsSettings.DefaultSimulator == spicecompat::simXyce ? "spdt_xyce.cir" : "spdt.cir");
   QString s = QString (".INCLUDE \"%1\"\n").arg(f);
   return s;
 }

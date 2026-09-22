@@ -43,6 +43,7 @@ Logical_Buf::Logical_Buf()
   Model = "Buf";
   Name  = "Y";
   SpiceModel = "A";
+  Simulator = spicecompat::simNgspice | spicecompat::simSpiceOpus | spicecompat::simQucsator;   // XSPICE digital device
 }
 
 // -------------------------------------------------------

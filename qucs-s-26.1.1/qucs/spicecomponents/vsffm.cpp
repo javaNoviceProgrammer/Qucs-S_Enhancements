@@ -60,7 +60,7 @@ vSffm::vSffm()
 		QObject::tr("carrier signal frequency")));
   Props.append(new Property("Mdi", "10", true,
 		QObject::tr("modulation index")));
-  Props.append(new Property("Fs", "500", false,
+  Props.append(new Property("Fs", "100", false,
 		QObject::tr("modulating signal frequency")));
 
   rotate();  // fix historical flaw
