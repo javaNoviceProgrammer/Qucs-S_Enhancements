@@ -49,6 +49,7 @@ qucs_add_test(test_erc)
 qucs_add_test(test_spice_options)
 qucs_add_test(test_netlist_audit)
 qucs_add_test(test_netlist_fixes)
+qucs_add_test(test_symbol_image)
 
 # Not a test: the driver scripts/ci/fuzz-simout.py runs over damaged
 # simulator output (see simout_harness.cpp).

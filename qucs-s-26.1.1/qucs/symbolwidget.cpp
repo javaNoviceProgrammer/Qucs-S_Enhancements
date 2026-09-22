@@ -132,6 +132,14 @@ void SymbolWidget::paintEvent(QPaintEvent*)
   if(dx < 2)  dx = 2;
   Painter.drawText(dx, y2-y1+2, 1, 1, Qt::AlignLeft | Qt::TextDontClip, DragNDropText);
 
+  // paint every image, they are the background of the symbol
+  for(qucs::Image *im : Images) {
+    Painter.save();
+    Painter.translate(cx, cy);
+    im->draw(&Painter);
+    Painter.restore();
+  }
+
   // paint all lines
   for(int i=0; i<Lines.size(); i++) {
     qucs::Line *pl = Lines.at(i);
@@ -187,6 +195,8 @@ int SymbolWidget::createStandardSymbol(const QString& Lib_, const QString& Comp_
   Lines.clear();
   Rects.clear();
   Ellipses.clear();
+  qDeleteAll(Images);
+  Images.clear();
   Texts.clear();
   PortNames.clear();
   LibraryPath = Lib_;
@@ -471,6 +481,8 @@ int SymbolWidget::setSymbol( QString& SymbolString,
   Lines.clear();
   Rects.clear();
   Ellipses.clear();
+  qDeleteAll(Images);
+  Images.clear();
   Texts.clear();
   PortNames.clear();
   LibraryPath = Lib_;
@@ -532,6 +544,8 @@ int SymbolWidget::loadSymFile(const QString &file)
   Lines.clear();
   Rects.clear();
   Ellipses.clear();
+  qDeleteAll(Images);
+  Images.clear();
   Texts.clear();
   PortNames.clear();
   Warning.clear();
@@ -707,6 +721,33 @@ int SymbolWidget::analyseLine(const QString& Row)
     if(i1+i3 > x2)  x2 = i1+i3;
     if(i2+i4 < y1)  y1 = i2+i4;
     if(i2+i4 > y2)  y2 = i2+i4;
+    return 1;
+  }
+  else if(s == "ImagePainting") {
+    // An image the symbol carries itself; see ImagePainting::save() for
+    // the fields. This one stores two corners, not a corner and a size.
+    if(!getCompLineIntegers(Row, &i1, &i2, &i3, &i4))  return -1;
+
+    qucs_s::EmbeddedImage image;
+    const QString data = Row.section(' ', 5, 5);
+    if(!data.isEmpty() && data != QLatin1String("-"))
+      image.loadBase64(data, Row.section(' ', 6, 6));
+    if(image.isNull())  return 0;
+
+    const QString turns = Row.section(' ', 7, 7);
+    if(!turns.isEmpty())
+      image.setTransform(turns.toInt(), Row.section(' ', 8, 8).toInt() != 0);
+
+    const int left = std::min(i1, i3);
+    const int top = std::min(i2, i4);
+    const int w = std::abs(i3 - i1);
+    const int h = std::abs(i4 - i2);
+    Images.append(new qucs::Image(left, top, w, h, image));
+
+    if(left < x1)  x1 = left;  // keep track of component boundings
+    if(top < y1)  y1 = top;
+    if(left + w > x2)  x2 = left + w;
+    if(top + h > y2)  y2 = top + h;
     return 1;
   }
   else if(s == "Rectangle") {

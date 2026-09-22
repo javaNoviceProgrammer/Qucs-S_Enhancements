@@ -604,6 +604,28 @@ existing demand.
   (right of the simulation toolbar) carries `intoH`, `popH`, this check,
   *Generate Netlist* and *Save netlist* (two new icons,
   `bitmaps/svg/netlist_*.svg`).
+- *Done:* **Images travel with the document, and reach the symbol.**
+  `qucs_s::EmbeddedImage` (`qucs/embeddedimage.*`) holds the bytes of the
+  file an image came from, its format, and the quarter turns and flip put
+  on it; it renders at the size it is asked for, so an SVG is drawn from
+  its source at every zoom instead of being frozen into pixels, and a
+  photograph keeps its own compression instead of being re-encoded as
+  PNG. `ImagePainting` is built on it: the file dialog offers every
+  format `QImageReader` has (SVG and SVGZ added, as Qucs-S renders them
+  itself through Qt6::Svg), `save()` writes
+  `ImagePainting x1 y1 x2 y2 <base64> <format> <turns> <mirrored>` (the
+  three new fields default, so 26.1.2 documents load and 26.1.2 loads
+  ours), and `rotate()`/`mirrorX()`/`mirrorY()` turn the picture and not
+  just its frame. A `qucs::Image` drawing primitive carries the same
+  object into `Component`, where `analyseLine()` reads an `ImagePainting`
+  line of a `<Symbol>` block - it was dropped before, so an instantiated
+  subcircuit lost the picture - and `drawSymbol()`, `rotate()`,
+  `mirrorX()` and `mirrorY()` treat it like the lines and arcs around it;
+  `SymbolWidget` does the same for the library preview.
+  `qucs/tests/test_symbol_image` covers the formats, the round trip with
+  the source file deleted, the turns and mirrors of both the painting and
+  the component, the older five-field line, and an image that cannot be
+  decoded (which no longer refuses the whole document).
 - **Unit-aware property editor**: a single inline editor that understands
   SI suffixes, validates against the property's `spicecompat::Simulator`
   mask, and shows the description tooltip — replacing the two-column

@@ -16,23 +16,24 @@
 #ifndef IMAGEPAINTING_H
 #define IMAGEPAINTING_H
 
+#include "embeddedimage.h"
 #include "rectangle.h"
+#include <QApplication>
+#include <QCheckBox>
 #include <QColor>
-#include <QPen>
-#include <QPixmap>
+#include <QComboBox>
+#include <QDebug>
+#include <QDialogButtonBox>
 #include <QFileDialog>
-#include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPushButton>
-#include <QDialogButtonBox>
-#include <QDebug>
-#include <QPainter>
 #include <QObject>
-#include <QComboBox>
-#include <QCheckBox>
-#include <QApplication>
+#include <QPainter>
+#include <QPen>
+#include <QPixmap>
+#include <QPushButton>
+#include <QVBoxLayout>
 
 class ImagePainting : public QObject, public qucs::Rectangle {
   Q_OBJECT
@@ -51,6 +52,12 @@ public:
   void setImageFromPath(const QString& path);
   void setImageFromClipboard();
 
+  //! The image itself - its bytes, its format and the turns applied to it.
+  const qucs_s::EmbeddedImage& embeddedImage() const { return m_image; }
+
+  //! Put the image in this rectangle, centre worked out as load() does.
+  void setPlacement(int left, int top, int right, int bottom);
+
   // Override selection and interaction methods
   bool getSelected(const QPoint& click, int tolerance) override;
   bool resizeTouched(const QPoint& click, int tolerance) override;
@@ -58,17 +65,21 @@ public:
   bool MousePressing(Schematic* sch = nullptr) override;
   void MouseResizeMoving(int x, int y, Schematic* p) override;
   void ResetDragTracking();
+
+  using Element::mirrorX;
+  using Element::mirrorY;
   bool rotate() noexcept override;
   bool rotate(int xc, int yc) noexcept override;
+  bool mirrorX() noexcept override;
+  bool mirrorY() noexcept override;
 
   int getImageWidth() const;
   int getImageHeight() const;
 
 private:
-  QString imagePath;
-  QPixmap image;
-  QPixmap originalImage;
-  void loadImage();
+  qucs_s::EmbeddedImage m_image;
+  //! Where the image was read from. Kept to show it, never read again.
+  QString m_sourceFile;
 
   enum DraggedCorner { TopLeft, TopRight, BottomLeft, BottomRight, NotSet };
   DraggedCorner m_draggedCorner = NotSet;
@@ -79,7 +90,6 @@ private:
   QColor penColor;
   int penWidth;
   Qt::PenStyle penStyle;
-  bool m_filled;
 
   // Aspect ratio control
   bool m_keepAspectRatio;
@@ -92,6 +102,8 @@ private:
   QCheckBox* m_aspectRatioCheck;
   QPushButton* m_resetButton;
   QLabel* m_statusLabel;
+  //! The image the path in the dialog names, until the dialog is accepted.
+  qucs_s::EmbeddedImage m_pendingImage;
 
   // Dialog handler methods
   void onBrowseClicked();
@@ -99,10 +111,12 @@ private:
   void onAspectRatioToggled(bool checked);
   void onPathChanged(const QString& newPath);
   void updateHeight();
+  void showImageState();
 
   // Helper methods
   void updateAspectRatio();
-  void applyAspectRatioToResize(int& newWidth, int& newHeight);
+  //! The image of the dialog if it has one, else the one being painted.
+  const qucs_s::EmbeddedImage& dialogImage() const;
 };
 
 #endif // IMAGEPAINTING_H

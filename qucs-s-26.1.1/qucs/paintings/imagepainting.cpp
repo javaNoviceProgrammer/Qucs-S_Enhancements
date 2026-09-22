@@ -15,9 +15,20 @@
  ***************************************************************************/
 #include "imagepainting.h"
 #include "filldialog.h"
+#include "geometry/geometry.h"
 #include "misc.h"
 #include "schematic.h"
 
+#include <QClipboard>
+#include <QMimeData>
+#include <QTransform>
+
+#include <cmath>
+
+namespace {
+//! The placeholder written for a painting that carries no image.
+const char* const NoImage = "-";
+}
 
 ImagePainting::ImagePainting() :
       Rectangle(false),
@@ -37,39 +48,37 @@ Painting* ImagePainting::newOne()
 
 
 void ImagePainting::paint(QPainter* painter) {
-  loadImage();
+  const QRect bounds = boundingRect();
 
-  // Use originalImage if available, otherwise use image
-  QPixmap imageToPaint = originalImage.isNull() ? image : originalImage;
+  if (!m_image.isNull() && !bounds.isEmpty()) {
+    // Render the image at the size it is about to be shown at, so that a
+    // vector image stays sharp however far the schematic is zoomed in.
+    const QTransform& t = painter->transform();
+    const QSize target(qRound(bounds.width() * std::hypot(t.m11(), t.m12())),
+                       qRound(bounds.height() * std::hypot(t.m21(), t.m22())));
+    const QPixmap pixmap = m_image.pixmap(target);
 
-  // Null checks
-  if (!imageToPaint.isNull() && !boundingRect().isEmpty()) {
-    painter->save();
-    painter->setPen(Qt::NoPen);
-
-    // Scale the image to fit the bounding rectangle
-    QPixmap scaledImage = imageToPaint.scaled(
-        boundingRect().size(),
-        Qt::IgnoreAspectRatio,
-        Qt::SmoothTransformation
-        );
-
-    painter->drawPixmap(boundingRect().topLeft(), scaledImage);
-    painter->restore();
+    if (!pixmap.isNull()) {
+      painter->save();
+      painter->setPen(Qt::NoPen);
+      painter->setRenderHint(QPainter::SmoothPixmapTransform);
+      painter->drawPixmap(QRectF{bounds}, pixmap, QRectF{pixmap.rect()});
+      painter->restore();
+    }
 
     // Draw selection handles when selected
     if (isSelected) {
       painter->setPen(QPen(Qt::darkGray, penWidth + 5));
-      painter->drawRect(boundingRect());
+      painter->drawRect(bounds);
       painter->setPen(QPen(Qt::white, penWidth, penStyle));
-      painter->drawRect(boundingRect());
+      painter->drawRect(bounds);
 
       // Draw resize handles
-      const auto bounds = boundingRect().marginsAdded({0, 0, 1, 1});
-      misc::draw_resize_handle(painter, bounds.topLeft());
-      misc::draw_resize_handle(painter, bounds.topRight());
-      misc::draw_resize_handle(painter, bounds.bottomRight());
-      misc::draw_resize_handle(painter, bounds.bottomLeft());
+      const auto handles = bounds.marginsAdded({0, 0, 1, 1});
+      misc::draw_resize_handle(painter, handles.topLeft());
+      misc::draw_resize_handle(painter, handles.topRight());
+      misc::draw_resize_handle(painter, handles.bottomRight());
+      misc::draw_resize_handle(painter, handles.bottomLeft());
     }
   } else {
     // Ensure base class is in valid state
@@ -80,9 +89,12 @@ void ImagePainting::paint(QPainter* painter) {
 }
 
 
+// "ImagePainting x1 y1 x2 y2 <base64> <format> <turns> <mirrored>"
+// Up to 26.1.2 only the first six fields were written and the image was
+// always a PNG; those files still load, the missing fields default.
 bool ImagePainting::load(const QString& s) {
   QStringList parts = s.split(' ', Qt::SkipEmptyParts);
-  if (parts.size() < 6) return false;
+  if (parts.size() < 5) return false;
 
   // Extract coordinates
   if (parts[0] != "ImagePainting") return false;
@@ -100,73 +112,52 @@ bool ImagePainting::load(const QString& s) {
   y2 = misc::clampCoordinate(parts[4].toInt(&ok));
   if (!ok) return false;
 
-  // The base64 image data is in part 5
-  QString imageData = parts[5];
+  updateCenter();
 
-  // Clear previous image and path
-  image = QPixmap();
-  originalImage = QPixmap();
-  imagePath.clear();
+  m_image.clear();
+  m_sourceFile.clear();
+  m_aspectRatio = 1.0;
 
-  // Try to load image from base64 data
-  if (!imageData.isEmpty()) {
-    QByteArray byteArray = QByteArray::fromBase64(imageData.toUtf8());
-    if (!byteArray.isEmpty()) {
-      if (image.loadFromData(byteArray)) {
-        originalImage = image; // Store original for resize operations
-        updateAspectRatio(); // Update aspect ratio when image is loaded
-        return true;
-      } else {
-        qWarning("Failed to load image from base64 data");
-      }
-    }
+  const QString imageData = parts.size() > 5 ? parts[5] : QString();
+  if (imageData.isEmpty() || imageData == QLatin1String(NoImage))
+    return true;   // a frame that lost its image; keep the rest of the file
+
+  QString format = parts.size() > 6 ? parts[6] : QString();
+  if (format == QLatin1String(NoImage) || format == QLatin1String("none")) format.clear();
+
+  if (!m_image.loadBase64(imageData, format)) {
+    qWarning("Failed to load the image of an ImagePainting");
+    return true;
   }
 
-  return false;
+  const int turns = parts.size() > 7 ? parts[7].toInt() : 0;
+  const bool mirrored = parts.size() > 8 && parts[8].toInt() != 0;
+  m_image.setTransform(turns, mirrored);
+
+  updateAspectRatio();
+  return true;
 }
 
 QString ImagePainting::save() {
-  QString imageData;
-
-  // If we have a loaded image, convert it to base64
-  if (!image.isNull()) {
-    QByteArray byteArray;
-    QBuffer buffer(&byteArray);
-    buffer.open(QIODevice::WriteOnly);
-
-    // Save as PNG format for best quality and transparency support
-    if (image.save(&buffer, "PNG")) {
-      imageData = byteArray.toBase64();
-    }
-  }
-  // If no image loaded but we have a path, try to load and convert
-  else if (!imagePath.isEmpty()) {
-    QPixmap tempImage;
-    if (tempImage.load(imagePath)) {
-      QByteArray byteArray;
-      QBuffer buffer(&byteArray);
-      buffer.open(QIODevice::WriteOnly);
-
-      if (tempImage.save(&buffer, "PNG")) {
-        imageData = byteArray.toBase64();
-      }
-    }
-  }
-
-  // Return in format: "ImagePainting x1 y1 x2 y2 base64_data"
-  return QString("ImagePainting %1 %2 %3 %4 %5")
-      .arg(x1).arg(y1).arg(x2).arg(y2).arg(imageData);
+  // The image travels with the document: its bytes are written here, so the
+  // file it was read from is not needed again.
+  return QString("ImagePainting %1 %2 %3 %4 %5 %6 %7 %8")
+      .arg(x1).arg(y1).arg(x2).arg(y2)
+      .arg(m_image.isNull() ? QString(NoImage) : m_image.base64())
+      .arg(m_image.isNull() ? QString(NoImage) : m_image.format())
+      .arg(m_image.quarterTurns())
+      .arg(m_image.isFlipped() ? 1 : 0);
 }
 
 QString ImagePainting::saveCpp() {
   // Customize as needed; example:
   return QString("new ImagePainting(%1, %2, %3, %4, \"%5\")")
-      .arg(x1).arg(y1).arg(x2-x1).arg(y2-y1).arg(imagePath);
+      .arg(x1).arg(y1).arg(x2-x1).arg(y2-y1).arg(m_sourceFile);
 }
 
 QString ImagePainting::saveJSON() {
   return QStringLiteral("{\"type\":\"ImagePainting\",\"image\":\"%1\",%2}")
-      .arg(imagePath, Rectangle::saveJSON().mid(1)); // Merge with base JSON
+      .arg(m_sourceFile, Rectangle::saveJSON().mid(1)); // Merge with base JSON
 }
 
 // Override getSelected to handle image area
@@ -210,41 +201,26 @@ void ImagePainting::MouseMoving(const QPoint& onGrid, Schematic* sch, const QPoi
 }
 
 bool ImagePainting::MousePressing(Schematic* sch) {
-  if (imagePath.isEmpty()) {
+  if (m_image.isNull()) {
     QWidget* parentWidget = sch ? sch->parentWidget() : nullptr;
     if (!parentWidget) {
       parentWidget = QApplication::activeWindow();
     }
 
-    QString filter = QObject::tr("Images (*.bmp *.gif *.jpg *.jpeg *.png)");
     QString newPath = QFileDialog::getOpenFileName(
         parentWidget,
         QObject::tr("Select Image"),
         QDir::homePath(),
-        filter
+        qucs_s::EmbeddedImage::fileDialogFilter()
         );
 
-    if (!newPath.isEmpty()) {
-      imagePath = newPath;
-      image = QPixmap();
-      originalImage = QPixmap();
-      loadImage();
+    if (newPath.isEmpty()) return false;   // No image selected.
 
-             // Set dimensions to actual image size if image loaded successfully
-      if (!image.isNull()) {
-        x2 = x1 + image.width();
-        y2 = y1 + image.height();
-        updateAspectRatio(); // Update aspect ratio when new image is loaded
-      } else {
-        // Fallback to default square size if image fails to load
-        const int squareSize = 100;
-        x2 = x1 + squareSize;
-        y2 = y1 + squareSize;
-      }
-    } else {
-      // No image selected.
-      return false;
-    }
+    setImageFromPath(newPath);
+
+    // Set dimensions to actual image size if image loaded successfully
+    const QSize size = m_image.isNull() ? QSize(100, 100) : m_image.size();
+    setPlacement(x1, y1, x1 + size.width(), y1 + size.height());
   }
 
   return true;
@@ -352,24 +328,18 @@ bool ImagePainting::Dialog(QWidget* parent) {
   dialog.setWindowTitle(QObject::tr("Image Properties"));
   auto* layout = new QVBoxLayout(&dialog);
 
+  m_pendingImage = qucs_s::EmbeddedImage();
+
   // Add image path UI
   auto* imageLayout = new QHBoxLayout;
-  auto* pathLabel = new QLabel(QObject::tr("Image Path:"));
-  m_pathEdit = new QLineEdit(imagePath);
+  auto* pathLabel = new QLabel(QObject::tr("Image file:"));
+  m_pathEdit = new QLineEdit(m_sourceFile);
   auto* browseButton = new QPushButton(QObject::tr("Browse..."));
 
-  // Add status label to show if image is embedded or external
+  // The image is always kept inside the document; the path only says where
+  // it was read from.
   m_statusLabel = new QLabel();
-  if (!image.isNull() && imagePath.isEmpty()) {
-    m_statusLabel->setText(QObject::tr("Image embedded in schematic"));
-    m_statusLabel->setStyleSheet("color: green; font-style: italic;");
-  } else if (!imagePath.isEmpty()) {
-    m_statusLabel->setText(QObject::tr("External image file"));
-    m_statusLabel->setStyleSheet("color: blue; font-style: italic;");
-  } else {
-    m_statusLabel->setText(QObject::tr("No image loaded"));
-    m_statusLabel->setStyleSheet("color: red; font-style: italic;");
-  }
+  showImageState();
 
   // Connect browse button
   QObject::connect(browseButton, &QPushButton::clicked, this, &ImagePainting::onBrowseClicked);
@@ -403,7 +373,7 @@ bool ImagePainting::Dialog(QWidget* parent) {
 
   // Reset to original button
   m_resetButton = new QPushButton(QObject::tr("Reset to original dimensions"));
-  m_resetButton->setEnabled(!image.isNull()); // Enable if image is loaded
+  m_resetButton->setEnabled(!m_image.isNull());
 
   dimensionsLayout->addLayout(widthLayout);
   dimensionsLayout->addLayout(heightLayout);
@@ -432,21 +402,21 @@ bool ImagePainting::Dialog(QWidget* parent) {
 
   layout->addWidget(&buttons);
 
-  if (dialog.exec() == QDialog::Rejected) return false;
-
-  // Update image path and load new image if changed
-  QString newPath = m_pathEdit->text();
-  if (newPath != imagePath) {
-    imagePath = newPath;
-    if (!imagePath.isEmpty()) {
-      // Load new image from file path
-      image = QPixmap();
-      loadImage();
-      updateAspectRatio(); // Update aspect ratio when new image is loaded
-    }
-    // If path is cleared but we have an embedded image, keep it
-    // (imagePath will be empty but image will remain loaded)
+  if (dialog.exec() == QDialog::Rejected) {
+    m_pendingImage = qucs_s::EmbeddedImage();
+    return false;
   }
+
+  // Take over the image the path names, if it is a new one. Clearing the
+  // path leaves the image that is already embedded alone.
+  const QString newPath = m_pathEdit->text();
+  if (newPath != m_sourceFile && !m_pendingImage.isNull()) {
+    m_pendingImage.setTransform(m_image.quarterTurns(), m_image.isFlipped());
+    m_image = m_pendingImage;
+    m_sourceFile = newPath;
+    updateAspectRatio();
+  }
+  m_pendingImage = qucs_s::EmbeddedImage();
 
   // Update persistent aspect ratio setting
   m_keepAspectRatio = m_aspectRatioCheck->isChecked();
@@ -458,6 +428,7 @@ bool ImagePainting::Dialog(QWidget* parent) {
   if (newWidth > 0 && newHeight > 0) {
     x2 = x1 + newWidth;
     y2 = y1 + newHeight;
+    updateCenter();
   }
 
   return true;
@@ -470,69 +441,69 @@ Element* ImagePainting::info(QString& Name, char* &BitmapFile, bool getNewOne) {
   return getNewOne ? new ImagePainting() : nullptr;
 }
 
-void ImagePainting::loadImage() {
-  // Don't reload if we already have an image and no path (base64 loaded)
-  if (!image.isNull() && imagePath.isEmpty()) {
-    return;
-  }
-
-  // This method is now primarily used for loading from file path
-  if (imagePath.isEmpty()) return;
-
-  // Only load if not already loaded or if path changed
-  if (image.isNull()) {
-    if (image.load(imagePath)) {
-      originalImage = image; // Store original for resize operations
-      updateAspectRatio(); // Update aspect ratio when image is loaded
-    } else {
-      qWarning("Failed to load image: %s", qUtf8Printable(imagePath));
-    }
-  }
-}
-
-// Override rotate methods to maintain functionality
+// Rotates the image a quarter turn counter-clockwise, together with the
+// rectangle it is drawn in - a square image turns too.
 bool ImagePainting::rotate() noexcept {
-  bool result = qucs::Rectangle::rotate();
-  if (result) {
-    // Clear cached image to force reload with new orientation
-    image = QPixmap();
-    // Invert aspect ratio when rotating
-    if (m_aspectRatio > 0) {
-      m_aspectRatio = 1.0 / m_aspectRatio;
-    }
-  }
-  return result;
+  qucs_s::geom::rotate_point_ccw(x1, y1, cx, cy);
+  qucs_s::geom::rotate_point_ccw(x2, y2, cx, cy);
+  if (x2 < x1) std::swap(x1, x2);
+  if (y2 < y1) std::swap(y1, y2);
+  updateCenter();
+
+  m_image.rotate();
+  updateAspectRatio();
+  return true;
 }
 
 bool ImagePainting::rotate(int xc, int yc) noexcept {
-  bool result = qucs::Rectangle::rotate(xc, yc);
-  if (result) {
-    // Clear cached image to force reload with new orientation
-    image = QPixmap();
-    // Invert aspect ratio when rotating
-    if (m_aspectRatio > 0) {
-      m_aspectRatio = 1.0 / m_aspectRatio;
-    }
-  }
-  return result;
+  if (cx == xc && cy == yc) return rotate();
+
+  qucs_s::geom::rotate_point_ccw(x1, y1, xc, yc);
+  qucs_s::geom::rotate_point_ccw(x2, y2, xc, yc);
+  if (x2 < x1) std::swap(x1, x2);
+  if (y2 < y1) std::swap(y1, y2);
+  updateCenter();
+
+  m_image.rotate();
+  updateAspectRatio();
+  return true;
+}
+
+bool ImagePainting::mirrorX() noexcept {
+  m_image.mirrorX();
+  return true;
+}
+
+bool ImagePainting::mirrorY() noexcept {
+  m_image.mirrorY();
+  return true;
+}
+
+
+void ImagePainting::setPlacement(int left, int top, int right, int bottom) {
+  x1 = left;
+  y1 = top;
+  x2 = right;
+  y2 = bottom;
+  updateCenter();
 }
 
 
 void ImagePainting::setImageFromPixmap(const QPixmap& pixmap) {
-  if (!pixmap.isNull()) {
-    image = pixmap;
-    originalImage = pixmap;
-    imagePath.clear(); // Clear path since this is embedded image data
-    updateAspectRatio(); // Update aspect ratio for new image
+  if (m_image.loadPixmap(pixmap)) {
+    m_sourceFile.clear();   // pasted, no file behind it
+    updateAspectRatio();
   }
 }
 
 void ImagePainting::setImageFromPath(const QString& path) {
-  if (!path.isEmpty()) {
-    imagePath = path;
-    image = QPixmap(); // Clear current image
-    originalImage = QPixmap(); // Clear original image
-    loadImage(); // Load from the new path (this will call updateAspectRatio)
+  if (path.isEmpty()) return;
+
+  if (m_image.loadFile(path)) {
+    m_sourceFile = path;
+    updateAspectRatio();
+  } else {
+    qWarning("Failed to load image: %s", qUtf8Printable(path));
   }
 }
 
@@ -541,49 +512,31 @@ void ImagePainting::setImageFromClipboard() {
   if (clipboard->mimeData()->hasImage()) {
     QImage clipboardImage = clipboard->image();
     if (!clipboardImage.isNull()) {
-      QPixmap pixmap = QPixmap::fromImage(clipboardImage);
-      setImageFromPixmap(pixmap);
+      setImageFromPixmap(QPixmap::fromImage(clipboardImage));
     }
   }
 }
 
 
 void ImagePainting::onBrowseClicked() {
-
-  QString filter = QObject::tr("Images (*.bmp *.gif *.jpg *.jpeg *.png)");
   QString path = QFileDialog::getOpenFileName(
       m_pathEdit->parentWidget(),
       QObject::tr("Select Image"),
-      QDir::homePath(),
-      filter
+      m_sourceFile.isEmpty() ? QDir::homePath() : m_sourceFile,
+      qucs_s::EmbeddedImage::fileDialogFilter()
       );
 
-
   if (!path.isEmpty()) {
-    m_pathEdit->setText(path);
-    m_statusLabel->setText(QObject::tr("External image file"));
-    m_statusLabel->setStyleSheet("color: blue; font-style: italic;");
+    m_pathEdit->setText(path);   // onPathChanged reads the file
   }
 }
 
 void ImagePainting::onResetClicked() {
-  QPixmap tempImage;
-  QString currentPath = m_pathEdit->text();
+  const QSize original = dialogImage().size();
+  if (original.isEmpty()) return;
 
-         // First try to use already loaded image
-  if (!image.isNull()) {
-    tempImage = image;
-  }
-  // Otherwise try to load from path
-  else if (!currentPath.isEmpty() && tempImage.load(currentPath)) {
-    image = tempImage;
-  }
-
-  if (!tempImage.isNull()) {
-    m_widthEdit->setText(QString::number(tempImage.width()));
-    m_heightEdit->setText(QString::number(tempImage.height()));
-    m_resetButton->setEnabled(true);
-  }
+  m_widthEdit->setText(QString::number(original.width()));
+  m_heightEdit->setText(QString::number(original.height()));
 }
 
 void ImagePainting::onAspectRatioToggled(bool checked) {
@@ -594,69 +547,69 @@ void ImagePainting::onAspectRatioToggled(bool checked) {
 }
 
 void ImagePainting::onPathChanged(const QString& newPath) {
-  if (!newPath.isEmpty()) {
-    QPixmap tempImage;
-    if (tempImage.load(newPath)) {
-      m_resetButton->setEnabled(true);
-      if (m_aspectRatioCheck->isChecked()) {
-        updateHeight();
-      }
-    } else {
-      m_resetButton->setEnabled(false);
-    }
+  m_pendingImage = qucs_s::EmbeddedImage();
+
+  if (!newPath.isEmpty() && newPath != m_sourceFile)
+    m_pendingImage.loadFile(newPath);
+
+  m_resetButton->setEnabled(!dialogImage().isNull());
+  showImageState();
+
+  if (!m_pendingImage.isNull() && m_aspectRatioCheck->isChecked())
+    updateHeight();
+}
+
+void ImagePainting::showImageState() {
+  if (!m_statusLabel) return;
+
+  const QString format = dialogImage().format().toUpper();
+  if (!m_pendingImage.isNull()) {
+    m_statusLabel->setText(
+        QObject::tr("%1 image, will be stored in the document").arg(format));
+    m_statusLabel->setStyleSheet("color: green; font-style: italic;");
+  } else if (!m_image.isNull()) {
+    m_statusLabel->setText(
+        QObject::tr("%1 image stored in the document").arg(format));
+    m_statusLabel->setStyleSheet("color: green; font-style: italic;");
+  } else if (!m_pathEdit->text().isEmpty()) {
+    m_statusLabel->setText(QObject::tr("Cannot read this file"));
+    m_statusLabel->setStyleSheet("color: red; font-style: italic;");
   } else {
-    m_resetButton->setEnabled(!image.isNull());
+    m_statusLabel->setText(QObject::tr("No image loaded"));
+    m_statusLabel->setStyleSheet("color: red; font-style: italic;");
   }
 }
 
 void ImagePainting::updateHeight() {
-  if (m_aspectRatioCheck && m_aspectRatioCheck->isChecked()) {
-    QPixmap currentImage = image;
+  if (!m_aspectRatioCheck || !m_aspectRatioCheck->isChecked()) return;
+  if (!m_widthEdit || !m_heightEdit) return;
 
-    // If no image loaded, try to load from path
-    if (currentImage.isNull() && m_pathEdit && !m_pathEdit->text().isEmpty()) {
-      currentImage.load(m_pathEdit->text());
-    }
+  const QSize original = dialogImage().size();
+  if (original.isEmpty()) return;
 
-    if (!currentImage.isNull() && m_widthEdit && m_heightEdit) {
-      int width = m_widthEdit->text().toInt();
-      if (width > 0) {
-        double aspectRatio = (double)currentImage.height() / currentImage.width();
-        int height = qRound(width * aspectRatio);
-        m_heightEdit->setText(QString::number(height));
-      }
-    }
-  }
+  const int width = m_widthEdit->text().toInt();
+  if (width <= 0) return;
+
+  const double aspectRatio = double(original.height()) / double(original.width());
+  m_heightEdit->setText(QString::number(qRound(width * aspectRatio)));
+}
+
+const qucs_s::EmbeddedImage& ImagePainting::dialogImage() const {
+  return m_pendingImage.isNull() ? m_image : m_pendingImage;
 }
 
 void ImagePainting::updateAspectRatio() {
-  QPixmap currentImage = originalImage.isNull() ? image : originalImage;
-  if (!currentImage.isNull()) {
-    m_aspectRatio = (double)currentImage.height() / currentImage.width();
-  } else {
-    m_aspectRatio = 1.0; // Default square aspect ratio
-  }
-}
-
-void ImagePainting::applyAspectRatioToResize(int& newWidth, int& newHeight) {
-  if (m_aspectRatio <= 0) return;
-
-  // Calculate what the height should be based on width and aspect ratio
-  int calculatedHeight = qRound(newWidth * m_aspectRatio);
-
-  // Use the calculated height
-  newHeight = calculatedHeight;
+  const QSize size = m_image.size();
+  m_aspectRatio = size.isEmpty() ? 1.0 : double(size.height()) / double(size.width());
 }
 
 // Needed to have the image size at schematic.cpp when drag and dropping
 int ImagePainting::getImageWidth() const {
-  if (!originalImage.isNull()) return originalImage.width();
-  if (!image.isNull()) return image.width();
-  return 100; // default fallback
+  const QSize size = m_image.size();
+  return size.isEmpty() ? 100 : size.width();
 }
 
 int ImagePainting::getImageHeight() const {
-  if (!originalImage.isNull()) return originalImage.height();
-  if (!image.isNull()) return image.height();
-  return 100; // default fallback
+  const QSize size = m_image.size();
+  return size.isEmpty() ? 100 : size.height();
 }

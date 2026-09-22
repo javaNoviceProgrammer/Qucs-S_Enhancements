@@ -2183,12 +2183,9 @@ void Schematic::contentsDropEvent(QDropEvent *Event)
     QStringList toOpen;
     for (const QUrl &url : urls) {
       QString filePath = QDir::toNativeSeparators(url.toLocalFile());
-      QString lower = filePath.toLower();
 
              // Check if file is a supported image
-      if (lower.endsWith(".png") || lower.endsWith(".jpg") ||
-          lower.endsWith(".jpeg") || lower.endsWith(".bmp") ||
-          lower.endsWith(".gif")) {
+      if (qucs_s::EmbeddedImage::isSupportedFile(filePath)) {
         // Insert ImagePainting at drop position
         auto ev_pos = Event->position();
 #if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
@@ -2198,10 +2195,9 @@ void Schematic::contentsDropEvent(QDropEvent *Event)
 #endif
         ImagePainting* imgPaint = new ImagePainting();
         imgPaint->setImageFromPath(filePath);
-        imgPaint->x1 = inModel.x();
-        imgPaint->y1 = inModel.y();
-        imgPaint->x2 = imgPaint->x1 + imgPaint->getImageWidth();
-        imgPaint->y2 = imgPaint->y1 + imgPaint->getImageHeight();
+        imgPaint->setPlacement(inModel.x(), inModel.y(),
+                               inModel.x() + imgPaint->getImageWidth(),
+                               inModel.y() + imgPaint->getImageHeight());
         this->a_Paintings->push_back(imgPaint);
         viewport()->update();
         setChanged(true, true);

@@ -158,10 +158,12 @@ SET(QUCS_SRCS
   symbolwidget.cpp wire_planner.cpp
   qucsshortcutmanager.cpp globals.cpp
   autosave.cpp crashhandler.cpp shellenvironment.cpp apptheme.cpp erc.cpp
+  embeddedimage.cpp
 )
 
 SET(QUCS_HDRS
 element.h
+embeddedimage.h
 conductor.h
 healer.h
 main.h

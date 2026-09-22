@@ -90,6 +90,7 @@ private:
   QList<qucs::Arc *> Arcs;
   QList<qucs::Rect *> Rects;
   QList<qucs::Ellips *> Ellipses;
+  QList<qucs::Image *> Images;
   QList<Text *>  Texts;
   QMap<int, QString> PortNames;
 };
