@@ -313,9 +313,10 @@ void QucsApp::initActions() {
 
   changeProps = new QAction(tr("Replace..."), this);
   changeProps->setShortcut(Qt::Key_F7);
-  changeProps->setStatusTip(tr("Replace component properties or VHDL code"));
+  changeProps->setStatusTip(tr("Find and replace component property values, or text"));
   changeProps->setWhatsThis(
-      tr("Replace\n\nChange component properties\nor\ntext in VHDL code"));
+      tr("Replace\n\nFinds component property values in this schematic, the open\n"
+         "ones or the whole project and replaces them;\nin a text document, text"));
   connect(changeProps, SIGNAL(triggered()), SLOT(slotChangeProps()));
 
   editCut = new QAction(QIcon((":/bitmaps/svg/editcut.svg")), tr("Cu&t"), this);
@@ -358,8 +359,9 @@ void QucsApp::initActions() {
 
   editFind = new QAction(tr("Find..."), this);
   editFind->setShortcut(QKeySequence::Find);
-  editFind->setStatusTip(tr("Find a piece of text"));
-  editFind->setWhatsThis(tr("Find\n\nSearches for a piece of text"));
+  editFind->setStatusTip(tr("Find a component, a net label or a value; or a piece of text"));
+  editFind->setWhatsThis(tr("Find\n\nIn a schematic, finds a component by its name, a net by its\n"
+                            "label or a property value; in a text document, a piece of text"));
   connect(editFind, SIGNAL(triggered()), SLOT(slotEditFind()));
 
   // to ease usage with notebooks, backspace can also be used to delete

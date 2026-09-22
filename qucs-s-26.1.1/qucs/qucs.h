@@ -55,6 +55,8 @@ class QComboBox;
 class QTabWidget;
 class QSplitter;
 class PaneWidget;
+class FindBar;
+class FindReplaceDialog;
 class QDir;
 class QMouseEvent;
 class QCloseEvent;
@@ -142,6 +144,10 @@ public:
   void setActivePane(ContextMenuTabWidget *pane);
   /// Makes the pane holding this widget the active one.
   void activatePaneOf(QWidget *widget);
+  /// Puts an open document in front: its pane active, its tab current.
+  void showDocument(QWidget *document);
+  /// The find bar under a pane's documents.
+  FindBar *findBarOf(ContextMenuTabWidget *pane) const;
   /// All open documents, pane by pane, in tab order.
   QList<QucsDoc *> allDocuments() const;
   /// The widget a document is shown in (a Schematic or a TextDoc).
@@ -212,6 +218,8 @@ public:
 
   QLineEdit *editText;     // for edit component properties on schematic
   SearchDialog *SearchDia; // global in order to keep values
+  /// Edit > Replace for schematics, made when first asked for.
+  FindReplaceDialog *findReplaceDialog() const { return a_findReplace; }
   TunerDialog *tunerDia;   // global in order to keep values
   SimMessage *sim;         // global in order to keep values
 
@@ -477,6 +485,7 @@ private:
   void removePane(ContextMenuTabWidget *pane);   // an empty pane; a neighbour becomes active
   QSplitter *rowOf(ContextMenuTabWidget *pane) const;
   PaneWidget *frameOf(ContextMenuTabWidget *pane) const;
+  FindReplaceDialog *a_findReplace = nullptr;
   void updatePaneActions();
   void slotFocusChanged(QWidget *old, QWidget *now);
   int addDocumentTab(QFrame *widget, const QString &title = QString());
