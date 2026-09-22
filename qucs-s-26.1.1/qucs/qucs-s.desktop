@@ -2,10 +2,11 @@
 Encoding=UTF-8
 Name=Qucs-S
 Comment=An Universal GUI for Circuit Simulators
-Exec=qucs-s %U
+Exec=qucs-s %F
 Icon=qucs-s
 Terminal=false
 
 Type=Application
 Categories=Education;Electronics
+MimeType=application/x-qucs-schematic;application/x-qucs-data-display;application/x-qucs-symbol;
 StartupNotify=false

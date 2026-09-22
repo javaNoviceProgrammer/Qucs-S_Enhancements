@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The Qucs file types, for the desktop entry (qucs-s.desktop, MimeType=):
+  installed as share/mime/packages/qucs-s.xml. Schematics, data displays
+  and symbols are all text beginning "<Qucs Schematic"; other programs use
+  ".sch" and ".sym" too, and the first line tells them apart.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-qucs-schematic">
+    <comment>Qucs schematic</comment>
+    <sub-class-of type="text/plain"/>
+    <icon name="qucs-s"/>
+    <magic priority="60">
+      <match type="string" offset="0" value="&lt;Qucs Schematic"/>
+    </magic>
+    <glob pattern="*.sch"/>
+  </mime-type>
+  <mime-type type="application/x-qucs-data-display">
+    <comment>Qucs data display</comment>
+    <sub-class-of type="text/plain"/>
+    <icon name="qucs-s"/>
+    <glob pattern="*.dpl"/>
+  </mime-type>
+  <mime-type type="application/x-qucs-symbol">
+    <comment>Qucs symbol</comment>
+    <sub-class-of type="text/plain"/>
+    <icon name="qucs-s"/>
+    <magic priority="60">
+      <match type="string" offset="0" value="&lt;Qucs Schematic"/>
+    </magic>
+    <glob pattern="*.sym"/>
+  </mime-type>
+</mime-info>

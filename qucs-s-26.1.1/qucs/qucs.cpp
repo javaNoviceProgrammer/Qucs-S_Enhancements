@@ -46,6 +46,7 @@
 
 #include "main.h"
 #include "qucs.h"
+#include "systemopen.h"
 #include "ink.h"
 #include "qucsdoc.h"
 #include "textdoc.h"
@@ -170,18 +171,8 @@ QucsApp::QucsApp(bool netlist2Console) :
   QDir homeDir       = QDir::homePath();
   lastExportFilename = homeDir.absoluteFilePath("export.png");
 
-  // load documents given as command line arguments
-  for(int z=1; z<qApp->arguments().size(); z++) {
-    QString arg = qApp->arguments()[z];
-    QByteArray ba = arg.toLatin1();
-    const char *c_arg = ba.data();
-    if(*(c_arg) != '-') {
-      QFileInfo Info(arg);
-      QucsSettings.QucsWorkDir.setPath(Info.absoluteDir().absolutePath());
-      arg = QucsSettings.QucsWorkDir.filePath(Info.fileName());
-      gotoPage(arg);
-    }
-  }
+  // The documents named on the command line are opened by main(), with
+  // openFromSystem(), once the window is up.
 
   QDir QucsBinDir(QucsSettings.BinDir);
   if (QucsSettings.firstRun) { // try to find Ngspice
@@ -3532,6 +3523,65 @@ void QucsApp::openDroppedFiles(const QStringList &files, QWidget *target)
     for (const QString &file : files)
       openDroppedFile(file);
   });
+}
+
+int QucsApp::openFromSystem(const QStringList &items)
+{
+  qInfo().noquote() << "asked to open:" << items.join(QLatin1String(", "));
+  QString project;
+  QStringList files, missing, refused;
+  for (const QString &item : items) {
+    const QString path = qucs_s::systemopen::localPath(item);
+    const QFileInfo info(path);
+    if (path.isEmpty()) {
+      refused << item;
+    } else if (info.isDir()) {
+      if (info.fileName().endsWith("_prj") && project.isEmpty())
+        project = path;
+      else
+        refused << QDir::toNativeSeparators(path);
+    } else if (!info.exists()) {
+      missing << QDir::toNativeSeparators(path);
+    } else if (!files.contains(path)) {
+      files << path;
+    }
+  }
+
+  int opened = 0;
+  if (!project.isEmpty()) {
+    openProject(project);
+    if (QDir(QucsSettings.QucsWorkDir).absolutePath() == QDir(project).absolutePath())
+      ++opened;
+  }
+  for (QString file : files) {
+    // Already open, maybe under another name of the same file (a link, or
+    // macOS' /var for /private/var): that document comes to the front.
+    const QString real = QFileInfo(file).canonicalFilePath();
+    for (QucsDoc *doc : allDocuments())
+      if (!doc->getDocName().isEmpty() && QFileInfo(doc->getDocName()).canonicalFilePath() == real) {
+        file = doc->getDocName();
+        break;
+      }
+    // Outside a project, file dialogs start where the document is.
+    if (ProjName.isEmpty())
+      QucsSettings.QucsWorkDir.setPath(QFileInfo(file).absolutePath());
+    if (gotoPage(file)) ++opened;
+  }
+
+  if (!missing.isEmpty() || !refused.isEmpty()) {
+    QStringList lines;
+    if (!missing.isEmpty())
+      lines << tr("No such file:") << missing;
+    if (!refused.isEmpty())
+      lines << tr("Not a document or a project directory (its name ends in \"_prj\"):") << refused;
+    QMessageBox::warning(this, tr("Open"), lines.join('\n'));
+  }
+  if (opened > 0) {
+    if (isMinimized()) showNormal();
+    raise();
+    activateWindow();
+  }
+  return opened;
 }
 
 void QucsApp::openDroppedFile(const QString &file)

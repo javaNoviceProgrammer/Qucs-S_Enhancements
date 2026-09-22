@@ -398,6 +398,19 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   schematics, data displays and symbols in their views, Verilog-A and other
   text files in the text editor, anything else the way a double-click would.
   Files dragged in from a file manager open the same way.
+- **Documents open from the system** (upstream #973): double-click a
+  schematic (`.sch`), data display (`.dpl`) or symbol (`.sym`) in the
+  Finder, the Explorer or a Linux file manager, or drop it on the Dock icon,
+  and it opens in Qucs-S — in the window already running, on macOS.
+  *Open With* offers Qucs-S for SPICE netlists (`.cir`, `.ckt`, `.sp`) and
+  Verilog-A (`.va`) on macOS too. On the command line `qucs-s FILE...`
+  opens documents and `qucs-s NAME_prj` opens a project; `-i` is not
+  needed. Qucs-S registers itself for these types without taking any of
+  them over from another program: macOS's *Default* handler for `.sch` and
+  `.sym` and owner of `.dpl`; on Windows the installer lists it under
+  *Open with*; on Linux the desktop entry and the MIME types
+  (`share/mime/packages/qucs-s.xml`, telling a Qucs `.sch` from another
+  program's by its first line) do the same.
 
 The detailed record — root causes, what each change does and how it is
 tested — is in [ENHANCEMENT_PROPOSAL.md](ENHANCEMENT_PROPOSAL.md).
@@ -550,7 +563,9 @@ their settings in a file under their temporary directory
 (`tests/isolated_settings.h`), so a test run never touches your own Qucs-S
 preferences; the application offers the same for trying a build out:
 `QUCS_SETTINGS_DIR=<dir> qucs-s` keeps that run's settings in
-`<dir>/qucs/qucs_s.ini`.
+`<dir>/qucs/qucs_s.ini`, and its crash reports and autosave copies under
+`<dir>` as well — a trial run that is killed leaves nothing for your own
+next start to report or offer.
 
 `scripts/ci/smoke-test.sh` has three suites — `load` (render every ngspice
 example), `simulate` (netlist → ngspice → dataset → render; needs `ngspice` on

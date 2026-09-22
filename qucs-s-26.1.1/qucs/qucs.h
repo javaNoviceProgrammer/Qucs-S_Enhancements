@@ -215,6 +215,12 @@ public:
   /// the pane the target is in; the active pane when there is no target.
   void openDroppedFiles(const QStringList &files, QWidget *target = nullptr);
   void openDroppedFile(const QString &file);
+  /// Opens what the system hands over - the command line, the Finder or
+  /// the Dock (QFileOpenEvent), a desktop's file manager: paths or file:
+  /// URLs of documents, and of a project directory (its name ends in
+  /// "_prj"), which opens as the project first. Brings the window to the
+  /// front. Returns how many documents and projects were opened.
+  int openFromSystem(const QStringList &items);
   QString fileType(const QString &);
   static bool isTextDocument(QWidget *);
 
