@@ -114,6 +114,9 @@ private:
 
   void writeSweepProperties();
   void writePropertyTable();
+  /// The options one line of the .OPTIONS editor holds; an empty value
+  /// means a flag, which has none.
+  static QList<QPair<QString, QString>> readOptionLine(const QString& line);
   void writeEquation();
 
   void simpleEditEqn(QLineEdit* lineEdit);

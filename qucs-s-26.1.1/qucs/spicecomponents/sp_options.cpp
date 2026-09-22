@@ -103,16 +103,20 @@ QString SpiceOptions::getExpression(spicecompat::SpiceDialect dialect /* = spice
         options.append(p);
     }
 
+    // An option with no value is a flag (ngspice has a good many:
+    // noopiter, notrnoise, keepopinfo, ...) and is written on its own.
     QString s;
     if (dialect == spicecompat::SPICEXyce) {
         s += QStringLiteral(".OPTIONS %1 ").arg(package);
         for (Property* p : options) {
-            s += QStringLiteral(" %1 = %2 ").arg(p->Name).arg(p->Value);
+            if (p->Value.trimmed().isEmpty()) s += QStringLiteral(" %1 ").arg(p->Name);
+            else s += QStringLiteral(" %1 = %2 ").arg(p->Name).arg(p->Value);
         }
         s += "\n";
     } else {
         for (Property* p : options) {
-            s += QStringLiteral(".OPTION %1 = %2\n").arg(p->Name).arg(p->Value);
+            if (p->Value.trimmed().isEmpty()) s += QStringLiteral(".OPTION %1\n").arg(p->Name);
+            else s += QStringLiteral(".OPTION %1 = %2\n").arg(p->Name).arg(p->Value);
         }
     }
     return s;

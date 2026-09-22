@@ -604,6 +604,18 @@ existing demand.
   (right of the simulation toolbar) carries `intoH`, `popH`, this check,
   *Generate Netlist* and *Save netlist* (two new icons,
   `bitmaps/svg/netlist_*.svg`).
+- *Done:* **Every line of a `.OPTIONS` section, however it is written.**
+  `ComponentDialog::writeEquation()` read one `name = value` per line and
+  threw away anything else, so an ngspice option that is a flag
+  (`noopiter`, `keepopinfo`, `notrnoise`, ...) vanished without a word
+  and `gmin=1e-10 reltol=1e-4` became one option whose value was
+  `1e-10 reltol=1e-4`. `ComponentDialog::readOptionLine()` reads a line
+  of the `.OPTIONS` editor into the options it holds - any number of
+  them, with or without a value, after an optional `.option`/`.options`
+  keyword, comments passed over - and `SpiceOptions::getExpression()`
+  writes an option without a value on its own. The other equation
+  components are untouched. `qucs/tests/test_spice_options` covers each
+  shape, the netlist, what the editor shows next time and the file.
 - *Done:* **A toolkit for a subcircuit's symbol.** `.PortSym` carries a
   name that `Component::analyseLine()` used to drop; it now reaches
   `Port::Name`, and `Subcircuit::readPortDirections()` reads the type of
