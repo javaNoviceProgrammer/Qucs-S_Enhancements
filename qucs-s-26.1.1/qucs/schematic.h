@@ -487,6 +487,12 @@ public:
   /// The net a wire belongs to, whether it is selected or not.
   Net netOf(Wire* wire) const;
 
+  /// Whether the grid is drawn: the document's own flag (getGridOn(),
+  /// saved in the file), unless the application's setting shows or hides
+  /// the grid of every schematic (QucsSettings.GridMode); a data display
+  /// keeps its own.
+  bool gridShown() const;
+
   /// The DC bias labels on show (the values the nodes carry once the DC
   /// bias is shown) and where each goes, for text of these metrics.
   struct BiasLabels {

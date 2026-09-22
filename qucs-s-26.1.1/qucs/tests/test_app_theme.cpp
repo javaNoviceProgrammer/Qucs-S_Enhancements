@@ -40,7 +40,8 @@ struct ThemeGuard {
 QComboBox* themeCombo(QWidget* dialog)
 {
     for (QComboBox* c : dialog->findChildren<QComboBox*>())
-        if (c->count() == 3 && c->itemData(1).toInt() == Dark && c->itemData(2).toInt() == Light) return c;
+        if (c->count() == 3 && c->itemText(0) == "System" && c->itemData(1).toInt() == Dark
+            && c->itemData(2).toInt() == Light) return c;   // not the grid's combo, which also has three
     return nullptr;
 }
 

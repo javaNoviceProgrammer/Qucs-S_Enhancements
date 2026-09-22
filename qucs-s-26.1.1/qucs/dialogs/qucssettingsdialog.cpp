@@ -273,6 +273,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
 
     appAppearanceGrid->addWidget(new QLabel(tr("Theme:"), appSettingsTab), 10, 0);
     ThemeCombo = new QComboBox(appSettingsTab);
+    ThemeCombo->setObjectName("themeCombo");
     ThemeCombo->addItem(tr("System"), qucs_s::apptheme::System);
     ThemeCombo->addItem(tr("Dark"), qucs_s::apptheme::Dark);
     ThemeCombo->addItem(tr("Light"), qucs_s::apptheme::Light);
@@ -289,6 +290,18 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                      "show on it. Prints and exports stay on white."));
     paperFollowsTheme->setChecked(QucsSettings.PaperFollowsTheme);
     appAppearanceGrid->addWidget(paperFollowsTheme, 11, 1);
+
+    appAppearanceGrid->addWidget(new QLabel(tr("Schematic grid:"), appSettingsTab), 12, 0);
+    gridModeCombo = new QComboBox(appSettingsTab);
+    gridModeCombo->setObjectName("gridModeCombo");
+    gridModeCombo->addItem(tr("As each schematic says"), 0);
+    gridModeCombo->addItem(tr("Always hidden"), 1);
+    gridModeCombo->addItem(tr("Always shown"), 2);
+    gridModeCombo->setToolTip(tr("Whether the grid is drawn: as each schematic keeps it (View > Show Grid, "
+                                 "Document Settings), or hidden or shown in every schematic regardless. "
+                                 "The files are not changed, and elements still snap to the grid."));
+    gridModeCombo->setCurrentIndex(gridModeCombo->findData(QucsSettings.GridMode));
+    appAppearanceGrid->addWidget(gridModeCombo, 12, 1);
 
     t->addTab(appAppearanceTab, tr("Appearance"));
 
@@ -744,6 +757,12 @@ void QucsSettingsDialog::slotApply()
         paperChanged = true;
         changed = true;
     }
+    if (QucsSettings.GridMode != gridModeCombo->currentData().toInt())
+    {
+        QucsSettings.GridMode = gridModeCombo->currentData().toInt();
+        App->applyGridSetting();
+        changed = true;
+    }
     if (QucsSettings.PaperFollowsTheme != paperFollowsTheme->isChecked())
     {
         QucsSettings.PaperFollowsTheme = paperFollowsTheme->isChecked();
@@ -1076,6 +1095,7 @@ void QucsSettingsDialog::slotDefaultValues()
     showPinDirections->setChecked(false);
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));
     paperFollowsTheme->setChecked(false);
+    gridModeCombo->setCurrentIndex(gridModeCombo->findData(0));
     checkLoadFromFutureVersions->setChecked(false);
     checkAntiAliasing->setChecked(false);
     checkTextAntiAliasing->setChecked(true);

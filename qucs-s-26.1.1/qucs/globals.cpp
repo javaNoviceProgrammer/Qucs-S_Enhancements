@@ -30,6 +30,7 @@
 #include "crashhandler.h"
 #include "apptheme.h"
 #include "extsimkernels/spicecompat.h"
+#include <algorithm>
 
 tQucsSettings QucsSettings;
 
@@ -122,6 +123,7 @@ bool loadSettings()
     QucsSettings.ShowPinNames = _settings::Get().item<bool>("ShowPinNames");
     QucsSettings.ShowPinDirections = _settings::Get().item<bool>("ShowPinDirections");
     QucsSettings.PaperFollowsTheme = _settings::Get().item<bool>("PaperFollowsTheme");
+    QucsSettings.GridMode = std::clamp(_settings::Get().item<int>("GridMode"), 0, 2);
     QucsSettings.SimulationConsoleHost = _settings::Get().item<int>("SimulationConsoleHost");
     if (!settings.contains("SimulationConsoleHost") && settings.contains("SimulationConsoleDock")
         && !settings.value("SimulationConsoleDock").toBool())   // the earlier two-way setting
@@ -213,6 +215,7 @@ bool saveApplSettings()
     qs.setItem<bool>("ShowPinNames",QucsSettings.ShowPinNames);
     qs.setItem<bool>("ShowPinDirections",QucsSettings.ShowPinDirections);
     qs.setItem<bool>("PaperFollowsTheme",QucsSettings.PaperFollowsTheme);
+    qs.setItem<int>("GridMode",QucsSettings.GridMode);
     qs.setItem<int>("SimulationConsoleHost",QucsSettings.SimulationConsoleHost);
     qs.setItem<int>("Theme",QucsSettings.Theme);
 

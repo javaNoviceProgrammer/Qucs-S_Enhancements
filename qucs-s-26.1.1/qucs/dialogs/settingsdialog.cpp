@@ -97,6 +97,13 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     QGridLayout *gp2 = new QGridLayout(Tab2);
     Check_GridOn = new QCheckBox(tr("show Grid"), Tab2);
     gp2->addWidget(Check_GridOn,0,0,1,1);
+    if (QucsSettings.GridMode != 0 && Doc->fileSuffix() != "dpl") {
+        // Kept in the file, but not what is drawn while the application's
+        // setting shows or hides the grid of every schematic.
+        Check_GridOn->setText(QucsSettings.GridMode == 1
+            ? tr("show Grid (the application settings hide it in every schematic)")
+            : tr("show Grid (the application settings show it in every schematic)"));
+    }
 
     valExpr = new QRegularExpressionValidator(QRegularExpression("[1-9]\\d{0,2}"), this);
 
