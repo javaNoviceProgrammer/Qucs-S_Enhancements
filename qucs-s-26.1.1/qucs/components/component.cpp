@@ -257,6 +257,10 @@ void Component::drawSymbol(QPainter* p) {
         p->restore();
     };
 
+    for (qucs::DrawingPrimitive *image: Images) {
+        draw_primitive(image, p);   // the background of the symbol
+    }
+
     for (qucs::DrawingPrimitive *line: Lines) {
         draw_primitive(line, p);
     }
@@ -309,6 +313,10 @@ void Component::paintIcon(QPixmap* pixmap) {
     painter.setPen(QPen{Qt::red});
     for (auto* port : Ports) {
         painter.drawEllipse(port->x - 2, port->y - 2, 4, 4);
+    }
+
+    for (qucs::Image* image : Images) {
+        image->draw(&painter);
     }
 
     for (qucs::Line* line : Lines) {
@@ -386,6 +394,9 @@ void Component::paintScheme(Schematic *p) {
 
     for (qucs::Ellips *pa: Ellipses) // paint all ellipses
         p->PostPaintEvent(_Ellipse, cx + pa->x, cy + pa->y, pa->w, pa->h);
+
+    for (qucs::Image *im: Images) // outline every image
+        p->PostPaintEvent(_Rect, cx + im->x, cy + im->y, im->w, im->h);
 }
 
 bool Component::moveCenter(int dx, int dy) noexcept {
@@ -459,6 +470,15 @@ bool Component::rotate() noexcept {
         tmp = pa->w;
         pa->w = pa->h;
         pa->h = tmp;
+    }
+
+    // rotate all images, the picture with the rectangle it fills
+    for (qucs::Image *im: Images) {
+        const double px = im->x;
+        im->x = im->y;
+        im->y = -px - im->w;
+        std::swap(im->w, im->h);
+        im->image.rotate();
     }
 
     // rotate all text
@@ -554,6 +574,12 @@ bool Component::mirrorX() noexcept {
     for (qucs::Ellips *pa: Ellipses)
         pa->y = -pa->y - pa->h;
 
+    // mirror all images
+    for (qucs::Image *im: Images) {
+        im->y = -im->y - im->h;
+        im->image.mirrorX();
+    }
+
     QFont f = QucsSettings.font;
     // mirror all text
     for (Text *pt: Texts) {
@@ -624,6 +650,12 @@ bool Component::mirrorY() noexcept {
     // mirror all ellipses
     for (qucs::Ellips *pa: Ellipses)
         pa->x = -pa->x - pa->w;
+
+    // mirror all images
+    for (qucs::Image *im: Images) {
+        im->x = -im->x - im->w;
+        im->image.mirrorY();
+    }
 
     int tmp;
     QFont f = QucsSettings.font;
@@ -1274,6 +1306,34 @@ int Component::analyseLine(const QString &Row, int numProps) {
         if (i2 + i4 < y1) y1 = i2 + i4;
         if (i2 + i4 > y2) y2 = i2 + i4;
         return 1;
+    } else if (s == "ImagePainting") {
+        // The symbol carries the image itself, base64 of the file it was
+        // read from; see ImagePainting::save() for the field order. Unlike
+        // every other painting this one stores two corners, not a corner
+        // and a size.
+        if (!getIntegers(Row, &i1, &i2, &i3, &i4)) return -1;
+
+        qucs_s::EmbeddedImage image;
+        const QString data = Row.section(' ', 5, 5);
+        if (!data.isEmpty() && data != QLatin1String("-"))
+            image.loadBase64(data, Row.section(' ', 6, 6));
+        if (image.isNull()) return 0;   // nothing left to draw
+
+        const QString turns = Row.section(' ', 7, 7);
+        if (!turns.isEmpty())
+            image.setTransform(turns.toInt(), Row.section(' ', 8, 8).toInt() != 0);
+
+        const int left = std::min(i1, i3);
+        const int top = std::min(i2, i4);
+        const int width = std::abs(i3 - i1);
+        const int height = std::abs(i4 - i2);
+        Images.append(new qucs::Image(left, top, width, height, image));
+
+        if (left < x1) x1 = left;  // keep track of component boundings
+        if (top < y1) y1 = top;
+        if (left + width > x2) x2 = left + width;
+        if (top + height > y2) y2 = top + height;
+        return 1;
     } else if (s == "Text") {  // must be last in order to reuse "s" *********
         if (!getIntegers(Row, &i1, &i2, &i3, 0, &i4)) return -1;
         Color=misc::ColorFromString(Row.section(' ', 4, 4));
@@ -1435,6 +1495,7 @@ void Component::copyComponent(Component *pc) {
     Arcs = pc->Arcs;
     Rects = pc->Rects;
     Ellipses = pc->Ellipses;
+    Images = pc->Images;
     Texts = pc->Texts;
 }
 
@@ -1473,6 +1534,8 @@ QString Component::getSpiceSubstrateLine()
 // ********                                                       ********
 // ***********************************************************************
 void MultiViewComponent::recreate() {
+    qDeleteAll(Images);
+    Images.clear();
     Ellipses.clear();
     Texts.clear();
     Ports.clear();

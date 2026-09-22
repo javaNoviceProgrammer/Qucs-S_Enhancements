@@ -40,6 +40,8 @@
 #include <QPen>
 #include <vector>
 
+#include "embeddedimage.h"
+
 class Node;
 class Schematic;
 
@@ -99,6 +101,17 @@ struct Ellips : DrawingPrimitive {
   void draw(QPainter* painter) const override;
   QPen penHint() const override { return Pen; }
   QBrush brushHint() const override { return Brush; }
+};
+
+// A bitmap or vector image drawn into a rectangle. The image travels with
+// the primitive - the file it came from is not needed again - so a symbol
+// that carries one can be rotated and mirrored like any other drawing.
+struct Image : DrawingPrimitive {
+  Image(double _x, double _y, double _w, double _h, const qucs_s::EmbeddedImage& _image)
+      : x(_x), y(_y), w(_w), h(_h), image(_image) {};
+  double x, y, w, h;
+  qucs_s::EmbeddedImage image;
+  void draw(QPainter* painter) const override;
 };
 
 struct Polyline : DrawingPrimitive {

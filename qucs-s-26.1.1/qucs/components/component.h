@@ -93,6 +93,7 @@ public:
   QList<struct qucs::Arc *>      Arcs;
   QList<qucs::Rect *>     Rects;
   QList<qucs::Ellips *>     Ellipses;
+  QList<qucs::Image *>    Images;
   QList<Port *>     Ports;
   QList<Text *>     Texts;
   QList<Property*> Props;

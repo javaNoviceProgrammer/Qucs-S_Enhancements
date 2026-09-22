@@ -235,6 +235,25 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   core (`share/qucs-s/spicelibrary`), and looked for its resources in the
   wrong place when kept under a directory named `bin`; both fixed, and
   the `simulate` smoke suite now runs circuits that include those files.
+- **Images, and images on a symbol**: an image is placed from the
+  *paintings* group of the component panel, pasted from the clipboard, or
+  dropped on the schematic from a file manager, and it can now be in any
+  format Qt has a reader for — SVG and SVGZ included, next to PNG, JPEG,
+  BMP, GIF, TIFF and WebP. The bytes of the file travel inside the
+  document: the picture keeps working when the file it came from is
+  gone, an SVG stays a vector and is redrawn sharp at every zoom instead
+  of being frozen into pixels, and a photograph keeps its JPEG
+  compression instead of being re-encoded as a much larger PNG. An image
+  put on a subcircuit's symbol reaches the instances of that subcircuit:
+  it is drawn as the background of the symbol and turns and mirrors with
+  it, like the lines and arcs around it — before, it was dropped when
+  the symbol was read, so the instance showed the symbol without its
+  picture (or the plain `sub` box, if the picture was all there was).
+  Fixed on the way: turning an image that had been read back from a
+  document emptied it and left a file that could not be opened at all, a
+  square image could not be turned, a mirrored one did not mirror, and a
+  freshly placed or loaded one turned about the origin of the schematic
+  instead of about itself.
 - **Cursor-key moves are undoable and cancellable**: moving the selection
   with the arrow keys marks the document modified, is one undo step for the
   whole sequence, and Escape takes it back while it is the latest change

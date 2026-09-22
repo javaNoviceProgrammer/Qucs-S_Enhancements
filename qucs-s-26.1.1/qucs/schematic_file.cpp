@@ -142,16 +142,9 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
       // Convert QImage to QPixmap and set it
       QPixmap pixmap = QPixmap::fromImage(clipboardImage);
 
-      // Set position
-      int defaultX = 0;
-      int defaultY = 0;
-      imagePainting->x1 = defaultX;
-      imagePainting->y1 = defaultY;
-      imagePainting->x2 = defaultX + clipboardImage.width();
-      imagePainting->y2 = defaultY + clipboardImage.height();
-
       // Set the image data directly in the ImagePainting
       imagePainting->setImageFromPixmap(pixmap);
+      imagePainting->setPlacement(0, 0, clipboardImage.width(), clipboardImage.height());
 
       // Add to the elements list
       pe->push_back(imagePainting);
@@ -166,27 +159,16 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
 
     // Check if the text looks like a file path and if it's an image file
     if (!clipboardText.isEmpty() && isImageFilePath(clipboardText)) {
-      QPixmap testPixmap;
-      if (testPixmap.load(clipboardText)) {
-        // Successfully loaded image from path
-        ImagePainting* imagePainting = new ImagePainting();
+      ImagePainting* imagePainting = new ImagePainting();
+      imagePainting->setImageFromPath(clipboardText);
 
-        // Set position
-        int defaultX = 0;
-        int defaultY = 0;
-        imagePainting->x1 = defaultX;
-        imagePainting->y1 = defaultY;
-        imagePainting->x2 = defaultX + testPixmap.width();
-        imagePainting->y2 = defaultY + testPixmap.height();
-
-        // Set the image from file path
-        imagePainting->setImageFromPath(clipboardText);
-
-        // Add to the elements list
+      if (!imagePainting->embeddedImage().isNull()) {
+        imagePainting->setPlacement(0, 0, imagePainting->getImageWidth(),
+                                    imagePainting->getImageHeight());
         pe->push_back(imagePainting);
-
         return true;
       }
+      delete imagePainting;
     }
   }
 
@@ -197,25 +179,23 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
       if (url.isLocalFile()) {
         QString filePath = url.toLocalFile();
         if (isImageFilePath(filePath)) {
-          QPixmap testPixmap;
-          if (testPixmap.load(filePath)) {
-            // Successfully loaded image from file
-            ImagePainting* imagePainting = new ImagePainting();
+          ImagePainting* imagePainting = new ImagePainting();
+          imagePainting->setImageFromPath(filePath);
 
-            // Set position (offset multiple images if there are several)
-            int defaultX = 100 + (pe->size() * 20); // Offset each image
-            int defaultY = 100 + (pe->size() * 20);
-            imagePainting->x1 = defaultX;
-            imagePainting->y1 = defaultY;
-            imagePainting->x2 = defaultX + testPixmap.width();
-            imagePainting->y2 = defaultY + testPixmap.height();
-
-            // Set the image from file path
-            imagePainting->setImageFromPath(filePath);
-
-            // Add to the elements list
-            pe->push_back(imagePainting);
+          if (imagePainting->embeddedImage().isNull()) {
+            delete imagePainting;
+            continue;
           }
+
+          // Set position (offset multiple images if there are several)
+          const int defaultX = 100 + (pe->size() * 20); // Offset each image
+          const int defaultY = 100 + (pe->size() * 20);
+          imagePainting->setPlacement(defaultX, defaultY,
+                                      defaultX + imagePainting->getImageWidth(),
+                                      defaultY + imagePainting->getImageHeight());
+
+          // Add to the elements list
+          pe->push_back(imagePainting);
         }
       }
     }
@@ -282,16 +262,7 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
 }
 
 bool Schematic::isImageFilePath(const QString& path) {
-  if (path.isEmpty()) return false;
-
-  QFileInfo fileInfo(path);
-  if (!fileInfo.exists() || !fileInfo.isFile()) {
-    return false;
-  }
-
-  // Use QImageReader to check if the file format is supported
-  QImageReader reader(path);
-  return reader.canRead();
+  return qucs_s::EmbeddedImage::isSupportedFile(path);
 }
 
 

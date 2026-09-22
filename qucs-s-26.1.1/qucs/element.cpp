@@ -40,6 +40,24 @@ void Ellips::draw(QPainter* painter) const {
     painter->drawEllipse(QRectF{x, y, w, h});
 }
 
+void Image::draw(QPainter* painter) const {
+    if (image.isNull() || w <= 0.0 || h <= 0.0) return;
+
+    // Render at the resolution the image is about to be shown at, so that a
+    // vector image stays sharp and a bitmap is resampled once.
+    const QTransform& t = painter->transform();
+    const QSize target(qRound(w * std::hypot(t.m11(), t.m12())),
+                       qRound(h * std::hypot(t.m21(), t.m22())));
+
+    const QPixmap pixmap = image.pixmap(target);
+    if (pixmap.isNull()) return;
+
+    painter->save();
+    painter->setRenderHint(QPainter::SmoothPixmapTransform);
+    painter->drawPixmap(QRectF{x, y, w, h}, pixmap, QRectF{pixmap.rect()});
+    painter->restore();
+}
+
 void Polyline::draw(QPainter* painter) const {
     painter->drawPolyline(points.data(), points.size());
 }
