@@ -759,10 +759,25 @@ existing demand.
   the source file deleted, the turns and mirrors of both the painting and
   the component, the older five-field line, and an image that cannot be
   decoded (which no longer refuses the whole document).
-- **Unit-aware property editor**: a single inline editor that understands
-  SI suffixes, validates against the property's `spicecompat::Simulator`
-  mask, and shows the description tooltip — replacing the two-column
-  name/value table.
+- *Done:* **Unit-aware property editor**. Upstream's redesigned
+  component dialog (#1054) had already replaced the two-column table and
+  hides the properties the simulator in use does not take; what was left
+  is the units. `qucs_s::units` (`qucs/valuereading.*`) reads a value:
+  a number (a prefix and a unit after it as Qucs writes them - or in
+  another case, which is then compared), an expression, a name, a list,
+  or text (a model name like `2N2222`, which merely starts with a
+  digit); for a number, what Qucs reads (`misc::str2num`), what the
+  SPICE netlist carries (`spicecompat::normalize_value`, the
+  netlister's own) and what SPICE reads in that (`spiceNumber()`: the
+  number, a scale factor with M = milli and MEG, the rest ignored), with
+  a warning when the two differ (`10 Mohm`, `10 meg`, `1 KOhm`) or a
+  digit follows the prefix (`4k7`, `2R2`). `ComponentDialog` shows it in
+  a line under the property table for the value field in focus, as it
+  is typed, colours a field with a warning amber, and puts the
+  description on the name and value cells as a tooltip. Over the
+  defaults of every built-in component (1086 numbers) nothing is
+  flagged. `qucs/tests/test_value_reading` covers 22 value shapes, the
+  warnings, SPICE's reading, the notation and the dialog.
 - *Done:* **Subcircuit properties dialog redesign** (#1285). `ID_Dialog`
   (`paintings/id_dialog.*`) kept its name and the file format
   (`"1=name=default=description=type"` in the `.ID` line) and lost the

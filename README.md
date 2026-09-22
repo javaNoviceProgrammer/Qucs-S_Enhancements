@@ -214,6 +214,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   package now has a field of its own in the properties dialog, the
   netlister finds it by name, and a schematic saved with the problem
   loads right (the misplaced option is put back).
+- **A value says what it means as you type it**: under the property
+  table of a component's dialog, a line reads the value being edited —
+  `10 kOhm = 10000 → netlist: 10K`, an expression, a parameter's name,
+  a list — with what the SPICE netlist will carry. Where SPICE and Qucs
+  would read two different numbers it says so and the value turns
+  amber: `10 Mohm` (Qucs: 10 mega; SPICE sees `10MOHM`, 10 milli),
+  `10 meg` (the other way round), `1 KOhm` (K is no prefix to Qucs),
+  and the European `4k7` or `2R2`, whose digits after the prefix are
+  not read at all. The property's description is the tooltip of its
+  name and its value.
 - **Subcircuit properties in one table** (upstream #1285): *Edit
   Subcircuit Properties* (double-click the symbol's name text in symbol
   mode) shows the prefix and one table of parameters — Show, Name,
