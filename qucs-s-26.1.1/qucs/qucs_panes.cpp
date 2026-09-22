@@ -10,6 +10,7 @@
  */
 
 #include "qucs.h"
+#include "findbar.h"
 #include "schematic.h"
 #include "textdoc.h"
 #include "misc.h"
@@ -31,7 +32,8 @@ class PaneWidget : public QWidget
 {
 public:
   explicit PaneWidget(ContextMenuTabWidget *tabs)
-      : QWidget(), a_tabs(tabs), a_marker(new QFrame(this))
+      : QWidget(), a_tabs(tabs), a_marker(new QFrame(this)),
+        a_findBar(new FindBar(tabs, this))
   {
     a_marker->setFixedHeight(3);
     a_marker->setAutoFillBackground(true);
@@ -41,9 +43,11 @@ public:
     layout->setSpacing(0);
     layout->addWidget(a_marker);
     layout->addWidget(a_tabs, 1);
+    layout->addWidget(a_findBar);   // hidden until Edit > Find
     setActive(false);
   }
   ContextMenuTabWidget *tabs() const { return a_tabs; }
+  FindBar *findBar() const { return a_findBar; }
   void setActive(bool on)
   {
     QPalette pal = a_marker->palette();
@@ -56,6 +60,7 @@ public:
 private:
   ContextMenuTabWidget *a_tabs;
   QFrame *a_marker;
+  FindBar *a_findBar;
 };
 
 // ---------------------------------------------------------------------
@@ -180,6 +185,22 @@ void QucsApp::activatePaneOf(QWidget *widget)
       return;
     }
   }
+}
+
+void QucsApp::showDocument(QWidget *document)
+{
+  if (document == nullptr || paneOf(document) == nullptr) return;
+  if (DocumentTab->indexOf(document) < 0) activatePaneOf(document);
+  if (DocumentTab->currentWidget() != document) {
+    DocumentTab->setCurrentWidget(document);
+    slotChangeView();
+  }
+}
+
+FindBar *QucsApp::findBarOf(ContextMenuTabWidget *pane) const
+{
+  PaneWidget *frame = frameOf(pane);
+  return frame != nullptr ? frame->findBar() : nullptr;
 }
 
 void QucsApp::slotFocusChanged(QWidget *, QWidget *now)

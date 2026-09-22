@@ -214,6 +214,24 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   package now has a field of its own in the properties dialog, the
   netlister finds it by name, and a schematic saved with the problem
   loads right (the misplaced option is put back).
+- **Find in a schematic, and find and replace across the project**:
+  *Edit → Find* (Ctrl+F) in a schematic opens a find bar under the
+  pane — type a component's name, a net label or a value and the first
+  match is selected and centred (names first: `R1` finds R1 before
+  R10), Enter and Shift+Enter step through the rest, Escape closes it;
+  a net label found lights up its whole net. It used to be disabled in
+  schematics. *Edit → Replace…* (F7) is a new Find and Replace for
+  component property values, in this schematic, in every open one or
+  in every schematic of the project: narrow it to a type of component,
+  to names that fit a wildcard (`R?`) and to one property, match case,
+  whole values or a regular expression (with `\1` in the
+  replacement), see every hit with the value it would get, untick the
+  ones to keep, and double-click one to see it. An open schematic takes
+  the change as one undo step; a project schematic that is not open is
+  opened, changed and left for you to save — nothing is written behind
+  your back. With nothing to find, a property is set whatever its value
+  (`Temp` of every resistor to `-273.15`), which is what the old
+  *Replace* dialog did for the schematic in front.
 - **A schematic opens whichever simulator is selected** (upstream
   #1468): only the components of the selected simulator were known to
   the loader, so with ngspice selected a schematic holding a

@@ -9,7 +9,7 @@ include_directories(
 # Header files
 set(DIALOGS_HDRS
     aboutdialog.h
-    changedialog.h
+    findreplacedialog.h
     digisettingsdialog.h
     exportdialog.h
     importdialog.h
@@ -37,7 +37,7 @@ set(DIALOGS_HDRS
 # Source files
 set(DIALOGS_SRCS
     aboutdialog.cpp
-    changedialog.cpp
+    findreplacedialog.cpp
     vasettingsdialog.cpp
     textboxdialog.cpp
     digisettingsdialog.cpp
@@ -65,7 +65,7 @@ set(DIALOGS_SRCS
 # Headers that need Qt MOC generation
 set(DIALOGS_MOC_HDRS
     aboutdialog.h
-    changedialog.h
+    findreplacedialog.h
     digisettingsdialog.h
     exportdialog.h
     importdialog.h

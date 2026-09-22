@@ -45,7 +45,8 @@
 #include "components/subcirport.h"
 #include "diagram.h"
 #include "dialogs/aboutdialog.h"
-#include "dialogs/changedialog.h"
+#include "dialogs/findreplacedialog.h"
+#include "findbar.h"
 #include "dialogs/importdialog.h"
 #include "dialogs/librarydialog.h"
 #include "dialogs/loaddialog.h"
@@ -932,11 +933,7 @@ void QucsApp::slotLocateProblem(int index) {
     if (doc == nullptr) return;
   }
   // The document in front, the component selected, the place in the middle.
-  if (DocumentTab->indexOf(doc) < 0) activatePaneOf(doc);
-  if (DocumentTab->currentWidget() != doc) {
-    DocumentTab->setCurrentWidget(doc);
-    slotChangeView();
-  }
+  showDocument(doc);
   doc->deselectElements(nullptr);
   if (!issue.component.isEmpty()) {
     // The one at the place, when the name is not unique (that being the problem).
@@ -1196,14 +1193,22 @@ void QucsApp::slotGettingStarted() {
 
 // ---------------------------------------------------------------------
 // Is called when the find action is triggered.
+// A text document gets the text search; a schematic the find bar under
+// its pane (a component by name, a net by label, a property value).
 void QucsApp::slotEditFind() {
-  SearchDia->initSearch(
-      DocumentTab->currentWidget(),
-      ((TextDoc *)DocumentTab->currentWidget())->textCursor().selectedText(),
-      false);
+  QWidget *Doc = DocumentTab->currentWidget();
+  if (isTextDocument(Doc)) {
+    SearchDia->initSearch(Doc, ((TextDoc *)Doc)->textCursor().selectedText(),
+                          false);
+    return;
+  }
+  if (FindBar *bar = findBarOf(DocumentTab)) bar->open();
 }
 
 // --------------------------------------------------------------
+// A text document gets the text search and replace; a schematic the find
+// and replace of component property values (this schematic, the open
+// ones or the project's).
 void QucsApp::slotChangeProps() {
   QWidget *Doc = DocumentTab->currentWidget();
   if (isTextDocument(Doc)) {
@@ -1211,13 +1216,15 @@ void QucsApp::slotChangeProps() {
 
     SearchDia->initSearch(Doc, ((TextDoc *)Doc)->textCursor().selectedText(),
                           true);
-  } else {
-    ChangeDialog *d = new ChangeDialog((Schematic *)Doc);
-    if (d->exec() == QDialog::Accepted) {
-      ((Schematic *)Doc)->setChanged(true, true);
-      ((Schematic *)Doc)->viewport()->update();
-    }
+    return;
   }
+  if (a_findReplace == nullptr) a_findReplace = new FindReplaceDialog(this);
+  a_findReplace->prepare();
+  a_findReplace->show();
+  a_findReplace->raise();
+  a_findReplace->activateWindow();
+  a_findReplace->findEdit()->setFocus();
+  a_findReplace->findEdit()->selectAll();
 }
 
 // --------------------------------------------------------------

@@ -158,12 +158,14 @@ SET(QUCS_SRCS
   symbolwidget.cpp wire_planner.cpp
   qucsshortcutmanager.cpp globals.cpp
   autosave.cpp crashhandler.cpp shellenvironment.cpp apptheme.cpp erc.cpp
-  embeddedimage.cpp
+  embeddedimage.cpp componentsearch.cpp findbar.cpp
 )
 
 SET(QUCS_HDRS
 element.h
 embeddedimage.h
+componentsearch.h
+findbar.h
 conductor.h
 healer.h
 main.h
@@ -208,6 +210,7 @@ SET(QUCS_MOC_HDRS
   processconsole.h
   projectView.h
   symbolwidget.h
+  findbar.h
 )
 
 # headers that need to be moc'ed

@@ -713,8 +713,42 @@ existing demand.
   mask, and shows the description tooltip — replacing the two-column
   name/value table.
 - **Subcircuit properties dialog redesign** (#1285).
-- **Project-wide search/replace of component values** and a
-  "find component by refdes" box on the canvas.
+- *Done:* **Project-wide search/replace of component values** and a
+  "find component by refdes" box on the canvas. `qucs_s::search`
+  (`qucs/componentsearch.*`) is the logic, widget-free: a `Query` (text;
+  names and labels and/or values; case, whole value, regular
+  expression; a model, a name wildcard, a property) and `find()`, which
+  lists `Match`es - exact names first, then other names, net labels
+  (of wires and nodes), values, each in document order; `replaced()`
+  (whole value when there is no text, `\1` groups for a regular
+  expression), `replace()` (the component found again by name and
+  place, the value only if it is still what was found and the new one
+  is neither empty nor holds a `"`; the text keeps its distance to the
+  symbol as the properties dialog does; the caller records one undo
+  step) and `reveal()` (selects the component, or a label and a wire of
+  its net so that the net highlighting shows it, and centres it).
+  `FindBar` (`qucs/findbar.*`) is a row under each pane's tabs
+  (`PaneWidget`), opened by *Edit → Find* in a schematic - the action
+  was disabled for schematics, and its slot C-cast any document to
+  `TextDoc` - searching names, labels and values as typed, one stop per
+  component, and following the pane to another document.
+  `FindReplaceDialog` (`dialogs/findreplacedialog.*`, non-modal, one per
+  application) replaces `ChangeDialog` behind *Edit → Replace* (F7) for
+  schematics: scopes *This schematic*, *Open schematics* (unsaved
+  changes included) and *All schematics of the project* (`.sch` below
+  the project, `Scratch/` excepted, the closed ones read off-screen),
+  type and property lists taken from the open schematics, a checkable
+  preview with the new values, Replace disabled once the fields no
+  longer describe the search shown. A closed schematic with checked
+  hits is opened with `gotoPage()`, changed and left unsaved (an
+  off-screen load and save would also reset the file's view).
+  `QucsApp::showDocument()` (pane and tab to the front) is shared with
+  the Problems tab. `qucs/tests/test_component_search` covers the
+  search, the replacement rules, stale and refused values, undo, the
+  bar (typing, stepping, wrapping, labels, another document) and the
+  dialog (checked rows only, the old dialog's "set this property"
+  use, stale fields, a bad expression, a project with an open, a closed
+  and a Scratch schematic, the double click).
 
 **Larger (architectural — see WS4 first)**
 
