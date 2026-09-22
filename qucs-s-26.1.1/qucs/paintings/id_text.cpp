@@ -150,7 +150,8 @@ bool ID_Text::rotate(int rcx, int rcy) noexcept
 bool ID_Text::Dialog(QWidget *parent)
 {
   auto d = std::make_unique<ID_Dialog>(this, parent);
-  return d->exec() != QDialog::Rejected;
+  // Changed by OK, or by Apply before a Cancel.
+  return d->exec() != QDialog::Rejected || d->applied();
 }
 
 QRect ID_Text::boundingRect() const noexcept
