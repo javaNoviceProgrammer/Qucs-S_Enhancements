@@ -791,11 +791,48 @@ void ComponentDialog::updateEqnEditor()
     else if (xycePackageEdit && property->Name == "XyceOptionPackage")
       xycePackageEdit->setText(property->Value);
 
+    else if (xycePackageEdit && property->Value.trimmed().isEmpty())
+      eqnList.append(property->Name + "\n");   // an option that is a flag
+
     else
       eqnList.append(property->Name + " = " + property->Value + "\n");
   }
   
   eqnEditor->setPlainText(eqnList);
+}
+
+// -------------------------------------------------------------------------
+// The options one line of the .OPTIONS editor holds, as name/value pairs
+// with an empty value for a flag. A SPICE user writes them in several
+// shapes and every one of them is meant:
+//
+//   reltol = 1e-4        one option with a value
+//   noopiter             a flag, which has no value at all
+//   gmin=1e-10 temp=50   several on one line
+//   .option method=gear  the keyword written out, as in a netlist
+//
+// Everything that is not a name, or a name followed by "= value", is
+// passed over.
+QList<QPair<QString, QString>> ComponentDialog::readOptionLine(const QString& line)
+{
+  QList<QPair<QString, QString>> options;
+
+  QString rest = line.trimmed();
+  if (rest.startsWith('*') || rest.startsWith(';')) return options;   // a comment
+
+  // The ".option"/".options" keyword, if the line was written as a
+  // netlist line would be.
+  static const QRegularExpression keyword("^\\.opt(ion|ions)?\\s+", QRegularExpression::CaseInsensitiveOption);
+  rest.remove(keyword);
+
+  static const QRegularExpression option("([A-Za-z_][A-Za-z_0-9]*)\\s*(?:=\\s*([^\\s=]+))?");
+  auto found = option.globalMatch(rest);
+  while (found.hasNext()) {
+    const auto match = found.next();
+    options.append(qMakePair(match.captured(1), match.captured(2).trimmed()));
+  }
+
+  return options;
 }
 
 // -------------------------------------------------------------------------
@@ -842,16 +879,23 @@ void ComponentDialog::writeEquation()
 
   QString text = eqnEditor->document()->toPlainText();
   QStringList lines = text.split('\n', Qt::SkipEmptyParts);
-  
+
   for (const QString& line : qAsConst(lines))
   {
+    if (xycePackageEdit) {   // .OPTIONS: see readOptionLine()
+      for (const auto& option : readOptionLine(line)) {
+        if (option.first == "XyceOptionPackage") {   // typed as a line: it is the package
+          component->Props.first()->Value = option.second;
+          continue;
+        }
+        component->Props.append(new Property(option.first, option.second, true));
+      }
+      continue;
+    }
+
     QString LHS = line.section('=',0,0).trimmed();
     QString RHS = line.section('=',1).trimmed();
     if (!LHS.isEmpty() && !RHS.isEmpty()) {
-      if (xycePackageEdit && LHS == "XyceOptionPackage") {   // typed as a line anyway: it is the package
-        component->Props.first()->Value = RHS;
-        continue;
-      }
       component->Props.append(new Property(LHS, RHS, true));
     }
   }

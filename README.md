@@ -200,7 +200,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Edit Diagram Properties → Properties → Legend*. Off by default; the
   position is saved with the diagram, and files without it load as before
   (upstream #1719).
-- **`.OPTIONS` keeps every line**: the first option of a `.OPTIONS`
+- **`.OPTIONS` keeps every line, however it is written**: each line of
+  the editor becomes a `.OPTION` line of the netlist, and a line may now
+  be an option with no value at all (`noopiter`, `keepopinfo` and the
+  other ngspice flags were dropped without a word), several options at
+  once (`gmin=1e-10 reltol=1e-4` became one option with a nonsense
+  value), or written out as a netlist line would be (`.option
+  method=gear`). Before that, the first option of a `.OPTIONS`
   section was dropped from the ngspice netlist (or taken for the Xyce
   option package) once the section had been edited — the netlister and
   the file format take the first property for the Xyce package, and the

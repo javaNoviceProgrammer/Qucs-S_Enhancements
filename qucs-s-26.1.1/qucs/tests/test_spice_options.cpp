@@ -84,6 +84,24 @@ private slots:
         QVERIFY(c.getExpression(spicecompat::CDL).isEmpty());
     }
 
+    // ngspice has a good many options that are flags with no value at
+    // all; one of those is written on its own.
+    void anOptionWithoutAValueIsAFlag()
+    {
+        SpiceOptions c;
+        setProps(c, {{"noopiter", ""}, {"reltol", "1e-4"}, {"keepopinfo", ""}});
+        QCOMPARE(c.getExpression(spicecompat::SPICEDefault),
+                 QString(".OPTION noopiter\n.OPTION reltol = 1e-4\n.OPTION keepopinfo\n"));
+        QCOMPARE(c.getExpression(spicecompat::SPICEXyce),
+                 QString(".OPTIONS DEVICE  noopiter  reltol = 1e-4  keepopinfo \n"));
+
+        // And it survives the file.
+        SpiceOptions back;
+        QVERIFY(back.load(c.save()));
+        QCOMPARE(back.getExpression(spicecompat::SPICEDefault),
+                 QString(".OPTION noopiter\n.OPTION reltol = 1e-4\n.OPTION keepopinfo\n"));
+    }
+
     void aFileSavedWithoutThePackageLineLoadsRight()
     {
         // Saved by the old dialog: the first value is an option, not a package.
@@ -147,6 +165,57 @@ private slots:
         QCOMPARE(comp->getExpression(spicecompat::SPICEXyce), QString(".OPTIONS TIMEINT  temp = 50  autobus = on \n"));
         // Saved with the package first, so it loads back the same.
         QVERIFY(comp->save().contains("\"TIMEINT\" 0 \"temp=50\" 1 \"autobus=on\" 1"));
+
+        // Every shape a SPICE user writes an option in. Each line of the
+        // editor is one or more options; up to now a line without "="
+        // was dropped without a word, and two options on one line became
+        // one with a nonsense value.
+        {
+            ComponentDialog shapes(comp, doc);
+            QTextEdit* ed = shapes.findChild<QTextEdit*>();
+            QVERIFY(ed != nullptr);
+            ed->setPlainText("temp = 50\n"
+                             "noopiter\n"
+                             "gmin=1e-10 reltol=1e-4\n"
+                             ".option method = gear\n"
+                             ".OPTIONS srcsteps=10\n"
+                             "* a comment\n");
+            QVERIFY(QMetaObject::invokeMethod(&shapes, "slotApplyButton"));
+
+            QStringList got;
+            for (Property* p : comp->Props)
+                if (p->Name != "XyceOptionPackage")
+                    got << (p->Value.isEmpty() ? p->Name : p->Name + "=" + p->Value);
+            QCOMPARE(got, (QStringList{"temp=50", "noopiter", "gmin=1e-10", "reltol=1e-4",
+                                       "method=gear", "srcsteps=10"}));
+
+            QCOMPARE(comp->getExpression(spicecompat::SPICEDefault),
+                     QString(".OPTION temp = 50\n.OPTION noopiter\n.OPTION gmin = 1e-10\n"
+                             ".OPTION reltol = 1e-4\n.OPTION method = gear\n.OPTION srcsteps = 10\n"));
+
+            // The editor writes them back one to a line, a flag bare.
+            ComponentDialog shown(comp, doc);
+            QTextEdit* again = shown.findChild<QTextEdit*>();
+            QVERIFY(again != nullptr);
+            QCOMPARE(again->toPlainText().trimmed(),
+                     QString("temp = 50\nnoopiter\ngmin = 1e-10\nreltol = 1e-4\n"
+                             "method = gear\nsrcsteps = 10"));
+
+            // And a round trip through the file changes nothing.
+            SpiceOptions reloaded;
+            QVERIFY(reloaded.load(comp->save()));
+            QCOMPARE(reloaded.getExpression(spicecompat::SPICEDefault),
+                     comp->getExpression(spicecompat::SPICEDefault));
+        }
+
+        // Back to two plain options for what follows.
+        {
+            ComponentDialog back(comp, doc);
+            QTextEdit* ed = back.findChild<QTextEdit*>();
+            QVERIFY(ed != nullptr);
+            ed->setPlainText("temp = 50\nautobus = on\n");
+            QVERIFY(QMetaObject::invokeMethod(&back, "slotApplyButton"));
+        }
 
         // An empty package field means DEVICE.
         ComponentDialog again(comp, doc);
