@@ -32,6 +32,7 @@
 
 // Global category and component lists.
 QHash<QString, Module *> Module::Modules;
+QList<Module *> Module::Unlisted;
 QList<Category *> Category::Categories;
 
 QMap<QString, QString> Module::vaComponents;
@@ -51,6 +52,19 @@ Module::~Module () {
 // Module registration using a category name and the appropriate
 // function returning a modules instance object.
 void Module::registerModule (QString category, pInfoFunc info) {
+  // An equation block is a component registered this way (it is loaded
+  // through the hash under its other category, or by name): the palette
+  // leaves out one the simulator in use cannot take, as registerComponent()
+  // does. Diagrams and paintings are for every simulator.
+  QString Name;
+  char* File;
+  Element* e = info(Name, File, true);
+  const Component* c = dynamic_cast<Component*>(e);
+  const bool listed = c == nullptr ||
+      (c->Simulator & QucsSettings.DefaultSimulator) == QucsSettings.DefaultSimulator;
+  delete e;
+  if (!listed) return;
+
   Module * m = new Module ();
   m->info = info;
   m->category = category;
@@ -67,20 +81,29 @@ void Module::registerComponent(QString category, pInfoFunc info) {
   char* File;
   Component* c = (Component*)info(Name, File, true);
 
-  // put into category and the component hash
-  if ((c->Simulator & QucsSettings.DefaultSimulator) ==
-      QucsSettings.DefaultSimulator) {
-    Module* m     = new Module();
-    m->info       = info;
-    m->category   = category;
+  // Every component goes into the hash, so a schematic made for another
+  // simulator opens (and undo after a simulator switch rebuilds it) with
+  // its parts intact - drawn as not simulable, and reported by the check
+  // and the netlister. Only the palette is limited to the simulator in use.
+  const bool listed = (c->Simulator & QucsSettings.DefaultSimulator) ==
+                      QucsSettings.DefaultSimulator;
+  Module* m     = new Module();
+  m->info       = info;
+  m->category   = category;
 
+  if (listed) {
     m->icon = new QPixmap(128, 128);
     c->paintIcon(m->icon);
-
     intoCategory(m);
-    if (!Modules.contains(c->Model)) {
-      Modules.insert(c->Model, m);
-    }
+  } else {
+    Unlisted.append(m);
+  }
+
+  // Of two classes with one model name, the first one for the simulator
+  // in use reads it; one for another simulator only fills a gap.
+  auto known = Modules.constFind(c->Model);
+  if (known == Modules.constEnd() || (listed && Unlisted.contains(known.value()))) {
+    Modules.insert(c->Model, m);
   }
   delete c;
 }
@@ -633,6 +656,9 @@ void Module::unregisterModules(void) {
   while (!Category::Categories.isEmpty()) {
     delete Category::Categories.takeFirst();
   }
+
+  qDeleteAll(Unlisted);
+  Unlisted.clear();
 
   QHash<QString, Module*>::iterator i = Modules.begin();
   while (i != Modules.end()) {

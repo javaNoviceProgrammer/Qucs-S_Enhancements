@@ -214,6 +214,21 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   package now has a field of its own in the properties dialog, the
   netlister finds it by name, and a schematic saved with the problem
   loads right (the misplaced option is put back).
+- **A schematic opens whichever simulator is selected** (upstream
+  #1468): only the components of the selected simulator were known to
+  the loader, so with ngspice selected a schematic holding a
+  Qucsator-only part (a microstrip tee, an external transient block, …)
+  did not open — the GUI offered to put an empty subcircuit in the
+  part's place, which the next save wrote over the original — and with
+  Qucsator selected a SPICE one did not. Of the 247 shipped examples,
+  ngspice refused 30, Xyce 32, SPICE OPUS 31 and Qucsator 93; now every
+  one opens under every simulator. Parts the selected simulator cannot
+  take are drawn in grey and named by *Check Schematic* before a run,
+  and an undo after switching simulators keeps them (it reloads the
+  document from its own text, and used to lose them the same way). The
+  component panel still offers only the selected simulator's parts —
+  now also in the *equations* group, which used to offer the SPICE
+  equation blocks to Qucsator and `.CSPARAM` to Xyce.
 - **Component netlists audited**: every built-in component was netlisted
   in every flavour and run through ngspice
   ([docs/bug_hunts/](docs/bug_hunts/README.md)). Fixed: the 4-terminal

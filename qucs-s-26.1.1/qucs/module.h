@@ -43,6 +43,10 @@ class Module
 
  public:
   static QHash<QString, Module *> Modules;
+  // Components of another simulator: in Modules (so they load) but in no
+  // category (so the palette does not offer them). Owned here; a listed
+  // module is owned by its category.
+  static QList<Module *> Unlisted;
   static QMap<QString, QString> vaComponents;
 
  public:

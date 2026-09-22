@@ -402,8 +402,22 @@ private slots:
         QucsSettings.DefaultSimulator = spicecompat::simXyce;
         Module::unregisterModules();
         Module::registerModules();
-        for (const char* model : {"Vfile", "Ifile", "SDTF", "XAPWL", "XSPICE_A"})
-            QVERIFY2(Module::getComponent(model) == nullptr, model);
+        QStringList offered;   // what the palette offers
+        for (const QString& cat : Category::getCategories()) {
+            for (Module* m : Category::getModules(cat)) {
+                QString name;
+                char* file = nullptr;
+                Element* e = m->info ? m->info(name, file, true) : nullptr;
+                if (auto* c = dynamic_cast<Component*>(e)) offered << c->Model;
+                delete e;
+            }
+        }
+        for (const char* model : {"Vfile", "Ifile", "SDTF", "XAPWL", "XSPICE_A"}) {
+            QVERIFY2(!offered.contains(model), model);
+            // ... but a schematic holding one still opens (upstream #1468).
+            std::unique_ptr<Component> c(Module::getComponent(model));
+            QVERIFY2(c != nullptr, model);
+        }
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         Module::unregisterModules();
         Module::registerModules();
