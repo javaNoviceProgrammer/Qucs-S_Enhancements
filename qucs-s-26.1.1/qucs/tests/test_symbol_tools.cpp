@@ -15,6 +15,7 @@
 #include "element.h"
 #include "main.h"
 #include "misc.h"
+#include <QFontMetrics>
 #include "module.h"
 #include "schematic.h"
 #include "components/component.h"
@@ -144,6 +145,7 @@ private slots:
     {
         QVERIFY(dir.isValid());
         useIsolatedSettings(dir.filePath("settings"));
+        QucsSettings.font = QApplication::font();   // else there is nothing to measure
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         QucsSettings.firstRun = false;
         QucsSettings.maxUndo = 20;
@@ -289,7 +291,15 @@ private slots:
     // A box wide enough for the names it now carries.
     void theNewSymbolMakesRoomForThePinNames()
     {
-        const QString path = write("wide.sch", subcircuit());
+        const QFontMetrics metrics(misc::pinFont(), nullptr);
+        if (metrics.horizontalAdvance("a_long_input_name") <= 0)
+            QSKIP("this platform has no font to measure a pin name with");
+
+        // Names long enough that the 40-wide box cannot hold them.
+        QString text = subcircuit();
+        text.replace("\"in\" 140 70", "\"a_long_input_name\" 140 70");
+        text.replace("\"out\" 320 70", "\"a_long_output_name\" 320 70");
+        const QString path = write("wide.sch", text);
         QVERIFY(!path.isEmpty());
 
         auto doc = std::make_unique<Schematic>(nullptr, path);
@@ -371,9 +381,13 @@ private slots:
         QCOMPARE(again.corners(), drawn.corners());
         QCOMPARE(again.save(), drawn.save());
 
+        // Every field is read from the place it is written in, whichever
+        // order a compiler evaluates arguments in.
+        const QString line = "Polyline 3 0 0 20 0 10 20 #000080 2 1 #c0c0c0 1 1 1";
         PolylinePainting closed;
-        QVERIFY(closed.load("Polyline 3 0 0 20 0 10 20 #000080 2 1 #c0c0c0 1 1 1"));
+        QVERIFY(closed.load(line));
         QVERIFY(closed.isClosed());
+        QCOMPARE(closed.save(), line);
     }
 
     void aPolylineTurnsAndMirrors()
