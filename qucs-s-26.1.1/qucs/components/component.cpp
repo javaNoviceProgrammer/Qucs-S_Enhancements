@@ -25,6 +25,7 @@
 #include "subcircuit.h"
 #include "spicecomponents/isffm.h"
 #include "main.h"
+#include "ink.h"
 #include "schematic.h"
 #include "module.h"
 #include "node.h"
@@ -104,8 +105,8 @@ int drawPinDirection(QPainter* painter, const QString& direction, const QPoint& 
     const QPoint across(half * in.y(), half * in.x());
 
     painter->save();
-    painter->setPen(QPen(Qt::darkGreen, 1));
-    painter->setBrush(QBrush(Qt::darkGreen));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::darkGreen, 1)));
+    painter->setBrush(qucs_s::ink::on(QBrush(Qt::darkGreen)));
     if (isBoth) {
         const QPoint middle((near_ + far_) / 2);
         painter->drawPolygon(QPolygon() << near_ << (middle + across) << far_ << (middle - across));
@@ -316,7 +317,7 @@ void Component::paint(QPainter *p) {
 
     drawSymbol(p);
 
-    p->setPen(QPen(Qt::black, 1));
+    p->setPen(qucs_s::ink::on(QPen(Qt::black, 1)));
     QRect text_br{tx, ty, 0, 0};
 
     if (showName) {
@@ -331,9 +332,9 @@ void Component::paint(QPainter *p) {
     }
 
     if (isActive == COMP_IS_OPEN)
-        p->setPen(QPen(Qt::red, 0));
+        p->setPen(qucs_s::ink::on(QPen(Qt::red, 0)));
     else if (isActive & COMP_IS_SHORTEN)
-        p->setPen(QPen(Qt::darkGreen, 0));
+        p->setPen(qucs_s::ink::on(QPen(Qt::darkGreen, 0)));
 
     if (isActive != COMP_IS_ACTIVE) {
         p->drawRect(x1, y1, x2 - x1 + 1, y2 - y1 + 1);
@@ -343,7 +344,7 @@ void Component::paint(QPainter *p) {
 
     // draw component bounding box
     if (isSelected) {
-        p->setPen(QPen(Qt::darkGray, 3));
+        p->setPen(qucs_s::ink::on(QPen(Qt::darkGray, 3)));
         p->drawRoundedRect(x1, y1, x2 - x1, y2 - y1, 4, 4);
     }
 
@@ -355,8 +356,9 @@ void Component::drawSymbol(QPainter* p) {
 
     auto draw_primitive = [&](qucs::DrawingPrimitive* prim, QPainter* p) {
         p->save();
-        p->setPen(correctSimulator ? prim->penHint() : WrongSimulatorPen);
-        p->setBrush(prim->brushHint());
+        // Colours meant for light paper, fitted to the paper in use.
+        p->setPen(qucs_s::ink::on(correctSimulator ? prim->penHint() : WrongSimulatorPen));
+        p->setBrush(qucs_s::ink::on(prim->brushHint()));
         prim->draw(p);
         p->restore();
     };
@@ -404,7 +406,7 @@ void Component::drawPins(QPainter* p) {
     if (body.isEmpty()) return;
 
     p->save();
-    p->setPen(QPen(Qt::black, 1));
+    p->setPen(qucs_s::ink::on(QPen(Qt::black, 1)));
     p->setFont(pinFont());
 
     for (const Port* port : Ports) {

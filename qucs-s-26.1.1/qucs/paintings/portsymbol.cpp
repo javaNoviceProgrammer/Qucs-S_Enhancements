@@ -23,6 +23,7 @@
 #include <QMargins>
 #include <QPainter>
 #include "misc.h"
+#include "ink.h"
 
 namespace helper {
 
@@ -115,7 +116,7 @@ void PortSymbol::paint(QPainter *painter)
 
     // Little circle
     const QRect circle_br{ -portCircleRadius, -portCircleRadius, portCircleDiameter, portCircleDiameter };
-    painter->setPen(QPen(Qt::red,1));  // like open node
+    painter->setPen(qucs_s::ink::on(QPen(Qt::red,1)));  // like open node
     painter->drawEllipse(circle_br);
 
     // The name is laid out to one side of the circle; the mark for the
@@ -132,8 +133,8 @@ void PortSymbol::paint(QPainter *painter)
       const QPoint head(away * (portCircleRadius + 10), 0);
       const QPoint across(0, 3);
 
-      painter->setPen(QPen(Qt::darkGreen, 1));
-      painter->setBrush(QBrush(Qt::darkGreen));
+      painter->setPen(qucs_s::ink::on(QPen(Qt::darkGreen, 1)));
+      painter->setBrush(qucs_s::ink::on(QBrush(Qt::darkGreen)));
       if (dir == QLatin1String("inout")) {
         const QPoint middle((tail + head) / 2);
         painter->drawPolygon(QPolygon() << tail << (middle + across) << head << (middle - across));
@@ -145,7 +146,7 @@ void PortSymbol::paint(QPainter *painter)
     }
 
     // Port name
-    painter->setPen(Qt::black);
+    painter->setPen(qucs_s::ink::on(Qt::black));
     painter->drawText(m_textOrigin.x(), m_textOrigin.y(), 1, 1, Qt::TextDontClip, nameStr.isEmpty() ? numberStr : nameStr);
     painter->restore();
   }
@@ -156,12 +157,12 @@ void PortSymbol::paint(QPainter *painter)
     painter->save();
 
     // Rectangle around the text and the circle.
-    painter->setPen(Qt::lightGray);
+    painter->setPen(qucs_s::ink::on(Qt::lightGray));
     painter->drawRect(boundingRect());
 
     // Selection box
     if (isSelected) {
-      painter->setPen(QPen(Qt::darkGray,3));
+      painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray,3)));
       painter->drawRoundedRect(boundingRect().marginsAdded(QMargins{3, 3, 3, 3}), 4, 4);
     }
 

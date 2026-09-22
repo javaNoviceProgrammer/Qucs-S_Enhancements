@@ -146,6 +146,9 @@ public:
   void activatePaneOf(QWidget *widget);
   /// Puts an open document in front: its pane active, its tab current.
   void showDocument(QWidget *document);
+  /// Gives every open schematic the paper of the settings and the theme
+  /// (misc::paperColor()), and the inline text editor with it.
+  void applyPaper();
   /// The find bar under a pane's documents.
   FindBar *findBarOf(ContextMenuTabWidget *pane) const;
   /// All open documents, pane by pane, in tab order.

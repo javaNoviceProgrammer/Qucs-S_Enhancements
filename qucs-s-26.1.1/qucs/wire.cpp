@@ -23,6 +23,7 @@
 #include <QPainter>
 #include "qucs_assert.h"
 #include "misc.h"
+#include "ink.h"
 
 Wire::Wire(int _x1, int _y1, int _x2, int _y2)
 {
@@ -91,13 +92,13 @@ bool Wire::getSelected(int x_, int y_)
 void Wire::paint(QPainter *painter) const {
   painter->save();
   if (isSelected) {
-    painter->setPen(QPen(Qt::darkGray,6));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray,6)));
     painter->drawLine(x1, y1, x2, y2);
-    painter->setPen(QPen(Qt::lightGray,2));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::lightGray,2)));
     painter->drawLine(x1, y1, x2, y2);
   }
   else {
-    painter->setPen(QPen(Qt::darkBlue,2));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::darkBlue,2)));
     painter->drawLine(x1, y1, x2, y2);
   }
   painter->restore();

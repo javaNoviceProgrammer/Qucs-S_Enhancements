@@ -158,7 +158,7 @@ SET(QUCS_SRCS
   symbolwidget.cpp wire_planner.cpp
   qucsshortcutmanager.cpp globals.cpp
   autosave.cpp crashhandler.cpp shellenvironment.cpp apptheme.cpp erc.cpp
-  embeddedimage.cpp componentsearch.cpp findbar.cpp biaslabels.cpp
+  embeddedimage.cpp componentsearch.cpp findbar.cpp biaslabels.cpp ink.cpp
 )
 
 SET(QUCS_HDRS
@@ -167,6 +167,7 @@ embeddedimage.h
 componentsearch.h
 findbar.h
 biaslabels.h
+ink.h
 conductor.h
 healer.h
 main.h

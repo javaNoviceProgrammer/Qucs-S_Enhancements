@@ -27,6 +27,7 @@
 #include "one_point.h"
 #include "schematic.h"
 #include "qucs_assert.h"
+#include "ink.h"
 
 
 Arrow::Arrow() : headStyle(ArrowHeadStyle::empty), headHeight(20.0), headWidth(8.0), headWingLength(sqrt(headWidth*headWidth + headHeight*headHeight)), headAngle(atan2(headWidth, headHeight))
@@ -42,7 +43,7 @@ Arrow::Arrow() : headStyle(ArrowHeadStyle::empty), headHeight(20.0), headWidth(8
 void Arrow::paint(QPainter* painter) {
   painter->save();
 
-  painter->setPen(isSelected ? QPen(Qt::darkGray,pen.width() + 5) : pen);
+  painter->setPen(qucs_s::ink::on(isSelected ? QPen(Qt::darkGray,pen.width() + 5) : pen));
 
   // Schaft
   painter->drawLine(x1, y1, x2, y2);
@@ -55,7 +56,7 @@ void Arrow::paint(QPainter* painter) {
       painter->drawLine(arrowTip, headRightWing);
       break;
     case ArrowHeadStyle::filled:
-      painter->setBrush(isSelected ? Qt::white : pen.brush());
+      painter->setBrush(qucs_s::ink::on(isSelected ? Qt::white : pen.brush()));
       painter->drawConvexPolygon(QPolygon(QList{headLeftWing, arrowTip, headRightWing}));
     break;
     default:

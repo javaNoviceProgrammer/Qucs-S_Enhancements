@@ -22,6 +22,7 @@
 
 #include <numbers>
 #include "qucs_assert.h"
+#include "ink.h"
 
 
 EllipseArc::EllipseArc()
@@ -35,14 +36,14 @@ EllipseArc::EllipseArc()
 void EllipseArc::paint(QPainter *painter) {
   painter->save();
   const auto bounds = boundingRect();
-  painter->setPen(pen);
+  painter->setPen(qucs_s::ink::on(pen));
 
   painter->drawArc(bounds, arcStartAngle, arcLengthAngle);
 
   if (isSelected) {
-    painter->setPen(QPen(Qt::darkGray,pen.width() + 5));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray,pen.width() + 5)));
     painter->drawArc(bounds, arcStartAngle, arcLengthAngle);
-    painter->setPen(QPen(Qt::white, pen.width(), pen.style()));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::white, pen.width(), pen.style())));
     painter->drawArc(bounds, arcStartAngle, arcLengthAngle);
 
     misc::draw_resize_handle(painter, bounds.topLeft());

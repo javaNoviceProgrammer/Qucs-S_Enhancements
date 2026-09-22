@@ -21,6 +21,7 @@
 
 #include <QPainter>
 #include "misc.h"
+#include "ink.h"
 
 ID_Text::ID_Text(int x1_, int y1_)
 {
@@ -37,7 +38,7 @@ void ID_Text::paint(QPainter* painter) {
   painter->save();
   painter->translate(x1, y1);
 
-  painter->setPen(QPen(Qt::black,1));
+  painter->setPen(qucs_s::ink::on(QPen(Qt::black,1)));
 
   QRect r;
   painter->drawText(QRect(0, 0, 1, 1), Qt::TextDontClip, prefix, &r);
@@ -57,7 +58,7 @@ void ID_Text::paint(QPainter* painter) {
   }
 
   if(isSelected) {
-    painter->setPen(QPen(Qt::darkGray,3));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray,3)));
     painter->drawRoundedRect(-4, -4, x2+8, y2+8, 4.0, 4.0);
   }
   painter->restore();

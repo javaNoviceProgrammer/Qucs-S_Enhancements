@@ -20,6 +20,7 @@
 #include <QPolygon>
 
 #include <algorithm>
+#include "ink.h"
 
 namespace {
 //! A click this near a corner counts as that corner.
@@ -72,18 +73,18 @@ void PolylinePainting::paint(QPainter* painter)
   if (m_points.size() < 2) return;
 
   painter->save();
-  painter->setPen(m_pen);
-  painter->setBrush(m_filled ? m_brush : QBrush(Qt::NoBrush));
+  painter->setPen(qucs_s::ink::on(m_pen));
+  painter->setBrush(qucs_s::ink::on(m_filled ? m_brush : QBrush(Qt::NoBrush)));
 
   if (m_closed || m_filled) painter->drawPolygon(polygon());
   else painter->drawPolyline(polygon());
 
   if (isSelected) {
     painter->setBrush(Qt::NoBrush);
-    painter->setPen(QPen(Qt::darkGray, m_pen.width() + 5));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray, m_pen.width() + 5)));
     if (m_closed || m_filled) painter->drawPolygon(polygon());
     else painter->drawPolyline(polygon());
-    painter->setPen(QPen(Qt::white, m_pen.width(), m_pen.style()));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::white, m_pen.width(), m_pen.style())));
     if (m_closed || m_filled) painter->drawPolygon(polygon());
     else painter->drawPolyline(polygon());
 

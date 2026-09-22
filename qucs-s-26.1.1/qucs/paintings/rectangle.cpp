@@ -20,6 +20,7 @@
 #include "one_point.h"
 #include "schematic.h"
 #include "misc.h"
+#include "ink.h"
 
 qucs::Rectangle::Rectangle(bool _filled)
 {
@@ -35,17 +36,17 @@ qucs::Rectangle::Rectangle(bool _filled)
 
 void qucs::Rectangle::paint(QPainter *painter) {
   painter->save();
-  painter->setPen(pen);
-  if (filled) painter->setBrush(brush);
+  painter->setPen(qucs_s::ink::on(pen));
+  if (filled) painter->setBrush(qucs_s::ink::on(brush));
 
   const auto bounds = boundingRect();
 
   painter->drawRect(bounds);
 
   if (isSelected) {
-    painter->setPen(QPen(Qt::darkGray,pen.width() + 5));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray,pen.width() + 5)));
     painter->drawRect(bounds);
-    painter->setPen(QPen(Qt::white, pen.width(), pen.style()));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::white, pen.width(), pen.style())));
     painter->drawRect(bounds);
 
     // QRect's topRight(), bottomRight() and bottomLeft() return coordinates

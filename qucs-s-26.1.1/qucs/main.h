@@ -119,6 +119,7 @@ struct tQucsSettings {
   // symbol, and mark which way the pin points (in, out, inout).
   bool ShowPinNames = true;
   bool ShowPinDirections = false;
+  bool PaperFollowsTheme = false;   // the schematic paper is dark in the dark theme
   // Where the simulator's output goes: the Simulation dock, a window of
   // its own, or the legacy window that blocks the application until closed.
   enum SimConsoleHost { SimConsoleDock = 0, SimConsoleWindow = 1, SimConsoleLegacyWindow = 2 };

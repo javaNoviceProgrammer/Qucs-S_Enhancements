@@ -20,6 +20,7 @@
 #include "multi_point.h"
 #include "one_point.h"
 #include "schematic.h"
+#include "ink.h"
 
 
 GraphicLine::GraphicLine(int ax, int ay, int bx, int by, QPen pen_) : pen(pen_)
@@ -37,13 +38,13 @@ GraphicLine::GraphicLine(int ax, int ay, int bx, int by, QPen pen_) : pen(pen_)
 
 void GraphicLine::paint(QPainter *painter) {
   painter->save();
-  painter->setPen(pen);
+  painter->setPen(qucs_s::ink::on(pen));
   painter->drawLine(x1, y1, x2, y2);
 
   if (isSelected) {
-    painter->setPen(QPen(Qt::darkGray,pen.width() + 5));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::darkGray,pen.width() + 5)));
     painter->drawLine(x1, y1, x2, y2);
-    painter->setPen(QPen(Qt::white, pen.width(), pen.style()));
+    painter->setPen(qucs_s::ink::on(QPen(Qt::white, pen.width(), pen.style())));
     painter->drawLine(x1, y1, x2, y2);
 
     misc::draw_resize_handle(painter, QPoint{x1, y1});

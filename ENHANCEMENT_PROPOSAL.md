@@ -427,10 +427,37 @@ existing demand.
   around that by temporarily marking the document changed; done
   synchronously it is a use-after-free that `test_drop_open` catches under
   ASan. Verified end to end on macOS with CGEvent drags.
-- **Explicit light/dark theme toggle** (#1725). The `hasDarkTheme` flag
-  already exists in `QucsSettings`; components draw with hard-coded
-  `Qt::darkBlue` pens, so this needs a small palette-indirection layer in
-  `qucs::DrawingPrimitive::draw()`.
+- *Done:* **Explicit light/dark theme toggle** (#1725): the theme itself
+  is the *Theme* setting below; what was left is the canvas.
+  Components draw with hard-coded pens (`Qt::darkBlue` alone ~1900
+  times in 193 files, in the constructors), so on a dark paper the
+  schematic vanished. `qucs_s::ink` (`qucs/ink.*`) is the indirection:
+  `ink::Paper` sets the paper for the time of a paint (nested, white
+  when none), and `ink::on()` gives a colour (pen, plain brush) to draw
+  with on it - itself on light paper; on dark paper (relative luminance
+  under 0.18), when its WCAG contrast to the paper is under 3, the HSL
+  lightness turned over and raised until it reaches 3, hue, saturation
+  and alpha kept; cached per paper. `Schematic::drawContents()` (the
+  canvas only) sets the paper from the viewport's background; the
+  colours pass through `ink::on()` where they reach the painter:
+  `Component::drawSymbol()` (every primitive's `penHint()` and
+  `brushHint()`, so the constructors stay as they are), the component's
+  texts, open/short marks, selection, pin names and direction marks,
+  simulation blocks, wires, nodes, wire labels, all paintings, the
+  grid, the frame and the post-paint previews. A diagram on dark paper
+  is a white card under a nested light `Paper` (its header bars, grid
+  and legend keep their meaning); the DC bias boxes are light
+  themselves, only their leader lines are fitted. Prints and exports
+  never set a paper, so they are unchanged. `misc::paperColor()` is the
+  canvas paper - `QucsSettings.BGColor`, or `ink::darkPaperColour()` in
+  the dark theme when `PaperFollowsTheme` (*Appearance*, default off) -
+  and `QucsApp::applyPaper()` gives it to every open schematic and the
+  inline text editor, from the settings dialog and on
+  `QStyleHints::colorSchemeChanged`. `qucs/tests/test_ink` covers the
+  mapping, nesting, every colour of every built-in symbol (each shows
+  on dark paper), the canvas (a wire comes out light and still blue, a
+  diagram is a white card, the print of the same schematic is dark blue
+  as ever) and the setting.
 - *Done:* **Diagram legend** (#1719). `Diagram::paintLegend()` draws, after
   the graphs and axis texts, a framed white box in the corner chosen by
   `Diagram::legendPos` (off / four corners) with one row per graph: a
