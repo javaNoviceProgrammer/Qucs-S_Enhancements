@@ -593,7 +593,31 @@ existing demand.
 
 **Medium (weeks each)**
 
-- **Auto-placement of DC-bias labels** to avoid overlaps (#1692).
+- *Done:* **Auto-placement of DC-bias labels** to avoid overlaps (#1692).
+  `Schematic::drawDcBiasPoints()` drew each value in a box at a fixed
+  offset from its node (`SweepDialog::setBiasPoints()` worked out
+  "no room to the right" and "horizontal wire" flags that nothing
+  read). `qucs_s::bias` (`qucs/biaslabels.*`) is the placement, free of
+  widgets as the issue asked: `candidates()` - the four corners beside
+  the anchor (upper left first for a voltage, upper right for a
+  current: the old offsets), the four sides, then the same eight 24
+  units out; `cost()` - boxes by area, wires by the length inside the
+  box (Liang-Barsky; along an edge is free) times its height; and
+  `place()`, which orders the labels by how few free places they have,
+  then gives each the candidate covering the least of the labels
+  placed so far and, among those, the least of the rest, a step out
+  costing half the label's area and getting a leader line.
+  `Schematic::layoutBiasLabels()` gathers the obstacles (symbols, their
+  property text, node dots, wire and node labels, wires, diagrams,
+  paintings) and `drawDcBiasPoints()` draws the leaders, then the boxes.
+  Which nodes get a value, the values, units, colours and boxes are
+  unchanged. `qucs/tests/test_bias_labels` covers free placement, a
+  symbol, a wire, labels close together, the hardest label first, the
+  fallbacks, the candidates, a survey of the shipped examples (every
+  value shown as `setBiasPoints()` picks them: label on label 436 -> 2,
+  on a symbol or its text 4135 -> 2200, crossed by a wire 3950 -> 478,
+  no schematic worse) and the drawing. A real ngspice DC bias of
+  `audio_amp.sch` (94 labels) was checked by eye.
 - *Done (click, not hover):* **Net highlighting.** `Schematic::netOf(Wire*)`
   flood-fills the `Node`↔`Wire` graph and, in rounds, joins what labels
   of the same name and ground symbols connect; `selectedNet()` is the

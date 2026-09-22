@@ -661,44 +661,75 @@ void Schematic::drawElements(QPainter* painter) {
     }
 }
 
-void Schematic::drawDcBiasPoints(QPainter* painter) {
-    painter->save();
-    int x, y, z;
-
-    const int xOffset = 10;
-    const int yOffset = 10;
-
+Schematic::BiasLabels Schematic::layoutBiasLabels(const QFontMetrics& metrics) const {
+    // The labels: a value per node that has one (a current, marked with
+    // 0x10, at a probe's or a source's node), in a box of the text's size.
+    BiasLabels result;
     for (auto* pn : *a_Nodes) {
         if (pn->Name.isEmpty())
             continue;
+        const QString value = misc::formatValue(pn->Name, 4);
+        const QRect textRect = metrics.boundingRect(value);
+        result.labels << qucs_s::bias::Label{QPoint(pn->cx, pn->cy),
+                                             QSize(textRect.width() + 6, textRect.height() + 4),
+                                             (pn->x1 & 0x10) != 0};
+        result.texts << value;
+    }
+    if (result.labels.isEmpty())
+        return result;
 
-        QString value = misc::formatValue(pn->Name, 4);
+    // What they had better not cover (upstream #1692): each goes beside
+    // its node where it covers the least of this.
+    qucs_s::bias::Obstacles obstacles;
+    for (auto* pc : *a_Components) {
+        obstacles.boxes << pc->boundingRect();
+        int textWidth, textHeight;
+        pc->textSize(textWidth, textHeight);
+        if (textWidth > 0 && textHeight > 0)
+            obstacles.boxes << QRect(pc->tx, pc->ty, textWidth, textHeight).translated(pc->center());
+    }
+    for (auto* pw : *a_Wires) {
+        obstacles.wires << QLine(pw->x1, pw->y1, pw->x2, pw->y2);
+        if (pw->hasLabel())
+            obstacles.boxes << pw->label()->boundingRect();
+    }
+    for (auto* pn : *a_Nodes) {
+        obstacles.boxes << QRect(pn->cx - 3, pn->cy - 3, 6, 6);   // its dot
+        if (pn->hasLabel())
+            obstacles.boxes << pn->label()->boundingRect();
+    }
+    for (auto* pd : *a_Diagrams)
+        obstacles.boxes << pd->boundingRect();
+    for (auto* pp : *a_Paintings)
+        obstacles.boxes << pp->boundingRect();
 
-        x = pn->cx;
-        y = pn->cy + 4;
-        z = pn->x1;
+    result.placements = qucs_s::bias::place(result.labels, obstacles);
+    return result;
+}
 
-        QRect textRect = painter->fontMetrics().boundingRect(value);
-        int rectWidth = textRect.width() + 6;
-        int rectHeight = textRect.height() + 4;
-
-        if (z & 0x10) {
-            x += xOffset;
-            y -= yOffset;
-        } else {
-            x -= xOffset;
-            y -= yOffset;
-        }
-
-        int rectX = x - rectWidth / 2;
-        int rectY = y - rectHeight / 2;
-
+void Schematic::drawDcBiasPoints(QPainter* painter) {
+    painter->save();
+    const BiasLabels bias = layoutBiasLabels(painter->fontMetrics());
+    auto ink = [&bias](int i) { return bias.labels.at(i).current ? QColor(Qt::darkGreen) : QColor(Qt::blue); };
+    // A label set apart from its node: a line to the nearest point of its
+    // box. All of them first, so that none runs over another's box.
+    for (int i = 0; i < bias.labels.size(); ++i) {
+        if (!bias.placements.at(i).leader)
+            continue;
+        const QRect box = bias.placements.at(i).box;
+        const QPoint a = bias.labels.at(i).anchor;
+        painter->setPen(QPen(ink(i), 1));
+        painter->drawLine(a, QPoint(qBound(box.left(), a.x(), box.right()),
+                                    qBound(box.top(), a.y(), box.bottom())));
+    }
+    for (int i = 0; i < bias.labels.size(); ++i) {
+        const QRect box = bias.placements.at(i).box;
         painter->setBrush(QBrush(QColor(230,230,230)));
         painter->setPen(Qt::NoPen);
-        painter->drawRoundedRect( QRectF(rectX, rectY, rectWidth, rectHeight),15,15,Qt::RelativeSize);
+        painter->drawRoundedRect(QRectF(box), 15, 15, Qt::RelativeSize);
 
-        painter->setPen(z & 0x10 ? Qt::darkGreen : Qt::blue);
-        painter->drawText(x - textRect.width() / 2, y + textRect.height() / 4, value);
+        painter->setPen(ink(i));
+        painter->drawText(box, Qt::AlignCenter, bias.texts.at(i));
     }
     painter->restore();
 }

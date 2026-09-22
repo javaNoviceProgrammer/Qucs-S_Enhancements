@@ -214,6 +214,19 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   package now has a field of its own in the properties dialog, the
   netlister finds it by name, and a schematic saved with the problem
   loads right (the misplaced option is put back).
+- **DC bias labels find their own place** (upstream #1692): after
+  *Calculate DC bias* every value used to be drawn at the same fixed
+  offset from its node, whatever was there — on the symbol, across a
+  wire, on the next value. Each label now goes beside its node where it
+  covers the least: first the corner it always had (upper left for a
+  voltage, upper right for a current), then the other corners and
+  sides, then a step further out with a thin leader line back to the
+  node; never on another value while any other place is left, and the
+  labels with the least room choose first. Values, units and colours
+  are as before. Over the 242 shipped schematics with every bias value
+  shown, labels on other labels went from 436 to 2, labels on a symbol
+  or its text from 4135 to 2200, and labels a wire runs through from
+  3950 to 478.
 - **Find in a schematic, and find and replace across the project**:
   *Edit → Find* (Ctrl+F) in a schematic opens a find bar under the
   pane — type a component's name, a net label or a value and the first
