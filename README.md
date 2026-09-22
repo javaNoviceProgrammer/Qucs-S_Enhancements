@@ -214,6 +214,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   package now has a field of its own in the properties dialog, the
   netlister finds it by name, and a schematic saved with the problem
   loads right (the misplaced option is put back).
+- **Subcircuit properties in one table** (upstream #1285): *Edit
+  Subcircuit Properties* (double-click the symbol's name text in symbol
+  mode) shows the prefix and one table of parameters — Show, Name,
+  Default, Type, Description — edited in the cells, as the component
+  dialog is, instead of a read-only list with edit fields and an extra
+  Apply-to-row step under it. Add gives a new row a name of its own and
+  starts typing it; Remove takes the selected rows; Move Up/Down set the
+  order (that of the symbol and the netlist); the type is picked from
+  real, integer and string or typed. OK and Apply check the table first
+  — a name missing, given twice or "File", or a character the file
+  cannot hold — and show what is wrong at its cell; Apply writes into
+  the symbol and keeps the dialog open.
 - **Schematics on dark paper**: symbols, wires and texts are drawn in
   fixed colours meant for light paper — dark blue above all — and
   vanished on a dark background colour. They now fit the paper they are

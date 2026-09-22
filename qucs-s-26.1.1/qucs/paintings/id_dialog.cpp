@@ -16,307 +16,325 @@
  ***************************************************************************/
 #include "id_dialog.h"
 #include "id_text.h"
+#include "schematic.h"
 
-#include <QHeaderView>
-#include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QGridLayout>
-#include <QLabel>
-#include <QTableWidget>
-#include <QTableWidgetItem>
-#include <QCheckBox>
-#include <QLineEdit>
+#include <QComboBox>
+#include <QDialogButtonBox>
 #include <QGroupBox>
-#include <QValidator>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
-#include <QMessageBox>
+#include <QRegularExpression>
+#include <QRegularExpressionValidator>
+#include <QSet>
+#include <QStyledItemDelegate>
+#include <QTableWidget>
+#include <QVBoxLayout>
 
+namespace {
 
-ID_Dialog::ID_Dialog(ID_Text *idText_, QWidget *parent)
-    : QDialog(parent)
+// What each field may hold: the file keeps a parameter as
+// "1=name=default=description=type" between double quotes, and the
+// component dialog reads "[a,b]" in a description as a list of choices.
+const QRegularExpression& prefixPattern()
 {
-  idText = idText_;
-  setWindowTitle(tr("Edit Subcircuit Properties"));
-
-  all = new QVBoxLayout;
-  all->setSpacing(5);
-  all->setContentsMargins(5,5,5,5);
-
-  QHBoxLayout *htop = new QHBoxLayout;
-  htop->setSpacing(5);
-  all->addLayout(htop);
-
-  Expr.setPattern("[A-Za-z][A-Za-z0-9_]*");
-  SubVal = new QRegularExpressionValidator(Expr, this);
-  Prefix = new QLineEdit(idText->prefix);
-  Prefix->setValidator(SubVal);
-
-  htop->addWidget(new QLabel(tr("Prefix:")));
-  htop->addWidget(Prefix);
-
-  QGroupBox *ParamBox = new QGroupBox(tr("Parameters"));
-  all->addWidget(ParamBox);
-  QVBoxLayout *vbox_param = new QVBoxLayout;
-  ParamBox->setLayout(vbox_param);
-
-  ParamTable = new QTableWidget();
-  ParamTable->horizontalHeader()->setStretchLastSection(true);
-  // set automatic resize so all content will be visible,
-  //  horizontal scrollbar will appear if table becomes too large
-  ParamTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-  ParamTable->horizontalHeader()->setSectionsClickable(false); // no action when clicking on the header
-  ParamTable->verticalHeader()->hide();
-  ParamTable->setColumnCount(5);
-  ParamTable->setHorizontalHeaderLabels(
-      QStringList() << tr("display") << tr("Name") << tr("Default") << tr("Description") << tr("Type"));
-  ParamTable->setSortingEnabled(false); // no sorting
-  ParamTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-  vbox_param->addWidget(ParamTable);
-
-  QTableWidgetItem *item;
-  for (const auto& sub_param : idText->subParameters) {
-    int row = ParamTable->rowCount();
-    ParamTable->insertRow(row);
-    item = new QTableWidgetItem((sub_param->display)? tr("yes") : tr("no"));
-    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-    ParamTable->setItem(row, 0, item);
-    item = new QTableWidgetItem(sub_param->name.section('=', 0, 0));
-    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-    ParamTable->setItem(row, 1, item);
-    item = new QTableWidgetItem(sub_param->name.section('=', 1, 1));
-    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-    ParamTable->setItem(row, 2, item);
-    item = new QTableWidgetItem(sub_param->description);
-    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-    ParamTable->setItem(row, 3, item);
-    item = new QTableWidgetItem(sub_param->type);
-    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-    ParamTable->setItem(row, 4, item);
-  }
-  connect(ParamTable, SIGNAL(currentCellChanged(int, int, int, int)), SLOT(slotEditParameter()));
-
-  showCheck = new QCheckBox(tr("display in schematic"));
-  showCheck->setChecked(true);
-
-  vbox_param->addWidget(showCheck);
-
-  QGridLayout *paramEditLayout = new QGridLayout;
-  vbox_param->addLayout(paramEditLayout);
-
-  paramEditLayout->addWidget(new QLabel(tr("Name:")), 0, 0);
-  paramEditLayout->addWidget(new QLabel(tr("Default Value:")), 1, 0);
-  paramEditLayout->addWidget(new QLabel(tr("Description:")), 2, 0);
-  paramEditLayout->addWidget(new QLabel(tr("Type:")), 3, 0);
-
-  Expr.setPattern("[\\w_]+");
-  NameVal = new QRegularExpressionValidator(Expr, this);
-  ParamNameEdit = new QLineEdit;
-  ParamNameEdit->setValidator(NameVal);
-
-  Expr.setPattern("[^\"=]*");
-  ValueVal = new QRegularExpressionValidator(Expr, this);
-  ValueEdit = new QLineEdit;
-  ValueEdit->setValidator(ValueVal);
-
-  Expr.setPattern("[^\"=\\[\\]]*");
-  DescrVal = new QRegularExpressionValidator(Expr, this);
-  DescriptionEdit = new QLineEdit;
-  DescriptionEdit->setValidator(DescrVal);
-
-  Expr.setPattern("[\\w_]+");
-  TypeVal = new QRegularExpressionValidator(Expr, this);
-  TypeEdit = new QLineEdit;
-  TypeEdit->setValidator(TypeVal);
-
-  paramEditLayout->addWidget(ParamNameEdit, 0, 1);
-  paramEditLayout->addWidget(ValueEdit, 1, 1);
-  paramEditLayout->addWidget(DescriptionEdit, 2, 1);
-  paramEditLayout->addWidget(TypeEdit, 3, 1);
-
-  QPushButton *ButtAdd = new QPushButton(tr("Add"));
-  connect(ButtAdd, SIGNAL(clicked()), SLOT(slotAddParameter()));
-  QPushButton *ButtRemove = new QPushButton(tr("Remove"));
-  connect(ButtRemove, SIGNAL(clicked()), SLOT(slotRemoveParameter()));
-
-  QHBoxLayout *hbox_paramedit = new QHBoxLayout;
-  vbox_param->addLayout(hbox_paramedit);
-  hbox_paramedit->addStretch();
-  hbox_paramedit->addWidget(ButtAdd);
-  hbox_paramedit->addWidget(ButtRemove);
-
-  QPushButton *ButtOK = new QPushButton(tr("OK"));
-  connect(ButtOK, SIGNAL(clicked()), SLOT(slotOk()));
-  QPushButton *ButtApply = new QPushButton(tr("Apply"));
-  connect(ButtApply, SIGNAL(clicked()), SLOT(slotApply()));
-  QPushButton *ButtCancel = new QPushButton(tr("Cancel"));
-  connect(ButtCancel, SIGNAL(clicked()), SLOT(reject()));
-
-  QHBoxLayout *hbox_bottom = new QHBoxLayout;
-  hbox_bottom->setSpacing(5);
-  all->addLayout(hbox_bottom);
-  hbox_bottom->addWidget(ButtOK);
-  hbox_bottom->addWidget(ButtApply);
-  hbox_bottom->addWidget(ButtCancel);
-
-  this->setLayout(all);
+  static const QRegularExpression re("^[A-Za-z][A-Za-z0-9_]*$");
+  return re;
+}
+const QRegularExpression& namePattern()
+{
+  static const QRegularExpression re("^[A-Za-z0-9_]+$");
+  return re;
+}
+const QRegularExpression& typePattern()
+{
+  static const QRegularExpression re("^[A-Za-z0-9_]*$");
+  return re;
+}
+const QRegularExpression& valuePattern()
+{
+  static const QRegularExpression re("^[^\"=]*$");
+  return re;
+}
+const QRegularExpression& descriptionPattern()
+{
+  static const QRegularExpression re("^[^\"=\\[\\]]*$");
+  return re;
 }
 
-ID_Dialog::~ID_Dialog()
+// The editors of the table's cells: each lets through only what its
+// field may hold; the type is chosen from a list or typed.
+class ParameterDelegate : public QStyledItemDelegate
 {
-  delete all;
-  delete SubVal;
-  delete NameVal;
-  delete ValueVal;
-  delete DescrVal;
-  delete TypeVal;
-}
+public:
+  using QStyledItemDelegate::QStyledItemDelegate;
 
-
-/*!
- * \brief ID_Dialog::slotEditParameter
- * Place data from selected table row in the edit fields.
- */
-void ID_Dialog::slotEditParameter()
-{
-  int row = ParamTable->currentRow();
-  if (row < 0 || row >= ParamTable->rowCount()) {
-    return;
+  QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option,
+                        const QModelIndex& index) const override
+  {
+    if (index.column() == ID_Dialog::TypeColumn) {
+      auto* combo = new QComboBox(parent);
+      combo->setEditable(true);
+      combo->addItems(ID_Dialog::types());
+      combo->setValidator(new QRegularExpressionValidator(typePattern(), combo));
+      return combo;
+    }
+    QWidget* editor = QStyledItemDelegate::createEditor(parent, option, index);
+    if (auto* line = qobject_cast<QLineEdit*>(editor)) {
+      const QRegularExpression& re = index.column() == ID_Dialog::NameColumn      ? namePattern()
+                                   : index.column() == ID_Dialog::DefaultColumn   ? valuePattern()
+                                                                                  : descriptionPattern();
+      line->setValidator(new QRegularExpressionValidator(re, line));
+    }
+    return editor;
   }
 
-  showCheck->setChecked(ParamTable->item(row, 0)->text() == tr("yes"));
-  ParamNameEdit->setText(ParamTable->item(row, 1)->text());
-  ValueEdit->setText(ParamTable->item(row, 2)->text());
-  DescriptionEdit->setText(ParamTable->item(row, 3)->text());
-  TypeEdit->setText(ParamTable->item(row, 4)->text());
-}
-
-
-/*!
- * \brief ID_Dialog::slotAddParameter
- * Add new set of parameters from edit fields into table.
- * Select added row.
- */
-void ID_Dialog::slotAddParameter()
-{
-  if(ParamNameEdit->text().isEmpty())
-    return;
-
-  if(ParamNameEdit->text() == "File") {
-    QMessageBox::critical(this, tr("Error"),
-       tr("Parameter must not be named \"File\"!"));
-    return;
-  }
-
-  int row;
-  for (row = 0; row < ParamTable->rowCount(); ++row) {
-    if(ParamTable->item(row, 1)->text() == ParamNameEdit->text()) {
-      QMessageBox::critical(this, tr("Error"),
-         tr("Parameter \"%1\" already in list!").arg(ParamNameEdit->text()));
+  void setEditorData(QWidget* editor, const QModelIndex& index) const override
+  {
+    if (auto* combo = qobject_cast<QComboBox*>(editor)) {
+      combo->setCurrentText(index.data(Qt::EditRole).toString());
       return;
     }
+    QStyledItemDelegate::setEditorData(editor, index);
   }
 
-  row = ParamTable->rowCount();
-  ParamTable->insertRow(row);
-
-  QTableWidgetItem *item;
-  item = new QTableWidgetItem((showCheck->isChecked())? tr("yes") : tr("no"));
-  item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-  ParamTable->setItem(row, 0, item);
-  item = new QTableWidgetItem(ParamNameEdit->text());
-  item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-  ParamTable->setItem(row, 1, item);
-  item = new QTableWidgetItem(ValueEdit->text());
-  item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-  ParamTable->setItem(row, 2, item);
-  item = new QTableWidgetItem(DescriptionEdit->text());
-  item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-  ParamTable->setItem(row, 3, item);
-  item = new QTableWidgetItem(TypeEdit->text());
-  item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-  ParamTable->setItem(row, 4, item);
-
-  ParamTable->setCurrentCell(row, 0);
-}
-
-
-/*!
- * \brief ID_Dialog::slotRemoveParameter
- * Remove selected row from table.
- */
-void ID_Dialog::slotRemoveParameter()
-{
-  int selectedrow = ParamTable->currentRow();
-  ParamTable->removeRow(selectedrow);
-  int nextRow = (selectedrow == ParamTable->rowCount())? selectedrow-1 : selectedrow;
-  ParamTable->setCurrentCell(nextRow, 0);
-}
-
-
-/*!
- * \brief ID_Dialog::slotOk
- * Commit changes from dialog table to component properties.
- */
-void ID_Dialog::slotOk()
-{
-  bool changed = false;
-
-  if (!Prefix->text().isEmpty())
-    if (idText->prefix != Prefix->text()) {
-      idText->prefix = Prefix->text();
-      changed = true;
+  void setModelData(QWidget* editor, QAbstractItemModel* model, const QModelIndex& index) const override
+  {
+    if (auto* combo = qobject_cast<QComboBox*>(editor)) {
+      model->setData(index, combo->currentText().trimmed(), Qt::EditRole);
+      return;
     }
+    QStyledItemDelegate::setModelData(editor, model, index);
+  }
+};
 
-  std::vector<std::unique_ptr<SubParameter>> scratch;
-  for (int row = 0; row < ParamTable->rowCount(); ++row) {
-      bool display = ParamTable->item(row, 0)->text() == tr("yes");
-      QString name(ParamTable->item(row, 1)->text() + "=" + ParamTable->item(row, 2)->text());
-      QString desc(ParamTable->item(row, 3)->text());
-      QString type(ParamTable->item(row, 4)->text());
+} // namespace
 
-      scratch.push_back(std::make_unique<SubParameter>(display, name, desc, type));
+QStringList ID_Dialog::types()
+{
+  return {QStringLiteral("real"), QStringLiteral("integer"), QStringLiteral("string")};
+}
+
+ID_Dialog::ID_Dialog(ID_Text* idText, QWidget* parent)
+    : QDialog(parent), m_idText(idText)
+{
+  setWindowTitle(tr("Edit Subcircuit Properties"));
+  auto* all = new QVBoxLayout(this);
+
+  auto* top = new QHBoxLayout;
+  top->addWidget(new QLabel(tr("Prefix:"), this));
+  m_prefix = new QLineEdit(idText->prefix, this);
+  m_prefix->setValidator(new QRegularExpressionValidator(prefixPattern(), m_prefix));
+  m_prefix->setToolTip(tr("What the names of this subcircuit's instances start with (SUB1, SUB2, ...)"));
+  top->addWidget(m_prefix, 1);
+  all->addLayout(top);
+
+  auto* box = new QGroupBox(tr("Parameters"), this);
+  auto* boxLayout = new QVBoxLayout(box);
+  m_table = new QTableWidget(0, ColumnCount, box);
+  m_table->setHorizontalHeaderLabels({tr("Show"), tr("Name"), tr("Default"), tr("Type"), tr("Description")});
+  m_table->horizontalHeaderItem(ShowColumn)->setToolTip(tr("Shown beside the instances on the schematic"));
+  m_table->horizontalHeaderItem(TypeColumn)->setToolTip(tr("The parameter's type where one is needed "
+                                                           "(Verilog-A): real when none is given"));
+  m_table->horizontalHeader()->setStretchLastSection(true);
+  m_table->horizontalHeader()->setSectionsClickable(false);
+  m_table->verticalHeader()->setVisible(false);
+  m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
+  m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+  m_table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked |
+                           QAbstractItemView::EditKeyPressed | QAbstractItemView::AnyKeyPressed);
+  m_table->setItemDelegate(new ParameterDelegate(m_table));
+  m_table->setMinimumSize(520, 180);
+  boxLayout->addWidget(m_table, 1);
+
+  for (const auto& p : idText->subParameters)
+    appendRow(p->display, p->name.section('=', 0, 0), p->name.section('=', 1, 1), p->type, p->description);
+  m_table->resizeColumnsToContents();
+  m_table->setColumnWidth(NameColumn, std::max(m_table->columnWidth(NameColumn), 100));
+  m_table->setColumnWidth(DefaultColumn, std::max(m_table->columnWidth(DefaultColumn), 100));
+  m_table->setColumnWidth(TypeColumn, std::max(m_table->columnWidth(TypeColumn), 80));
+
+  auto* rows = new QHBoxLayout;
+  auto* add = new QPushButton(tr("Add"), box);
+  m_remove = new QPushButton(tr("Remove"), box);
+  m_up = new QPushButton(tr("Move Up"), box);
+  m_down = new QPushButton(tr("Move Down"), box);
+  for (QPushButton* b : {add, m_remove, m_up, m_down}) rows->addWidget(b);
+  rows->addStretch(1);
+  boxLayout->addLayout(rows);
+  all->addWidget(box, 1);
+
+  m_message = new QLabel(this);
+  m_message->setWordWrap(true);
+  QPalette red = m_message->palette();
+  red.setColor(QPalette::WindowText, QColor(0xd0, 0x30, 0x30));
+  m_message->setPalette(red);
+  all->addWidget(m_message);
+
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
+  all->addWidget(buttons);
+
+  connect(add, &QPushButton::clicked, this, &ID_Dialog::addParameter);
+  connect(m_remove, &QPushButton::clicked, this, &ID_Dialog::removeParameters);
+  connect(m_up, &QPushButton::clicked, this, &ID_Dialog::moveUp);
+  connect(m_down, &QPushButton::clicked, this, &ID_Dialog::moveDown);
+  connect(m_table, &QTableWidget::itemSelectionChanged, this, &ID_Dialog::updateButtons);
+  connect(m_table, &QTableWidget::itemChanged, this, [this] { m_message->clear(); });
+  connect(m_prefix, &QLineEdit::textEdited, this, [this] { m_message->clear(); });
+  connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, &ID_Dialog::apply);
+  connect(buttons, &QDialogButtonBox::accepted, this, [this] {
+    if (!apply()) return;   // the problem is on show
+    m_applied ? accept() : reject();
+  });
+  connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+  updateButtons();
+}
+
+void ID_Dialog::appendRow(bool display, const QString& name, const QString& value, const QString& type,
+                          const QString& description)
+{
+  const int row = m_table->rowCount();
+  m_table->insertRow(row);
+  auto* show = new QTableWidgetItem;
+  show->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+  show->setCheckState(display ? Qt::Checked : Qt::Unchecked);
+  m_table->setItem(row, ShowColumn, show);
+  m_table->setItem(row, NameColumn, new QTableWidgetItem(name));
+  m_table->setItem(row, DefaultColumn, new QTableWidgetItem(value));
+  m_table->setItem(row, TypeColumn, new QTableWidgetItem(type));
+  m_table->setItem(row, DescriptionColumn, new QTableWidgetItem(description));
+}
+
+void ID_Dialog::addParameter()
+{
+  // A name of its own to begin with, ready to be typed over.
+  QSet<QString> taken;
+  for (int row = 0; row < m_table->rowCount(); ++row) taken.insert(m_table->item(row, NameColumn)->text());
+  int n = 1;
+  while (taken.contains(QStringLiteral("P%1").arg(n))) ++n;
+  appendRow(true, QStringLiteral("P%1").arg(n), QString(), QString(), QString());
+  const int row = m_table->rowCount() - 1;
+  m_table->setCurrentCell(row, NameColumn);
+  m_table->editItem(m_table->item(row, NameColumn));
+}
+
+void ID_Dialog::removeParameters()
+{
+  QList<int> rows;
+  for (const QModelIndex& index : m_table->selectionModel()->selectedRows()) rows << index.row();
+  if (rows.isEmpty() && m_table->currentRow() >= 0) rows << m_table->currentRow();
+  std::sort(rows.begin(), rows.end(), std::greater<int>());
+  for (int row : rows) m_table->removeRow(row);
+  if (!rows.isEmpty() && m_table->rowCount() > 0)
+    m_table->selectRow(std::min(rows.last(), m_table->rowCount() - 1));
+  updateButtons();
+}
+
+void ID_Dialog::moveCurrent(int by)
+{
+  const int row = m_table->currentRow(), other = row + by;
+  if (row < 0 || other < 0 || other >= m_table->rowCount()) return;
+  for (int column = 0; column < ColumnCount; ++column) {
+    QTableWidgetItem* a = m_table->takeItem(row, column);
+    QTableWidgetItem* b = m_table->takeItem(other, column);
+    m_table->setItem(row, column, b);
+    m_table->setItem(other, column, a);
+  }
+  m_table->selectRow(other);
+  m_table->setCurrentCell(other, NameColumn);
+  updateButtons();
+}
+
+void ID_Dialog::moveUp() { moveCurrent(-1); }
+void ID_Dialog::moveDown() { moveCurrent(1); }
+
+void ID_Dialog::updateButtons()
+{
+  const int row = m_table->currentRow();
+  const bool any = !m_table->selectionModel()->selectedRows().isEmpty() || row >= 0;
+  m_remove->setEnabled(any && m_table->rowCount() > 0);
+  m_up->setEnabled(row > 0);
+  m_down->setEnabled(row >= 0 && row < m_table->rowCount() - 1);
+}
+
+QString ID_Dialog::problem(int* row, int* column) const
+{
+  auto at = [&](int r, int c, const QString& text) {
+    if (row) *row = r;
+    if (column) *column = c;
+    return text;
+  };
+  const QString prefix = m_prefix->text().trimmed();
+  if (!prefixPattern().match(prefix).hasMatch())
+    return at(-1, -1, tr("The prefix must start with a letter, and hold only letters, digits and _."));
+
+  QSet<QString> names;
+  for (int r = 0; r < m_table->rowCount(); ++r) {
+    const QString name = m_table->item(r, NameColumn)->text().trimmed();
+    if (name.isEmpty()) return at(r, NameColumn, tr("Parameter %1 has no name.").arg(r + 1));
+    if (!namePattern().match(name).hasMatch())
+      return at(r, NameColumn, tr("\"%1\": a name may hold only letters, digits and _.").arg(name));
+    if (name == QLatin1String("File"))
+      return at(r, NameColumn, tr("\"File\" is the subcircuit's own property; the parameter needs another name."));
+    if (names.contains(name)) return at(r, NameColumn, tr("\"%1\" is there twice.").arg(name));
+    names.insert(name);
+    if (!valuePattern().match(m_table->item(r, DefaultColumn)->text()).hasMatch())
+      return at(r, DefaultColumn, tr("The default of \"%1\" cannot hold \" or =.").arg(name));
+    if (!typePattern().match(m_table->item(r, TypeColumn)->text().trimmed()).hasMatch())
+      return at(r, TypeColumn, tr("The type of \"%1\" may hold only letters, digits and _.").arg(name));
+    if (!descriptionPattern().match(m_table->item(r, DescriptionColumn)->text()).hasMatch())
+      return at(r, DescriptionColumn, tr("The description of \"%1\" cannot hold \", =, [ or ].").arg(name));
+  }
+  return at(-1, -1, QString());
+}
+
+bool ID_Dialog::apply()
+{
+  int row = -1, column = -1;
+  const QString wrong = problem(&row, &column);
+  if (!wrong.isEmpty()) {
+    m_message->setText(wrong);
+    if (row < 0) {
+      m_prefix->setFocus();
+    } else {
+      m_table->setCurrentCell(row, column);
+      m_table->setFocus();
+    }
+    return false;
+  }
+  m_message->clear();
+
+  bool changed = false;
+  const QString prefix = m_prefix->text().trimmed();
+  if (m_idText->prefix != prefix) {
+    m_idText->prefix = prefix;
+    changed = true;
   }
 
-  if (scratch.size() != idText->subParameters.size()) {
-      changed = true;
-  } else {
-      for (std::size_t i = 0; !changed && i < scratch.size(); i++) {
-        changed = changed
-                || scratch[i]->display     != idText->subParameters[i]->display
-                || scratch[i]->name        != idText->subParameters[i]->name
-                || scratch[i]->description != idText->subParameters[i]->description
-                || scratch[i]->type        != idText->subParameters[i]->type
-                ;
-      }
+  std::vector<std::unique_ptr<SubParameter>> table;
+  for (int r = 0; r < m_table->rowCount(); ++r)
+    table.push_back(std::make_unique<SubParameter>(
+        m_table->item(r, ShowColumn)->checkState() == Qt::Checked,
+        m_table->item(r, NameColumn)->text().trimmed() + "=" + m_table->item(r, DefaultColumn)->text(),
+        m_table->item(r, DescriptionColumn)->text(),
+        m_table->item(r, TypeColumn)->text().trimmed()));
+
+  bool same = table.size() == m_idText->subParameters.size();
+  for (std::size_t i = 0; same && i < table.size(); ++i) {
+    const SubParameter& a = *table[i];
+    const SubParameter& b = *m_idText->subParameters[i];
+    same = a.display == b.display && a.name == b.name && a.description == b.description && a.type == b.type;
+  }
+  if (!same) {
+    m_idText->subParameters.swap(table);
+    changed = true;
   }
 
   if (changed) {
-      idText->subParameters.swap(scratch);
+    m_applied = true;
+    if (auto* doc = qobject_cast<Schematic*>(parentWidget())) doc->viewport()->update();
   }
-
-  changed ? accept() : reject();
-}
-
-
-/*!
- * \brief ID_Dialog::slotApply
- * Apply data from edit fields to table. Clear edit fields.
- */
-void ID_Dialog::slotApply()
-{
-  int selectedrow = ParamTable->currentRow();
-  if (selectedrow<0) return; // Nothing selected
-
-  QTableWidgetItem *item;
-  item = ParamTable->item(selectedrow, 0);
-  item->setText(showCheck->isChecked() ? tr("yes") : tr("no"));
-  item = ParamTable->item(selectedrow, 1);
-  item->setText(ParamNameEdit->text());
-  item = ParamTable->item(selectedrow, 2);
-  item->setText(ValueEdit->text());
-  item = ParamTable->item(selectedrow, 3);
-  item->setText(DescriptionEdit->text());
-  item = ParamTable->item(selectedrow, 4);
-  item->setText(TypeEdit->text());
-
+  return true;
 }

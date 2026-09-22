@@ -763,7 +763,26 @@ existing demand.
   SI suffixes, validates against the property's `spicecompat::Simulator`
   mask, and shows the description tooltip — replacing the two-column
   name/value table.
-- **Subcircuit properties dialog redesign** (#1285).
+- *Done:* **Subcircuit properties dialog redesign** (#1285). `ID_Dialog`
+  (`paintings/id_dialog.*`) kept its name and the file format
+  (`"1=name=default=description=type"` in the `.ID` line) and lost the
+  rest: a read-only table, four edit fields, a check box and an Apply
+  that copied the fields into the selected row. Now one `QTableWidget`
+  (Show as a check box; Name, Default, Type, Description editable in
+  place) with an item delegate whose editors take only what the field
+  may hold (the old validators, and a type combo of real / integer /
+  string that can be typed into); Add (a free `P<n>` name, the editor
+  open), Remove (every selected row), Move Up/Down (the whole row);
+  `problem()` checks the prefix and every row - a name missing, twice,
+  "File", or a character the format cannot hold, also for text that
+  did not come through an editor - and `apply()` shows it at its cell
+  or writes the table into the `ID_Text`, repainting the schematic.
+  Apply keeps the dialog open, and `ID_Text::Dialog()` reports a change
+  also when Apply wrote one before a Cancel. New-style connects, no
+  hand-deleted members. `qucs/tests/test_subcircuit_dialog` covers the
+  table, edits reaching the symbol and reading back, OK without a
+  change, adding, removing and moving rows, every refusal, Apply (also
+  through `ID_Text::Dialog()`), and the editors.
 - *Done:* **Project-wide search/replace of component values** and a
   "find component by refdes" box on the canvas. `qucs_s::search`
   (`qucs/componentsearch.*`) is the logic, widget-free: a `Query` (text;
