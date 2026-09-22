@@ -1361,6 +1361,46 @@ void Schematic::throughAllNodes(bool User, QStringList& Collect,
   }
 }
 
+// ---------------------------------------------------
+// A subcircuit's pin is netlisted as the net its port sits on, so a net
+// with no label of its own would reach the .SUBCKT line as "_net7". Give
+// it the name of the port instead - the name the symbol writes beside
+// that pin - unless something else on the schematic already answers to
+// it, which would join two nets that are not connected.
+//
+// Runs after the labelled nets have been propagated, so a port whose node
+// is still unnamed is on a net without a label anywhere.
+void Schematic::nameUnlabelledPortNets(QStringList& Collect, int& countInit)
+{
+  // What a netlist may call a node. A component name is normally this
+  // already; one that is not keeps the generated name.
+  static const QRegularExpression plainName("^[A-Za-z_][A-Za-z0-9_]*$");
+
+  QSet<QString> taken;
+  for (Node* pn : a_DocNodes)
+    if (!pn->Name.isEmpty()) taken.insert(pn->Name);
+
+  for (Component* pc : a_DocComps) {
+    if (pc->Model != "Port") continue;
+    if (pc->isActive != COMP_IS_ACTIVE) continue;
+    if (pc->Ports.isEmpty()) continue;
+
+    Node* pn = pc->Ports.first()->Connection;
+    if (pn == nullptr || !pn->Name.isEmpty()) continue;
+
+    if (!plainName.match(pc->Name).hasMatch()) continue;
+    // VHDL names must not begin with '_', as elsewhere in the netlister
+    const QString name = a_isAnalog ? pc->Name : "net" + pc->Name;
+    if (taken.contains(name)) continue;
+
+    pn->Name = name;
+    taken.insert(name);
+    if (a_isAnalog) createNodeSet(Collect, countInit, pn, pn);
+    pn->State = 1;
+    propagateNode(Collect, countInit, pn);
+  }
+}
+
 // ----------------------------------------------------------
 // Checks whether this file is a qucs file and whether it is an subcircuit.
 // It returns the number of subcircuit ports.
@@ -1753,6 +1793,10 @@ bool Schematic::giveNodeNames(QTextStream *stream, int& countInit,
 
   // work on named nodes first in order to preserve the user given names
   throughAllNodes(true, Collect, countInit);
+
+  // a subcircuit port on a net that carries no label names that net, so
+  // the pin of the .SUBCKT is called what the symbol shows beside it
+  nameUnlabelledPortNets(Collect, countInit);
 
   // give names to the remaining (unnamed) nodes
   throughAllNodes(false, Collect, countInit);

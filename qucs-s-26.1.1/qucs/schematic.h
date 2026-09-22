@@ -186,6 +186,12 @@ public:
   void  switchPaintMode();
   int   adjustPortNumbers();
   int   orderSymbolPorts();
+  /// The label on the net \a node sits on, empty when it carries none.
+  QString netLabelOf(Node* node) const;
+  /// The name the netlist gives the pin a subcircuit port makes: the
+  /// label of the net the port sits on, or the port's own name when that
+  /// net carries none. This is what the symbol writes beside the pin.
+  QString portPinName(Component* port) const;
   void  reloadGraphs();
   bool  createSubcircuitSymbol();
 
@@ -615,6 +621,7 @@ private:
 
   static void createNodeSet(QStringList&, int&, Conductor*, Node*);
   void throughAllNodes(bool, QStringList&, int&);
+  void nameUnlabelledPortNets(QStringList&, int&);
   void propagateNode(QStringList&, int&, Node*);
   void collectDigitalSignals(void);
   void beginNetlistDigital(QTextStream &);
