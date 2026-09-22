@@ -54,7 +54,10 @@ app="$stage/qucs-s.app"
 cp -pR "$build/qucs/qucs-s.app" "$app"
 bin="$app/Contents/MacOS/bin"
 res="$app/Contents/MacOS/share/qucs-s"
-mkdir -p "$bin" "$res/examples" "$res/library" "$res/symbols" "$res/lang"
+# The build-tree app may carry a share tree of its own (the smoke suite
+# links the source tree's spicelibrary into it): start from nothing.
+rm -rf "$app/Contents/MacOS/share"
+mkdir -p "$bin" "$res/examples" "$res/library" "$res/symbols" "$res/lang" "$res/spicelibrary"
 
 for tool in qucs-activefilter/qucs-sactivefilter qucs-attenuator/qucs-sattenuator \
             qucs-filter/qucs-sfilter qucs-powercombining/qucs-spowercombining \
@@ -77,7 +80,7 @@ for models in TubesExtended BJT_Darlington Optocoupler DualGateMOSFET; do
   cp -pR "$src/library/$models" "$res/library/"
 done
 cp -pR "$src/library/symbols/." "$res/symbols/"
-cp -pR "$src/library/spicelibrary" "$res/spicelibrary"
+cp -pR "$src/library/spicelibrary/." "$res/spicelibrary/"
 cp -p  "$build"/translations/*.qm "$res/lang/" 2>/dev/null || echo "    warning: no translations found" >&2
 
 echo "==> Bundling Qt (macdeployqt)"
@@ -200,6 +203,10 @@ for want in examples/ngspice library/Ideal.lib library/BJT_Darlington symbols \
             spicelibrary/coax.cir spicelibrary/core.cir spicelibrary/winding.cir; do
   [ -e "$res/$want" ] || { echo "error: share/qucs-s/$want is missing from the bundle" >&2; exit 1; }
 done
+# codesign refuses a symbolic link that points out of the bundle.
+if find "$res" -type l | grep -q .; then
+  echo "error: symbolic links under share/qucs-s:" >&2; find "$res" -type l >&2; exit 1
+fi
 
 echo "==> Creating $name.dmg"
 dmgroot="$stage/dmg"
