@@ -24,9 +24,9 @@ mode (the panel filters by simulator).
 Xyce is not installed here: Xyce findings are from reading the emitted text
 against the Xyce reference guide, and say so.
 
-*Status:* sections A and B were fixed in `984660c` (each entry says so);
-`qucs/tests/test_netlist_fixes` holds one case per fix. Sections C and D are
-open.
+*Status:* sections A and B were fixed in `984660c`, sections C and D in
+`db4f676` (each entry says so); `qucs/tests/test_netlist_fixes` and
+`test_erc` hold one case per fix. Nothing is open.
 
 ---
 
@@ -268,16 +268,22 @@ The digital gates and flip-flops handle this the other way — see C2.
 
 ### C1. Equation Defined Device, implicit type
 
+> **Fixed** in `db4f676` — the check (F10, before a run, Generate Netlist) reports it as an error.
+
 `EqnDefined::spice_netlist` returns an empty string for `Type = implicit`.
 `SpiceModel` is `B`, so the kernel's compatibility check does not flag it
 either: the device just disappears from the ngspice/Xyce netlist.
 
 ### C2. Digital gates and flip-flops in Xyce mode
 
+> **Fixed** in `db4f676` — their simulator masks drop Xyce; the check reports "not available for Xyce".
+
 `GateComponent::spice_netlist` returns `QString()` for Xyce; `d_dff` and the
 others likewise. The gate is gone from the netlist with no message.
 
 ### C3. Winding without its core
+
+> **Fixed** in `db4f676` — the check reports "no magnetic core named … in the schematic".
 
 `magnetics/winding.cpp` looks the `CORE` component up by name in the schematic;
 when it is not there the H and B node names are empty and the line reads
@@ -286,29 +292,34 @@ count, with nothing pointing at the missing core.
 
 ### C4. Properties the SPICE netlist ignores although the dialog shows them
 
+> **Fixed** in `db4f676` — see the last column: a property either reaches the netlist now or is marked Qucsator's (hidden under a SPICE simulator). A component without a SPICE model is a check error under a SPICE simulator.
+
 Found by the marker survey (`marker_audit.txt`). Not counting Qucsator-only
 properties that are hidden by their `simulators` mask (the transient block's
 `reltol`, `IntegrationMethod`, … are masked correctly).
 
-| component | ignored | note |
-|---|---|---|
-| dc simulation `.DC` | `Temp reltol abstol vntol MaxIter` | shown for every simulator, only `op` is emitted; no `.options` / `.temp` |
-| ac simulation `.AC` | `Noise` | ngspice has `.noise`, not an AC flag |
-| Diode | `Isr Nr` (ngspice and Xyce have ISR, NR), `Cp` | |
-| JFET | `Betatce` (ngspice BETATCE), `Xti`, `N`, `Isr`, `Nr`, `M` | |
-| MOSFET | `Nrd Nrs` (SPICE instance params), `Rg`, `N`, `Tt` | |
-| Transmission Line, 4-terminal line | `Alpha` | a lossy spec becomes lossless |
-| Switch (time) | `MaxDuration Transition` | see A7 |
-| Inductor/Capacitor with Q | `Mode` | only the Linear (constant R) form |
-| Potentiometer | `Taper_Coeff Conformity Linearity Contact_Res Temp_Coeff` | |
-| VCCS/CCCS/VCVS/CCVS | `T` (delay) | |
-| Power Source | `Temp` | |
-| Coupled Transmission Line | — | ngspice/Qucsator only, correct |
-| Twisted-Pair | everything | no SPICE model at all; `SpiceModel` is empty so the kernel reports it |
+| component | ignored | note | now |
+|---|---|---|---|
+| dc simulation `.DC` | `Temp reltol abstol vntol MaxIter` | shown for every simulator, only `op` is emitted; no `.options` / `.temp` | Qucsator's (an `.OPTIONS` section carries them for SPICE) |
+| ac simulation `.AC` | `Noise` | ngspice has `.noise`, not an AC flag | Qucsator's |
+| S-parameter simulation `.SP` | `NoiseIP NoiseOP saveCVs saveAll` | ngspice's `sp` takes the noise flag alone | Qucsator's |
+| Diode | `Isr Nr` (ngspice and Xyce have ISR, NR), `Cp` | | ISR, NR in the card; Cp a capacitor across the diode; `Ffe` Qucsator's |
+| JFET | `Betatce` (ngspice BETATCE), `Xti`, `N`, `Isr`, `Nr`, `M` | | N, XTI, BETATCE in ngspice's card; ISR, NR, M, Ffe Qucsator's |
+| MOSFET | `Nrd Nrs` (SPICE instance params), `Rg`, `N`, `Tt` | | NRD, NRS on the instance; Rg a resistor in series with the gate; N, Tt, Ffe Qucsator's |
+| Transmission Line, 4-terminal line | `Alpha` | a lossy spec becomes lossless | an LTRA with R' = 2 a Z0 when Alpha > 0 (0.3 m at 1 dB/m: S21 within 0.05 % of qucsator) |
+| Switch (time) | `MaxDuration Transition` | see A7 | MaxDuration in A7; Transition was Qucsator's already |
+| Inductor/Capacitor with Q | `Mode` | *wrong finding:* Constant and SquareRoot are netlisted with `hertz`; the marker survey cannot see an option name | — |
+| Potentiometer | `Taper_Coeff Conformity Linearity Contact_Res Temp_Coeff` | | the Verilog-A model's contact resistance, error terms and LEVEL 2/3 tapers; the temperature coefficient Qucsator's |
+| VCCS/CCCS/VCVS/CCVS | `T` (delay) | | Qucsator's (the others were marked so already) |
+| Power Source | `Temp` | | Qucsator's |
+| Coupled Transmission Line | — | ngspice/Qucsator only, correct | — |
+| Twisted-Pair | everything | no SPICE model at all; `SpiceModel` is empty so the kernel reports it | the check reports it too |
 
 ---
 
 ## D. Lower severity
+
+> **Fixed** in `db4f676`, except the voltage probe's load (documented behaviour) and the item already fixed in `31ebafc`.
 
 * **Relay for Xyce** (`relais.cpp`): `von = Vt`, `voff = Vt − Vh`. The `sw`
   semantics it mirrors for ngspice are on above Vt + Vh and off below Vt − Vh,

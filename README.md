@@ -173,7 +173,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   rule check before the simulator sees the circuit — component pins and
   wire ends connected to nothing (a wire end carrying a label is a named
   net, not a problem), two components of one name, no ground, no
-  simulation block — listed on a *Problems* tab of the message dock with
+  simulation block, and what the simulator in use would drop from the
+  netlist (a component not available for it, one without a SPICE model,
+  an implicit equation-defined device, a winding without its core) —
+  listed on a *Problems* tab of the message dock with
   error/warning icons; a click on a row selects the component and centres
   the schematic on the place. Every simulation runs the check first and
   brings the tab up when there are errors (the run goes ahead anyway; the
@@ -220,7 +223,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   in the wrong order; XSPICE-based components were offered for Xyce. And
   values follow Qucs notation now: a bare `10M` is 10 mega (SPICE read it
   as milli), `10 cm` is 0.1, `-1 MOhm` keeps its sign, `2*Rload` is braced
-  so the simulator evaluates it.
+  so the simulator evaluates it. Properties the dialog showed but the
+  SPICE netlist ignored either reach it (the diode's ISR/NR and Cp, the
+  JFET's N/XTI/BETATCE, the MOSFET's NRD/NRS and Rg, a transmission
+  line's Alpha as an LTRA, the potentiometer's contact resistance, error
+  terms and tapers) or are hidden under a SPICE simulator as Qucsator's
+  (the DC block's settings, the AC block's Noise, the delay of the
+  controlled sources, …), the way the transient block's already were.
 - **Cursor-key moves are undoable and cancellable**: moving the selection
   with the arrow keys marks the document modified, is one undo step for the
   whole sequence, and Escape takes it back while it is the latest change
