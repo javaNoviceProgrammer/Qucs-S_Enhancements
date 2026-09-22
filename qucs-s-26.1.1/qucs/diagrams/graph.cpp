@@ -532,6 +532,12 @@ void Graph::drawLines(QPainter* painter) const {
   QPointF segment_end;
 
   lines.clear();
+  strokes.clear();
+  QPolygonF stroke;
+  const auto finish_stroke = [this, &stroke]() {
+    if (stroke.size() >= 2) strokes.append(stroke);
+    stroke.clear();
+  };
 
   for (const auto& point : *this) {
     // No more data points
@@ -544,6 +550,7 @@ void Graph::drawLines(QPainter* painter) const {
     // drawing a graph from the beginning
     if (point.isStrokeEnd()) {
       drawing_started = false;
+      finish_stroke();
       continue;
     }
 
@@ -557,6 +564,7 @@ void Graph::drawLines(QPainter* painter) const {
       segment_start.setX(point.getScrX());
       segment_start.setY(point.getScrY());
       drawing_started = true;
+      stroke.append(segment_start);
       continue;
     }
 
@@ -568,9 +576,11 @@ void Graph::drawLines(QPainter* painter) const {
     }
 
     lines.append(QLineF(segment_start, segment_end));
+    stroke.append(segment_end);
 
     segment_start = segment_end;
   }
+  finish_stroke();
 
 
   // Cannot render the points greater than diagram size in pixels
@@ -623,7 +633,16 @@ void Graph::drawLines(QPainter* painter) const {
 
   }//finish lines calculation
 
-  painter->drawLines(lines);
+  if (pen.style() == Qt::CustomDashLine) {
+    // Dashed and dotted (#1723): the pattern has to run on from one point
+    // to the next. Drawn as separate lines, it would start again at every
+    // point, and wherever the points are closer than a dash - most
+    // simulations - the graph would come out solid.
+    for (const QPolygonF& s : strokes)
+      painter->drawPolyline(s);
+  } else {
+    painter->drawLines(lines);
+  }
   painter->restore();
 }
 

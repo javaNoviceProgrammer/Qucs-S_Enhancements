@@ -474,6 +474,26 @@ existing demand.
   the chosen corner of an offscreen paint) and the dialog. Along the way
   `DiagramDialog::slotApply()` lost an unchecked `(Schematic*)parent()`
   cast.
+- *Done:* **Line styles that show** (#1723). `Graph::drawLines()` drew a
+  graph as `QPainter::drawLines()` of its segments, and Qt starts a dash
+  pattern afresh on every line: wherever the points are closer than a
+  dash (10 x the pen width) - about every simulation - dashed, dotted
+  and long-dashed graphs were solid. The points of every stroke are now
+  kept as a `QPolygonF` too (same pass, same cache) and the patterned
+  styles are drawn with `drawPolyline()`; solid lines keep `drawLines()`
+  and its vertical-run reduction. 16 dashed graphs of 200,000 points
+  render as fast as solid ones. On the way, `qucs/tests/test_graph_style`
+  showed a graph of two samples drawing nothing at all: in
+  `Diagram::calcData()` the "no single point after a stroke end" check
+  still used the offsets of upstream's float array (a marker one float,
+  a point two) - `p-3` / `p -= 3` in a list of one entry per point meant
+  two points, so every stroke of exactly two points was erased: a
+  two-sample graph, the first curve of a sweep with two samples a step,
+  the last segment of a curve coming back into a diagram with a manual
+  range. Its neighbour (`p-2`, the hidden-point case) had been converted.
+  The test counts the dashes along a flat line for every style, thickness
+  and density, checks a sweep's curves stay apart, and fails on either
+  half of the old code.
 - *Done:* **Cancel keyboard move restores original position** (#1525).
   A cursor-key move now marks the document modified and is one undo step
   however many key presses it takes (`setChanged(..., 'k')` coalesces
