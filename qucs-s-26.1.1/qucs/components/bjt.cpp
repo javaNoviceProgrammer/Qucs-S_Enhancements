@@ -145,9 +145,12 @@ QString BJT::netlist()
     s += " "+p1->Connection->Name;   // node names
   s += " "+Ports.at(1)->Connection->Name;  // connect substrate to collector
 
-  // output all properties
+  // output all properties, but not the ones of the GUI (the checker
+  // warns about them)
+  static const QStringList notForQucsator{"Symbol", "UseGlobTemp", "LibName", "CompName"};
   for(const auto& p2 : Props)
-    s += " "+p2->Name+"=\""+p2->Value+"\"";
+    if (!notForQucsator.contains(p2->Name))
+      s += " "+p2->Name+"=\""+p2->Value+"\"";
 
   return s + '\n';
 }

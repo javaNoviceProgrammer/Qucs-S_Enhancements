@@ -1,0 +1,9 @@
+* SPDT switch, for Xyce (its switch model is VSWITCH with VON/VOFF; the
+* band of spdt.cir's SW models, vt-vh .. vt+vh, spelled out)
+
+.subckt SPDT COM NO NC POS NEG vt=1.0 vh=0.25 ron=0.1 roff=1e12
+S1 COM NO POS NEG MYSW1 OFF
+S2 COM NC NEG POS MYSW2 ON
+.model MYSW1 VSWITCH(RON={ron} ROFF={roff} VON={vt+vh} VOFF={vt-vh})
+.model MYSW2 VSWITCH(RON={ron} ROFF={roff} VON={-vt+vh} VOFF={-vt-vh})
+.ends

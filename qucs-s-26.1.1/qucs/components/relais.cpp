@@ -19,6 +19,7 @@
 #include "node.h"
 #include "misc.h"
 #include "extsimkernels/spicecompat.h"
+#include "main.h"
 
 
 Relais::Relais()
@@ -188,7 +189,8 @@ Element* Relais::info_spdt(QString& Name, char* &BitmapFile, bool getNewOne)
 
 QString Relais::getSpiceLibrary()
 {
-  QString f = spicecompat::getSpiceLibPath("spdt.cir");
+  // Xyce's switch model is VSWITCH, not SW: a file of its own.
+  QString f = spicecompat::getSpiceLibPath(QucsSettings.DefaultSimulator == spicecompat::simXyce ? "spdt_xyce.cir" : "spdt.cir");
   QString s = QString (".INCLUDE \"%1\"\n").arg(f);
   return s;
 }

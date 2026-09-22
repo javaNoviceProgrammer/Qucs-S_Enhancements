@@ -25,7 +25,7 @@ SpiceCSParam::SpiceCSParam()
   isEquation = true;
   Type = isComponent; // Analogue and digital component.
   Description = QObject::tr(".CSPARAM section");
-  Simulator = spicecompat::simSpice;
+  Simulator = spicecompat::simNgspice | spicecompat::simSpiceOpus;   // Xyce has no .CSPARAM
 
   QFont f = QucsSettings.font;
   f.setWeight(QFont::Light);

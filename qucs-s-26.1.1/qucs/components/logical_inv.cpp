@@ -43,6 +43,7 @@ Logical_Inv::Logical_Inv()
   Model = "Inv";
   Name  = "Y";
   SpiceModel = "A";
+  Simulator = spicecompat::simNgspice | spicecompat::simSpiceOpus | spicecompat::simQucsator;   // XSPICE digital device
 }
 
 // -------------------------------------------------------

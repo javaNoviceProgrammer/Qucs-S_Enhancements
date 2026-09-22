@@ -67,7 +67,7 @@ VCCS::VCCS()
 
   Props.append(new Property("G", "1 S", true,
 		QObject::tr("forward transconductance")));
-  Props.append(new Property("T", "0", false, QObject::tr("delay time (Qucsator only)")));
+  Props.append(new Property("T", "0", false, QObject::tr("delay time (Qucsator only)"), Property::Type::Value, spicecompat::simQucsator));
 }
 
 VCCS::~VCCS()

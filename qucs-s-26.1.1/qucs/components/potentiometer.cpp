@@ -10,6 +10,7 @@
 
 #include "potentiometer.h"
 #include "extsimkernels/spicecompat.h"
+#include "misc.h"
 #include "node.h"
 
 potentiometer::potentiometer()
@@ -39,14 +40,15 @@ potentiometer::potentiometer()
   Props.append (new Property ("Contact_Res", "1", false,
     QObject::tr ("wiper arm contact resistance")
     +" ("+QObject::tr ("Ohm")+")"));
+  // The temperature dependence is Qucsator's (not in the SPICE form).
   Props.append (new Property ("Temp_Coeff", "100", false,
     QObject::tr ("resistance temperature coefficient")
-    +" ("+QObject::tr ("PPM/Celsius")+")"));
+    +" ("+QObject::tr ("PPM/Celsius")+")", Property::Type::Value, spicecompat::simQucsator));
   Props.append (new Property ("Tnom", "26.85", false,
     QObject::tr ("parameter measurement temperature")
-    +" ("+QObject::tr ("Celsius")+")"));
+    +" ("+QObject::tr ("Celsius")+")", Property::Type::Value, spicecompat::simQucsator));
   Props.append (new Property ("Temp", "26.85", false,
-    QObject::tr ("simulation temperature")));
+    QObject::tr ("simulation temperature"), Property::Type::Value, spicecompat::simQucsator));
 
   createSymbol ();
   tx = x1 + 8;
@@ -115,14 +117,45 @@ QString potentiometer::spice_netlist(spicecompat::SpiceDialect dialect /* = spic
 {
     Q_UNUSED(dialect);
 
+    // The Verilog-A model of qucsator (potentiometer.va): the wiper divides
+    // R_pot by Rotation/Max_Rotation; the conformity and linearity errors
+    // scale both parts, unless a taper (Taper_Coeff with LEVEL 2 or 3) puts
+    // R_pot*Tpcoeff in parallel with the bottom (2) or the top (3) part;
+    // Contact_Res sits between the wiper pin and the divider. The
+    // temperature coefficient is not carried over.
     QString s;
-    QString R = spicecompat::normalize_value(getProperty("R_pot")->Value);
-    QString rot = spicecompat::normalize_value(getProperty("Rotation")->Value);
-    QString max_rot = spicecompat::normalize_value(getProperty("Max_Rotation")->Value);
-    QString pin1 = spicecompat::normalize_node_name(Ports.at(0)->Connection->Name);
-    QString pin2 = spicecompat::normalize_node_name(Ports.at(1)->Connection->Name);
-    QString pin3 = spicecompat::normalize_node_name(Ports.at(2)->Connection->Name);
-    s += QStringLiteral("R%1_1 %2 %3 R='(%4)*(%5)/(%6)'\n").arg(Name).arg(pin1).arg(pin2).arg(R).arg(rot).arg(max_rot);
-    s += QStringLiteral("R%1_2 %2 %3 R='(%4)*(1.0-(%5)/(%6))'\n").arg(Name).arg(pin2).arg(pin3).arg(R).arg(rot).arg(max_rot);
+    const auto v = [this](const char* name) { return spicecompat::normalize_value(getProperty(name)->Value); };
+    const QString R = v("R_pot"), rot = v("Rotation"), maxRot = v("Max_Rotation");
+    const QString conformity = v("Conformity"), linearity = v("Linearity"), taper = v("Taper_Coeff");
+    QString pin1 = spicecompat::normalize_node_name(Ports.at(0)->Connection->Name);   // B
+    QString pin2 = spicecompat::normalize_node_name(Ports.at(1)->Connection->Name);   // wiper
+    QString pin3 = spicecompat::normalize_node_name(Ports.at(2)->Connection->Name);   // T
+
+    double contact = 0.0, taperCoeff = 0.0, fac = 1.0;
+    QString unit;
+    misc::str2num(getProperty("Contact_Res")->Value, contact, unit, fac);
+    contact *= fac;
+    misc::str2num(getProperty("Taper_Coeff")->Value, taperCoeff, unit, fac);
+    taperCoeff *= fac;
+    const int level = getProperty("LEVEL")->Value.toInt();
+    const bool tapered = taperCoeff != 0.0 && (level == 2 || level == 3);
+
+    QString wiper = pin2;
+    if (contact > 0.0) {
+        wiper = QStringLiteral("_net_%1_w").arg(Name);
+        s += QStringLiteral("R%1_c %2 %3 %4\n").arg(Name, pin2, wiper, v("Contact_Res"));
+    }
+    const QString angle = QStringLiteral("(%1)*3.14159265358979/180").arg(rot);
+    const QString errorTerm = QStringLiteral("(1+((%1)+(%2)*sin(%3))/100)").arg(conformity, linearity, angle);
+    const QString scale = tapered ? QStringLiteral("1") : errorTerm;
+    s += QStringLiteral("R%1_1 %2 %3 R='(0.000001+(%4)/(%5))*(%6)*%7'\n").arg(Name, pin1, wiper, rot, maxRot, R, scale);
+    s += QStringLiteral("R%1_2 %2 %3 R='(1.000001-(%4)/(%5))*(%6)*%7'\n").arg(Name, wiper, pin3, rot, maxRot, R, scale);
+    if (tapered) {
+        const QString tpcoeff = QStringLiteral("((%1)+((%2)+(%3)*sin(%4))/100)").arg(taper, conformity, linearity, angle);
+        if (level == 2)
+            s += QStringLiteral("R%1_tb %2 %3 R='(%4)*%5'\n").arg(Name, pin1, wiper, R, tpcoeff);
+        else
+            s += QStringLiteral("R%1_tt %2 %3 R='(%4)*%5'\n").arg(Name, wiper, pin3, R, tpcoeff);
+    }
     return s;
 }

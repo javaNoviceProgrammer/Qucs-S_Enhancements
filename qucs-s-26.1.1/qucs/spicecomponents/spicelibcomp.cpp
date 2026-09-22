@@ -265,7 +265,7 @@ QString SpiceLibComp::cdl_netlist()
 
 QString SpiceLibComp::getSpiceLibrary()
 {
-    if (isActive != COMP_IS_ACTIVE) return QString();
+    if (isActive != COMP_IS_ACTIVE || Props.at(0)->Value.trimmed().isEmpty()) return QString();
     QString f = misc::properAbsFileName(Props.at(0)->Value, containingSchematic);
     QString s = QStringLiteral(".INCLUDE \"%1\"\n").arg(f);
     return s;

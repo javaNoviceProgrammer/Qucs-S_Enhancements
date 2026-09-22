@@ -39,6 +39,7 @@ tff_SR::tff_SR()
   Model = "tff_SR";
   Name  = "Y";
   SpiceModel = "A";
+  Simulator = spicecompat::simNgspice | spicecompat::simSpiceOpus | spicecompat::simQucsator;   // XSPICE digital device
 }
 
 Component * tff_SR::newOne()

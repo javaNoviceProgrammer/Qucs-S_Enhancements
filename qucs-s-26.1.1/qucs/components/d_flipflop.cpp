@@ -52,6 +52,7 @@ D_FlipFlop::D_FlipFlop()
   Model = "DFF";
   Name  = "Y";
   SpiceModel = "A";
+  Simulator = spicecompat::simNgspice | spicecompat::simSpiceOpus | spicecompat::simQucsator;   // XSPICE digital device
 }
 
 // -------------------------------------------------------

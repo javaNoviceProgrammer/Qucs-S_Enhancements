@@ -140,6 +140,66 @@ private slots:
         QCOMPARE(check(nullptr).size(), 0);
     }
 
+    // What the simulator in use cannot take: a component whose mask does
+    // not carry the simulator (drawn red after a change of simulator), one
+    // without a SPICE model, an implicit EDD, a winding without its core.
+    // A digital circuit is not held to the SPICE rules.
+    void theSimulatorRulesNameWhatTheNetlistWouldLose()
+    {
+        const QString sch = dir.filePath("simulator_rules.sch");
+        write(sch,
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <GND * 1 100 300 0 0 0 0>\n"
+            "  <.DC DC1 1 500 100 0 26 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>\n"
+            "  <VDMOS M1 1 200 200 8 -36 0 0 \"nchan\" 1 \"1\" 1 \"0.0\" 1 \"1.0\" 1 \"0.6\" 0 \"0.0\" 1 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"1.0\" 0 \"0.0\" 0 \"0.0\" 0 \"1.0\" 0 \"0.0\" 0 \"0.1\" 0 \"1500\" 0 \"1.0e-10\" 0 \"1.0\" 0 \"1e7\" 0 \"0.0\" 0 \"1.0\" 0 \"0.0\" 0 \"1.11\" 0 \"3.0\" 0 \"1e-14\" 0 \"0.8\" 0 \"0.5\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"1.0\" 0 \"10e-6\" 0 \"1000\" 0 \"26.85\" 0 \"26.85\" 0 \"yes\" 0 \"off\" 1>\n"
+            "  <TWIST Line1 1 400 200 -26 16 0 0 \"0.5 mm\" 1 \"0.8 mm\" 1 \"1.5\" 1 \"100\" 0 \"4\" 0 \"1\" 0 \"0.022e-6\" 0 \"4e-4\" 0 \"26.85\" 0>\n"
+            "  <EDD D1 1 600 200 -26 -66 0 0 \"implicit\" 0 \"1\" 0 \"0\" 1 \"0\" 0>\n"
+            "  <WINDING W1 1 800 200 -20 50 0 0 \"CORE1\" 1 \"10\" 1 \"0.1\" 1>\n"
+            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.gotoPage(sch, false, false));
+        Schematic* doc = app.currentSchematic();
+        QVERIFY(doc != nullptr);
+
+        QStringList got = messages(check(doc));
+        QVERIFY2(got.contains("E Line1: has no SPICE model, Ngspice cannot simulate it"), qPrintable(got.join(" | ")));
+        QVERIFY2(got.contains("E D1: an implicit equation-defined device has no SPICE form (use the explicit type)"), qPrintable(got.join(" | ")));
+        QVERIFY2(got.contains("E W1: no magnetic core named CORE1 in the schematic"), qPrintable(got.join(" | ")));
+        QVERIFY2(got.filter("not available").isEmpty(), qPrintable(got.join(" | ")));   // VDMOS is fine for ngspice
+
+        // The simulator changed to Xyce with the schematic open: the VDMOS
+        // (ngspice only) is what the netlist would lose.
+        QucsSettings.DefaultSimulator = spicecompat::simXyce;
+        got = messages(check(doc));
+        QVERIFY2(got.contains("E M1: not available for Xyce"), qPrintable(got.join(" | ")));
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+
+        // The explicit EDD and a core for the winding put things right.
+        for (Component* c : doc->a_DocComps) {
+            if (c->Model == "EDD") c->Props.first()->Value = "explicit";
+        }
+        QString line = "<CORE CORE1 1 900 200 -40 35 0 0 \"26.0\" 1 \"27.0\" 1 \"0.05\" 1 \"395e3\" 1 \"1e-4\" 1 \"1.0\" 1 \"1.0\" 1 \"0.0\" 1 \"generic\" 1 \"1.0\" 0 \"1.0\" 0 \"1.0\" 0 \"1.0\" 0 \"1.0\" 0 \"1.0\" 0 \"false\" 0>";
+        Component* core = getComponentFromName(line, doc);
+        QVERIFY(core && core->load(line));
+        doc->insertRawComponent(core);
+        got = messages(check(doc));
+        QVERIFY2(got.filter("implicit").isEmpty() && got.filter("no magnetic").isEmpty(), qPrintable(got.join(" | ")));
+
+        // Under Qucsator the SPICE rules do not apply, and a digital circuit
+        // (a .Digi block) is checked for neither.
+        QucsSettings.DefaultSimulator = spicecompat::simQucsator;
+        got = messages(check(doc));
+        QVERIFY2(got.filter("SPICE").isEmpty(), qPrintable(got.join(" | ")));
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        line = "<.Digi Digi1 1 950 100 0 45 0 0 \"TruthTable\" 1 \"10 ns\" 0 \"VHDL\" 0>";
+        Component* digi = getComponentFromName(line, doc);
+        QVERIFY(digi && digi->load(line));
+        doc->insertRawComponent(digi);
+        got = messages(check(doc));
+        QVERIFY2(got.filter("SPICE").isEmpty() && got.filter("not available").isEmpty(), qPrintable(got.join(" | ")));
+    }
+
     void theMenuActionListsThemAndAClickShowsThePlace()
     {
         QucsApp app(false);

@@ -68,7 +68,7 @@ Source_ac::Source_ac()
   Props.append(new Property("f", "1 MHz", false,
                 QObject::tr("frequency in Hertz")));
   Props.append(new Property("Temp", "26.85", false,
-        QObject::tr("simulation temperature in degree Celsius")));
+        QObject::tr("simulation temperature in degree Celsius"), Property::Type::Value, spicecompat::simQucsator));   // the noise temperature: Qucsator only
   Props.append(new Property("EnableTran", "true", false,
     QObject::tr("enable transient model as sine source [true,false]")));
   Props.append(new Property("LoadOnly", "false", false,

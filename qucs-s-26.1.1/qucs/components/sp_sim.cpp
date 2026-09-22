@@ -41,16 +41,17 @@ SP_Sim::SP_Sim()
   Props.append(new Property("Noise", "no", false,
     QObject::tr("calculate noise parameters")+
     " [yes, no]"));
+  // Qucsator only: ngspice's sp analysis takes the noise flag alone.
   Props.append(new Property("NoiseIP", "1", false,
-    QObject::tr("input port for noise figure")));
+    QObject::tr("input port for noise figure"), Property::Type::Value, spicecompat::simQucsator));
   Props.append(new Property("NoiseOP", "2", false,
-    QObject::tr("output port for noise figure")));
+    QObject::tr("output port for noise figure"), Property::Type::Value, spicecompat::simQucsator));
   Props.append(new Property("saveCVs", "no", false,
     QObject::tr("put characteristic values into dataset")+
-    " [yes, no]"));
+    " [yes, no]", Property::Type::Value, spicecompat::simQucsator));
   Props.append(new Property("saveAll", "no", false,
     QObject::tr("save subcircuit characteristic values into dataset")+
-    " [yes, no]"));
+    " [yes, no]", Property::Type::Value, spicecompat::simQucsator));
 }
 
 SP_Sim::~SP_Sim()
