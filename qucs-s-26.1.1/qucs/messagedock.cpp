@@ -21,8 +21,22 @@
 #include "qucsdoc.h"
 #include "textdoc.h"
 
+#include <QApplication>
+#include <QClipboard>
+#include <QCollator>
 #include <QDockWidget>
+#include <QHBoxLayout>
+#include <QLineEdit>
 #include <QListWidget>
+#include <QPushButton>
+#include <QHeaderView>
+#include <QSet>
+#include <QTreeWidget>
+#include <QVBoxLayout>
+
+#include <algorithm>
+#include <cmath>
+#include <functional>
 #include <QFileInfo>
 #include <QStyle>
 #include "schematic.h"
@@ -70,6 +84,42 @@ MessageDock::MessageDock(QucsApp *App_): QWidget()
     connect(problems, &QListWidget::itemClicked, this, &MessageDock::slotProblemChosen);
     connect(problems, &QListWidget::itemActivated, this, &MessageDock::slotProblemChosen);
     builderTabs->insertTab(2, problems, tr("Problems"));
+
+    // 4) the operating point of every device after a DC bias run
+    auto *opPage = new QWidget();
+    auto *opLayout = new QVBoxLayout(opPage);
+    opLayout->setContentsMargins(0, 0, 0, 0);
+    auto *opBar = new QHBoxLayout();
+    operatingPointFilter = new QLineEdit();
+    operatingPointFilter->setObjectName("operatingPointFilter");
+    operatingPointFilter->setPlaceholderText(tr("Filter: a component, a device or a parameter (T1, gm, vth)"));
+    operatingPointFilter->setClearButtonEnabled(true);
+    auto *copy = new QPushButton(tr("Copy"));
+    copy->setObjectName("operatingPointCopy");
+    copy->setToolTip(tr("Copies the rows shown, tab-separated, to paste into a spreadsheet"));
+    opBar->addWidget(operatingPointFilter, 1);
+    opBar->addWidget(copy);
+    operatingPoint = new QTreeWidget();
+    operatingPoint->setObjectName("operatingPoint");
+    operatingPoint->setColumnCount(2);
+    operatingPoint->setHeaderLabels({tr("Component / device / parameter"), tr("Value")});
+    operatingPoint->setUniformRowHeights(true);
+    operatingPoint->setAlternatingRowColors(true);
+    operatingPoint->header()->setStretchLastSection(false);
+    operatingPoint->setToolTip(tr("The operating point of every device after a DC bias run with ngspice; "
+                                  "click a component to see it in the schematic."));
+    opLayout->addLayout(opBar);
+    opLayout->addWidget(operatingPoint);
+    a_operatingPointTab = builderTabs->insertTab(3, opPage, tr("Operating Point"));
+    connect(operatingPointFilter, &QLineEdit::textChanged, this, &MessageDock::slotFilterOperatingPoint);
+    connect(copy, &QPushButton::clicked, this, [this] {
+        QApplication::clipboard()->setText(operatingPointText());
+    });
+    connect(operatingPoint, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *item) {
+        const QString component = item->data(0, Qt::UserRole).toString();
+        if (!component.isEmpty()) emit componentRequested(component);
+    });
+    showOperatingPoint(nullptr, false);
 
     msgDock = new QDockWidget(tr("admsXml Dock"));
     msgDock->setWidget(builderTabs);
@@ -301,6 +351,153 @@ void MessageDock::showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& 
 Schematic* MessageDock::problemsDocument() const
 {
     return a_problemsDoc.data();
+}
+
+namespace {
+// Data of the Operating Point tab's rows: the component (every row), and
+// for a parameter its number and unit (operatingPointText()).
+constexpr int ValueRole = Qt::UserRole + 1;
+constexpr int UnitRole = Qt::UserRole + 2;
+constexpr int DeviceRole = Qt::UserRole + 3;
+
+QString deviceText(const qucs_s::oppoint::Device &d)
+{
+    return d.model.isEmpty() ? d.type : d.type + QStringLiteral(", ") + d.model;
+}
+
+// Resistors, capacitors, inductors and sources: listed after the devices
+// whose operating point is the point (transistors, diodes, OSDI devices).
+bool isCircuitElement(const qucs_s::oppoint::Device &d)
+{
+    static const QStringList elements = {"resistor", "capacitor", "inductor", "mutual", "vsource", "isource",
+                                         "vcvs", "vccs", "ccvs", "cccs", "asrc"};
+    return elements.contains(d.type.toLower());
+}
+} // namespace
+
+void MessageDock::showOperatingPoint(Schematic* doc, bool raise)
+{
+    if (a_operatingPointDoc != doc) {
+        if (a_operatingPointDoc) disconnect(a_operatingPointDoc, nullptr, this, nullptr);
+        if (doc != nullptr)
+            connect(doc, &QObject::destroyed, this, [this] { showOperatingPoint(nullptr, false); });
+    }
+    a_operatingPointDoc = doc;
+    operatingPoint->clear();
+    const QList<qucs_s::oppoint::Device> devices = doc != nullptr ? doc->operatingPoint()
+                                                                  : QList<qucs_s::oppoint::Device>();
+    if (devices.isEmpty()) {
+        auto *item = new QTreeWidgetItem(operatingPoint, {
+            doc == nullptr ? tr("Calculate DC bias (F8) with ngspice to see the operating point of every device.")
+                           : tr("No device reported an operating point.")});
+        item->setFlags(Qt::ItemIsEnabled);
+        item->setFirstColumnSpanned(true);
+    }
+
+    // A row per component - in the order of their names, numbers counted
+    // (T2 before T10) - with its device, or the devices of a subcircuit,
+    // and their parameters.
+    QHash<QString, QTreeWidgetItem *> components;
+    QSet<QTreeWidgetItem *> active;   // with a device other than a circuit element
+    QList<QTreeWidgetItem *> tops;
+    for (const qucs_s::oppoint::Device &d : devices) {
+        const QString component = d.component.isEmpty() ? d.name.toUpper() : d.component;
+        QTreeWidgetItem *&top = components[component];
+        if (top == nullptr) {
+            top = new QTreeWidgetItem({component, QString()});
+            top->setData(0, Qt::UserRole, d.component);
+            tops << top;
+        }
+        if (!isCircuitElement(d)) active.insert(top);
+        QTreeWidgetItem *device = top;
+        if (d.inside.isEmpty()) {
+            top->setText(1, deviceText(d));
+            top->setToolTip(1, d.description);
+        } else {
+            device = new QTreeWidgetItem(top, {d.inside, deviceText(d)});
+            device->setData(0, Qt::UserRole, d.component);
+            device->setToolTip(1, d.description);
+            top->setText(1, tr("subcircuit, %n device(s)", nullptr, top->childCount()));
+        }
+        device->setData(0, DeviceRole, d.inside.isEmpty() ? d.type : d.inside);
+        for (const qucs_s::oppoint::Parameter &p : d.parameters) {
+            if (std::fabs(p.value) >= 1e90) continue;   // ngspice's "not set" (bv_max 1e99)
+            auto *row = new QTreeWidgetItem(device, {p.name, qucs_s::oppoint::valueText(d, p)});
+            row->setData(0, Qt::UserRole, d.component);
+            row->setData(0, ValueRole, p.value);
+            row->setData(0, UnitRole, qucs_s::oppoint::unitOf(d.type, p.name));
+            row->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+        }
+    }
+    QCollator order;
+    order.setNumericMode(true);
+    order.setCaseSensitivity(Qt::CaseInsensitive);
+    std::sort(tops.begin(), tops.end(), [&order, &active](QTreeWidgetItem *a, QTreeWidgetItem *b) {
+        if (active.contains(a) != active.contains(b)) return active.contains(a);
+        return order.compare(a->text(0), b->text(0)) < 0;
+    });
+    operatingPoint->addTopLevelItems(tops);
+    // Each value next to its name, however wide the dock.
+    operatingPoint->expandAll();
+    operatingPoint->resizeColumnToContents(0);
+    operatingPoint->resizeColumnToContents(1);
+    operatingPoint->collapseAll();
+
+    builderTabs->setTabText(a_operatingPointTab, devices.isEmpty() ? tr("Operating Point")
+                                                                   : tr("Operating Point (%1)").arg(devices.size()));
+    slotFilterOperatingPoint();
+    if (raise) raiseOperatingPoint();
+}
+
+Schematic* MessageDock::operatingPointDocument() const
+{
+    return a_operatingPointDoc.data();
+}
+
+void MessageDock::raiseOperatingPoint()
+{
+    builderTabs->setCurrentIndex(a_operatingPointTab);
+    msgDock->show();
+    msgDock->raise();
+}
+
+// A row is shown when it, a row above it or a row below it has the text;
+// what is found is opened up. "gm" shows every device's gm (and gmbs...),
+// "T1" all of T1.
+void MessageDock::slotFilterOperatingPoint()
+{
+    const QString text = operatingPointFilter->text().trimmed();
+    const auto has = [&text](const QTreeWidgetItem *item) {
+        return item->text(0).contains(text, Qt::CaseInsensitive);
+    };
+    // Returns whether the item is shown.
+    std::function<bool(QTreeWidgetItem *, bool)> filter = [&](QTreeWidgetItem *item, bool above) {
+        const bool here = above || text.isEmpty() || has(item);
+        bool below = false;
+        for (int i = 0; i < item->childCount(); ++i) below = filter(item->child(i), here) || below;
+        const bool shown = here || below;
+        item->setHidden(!shown);
+        item->setExpanded(!text.isEmpty() && below);
+        return shown;
+    };
+    for (int i = 0; i < operatingPoint->topLevelItemCount(); ++i)
+        filter(operatingPoint->topLevelItem(i), false);
+}
+
+QString MessageDock::operatingPointText() const
+{
+    QStringList lines{QStringLiteral("component\tdevice\tparameter\tvalue\tunit")};
+    for (QTreeWidgetItemIterator it(operatingPoint, QTreeWidgetItemIterator::NotHidden); *it; ++it) {
+        const QTreeWidgetItem *row = *it;
+        if (!row->data(0, ValueRole).isValid()) continue;   // a parameter's row
+        const QTreeWidgetItem *device = row->parent();
+        const QTreeWidgetItem *top = device;
+        while (top->parent() != nullptr) top = top->parent();
+        lines << QStringList{top->text(0), device->data(0, DeviceRole).toString(), row->text(0),
+                             QString::number(row->data(0, ValueRole).toDouble(), 'g', 9),
+                             row->data(0, UnitRole).toString()}.join('\t');
+    }
+    return lines.join('\n') + '\n';
 }
 
 void MessageDock::slotProblemChosen()

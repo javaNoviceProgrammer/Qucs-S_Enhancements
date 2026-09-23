@@ -954,6 +954,20 @@ void QucsApp::slotLocateProblem(int index) {
   doc->viewport()->update();
 }
 
+void QucsApp::slotShowOperatingPointComponent(const QString &component) {
+  Schematic *doc = messageDock->operatingPointDocument();
+  if (doc == nullptr) return;
+  showDocument(doc);
+  doc->deselectElements(nullptr);
+  for (Component *c : doc->a_DocComps)
+    if (c->Name == component) {
+      c->isSelected = true;
+      doc->centerOn(QPoint(c->cx, c->cy));
+      break;
+    }
+  doc->viewport()->update();
+}
+
 // ------------------------------------------------------------------------
 // Is called to show the output messages of the last simulation.
 void QucsApp::slotShowLastMsg() {

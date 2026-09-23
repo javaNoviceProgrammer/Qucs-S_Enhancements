@@ -680,6 +680,9 @@ public slots:
   /// A row of the Problems tab: selects the component (if one is meant)
   /// and centres the schematic on the place.
   void slotLocateProblem(int index);
+  /// Selects and centres the component of that name in the schematic of
+  /// the Operating Point tab.
+  void slotShowOperatingPointComponent(const QString &component);
 private:
   QString a_lastSimulatedDoc;   // for currentScratchDir()
   /// Runs the check on \a doc and shows the result; the dock comes up

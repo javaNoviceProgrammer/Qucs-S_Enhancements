@@ -23,6 +23,7 @@
 #endif
 
 #include "abstractspicekernel.h"
+#include "oppoint.h"
 #include "misc.h"
 #include "main.h"
 #include "../paintings/id_text.h"
@@ -810,6 +811,21 @@ void AbstractSpiceKernel::parseDC_OPoutput(QString ngspice_file)
     SweepDialog *swpdlg = new SweepDialog(a_schematic,&NodeVals);
     delete swpdlg;
 
+    // The operating point of every device, from ngspice's "show all" -
+    // written after the node values by the same run: an older file is a
+    // previous run's (the Scratch folder keeps them).
+    QList<qucs_s::oppoint::Device> devices;
+    const QFileInfo nodes(ngspice_file), shown(ngspice_file + "_dev");
+    if (shown.exists() && shown.lastModified() >= nodes.lastModified()) {
+        QFile f(shown.filePath());
+        if (f.open(QIODevice::ReadOnly))
+            devices = qucs_s::oppoint::parseShow(QString::fromUtf8(f.readAll()));
+    }
+    QStringList components;
+    for (Component *c : a_schematic->a_DocComps) components << c->Name;
+    qucs_s::oppoint::attribute(devices, components);
+    a_schematic->setOperatingPoint(devices);
+
     a_schematic->setShowBias(1);
 }
 
@@ -844,6 +860,7 @@ void AbstractSpiceKernel::parseDC_OPoutputXY(QString xyce_file)
     SweepDialog *swpdlg = new SweepDialog(a_schematic,&NodeVals);
     delete swpdlg;
 
+    a_schematic->setOperatingPoint({});   // Xyce has no "show all"
     a_schematic->setShowBias(1);
 }
 

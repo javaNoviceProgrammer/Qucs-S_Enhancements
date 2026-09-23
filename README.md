@@ -277,6 +277,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   shown, labels on other labels went from 436 to 2, labels on a symbol
   or its text from 4135 to 2200, and labels a wire runs through from
   3950 to 478.
+- **The operating point of every device** (upstream #789): after
+  *Calculate DC bias* with ngspice, rest the mouse on a transistor,
+  diode or Verilog-A (OSDI) device to see what it is doing — `ic`,
+  `vbe`, `gm`, `gpi`, `cpi` of a BJT; `id`, `vgs`, `vth`, `vdsat`, `gm`,
+  `gds` and the capacitances of a MOSFET; a diode's `cd`; whatever an
+  OSDI model reports — with units, zeros left out. *View → Operating
+  Point* opens the full list in the message dock: one row per
+  component (transistors first, then resistors, capacitors and sources;
+  a subcircuit's devices under it), every parameter ngspice gives, a
+  filter (`gm` shows every device's gm, `T1` all of T1), *Copy* for a
+  spreadsheet, and a click that selects the component. Nothing extra to
+  set up: the DC bias run asks ngspice for it (`show all`).
 - **Find in a schematic, and find and replace across the project**:
   *Edit → Find* (Ctrl+F) in a schematic opens a find bar under the
   pane — type a component's name, a net label or a value and the first

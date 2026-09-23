@@ -30,6 +30,8 @@
 #include "paintings/paintings.h"
 #include "schematic.h"
 #include "ink.h"
+#include <QHelpEvent>
+#include <QToolTip>
 #include "settings.h"
 #include "textdoc.h"
 
@@ -673,6 +675,48 @@ void Schematic::drawElements(QPainter* painter) {
     for (auto* painting : *a_Paintings) {
         painting->paint(painter);
     }
+}
+
+QList<const qucs_s::oppoint::Device*> Schematic::operatingPointOf(const QString& component) const
+{
+    QList<const qucs_s::oppoint::Device*> devices;
+    for (const qucs_s::oppoint::Device& d : a_operatingPoint)
+        if (d.component == component) devices << &d;
+    return devices;
+}
+
+QString Schematic::operatingPointTooltip(const QPoint& viewportPos)
+{
+    if (a_showBias <= 0 || a_operatingPoint.isEmpty()) return QString();
+    const QPoint at = viewportToModel(viewportPos);
+    // The smallest component there that has an operating point (a
+    // transistor drawn over a larger symbol's box).
+    const Component* chosen = nullptr;
+    qint64 chosenArea = 0;
+    for (Component* c : a_DocComps) {
+        if (!c->getSelected(at.x(), at.y())) continue;
+        const QRect box = c->boundingRect();
+        const qint64 area = qint64(box.width()) * box.height();
+        if (chosen != nullptr && area >= chosenArea) continue;
+        if (operatingPointOf(c->Name).isEmpty()) continue;
+        chosen = c;
+        chosenArea = area;
+    }
+    return chosen == nullptr ? QString() : qucs_s::oppoint::tooltip(operatingPointOf(chosen->Name));
+}
+
+bool Schematic::eventFilter(QObject* watched, QEvent* event)
+{
+    if (event->type() == QEvent::ToolTip && watched == viewport()) {
+        const auto* help = static_cast<QHelpEvent*>(event);
+        const QString text = operatingPointTooltip(help->pos());
+        if (text.isEmpty())
+            QToolTip::hideText();
+        else
+            QToolTip::showText(help->globalPos(), text, viewport());
+        return true;
+    }
+    return Q3ScrollView::eventFilter(watched, event);
 }
 
 Schematic::BiasLabels Schematic::layoutBiasLabels(const QFontMetrics& metrics) const {
