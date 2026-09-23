@@ -322,6 +322,24 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   LC_lowpass_optimization* chooses the three E24 values of a 50 Ω
   low-pass (0.5 dB to 1 MHz, 30 dB down from 3.16 MHz) in about two
   seconds.
+- **NgOpt: ngspice's own optimizer as a component**: for ngspice builds
+  that have the `optimize` command (the
+  [Ngspice_OpenVAF_Enhancements](https://github.com/javaNoviceProgrammer/Ngspice_OpenVAF_Enhancements)
+  fork), *simulations → ngspice optimize* is a form for it. Its knobs are
+  an equation's or `.PARAM`'s variables (*Add Equation Variables* adds
+  them all), device instances (`R1`, `@m1[w]`) or model parameters
+  (`@dmod[is]`), each with a range. The objective is an ngspice
+  expression to minimize after an analysis, or targets to fit by least
+  squares, each after its own analysis (a simulation component of the
+  schematic, or an ngspice command such as `ac lin 1 1meg 1meg`). The
+  method is differential evolution, particle swarm, simulated
+  annealing, Nelder-Mead or Levenberg-Marquardt, with iterations,
+  tolerance, population and seed. The dialog shows the command it
+  writes. Press Simulate: ngspice optimizes first, in one process, and
+  the schematic's simulations then run at the optimum; the status log
+  has ngspice's verdict and the values found become the knobs' initial
+  values. Example: *NGspice features → LC_lowpass_ngopt* fits the
+  low-pass to a Butterworth response in 39 evaluations.
 - **Find in a schematic, and find and replace across the project**:
   *Edit → Find* (Ctrl+F) in a schematic opens a find bar under the
   pane — type a component's name, a net label or a value and the first

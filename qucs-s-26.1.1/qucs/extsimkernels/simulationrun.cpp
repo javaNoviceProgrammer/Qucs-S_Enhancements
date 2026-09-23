@@ -38,6 +38,7 @@
 #include "simulationrun.h"
 #include "main.h"
 #include "schematic.h"
+#include "ngoptimize.h"
 
 SimulationRun::SimulationRun(Schematic* sch, bool netlist2Console, QObject* parent) :
     QObject(parent),
@@ -183,6 +184,8 @@ void SimulationRun::slotProcessOutput()
             emit success();
         }
     }
+    if (QucsSettings.DefaultSimulator == spicecompat::simNgspice && !a_schematic.isNull())
+        reportNgOptimizations(out);
     saveLog();
     if (a_console != nullptr)
         a_console->insertPlainText("Simulation finished\n");
@@ -407,6 +410,56 @@ void SimulationRun::writeBackOptimum()
         f[2] = value;
         p->Value = f.join('|');
         changed = true;
+    }
+    if (changed) a_schematic->setChanged(true, true);
+}
+
+void SimulationRun::reportNgOptimizations(const QString& out)
+{
+    using namespace qucs_s::ngopt;
+    const QStringList names = a_ngspice->optimizations();
+    if (names.isEmpty()) return;
+    const QStyle *style = QApplication::style();
+    if (unsupported(out)) {
+        addLogEntry(tr("This ngspice has no optimize command: NgOpt needs an ngspice built with it "
+                       "(Ngspice_OpenVAF_Enhancements). The simulations ran with the initial values."),
+                    style->standardIcon(QStyle::SP_MessageBoxCritical));
+        return;
+    }
+    const QList<Result> results = parseResults(out);
+    bool changed = false;
+    for (int i = 0; i < names.size(); ++i) {
+        Component* c = nullptr;
+        for (Component* pc : a_schematic->a_DocComps)
+            if (pc->Model == ".NGOPT" && pc->Name == names.at(i)) c = pc;
+        if (c == nullptr) continue;
+        if (i >= results.size()) {
+            addLogEntry(tr("%1: ngspice reported no optimum. Please check log.").arg(names.at(i)),
+                        style->standardIcon(QStyle::SP_MessageBoxWarning));
+            continue;
+        }
+        // The values found become the knobs' initial values, as the
+        // Optimization component's do: the next run starts from them.
+        const Result& r = results.at(i);
+        Command command = Command::read(c);
+        if (r.values.size() == command.knobs.size()) {
+            bool mine = false;
+            for (int k = 0; k < command.knobs.size(); ++k) {
+                const QString value = misc::num2str(r.values.at(k).second, -1, QString());
+                if (command.knobs.at(k).init == value) continue;
+                command.knobs[k].init = value;
+                mine = true;
+            }
+            if (mine) {
+                command.write(c);
+                changed = true;
+            }
+        }
+        QString text = QStringLiteral("%1: %2").arg(names.at(i), r.summary);
+        for (const QString& note : r.notes) text += QStringLiteral("\n") + note;
+        const bool doubtful = r.interrupted || !r.notes.isEmpty();
+        addLogEntry(text, doubtful ? style->standardIcon(QStyle::SP_MessageBoxWarning)
+                                   : QIcon(":/bitmaps/svg/ok_apply.svg"));
     }
     if (changed) a_schematic->setChanged(true, true);
 }

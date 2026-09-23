@@ -20,6 +20,7 @@
 #include "components/component.h"
 #include "components/componentdialog.h"
 #include "components/optimizedialog.h"
+#include "components/ngoptdialog.h"
 #include "components/spicedialog.h"
 #include "components/spicefile.h"
 #include "components/vacomponent.h"
@@ -1827,6 +1828,12 @@ void MouseActions::editElement(Schematic *Doc, QMouseEvent *Event)
             OptimizeDialog *od = new OptimizeDialog((Optimize_Sim *) c, Doc);
             if (od->exec() != 1)
                 break; // dialog is WDestructiveClose
+        } else if (c->Model == ".NGOPT") {
+            NgOptDialog *nd = new NgOptDialog(c, Doc);
+            const int result = nd->exec();
+            delete nd;
+            if (result != QDialog::Accepted)
+                break;
         } else if (c->Model == "SPICEINIT") {
             TextBoxDialog *od = new TextBoxDialog("Edit .spiceinit configuration", c, Doc);
             if (od->exec() != 1)

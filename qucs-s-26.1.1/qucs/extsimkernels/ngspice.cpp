@@ -17,6 +17,7 @@
 
 
 #include "ngspice.h"
+#include "ngoptimize.h"
 #include "components/iprobe.h"
 #include "components/vprobe.h"
 #include "components/equation.h"
@@ -129,6 +130,26 @@ void Ngspice::createNetlist(
                 stream<<QStringLiteral("pre_osdi '%1'\n").arg(abs_file);
             }
         }
+    }
+
+    // NgOpt: ngspice's optimize, ahead of the simulations - it leaves the
+    // circuit at the optimum, so they show it. A .param it changed stays
+    // across the reset after each simulation; an alter or altermod does
+    // not, so those knobs are kept in variables and set again.
+    a_optimizations.clear();
+    QString reapply;
+    for (Component* pc : a_schematic->a_DocComps) {
+        if (pc->Model != ".NGOPT" || pc->isActive != COMP_IS_ACTIVE) continue;
+        const qucs_s::ngopt::Command command = qucs_s::ngopt::Command::read(pc);
+        QString line, why;
+        if (!qucs_s::ngopt::commandLine(command, a_schematic, &line, &why)) {
+            stream << QStringLiteral("echo \"Error: %1: %2\"\n").arg(pc->Name, why.replace('"', '\''));
+            continue;
+        }
+        a_optimizations.append(pc->Name);
+        const int index = a_optimizations.size();
+        stream << line << "\n" << qucs_s::ngopt::carryLines(command, index) << "\n";
+        reapply += qucs_s::ngopt::reapplyLines(command, index);
     }
 
     // determine which simulations are in use
@@ -370,7 +391,9 @@ void Ngspice::createNetlist(
         }
 
         spiceNetlist.append("destroy all\n");
-        spiceNetlist.append("reset\n\n");
+        spiceNetlist.append("reset\n");
+        spiceNetlist.append(reapply);
+        spiceNetlist.append("\n");
         stream << spiceNetlist;
     }
 
