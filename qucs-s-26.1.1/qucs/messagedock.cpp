@@ -377,10 +377,16 @@ bool isCircuitElement(const qucs_s::oppoint::Device &d)
 
 void MessageDock::showOperatingPoint(Schematic* doc, bool raise)
 {
-    if (a_operatingPointDoc != doc) {
-        if (a_operatingPointDoc) disconnect(a_operatingPointDoc, nullptr, this, nullptr);
+    // The rows go with their document - without touching it while it is
+    // being destroyed.
+    if (a_operatingPointDoc.data() != doc) {
+        QObject::disconnect(a_operatingPointGone);
+        a_operatingPointGone = QMetaObject::Connection();
         if (doc != nullptr)
-            connect(doc, &QObject::destroyed, this, [this] { showOperatingPoint(nullptr, false); });
+            a_operatingPointGone = connect(doc, &QObject::destroyed, this, [this] {
+                a_operatingPointDoc = nullptr;
+                showOperatingPoint(nullptr, false);
+            });
     }
     a_operatingPointDoc = doc;
     operatingPoint->clear();
@@ -451,7 +457,7 @@ void MessageDock::showOperatingPoint(Schematic* doc, bool raise)
 
 Schematic* MessageDock::operatingPointDocument() const
 {
-    return a_operatingPointDoc.data();
+    return qobject_cast<Schematic*>(a_operatingPointDoc.data());
 }
 
 void MessageDock::raiseOperatingPoint()

@@ -370,11 +370,30 @@ private slots:
         emit tree->itemClicked(tree->topLevelItem(0)->child(1), 0);
         QVERIFY(bjt->isSelected);
 
-        // Another schematic's run: that one's; the document gone: nothing.
+        // No document: the note only.
         dock->showOperatingPoint(nullptr, false);
         QCOMPARE(tree->topLevelItemCount(), 1);   // the note
         QVERIFY(!(tree->topLevelItem(0)->flags() & Qt::ItemIsSelectable));
+        QVERIFY(dock->operatingPointDocument() == nullptr);
+
+        // The document closed while the tab shows it: its rows go with it.
+        // (Its destroyed() comes from ~QWidget, half-way down: nothing may
+        // take the widget for a Schematic then - UBSan on Qt 6.10.)
+        dock->showOperatingPoint(doc, false);
+        QCOMPARE(dock->operatingPointDocument(), doc);
+        QCOMPARE(tree->topLevelItemCount(), 3);
         doc->setChanged(false);
+        app.closeAllFiles();
+        QVERIFY(dock->operatingPointDocument() == nullptr);
+        QCOMPARE(tree->topLevelItemCount(), 1);   // the note again
+        QVERIFY(!(tree->topLevelItem(0)->flags() & Qt::ItemIsSelectable));
+        // And a later document is shown as any.
+        QVERIFY(app.gotoPage(sch));
+        Schematic* again = app.currentSchematic();
+        again->setOperatingPoint(devices);
+        dock->showOperatingPoint(again, false);
+        QCOMPARE(tree->topLevelItemCount(), 3);
+        again->setChanged(false);
         app.closeAllFiles();
     }
 

@@ -106,7 +106,12 @@ private slots:
 
 private:
   QPointer<Schematic> a_problemsDoc;
-  QPointer<Schematic> a_operatingPointDoc;
+  // Kept as a QObject: ~QWidget emits destroyed() before QPointers let go,
+  // and QPointer<Schematic>::data() would then cast the half-destroyed
+  // widget back to a Schematic (UBSan: downcast of a QWidget).
+  // operatingPointDocument() uses qobject_cast, null for such a widget.
+  QPointer<QObject> a_operatingPointDoc;
+  QMetaObject::Connection a_operatingPointGone;
   int a_operatingPointTab = -1;
   QList<qucs_s::erc::Issue> a_issues;
 
