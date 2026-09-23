@@ -39,6 +39,7 @@
 #include "main.h"
 #include "schematic.h"
 #include "ngoptimize.h"
+#include "ngstatistics.h"
 #include "qucs.h"
 #include "textdoc.h"
 
@@ -191,8 +192,10 @@ void SimulationRun::slotProcessOutput()
             emit success();
         }
     }
-    if (QucsSettings.DefaultSimulator == spicecompat::simNgspice && !a_schematic.isNull())
+    if (QucsSettings.DefaultSimulator == spicecompat::simNgspice && !a_schematic.isNull()) {
         reportNgOptimizations(out);
+        reportNgStatistics(out);
+    }
     saveLog();
     if (a_console != nullptr)
         a_console->insertPlainText("Simulation finished\n");
@@ -605,6 +608,29 @@ void SimulationRun::reportNgOptimizations(const QString& out)
                                    : QIcon(":/bitmaps/svg/ok_apply.svg"));
     }
     if (changed) a_schematic->setChanged(true, true);
+}
+
+void SimulationRun::reportNgStatistics(const QString& out)
+{
+    using namespace qucs_s::ngstats;
+    const QStyle *style = QApplication::style();
+    for (const QString& name : a_ngspice->statistics()) {
+        Component* c = nullptr;
+        for (Component* pc : a_schematic->a_DocComps)
+            if (isStatistics(pc) && pc->Name == name) c = pc;
+        if (c == nullptr) continue;
+        const bool corners = c->Model == QLatin1String(kCornersModel);
+        if (unsupported(out, corners)) {
+            addLogEntry(tr("This ngspice has no %1 command: %2 needs an ngspice built with it "
+                           "(Ngspice_OpenVAF_Enhancements).")
+                            .arg(corners ? QStringLiteral("corners") : QStringLiteral("montecarlo"), name),
+                        style->standardIcon(QStyle::SP_MessageBoxCritical));
+            continue;
+        }
+        const Summary summary = summarize(c, out, a_ngspice->workdir());
+        addLogEntry(summary.text, summary.warning ? style->standardIcon(QStyle::SP_MessageBoxWarning)
+                                                  : QIcon(":/bitmaps/svg/ok_apply.svg"));
+    }
 }
 
 bool SimulationRun::writeNetlist(const QString& filename)

@@ -131,6 +131,8 @@ public:
     void parseResFile(QString resfile, QString &var, QStringList &values);
     void convertToQucsData(const QString &qucs_dataset);
     QString getOutput();
+    /// The Scratch folder the netlist and the simulator's output files are in.
+    QString workdir() const { return a_workdir; }
     /// The simulator process's own account of its last error, and the
     /// command it was started with (for the messages of a failed start).
     QString processErrorString() const;

@@ -20,6 +20,7 @@
 #include "extsimkernels/spicecompat.h"
 #include "optimization.h"
 #include "ngoptimize.h"
+#include "ngstatistics.h"
 #include "osdiselection.h"
 #include "misc.h"
 #include "qucs.h"
@@ -142,6 +143,13 @@ QList<Issue> check(Schematic* doc)
         if (c->Model == QLatin1String(".NGOPT") && simulator == spicecompat::simNgspice) {
             QString line, why;
             if (!ngopt::commandLine(ngopt::Command::read(c), doc, &line, &why))
+                errors << Issue{Severity::Error, tr("%1: %2").arg(c->Name, why), QPoint(c->cx, c->cy), c->Name};
+        }
+        // NgMonteCarlo, NgCorners: a montecarlo or corners line the netlist
+        // cannot write.
+        if (ngstats::isStatistics(c) && simulator == spicecompat::simNgspice) {
+            QString line, why;
+            if (!ngstats::commandLine(c, doc, &line, &why))
                 errors << Issue{Severity::Error, tr("%1: %2").arg(c->Name, why), QPoint(c->cx, c->cy), c->Name};
         }
         // A Verilog-A component: its module in a library of the project, or

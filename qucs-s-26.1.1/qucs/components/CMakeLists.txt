@@ -44,6 +44,7 @@ iprobe.cpp		opamp.cpp		verilogfile.cpp		vcresistor.cpp
 coplanar.cpp		ipulse.cpp		opt_sim.cpp		vexp.cpp
 coupler.cpp		irect.cpp		optimizedialog.cpp	vfile.cpp
 ngopt_sim.cpp		ngoptdialog.cpp
+ngmontecarlo_sim.cpp	ngcorners_sim.cpp	ngstatisticsdialog.cpp
 cpwgap.cpp		isolator.cpp	vhdlfile.cpp
 cpwopen.cpp		jfet.cpp		pad2bit.cpp		volt_ac.cpp
 cpwshort.cpp		jk_flipflop.cpp		pad3bit.cpp		volt_dc.cpp
@@ -185,6 +186,9 @@ opt_sim.h
 optimizedialog.h
 ngopt_sim.h
 ngoptdialog.h
+ngmontecarlo_sim.h
+ngcorners_sim.h
+ngstatisticsdialog.h
 pad2bit.h
 pad3bit.h
 pad4bit.h
@@ -251,6 +255,7 @@ componentdialog.h
 spicedialog.h
 optimizedialog.h
 ngoptdialog.h
+ngstatisticsdialog.h
 spicefile.h
 )
 

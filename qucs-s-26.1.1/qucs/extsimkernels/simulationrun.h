@@ -94,6 +94,9 @@ private:
     /// NgOpt: what ngspice's optimize said in \a out, in the status log,
     /// and the values it found as the knobs' initial values.
     void reportNgOptimizations(const QString& out);
+    /// NgMonteCarlo, NgCorners: their yields or corners, and what ngspice
+    /// noted, in the status log.
+    void reportNgStatistics(const QString& out);
     void writeBackOptimum();
     /// Starts compiling the Verilog-A modules the netlist uses whose
     /// library is missing or older than its source; false when there is
