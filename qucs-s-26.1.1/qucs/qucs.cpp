@@ -1704,8 +1704,11 @@ void QucsApp::useProjectScratch(bool on)
 
 // ----------------------------------------------------------
 // Opens an existing project.
-void QucsApp::openProject(const QString& Path)
+void QucsApp::openProject(const QString& PathGiven)
 {
+  // The folder dialog on macOS gives "…/name_prj/": one spelling for the
+  // project, in the recent list too.
+  const QString Path = QDir::cleanPath(PathGiven);
   // this will also remove the path from recent projects if the directory doesn't exist.
   updateRecentProjectsList(Path);
 
@@ -1820,16 +1823,24 @@ void QucsApp::slotMenuProjClose()
 // remove a directory recursively
 bool QucsApp::recurRemove(const QString &Path)
 {
-  QDir projDir = QDir(Path);
+  // Never through a link: QDir("…/link_prj/").removeRecursively() empties
+  // the folder the link leads to (a linked project goes by removeLink()).
+  const QString path = QDir::cleanPath(Path);
+  if (path.isEmpty() || qucs_s::workspace::isLink(path)) return false;
+  QDir projDir = QDir(path);
   return projDir.removeRecursively();
 }
 
 // ----------------------------------------------------------
-bool QucsApp::deleteProject(const QString& Path)
+bool QucsApp::deleteProject(const QString& PathGiven)
 {
   slotHideEdit();
 
-  if(Path.isEmpty()) return false;
+  if(PathGiven.isEmpty()) return false;
+  // Project > Delete Project takes the folder from the dialog, which on
+  // macOS ends in "/": read through that slash a linked project is the
+  // folder it leads to, and removing it would empty the original.
+  const QString Path = QDir::cleanPath(PathGiven);
 
   QString delProjName = QDir(Path).dirName(); // only project directory name
 
@@ -1944,8 +1955,10 @@ void QucsApp::setWorkspace(const QString &dir)
   readProjects();
 }
 
-QString QucsApp::bringProjectIn(const QString &source, bool link)
+QString QucsApp::bringProjectIn(const QString &sourceGiven, bool link)
 {
+  // The folder dialog on macOS hands the folder over with a "/" at the end.
+  const QString source = QDir::cleanPath(sourceGiven);
   const QString workspace = QucsSettings.qucsWorkspaceDir.absolutePath();
   const auto bring = [&](const QString &name) {
     QApplication::setOverrideCursor(Qt::WaitCursor);

@@ -164,6 +164,55 @@ private slots:
         QCOMPARE(check(source, workspace).status, Result::Done);
     }
 
+    // A folder as the macOS dialog gives it, "…/amp_prj/", or typed with
+    // "//" or "./" in it: the same folder, and the same project.
+    void aFolderWrittenAnyWay()
+    {
+        fresh("spelled");
+        const QString slash = QDir::toNativeSeparators(source) + QDir::separator();
+        const Result copied = importProject(slash, workspace);
+        QVERIFY2(copied.status == Result::Done, qPrintable(copied.message));
+        QCOMPARE(copied.path, QDir(workspace).absoluteFilePath("amp_prj"));
+        QCOMPARE(read(copied.path + "/amp.sch"), kSchematic);
+
+        const Result linked = linkProject(source + "//", workspace, "amp_link_prj");
+        QVERIFY2(linked.status == Result::Done, qPrintable(linked.message));
+        QVERIFY(isLink(linked.path));
+        QCOMPARE(QFileInfo(linkTarget(linked.path)).canonicalFilePath(), QFileInfo(source).canonicalFilePath());
+
+        // The workspace written with a slash too: the path has none twice.
+        const Result dotted = importProject(source + "/./", workspace + "/", "amp_dot_prj");
+        QVERIFY2(dotted.status == Result::Done, qPrintable(dotted.message));
+        QCOMPARE(dotted.path, QDir(workspace).absoluteFilePath("amp_dot_prj"));
+
+        // What was refused is refused for what it is, not for the slash.
+        const Result there = check(copied.path + "/", workspace);
+        QCOMPARE(there.status, Result::Invalid);
+        QVERIFY2(there.message.contains("in the workspace already"), qPrintable(there.message));
+        QVERIFY2(there.message.endsWith("amp_prj is in the workspace already."), qPrintable(there.message));
+        QCOMPARE(check(slash, workspace).status, Result::Exists);
+
+        // From the application, as the menu's folder dialog hands it over.
+        fresh("spelled-app");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.switchWorkspace(workspace));
+        QCOMPARE(app.bringProjectIn(source + "/", false), QDir(workspace).absoluteFilePath("amp_prj"));
+        QString asked;
+        QString linkedApp;
+        answering([&] { linkedApp = app.bringProjectIn(source + "/", true); },
+                  [&](QWidget* w) {
+                      auto* input = qobject_cast<QInputDialog*>(w);
+                      if (input == nullptr) return false;
+                      asked = input->textValue();
+                      input->accept();
+                      return true;
+                  });
+        QCOMPARE(asked, QStringLiteral("amp_2"));   // offered after the folder's name, not ""
+        QCOMPARE(linkedApp, QDir(workspace).absoluteFilePath("amp_2_prj"));
+        QVERIFY(isLink(linkedApp));
+    }
+
     void linkLinksTheProject()
     {
         fresh("link");
@@ -327,6 +376,34 @@ private slots:
                   });
         QVERIFY(deleted);
         QVERIFY2(question.contains("Remove the link") && question.contains("stay where they are"), qPrintable(question));
+        QVERIFY(!QFileInfo::exists(link) && !isLink(link));
+        QCOMPARE(read(source + "/amp.sch"), kSchematic);
+        QCOMPARE(read(source + "/sub/lib.sch"), kSchematic);
+    }
+
+    // Project > Delete Project takes the folder from the dialog, which on
+    // macOS ends in "/". A link read through that slash is the folder it
+    // leads to: the question has to be about the link all the same, and
+    // Yes must take the link, never the project's files.
+    void deletingALinkedProjectGivenWithASlash()
+    {
+        fresh("delete-slash");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.switchWorkspace(workspace));
+        const QString link = app.bringProjectIn(source, true);
+        QVERIFY(isLink(link));
+        QVERIFY(isLink(link + "/"));
+        QCOMPARE(QFileInfo(linkTarget(link + "/")).canonicalFilePath(), QFileInfo(source).canonicalFilePath());
+        QString question;
+        bool deleted = false;
+        answering([&] { deleted = app.deleteProject(link + "/"); },
+                  [&](QWidget* w) {
+                      if (auto* box = qobject_cast<QMessageBox*>(w)) question += box->text() + "\n";
+                      return clickYes(w);
+                  });
+        QVERIFY(deleted);
+        QVERIFY2(question.contains("Remove the link") && !question.contains("destroy"), qPrintable(question));
         QVERIFY(!QFileInfo::exists(link) && !isLink(link));
         QCOMPARE(read(source + "/amp.sch"), kSchematic);
         QCOMPARE(read(source + "/sub/lib.sch"), kSchematic);

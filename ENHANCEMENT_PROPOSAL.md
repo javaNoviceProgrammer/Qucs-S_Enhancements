@@ -758,6 +758,19 @@ existing demand.
   asked for, cancelling, a message), deleting a linked project, a linked
   project opened, listed, saved and given its Scratch folder in its real
   place, and the settings dialog's switch.
+  Found in use on macOS: the folder dialog hands a folder over as
+  `…/project1_prj/`, and `QFileInfo` takes the name after that slash as
+  empty - every import and link was refused as "not a project". Worse,
+  read through the slash a linked project is the folder it leads to, so
+  *Project → Delete Project* on one asked to destroy the project's files
+  and, answered Yes, emptied the original (then failed on the link).
+  `workspace::check/importProject/linkProject/isLink/linkTarget/
+  removeLink`, `bringProjectIn()`, `openProject()` and `deleteProject()`
+  clean the path first (`QDir::cleanPath`), and `recurRemove()` refuses
+  a link whatever it is given. Covered: import, link and the checks
+  with `/`, `//` and `./` in the paths, from the application too, and a
+  linked project deleted as the dialog gives it - the link goes, the
+  project stays.
 
 **Medium (weeks each)**
 
