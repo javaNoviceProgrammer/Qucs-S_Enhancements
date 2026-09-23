@@ -895,9 +895,13 @@ void QucsApp::initActions() {
       tr("Show Last Netlist\n\nShows the netlist of the last simulation"));
   connect(showNet, SIGNAL(triggered()), SLOT(slotShowLastNetlist()));
 
-  checkSchematicAction = new QAction(tr("Check Schematic"), this);
+  // The yellow check: this schematic only; the green one next to it
+  // (checkHierarchyAction) takes its subcircuits too.
+  checkSchematicAction = new QAction(QIcon(":/bitmaps/svg/check_current.svg"), tr("Check Schematic"), this);
   checkSchematicAction->setShortcut(Qt::Key_F10);
-  checkSchematicAction->setStatusTip(tr("Checks the schematic for what a simulation would fail on"));
+  checkSchematicAction->setToolTip(tr("Check Schematic: this schematic only, not its subcircuits"));
+  checkSchematicAction->setStatusTip(tr("Checks the schematic for what a simulation would fail on - "
+                                        "this schematic only, not the subcircuits it uses"));
   checkSchematicAction->setWhatsThis(
       tr("Check Schematic\n\nLists unconnected pins and wire ends, duplicate names, "
          "a missing ground or simulation on the Problems tab; a click shows the place"));
@@ -1331,7 +1335,8 @@ void QucsApp::initToolBar() {
   hierarchyToolbar->addAction(intoH);
   hierarchyToolbar->addAction(popH);
   hierarchyToolbar->addSeparator();
-  hierarchyToolbar->addAction(checkHierarchyAction);
+  hierarchyToolbar->addAction(checkSchematicAction);   // yellow: this schematic
+  hierarchyToolbar->addAction(checkHierarchyAction);   // green: and its subcircuits
   hierarchyToolbar->addAction(generateNetlist);
   hierarchyToolbar->addAction(save_netlist);
 }

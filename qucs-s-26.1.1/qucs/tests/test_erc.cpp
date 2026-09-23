@@ -10,6 +10,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QToolBar>
+#include "mouseactions.h"
 #include <QDirIterator>
 #include <QLabel>
 #include <QTimer>
@@ -369,8 +370,36 @@ private slots:
         QVERIFY(bar != nullptr);
         QStringList names;
         for (QAction* a : bar->actions()) if (!a->isSeparator()) names << a->text().remove('&');
-        QCOMPARE(names, (QStringList{"Go into Subcircuit", "Pop out", "Check Schematic and Subcircuits", "Generate Netlist", "Save netlist"}));
+        // The yellow check (this schematic) left of the green (and its subcircuits).
+        QCOMPARE(names, (QStringList{"Go into Subcircuit", "Pop out", "Check Schematic",
+                                     "Check Schematic and Subcircuits", "Generate Netlist", "Save netlist"}));
         for (QAction* a : bar->actions()) if (!a->isSeparator()) QVERIFY2(!a->icon().isNull(), qPrintable(a->text()));
+
+        // The yellow one checks the schematic in front, none of its subcircuits.
+        QVERIFY(app.gotoPage(top, false, false));
+        doc = app.currentSchematic();
+        QVERIFY(doc != nullptr);
+        QAction* current = nullptr;
+        for (QAction* a : bar->actions()) if (a->text() == "Check Schematic") current = a;
+        QVERIFY(current != nullptr);
+        current->trigger();
+        for (const Issue& i : dock->issues())
+            QVERIFY2(QFileInfo(i.file).fileName() == "top.sch", qPrintable(i.file + ": " + i.message));
+
+        // The canvas menu has Export... on the empty canvas, not on a component.
+        const auto menuAt = [&](const QPoint& model) {
+            QTest::mouseClick(doc->viewport(), Qt::RightButton, Qt::NoModifier, doc->modelToViewport(model));
+            QStringList texts;
+            for (QAction* a : app.view->ComponentMenu->actions()) if (!a->isSeparator()) texts << a->text();
+            app.view->ComponentMenu->close();
+            return texts;
+        };
+        QStringList onComponent = menuAt(QPoint(200, 200));   // SUB1
+        QVERIFY2(onComponent.contains("Edit Properties") && !onComponent.contains("Export..."),
+                 qPrintable(onComponent.join(" | ")));
+        QStringList onCanvas = menuAt(QPoint(700, 40));
+        QVERIFY2(onCanvas.contains("Export...") && !onCanvas.contains("Edit Properties"),
+                 qPrintable(onCanvas.join(" | ")));
         // For a look: QUCS_TEST_GRAB=<dir> saves a picture of the toolbar rows.
         const QString grabDir = qEnvironmentVariable("QUCS_TEST_GRAB");
         if (!grabDir.isEmpty()) app.grab(QRect(0, 0, app.width(), 130)).save(grabDir + "/toolbars.png");

@@ -227,8 +227,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   it uses, at any depth (open documents as they are, the others from
   disk); a subcircuit's finding names its file and a click opens it
   there. A *Hierarchy and Netlist* toolbar to the right of the simulation
-  toolbar holds *Go into Subcircuit*, *Pop out*, that check, *Generate
-  Netlist* and *Save netlist*.
+  toolbar holds *Go into Subcircuit*, *Pop out*, the two checks — a
+  yellow check mark for this schematic only (*Check Schematic*, F10),
+  then the green one for it and its subcircuits — *Generate Netlist* and
+  *Save netlist*.
 - **Net highlighting**: select a wire and its whole electrical net lights
   up — every wire and node reached through junctions, through wire labels
   of the same name (a `Vout` here joins a `Vout` there) and through ground
@@ -535,8 +537,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   When the workspace already has a project of that name, you are asked
   for another one.
 - **Export to SVG, PDF, EPS, JPEG and more, without Inkscape** (*File →
-  Export as image...*, or *Export...* at the bottom of the schematic's
-  context menu; *Export Diagram...* on a diagram for the diagram alone):
+  Export as image...*, or *Export...* on the context menu of the empty
+  canvas; *Export Diagram...* on a diagram for the diagram alone):
   PNG, JPEG, BMP, TIFF, WebP, SVG, PDF, EPS and *PDF + LaTeX*, all
   written by Qucs-S itself. Before, PNG and JPEG were the only formats
   that worked everywhere: SVG came out at the wrong scale in a corner of
