@@ -231,8 +231,7 @@ if(xAxis.log) {
       Lines.prepend(new qucs::Line(z, y2, z, 0, GridPen));  // x grid
 
     if((zD < 1.5*zDstep) || (z == 0) || (z == x2)) {
-      if (engineeringNotation) tmp = misc::num2str(zD);
-      else tmp = misc::StringNiceNum(zD);
+      tmp = numberText(zD);
       if(xAxis.up < 0.0)  tmp = '-'+tmp;
       w = metrics.boundingRect(tmp).width();  // width of text
       // center text horizontally under the x tick mark
@@ -261,8 +260,7 @@ else {  // not logarithmical
   z = int(zD);   //  "int(...)" implies "floor(...)"
   while((z <= x2) && (z >= 0)) {    // create all grid lines
     if(fabs(GridNum) < 0.01*pow(10.0, Expo)) GridNum = 0.0;// make 0 really 0
-    if (engineeringNotation) tmp = misc::num2str(GridNum);
-    else tmp = misc::StringNiceNum(GridNum);
+    tmp = numberText(GridNum, GridStep);
     w = metrics.boundingRect(tmp).width();  // width of text
     // center text horizontally under the x tick mark
     Texts.append(new Text(z-(w>>1), -y1, tmp)); // Text(x, y, str, ...)

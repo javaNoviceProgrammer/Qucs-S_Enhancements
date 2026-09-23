@@ -86,7 +86,7 @@ private slots:
         QCOMPARE(again->Graphs.size(), 2);
         QCOMPARE(again->xAxis.limit_max, 1e7);   // the fields before it still land
         QCOMPARE(again->yAxis.Units, 0);
-        QCOMPARE(again->engineeringNotation, true);
+        QCOMPARE(again->notation, qucs_s::numberformat::Notation::Engineering);
     }
 
     void olderFilesAndBadValuesLoadWithoutALegend()

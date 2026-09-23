@@ -170,6 +170,7 @@ private:
               *NotationLabel;
   QLabel      *thicknessLabel, *precisionLabel;
   QComboBox   *PropertyBox, *GridStyleBox, *yAxisBox, *NotationBox, *LegendBox = nullptr;
+  QSpinBox    *DecimalsBox = nullptr;   // places after the point of the numbers; -1: auto
   QPushButton *ColorButt, *GridColorButt;
   QSlider     *SliderRotX, *SliderRotY, *SliderRotZ;
   Cross3D     *DiagCross;

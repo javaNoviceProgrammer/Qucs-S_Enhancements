@@ -241,6 +241,20 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Edit Diagram Properties → Properties → Legend*. Off by default; the
   position is saved with the diagram, and files without it load as before
   (upstream #1719).
+- **Six number notations for a diagram's axes** (*Properties* of a
+  diagram, *Number notation* and *Decimal places*): automatic (what
+  "scientific" was: decimal, with an exponent for large and small
+  numbers), **decimal** (neither exponent nor prefix: 250000, 0.000025),
+  scientific (2.5e5), scientific with a power of ten (2.5×10⁵),
+  engineering with SI prefixes (250k, as before) and engineering with an
+  exponent that is a multiple of three (250e3). *Decimal places* is auto
+  (as many as each number needs; decimal labels as many as the grid
+  step needs, so they line up: 0.00, 0.25, 0.50) or a fixed number. The
+  markers and the cursor readout in the status bar follow the diagram.
+  Saved with the diagram; older versions read a notation of their own as
+  automatic. Fixed on the way: a diagram without graphs (or whose data
+  had not changed) showed a new diagram's axes — 0 to 1, engineering —
+  after the schematic was opened, instead of its own.
 - **Dashed and dotted graphs look dashed and dotted** (upstream #1723):
   the pattern runs on along the whole curve. Upstream started it again at
   every data point, so a graph whose points were closer together than a
