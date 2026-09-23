@@ -186,8 +186,10 @@ public:
             else
                 m_target->setClipRegion(state.clipRegion(), state.clipOperation());
         }
+        // A restore to a state without a clip says NoClip and still has
+        // clipping enabled: the clip is off.
         if (flags & DirtyClipEnabled)
-            m_target->setClipping(state.isClipEnabled());
+            m_target->setClipping(state.isClipEnabled() && state.clipOperation() != Qt::NoClip);
     }
 
     void drawPath(const QPainterPath& path) override { m_target->drawPath(path); }

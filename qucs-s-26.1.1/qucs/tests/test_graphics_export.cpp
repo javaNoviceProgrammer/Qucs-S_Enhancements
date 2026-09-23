@@ -180,6 +180,41 @@ private slots:
 
     // ---- formats -----------------------------------------------------
 
+    // A clip set between save() and restore() ends with the restore: what
+    // is painted afterwards, outside it, reaches the target. (A histogram
+    // clips its bars to the plot; the axis labels after them went missing.)
+    void aClipEndsWithItsRestore()
+    {
+        using namespace qucs_s::exportdevices;
+        for (const bool outerClip : {false, true}) {
+            QImage image(200, 100, QImage::Format_RGB32);
+            image.fill(Qt::white);
+            QPainter target(&image);
+            {
+                RelayDevice device(&target, TextMode::Text, Colours::Colour);
+                QPainter p(&device);
+                if (outerClip) p.setClipRect(0, 0, 190, 100);
+                p.translate(0, 100);
+                p.scale(1, -1);   // as a diagram paints its graphs
+                p.save();
+                p.setClipRect(QRectF(0, 0, 50, 50));
+                p.fillRect(QRectF(0, 0, 200, 100), Qt::red);
+                p.restore();
+                p.fillRect(QRectF(100, 0, 50, 50), Qt::blue);
+                p.resetTransform();
+                p.fillRect(QRectF(160, 0, 20, 20), Qt::green);
+            }
+            target.end();
+            const QString why = outerClip ? QStringLiteral("with an outer clip") : QStringLiteral("without");
+            QVERIFY2(image.pixelColor(25, 75) == QColor(Qt::red), qPrintable(why));     // inside the clip
+            QVERIFY2(image.pixelColor(47, 53) == QColor(Qt::red), qPrintable(why));     // all of it
+            QVERIFY2(image.pixelColor(53, 75) == QColor(Qt::white), qPrintable(why));   // and no more
+            QVERIFY2(image.pixelColor(75, 25) == QColor(Qt::white), qPrintable(why));   // clipped away
+            QVERIFY2(image.pixelColor(125, 75) == QColor(Qt::blue), qPrintable(why));   // after the restore
+            QVERIFY2(image.pixelColor(170, 10) == QColor(Qt::green), qPrintable(why));
+        }
+    }
+
     void theFormatsAndTheirSuffixes()
     {
         const QList<Format> all = formats();
