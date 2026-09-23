@@ -47,6 +47,7 @@
 #include "main.h"
 #include "qucs.h"
 #include "systemopen.h"
+#include "workspace.h"
 #include "ink.h"
 #include "qucsdoc.h"
 #include "textdoc.h"
@@ -462,6 +463,8 @@ void QucsApp::initView()
 
   connect(Projects, SIGNAL(doubleClicked(const QModelIndex &)),
           this, SLOT(slotListProjOpen(const QModelIndex &)));
+  Projects->setContextMenuPolicy(Qt::CustomContextMenu);
+  connect(Projects, &QListView::customContextMenuRequested, this, &QucsApp::slotProjectsContextMenu);
 
   // ----------------------------------------------------------
   // "Content" Tab of the left QTabWidget
@@ -1844,6 +1847,23 @@ bool QucsApp::deleteProject(const QString& Path)
     return false;
   }
 
+  // A linked project (Link Project): the link goes, never the project it
+  // leads to - removing the folder recursively would empty the original.
+  if (qucs_s::workspace::isLink(Path)) {
+    if (QMessageBox::question(this, tr("Remove Link"),
+            tr("%1 is linked into the workspace from\n%2\n\nRemove the link? "
+               "The project's files stay where they are.")
+                .arg(QDir(Path).dirName(), QDir::toNativeSeparators(qucs_s::workspace::linkTarget(Path))),
+            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+      return false;
+    QString error;
+    if (!qucs_s::workspace::removeLink(Path, &error)) {
+      QMessageBox::warning(this, tr("Remove Link"), error);
+      return false;
+    }
+    return true;
+  }
+
   // first ask, if really delete project ?
   if(QMessageBox::warning(this, tr("Warning"),
       tr("This will destroy all the project files permanently ! Continue ?"),
@@ -1855,6 +1875,134 @@ bool QucsApp::deleteProject(const QString& Path)
     return false;
   }
   return true;
+}
+
+// ----------------------------------------------------------
+// The Projects panel's menu.
+void QucsApp::slotProjectsContextMenu(const QPoint &pos)
+{
+  QMenu menu(Projects);
+  menu.addAction(projSwitchWorkspace);
+  menu.addSeparator();
+  menu.addAction(projImport);
+  menu.addAction(projLink);
+  menu.exec(Projects->viewport()->mapToGlobal(pos));
+}
+
+void QucsApp::slotSwitchWorkspace()
+{
+  const QString dir = QFileDialog::getExistingDirectory(
+      this, tr("Choose the Workspace Folder"), QucsSettings.qucsWorkspaceDir.absolutePath(),
+      QFileDialog::ShowDirsOnly);
+  if (dir.isEmpty()) return;
+  if (QDir(dir).canonicalPath() == QucsSettings.qucsWorkspaceDir.canonicalPath()) {
+    statusBar()->showMessage(tr("%1 is the workspace already.").arg(QDir::toNativeSeparators(dir)), 5000);
+    return;
+  }
+  if (switchWorkspace(dir))
+    statusBar()->showMessage(tr("Workspace: %1").arg(QDir::toNativeSeparators(dir)), 5000);
+}
+
+void QucsApp::slotImportProject()
+{
+  const QString source = QFileDialog::getExistingDirectory(
+      this, tr("Choose a Project Folder (NAME_prj) to Copy into the Workspace"), QDir::homePath(),
+      QFileDialog::ShowDirsOnly);
+  if (source.isEmpty()) return;
+  const QString path = bringProjectIn(source, false);
+  if (!path.isEmpty())
+    statusBar()->showMessage(tr("%1 was copied into the workspace.").arg(QDir(path).dirName()), 5000);
+}
+
+void QucsApp::slotLinkProject()
+{
+  const QString source = QFileDialog::getExistingDirectory(
+      this, tr("Choose a Project Folder (NAME_prj) to Link into the Workspace"), QDir::homePath(),
+      QFileDialog::ShowDirsOnly);
+  if (source.isEmpty()) return;
+  const QString path = bringProjectIn(source, true);
+  if (!path.isEmpty())
+    statusBar()->showMessage(tr("%1 is linked into the workspace from %2.")
+                                 .arg(QDir(path).dirName(), QDir::toNativeSeparators(QDir(source).absolutePath())),
+                             8000);
+}
+
+bool QucsApp::switchWorkspace(const QString &dir)
+{
+  if (!closeAllFiles()) return false;   // unsaved changes: asks first
+  setWorkspace(dir);
+  saveApplSettings();
+  return true;
+}
+
+void QucsApp::setWorkspace(const QString &dir)
+{
+  QDir().mkpath(dir);
+  QucsSettings.qucsWorkspaceDir.setPath(QDir(dir).absolutePath());
+  QucsSettings.projsDir.setPath(QDir(dir).absolutePath());   // the folder the panel lists
+  slotMenuProjClose();   // a project of the old workspace closes; the user libraries follow
+  readProjects();
+}
+
+QString QucsApp::bringProjectIn(const QString &source, bool link)
+{
+  const QString workspace = QucsSettings.qucsWorkspaceDir.absolutePath();
+  const auto bring = [&](const QString &name) {
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const qucs_s::workspace::Result r = link ? qucs_s::workspace::linkProject(source, workspace, name)
+                                             : qucs_s::workspace::importProject(source, workspace, name);
+    QApplication::restoreOverrideCursor();
+    return r;
+  };
+  const QString title = link ? tr("Link Project") : tr("Import Project");
+  qucs_s::workspace::Result r = bring(QString());
+  // The workspace has a project of that name: another name, or nothing.
+  while (r.status == qucs_s::workspace::Result::Exists) {
+    QString name = qucs_s::workspace::freeName(workspace, QDir(source).dirName());
+    name.chop(4);   // asked without "_prj", as for a new project
+    bool ok = false;
+    name = QInputDialog::getText(this, title,
+                                 tr("The workspace has a project named %1 already.\n"
+                                    "Name of the one coming in:").arg(QDir(r.path).dirName().chopped(4)),
+                                 QLineEdit::Normal, name, &ok).trimmed();
+    if (!ok || name.isEmpty()) return QString();
+    if (!name.endsWith("_prj")) name += "_prj";
+    r = bring(name);
+  }
+  if (r.status != qucs_s::workspace::Result::Done) {
+    QMessageBox::warning(this, title, r.message);
+    return QString();
+  }
+  showProjectInList(r.path);
+  return r.path;
+}
+
+void QucsApp::showProjectInList(const QString &path)
+{
+  TabView->setCurrentIndex(0);   // the Projects tab
+  if (QucsSettings.projsDir.absolutePath() != QucsSettings.qucsWorkspaceDir.absolutePath()) {
+    QucsSettings.projsDir.setPath(QucsSettings.qucsWorkspaceDir.absolutePath());
+    readProjects();
+  }
+  // The model reads the folder in the background: select the project once
+  // it is listed.
+  const auto select = [this, path] {
+    const QModelIndex source = a_homeDirModel->index(path);
+    if (!source.isValid()) return false;
+    const QModelIndex shown = a_proxyModel->mapFromSource(source);
+    if (!shown.isValid()) return false;
+    Projects->setCurrentIndex(shown);
+    Projects->scrollTo(shown);
+    return true;
+  };
+  if (select()) return;
+  auto *once = new QMetaObject::Connection;
+  *once = connect(a_homeDirModel, &QFileSystemModel::directoryLoaded, this, [once, select](const QString &) {
+    if (select()) {
+      QObject::disconnect(*once);
+      delete once;
+    }
+  });
 }
 
 // ----------------------------------------------------------
@@ -4817,6 +4965,18 @@ QVariant QucsFileSystemModel::data( const QModelIndex& index, int role ) const
         if (dName.endsWith("_prj")) { // it's a Qucs project
             // for some reason SVG does not always work on Windows, so use PNG
             return QIcon(":bitmaps/hicolor/128x128/apps/qucs.png");
+        }
+    }
+    // A project linked into the workspace (Link Project): in italics, and
+    // where it is as the tooltip.
+    if (role == Qt::FontRole || role == Qt::ToolTipRole) {
+        const QString path = filePath(index);
+        if (qucs_s::workspace::isLink(path)) {
+            if (role == Qt::ToolTipRole)
+                return tr("Linked from %1").arg(QDir::toNativeSeparators(qucs_s::workspace::linkTarget(path)));
+            QFont font = QFileSystemModel::data(index, role).value<QFont>();
+            font.setItalic(true);
+            return font;
         }
     }
     // return default system icon

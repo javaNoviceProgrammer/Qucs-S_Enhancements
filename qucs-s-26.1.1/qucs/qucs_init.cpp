@@ -438,6 +438,29 @@ void QucsApp::initActions() {
   projClose->setWhatsThis(tr("Close Project\n\nCloses the current project"));
   connect(projClose, SIGNAL(triggered()), SLOT(slotMenuProjClose()));
 
+  // Also the menu of the Projects panel (right-click).
+  projSwitchWorkspace = new QAction(tr("&Switch Workspace..."), this);
+  projSwitchWorkspace->setObjectName("projSwitchWorkspace");
+  projSwitchWorkspace->setStatusTip(tr("Chooses another folder as the workspace, the folder of the projects"));
+  projSwitchWorkspace->setWhatsThis(tr("Switch Workspace\n\nChooses another folder as the workspace: the "
+                                       "Projects panel lists the projects in it"));
+  connect(projSwitchWorkspace, &QAction::triggered, this, &QucsApp::slotSwitchWorkspace);
+
+  projImport = new QAction(tr("&Import Project..."), this);
+  projImport->setObjectName("projImport");
+  projImport->setStatusTip(tr("Copies a project folder from elsewhere into the workspace"));
+  projImport->setWhatsThis(tr("Import Project\n\nCopies a project folder (NAME_prj) from elsewhere into the "
+                              "workspace"));
+  connect(projImport, &QAction::triggered, this, &QucsApp::slotImportProject);
+
+  projLink = new QAction(tr("&Link Project..."), this);
+  projLink->setObjectName("projLink");
+  projLink->setStatusTip(tr("Puts a link to a project folder elsewhere into the workspace; nothing is copied"));
+  projLink->setWhatsThis(tr("Link Project\n\nPuts a link to a project folder (NAME_prj) elsewhere into the "
+                            "workspace: it is listed and opens as any project there, and its files stay where "
+                            "they are. Deleting it from the workspace removes the link only."));
+  connect(projLink, &QAction::triggered, this, &QucsApp::slotLinkProject);
+
   addToProj = new QAction(tr("&Add Files to Project..."), this);
   addToProj->setShortcut(tr("Ctrl+Shift+A"));
   addToProj->setStatusTip(tr("Copies files to project directory"));
@@ -1041,9 +1064,13 @@ void QucsApp::initMenuBar() {
   recentProjMenu->addSeparator();
   recentProjMenu->addAction(projClearRecent);
 
+  projMenu->addAction(projImport);
+  projMenu->addAction(projLink);
   projMenu->addAction(addToProj);
   projMenu->addAction(projClose);
   projMenu->addAction(projDel);
+  projMenu->addSeparator();
+  projMenu->addAction(projSwitchWorkspace);
   projMenu->addSeparator();
   projMenu->addAction(createLib);
   projMenu->addSeparator();
@@ -1651,6 +1678,11 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("Project.Delete", "Project", "Delete Project", projDel,
                       QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D));
+
+  mgr.registerCommand("Project.Import", "Project", "Import Project", projImport, QKeySequence());
+  mgr.registerCommand("Project.Link", "Project", "Link Project", projLink, QKeySequence());
+  mgr.registerCommand("Project.SwitchWorkspace", "Project", "Switch Workspace", projSwitchWorkspace,
+                      QKeySequence());
 
   mgr.registerCommand("Project.CreateLib", "Project", "Create Library",
                       createLib,

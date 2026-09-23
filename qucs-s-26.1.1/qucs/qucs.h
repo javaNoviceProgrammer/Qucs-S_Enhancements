@@ -168,6 +168,7 @@ public:
   void moveDocument(QWidget *document, ContextMenuTabWidget *to);
 
   ProjectView *projectView() const { return Content; }
+  QListView *projectsView() const { return Projects; }
   MessageDock *messages() const { return messageDock; }
   SimulationConsole *simulationConsole() const { return simConsole; }
   /// The Terminal dock's shell and the Python Shell dock's interpreter.
@@ -200,6 +201,24 @@ public:
   /// documents, points the work directory, the Content panel and the
   /// Scratch folder at it.
   void openProject(const QString &);
+  /// Deletes the project folder \a path after asking - or, for a project
+  /// linked into the workspace, removes the link only.
+  bool deleteProject(const QString &path);
+  /// The workspace becomes \a dir (made if missing): the Projects panel
+  /// lists it, the open project and documents are closed (asking about
+  /// unsaved changes first - false when that is refused), and the setting
+  /// is saved.
+  bool switchWorkspace(const QString &dir);
+  /// Makes \a dir the workspace and shows it in the Projects panel (the
+  /// documents are closed by the caller).
+  void setWorkspace(const QString &dir);
+  /// Copies (or, with \a link, links) the project folder \a source into
+  /// the workspace (workspace.h), asking for another name when the
+  /// workspace has one of its name, and selects it in the Projects panel.
+  /// Returns the project in the workspace; empty if nothing came in.
+  QString bringProjectIn(const QString &source, bool link);
+  /// Lists the workspace in the Projects panel with \a path selected.
+  void showProjectInList(const QString &path);
   /// Opens a file the way a double-click in the Content panel does: by its
   /// suffix, in the schematic view, the text editor, a registered program
   /// or the system's application. \a note is the panel's note column
@@ -346,6 +365,12 @@ public slots:
 private slots:
   void slotMenuProjOpen();
   void slotMenuProjDel();
+  /// The Projects panel's menu (right-click): Switch Workspace, Import
+  /// Project, Link Project.
+  void slotProjectsContextMenu(const QPoint &pos);
+  void slotSwitchWorkspace();
+  void slotImportProject();
+  void slotLinkProject();
   void slotListProjOpen(const QModelIndex &);
   void slotSelectSubcircuit(const QModelIndex &);
   void slotSelectLibComponent(QTreeWidgetItem *);
@@ -442,7 +467,7 @@ public:
       *fileSaveAs, *fileSaveAll, *fileClose, *fileCloseOthers,
       *fileCloseAllLeft, *fileCloseAllRight, *fileCloseAll, *fileExamples,
       *fileSettings, *filePrint, *fileQuit, *projNew, *projOpen, *projDel,
-      *projClose, *applSettings, *refreshSchPath, *editCut, *editCopy, *magAll,
+      *projClose, *projImport, *projLink, *projSwitchWorkspace, *applSettings, *refreshSchPath, *editCut, *editCopy, *magAll,
       *magSel, *magOne, *magMinus, *filePrintFit, *tune, *symEdit, *intoH,
       *popH, *simulate, *save_netlist, *generateNetlist, *dpl_sch, *undo, *redo, *dcbias,
       *saveCdlNetlist, *cdlSettings,
@@ -511,7 +536,6 @@ private:
   void printCurrentDocument(bool);
   bool saveFile(QucsDoc *Doc = 0);
   bool saveAs();
-  bool deleteProject(const QString &);
   void updatePortNumber(QucsDoc *, int);
   int fillComboBox(bool);
   void fillSimulatorsComboBox();

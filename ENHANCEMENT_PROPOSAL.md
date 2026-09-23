@@ -695,6 +695,39 @@ existing demand.
   the action in both roles and the settings dialog; `test_app_theme`'s
   combo lookup no longer depends on the order of the dialog's combos.
 
+- *Done:* **Switch Workspace, Import Project, Link Project** (the
+  Projects panel's context menu, and the Project menu).
+  `qucs_s::workspace` (`qucs/workspace.*`) is the file side, free of
+  widgets: `check()` (a folder named `*_prj`, a name ending in `_prj`
+  without separators, not in the workspace already - by its place or as
+  the link there -, not holding the workspace, nothing of that name
+  there yet), `importProject()` (`std::filesystem::copy`, recursive,
+  links inside as links; a failed copy is removed), `linkProject()` (a
+  directory symbolic link; on Windows, where that needs Developer Mode or
+  an administrator, a junction via `mklink /J`), `freeName()`
+  (`amp_2_prj`), `isLink()`/`linkTarget()` (symbolic links and
+  junctions) and `removeLink()` (unlink / `RemoveDirectory`, never
+  following). `QucsApp::switchWorkspace()` closes the documents (asking
+  about unsaved ones), `setWorkspace()` sets the workspace *and* the
+  folder the panel lists (`projsDir`), closes the old workspace's
+  project and saves the setting; the settings dialog now goes through it
+  as well - it set only the workspace, and the panel went on listing the
+  old one. `bringProjectIn()` asks for another name when the workspace
+  has one of that name, and selects the project in the panel once the
+  model has read the folder. A linked project is listed in italics with
+  "Linked from ..." as the tooltip. `deleteProject()` removes a linked
+  project's link and nothing else: upstream's `QDir::removeRecursively()`
+  on the link emptied the original project through it and then failed on
+  the link (checked by running the test with the guard disabled).
+  `qucs/tests/test_workspace_projects` covers the copy (subfolders,
+  hidden files, links), every refusal, the link (one project from two
+  places), removing a link, the menus, switching (a folder that does not
+  exist yet, the setting saved, the open project closed), import and
+  link from the application (selection, italics, tooltip, the name
+  asked for, cancelling, a message), deleting a linked project, a linked
+  project opened, listed, saved and given its Scratch folder in its real
+  place, and the settings dialog's switch.
+
 **Medium (weeks each)**
 
 - *Done:* **Auto-placement of DC-bias labels** to avoid overlaps (#1692).
