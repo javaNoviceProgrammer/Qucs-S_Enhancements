@@ -61,6 +61,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   one after the other, with the compiler output in the message dock and a
   pass/fail tally at the end. Files with unsaved changes are compiled as last
   saved, after a confirmation.
+- **Verilog-A components keep their parameters' descriptions**: a
+  component made from a Verilog-A module (draw its symbol, save it, *Load
+  Verilog-A module*) shows each parameter's `desc` as written, with its
+  `units` in brackets ("Resistance at the nominal temperature [Ohm]").
+  Upstream took every space out of the component file ("Resistance at
+  the nominal temperature" became "Resistanceatthenominaltemperature"),
+  a quote in any
+  description left the component with no parameters at all, a string
+  parameter's default came out as garbage, and a symbol in a project
+  subfolder was not found. The parameters come from the library OpenVAF
+  built (OSDI 0.3 or 0.4, the module of the file's name) while it is as
+  new as the source, and from the source itself otherwise.
 - **Content panel sees the whole project**: files in subdirectories of the
   project (at any depth, hidden directories excluded) are listed under
   their category, either as `sub/dir/name.ext` rows or as sub-trees with

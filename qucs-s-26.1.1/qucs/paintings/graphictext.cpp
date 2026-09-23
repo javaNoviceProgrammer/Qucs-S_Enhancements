@@ -14,6 +14,7 @@
  *   (at your option) any later version.                                   *
  *                                                                         *
  ***************************************************************************/
+#include "vamodule.h"
 #include "graphictext.h"
 #include "graphictextdialog.h"
 #include "main.h"
@@ -153,12 +154,13 @@ QString GraphicText::saveJSON()
     QString t = text;
     misc::convert2ASCII(t);
 
+    // The text as a JSON string: quotes and backslashes in it escaped.
     QString s = QStringLiteral("{\"type\" : \"graphictext\", "
-                        "\"x\" : %1, \"y\" : %2, \"s\" : \"%3\", "
+                        "\"x\" : %1, \"y\" : %2, \"s\" : %3, "
                         "\"color\" : \"%4\", \"size\" : %5, \"cos\" : %6, \"sin\" : %7},")
                     .arg(x1)
                     .arg(y1)
-                    .arg(t)
+                    .arg(qucs_s::vamodule::jsonString(t))
                     .arg(color.name())
                     .arg(font.pointSize())
                     .arg(cos(pi * angle / 180.0))

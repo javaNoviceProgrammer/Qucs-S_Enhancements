@@ -324,6 +324,37 @@ existing demand.
   pass/fail tally in the message dock, `.osdi` files appear in the tree.
   Points at the settings when OpenVAF is not configured. Covered by
   `qucs/tests/test_build_all_va` with a stand-in compiler.
+- *Done:* **Verilog-A components as their module describes them.** A
+  module becomes a component through JSON files written when its symbol is
+  saved (`NAME_props.json`, `NAME_sym.json`, merged into
+  `NAME_symbol.json`) and read by `vacomponent`. Upstream wrote them by
+  hand - unescaped strings, trailing commas - and read them by deleting
+  every space in the file before parsing (to get rid of the commas): every
+  description lost its spaces, a quote in one parameter's description
+  made the whole file invalid and the component came up without
+  parameters (reported as "Symbol file not found"), a quote in a text on
+  the symbol did the same. The merge glued the two files by deleting
+  "}{" and looked for them in the project folder rather than next to the
+  symbol. The OSDI reader took descriptor 0 without checking the library
+  (`osdi_log` written through unchecked, no version or count), read a
+  string parameter's pointer as its text and integers as unsigned, and
+  the fallback source reader indexed past its token list; the units were
+  a TODO. `qucs_s::vamodule` (`qucs/vamodule.*`) now reads the library
+  (OSDI 0.3 and later, descriptors stepped by `OSDI_DESCRIPTOR_SIZE`, the
+  module of the file's name, `$`-parameters left out, strings quoted as
+  `.model` needs them - ngspice refuses `kind=nmos`) while it is not older
+  than the source, and the source otherwise (attributes `desc`, `units`,
+  `type="instance"`, comments, lists, ranges, local parameters left out);
+  writes the files with `QJsonDocument`; `parseJson()` drops only the
+  commas before a closing bracket outside strings, so older files still
+  read; `jsonString()` quotes a symbol text; `setIcon()` is the load
+  dialog's icon change (which rewrote the file as Latin-1, even when
+  cancelled). *Load Verilog-A module* finds components anywhere in the
+  project. `qucs/tests/test_verilog_a_components` covers the source
+  reader, the properties with units, older files, a symbol with texts and
+  quotes in a project subfolder, the icon, and - with OpenVAF on the
+  machine - the library (defaults, units, instance parameters, strings,
+  two modules, the library used only while it is as new as the source).
 - *Done:* **Content panel lists the whole project tree.** Upstream only
   showed the files in the project directory itself. `misc::projectFiles()`
   walks the subdirectories (no hidden directories, no symlinked ones) and
