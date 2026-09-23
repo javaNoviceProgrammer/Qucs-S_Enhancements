@@ -132,6 +132,7 @@ void Diagram::paintDiagram(QPainter *painter) {
     }
 
     painter->scale(1.0, -1.0); // make Y-axis grow upwards
+    paintBehindGraphs(painter);
     for (Graph *pg: Graphs) {
         pg->paint(painter);
     }
@@ -148,6 +149,7 @@ void Diagram::paintDiagram(QPainter *painter) {
         painter->restore();
     }
 
+    paintInFront(painter);
     paintLegend(painter);
 
     if (isSelected) {
@@ -1437,7 +1439,8 @@ QString Diagram::save() {
     s += QString::number(yAxis.Units) + " "
          + QString::number(zAxis.Units) + " "
          + QString::number(legendPos) + " "
-         + QString::number(notationDecimals);
+         + QString::number(notationDecimals)
+         + extraSaveFields();
 
     // labels can contain spaces -> must be last items in the line
     s += " \"" + xAxis.Label + "\" \"" + yAxis.Label + "\" \"" + zAxis.Label + "\">\n";
@@ -1577,6 +1580,14 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
                         if (misc::charAt(n, 0, '"') != '"') {
                             const int places = n.toInt(&ok);
                             notationDecimals = ok && places >= -1 && places <= 15 ? places : -1;
+                            // What the diagram type keeps of its own (a histogram's bins, ...).
+                            QStringList extra;
+                            for (int i = 29;; ++i) {
+                                n = s.section(' ', i, i);
+                                if (n.isEmpty() || misc::charAt(n, 0, '"') == '"') break;
+                                extra << n;
+                            }
+                            loadExtraFields(extra);
                         }
                     }
                 }

@@ -608,6 +608,36 @@ existing demand.
   the chosen corner of an offscreen paint) and the dialog. Along the way
   `DiagramDialog::slotApply()` lost an unchecked `(Schematic*)parent()`
   cast.
+- *Done:* **Histogram diagram.** `HistogramDiagram`
+  (`qucs/diagrams/histogramdiagram.*`, `<Histogram ...>`) derives from
+  the Cartesian diagram and counts every finite value of each graph (a
+  complex one by its magnitude) into common bins over the values or the
+  x axis' manual limits: `bins` of them, or automatic by
+  Freedman-Diaconis (the square root of the number when the quartiles
+  meet; 1 to 200, reckoned in doubles), the top edge in the last bin.
+  The heights are counts, percentages or densities; the y axis starts at
+  0 (a least value of a tenth of the tallest bar puts the automatic
+  scale's lower end there). The bars are painted, not traced: new
+  `Diagram` hooks paint behind the graphs and over the axis texts, and a
+  diagram type saves fields of its own after the common ones
+  (`extraSaveFields()`/`loadExtraFields()`: bins, height, the flags for
+  the normal fit and the statistics box, the lower and upper limits).
+  The statistics box (N, mean, deviation, the share within the limits,
+  what fell outside the bins) goes in the top corner the bars reach
+  least; the axis labels default to the variables and to what the
+  heights are. The diagram dialog has a *Histogram* group, no right axis
+  and no logarithmic scales; the zoom rectangle, cursor readout, reset
+  limits and free resizing are the Cartesian diagram's. Painting it
+  through the export device showed a bug there: a clip set between
+  `save()` and `restore()` stayed on, since Qt restores to "no clip" with
+  clipping still enabled and the relay turned it back on - every label
+  after a clipped drawing went missing from PNG, SVG and PDF exports; the
+  relay now keeps clipping off under `NoClip`. The NgMonteCarlo example
+  shows its corner frequency in one, with the fit and the spec limits.
+  `qucs/tests/test_histogram_diagram` covers the counting, the automatic
+  bins, the heights, the fit's room, manual limits, several graphs, the
+  settings saved and loaded (and older lines), a schematic, the drawing
+  and the dialog; `test_graphics_export` the clip.
 - *Done:* **Number notations of a diagram.** A diagram had two:
   "scientific" (`misc::StringNiceNum`: decimal, an exponent when
   |log10| >= 3) and "engineering" (`misc::num2str`: SI prefixes), kept
@@ -1025,7 +1055,7 @@ existing demand.
   into a second file. A small raw reader (`dims=`, padded or not,
   complex, several plots in a file) turns them into the dataset under
   the component's name: `sample` or `corner` as the scale, a scalar per
-  sample with a histogram, a waveform family against the analysis scale
+  sample, a waveform family against the analysis scale
   and the sample or the corner, the yield and counts. `SimulationRun`
   puts ngspice's report (samples, yield, confidence interval,
   violations, notes; the corners with their values) in the status log,
@@ -1038,7 +1068,9 @@ existing demand.
   the command lines and what they refuse, the components saved and
   loaded, the raw reader, the dataset, the netlist, the log, the dialog,
   the ERC, an ngspice without the commands - and, with one that has
-  them, the example (200 samples, the family, the histogram, the yield)
+  them, the example (200 samples, the family, the yield, and the
+  example's Histogram diagram with the share between its limits equal
+  to ngspice's yield)
   and the corners of a compiled Verilog-A resistor, their values and
   waveforms and a Monte Carlo at two of them.
 - *Done (click, not hover):* **Net highlighting.** `Schematic::netOf(Wire*)`

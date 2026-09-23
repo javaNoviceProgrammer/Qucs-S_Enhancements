@@ -16,6 +16,7 @@ polardiagram.h
 psdiagram.h
 rect3ddiagram.h
 rectdiagram.h
+histogramdiagram.h
 smithdiagram.h
 tabdiagram.h
 timingdiagram.h
@@ -26,7 +27,7 @@ SET(DIAGRAMS_SRCS
 curvediagram.cpp	graph.cpp		polardiagram.cpp	smithdiagram.cpp
 diagram.cpp		marker.cpp		psdiagram.cpp		tabdiagram.cpp
 diagramdialog.cpp	markerdialog.cpp	rect3ddiagram.cpp	timingdiagram.cpp
-rectdiagram.cpp		truthdiagram.cpp
+rectdiagram.cpp		truthdiagram.cpp	histogramdiagram.cpp
 )
 
 SET(DIAGRAMS_MOC_HDRS

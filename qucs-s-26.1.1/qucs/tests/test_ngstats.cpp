@@ -39,6 +39,7 @@
 #include "schematic.h"
 #include "simulationconsole.h"
 #include "components/component.h"
+#include "diagrams/histogramdiagram.h"
 #include "components/ngcorners_sim.h"
 #include "components/ngmontecarlo_sim.h"
 #include "components/ngstatisticsdialog.h"
@@ -420,8 +421,8 @@ private slots:
     }
 
     // The dataset: the family against the scale and the sample, the
-    // scalars with their histograms, the counts; the corners' values and
-    // waveforms against the corner.
+    // scalars, the counts; the corners' values and waveforms against the
+    // corner.
     void theDatasetIsWritten()
     {
         const QString work = dir.filePath("ds");
@@ -432,7 +433,7 @@ private slots:
         QVERIFY2(mc.contains("<indep ngmontecarlo1.frequency 2>"), qPrintable(mc));
         QVERIFY2(mc.contains("<dep ngmontecarlo1.gain ngmontecarlo1.frequency ngmontecarlo1.sample>"), qPrintable(mc));
         QVERIFY2(mc.contains("<dep ngmontecarlo1.fc ngmontecarlo1.sample>"), qPrintable(mc));
-        QVERIFY2(mc.contains("<dep ngmontecarlo1.fc_hist ngmontecarlo1.fc_bins>"), qPrintable(mc));
+        QVERIFY(!mc.contains("_hist") && !mc.contains("_bins"));   // a Histogram diagram bins them
         QVERIFY(!mc.contains("frequency ngmontecarlo1.sample>\n1.0"));   // the scale is no scalar
 
         const QString file = dir.filePath("mc.dat");
@@ -442,10 +443,6 @@ private slots:
         QCOMPARE(table.value("ngmontecarlo1.fc"), QVector<double>({10, 20, 30}));
         QCOMPARE(table.value("ngmontecarlo1.yield"), QVector<double>({0.5}));
         QCOMPARE(table.value("ngmontecarlo1.nfailed"), QVector<double>({1}));
-        QCOMPARE(table.value("ngmontecarlo1.fc_hist"), QVector<double>({1, 1, 1}));
-        const QVector<double> bins = table.value("ngmontecarlo1.fc_bins");
-        QCOMPARE(bins.size(), 3);
-        QVERIFY(std::abs(bins.at(0) - 40.0 / 3) < 1e-9 && std::abs(bins.at(2) - 80.0 / 3) < 1e-9);
         QVERIFY(!table.contains("ngmontecarlo1.montecarlo_n"));
 
         QVERIFY(write(work + "/spice4qucs.ngcorners1.ngcorners", kCornersRaw));
@@ -662,7 +659,8 @@ private slots:
         const QString file = copyExample(dir.path(), "example");
         QucsApp app(false);
         MainGuard guard(&app);
-        QVERIFY(simulate(app, file) != nullptr);
+        Schematic* doc = simulate(app, file);
+        QVERIFY(doc != nullptr);
         const QString log = logText(app);
         QVERIFY2(log.contains("NgMonteCarlo1: 200 random samples, analysis 'ac dec 20 100 100k', 1 spec, seed 1"),
                  qPrintable(log));
@@ -676,11 +674,23 @@ private slots:
         QCOMPARE(fc.size(), 200);
         const double mean = std::accumulate(fc.begin(), fc.end(), 0.0) / fc.size();
         QVERIFY2(std::abs(mean - 1591.5) < 60, qPrintable(QString::number(mean)));
-        const QVector<double> hist = table.value("ngmontecarlo1.fc_hist");
-        QCOMPARE(std::accumulate(hist.begin(), hist.end(), 0.0), 200.0);
         // +/- 10 % around a 7 % sigma: most samples pass, not all.
         const double yield = table.value("ngmontecarlo1.yield").value(0);
         QVERIFY2(yield > 0.7 && yield < 0.98, qPrintable(QString::number(yield)));
+
+        // The example's histogram diagram: the 200 corner frequencies in its
+        // bins, and between its limits the share ngspice judged within spec.
+        HistogramDiagram* hist = nullptr;
+        for (Diagram* d : *doc->a_Diagrams)
+            if (d->Name == "Histogram") hist = static_cast<HistogramDiagram*>(d);
+        QVERIFY(hist != nullptr);
+        hist->loadGraphData(dir.filePath("example.dat"));
+        QCOMPARE(hist->bars().size(), 1);
+        const HistogramDiagram::Bars& bars = hist->bars().first();
+        QCOMPARE(bars.n, 200);
+        QCOMPARE(std::accumulate(bars.counts.begin(), bars.counts.end(), 0.0), 200.0);
+        QVERIFY2(std::abs(double(bars.within) / bars.n - yield) < 1e-9,
+                 qPrintable(QString("%1 %2").arg(bars.within).arg(yield)));
         // The ordinary simulation ran as before.
         QVERIFY(!table.value("ac.v(out)").isEmpty());
     }

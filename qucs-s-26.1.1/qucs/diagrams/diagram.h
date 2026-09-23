@@ -133,7 +133,7 @@ public:
   QString save();
   bool    load(const QString&, QTextStream*);
 
-  void getAxisLimits(Graph*);
+  virtual void getAxisLimits(Graph*);
   void updateGraphData();
   void loadGraphData(const QString&);
   void recalcGraphData();
@@ -182,6 +182,16 @@ public:
   int rotX, rotY, rotZ; // for "Rect3D": rotation around x, y and z axis
 
 protected:
+  /// What a diagram type saves beyond the common fields, after them and
+  /// before the labels (" 12 0 3"), and reads back from those fields.
+  virtual QString extraSaveFields() const { return QString(); }
+  virtual void loadExtraFields(const QStringList&) {}
+  /// Painted under the graphs, in their coordinates (origin at the lower
+  /// left corner, y upwards), and over the axis texts, in the diagram's
+  /// (y downwards), before the legend.
+  virtual void paintBehindGraphs(QPainter*) {}
+  virtual void paintInFront(QPainter*) {}
+
   void calcSmithAxisScale(Axis*, int&, int&);
   void createSmithChart(Axis*, int Mode=7);
   void calcPolarAxisScale(Axis*, double&, double&, double&);

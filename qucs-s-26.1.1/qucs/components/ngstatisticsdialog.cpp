@@ -156,8 +156,7 @@ NgStatisticsDialog::NgStatisticsDialog(Component* component, Schematic* schemati
                   "In the dataset as <tt>%1.NAME</tt> against <tt>%1.corner</tt>.").arg(prefix))
         : note(tr("Evaluated after every sample's analysis. A number (<tt>maximum(db(v(out)))</tt>, "
                   "<tt>@r1[resistance]</tt>) is one value per sample, in the dataset as <tt>%1.NAME</tt> against "
-                  "<tt>%1.sample</tt> with its histogram <tt>%1.NAME_hist</tt> over <tt>%1.NAME_bins</tt>; a "
-                  "waveform (<tt>db(v(out))</tt> of an ac analysis) is a family of curves, one per sample. "
+                  "<tt>%1.sample</tt> - a Histogram diagram shows its distribution; a waveform (<tt>db(v(out))</tt> of an ac analysis) is a family of curves, one per sample. "
                   "A complex value is recorded as its magnitude.").arg(prefix));
     a_tabs->addTab(tablePage(a_records, addRecordButton, removeRecordButton, recordNote), tr("Values"));
     connect(addRecordButton, &QPushButton::clicked, this, [this] { addRecord(); });

@@ -136,9 +136,8 @@ QList<RawPlot> readRaw(const QString& file);
 /// Whether \a file (a name of the outputs list) is one of these results.
 bool isResultFile(const QString& file);
 /// The Qucs dataset blocks of the result \a file in \a workdir: every
-/// variable under the component's name ("ngmontecarlo1.gain"); a Monte
-/// Carlo's scalars also as a histogram ("..._hist" over "..._bins").
-/// Empty for a file that holds none (the waveforms of corners come with
+/// variable under the component's name ("ngmontecarlo1.gain"). Empty for
+/// a file that holds none (the waveforms of corners come with
 /// the corners' own file).
 QString datasetBlocks(const QString& workdir, const QString& file);
 

@@ -247,6 +247,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Edit Diagram Properties → Properties → Legend*. Off by default; the
   position is saved with the diagram, and files without it load as before
   (upstream #1719).
+- **Histogram diagram** (*diagrams → Histogram*): each graph's values -
+  a Monte Carlo's samples, or every point of any variable - counted into
+  bins and drawn as bars in the graph's colour, several graphs over each
+  other on the same bins. The bins cover the values or the x axis'
+  manual limits, their number automatic (by the spread of the values,
+  Freedman-Diaconis) or set; the height a count, a percentage or a
+  probability density. The normal distribution of the same mean and
+  deviation can be drawn over the bars, a box gives each graph's number,
+  mean and deviation, and a lower and an upper limit are drawn as lines
+  with the share of values between them - for a Monte Carlo, the yield.
+  Grid, notation, legend, zoom and the cursor readout are the Cartesian
+  diagram's; the settings are in its *Properties* tab.
 - **Six number notations for a diagram's axes** (*Properties* of a
   diagram, *Number notation* and *Decimal places*): automatic (what
   "scientific" was: decimal, with an exponent for large and small
@@ -397,9 +409,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   drawing the circuit's random values anew each time (`agauss()`,
   `aunif()` in a `.PARAM` or a component's value, and optionally the
   Verilog-A models' declared statistics). It records the values you
-  name: a number per sample lands in the dataset against the sample,
-  with its histogram (`NAME_hist` over `NAME_bins`), and a waveform as a
-  family of curves, one per sample. Specs with limits give a yield and
+  name: a number per sample lands in the dataset against the sample (a
+  Histogram diagram shows its distribution), and a waveform as a family
+  of curves, one per sample. Specs with limits give a yield and
   its 95% confidence interval in the status log and the dataset.
   *simulations → ngspice corners* runs the analysis at every process
   corner the Verilog-A models declare (`(* corner="ss=+10%, ff=-10%" *)`),
@@ -410,8 +422,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   component's name in the dataset (`ngmontecarlo1.gain`,
   `ngcorners1.v(out)`). Example: *NGspice features →
   RC_lowpass_montecarlo*: 200 samples of an RC low-pass with 5% parts,
-  the family of gain curves, the histogram of the corner frequency and
-  its yield against ±10%.
+  the family of gain curves, the histogram of the corner frequency with
+  its normal fit and the ±10% limits, and the yield.
 - **Find in a schematic, and find and replace across the project**:
   *Edit → Find* (Ctrl+F) in a schematic opens a find bar under the
   pane — type a component's name, a net label or a value and the first
