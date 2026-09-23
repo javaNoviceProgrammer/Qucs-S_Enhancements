@@ -875,7 +875,7 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
     for (Diagram* diagram : *a_Diagrams) {
         // BUG: Obtaining the diagram type by name is marked as a bug elsewhere (to be solved separately).
         // TODO: Currently only rectangular diagrams are supported.
-        if (diagram->getSelected(xpos, ypos) && diagram->Name == "Rect") {
+        if (diagram->getSelected(xpos, ypos) && (diagram->Name == "Rect" || diagram->Name == "Histogram")) {
             bool hasY1 = false, hasY2 = false;
             for (auto graph: diagram->Graphs) {
                 hasY1 |= graph->yAxisNo == 0;

@@ -25,6 +25,8 @@
 #include "misc.h"
 #include "qucs.h"
 #include "rect3ddiagram.h"
+#include "histogramdiagram.h"
+#include "valuereading.h"
 #include "schematic.h"
 #include "settings.h"
 
@@ -150,6 +152,8 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   } else if (Diag->Name == "Rect3D") {
     NameY = tr("y-Axis");
     NameZ = tr("z-Axis");
+  } else if (Diag->Name == "Histogram") {
+    NameY = tr("y-Axis");
   }
 
   all = new QVBoxLayout(this); // to provide necessary size
@@ -455,7 +459,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     gp->addWidget(ylLabel, Row, 1);
     Row++;
 
-    if ((Diag->Name != "Smith") && (Diag->Name != "Polar")) {
+    if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram")) {
       gp->addWidget(new QLabel(NameZ + " " + tr("Label:"), Tab2), Row, 0);
       yrLabel = new QLineEdit(Tab2);
       yrLabel->setValidator(Validator);
@@ -541,6 +545,49 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     LegendBox->setCurrentIndex(Diag->legendPos);
     gp->addWidget(LegendBox, Row, 1);
     Row++;
+
+    // A histogram: its bins and what goes with them.
+    if (auto *hist = dynamic_cast<HistogramDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Histogram"), Tab2);
+      QGridLayout *hl = new QGridLayout(box);
+      hl->addWidget(new QLabel(tr("Bins:")), 0, 0);
+      HistBins = new QSpinBox();
+      HistBins->setRange(0, 1000);
+      HistBins->setSpecialValueText(tr("automatic"));   // 0: Freedman-Diaconis
+      HistBins->setValue(hist->bins);
+      HistBins->setToolTip(tr("The number of bins over the values (or the x-axis' manual limits); "
+                              "automatic: by the spread of the values (Freedman-Diaconis)"));
+      hl->addWidget(HistBins, 0, 1);
+      hl->addWidget(new QLabel(tr("Height:")), 1, 0);
+      HistHeight = new QComboBox();
+      HistHeight->addItem(tr("count"));
+      HistHeight->addItem(tr("percent"));
+      HistHeight->addItem(tr("probability density"));
+      HistHeight->setCurrentIndex(hist->height);
+      hl->addWidget(HistHeight, 1, 1);
+      HistFit = new QCheckBox(tr("normal distribution of the same mean and deviation"));
+      HistFit->setChecked(hist->normalFit);
+      hl->addWidget(HistFit, 2, 0, 1, 2);
+      HistStats = new QCheckBox(tr("statistics: number, mean and deviation"));
+      HistStats->setChecked(hist->statistics);
+      hl->addWidget(HistStats, 3, 0, 1, 2);
+      auto limitEdit = [](double value) {
+        auto *e = new QLineEdit(std::isfinite(value) ? misc::num2str(value, -1, QString()) : QString());
+        e->setPlaceholderText(tr("none"));
+        return e;
+      };
+      hl->addWidget(new QLabel(tr("Lower limit:")), 4, 0);
+      HistLower = limitEdit(hist->lowerLimit);
+      hl->addWidget(HistLower, 4, 1);
+      hl->addWidget(new QLabel(tr("Upper limit:")), 5, 0);
+      HistUpper = limitEdit(hist->upperLimit);
+      hl->addWidget(HistUpper, 5, 1);
+      HistLower->setToolTip(tr("A line at a spec limit, and the share of the values between the two "
+                               "in the statistics (1.432k, 2e-3)"));
+      HistUpper->setToolTip(HistLower->toolTip());
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
 
     // ...........................................................
     xLabel->setText(Diag->xAxis.Label);
@@ -874,11 +921,11 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     stopZ->setText(QString::number(val_stopZ));
 
     if ((Diag->Name == "Smith") || (Diag->Name == "ySmith") ||
-        (Diag->Name == "Polar")) {
+        (Diag->Name == "Polar") || (Diag->Name == "Histogram")) {
       axisZ->setEnabled(false);
     }
     if (Diag->Name.left(4) != "Rect") // cartesian 2D and 3D
-      if (Diag->Name != "Curve") {
+      if (Diag->Name != "Curve" && Diag->Name != "Histogram") {
         axisX->setEnabled(false);
         startY->setEnabled(false);
         startZ->setEnabled(false);
@@ -1497,6 +1544,26 @@ void DiagramDialog::slotApply() {
       changed = true;
     }
 
+    if (auto *hist = dynamic_cast<HistogramDiagram *>(Diag); hist && HistBins) {
+      auto limitOf = [](const QLineEdit *e) {
+        const qucs_s::units::Reading r = qucs_s::units::read(e->text());
+        return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
+      };
+      auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
+      const double lower = limitOf(HistLower), upper = limitOf(HistUpper);
+      if (hist->bins != HistBins->value() || hist->height != HistHeight->currentIndex()
+          || hist->normalFit != HistFit->isChecked() || hist->statistics != HistStats->isChecked()
+          || !same(hist->lowerLimit, lower) || !same(hist->upperLimit, upper)) {
+        hist->bins = HistBins->value();
+        hist->height = HistHeight->currentIndex();
+        hist->normalFit = HistFit->isChecked();
+        hist->statistics = HistStats->isChecked();
+        hist->lowerLimit = lower;
+        hist->upperLimit = upper;
+        changed = true;
+      }
+    }
+
     if ((Diag->Name.left(4) == "Rect") || (Diag->Name == "Curve")) {
       auto yUnit = Diag->yAxis.Units;
       if (yUnit != LogUnitsY->currentIndex()) {
@@ -1530,7 +1597,7 @@ void DiagramDialog::slotApply() {
             (Qt::PenStyle)(GridStyleBox->currentIndex() + 1));
         changed = true;
       }
-    if ((Diag->Name != "Smith") && (Diag->Name != "Polar")) {
+    if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram")) {
       if (Diag->zAxis.Label.isEmpty())
         Diag->zAxis.Label = ""; // can be not 0 and empty!
       if (yrLabel->text().isEmpty())

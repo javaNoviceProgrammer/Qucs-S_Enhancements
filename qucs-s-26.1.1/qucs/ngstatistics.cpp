@@ -208,26 +208,6 @@ void indep(QTextStream& s, const QString& name, const QVector<double>& values)
     s << "</indep>\n";
 }
 
-// A histogram of the finite values of \a values: counts over bin centres,
-// about the square root of their number of bins.
-bool histogram(const QVector<double>& values, QVector<double>* centres, QVector<double>* counts)
-{
-    QVector<double> finite;
-    for (double v : values)
-        if (std::isfinite(v)) finite << v;
-    if (finite.size() < 2) return false;
-    const auto [lo, hi] = std::minmax_element(finite.begin(), finite.end());
-    const double low = *lo, high = *hi;
-    if (!(high > low)) return false;
-    const int bins = std::clamp(int(std::ceil(std::sqrt(double(finite.size())))), 3, 40);
-    const double width = (high - low) / bins;
-    centres->resize(bins);
-    counts->fill(0.0, bins);
-    for (int k = 0; k < bins; ++k) (*centres)[k] = low + (k + 0.5) * width;
-    for (double v : finite) (*counts)[std::min(bins - 1, int((v - low) / width))] += 1.0;
-    return true;
-}
-
 // Whether a vector of length L is the analysis scale a family is drawn
 // against: time, frequency, or a dc sweep's (v-sweep, temp-sweep, ...).
 bool scaleName(const QString& name)
@@ -296,14 +276,6 @@ QString monteCarloBlocks(const QString& path, const QString& prefix)
         s << "<dep " << datasetName(prefix, v.name) << ' ' << sampleName << ">\n";
         for (int i = 0; i < n; ++i) s << value(v, i) << '\n';
         s << "</dep>\n";
-        QVector<double> centres, counts;
-        if (v.im.isEmpty() && histogram(v.re.mid(0, n), &centres, &counts)) {
-            const QString bins = datasetName(prefix, v.name + QStringLiteral("_bins"));
-            indep(s, bins, centres);
-            s << "<dep " << datasetName(prefix, v.name + QStringLiteral("_hist")) << ' ' << bins << ">\n";
-            for (double c : counts) s << number(c) << '\n';
-            s << "</dep>\n";
-        }
     }
     return out;
 }

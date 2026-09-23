@@ -23,6 +23,7 @@
 #include "diagram.h"
 
 #include "rectdiagram.h"
+#include "histogramdiagram.h"
 #include "polardiagram.h"
 #include "smithdiagram.h"
 #include "tabdiagram.h"

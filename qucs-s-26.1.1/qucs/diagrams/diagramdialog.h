@@ -171,6 +171,12 @@ private:
   QLabel      *thicknessLabel, *precisionLabel;
   QComboBox   *PropertyBox, *GridStyleBox, *yAxisBox, *NotationBox, *LegendBox = nullptr;
   QSpinBox    *DecimalsBox = nullptr;   // places after the point of the numbers; -1: auto
+  // A histogram's own: the bins, what the heights are, the fitted normal
+  // distribution, the statistics box, the limits.
+  QSpinBox    *HistBins = nullptr;
+  QComboBox   *HistHeight = nullptr;
+  QCheckBox   *HistFit = nullptr, *HistStats = nullptr;
+  QLineEdit   *HistLower = nullptr, *HistUpper = nullptr;
   QPushButton *ColorButt, *GridColorButt;
   QSlider     *SliderRotX, *SliderRotY, *SliderRotZ;
   Cross3D     *DiagCross;

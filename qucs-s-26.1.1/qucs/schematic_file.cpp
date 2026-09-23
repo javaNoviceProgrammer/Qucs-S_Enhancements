@@ -973,6 +973,7 @@ bool Schematic::loadDiagrams(QTextStream *stream, std::list<Diagram*> *List)
     else if(cstr == "<Curve") d = new CurveDiagram();
     else if(cstr == "<Time") d = new TimingDiagram();
     else if(cstr == "<Truth") d = new TruthDiagram();
+    else if(cstr == "<Histogram") d = new HistogramDiagram();
     else {
       misc::reportError(QObject::tr("Format Error:\nUnknown diagram!"));
       return false;
