@@ -43,6 +43,14 @@ std::filesystem::path fsPath(const QString& path)
 #endif
 }
 
+// A folder as the file dialog gives it or a user types it - "…/amp_prj/",
+// "…//amp_prj", "C:\\x\\amp_prj" - spelled once: "/" separators, none at
+// the end, no "." or "..". A trailing slash made the folder's name empty.
+QString clean(const QString& path)
+{
+    return path.isEmpty() ? path : QDir::cleanPath(path);
+}
+
 bool isProjectName(const QString& name)
 {
     return name.size() > 4 && name.endsWith(QLatin1String("_prj"));
@@ -80,20 +88,23 @@ bool linkLike(const QFileInfo& info)
 
 bool isLink(const QString& path)
 {
-    return linkLike(QFileInfo(path));
+    // "…/link_prj/" is read through the link, as the folder it leads to.
+    return linkLike(QFileInfo(clean(path)));
 }
 
 QString linkTarget(const QString& path)
 {
-    const QFileInfo info(path);
+    const QFileInfo info(clean(path));
 #if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
     if (info.isJunction()) return info.junctionTarget();
 #endif
     return linkLike(info) ? info.symLinkTarget() : QString();
 }
 
-Result check(const QString& source, const QString& workspace, const QString& name)
+Result check(const QString& sourceGiven, const QString& workspaceGiven, const QString& name)
 {
+    const QString source = clean(sourceGiven);
+    const QString workspace = clean(workspaceGiven);
     Result r;
     r.status = Result::Invalid;
     const QFileInfo from(source);
@@ -136,8 +147,10 @@ Result check(const QString& source, const QString& workspace, const QString& nam
     return r;
 }
 
-Result importProject(const QString& source, const QString& workspace, const QString& name)
+Result importProject(const QString& sourceGiven, const QString& workspaceGiven, const QString& name)
 {
+    const QString source = clean(sourceGiven);
+    const QString workspace = clean(workspaceGiven);
     Result r = check(source, workspace, name);
     if (r.status != Result::Done) return r;
     std::error_code ec;
@@ -155,8 +168,10 @@ Result importProject(const QString& source, const QString& workspace, const QStr
     return r;
 }
 
-Result linkProject(const QString& source, const QString& workspace, const QString& name)
+Result linkProject(const QString& sourceGiven, const QString& workspaceGiven, const QString& name)
 {
+    const QString source = clean(sourceGiven);
+    const QString workspace = clean(workspaceGiven);
     Result r = check(source, workspace, name);
     if (r.status != Result::Done) return r;
     const QString target = QFileInfo(source).canonicalFilePath();
@@ -197,8 +212,9 @@ QString freeName(const QString& workspace, const QString& name)
     return QString();
 }
 
-bool removeLink(const QString& path, QString* error)
+bool removeLink(const QString& pathGiven, QString* error)
 {
+    const QString path = clean(pathGiven);   // unlink("…/link_prj/") fails
     if (!isLink(path)) {
         if (error) *error = tr("%1 is not a link.").arg(shown(path));
         return false;
