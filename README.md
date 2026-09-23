@@ -389,6 +389,29 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   has ngspice's verdict and the values found become the knobs' initial
   values. Example: *NGspice features → LC_lowpass_ngopt* fits the
   low-pass to a Butterworth response in 39 evaluations.
+- **NgMonteCarlo and NgCorners: ngspice's own statistical loops as
+  components**: for the same ngspice builds, which have the `montecarlo`
+  and `corners` commands. *simulations → ngspice Monte Carlo* runs an
+  analysis (a simulation component of the schematic, or an ngspice
+  command) for N samples - plain or Latin hypercube, with a seed -
+  drawing the circuit's random values anew each time (`agauss()`,
+  `aunif()` in a `.PARAM` or a component's value, and optionally the
+  Verilog-A models' declared statistics). It records the values you
+  name: a number per sample lands in the dataset against the sample,
+  with its histogram (`NAME_hist` over `NAME_bins`), and a waveform as a
+  family of curves, one per sample. Specs with limits give a yield and
+  its 95% confidence interval in the status log and the dataset.
+  *simulations → ngspice corners* runs the analysis at every process
+  corner the Verilog-A models declare (`(* corner="ss=+10%, ff=-10%" *)`),
+  or at the ones listed, the nominal first: the values you name per
+  corner, and the voltages and currents at every corner as families,
+  or instead a Monte Carlo with a yield at each corner. The status log
+  names the corners with their values. Everything is under the
+  component's name in the dataset (`ngmontecarlo1.gain`,
+  `ngcorners1.v(out)`). Example: *NGspice features →
+  RC_lowpass_montecarlo*: 200 samples of an RC low-pass with 5% parts,
+  the family of gain curves, the histogram of the corner frequency and
+  its yield against ±10%.
 - **Find in a schematic, and find and replace across the project**:
   *Edit → Find* (Ctrl+F) in a schematic opens a find bar under the
   pane — type a component's name, a net label or a value and the first

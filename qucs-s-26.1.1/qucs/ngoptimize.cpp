@@ -17,6 +17,7 @@
 #include <cmath>
 
 #include "components/component.h"
+#include "ngstatistics.h"
 #include "schematic.h"
 #include "valuereading.h"
 
@@ -176,7 +177,8 @@ QString analysisCommand(const Schematic* schematic, const QString& analysis)
     const QString a = analysis.trimmed();
     if (schematic != nullptr)
         for (Component* c : schematic->a_DocComps)
-            if (c->isSimulation && c->Model != QLatin1String(".NGOPT") && c->Name.compare(a, Qt::CaseInsensitive) == 0)
+            if (c->isSimulation && c->Model != QLatin1String(".NGOPT") && !qucs_s::ngstats::isStatistics(c)
+                && c->Name.compare(a, Qt::CaseInsensitive) == 0)
                 return c->getSpiceNetlist().trimmed().split(QLatin1Char('\n')).value(0).trimmed();
     return a;
 }

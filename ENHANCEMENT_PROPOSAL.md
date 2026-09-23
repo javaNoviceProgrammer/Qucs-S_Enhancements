@@ -1002,6 +1002,45 @@ existing demand.
   one), the dialog, the ERC, an ngspice without the command - and, with
   one that has it, the example and a divider whose instance knob is
   still at the optimum in the transient after the AC analysis.
+- *Done:* **NgMonteCarlo and NgCorners: ngspice's own `montecarlo` and
+  `corners` as components.** The same ngspice builds have a packaged
+  Monte Carlo (`montecarlo N -analysis ... -expr name=... -spec ...
+  -min/-max`, its E-151/552 and the `-lhs`/`-seed` policies of
+  E-535..538) and a corner loop over the corners Verilog-A models
+  declare (`corners [-list] [-nonominal] -analysis ... -output ...` or
+  `-mc N ...` per corner, E-654/655). The two components (*simulations*,
+  ngspice only, `.NGMONTECARLO`, `.NGCORNERS`) are those commands:
+  `qucs_s::ngstats` (`qucs/ngstatistics.*`) keeps them in the components'
+  properties (`Samples`, `Seed`, `LHS`, `ModelStats`, `Analysis`; for
+  corners also `Corners`, `Nominal`, `Waveforms`; then a
+  `Record=name|expression` or `Spec=metric|min|max` each), writes the
+  lines (a spec's metric is recorded too, as `spec1`, `spec2`, ...) and
+  the `.control` block `Ngspice::createNetlist` puts after the
+  simulations: between two echoed markers, a transient interpolated
+  onto its step (`option interp`) so every sample or corner has the same
+  points, `option osdimc` around the run for the models' statistics, the
+  `montecarlo<n>` or `corners<n>` plot written as ASCII into the Scratch
+  folder, and for corners each corner's own analysis plot - kept by the
+  command before its plot, walked back with `setplot previous` - appended
+  into a second file. A small raw reader (`dims=`, padded or not,
+  complex, several plots in a file) turns them into the dataset under
+  the component's name: `sample` or `corner` as the scale, a scalar per
+  sample with a histogram, a waveform family against the analysis scale
+  and the sample or the corner, the yield and counts. `SimulationRun`
+  puts ngspice's report (samples, yield, confidence interval,
+  violations, notes; the corners with their values) in the status log,
+  and says when an ngspice has no such command. `NgStatisticsDialog`:
+  the analysis, samples, seed, sampling and statistics, or the corners,
+  the nominal, the waveforms and a Monte Carlo per corner; tables of
+  values and specs; the command it makes, live. The ERC reports a
+  command that cannot be written. Example: `examples/ngspice/NGspice
+  features/RC_lowpass_montecarlo.sch`. `qucs/tests/test_ngstats` covers
+  the command lines and what they refuse, the components saved and
+  loaded, the raw reader, the dataset, the netlist, the log, the dialog,
+  the ERC, an ngspice without the commands - and, with one that has
+  them, the example (200 samples, the family, the histogram, the yield)
+  and the corners of a compiled Verilog-A resistor, their values and
+  waveforms and a Monte Carlo at two of them.
 - *Done (click, not hover):* **Net highlighting.** `Schematic::netOf(Wire*)`
   flood-fills the `Node`↔`Wire` graph and, in rounds, joins what labels
   of the same name and ground symbols connect; `selectedNet()` is the

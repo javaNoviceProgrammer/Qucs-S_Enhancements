@@ -19,6 +19,7 @@
 #include "ngspice.h"
 #include "osdiselection.h"
 #include "ngoptimize.h"
+#include "ngstatistics.h"
 #include "components/iprobe.h"
 #include "components/vprobe.h"
 #include "components/equation.h"
@@ -450,6 +451,25 @@ void Ngspice::createNetlist(
         spiceNetlist.append(reapply);
         spiceNetlist.append("\n");
         stream << spiceNetlist;
+    }
+
+    // NgMonteCarlo and NgCorners: ngspice's montecarlo and corners, after
+    // the simulations, each writing its results into files of its own.
+    a_statistics.clear();
+    QString saved;
+    for (const QString& nod : vars)
+        saved += nod.endsWith("#branch") ? QStringLiteral("i(%1) ").arg(nod.section('#', 0, 0))
+                                         : QStringLiteral("v(%1) ").arg(nod);
+    for (Component* pc : a_schematic->a_DocComps) {
+        if (!qucs_s::ngstats::isStatistics(pc) || pc->isActive != COMP_IS_ACTIVE) continue;
+        QString why;
+        const QString block = qucs_s::ngstats::controlBlock(pc, a_schematic, saved, &outputs, &why);
+        if (block.isEmpty()) {
+            stream << QStringLiteral("echo \"Error: %1: %2\"\n").arg(pc->Name, why.replace('"', '\''));
+            continue;
+        }
+        a_statistics.append(pc->Name);
+        stream << block << "destroy all\n" << "reset\n" << reapply << "\n";
     }
 
     stream << "exit\n"

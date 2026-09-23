@@ -21,6 +21,8 @@
 #include "components/componentdialog.h"
 #include "components/optimizedialog.h"
 #include "components/ngoptdialog.h"
+#include "components/ngstatisticsdialog.h"
+#include "ngstatistics.h"
 #include "components/spicedialog.h"
 #include "components/spicefile.h"
 #include "components/vacomponent.h"
@@ -1838,6 +1840,12 @@ void MouseActions::editElement(Schematic *Doc, QMouseEvent *Event)
             NgOptDialog *nd = new NgOptDialog(c, Doc);
             const int result = nd->exec();
             delete nd;
+            if (result != QDialog::Accepted)
+                break;
+        } else if (qucs_s::ngstats::isStatistics(c)) {
+            NgStatisticsDialog *sd = new NgStatisticsDialog(c, Doc);
+            const int result = sd->exec();
+            delete sd;
             if (result != QDialog::Accepted)
                 break;
         } else if (c->Model == "SPICEINIT") {

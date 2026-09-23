@@ -72,6 +72,8 @@
         <file>bitmaps/svg/tran.svg</file>
         <file>bitmaps/svg/optimize.svg</file>
         <file>bitmaps/svg/ngopt.svg</file>
+        <file>bitmaps/svg/ngmontecarlo.svg</file>
+        <file>bitmaps/svg/ngcorners.svg</file>
         <file>bitmaps/svg/sweep.svg</file>
         <file>bitmaps/svg/digi.svg</file>
         <file>bitmaps/svg/sparameter.svg</file>

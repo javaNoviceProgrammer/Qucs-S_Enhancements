@@ -555,6 +555,8 @@ void Module::registerModules (void) {
   //if (QucsSettings.DefaultSimulator == spicecompat::simQucsator)
       REGISTER_SIMULATION_1 (Optimize_Sim);
       REGISTER_SIMULATION_1 (NgOpt_Sim);   // ngspice's own optimize (ngspice only)
+      REGISTER_SIMULATION_1 (NgMonteCarlo_Sim);   // ngspice's own montecarlo (ngspice only)
+      REGISTER_SIMULATION_1 (NgCorners_Sim);      // ngspice's own corners (ngspice only)
   //if (QucsSettings.DefaultSimulator != spicecompat::simQucsator) {
       REGISTER_SIMULATION_1 (SpiceFourier);
       REGISTER_SIMULATION_1 (SpiceNoise);

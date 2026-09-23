@@ -24,6 +24,7 @@
 
 #include "abstractspicekernel.h"
 #include "oppoint.h"
+#include "ngstatistics.h"
 #include "misc.h"
 #include "main.h"
 #include "../paintings/id_text.h"
@@ -1328,6 +1329,12 @@ void AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
     QStringList indep_vars;
 
     for (const QString& ngspice_output_filename : a_output_files) { // For every simulation convert results to Qucs dataset
+        // NgMonteCarlo, NgCorners: results of their own shape (families
+        // over the sample or the corner), under the component's name.
+        if (qucs_s::ngstats::isResultFile(ngspice_output_filename)) {
+            ds_stream << qucs_s::ngstats::datasetBlocks(a_workdir, ngspice_output_filename);
+            continue;
+        }
         QList< QList<double> > sim_points;
         QStringList var_list, extra_vars;
         QString swp_var,swp_var2;
