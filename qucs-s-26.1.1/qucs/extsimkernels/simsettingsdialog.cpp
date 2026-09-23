@@ -128,6 +128,20 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
     gbp2->setLayout(top3);
 
     simulatorsLayout->addWidget(gbp2);
+
+    // What a simulation insists on before it starts.
+    QGroupBox *gbChecks = new QGroupBox(tr("Before a simulation"), simulatorsTab);
+    QVBoxLayout *checksLayout = new QVBoxLayout;
+    a_cbRequireGround = new QCheckBox(tr("A schematic must have a ground symbol"), gbChecks);
+    a_cbRequireGround->setObjectName(QStringLiteral("cbRequireGround"));
+    a_cbRequireGround->setChecked(QucsSettings.RequireGround);
+    a_cbRequireGround->setToolTip(
+        tr("On: a circuit without a ground symbol is not simulated, and Check Schematic calls it an error. "
+           "Off: it is simulated as it is - node 0 then comes from a net named 0 or from a component "
+           "(a SPICE netlist, a library part) that brings it - and Check Schematic only warns."));
+    checksLayout->addWidget(a_cbRequireGround);
+    gbChecks->setLayout(checksLayout);
+    simulatorsLayout->addWidget(gbChecks);
     simulatorsLayout->addStretch(1);
 
     // Tab 2: the simulation console - a dock, or the classic window.
@@ -185,6 +199,7 @@ void SimSettingsDialog::slotApply()
     qs.setItem<QString>("NgspiceParams", a_edtNgspiceSimParam->text());
     qs.setItem<QString>("XyceParams", a_edtXyceSimParam->text());
     qs.setItem<QString>("SpopusParams", a_edtSpopusSimParam->text());
+    QucsSettings.RequireGround = a_cbRequireGround->isChecked();
     QucsSettings.SimulationConsoleHost = a_rbConsoleLegacy->isChecked() ? tQucsSettings::SimConsoleLegacyWindow
                                        : a_rbConsoleWindow->isChecked() ? tQucsSettings::SimConsoleWindow
                                                                         : tQucsSettings::SimConsoleDock;

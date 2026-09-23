@@ -222,7 +222,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the schematic on the place. Every simulation runs the check first and
   brings the tab up when there are errors (the run goes ahead anyway; the
   simulator has the last word). Subcircuits (schematics with ports) are
-  not asked for a ground or a simulation. *Check Schematic and
+  not asked for a ground or a simulation. A ground symbol is required by
+  default; *Simulation → Simulators Settings → Before a simulation → A
+  schematic must have a ground symbol* turns that off: the circuit is
+  simulated as it is (node 0 from a net named `0` or a component that
+  brings it) and the check only warns. *Check Schematic and
   Subcircuits* runs it on the schematic in front and on every subcircuit
   it uses, at any depth (open documents as they are, the others from
   disk); a subcircuit's finding names its file and a click opens it

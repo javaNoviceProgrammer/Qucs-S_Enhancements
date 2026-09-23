@@ -61,6 +61,9 @@ private:
     QRadioButton *a_rbConsoleWindow;
     QRadioButton *a_rbConsoleLegacy;
 
+    // A ground symbol is required to simulate (QucsSettings.RequireGround).
+    QCheckBox *a_cbRequireGround;
+
 public:
     explicit SimSettingsDialog(QWidget *parent = 0);
 

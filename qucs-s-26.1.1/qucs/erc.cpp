@@ -214,8 +214,14 @@ QList<Issue> check(Schematic* doc)
     if (!port && !doc->a_DocComps.empty()) {
         const Component* first = *doc->a_DocComps.begin();
         const QPoint where(first->cx, first->cy);
-        if (!ground)
+        // An error unless the settings leave the ground to the user; then
+        // a warning (a net named 0 or a SPICE part may bring node 0).
+        if (!ground && QucsSettings.RequireGround)
             errors << Issue{Severity::Error, tr("no ground: the circuit has no reference node"), where, QString()};
+        else if (!ground)
+            warnings << Issue{Severity::Warning,
+                              tr("no ground symbol: node 0 comes only from a net named 0 or a component that brings it"),
+                              where, QString()};
         if (!simulation)
             warnings << Issue{Severity::Warning, tr("no simulation: no .AC, .TR, .DC, .SP, ... block"), where, QString()};
     }
