@@ -141,6 +141,8 @@ public:
 
   void paintElementsScheme(Schematic*);
   void rightPressMenu(Schematic*, QMouseEvent*, float, float);
+  // Fills ComponentMenu for a right click at (fX, fY), without showing it.
+  void fillContextMenu(Schematic*, float fX, float fY);
 
   // Transformation of moving elements
   void mirrorXMovingElements(Schematic*, bool doPaint=false);

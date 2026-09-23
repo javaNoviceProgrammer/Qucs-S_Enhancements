@@ -118,6 +118,11 @@ private slots:
     // check only warns; the choice is kept and the dialog sets it.
     void theGroundIsRequiredOnlyWhenTheSettingsSaySo()
     {
+        // The settings as they were for the other tests, whatever happens.
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
         Schematic doc(nullptr, broken);   // no ground
         QVERIFY(doc.load());
         GroundProbe<Ngspice> ngspice(&doc);
@@ -439,11 +444,11 @@ private slots:
             QVERIFY2(QFileInfo(i.file).fileName() == "top.sch", qPrintable(i.file + ": " + i.message));
 
         // The canvas menu has Export... on the empty canvas, not on a component.
+        // (The menu as a right click fills it; popping it up is Qt's part.)
         const auto menuAt = [&](const QPoint& model) {
-            QTest::mouseClick(doc->viewport(), Qt::RightButton, Qt::NoModifier, doc->modelToViewport(model));
+            app.view->fillContextMenu(doc, model.x(), model.y());
             QStringList texts;
             for (QAction* a : app.view->ComponentMenu->actions()) if (!a->isSeparator()) texts << a->text();
-            app.view->ComponentMenu->close();
             return texts;
         };
         QStringList onComponent = menuAt(QPoint(200, 200));   // SUB1
