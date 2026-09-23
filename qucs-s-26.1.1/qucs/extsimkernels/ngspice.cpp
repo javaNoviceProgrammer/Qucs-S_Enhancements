@@ -17,6 +17,7 @@
 
 
 #include "ngspice.h"
+#include "osdiselection.h"
 #include "ngoptimize.h"
 #include "components/iprobe.h"
 #include "components/vprobe.h"
@@ -67,6 +68,33 @@ Ngspice::Ngspice(Schematic* schematic, QObject *parent) :
 }
 
 /*!
+ * \brief Ngspice::osdiLoads The pre_osdi lines of the OSDI libraries
+ *        (compiled Verilog-A) the netlist needs: of the project's - its
+ *        folder and subfolders, as the Content panel lists them - those
+ *        that define a module a .model card of \a netlist, or of a file
+ *        it includes, names; one library for each module. Without a
+ *        project (the command line) none.
+ */
+QString Ngspice::osdiLoads(const QString& netlist) const
+{
+    if (QucsMain == nullptr || QucsMain->ProjName.isEmpty())
+        return QString();
+    QStringList files;
+    for (const QString& file : misc::projectFiles(QucsSettings.QucsWorkDir, {"*.osdi"}))
+        files << QucsSettings.QucsWorkDir.absoluteFilePath(file);
+    if (files.isEmpty())
+        return QString();
+    const QString base = QFileInfo(a_schematic->getDocName()).absolutePath();
+    QStringList notes;
+    QString out;
+    for (const QString& file : qucs_s::osdi::needed(files, qucs_s::osdi::usedModelTypes(netlist, base), &notes))
+        out += QStringLiteral("pre_osdi '%1'\n").arg(file);
+    for (const QString& note : notes)
+        out += QStringLiteral("* OSDI: %1\n").arg(note);
+    return out;
+}
+
+/*!
  * \brief Ngspice::createNetlist Output Ngspice-style netlist to text stream.
  *        Netlist contains sections necessary for Ngspice.
  * \param[out] stream QTextStream that associated with spice netlist file
@@ -91,12 +119,24 @@ void Ngspice::createNetlist(
     if (found && QucsSettings.DefaultSimulator != spicecompat::simSpiceOpus)
         stream<<QStringLiteral(".INCLUDE \"%1\"\n").arg(mathf_inc);
 
-    stream<<collectSpiceLibs(a_schematic); // collect libraries on the top of netlist
-    if(!prepareSpiceNetlist(stream)) return; // Unable to perform spice simulation
-    startNetlist(stream); // output .PARAM and components
+    const QString libraries = collectSpiceLibs(a_schematic); // collect libraries on the top of netlist
+    stream<<libraries;
+    // The subcircuits and components go through a string first: the OSDI
+    // libraries loaded are the ones its .model cards (and the libraries'
+    // cards) need.
+    QString body;
+    QTextStream bodyStream(&body);
+    const bool prepared = prepareSpiceNetlist(bodyStream);
+    if (prepared)
+        startNetlist(bodyStream); // output .PARAM and components
+    bodyStream.flush();
+    stream<<body;
+    if (!prepared) return; // Unable to perform spice simulation
+    const QString osdi = osdiLoads(libraries + body);
 
     if (a_DC_OP_only) {
         stream<<".control\n"  // Execute only DC OP analysis
+              <<osdi
               <<"set filetype=ascii\n" // Ignore all other simulations
               <<"op\n"
               <<"print all > spice4qucs.cir.dc_op\n";
@@ -120,17 +160,7 @@ void Ngspice::createNetlist(
 
     stream << "\n.control\n\n";          //execute simulations
 
-    if (QucsMain != nullptr) { // if not run from CLI
-        if (!QucsMain->ProjName.isEmpty()) {
-            // always load osdi from the project directory (and its
-            // subdirectories, which the Content panel lists as well)
-            const QStringList osdi_files = misc::projectFiles(QucsSettings.QucsWorkDir, {"*.osdi"});
-            for(const auto &file : osdi_files) {
-                QString abs_file = QucsSettings.QucsWorkDir.absoluteFilePath(file);
-                stream<<QStringLiteral("pre_osdi '%1'\n").arg(abs_file);
-            }
-        }
-    }
+    stream<<osdi;
 
     // NgOpt: ngspice's optimize, ahead of the simulations - it leaves the
     // circuit at the optimum, so they show it. A .param it changed stays
