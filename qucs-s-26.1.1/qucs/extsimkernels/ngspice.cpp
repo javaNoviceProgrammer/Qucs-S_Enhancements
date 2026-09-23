@@ -94,6 +94,31 @@ QString Ngspice::osdiLoads(const QString& netlist) const
     return out;
 }
 
+QList<qucs_s::osdi::Build> Ngspice::verilogABuilds()
+{
+    if (QucsMain == nullptr || QucsMain->ProjName.isEmpty())
+        return {};
+    const QDir project(QucsSettings.QucsWorkDir);
+    QStringList sources, libraries;
+    for (const QString& file : misc::projectFiles(project, {"*.va"}))
+        sources << project.absoluteFilePath(file);
+    if (sources.isEmpty())
+        return {};
+    for (const QString& file : misc::projectFiles(project, {"*.osdi"}))
+        libraries << project.absoluteFilePath(file);
+    // The netlist the simulation will write, for the modules it uses.
+    const QString output = a_output;   // what a broken netlist adds is the simulation's to say
+    QString netlist;
+    {
+        QTextStream stream(&netlist);
+        QStringList simulations, vars, outputs;
+        createNetlist(stream, simulations, vars, outputs);
+    }
+    a_output = output;
+    const QString base = QFileInfo(a_schematic->getDocName()).absolutePath();
+    return qucs_s::osdi::builds(sources, libraries, qucs_s::osdi::usedModelTypes(netlist, base));
+}
+
 /*!
  * \brief Ngspice::createNetlist Output Ngspice-style netlist to text stream.
  *        Netlist contains sections necessary for Ngspice.

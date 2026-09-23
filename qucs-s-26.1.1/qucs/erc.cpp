@@ -20,8 +20,13 @@
 #include "extsimkernels/spicecompat.h"
 #include "optimization.h"
 #include "ngoptimize.h"
+#include "osdiselection.h"
+#include "misc.h"
+#include "qucs.h"
+#include "components/vacomponent.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QHash>
 #include <QSet>
 #include <QStringList>
@@ -63,6 +68,25 @@ QList<Issue> check(Schematic* doc)
     // (VHDL/Verilog) flow whatever the simulator setting says.
     const int simulator = doc->isDigitalCircuit() ? int(spicecompat::simNotSpecified) : QucsSettings.DefaultSimulator;
     QHash<QString, const Component*> byName;
+    // The Verilog-A libraries and sources of the open project, read when a
+    // Verilog-A component asks: ngspice gets its modules from them.
+    QStringList vaLibraries, vaSources;
+    bool vaListed = false;
+    const auto moduleInProject = [&](const QString& module) {
+        if (QucsMain == nullptr || QucsMain->ProjName.isEmpty()) return true;   // nowhere to look
+        if (!vaListed) {
+            const QDir project(QucsSettings.QucsWorkDir);
+            for (const QString& file : misc::projectFiles(project, {"*.osdi"}))
+                vaLibraries << project.absoluteFilePath(file);
+            for (const QString& file : misc::projectFiles(project, {"*.va"}))
+                vaSources << project.absoluteFilePath(file);
+            vaListed = true;
+        }
+        return std::any_of(vaLibraries.cbegin(), vaLibraries.cend(),
+                           [&](const QString& file) { return osdi::defines(file, module); })
+            || std::any_of(vaSources.cbegin(), vaSources.cend(),
+                           [&](const QString& file) { return osdi::sourceDefines(file, module); });
+    };
     for (Component* c : doc->a_DocComps) {
         if (!inCircuit(c)) continue;
         if (isGround(c)) ground = true;
@@ -120,6 +144,14 @@ QList<Issue> check(Schematic* doc)
             if (!ngopt::commandLine(ngopt::Command::read(c), doc, &line, &why))
                 errors << Issue{Severity::Error, tr("%1: %2").arg(c->Name, why), QPoint(c->cx, c->cy), c->Name};
         }
+        // A Verilog-A component: its module in a library of the project, or
+        // in a source compiled before the simulation.
+        if (simulator == spicecompat::simNgspice && dynamic_cast<const vacomponent*>(c) != nullptr
+            && !moduleInProject(c->Model))
+            warnings << Issue{Severity::Warning,
+                              tr("%1: the Verilog-A module %2 is in no library (.osdi) or source (.va) of the project")
+                                  .arg(c->Name, c->Model),
+                              QPoint(c->cx, c->cy), c->Name};
         // A winding refers to its magnetic core by name.
         if (c->Model == QLatin1String("WINDING")) {
             const QString core = c->getProperty("CORE") ? c->getProperty("CORE")->Value : QString();

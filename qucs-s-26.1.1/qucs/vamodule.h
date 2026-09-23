@@ -51,6 +51,10 @@ bool osdiModules(const QString& osdiFile, QStringList* names, QString* error = n
 /// from (0:inf);" - comments left out, local parameters too.
 VerilogModule readSource(const QString& source, const QString& wanted = QString());
 
+/// The names of the modules in Verilog-A source, as written, in order
+/// (comments left out).
+QStringList sourceModules(const QString& source);
+
 /// The component's properties (NAME_props.json): the module's parameters,
 /// each with its description and, in brackets, its units.
 QJsonObject propsObject(const VerilogModule& module);

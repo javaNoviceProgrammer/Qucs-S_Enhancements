@@ -24,6 +24,7 @@
 #include <QDataStream>
 #include "schematic.h"
 #include "abstractspicekernel.h"
+#include "osdiselection.h"
 
 /*!
   \file ngspice.h
@@ -55,6 +56,11 @@ public:
     void SaveNetlist(QString filename, bool netlist2Console);
     void setSimulatorCmd(QString cmd);
     void setSimulatorParameters(QString parameters);
+    /// The Verilog-A sources of the open project to compile before this
+    /// schematic is simulated: those that define a module its netlist uses
+    /// and whose library is missing or older (osdi::builds()). None
+    /// without a project.
+    QList<qucs_s::osdi::Build> verilogABuilds();
     /// The NgOpt components whose optimize the last netlist runs, in
     /// order: their results come in this order in the output.
     const QStringList& optimizations() const { return a_optimizations; }
