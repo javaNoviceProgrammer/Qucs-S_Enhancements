@@ -670,6 +670,7 @@ void QucsApp::initView()
 
   messageDock = new MessageDock(this);
   connect(messageDock, &MessageDock::locateRequested, this, &QucsApp::slotLocateProblem);
+  connect(messageDock, &MessageDock::componentRequested, this, &QucsApp::slotShowOperatingPointComponent);
   simConsole = new SimulationConsole(this);
   connect(simConsole, &SimulationConsole::saveNetlistRequested, this, &QucsApp::slotSaveNetlist);
 
@@ -4569,6 +4570,11 @@ void QucsApp::slotAfterSpiceSimulation(SimulationRun *run)
             }
         }
     }
+
+    // A DC bias run: the operating point of its devices on the tab (not
+    // brought up - the labels on the schematic are what was asked for).
+    if (run->wasSimulated() && sch->getShowBias() > 0)
+        messageDock->showOperatingPoint(sch, false);
 
     sch->reloadGraphs();
     sch->viewport()->update();

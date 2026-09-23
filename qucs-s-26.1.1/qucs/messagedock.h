@@ -27,6 +27,9 @@
 class QDockWidget;
 class QTabWidget;
 class QPlainTextEdit;
+class QTreeWidget;
+class QTreeWidgetItem;
+class QLineEdit;
 
 /*!
  * \file messagedock.h
@@ -59,6 +62,23 @@ public:
   const QList<qucs_s::erc::Issue>& issues() const { return a_issues; }
 
   /*!
+   * \brief operatingPoint lists the operating point of every device after
+   * a DC bias run (oppoint.h): a component, its device(s), their
+   * parameters; a click on a component locates it in the schematic.
+   */
+  QTreeWidget *operatingPoint;
+  QLineEdit *operatingPointFilter;
+  /// Shows the operating point of \a doc's last DC bias run on the
+  /// Operating Point tab, and brings the tab up when asked to.
+  void showOperatingPoint(Schematic* doc, bool raise);
+  Schematic* operatingPointDocument() const;
+  /// The Operating Point tab in front, the dock shown.
+  void raiseOperatingPoint();
+  /// The rows the filter leaves, as text: component, device, parameter,
+  /// value, unit - tab-separated, one parameter a line.
+  QString operatingPointText() const;
+
+  /*!
    * \brief admsOutput holds the make output of running admsXml
    */
   QPlainTextEdit *admsOutput;
@@ -72,6 +92,9 @@ public:
 signals:
   /// A row of the Problems tab was chosen: issues()[index] is to be shown.
   void locateRequested(int index);
+  /// A row of the Operating Point tab was chosen: the component of that
+  /// name in operatingPointDocument() is to be shown.
+  void componentRequested(const QString &component);
 
 
 private slots:
@@ -79,9 +102,12 @@ private slots:
   void slotCppChanged();
   void slotCursor();
   void slotProblemChosen();
+  void slotFilterOperatingPoint();
 
 private:
   QPointer<Schematic> a_problemsDoc;
+  QPointer<Schematic> a_operatingPointDoc;
+  int a_operatingPointTab = -1;
   QList<qucs_s::erc::Issue> a_issues;
 
 };

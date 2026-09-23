@@ -71,6 +71,7 @@ qucs_add_test(test_value_reading)
 qucs_add_test(test_grid_setting)
 qucs_add_test(test_graph_style)
 qucs_add_test(test_system_open)
+qucs_add_test(test_operating_point)
 target_compile_definitions(test_system_open PRIVATE QUCS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 if(APPLE)
   target_compile_definitions(test_system_open PRIVATE

@@ -24,6 +24,7 @@
 #include "misc.h"
 #include "octave_window.h"
 #include "qucs.h"
+#include "messagedock.h"
 #include "simulationconsole.h"
 
 #include <QAction>
@@ -1119,6 +1120,14 @@ void QucsApp::initMenuBar() {
   viewPython->setStatusTip(tr("Shows/hides the Python Shell dock"));
   connect(viewPython, &QAction::triggered, this, [this](bool on) { if (on) pythonDock->raise(); });
   viewMenu->addAction(viewPython);
+  // The Operating Point tab of the message dock (a DC bias run fills it).
+  QAction *viewOperatingPoint = new QAction(tr("&Operating Point"), this);
+  viewOperatingPoint->setObjectName("viewOperatingPoint");
+  viewOperatingPoint->setStatusTip(tr("Shows the operating point of every device after the last DC bias run"));
+  viewOperatingPoint->setWhatsThis(tr("Operating Point\n\nThe operating point of every device - gm, vth, id, "
+                                      "capacitances... - after the last DC bias run with ngspice"));
+  connect(viewOperatingPoint, &QAction::triggered, this, [this] { messageDock->raiseOperatingPoint(); });
+  viewMenu->addAction(viewOperatingPoint);
   viewMenu->addSeparator();
   QMenu *panesMenu = viewMenu->addMenu(tr("&Panes"));
   panesMenu->addAction(splitPaneRight);

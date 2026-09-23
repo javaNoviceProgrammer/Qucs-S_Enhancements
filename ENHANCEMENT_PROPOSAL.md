@@ -722,6 +722,35 @@ existing demand.
   on a symbol or its text 4135 -> 2200, crossed by a wire 3950 -> 478,
   no schematic worse) and the drawing. A real ngspice DC bias of
   `audio_amp.sch` (94 labels) was checked by eye.
+- *Done:* **Device operating points** (#789, where dumping `@D1[cd]`
+  and the like was asked for). The DC bias run (`a_DC_OP_only`) now
+  ends with `show all > spice4qucs.cir.dc_op_dev` after the node values
+  (ngspice only; SPICE OPUS shares the kernel class). `qucs_s::oppoint`
+  (`qucs/oppoint.*`) reads it - a block per device type ("BJT: ...",
+  an OSDI module's name), a `device` row naming up to three devices, a
+  `model` row, a row per parameter; "-" and rows of the wrong width are
+  left out - and gives each device to its component by the netlist's
+  naming (the name, or the SPICE letter and the name: `T1` -> `mt1`,
+  `Pr1` -> `vpr1`, `SUB1` -> `xsub1`; `m.xsub1.m9` is M9 inside SUB1).
+  `unitOf()` knows the quantities by name and first letter (A, V, S, F,
+  C, W, Ohm; `*mod` flags, `mult_*`, geometry and counts have none),
+  `isOperatingQuantity()` separates them from the set-up. The device
+  file is read only if it is not older than the node file of the same
+  run (the Scratch folder keeps an earlier run's). `Schematic` keeps the
+  devices; its viewport's tooltip, while the DC bias is shown, is the
+  operating point of the component under the mouse (nonzero operating
+  quantities, 24 rows at most, rounding zeros like an off transistor's
+  1e-134 A left out). The message dock's *Operating Point* tab
+  (*View -> Operating Point*) lists all of it: components with a
+  semiconductor or OSDI device first, then the circuit elements, in
+  name order counting numbers; a filter that keeps what matches and
+  what is above or below it; *Copy* as tab-separated
+  component/device/parameter/value/unit; a click selects and centres
+  the component. `qucs/tests/test_operating_point` covers the parser on
+  ngspice 46 output (BJT, diode, Mos1 with a subcircuit device, resistor,
+  sources, an OSDI module), the attribution, units, values, the tooltip,
+  the schematic and the tab, and a real DC bias run of two shipped
+  examples when ngspice is installed (it is on the Linux CI job).
 - *Done (click, not hover):* **Net highlighting.** `Schematic::netOf(Wire*)`
   flood-fills the `Node`↔`Wire` graph and, in rounds, joins what labels
   of the same name and ground symbols connect; `selectedNet()` is the

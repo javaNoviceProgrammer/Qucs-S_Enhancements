@@ -98,8 +98,12 @@ void Ngspice::createNetlist(
         stream<<".control\n"  // Execute only DC OP analysis
               <<"set filetype=ascii\n" // Ignore all other simulations
               <<"op\n"
-              <<"print all > spice4qucs.cir.dc_op\n"
-              <<"destroy all\n"
+              <<"print all > spice4qucs.cir.dc_op\n";
+        // The operating point of every device - gm, vth, id, cd, ... - for
+        // the Operating Point tab and the components' tooltips (oppoint.h).
+        if (QucsSettings.DefaultSimulator == spicecompat::simNgspice)
+            stream<<"show all > spice4qucs.cir.dc_op_dev\n";
+        stream<<"destroy all\n"
               <<"quit\n"
               <<".endc\n"
               <<".end\n";

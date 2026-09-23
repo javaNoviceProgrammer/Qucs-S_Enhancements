@@ -31,6 +31,7 @@
 #include "wire_planner.h"
 #include "schematic_selection.h"
 #include "biaslabels.h"
+#include "oppoint.h"
 
 #include "qt3_compat/q3scrollview.h"
 #include <QVector>
@@ -380,6 +381,8 @@ protected:
   void contentsDragLeaveEvent(QDragLeaveEvent*)override;
   void contentsDragMoveEvent(QDragMoveEvent*)override;
   void contentsNativeGestureZoomEvent( QNativeGestureEvent* ) override;
+  /// The canvas's tooltips (operatingPointTooltip()).
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
 protected slots:
   void slotScrollUp();
@@ -501,7 +504,19 @@ public:
     QList<qucs_s::bias::Placement> placements;
   };
   BiasLabels layoutBiasLabels(const QFontMetrics& metrics) const;
+
+  /// The operating point of every device found by the last DC bias run
+  /// (ngspice's "show all", oppoint.h): the Operating Point tab lists it,
+  /// and a component's tooltip shows its own while the DC bias is shown.
+  void setOperatingPoint(const QList<qucs_s::oppoint::Device>& devices) { a_operatingPoint = devices; }
+  const QList<qucs_s::oppoint::Device>& operatingPoint() const { return a_operatingPoint; }
+  /// The devices of a component: itself, or those inside a subcircuit.
+  QList<const qucs_s::oppoint::Device*> operatingPointOf(const QString& component) const;
+  /// The tooltip for the point \a viewportPos of the canvas: the operating
+  /// point of the component there, if the DC bias is shown and it has one.
+  QString operatingPointTooltip(const QPoint& viewportPos);
 private:
+  QList<qucs_s::oppoint::Device> a_operatingPoint;
   void drawNetHighlight(QPainter* painter, const Net& net);
   void drawDcBiasPoints(QPainter* painter);
   void drawPostPaintEvents(QPainter* painter);
