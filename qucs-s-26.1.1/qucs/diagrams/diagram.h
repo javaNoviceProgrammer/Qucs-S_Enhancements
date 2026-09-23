@@ -20,6 +20,7 @@
 
 #include "graph.h"
 #include "element.h"
+#include "numberformat.h"
 
 #include <QTextStream>
 #include <QList>
@@ -154,7 +155,17 @@ public:
   int x3, y3;
   Axis  xAxis, yAxis, zAxis;   // axes (x, y left, y right)
   int State;  // to remember which resize area was touched
-  bool engineeringNotation;
+  // How the numbers on the axes, in the markers and in the cursor
+  // readout are written, and with how many places after the point (-1:
+  // as many as they need).
+  qucs_s::numberformat::Notation notation;
+  int notationDecimals;
+  /// \a value as this diagram writes numbers; \a step, the distance
+  /// between the labels of an axis, lines decimal labels up.
+  QString numberText(double value, double step = 0.0) const
+  {
+      return qucs_s::numberformat::format(value, notation, notationDecimals, step);
+  }
 
   /// Where the legend (a colour/style sample and the variable of every
   /// graph) is drawn: LegendOff, or a corner of the diagram.
@@ -162,6 +173,10 @@ public:
                         LegendBottomLeft, LegendBottomRight };
   int legendPos;
   void paintLegend(QPainter* painter);
+
+  // Whether updateGraphData() has laid the diagram out since it was made:
+  // until then its axes and labels are the constructor's defaults.
+  bool laidOut = false;
 
   bool hideLines;       // for "Rect3D": hide invisible lines ?
   int rotX, rotY, rotZ; // for "Rect3D": rotation around x, y and z axis

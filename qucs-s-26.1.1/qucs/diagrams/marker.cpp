@@ -239,14 +239,17 @@ void Marker::createText()
   pz[1] = VarDep[1];
 
   // now actually create text.
-  bool engNotation = pGraph->parentDiagram()->engineeringNotation;
+  // In the diagram's notation; automatic keeps the marker's precision as
+  // significant digits, the others take it as places after the point.
+  using qucs_s::numberformat::Notation;
+  const Notation notation = pGraph->parentDiagram()->notation;
+  const auto number = [&](double v) {
+    return notation == Notation::Automatic ? QString::number(v, 'g', Precision)
+                                           : qucs_s::numberformat::format(v, notation, Precision);
+  };
   for(unsigned ii=0; (pD=pGraph->axis(ii)); ++ii) {
     Text += pD->Var + ": ";
-    if (engNotation) {
-        Text += misc::num2str(VarPos[ii],Precision) + "\n";
-    } else {
-        Text += QString::number(VarPos[ii],'g',Precision) + "\n";
-    }
+    Text += number(VarPos[ii]) + "\n";
   }
 
   if ( pGraph->Var.contains('/') )
@@ -268,11 +271,8 @@ void Marker::createText()
   } else {
       double mag = sqrt(pz[0]*pz[0] + pz[1]*pz[1]);
       double val = qucs::num2db(mag,ax->Units);
-      if (engNotation) {
-          Text += misc::num2str(val,Precision) + "\n";
-      } else {
-          Text += QString::number(val,'g',Precision);
-      }
+      Text += number(val);
+      if (notation != Notation::Automatic) Text += "\n";
   }
 
   QUCS_ASSERT(diag());

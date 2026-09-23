@@ -869,9 +869,6 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
     auto ypos = modelPos.y();
     QString text = "";
 
-    auto doubleToString = [](bool condition, double number) {
-      return condition ? misc::num2str(number) : misc::StringNiceNum(number);
-    };
 
     if (a_Diagrams == nullptr) return; // fix for crash on document closing; appears time to time
 
@@ -888,16 +885,16 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
             QPointF mouseClickPoint = QPointF(xpos - diagram->cx, diagram->cy - ypos);
             MappedPoint mp = diagram->pointToValue(mouseClickPoint);
 
-            auto _x = doubleToString(diagram->engineeringNotation, mp.x);
+            auto _x = diagram->numberText(mp.x);
             text = "X=" + _x;
             if (hasY1) {
                 text.append("; Y1=");
-                auto _y1 = doubleToString(diagram->engineeringNotation, mp.y1);
+                auto _y1 = diagram->numberText(mp.y1);
                 text.append(_y1);
             }
             if (hasY2) {
                 text.append("; Y2=");
-                auto _y2 = doubleToString(diagram->engineeringNotation, mp.y2);
+                auto _y2 = diagram->numberText(mp.y2);
                 text.append(_y2);
             }
             break;

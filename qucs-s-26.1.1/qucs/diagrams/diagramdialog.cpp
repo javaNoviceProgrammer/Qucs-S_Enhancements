@@ -509,14 +509,24 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
 
     NotationLabel = new QLabel(tr("Number notation: "), Tab2);
     gp->addWidget(NotationLabel, Row, 0);
+    // The notations, each with examples; the item's data is the value the
+    // diagram keeps (numberformat::Notation).
     NotationBox = new QComboBox(Tab2);
-    NotationBox->addItem(tr("scientific notation"));
-    NotationBox->addItem(tr("engineering notation"));
-    if (Diag->engineeringNotation)
-      NotationBox->setCurrentIndex(1);
-    else
-      NotationBox->setCurrentIndex(0);
+    for (const auto& [notation, text] : qucs_s::numberformat::choices())
+      NotationBox->addItem(text, int(notation));
+    NotationBox->setCurrentIndex(std::max(0, NotationBox->findData(int(Diag->notation))));
     gp->addWidget(NotationBox, Row, 1);
+    Row++;
+
+    gp->addWidget(new QLabel(tr("Decimal places: "), Tab2), Row, 0);
+    DecimalsBox = new QSpinBox(Tab2);
+    DecimalsBox->setRange(-1, 15);
+    DecimalsBox->setSpecialValueText(tr("auto"));   // -1: as many as each number needs
+    DecimalsBox->setValue(Diag->notationDecimals);
+    DecimalsBox->setToolTip(tr("Places after the point of the numbers on the axes and in the cursor "
+                               "readout (of the mantissa, with an exponent or a prefix). Auto: as many "
+                               "as they need; decimal labels as many as the grid step needs."));
+    gp->addWidget(DecimalsBox, Row, 1);
     Row++;
 
     // The legend: off, or in one of the corners (the order of the entries
@@ -1472,20 +1482,14 @@ void DiagramDialog::slotApply() {
     }
 
     if (NotationBox) {
-      bool notation = false;
-      switch (NotationBox->currentIndex()) {
-      case 0:
-        notation = false;
-        break;
-      case 1:
-        notation = true;
-        break;
-      default:
-        break;
-      }
-      if (Diag->engineeringNotation != notation)
+      const auto notation = qucs_s::numberformat::fromInt(NotationBox->currentData().toInt());
+      if (Diag->notation != notation)
         changed = true;
-      Diag->engineeringNotation = notation;
+      Diag->notation = notation;
+    }
+    if (DecimalsBox && Diag->notationDecimals != DecimalsBox->value()) {
+      Diag->notationDecimals = DecimalsBox->value();
+      changed = true;
     }
 
     if (LegendBox && Diag->legendPos != LegendBox->currentIndex()) {

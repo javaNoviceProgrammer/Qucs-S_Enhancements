@@ -91,7 +91,8 @@ Diagram::Diagram(int _cx, int _cy) {
     rotZ = 225;
     hideLines = true;  // hide invisible lines
 
-    engineeringNotation = true;
+    notation = qucs_s::numberformat::Notation::Engineering;
+    notationDecimals = -1;
     legendPos = LegendOff;
 
     Type = isDiagram;
@@ -815,7 +816,10 @@ void Diagram::loadGraphData(const QString &defaultDataSet) {
         getAxisLimits(pg);
     }
 
-    if (No <= 0) {   // All dataset files unchanged ?
+    // All dataset files unchanged - and laid out with them once: a diagram
+    // without graphs, or whose data did not change, still has to show its
+    // own axes and notation after it was loaded.
+    if (No <= 0 && laidOut) {
         yAxis.numGraphs = yNum;  // rebuild scrollbar position
         zAxis.numGraphs = zNum;
 
@@ -876,6 +880,7 @@ void Diagram::recalcGraphData() {
 
 // ------------------------------------------------------------------------
 void Diagram::updateGraphData() {
+    laidOut = true;
     int valid = calcDiagram();   // do not calculate graph data if invalid
 
     for (Graph *pg: Graphs) {
@@ -1425,12 +1430,14 @@ QString Diagram::save() {
     s += QString::number(rotX) + " " + QString::number(rotY) + " " +
          QString::number(rotZ);
 
-    if (engineeringNotation) s += " 1 ";
-    else s += " 0 ";
+    // 0 and 1 (automatic, engineering) are what older versions read; any
+    // other they take for 0.
+    s += " " + QString::number(int(notation)) + " ";
 
     s += QString::number(yAxis.Units) + " "
          + QString::number(zAxis.Units) + " "
-         + QString::number(legendPos);
+         + QString::number(legendPos) + " "
+         + QString::number(notationDecimals);
 
     // labels can contain spaces -> must be last items in the line
     s += " \"" + xAxis.Label + "\" \"" + yAxis.Label + "\" \"" + zAxis.Label + "\">\n";
@@ -1552,8 +1559,7 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
 
             n = s.section(' ', 24, 24);
             if (misc::charAt(n, 0, '"') != '"') {
-                if (n == "1") engineeringNotation = true;
-                else engineeringNotation = false;
+                notation = qucs_s::numberformat::fromInt(n.toInt());
                 n = s.section(' ', 25, 25);
                 if (misc::charAt(n, 0, '"') != '"') {
                     yAxis.Units = n.toInt(&ok);
@@ -1567,6 +1573,11 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
                     if (misc::charAt(n, 0, '"') != '"') {
                         const int pos = n.toInt(&ok);
                         legendPos = ok && pos >= LegendOff && pos <= LegendBottomRight ? pos : LegendOff;
+                        n = s.section(' ', 28, 28);   // decimal places (absent in older files)
+                        if (misc::charAt(n, 0, '"') != '"') {
+                            const int places = n.toInt(&ok);
+                            notationDecimals = ok && places >= -1 && places <= 15 ? places : -1;
+                        }
                     }
                 }
             }
@@ -1845,8 +1856,7 @@ void Diagram::createPolarDiagram(Axis *Axis, int Mode) {
             z = int(zD);
             GridNum += GridStep;
             QString lbl;
-            if (engineeringNotation) lbl = misc::num2str(GridNum);
-            else lbl = misc::StringNiceNum(GridNum);
+            lbl = numberText(GridNum, GridStep);
             Texts.append(new Text(((x2 + z) >> 1) - 10, tPos, lbl));
 
             phi = int(16.0 * 180.0 / pi * atan(double(2 * tHeight) / zD));
@@ -1863,7 +1873,7 @@ void Diagram::createPolarDiagram(Axis *Axis, int Mode) {
     }
 
     // create outer circle
-    Texts.append(new Text(x2 - 8, tPos, misc::StringNiceNum(Axis->up)));
+    Texts.append(new Text(x2 - 8, tPos, numberText(Axis->up)));
     phi = int(16.0 * 180.0 / pi * atan(double(2 * tHeight) / double(x2)));
     if (!Below) tmp = phi;
     else tmp = 0;
@@ -2085,8 +2095,7 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
 
             if ((zD < 1.5 * zDstep) || (z == 0)) {
                 double yVal = qucs::num2db(zD, Axis->Units);
-                if (engineeringNotation) tmp = misc::num2str(yVal, 2);
-                else tmp = misc::StringNiceNum(yVal);
+                tmp = numberText(yVal);
 
                 if (Axis->up < 0.0) tmp = '-' + tmp;
 
@@ -2123,8 +2132,7 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
         z = int(zD);   //  "int(...)" implies "floor(...)"
         while ((z <= y2) && (z >= 0)) {  // create all grid lines
             if (fabs(GridNum) < 0.01 * pow(10.0, Expo)) GridNum = 0.0;// make 0 really 0
-            if (engineeringNotation) tmp = misc::num2str(GridNum);
-            else tmp = misc::StringNiceNum(GridNum);
+            tmp = numberText(GridNum, GridStep);
 
             w = metrics.boundingRect(tmp).width();  // width of text
             if (maxWidth < w) maxWidth = w;
