@@ -84,6 +84,9 @@ private:
     void addLogEntry(const QString&text, const QIcon &icon);
     void setSimulator();
     void startOptimization(Component* optimization);
+    /// NgOpt: what ngspice's optimize said in \a out, in the status log,
+    /// and the values it found as the knobs' initial values.
+    void reportNgOptimizations(const QString& out);
     void writeBackOptimum();
 
 signals:

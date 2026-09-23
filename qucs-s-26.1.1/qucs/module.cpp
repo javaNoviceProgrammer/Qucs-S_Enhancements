@@ -554,6 +554,7 @@ void Module::registerModules (void) {
   REGISTER_SIMULATION_1 (Digi_Sim);
   //if (QucsSettings.DefaultSimulator == spicecompat::simQucsator)
       REGISTER_SIMULATION_1 (Optimize_Sim);
+      REGISTER_SIMULATION_1 (NgOpt_Sim);   // ngspice's own optimize (ngspice only)
   //if (QucsSettings.DefaultSimulator != spicecompat::simQucsator) {
       REGISTER_SIMULATION_1 (SpiceFourier);
       REGISTER_SIMULATION_1 (SpiceNoise);

@@ -39,6 +39,7 @@ class Ngspice : public AbstractSpiceKernel
 
 private:
     QString a_spinit_name;
+    QStringList a_optimizations;
 
     bool checkNodeNames(QStringList &incompat);
     static QString collectSpiceinit(Schematic* sch);
@@ -53,6 +54,9 @@ public:
     void SaveNetlist(QString filename, bool netlist2Console);
     void setSimulatorCmd(QString cmd);
     void setSimulatorParameters(QString parameters);
+    /// The NgOpt components whose optimize the last netlist runs, in
+    /// order: their results come in this order in the output.
+    const QStringList& optimizations() const { return a_optimizations; }
 
 protected:
     void createNetlist(

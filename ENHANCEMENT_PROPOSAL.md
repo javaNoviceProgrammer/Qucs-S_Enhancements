@@ -818,9 +818,10 @@ existing demand.
 - *Done:* **Optimization with ngspice** (#1327). The `.Opt` component
   was qucsator-only: ASCO drives qucsator, and with ngspice the
   component was not in the palette, and a schematic that had one was
-  refused as "SPICE-incompatible". ASCO cannot drive ngspice netlists
-  with a `.control` section, which is how Qucs-S runs every analysis, so
-  Qucs-S searches itself. `qucs_s::optimization` (`qucs/optimization.*`)
+  refused as "SPICE-incompatible". Whether ASCO can drive ngspice
+  netlists with a `.control` section - how Qucs-S runs every analysis -
+  is open upstream (untested here: ASCO is not installed), and stock
+  ngspice has no optimizer of its own, so Qucs-S searches itself. `qucs_s::optimization` (`qucs/optimization.*`)
   reads the component as the dialog writes it (variables
   `name|yes|initial|min|max|type`, goals `name|MIN/MAX/LE/GE/EQ/MON|value`,
   the DE settings), knows the E series (the standard's tables, 9.19 of
@@ -857,6 +858,47 @@ existing demand.
   (an equation's variable on a log scale; a resistor's only, from E24),
   a missing goal, a missing simulation, a stopped run, a start that
   meets its goals, the example, and DC bias beside the component.
+- *Done:* **NgOpt: ngspice's own `optimize` as a component.** ngspice
+  builds from Ngspice_OpenVAF_Enhancements have a parameter optimizer
+  (`optimize`, its E-130/143/144/145/194/195/196): knobs of three kinds
+  (`-dparam` a `.param`, re-sourced; `-param` an instance, `alter`;
+  `-mparam` a model parameter, `altermod`), a scalar `-minimize` after
+  one analysis or least-squares `-target`s over up to eight `-analysis`
+  stages, and the methods nm, lm, pso, de and sa - run inside one
+  ngspice process, with no netlist written per candidate. The NgOpt
+  component (*simulations*, ngspice only, `.NGOPT`) is that command:
+  `qucs_s::ngopt` (`qucs/ngoptimize.*`) keeps it in the component's
+  properties (`Method`, `MaxIter`, `Tol`, `Size`, `Seed`, `Verbose`,
+  `Analysis`, `Minimize`, then a `Knob=kind|name|init|lo|hi` or
+  `Target=analysis|expression|value|weight` each, saved with their names
+  like the Optimization component's), writes the line (values with Qucs
+  prefixes as numbers, an expression as one token, a stage per analysis
+  in the order they come, an analysis named after a simulation component
+  taking its command), and reads what ngspice prints at the end.
+  `Ngspice::createNetlist` puts the line first in `.control`: ngspice
+  leaves the circuit at the optimum, so the schematic's simulations show
+  it. The netlist resets after each simulation, which keeps a `.param`
+  the optimizer changed (the deck is edited) but not an `alter` or an
+  `altermod`: the in-place knobs' values (`optimize_<name>`) go into
+  shell variables right after `optimize` and are set again after every
+  `reset`. `SimulationRun` puts ngspice's verdict (converged or
+  interrupted, the cost, the evaluations, its NOTEs) in the status log
+  and the values found into the knobs' initial values (undoable); an
+  ngspice without the command ("no such command") is said to be one.
+  `NgOptDialog`: the method (with what it is good for) and its settings,
+  a table of knobs (*Add Equation Variables* makes one of every number
+  an equation or `.PARAM` defines, a decade each way), the objective -
+  an expression after an analysis, or a table of targets - and the
+  command it makes, live. The ERC reports a command that cannot be
+  written. Example: `examples/ngspice/NGspice features/
+  LC_lowpass_ngopt.sch` fits the low-pass to a 1 MHz Butterworth
+  response by least squares (3.183 nF, 15.92 uH, 3.183 nF, 39
+  evaluations). `qucs/tests/test_ngopt` covers the command line and what
+  it refuses, the carried knobs, ngspice's output, the component saved
+  and loaded, the netlist (order, resets, a refused command, an inactive
+  one), the dialog, the ERC, an ngspice without the command - and, with
+  one that has it, the example and a divider whose instance knob is
+  still at the optimum in the transient after the AC analysis.
 - *Done (click, not hover):* **Net highlighting.** `Schematic::netOf(Wire*)`
   flood-fills the `Node`↔`Wire` graph and, in rounds, joins what labels
   of the same name and ground symbols connect; `selectedNet()` is the

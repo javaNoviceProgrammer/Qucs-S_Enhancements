@@ -19,6 +19,7 @@
 #include "main.h"
 #include "extsimkernels/spicecompat.h"
 #include "optimization.h"
+#include "ngoptimize.h"
 
 #include <QCoreApplication>
 #include <QHash>
@@ -112,6 +113,12 @@ QList<Issue> check(Schematic* doc)
                                 tr("%1 optimizes %2, which is not in the schematic").arg(c->Name, problem.simulation),
                                 QPoint(c->cx, c->cy), c->Name};
             }
+        }
+        // NgOpt: an optimize line the netlist cannot write.
+        if (c->Model == QLatin1String(".NGOPT") && simulator == spicecompat::simNgspice) {
+            QString line, why;
+            if (!ngopt::commandLine(ngopt::Command::read(c), doc, &line, &why))
+                errors << Issue{Severity::Error, tr("%1: %2").arg(c->Name, why), QPoint(c->cx, c->cy), c->Name};
         }
         // A winding refers to its magnetic core by name.
         if (c->Model == QLatin1String("WINDING")) {
