@@ -251,11 +251,27 @@ bool readOsdi(const QString& osdiFile, const QString& wanted, VerilogModule* mod
     return true;
 }
 
+namespace {
+// "module NAME (ports);", "module NAME;", "module NAME #(...)".
+const QRegularExpression& moduleHead()
+{
+    static const QRegularExpression head(QStringLiteral(R"(\b(?:macro)?module\s+([A-Za-z_]\w*)\s*(?=[(;#]))"));
+    return head;
+}
+} // namespace
+
+QStringList sourceModules(const QString& source)
+{
+    QStringList names;
+    for (auto it = moduleHead().globalMatch(withoutComments(source)); it.hasNext();)
+        names << it.next().captured(1);
+    return names;
+}
+
 VerilogModule readSource(const QString& source, const QString& wanted)
 {
     const QString text = withoutComments(source);
-    // "module NAME (ports);", "module NAME;", "module NAME #(...)".
-    static const QRegularExpression moduleHead(QStringLiteral(R"(\b(?:macro)?module\s+([A-Za-z_]\w*)\s*(?=[(;#]))"));
+    const QRegularExpression& moduleHead = vamodule::moduleHead();
     VerilogModule module;
     qsizetype bodyStart = -1;
     for (auto it = moduleHead.globalMatch(text); it.hasNext();) {

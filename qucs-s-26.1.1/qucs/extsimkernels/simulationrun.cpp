@@ -39,6 +39,8 @@
 #include "main.h"
 #include "schematic.h"
 #include "ngoptimize.h"
+#include "qucs.h"
+#include "textdoc.h"
 
 SimulationRun::SimulationRun(Schematic* sch, bool netlist2Console, QObject* parent) :
     QObject(parent),
@@ -64,6 +66,11 @@ SimulationRun::SimulationRun(Schematic* sch, bool netlist2Console, QObject* pare
 
 SimulationRun::~SimulationRun()
 {
+    if (a_compiler != nullptr) {
+        a_compiler->disconnect(this);
+        a_compiler->kill();
+        a_compiler->waitForFinished(2000);
+    }
     a_ngspice->killThemAll();
     a_xyce->killThemAll();
 }
@@ -212,8 +219,10 @@ void SimulationRun::slotProcessOutput()
 void SimulationRun::slotNgspiceStarted()
 {
     if (a_console != nullptr) {
-        // After an optimization the console keeps its account of it.
-        if (!a_afterOptimization) a_console->clear();
+        // After an optimization, or a compilation, the console keeps its
+        // account of it.
+        if (!a_afterOptimization && !a_keepConsole) a_console->clear();
+        a_keepConsole = false;
         QString sim = spicecompat::getDefaultSimulatorName(QucsSettings.DefaultSimulator);
         a_console->insertPlainText(sim + tr(" started...\n"));
     }
@@ -260,6 +269,12 @@ void SimulationRun::start()
     a_wasSimulated = true;
     a_hasError = false;
     if (a_progress != nullptr) a_progress->setValue(0);
+    // The Verilog-A modules the netlist uses whose library is missing or
+    // out of date are compiled first; compileNext() starts again then.
+    if (!a_compiled && !a_schematic.isNull() && QucsSettings.DefaultSimulator == spicecompat::simNgspice
+        && startBuilds())
+        return;
+    a_compiled = false;
     if (a_optimizationAllowed && !a_schematic.isNull()
         && QucsSettings.DefaultSimulator == spicecompat::simNgspice) {
         for (Component* pc : a_schematic->a_DocComps)
@@ -287,6 +302,14 @@ void SimulationRun::start()
 void SimulationRun::stop()
 {
     if (!a_running) return;
+    if (a_compiler != nullptr) {
+        // slotCompiled() ends the run.
+        a_builds.clear();
+        a_compileStopped = true;
+        addLogEntry(tr("Simulation stopped."), QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning));
+        a_compiler->kill();
+        return;
+    }
     if (a_optimizer != nullptr && a_optimizer->isRunning()) {
         // The best point so far is still simulated (slotOptimized()); a
         // second stop stops that.
@@ -299,6 +322,126 @@ void SimulationRun::stop()
     a_wasSimulated = false;
     a_ngspice->killThemAll();   // the kernel's finished() follows and ends the run
     a_xyce->killThemAll();
+}
+
+bool SimulationRun::startBuilds()
+{
+    a_builds = a_ngspice->verilogABuilds();
+    if (a_builds.isEmpty()) return false;
+    const QStyle *style = QApplication::style();
+    const QString openVAF = QucsSettings.OpenVAFExecutable.trimmed();
+    if (openVAF.isEmpty() || !QFileInfo(openVAF).isExecutable()) {
+        // Simulated with what there is; ngspice says what it misses.
+        for (const qucs_s::osdi::Build& build : std::as_const(a_builds))
+            addLogEntry(build.missing
+                            ? tr("%1 is not compiled, and there is no OpenVAF to compile it "
+                                 "(Application Settings > Locations > OpenVAF Path)")
+                                  .arg(QDir::toNativeSeparators(build.source))
+                            : tr("%1 is older than %2; with OpenVAF set (Application Settings > "
+                                 "Locations > OpenVAF Path) it is compiled before a simulation")
+                                  .arg(QDir::toNativeSeparators(build.library),
+                                       QDir::toNativeSeparators(build.source)),
+                        style->standardIcon(QStyle::SP_MessageBoxWarning));
+        a_builds.clear();
+        return false;
+    }
+    if (QucsMain != nullptr)
+        for (const qucs_s::osdi::Build& build : std::as_const(a_builds))
+            if (TextDoc *doc = QucsMain->findTextDoc(build.source); doc != nullptr && doc->getDocChanged())
+                addLogEntry(tr("%1 has unsaved changes: compiled as saved").arg(QDir::toNativeSeparators(build.source)),
+                            style->standardIcon(QStyle::SP_MessageBoxWarning));
+    if (a_console != nullptr) {
+        a_console->clear();
+        a_console->insertPlainText(tr("Compiling the Verilog-A the circuit uses with OpenVAF:\n"));
+    }
+    compileNext();
+    return true;
+}
+
+void SimulationRun::compileNext()
+{
+    if (a_builds.isEmpty()) {
+        a_compiled = true;
+        a_keepConsole = true;
+        start();
+        return;
+    }
+    const qucs_s::osdi::Build build = a_builds.takeFirst();
+    const QString openVAF = QucsSettings.OpenVAFExecutable.trimmed();
+    if (a_console != nullptr)
+        a_console->insertPlainText(QStringLiteral("%1 %2\n").arg(openVAF, QDir::toNativeSeparators(build.source)));
+    addLogEntry(build.missing ? tr("Compiling %1 (%2 has no library yet)")
+                                    .arg(QDir::toNativeSeparators(build.source), build.modules.join(QStringLiteral(", ")))
+                              : tr("Compiling %1 (changed since %2 was built)")
+                                    .arg(QDir::toNativeSeparators(build.source),
+                                         QFileInfo(build.library).fileName()),
+                QApplication::style()->standardIcon(QStyle::SP_MessageBoxInformation));
+    a_compiler = new QProcess(this);
+    a_compiler->setProcessChannelMode(QProcess::MergedChannels);
+    a_compiler->setWorkingDirectory(QFileInfo(build.source).absolutePath());
+    connect(a_compiler, &QProcess::readyRead, this, &SimulationRun::slotCompilerOutput);
+    connect(a_compiler, &QProcess::finished, this, &SimulationRun::slotCompiled);
+    connect(a_compiler, &QProcess::errorOccurred, this, &SimulationRun::slotCompilerError);
+    a_compiler->setProperty("source", build.source);
+    a_compiler->start(openVAF, {build.source});
+}
+
+void SimulationRun::slotCompilerOutput()
+{
+    if (a_compiler == nullptr) return;
+    const QString out = QString::fromLocal8Bit(a_compiler->readAll());
+    if (a_console != nullptr && !out.isEmpty()) {
+        a_console->moveCursor(QTextCursor::End);
+        a_console->insertPlainText(out);
+    }
+}
+
+void SimulationRun::slotCompiled(int exitCode, QProcess::ExitStatus status)
+{
+    slotCompilerOutput();
+    const QString source = QDir::toNativeSeparators(a_compiler->property("source").toString());
+    a_compiler->deleteLater();
+    a_compiler = nullptr;
+    if (a_compileStopped) {
+        a_compileStopped = false;
+        a_hasError = true;
+        a_wasSimulated = false;
+        a_running = false;
+        emit simulated(this);
+        return;
+    }
+    if (status != QProcess::NormalExit || exitCode != 0) {
+        compileFailed(status == QProcess::NormalExit
+                          ? tr("OpenVAF could not compile %1 (exit code %2); the simulation did not run.")
+                                .arg(source).arg(exitCode)
+                          : tr("OpenVAF crashed on %1; the simulation did not run.").arg(source));
+        return;
+    }
+    compileNext();
+}
+
+void SimulationRun::slotCompilerError(QProcess::ProcessError error)
+{
+    // finished() does not follow a start failure.
+    if (error != QProcess::FailedToStart || a_compiler == nullptr) return;
+    const QString why = a_compiler->errorString();
+    a_compiler->deleteLater();
+    a_compiler = nullptr;
+    compileFailed(tr("OpenVAF could not be started: %1").arg(why));
+}
+
+void SimulationRun::compileFailed(const QString& why)
+{
+    a_builds.clear();
+    addLogEntry(why, QApplication::style()->standardIcon(QStyle::SP_MessageBoxCritical));
+    if (a_console != nullptr) {
+        a_console->moveCursor(QTextCursor::End);
+        a_console->insertPlainText(QLatin1Char('\n') + why + QLatin1Char('\n'));
+    }
+    a_hasError = true;
+    a_wasSimulated = false;
+    a_running = false;
+    emit simulated(this);
 }
 
 void SimulationRun::startOptimization(Component* optimization)

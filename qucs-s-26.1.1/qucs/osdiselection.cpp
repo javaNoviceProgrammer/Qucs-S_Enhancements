@@ -47,9 +47,45 @@ struct SpiceFile {
     QStringList includes;
 };
 
+struct Source {
+    Stamp stamp;
+    QStringList modules;    // lower case
+    QStringList includes;   // as written
+};
+
 QMutex cacheMutex;
 QHash<QString, Library> libraries;
 QHash<QString, SpiceFile> spiceFiles;
+QHash<QString, Source> sources;
+
+// A Verilog-A source's modules and `include lines, cached.
+Source readSource(const QString& path)
+{
+    const QFileInfo info(path);
+    const Stamp stamp = Stamp::of(info);
+    const QString key = info.absoluteFilePath();
+    {
+        QMutexLocker lock(&cacheMutex);
+        auto it = sources.constFind(key);
+        if (it != sources.constEnd() && it->stamp == stamp)
+            return *it;
+    }
+    Source read;
+    read.stamp = stamp;
+    QFile file(key);
+    if (file.open(QIODevice::ReadOnly)) {
+        const QString text = QString::fromUtf8(file.readAll());
+        for (const QString& name : vamodule::sourceModules(text))
+            read.modules << name.toLower();
+        static const QRegularExpression include(QStringLiteral(R"re(^\s*`include\s+"([^"]+)")re"),
+                                                QRegularExpression::MultilineOption);
+        for (auto it = include.globalMatch(text); it.hasNext();)
+            read.includes << it.next().captured(1);
+    }
+    QMutexLocker lock(&cacheMutex);
+    sources.insert(key, read);
+    return read;
+}
 
 // A SPICE text as its logical lines: a "+" line continues the one before,
 // a "*" line is a comment.
@@ -259,6 +295,71 @@ QStringList needed(const QStringList& osdiFiles, const QSet<QString>& types, QSt
     for (const QString& file : osdiFiles)
         if (chosen.contains(file) && !out.contains(file))
             out << file;
+    return out;
+}
+
+bool sourceDefines(const QString& vaFile, const QString& module)
+{
+    return readSource(vaFile).modules.contains(module.toLower());
+}
+
+QStringList sourceIncludes(const QString& vaFile)
+{
+    QStringList found;
+    QStringList pending{QFileInfo(vaFile).absoluteFilePath()};
+    QSet<QString> seen{pending.first()};
+    while (!pending.isEmpty() && seen.size() < 500) {
+        const QString file = pending.takeFirst();
+        const QDir folder = QFileInfo(file).absoluteDir();
+        for (const QString& name : readSource(file).includes) {
+            const QFileInfo included(folder.absoluteFilePath(name));
+            // "disciplines.vams" and the like come with OpenVAF.
+            if (!included.isFile() || seen.contains(included.absoluteFilePath()))
+                continue;
+            seen.insert(included.absoluteFilePath());
+            found << included.absoluteFilePath();
+            pending << included.absoluteFilePath();
+        }
+    }
+    return found;
+}
+
+QList<Build> builds(const QStringList& vaFiles, const QStringList& osdiFiles, const QSet<QString>& types)
+{
+    QList<Build> out;
+    for (const QString& va : vaFiles) {
+        Build build;
+        for (const QString& module : readSource(va).modules)
+            if (types.contains(module))
+                build.modules << module;
+        if (build.modules.isEmpty())
+            continue;
+        const QFileInfo source(va);
+        build.source = source.absoluteFilePath();
+        build.library = source.absoluteDir().absoluteFilePath(source.completeBaseName() + QStringLiteral(".osdi"));
+        const QFileInfo library(build.library);
+        if (library.isFile()) {
+            // Older than the source, or than a file it includes.
+            QDateTime newest = source.lastModified();
+            for (const QString& included : sourceIncludes(va))
+                newest = std::max(newest, QFileInfo(included).lastModified());
+            if (library.lastModified() < newest)
+                out << build;
+            continue;
+        }
+        // No library of its own: built when no other has the modules.
+        bool elsewhere = false;
+        for (const QString& module : std::as_const(build.modules))
+            for (const QString& file : osdiFiles)
+                if (defines(file, module)) {
+                    elsewhere = true;
+                    break;
+                }
+        if (!elsewhere) {
+            build.missing = true;
+            out << build;
+        }
+    }
     return out;
 }
 

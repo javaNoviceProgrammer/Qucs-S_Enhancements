@@ -410,6 +410,36 @@ existing demand.
   including another, a duplicate, unused libraries) for a simulation
   and for the DC bias; `test_build_all_va` checks that a circuit without
   Verilog-A loads none.
+- *Done:* **Verilog-A compiled when a simulation needs it.** A changed
+  `.va` took a Build All (or *Build Verilog-A module*) before ngspice saw
+  it; forgotten, the simulation ran the old library without a word, and
+  a module never built was an "unknown model type" from ngspice.
+  `osdi::builds()` takes the sources of the project that define a module
+  the netlist uses (`vamodule::sourceModules()`, comments left out) and
+  keeps those whose library - `NAME.osdi` beside `NAME.va`, where OpenVAF
+  writes it - is older than the source or than a file it includes
+  (`osdi::sourceIncludes()`: `` `include`` lines followed through the
+  project; the ones OpenVAF brings, like `disciplines.vams`, are not
+  there and do not count), or is not there while no other library of the
+  project defines the module (a module built elsewhere is left to that
+  library). `Ngspice::verilogABuilds()` writes the netlist to a string for
+  the types it uses. `SimulationRun::start()` compiles those first, one
+  after the other, asynchronously, the output in the console (kept when
+  the simulation starts), a status line for each; then starts again and
+  simulates. A source that fails stops the run: the error in the log and
+  the console, `simulated()` with the error, no simulator started. Stop
+  kills the compiler. Without OpenVAF (the path in the settings) the run
+  goes on with the libraries there are and the log names each one out of
+  date. A modified `.va` open in the editor is compiled as saved (said).
+  ERC: a Verilog-A component (`vacomponent`) whose module is in no
+  library and no source of the open project is a warning.
+  `test_osdi_selection` covers the modules of a source, the includes,
+  what is compiled (never built, changed since built, an include changed,
+  a module in another library, a two-module source, unused sources), a
+  simulation of a project with a stand-in OpenVAF and ngspice (compiled
+  once, not again while unchanged, again after a change; a broken source
+  stops the run; without OpenVAF the run goes on and says so) and the
+  ERC warning.
 - *Done:* **Folder icons in the Content panel are a setting**
   (`ContentFolderIcons`, default off; *Application Settings → Settings*).
   `ProjectView::folderItem()` sets the icon only when it is on, the

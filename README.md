@@ -104,6 +104,19 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   runs on) is searched for the module's name. The DC bias
   (*Calculate DC bias*) now loads them too; its netlist loaded none, so
   it failed on a circuit with a Verilog-A device.
+- **Verilog-A is compiled when a simulation needs it**: before an ngspice
+  simulation (or the DC bias) the Verilog-A sources of the project that
+  define a module the circuit uses are compiled with OpenVAF when their
+  library (`NAME.osdi` beside `NAME.va`) is missing or older than the
+  source or a file it `` `include``s — edit a model, press F2, and the
+  simulation runs the new one. The compiler's output goes to the
+  simulation console; a source that does not compile stops the run with
+  OpenVAF's error instead of simulating the old library. Without an
+  OpenVAF path in the settings the simulation runs with what there is
+  and the status log says which library is out of date. A source open
+  with unsaved changes is compiled as saved, and the log says so. *Check
+  Schematic* warns about a Verilog-A component whose module is in no
+  library and no source of the project.
 - **A Scratch folder per project, a subfolder per schematic**: the
   temporary files of a simulation (netlist, the raw simulator output such
   as `spice4qucs.ac1.plot`, log) go to `Scratch/<schematic>/` inside the

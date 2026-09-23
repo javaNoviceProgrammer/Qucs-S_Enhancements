@@ -64,6 +64,13 @@ private:
     bool a_optimizationAllowed = false;
     bool a_afterOptimization = false;   // the simulation of the best point
     Optimizer *a_optimizer = nullptr;
+    // Verilog-A: OpenVAF compiling a module the netlist uses, before the
+    // simulation; what is still to compile.
+    QProcess *a_compiler = nullptr;
+    QList<qucs_s::osdi::Build> a_builds;
+    bool a_compiled = false;         // what start() needed is compiled: simulate
+    bool a_compileStopped = false;
+    bool a_keepConsole = false;      // the console shows the compilation
 
 public:
     explicit SimulationRun(Schematic* sch, bool netlist2Console, QObject* parent = nullptr);
@@ -88,6 +95,12 @@ private:
     /// and the values it found as the knobs' initial values.
     void reportNgOptimizations(const QString& out);
     void writeBackOptimum();
+    /// Starts compiling the Verilog-A modules the netlist uses whose
+    /// library is missing or older than its source; false when there is
+    /// nothing to compile (or no OpenVAF to compile it with).
+    bool startBuilds();
+    void compileNext();
+    void compileFailed(const QString& why);
 
 signals:
     /// The simulator process is running.
@@ -130,6 +143,9 @@ private slots:
     void slotNgspiceStarted();
     void slotNgspiceStartError(QProcess::ProcessError err);
     void slotOptimized(bool ok);
+    void slotCompilerOutput();
+    void slotCompiled(int exitCode, QProcess::ExitStatus status);
+    void slotCompilerError(QProcess::ProcessError error);
 };
 
 #endif // SIMULATIONRUN_H

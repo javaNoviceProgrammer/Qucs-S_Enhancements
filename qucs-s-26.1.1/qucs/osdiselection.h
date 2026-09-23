@@ -14,6 +14,7 @@
 #ifndef QUCS_OSDISELECTION_H
 #define QUCS_OSDISELECTION_H
 
+#include <QList>
 #include <QSet>
 #include <QString>
 #include <QStringList>
@@ -46,10 +47,33 @@ bool defines(const QString& osdiFile, const QString& module);
 
 /// The libraries of \a osdiFiles a netlist that uses \a types needs, in
 /// the order given: each type a library defines is taken from one library
-/// - one already taken, else the most recently built. What was left out
-/// for another library is said in \a notes.
+/// - one already taken, else the one with the most of what is needed,
+/// else the most recently built. What was left out for another library is
+/// said in \a notes.
 QStringList needed(const QStringList& osdiFiles, const QSet<QString>& types,
                    QStringList* notes = nullptr);
+
+/// Whether the Verilog-A source defines \a module (any case).
+bool sourceDefines(const QString& vaFile, const QString& module);
+
+/// The files a Verilog-A source brings in with `include "FILE" - and
+/// the files those bring in - that are there: taken against the folder of
+/// the file that names them.
+QStringList sourceIncludes(const QString& vaFile);
+
+/// A Verilog-A source of the project to compile before a simulation.
+struct Build {
+    QString source;        ///< the .va
+    QString library;       ///< what OpenVAF writes: NAME.osdi beside it
+    QStringList modules;   ///< the modules the netlist uses that it defines
+    bool missing = false;  ///< no library has them yet (else: older than its source)
+};
+
+/// The sources of \a vaFiles to compile for a netlist that uses \a types:
+/// one defining a module used whose library (NAME.osdi beside it) is older
+/// than it or than a file it includes; or, when none of \a osdiFiles
+/// defines the module, whose library is not there yet.
+QList<Build> builds(const QStringList& vaFiles, const QStringList& osdiFiles, const QSet<QString>& types);
 
 } // namespace qucs_s::osdi
 

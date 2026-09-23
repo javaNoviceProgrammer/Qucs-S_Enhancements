@@ -10,7 +10,10 @@
  * PATH) real libraries are compiled and read too.
  */
 #include <QtTest>
+#include <QListWidget>
+#include <QPlainTextEdit>
 #include <QProcess>
+#include <QProgressBar>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
@@ -21,7 +24,11 @@
 #include "qucs.h"
 #include "schematic.h"
 #include "osdiselection.h"
+#include "vamodule.h"
+#include "erc.h"
+#include "components/vacomponent.h"
 #include "extsimkernels/ngspice.h"
+#include "extsimkernels/simulationrun.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
 
@@ -338,6 +345,197 @@ private slots:
             QVERIFY2(loaded == sorted, qPrintable(netlist));
             QVERIFY(netlist.indexOf("pre_osdi") < netlist.indexOf("\nop\n"));
         }
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
+    }
+
+    // ---- compiling before a simulation -------------------------------
+
+    void theModulesOfASource()
+    {
+        const QString source =
+            "// module commented(a);\n"
+            "`include \"disciplines.vams\"\n"
+            "module First (a, b); endmodule\n"
+            "/* module hidden; */\n"
+            "module second; endmodule\n"
+            "macromodule third #(parameter p = 1) (x); endmodule\n";
+        QCOMPARE(vamodule::sourceModules(source), (QStringList{"First", "second", "third"}));
+    }
+
+    void whatIsCompiled()
+    {
+        const QString base = dir.filePath("builds");
+        const QDateTime now = QDateTime::currentDateTime();
+        write(base + "/amp.va", "module amp(a); endmodule\n");              // used, never built
+        write(base + "/res.va", "module res(a); endmodule\n");              // used, built after it
+        write(base + "/res.osdi", foreignLibrary("res"));
+        setBuilt(base + "/res.va", now.addSecs(-60));
+        write(base + "/top.va", "`include \"common.vams\"\n`include \"disciplines.vams\"\nmodule top(a); endmodule\n");
+        write(base + "/common.vams", "`include \"deeper/more.vams\"\n");
+        write(base + "/deeper/more.vams", "// constants\n");
+        write(base + "/top.osdi", foreignLibrary("top"));
+        setBuilt(base + "/top.va", now.addSecs(-60));
+        setBuilt(base + "/common.vams", now.addSecs(-60));
+        setBuilt(base + "/top.osdi", now.addSecs(-30));
+        setBuilt(base + "/deeper/more.vams", now.addSecs(-10));              // changed since top.osdi
+        write(base + "/other.va", "module other(a); endmodule\n");          // used, a library elsewhere has it
+        write(base + "/lib/other.osdi", foreignLibrary("other"));
+        write(base + "/pair.va", "module p1(a); endmodule\nmodule P2(a); endmodule\n");
+        write(base + "/unused.va", "module unused(a); endmodule\n");
+
+        QCOMPARE(osdi::sourceIncludes(base + "/top.va"),
+                 (QStringList{base + "/common.vams", base + "/deeper/more.vams"}));
+        QVERIFY(osdi::sourceDefines(base + "/pair.va", "p2"));
+        QVERIFY(!osdi::sourceDefines(base + "/pair.va", "p3"));
+
+        const QStringList sources{base + "/amp.va", base + "/res.va", base + "/top.va", base + "/other.va",
+                                  base + "/pair.va", base + "/unused.va"};
+        const QStringList libraries{base + "/res.osdi", base + "/top.osdi", base + "/lib/other.osdi"};
+        const QList<osdi::Build> list =
+            osdi::builds(sources, libraries, {"amp", "res", "top", "other", "p2", "npn"});
+        QStringList built;
+        for (const osdi::Build& b : list) built << QFileInfo(b.source).fileName();
+        QCOMPARE(built, (QStringList{"amp.va", "top.va", "pair.va"}));
+        QVERIFY(list[0].missing);
+        QCOMPARE(list[0].library, base + "/amp.osdi");
+        QVERIFY(!list[1].missing);
+        QCOMPARE(list[2].modules, QStringList{"p2"});
+
+        // The source changed after its library: built again.
+        setBuilt(base + "/res.va", now.addSecs(10));
+        QCOMPARE(osdi::builds(sources, libraries, {"res"}).size(), 1);
+    }
+
+    void aSimulationCompilesWhatItUsesFirst()
+    {
+        const QString calls = dir.filePath("openvaf-calls.log");
+        const QString record = dir.filePath("ngspice-got.cir");
+        const QString openvaf = dir.filePath("fake-openvaf.sh");
+        write(openvaf, QStringLiteral(
+            "#!/bin/sh\n"
+            "echo \"$1\" >> \"%1\"\n"
+            "if grep -q broken \"$1\"; then echo \"error: cannot parse $1\"; exit 1; fi\n"
+            "echo \"compiled $1\"\n"
+            "printf '\\000%s\\000' \"$(basename \"${1%.va}\")\" > \"${1%.va}.osdi\"\n").arg(calls).toUtf8());
+        const QString ngspice = dir.filePath("fake-ngspice.sh");
+        write(ngspice, QStringLiteral(
+            "#!/bin/sh\n"
+            "for a in \"$@\"; do case \"$a\" in *.cir) cp \"$a\" \"%1\";; esac; done\n"
+            "echo \"fake ngspice\"\n").arg(record).toUtf8());
+        for (const QString& script : {openvaf, ngspice})
+            QVERIFY(QFile::setPermissions(script, QFile::permissions(script) | QFile::ExeOwner));
+
+        const QString vaProject = workspace + "/va_prj";
+        write(vaProject + "/amp.va", "module amp(a, b); endmodule\n");
+        write(vaProject + "/models/unused.va", "module unused(a, b); endmodule\n");
+        write(vaProject + "/broken.va", "module broken(a, b); // broken\nendmodule\n");
+        QByteArray uses(circuit);
+        uses.replace("\"models/devices.lib\"", "\"\"");
+        uses.replace(".model m1 PSP103 (level=103)", ".model m1 amp");
+        uses.replace("</Components>", "  <.DC DC1 1 500 200 0 40 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 "
+                                      "\"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0 \"no\" 0>\n</Components>");
+        write(vaProject + "/uses.sch", uses);
+        QByteArray fails(uses);
+        fails.replace(".model m1 amp", ".model m1 broken");
+        write(vaProject + "/fails.sch", fails);
+
+        const QString savedNgspice = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = ngspice;
+        QucsSettings.OpenVAFExecutable = openvaf;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.openProject(vaProject);
+        QCOMPARE(app.ProjName, QString("va"));
+
+        QPlainTextEdit console;
+        QListWidget log;
+        QProgressBar progress;
+        const auto simulate = [&](const QString& file, bool* error) {
+            Schematic sch(nullptr, file);
+            if (!sch.load()) return false;
+            SimulationRun run(&sch, false);
+            run.attach(&console, &log, &progress);
+            QSignalSpy done(&run, &SimulationRun::simulated);
+            run.start();
+            const bool finished = done.size() > 0 || done.wait(30000);
+            *error = run.hasError();
+            return finished;
+        };
+        const auto lines = [&](const QString& path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()).split('\n', Qt::SkipEmptyParts)
+                                               : QStringList();
+        };
+        bool error = false;
+
+        // amp.va is compiled - not the others - and the netlist loads it.
+        QVERIFY(simulate(vaProject + "/uses.sch", &error));
+        QCOMPARE(lines(calls), QStringList{vaProject + "/amp.va"});
+        QVERIFY(QFileInfo::exists(vaProject + "/amp.osdi"));
+        QVERIFY2(lines(record).contains("pre_osdi '" + vaProject + "/amp.osdi'"), qPrintable(lines(record).join('\n')));
+        QVERIFY2(console.toPlainText().contains("compiled " + vaProject + "/amp.va"), qPrintable(console.toPlainText()));
+        QVERIFY(console.toPlainText().contains("fake ngspice"));   // the compilation stays above
+
+        // Built and unchanged: nothing to compile.
+        QVERIFY(simulate(vaProject + "/uses.sch", &error));
+        QCOMPARE(lines(calls).size(), 1);
+
+        // Changed: compiled again.
+        setBuilt(vaProject + "/amp.va", QDateTime::currentDateTime().addSecs(30));
+        QVERIFY(simulate(vaProject + "/uses.sch", &error));
+        QCOMPARE(lines(calls).size(), 2);
+
+        // A source that does not compile: no simulation, the error said.
+        QFile::remove(record);
+        QVERIFY(simulate(vaProject + "/fails.sch", &error));
+        QVERIFY(error);
+        QVERIFY(!QFileInfo::exists(record));
+        QCOMPARE(lines(calls).last(), vaProject + "/broken.va");
+        bool said = false;
+        for (int i = 0; i < log.count(); ++i)
+            said = said || log.item(i)->text().contains("OpenVAF could not compile");
+        QVERIFY(said);
+
+        // No OpenVAF: simulated with what there is, the stale library said.
+        QucsSettings.OpenVAFExecutable.clear();
+        setBuilt(vaProject + "/amp.va", QDateTime::currentDateTime().addSecs(60));
+        log.clear();
+        QVERIFY(simulate(vaProject + "/uses.sch", &error));
+        QCOMPARE(lines(calls).size(), 3);   // not compiled
+        QVERIFY(QFileInfo::exists(record));
+        said = false;
+        for (int i = 0; i < log.count(); ++i)
+            said = said || log.item(i)->text().contains("is older than");
+        QVERIFY(said);
+
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
+        QucsSettings.NgspiceExecutable = savedNgspice;
+    }
+
+    void theCheckFindsAModuleNowhereInTheProject()
+    {
+        Module::registerModules();   // a QucsApp's destructor unregisters them
+        const QString vaProject = workspace + "/erc_prj";
+        write(vaProject + "/circuit.sch", circuit);
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.openProject(vaProject);
+        Schematic sch(nullptr, vaProject + "/circuit.sch");
+        QVERIFY(sch.load());
+        auto* ghost = new vacomponent(vamodule::propsObject(vamodule::readSource("module ghost(a, b); endmodule")));
+        ghost->Name = "X1";
+        sch.a_DocComps.push_back(ghost);
+        const auto warned = [&] {
+            for (const erc::Issue& issue : erc::check(&sch))
+                if (issue.component == "X1" && issue.message.contains("Verilog-A module ghost")) return true;
+            return false;
+        };
+        QVERIFY(warned());
+        write(vaProject + "/ghost.va", "module ghost(a, b); endmodule\n");   // compiled before the simulation
+        QVERIFY(!warned());
+        QFile::remove(vaProject + "/ghost.va");
+        write(vaProject + "/lib/ghost.osdi", foreignLibrary("ghost"));
+        QVERIFY(!warned());
         QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
     }
 
