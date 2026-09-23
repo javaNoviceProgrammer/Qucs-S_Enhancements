@@ -378,10 +378,16 @@ void QucsApp::initActions() {
   exportAsImage->setWhatsThis(
       tr("Export as image\n\nExports the current document to an image file"));
 
-  exportDiagramAsImage = new QAction(tr("Export as image..."), this);
+  exportDiagramAsImage = new QAction(tr("Export Diagram..."), this);
   connect(exportDiagramAsImage, SIGNAL(triggered()),
           SLOT(slotSaveDiagramToGraphicsFile()));
   exportDiagramAsImage->setStatusTip(tr("Exports the diagram to an image file"));
+
+  exportGraphics = new QAction(tr("Export..."), this);
+  connect(exportGraphics, SIGNAL(triggered()),
+          SLOT(slotSaveSchematicToGraphicsFile()));
+  exportGraphics->setStatusTip(
+      tr("Exports the document, or the selection, to an image, SVG, PDF or EPS file"));
 
   editCopyImage = new QAction(tr("Copy as Image"), this);
   connect(editCopyImage, SIGNAL(triggered()), SLOT(slotEditCopyImage()));

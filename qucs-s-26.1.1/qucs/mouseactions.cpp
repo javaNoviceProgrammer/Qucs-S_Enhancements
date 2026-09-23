@@ -803,6 +803,9 @@ void MouseActions::rightPressMenu(Schematic *Doc, QMouseEvent *Event, float fX, 
                 ComponentMenu->addAction(QucsMain->popH);
     } while (false);
 
+    ComponentMenu->addSeparator();
+    ComponentMenu->addAction(QucsMain->exportGraphics);
+
     ComponentMenu->popup(Event->globalPosition().toPoint());
     Doc->viewport()->update();
 }

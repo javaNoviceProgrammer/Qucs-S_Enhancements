@@ -481,6 +481,7 @@ public:
 
   QAction *exportAsImage;
   QAction *exportDiagramAsImage;   // a diagram's context menu: the diagram alone
+  QAction *exportGraphics;         // the canvas' context menu: the export dialog
   QAction *editCopyImage;          // the selection, or everything, on the clipboard as a picture
 
   QAction *activeAction; // pointer to the action selected by the user
