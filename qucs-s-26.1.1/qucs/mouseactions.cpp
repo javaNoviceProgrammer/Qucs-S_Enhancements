@@ -723,6 +723,7 @@ void MouseActions::rightPressMenu(Schematic *Doc, QMouseEvent *Event, float fX, 
         if (!QucsMain->onGrid->isChecked())
             ComponentMenu->addAction(QucsMain->onGrid);
         ComponentMenu->addAction(QucsMain->editCopy);
+        ComponentMenu->addAction(QucsMain->editCopyImage);
         if (!QucsMain->editPaste->isChecked())
             ComponentMenu->addAction(QucsMain->editPaste);
         break;
@@ -739,13 +740,7 @@ void MouseActions::rightPressMenu(Schematic *Doc, QMouseEvent *Event, float fX, 
                     ComponentMenu->addAction(QucsMain->resetDiagramLimits);
                 }
 
-                // TODO: This should probably be in qucs_init::initActions.
-                QAction *actExport = new QAction(QObject::tr("Export as image"), QucsMain);
-                QObject::connect(actExport,
-                                 SIGNAL(triggered(bool)),
-                                 QucsMain,
-                                 SLOT(slotSaveDiagramToGraphicsFile()));
-                ComponentMenu->addAction(actExport);
+                ComponentMenu->addAction(QucsMain->exportDiagramAsImage);
             }
         }
         break;

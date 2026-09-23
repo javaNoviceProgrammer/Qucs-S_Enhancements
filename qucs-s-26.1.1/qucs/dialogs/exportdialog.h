@@ -1,5 +1,5 @@
 /***************************************************************************
-                               exportdiagramdialog.h
+                               exportdialog.h
                               ------------------
     begin                : Thu Nov 28 2013
     copyright            : (C) 2013 by Vadim Kuznetzov
@@ -17,93 +17,98 @@
 #ifndef EXPORTDIALOG_H
 #define EXPORTDIALOG_H
 
+#include "graphicsexport.h"
+
 #include <QDialog>
+#include <QSize>
 
-class QLabel;
 class QCheckBox;
-class QLineEdit;
 class QComboBox;
-class QHBoxLayout;
-class QVBoxLayout;
+class QDoubleSpinBox;
+class QFormLayout;
+class QLabel;
+class QLineEdit;
+class QPushButton;
+class QSpinBox;
 
+// File > Export as image: the file, its format (PNG, JPEG, BMP, TIFF,
+// WebP, SVG, PDF, EPS, PDF + LaTeX) and how it is drawn; or the drawing on
+// the clipboard. The choices are kept for the next time.
 class ExportDialog : public QDialog
 {
     Q_OBJECT
 public:
-    explicit ExportDialog(int w, int h, int wsel, int hsel, QString filename_, bool nosel_=true, QWidget *parent = 0);
-    
-private:
-    QPushButton* ExportButt;
-    QPushButton* CancelButt;
-    QPushButton* SaveButt;
+    /// What exec() returns after "Copy to Clipboard".
+    enum { Copied = 2 };
 
-    QLabel* lblFilename;
-    QLabel* lblResolutionX;
-    QLabel* lblResolutionY;
-    QLabel* lblRatio;
-    QLabel* lblFormat;
+    /// \a size and \a selectionSize: what is drawn, in units of the
+    /// schematic, of everything and of the selection (empty: nothing is
+    /// selected).
+    ExportDialog(QSize size, QSize selectionSize, const QString& fileName, QWidget* parent = nullptr);
 
-    QCheckBox* cbResolution;
-    QCheckBox* cbRatio;
-    QCheckBox* cbSelected;
-
-    QLineEdit* editFilename;
-    QLineEdit* editResolutionX;
-    QLineEdit* editResolutionY;
-    QLineEdit* editScale;
-
-    QComboBox* cbxImgType;
-
-    QHBoxLayout* lower1;
-    QHBoxLayout* lower2;
-    QHBoxLayout* lower3;
-    QHBoxLayout* lower4;
-    QVBoxLayout* top;
-
-    int dwidth, dheight;
-
-    int dwidthsel, dheightsel;
-
-    float scale;
-
-    bool svg, noselected;
-
-    QString filename;
-
-public:
-
-    enum ImgFormat {Coloured, Monochrome, Grayscale};
-
-    QString FileToSave();
-    bool isOriginalSize();
-    bool isExportSelected();
-    int Xpixels();
-    int Ypixels();
-    bool isSvg();
-    bool needsInkscape();
-    bool isValidFilename();
-    bool isPdf();
-    bool isPdf_Tex();
-    bool isEps();
+    /// A diagram's export: its selection, only.
     void setDiagram();
-    float getScale();
 
-    ExportDialog::ImgFormat getImgFormat();
+    /// The file, with the suffix of the format.
+    QString fileName() const;
+    qucs_s::graphicsexport::Format format() const;
+    qucs_s::graphicsexport::Options options() const;
 
-signals:
-    
-private slots:
-    void setFileName();
-    void calcWidth();
-    void calcHeight();
-    void recalcRatio();
-    void restoreOriginalWtoH();
-    void setSvg(QString filename);
-    void setSelectedWH();
-    void recalcScale();
+    // The controls, for the tests.
+    QLineEdit* fileEdit() const { return m_file; }
+    QComboBox* formatBox() const { return m_format; }
+    QCheckBox* selectionBox() const { return m_selection; }
+    QDoubleSpinBox* scaleBox() const { return m_scale; }
+    QSpinBox* dpiBox() const { return m_dpi; }
+    QSpinBox* widthBox() const { return m_width; }
+    QSpinBox* heightBox() const { return m_height; }
+    QComboBox* coloursBox() const { return m_colours; }
+    QCheckBox* transparentBox() const { return m_transparent; }
+    QSpinBox* qualityBox() const { return m_quality; }
+    QCheckBox* outlinesBox() const { return m_outlines; }
+    QLabel* noteLabel() const { return m_note; }
+    QPushButton* copyButton() const { return m_copy; }
 
 public slots:
-    
+    void accept() override;
+
+private slots:
+    void browse();
+    void fileEdited(const QString& text);
+    void formatChosen();
+    void selectionToggled();
+    void outlinesToggled(bool on);
+
+private:
+    QSize drawnSize() const;
+    void setScale(double scale, const QObject* from);
+    void updateControls();
+    void load();
+    void store() const;
+
+    QSize m_size;
+    QSize m_selectionSize;
+    double m_scaleValue = 1.0;        // the spin box shows it rounded
+    bool m_outlinesSvg = true;        // what was chosen for each format
+    bool m_outlinesPdf = false;
+
+    QFormLayout* m_form;
+    QLineEdit* m_file;
+    QComboBox* m_format;
+    QCheckBox* m_selection;
+    QDoubleSpinBox* m_scale;
+    QSpinBox* m_dpi;
+    QSpinBox* m_width;
+    QSpinBox* m_height;
+    QLabel* m_physical;
+    QComboBox* m_colours;
+    QCheckBox* m_transparent;
+    QSpinBox* m_quality;
+    QCheckBox* m_outlines;
+    QLabel* m_note;
+    QPushButton* m_copy;
+    QWidget* m_scaleRow;
+    QWidget* m_sizeRow;
 };
 
 #endif // EXPORTDIALOG_H

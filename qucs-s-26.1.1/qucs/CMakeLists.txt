@@ -160,6 +160,7 @@ SET(QUCS_SRCS
   autosave.cpp crashhandler.cpp shellenvironment.cpp apptheme.cpp erc.cpp
   embeddedimage.cpp componentsearch.cpp findbar.cpp biaslabels.cpp ink.cpp valuereading.cpp
   systemopen.cpp oppoint.cpp workspace.cpp vamodule.cpp optimization.cpp ngoptimize.cpp
+  exportdevices.cpp graphicsexport.cpp
 )
 
 SET(QUCS_HDRS
@@ -176,6 +177,8 @@ workspace.h
 vamodule.h
 optimization.h
 ngoptimize.h
+exportdevices.h
+graphicsexport.h
 conductor.h
 healer.h
 main.h

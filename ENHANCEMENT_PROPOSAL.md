@@ -1101,6 +1101,62 @@ existing demand.
   dialog (checked rows only, the old dialog's "set this property"
   use, stale fields, a bad expression, a project with an open, a closed
   and a Scratch schematic, the double click).
+- *Done:* **Export in every useful format, by Qucs-S alone.** Upstream's
+  `ImageWriter` wrote PNG and JPEG through `QImage` and SVG through
+  `QSvgGenerator`, and handed PDF, EPS and PDF + LaTeX to Inkscape with
+  0.92's options (`-z --file= --export-pdf=`), which Inkscape 1.x rejects
+  or warns about; without Inkscape: "Inkscape start error!". The SVG had
+  no `viewBox`, a size in millimetres at 72 dpi read at 96, and the
+  drawing fitted into the size of the schematic without its margins:
+  0.92 of the canvas, in its top left corner. Its text named the font as
+  Qt knows it - on macOS `.AppleSystemUIFont`, which nothing else can
+  resolve - so every reader set it in another font and the labels ran
+  over their boxes. The command line refused JPEG and printed a PDF on
+  an A4 page. `qucs_s::graphicsexport` (`qucs/graphicsexport.*`) now
+  writes PNG, JPEG, BMP, TIFF, WebP (those Qt's image writers have), SVG,
+  PDF (`QPdfWriter`, the page the size of the drawing), EPS and PDF +
+  LaTeX; `Schematic::printedArea()` is what `print()` draws (the frame
+  included), so the size and the drawing agree. Two paint devices
+  (`qucs/exportdevices.*`): `RelayDevice` draws on another painter and
+  decides the text - as it is (a font of a family starting with "." is
+  named `sans-serif` in an SVG), as the outlines of its glyphs, or kept
+  with its position, angle, font and colour for a LaTeX overlay - and
+  the colours: grayscale, or black and white, where a line or a text is
+  black unless it is white and a fill white unless it is dark, so light
+  fills do not swallow the drawing and cyan traces do not vanish.
+  `EpsDevice` writes EPS (LanguageLevel 2, a unit 1/96 inch, y turned
+  down in the prolog): paths with their fill rule, pens with width, caps,
+  joins, miter limit and dashes (a cosmetic pen one unit wide), the
+  hatch patterns as clipped lines, the dense ones as their share of the
+  colour, alpha and opacity on white paper, clipping, images as
+  hexadecimal samples, text as outlines. PDF + LaTeX writes `NAME.pdf`
+  without text and `NAME.pdf_tex` in Inkscape's layout (`\svgwidth`,
+  `\svgscale`), each text at the start of its baseline, turned, in its
+  colour, bold or italic, as large as in the drawing unless
+  `\qucsdocumentfont` is defined, with what LaTeX takes for a command
+  escaped unless the text has a `$`. The dialog (rewritten) has the
+  format, the scale linked to the resolution and the pixels, the size in
+  centimetres for a vector format, colours, transparency (not for JPEG
+  or BMP), quality (JPEG, WebP), text as outlines (SVG, PDF), a note for
+  EPS and PDF + LaTeX, and *Copy to Clipboard*; the choices are kept
+  (`Export/` in the settings) and the file offered is named after the
+  document. *Edit → Copy as Image* (and the context menu) puts the
+  selection or the document on the clipboard: an image at twice the
+  scale, an SVG with outlines and a PDF. The diagram's *Export as image*
+  is one action instead of a new one per right click. `-p` takes the same
+  formats by the extension, `--dpi` for an image, `--color BW`; a PDF is
+  the drawing's size unless `--page` or `--orin` is given, and an
+  unknown extension or an empty document is an error (exit 1) instead
+  of nothing written. `qucs/tests/test_graphics_export` covers the
+  formats and suffixes, the area and the selection, every raster format,
+  scale and resolution, paper and transparency, grey and black and
+  white, the SVG's size and geometry (rendered and compared with the
+  image), its fonts, the PDF's page and fonts, the EPS's structure and
+  the EPS engine alone, PDF + LaTeX, the text kept for LaTeX, outlines
+  against text, the clipboard and the dialog; where Ghostscript,
+  pdftoppm and pdflatex are installed it renders the EPS and the PDF and
+  compiles the overlay. The `load` smoke suite writes an example in every
+  format from the command line.
 
 **Larger (architectural — see WS4 first)**
 

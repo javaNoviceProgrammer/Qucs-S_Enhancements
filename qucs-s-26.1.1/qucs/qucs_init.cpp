@@ -378,6 +378,20 @@ void QucsApp::initActions() {
   exportAsImage->setWhatsThis(
       tr("Export as image\n\nExports the current document to an image file"));
 
+  exportDiagramAsImage = new QAction(tr("Export as image..."), this);
+  connect(exportDiagramAsImage, SIGNAL(triggered()),
+          SLOT(slotSaveDiagramToGraphicsFile()));
+  exportDiagramAsImage->setStatusTip(tr("Exports the diagram to an image file"));
+
+  editCopyImage = new QAction(tr("Copy as Image"), this);
+  connect(editCopyImage, SIGNAL(triggered()), SLOT(slotEditCopyImage()));
+  editCopyImage->setStatusTip(
+      tr("Copies the selection, or the whole document, into the clipboard as a picture"));
+  editCopyImage->setWhatsThis(
+      tr("Copy as Image\n\nCopies the selection, or the whole document when nothing is\n"
+         "selected, into the clipboard as a picture: an image, an SVG and a PDF,\n"
+         "for another program to paste"));
+
   // cursor left/right/up/down to move marker on a graph
   cursorLeft = new QShortcut(QKeySequence(Qt::Key_Left), this);
   connect(cursorLeft, SIGNAL(activated()), SLOT(slotCursorLeft()));
@@ -1008,6 +1022,7 @@ void QucsApp::initMenuBar() {
   editMenu->addSeparator();
   editMenu->addAction(editCut);
   editMenu->addAction(editCopy);
+  editMenu->addAction(editCopyImage);
   editMenu->addAction(editPaste);
   editMenu->addAction(editDelete);
   editMenu->addSeparator();
@@ -1551,6 +1566,9 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("Edit.Copy", "Edit", "Copy", editCopy,
                       QKeySequence::Copy);
+
+  mgr.registerCommand("Edit.CopyImage", "Edit", "Copy as Image", editCopyImage,
+                      QKeySequence());
 
   mgr.registerCommand("Edit.Paste", "Edit", "Paste", editPaste,
                       QKeySequence::Paste);

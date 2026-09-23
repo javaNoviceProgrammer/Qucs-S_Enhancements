@@ -1003,15 +1003,7 @@ void Schematic::print(QPrinter*, QPainter* painter, bool printAll,
     const QRectF pageSize{0, 0, static_cast<double>(painter->device()->width()),
                           static_cast<double>(painter->device()->height())};
 
-    QRect printedArea = printAll ? allBoundingRect() : currentSelection().bounds;
-
-    if (printAll && a_showFrame != FrameSize::None) {
-        int frame_width, frame_height;
-        sizeOfFrame(frame_width, frame_height);
-        printedArea |= QRect{0, 0, frame_width, frame_height};
-    }
-
-    printedArea = printedArea.marginsAdded(margins);
+    const QRect printedArea = this->printedArea(printAll, margins);
 
     double scale = 1.0;
     if (fitToPage) {
@@ -1059,6 +1051,18 @@ void Schematic::print(QPrinter*, QPainter* painter, bool printAll,
     paintSchToViewpainter(painter, printAll);
 
     painter->restore();
+}
+
+QRect Schematic::printedArea(bool printAll, QMargins margins) {
+    QRect area = printAll ? allBoundingRect() : currentSelection().bounds;
+
+    if (printAll && a_showFrame != FrameSize::None) {
+        int frame_width, frame_height;
+        sizeOfFrame(frame_width, frame_height);
+        area |= QRect{0, 0, frame_width, frame_height};
+    }
+
+    return area.marginsAdded(margins);
 }
 
 namespace {

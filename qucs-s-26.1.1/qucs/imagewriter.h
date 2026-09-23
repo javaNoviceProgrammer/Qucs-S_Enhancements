@@ -27,19 +27,24 @@
 
 class QWidget;
 
+// File > Export as image: the export dialog for a document, then the file
+// written (graphicsexport) or the drawing on the clipboard.
 class ImageWriter
 {
 public:
   ImageWriter (QString lastfile);
   virtual ~ImageWriter ();
+  // 0 when a file was written or the clipboard filled, -1 otherwise.
   int print(QWidget *);
-  void noGuiPrint(QWidget *, const QString& printFile, const QString& color);
 
   QString getLastSavedFile();
+  // The drawing went to the clipboard rather than to a file.
+  bool copied() const { return m_copied; }
 
   void setDiagram(bool diagram) { onlyDiagram = diagram; };
 private:
   bool onlyDiagram;
+  bool m_copied = false;
   QString lastExportFilename;
 };
 

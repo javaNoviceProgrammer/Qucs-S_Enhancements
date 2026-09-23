@@ -113,6 +113,9 @@ public:
   void setName(const QString&);
   void setChanged(bool, bool fillStack=false, char Op='*');
   void print(QPrinter*, QPainter*, bool printAll, bool fitToPage, QMargins margins={});
+  // What print() draws: everything (with the frame, when one is shown) or
+  // the selection, and the margins.
+  QRect printedArea(bool printAll, QMargins margins={});
 
   void paintSchToViewpainter(QPainter* painter, bool printAll);
 
