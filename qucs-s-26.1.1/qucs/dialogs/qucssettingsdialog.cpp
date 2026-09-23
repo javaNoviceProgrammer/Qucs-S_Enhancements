@@ -745,7 +745,9 @@ void QucsSettingsDialog::slotApply()
       // if user aborts closing, just return
       if(!App->closeAllFiles()) return;
 
-      QucsSettings.qucsWorkspaceDir.setPath(homeEdit->text());
+      // The Projects panel lists the new one (the folder it shows was left
+      // at the old workspace), made if it does not exist yet.
+      App->setWorkspace(homeEdit->text());
       homeDirChanged = true;
       // later below the file tree will be refreshed
     }

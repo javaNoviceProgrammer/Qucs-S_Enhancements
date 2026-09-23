@@ -423,6 +423,23 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Open with*; on Linux the desktop entry and the MIME types
   (`share/mime/packages/qucs-s.xml`, telling a Qucs `.sch` from another
   program's by its first line) do the same.
+- **Workspace, import and link from the Projects panel**: right-click
+  the *Projects* panel (or use the *Project* menu):
+  - *Switch Workspace...* chooses another folder as the workspace; the
+    panel lists its projects, and the choice is kept (the same as
+    *Application Settings → Locations*, which now also updates the
+    panel — it used to keep listing the old workspace until a restart).
+  - *Import Project...* copies a project folder (`NAME_prj`) from
+    anywhere into the workspace.
+  - *Link Project...* puts a link to a project folder elsewhere into the
+    workspace: nothing is copied, and the project is listed (in italics,
+    with its real place as the tooltip), opened, edited and simulated as
+    any other; its files and Scratch folder stay where they are.
+    *Delete* on a linked project removes the link only — the project
+    itself is not touched. (A symbolic link; on Windows a junction when
+    symbolic links need Developer Mode.)
+  When the workspace already has a project of that name, you are asked
+  for another one.
 
 The detailed record — root causes, what each change does and how it is
 tested — is in [ENHANCEMENT_PROPOSAL.md](ENHANCEMENT_PROPOSAL.md).
