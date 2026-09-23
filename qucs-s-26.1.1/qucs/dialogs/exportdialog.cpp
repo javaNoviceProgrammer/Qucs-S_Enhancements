@@ -225,6 +225,13 @@ void ExportDialog::accept()
         QMessageBox::warning(this, windowTitle(), tr("Give the file to export to."));
         return;
     }
+    // A suffix of a format this build cannot write (TIFF, WebP without
+    // the qtimageformats plugins) is not quietly changed into another.
+    if (const auto typed = formatOf(m_file->text().trimmed()); typed && m_format->findData(int(*typed)) < 0) {
+        QMessageBox::warning(this, windowTitle(),
+                             tr("This build of Qucs-S cannot write a %1.").arg(description(*typed)));
+        return;
+    }
     const QString folder = QFileInfo(name).absolutePath();
     if (!QFileInfo(folder).isDir()) {
         QMessageBox::warning(this, windowTitle(),
