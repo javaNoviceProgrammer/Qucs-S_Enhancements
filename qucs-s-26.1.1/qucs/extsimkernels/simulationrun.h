@@ -24,6 +24,7 @@
 
 #include "ngspice.h"
 #include "xyce.h"
+#include "optimizer.h"
 
 class Schematic;
 class QPlainTextEdit;
@@ -60,6 +61,9 @@ private:
     bool a_hasError;
     bool a_netlist2Console;
     bool a_running;
+    bool a_optimizationAllowed = false;
+    bool a_afterOptimization = false;   // the simulation of the best point
+    Optimizer *a_optimizer = nullptr;
 
 public:
     explicit SimulationRun(Schematic* sch, bool netlist2Console, QObject* parent = nullptr);
@@ -78,9 +82,9 @@ public:
 private:
     void saveLog();
     void addLogEntry(const QString&text, const QIcon &icon);
-    bool logContainsError(const QString &out);
-    bool logContainsWarning(const QString &out);
     void setSimulator();
+    void startOptimization(Component* optimization);
+    void writeBackOptimum();
 
 signals:
     /// The simulator process is running.
@@ -92,6 +96,21 @@ signals:
     void success();
 
 public:
+    /// Whether the simulator's output reports an error (a warning) - the
+    /// patterns of the simulator in the settings.
+    static bool logContainsError(const QString &out);
+    static bool logContainsWarning(const QString &out);
+    /// Points a kernel at the ngspice of the settings, with its parameters.
+    static void configureNgspice(Ngspice* kernel);
+
+    /// An active optimization component (.Opt) in the schematic makes
+    /// start() optimize with ngspice (Optimizer) before it simulates the
+    /// best point found; allowed unless this is a DC bias run or a tuner
+    /// step. Off by default.
+    void setOptimizationAllowed(bool allowed) { a_optimizationAllowed = allowed; }
+    /// The optimization of this run, while it runs and after.
+    Optimizer* optimizer() const { return a_optimizer; }
+
     /// Writes the netlist of the schematic to \a filename (a SPICE
     /// simulator's: ngspice, SPICE OPUS or Xyce) without asking anything;
     /// false when the simulator is not one of those or the file was not
@@ -107,6 +126,7 @@ private slots:
     void slotProcessOutput();
     void slotNgspiceStarted();
     void slotNgspiceStartError(QProcess::ProcessError err);
+    void slotOptimized(bool ok);
 };
 
 #endif // SIMULATIONRUN_H

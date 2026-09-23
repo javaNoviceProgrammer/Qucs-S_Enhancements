@@ -8,6 +8,7 @@ INCLUDE_DIRECTORIES( ${CMAKE_CURRENT_SOURCE_DIR}
 
 SET(EXTSIMKERNELS_HDRS
 simulationrun.h
+optimizer.h
 abstractspicekernel.h
 ngspice.h
 xyce.h
@@ -25,6 +26,7 @@ CdlSettingsDialog.h
 
 SET(EXTSIMKERNELS_SRCS
 simulationrun.cpp
+optimizer.cpp
 abstractspicekernel.cpp
 ngspice.cpp
 xyce.cpp
@@ -43,6 +45,7 @@ CdlSettingsDialog.cpp
 
 SET(EXTSIMKERNELS_MOC_HDRS
 simulationrun.h
+optimizer.h
 abstractspicekernel.h
 ngspice.h
 xyce.h

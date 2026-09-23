@@ -29,6 +29,9 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QStyle>
+#include <QTextCursor>
+
+#include <algorithm>
 
 #include "settings.h"
 #include "misc.h"
@@ -85,18 +88,7 @@ void SimulationRun::setSimulator()
         connect(a_ngspice,SIGNAL(started()),this,SLOT(slotNgspiceStarted()));
         connect(a_ngspice,SIGNAL(finished()),this,SLOT(slotProcessOutput()));
         connect(a_ngspice,SIGNAL(errors(QProcess::ProcessError)),this,SLOT(slotNgspiceStartError(QProcess::ProcessError)));
-        QString cmd;
-        if (QFileInfo(QucsSettings.NgspiceExecutable).isRelative()) { // this check is related to MacOS
-            cmd = QFileInfo(QucsSettings.BinDir + QucsSettings.NgspiceExecutable).absoluteFilePath();
-        } else {
-            cmd = QFileInfo(QucsSettings.NgspiceExecutable).absoluteFilePath();
-        }
-        if (QFileInfo::exists(cmd)) {
-            a_ngspice->setSimulatorCmd(cmd);
-        } else {
-            a_ngspice->setSimulatorCmd(QucsSettings.NgspiceExecutable); //rely on $PATH
-        }
-        a_ngspice->setSimulatorParameters(_settings::Get().item<QString>("NgspiceParams"));
+        configureNgspice(a_ngspice);
     }
         break;
     case spicecompat::simXyce: {
@@ -120,6 +112,22 @@ void SimulationRun::setSimulator()
     }
 }
 
+
+void SimulationRun::configureNgspice(Ngspice* kernel)
+{
+    QString cmd;
+    if (QFileInfo(QucsSettings.NgspiceExecutable).isRelative()) { // this check is related to MacOS
+        cmd = QFileInfo(QucsSettings.BinDir + QucsSettings.NgspiceExecutable).absoluteFilePath();
+    } else {
+        cmd = QFileInfo(QucsSettings.NgspiceExecutable).absoluteFilePath();
+    }
+    if (QFileInfo::exists(cmd)) {
+        kernel->setSimulatorCmd(cmd);
+    } else {
+        kernel->setSimulatorCmd(QucsSettings.NgspiceExecutable); //rely on $PATH
+    }
+    kernel->setSimulatorParameters(_settings::Get().item<QString>("NgspiceParams"));
+}
 
 void SimulationRun::slotProcessOutput()
 {
@@ -201,7 +209,8 @@ void SimulationRun::slotProcessOutput()
 void SimulationRun::slotNgspiceStarted()
 {
     if (a_console != nullptr) {
-        a_console->clear();
+        // After an optimization the console keeps its account of it.
+        if (!a_afterOptimization) a_console->clear();
         QString sim = spicecompat::getDefaultSimulatorName(QucsSettings.DefaultSimulator);
         a_console->insertPlainText(sim + tr(" started...\n"));
     }
@@ -248,6 +257,14 @@ void SimulationRun::start()
     a_wasSimulated = true;
     a_hasError = false;
     if (a_progress != nullptr) a_progress->setValue(0);
+    if (a_optimizationAllowed && !a_schematic.isNull()
+        && QucsSettings.DefaultSimulator == spicecompat::simNgspice) {
+        for (Component* pc : a_schematic->a_DocComps)
+            if (pc->Model == ".Opt" && pc->isActive == COMP_IS_ACTIVE) {
+                startOptimization(pc);
+                return;
+            }
+    }
     switch (QucsSettings.DefaultSimulator) {
     case spicecompat::simNgspice:
         a_ngspice->slotSimulate();
@@ -267,11 +284,131 @@ void SimulationRun::start()
 void SimulationRun::stop()
 {
     if (!a_running) return;
+    if (a_optimizer != nullptr && a_optimizer->isRunning()) {
+        // The best point so far is still simulated (slotOptimized()); a
+        // second stop stops that.
+        addLogEntry(tr("Optimization stopped."), QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning));
+        a_optimizer->stop();
+        return;
+    }
     addLogEntry(tr("Simulation stopped."), QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning));
     a_hasError = true;      // no result to convert
     a_wasSimulated = false;
     a_ngspice->killThemAll();   // the kernel's finished() follows and ends the run
     a_xyce->killThemAll();
+}
+
+void SimulationRun::startOptimization(Component* optimization)
+{
+    using namespace qucs_s::optimization;
+    const QStyle *style = QApplication::style();
+    if (a_console != nullptr) a_console->clear();
+    Problem problem;
+    QString why;
+    bool ok = Problem::read(optimization, &problem, &why);
+    if (ok && !problem.simulation.isEmpty()) {
+        ok = std::any_of(a_schematic->a_DocComps.begin(), a_schematic->a_DocComps.end(), [&](Component* c) {
+            return c->isSimulation && c->Model != ".Opt" && c->Name.compare(problem.simulation, Qt::CaseInsensitive) == 0;
+        });
+        if (!ok) why = tr("%1 optimizes %2, which is not in the schematic").arg(problem.component, problem.simulation);
+    }
+    if (!ok) {
+        addLogEntry(tr("Optimization impossible: %1").arg(why), style->standardIcon(QStyle::SP_MessageBoxCritical));
+        if (a_console != nullptr) a_console->insertPlainText(tr("Optimization impossible: %1\n").arg(why));
+        a_hasError = true;
+        a_wasSimulated = false;
+        a_running = false;
+        saveLog();
+        emit simulated(this);
+        return;
+    }
+
+    a_optimizer = new Optimizer(a_schematic, problem, this);
+    connect(a_optimizer, &Optimizer::message, this, [this](const QString& line) {
+        if (a_console == nullptr) return;
+        a_console->moveCursor(QTextCursor::End);
+        a_console->insertPlainText(line + "\n");
+        a_console->moveCursor(QTextCursor::End);
+    });
+    if (a_progress != nullptr) connect(a_optimizer, &Optimizer::progress, a_progress, &QProgressBar::setValue);
+    connect(a_optimizer, &Optimizer::finished, this, &SimulationRun::slotOptimized);
+
+    int goals = 0;
+    for (const Goal& g : problem.goals) goals += g.type != GoalType::Monitor;
+    int variables = 0;
+    for (const Variable& v : problem.variables) variables += v.active;
+    if (a_console != nullptr) {
+        a_console->insertPlainText(
+            tr("Optimization %1 of %2 with ngspice: %3, %4\n")
+                .arg(problem.component,
+                     problem.simulation.isEmpty() ? tr("all simulations") : problem.simulation,
+                     variables == 1 ? tr("1 variable") : tr("%1 variables").arg(variables),
+                     goals == 1 ? tr("1 goal") : tr("%1 goals").arg(goals)));
+        a_console->insertPlainText(tr("%1, a population of %2, up to %3 generations, %4 simulations at a time\n")
+                                       .arg(problem.settings.methodName())
+                                       .arg(std::max(problem.settings.population, 6))
+                                       .arg(problem.settings.generations)
+                                       .arg(a_optimizer->parallel()));
+    }
+    addLogEntry(tr("Optimization started on: ") + QDateTime::currentDateTime().toString(),
+                style->standardIcon(QStyle::SP_MessageBoxInformation));
+    emit started();
+    a_optimizer->start();
+}
+
+void SimulationRun::slotOptimized(bool ok)
+{
+    const QStyle *style = QApplication::style();
+    if (!ok || a_schematic.isNull()) {
+        addLogEntry(a_schematic.isNull() ? tr("The schematic was closed during the optimization.")
+                                         : tr("Optimization failed. Please check log."),
+                    style->standardIcon(QStyle::SP_MessageBoxCritical));
+        a_hasError = true;
+        a_wasSimulated = false;
+        a_running = false;
+        saveLog();
+        emit simulated(this);
+        return;
+    }
+    writeBackOptimum();
+    addLogEntry(tr("Optimization finished: cost %1 after %2 simulations; simulating the best point.")
+                    .arg(qucs_s::optimization::number(a_optimizer->bestCost()))
+                    .arg(a_optimizer->simulations()),
+                QIcon(":/bitmaps/svg/ok_apply.svg"));
+    if (a_console != nullptr) a_console->insertPlainText(tr("Simulating the best point...\n"));
+    a_afterOptimization = true;
+    if (a_progress != nullptr) a_progress->setValue(0);
+    // Every simulation of the schematic, with the best values: the
+    // diagrams of the others keep theirs.
+    const qucs_s::optimization::NetlistScope scope(a_schematic, a_optimizer->problem(), a_optimizer->bestValues(),
+                                                   /*allSimulations=*/true);
+    a_ngspice->setExtraParameters(scope.extraParameters());
+    a_ngspice->setOperatingPointOnly(false);
+    a_ngspice->slotSimulate();
+}
+
+void SimulationRun::writeBackOptimum()
+{
+    // The best values become the variables' initial values, as ASCO's do
+    // with qucsator: the next run starts from them.
+    const QMap<QString, double> best = a_optimizer->bestValues();
+    Component* opt = nullptr;
+    for (Component* c : a_schematic->a_DocComps)
+        if (c->Model == ".Opt" && c->Name == a_optimizer->problem().component) opt = c;
+    if (opt == nullptr) return;
+    bool changed = false;
+    for (int i = 2; i < opt->Props.size(); ++i) {
+        Property* p = opt->Props.at(i);
+        if (p->Name != "Var") continue;
+        QStringList f = p->Value.split('|');
+        if (f.size() < 3 || f.value(1).trimmed() == "no" || !best.contains(f.at(0).trimmed())) continue;
+        const QString value = qucs_s::optimization::number(best.value(f.at(0).trimmed()));
+        if (f.at(2) == value) continue;
+        f[2] = value;
+        p->Value = f.join('|');
+        changed = true;
+    }
+    if (changed) a_schematic->setChanged(true, true);
 }
 
 bool SimulationRun::writeNetlist(const QString& filename)

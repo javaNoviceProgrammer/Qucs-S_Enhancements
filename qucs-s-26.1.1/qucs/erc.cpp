@@ -18,6 +18,7 @@
 #include "components/component.h"
 #include "main.h"
 #include "extsimkernels/spicecompat.h"
+#include "optimization.h"
 
 #include <QCoreApplication>
 #include <QHash>
@@ -86,13 +87,29 @@ QList<Issue> check(Schematic* doc)
                 errors << Issue{Severity::Error, tr("%1: not available for %2").arg(c->Name, simName),
                                 QPoint(c->cx, c->cy), c->Name};
             } else if (spiceSimulator(simulator) && c->SpiceModel.isEmpty() && !c->isEquation && !c->isProbe
-                       && !isGround(c)) {
+                       && !isGround(c) && c->Model != QLatin1String(".Opt")) {   // Qucs runs an optimization
                 errors << Issue{Severity::Error, tr("%1: has no SPICE model, %2 cannot simulate it").arg(c->Name, simName),
                                 QPoint(c->cx, c->cy), c->Name};
             } else if (spiceSimulator(simulator) && c->Model == QLatin1String("EDD")
                        && !c->Props.isEmpty() && c->Props.first()->Value == QLatin1String("implicit")) {
                 errors << Issue{Severity::Error,
                                 tr("%1: an implicit equation-defined device has no SPICE form (use the explicit type)").arg(c->Name),
+                                QPoint(c->cx, c->cy), c->Name};
+            }
+        }
+        // An optimization Qucs runs (ngspice): what it cannot start with.
+        if (c->Model == QLatin1String(".Opt") && simulator == spicecompat::simNgspice) {
+            optimization::Problem problem;
+            QString why;
+            if (!optimization::Problem::read(c, &problem, &why)) {
+                errors << Issue{Severity::Error, why, QPoint(c->cx, c->cy), c->Name};
+            } else if (!problem.simulation.isEmpty()
+                       && std::none_of(doc->a_DocComps.begin(), doc->a_DocComps.end(), [&](const Component* o) {
+                              return isSimulation(o) && o != c
+                                     && o->Name.compare(problem.simulation, Qt::CaseInsensitive) == 0;
+                          })) {
+                errors << Issue{Severity::Error,
+                                tr("%1 optimizes %2, which is not in the schematic").arg(c->Name, problem.simulation),
                                 QPoint(c->cx, c->cy), c->Name};
             }
         }

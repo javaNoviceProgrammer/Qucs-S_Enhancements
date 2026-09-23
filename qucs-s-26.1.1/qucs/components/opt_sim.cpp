@@ -28,7 +28,8 @@
 Optimize_Sim::Optimize_Sim()
 {
   Description = QObject::tr("Optimization");
-  Simulator = spicecompat::simQucsator;
+  // With qucsator ASCO optimizes; with ngspice Qucs does (Optimizer).
+  Simulator = spicecompat::simQucsator | spicecompat::simNgspice;
   initSymbol(Description);
   Model = ".Opt";
   Name  = "Opt";

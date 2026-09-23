@@ -73,6 +73,7 @@ protected:
 
     bool a_DC_OP_only; // only calculate operating point to show DC bias
     bool a_needsPrefix;
+    QString a_extraParameters;   // .PARAM lines ahead of the schematic's own
     Schematic *a_schematic;
 
     bool a_parseFourTHD;  // Fourier output is parsed twice, first freqencies, then THD
@@ -138,6 +139,13 @@ public:
     virtual void setSimulatorCmd(QString cmd);
     virtual void setSimulatorParameters(QString parameters);
     void setWorkdir(QString path);
+    /// Lines the netlist carries ahead of the schematic's parameters:
+    /// ".PARAM Rload=50\n" for an optimization's variable that no
+    /// component defines (optimization::NetlistScope).
+    void setExtraParameters(const QString& lines) { a_extraParameters = lines; }
+    /// A full simulation, not the operating point alone, whatever the
+    /// schematic's DC bias state was when the kernel was made.
+    void setOperatingPointOnly(bool only) { a_DC_OP_only = only; }
     virtual void SaveNetlist(QString filename);
     virtual bool waitEndOfSimulation();
     void setConsole(QPlainTextEdit *console) { a_console = console; }

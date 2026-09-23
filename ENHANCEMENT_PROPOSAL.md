@@ -815,6 +815,48 @@ existing demand.
   sources, an OSDI module), the attribution, units, values, the tooltip,
   the schematic and the tab, and a real DC bias run of two shipped
   examples when ngspice is installed (it is on the Linux CI job).
+- *Done:* **Optimization with ngspice** (#1327). The `.Opt` component
+  was qucsator-only: ASCO drives qucsator, and with ngspice the
+  component was not in the palette, and a schematic that had one was
+  refused as "SPICE-incompatible". ASCO cannot drive ngspice netlists
+  with a `.control` section, which is how Qucs-S runs every analysis, so
+  Qucs-S searches itself. `qucs_s::optimization` (`qucs/optimization.*`)
+  reads the component as the dialog writes it (variables
+  `name|yes|initial|min|max|type`, goals `name|MIN/MAX/LE/GE/EQ/MON|value`,
+  the DE settings), knows the E series (the standard's tables, 9.19 of
+  E192 included), reads a Qucs dataset, finds a goal among its variables
+  (`gain` is `ac.gain`; `vo` is `ac.v(vo)`, as ngspice keeps an
+  expression of a voltage one), measures a sweep by its worst point for
+  the goal, and weighs the goals into a cost (objectives relative to
+  the start, constraints' shortfall relative to the target, the
+  component's weights). `DifferentialEvolution` is Storn and Price's,
+  the ten strategies of the dialog (whose list named DE/rand/1/exp
+  twice; the fifth is DE/rand/2/exp), asked for candidates and told
+  their costs, seeded as the component says. `NetlistScope` makes the
+  schematic netlist one candidate: the variables' values in their
+  definitions (equation, `.PARAM`, `.GLOBAL_PARAM`), a `.PARAM` line
+  for a variable only a component's value names
+  (`AbstractSpiceKernel::setExtraParameters`), only the optimized
+  simulation, and everything back afterwards. `Optimizer`
+  (`extsimkernels/optimizer.*`) simulates the start (a goal the results
+  lack ends the run with the names they have), then each generation's
+  candidates in `Scratch/<schematic>/opt/1..8`, up to eight ngspice
+  processes at a time; it stops after the generations, at convergence
+  (the population's cost variance), or when every goal is a limit and
+  all are met. `SimulationRun::start()` runs it for an active `.Opt`
+  with ngspice (not for DC bias or a tuner step), writes the best
+  values into the component's variables (undoable, as ASCO's are) and
+  simulates the best point with every simulation for the diagrams;
+  *Stop* stops the search and keeps the best. The ERC reads the
+  component too. Example: `examples/ngspice/NGspice features/
+  LC_lowpass_optimization.sch`. `qucs/tests/test_optimization` covers
+  the component's formats, the series, the dataset, goal names and
+  sweeps, the cost, all ten strategies on a sphere (bounds, the same
+  seed the same search), the netlist of a candidate and the schematic
+  after it, the ERC - and, with ngspice, a divider tuned to a ratio
+  (an equation's variable on a log scale; a resistor's only, from E24),
+  a missing goal, a missing simulation, a stopped run, a start that
+  meets its goals, the example, and DC bias beside the component.
 - *Done (click, not hover):* **Net highlighting.** `Schematic::netOf(Wire*)`
   flood-fills the `Node`↔`Wire` graph and, in rounds, joins what labels
   of the same name and ground symbols connect; `selectedNet()` is the
