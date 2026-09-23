@@ -616,13 +616,14 @@ private slots:
         QVERIFY(!dialog.transparentBox()->isEnabled());
         QVERIFY(!dialog.options().transparent);
 
-        // A suffix typed chooses the format.
+        // A suffix typed chooses the format (SVG: every build has it; TIFF
+        // and WebP need the qtimageformats plugins).
         dialog.fileEdit()->clear();
-        QTest::keyClicks(dialog.fileEdit(), path("typed.tiff"));
-        QCOMPARE(dialog.format(), Format::Tiff);
-        QCOMPARE(dialog.fileName(), path("typed.tiff"));
+        QTest::keyClicks(dialog.fileEdit(), path("typed.svg"));
+        QCOMPARE(dialog.format(), Format::Svg);
+        QCOMPARE(dialog.fileName(), path("typed.svg"));
         dialog.fileEdit()->setText(path("plain"));
-        QCOMPARE(dialog.fileName(), path("plain.tif"));
+        QCOMPARE(dialog.fileName(), path("plain.svg"));
     }
 
     void theDialogsScaleResolutionAndPixels()
