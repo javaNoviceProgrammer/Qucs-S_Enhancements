@@ -4542,6 +4542,9 @@ void QucsApp::slotSimulateWithSpice()
         if (run == nullptr)
             return;   // another simulation is still running; the console says so
         a_lastSimulatedDoc = schematic->getDocName();
+        // An optimization component optimizes (ngspice), but not in a DC
+        // bias run or a tuner step.
+        run->setOptimizationAllowed(!TuningMode && schematic->getShowBias() != 0);
         connect(run, &SimulationRun::simulated, this, &QucsApp::slotAfterSpiceSimulation);
         connect(run, &SimulationRun::warnings, this, &QucsApp::slotShowWarnings);
         connect(run, &SimulationRun::success, this, &QucsApp::slotResetWarnings);

@@ -301,6 +301,27 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   filter (`gm` shows every device's gm, `T1` all of T1), *Copy* for a
   spreadsheet, and a click that selects the component. Nothing extra to
   set up: the DC bias run asks ngspice for it (`show all`).
+- **Optimization with ngspice** (upstream #1327): the *Optimization*
+  component is no longer qucsator-only. Place it beside an ngspice
+  simulation, list its variables (initial value, bounds, a linear or
+  logarithmic scale, integers or an E3 ... E192 series) and its goals
+  (results of the simulation by name, e.g. a Nutmeg equation's
+  `passband = vecmin(gain[0,20])`: at least, at most, equal to a value,
+  as small or as large as possible, or just shown), and press Simulate.
+  Qucs-S runs differential evolution itself: every candidate is one
+  ngspice run, as many at a time as the machine has cores; the console
+  shows the start and every few generations the best values and each
+  goal met or not. The best values become the component's initial
+  values (undoable), and the best point is simulated once more so the
+  diagrams show it. A variable can be an equation's or `.PARAM`'s, or
+  named only in a component's value (`Rx`, as the qucsator examples
+  do); a goal over a sweep counts by its worst point. The run stops
+  after the generations of its settings, when the population has
+  converged, or as soon as every goal is met when all are limits;
+  *Stop* keeps the best so far. Example: *NGspice features →
+  LC_lowpass_optimization* chooses the three E24 values of a 50 Ω
+  low-pass (0.5 dB to 1 MHz, 30 dB down from 3.16 MHz) in about two
+  seconds.
 - **Find in a schematic, and find and replace across the project**:
   *Edit → Find* (Ctrl+F) in a schematic opens a find bar under the
   pane — type a component's name, a net label or a value and the first

@@ -95,7 +95,7 @@ OptimizeDialog::OptimizeDialog(Optimize_Sim *c_, Schematic *d_)
                "DE/rand/1/exp;"
                "DE/rand-to-best/1/exp;"
                "DE/best/2/exp;"
-               "DE/rand/1/exp;"
+               "DE/rand/2/exp;"
                "DE/best/1/bin;"
                "DE/rand/1/bin;"
                "DE/rand-to-best/1/bin;"

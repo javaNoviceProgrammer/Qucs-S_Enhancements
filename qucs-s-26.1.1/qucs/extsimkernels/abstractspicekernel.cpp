@@ -134,6 +134,8 @@ bool AbstractSpiceKernel::checkSchematic(QStringList &incompat)
 {
     incompat.clear();
     for(Component *pc : a_schematic->a_DocComps) {
+        // An optimization is run by Qucs (SimulationRun), not the simulator.
+        if (pc->Model == ".Opt") continue;
         if ((!pc->isEquation)&&!(pc->isProbe)) {
             if (pc->SpiceModel.isEmpty() && pc->isActive) incompat.append(pc->Name);
         }
@@ -229,6 +231,7 @@ void AbstractSpiceKernel::startNetlist(QTextStream &stream, spicecompat::SpiceDi
         }
 
         // Parameters, Initial conditions, Options
+        stream<<a_extraParameters;
         for(Component *pc : a_schematic->a_DocComps) {
             if (pc->isEquation) {
                 s = pc->getExpression(dialect);
