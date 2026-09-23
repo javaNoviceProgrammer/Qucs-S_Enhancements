@@ -150,6 +150,9 @@ bool AbstractSpiceKernel::checkSchematic(QStringList &incompat)
  */
 bool AbstractSpiceKernel::checkGround()
 {
+    // Not asked for (Simulators Settings): the netlist goes as it is, and
+    // the simulator says what it thinks of a circuit without node 0.
+    if (!QucsSettings.RequireGround) return true;
     return std::ranges::any_of(
         a_schematic->a_DocComps,
         [](auto* c) { return c->Model == "GND"; });

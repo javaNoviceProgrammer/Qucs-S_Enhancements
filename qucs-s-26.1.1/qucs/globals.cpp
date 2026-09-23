@@ -132,6 +132,7 @@ bool loadSettings()
         || QucsSettings.SimulationConsoleHost > tQucsSettings::SimConsoleLegacyWindow)
         QucsSettings.SimulationConsoleHost = tQucsSettings::SimConsoleDock;
     QucsSettings.Theme = qucs_s::apptheme::bounded(_settings::Get().item<int>("Theme"));
+    QucsSettings.RequireGround = _settings::Get().item<bool>("RequireGround");
     QucsSettings.RecentProjects = _settings::Get().item<QString>("RecentProjects").split("*", Qt::SkipEmptyParts);
     QucsSettings.RecentDocs = _settings::Get().item<QString>("RecentDocs").split("*", Qt::SkipEmptyParts);
     QucsSettings.numRecentDocs = QucsSettings.RecentDocs.count();
@@ -218,6 +219,7 @@ bool saveApplSettings()
     qs.setItem<int>("GridMode",QucsSettings.GridMode);
     qs.setItem<int>("SimulationConsoleHost",QucsSettings.SimulationConsoleHost);
     qs.setItem<int>("Theme",QucsSettings.Theme);
+    qs.setItem<bool>("RequireGround",QucsSettings.RequireGround);
 
     // Copy the list of directory paths in which Qucs should
     // search for subcircuit schematics from qucsPathList

@@ -27,6 +27,10 @@
 #include "simulationconsole.h"
 #include "components/component.h"
 #include "extsimkernels/spicecompat.h"
+#include "extsimkernels/ngspice.h"
+#include "extsimkernels/xyce.h"
+#include "extsimkernels/simsettingsdialog.h"
+#include <QCheckBox>
 #include "isolated_settings.h"
 
 using namespace qucs_s::erc;
@@ -43,6 +47,13 @@ QStringList messages(const QList<Issue>& issues)
     for (const Issue& i : issues) out << (i.severity == Severity::Error ? "E " : "W ") + i.message;
     return out;
 }
+
+// What a kernel says of the schematic's ground before it simulates.
+template <typename Kernel>
+struct GroundProbe : Kernel {
+    using Kernel::Kernel;
+    bool groundFound() { return this->checkGround(); }
+};
 
 QAction* menuAction(QucsApp* app, const QString& menuTitle, const QString& text)
 {
@@ -100,6 +111,47 @@ private slots:
             "<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
         fine = dir.filePath("RCL_resonance.sch");
         QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"), fine));
+    }
+
+    // Simulators Settings > Before a simulation: without "A schematic must
+    // have a ground symbol" a circuit without one is simulated and the
+    // check only warns; the choice is kept and the dialog sets it.
+    void theGroundIsRequiredOnlyWhenTheSettingsSaySo()
+    {
+        Schematic doc(nullptr, broken);   // no ground
+        QVERIFY(doc.load());
+        GroundProbe<Ngspice> ngspice(&doc);
+        GroundProbe<Xyce> xyce(&doc);
+        const QString error = "E no ground: the circuit has no reference node";
+        const QString warning = "W no ground symbol: node 0 comes only from a net named 0 or a component that brings it";
+
+        QVERIFY(QucsSettings.RequireGround);   // the default
+        QStringList got = messages(check(&doc));
+        QVERIFY2(got.contains(error) && !got.contains(warning), qPrintable(got.join(" | ")));
+        QVERIFY(!ngspice.groundFound());
+        QVERIFY(!xyce.groundFound());
+
+        QucsSettings.RequireGround = false;
+        got = messages(check(&doc));
+        QVERIFY2(!got.contains(error) && got.contains(warning), qPrintable(got.join(" | ")));
+        QVERIFY(ngspice.groundFound());
+        QVERIFY(xyce.groundFound());
+
+        // Kept in the settings file.
+        QVERIFY(saveApplSettings());
+        QucsSettings.RequireGround = true;
+        QVERIFY(loadSettings());
+        QVERIFY(!QucsSettings.RequireGround);
+
+        // The dialog shows the setting and sets it.
+        SimSettingsDialog dialog;
+        auto* box = dialog.findChild<QCheckBox*>("cbRequireGround");
+        QVERIFY(box != nullptr);
+        QVERIFY(!box->isChecked());
+        box->setChecked(true);
+        QVERIFY(QMetaObject::invokeMethod(&dialog, "slotApply"));
+        QVERIFY(QucsSettings.RequireGround);
+        QVERIFY(messages(check(&doc)).contains(error));
     }
 
     void theChecksFindEachKindOfProblem()

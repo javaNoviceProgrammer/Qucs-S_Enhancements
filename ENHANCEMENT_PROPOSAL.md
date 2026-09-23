@@ -1035,6 +1035,15 @@ existing demand.
   `bitmaps/svg/check_current.svg`, the green one's colours turned
   yellow), this check, *Generate Netlist* and *Save netlist* (two new
   icons, `bitmaps/svg/netlist_*.svg`).
+- *Done:* **The ground a setting.** ngspice, SPICE OPUS and Xyce
+  (`AbstractSpiceKernel::checkGround()`) refused a circuit without a
+  ground symbol, and the check called it an error, whatever brought node
+  0 in - a net labelled `0`, a SPICE netlist or library part.
+  `QucsSettings.RequireGround` (`RequireGround`, default on), a checkbox
+  under *Simulators Settings → Before a simulation*: off, the kernels
+  let the netlist go and the check reports a missing ground as a warning.
+  `test_erc` covers both kernels and the check either way, the setting
+  kept across a save and a load, and the dialog.
 - *Done:* **Every line of a `.OPTIONS` section, however it is written.**
   `ComponentDialog::writeEquation()` read one `name = value` per line and
   threw away anything else, so an ngspice option that is a flag
