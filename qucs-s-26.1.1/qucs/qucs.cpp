@@ -91,6 +91,7 @@
 #include "octave_window.h"
 #include "printerwriter.h"
 #include "imagewriter.h"
+#include "graphicsexport.h"
 #include "qucslib_common.h"
 #include "misc.h"
 #include "extsimkernels/verilogawriter.h"
@@ -3950,6 +3951,7 @@ void QucsApp::switchSchematicDoc (bool SchematicMode)
   setDiagramLimits->setEnabled (SchematicMode);
 
   exportAsImage->setEnabled (SchematicMode); // only export schematic, no text
+  editCopyImage->setEnabled (SchematicMode);
 
   editFind->setEnabled (true);   // text search, or the schematic's find bar
   insEntity->setEnabled (!SchematicMode);
@@ -4490,13 +4492,48 @@ void QucsApp::slotSaveDiagramToGraphicsFile()
 
 void QucsApp::slotSaveSchematicToGraphicsFile(bool diagram)
 {
-  ImageWriter *writer = new ImageWriter(lastExportFilename);
-  writer->setDiagram(diagram);
-  if (!writer->print(DocumentTab->currentWidget())) {
-    lastExportFilename = writer->getLastSavedFile();
-    statusBar()->showMessage(QObject::tr("Successfully exported"), 2000);
+  ImageWriter writer(lastExportFilename);
+  writer.setDiagram(diagram);
+  if (!writer.print(DocumentTab->currentWidget())) {
+    if (writer.copied()) {
+      statusBar()->showMessage(tr("Copied into the clipboard as a picture"), 3000);
+    } else {
+      lastExportFilename = writer.getLastSavedFile();
+      statusBar()->showMessage(tr("Exported to %1").arg(QDir::toNativeSeparators(lastExportFilename)), 4000);
+    }
   }
-  delete writer;
+}
+
+// The selection - everything when nothing is selected - into the clipboard
+// as a picture, drawn as the export dialog last had it (colours,
+// background), the image at twice the size of the schematic.
+void QucsApp::slotEditCopyImage()
+{
+  Schematic *doc = currentSchematic();
+  if (doc == nullptr)
+    return;
+  using namespace qucs_s::graphicsexport;
+  Options options;
+  options.selectionOnly = !area(doc, true).isEmpty();
+  options.scale = 2.0;
+  {
+    QucsSettingsFile settings;
+    settings.beginGroup(QStringLiteral("Export"));
+    const int colours = settings.value(QStringLiteral("Colours"), 0).toInt();
+    if (colours >= int(Colours::Colour) && colours <= int(Colours::Monochrome))
+      options.colours = Colours(colours);
+    options.transparent = settings.value(QStringLiteral("Transparent"), false).toBool();
+    settings.endGroup();
+  }
+  if (area(doc, options.selectionOnly).isEmpty()) {
+    statusBar()->showMessage(tr("Nothing to copy: the document is empty"), 3000);
+    return;
+  }
+  QGuiApplication::clipboard()->setMimeData(mimeData(doc, options));
+  statusBar()->showMessage(options.selectionOnly
+                               ? tr("The selection is in the clipboard as a picture")
+                               : tr("The document is in the clipboard as a picture"),
+                           3000);
 }
 
 

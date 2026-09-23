@@ -90,6 +90,22 @@ suite_load() {
   done < <(find "$EXAMPLES/ngspice" -name '*.sch' -not -path '*/OpenVAF/*' -print0 | sort -z)
   # OpenVAF/ examples reference user-compiled Verilog-A devices that only
   # exist after the module is loaded in the GUI; they cannot load headless.
+
+  # The formats of File > Export, by the extension (TIFF and WebP need the
+  # qtimageformats plugins, not in every Qt): a schematic with a diagram,
+  # paintings and text, and a PDF printed on a page.
+  echo "== load: export every format"
+  local sch="$EXAMPLES/ngspice/NGspice features/LC_lowpass_optimization.sch"
+  local ext out
+  for ext in png jpg bmp svg pdf eps pdf_tex; do
+    out="$OUT/export-$ext.$ext"
+    run "export.$ext" 120 "$QUCS" -p -i "$sch" -o "$out" || continue
+    if [ ! -s "$out" ]; then
+      pass=$((pass-1)); fail=$((fail+1)); failed_names+=("export.$ext")
+      printf '  FAIL  %-60s nothing written\n' "export.$ext"
+    fi
+  done
+  run "export.page.pdf" 120 "$QUCS" -p -i "$sch" -o "$OUT/export-page.pdf" --page A4 --orin landscape
 }
 
 # --------------------------------------------------------------------------

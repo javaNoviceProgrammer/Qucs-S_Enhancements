@@ -480,6 +480,8 @@ public:
   QAction *TabPreviousAction; /// Action for raising the previous document tab
 
   QAction *exportAsImage;
+  QAction *exportDiagramAsImage;   // a diagram's context menu: the diagram alone
+  QAction *editCopyImage;          // the selection, or everything, on the clipboard as a picture
 
   QAction *activeAction; // pointer to the action selected by the user
   bool TuningMode;
@@ -733,6 +735,7 @@ public slots:
   void slotOpenRecentProject();
   void slotSaveDiagramToGraphicsFile();
   void slotSaveSchematicToGraphicsFile(bool diagram = false);
+  void slotEditCopyImage();
 
 private slots:
   void slotCursorLeft(bool left = true);

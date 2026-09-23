@@ -46,7 +46,7 @@
 #include "main.h"
 #include "node.h"
 #include "printerwriter.h"
-#include "imagewriter.h"
+#include "graphicsexport.h"
 #include "schematic.h"
 #include "settings.h"
 #include "module.h"
@@ -355,8 +355,19 @@ int doXyceNetlist(QString schematicFileName, QString netlistFileName, bool netli
 }
 
 int doPrint(QString schematicFileName, QString printFile,
-    QString page, int dpi, QString color, QString orientation)
+    QString page, int dpi, bool dpiGiven, QString color, QString orientation, bool onPage)
 {
+    using namespace qucs_s::graphicsexport;
+
+    const std::optional<Format> format = formatOf(printFile);
+    if (!format)
+    {
+        fprintf(stderr, "Error: %s: unknown format; the extension is one of "
+                        "png, jpg, bmp, tif, webp, svg, pdf, eps, pdf_tex\n",
+                printFile.toLocal8Bit().constData());
+        return 1;
+    }
+
     // Rendering does not depend on a simulator. Every component loads
     // whichever one is selected, but a part of another simulator is drawn
     // in grey; with simNotSpecified none is, so a print looks the same
@@ -378,19 +389,28 @@ int doPrint(QString schematicFileName, QString printFile,
 
     qDebug() << "*** try to print file  :" << printFile;
 
-    // determine filetype
-    if (printFile.endsWith(".pdf")) {
-        //initial printer
-        PrinterWriter *Printer = new PrinterWriter();
-        Printer->setFitToPage(true);
-        Printer->noGuiPrint(schematic.get(), printFile, page, dpi, color, orientation);
-    }
-    else
+    if (*format == Format::Pdf && onPage)
     {
-        ImageWriter *Printer = new ImageWriter("");
-        Printer->noGuiPrint(schematic.get(), printFile, color);
+        // On a page of the size asked for, as a printer would.
+        PrinterWriter printer;
+        printer.setFitToPage(true);
+        printer.noGuiPrint(schematic.get(), printFile, page, dpi, color, orientation);
+        return 0;
     }
 
+    Options options;
+    options.colours = color == "BW" ? Colours::Monochrome : Colours::Colour;
+    if (dpiGiven && dpi > 0)
+        options.scale = dpi / 96.0;
+    // As the export dialog has it by default: an SVG looks the same
+    // everywhere, a PDF embeds its fonts.
+    options.textAsOutlines = *format == Format::Svg;
+    QString error;
+    if (!write(schematic.get(), printFile, *format, options, &error))
+    {
+        fprintf(stderr, "Error: %s\n", error.toLocal8Bit().constData());
+        return 1;
+    }
     return 0;
 }
 
@@ -882,11 +902,11 @@ int main(int argc, char *argv[])
     parser.addOptions({
         {{"h", "help"}, QCoreApplication::translate("main", "display this help and exit")},
         {{"n", "netlist"}, QCoreApplication::translate("main", "convert Qucs schematic into netlist")},
-        {{"p", "print"}, QCoreApplication::translate("main", "print Qucs schematic to file (eps needs inkscape)")},
-        {"page", QCoreApplication::translate("main", "set print page size (default A4)"), "A4|A3|B4|B5", "A4"},
-        {"dpi", QCoreApplication::translate("main", "set dpi value (default 96)"), "NUMBER", "96"},
-        {"color", QCoreApplication::translate("main", "set color mode (default RGB)"), "RGB|BW", "RGB"},
-        {"orin", QCoreApplication::translate("main", "set orientation (default portraid)"), "portraid|landscape", "portraid"},
+        {{"p", "print"}, QCoreApplication::translate("main", "print Qucs schematic to file: png, jpg, bmp, tif, webp, svg, pdf, eps or pdf_tex, by its extension")},
+        {"page", QCoreApplication::translate("main", "print a PDF on a page of this size (default A4); without --page or --orin a PDF has the size of the drawing"), "A4|A3|B4|B5", "A4"},
+        {"dpi", QCoreApplication::translate("main", "set dpi value (default 96): the resolution of an image, or of a PDF page"), "NUMBER", "96"},
+        {"color", QCoreApplication::translate("main", "set color mode (default RGB); BW: black and white"), "RGB|BW", "RGB"},
+        {"orin", QCoreApplication::translate("main", "set orientation of a PDF page (default portraid)"), "portraid|landscape", "portraid"},
         {"i", QCoreApplication::translate("main", "use file as input schematic"), "FILENAME"},
         {"o", QCoreApplication::translate("main", "use file as output netlist"), "FILENAME"},
         {"ngspice", QCoreApplication::translate("main", "create Ngspice netlist")},
@@ -1061,7 +1081,8 @@ int main(int argc, char *argv[])
         }
         else if (print_flag)
         {
-            return doPrint(inputfile, outputfile, page, dpi, color, orientation);
+            return doPrint(inputfile, outputfile, page, dpi, parser.isSet("dpi"), color, orientation,
+                           parser.isSet("page") || parser.isSet("orin"));
         }
     }
 

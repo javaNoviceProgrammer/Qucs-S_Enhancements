@@ -491,6 +491,38 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     symbolic links need Developer Mode.)
   When the workspace already has a project of that name, you are asked
   for another one.
+- **Export to SVG, PDF, EPS, JPEG and more, without Inkscape** (*File →
+  Export as image...*; a diagram's context menu for the diagram alone):
+  PNG, JPEG, BMP, TIFF, WebP, SVG, PDF, EPS and *PDF + LaTeX*, all
+  written by Qucs-S itself. Before, PNG and JPEG were the only formats
+  that worked everywhere: SVG came out at the wrong scale in a corner of
+  its canvas, with its text in a font no other program has (macOS's
+  system font), and PDF, EPS and PDF + LaTeX ran Inkscape with options
+  Inkscape 1.x no longer takes — an error without Inkscape. Now:
+  - a vector file has the size of the drawing (a unit of the schematic is
+    1/96 inch): an SVG with its `viewBox`, a PDF page cropped to the
+    drawing with its fonts embedded, an EPS from a PostScript writer of
+    its own (Qt 6 has none);
+  - *Text as outlines* for SVG and PDF (always for EPS): the file looks
+    the same everywhere; without it an SVG names a font the reader has;
+  - *PDF + LaTeX* writes `NAME.pdf` without text and `NAME.pdf_tex` with
+    it, for LaTeX to set in the document's font: `\input{NAME.pdf_tex}`,
+    `\def\svgwidth{\columnwidth}` for its width; the text is as large
+    as in the drawing (`\def\qucsdocumentfont{}` keeps the document's
+    size), turned text stays turned, a text with `$` is taken as LaTeX;
+  - images at any scale or resolution (the dpi is written into the file),
+    JPEG and WebP quality;
+  - colour, grayscale or black and white (lines and text black, fills
+    white unless dark), on white paper or a transparent background;
+  - the whole document or the selection, the file named after the
+    document, and the choices kept for the next time.
+  *Copy to Clipboard* in the dialog, and *Edit → Copy as Image* (also in
+  the context menu), put the selection — or everything — on the
+  clipboard as an image, an SVG and a PDF, for another program to paste.
+  On the command line `qucs-s -p -i FILE.sch -o OUT.ext` takes the same
+  formats by the extension, `--dpi` for an image's resolution and
+  `--color BW`; a PDF is the size of the drawing unless `--page` or
+  `--orin` asks for a page.
 
 The detailed record — root causes, what each change does and how it is
 tested — is in [ENHANCEMENT_PROPOSAL.md](ENHANCEMENT_PROPOSAL.md).
@@ -648,7 +680,7 @@ preferences; the application offers the same for trying a build out:
 next start to report or offer.
 
 `scripts/ci/smoke-test.sh` has three suites — `load` (render every ngspice
-example), `simulate` (netlist → ngspice → dataset → render; needs `ngspice` on
+example, and one in every export format), `simulate` (netlist → ngspice → dataset → render; needs `ngspice` on
 `PATH`) and `hostile` (render a fixture against damaged datasets). Everything
 runs headless through the CLI modes of `qucs-s`; no window is opened.
 
