@@ -1030,9 +1030,11 @@ existing demand.
   components) breadth-first with a visited set, using open documents and
   loading the rest off-screen, and `slotLocateProblem()` opens another
   file's issue with `gotoPage()`. The *Hierarchy and Netlist* toolbar
-  (right of the simulation toolbar) carries `intoH`, `popH`, this check,
-  *Generate Netlist* and *Save netlist* (two new icons,
-  `bitmaps/svg/netlist_*.svg`).
+  (right of the simulation toolbar) carries `intoH`, `popH`, *Check
+  Schematic* (the schematic in front only; a yellow check mark,
+  `bitmaps/svg/check_current.svg`, the green one's colours turned
+  yellow), this check, *Generate Netlist* and *Save netlist* (two new
+  icons, `bitmaps/svg/netlist_*.svg`).
 - *Done:* **Every line of a `.OPTIONS` section, however it is written.**
   `ComponentDialog::writeEquation()` read one `name = value` per line and
   threw away anything else, so an ngspice option that is a flag
@@ -1232,8 +1234,8 @@ existing demand.
   (`Export/` in the settings) and the file offered is named after the
   document. *Edit → Copy as Image* (and the context menu) puts the
   selection or the document on the clipboard: an image at twice the
-  scale, an SVG with outlines and a PDF. The canvas' context menu ends
-  with *Export...* (the dialog); a diagram's *Export Diagram...* (the
+  scale, an SVG with outlines and a PDF. The context menu of the empty
+  canvas ends with *Export...* (the dialog; not on a component's); a diagram's *Export Diagram...* (the
   diagram alone) is one action instead of a new one per right click. `-p` takes the same
   formats by the extension, `--dpi` for an image, `--color BW`; a PDF is
   the drawing's size unless `--page` or `--orin` is given, and an
