@@ -1142,8 +1142,9 @@ existing demand.
   (`Export/` in the settings) and the file offered is named after the
   document. *Edit → Copy as Image* (and the context menu) puts the
   selection or the document on the clipboard: an image at twice the
-  scale, an SVG with outlines and a PDF. The diagram's *Export as image*
-  is one action instead of a new one per right click. `-p` takes the same
+  scale, an SVG with outlines and a PDF. The canvas' context menu ends
+  with *Export...* (the dialog); a diagram's *Export Diagram...* (the
+  diagram alone) is one action instead of a new one per right click. `-p` takes the same
   formats by the extension, `--dpi` for an image, `--color BW`; a PDF is
   the drawing's size unless `--page` or `--orin` is given, and an
   unknown extension or an empty document is an error (exit 1) instead

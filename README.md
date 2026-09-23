@@ -492,7 +492,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   When the workspace already has a project of that name, you are asked
   for another one.
 - **Export to SVG, PDF, EPS, JPEG and more, without Inkscape** (*File →
-  Export as image...*; a diagram's context menu for the diagram alone):
+  Export as image...*, or *Export...* at the bottom of the schematic's
+  context menu; *Export Diagram...* on a diagram for the diagram alone):
   PNG, JPEG, BMP, TIFF, WebP, SVG, PDF, EPS and *PDF + LaTeX*, all
   written by Qucs-S itself. Before, PNG and JPEG were the only formats
   that worked everywhere: SVG came out at the wrong scale in a corner of
