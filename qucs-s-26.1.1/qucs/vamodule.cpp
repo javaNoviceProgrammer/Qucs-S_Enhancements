@@ -107,20 +107,30 @@ QStringList splitTopLevel(const QString& text)
 
 } // namespace
 
-bool readOsdi(const QString& osdiFile, const QString& wanted, VerilogModule* module, QString* error)
+namespace {
+
+// The descriptors of a loaded OSDI library: how many, where the first is
+// and how far apart they are.
+struct Descriptors {
+    uint32_t count = 0;
+    const char* first = nullptr;
+    size_t stride = sizeof(OsdiDescriptor);
+
+    const OsdiDescriptor* at(uint32_t i) const
+    {
+        return reinterpret_cast<const OsdiDescriptor*>(first + i * stride);
+    }
+};
+
+// Loads \a library and finds its descriptors: false, and why in \a error,
+// when it is not an OSDI library this build reads.
+bool openDescriptors(QLibrary& library, const QString& shown, Descriptors* out, QString* error)
 {
     const auto fail = [error](const QString& why) {
         if (error) *error = why;
         return false;
     };
-    const QString shown = QDir::toNativeSeparators(osdiFile);
-    QLibrary library(osdiFile);
     if (!library.load()) return fail(tr("%1 cannot be loaded: %2").arg(shown, library.errorString()));
-    struct Unload {
-        QLibrary& library;
-        ~Unload() { library.unload(); }
-    } unload{library};
-
     const auto* major = reinterpret_cast<const uint32_t*>(library.resolve("OSDI_VERSION_MAJOR"));
     const auto* minor = reinterpret_cast<const uint32_t*>(library.resolve("OSDI_VERSION_MINOR"));
     if (major != nullptr && minor != nullptr && (*major != 0 || *minor < 3))
@@ -131,10 +141,48 @@ bool readOsdi(const QString& osdiFile, const QString& wanted, VerilogModule* mod
         return fail(tr("%1 describes no module: it is not an OSDI library.").arg(shown));
     // OSDI 0.4 descriptors are larger: step by the size the library gives.
     const auto* size = reinterpret_cast<const uint32_t*>(library.resolve("OSDI_DESCRIPTOR_SIZE"));
-    const size_t stride = size != nullptr && *size >= sizeof(OsdiDescriptor) ? *size : sizeof(OsdiDescriptor);
-    const auto descriptorAt = [first, stride](uint32_t i) {
-        return reinterpret_cast<const OsdiDescriptor*>(first + i * stride);
+    out->count = *count;
+    out->first = first;
+    out->stride = size != nullptr && *size >= sizeof(OsdiDescriptor) ? *size : sizeof(OsdiDescriptor);
+    return true;
+}
+
+struct Unload {
+    QLibrary& library;
+    ~Unload() { library.unload(); }
+};
+
+} // namespace
+
+bool osdiModules(const QString& osdiFile, QStringList* names, QString* error)
+{
+    QLibrary library(osdiFile);
+    Unload unload{library};
+    Descriptors descriptors;
+    if (!openDescriptors(library, QDir::toNativeSeparators(osdiFile), &descriptors, error))
+        return false;
+    QStringList found;
+    for (uint32_t i = 0; i < descriptors.count; ++i)
+        if (descriptors.at(i)->name != nullptr)
+            found << QString::fromUtf8(descriptors.at(i)->name);
+    *names = found;
+    return true;
+}
+
+bool readOsdi(const QString& osdiFile, const QString& wanted, VerilogModule* module, QString* error)
+{
+    const auto fail = [error](const QString& why) {
+        if (error) *error = why;
+        return false;
     };
+    const QString shown = QDir::toNativeSeparators(osdiFile);
+    QLibrary library(osdiFile);
+    Unload unload{library};
+    Descriptors descriptors;
+    if (!openDescriptors(library, shown, &descriptors, error))
+        return false;
+    const auto* count = &descriptors.count;
+    const auto descriptorAt = [&descriptors](uint32_t i) { return descriptors.at(i); };
     const OsdiDescriptor* d = descriptorAt(0);
     for (uint32_t i = 0; i < *count; ++i)
         if (descriptorAt(i)->name != nullptr

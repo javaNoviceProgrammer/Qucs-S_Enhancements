@@ -82,12 +82,28 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   icons in the Content panel* puts a folder icon on them.
   Open, copy, rename, delete, drag and subcircuit insertion work on them in
   both listings. A new *Osdi* category lists the compiled `.osdi` models;
-  ngspice loads all of them, wherever they are in the project, and Build
-  All compiles the `.va` files wherever they are. Two more categories sit
+  ngspice loads the ones a simulation uses, wherever they are in the
+  project (see below), and Build All compiles the `.va` files wherever
+  they are. Two more categories sit
   between *SPICE* and *Others*: *Python* (`.py`, `.pyw`; they open in the
   text editor) and *Images* (`.png`, `.jpg`/`.jpeg`, `.svg`, `.gif`,
   `.bmp`, `.tif`, `.webp` and the other formats Qt reads; they open with
   the system's viewer). Files in *Scratch* stay under *Scratch*.
+- **ngspice loads only the Verilog-A models a circuit uses**: the netlist
+  loaded (`pre_osdi`) every `.osdi` of the project, whatever the circuit
+  used — with a few libraries of compiled models in the project, every
+  simulation loaded all of them, and two builds of one module clashed.
+  Now the device types of the netlist's `.model` cards — those of the
+  schematic, its subcircuits and the libraries and include files they
+  bring in, followed into the files those include — are matched against
+  the modules each library defines, and only those libraries are
+  loaded: one for each module (a library already loaded, else the one
+  with the most of what is needed, else the most recently built; a
+  netlist comment says which was left out). A library that Qucs-S
+  cannot load itself (built for another architecture than the one it
+  runs on) is searched for the module's name. The DC bias
+  (*Calculate DC bias*) now loads them too; its netlist loaded none, so
+  it failed on a circuit with a Verilog-A device.
 - **A Scratch folder per project, a subfolder per schematic**: the
   temporary files of a simulation (netlist, the raw simulator output such
   as `spice4qucs.ac1.plot`, log) go to `Scratch/<schematic>/` inside the

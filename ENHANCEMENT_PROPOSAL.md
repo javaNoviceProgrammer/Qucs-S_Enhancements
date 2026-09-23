@@ -364,9 +364,10 @@ existing demand.
   file in its subdirectory, and `misc::properAbsFileName()` resolves such a
   relative path against the project so an inserted `sub/x.sch` netlists
   from any schematic. New *Osdi* category for the compiled models; the
-  ngspice netlister `pre_osdi`s every `.osdi` of the tree and Build All
-  compiles every `.va` of the tree, so the panel and the simulator agree
-  on what belongs to the project.
+  ngspice netlister looks for `.osdi` files in the whole tree (and loads
+  the ones the netlist uses, see below) and Build All compiles every
+  `.va` of the tree, so the panel and the simulator agree on what
+  belongs to the project.
   Two listings, switched from the context menu of the panel's empty area
   (*Toggle hierarchy search view*; rows keep their own menus) and kept in
   the settings (`ContentTreeView`): the flat
@@ -377,6 +378,38 @@ existing demand.
   `ProjectView::filePath()/isFile()/categoryOf()` instead of reading the
   row text and assuming the parent is the category. Expanded rows
   (categories and folders) are remembered across refreshes by path.
+- *Done:* **Only the OSDI libraries a netlist uses.** `Ngspice::
+  createNetlist()` wrote `pre_osdi` for every `.osdi` of the project,
+  whatever the circuit used: each simulation loaded every library (a
+  project that keeps several PDKs' compiled models loaded all of them),
+  and two builds of a module (`psp103.osdi` and `old/psp103.osdi`)
+  clashed - the fork refuses a second registration. The DC-bias netlist
+  (`a_DC_OP_only`) returned before that block and loaded none, so a
+  circuit with a Verilog-A device could not show its bias.
+  `qucs_s::osdi` (`qucs/osdiselection.*`): `modelTypes()` reads the types
+  of the `.model` cards (continuation lines joined, comments left out,
+  `type(` and `type (`), `includedFiles()` the files of `.include`,
+  `.inc` and `.lib` lines (quoted or not, relative to the file that names
+  them), `usedModelTypes()` follows them through the files they include
+  (each once, remembered while unchanged); `modulesOf()` asks the
+  library itself (`vamodule::osdiModules()`, which shares the loading and
+  the checks with `readOsdi()`) and remembers it while the file is
+  unchanged, and a library Qucs-S cannot load - built for another
+  architecture than Qucs-S, while ngspice may run under Rosetta - is
+  searched for the name as a string of its own (a NUL on each side, any
+  case); `needed()` keeps one library for each module used: one already
+  kept, else the one that has the most of what is still needed, else the
+  most recently built, and says what it left out. The netlist body goes
+  through a string, the `pre_osdi` lines (with a comment for each module
+  left out elsewhere) go into both `.control` blocks - the simulations'
+  and the DC bias'. `qucs/tests/test_osdi_selection` covers the cards,
+  the includes, the files they include (a loop, a changed file), a
+  foreign library, the choice among duplicates and multi-module
+  libraries, real libraries compiled by OpenVAF when it is installed,
+  and the netlist of a project (a `.MODEL` card, an included library
+  including another, a duplicate, unused libraries) for a simulation
+  and for the DC bias; `test_build_all_va` checks that a circuit without
+  Verilog-A loads none.
 - *Done:* **Folder icons in the Content panel are a setting**
   (`ContentFolderIcons`, default off; *Application Settings → Settings*).
   `ProjectView::folderItem()` sets the icon only when it is on, the

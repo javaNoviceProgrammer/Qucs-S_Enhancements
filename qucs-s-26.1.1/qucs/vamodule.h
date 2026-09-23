@@ -18,6 +18,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 namespace qucs_s::vamodule {
 
@@ -39,6 +40,11 @@ struct VerilogModule {
 /// it (OSDI 0.3 or later): false, and why in \a error, if the library
 /// cannot be read.
 bool readOsdi(const QString& osdiFile, const QString& wanted, VerilogModule* module, QString* error = nullptr);
+
+/// The names of the modules in the OSDI library \a osdiFile (OSDI 0.3 or
+/// later), as they are written: false, and why in \a error, if the
+/// library cannot be read.
+bool osdiModules(const QString& osdiFile, QStringList* names, QString* error = nullptr);
 
 /// The same read from Verilog-A source, for when there is no library yet:
 /// "(* desc="...", units="...", type="instance" *) parameter real r = 1e3

@@ -48,6 +48,7 @@ private:
     QString getParentSWPCntVar(Component *pc_swp, QString sim);
     void cleanSpiceinit();
     void createSpiceinit(const QString &initial_spiceinit);
+    QString osdiLoads(const QString& netlist) const;
 
 public:
     explicit Ngspice(Schematic* schematic, QObject *parent = 0);

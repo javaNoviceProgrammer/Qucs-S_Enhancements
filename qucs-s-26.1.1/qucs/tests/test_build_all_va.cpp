@@ -85,7 +85,8 @@ class TestBuildAllVerilogA : public QObject
             "echo \"$1\" >> \"" + dir.filePath("calls.log") + "\"\n"
             "if grep -q broken \"$1\"; then echo \"error: cannot parse $1\"; exit 1; fi\n"
             "echo \"compiled $1\"\n"
-            "touch \"${1%.va}.osdi\"\n", true);
+            // the module's name as a string, as a library holds it
+            "printf '\\000%s\\000' \"$(basename \"${1%.va}\")\" > \"${1%.va}.osdi\"\n", true);
     }
 
     static QStringList children(ProjectView* view, int category)
@@ -390,19 +391,31 @@ private slots:
         QVERIFY(!children(app.projectView(), ProjectView::Others).contains("good.osdi"));
         QVERIFY(app.projectView()->isExpanded(app.projectView()->model()->index(ProjectView::VerilogA, 0)));
 
-        // ngspice gets every compiled model of the project, wherever it is.
+        // ngspice gets the compiled models the netlist uses, wherever in
+        // the project they are - and a circuit without them none.
         app.ProjName = "vatest";
         QucsSettings.S4Qworkdir = dir.filePath("kernel");
-        Schematic sch(nullptr, QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"));
-        QVERIFY(sch.load());
-        Ngspice kernel(&sch);
-        kernel.setWorkdir(dir.filePath("kernel"));
-        kernel.SaveNetlist(dir.filePath("kernel/net.cir"), false);
-        QFile net(dir.filePath("kernel/net.cir"));
-        QVERIFY(net.open(QIODevice::ReadOnly));
-        const QString netlist = QString::fromUtf8(net.readAll());
+        const auto netlistOf = [&](const QString& file) {
+            Schematic sch(nullptr, file);
+            if (!sch.load()) return QString();
+            Ngspice kernel(&sch);
+            kernel.setWorkdir(dir.filePath("kernel"));
+            kernel.SaveNetlist(dir.filePath("kernel/net.cir"), false);
+            QFile net(dir.filePath("kernel/net.cir"));
+            return net.open(QIODevice::ReadOnly) ? QString::fromUtf8(net.readAll()) : QString();
+        };
+        write(project + "/uses.sch",
+              "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+              "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+              "  <GND * 1 280 100 0 0 0 0>\n"
+              "  <GND * 1 220 100 0 0 0 0>\n"
+              "  <SpiceModel SpiceModel1 1 120 300 -27 16 0 0 \".model m1 good\" 1 \".model m2 DEEP\" 1 \"Line_3=\" 0>\n"
+              "</Components>\n");
+        QString netlist = netlistOf(project + "/uses.sch");
         QVERIFY2(netlist.contains("pre_osdi '" + project + "/good.osdi'"), qPrintable(netlist));
         QVERIFY2(netlist.contains("pre_osdi '" + project + "/models/deep.osdi'"), qPrintable(netlist));
+        netlist = netlistOf(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"));
+        QVERIFY2(netlist.contains(".control") && !netlist.contains("pre_osdi"), qPrintable(netlist));
     }
 
     // Right-clicking the "Verilog-A" row pops up a menu with "Build All";
