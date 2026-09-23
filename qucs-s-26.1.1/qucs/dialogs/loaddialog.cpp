@@ -34,6 +34,7 @@
 #include <QKeyEvent>
 #include <QMessageBox>
 
+#include "vamodule.h"
 #include "loaddialog.h"
 #include "qucs.h"
 #include "qucsdoc.h"
@@ -274,54 +275,20 @@ void LoadDialog::loadSelected()
  */
 void LoadDialog::slotChangeIcon()
 {
-//  qDebug() << "slotChangeIcon";
-  QString iconFileName =
+  const QString iconFileName =
           QFileDialog::getOpenFileName(this,
                                         tr("Open File"),
                                         QString(projDir.absolutePath()),
                                         tr("Icon image (*.png)"));
+  if (iconFileName.isEmpty()) return;   // cancelled: the icon stays
+  const QString newIcon = QFileInfo(iconFileName).completeBaseName();
 
-  QString newIcon =  QFileInfo(iconFileName).completeBaseName();
-//  qDebug() << "icon "<< newIcon;
-
-  QString filename = fileView->currentItem()->text();
-  filename = projDir.absoluteFilePath(filename);
-//  qDebug() << "for " <<  filename;
-
-  // open json
-  // change property
-  // save&close
-  // Try to open the JSON file, can use QScriptEngine for this?
-  //
-  QFile file(filename);
-  QByteArray ba;
-  ba.clear();
-  if (!file.open(QIODevice::ReadWrite | QIODevice::Text)){
-    QMessageBox::critical(this, tr("Error"),
-                          tr("File not found: %1").arg(filename));
+  const QString filename = projDir.absoluteFilePath(fileView->currentItem()->text());
+  QString why;
+  if (!qucs_s::vamodule::setIcon(filename, newIcon, &why)) {
+    QMessageBox::critical(this, tr("Error"), why);
+    return;
   }
-  else {
-    QTextStream in(&file);
-    while ( !in.atEnd() )
-    {
-      QString line = in.readLine();
-      if (line.contains("BitmapFile")){
-          QString change =
-                  QStringLiteral("  \"BitmapFile\" : \"%1\",").arg(newIcon);
-          QString stmp = change + "\n";
-          ba.append(stmp.toLatin1());
-      }
-      else{
-          QString stmp = line + "\n";
-          ba.append(stmp.toLatin1());
-      }
-    }
-  }
-
-  // write back to the same file, clear it first
-  file.resize(0);
-  file.write(ba);
-  file.close();
 
   // update icon
   this->slotSymbolFileClicked(fileView->currentItem());

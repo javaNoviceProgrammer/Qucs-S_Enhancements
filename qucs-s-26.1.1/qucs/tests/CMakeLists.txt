@@ -73,6 +73,7 @@ qucs_add_test(test_graph_style)
 qucs_add_test(test_system_open)
 qucs_add_test(test_operating_point)
 qucs_add_test(test_workspace_projects)
+qucs_add_test(test_verilog_a_components)
 target_compile_definitions(test_system_open PRIVATE QUCS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 if(APPLE)
   target_compile_definitions(test_system_open PRIVATE

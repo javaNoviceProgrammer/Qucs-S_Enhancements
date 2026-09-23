@@ -44,22 +44,15 @@
 #include "misc.h"
 #include "extsimkernels/abstractspicekernel.h"
 #include "extsimkernels/s2spice.h"
-#include "osdi/osdi_0_3.h"
+#include "vamodule.h"
+#include <QJsonDocument>
+#include <QJsonObject>
 
 
 // Here the subcircuits, SPICE components etc are collected. It must be
 // global to also work within the subcircuits.
 SubMap FileList;
 
-// Dummy function for osdi_log callback.
-// Without it, the program will crash if print or display function called
-// in verilog-a model.
-extern void osdi_log_skip(void *handle, char* msg, uint32_t lvl)
-{
-  (void)handle;
-  (void)msg;
-  (void)lvl;
-}
 
 // -------------------------------------------------------------
 // Creates a Qucs file format (without document properties) in the returning
@@ -424,200 +417,42 @@ int Schematic::saveSymbolCpp (void)
 int Schematic::savePropsJSON()
 {
   QFileInfo info (a_DocName);
-  QString jsonfile = info.absolutePath () + QDir::separator()
-                     + info.baseName() + "_props.json";
-  QString vafilename = info.absolutePath () + QDir::separator()
-                       + info.baseName() + ".va";
-  QString osdifile = info.absolutePath() + QDir::separator()
-                     + info.baseName() + ".osdi";
+  const QString base = info.absolutePath() + QDir::separator() + info.baseName();
+  const QString vafilename = base + ".va";
+  const QString osdifile = base + ".osdi";
+  const QString jsonfile = base + "_props.json";
 
   QFile vafile(vafilename);
   if (!vafile.open (QIODevice::ReadOnly)) {
     misc::reportError(QObject::tr("Cannot open Verilog-A file \"%1\"!").arg(vafilename));
     return -1;
   }
+  const QString source = QString::fromUtf8(vafile.readAll());
+  vafile.close();
 
-  // if no osdi file exits, generete json file in the old way
-  if (!QFile::exists(osdifile)){
-    QString module;
-    QStringList prop_name;
-    QStringList prop_val;
-    QTextStream vastream (&vafile);
-    while(!vastream.atEnd()) {
-      QString line = vastream.readLine();
-      line = line.toLower();
-      if (line.contains("module")) {
-        auto tokens = line.split(QRegularExpression("[\\s()]"));
-        if (tokens.count() > 1) module = tokens.at(1);
-            module = module.trimmed();
-        continue;
-      }
-      if (line.contains("parameter")) {
-        auto tokens = line.split(QRegularExpression("[\\s=;]"), Qt::SkipEmptyParts);
-        if (tokens.count() >= 4) {
-          for(int ic = 0; ic <= tokens.count(); ic++) {
-            if (tokens.at(ic) == "parameter") {
-              prop_name.append(tokens.at(ic+2));
-              prop_val.append(tokens.at(ic+3));
-              break;
-            }
-          }
-        }
-      }
-    }
-    vafile.close();
-
-    QFile file (jsonfile);
-
-    if (!file.open (QIODevice::WriteOnly)) {
-      misc::reportError(QObject::tr("Cannot save JSON props file \"%1\"!").arg(jsonfile));
-      return -1;
-    }
-
-    QTextStream stream (&file);
-
-    stream << "{\n";
-
-    stream << QStringLiteral("  \"description\" : \"%1 verilog device\",\n").arg(module);
-    stream << "  \"property\" : [\n";
-    auto name = prop_name.begin();
-    auto val = prop_val.begin();
-    for(; name != prop_name.end(); name++,val++) {
-      stream << QStringLiteral("    { \"name\" : \"%1\", \"value\" : \"%2\", \"display\" : \"false\", \"desc\" : \"-\"},\n")
-                    .arg(*name,*val);
-    }
-    stream << "  ],\n\n";
-    stream << "  \"tx\" : 4,\n";
-    stream << "  \"ty\" : 4,\n";
-    stream << QStringLiteral("  \"Model\" : \"%1\",\n").arg(module);
-    stream << "  \"NetName\" : \"T\",\n\n\n";
-    stream << QStringLiteral("  \"SymName\" : \"%1\",\n").arg(module);
-    stream << QStringLiteral("  \"BitmapFile\" : \"%1\",\n").arg(module);
-
-    stream << "}";
-
-    file.close ();
-  }else{
-    QString module;
-    QStringList prop_name;
-    QStringList prop_val;
-    QStringList prop_disp;
-    QStringList prop_desc;
-
-    QLibrary osdilib (osdifile);
-    if (!osdilib.load()){
-      misc::reportError(QObject::tr("No valid osdi file. Re-compile verilog-a file first!"));
-      return -1;
-    }
-
-    // log function is disabled here.
-    // the dummy function osdi_log_backup is assigned to callback pointer
-    // to avoid program crash.
-    void** osdi_log_ = reinterpret_cast<void**>(osdilib.resolve("osdi_log"));
-    void* osdi_log_backup = nullptr;
-    if (osdi_log_){
-      osdi_log_backup = *osdi_log_;
-    }
-    *osdi_log_ = (void*)osdi_log_skip;
-
-    OsdiDescriptor* descriptors = reinterpret_cast<OsdiDescriptor*>(osdilib.resolve("OSDI_DESCRIPTORS"));
-    auto descriptor = descriptors[0];
-    void* handler = nullptr;
-
-    // OsdiSimParas and OsdiInitInfo have to be initialized before setup_model and setup_instance
-    std::vector<char*> sim_params_names_vec={nullptr};
-    std::vector<double> sim_params_vals_vec={};
-    std::vector<char*> sim_params_str_vec = {nullptr};
-    OsdiSimParas sim_params = {
-                        .names = sim_params_names_vec.data(),
-                        .vals = sim_params_vals_vec.data(),
-                        .names_str = sim_params_str_vec.data(),
-                        .vals_str = nullptr
-    };
-    OsdiInitInfo sim_info = {
-        .flags = 0,
-        .num_errors = 0,
-        .errors = nullptr
-    };
-
-    void* model = calloc(1,descriptor.model_size);
-    void* instance = calloc(1,descriptor.instance_size);
-
-    descriptor.setup_model(handler,model,&sim_params,&sim_info);
-    descriptor.setup_instance(handler,instance,model,300,descriptor.num_terminals,&sim_params,&sim_info);
-
-    module = QString(descriptor.name);
-    for(uint32_t i=1;i<descriptor.num_params;i++) {
-      auto param = descriptor.param_opvar+i;
-      void* value;
-      if (i<descriptor.num_instance_params){
-        value = descriptor.access(instance,model,i,ACCESS_FLAG_INSTANCE);
-        prop_disp.append("true");
-      }else{
-        value = descriptor.access(instance,model,i,ACCESS_FLAG_READ);
-        prop_disp.append("false");
-      }
-
-      switch (param->flags & PARA_TY_MASK)
-      {
-      case PARA_TY_INT:
-        prop_val.append(QString::number(*static_cast<uint32_t*>(value)));
-        break;
-      case PARA_TY_REAL:
-        prop_val.append(QString::number(*static_cast<double*>(value)));
-        break;
-      case PARA_TY_STR:
-        prop_val.append(QString(static_cast<char*>(value)));
-        break;
-      default:
-        prop_val.append("");
-        break;
-      }
-
-      prop_name.append(param->name[0]);
-      prop_desc.append(param->description);
-    }
-
-    free(model);
-    free(instance);
-    if (osdi_log_backup) {
-      *osdi_log_ = osdi_log_backup;
-    }
-    osdilib.unload();
-
-    QFile file (jsonfile);
-
-    if (!file.open (QIODevice::WriteOnly)) {
-      misc::reportError(QObject::tr("Cannot save JSON props file \"%1\"!").arg(jsonfile));
-      return -1;
-    }
-
-    QTextStream stream (&file);
-
-    stream << "{\n";
-
-    stream << QStringLiteral("  \"description\" : \"%1 verilog device\",\n").arg(module);
-    stream << "  \"property\" : [\n";
-    auto name = prop_name.begin();
-    auto val = prop_val.begin();
-    auto disp = prop_disp.begin();
-    auto desc = prop_desc.begin();
-    for(; name != prop_name.end(); name++,val++,disp++,desc++) {
-      stream << QStringLiteral("    { \"name\" : \"%1\", \"value\" : \"%2\", \"display\" : \"%3\", \"desc\" : \"%4\"},\n")
-                    .arg(*name,*val,*disp,*desc);
-    }
-    stream << "  ],\n\n";
-    stream << "  \"tx\" : 4,\n";
-    stream << "  \"ty\" : 4,\n";
-    stream << QStringLiteral("  \"Model\" : \"%1\",\n").arg(module);
-    stream << "  \"NetName\" : \"T\",\n\n\n";
-    stream << QStringLiteral("  \"SymName\" : \"%1\",\n").arg(module);
-    stream << QStringLiteral("  \"BitmapFile\" : \"%1\",\n").arg(module);
-
-    stream << "}";
-
-    file.close ();
+  // The library OpenVAF built knows the parameters best (their units, the
+  // instance ones) - if it was built from this source; the source itself
+  // otherwise, and before there is a library.
+  qucs_s::vamodule::VerilogModule module;
+  const QFileInfo osdi(osdifile);
+  QString why;
+  const bool fromLibrary = osdi.exists() && osdi.lastModified() >= QFileInfo(vafilename).lastModified()
+                           && qucs_s::vamodule::readOsdi(osdifile, info.baseName(), &module, &why);
+  if (!why.isEmpty())
+    qWarning().noquote() << why << "- the parameters are read from" << vafilename;
+  if (!fromLibrary)
+    module = qucs_s::vamodule::readSource(source, info.baseName());
+  if (module.name.isEmpty()) {
+    misc::reportError(QObject::tr("There is no module in the Verilog-A file \"%1\"!").arg(vafilename));
+    return -1;
   }
+
+  QFile file (jsonfile);
+  if (!file.open (QIODevice::WriteOnly)) {
+    misc::reportError(QObject::tr("Cannot save JSON props file \"%1\"!").arg(jsonfile));
+    return -1;
+  }
+  file.write(QJsonDocument(qucs_s::vamodule::propsObject(module)).toJson(QJsonDocument::Indented));
   return 0;
 }
 
@@ -890,29 +725,25 @@ int Schematic::saveDocument()
 
 
 
-      // Append _sym.json into _props.json, save into _symbol.json. This
-      // is an auxiliary export: the document itself is already written, so
-      // a problem here is reported but does not fail the save.
-      QFile f1(QucsSettings.QucsWorkDir.filePath(fileBase()+"_props.json"));
-      QFile f2(QucsSettings.QucsWorkDir.filePath(fileBase()+"_sym.json"));
-      QFile f3(QucsSettings.QucsWorkDir.filePath(fileBase()+"_symbol.json"));
-      if (!f1.open(QIODevice::ReadOnly | QIODevice::Text) ||
-          !f2.open(QIODevice::ReadOnly | QIODevice::Text)) {
+      // _props.json and _sym.json in one object, _symbol.json - next to
+      // this symbol, where the two were written. This is an auxiliary
+      // export: the document itself is already written, so a problem here
+      // is reported but does not fail the save.
+      const QString base = QFileInfo(a_DocName).absolutePath() + QDir::separator() + fileBase();
+      QFile f1(base + "_props.json");
+      QFile f2(base + "_sym.json");
+      QFile f3(base + "_symbol.json");
+      QString why1, why2;
+      const QJsonObject props = f1.open(QIODevice::ReadOnly) ? qucs_s::vamodule::parseJson(f1.readAll(), &why1) : QJsonObject();
+      const QJsonObject symbol = f2.open(QIODevice::ReadOnly) ? qucs_s::vamodule::parseJson(f2.readAll(), &why2) : QJsonObject();
+      if (props.isEmpty() || symbol.isEmpty()) {
         QMessageBox::warning(this, tr("Warning"),
-                             tr("Cannot read the generated symbol JSON files."));
-      } else if (!f3.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                             tr("Cannot read the generated symbol JSON files.") + "\n" + why1 + "\n" + why2);
+      } else if (!f3.open(QIODevice::WriteOnly)) {
         QMessageBox::warning(this, tr("Warning"),
                              tr("Cannot write %1.").arg(f3.fileName()));
       } else {
-        QString dat1 = QString(f1.readAll());
-        QString dat2 = QString(f2.readAll());
-        QString finalJSON = dat1.append(dat2);
-
-        // remove joining point
-        finalJSON = finalJSON.replace("}{", "");
-
-        QTextStream out(&f3);
-        out << finalJSON;
+        f3.write(QJsonDocument(qucs_s::vamodule::merged(props, symbol)).toJson(QJsonDocument::Indented));
       }
 
       // TODO choose icon, default to something or provided png

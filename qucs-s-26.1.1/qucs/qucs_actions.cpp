@@ -1772,11 +1772,9 @@ void QucsApp::slotLoadModule() {
 
   QDir projDir = QucsSettings.QucsWorkDir.absolutePath();
 
-  QStringList files;
-  QString fileSuffix = "*_symbol.json";
-
-  files = projDir.entryList(QStringList(fileSuffix),
-                            QDir::Files | QDir::NoSymLinks);
+  // Anywhere in the project, as Build All compiles the .va files and the
+  // Content panel lists them ("sub/dir/name_symbol.json").
+  const QStringList files = misc::projectFiles(projDir, {QStringLiteral("*_symbol.json")});
 
   // no JSON files or no a project?
   if (!files.size()) {

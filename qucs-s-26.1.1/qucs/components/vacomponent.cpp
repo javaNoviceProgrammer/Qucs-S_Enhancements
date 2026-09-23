@@ -16,6 +16,7 @@
  ***************************************************************************/
 
 
+#include "vamodule.h"
 #include "vacomponent.h"
 
 #include <QString>
@@ -329,39 +330,20 @@ QString vacomponent::spice_netlist(spicecompat::SpiceDialect dialect /* = spicec
  */
 QJsonObject getJsonObject(QString filename)
 {
-    // Try to open the JSON file
     QFile file(filename);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    if (!file.open(QIODevice::ReadOnly)) {
         misc::reportError(QObject::tr("Symbol file not found: %1").arg(filename));
         throw std::runtime_error("File not found");
     }
-
-    // Stream-in the file
-    QTextStream in(&file);
-
-    // Put into a string
-    QString data = (QString) in.readAll();
-    // remove trailing comma`s
-    data = data.simplified();
-    data.remove(" ");
-    data.replace(",]","]");
-    data.replace(",}","}");
-    // close
-    file.close();
-
-    QJsonParseError error;
-
-    QJsonDocument jdoc = QJsonDocument::fromJson(data.toUtf8(), &error);
-
-
-    if(error.error != QJsonParseError::NoError) {
-        misc::reportError(QObject::tr("Symbol file not found: %1").arg(filename));
+    // As it is: descriptions, texts and names keep their spaces (the old
+    // reader took every space out of the file to fix the trailing commas
+    // it wrote; parseJson() drops those commas and nothing else).
+    QString why;
+    const QJsonObject object = qucs_s::vamodule::parseJson(file.readAll(), &why);
+    if (object.isEmpty()) {
+        misc::reportError(QObject::tr("The component file %1 cannot be read: %2").arg(filename, why));
         throw std::runtime_error("Json parse error");
     }
-
-
-    QJsonObject object = jdoc.object();
-
     return object;
 }
 
