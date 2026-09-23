@@ -686,6 +686,13 @@ void MouseActions::MMoveZoomIn(Schematic *Doc, QMouseEvent *Event)
 // Is called from several MousePress functions to show right button menu.
 void MouseActions::rightPressMenu(Schematic *Doc, QMouseEvent *Event, float fX, float fY)
 {
+    fillContextMenu(Doc, fX, fY);
+    ComponentMenu->popup(Event->globalPosition().toPoint());
+    Doc->viewport()->update();
+}
+
+void MouseActions::fillContextMenu(Schematic *Doc, float fX, float fY)
+{
     MAx1 = int(fX);
     MAy1 = int(fY);
     focusElement = Doc->selectElement(fX, fY, false);
@@ -809,9 +816,6 @@ void MouseActions::rightPressMenu(Schematic *Doc, QMouseEvent *Event, float fX, 
         ComponentMenu->addSeparator();
         ComponentMenu->addAction(QucsMain->exportGraphics);
     }
-
-    ComponentMenu->popup(Event->globalPosition().toPoint());
-    Doc->viewport()->update();
 }
 
 // -----------------------------------------------------------
