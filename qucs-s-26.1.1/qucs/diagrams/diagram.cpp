@@ -175,28 +175,30 @@ void Diagram::paintDiagram(QPainter *painter) {
 void Diagram::paintLegend(QPainter *painter) {
     if (legendPos == LegendOff || Graphs.isEmpty()) return;
 
-    // A row per graph; a graph in auto colors has a row per curve, with
-    // the values of the parameters swept (at most a few dozen, then how
-    // many more there are).
+    // A row per graph; a graph in auto colors or markers has a row per
+    // curve, with the values of the parameters swept (at most a few
+    // dozen, then how many more there are).
     struct Row {
         QColor color;
         graphstyle_t style = GRAPHSTYLE_SOLID;
         int thick = 0;
         QString text;
         bool sample = true;
+        Graph::PointMarker marker = Graph::PointMarker::None;
     };
     constexpr int maxCurveRows = 24;
     QList<Row> rows;
     for (Graph *pg: Graphs) {
-        if (pg->colorsEachCurve() && pg->countY > 1) {
+        if (pg->distinguishesCurves() && pg->countY > 1) {
             const int shown = std::min(pg->countY, maxCurveRows);
             for (int c = 0; c < shown; ++c)
-                rows.append({pg->curveColor(c), pg->curveStyle(c), pg->Thick, pg->Var + "  " + pg->curveLabel(c), true});
+                rows.append({pg->curveColor(c), pg->Style, pg->Thick, pg->Var + "  " + pg->curveLabel(c), true,
+                             pg->curveMarker(c)});
             if (pg->countY > shown)
                 rows.append({QColor(), GRAPHSTYLE_SOLID, 0,
                              QObject::tr("... %1 more curves of %2").arg(pg->countY - shown).arg(pg->Var), false});
         } else {
-            rows.append({pg->curveColor(0), pg->curveStyle(0), pg->Thick, pg->Var, true});
+            rows.append({pg->curveColor(0), pg->Style, pg->Thick, pg->Var, true, pg->curveMarker(0)});
         }
     }
 
@@ -251,6 +253,10 @@ void Diagram::paintLegend(QPainter *painter) {
                 break;
             default:
                 painter->drawLine(QPointF(x0, mid), QPointF(x1, mid));
+            }
+            if (row.marker != Graph::PointMarker::None) {
+                painter->setPen(QPen(row.color, 1));
+                Graph::drawPointMarker(painter, row.marker, QPointF(x0 + sample / 2, mid), Graph::markerSize(row.thick));
             }
         }
         painter->setPen(Qt::black);
@@ -649,6 +655,13 @@ void Diagram::calcData(Graph *g) {
     double *py = &Dummy;
 
     g->resizeScrPoints(Size);
+    // Where the data points fall, for the point markers: before clipping
+    // moves any, and only those inside the diagram.
+    g->clearMarkerPoints();
+    const bool marks = g->drawsPointMarkers();
+    auto mark = [&](int curve, Graph::iterator const &at) {
+        if (marks && insideDiagramP(at)) g->addMarkerPoint(curve, QPointF(at->getScrX(), at->getScrY()));
+    };
     auto p = g->begin();
     auto p_end = g->begin();
     p_end += Size - 9;   // limit of buffer
@@ -667,14 +680,17 @@ void Diagram::calcData(Graph *g) {
         case GRAPHSTYLE_LONGDASH:
 
             for (i = g->countY; i > 0; i--) {  // every branch of curves
+                const int curve = g->countY - i;
                 px = g->axis(0)->Points;
                 calcCoordinateP(px, pz, py, p, pa);
+                mark(curve, p);
                 ++px;
                 pz += 2;
                 ++p;
                 for (z = g->axis(0)->count - 1; z > 0; z--) {  // every point
                     FIT_MEMORY_SIZE;  // need to enlarge memory block ?
                     calcCoordinateP(px, pz, py, p, pa);
+                    mark(curve, p);
                     ++px;
                     pz += 2;
                     ++p;

@@ -918,6 +918,8 @@ private slots:
         QCOMPARE(family->Graphs.size(), 1);
         Graph* g = family->Graphs.first();
         QVERIFY(g->autoColor && g->colorsEachCurve());
+        QCOMPARE(g->pointMarker, Graph::PointMarker::Auto);
+        QCOMPARE(g->curveMarker(1), Graph::PointMarker::Square);
         QCOMPARE(g->countY, 5);
         QCOMPARE(g->curveColor(0), Graph::autoPalette().at(0));
         QCOMPARE(g->curveColor(4), Graph::autoPalette().at(4));
