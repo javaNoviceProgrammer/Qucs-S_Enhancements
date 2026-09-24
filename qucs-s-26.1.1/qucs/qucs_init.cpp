@@ -27,6 +27,7 @@
 #include "messagedock.h"
 #include "simulationconsole.h"
 #include "apptheme.h"
+#include "statusbar.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -1362,64 +1363,15 @@ void QucsApp::initToolBar() {
 
 // ----------------------------------------------------------
 void QucsApp::initStatusBar() {
-  DiagramValuesLabel = new QLabel("", statusBar());
-  statusBar()->addPermanentWidget(DiagramValuesLabel, 0);
-
-  // To reserve enough space, insert the longest text and rewrite it afterwards.
-  // SimulatorLabel = new
-  // QLabel(spicecompat::getDefaultSimulatorName(QucsSettings.DefaultSimulator));
-  // statusBar()->addPermanentWidget(SimulatorLabel, 0);
-
-  WarningLabel = new QLabel(tr("no warnings"), statusBar());
-  statusBar()->addWidget(WarningLabel, 0);
-
-  PositionLabel = new QLabel("0 : 0", statusBar());
-#ifndef __APPLE__
-  PositionLabel->setAlignment(Qt::AlignRight);
-#endif
-  statusBar()->addPermanentWidget(PositionLabel, 0);
-
-  statusBar()->showMessage(tr("Ready."), 2000);
-}
-
-// ----------------------------------------------------------
-void QucsApp::slotShowWarnings() {
-  static int ResultState = 0;
-
-  if (ResultState == 0) {
-    QFont f = WarningLabel->font();
-    f.setWeight(QFont::DemiBold);
-    WarningLabel->setFont(f);
-    WarningLabel->setText(tr("Warnings in last simulation! Press F5"));
-  }
-
-  ResultState++;
-  if (ResultState & 1)
-    misc::setWidgetForegroundColor(WarningLabel, Qt::red);
-  else
-    WarningLabel->setPalette(QPalette());   // the status bar's own colour, dark theme or light
-
-  if (ResultState < 9)
-    QTimer::singleShot(500, this, SLOT(slotShowWarnings()));
-  else
-    ResultState = 0;
-}
-
-// ----------------------------------------------------------
-void QucsApp::slotResetWarnings() {
-  QFont f = WarningLabel->font(); // reset warning label
-  f.setWeight(QFont::Normal);
-  WarningLabel->setFont(f);
-  WarningLabel->setPalette(QPalette());
-  WarningLabel->setText(tr("no warnings"));
+  // The hint of the tool in hand on the left, the chips on the right
+  // (statusbar.h); passing messages cover the hint for a while.
+  a_status = new StatusPanel(this);
 }
 
 // ----------------------------------------------------------
 void QucsApp::printCursorPosition(int x, int y, QString text) {
-  PositionLabel->setText(QString::number(x) + " : " + QString::number(y));
-  PositionLabel->setMinimumWidth(PositionLabel->width());
-
-  DiagramValuesLabel->setText(text);
+  if (a_status != nullptr)
+    a_status->setCursor(x, y, text);
 }
 
 // --------------------------------------------------------------

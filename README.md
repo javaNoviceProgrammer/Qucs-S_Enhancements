@@ -232,6 +232,32 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     white.
   Under the platform's themes the text editor is black on white, as
   before.
+- **Status bar**: on the left, what the tool in hand does and the keys it
+  takes — *Double-click to edit · ⌘-click to add · drag on empty space to
+  select*, *Click to place ground · right-click to rotate · Esc to stop*,
+  the wiring route and how to change it. On the right, chips that show
+  while they have something to say; when the window is narrow the least
+  important give way first:
+  - the diagram value under the cursor, each axis by its variable with
+    its unit (`time 1.5 ms · out.Vt 1.235 V`; on a histogram the value
+    and its count; in the diagram's own notation when it has one); the
+    selection (one component by its name
+    and value, `R1: R = 50`; a click zooms to it); the cursor position
+    (line and column in the text editor); the grid (a click shows or
+    hides it); the zoom (a menu: fit, the selection, 25–400 %);
+  - the electrical rule check of the schematic in front, run again a
+    moment after each edit — *No problems*, *1 error, 3 warnings*, the
+    first few in its tool tip; a click lists them on the *Problems* tab
+    and goes to the first; the last simulation — its seconds while it
+    runs, then *Simulated in 0.42 s*, *2 warnings*, *Simulation failed*
+    or *stopped*; a click shows its output — in place of the blinking
+    "Warnings in last simulation" label; the simulator with its version
+    (*Ngspice 46*), whose menu switches simulators as the tool bar's
+    list does;
+  - whether the document is saved (*Saved 5 min ago*, *Unsaved ·
+    autosaved just now*, *Not saved*; a click saves it) and the theme
+    (its swatch; a click opens *View → Theme*).
+  The green, amber and red marks are fitted to the bar in every theme.
 - **Check Schematic** (*Simulation → Check Schematic*, F10): an electrical
   rule check before the simulator sees the circuit — component pins and
   wire ends connected to nothing (a wire end carrying a label is a named

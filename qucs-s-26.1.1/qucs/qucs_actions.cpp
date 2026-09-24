@@ -65,6 +65,7 @@
 #include "portsymbol.h"
 #include "projectView.h"
 #include "qucs.h"
+#include "statusbar.h"
 #include "schematic.h"
 #include "spicecomponents/sp_nutmeg.h"
 #include "textdoc.h"
@@ -135,6 +136,8 @@ bool QucsApp::performToggleAction(bool on, QAction *Action,
   } while (false); // to perform "break"
 
   Doc->viewport()->update();
+  if (a_status != nullptr)
+    a_status->scheduleRefresh();   // the hint of the tool in hand
   return true;
 }
 
@@ -436,7 +439,7 @@ void QucsApp::slotEditCut() {
     ((Schematic *)Doc)->cut();
   }
 
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 }
 
 // --------------------------------------------------------------------
@@ -450,7 +453,7 @@ void QucsApp::slotEditCopy() {
     ((Schematic *)Doc)->copy();
   }
 
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 }
 
 // -----------------------------------------------------------------------
@@ -548,6 +551,7 @@ void QucsApp::slotInsertEquation(bool on) {
 
   MouseMoveAction = &MouseActions::MMoveElement;
   MousePressAction = &MouseActions::MPressElement;
+  a_status->scheduleRefresh();   // the hint: click to place it
 }
 
 // -----------------------------------------------------------------------
@@ -577,6 +581,7 @@ void QucsApp::slotInsertGround(bool on) {
 
   MouseMoveAction = &MouseActions::MMoveElement;
   MousePressAction = &MouseActions::MPressElement;
+  a_status->scheduleRefresh();   // the hint: click to place it
 }
 
 // -----------------------------------------------------------------------
@@ -613,6 +618,7 @@ void QucsApp::slotInsertPort(bool on) {
 
   MouseMoveAction = &MouseActions::MMoveElement;
   MousePressAction = &MouseActions::MPressElement;
+  a_status->scheduleRefresh();   // the hint: click to place it
 }
 
 // --------------------------------------------------------------
@@ -813,7 +819,7 @@ void QucsApp::editFile(const QString &File, bool reloadFile) {
       else {
         gotoPage(File, reloadFile);
         lastDirOpenSave = File; // remember last directory and file
-        statusBar()->showMessage(tr("Ready."));
+        statusBar()->clearMessage();
       }
     }
   } else {
@@ -1333,7 +1339,7 @@ void QucsApp::slotAddToProject() {
 
   free(Buffer);
   slotUpdateTreeview();
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 }
 
 // -----------------------------------------------------------

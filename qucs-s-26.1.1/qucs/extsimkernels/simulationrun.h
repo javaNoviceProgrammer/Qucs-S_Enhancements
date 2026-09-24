@@ -61,6 +61,8 @@ private:
     bool a_hasError;
     bool a_netlist2Console;
     bool a_running;
+    bool a_stopped = false;           // stop() ended it
+    int a_warningCount = 0;           // the simulator's lines that warn
     bool a_optimizationAllowed = false;
     bool a_afterOptimization = false;   // the simulation of the best point
     Optimizer *a_optimizer = nullptr;
@@ -85,6 +87,10 @@ public:
     bool hasError() const { return a_hasError; }
     /// From start() until the simulator has finished (or failed to start).
     bool isRunning() const { return a_running; }
+    /// Whether stop() ended the run.
+    bool wasStopped() const { return a_stopped; }
+    /// How many lines of the simulator's output warn (countWarnings()).
+    int warningCount() const { return a_warningCount; }
 
 private:
     void saveLog();
@@ -119,6 +125,8 @@ public:
     /// patterns of the simulator in the settings.
     static bool logContainsError(const QString &out);
     static bool logContainsWarning(const QString &out);
+    /// The lines of \a out that warn, by the same patterns.
+    static int countWarnings(const QString &out);
     /// Points a kernel at the ngspice of the settings, with its parameters.
     static void configureNgspice(Ngspice* kernel);
 

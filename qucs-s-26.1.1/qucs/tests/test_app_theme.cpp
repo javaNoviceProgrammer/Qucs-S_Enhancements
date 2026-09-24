@@ -545,26 +545,6 @@ private slots:
         QTRY_COMPARE(bar->count(), before - 1);
     }
 
-    void theWarningLabelTakesTheStatusBarsColour()
-    {
-        // It blinked red and black, and was left black: unreadable on a
-        // dark status bar.
-        ThemeGuard guard;
-        QucsApp app(false);
-        MainGuard mainGuard(&app);
-        app.applyTheme(Nord);
-        QLabel* warning = nullptr;
-        for (QLabel* l : app.statusBar()->findChildren<QLabel*>())
-            if (l->text() == "no warnings") warning = l;
-        QVERIFY(warning != nullptr);
-        misc::setWidgetForegroundColor(warning, Qt::red);
-        QVERIFY(warning->testAttribute(Qt::WA_SetPalette));
-        QVERIFY(QMetaObject::invokeMethod(&app, "slotResetWarnings"));
-        QVERIFY(!warning->testAttribute(Qt::WA_SetPalette));
-        QVERIFY(qucs_s::ink::contrast(warning->palette().color(QPalette::WindowText),
-                                      designedTheme(Nord)->colours.surface) >= 3.0);
-    }
-
     void theFallbackPalettesAreReadable()
     {
         // What a platform that cannot switch its appearance gets.

@@ -47,6 +47,7 @@ class tunerElement;
 class SimulationRun;
 class SimulationConsole;
 class ProcessConsole;
+class StatusPanel;
 
 class QLabel;
 class QAction;
@@ -178,6 +179,8 @@ public:
   ProjectView *projectView() const { return Content; }
   QListView *projectsView() const { return Projects; }
   MessageDock *messages() const { return messageDock; }
+  /// The status bar's hint and chips (statusbar.h).
+  StatusPanel *statusPanel() const { return a_status; }
   SimulationConsole *simulationConsole() const { return simConsole; }
   /// The Terminal dock's shell and the Python Shell dock's interpreter.
   ProcessConsole *terminalConsole() const { return terminal; }
@@ -587,8 +590,6 @@ public:
    ************************************************** */
 
 public slots:
-  void slotShowWarnings();
-  void slotResetWarnings();
   void printCursorPosition(int, int, QString);
   void slotUpdateUndo(bool); // update undo available state
   void slotUpdateRedo(bool); // update redo available state
@@ -643,9 +644,7 @@ private:
   // This is rather cumbersome -> Make this with a QScrollView instead??
   QShortcut *cursorUp, *cursorLeft, *cursorRight, *cursorDown;
 
-  QLabel *WarningLabel, *PositionLabel,
-      *DiagramValuesLabel; // labels in status bar
-  // QLabel *SimulatorLabel;
+  StatusPanel *a_status = nullptr;   // the status bar's hint and chips
 
   /* **************************************************
    *****  The following methods are located in  *****
@@ -778,6 +777,7 @@ private:
                   const QStringList & = QStringList(),
                   bool qucs_tool = false); // tool, description and args
   friend class SaveDialog;
+  friend class StatusPanel;   // the simulator, the theme menu, the rule check
 
   /// @brief Scans the schematic for CMD components and executes their commands
   ///        after simulation completes.

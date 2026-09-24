@@ -868,6 +868,48 @@ existing demand.
   label; `QUCS_TEST_GRAB=<dir>` saves every theme's main window, menu,
   editor, side panel and settings. `test_ink` covers `inked()`.
 
+- *Done:* **A status bar worth reading.** It held the cursor position, a
+  "no warnings" label that blinked red after a run with warnings, and the
+  diagram readout as `X=...; Y1=...`, while "Ready." messages without a
+  timeout covered its left side for good. `StatusPanel` (statusbar.h)
+  owns it now: a `HintLabel` on the left (elided, whole in its tool tip)
+  with the hint of the mouse mode in hand (`modeHint()`: from
+  `MousePressAction`/`MouseMoveAction`, the element being placed and the
+  wire planner's route), and a `ChipRow` on the right that shows each
+  chip while it is wanted and there is room for it and for every more
+  important one (run, problems, position, readout, zoom, selection,
+  simulator, saved, grid, theme), with a minimum width of 0, so it never
+  holds the window wide. The problems chip runs `erc::check()` on the
+  schematic in front 400 ms after `Schematic::signalEdited()` (the new
+  signal of `setChanged(true)`) and again when the simulator changes;
+  the run chip follows a `SimulationRun` to `simulated` (`watchRun()`)
+  or Qucsator's run (`runStarted()`/`runEnded()`); the simulator chip
+  asks the program for its version once the window shows
+  (`versionArguments()`, `versionIn()`: `--version` or `-v`, stdin
+  closed, killed after 3 s, kept per program and date); the saved chip
+  reads the file's date and `autosave::writtenAt()`. The panel refreshes
+  on the next turn of the loop after the document in front is painted
+  (an event filter on its viewport), edited or switched, a tool is
+  taken, a run moves or the theme changes; a clock ticks the run's
+  seconds and the ages. `status::readout()` names each axis by its
+  variable without its dataset, with the unit its name tells
+  (`unitOf()`) or the axis' dB scale, and `withUnit()` writes SI
+  prefixes to four digits; a diagram with a notation of its own keeps
+  it; a histogram reads as its variable and the count (percent,
+  density) of its bar. `SimulationRun` counts warning lines (`countWarnings()`) and knows
+  when it was stopped. The chips are flat in every style (a style sheet
+  on the row from the palette; the macOS style would bevel them) and
+  share one size of type, 11 points at most. The "Ready." messages
+  became `clearMessage()`, and "Saving aborted" is no longer overwritten
+  at once. `test_status_bar` covers units, prefixes, the readout, ages,
+  durations, versions and warning counts, and in the window the hint per
+  tool, cursor and readout, the selection, grid and zoom (its menu), the
+  problems after an edit, the run chip through its states, the
+  simulator's version from a stand-in program and the switch, the saved
+  state through autosave and a save, the theme chip's menu, the marks'
+  contrast on every designed theme and the row giving way;
+  `QUCS_TEST_GRAB=<dir>` saves the bar in six themes.
+
 - *Done:* **A grid setting for every schematic.** The grid's visibility
   was only per document (`QucsDoc::a_GridOn`, the third field of the
   file's `<Grid=...>`, toggled by *View > Show Grid (current document)*
