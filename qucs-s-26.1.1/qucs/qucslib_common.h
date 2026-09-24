@@ -518,6 +518,7 @@ inline QStringList getBlacklistedLibraries(QString dir)
         break;
     default:break;
     }
+    if (filename.isEmpty()) return blacklisted_libs;   // no simulator chosen yet
 
     QFile f_blist(filename);
     if (!f_blist.open(QIODevice::ReadOnly)) return blacklisted_libs;

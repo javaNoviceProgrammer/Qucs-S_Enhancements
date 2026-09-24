@@ -350,12 +350,12 @@
   <text
      x="17.846834"
      y="110.84013"
-     style="font-size:41.0409px;font-family:Sans;letter-spacing:0;word-spacing:0;opacity:0.979079;fill:#000000;fill-opacity:1;stroke-width:1.05967"
+     style="font-size:41.0409px;font-family:sans-serif;letter-spacing:0;word-spacing:0;opacity:0.979079;fill:#000000;fill-opacity:1;stroke-width:1.05967"
      transform="scale(1.0179025,0.98241237)"
      id="text139"><tspan
        x="17.846834"
        y="110.84013"
        font-size="38.73"
-       style="font-size:41.0409px;font-family:'Liberation Sans';fill:#000000;fill-opacity:1;stroke-width:1.05967"
+       style="font-size:41.0409px;font-family:sans-serif;fill:#000000;fill-opacity:1;stroke-width:1.05967"
        id="tspan137">SYM</tspan></text>
 </svg>

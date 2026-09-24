@@ -410,6 +410,12 @@ QStringList misc::projectFiles(const QDir& root, const QStringList& nameFilters)
 }
 
 // #########################################################################
+QString misc::canonicalDir(const QDir& dir)
+{
+  return dir.path().isEmpty() ? QString() : dir.canonicalPath();
+}
+
+// #########################################################################
 QString misc::scratchDir()
 {
   if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty())

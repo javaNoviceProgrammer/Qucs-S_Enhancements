@@ -145,5 +145,9 @@ extern VersionTriplet QucsVersion;
 bool loadSettings();
 bool saveApplSettings();
 void qucsMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg);
+/// Qt's hint on macOS that a missing font family made it list the other
+/// names of every font, for the generic "sans-serif" the texts of the
+/// icons ask for: qucsMessageOutput leaves it out.
+bool isGenericFontFamilyHint(const QMessageLogContext &context, const QString &msg);
 
 #endif // ifndef QUCS_MAIN_H
