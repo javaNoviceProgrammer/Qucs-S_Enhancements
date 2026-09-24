@@ -10,6 +10,7 @@
 #include <QTemporaryDir>
 #include <QPlainTextEdit>
 #include <QMenu>
+#include <QRegularExpression>
 #include <algorithm>
 
 #include "config.h"
@@ -368,6 +369,9 @@ private slots:
         app.projectView()->setExpanded(app.projectView()->model()->index(ProjectView::VerilogA, 0), true);
         QCOMPARE(children(app.projectView(), ProjectView::VerilogA), QStringList({"broken.va", "good.va", "models/deep.va"}));
 
+        // The output moves the cursor of the dock's text a line at a time:
+        // no warning a line (the dock printed the line's number).
+        QTest::failOnWarning(QRegularExpression(QStringLiteral("^\\d+$")));
         QVERIFY(QMetaObject::invokeMethod(&app, "slotCMenuBuildAllVerilogA"));
         QTRY_VERIFY_WITH_TIMEOUT(app.messages()->admsOutput->toPlainText().contains("Done:"), 15000);
 
