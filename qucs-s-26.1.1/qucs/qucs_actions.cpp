@@ -224,8 +224,7 @@ void QucsApp::slotEditMirrorY(bool on) {
 // It also comments out the selected text on a text document
 // \todo update the status or tooltip message
 void QucsApp::slotEditActivate(bool on) {
-  TextDoc *Doc = (TextDoc *)DocumentTab->currentWidget();
-  if (isTextDocument(Doc)) {
+  if (auto *Doc = qobject_cast<TextDoc *>(DocumentTab->currentWidget())) {
     // TODO Doc->clearParagraphBackground (Doc->tmpPosX);
     Doc->commentSelected();
 
@@ -241,8 +240,7 @@ void QucsApp::slotEditActivate(bool on) {
 // ------------------------------------------------------------------------
 // Is called if "Delete"-Button is pressed.
 void QucsApp::slotEditDelete(bool on) {
-  TextDoc *Doc = (TextDoc *)DocumentTab->currentWidget();
-  if (isTextDocument(Doc)) {
+  if (auto *Doc = qobject_cast<TextDoc *>(DocumentTab->currentWidget())) {
     Doc->viewport()->setFocus();
     // Doc->del();
     Doc->textCursor().deleteChar();
@@ -368,8 +366,7 @@ void QucsApp::slotMoveText(bool on) {
 // -----------------------------------------------------------------------
 // Is called, when "Zoom in" action is triggered.
 void QucsApp::slotZoomIn(bool on) {
-  auto *Doc = (TextDoc *)DocumentTab->currentWidget();
-  if (isTextDocument(Doc)) {
+  if (auto *Doc = qobject_cast<TextDoc *>(DocumentTab->currentWidget())) {
     Doc->zoomBy(1.5f);
     magPlus->blockSignals(true);
     magPlus->setChecked(false);
@@ -508,7 +505,8 @@ void QucsApp::slotEditPaste(bool on) {
 
 // -----------------------------------------------------------------------
 void QucsApp::slotInsertEntity() {
-  TextDoc *Doc = (TextDoc *)DocumentTab->currentWidget();
+  auto *Doc = qobject_cast<TextDoc *>(DocumentTab->currentWidget());
+  if (Doc == nullptr) return;   // a schematic in front: no VHDL entity to insert
   Doc->viewport()->setFocus();
   // TODO Doc->clearParagraphBackground (Doc->tmpPosX);
   Doc->insertSkeleton();
