@@ -55,6 +55,7 @@ TextDoc::TextDoc(QucsApp *App_, const QString& Name_) : QPlainTextEdit(), QucsDo
   Library = "";
   Libraries = "";
   SetChanged = false;
+  recreate = false;   // written with the settings; read back only when a file has it
   devtype = DEV_DEF;
 
   a_tmpPosX = a_tmpPosY = 1;  // set to 1 to trigger line highlighting
