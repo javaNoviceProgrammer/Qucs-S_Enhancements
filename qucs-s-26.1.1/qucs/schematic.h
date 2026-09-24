@@ -365,6 +365,9 @@ signals:
   void signalUndoState(bool);
   void signalRedoState(bool);
   void signalFileChanged(bool);
+  /** The content was edited (setChanged(true)): what is checked of it,
+      the electrical rules, may have changed. */
+  void signalEdited();
   void signalComponentDeleted(Component *);
   /** Emitted after the whole document was replaced (undo, redo, reload).
       Every Element* obtained from this schematic before the signal is

@@ -29,6 +29,7 @@
 #include "wire.h"
 #include "paintings/paintings.h"
 #include "schematic.h"
+#include "statusbar.h"
 #include "ink.h"
 #include <QHelpEvent>
 #include <QToolTip>
@@ -345,6 +346,8 @@ void Schematic::setChanged(bool c, bool fillStack, char Op)
     else if (a_DocChanged && (!c))
         emit signalFileChanged(false);
     a_DocChanged = c;
+    if (c)
+        emit signalEdited();
 
     a_showBias = -1; // schematic changed => bias points may be invalid
 
@@ -876,27 +879,9 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
         // BUG: Obtaining the diagram type by name is marked as a bug elsewhere (to be solved separately).
         // TODO: Currently only rectangular diagrams are supported.
         if (diagram->getSelected(xpos, ypos) && (diagram->Name == "Rect" || diagram->Name == "Histogram")) {
-            bool hasY1 = false, hasY2 = false;
-            for (auto graph: diagram->Graphs) {
-                hasY1 |= graph->yAxisNo == 0;
-                hasY2 |= graph->yAxisNo == 1;
-            }
-
-            QPointF mouseClickPoint = QPointF(xpos - diagram->cx, diagram->cy - ypos);
-            MappedPoint mp = diagram->pointToValue(mouseClickPoint);
-
-            auto _x = diagram->numberText(mp.x);
-            text = "X=" + _x;
-            if (hasY1) {
-                text.append("; Y1=");
-                auto _y1 = diagram->numberText(mp.y1);
-                text.append(_y1);
-            }
-            if (hasY2) {
-                text.append("; Y2=");
-                auto _y2 = diagram->numberText(mp.y2);
-                text.append(_y2);
-            }
+            // Each axis by its variable, with the unit it tells (statusbar.h).
+            const QPointF mouseClickPoint(xpos - diagram->cx, diagram->cy - ypos);
+            text = qucs_s::status::readout(diagram, diagram->pointToValue(mouseClickPoint));
             break;
         }
     }

@@ -59,6 +59,7 @@
 #include <QStandardPaths>
 #include <QActionGroup>
 #include "apptheme.h"
+#include "statusbar.h"
 #include <QStyledItemDelegate>
 #include <QStyle>
 #include <QTabBar>
@@ -293,8 +294,11 @@ int QucsApp::autosaveAll(bool emergency)
     if (!qucs_s::autosave::write(doc, i).isEmpty())
       ++written;
   }
-  if (!emergency && written > 0)
+  if (!emergency && written > 0) {
     statusBar()->showMessage(tr("Autosaved %n document(s).", "", written), 3000);
+    if (a_status != nullptr)
+      a_status->scheduleRefresh();
+  }
   return written;
 }
 
@@ -447,6 +451,8 @@ void QucsApp::applyLook()
   if (themeActions != nullptr)
     for (QAction *a : themeActions->actions())
       a->setChecked(a->data().toInt() == QucsSettings.Theme);
+  if (a_status != nullptr)
+    a_status->themeChanged();
 }
 
 /**
@@ -976,6 +982,8 @@ void QucsApp::fillSimulatorsComboBox() {
 
     simulate->setEnabled(anySimulatorsFound);
     simulatorsCombobox->setEnabled(anySimulatorsFound);
+    if (a_status != nullptr)
+      a_status->scheduleRefresh();
 }
 
 
@@ -1016,7 +1024,7 @@ void QucsApp::slotChangeSimulator(int index) {
     if (tabType == "Schematic") {
         ((Q3ScrollView*)DocumentTab->currentWidget())->viewport()->update();
     }
-    //SimulatorLabel->setText(spicecompat::getDefaultSimulatorName(QucsSettings.DefaultSimulator));
+    a_status->scheduleRefresh();
 }
 
 // ----------------------------------------------------------
@@ -1280,6 +1288,7 @@ void QucsApp::slotSelectComponent(QListWidgetItem *item)
 
   MouseMoveAction = &MouseActions::MMoveElement;
   MousePressAction = &MouseActions::MPressElement;
+  a_status->scheduleRefresh();   // the hint: click to place it
   MouseReleaseAction = nullptr;
   MouseDoubleClickAction = nullptr;
 
@@ -1753,7 +1762,7 @@ void QucsApp::openProject(const QString& PathGiven)
   int i = addDocumentTab(d);
   DocumentTab->setCurrentIndex(i);
 
-  slotResetWarnings();
+  a_status->clearRun();
 
   QucsSettings.QucsWorkDir.setPath(ProjDir.path());
   octave->adjustDirectory();
@@ -1826,7 +1835,7 @@ void QucsApp::slotMenuProjClose()
   int i = addDocumentTab(d);
   DocumentTab->setCurrentIndex(i);
 
-  slotResetWarnings();
+  a_status->clearRun();
   setWindowTitle(windowTitle);
   QucsSettings.QucsWorkDir.setPath(QucsSettings.qucsWorkspaceDir.absolutePath());
   octave->adjustDirectory();
@@ -2079,7 +2088,7 @@ void QucsApp::slotFileNew()
   int i = addDocumentTab(d);
   DocumentTab->setCurrentIndex(i);
 
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 }
 
 void QucsApp::slotSymbolNew()
@@ -2092,7 +2101,7 @@ void QucsApp::slotSymbolNew()
   DocumentTab->setCurrentIndex(i);
   slotSymbolEdit();
   d->setIsSymbolOnly(true);
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 }
 
 // --------------------------------------------------------------
@@ -2104,7 +2113,7 @@ void QucsApp::slotTextNew()
   int i = addDocumentTab(d);
   DocumentTab->setCurrentIndex(i);
 
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 }
 
 // --------------------------------------------------------------
@@ -2156,7 +2165,7 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
                            tr("Document opened in read-only mode! "
                            "Simulation will not work. Please copy the document "
                            "to the directory where you have write permission!"));
-      statusBar()->showMessage("Read only");
+      statusBar()->showMessage(tr("Read only"), 5000);
   }
 
   if(!d->load()) {    // load document if possible
@@ -2205,7 +2214,7 @@ void QucsApp::slotFileOpen()
     gotoPage(s);
     lastDirOpenSave = s;   // remember last directory and file
 
-    statusBar()->showMessage(tr("Ready."));
+    statusBar()->clearMessage();
   }
 }
 
@@ -2243,12 +2252,11 @@ void QucsApp::slotFileSave()
   if(!saveFile()) {
     DocumentTab->blockSignals(false);
     statusBar()->showMessage(tr("Saving aborted"), 2000);
-    statusBar()->showMessage(tr("Ready."));
     return;
   }
 
   DocumentTab->blockSignals(false);
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 
   if(!ProjName.isEmpty())
     slotUpdateTreeview();
@@ -2390,12 +2398,11 @@ void QucsApp::slotFileSaveAs()
   if(!saveAs()) {
     DocumentTab->blockSignals(false);
     statusBar()->showMessage(tr("Saving aborted"), 3000);
-    statusBar()->showMessage(tr("Ready."));
     return;
   }
 
   DocumentTab->blockSignals(false);
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 
   // refresh the schematic file path
   slotRefreshSchPath();
@@ -2446,7 +2453,7 @@ void QucsApp::slotFileSaveAll()
   if (tabType == "Schematic") {
     ((Q3ScrollView*)DocumentTab->currentWidget())->viewport()->update();
   }
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 
   // refresh the schematic file path
   slotRefreshSchPath();
@@ -2520,7 +2527,7 @@ void QucsApp::closeFile(int index)
       }
     }
 
-    statusBar()->showMessage(tr("Ready."));
+    statusBar()->clearMessage();
 }
 
 
@@ -2644,7 +2651,7 @@ void QucsApp::slotFileExamples() {
   }
 
   gotoPage(exampleFile);
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 }
 
 void QucsApp::slotHelpTutorial()
@@ -2709,6 +2716,8 @@ void QucsApp::slotChangeView()
   }
 
   Doc->becomeCurrent(true);
+  if (a_status != nullptr)   // not yet while the window is being built
+    a_status->documentChanged();
 
 //  TODO proper window title
 //  QFileInfo Info (Doc-> getDocName());
@@ -2936,7 +2945,7 @@ void QucsApp::printCurrentDocument(bool fitToPage)
   writer->print(DocumentTab->currentWidget());
   delete writer;
 
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
   return;
 }
 
@@ -2966,7 +2975,7 @@ void QucsApp::slotFileQuit()
     qApp->quit();
   }
 
-  statusBar()->showMessage(tr("Ready."));
+  statusBar()->clearMessage();
 }
 
 //-----------------------------------------------------------------
@@ -3261,8 +3270,6 @@ void QucsApp::slotSimulate(QWidget *w)
     }
   }
 
-  slotResetWarnings();
-
   if(Info.suffix() == "m" || Info.suffix() == "oct") {
     // It is an Octave script.
     if(Doc->getDocChanged())
@@ -3292,8 +3299,10 @@ void QucsApp::slotSimulate(QWidget *w)
       sim->show();
   }
 
+  a_status->runStarted(Doc->getDocName());
   if(!sim->startProcess()) {
       if (TuningMode == true) sim->show();//The message window is hidden when the tuning mode is active, but in case of error such window pops up
+      a_status->runEnded(StatusPanel::Outcome::Failed, 0);
       return;
   }
 
@@ -3345,6 +3354,7 @@ void QucsApp::slotAfterSimulation(int Status, SimMessage *sim)
 {
 
   if(Status != 0) { // errors ocurred ?
+      a_status->runEnded(StatusPanel::Outcome::Failed, 0);
       if (TuningMode) {
           sim->show();
           tunerDia->SimulationEnded();
@@ -3352,8 +3362,9 @@ void QucsApp::slotAfterSimulation(int Status, SimMessage *sim)
       return;
   }
 
-  if(sim->ErrText->document()->lineCount() > 1)   // were there warnings ?
-    slotShowWarnings();
+  // The simulator's warnings, a line each.
+  const int warnings = int(sim->ErrText->toPlainText().split(QLatin1Char('\n'), Qt::SkipEmptyParts).size());
+  a_status->runEnded(warnings > 0 ? StatusPanel::Outcome::Warned : StatusPanel::Outcome::Succeeded, warnings);
 
   // Is the page still open? DocWidget is a QPointer and goes null when
   // the document is destroyed.
@@ -3849,6 +3860,7 @@ void QucsApp::slotSelectSubcircuit(const QModelIndex &idx)
 
   MouseMoveAction = &MouseActions::MMoveElement;
   MousePressAction = &MouseActions::MPressElement;
+  a_status->scheduleRefresh();   // the hint: click to place it
   MouseReleaseAction = nullptr;
   MouseDoubleClickAction = nullptr;
 }
@@ -4351,6 +4363,8 @@ void QucsApp::slotFileChanged(bool changed)
   // document may emit it too.
   if (auto *doc = qobject_cast<QWidget *>(sender()))
     setDocumentChanged(doc, changed);
+  if (a_status != nullptr)
+    a_status->scheduleRefresh();   // saved, or not
 }
 
 // -----------------------------------------------------------
@@ -4622,8 +4636,7 @@ void QucsApp::slotSimulateWithSpice()
         // bias run or a tuner step.
         run->setOptimizationAllowed(!TuningMode && schematic->getShowBias() != 0);
         connect(run, &SimulationRun::simulated, this, &QucsApp::slotAfterSpiceSimulation);
-        connect(run, &SimulationRun::warnings, this, &QucsApp::slotShowWarnings);
-        connect(run, &SimulationRun::success, this, &QucsApp::slotResetWarnings);
+        a_status->watchRun(run, schematic->getDocName());
         run->start();
         simConsole->runLegacyWindow();   // legacy mode: modal until closed
     }

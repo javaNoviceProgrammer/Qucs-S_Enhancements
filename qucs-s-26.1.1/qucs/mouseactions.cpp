@@ -60,28 +60,18 @@
 #include <climits>
 #include <cstdlib>
 #include "qucs_assert.h"
+#include "statusbar.h"
 
 #define MIN_SELECT_SIZE 5.0
 
 QAction *formerAction; // remember action before drag n'drop etc.
 
 
-// Helper func to show a hint about wiring modes in app's status bar
-void showWireModeHint(QucsApp* app, const qucs_s::wire::Planner planner)
+// The status bar's hint follows the wiring mode (StatusPanel::modeHint()).
+void showWireModeHint(QucsApp* app, const qucs_s::wire::Planner)
 {
-    app->statusBar()->clearMessage();
-
-    switch (planner.planType()) {
-        case qucs_s::wire::Planner::PlanType::Straight:
-            app->statusBar()->showMessage(QucsApp::tr("Wiring mode: free. RMB to switch to orthogonal."));
-            break;
-        // Here is a hidden knownledge: ThreeStepYX goes right before Straight in PlanType enumeration.
-        case qucs_s::wire::Planner::PlanType::ThreeStepYX:
-            app->statusBar()->showMessage(QucsApp::tr("Wiring mode: orthogonal. RMB to switch to free."));
-            break;
-        default:
-            app->statusBar()->showMessage(QucsApp::tr("Wiring mode: orthogonal. RMB to cycle through variants."));
-    }
+    if (app != nullptr && app->statusPanel() != nullptr)
+        app->statusPanel()->scheduleRefresh();
 }
 
 
@@ -1253,8 +1243,8 @@ void MouseActions::MPressWire2(Schematic *Doc, QMouseEvent *Event, float fX, flo
         if (lastNode == nullptr || lastNode->conn_count() > 1) {
             // if last port is connected, then...
 
-            // Don't show wiring mode hint anymore
-            App->statusBar()->clearMessage();
+            // The hint follows the mode the wire leaves behind.
+            showWireModeHint(App, Doc->a_wirePlanner);
 
             if (formerAction) {
                 // ...restore old action

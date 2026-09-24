@@ -99,6 +99,15 @@ void setDirectory(const QString& dir)
     g_directoryOverride = dir;
 }
 
+QDateTime writtenAt(const QucsDoc* doc, int untitledId)
+{
+    if (doc == nullptr)
+        return {};
+    const QFileInfo copy(directory() + QStringLiteral("/") + keyFor(identityFor(doc, untitledId))
+                         + QStringLiteral(".") + suffixFor(doc));
+    return copy.exists() ? copy.lastModified() : QDateTime();
+}
+
 QString write(QucsDoc* doc, int untitledId)
 {
     if (doc == nullptr)

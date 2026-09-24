@@ -165,6 +165,7 @@ void SimulationRun::slotProcessOutput()
         break;
     }
 
+    a_warningCount = countWarnings(out);
     const QStyle *style = QApplication::style();
     if (a_schematic.isNull()) {
         // The document was closed while the simulator ran (the run is not
@@ -271,6 +272,8 @@ void SimulationRun::start()
     a_running = true;
     a_wasSimulated = true;
     a_hasError = false;
+    a_stopped = false;
+    a_warningCount = 0;
     if (a_progress != nullptr) a_progress->setValue(0);
     // The Verilog-A modules the netlist uses whose library is missing or
     // out of date are compiled first; compileNext() starts again then.
@@ -309,6 +312,7 @@ void SimulationRun::stop()
         // slotCompiled() ends the run.
         a_builds.clear();
         a_compileStopped = true;
+        a_stopped = true;
         addLogEntry(tr("Simulation stopped."), QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning));
         a_compiler->kill();
         return;
@@ -321,6 +325,7 @@ void SimulationRun::stop()
         return;
     }
     addLogEntry(tr("Simulation stopped."), QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    a_stopped = true;
     a_hasError = true;      // no result to convert
     a_wasSimulated = false;
     a_ngspice->killThemAll();   // the kernel's finished() follows and ends the run
@@ -766,4 +771,12 @@ bool SimulationRun::logContainsWarning(const QString &out)
         }
     }
     return found;
+}
+
+int SimulationRun::countWarnings(const QString &out)
+{
+    int count = 0;
+    for (const QStringView line : QStringView(out).split(QLatin1Char('\n')))
+        if (logContainsWarning(line.toString())) ++count;
+    return count;
 }

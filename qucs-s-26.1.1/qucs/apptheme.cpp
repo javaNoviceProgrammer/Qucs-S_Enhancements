@@ -407,6 +407,8 @@ QDockWidget::close-button:hover, QDockWidget::float-button:hover { background: {
 
 QStatusBar { background: {surface}; color: {muted}; border-top: 1px solid {border}; }
 QStatusBar::item { border: none; }
+QStatusBar QLabel { color: {text}; }
+QStatusBar QLabel#statusHint { color: {muted}; }
 
 QMenuBar { background: {surface}; border-bottom: 1px solid {border}; }
 QMenuBar::item { background: transparent; padding: 4px 10px; border-radius: 4px; }

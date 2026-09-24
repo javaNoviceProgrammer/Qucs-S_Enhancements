@@ -55,6 +55,10 @@ void setDirectory(const QString& dir);
 /// Returns the path of the copy, or an empty string on failure.
 QString write(QucsDoc* doc, int untitledId = 0);
 
+/// When the copy of \a doc was last written; invalid when there is none
+/// (it goes when the document is saved).
+QDateTime writtenAt(const QucsDoc* doc, int untitledId = 0);
+
 /// Removes the copy belonging to a named document. No-op if there is none.
 void remove(const QString& originalPath);
 
