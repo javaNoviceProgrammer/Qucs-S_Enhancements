@@ -60,6 +60,7 @@
 #include <QActionGroup>
 #include "apptheme.h"
 #include "statusbar.h"
+#include <algorithm>
 #include <QStyledItemDelegate>
 #include <QStyle>
 #include <QTabBar>
@@ -1358,6 +1359,9 @@ void QucsApp::initCursorMenu()
   }
 
   APPEND_MENU(ActionCMenuOpen, slotCMenuOpen, "Open")
+  // A Verilog-A file: OpenVAF on it (on the .va files selected with it).
+  APPEND_MENU(ActionCMenuCompileVerilogA, slotCMenuCompileVerilogA, "Compile")
+  ActionCMenuCompileVerilogA->setStatusTip(tr("Compile the Verilog-A file with OpenVAF"));
   APPEND_MENU(ActionCMenuCopy, slotCMenuCopy, "Duplicate")
   APPEND_MENU(ActionCMenuRename, slotCMenuRename, "Rename")
   APPEND_MENU(ActionCMenuDelete, slotCMenuDelete, "Delete")
@@ -1435,6 +1439,31 @@ void QucsApp::slotShowContentMenu(const QPoint& pos)
     ActionCMenuInsert->setVisible(
         idx.sibling(idx.row(), 1).data().toString().contains(tr("-port"))
         );
+
+    // Compile on a .va file: that one, or every .va file selected with it.
+    const QDir project(QucsSettings.QucsWorkDir);
+    const auto isVerilogA = [](const QString &file) {
+      return QFileInfo(file).suffix().compare(QLatin1String("va"), Qt::CaseInsensitive) == 0;
+    };
+    a_contentMenuVaFiles.clear();
+    const QString clicked = Content->filePath(idx);
+    if (isVerilogA(clicked)) {
+      const QModelIndexList rows = selectionModel->selectedRows();
+      const bool inSelection = std::any_of(rows.cbegin(), rows.cend(), [&](const QModelIndex &r) {
+        return r.row() == idx.row() && r.parent() == idx.parent();
+      });
+      if (inSelection) {
+        for (const QModelIndex &r : rows)
+          if (isVerilogA(Content->filePath(r))) a_contentMenuVaFiles.append(project.filePath(Content->filePath(r)));
+      } else {
+        a_contentMenuVaFiles.append(project.filePath(clicked));
+      }
+    }
+    ActionCMenuCompileVerilogA->setVisible(!a_contentMenuVaFiles.isEmpty());
+    ActionCMenuCompileVerilogA->setEnabled(a_vaBuilder == nullptr);
+    ActionCMenuCompileVerilogA->setText(a_contentMenuVaFiles.size() > 1
+                                          ? tr("Compile %1 Files").arg(a_contentMenuVaFiles.size())
+                                          : tr("Compile"));
 
     // Disable Duplicate and Rename when multiple files are selected
     ActionCMenuCopy->setEnabled(!multipleSelected);

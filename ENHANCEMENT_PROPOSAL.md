@@ -324,6 +324,23 @@ existing demand.
   pass/fail tally in the message dock, `.osdi` files appear in the tree.
   Points at the settings when OpenVAF is not configured. Covered by
   `qucs/tests/test_build_all_va` with a stand-in compiler.
+- *Done:* **"Compile" on a .va file** of the Content panel: the file
+  menu offers it on a `.va` row (the right-clicked file, or the `.va`
+  files selected with it: *Compile N Files*), through the same queue as
+  Build All (`QucsApp::buildVerilogA()`: the checks, then
+  `startNextVerilogABuild()`). Open files with changes can be saved
+  first (*Save and Compile*) or compiled as saved. The output now comes
+  to the front (`MessageDock::showBuildOutput()`): the dock is tabbed
+  with the simulation console, terminal and Python shell, and only
+  `show()` was called, which left it behind the tab in front - and inside
+  the dock the Problems or Operating Point tab could be the one shown.
+  `test_build_all_va` covers the menu (only on `.va` rows), one file,
+  a selection, *Save and Compile*, and the output in front of the
+  console (by its visible region: a tabbed dock behind another stays
+  "visible", moved out of sight). Found on the way by UBSan: a text
+  document saved its `Recreate=` setting from a flag nothing had set,
+  and *Delete*, *Activate* and *Zoom In* cast the tab in front to a text
+  document before asking whether it was one (`qobject_cast` now).
 - *Done:* **Verilog-A components as their module describes them.** A
   module becomes a component through JSON files written when its symbol is
   saved (`NAME_props.json`, `NAME_sym.json`, merged into

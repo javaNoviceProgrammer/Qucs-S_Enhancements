@@ -88,6 +88,10 @@ public:
   QPlainTextEdit *cppOutput;
 
   void reset();
+  /// The build's output (OpenVAF's, admsXml's) in front: its tab chosen,
+  /// the dock shown and raised over the docks it shares the bottom of the
+  /// window with (the simulation console, the terminal...).
+  void showBuildOutput();
 
 signals:
   /// A row of the Problems tab was chosen: issues()[index] is to be shown.

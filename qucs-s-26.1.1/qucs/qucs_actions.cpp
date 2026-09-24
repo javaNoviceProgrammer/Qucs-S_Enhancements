@@ -1977,8 +1977,8 @@ void QucsApp::slotBuildModule() {
   messageDock->admsOutput->appendPlainText(vaStatus);
   messageDock->cppOutput->appendPlainText(cppStatus);
 
-  // shot the message docks
-  messageDock->msgDock->show();
+  // the output in front
+  messageDock->showBuildOutput();
 }
 
 void QucsApp::buildWithOpenVAF() {
@@ -2028,8 +2028,8 @@ void QucsApp::buildWithOpenVAF() {
   // push make output to message dock
   messageDock->admsOutput->appendPlainText(vaStatus);
 
-  // shot the message docks
-  messageDock->msgDock->show();
+  // the output in front
+  messageDock->showBuildOutput();
 }
 
 /*!
@@ -2039,15 +2039,37 @@ void QucsApp::buildWithOpenVAF() {
  *        from the application settings.
  */
 void QucsApp::slotCMenuBuildAllVerilogA() {
-  if (a_vaBuilder != nullptr) {
+  const QDir project(QucsSettings.QucsWorkDir.absolutePath());
+  const QStringList vaFiles = misc::projectFiles(project, {"*.va"});   // relative paths
+  if (vaFiles.isEmpty()) {
     QMessageBox::information(this, tr("Build All"),
-                             tr("A Verilog-A build is already running."));
+                             tr("The project contains no Verilog-A (.va) files."));
+    return;
+  }
+  QStringList files;
+  for (const QString& name : vaFiles)
+    files.append(project.filePath(name));
+  buildVerilogA(files, tr("Build All"),
+                tr("Building %n Verilog-A file(s) in %1", "", files.size()).arg(project.absolutePath()));
+}
+
+void QucsApp::slotCMenuCompileVerilogA() {
+  const QStringList files = a_contentMenuVaFiles;
+  if (files.isEmpty()) return;
+  buildVerilogA(files, tr("Compile"),
+                files.size() == 1 ? tr("Compiling %1").arg(QDir::toNativeSeparators(files.constFirst()))
+                                  : tr("Compiling %n Verilog-A file(s)", "", files.size()));
+}
+
+void QucsApp::buildVerilogA(const QStringList &files, const QString &title, const QString &heading) {
+  if (a_vaBuilder != nullptr) {
+    QMessageBox::information(this, title, tr("A Verilog-A build is already running."));
     return;
   }
 
   const QString openVAF = QucsSettings.OpenVAFExecutable.trimmed();
   if (openVAF.isEmpty() || !QFileInfo(openVAF).isExecutable()) {
-    QMessageBox box(QMessageBox::Warning, tr("Build All"),
+    QMessageBox box(QMessageBox::Warning, title,
                     openVAF.isEmpty()
                       ? tr("The OpenVAF executable is not set.")
                       : tr("The OpenVAF executable is not usable:\n%1").arg(openVAF),
@@ -2060,39 +2082,41 @@ void QucsApp::slotCMenuBuildAllVerilogA() {
     return;
   }
 
+  // Open .va documents with changes: saved first, or compiled as they are
+  // on disk.
   const QDir project(QucsSettings.QucsWorkDir.absolutePath());
-  const QStringList vaFiles = misc::projectFiles(project, {"*.va"});   // relative paths
-  if (vaFiles.isEmpty()) {
-    QMessageBox::information(this, tr("Build All"),
-                             tr("The project contains no Verilog-A (.va) files."));
-    return;
-  }
-
-  // Modified .va documents would be compiled as last saved; say so.
-  QStringList unsaved;
-  for (const QString& name : vaFiles) {
-    if (TextDoc *doc = findTextDoc(project.filePath(name)))
-      if (doc->getDocChanged()) unsaved.append(name);
+  QList<TextDoc *> unsaved;
+  QStringList names;
+  for (const QString& file : files) {
+    if (TextDoc *doc = findTextDoc(file); doc != nullptr && doc->getDocChanged()) {
+      unsaved.append(doc);
+      names.append(QDir::toNativeSeparators(project.relativeFilePath(file)));
+    }
   }
   if (!unsaved.isEmpty()) {
-    const auto answer = QMessageBox::question(this, tr("Build All"),
-        tr("These files have unsaved changes and will be compiled as saved on disk:\n%1\n\nContinue?")
-          .arg(unsaved.join("\n")),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    if (answer != QMessageBox::Yes) return;
+    QMessageBox box(QMessageBox::Question, title,
+                    tr("These files have unsaved changes:\n%1").arg(names.join("\n")),
+                    QMessageBox::Cancel, this);
+    QPushButton *save = box.addButton(tr("Save and Compile"), QMessageBox::AcceptRole);
+    QPushButton *asSaved = box.addButton(tr("Compile as Saved"), QMessageBox::ActionRole);
+    box.setDefaultButton(save);
+    box.exec();
+    if (box.clickedButton() == save) {
+      for (TextDoc *doc : std::as_const(unsaved))
+        if (!saveFile(doc)) return;
+    } else if (box.clickedButton() != asSaved) {
+      return;
+    }
   }
 
   messageDock->reset();
   messageDock->builderTabs->setTabText(0, tr("OpenVAF"));
   messageDock->msgDock->setWindowTitle(tr("OpenVAF Dock"));
-  messageDock->admsOutput->appendPlainText(
-      tr("Building %n Verilog-A file(s) in %1", "", vaFiles.size()).arg(project.absolutePath()));
-  messageDock->msgDock->show();
+  messageDock->admsOutput->appendPlainText(heading);
+  messageDock->showBuildOutput();
 
-  a_vaBuildQueue.clear();
-  for (const QString& name : vaFiles)
-    a_vaBuildQueue.append(project.filePath(name));
-  a_vaBuildTotal = vaFiles.size();
+  a_vaBuildQueue = files;
+  a_vaBuildTotal = int(files.size());
   a_vaBuildFailed = 0;
   startNextVerilogABuild();
 }

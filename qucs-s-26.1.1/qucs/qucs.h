@@ -343,6 +343,9 @@ public slots:
   void slotShowContentMenu(const QPoint &);
 
   void slotCMenuBuildAllVerilogA();
+  /// "Compile" on a .va file of the Content panel: OpenVAF on that file,
+  /// or on the .va files selected with it.
+  void slotCMenuCompileVerilogA();
   void slotCMenuContentView(QAction *mode);
   void slotVerilogABuildOutput();
   void slotVerilogABuildFinished(int exitCode, QProcess::ExitStatus status);
@@ -464,6 +467,7 @@ public:
   // corresponding actions
   QAction *ActionCMenuOpen, *ActionCMenuCopy, *ActionCMenuRename,
       *ActionCMenuDelete, *ActionCMenuInsert, *ActionCMenuBuildAllVerilogA,
+      *ActionCMenuCompileVerilogA,
       *ActionCMenuViewFlat, *ActionCMenuViewTree, *ActionCMenuRefresh;
 
   // "Build All" for Verilog-A: the files still to compile with OpenVAF,
@@ -473,6 +477,14 @@ public:
   int a_vaBuildTotal = 0;
   int a_vaBuildFailed = 0;
   void startNextVerilogABuild();
+  /// Compiles \a files (absolute paths) with OpenVAF one after the other,
+  /// the output in the message dock, after the checks: no build running,
+  /// OpenVAF usable, open documents with changes saved (or compiled as
+  /// they are on disk). \a title names the job, \a heading starts the
+  /// output.
+  void buildVerilogA(const QStringList &files, const QString &title, const QString &heading);
+  // The .va files the Content panel's menu was opened on.
+  QStringList a_contentMenuVaFiles;
 
   QAction *fileNew, *textNew, *symNew, *fileNewDpl, *fileOpen, *fileSave,
       *fileSaveAs, *fileSaveAll, *fileClose, *fileCloseOthers,
