@@ -235,6 +235,104 @@ QStringList modulesOf(const QString& osdiFile, bool* readable)
     return library.modules;
 }
 
+namespace {
+
+enum class Format { Unknown, Elf, MachO, Pe };
+enum class Cpu { X86_64, Arm64, Other };
+
+// What a binary is for: its format and the processors it has code for
+// (several in a universal Mach-O; none known: empty).
+struct Binary {
+    Format format = Format::Unknown;
+    QList<Cpu> cpus;
+};
+
+Binary binaryOf(const QString& path)
+{
+    Binary out;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return out;
+    const QByteArray head = f.read(4096);
+    const auto byte = [&](int at) { return at < head.size() ? quint32(quint8(head.at(at))) : 0u; };
+    const auto u16 = [&](int at, bool little) {
+        return little ? byte(at) | byte(at + 1) << 8 : byte(at) << 8 | byte(at + 1);
+    };
+    const auto u32 = [&](int at, bool little) {
+        return little ? u16(at, true) | u16(at + 2, true) << 16 : u16(at, false) << 16 | u16(at + 2, false);
+    };
+    const auto machCpu = [](quint32 type) {
+        return type == 0x01000007u ? Cpu::X86_64 : type == 0x0100000cu ? Cpu::Arm64 : Cpu::Other;
+    };
+    if (head.size() >= 20 && head.startsWith("\x7f" "ELF")) {
+        out.format = Format::Elf;
+        const quint32 machine = u16(18, byte(5) == 1);   // EI_DATA: 1 little-endian
+        out.cpus << (machine == 62 ? Cpu::X86_64 : machine == 183 ? Cpu::Arm64 : Cpu::Other);
+    } else if (head.size() >= 8 && (u32(0, true) == 0xfeedfacfu || u32(0, true) == 0xfeedfaceu)) {
+        out.format = Format::MachO;
+        out.cpus << machCpu(u32(4, true));
+    } else if (head.size() >= 8 && u32(0, false) == 0xcafebabeu) {
+        // A universal Mach-O - if the count of its parts is one (Java class
+        // files begin so too, and so do test files).
+        const quint32 count = u32(4, false);
+        if (count < 1 || count > 8 || head.size() < int(8 + 20 * count))
+            return out;
+        out.format = Format::MachO;
+        for (quint32 i = 0; i < count; ++i)
+            out.cpus << machCpu(u32(8 + 20 * int(i), false));
+    } else if (head.size() >= 0x40 && head.startsWith("MZ")) {
+        const int pe = int(u32(0x3c, true));
+        if (pe > 0 && pe + 6 <= head.size() && head.mid(pe, 4) == QByteArray("PE\0\0", 4)) {
+            out.format = Format::Pe;
+            const quint32 machine = u16(pe + 4, true);
+            out.cpus << (machine == 0x8664 ? Cpu::X86_64 : machine == 0xaa64 ? Cpu::Arm64 : Cpu::Other);
+        }
+    }
+    return out;
+}
+
+// What this Qucs-S was built for. On macOS without its processor: one of
+// either runs the other's code (Rosetta), so that says nothing about what
+// the simulator loads.
+Binary thisBuild()
+{
+    Binary out;
+#if defined(Q_OS_MACOS)
+    out.format = Format::MachO;
+    return out;
+#elif defined(Q_OS_WIN)
+    out.format = Format::Pe;
+#else
+    out.format = Format::Elf;
+#endif
+#if defined(Q_PROCESSOR_ARM_64)
+    out.cpus << Cpu::Arm64;
+#elif defined(Q_PROCESSOR_X86_64)
+    out.cpus << Cpu::X86_64;
+#endif
+    return out;
+}
+
+} // namespace
+
+bool builtForAnotherPlatform(const QString& file, const QString& simulator)
+{
+    const Binary library = binaryOf(file);
+    if (library.format == Format::Unknown)
+        return false;
+    Binary host = simulator.isEmpty() ? Binary() : binaryOf(simulator);
+    if (host.format == Format::Unknown)
+        host = thisBuild();   // a script, or not found
+    if (library.format != host.format)
+        return true;
+    if (library.cpus.contains(Cpu::Other) || host.cpus.isEmpty() || host.cpus.contains(Cpu::Other))
+        return false;   // nothing to tell by
+    for (Cpu cpu : library.cpus)
+        if (host.cpus.contains(cpu))
+            return false;
+    return true;
+}
+
 bool defines(const QString& osdiFile, const QString& module)
 {
     bool readable = false;
@@ -324,7 +422,8 @@ QStringList sourceIncludes(const QString& vaFile)
     return found;
 }
 
-QList<Build> builds(const QStringList& vaFiles, const QStringList& osdiFiles, const QSet<QString>& types)
+QList<Build> builds(const QStringList& vaFiles, const QStringList& osdiFiles, const QSet<QString>& types,
+                    const QString& simulator)
 {
     QList<Build> out;
     for (const QString& va : vaFiles) {
@@ -338,6 +437,11 @@ QList<Build> builds(const QStringList& vaFiles, const QStringList& osdiFiles, co
         build.source = source.absoluteFilePath();
         build.library = source.absoluteDir().absoluteFilePath(source.completeBaseName() + QStringLiteral(".osdi"));
         const QFileInfo library(build.library);
+        if (library.isFile() && builtForAnotherPlatform(build.library, simulator)) {
+            build.foreign = true;
+            out << build;
+            continue;
+        }
         if (library.isFile()) {
             // Older than the source, or than a file it includes.
             QDateTime newest = source.lastModified();

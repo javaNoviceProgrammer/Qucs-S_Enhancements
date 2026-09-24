@@ -385,6 +385,19 @@ QString LibComp::cdl_netlist()
     return spice_netlist(spicecompat::CDL);
 }
 
+QStringList LibComp::getVerilogAFiles()
+{
+  QString content;
+  QStringList includes, attach;
+  if (loadSection("Spice", content, &includes, &attach) < 0)
+    return {};
+  QStringList files;
+  for (const QString &file : std::as_const(attach))
+    if (file.endsWith(".va", Qt::CaseInsensitive) || file.endsWith(".osdi", Qt::CaseInsensitive))
+      files.append(getSubcircuitFile() + '/' + file);
+  return files;
+}
+
 QString LibComp::getSpiceLibrary()
 {
   QStringList files;

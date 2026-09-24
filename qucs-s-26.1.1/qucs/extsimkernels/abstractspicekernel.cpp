@@ -1809,6 +1809,25 @@ QString AbstractSpiceKernel::collectSpiceLibs(Schematic* sch)
 }
 
 
+QStringList AbstractSpiceKernel::collectVerilogAFiles(Schematic *sch)
+{
+  QStringList collected;
+  if (sch == nullptr) return collected;
+  for (Component *pc : sch->a_DocComps) {
+    QStringList files;
+    if (pc->Model == "Sub") {
+      Schematic sub(nullptr, ((Subcircuit *)pc)->getSubcircuitFile());
+      if (!sub.loadDocument()) continue;
+      files = collectVerilogAFiles(&sub);
+    } else {
+      files = pc->getVerilogAFiles();
+    }
+    for (const QString &file : std::as_const(files))
+      if (!collected.contains(file)) collected.append(file);
+  }
+  return collected;
+}
+
 QStringList AbstractSpiceKernel::collectSpiceLibraryFiles(Schematic *sch)
 {
   QStringList collected_spicelib;

@@ -45,6 +45,8 @@
 
 #include "librarydialog.h"
 #include "main.h"
+#include "misc.h"
+#include "osdiselection.h"
 #include "painting.h"
 #include "extsimkernels/abstractspicekernel.h"
 #include "extsimkernels/spicecompat.h"
@@ -359,6 +361,115 @@ int LibraryDialog::intoFile(QString &ifn, QString &ofn, QStringList &IFiles)
 }
 
 // ---------------------------------------------------------------
+bool LibraryDialog::copyIntoLibrary(const QString &from, const QString &name)
+{
+  const QString source = QFileInfo(from).absoluteFilePath();
+  if (a_copied.contains(name)) {
+    if (a_copied.value(name) == source) return true;   // another subcircuit uses it too
+    ErrText->insertPlainText(tr("ERROR: %1 and %2 would both be \"%3\" in the library.\n")
+                               .arg(QDir::toNativeSeparators(a_copied.value(name)),
+                                    QDir::toNativeSeparators(source), name));
+    return false;
+  }
+  QDir folder(LibDir);
+  if (!folder.mkpath(NameEdit->text()) || !folder.cd(NameEdit->text())) {
+    ErrText->insertPlainText(QObject::tr("ERROR: Cannot create user library subdirectory !\n"));
+    return false;
+  }
+  const QString target = folder.absoluteFilePath(name);
+  if (QFileInfo(target).canonicalFilePath() == QFileInfo(source).canonicalFilePath()) {
+    a_copied.insert(name, source);   // there already: the library made again, a component of it in use
+    return true;
+  }
+  QDir().mkpath(QFileInfo(target).absolutePath());
+  QFile::remove(target);
+  if (!QFile::copy(source, target)) {
+    ErrText->insertPlainText(QObject::tr("ERROR: Cannot create file \"%1\".\n").arg(name));
+    return false;
+  }
+  a_copied.insert(name, source);
+  return true;
+}
+
+// ---------------------------------------------------------------
+int LibraryDialog::embedVerilogA(Schematic *doc, const QString &spice, const QString &baseDir,
+                                 QStringList &attached)
+{
+  const QSet<QString> types = qucs_s::osdi::usedModelTypes(spice, baseDir);
+  if (types.isEmpty()) return 0;
+
+  // What there is: the project's, and what the libraries of the
+  // subcircuit's components bring.
+  QStringList sources, libraries;
+  const QDir project(QucsSettings.QucsWorkDir);
+  for (const QString &file : misc::projectFiles(project, {"*.va"}))
+    sources << project.absoluteFilePath(file);
+  for (const QString &file : misc::projectFiles(project, {"*.osdi"}))
+    libraries << project.absoluteFilePath(file);
+  for (const QString &file : AbstractSpiceKernel::collectVerilogAFiles(doc)) {
+    if (!QFileInfo(file).isFile()) continue;
+    if (file.endsWith(".va", Qt::CaseInsensitive) && !sources.contains(file)) sources << file;
+    else if (file.endsWith(".osdi", Qt::CaseInsensitive) && !libraries.contains(file)) libraries << file;
+  }
+
+  // The libraries a simulation would load, and the sources of the modules.
+  const QStringList needed = qucs_s::osdi::needed(libraries, types);
+  QStringList definingSources;
+  QSet<QString> fromSource;
+  for (const QString &va : std::as_const(sources))
+    for (const QString &type : types)
+      if (qucs_s::osdi::sourceDefines(va, type)) {
+        if (!definingSources.contains(va)) definingSources << va;
+        fromSource.insert(type);
+      }
+  if (needed.isEmpty() && definingSources.isEmpty()) return 0;   // no Verilog-A in it
+
+  int errors = 0;
+  QStringList embedded;
+  const auto attach = [&](const QString &file) {
+    const QString name = QFileInfo(file).fileName();
+    if (!copyIntoLibrary(file, name)) { ++errors; return; }
+    if (!attached.contains(name)) attached << name;
+    embedded << name;
+  };
+  for (const QString &va : std::as_const(definingSources)) {
+    attach(va);
+    // The files it includes, where it finds them: beside it, or below.
+    const QDir folder = QFileInfo(va).absoluteDir();
+    for (const QString &included : qucs_s::osdi::sourceIncludes(va)) {
+      const QString relative = folder.relativeFilePath(included);
+      if (relative.startsWith("..")) {
+        ErrText->insertPlainText(tr("Warning: %1 includes %2 from outside its folder; it is not "
+                                    "embedded.\n").arg(QFileInfo(va).fileName(),
+                                                        QDir::toNativeSeparators(included)));
+        continue;
+      }
+      if (copyIntoLibrary(included, relative)) embedded << relative;
+      else ++errors;
+    }
+  }
+  for (const QString &osdi : needed)
+    attach(osdi);
+
+  // A module with a source but no library: compiled where the library is
+  // used (with OpenVAF), or here with Build All first.
+  QSet<QString> compiled;
+  for (const QString &osdi : needed)
+    for (const QString &type : types)
+      if (qucs_s::osdi::defines(osdi, type)) compiled.insert(type);
+  QStringList uncompiled = QStringList((fromSource - compiled).cbegin(), (fromSource - compiled).cend());
+  uncompiled.sort();
+  if (!uncompiled.isEmpty())
+    ErrText->insertPlainText(tr("Warning: no compiled model (.osdi) of %1: only the source is embedded "
+                                "(Build All compiles it here; OpenVAF compiles it where the library is used).\n")
+                               .arg(uncompiled.join(", ")));
+  embedded.removeDuplicates();
+  if (!embedded.isEmpty())
+    ErrText->insertPlainText(tr("Embedding Verilog-A: %1\n").arg(embedded.join(", ")));
+  return errors;
+}
+
+// ---------------------------------------------------------------
 void LibraryDialog::slotCheckDescrChanged(int state)
 {
   if (state == Qt::Unchecked){
@@ -430,6 +541,7 @@ void LibraryDialog::slotSave()
 
   QString tmp;
   QTextStream ts(&tmp, QIODevice::WriteOnly);
+  a_copied.clear();
 
   for (int i=0; i < SelectedNames.count(); i++) {
     ErrText->insertPlainText("\n=================\n");
@@ -510,6 +622,7 @@ void LibraryDialog::slotSave()
                     .arg(Doc->getDocName()).arg(err_lst.join("; ")));
         }
         kern->createSubNetlist(ts,true);
+        const QString spiceNetlist = tmp;
         intoStream(Stream, tmp, "Spice");
 
         QStringList libs = kern->collectSpiceLibraryFiles(Doc);
@@ -517,6 +630,11 @@ void LibraryDialog::slotSave()
         for (QString &file: libs) {
           QString ofile = file;
           intoFile(file, ofile, copiedFiles);
+        }
+        if (QucsSettings.EmbedVerilogAInLibraries) {
+          const QString base = QFileInfo(QucsSettings.QucsWorkDir.filePath(SelectedNames[i])).absolutePath();
+          if (embedVerilogA(Doc, spiceNetlist, base, copiedFiles) > 0)
+            Success = false;
         }
         if (!copiedFiles.isEmpty()) {
           Stream << "<SpiceAttach \"" << copiedFiles.join("\" \"")
