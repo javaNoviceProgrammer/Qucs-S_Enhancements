@@ -86,3 +86,4 @@ if(APPLE)
   target_compile_definitions(test_system_open PRIVATE
     QUCS_BUNDLE_INFO_PLIST="$<TARGET_BUNDLE_CONTENT_DIR:${QUCS_NAME}>/Info.plist")
 endif()
+qucs_add_test(test_quiet_start)

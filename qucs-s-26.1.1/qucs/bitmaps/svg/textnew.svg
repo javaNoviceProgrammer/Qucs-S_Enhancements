@@ -347,12 +347,12 @@
   <text
      x="17.408957"
      y="114.09251"
-     style="font-size:48.3155px;font-family:Sans;letter-spacing:0;word-spacing:0;opacity:0.979079;fill:#3b3b3b;stroke-width:1.2475;stroke-dasharray:none"
+     style="font-size:48.3155px;font-family:sans-serif;letter-spacing:0;word-spacing:0;opacity:0.979079;fill:#3b3b3b;stroke-width:1.2475;stroke-dasharray:none"
      transform="scale(1.0179025,0.98241237)"
      id="text139"><tspan
        x="17.408957"
        y="114.09251"
        font-size="38.73"
-       style="font-size:48.3155px;font-family:'Liberation Sans';fill:#000000;fill-opacity:1;stroke-width:1.2475;stroke-dasharray:none"
+       style="font-size:48.3155px;font-family:sans-serif;fill:#000000;fill-opacity:1;stroke-width:1.2475;stroke-dasharray:none"
        id="tspan137">TXT</tspan></text>
 </svg>

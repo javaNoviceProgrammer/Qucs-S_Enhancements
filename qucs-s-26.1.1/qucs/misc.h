@@ -53,6 +53,10 @@ namespace misc {
   /// ("*.va") only matching names are returned. Sorted with the root's
   /// own files first, then directory by directory.
   QStringList projectFiles(const QDir& root, const QStringList& nameFilters = QStringList());
+  /// The canonical path of a folder setting, empty while it is not set: a
+  /// QDir given an empty path (the AdmsXml and ASCO folders of most
+  /// configurations) keeps it, and its canonicalPath() warns.
+  QString canonicalDir(const QDir& dir);
   /// The folder inside a project that takes its temporary files (netlists,
   /// simulator output, logs), listed by the Content panel as "Scratch".
   inline const char* const ScratchFolder = "Scratch";

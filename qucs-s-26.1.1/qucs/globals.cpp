@@ -49,9 +49,16 @@ bool loadSettings()
     QucsSettings.firstRun = _settings::Get().item<bool>("firstRun");
 
     /*** Temporarily continue to use QucsSettings to make sure all settings convert okay and remain compatible ***/
-    QucsSettings.font.fromString(_settings::Get().item<QString>("font"));
-    QucsSettings.appFont.fromString(_settings::Get().item<QString>("appFont"));
-    QucsSettings.textFont.fromString(_settings::Get().item<QString>("textFont"));
+    // a font not saved yet (the text font of a new configuration) keeps
+    // the default main() gave it
+    auto readFont = [](QFont& font, const QString& key) {
+        const QString description = _settings::Get().item<QString>(key);
+        if (!description.isEmpty())
+            font.fromString(description);
+    };
+    readFont(QucsSettings.font, "font");
+    readFont(QucsSettings.appFont, "appFont");
+    readFont(QucsSettings.textFont, "textFont");
     QucsSettings.largeFontSize = _settings::Get().item<double>("LargeFontSize");
     QucsSettings.maxUndo = _settings::Get().item<int>("maxUndo");
     QucsSettings.NodeWiring = _settings::Get().item<int>("NodeWiring");
@@ -191,8 +198,8 @@ bool saveApplSettings()
     qs.setItem<QString>("Attribute", QucsSettings.Attribute.name());
     qs.setItem<QString>("Directive", QucsSettings.Directive.name());
     qs.setItem<QString>("Task", QucsSettings.Task.name());
-    qs.setItem<QString>("AdmsXmlBinDir", QucsSettings.AdmsXmlBinDir.canonicalPath());
-    qs.setItem<QString>("AscoBinDir", QucsSettings.AscoBinDir.canonicalPath());
+    qs.setItem<QString>("AdmsXmlBinDir", misc::canonicalDir(QucsSettings.AdmsXmlBinDir));
+    qs.setItem<QString>("AscoBinDir", misc::canonicalDir(QucsSettings.AscoBinDir));
     qs.setItem<QString>("NgspiceExecutable",QucsSettings.NgspiceExecutable);
     qs.setItem<QString>("XyceExecutable",QucsSettings.XyceExecutable);
     qs.setItem<QString>("XyceParExecutable",QucsSettings.XyceParExecutable);
@@ -236,6 +243,20 @@ bool saveApplSettings()
   return true;
 }
 
+bool isGenericFontFamilyHint(const QMessageLogContext &context, const QString &msg)
+{
+    // The icons' texts (AC, .PARAM, TXT...) ask for "sans-serif", as an SVG
+    // should, and QtSvg hands it to the font database as a family. CoreText
+    // has no such family: the first time, Qt lists every font's names
+    // (some 50 ms) and suggests replacing the family - with one that exists
+    // on one platform only. Any other missing family is still reported.
+    if (qstrcmp(context.category, "qt.qpa.fonts") != 0
+        || !msg.startsWith(QLatin1String("Populating font family aliases")))
+        return false;
+    static const QRegularExpression family(QStringLiteral("missing font family \"([^\"]*)\""));
+    return family.match(msg).captured(1).compare(QLatin1String("sans-serif"), Qt::CaseInsensitive) == 0;
+}
+
 /*!
  * \brief qucsMessageOutput handles qDebug, qWarning, qCritical, qFatal.
  * \param type Message type (Qt enum)
@@ -250,6 +271,8 @@ bool saveApplSettings()
  */
 void qucsMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
+    if (isGenericFontFamilyHint(context, msg))
+        return;
     qucs_s::crash::noteMessage(type, msg);   // kept for the crash report
     QByteArray localMsg = msg.toLocal8Bit();
     const char *file = context.file ? context.file : "";

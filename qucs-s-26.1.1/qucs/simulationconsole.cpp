@@ -23,6 +23,7 @@
 #include <QDialog>
 #include <QDockWidget>
 #include <QEvent>
+#include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QPlainTextEdit>
@@ -51,9 +52,9 @@ SimulationConsole::SimulationConsole(QucsApp* app)
       a_buttonClear(new QPushButton(tr("Clear"), this)),
       a_buttonClose(new QPushButton(tr("Close"), this))
 {
-    QFont font;
-    font.setFamily("monospace");
-    font.setStyleHint(QFont::Monospace);
+    // the system's fixed-pitch font: a family named "monospace" exists only
+    // under fontconfig, and elsewhere Qt searches every font for it
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSize(10);
     a_console->setFont(font);
     a_console->setReadOnly(true);

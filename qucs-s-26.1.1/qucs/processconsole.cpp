@@ -18,6 +18,7 @@
 #include <QDir>
 #include <QEvent>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -375,9 +376,9 @@ ProcessConsole::ProcessConsole(QWidget* parent)
     a_pendingFlush->setSingleShot(true);
     a_pendingFlush->setInterval(3000);   // a program that says nothing gets its input then
     connect(a_pendingFlush, &QTimer::timeout, this, &ProcessConsole::flushPendingInput);
-    QFont font;
-    font.setFamily("monospace");
-    font.setStyleHint(QFont::Monospace);
+    // the system's fixed-pitch font: a family named "monospace" exists only
+    // under fontconfig, and elsewhere Qt searches every font for it
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSize(10);
     a_output->setFont(font);
     a_output->setReadOnly(true);

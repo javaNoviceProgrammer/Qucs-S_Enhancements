@@ -559,7 +559,6 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     pathsTableWidget->verticalHeader()->hide();
     // allow multiple items to be selected
     pathsTableWidget->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    connect(pathsTableWidget, SIGNAL(cellClicked(int,int)), SLOT(slotPathTableClicked(int,int)));
     pathsGrid->addWidget(pathsTableWidget, 0, 0, 3, 2);
 
     QPushButton *AddPathButt = new QPushButton(tr("Add Path"));
@@ -649,8 +648,8 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
 
     /*! Load paths from settings */
     homeEdit->setText(QucsSettings.qucsWorkspaceDir.canonicalPath());
-    admsXmlEdit->setText(QucsSettings.AdmsXmlBinDir.canonicalPath());
-    ascoEdit->setText(QucsSettings.AscoBinDir.canonicalPath());
+    admsXmlEdit->setText(misc::canonicalDir(QucsSettings.AdmsXmlBinDir));
+    ascoEdit->setText(misc::canonicalDir(QucsSettings.AscoBinDir));
     octaveEdit->setText(QucsSettings.OctaveExecutable);
     OpenVAFEdit->setText(QucsSettings.OpenVAFExecutable);
     RFLayoutEdit->setText(QucsSettings.RFLayoutExecutable);
