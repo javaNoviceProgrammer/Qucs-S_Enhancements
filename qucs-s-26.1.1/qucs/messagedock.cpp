@@ -234,7 +234,6 @@ void MessageDock::slotCppChanged()
  */
 void MessageDock::slotCursor()
 {
-    qWarning()  << admsOutput->textCursor().blockNumber();
     int gotoLine = -1;
     QString line =  admsOutput->textCursor().block().text();
     if (line.contains("[fatal..]",Qt::CaseSensitive)) {
@@ -245,7 +244,7 @@ void MessageDock::slotCursor()
             a = line.indexOf(":")+1;
             b = line.indexOf(":",a);
             gotoLine = line.mid(a,b-a).trimmed().toInt();
-            qWarning() << "goto line " << gotoLine;
+            qDebug() << "goto line " << gotoLine;
         }
 
         // try to find line number: "syntax error at line 33 --"
@@ -254,7 +253,7 @@ void MessageDock::slotCursor()
             a = line.indexOf("at line");
             b = line.indexOf("--",a);
             gotoLine = line.mid(a+7,b-a-7).trimmed().toInt();
-            qWarning() << "goto line " << gotoLine;
+            qDebug() << "goto line " << gotoLine;
         }
     }
 
