@@ -32,6 +32,7 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 #include "qucs.h"
 #include "textdoc.h"
 #include "syntax.h"
+#include "apptheme.h"
 #include "components/vhdlfile.h"
 #include "components/verilogfile.h"
 #include "components/vafile.h"
@@ -80,6 +81,7 @@ TextDoc::TextDoc(QucsApp *App_, const QString& Name_) : QPlainTextEdit(), QucsDo
   syntaxHighlight = new SyntaxHighlighter(this);
   syntaxHighlight->setLanguage(language);
   syntaxHighlight->setDocument(document());
+  syntaxHighlight->setPaper(a_paper);
 
   connect(this, SIGNAL(cursorPositionChanged()), this, SLOT(highlightCurrentLine()));
   highlightCurrentLine();
@@ -662,9 +664,7 @@ void TextDoc::highlightCurrentLine()
     if (!isReadOnly()) {
         QTextEdit::ExtraSelection selection;
 
-        QColor lineColor = QColor(Qt::blue).lighter(195);
-
-        selection.format.setBackground(lineColor);
+        selection.format.setBackground(a_currentLine);
         selection.format.setProperty(QTextFormat::FullWidthSelection, true);
         selection.cursor = textCursor();
         selection.cursor.clearSelection();
@@ -675,18 +675,37 @@ void TextDoc::highlightCurrentLine()
 }
 
 /*!
- * \brief The editor's colours: black text on white, in the light and the
- * dark theme alike, and independent of the schematic's document
+ * \brief The editor's colours. Under the platform's themes black text on
+ * white, in the light and the dark theme alike (the syntax colours are
+ * meant for white), and independent of the schematic's document
  * background (which earlier versions meant to use here but never showed:
- * see below). As a style sheet, not a palette: the main window has a
- * style sheet, and Qt's style-sheet style puts the application palette
- * back on every widget it polishes (each time the editor is shown), which
- * took a palette set here away and made the editor follow the theme's
- * base colour.
+ * see below). Under a designed theme its base and text colours, the
+ * syntax colours fitted to them (ink::on()). As a style sheet, not a
+ * palette: the main window has a style sheet, and Qt's style-sheet style
+ * puts the application palette back on every widget it polishes (each
+ * time the editor is shown), which took a palette set here away and made
+ * the editor follow the theme's base colour.
  */
 void TextDoc::applyDocumentColors()
 {
-  setStyleSheet(QStringLiteral("QPlainTextEdit { background-color: #ffffff; color: #000000; }"));
+  QColor paper(Qt::white), text(Qt::black);
+  a_currentLine = QColor(Qt::blue).lighter(195);
+  a_margin = Qt::lightGray;
+  a_marginText = Qt::black;
+  if (const auto *theme = qucs_s::apptheme::designedTheme(qucs_s::apptheme::current())) {
+    const qucs_s::apptheme::Colours &c = theme->colours;
+    paper = c.base;
+    text = c.text;
+    a_currentLine = qucs_s::apptheme::mix(c.base, c.accent, theme->dark ? 0.16 : 0.10);
+    a_margin = c.surface;
+    a_marginText = c.muted;
+  }
+  a_paper = paper;
+  setStyleSheet(QStringLiteral("QPlainTextEdit { background-color: %1; color: %2; }")
+                    .arg(paper.name(QColor::HexRgb), text.name(QColor::HexRgb)));
+  if (syntaxHighlight != nullptr) syntaxHighlight->setPaper(paper);
+  highlightCurrentLine();
+  if (lineNumberArea != nullptr) lineNumberArea->update();
 }
 
 void TextDoc::refreshLanguage()
@@ -751,7 +770,7 @@ void TextDoc::resizeEvent(QResizeEvent *e)
 void TextDoc::lineNumberAreaPaintEvent(QPaintEvent *event)
 {
     QPainter painter(lineNumberArea);
-    painter.fillRect(event->rect(), Qt::lightGray);
+    painter.fillRect(event->rect(), a_margin);
 
     QTextBlock block = firstVisibleBlock();
     int blockNumber = block.blockNumber();
@@ -761,7 +780,7 @@ void TextDoc::lineNumberAreaPaintEvent(QPaintEvent *event)
     while (block.isValid() && top <= event->rect().bottom()) {
         if (block.isVisible() && bottom >= event->rect().top()) {
             QString number = QString::number(blockNumber + 1);
-            painter.setPen(Qt::black);
+            painter.setPen(a_marginText);
             painter.drawText(0, top, lineNumberArea->width(), fontMetrics().height(),
                 Qt::AlignRight, number);
         }

@@ -2,8 +2,8 @@
  * The colours of a schematic on its paper (ink.h): on light paper as they
  * always were, on dark paper lightened where they would not show - every
  * colour the built-in symbols use, the canvas as drawn, diagrams as light
- * cards, prints unchanged - and the setting that makes the paper follow
- * the dark theme.
+ * cards, prints unchanged, pictures (icons) inked pixel by pixel - and the
+ * setting that makes the paper follow the dark theme.
  */
 #include <QtTest>
 #include <QImage>
@@ -150,6 +150,41 @@ private slots:
             QVERIFY(ink::darkPaper());
         }
         QVERIFY(!ink::darkPaper());
+    }
+
+    void aPictureIsInked()
+    {
+        // The component list's and the tool bars' icons on a dark theme:
+        // every pixel through on(), its transparency kept.
+        QImage picture(4, 1, QImage::Format_ARGB32);
+        picture.setPixel(0, 0, qRgba(0, 0, 128, 255));     // dark blue
+        picture.setPixel(1, 0, qRgba(0, 0, 128, 100));     // its antialiased edge
+        picture.setPixel(2, 0, qRgba(255, 255, 255, 255)); // white shows already
+        picture.setPixel(3, 0, qRgba(0, 0, 0, 0));         // nothing
+        QPixmap pixmap = QPixmap::fromImage(picture);
+        pixmap.setDevicePixelRatio(2.0);
+
+        const QImage inked = ink::inked(pixmap, kDark).toImage().convertToFormat(QImage::Format_ARGB32);
+        QCOMPARE(inked.size(), picture.size());
+        const QColor blue = QColor::fromRgba(inked.pixel(0, 0));
+        QVERIFY(ink::contrast(blue, kDark) >= 3.0);
+        QVERIFY(blue.blue() > blue.red());   // still blue, lighter
+        QCOMPARE(qAlpha(inked.pixel(1, 0)), 100);
+        QCOMPARE(QColor::fromRgba(inked.pixel(1, 0)).rgb(), blue.rgb());
+        QCOMPARE(QColor::fromRgba(inked.pixel(2, 0)), QColor(Qt::white));
+        QCOMPARE(qAlpha(inked.pixel(3, 0)), 0);
+        QCOMPARE(ink::inked(pixmap, kDark).devicePixelRatio(), 2.0);
+
+        // On light paper the picture as it is.
+        QCOMPARE(ink::inked(pixmap, kCream).toImage(), pixmap.toImage());
+
+        // An icon: its pixmap at the size asked, inked, the same one each time.
+        QIcon icon(QPixmap::fromImage(picture.scaled(16, 16)));
+        const QIcon a = ink::inked(icon, QSize(16, 16), 1.0, kDark);
+        const QIcon b = ink::inked(icon, QSize(16, 16), 1.0, kDark);
+        QCOMPARE(a.cacheKey(), b.cacheKey());
+        QVERIFY(a.cacheKey() != icon.cacheKey());
+        QCOMPARE(ink::inked(icon, QSize(16, 16), 1.0, kCream).cacheKey(), icon.cacheKey());
     }
 
     // Every colour a built-in symbol is drawn with shows on dark paper.

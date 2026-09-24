@@ -11,6 +11,7 @@
 #include "ink.h"
 
 #include <QHash>
+#include <QImage>
 
 #include <cmath>
 
@@ -107,6 +108,44 @@ QBrush on(QBrush brush)
     if (brush.style() != Qt::NoBrush && brush.gradient() == nullptr && brush.textureImage().isNull())
         brush.setColor(on(brush.color()));
     return brush;
+}
+
+QPixmap inked(const QPixmap& pixmap, const QColor& paper)
+{
+    if (pixmap.isNull() || !isDark(paper)) return pixmap;
+    QImage image = pixmap.toImage().convertToFormat(QImage::Format_ARGB32);
+    const Paper on_(paper);
+    QHash<QRgb, QRgb> mapped;   // an icon has a few hundred colours at most
+    for (int y = 0; y < image.height(); ++y) {
+        auto* line = reinterpret_cast<QRgb*>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const int alpha = qAlpha(line[x]);
+            if (alpha == 0) continue;
+            const QRgb opaque = line[x] | 0xff000000u;
+            auto hit = mapped.constFind(opaque);
+            if (hit == mapped.constEnd()) hit = mapped.insert(opaque, on(QColor::fromRgb(opaque)).rgb());
+            line[x] = (*hit & 0x00ffffffu) | (QRgb(alpha) << 24);
+        }
+    }
+    QPixmap result = QPixmap::fromImage(image);
+    result.setDevicePixelRatio(pixmap.devicePixelRatio());
+    return result;
+}
+
+QIcon inked(const QIcon& icon, const QSize& size, qreal ratio, const QColor& paper)
+{
+    if (icon.isNull() || !isDark(paper) || !size.isValid()) return icon;
+    static QHash<QString, QIcon> kept;
+    const QString key = QStringLiteral("%1/%2x%3@%4/%5")
+                            .arg(icon.cacheKey()).arg(size.width()).arg(size.height())
+                            .arg(ratio).arg(paper.rgb());
+    auto hit = kept.constFind(key);
+    if (hit != kept.constEnd()) return *hit;
+    const QPixmap pixmap = icon.pixmap(size, ratio);
+    QIcon result(inked(pixmap, paper));
+    if (kept.size() > 1024) kept.clear();
+    kept.insert(key, result);
+    return result;
 }
 
 } // namespace qucs_s::ink

@@ -71,8 +71,20 @@ bool misc::isDarkTheme()
 
 QColor misc::paperColor()
 {
-    if (QucsSettings.PaperFollowsTheme && isDarkTheme()) return qucs_s::ink::darkPaperColour();
+    if (QucsSettings.PaperFollowsTheme) {
+        const QColor paper = qucs_s::apptheme::paper(QucsSettings.Theme);
+        if (paper.isValid()) return paper;
+    }
     return QucsSettings.BGColor.isValid() ? QucsSettings.BGColor : QColor(255, 250, 225);
+}
+
+QColor misc::gridColor(const QColor& setting)
+{
+    if (QucsSettings.PaperFollowsTheme) {
+        const QColor grid = qucs_s::apptheme::grid(QucsSettings.Theme);
+        if (grid.isValid()) return grid;
+    }
+    return qucs_s::ink::on(setting);
 }
 
 QString misc::getIconPath(const QString &file)

@@ -58,6 +58,8 @@
 #include <QStyleHints>
 #include <QStandardPaths>
 #include <QActionGroup>
+#include "apptheme.h"
+#include <QStyledItemDelegate>
 #include "schematic.h"
 #include "mouseactions.h"
 #include "messagedock.h"
@@ -371,6 +373,79 @@ QucsApp::~QucsApp()
 // ##########     Creates the working area (QTabWidget etc.)    ##########
 // ##########                                                   ##########
 // #######################################################################
+namespace {
+
+// The component list's icons are drawn for white paper: on a dark list
+// they are inked (ink::inked()), dark blue turned light blue.
+class InkedIconDelegate : public QStyledItemDelegate
+{
+public:
+  using QStyledItemDelegate::QStyledItemDelegate;
+
+protected:
+  void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override
+  {
+    QStyledItemDelegate::initStyleOption(option, index);
+    const QColor paper = option->palette.color(QPalette::Base);
+    if (option->icon.isNull() || !qucs_s::ink::isDark(paper)) return;
+    const QWidget *view = option->widget;
+    const qreal ratio = view != nullptr ? view->devicePixelRatio() : 1.0;
+    option->icon = qucs_s::ink::inked(option->icon, option->decorationSize, ratio, paper);
+  }
+};
+
+// The component list in the theme's colours: the list on the base colour,
+// hovered and selected items tinted with the highlight.
+void styleComponentList(QListWidget *list)
+{
+  const QPalette p = QApplication::palette();
+  const QColor base = p.color(QPalette::Base), text = p.color(QPalette::Text);
+  const QColor accent = p.color(QPalette::Highlight);
+  auto css = [](const QColor &c) { return c.name(QColor::HexRgb); };
+  const QString sheet = QStringLiteral(R"(
+      QListWidget { background: %1; color: %2; outline: none; padding: 0px; margin: 0px; border: none; }
+      QListWidget::item { margin: 0px 3px; border: none; border-radius: 4px; outline: none; background-color: transparent; }
+      QListWidget::item:hover { background-color: %3; }
+      QListWidget::item:selected { background-color: %4; color: %2; border: none; margin: 0px; }
+      QListWidget::item:selected:!focus { background-color: %5; color: %2; }
+      QListWidget::item:selected:hover { border: 1px solid %6; }
+      QListWidget::item:focus { outline: none; }
+  )")
+      .arg(css(base), css(text), css(qucs_s::apptheme::mix(base, accent, 0.14)),
+           css(qucs_s::apptheme::mix(base, accent, 0.28)), css(qucs_s::apptheme::mix(base, text, 0.12)),
+           css(qucs_s::apptheme::mix(base, accent, 0.7)));
+  QPalette listPalette = list->palette();
+  listPalette.setColor(QPalette::Base, base);
+  list->setPalette(listPalette);
+  list->setStyleSheet(sheet);
+}
+
+} // namespace
+
+void QucsApp::applyTheme(int theme)
+{
+  theme = qucs_s::apptheme::bounded(theme);
+  QucsSettings.Theme = theme;
+  qucs_s::apptheme::apply(theme);
+  _settings::Get().setItem<int>("Theme", theme);
+  applyLook();
+}
+
+void QucsApp::applyLook()
+{
+  QucsSettings.hasDarkTheme = misc::isDarkTheme();
+  if (CompComps != nullptr) {
+    styleComponentList(CompComps);
+    CompComps->viewport()->update();
+  }
+  applyPaper();
+  for (QucsDoc *doc : allDocuments())
+    if (auto *text = qobject_cast<TextDoc *>(documentWidget(doc))) text->applyDocumentColors();
+  if (themeActions != nullptr)
+    for (QAction *a : themeActions->actions())
+      a->setChecked(a->data().toInt() == QucsSettings.Theme);
+}
+
 /**
  * @brief QucsApp::initView Setup the layour of all widgets
  */
@@ -415,10 +490,7 @@ void QucsApp::initView()
   // The system turning dark or light: a paper that follows the theme
   // follows it (once the application's palette has changed).
   connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this] {
-    QTimer::singleShot(0, this, [this] {
-      QucsSettings.hasDarkTheme = misc::isDarkTheme();
-      applyPaper();
-    });
+    QTimer::singleShot(0, this, [this] { applyLook(); });
   });
 #endif
 
@@ -499,67 +571,10 @@ void QucsApp::initView()
   CompComps->setIconSize(QSize(64,64));
   CompComps->setAcceptDrops(false);
 
-  const QString itemStyle = R"(
-      QListWidget {
-          background: white;
-          color: black;
-          outline: none;
-          padding: 0px;
-          margin: 0px;
-      }
-
-      QListWidget::item {
-          position: relative;
-          margin-top: 0px;
-          margin-left: 3px;
-          margin-right: 3px;
-          margin-bottom: 0px;
-          border: none;
-          border-radius: 2px;
-          outline: none;
-          background-color: transparent;
-      }
-
-      QListWidget::item:hover {
-          background-color: rgba(220, 242, 255, 0.75);
-      }
-
-      QListWidget::item:selected {
-          position: relative;
-          background-color: rgba(181, 227, 255, 0.75);
-          border: none;
-          color: black;
-          margin: 0px;
-      }
-
-      QListWidget::item:selected:focus {
-          position: relative;
-          background-color: rgba(181, 227, 255, 0.75);
-          border: none;
-          color: black;
-          margin: 0px;
-      }
-
-      QListWidget::item:selected:!focus {
-          position: relative;
-          background-color: rgba(222, 222, 223, 0.75);
-          border: none;
-          color: black;
-          margin: 0px;
-      }
-
-      QListWidget::item:selected:hover {
-          position: relative;
-          border: 1px solid black; /* Black border when selected and hovered */
-          padding-top:-1px;
-      }
-
-      QListWidget::item:focus {
-          outline: none; /* Remove the default focus outline */
-      }
-  )";
-
-  CompComps->setStyleSheet(itemStyle);
+  // Its colours are the theme's (applyLook()); on a dark list the icons,
+  // drawn for white, are inked.
+  CompComps->setItemDelegate(new InkedIconDelegate(CompComps));
+  styleComponentList(CompComps);
 
   // Setup component search box and button.
   CompSearch = new QLineEdit(this);

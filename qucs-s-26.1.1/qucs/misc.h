@@ -128,9 +128,14 @@ namespace misc {
   QString getIconPath(const QString &file);
   bool isDarkTheme();
   /// The paper of the schematic canvas: the background colour from the
-  /// settings, or a dark one in the dark theme when the settings say the
-  /// paper follows the theme.
+  /// settings, or - when the settings say the paper follows the theme -
+  /// the theme's paper (a designed theme's own, the dark paper in the dark
+  /// theme; a light platform theme has none).
   QColor paperColor();
+  /// The colour the canvas' grid is drawn in: the designed theme's when
+  /// the paper follows the theme, otherwise \a setting fitted to the paper
+  /// (ink::on()).
+  QColor gridColor(const QColor& setting);
   QString getWindowTitle();
   QString wildcardToRegularExpression(const QString &wc_str, const bool enableEscaping);
 

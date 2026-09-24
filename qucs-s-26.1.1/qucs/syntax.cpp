@@ -23,6 +23,7 @@
 
 #include "textdoc.h"
 #include "syntax.h"
+#include "ink.h"
 
 
 SyntaxHighlighter::SyntaxHighlighter(TextDoc *textEdit) : QSyntaxHighlighter(textEdit)
@@ -55,9 +56,24 @@ SyntaxHighlighter::~SyntaxHighlighter()
 }
 
 // ---------------------------------------------------
+void SyntaxHighlighter::setPaper(const QColor& paper)
+{
+  const qucs_s::ink::Paper on(paper);
+  reservedWordFormat.setForeground(qucs_s::ink::on(Qt::darkBlue));
+  unitFormat.setForeground(qucs_s::ink::on(Qt::darkRed));
+  datatypeFormat.setForeground(qucs_s::ink::on(Qt::darkBlue));
+  directiveFormat.setForeground(qucs_s::ink::on(Qt::darkBlue));
+  functionFormat.setForeground(qucs_s::ink::on(Qt::darkGreen));
+  commentFormat.setForeground(qucs_s::ink::on(Qt::gray));
+  setLanguage(language);   // the rules carry copies of the formats
+  rehighlight();
+}
+
+// ---------------------------------------------------
 void SyntaxHighlighter::setLanguage(int lang)
 {
   language = lang;
+  highlightingRules.clear();   // set again, not added to
 
   HighlightingRule rule;
 

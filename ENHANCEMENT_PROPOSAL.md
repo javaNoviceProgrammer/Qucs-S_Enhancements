@@ -828,6 +828,45 @@ existing demand.
   round trip to the system's look (resolve mask 0, no `AA_SetPalette`),
   the platform-vs-palette decision, storage, and the dialog's combo
   (choice, save, the main window following, *Default Values*).
+- *Done:* **Designed themes.** Ten themes that look the same on every
+  platform, next to the platform's System/Dark/Light: Daylight, Paper,
+  Solarized Light, Catppuccin Latte, Graphite, Nord, Dracula, One Dark,
+  Solarized Dark, Catppuccin Mocha (`apptheme::designed()`, ids 3-12 of
+  the same `Theme` setting). Each is a set of `Colours` - window,
+  surface, base, alternate, raised, border, text, muted, disabled,
+  accent and the text on it, link, and the schematic's paper and grid -
+  made into a palette (`palette()`) and a style sheet for the tool bars,
+  docks, tab bars, menus, scroll bars, headers, group boxes and status
+  bar (`styleSheet()`). They draw with `DesignedStyle`, a `QProxyStyle`
+  over Fusion that paints buttons, fields, check boxes and radio buttons
+  flat and rounded from the palette alone - so the colour-picker buttons,
+  whose palette carries the colour, keep showing it; no style sheet
+  touches them - and inks the icons of tool bars on a dark palette.
+  `apply()` swaps the style in and out and remembers the platform's
+  (`nativeStyle()`, `setNativeStyle()`: *App Style* chosen under a
+  designed theme waits for a platform theme), and sets the platform's
+  colour scheme to the theme's darkness for the window frames and native
+  dialogs. `QucsApp::applyTheme()` / `applyLook()` bring the component
+  list (its colours from the palette; `InkedIconDelegate` inks its icons
+  on a dark list), the paper, open text editors and *View → Theme* (a
+  radio menu with a swatch per theme) in line. `ink::inked()` inks a
+  pixmap or an icon pixel by pixel through `on()`. The paper setting
+  became *Schematic paper and grid from the theme*: `misc::paperColor()`
+  and the new `misc::gridColor()` take a designed theme's own; the
+  platform's Dark keeps the dark paper. The text editor takes a designed
+  theme's base and text, its syntax colours fitted with `ink::on()`, the
+  current line and the line-number margin from the theme; the
+  highlighter's `setLanguage()` no longer piles up rules when called
+  again. The status bar's warning label no longer blinks back to black
+  (it takes the status bar's colour). `test_app_theme` checks every
+  theme's contrasts (text 4.5:1 on all its backgrounds, muted text 3:1,
+  the accent's text 4.5:1, disabled text dim but there, the grid on the
+  paper), its palette and style sheet, the style's swap and the waiting
+  App Style, the paper and grid, a picker button and a checked box as
+  drawn, the dialog's combo and *View → Theme*, the component list
+  (no dark-blue pixel left on Nord), the text editor and the warning
+  label; `QUCS_TEST_GRAB=<dir>` saves every theme's main window, menu,
+  editor, side panel and settings. `test_ink` covers `inked()`.
 
 - *Done:* **A grid setting for every schematic.** The grid's visibility
   was only per document (`QucsDoc::a_GridOn`, the third field of the

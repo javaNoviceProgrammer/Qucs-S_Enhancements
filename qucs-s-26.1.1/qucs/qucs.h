@@ -50,6 +50,7 @@ class ProcessConsole;
 
 class QLabel;
 class QAction;
+class QActionGroup;
 class QLineEdit;
 class QComboBox;
 class QTabWidget;
@@ -149,6 +150,12 @@ public:
   /// Gives every open schematic the paper of the settings and the theme
   /// (misc::paperColor()), and the inline text editor with it.
   void applyPaper();
+  /// Puts \a theme on the application (apptheme::apply()), keeps it in the
+  /// settings and brings everything that depends on it in line.
+  void applyTheme(int theme);
+  /// What depends on the theme, after it changed: the component list's
+  /// colours and icons, the paper, the text editors, View > Theme.
+  void applyLook();
   /// Draws every open schematic again with the grid the settings say
   /// (QucsSettings.GridMode), and brings View > Show Grid in line.
   void applyGridSetting();
@@ -433,7 +440,7 @@ public:
   MouseActions *view;
   ContextMenuTabWidget *DocumentTab;   // the active pane
   QSplitter *a_paneArea = nullptr;     // rows of panes (the central widget)
-  QListWidget *CompComps;
+  QListWidget *CompComps = nullptr;
   QTreeWidget *libTreeWidget;
   QTextEdit *CompDescr;
   QLineEdit *LibCompSearch;
@@ -610,6 +617,8 @@ private:
   QMenu *fileMenu, *editMenu, *insMenu, *projMenu, *recentProjMenu, *simMenu,
       *viewMenu, *helpMenu, *alignMenu, *toolMenu, *recentFilesMenu, *cmMenu,
       *symbolMenu;
+  QMenu *themeMenu = nullptr;          // View > Theme
+  QActionGroup *themeActions = nullptr;
   QAction *fileRecentAction[MaxRecentFiles];
   QAction *fileClearRecent;
 

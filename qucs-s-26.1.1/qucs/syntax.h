@@ -42,6 +42,9 @@ public:
 
  void setLanguage(int);
  void highlightBlock(const QString&);
+ /// The colours, meant for white, fitted to the editor's paper
+ /// (ink::on()); the text highlighted again.
+ void setPaper(const QColor& paper);
 
 private:
   int language;

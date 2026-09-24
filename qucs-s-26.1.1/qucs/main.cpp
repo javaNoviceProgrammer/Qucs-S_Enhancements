@@ -742,13 +742,9 @@ int main(int argc, char *argv[])
     // load existing settings (if any)
     loadSettings();
 
-    /* restore saved style */
-    QString savedStyle = _settings::Get().item<QString>("AppStyle");
-    QStyle* style = QStyleFactory::create(savedStyle);
-    if (style) {
-        QApplication::setStyle(style);
-    }
-    /* restore saved style */
+    // The saved style for the platform's themes, then the theme (a
+    // designed theme draws with a style of its own).
+    qucs_s::apptheme::setNativeStyle(_settings::Get().item<QString>("AppStyle"));
     qucs_s::apptheme::apply(QucsSettings.Theme);
 
     QDir().mkpath(QucsSettings.qucsWorkspaceDir.absolutePath());
