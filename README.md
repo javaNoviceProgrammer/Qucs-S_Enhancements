@@ -122,22 +122,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Schematic* warns about a Verilog-A component whose module is in no
   library and no source of the project.
 - **Libraries that bring their Verilog-A**: *Tools → Create Library*
-  copies the Verilog-A its subcircuits use into the library's folder
-  (`user_lib/NAME/`, beside `NAME.lib`), listed with the component: the
-  compiled models (`.osdi`) a simulation would load for the modules their
-  `.model` cards name, the sources (`.va`) that define them and the files
-  those `` `include `` (from the project, and from libraries whose
-  components the subcircuits use). A circuit that uses the library — in
-  any project, or none — loads its models; one built for another platform
-  (a Linux `.osdi` on a Mac, an x86-64 one for an Arm ngspice, judged by
-  the ngspice program itself) is compiled there from the embedded source
-  with OpenVAF before the simulation instead. A module with a source but
-  no compiled model gets a warning when the library is made. *Application
-  Settings → Settings → Embed Verilog-A and OSDI files in exported
-  libraries* (on by default) turns it off: the library then holds the
-  subcircuits and their symbols only, as before. Share the library as
-  `NAME.lib` with its folder; older versions of Qucs-S read it and ignore
-  the Verilog-A files.
+  copies the Verilog-A sources (`.va`) its subcircuits use into the
+  library's folder (`user_lib/NAME/`, beside `NAME.lib`), listed with the
+  component: those that define the modules their `.model` cards name, and
+  the files they `` `include `` (from the project, and from libraries whose
+  components the subcircuits use). Compiled models (`.osdi`) are not
+  embedded: each runs on one platform only. A circuit that uses the
+  library — in any project, or none — has the source compiled with OpenVAF
+  beside it before its first simulation, and again when the source is
+  newer or the model was built on another platform (a Linux `.osdi` on a
+  Mac, an x86-64 one for an Arm ngspice, judged by the ngspice program
+  itself), and loads the model. A module the project has only compiled,
+  with no source, gets a warning when the library is made. *Application
+  Settings → Settings → Embed Verilog-A files in exported libraries* (on
+  by default) turns it off: the library then holds the subcircuits and
+  their symbols only, as before. Share the library as `NAME.lib` with its
+  folder; older versions of Qucs-S read it and ignore the Verilog-A files.
 - **A Scratch folder per project, a subfolder per schematic**: the
   temporary files of a simulation (netlist, the raw simulator output such
   as `spice4qucs.ac1.plot`, log) go to `Scratch/<schematic>/` inside the

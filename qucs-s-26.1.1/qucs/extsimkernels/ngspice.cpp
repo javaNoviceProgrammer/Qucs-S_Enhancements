@@ -88,10 +88,11 @@ QString programFile(const QString& command)
  * \brief Ngspice::osdiLoads The pre_osdi lines of the OSDI libraries
  *        (compiled Verilog-A) the netlist needs: of the project's - its
  *        folder and subfolders, as the Content panel lists them - and of
- *        the libraries whose components the circuit uses (Create Library
- *        embeds them), those that define a module a .model card of
- *        \a netlist, or of a file it includes, names; one library for each
- *        module. One built for another platform is left out, and said.
+ *        the libraries whose components the circuit uses (compiled
+ *        from the sources Create Library embeds), those that define a
+ *        module a .model card of \a netlist, or of a file it includes,
+ *        names; one library for each module. One built for another
+ *        platform is left out, and said.
  */
 QString Ngspice::osdiLoads(const QString& netlist) const
 {
@@ -133,7 +134,8 @@ QList<qucs_s::osdi::Build> Ngspice::verilogABuilds()
             libraries << project.absoluteFilePath(file);
     }
     // The sources the libraries of the circuit's components embed: their
-    // models are compiled here when brought from another platform.
+    // models are compiled here, beside them, before the first simulation,
+    // and again when out of date or built on another platform.
     for (const QString& file : collectVerilogAFiles(a_schematic)) {
         if (!QFileInfo(file).isFile()) continue;
         if (file.endsWith(QLatin1String(".va"), Qt::CaseInsensitive) && !sources.contains(file)) sources << file;

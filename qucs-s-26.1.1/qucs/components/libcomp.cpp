@@ -25,6 +25,7 @@
 
 #include <QTextStream>
 #include <QDir>
+#include <QFileInfo>
 #include <QRegularExpression>
 #include <QDebug>
 
@@ -391,10 +392,17 @@ QStringList LibComp::getVerilogAFiles()
   QStringList includes, attach;
   if (loadSection("Spice", content, &includes, &attach) < 0)
     return {};
+  const QDir folder(getSubcircuitFile());
   QStringList files;
-  for (const QString &file : std::as_const(attach))
-    if (file.endsWith(".va", Qt::CaseInsensitive) || file.endsWith(".osdi", Qt::CaseInsensitive))
-      files.append(getSubcircuitFile() + '/' + file);
+  for (const QString &file : std::as_const(attach)) {
+    if (file.endsWith(".osdi", Qt::CaseInsensitive)) {
+      files.append(folder.absoluteFilePath(file));
+    } else if (file.endsWith(".va", Qt::CaseInsensitive)) {
+      files.append(folder.absoluteFilePath(file));
+      const QString model = folder.absoluteFilePath(QFileInfo(file).completeBaseName() + ".osdi");
+      if (QFileInfo(model).isFile() && !files.contains(model)) files.append(model);
+    }
+  }
   return files;
 }
 

@@ -152,8 +152,9 @@ public:
     virtual bool waitEndOfSimulation();
     void setConsole(QPlainTextEdit *console) { a_console = console; }
     QStringList collectSpiceLibraryFiles(Schematic *sch);
-    /// The .va and .osdi files the components of \a sch and of its
-    /// subcircuits bring with them (Component::getVerilogAFiles()).
+    /// The .va files the components of \a sch and of its subcircuits
+    /// bring with them, and the .osdi models compiled from them
+    /// (Component::getVerilogAFiles()).
     static QStringList collectVerilogAFiles(Schematic *sch);
     static QString collectSpiceLibs(Schematic* sch);
 
