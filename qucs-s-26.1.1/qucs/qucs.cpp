@@ -60,6 +60,8 @@
 #include <QActionGroup>
 #include "apptheme.h"
 #include <QStyledItemDelegate>
+#include <QStyle>
+#include <QTabBar>
 #include "schematic.h"
 #include "mouseactions.h"
 #include "messagedock.h"
@@ -441,6 +443,7 @@ void QucsApp::applyLook()
   applyPaper();
   for (QucsDoc *doc : allDocuments())
     if (auto *text = qobject_cast<TextDoc *>(documentWidget(doc))) text->applyDocumentColors();
+  for (ContextMenuTabWidget *pane : panes()) placeTabButtons(pane);
   if (themeActions != nullptr)
     for (QAction *a : themeActions->actions())
       a->setChecked(a->data().toInt() == QucsSettings.Theme);
@@ -2874,11 +2877,17 @@ int QucsApp::addDocumentTabTo(ContextMenuTabWidget* pane, QFrame* widget, const 
 {
   int index = pane->addTab(widget, title.isEmpty() ? tr("untitled") : title);
 #if __APPLE__
+  // The "modified" marker, on the side the close button is not on: put
+  // in the close button's place it took the button away.
   widget->setFrameStyle(QFrame::NoFrame);
   QTabBar* tabBar = pane->tabBar();
   QLabel* modifiedLabel = new QLabel(" ", tabBar);
+  modifiedLabel->setObjectName(QStringLiteral("modifiedMarker"));
   modifiedLabel->setFixedWidth(10);
-  tabBar->setTabButton(index, QTabBar::RightSide, modifiedLabel);
+  const auto closeSide = QTabBar::ButtonPosition(
+      tabBar->style()->styleHint(QStyle::SH_TabBar_CloseButtonPosition, nullptr, tabBar));
+  tabBar->setTabButton(index, closeSide == QTabBar::LeftSide ? QTabBar::RightSide : QTabBar::LeftSide,
+                       modifiedLabel);
 #endif
   return index;
 }
@@ -2899,11 +2908,13 @@ void QucsApp::setDocumentTabChanged(int index, bool changed)
   if (index < 0 || index >= DocumentTab->count())
     return;   // no such tab (e.g. the document is being closed)
 #ifdef __APPLE__
-  // The "modified" marker is a QLabel installed by addDocumentTab(); a tab
-  // added another way has none, and a stale index yields nullptr. Both
-  // used to be dereferenced blindly (segfault on every text tab close).
-  if (auto *label = qobject_cast<QLabel *>(DocumentTab->tabBar()->tabButton(index, QTabBar::RightSide)))
-    label->setText(changed ? "\u26AB" : " ");
+  // The "modified" marker is a QLabel installed by addDocumentTab(), on
+  // whichever side the close button is not; a tab added another way has
+  // none, and a stale index yields nullptr. Both used to be dereferenced
+  // blindly (segfault on every text tab close).
+  for (auto side : {QTabBar::LeftSide, QTabBar::RightSide})
+    if (auto *label = qobject_cast<QLabel *>(DocumentTab->tabBar()->tabButton(index, side)))
+      label->setText(changed ? "\u26AB" : " ");
 #else
     if (changed) {
         DocumentTab->setTabIcon(index,QIcon(":bitmaps/svg/filesave.svg"));

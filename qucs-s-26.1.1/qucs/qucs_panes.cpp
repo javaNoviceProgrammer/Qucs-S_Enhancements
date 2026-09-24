@@ -23,6 +23,8 @@
 #include <QLabel>
 #include <QSplitter>
 #include <QTabBar>
+#include <QAbstractButton>
+#include <QStyle>
 #include <QVBoxLayout>
 
 /*!
@@ -102,6 +104,27 @@ ContextMenuTabWidget *QucsApp::createPane()
   tabs->tabBar()->installEventFilter(this);   // a click on the tabs activates the pane
   new PaneWidget(tabs);
   return tabs;
+}
+
+void QucsApp::placeTabButtons(ContextMenuTabWidget *pane)
+{
+  QTabBar *bar = pane->tabBar();
+  const auto closeSide = QTabBar::ButtonPosition(
+      bar->style()->styleHint(QStyle::SH_TabBar_CloseButtonPosition, nullptr, bar));
+  const auto markerSide = closeSide == QTabBar::LeftSide ? QTabBar::RightSide : QTabBar::LeftSide;
+  for (int i = 0; i < bar->count(); ++i) {
+    QWidget *close = nullptr, *marker = nullptr;
+    for (auto side : {QTabBar::LeftSide, QTabBar::RightSide})
+      if (QWidget *w = bar->tabButton(i, side)) {
+        if (qobject_cast<QAbstractButton *>(w) != nullptr) close = w;
+        else marker = w;
+      }
+    if (bar->tabButton(i, closeSide) == close && bar->tabButton(i, markerSide) == marker) continue;
+    bar->setTabButton(i, QTabBar::LeftSide, nullptr);
+    bar->setTabButton(i, QTabBar::RightSide, nullptr);
+    if (close != nullptr) bar->setTabButton(i, closeSide, close);
+    if (marker != nullptr) bar->setTabButton(i, markerSide, marker);
+  }
 }
 
 QList<ContextMenuTabWidget *> QucsApp::panes() const

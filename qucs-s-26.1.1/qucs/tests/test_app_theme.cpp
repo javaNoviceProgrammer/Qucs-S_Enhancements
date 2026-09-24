@@ -14,6 +14,9 @@
 #include <QStandardPaths>
 #include <QStyleHints>
 #include <QTabWidget>
+#include <QTabBar>
+#include <QAbstractButton>
+#include <QProxyStyle>
 #include <QPainter>
 #include <QMenu>
 #include <QMenuBar>
@@ -113,6 +116,25 @@ int darkBluePixels(const QImage& image)
                 ++n;
         }
     return n;
+}
+
+// A style that closes tabs on the left, as the macOS style does.
+class ClosesOnTheLeft : public QProxyStyle
+{
+public:
+    ClosesOnTheLeft() : QProxyStyle(QStyleFactory::create("Fusion")) {}
+    int styleHint(StyleHint hint, const QStyleOption* option = nullptr, const QWidget* widget = nullptr,
+                  QStyleHintReturn* ret = nullptr) const override
+    {
+        if (hint == SH_TabBar_CloseButtonPosition) return QTabBar::LeftSide;
+        return QProxyStyle::styleHint(hint, option, widget, ret);
+    }
+};
+
+// The side a tab bar's style puts the close buttons on.
+QTabBar::ButtonPosition closeSide(QTabBar* bar)
+{
+    return QTabBar::ButtonPosition(bar->style()->styleHint(QStyle::SH_TabBar_CloseButtonPosition, nullptr, bar));
 }
 
 struct PaperGuard {
@@ -451,6 +473,61 @@ private slots:
         QCOMPARE(background(), QColor(Qt::white));
     }
 
+    void everyTabKeepsItsCloseButton()
+    {
+        // On macOS a tab's "modified" marker went into the right-hand
+        // button place, where the macOS style has no close button - and
+        // where Fusion and the designed themes have it: new tabs had none.
+        // A tab opened before a theme switch kept its close button on the
+        // old side, where Qt takes no click on it.
+        ThemeGuard guard;
+        QucsApp app(false);
+        MainGuard mainGuard(&app);
+        app.setAttribute(Qt::WA_DontShowOnScreen);
+        app.resize(1000, 700);
+        app.show();
+        const QString features = QStringLiteral(QUCS_EXAMPLES_DIR) + "/ngspice/NGspice features/";
+        QVERIFY(app.gotoPage(features + "RC_lowpass_montecarlo.sch", false, false));
+        app.applyTheme(Nord);
+        QVERIFY(app.gotoPage(features + "LC_lowpass_ngopt.sch", false, false));
+        QTabBar* bar = app.DocumentTab->tabBar();
+        QVERIFY(bar->count() >= 2);
+        // Tabs with a close button, shown, in the place the style has for
+        // it; -1 when a close button is in the other place.
+        auto closeButtons = [&] {
+            int n = 0;
+            const QTabBar::ButtonPosition side = closeSide(bar);
+            const QTabBar::ButtonPosition other = side == QTabBar::LeftSide ? QTabBar::RightSide : QTabBar::LeftSide;
+            for (int i = 0; i < bar->count(); ++i) {
+                if (qobject_cast<QAbstractButton*>(bar->tabButton(i, other)) != nullptr) return -1;
+                auto* close = qobject_cast<QAbstractButton*>(bar->tabButton(i, side));
+                if (close != nullptr && close->isVisible()) ++n;
+            }
+            return n;
+        };
+        QCOMPARE(closeButtons(), bar->count());
+        // A style that closes on the left, and back.
+        ClosesOnTheLeft left;
+        bar->setStyle(&left);
+        QCOMPARE(closeSide(bar), QTabBar::LeftSide);
+        app.applyLook();
+        QCOMPARE(closeButtons(), bar->count());
+        bar->setStyle(nullptr);
+        app.applyLook();
+        QCOMPARE(closeSide(bar), QTabBar::RightSide);
+        QCOMPARE(closeButtons(), bar->count());
+        app.applyTheme(System);
+        QCOMPARE(closeButtons(), bar->count());
+        app.applyTheme(Daylight);
+        QCOMPARE(closeButtons(), bar->count());
+        // A click on one closes its document.
+        const int before = bar->count();
+        auto* close = qobject_cast<QAbstractButton*>(bar->tabButton(before - 1, closeSide(bar)));
+        QVERIFY(close != nullptr);
+        close->click();
+        QTRY_COMPARE(bar->count(), before - 1);
+    }
+
     void theWarningLabelTakesTheStatusBarsColour()
     {
         // It blinked red and black, and was left black: unreadable on a
@@ -661,6 +738,15 @@ private slots:
             app.applyLook();
             QTest::qWait(2300);   // past the "Ready." of the status bar
             app.grab().save(grabDir + "/" + file + "-main.png");
+            // Two documents: the tabs and their close buttons.
+            const QString second = QStringLiteral(QUCS_EXAMPLES_DIR) + "/ngspice/NGspice features/LC_lowpass_ngopt.sch";
+            QVERIFY(app.gotoPage(second, false, false));
+            QTest::qWait(100);
+            {
+                QTabBar* bar = app.DocumentTab->tabBar();
+                app.grab(QRect(app.DocumentTab->mapTo(&app, QPoint(0, 0)), QSize(700, bar->height() + 6)))
+                    .save(grabDir + "/" + file + "-tabs.png");
+            }
             // A Verilog-A source in the editor, the simulation console below.
             const QString va = QStringLiteral(QUCS_EXAMPLES_DIR) + "/ngspice/OpenVAF/Tunnel_Ngspice_prj/tunnel.va";
             QVERIFY(app.gotoPage(va, false, false));
