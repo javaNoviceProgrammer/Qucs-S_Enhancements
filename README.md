@@ -55,12 +55,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   loaders and the simulator-output parsers survive damaged input, the app
   keeps autosave copies and writes a crash report with a backtrace, and the
   next start offers to restore what was open.
-- **Verilog-A "Build All"**: right-click the *Verilog-A* row in the
-  Content panel to compile every `.va` file of the project with OpenVAF (the
-  executable set under *Application Settings → Locations → OpenVAF Path*),
-  one after the other, with the compiler output in the message dock and a
-  pass/fail tally at the end. Files with unsaved changes are compiled as last
-  saved, after a confirmation.
+- **Verilog-A "Build All" and "Compile"**: right-click the *Verilog-A* row
+  in the Content panel to compile every `.va` file of the project with
+  OpenVAF (the executable set under *Application Settings → Locations →
+  OpenVAF Path*), or a `.va` file's row for *Compile*: that file alone —
+  or, with several `.va` files selected, *Compile N Files*. They run one
+  after the other, the compiler output in the message dock, brought to
+  the front over the simulation console, terminal or Python shell sharing
+  the bottom of the window, and a pass/fail tally at the end. Open files
+  with unsaved changes are saved first (*Save and Compile*) or compiled
+  as last saved (*Compile as Saved*).
 - **Verilog-A components keep their parameters' descriptions**: a
   component made from a Verilog-A module (draw its symbol, save it, *Load
   Verilog-A module*) shows each parameter's `desc` as written, with its

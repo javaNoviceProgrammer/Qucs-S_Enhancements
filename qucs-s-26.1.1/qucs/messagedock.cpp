@@ -460,6 +460,13 @@ Schematic* MessageDock::operatingPointDocument() const
     return qobject_cast<Schematic*>(a_operatingPointDoc.data());
 }
 
+void MessageDock::showBuildOutput()
+{
+    builderTabs->setCurrentWidget(admsOutput);
+    msgDock->show();
+    msgDock->raise();
+}
+
 void MessageDock::raiseOperatingPoint()
 {
     builderTabs->setCurrentIndex(a_operatingPointTab);

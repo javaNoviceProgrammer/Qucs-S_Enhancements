@@ -19,6 +19,11 @@
 #include "main.h"
 #include "misc.h"
 #include "messagedock.h"
+#include "simulationconsole.h"
+#include "textdoc.h"
+#include <QMessageBox>
+#include <QPushButton>
+#include <QTabWidget>
 #include "projectView.h"
 #include "extsimkernels/spicecompat.h"
 #include "extsimkernels/ngspice.h"
@@ -575,6 +580,168 @@ private slots:
         QCOMPARE(_settings::Get().item<int>("ContentRefreshSeconds"), 15);   // saved
         app.projectView()->applyRefreshSettings();   // as QucsApp does after the dialog
         QVERIFY(app.projectView()->autoRefreshEnabled());
+    }
+
+    // "Compile" on a .va file of the panel: OpenVAF on that file alone -
+    // or on the .va files selected with it; not on other files.
+    void compileOnAVaFile()
+    {
+        QucsSettings.OpenVAFExecutable = fakeCompiler();
+        QucsSettings.QucsWorkDir.setPath(project);
+        const QString calls = dir.filePath("calls.log");
+        QFile::remove(calls);
+        QFile::remove(project + "/good.osdi");
+
+        QucsApp app(false);
+        MainGuard guard(&app);
+        ProjectView* view = app.projectView();
+        view->setProjPath(project);
+        app.show();
+        view->expandAll();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QMenu* fileMenu = menuWithAction(&app, "Open");
+        QVERIFY(fileMenu != nullptr);
+        QAction* compile = nullptr;
+        for (QAction* a : fileMenu->actions())
+            if (a->text() == "Compile") compile = a;
+        QVERIFY(compile != nullptr);
+
+        QStandardItemModel* m = view->model();
+        // A build lists the project again (the new .osdi files): the rows
+        // are made anew, so they are looked up each time.
+        const auto vaRow = [&](const QString& name) {
+            const QModelIndex va = m->index(ProjectView::VerilogA, 0);
+            for (int i = 0; i < m->rowCount(va); ++i)
+                if (view->filePath(m->index(i, 0, va)) == name) return m->index(i, 0, va);
+            return QModelIndex();
+        };
+        QVERIFY(vaRow("good.va").isValid() && vaRow("models/deep.va").isValid());
+        const auto menuOn = [&](const QModelIndex& row) {
+            for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
+            return QMetaObject::invokeMethod(&app, "slotShowContentMenu",
+                                             Q_ARG(QPoint, view->visualRect(row).center()));
+        };
+        const auto compiled = [&] {
+            QFile f(calls);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()).trimmed().split('\n') : QStringList();
+        };
+
+        // Not on a schematic.
+        QVERIFY(menuOn(m->index(0, 0, m->index(ProjectView::Schematics, 0))));
+        QVERIFY(fileMenu->isVisible());
+        QVERIFY(!compile->isVisible());
+
+        // On good.va: that file.
+        view->selectionModel()->clear();
+        QVERIFY(menuOn(vaRow("good.va")));
+        QVERIFY(compile->isVisible() && compile->isEnabled());
+        QCOMPARE(compile->text(), QString("Compile"));
+        compile->trigger();
+        fileMenu->hide();
+        QTRY_VERIFY_WITH_TIMEOUT(app.messages()->admsOutput->toPlainText().contains("Done:"), 15000);
+        QString log = app.messages()->admsOutput->toPlainText();
+        QVERIFY2(log.startsWith("Compiling " + QDir::toNativeSeparators(project + "/good.va")), qPrintable(log));
+        QVERIFY2(log.contains("compiled " + project + "/good.va"), qPrintable(log));
+        QCOMPARE(compiled(), QStringList({project + "/good.va"}));
+        QVERIFY(QFileInfo::exists(project + "/good.osdi"));
+        QVERIFY(!app.messages()->admsOutput->visibleRegion().isEmpty());   // the output in front
+
+        // Two .va files selected: both, the clicked one among them.
+        QFile::remove(calls);
+        view->expandAll();
+        view->selectionModel()->select(vaRow("good.va"), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        view->selectionModel()->select(vaRow("models/deep.va"), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        QVERIFY(menuOn(vaRow("models/deep.va")));
+        QCOMPARE(compile->text(), QString("Compile 2 Files"));
+        compile->trigger();
+        fileMenu->hide();
+        QTRY_VERIFY_WITH_TIMEOUT(app.messages()->admsOutput->toPlainText().contains("Done:"), 15000);
+        QCOMPARE(compiled(), QStringList({project + "/good.va", project + "/models/deep.va"}));
+        // A row outside the selection: that one alone.
+        view->expandAll();
+        QVERIFY(menuOn(vaRow("broken.va")));
+        QCOMPARE(compile->text(), QString("Compile"));
+        for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
+    }
+
+    // A .va file open with changes: saved first when asked, then compiled.
+    void compileSavesTheOpenFileFirst()
+    {
+        QucsSettings.OpenVAFExecutable = fakeCompiler();
+        QucsSettings.QucsWorkDir.setPath(project);
+        QFile::remove(dir.filePath("calls.log"));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        ProjectView* view = app.projectView();
+        view->setProjPath(project);
+        app.show();
+        view->expandAll();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+
+        QVERIFY(app.gotoPage(project + "/good.va", false, false));
+        auto* doc = qobject_cast<TextDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        doc->moveCursor(QTextCursor::End);
+        doc->insertPlainText("// edited\n");
+        QVERIFY(doc->getDocChanged());
+
+        const QModelIndex good = view->model()->index(1, 0, view->model()->index(ProjectView::VerilogA, 0));
+        view->selectionModel()->clear();
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotShowContentMenu", Q_ARG(QPoint, view->visualRect(good).center())));
+        QMenu* fileMenu = menuWithAction(&app, "Open");
+        QAction* compile = nullptr;
+        for (QAction* a : fileMenu->actions())
+            if (a->text() == "Compile") compile = a;
+        QVERIFY(compile != nullptr);
+        fileMenu->hide();
+        // The question: "Save and Compile".
+        bool asked = false;
+        QTimer answer;
+        connect(&answer, &QTimer::timeout, this, [&] {
+            auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (box == nullptr) return;
+            for (QAbstractButton* b : box->buttons())
+                if (b->text() == "Save and Compile") { asked = true; b->click(); }
+        });
+        answer.start(20);
+        compile->trigger();
+        answer.stop();
+        QVERIFY(asked);
+        QVERIFY(!doc->getDocChanged());
+        QFile saved(project + "/good.va");
+        QVERIFY(saved.open(QIODevice::ReadOnly));
+        QVERIFY(QString::fromUtf8(saved.readAll()).contains("// edited"));
+        QTRY_VERIFY_WITH_TIMEOUT(app.messages()->admsOutput->toPlainText().contains("Done:"), 15000);
+    }
+
+    // The message dock shares the bottom of the window with the simulation
+    // console, the terminal and the Python shell; a build brings its
+    // output to the front - the dock's tab and, inside it, the output's.
+    void theBuildOutputComesToTheFront()
+    {
+        QucsSettings.OpenVAFExecutable = fakeCompiler();
+        QucsSettings.QucsWorkDir.setPath(project);
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.projectView()->setProjPath(project);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        MessageDock* messages = app.messages();
+        messages->builderTabs->setCurrentWidget(messages->problems);   // a check was shown last
+        messages->msgDock->show();
+        app.simulationConsole()->showConsole();                        // then a simulation
+        // A dock whose tab is not in front stays "visible", moved out of
+        // sight: what is seen has a visible region.
+        const auto inFront = [](QWidget* w) { return w->isVisible() && !w->visibleRegion().isEmpty(); };
+        QCoreApplication::processEvents();
+        QVERIFY(app.tabifiedDockWidgets(messages->msgDock).contains(app.simulationConsole()->dock()));
+        QTRY_VERIFY(inFront(app.simulationConsole()));
+        QVERIFY(!inFront(messages->admsOutput));
+
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotCMenuBuildAllVerilogA"));
+        QTRY_VERIFY(inFront(messages->admsOutput));
+        QVERIFY(!inFront(app.simulationConsole()));
+        QTRY_VERIFY_WITH_TIMEOUT(messages->admsOutput->toPlainText().contains("Done:"), 15000);
     }
 };
 
