@@ -12,6 +12,8 @@
 #include <QTemporaryDir>
 #include <QLinearGradient>
 
+#include <cstdlib>
+
 #include "config.h"
 #include "qucs.h"
 #include "schematic.h"
@@ -170,7 +172,13 @@ private slots:
         QVERIFY(ink::contrast(blue, kDark) >= 3.0);
         QVERIFY(blue.blue() > blue.red());   // still blue, lighter
         QCOMPARE(qAlpha(inked.pixel(1, 0)), 100);
-        QCOMPARE(QColor::fromRgba(inked.pixel(1, 0)).rgb(), blue.rgb());
+        // The same colour, as near as a pixmap keeps it: one stored
+        // premultiplied (Linux) rounds each channel at alpha 100 to
+        // 255/100 steps, and #7f7fff comes back #8080ff.
+        const QColor edge = QColor::fromRgba(inked.pixel(1, 0));
+        QVERIFY2(std::abs(edge.red() - blue.red()) <= 3 && std::abs(edge.green() - blue.green()) <= 3
+                     && std::abs(edge.blue() - blue.blue()) <= 3,
+                 qPrintable(edge.name() + QStringLiteral(" for ") + blue.name()));
         QCOMPARE(QColor::fromRgba(inked.pixel(2, 0)), QColor(Qt::white));
         QCOMPARE(qAlpha(inked.pixel(3, 0)), 0);
         QCOMPARE(ink::inked(pixmap, kDark).devicePixelRatio(), 2.0);

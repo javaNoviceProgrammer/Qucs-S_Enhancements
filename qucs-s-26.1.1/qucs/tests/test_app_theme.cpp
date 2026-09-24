@@ -27,6 +27,8 @@
 #include <QStatusBar>
 #include <QStyleFactory>
 
+#include <algorithm>
+
 #include "config.h"
 #include "qucs.h"
 #include "module.h"
@@ -103,19 +105,31 @@ QListWidget* componentList(QucsApp& app)
     return nullptr;
 }
 
-// Pixels of an image that are dark blue: what the symbols of Qucs are
-// drawn in for white paper.
-int darkBluePixels(const QImage& image)
+// The pixels of an image left dark blue on \a paper: the colour the symbols
+// of Qucs are drawn in for white. Only a blue below the paper in red and
+// green counts: text lighter than the paper, anti-aliased - on Linux with
+// coloured subpixel fringes - stays between the paper and itself in every
+// channel, so it never does.
+QList<QPoint> darkBlue(const QImage& image, const QColor& paper)
 {
-    int n = 0;
+    QList<QPoint> found;
     for (int y = 0; y < image.height(); ++y)
         for (int x = 0; x < image.width(); ++x) {
             const QColor c = image.pixelColor(x, y);
             if (c.alpha() > 200 && c.blue() > 90 && c.blue() > c.red() + 50 && c.blue() > c.green() + 50
-                && c.value() < 170 && c.red() < 60)
-                ++n;
+                && c.value() < 170 && c.red() < std::min(60, paper.red() - 10) && c.green() < paper.green() - 10)
+                found << QPoint(x, y);
         }
-    return n;
+    return found;
+}
+
+// A failure's message: how many and the first few, where and what colour.
+QByteArray describe(const QImage& image, const QList<QPoint>& found)
+{
+    QStringList first;
+    for (const QPoint& p : found.mid(0, 8))
+        first << QStringLiteral("(%1,%2) %3").arg(p.x()).arg(p.y()).arg(image.pixelColor(p).name());
+    return QStringLiteral("%1 dark blue pixels: %2").arg(found.size()).arg(first.join(QStringLiteral(", "))).toUtf8();
 }
 
 // A style that closes tabs on the left, as the macOS style does.
@@ -435,11 +449,12 @@ private slots:
         };
         app.applyTheme(Daylight);
         QVERIFY(list->styleSheet().contains(designedTheme(Daylight)->colours.base.name()));
-        QVERIFY(darkBluePixels(look()) > 50);
+        QVERIFY(darkBlue(look(), designedTheme(Daylight)->colours.base).size() > 50);
         app.applyTheme(Nord);
         QVERIFY(list->styleSheet().contains(designedTheme(Nord)->colours.base.name()));
         const QImage nord = look();
-        QCOMPARE(darkBluePixels(nord), 0);
+        const QList<QPoint> left = darkBlue(nord, designedTheme(Nord)->colours.base);
+        QVERIFY2(left.isEmpty(), describe(nord, left).constData());
         QCOMPARE(nord.pixelColor(2, 2), designedTheme(Nord)->colours.base);
         app.applyTheme(System);
         QCOMPARE(list->palette().color(QPalette::Base).rgba(), QApplication::palette().color(QPalette::Base).rgba());
@@ -466,7 +481,9 @@ private slots:
         app.applyTheme(Dracula);
         QCOMPARE(background(), designedTheme(Dracula)->colours.base);
         // Nothing drawn in the colours meant for white is left dark on it.
-        QCOMPARE(darkBluePixels(doc->viewport()->grab().toImage()), 0);
+        const QImage dracula = doc->viewport()->grab().toImage();
+        const QList<QPoint> left = darkBlue(dracula, designedTheme(Dracula)->colours.base);
+        QVERIFY2(left.isEmpty(), describe(dracula, left).constData());
         app.applyTheme(SolarizedLight);
         QCOMPARE(background(), designedTheme(SolarizedLight)->colours.base);
         app.applyTheme(Dark);   // a platform theme: black on white, as before
