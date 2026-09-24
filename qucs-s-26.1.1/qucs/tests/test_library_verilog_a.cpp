@@ -1,11 +1,12 @@
 /*
  * Libraries that bring their Verilog-A: Tools > Create Library copies the
- * .va sources and the .osdi models the subcircuits use - and the files the
- * sources include - into the library's folder when the setting says so;
- * a circuit that uses the library, in any project or none, loads those
- * models, and a model built for another platform is compiled again from
- * its source instead of being handed to ngspice. Stand-in .osdi files
- * carry the module's name as a string, as a library holds it.
+ * .va sources the subcircuits use - and the files they include - into the
+ * library's folder when the setting says so, never a compiled .osdi model,
+ * which runs on one platform only; a circuit that uses the library, in any
+ * project or none, has the source compiled beside it before a simulation
+ * and loads the model, and a model built on another platform is compiled
+ * again instead of being handed to ngspice. Stand-in .osdi files carry the
+ * module's name as a string, as a library holds it.
  */
 #include <QtTest>
 #include <QCheckBox>
@@ -133,12 +134,12 @@ class TestLibraryVerilogA : public QObject
     QTemporaryDir dir;
     QString workspace, project, userLib;
 
-    // Tools > Create Library with the subcircuit, no descriptions; the
-    // dialog's messages.
-    QString createLibrary(QucsApp& app, const QString& name)
+    // Tools > Create Library with the subcircuit \a schematic, no
+    // descriptions; the dialog's messages.
+    QString createLibrary(QucsApp& app, const QString& name, const QString& schematic = "sub.sch")
     {
         LibraryDialog dialog(&app);
-        dialog.fillSchematicList({"sub.sch"});
+        dialog.fillSchematicList({schematic});
         auto* nameEdit = dialog.findChild<QLineEdit*>();
         if (nameEdit == nullptr) return {};
         nameEdit->setText(name);
@@ -180,13 +181,15 @@ private slots:
         QucsSettings.qucsWorkspaceDir.setPath(workspace);
         QucsSettings.QucsWorkDir.setPath(project);
 
-        // good.va (with a file it includes) and its model; other.va, not used.
+        // good.va (with a file it includes) and its model; other.va, not
+        // used; a model with no source.
         write(project + "/good.va", "`include \"disciplines.vams\"\n`include \"inc/common.vams\"\n"
                                     "module good(p, n);\nendmodule\n");
         write(project + "/inc/common.vams", "// shared\n");
         write(project + "/good.osdi", osdi("good"));
         write(project + "/other.va", "module unused(p, n);\nendmodule\n");
         write(project + "/other.osdi", osdi("unused"));
+        write(project + "/binonly.osdi", osdi("binonly"));
         // A two-port subcircuit whose model card is of the module good.
         write(project + "/sub.sch",
               "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
@@ -195,6 +198,9 @@ private slots:
               "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
               "  <SpiceModel SpiceModel1 1 120 300 -27 16 0 0 \".model m1 good\" 1 \"\" 0>\n"
               "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        // One whose model card is of the module with no source.
+        write(project + "/bin.sch",
+              QString(read(project + "/sub.sch")).replace(".model m1 good", ".model m2 binonly").toUtf8());
     }
 
     // The format and the processor of a library, against those of this
@@ -237,8 +243,9 @@ private slots:
         QVERIFY(!builtForAnotherPlatform(native, dir.filePath("h/script-ngspice")));
     }
 
-    // On: the model and the source of the module the subcircuit uses, and
-    // what the source includes, go into the library; nothing else does.
+    // On: the source of the module the subcircuit uses, and what it
+    // includes, go into the library; nothing else does - no compiled model,
+    // and one a library made before had compiled is gone.
     void theLibraryEmbedsTheVerilogAItUses()
     {
         QucsSettings.EmbedVerilogAInLibraries = true;
@@ -246,18 +253,41 @@ private slots:
         MainGuard guard(&app);
         app.ProjName = "vaproj";
         QucsSettings.QucsWorkDir.setPath(project);
+        write(userLib + "/VaLib/good.osdi", osdi("good"));   // compiled from the library made before
 
         const QString log = createLibrary(app, "VaLib");
         QVERIFY2(log.contains("Successfully created library."), qPrintable(log));
-        QVERIFY2(log.contains("Embedding Verilog-A: good.va, inc/common.vams, good.osdi"), qPrintable(log));
+        QVERIFY2(log.contains("Embedding Verilog-A: good.va, inc/common.vams (compiled with OpenVAF where "
+                              "the library is used)"), qPrintable(log));
+        QVERIFY2(!log.contains("Warning"), qPrintable(log));
         const QString lib = read(userLib + "/VaLib.lib");
-        QVERIFY2(lib.contains("<SpiceAttach \"good.va\" \"good.osdi\">"), qPrintable(lib));
+        QVERIFY2(lib.contains("<SpiceAttach \"good.va\">"), qPrintable(lib));
+        QVERIFY2(!lib.contains(".osdi"), qPrintable(lib));
         QVERIFY(QFileInfo::exists(userLib + "/VaLib/good.va"));
-        QVERIFY(QFileInfo::exists(userLib + "/VaLib/good.osdi"));
         QVERIFY(QFileInfo::exists(userLib + "/VaLib/inc/common.vams"));
+        QVERIFY(!QFileInfo::exists(userLib + "/VaLib/good.osdi"));
         QVERIFY(!QFileInfo::exists(userLib + "/VaLib/other.va"));
         QVERIFY(!QFileInfo::exists(userLib + "/VaLib/other.osdi"));
-        QCOMPARE(read(userLib + "/VaLib/good.osdi").toUtf8(), osdi("good"));
+        QCOMPARE(read(userLib + "/VaLib/good.va"), read(project + "/good.va"));
+    }
+
+    // A module the project has only compiled: not embedded, and said.
+    void aModelWithNoSourceIsNotEmbedded()
+    {
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+
+        const QString log = createLibrary(app, "BinLib", "bin.sch");
+        QVERIFY2(log.contains("Successfully created library."), qPrintable(log));
+        QVERIFY2(log.contains("Warning: no Verilog-A source of binonly, only a compiled model (.osdi)"),
+                 qPrintable(log));
+        QVERIFY(!log.contains("Embedding Verilog-A"));
+        const QString lib = read(userLib + "/BinLib.lib");
+        QVERIFY2(!lib.contains("binonly.osdi"), qPrintable(lib));
+        QVERIFY(!QFileInfo::exists(userLib + "/BinLib/binonly.osdi"));
     }
 
     // Off: the subcircuits and their symbols only, as before.
@@ -279,10 +309,11 @@ private slots:
         QucsSettings.EmbedVerilogAInLibraries = true;
     }
 
-    // A circuit elsewhere - no project open - that uses the library loads
-    // its model; one built for another platform is not handed to ngspice
-    // but compiled again from the embedded source.
-    void aCircuitUsingTheLibraryLoadsItsModel()
+    // A circuit elsewhere - no project open - that uses the library has
+    // the embedded source compiled beside it before the first simulation,
+    // then loads the model; one built on another platform is not handed to
+    // ngspice but compiled again.
+    void aCircuitUsingTheLibraryCompilesAndLoadsItsModel()
     {
         QucsApp app(false);
         MainGuard guard(&app);
@@ -295,32 +326,39 @@ private slots:
         QucsSettings.QucsWorkDir.setPath(dir.filePath("elsewhere"));
         // The library found through its canonical path (/private/var for
         // /var on macOS).
-        const QString model = QFileInfo(userLib + "/VaLib/good.osdi").canonicalFilePath();
-
-        QString netlist = netlistOf(use);
-        QVERIFY2(netlist.contains("pre_osdi '" + model + "'"), qPrintable(netlist));
-        QVERIFY2(netlist.contains(".model m1 good"), qPrintable(netlist));
-
-        {
+        const QString model = QFileInfo(userLib + "/VaLib").canonicalFilePath() + "/good.osdi";
+        const auto buildsFor = [&]() {
             Schematic sch(nullptr, use);
-            QVERIFY(sch.load());
+            if (!sch.load()) return QList<qucs_s::osdi::Build>();
             Ngspice kernel(&sch);
             kernel.setWorkdir(dir.filePath("kernel"));
-            QVERIFY(kernel.verilogABuilds().isEmpty());   // the model is newer than its source
-        }
+            return kernel.verilogABuilds();
+        };
 
-        // The library as it came from another platform.
+        // Not compiled yet: compiled, beside the source, before it runs.
+        QString netlist = netlistOf(use);
+        QVERIFY2(!netlist.contains("pre_osdi"), qPrintable(netlist));
+        QVERIFY2(netlist.contains(".model m1 good"), qPrintable(netlist));
+        QList<qucs_s::osdi::Build> builds = buildsFor();
+        QCOMPARE(builds.size(), 1);
+        QCOMPARE(QFileInfo(builds.first().source).fileName(), QString("good.va"));
+        QCOMPARE(builds.first().library, model);
+        QVERIFY(builds.first().missing);
+        QVERIFY(!builds.first().foreign);
+
+        // Compiled (as OpenVAF would): loaded, and not compiled again.
+        write(model, osdi("good", nativeHeader()));
+        netlist = netlistOf(use);
+        QVERIFY2(netlist.contains("pre_osdi '" + model + "'"), qPrintable(netlist));
+        QVERIFY(buildsFor().isEmpty());   // the model is newer than its source
+
+        // The model as it came from another platform.
         write(model, osdi("good", foreignHeader()));
         netlist = netlistOf(use);
         QVERIFY2(!netlist.contains("pre_osdi"), qPrintable(netlist));
         QVERIFY2(netlist.contains("* OSDI: ") && netlist.contains("built for another platform"), qPrintable(netlist));
-        Schematic sch(nullptr, use);
-        QVERIFY(sch.load());
-        Ngspice kernel(&sch);
-        kernel.setWorkdir(dir.filePath("kernel"));
-        const QList<qucs_s::osdi::Build> builds = kernel.verilogABuilds();
+        builds = buildsFor();
         QCOMPARE(builds.size(), 1);
-        QCOMPARE(QFileInfo(builds.first().source).fileName(), QString("good.va"));
         QCOMPARE(builds.first().library, model);
         QVERIFY(builds.first().foreign);
         QVERIFY(!builds.first().missing);

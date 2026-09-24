@@ -77,12 +77,12 @@ private:
   void intoStream(QTextStream&, QString&, const char*);
   int intoFile(QString&, QString&,  QStringList&);
   /// The Verilog-A a subcircuit's SPICE netlist \a spice uses, into the
-  /// library's folder (QucsSettings.EmbedVerilogAInLibraries): the .osdi
-  /// libraries a simulation would load for the modules its .model cards
-  /// name and the sources defining them, with the files they include -
-  /// from the project and from the libraries of the subcircuit's
-  /// components. The .va and .osdi names go to \a attached; returns the
-  /// errors.
+  /// library's folder (QucsSettings.EmbedVerilogAInLibraries): the sources
+  /// defining the modules its .model cards name, with the files they
+  /// include - from the project and from the libraries of the subcircuit's
+  /// components. No compiled model (.osdi): it runs on one platform only,
+  /// and a simulation compiles the source where the library is used. The
+  /// .va names go to \a attached; returns the errors.
   int embedVerilogA(Schematic *doc, const QString &spice, const QString &baseDir, QStringList &attached);
   /// Copies \a from into the library's folder as \a name (a path in it);
   /// a name another file already took this time is an error.

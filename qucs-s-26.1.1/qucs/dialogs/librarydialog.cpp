@@ -412,8 +412,9 @@ int LibraryDialog::embedVerilogA(Schematic *doc, const QString &spice, const QSt
     else if (file.endsWith(".osdi", Qt::CaseInsensitive) && !libraries.contains(file)) libraries << file;
   }
 
-  // The libraries a simulation would load, and the sources of the modules.
-  const QStringList needed = qucs_s::osdi::needed(libraries, types);
+  // The sources of the modules the .model cards name. A compiled model
+  // (.osdi) runs on one platform only: the library brings the source, and
+  // OpenVAF compiles it where the library is used.
   QStringList definingSources;
   QSet<QString> fromSource;
   for (const QString &va : std::as_const(sources))
@@ -422,22 +423,36 @@ int LibraryDialog::embedVerilogA(Schematic *doc, const QString &spice, const QSt
         if (!definingSources.contains(va)) definingSources << va;
         fromSource.insert(type);
       }
-  if (needed.isEmpty() && definingSources.isEmpty()) return 0;   // no Verilog-A in it
+  QSet<QString> compiledOnly;
+  for (const QString &osdi : std::as_const(libraries))
+    for (const QString &type : types)
+      if (!fromSource.contains(type) && qucs_s::osdi::defines(osdi, type)) compiledOnly.insert(type);
+  if (!compiledOnly.isEmpty()) {
+    QStringList modules(compiledOnly.cbegin(), compiledOnly.cend());
+    modules.sort();
+    ErrText->insertPlainText(tr("Warning: no Verilog-A source of %1, only a compiled model (.osdi): "
+                                "it is not embedded, as a compiled model runs on one platform only.\n")
+                               .arg(modules.join(", ")));
+  }
+  if (definingSources.isEmpty()) return 0;   // no Verilog-A in it
 
+  const QDir folder(LibDir.absoluteFilePath(NameEdit->text()));
   int errors = 0;
   QStringList embedded;
-  const auto attach = [&](const QString &file) {
-    const QString name = QFileInfo(file).fileName();
-    if (!copyIntoLibrary(file, name)) { ++errors; return; }
+  for (const QString &va : std::as_const(definingSources)) {
+    const QString name = QFileInfo(va).fileName();
+    const bool copied = !a_copied.contains(name)
+        && QFileInfo(folder.absoluteFilePath(name)).canonicalFilePath() != QFileInfo(va).canonicalFilePath();
+    if (!copyIntoLibrary(va, name)) { ++errors; continue; }
+    // A model compiled from what the library brought before is compiled
+    // again from this source.
+    if (copied) QFile::remove(folder.absoluteFilePath(QFileInfo(name).completeBaseName() + ".osdi"));
     if (!attached.contains(name)) attached << name;
     embedded << name;
-  };
-  for (const QString &va : std::as_const(definingSources)) {
-    attach(va);
     // The files it includes, where it finds them: beside it, or below.
-    const QDir folder = QFileInfo(va).absoluteDir();
+    const QDir sourceFolder = QFileInfo(va).absoluteDir();
     for (const QString &included : qucs_s::osdi::sourceIncludes(va)) {
-      const QString relative = folder.relativeFilePath(included);
+      const QString relative = sourceFolder.relativeFilePath(included);
       if (relative.startsWith("..")) {
         ErrText->insertPlainText(tr("Warning: %1 includes %2 from outside its folder; it is not "
                                     "embedded.\n").arg(QFileInfo(va).fileName(),
@@ -448,24 +463,10 @@ int LibraryDialog::embedVerilogA(Schematic *doc, const QString &spice, const QSt
       else ++errors;
     }
   }
-  for (const QString &osdi : needed)
-    attach(osdi);
-
-  // A module with a source but no library: compiled where the library is
-  // used (with OpenVAF), or here with Build All first.
-  QSet<QString> compiled;
-  for (const QString &osdi : needed)
-    for (const QString &type : types)
-      if (qucs_s::osdi::defines(osdi, type)) compiled.insert(type);
-  QStringList uncompiled = QStringList((fromSource - compiled).cbegin(), (fromSource - compiled).cend());
-  uncompiled.sort();
-  if (!uncompiled.isEmpty())
-    ErrText->insertPlainText(tr("Warning: no compiled model (.osdi) of %1: only the source is embedded "
-                                "(Build All compiles it here; OpenVAF compiles it where the library is used).\n")
-                               .arg(uncompiled.join(", ")));
   embedded.removeDuplicates();
   if (!embedded.isEmpty())
-    ErrText->insertPlainText(tr("Embedding Verilog-A: %1\n").arg(embedded.join(", ")));
+    ErrText->insertPlainText(tr("Embedding Verilog-A: %1 (compiled with OpenVAF where the library is used)\n")
+                               .arg(embedded.join(", ")));
   return errors;
 }
 
