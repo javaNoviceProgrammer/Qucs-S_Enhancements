@@ -101,6 +101,7 @@
 #include "ngopt_sim.h"
 #include "ngmontecarlo_sim.h"
 #include "ngcorners_sim.h"
+#include "ngsweep_sim.h"
 #include "param_sweep.h"
 #include "systemcommand.h"
 #include "iprobe.h"

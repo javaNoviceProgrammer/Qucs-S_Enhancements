@@ -25,6 +25,7 @@
 #include "abstractspicekernel.h"
 #include "oppoint.h"
 #include "ngstatistics.h"
+#include "ngsweep.h"
 #include "misc.h"
 #include "main.h"
 #include "../paintings/id_text.h"
@@ -1333,6 +1334,12 @@ void AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
         // over the sample or the corner), under the component's name.
         if (qucs_s::ngstats::isResultFile(ngspice_output_filename)) {
             ds_stream << qucs_s::ngstats::datasetBlocks(a_workdir, ngspice_output_filename);
+            continue;
+        }
+        // NgSweep: every point's waveforms as families, the recorded
+        // values against the swept parameters.
+        if (qucs_s::ngsweep::isResultFile(ngspice_output_filename)) {
+            ds_stream << qucs_s::ngsweep::datasetBlocks(a_workdir, ngspice_output_filename, a_schematic);
             continue;
         }
         QList< QList<double> > sim_points;

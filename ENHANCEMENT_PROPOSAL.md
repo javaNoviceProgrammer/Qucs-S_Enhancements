@@ -650,6 +650,30 @@ existing demand.
   on dark paper), the canvas (a wire comes out light and still blue, a
   diagram is a white card, the print of the same schematic is dark blue
   as ever) and the setting.
+- *Done:* **Auto colors for the curves of a graph.** A graph of a swept
+  variable holds a curve per value (Graph::countY branches, each ended by
+  a BRANCHEND in the screen points), all drawn in the graph's one color.
+  `Graph::autoColor` draws each in a color of its own: `drawLines()` keeps
+  each line's and stroke's curve (the long-line joining stops at a
+  curve's end) and draws them curve by curve with `curveColor()` and
+  `curveStyle()`, the symbol styles switch pens at each branch end.
+  `autoPalette()` is eight categorical hues in a fixed order validated for
+  protanopia/deuteranopia separation (the order is the safeguard) on the
+  white card a diagram is drawn on; past eight, the colors come round
+  with the next dash pattern rather than generated hues. The auto graphs
+  of a diagram continue one sequence (`curveOffset()`), so no two curves
+  share a look. `Diagram::paintLegend()` gives an auto graph a row per
+  curve (up to 24, then how many more) labelled with `curveLabel()` -
+  the swept variables' values, their names without the graph's own
+  prefix (`r1=2k`) - and the graph's name on an axis is in plain ink.
+  Only where curves are drawn (Rect, Polar, Smith, ySmith, PS, SP,
+  Curve). Saved as an eighth field of the graph line, written only when
+  on, which older versions do not read. The diagram dialog has *auto*
+  next to *Color* (the color button off while it is on; the legend
+  switched on with it; the graph list shows "auto"). Covered by
+  `qucs/tests/test_graph_autocolor` (the field, the palette, the colors
+  and styles per curve across graphs, the rendering in pixels, the
+  legend rows, the dialog).
 - *Done:* **Diagram legend** (#1719). `Diagram::paintLegend()` draws, after
   the graphs and axis texts, a framed white box in the corner chosen by
   `Diagram::legendPos` (off / four corners) with one row per graph: a
@@ -1212,6 +1236,52 @@ existing demand.
   to ngspice's yield)
   and the corners of a compiled Verilog-A resistor, their values and
   waveforms and a Monte Carlo at two of them.
+- *Done:* **NgSweep: ngspice's own `sweep` as a component.** The same
+  ngspice builds have a universal parametric sweep (E-146: `sweep <knob>
+  (lin N a b | list v...) [-vs <knob> <spec>]... -analysis <cmd> -output
+  ...`; the knob kind - `alter`, `altermod`, `.param` - found by ngspice;
+  E-190's outer knobs; each run's analysis plot kept before the sweep's
+  own). Qucs's parameter sweep (`.SW`) writes its own `foreach` loop and
+  does not use it. The component (*simulations*, ngspice only,
+  `.NGSWEEP`, `isSimulation` so an `op` sweep needs no other simulation)
+  is that command: `qucs_s::ngsweep` (`qucs/ngsweep.*`) keeps it in the
+  properties `Analysis`, `Param`, `Type` (lin, log, list), `Start`,
+  `Stop`, `Points`, `List` (not `Values`, which the component dialog
+  reserves), `Waveforms`, then `Vs=knob|type|start|stop|points|list` and
+  `Record=name|expression`; writes the line - a log sweep as the list
+  of its points, as ngspice's `dec` counts per decade; the knob values
+  are the ones ngspice computes - and the `.control` block after the
+  simulations: between markers, `destroy all` so the runs' plots are
+  the only ones before the sweep's, `option interp` for a transient,
+  the sweep with the records and the saved voltages and currents as
+  `-output` (every analysis but `op` needs one), the sweep plot written
+  as ASCII, then each run's plot, walked back to with `setplot
+  previous`, appended into a second file. The dataset: the knobs'
+  values (the inner knob's from the sweep plot), every run's waveforms
+  as a family against the analysis scale and the knobs (resampled onto
+  the first run's scale if a run's points differ), the recorded values
+  against the knobs - with outer knobs found by ngspice's own names for
+  the curves (`peak_c1_1e_07`), since `write` puts the vectors in
+  alphabetical order; after an `op` or when the waveforms are missing,
+  the voltages' and currents' last values. `SimulationRun` puts what was
+  swept and ngspice's warnings in the status log, says when a run's
+  waveforms could not be read or the ngspice has no `sweep`, and leaves
+  out of the warning count the `checkvalid` lines ngspice prints of the
+  knob when it reads it to tell its kind. `NgSweepDialog`: the analysis,
+  the parameter (the schematic's components, equation variables,
+  `temp`), the sweep, outer sweeps, recorded values, and the command,
+  live; the ERC reports a command that cannot be written. The analysis
+  of a named simulation component is now taken from it switched off too
+  (`ngopt::analysisCommand`), for NgOpt, NgMonteCarlo and NgCorners as
+  well: off, it runs only in the command that names it. Example:
+  `examples/ngspice/NGspice features/RC_lowpass_ngsweep.sch`.
+  `qucs/tests/test_ngsweep` covers the knob values and specs, the
+  command line and what it refuses, saving and loading, the block, the
+  dataset (families, outer knobs by name, a missing run, an `op`, a
+  transient resampled), the log, the netlist, the ERC, the dialog, an
+  ngspice without the command - and, with one that has it, an ac sweep
+  against the analytic low-pass at every point, an `op` over two knobs,
+  a transient, and the example with its auto-colored diagram.
 - *Done (click, not hover):* **Net highlighting.** `Schematic::netOf(Wire*)`
   flood-fills the `Node`↔`Wire` graph and, in rounds, joins what labels
   of the same name and ground symbols connect; `selectedNet()` is the

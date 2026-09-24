@@ -21,6 +21,7 @@
 #include "optimization.h"
 #include "ngoptimize.h"
 #include "ngstatistics.h"
+#include "ngsweep.h"
 #include "osdiselection.h"
 #include "misc.h"
 #include "qucs.h"
@@ -150,6 +151,12 @@ QList<Issue> check(Schematic* doc)
         if (ngstats::isStatistics(c) && simulator == spicecompat::simNgspice) {
             QString line, why;
             if (!ngstats::commandLine(c, doc, &line, &why))
+                errors << Issue{Severity::Error, tr("%1: %2").arg(c->Name, why), QPoint(c->cx, c->cy), c->Name};
+        }
+        // NgSweep: a sweep line the netlist cannot write.
+        if (ngsweep::isSweep(c) && simulator == spicecompat::simNgspice) {
+            QString line, why;
+            if (!ngsweep::commandLine(c, doc, QString(), &line, &why))
                 errors << Issue{Severity::Error, tr("%1: %2").arg(c->Name, why), QPoint(c->cx, c->cy), c->Name};
         }
         // A Verilog-A component: its module in a library of the project, or

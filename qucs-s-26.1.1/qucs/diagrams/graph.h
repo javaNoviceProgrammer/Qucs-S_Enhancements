@@ -172,6 +172,28 @@ public:
   int  Precision;   // number of digits to show
   int  numMode;     // real/imag or polar (deg/rad)
 
+  /// Auto colors: each curve of the graph - a value of a parameter swept
+  /// - in a color of its own, from autoPalette() in its order, the
+  /// graph's own Color aside. The auto graphs of a diagram share the
+  /// colors: the next one goes on where the one before left off. Past the
+  /// palette the colors come round again with the next line style.
+  bool autoColor = false;
+  /// The eight colors, in the order they are given (a categorical palette
+  /// checked for color vision deficiency and on white paper).
+  static const QList<QColor>& autoPalette();
+  /// Whether a diagram of this kind draws curves that auto colors apply
+  /// to (Rect, Polar, Smith, the polar-Smith ones, Curve).
+  static bool autoColorApplies(const QString& diagramName);
+  /// Whether this graph's curves are drawn each in a color of its own.
+  bool colorsEachCurve() const;
+  /// The color and the line style curve \a curve (0 to countY - 1) is
+  /// drawn in: the graph's own when it does not color each curve.
+  QColor curveColor(int curve) const;
+  graphstyle_t curveStyle(int curve) const;
+  /// The value of each swept parameter at curve \a curve: "r1=2k, c1=100n";
+  /// empty when the graph has one curve.
+  QString curveLabel(int curve) const;
+
 private: // painting
   void drawStarSymbols(QPainter* painter) const;
   void drawLines(QPainter* painter) const;
@@ -182,6 +204,7 @@ public: // marker related
   std::pair<double,double> findSample(std::vector<double>&) const;
   Diagram const* parentDiagram() const{return diagram;}
 private:
+  int curveOffset() const;   // the curves of the diagram's auto graphs before this one
   QVector<DataX*>  cPointsX;
   std::vector<ScrPt> ScrPoints; // data in screen coordinates
   Diagram const* diagram;
@@ -190,6 +213,8 @@ private:
   // The same points as one polyline per stroke: a dash pattern runs on
   // along a polyline, while every line of drawLines() starts it afresh.
   mutable QList<QPolygonF> strokes;
+  mutable QList<int> lineCurves;     // the curve (branch) of each line
+  mutable QList<int> strokeCurves;   // and of each stroke
   mutable QDateTime     linesCalculated;
   void linesInvalidate() {linesCalculated = QDateTime();} //Set to 'null' date
 };

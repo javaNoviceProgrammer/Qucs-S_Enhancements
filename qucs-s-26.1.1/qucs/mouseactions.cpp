@@ -22,6 +22,8 @@
 #include "components/optimizedialog.h"
 #include "components/ngoptdialog.h"
 #include "components/ngstatisticsdialog.h"
+#include "components/ngsweepdialog.h"
+#include "ngsweep.h"
 #include "ngstatistics.h"
 #include "components/spicedialog.h"
 #include "components/spicefile.h"
@@ -1835,6 +1837,12 @@ void MouseActions::editElement(Schematic *Doc, QMouseEvent *Event)
                 break;
         } else if (qucs_s::ngstats::isStatistics(c)) {
             NgStatisticsDialog *sd = new NgStatisticsDialog(c, Doc);
+            const int result = sd->exec();
+            delete sd;
+            if (result != QDialog::Accepted)
+                break;
+        } else if (qucs_s::ngsweep::isSweep(c)) {
+            NgSweepDialog *sd = new NgSweepDialog(c, Doc);
             const int result = sd->exec();
             delete sd;
             if (result != QDialog::Accepted)

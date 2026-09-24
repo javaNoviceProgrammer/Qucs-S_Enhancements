@@ -40,6 +40,7 @@
 #include "schematic.h"
 #include "ngoptimize.h"
 #include "ngstatistics.h"
+#include "ngsweep.h"
 #include "qucs.h"
 #include "textdoc.h"
 
@@ -165,7 +166,12 @@ void SimulationRun::slotProcessOutput()
         break;
     }
 
-    a_warningCount = countWarnings(out);
+    // What ngspice's sweep prints of its knobs when it reads them is no
+    // warning about the circuit.
+    const QString checked = QucsSettings.DefaultSimulator == spicecompat::simNgspice && !a_schematic.isNull()
+        ? qucs_s::ngsweep::withoutKnobProbes(out, a_schematic, a_ngspice->sweeps())
+        : out;
+    a_warningCount = countWarnings(checked);
     const QStyle *style = QApplication::style();
     if (a_schematic.isNull()) {
         // The document was closed while the simulator ran (the run is not
@@ -174,13 +180,13 @@ void SimulationRun::slotProcessOutput()
                     style->standardIcon(QStyle::SP_MessageBoxWarning));
         a_hasError = true;
         a_wasSimulated = false;
-    } else if (logContainsError(out)) {
+    } else if (logContainsError(checked)) {
         addLogEntry(tr("There were simulation errors. Please check log."),
                     style->standardIcon(QStyle::SP_MessageBoxCritical));
         a_hasError = true;
         a_wasSimulated = false;
         emit warnings();
-    } else if (logContainsWarning(out)) {
+    } else if (logContainsWarning(checked)) {
         addLogEntry(tr("There were simulation warnings. Please check log."),
                     style->standardIcon(QStyle::SP_MessageBoxWarning));
         addLogEntry(tr("Simulation finished. Now place diagram on schematic to plot the result."),
@@ -196,6 +202,7 @@ void SimulationRun::slotProcessOutput()
     if (QucsSettings.DefaultSimulator == spicecompat::simNgspice && !a_schematic.isNull()) {
         reportNgOptimizations(out);
         reportNgStatistics(out);
+        reportNgSweeps(out);
     }
     saveLog();
     if (a_console != nullptr)
@@ -641,6 +648,27 @@ void SimulationRun::reportNgStatistics(const QString& out)
             continue;
         }
         const Summary summary = summarize(c, out, a_ngspice->workdir());
+        addLogEntry(summary.text, summary.warning ? style->standardIcon(QStyle::SP_MessageBoxWarning)
+                                                  : QIcon(":/bitmaps/svg/ok_apply.svg"));
+    }
+}
+
+void SimulationRun::reportNgSweeps(const QString& out)
+{
+    const QStyle *style = QApplication::style();
+    for (const QString& name : a_ngspice->sweeps()) {
+        Component* c = nullptr;
+        for (Component* pc : a_schematic->a_DocComps)
+            if (qucs_s::ngsweep::isSweep(pc) && pc->Name == name) c = pc;
+        if (c == nullptr) continue;
+        if (qucs_s::ngsweep::unsupported(out)) {
+            addLogEntry(tr("This ngspice has no sweep command: %1 needs an ngspice built with it "
+                           "(Ngspice_OpenVAF_Enhancements).")
+                            .arg(name),
+                        style->standardIcon(QStyle::SP_MessageBoxCritical));
+            continue;
+        }
+        const qucs_s::ngstats::Summary summary = qucs_s::ngsweep::summarize(c, a_schematic, out, a_ngspice->workdir());
         addLogEntry(summary.text, summary.warning ? style->standardIcon(QStyle::SP_MessageBoxWarning)
                                                   : QIcon(":/bitmaps/svg/ok_apply.svg"));
     }

@@ -103,6 +103,9 @@ private:
     /// NgMonteCarlo, NgCorners: their yields or corners, and what ngspice
     /// noted, in the status log.
     void reportNgStatistics(const QString& out);
+    /// NgSweep: what ngspice's sweep swept, and its warnings, in the
+    /// status log.
+    void reportNgSweeps(const QString& out);
     void writeBackOptimum();
     /// Starts compiling the Verilog-A modules the netlist uses whose
     /// library is missing or older than its source; false when there is
