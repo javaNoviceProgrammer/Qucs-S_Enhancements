@@ -175,14 +175,39 @@ void Diagram::paintDiagram(QPainter *painter) {
 void Diagram::paintLegend(QPainter *painter) {
     if (legendPos == LegendOff || Graphs.isEmpty()) return;
 
+    // A row per graph; a graph in auto colors has a row per curve, with
+    // the values of the parameters swept (at most a few dozen, then how
+    // many more there are).
+    struct Row {
+        QColor color;
+        graphstyle_t style = GRAPHSTYLE_SOLID;
+        int thick = 0;
+        QString text;
+        bool sample = true;
+    };
+    constexpr int maxCurveRows = 24;
+    QList<Row> rows;
+    for (Graph *pg: Graphs) {
+        if (pg->colorsEachCurve() && pg->countY > 1) {
+            const int shown = std::min(pg->countY, maxCurveRows);
+            for (int c = 0; c < shown; ++c)
+                rows.append({pg->curveColor(c), pg->curveStyle(c), pg->Thick, pg->Var + "  " + pg->curveLabel(c), true});
+            if (pg->countY > shown)
+                rows.append({QColor(), GRAPHSTYLE_SOLID, 0,
+                             QObject::tr("... %1 more curves of %2").arg(pg->countY - shown).arg(pg->Var), false});
+        } else {
+            rows.append({pg->curveColor(0), pg->curveStyle(0), pg->Thick, pg->Var, true});
+        }
+    }
+
     const QFontMetricsF fm(painter->font());
     const qreal pad = 4.0, sample = 20.0, gap = 6.0, margin = 6.0;
     const qreal rowHeight = fm.height();
     qreal textWidth = 0.0;
-    for (Graph *pg: Graphs)
-        textWidth = std::max(textWidth, fm.horizontalAdvance(pg->Var));
+    for (const Row &row: rows)
+        textWidth = std::max(textWidth, fm.horizontalAdvance(row.text));
     const qreal width = pad + sample + gap + textWidth + pad;
-    const qreal height = pad + Graphs.size() * rowHeight + pad;
+    const qreal height = pad + rows.size() * rowHeight + pad;
 
     const bool left = legendPos == LegendTopLeft || legendPos == LegendBottomLeft;
     const bool top = legendPos == LegendTopLeft || legendPos == LegendTopRight;
@@ -196,12 +221,12 @@ void Diagram::paintLegend(QPainter *painter) {
     painter->drawRect(QRectF(x, y, width, height));
 
     qreal rowTop = y + pad;
-    for (Graph *pg: Graphs) {
+    for (const Row &row: rows) {
         const qreal mid = rowTop + rowHeight / 2.0;
         const qreal x0 = x + pad, x1 = x0 + sample;
-        QPen pen(pg->Color, pg->Thick);
+        QPen pen(row.color, row.thick);
         pen.setCapStyle(Qt::RoundCap);
-        switch (pg->Style) {   // the same patterns Graph::drawLines() uses
+        switch (row.style) {   // the same patterns Graph::drawLines() uses
         case GRAPHSTYLE_DASH:     pen.setDashPattern({10.0, 6.0}); break;
         case GRAPHSTYLE_DOT:      pen.setDashPattern({2.0, 4.0});  break;
         case GRAPHSTYLE_LONGDASH: pen.setDashPattern({24.0, 8.0}); break;
@@ -209,25 +234,27 @@ void Diagram::paintLegend(QPainter *painter) {
         }
         painter->setPen(pen);
         painter->setBrush(Qt::NoBrush);
-        switch (pg->Style) {
-        case GRAPHSTYLE_STAR:
-            painter->drawLine(QPointF(x0 + sample / 2 - 4, mid - 4), QPointF(x0 + sample / 2 + 4, mid + 4));
-            painter->drawLine(QPointF(x0 + sample / 2 - 4, mid + 4), QPointF(x0 + sample / 2 + 4, mid - 4));
-            painter->drawLine(QPointF(x0 + sample / 2, mid - 5), QPointF(x0 + sample / 2, mid + 5));
-            break;
-        case GRAPHSTYLE_CIRCLE:
-            painter->drawEllipse(QPointF(x0 + sample / 2, mid), 4.0, 4.0);
-            break;
-        case GRAPHSTYLE_ARROW:
-            painter->drawLine(QPointF(x0 + sample / 2, mid + 6), QPointF(x0 + sample / 2, mid - 6));
-            painter->drawLine(QPointF(x0 + sample / 2 - 3, mid - 2), QPointF(x0 + sample / 2, mid - 6));
-            painter->drawLine(QPointF(x0 + sample / 2 + 3, mid - 2), QPointF(x0 + sample / 2, mid - 6));
-            break;
-        default:
-            painter->drawLine(QPointF(x0, mid), QPointF(x1, mid));
+        if (row.sample) {
+            switch (row.style) {
+            case GRAPHSTYLE_STAR:
+                painter->drawLine(QPointF(x0 + sample / 2 - 4, mid - 4), QPointF(x0 + sample / 2 + 4, mid + 4));
+                painter->drawLine(QPointF(x0 + sample / 2 - 4, mid + 4), QPointF(x0 + sample / 2 + 4, mid - 4));
+                painter->drawLine(QPointF(x0 + sample / 2, mid - 5), QPointF(x0 + sample / 2, mid + 5));
+                break;
+            case GRAPHSTYLE_CIRCLE:
+                painter->drawEllipse(QPointF(x0 + sample / 2, mid), 4.0, 4.0);
+                break;
+            case GRAPHSTYLE_ARROW:
+                painter->drawLine(QPointF(x0 + sample / 2, mid + 6), QPointF(x0 + sample / 2, mid - 6));
+                painter->drawLine(QPointF(x0 + sample / 2 - 3, mid - 2), QPointF(x0 + sample / 2, mid - 6));
+                painter->drawLine(QPointF(x0 + sample / 2 + 3, mid - 2), QPointF(x0 + sample / 2, mid - 6));
+                break;
+            default:
+                painter->drawLine(QPointF(x0, mid), QPointF(x1, mid));
+            }
         }
         painter->setPen(Qt::black);
-        painter->drawText(QPointF(x1 + gap, rowTop + fm.ascent()), pg->Var);
+        painter->drawText(QPointF(x1 + gap, rowTop + fm.ascent()), row.text);
         rowTop += rowHeight;
     }
     painter->restore();
@@ -245,6 +272,12 @@ void Diagram::paintMarkers(QPainter *p, bool paintAll) {
 // ------------------------------------------------------------
 void Diagram::paintScheme(Schematic *p) {
     p->PostPaintEvent(_Rect, cx, cy - y2, x2, y2);
+}
+
+// The ink of a graph's name on an axis: its color, or plain when its
+// curves each have one.
+static QColor labelColor(const Graph *pg) {
+    return pg->colorsEachCurve() ? QColor(Qt::black) : pg->Color;
 }
 
 /*!
@@ -269,12 +302,12 @@ void Diagram::createAxisLabels() {
             if (Name[0] != 'C') {   // locus curve ?
                 w = metrics.boundingRect(pD->Var).width() >> 1;
                 if (w > wmax) wmax = w;
-                Texts.append(new Text(x - w, y, pD->Var, pg->Color, 12.0));
+                Texts.append(new Text(x - w, y, pD->Var, labelColor(pg), 12.0));
             } else {
                 w = metrics.boundingRect("real(" + pg->Var + ")").width() >> 1;
                 if (w > wmax) wmax = w;
                 Texts.append(new Text(x - w, y, "real(" + pg->Var + ")",
-                                      pg->Color, 12.0));
+                                      labelColor(pg), 12.0));
             }
         }
     } else {
@@ -332,12 +365,12 @@ void Diagram::createAxisLabels() {
                 if (Name[0] != 'C') {   // location curve ?
                     w = metrics.boundingRect(var_name).width() >> 1;
                     if (w > wmax) wmax = w;
-                    Texts.append(new Text(x, y - w, var_name, pg->Color, 12.0, 0.0, 1.0));
+                    Texts.append(new Text(x, y - w, var_name, labelColor(pg), 12.0, 0.0, 1.0));
                 } else {
                     w = metrics.boundingRect("imag(" + var_name + ")").width() >> 1;
                     if (w > wmax) wmax = w;
                     Texts.append(new Text(x, y - w, "imag(" + var_name + ")",
-                                          pg->Color, 12.0, 0.0, 1.0));
+                                          labelColor(pg), 12.0, 0.0, 1.0));
                 }
             } else {     // if no data => <invalid>
                 w = metrics.boundingRect(pg->Var + INVALID_STR).width() >> 1;
@@ -379,12 +412,12 @@ void Diagram::createAxisLabels() {
                     w = metrics.boundingRect(var_name).width() >> 1;
                     if (w > wmax) wmax = w;
                     Texts.append(new Text(x, y + w, var_name,
-                                          pg->Color, 12.0, 0.0, -1.0));
+                                          labelColor(pg), 12.0, 0.0, -1.0));
                 } else {
                     w = metrics.boundingRect("imag(" + var_name + ")").width() >> 1;
                     if (w > wmax) wmax = w;
                     Texts.append(new Text(x, y + w, "imag(" + var_name + ")",
-                                          pg->Color, 12.0, 0.0, -1.0));
+                                          labelColor(pg), 12.0, 0.0, -1.0));
                 }
             } else {     // if no data => <invalid>
                 w = metrics.boundingRect(pg->Var + INVALID_STR).width() >> 1;

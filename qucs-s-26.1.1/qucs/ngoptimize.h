@@ -92,8 +92,9 @@ struct Command {
 QList<QPair<QString, QString>> methods();
 
 /// The analysis a stage runs: the command of the simulation component of
-/// that name in the schematic ("AC1": "ac dec 20 100k 10meg"), else the
-/// text itself as an ngspice command ("ac lin 1 1meg 1meg", "op").
+/// that name in the schematic ("AC1": "ac dec 20 100k 10meg") - switched
+/// off too, when it is to run only there - else the text itself as an
+/// ngspice command ("ac lin 1 1meg 1meg", "op").
 QString analysisCommand(const Schematic* schematic, const QString& analysis);
 
 /// The optimize line of \a command; false and why in \a error when it

@@ -239,6 +239,17 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     ColorButt->setEnabled(false);
     connect(ColorButt, &QPushButton::clicked, this,
             &DiagramDialog::slotSetColor);
+    // Auto: a color for each curve of the graph - each value of a
+    // parameter swept - instead of one for all.
+    if (Graph::autoColorApplies(Diag->Name)) {
+      AutoColorBox = new QCheckBox(tr("auto"));
+      AutoColorBox->setToolTip(
+          tr("Each curve of the graph - every value of a swept parameter - in a color of its own, "
+             "named with its values in the legend"));
+      AutoColorBox->setEnabled(false);
+      Box2Layout->addWidget(AutoColorBox);
+      connect(AutoColorBox, &QCheckBox::toggled, this, &DiagramDialog::slotSetAutoColor);
+    }
 
     Box2Layout->setStretchFactor(new QWidget(Box2),
                                  5); // stretchable placeholder
@@ -1233,6 +1244,7 @@ void DiagramDialog::slotTakeVar(QTableWidgetItem *Item) {
 
   if (Diag->Name != "Tab" && Diag->Name != "Truth") {
     g->Color = misc::getWidgetBackgroundColor(ColorButt);
+    g->autoColor = AutoColorBox != nullptr && AutoColorBox->isChecked();
     g->Thick = thicknessSpin->value();
     QColor selectedColor(
         DefaultColors[GraphList->rowCount() % NumDefaultColors]);
@@ -1253,7 +1265,8 @@ void DiagramDialog::slotTakeVar(QTableWidgetItem *Item) {
       g->yAxisNo = 1;
     }
     Label3->setEnabled(true);
-    ColorButt->setEnabled(true);
+    ColorButt->setEnabled(!g->autoColor);
+    if (AutoColorBox) AutoColorBox->setEnabled(true);
   } else if (Diag->Name == "Tab") { // Changed from 'else' to 'else if'
     if (precisionSpin) {            // Add null check
       g->Precision = precisionSpin->value();
@@ -1343,7 +1356,12 @@ void DiagramDialog::SelectGraph(Graph *g) {
       }
 
       Label3->setEnabled(true);
-      ColorButt->setEnabled(true);
+      ColorButt->setEnabled(!g->autoColor);
+      if (AutoColorBox) {
+        const QSignalBlocker block(AutoColorBox);
+        AutoColorBox->setChecked(g->autoColor);
+        AutoColorBox->setEnabled(true);
+      }
     }
   } else {
     precisionSpin->setValue(g->Precision);
@@ -1415,6 +1433,7 @@ void DiagramDialog::slotDeleteGraph() {
     }
     Label3->setEnabled(false);
     ColorButt->setEnabled(false);
+    if (AutoColorBox) AutoColorBox->setEnabled(GraphList->rowCount() != 0);
   } else {
     if (precisionSpin)
       precisionSpin->setValue(3);
@@ -1469,6 +1488,7 @@ void DiagramDialog::slotNewGraph() {
 
   if (Diag->Name != "Tab" && Diag->Name != "Truth") {
     g->Color = misc::getWidgetBackgroundColor(ColorButt);
+    g->autoColor = AutoColorBox != nullptr && AutoColorBox->isChecked();
     g->Thick = thicknessSpin->value();
     g->Style = toGraphStyle(PropertyBox->currentIndex());
     QUCS_ASSERT(g->Style != GRAPHSTYLE_INVALID);
@@ -1772,6 +1792,20 @@ void DiagramDialog::slotSetColor() {
 
   Graphs.at(i)->Color = c;
   updateGraphListItem(i); // Update table display
+  changed = true;
+  toTake = false;
+}
+
+void DiagramDialog::slotSetAutoColor(bool on) {
+  ColorButt->setEnabled(!on);
+  const int i = GraphList->currentRow();
+  if (i < 0)
+    return;
+  Graphs.at(i)->autoColor = on;
+  updateGraphListItem(i);
+  // The colors mean nothing without the values they stand for.
+  if (on && LegendBox != nullptr && LegendBox->currentIndex() == Diagram::LegendOff)
+    LegendBox->setCurrentIndex(Diagram::LegendTopRight);
   changed = true;
   toTake = false;
 }
@@ -2296,7 +2330,22 @@ void DiagramDialog::updateGraphListItem(int row) {
       colorItem->setFlags(colorItem->flags() ^ Qt::ItemIsEditable);
       GraphList->setItem(row, 1, colorItem);
     }
-    colorItem->setBackground(QBrush(g->Color));
+    if (g->autoColor && Graph::autoColorApplies(Diag->Name)) {
+      // The first colors of the palette, in stripes.
+      QPixmap stripes(16, 12);
+      QPainter p(&stripes);
+      const QList<QColor> &palette = Graph::autoPalette();
+      for (int k = 0; k < 4; ++k)
+        p.fillRect(k * 4, 0, 4, 12, palette.at(k));
+      p.end();
+      colorItem->setBackground(QBrush());
+      colorItem->setIcon(QIcon(stripes));
+      colorItem->setText(tr("auto"));
+    } else {
+      colorItem->setIcon(QIcon());
+      colorItem->setText(QString());
+      colorItem->setBackground(QBrush(g->Color));
+    }
 
     // Column 2: Style
     QString styleName;

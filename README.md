@@ -316,6 +316,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Edit Diagram Properties → Properties → Legend*. Off by default; the
   position is saved with the diagram, and files without it load as before
   (upstream #1719).
+- **Auto colors for the curves of a sweep**: a graph whose variable was
+  swept - a parameter sweep, NgSweep, a Monte Carlo family - draws a curve
+  for each value; with *auto* ticked next to the graph's *Color* in the
+  diagram dialog, each curve has a color of its own, from an eight-color
+  palette in a fixed order (kept apart for colour-blind readers too), and
+  the legend - switched on with it - names every curve by its values
+  (`r1=2k`). The auto graphs of a diagram share the palette, each going
+  on where the last left off; past eight curves the colors come round
+  with the next dash pattern. In Cartesian, polar, Smith and locus
+  diagrams; saved with the graph, and older versions read the graph as
+  before.
 - **Histogram diagram** (*diagrams → Histogram*): each graph's values -
   a Monte Carlo's samples, or every point of any variable - counted into
   bins and drawn as bars in the graph's colour, several graphs over each
@@ -494,6 +505,24 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   RC_lowpass_montecarlo*: 200 samples of an RC low-pass with 5% parts,
   the family of gain curves, the histogram of the corner frequency with
   its normal fit and the ±10% limits, and the yield.
+- **NgSweep: ngspice's own parametric sweep as a component**: for
+  ngspice builds with the `sweep` command. *simulations → ngspice sweep*
+  changes a parameter - a component (`R1`, `V1`), an instance or model
+  parameter (`@m1[w]`, `@dmod[is]`), a `.param` (an equation's
+  variable) or `temp`; ngspice tells which - over a linear, logarithmic
+  or listed set of values, and runs an analysis (a simulation component
+  of the schematic, switched off if only its sweep is wanted, or an
+  ngspice command) at each. Every value's voltages and currents over
+  frequency, time or a dc sweep come into the dataset as a family of
+  curves (`ngsweep1.v(out)` against `ngsweep1.frequency` and
+  `ngsweep1.r1`); after an `op`, the voltages and currents against the
+  parameter. Up to three more parameters swept around the first make a
+  curve for every combination, and named values (`maximum(vdb(out))`)
+  are recorded at every point. The dialog shows the command it writes;
+  the status log what was swept and ngspice's warnings. Example:
+  *NGspice features → RC_lowpass_ngsweep*: an RC low-pass for five
+  values of R1, the curves in auto colors, and the corner frequency
+  against R1.
 - **Find in a schematic, and find and replace across the project**:
   *Edit → Find* (Ctrl+F) in a schematic opens a find bar under the
   pane — type a component's name, a net label or a value and the first

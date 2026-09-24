@@ -30,6 +30,7 @@
 #include <QVBoxLayout>
 
 #include "component.h"
+#include "ngsweep.h"
 #include "misc.h"
 #include "schematic.h"
 #include "valuereading.h"
@@ -228,7 +229,7 @@ QStringList NgOptDialog::simulations() const
     if (a_doc == nullptr) return names;
     for (Component* c : a_doc->a_DocComps)
         if (c->isSimulation && c != a_comp && c->Model != QLatin1String(".NGOPT") && c->Model != QLatin1String(".Opt")
-            && c->Model != QLatin1String(".SW"))
+            && c->Model != QLatin1String(".SW") && !qucs_s::ngsweep::isSweep(c))
             names << c->Name;
     return names;
 }

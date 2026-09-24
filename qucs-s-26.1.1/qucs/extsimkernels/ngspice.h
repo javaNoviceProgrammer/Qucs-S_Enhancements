@@ -42,6 +42,7 @@ private:
     QString a_spinit_name;
     QStringList a_optimizations;
     QStringList a_statistics;
+    QStringList a_sweeps;
 
     bool checkNodeNames(QStringList &incompat);
     static QString collectSpiceinit(Schematic* sch);
@@ -67,6 +68,8 @@ public:
     const QStringList& optimizations() const { return a_optimizations; }
     /// The NgMonteCarlo and NgCorners components the last netlist runs.
     const QStringList& statistics() const { return a_statistics; }
+    /// The NgSweep components the last netlist runs.
+    const QStringList& sweeps() const { return a_sweeps; }
 
 protected:
     void createNetlist(

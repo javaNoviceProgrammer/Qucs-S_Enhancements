@@ -18,6 +18,7 @@
 
 #include "components/component.h"
 #include "ngstatistics.h"
+#include "ngsweep.h"
 #include "schematic.h"
 #include "valuereading.h"
 
@@ -178,8 +179,16 @@ QString analysisCommand(const Schematic* schematic, const QString& analysis)
     if (schematic != nullptr)
         for (Component* c : schematic->a_DocComps)
             if (c->isSimulation && c->Model != QLatin1String(".NGOPT") && !qucs_s::ngstats::isStatistics(c)
-                && c->Name.compare(a, Qt::CaseInsensitive) == 0)
-                return c->getSpiceNetlist().trimmed().split(QLatin1Char('\n')).value(0).trimmed();
+                && !qucs_s::ngsweep::isSweep(c)
+                && c->Name.compare(a, Qt::CaseInsensitive) == 0) {
+                // A simulation switched off still says what its analysis
+                // is: run only by the command that names it.
+                const int active = c->isActive;
+                c->isActive = COMP_IS_ACTIVE;
+                const QString command = c->getSpiceNetlist().trimmed().split(QLatin1Char('\n')).value(0).trimmed();
+                c->isActive = active;
+                return command;
+            }
     return a;
 }
 

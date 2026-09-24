@@ -68,6 +68,9 @@ private slots:
   void slotApply();
   void slotCancel();
   void slotSetColor();
+  /// Auto colors for the selected graph: each of its curves in a color of
+  /// its own (Graph::autoColor).
+  void slotSetAutoColor(bool on);
   void slotSetGridColor();
   void slotResetToTake(const QString&);
   void slotSetNumMode(int);
@@ -178,6 +181,7 @@ private:
   QCheckBox   *HistFit = nullptr, *HistStats = nullptr;
   QLineEdit   *HistLower = nullptr, *HistUpper = nullptr;
   QPushButton *ColorButt, *GridColorButt;
+  QCheckBox   *AutoColorBox = nullptr;
   QSlider     *SliderRotX, *SliderRotY, *SliderRotZ;
   Cross3D     *DiagCross;
   bool changed, transfer, toTake;

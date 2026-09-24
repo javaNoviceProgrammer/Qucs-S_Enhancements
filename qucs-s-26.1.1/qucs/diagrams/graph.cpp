@@ -18,6 +18,8 @@
 #include "misc.h"
 #include "diagram.h"
 
+#include <algorithm>
+#include <climits>
 #include <cstdlib>
 #include <iostream>
 #include <cmath>
@@ -117,7 +119,7 @@ QString Graph::save()
   QString s = "\t<\""+Var+"\" "+Color.name()+
 	      " "+QString::number(Thick)+" "+QString::number(Precision)+
 	      " "+QString::number(numMode)+" "+QString::number(Style)+
-	      " "+QString::number(yAxisNo)+">";
+	      " "+QString::number(yAxisNo)+(autoColor ? " 1" : "")+">";
 
   for (Marker *pm : Markers)
     s += "\n\t  "+pm->save();
@@ -163,6 +165,10 @@ bool Graph::load(const QString& _s)
   if(n.isEmpty()) return true;   // backward compatible
   yAxisNo = n.toInt(&ok);
   if(!ok) return false;
+
+  // Auto colors: an eighth field, which versions before it do not read.
+  n  = s.section(' ',7,7);
+  autoColor = n.toInt(&ok) == 1 && ok;
 
   return true;
 }
@@ -272,11 +278,90 @@ Graph* Graph::sameNewOne()
   pg->Precision = Precision;
   pg->numMode   = numMode;
   pg->yAxisNo   = yAxisNo;
+  pg->autoColor = autoColor;
 
   for (Marker *pm : Markers)
     pg->Markers.append(pm->sameNewOne(pg));
 
   return pg;
+}
+
+// -----------------------------------------------------------------------
+const QList<QColor>& Graph::autoPalette()
+{
+  // Eight hues in a fixed order: the order keeps neighbours apart for
+  // protanopia and deuteranopia too. Three of them are light on white;
+  // the legend names every curve.
+  static const QList<QColor> palette = {
+      QColor(0x2a, 0x78, 0xd6),   // blue
+      QColor(0xeb, 0x68, 0x34),   // orange
+      QColor(0x1b, 0xaf, 0x7a),   // aqua
+      QColor(0xed, 0xa1, 0x00),   // yellow
+      QColor(0xe8, 0x7b, 0xa4),   // magenta
+      QColor(0x00, 0x83, 0x00),   // green
+      QColor(0x4a, 0x3a, 0xa7),   // violet
+      QColor(0xe3, 0x49, 0x48),   // red
+  };
+  return palette;
+}
+
+bool Graph::autoColorApplies(const QString& diagramName)
+{
+  static const QStringList curves = {"Rect", "Polar", "Smith", "ySmith", "PS", "SP", "Curve"};
+  return curves.contains(diagramName);
+}
+
+bool Graph::colorsEachCurve() const
+{
+  return autoColor && diagram != nullptr && autoColorApplies(diagram->Name);
+}
+
+int Graph::curveOffset() const
+{
+  int offset = 0;
+  if (diagram == nullptr) return offset;
+  for (const Graph* g : diagram->Graphs) {
+    if (g == this) break;
+    if (g->colorsEachCurve()) offset += std::max(1, g->countY);
+  }
+  return offset;
+}
+
+QColor Graph::curveColor(int curve) const
+{
+  if (!colorsEachCurve()) return Color;
+  const QList<QColor>& palette = autoPalette();
+  return palette.at((curveOffset() + std::max(0, curve)) % palette.size());
+}
+
+graphstyle_t Graph::curveStyle(int curve) const
+{
+  // Lines take the next pattern each time the colors come round; symbols
+  // keep theirs.
+  if (!colorsEachCurve() || Style > GRAPHSTYLE_LONGDASH || Style < GRAPHSTYLE_SOLID) return Style;
+  const int round = (curveOffset() + std::max(0, curve)) / int(autoPalette().size());
+  return graphstyle_t((int(Style) + round) % (int(GRAPHSTYLE_LONGDASH) + 1));
+}
+
+QString Graph::curveLabel(int curve) const
+{
+  QStringList parts;
+  // The swept parameters' names without what the graph's own name starts
+  // with: "ngspice/ngsweep1.v(out)" has "ngsweep1.r1" as r1.
+  QString own = Var.section('/', -1);
+  const qsizetype dot = own.indexOf('.');
+  own = dot > 0 ? own.left(dot + 1) : QString();
+  int c = curve;
+  for (unsigned i = 1; i < numAxes(); ++i) {
+    const DataX* x = axis(i);
+    if (x == nullptr || x->count < 1) break;
+    const int index = c % x->count;
+    c /= x->count;
+    QString name = x->Var.section('/', -1);
+    if (!own.isEmpty() && name.startsWith(own)) name = name.mid(own.size());
+    parts << name + "=" + misc::num2str(x->Points[index]);
+  }
+  return parts.join(", ");
 }
 
 /*!
@@ -395,10 +480,27 @@ double Graph::ScrPt::getDep() const
   return dep;
 }
 
+// The pen of curve \a curve, when the graph colors each curve: for
+// the symbols, which are drawn point by point.
+static void curvePen(QPainter* painter, const Graph* g, bool perCurve, int curve)
+{
+  if (!perCurve) return;
+  QPen pen = painter->pen();
+  pen.setColor(g->curveColor(curve));
+  painter->setPen(pen);
+}
+
 void Graph::drawCircleSymbols(QPainter* painter) const {
   constexpr double radius = 4.0;
+  const bool perCurve = colorsEachCurve() && !isSelected;
+  int curve = 0;
+  curvePen(painter, this, perCurve, curve);
 
   for (auto point : *this) {
+    if (point.isBranchEnd() && !point.isGraphEnd()) {
+      curvePen(painter, this, perCurve, ++curve);
+      continue;
+    }
     if (!point.isPt()) {
       continue;
     }
@@ -410,9 +512,16 @@ void Graph::drawArrowSymbols(QPainter* painter) const {
   // Arrow head size constants
   constexpr double head_height = 7.0;
   constexpr double head_half_width = 4.0;
+  const bool perCurve = colorsEachCurve() && !isSelected;
+  int curve = 0;
+  curvePen(painter, this, perCurve, curve);
   for (auto point : *this) {
     if (point.isGraphEnd()) {
       break;
+    }
+    if (point.isBranchEnd()) {
+      curvePen(painter, this, perCurve, ++curve);
+      continue;
     }
 
     if (!point.isPt()) {
@@ -430,7 +539,14 @@ void Graph::drawArrowSymbols(QPainter* painter) const {
 }
 
 void Graph::drawStarSymbols(QPainter* painter) const {
+  const bool perCurve = colorsEachCurve() && !isSelected;
+  int curve = 0;
+  curvePen(painter, this, perCurve, curve);
   for (auto point : *this) {
+    if (point.isBranchEnd() && !point.isGraphEnd()) {
+      curvePen(painter, this, perCurve, ++curve);
+      continue;
+    }
     if (!point.isPt()) {
       continue;
     }
@@ -445,13 +561,10 @@ void Graph::drawStarSymbols(QPainter* painter) const {
   }
 }
 
-void Graph::drawLines(QPainter* painter) const {
-  painter->save();
-
-  QPen pen = painter->pen();
-  pen.setJoinStyle(Qt::RoundJoin);
-  pen.setCapStyle(Qt::RoundCap);
-  switch(Style) {
+// \a pen in the pattern of a line style.
+static void setLineStyle(QPen& pen, graphstyle_t style)
+{
+  switch(style) {
     case GRAPHSTYLE_DASH:
       pen.setDashPattern({10.0, 6.0});  // stroke len, space len
       break;
@@ -464,6 +577,16 @@ void Graph::drawLines(QPainter* painter) const {
     default:
       pen.setStyle(Qt::SolidLine);
   }
+}
+
+void Graph::drawLines(QPainter* painter) const {
+  painter->save();
+
+  QPen pen = painter->pen();
+  pen.setJoinStyle(Qt::RoundJoin);
+  pen.setCapStyle(Qt::RoundCap);
+  const QPen base = pen;
+  setLineStyle(pen, Style);
   painter->setPen(pen);
 
   if ( ! linesCalculated.isValid()
@@ -533,9 +656,15 @@ void Graph::drawLines(QPainter* painter) const {
 
   lines.clear();
   strokes.clear();
+  lineCurves.clear();
+  strokeCurves.clear();
+  int curve = 0;   // the branch of the points: a curve of the graph
   QPolygonF stroke;
-  const auto finish_stroke = [this, &stroke]() {
-    if (stroke.size() >= 2) strokes.append(stroke);
+  const auto finish_stroke = [this, &stroke, &curve]() {
+    if (stroke.size() >= 2) {
+      strokes.append(stroke);
+      strokeCurves.append(curve);
+    }
     stroke.clear();
   };
 
@@ -551,6 +680,7 @@ void Graph::drawLines(QPainter* painter) const {
     if (point.isStrokeEnd()) {
       drawing_started = false;
       finish_stroke();
+      if (point.isBranchEnd()) ++curve;   // the next curve begins
       continue;
     }
 
@@ -576,6 +706,7 @@ void Graph::drawLines(QPainter* painter) const {
     }
 
     lines.append(QLineF(segment_start, segment_end));
+    lineCurves.append(curve);
     stroke.append(segment_end);
 
     segment_start = segment_end;
@@ -590,19 +721,30 @@ void Graph::drawLines(QPainter* painter) const {
   if (lines.size() > 2*max_points) {
     // Too many lines for display - we will try join some lines ...
     QList<QLineF> joint_lines;
+    QList<int> joint_curves;
 
     bool joining = false;  // Marks that we are joining nearest lines
     float x, y1, y2; // Initial (x,y1) and current (x,y2) coordinates
+    int join_curve = 0; // the curve of the lines being joined
     size_t count = 0, final_count = lines.size()-1;
 
     auto near = [](float x1, float x2) { return std::abs(x1-x2) < 0.25; };
 
-    for (const auto& l : lines) {
+    for (qsizetype li = 0; li < lines.size(); ++li) {
+      const QLineF& l = lines.at(li);
+      const int line_curve = lineCurves.at(li);
       bool try_join = count++ < final_count; // Do not extend last line
+      if (joining && line_curve != join_curve) {
+        // A join ends where its curve does: the next is drawn apart.
+        joining = false;
+        joint_lines.append(QLineF(QPointF(x, y1), QPointF(x, y2)));
+        joint_curves.append(join_curve);
+      }
 
       if (try_join && !joining && near(l.x1(),l.x2())) {
         // Start joining lines; just store the initial line coordinates
         joining = true;
+        join_curve = line_curve;
         x = l.x1();
         // We wanna have y1 <= y2
         if (l.y1() < l.y2())
@@ -620,20 +762,46 @@ void Graph::drawLines(QPainter* painter) const {
         if (joining) {
           joining = false;
           joint_lines.append(QLineF(QPointF(x, y1), QPointF(x, y2)));
+          joint_curves.append(join_curve);
         }
         joint_lines.append(l);
+        joint_curves.append(line_curve);
       }
     }
 
     qDebug() << QString("GRAPH: reduced: %1 -> %2 lines\n").arg(lines.size()).arg(joint_lines.size());
     lines = QList<QLineF>(std::begin(joint_lines), std::end(joint_lines)); // Switch to optimized list of lines
+    lineCurves = joint_curves;
   }
 
   linesCalculated = QDateTime::currentDateTime();
 
   }//finish lines calculation
 
-  if (pen.style() == Qt::CustomDashLine) {
+  if (colorsEachCurve() && !isSelected) {
+    // Auto colors: every curve with its own pen. The lines and strokes
+    // come curve after curve.
+    qsizetype li = 0, si = 0;
+    while (li < lines.size() || si < strokes.size()) {
+      const int c = std::min(li < lines.size() ? lineCurves.at(li) : INT_MAX,
+                             si < strokes.size() ? strokeCurves.at(si) : INT_MAX);
+      qsizetype le = li, se = si;
+      while (le < lines.size() && lineCurves.at(le) == c) ++le;
+      while (se < strokes.size() && strokeCurves.at(se) == c) ++se;
+      QPen curvePen = base;
+      curvePen.setColor(curveColor(c));
+      setLineStyle(curvePen, curveStyle(c));
+      painter->setPen(curvePen);
+      if (curvePen.style() == Qt::CustomDashLine) {
+        for (qsizetype k = si; k < se; ++k)
+          painter->drawPolyline(strokes.at(k));
+      } else if (le > li) {
+        painter->drawLines(lines.constData() + li, int(le - li));
+      }
+      li = le;
+      si = se;
+    }
+  } else if (pen.style() == Qt::CustomDashLine) {
     // Dashed and dotted (#1723): the pattern has to run on from one point
     // to the next. Drawn as separate lines, it would start again at every
     // point, and wherever the points are closer than a dash - most
