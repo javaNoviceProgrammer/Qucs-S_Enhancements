@@ -114,9 +114,15 @@ protected:
       void resizeEvent(QResizeEvent *event) override;
 
 private:
-  SyntaxHighlighter * syntaxHighlight;
+  SyntaxHighlighter * syntaxHighlight = nullptr;
+  // The editor's colours (applyDocumentColors()): its paper, the current
+  // line, the line numbers' margin and their colour.
+  QColor a_paper = Qt::white;
+  QColor a_currentLine;
+  QColor a_margin = Qt::lightGray;
+  QColor a_marginText = Qt::black;
   QDateTime lastLoadModTime; // Timestamp of last successful load
-  LineNumberArea *lineNumberArea;
+  LineNumberArea *lineNumberArea = nullptr;
 
 private slots:
   void highlightCurrentLine();

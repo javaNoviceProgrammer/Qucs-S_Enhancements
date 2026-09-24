@@ -201,15 +201,37 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Next Pane* (Ctrl+`) and *Close Pane* (its documents go to a
   neighbour); a pane whose last document is closed goes by itself. Save
   All, Close All and Find span every pane.
-- **Theme** (*Application Settings → Appearance → Theme*): *System*,
-  *Dark* or *Light* for the application's windows, menus, docks and
-  dialogs. On macOS and Windows Qt asks the platform for the appearance,
-  so the native controls, title bars and menus follow; elsewhere (Linux,
-  and any platform that does not answer) a dark or light palette is put
-  on the application. *System* takes the platform's colours again and
-  follows them when they change. The schematic's own colours — document
-  background, grid — stay the settings above it on the same tab, and the
-  text editor is black on white in either theme.
+- **Theme** (*Application Settings → Appearance → Theme*, or *View →
+  Theme* to switch at once): *System*, *Dark* or *Light* — the
+  platform's own look — or one of ten designed themes that look the same
+  on every platform: *Daylight*, *Paper* (the warm cream of classic
+  Qucs), *Solarized Light* and *Catppuccin Latte*; *Graphite*, *Nord*,
+  *Dracula*, *One Dark*, *Solarized Dark* and *Catppuccin Mocha*.
+  - The platform's themes: on macOS and Windows Qt asks the platform for
+    the appearance, so the native controls, title bars and menus follow;
+    elsewhere (Linux, and any platform that does not answer) a dark or
+    light palette is put on the application. *System* takes the
+    platform's colours again and follows them when they change. They
+    draw with the *App Style* above.
+  - A designed theme draws with Fusion under a style of its own: flat,
+    rounded buttons, fields, check boxes and radio buttons in the
+    palette's colours (a colour-picker button still shows its colour),
+    and a style sheet for the tool bars, docks, tabs (an accent line
+    under the current one), menus, slim scroll bars and the status bar.
+    Every theme's text meets WCAG contrast on its backgrounds. The
+    window frames and the platform's dialogs follow its darkness.
+  - The component list and the text editor take the theme's colours. On
+    a dark theme the component and tool bar icons, drawn in dark blue
+    for white, are inked like the schematic (see *Schematics on dark
+    paper*), and so are the editor's syntax colours.
+  - *Schematic paper and grid from the theme* (same tab, off by default)
+    puts each designed theme's own paper and grid under the schematic —
+    Nord's slate, Solarized's cream, Paper's classic cream — instead of
+    the document background and grid colours above; under the platform's
+    themes it is the dark paper in *Dark*. Prints and exports stay on
+    white.
+  Under the platform's themes the text editor is black on white, as
+  before.
 - **Check Schematic** (*Simulation → Check Schematic*, F10): an electrical
   rule check before the simulator sees the circuit — component pins and
   wire ends connected to nothing (a wire end carrying a label is a named
@@ -333,10 +355,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   black light grey, dark red pink), a colour that shows is left alone,
   and a diagram is drawn as a light card, as it prints. On light paper,
   and in every print and export, nothing changes. *Application
-  Settings → Appearance → Dark schematic paper in the dark theme*
+  Settings → Appearance → Schematic paper and grid from the theme*
   (off by default) gives the canvas dark paper whenever the theme is
-  dark, and follows the system when it switches; a dark *Document
-  Background Color* of your own works the same way.
+  dark — a designed theme's own — and follows the system when it
+  switches; a dark *Document Background Color* of your own works the
+  same way.
 - **DC bias labels find their own place** (upstream #1692): after
   *Calculate DC bias* every value used to be drawn at the same fixed
   offset from its node, whatever was there — on the symbol, across a

@@ -26,8 +26,10 @@
 #include "qucs.h"
 #include "messagedock.h"
 #include "simulationconsole.h"
+#include "apptheme.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QDockWidget>
 #include <QLabel>
@@ -1189,6 +1191,23 @@ void QucsApp::initMenuBar() {
   panesMenu->addAction(moveDocumentToNextPane);
   panesMenu->addAction(nextPaneAction);
 
+  // View > Theme: every theme, the one in use checked; a choice is shown
+  // at once and kept in the settings (Application Settings > Appearance).
+  themeMenu = viewMenu->addMenu(tr("&Theme"));
+  themeActions = new QActionGroup(this);
+  themeActions->setExclusive(true);
+  for (int theme : qucs_s::apptheme::themes()) {
+    if (theme == qucs_s::apptheme::Daylight) themeMenu->addSection(tr("Designed, light"));
+    if (theme == qucs_s::apptheme::Graphite) themeMenu->addSection(tr("Designed, dark"));
+    QAction *a = themeMenu->addAction(qucs_s::apptheme::swatch(theme), qucs_s::apptheme::name(theme));
+    a->setCheckable(true);
+    a->setData(theme);
+    a->setChecked(theme == QucsSettings.Theme);
+    themeActions->addAction(a);
+  }
+  connect(themeActions, &QActionGroup::triggered, this,
+          [this](QAction *a) { applyTheme(a->data().toInt()); });
+
   helpMenu = new QMenu(tr("&Help")); // menuBar entry helpMenu
   helpMenu->addAction(helpIndex);
   // helpMenu->addAction(helpQucsIndex);
@@ -1378,7 +1397,7 @@ void QucsApp::slotShowWarnings() {
   if (ResultState & 1)
     misc::setWidgetForegroundColor(WarningLabel, Qt::red);
   else
-    misc::setWidgetForegroundColor(WarningLabel, Qt::black);
+    WarningLabel->setPalette(QPalette());   // the status bar's own colour, dark theme or light
 
   if (ResultState < 9)
     QTimer::singleShot(500, this, SLOT(slotShowWarnings()));
@@ -1391,7 +1410,7 @@ void QucsApp::slotResetWarnings() {
   QFont f = WarningLabel->font(); // reset warning label
   f.setWeight(QFont::Normal);
   WarningLabel->setFont(f);
-  misc::setWidgetForegroundColor(WarningLabel, Qt::black);
+  WarningLabel->setPalette(QPalette());
   WarningLabel->setText(tr("no warnings"));
 }
 

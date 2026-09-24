@@ -264,30 +264,47 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     appAppearanceGrid->addWidget(StyleCombo,9,1);
 
 
-    // Retrieve the current style and set it as selected
-    QString currentStyle = QApplication::style()->objectName();
+    // The style of the platform's themes: the one on the application, or
+    // the one to go back to while a designed theme draws with its own.
+    const QString currentStyle = qucs_s::apptheme::nativeStyle();
     int index = StyleCombo->findText(currentStyle, Qt::MatchFixedString);
     if (index != -1) {
         StyleCombo->setCurrentIndex(index);
-    }      
+    }
 
     appAppearanceGrid->addWidget(new QLabel(tr("Theme:"), appSettingsTab), 10, 0);
     ThemeCombo = new QComboBox(appSettingsTab);
     ThemeCombo->setObjectName("themeCombo");
-    ThemeCombo->addItem(tr("System"), qucs_s::apptheme::System);
-    ThemeCombo->addItem(tr("Dark"), qucs_s::apptheme::Dark);
-    ThemeCombo->addItem(tr("Light"), qucs_s::apptheme::Light);
-    ThemeCombo->setToolTip(tr("The colours of the application's windows, menus and dialogs: "
-                              "what the operating system shows, or dark or light regardless of it. "
-                              "The document background and grid colours above are separate settings."));
+    for (int theme : qucs_s::apptheme::themes()) {
+        if (theme == qucs_s::apptheme::Daylight || theme == qucs_s::apptheme::Graphite)
+            ThemeCombo->insertSeparator(ThemeCombo->count());
+        ThemeCombo->addItem(qucs_s::apptheme::swatch(theme), qucs_s::apptheme::name(theme), theme);
+    }
+    ThemeCombo->setToolTip(tr("The colours of the application's windows, menus and dialogs. System, Dark "
+                              "and Light are the platform's own look (the App Style above); the others "
+                              "are designed themes that look the same on every platform, with a "
+                              "schematic paper and grid of their own. Also under View > Theme."));
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(QucsSettings.Theme));
     appAppearanceGrid->addWidget(ThemeCombo, 10, 1);
+    // A designed theme draws with its own style: App Style is for the
+    // platform's themes.
+    auto styleFollowsTheme = [this] {
+        const bool designed = qucs_s::apptheme::designedTheme(ThemeCombo->currentData().toInt()) != nullptr;
+        StyleCombo->setEnabled(!designed);
+        StyleCombo->setToolTip(designed ? tr("The designed themes draw with a style of their own; this one "
+                                             "is used with System, Dark and Light.")
+                                        : QString());
+    };
+    connect(ThemeCombo, &QComboBox::currentIndexChanged, this, styleFollowsTheme);
+    styleFollowsTheme();
 
-    appAppearanceGrid->addWidget(new QLabel(tr("Dark schematic paper in the dark theme:"), appSettingsTab), 11, 0);
+    appAppearanceGrid->addWidget(new QLabel(tr("Schematic paper and grid from the theme:"), appSettingsTab), 11, 0);
     paperFollowsTheme = new QCheckBox(appSettingsTab);
-    paperFollowsTheme->setToolTip(tr("In the dark theme the schematic is drawn on dark paper instead of the "
-                                     "background colour above; symbols, wires and texts are lightened to "
-                                     "show on it. Prints and exports stay on white."));
+    paperFollowsTheme->setToolTip(tr("The schematic is drawn on the theme's paper and grid instead of the "
+                                     "background and grid colours above: a designed theme's own, dark "
+                                     "paper in the Dark theme (the light System and Light themes keep the "
+                                     "colours above). On dark paper symbols, wires and texts are lightened "
+                                     "to show. Prints and exports stay on white."));
     paperFollowsTheme->setChecked(QucsSettings.PaperFollowsTheme);
     appAppearanceGrid->addWidget(paperFollowsTheme, 11, 1);
 
@@ -775,25 +792,24 @@ void QucsSettingsDialog::slotApply()
     bool styleChanged = false;
     if (_settings::Get().item<QString>("AppStyle") != selectedStyle )
     {
-        QStyle* style = QStyleFactory::create(selectedStyle);
-        if (style) {
-          QApplication::setStyle(style);
+        if (QStyleFactory::keys().contains(selectedStyle, Qt::CaseInsensitive)) {
+          // Shown now, or - under a designed theme - when a platform theme is back.
+          qucs_s::apptheme::setNativeStyle(selectedStyle);
           _settings::Get().setItem<QString>("AppStyle",  selectedStyle);
-          changed = true;  
+          changed = true;
           styleChanged = true;
-        } 
+        }
     }
 
     const int selectedTheme = ThemeCombo->currentData().toInt();
     if (QucsSettings.Theme != selectedTheme || styleChanged)
     {
-        QucsSettings.Theme = selectedTheme;
-        qucs_s::apptheme::apply(QucsSettings.Theme);   // after the style: a new style brings its own palette
-        QucsSettings.hasDarkTheme = misc::isDarkTheme();
-        paperChanged = true;   // the paper may follow the theme
+        // After the style: a new style brings its own palette. The paper
+        // may follow the theme; the component list does.
+        App->applyTheme(selectedTheme);
         changed = true;
     }
-    if (paperChanged) App->applyPaper();   // every open schematic, in every pane
+    else if (paperChanged) App->applyPaper();   // every open schematic, in every pane
 
     // Update all open schematics with the new grid color.
     if (_settings::Get().item<QColor>("GridColor") != GridColorButton->palette().color(GridColorButton->backgroundRole())) {

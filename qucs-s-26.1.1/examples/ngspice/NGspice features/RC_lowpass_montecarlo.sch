@@ -34,13 +34,13 @@
   <260 230 260 260 "" 0 0 0 "">
 </Wires>
 <Diagrams>
-  <Rect 620 290 480 280 3 #c0c0c0 1 10 1 100 1 100000 1 -50 10 5 1 -1 0.5 1 315 0 225 0 0 0 "" "" "">
+  <Rect 740 290 480 280 3 #c0c0c0 1 10 1 100 1 100000 1 -50 10 5 1 -1 0.5 1 315 0 225 0 0 0 "" "" "">
 	<"ngspice/ngmontecarlo1.gain" #0000ff 0 3 0 0 0>
   </Rect>
-  <Histogram 620 660 480 280 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 -1 0.5 1 315 0 225 0 0 0 0 -1 0 0 3 1432 1751 "" "" "">
+  <Histogram 740 660 480 280 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 -1 0.5 1 315 0 225 0 0 0 0 -1 0 0 3 1432 1751 "" "" "">
 	<"ngspice/ngmontecarlo1.fc" #0050c8 1 3 0 0 0>
   </Histogram>
 </Diagrams>
 <Paintings>
-  <Text 40 620 12 #000000 0 "A 1.59 kHz RC low-pass with parts of 5 % (one sigma): SpicePar1 draws R1 and C1 from\nGaussians, agauss(nominal, three sigma, 3). NgMonteCarlo1 runs ngspice's montecarlo\ncommand: 200 samples of AC1, each with new values. It records the gain of every sample\n(a family of 200 curves, above right) and the corner frequency 1/(2 pi R C) of each - in a\nhistogram diagram below, with the normal distribution of the same mean and deviation\nand the limits - and judges the corner frequency against 1591.5 Hz +/- 10 %: the yield\nand its 95 % confidence interval are in the status log, and in the dataset as\nngmontecarlo1.yield. Double-click NgMonteCarlo1 for its form and the command it\nwrites; press F2. Needs an ngspice built with montecarlo (Ngspice-OpenVAF-Enhancements).">
+  <Text 40 730 12 #000000 0 "A 1.59 kHz RC low-pass with parts of 5 % (one sigma): SpicePar1 draws R1 and C1 from\nGaussians, agauss(nominal, three sigma, 3). NgMonteCarlo1 runs ngspice's montecarlo\ncommand: 200 samples of AC1, each with new values. It records the gain of every sample\n(a family of 200 curves, above right) and the corner frequency 1/(2 pi R C) of each - in a\nhistogram diagram below, with the normal distribution of the same mean and deviation\nand the limits - and judges the corner frequency against 1591.5 Hz +/- 10 %: the yield\nand its 95 % confidence interval are in the status log, and in the dataset as\nngmontecarlo1.yield. Double-click NgMonteCarlo1 for its form and the command it\nwrites; press F2. Needs an ngspice built with montecarlo (Ngspice-OpenVAF-Enhancements).">
 </Paintings>

@@ -13,7 +13,9 @@
 
 #include <QBrush>
 #include <QColor>
+#include <QIcon>
 #include <QPen>
+#include <QPixmap>
 
 /*!
  * \brief The colours of a schematic on dark paper.
@@ -65,6 +67,14 @@ QBrush on(QBrush brush);
 /// The paper of the canvas in the dark theme, when the schematic is to
 /// follow the theme.
 inline QColor darkPaperColour() { return QColor(0x22, 0x24, 0x27); }
+
+/// A picture drawn for light paper, put on \a paper: every pixel through
+/// on(), its transparency kept. As it is on light paper.
+QPixmap inked(const QPixmap& pixmap, const QColor& paper);
+/// An icon's pixmap of \a size (at \a ratio device pixels a pixel) for
+/// \a paper, as an icon; the icon itself on light paper. Kept for the
+/// next time it is asked for.
+QIcon inked(const QIcon& icon, const QSize& size, qreal ratio, const QColor& paper);
 
 } // namespace qucs_s::ink
 

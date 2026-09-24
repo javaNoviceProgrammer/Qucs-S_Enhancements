@@ -119,7 +119,7 @@ struct tQucsSettings {
   // symbol, and mark which way the pin points (in, out, inout).
   bool ShowPinNames = true;
   bool ShowPinDirections = false;
-  bool PaperFollowsTheme = false;   // the schematic paper is dark in the dark theme
+  bool PaperFollowsTheme = false;   // the schematic paper (and grid) is the theme's
   int GridMode = 0;   // the grid of the schematics: 0 as each says, 1 always hidden, 2 always shown
   // Where the simulator's output goes: the Simulation dock, a window of
   // its own, or the legacy window that blocks the application until closed.
