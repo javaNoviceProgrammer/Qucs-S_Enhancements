@@ -659,21 +659,35 @@ existing demand.
   `curveStyle()`, the symbol styles switch pens at each branch end.
   `autoPalette()` is eight categorical hues in a fixed order validated for
   protanopia/deuteranopia separation (the order is the safeguard) on the
-  white card a diagram is drawn on; past eight, the colors come round
-  with the next dash pattern rather than generated hues. The auto graphs
-  of a diagram continue one sequence (`curveOffset()`), so no two curves
-  share a look. `Diagram::paintLegend()` gives an auto graph a row per
-  curve (up to 24, then how many more) labelled with `curveLabel()` -
-  the swept variables' values, their names without the graph's own
-  prefix (`r1=2k`) - and the graph's name on an axis is in plain ink.
+  white card a diagram is drawn on; past eight the colors come round
+  (never generated hues), every curve in the graph's own line style. The
+  auto graphs of a diagram continue one sequence (`curveOffset()`).
+  Point markers (`Graph::pointMarker`: none, auto, or one of seven shapes)
+  tell curves apart where colors repeat: `Diagram::calcData()` keeps each
+  curve's data points inside the diagram before clipping moves any
+  (`addMarkerPoint()`), and `drawPointMarkers()` draws on every point of
+  a sparse curve and some 40 pixels apart along a dense one, each curve
+  starting a quarter step on from the one before; filled shapes with a
+  white ring (strokes for the cross and plus), 9 px across at thickness 2.
+  Auto takes the seven shapes in turn (`markerOffset()` across the
+  diagram's graphs), so with auto colors no two of the first 56 curves
+  share both. `Diagram::paintLegend()` gives an auto graph a row per
+  curve (up to 24, then how many more) - also for auto markers alone -
+  with its line and marker, labelled with `curveLabel()`: the swept
+  variables' values to four significant digits, their names without the
+  graph's own prefix (`r1=2.2k`); the graph's name on an axis is in
+  plain ink.
   Only where curves are drawn (Rect, Polar, Smith, ySmith, PS, SP,
-  Curve). Saved as an eighth field of the graph line, written only when
-  on, which older versions do not read. The diagram dialog has *auto*
-  next to *Color* (the color button off while it is on; the legend
-  switched on with it; the graph list shows "auto"). Covered by
-  `qucs/tests/test_graph_autocolor` (the field, the palette, the colors
-  and styles per curve across graphs, the rendering in pixels, the
-  legend rows, the dialog).
+  Curve). Saved as an eighth (auto colors) and a ninth (the marker) field
+  of the graph line, written only when there is something to say, which
+  older versions do not read. The diagram dialog has *auto* next to
+  *Color* (the color button off while it is on) and a *Marker* box (off
+  for the symbol styles); either in auto switches the legend on; the
+  graph list shows them. Covered by `qucs/tests/test_graph_autocolor`
+  (the fields, the palette and the shapes, colors and markers per curve
+  across graphs, the rendering in pixels - markers on the points of a
+  sparse curve and spaced along a dense one - the legend rows, the
+  dialog).
 - *Done:* **Diagram legend** (#1719). `Diagram::paintLegend()` draws, after
   the graphs and axis texts, a framed white box in the corner chosen by
   `Diagram::legendPos` (off / four corners) with one row per graph: a
@@ -1281,7 +1295,8 @@ existing demand.
   transient resampled), the log, the netlist, the ERC, the dialog, an
   ngspice without the command - and, with one that has it, an ac sweep
   against the analytic low-pass at every point, an `op` over two knobs,
-  a transient, and the example with its auto-colored diagram.
+  a transient, and the example with its diagram in auto colors and
+  markers.
 - *Done (click, not hover):* **Net highlighting.** `Schematic::netOf(Wire*)`
   flood-fills the `Node`↔`Wire` graph and, in rounds, joins what labels
   of the same name and ground symbols connect; `selectedNet()` is the

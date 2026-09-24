@@ -176,7 +176,8 @@ public:
   /// - in a color of its own, from autoPalette() in its order, the
   /// graph's own Color aside. The auto graphs of a diagram share the
   /// colors: the next one goes on where the one before left off. Past the
-  /// palette the colors come round again with the next line style.
+  /// palette the colors come round again (point markers tell those
+  /// curves apart).
   bool autoColor = false;
   /// The eight colors, in the order they are given (a categorical palette
   /// checked for color vision deficiency and on white paper).
@@ -186,10 +187,37 @@ public:
   static bool autoColorApplies(const QString& diagramName);
   /// Whether this graph's curves are drawn each in a color of its own.
   bool colorsEachCurve() const;
-  /// The color and the line style curve \a curve (0 to countY - 1) is
-  /// drawn in: the graph's own when it does not color each curve.
+  /// The color curve \a curve (0 to countY - 1) is drawn in: the
+  /// graph's own when it does not color each curve.
   QColor curveColor(int curve) const;
-  graphstyle_t curveStyle(int curve) const;
+
+  /// Point markers: a symbol on the data points of a line graph, some
+  /// 40 pixels apart - one shape, or Auto: each curve a shape of its
+  /// own from autoMarkers() in its order, the auto graphs of a diagram
+  /// going on from each other like the colors. Seven shapes against eight
+  /// colors: no two curves alike in both before the 57th.
+  enum class PointMarker { None = 0, Auto, Circle, Square, Triangle, Diamond, TriangleDown, Cross, Plus };
+  PointMarker pointMarker = PointMarker::None;
+  static const QList<PointMarker>& autoMarkers();
+  /// Whether this graph marks its points (a line graph in a diagram that
+  /// draws curves, with a marker chosen).
+  bool drawsPointMarkers() const;
+  /// The shape of curve \a curve's markers (None when there are none).
+  PointMarker curveMarker(int curve) const;
+  /// Whether the curves of this graph each look different: auto colors,
+  /// or auto markers.
+  bool distinguishesCurves() const;
+  /// A marker of \a shape at \a centre, \a size across, in the painter's
+  /// pen color with a ring of \a paper round it; \a up is the direction
+  /// of up on the screen in the painter's y (+1 or -1).
+  static void drawPointMarker(QPainter* painter, PointMarker shape, const QPointF& centre, qreal size,
+                              const QColor& paper = Qt::white, qreal up = -1);
+  /// How big a marker is across, for a graph's thickness.
+  static qreal markerSize(int thick);
+  /// The markers' positions: the data points of each curve inside the
+  /// diagram, kept while the screen coordinates are worked out.
+  void clearMarkerPoints() { markerPoints.clear(); }
+  void addMarkerPoint(int curve, const QPointF& point);
   /// The value of each swept parameter at curve \a curve: "r1=2k, c1=100n";
   /// empty when the graph has one curve.
   QString curveLabel(int curve) const;
@@ -204,7 +232,10 @@ public: // marker related
   std::pair<double,double> findSample(std::vector<double>&) const;
   Diagram const* parentDiagram() const{return diagram;}
 private:
-  int curveOffset() const;   // the curves of the diagram's auto graphs before this one
+  int curveOffset() const;   // the curves of the diagram's auto-colored graphs before this one
+  int markerOffset() const;  // and of its auto-marked ones
+  void drawPointMarkers(QPainter* painter) const;
+  QList<QList<QPointF>> markerPoints;   // each curve's data points inside the diagram
   QVector<DataX*>  cPointsX;
   std::vector<ScrPt> ScrPoints; // data in screen coordinates
   Diagram const* diagram;

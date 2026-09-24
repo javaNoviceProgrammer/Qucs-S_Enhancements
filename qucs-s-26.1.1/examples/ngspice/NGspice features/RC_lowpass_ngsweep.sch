@@ -34,12 +34,12 @@
 </Wires>
 <Diagrams>
   <Rect 700 330 500 320 3 #c0c0c0 1 11 1 10 1 100000 1 0.01 1 1 1 -1 0.5 1 315 0 225 1 0 0 3 -1 "frequency (Hz)" "|v(out)| (V)" "">
-	<"ngspice/ngsweep1.v(out)" #0000ff 2 3 0 0 0 1>
+	<"ngspice/ngsweep1.v(out)" #0000ff 2 3 0 0 0 1 1>
   </Rect>
   <Rect 700 760 500 300 3 #c0c0c0 1 11 1 250 1 4000 1 100 1 1000 1 -1 0.5 1 315 0 225 1 0 0 0 -1 "R1 (Ohm)" "corner frequency (Hz)" "">
 	<"ngspice/ngsweep1.fc" #2a78d6 2 3 0 5 0>
   </Rect>
 </Diagrams>
 <Paintings>
-  <Text 40 540 12 #000000 0 "An RC low-pass for five values of R1, 250 Ohm to 4 kOhm: NgSweep1 runs\nngspice's sweep command, which changes R1 and runs AC1 at each value.\nEvery value's v(out) is a curve of its own in the diagram above right; its\ngraph's color is auto, so each curve has a color of its own and the legend\nnames its R1. AC1 itself is switched off: only its sweep runs. NgSweep1 also\nrecords the corner frequency 1/(2 pi R1 C1) at every value (below right).\nDouble-click NgSweep1 for its form and the command it writes, or a graph\nfor its color; press F2. Needs an ngspice built with the sweep command\n(Ngspice-OpenVAF-Enhancements).">
+  <Text 40 540 12 #000000 0 "An RC low-pass for five values of R1, 250 Ohm to 4 kOhm: NgSweep1 runs\nngspice's sweep command, which changes R1 and runs AC1 at each value.\nEvery value's v(out) is a curve of its own in the diagram above right; its\ngraph's color and marker are auto, so each curve has a color and a marker\nof its own, and the legend names its R1. AC1 itself is switched off: only its sweep runs. NgSweep1 also\nrecords the corner frequency 1/(2 pi R1 C1) at every value (below right).\nDouble-click NgSweep1 for its form and the command it writes, or a graph\nfor its color; press F2. Needs an ngspice built with the sweep command\n(Ngspice-OpenVAF-Enhancements).">
 </Paintings>

@@ -270,6 +270,21 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     }
     connect(PropertyBox, QOverload<int>::of(&QComboBox::activated), this,
             &DiagramDialog::slotSetGraphStyle);
+    // Point markers on a line graph: none, auto (a shape for each curve),
+    // or one shape for all.
+    if (Graph::autoColorApplies(Diag->Name)) {
+      MarkerLabel = new QLabel(tr("Marker:"));
+      Box2Layout->addWidget(MarkerLabel);
+      MarkerBox = new QComboBox();
+      MarkerBox->addItems({tr("none"), tr("auto"), tr("circle"), tr("square"), tr("triangle"),
+                           tr("diamond"), tr("triangle down"), tr("cross"), tr("plus")});
+      MarkerBox->setToolTip(tr("A symbol on the data points; auto gives each curve a shape of its own"));
+      Box2Layout->addWidget(MarkerBox);
+      MarkerLabel->setEnabled(false);
+      MarkerBox->setEnabled(false);
+      connect(MarkerBox, QOverload<int>::of(&QComboBox::activated), this,
+              &DiagramDialog::slotSetPointMarker);
+    }
     Box2Layout->setStretchFactor(new QWidget(Box2),
                                  5); // stretchable placeholder
 
@@ -1245,6 +1260,7 @@ void DiagramDialog::slotTakeVar(QTableWidgetItem *Item) {
   if (Diag->Name != "Tab" && Diag->Name != "Truth") {
     g->Color = misc::getWidgetBackgroundColor(ColorButt);
     g->autoColor = AutoColorBox != nullptr && AutoColorBox->isChecked();
+    if (MarkerBox != nullptr) g->pointMarker = Graph::PointMarker(MarkerBox->currentIndex());
     g->Thick = thicknessSpin->value();
     QColor selectedColor(
         DefaultColors[GraphList->rowCount() % NumDefaultColors]);
@@ -1267,6 +1283,7 @@ void DiagramDialog::slotTakeVar(QTableWidgetItem *Item) {
     Label3->setEnabled(true);
     ColorButt->setEnabled(!g->autoColor);
     if (AutoColorBox) AutoColorBox->setEnabled(true);
+    enableMarkerBox(g);
   } else if (Diag->Name == "Tab") { // Changed from 'else' to 'else if'
     if (precisionSpin) {            // Add null check
       g->Precision = precisionSpin->value();
@@ -1362,6 +1379,11 @@ void DiagramDialog::SelectGraph(Graph *g) {
         AutoColorBox->setChecked(g->autoColor);
         AutoColorBox->setEnabled(true);
       }
+      if (MarkerBox) {
+        const QSignalBlocker block(MarkerBox);
+        MarkerBox->setCurrentIndex(int(g->pointMarker));
+      }
+      enableMarkerBox(g);
     }
   } else {
     precisionSpin->setValue(g->Precision);
@@ -1434,6 +1456,7 @@ void DiagramDialog::slotDeleteGraph() {
     Label3->setEnabled(false);
     ColorButt->setEnabled(false);
     if (AutoColorBox) AutoColorBox->setEnabled(GraphList->rowCount() != 0);
+    if (GraphList->rowCount() == 0) enableMarkerBox(nullptr);
   } else {
     if (precisionSpin)
       precisionSpin->setValue(3);
@@ -1489,6 +1512,7 @@ void DiagramDialog::slotNewGraph() {
   if (Diag->Name != "Tab" && Diag->Name != "Truth") {
     g->Color = misc::getWidgetBackgroundColor(ColorButt);
     g->autoColor = AutoColorBox != nullptr && AutoColorBox->isChecked();
+    if (MarkerBox != nullptr) g->pointMarker = Graph::PointMarker(MarkerBox->currentIndex());
     g->Thick = thicknessSpin->value();
     g->Style = toGraphStyle(PropertyBox->currentIndex());
     QUCS_ASSERT(g->Style != GRAPHSTYLE_INVALID);
@@ -1810,6 +1834,27 @@ void DiagramDialog::slotSetAutoColor(bool on) {
   toTake = false;
 }
 
+void DiagramDialog::enableMarkerBox(const Graph *g) {
+  if (MarkerBox == nullptr) return;
+  const bool line = g != nullptr && g->Style >= GRAPHSTYLE_SOLID && g->Style <= GRAPHSTYLE_LONGDASH;
+  MarkerBox->setEnabled(line);
+  MarkerLabel->setEnabled(line);
+}
+
+void DiagramDialog::slotSetPointMarker(int marker) {
+  const int i = GraphList->currentRow();
+  if (i < 0)
+    return;
+  Graphs.at(i)->pointMarker = Graph::PointMarker(marker);
+  updateGraphListItem(i);
+  // The shapes mean nothing without the values they stand for.
+  if (Graphs.at(i)->pointMarker == Graph::PointMarker::Auto && LegendBox != nullptr &&
+      LegendBox->currentIndex() == Diagram::LegendOff)
+    LegendBox->setCurrentIndex(Diagram::LegendTopRight);
+  changed = true;
+  toTake = false;
+}
+
 /*!
  * \brief Opens a color picker dialog and sets the grid color.
  *
@@ -1953,6 +1998,7 @@ void DiagramDialog::slotSetGraphStyle(int style) {
   Graph *g = Graphs.at(i).get();
   g->Style = toGraphStyle(style);
   QUCS_ASSERT(g->Style != GRAPHSTYLE_INVALID);
+  enableMarkerBox(g);   // markers go on lines, not on symbols
 
   updateGraphListItem(i); // Update table display
   changed = true;
@@ -2375,6 +2421,9 @@ void DiagramDialog::updateGraphListItem(int row) {
       styleName = "";
       break;
     }
+    if (g->pointMarker != Graph::PointMarker::None && MarkerBox != nullptr &&
+        g->Style >= GRAPHSTYLE_SOLID && g->Style <= GRAPHSTYLE_LONGDASH)
+      styleName += " + " + MarkerBox->itemText(int(g->pointMarker));
     QTableWidgetItem *styleItem = GraphList->item(row, 2);
     if (!styleItem) {
       styleItem = new QTableWidgetItem(styleName);

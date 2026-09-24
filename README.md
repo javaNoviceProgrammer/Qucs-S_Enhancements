@@ -316,17 +316,23 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Edit Diagram Properties → Properties → Legend*. Off by default; the
   position is saved with the diagram, and files without it load as before
   (upstream #1719).
-- **Auto colors for the curves of a sweep**: a graph whose variable was
-  swept - a parameter sweep, NgSweep, a Monte Carlo family - draws a curve
-  for each value; with *auto* ticked next to the graph's *Color* in the
-  diagram dialog, each curve has a color of its own, from an eight-color
-  palette in a fixed order (kept apart for colour-blind readers too), and
-  the legend - switched on with it - names every curve by its values
-  (`r1=2k`). The auto graphs of a diagram share the palette, each going
-  on where the last left off; past eight curves the colors come round
-  with the next dash pattern. In Cartesian, polar, Smith and locus
-  diagrams; saved with the graph, and older versions read the graph as
-  before.
+- **Auto colors and point markers for the curves of a sweep**: a graph
+  whose variable was swept - a parameter sweep, NgSweep, a Monte Carlo
+  family - draws a curve for each value; with *auto* ticked next to the
+  graph's *Color* in the diagram dialog, each curve has a color of its
+  own, from an eight-color palette in a fixed order (kept apart for
+  colour-blind readers too), every curve in the graph's own line style.
+  *Marker* puts a symbol on the data points - on every point of a sparse
+  curve, some 40 pixels apart along a dense one, each curve's starting a
+  little further on so curves that lie on each other still show theirs:
+  one shape for all (circle, square, triangle, diamond, triangle down,
+  cross, plus), or *auto*, a shape for each curve from the seven in turn
+  - with auto colors no two curves alike before the 57th. The legend -
+  switched on with either - names every curve by its values (`r1=2.2k`)
+  with its line and marker. The auto graphs of a diagram share the
+  sequence, each going on where the last left off. In Cartesian, polar,
+  Smith and locus diagrams; saved with the graph, and older versions read
+  the graph as before.
 - **Histogram diagram** (*diagrams → Histogram*): each graph's values -
   a Monte Carlo's samples, or every point of any variable - counted into
   bins and drawn as bars in the graph's colour, several graphs over each

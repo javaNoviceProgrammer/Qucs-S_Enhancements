@@ -71,6 +71,9 @@ private slots:
   /// Auto colors for the selected graph: each of its curves in a color of
   /// its own (Graph::autoColor).
   void slotSetAutoColor(bool on);
+  /// The point marker of the selected graph (Graph::PointMarker, in the
+  /// order of the box: none, auto, then the shapes).
+  void slotSetPointMarker(int marker);
   void slotSetGridColor();
   void slotResetToTake(const QString&);
   void slotSetNumMode(int);
@@ -182,6 +185,10 @@ private:
   QLineEdit   *HistLower = nullptr, *HistUpper = nullptr;
   QPushButton *ColorButt, *GridColorButt;
   QCheckBox   *AutoColorBox = nullptr;
+  QLabel      *MarkerLabel = nullptr;
+  QComboBox   *MarkerBox = nullptr;
+  /// Enables the marker box for \a g (a line graph) or a new graph.
+  void enableMarkerBox(const Graph *g);
   QSlider     *SliderRotX, *SliderRotY, *SliderRotZ;
   Cross3D     *DiagCross;
   bool changed, transfer, toTake;

@@ -87,6 +87,7 @@ void Graph::paint(QPainter* painter) {
 
     painter->setPen(QPen(Qt::white, Thick, Qt::SolidLine));
     paintLines(painter);
+    drawPointMarkers(painter);
     painter->restore();
     return;
   }
@@ -94,6 +95,7 @@ void Graph::paint(QPainter* painter) {
   // **** not selected ****
   painter->setPen(QPen(QColor(Color), Thick, Qt::SolidLine));
   paintLines(painter);
+  drawPointMarkers(painter);
   painter->restore();
 }
 
@@ -119,7 +121,14 @@ QString Graph::save()
   QString s = "\t<\""+Var+"\" "+Color.name()+
 	      " "+QString::number(Thick)+" "+QString::number(Precision)+
 	      " "+QString::number(numMode)+" "+QString::number(Style)+
-	      " "+QString::number(yAxisNo)+(autoColor ? " 1" : "")+">";
+	      " "+QString::number(yAxisNo);
+  // Auto colors and the point marker: fields of their own, which versions
+  // before them do not read; written only when there is something to say.
+  if (autoColor || pointMarker != PointMarker::None)
+    s += autoColor ? " 1" : " 0";
+  if (pointMarker != PointMarker::None)
+    s += " " + QString::number(int(pointMarker));
+  s += ">";
 
   for (Marker *pm : Markers)
     s += "\n\t  "+pm->save();
@@ -166,9 +175,14 @@ bool Graph::load(const QString& _s)
   yAxisNo = n.toInt(&ok);
   if(!ok) return false;
 
-  // Auto colors: an eighth field, which versions before it do not read.
+  // Auto colors: an eighth field, which versions before it do not read;
+  // the point marker a ninth.
   n  = s.section(' ',7,7);
   autoColor = n.toInt(&ok) == 1 && ok;
+  n  = s.section(' ',8,8);
+  const int marker = n.toInt(&ok);
+  pointMarker = ok && marker > int(PointMarker::None) && marker <= int(PointMarker::Plus)
+                    ? PointMarker(marker) : PointMarker::None;
 
   return true;
 }
@@ -279,6 +293,7 @@ Graph* Graph::sameNewOne()
   pg->numMode   = numMode;
   pg->yAxisNo   = yAxisNo;
   pg->autoColor = autoColor;
+  pg->pointMarker = pointMarker;
 
   for (Marker *pm : Markers)
     pg->Markers.append(pm->sameNewOne(pg));
@@ -334,13 +349,152 @@ QColor Graph::curveColor(int curve) const
   return palette.at((curveOffset() + std::max(0, curve)) % palette.size());
 }
 
-graphstyle_t Graph::curveStyle(int curve) const
+const QList<Graph::PointMarker>& Graph::autoMarkers()
 {
-  // Lines take the next pattern each time the colors come round; symbols
-  // keep theirs.
-  if (!colorsEachCurve() || Style > GRAPHSTYLE_LONGDASH || Style < GRAPHSTYLE_SOLID) return Style;
-  const int round = (curveOffset() + std::max(0, curve)) / int(autoPalette().size());
-  return graphstyle_t((int(Style) + round) % (int(GRAPHSTYLE_LONGDASH) + 1));
+  static const QList<PointMarker> shapes = {PointMarker::Circle,  PointMarker::Square,       PointMarker::Triangle,
+                                            PointMarker::Diamond, PointMarker::TriangleDown, PointMarker::Cross,
+                                            PointMarker::Plus};
+  return shapes;
+}
+
+bool Graph::drawsPointMarkers() const
+{
+  return pointMarker != PointMarker::None && diagram != nullptr && autoColorApplies(diagram->Name)
+         && Style >= GRAPHSTYLE_SOLID && Style <= GRAPHSTYLE_LONGDASH;
+}
+
+int Graph::markerOffset() const
+{
+  int offset = 0;
+  if (diagram == nullptr) return offset;
+  for (const Graph* g : diagram->Graphs) {
+    if (g == this) break;
+    if (g->drawsPointMarkers() && g->pointMarker == PointMarker::Auto) offset += std::max(1, g->countY);
+  }
+  return offset;
+}
+
+Graph::PointMarker Graph::curveMarker(int curve) const
+{
+  if (!drawsPointMarkers()) return PointMarker::None;
+  if (pointMarker != PointMarker::Auto) return pointMarker;
+  const QList<PointMarker>& shapes = autoMarkers();
+  return shapes.at((markerOffset() + std::max(0, curve)) % shapes.size());
+}
+
+bool Graph::distinguishesCurves() const
+{
+  return colorsEachCurve() || (drawsPointMarkers() && pointMarker == PointMarker::Auto);
+}
+
+void Graph::addMarkerPoint(int curve, const QPointF& point)
+{
+  if (curve < 0) return;
+  while (markerPoints.size() <= curve) markerPoints.append(QList<QPointF>());
+  markerPoints[curve].append(point);
+}
+
+void Graph::drawPointMarker(QPainter* painter, PointMarker shape, const QPointF& c, qreal size,
+                            const QColor& paper, qreal up)
+{
+  if (shape == PointMarker::None || shape == PointMarker::Auto) return;
+  const QColor ink = painter->pen().color();
+  const qreal r = size / 2.0;
+  painter->save();
+  painter->setRenderHint(QPainter::Antialiasing, true);
+  if (shape == PointMarker::Cross || shape == PointMarker::Plus) {
+    // Strokes: a ring of paper under them, then the ink.
+    QList<QLineF> strokes;
+    if (shape == PointMarker::Cross)
+      strokes = {QLineF(c.x() - r, c.y() - r, c.x() + r, c.y() + r), QLineF(c.x() - r, c.y() + r, c.x() + r, c.y() - r)};
+    else
+      strokes = {QLineF(c.x() - r, c.y(), c.x() + r, c.y()), QLineF(c.x(), c.y() - r, c.x(), c.y() + r)};
+    painter->setPen(QPen(paper, 4.0, Qt::SolidLine, Qt::RoundCap));
+    painter->drawLines(strokes);
+    painter->setPen(QPen(ink, 2.0, Qt::SolidLine, Qt::RoundCap));
+    painter->drawLines(strokes);
+    painter->restore();
+    return;
+  }
+  // Filled, with a ring of paper round it: it stays clear of the lines it
+  // sits on.
+  painter->setPen(QPen(paper, 1.5));
+  painter->setBrush(ink);
+  switch (shape) {
+    case PointMarker::Circle:
+      painter->drawEllipse(c, r, r);
+      break;
+    case PointMarker::Square:
+      painter->drawRect(QRectF(c.x() - 0.9 * r, c.y() - 0.9 * r, 1.8 * r, 1.8 * r));
+      break;
+    case PointMarker::Diamond:
+      painter->drawPolygon(QPolygonF({QPointF(c.x(), c.y() + 1.2 * r), QPointF(c.x() + r, c.y()),
+                                      QPointF(c.x(), c.y() - 1.2 * r), QPointF(c.x() - r, c.y())}));
+      break;
+    case PointMarker::Triangle:
+    case PointMarker::TriangleDown: {
+      const qreal apex = shape == PointMarker::Triangle ? up : -up;   // towards the top of the screen or away
+      painter->drawPolygon(QPolygonF({QPointF(c.x(), c.y() + apex * 1.15 * r),
+                                      QPointF(c.x() + 1.1 * r, c.y() - apex * 0.8 * r),
+                                      QPointF(c.x() - 1.1 * r, c.y() - apex * 0.8 * r)}));
+      break;
+    }
+    default:
+      break;
+  }
+  painter->restore();
+}
+
+void Graph::drawPointMarkers(QPainter* painter) const
+{
+  if (!drawsPointMarkers()) return;
+  // Every data point of a sparse curve; along a dense one a marker every
+  // so far, each curve starting a quarter of the way on from the one
+  // before, so the markers of curves that lie on each other do not stack.
+  constexpr qreal spacing = 40.0;
+  const qreal size = markerSize(Thick);
+  auto distance = [](const QPointF& a, const QPointF& b) { return std::hypot(a.x() - b.x(), a.y() - b.y()); };
+  painter->save();
+  for (int c = 0; c < markerPoints.size(); ++c) {
+    const QList<QPointF>& points = markerPoints.at(c);
+    if (points.isEmpty()) continue;
+    qreal length = 0;
+    for (qsizetype i = 1; i < points.size(); ++i) length += distance(points.at(i - 1), points.at(i));
+    const bool every = points.size() < 2 || length / qreal(points.size() - 1) >= spacing;
+    QPen pen = painter->pen();
+    pen.setColor(isSelected ? QColor(Qt::darkGray) : curveColor(c));
+    painter->setPen(pen);
+    const PointMarker shape = curveMarker(c);
+    qreal travelled = spacing - spacing * qreal(c % 4) / 4.0;
+    for (qsizetype i = 0; i < points.size(); ++i) {
+      if (i > 0) travelled += distance(points.at(i - 1), points.at(i));
+      if (!every && travelled < spacing) continue;
+      drawPointMarker(painter, shape, points.at(i), size, Qt::white, +1.0);   // y grows upwards here
+      travelled = 0;
+    }
+  }
+  painter->restore();
+}
+
+// A value with an engineering prefix, to four significant digits: "289.3",
+// "1.076k", "100n".
+static QString engineering(double value)
+{
+  static const char prefixes[] = "fpnum kMGT";   // 1e-15 .. 1e12
+  const double magnitude = std::fabs(value);
+  if (magnitude == 0 || !std::isfinite(value)) return QString::number(value);
+  int exponent = int(std::floor(std::log10(magnitude) / 3.0));
+  exponent = std::clamp(exponent, -5, 4);
+  const double scaled = value / std::pow(10.0, 3.0 * exponent);
+  QString s = QString::number(scaled, 'g', 4);
+  if (s.contains('e')) return QString::number(value, 'g', 4);   // beyond the prefixes
+  if (exponent != 0) s += QChar(prefixes[exponent + 5]);
+  return s;
+}
+
+qreal Graph::markerSize(int thick)
+{
+  return 6.0 + 1.5 * thick;
 }
 
 QString Graph::curveLabel(int curve) const
@@ -359,7 +513,7 @@ QString Graph::curveLabel(int curve) const
     c /= x->count;
     QString name = x->Var.section('/', -1);
     if (!own.isEmpty() && name.startsWith(own)) name = name.mid(own.size());
-    parts << name + "=" + misc::num2str(x->Points[index]);
+    parts << name + "=" + engineering(x->Points[index]);
   }
   return parts.join(", ");
 }
@@ -790,7 +944,7 @@ void Graph::drawLines(QPainter* painter) const {
       while (se < strokes.size() && strokeCurves.at(se) == c) ++se;
       QPen curvePen = base;
       curvePen.setColor(curveColor(c));
-      setLineStyle(curvePen, curveStyle(c));
+      setLineStyle(curvePen, Style);
       painter->setPen(curvePen);
       if (curvePen.style() == Qt::CustomDashLine) {
         for (qsizetype k = si; k < se; ++k)
