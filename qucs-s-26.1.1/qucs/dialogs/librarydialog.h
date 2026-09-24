@@ -33,6 +33,7 @@
 #include <QDialog>
 #include <QFile>
 #include <QDir>
+#include <QHash>
 #include <QCheckBox>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -51,6 +52,8 @@ class QStackedWidget;
 //class QStringList;
 class QListWidget;
 
+
+class Schematic;
 
 class LibraryDialog : public QDialog {
    Q_OBJECT
@@ -73,6 +76,17 @@ private slots:
 private:
   void intoStream(QTextStream&, QString&, const char*);
   int intoFile(QString&, QString&,  QStringList&);
+  /// The Verilog-A a subcircuit's SPICE netlist \a spice uses, into the
+  /// library's folder (QucsSettings.EmbedVerilogAInLibraries): the .osdi
+  /// libraries a simulation would load for the modules its .model cards
+  /// name and the sources defining them, with the files they include -
+  /// from the project and from the libraries of the subcircuit's
+  /// components. The .va and .osdi names go to \a attached; returns the
+  /// errors.
+  int embedVerilogA(Schematic *doc, const QString &spice, const QString &baseDir, QStringList &attached);
+  /// Copies \a from into the library's folder as \a name (a path in it);
+  /// a name another file already took this time is an error.
+  bool copyIntoLibrary(const QString &from, const QString &name);
 
 private:
   int curDescr;
@@ -98,6 +112,7 @@ private:
 
   QFile LibFile;
   QDir LibDir;
+  QHash<QString, QString> a_copied;   // what the library's folder got this time: name -> source
   QRegularExpression Expr;
   QRegularExpressionValidator *Validator;
 };

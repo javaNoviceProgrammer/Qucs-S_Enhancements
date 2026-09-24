@@ -41,6 +41,14 @@ QSet<QString> usedModelTypes(const QString& spice, const QString& baseDir);
 /// another architecture than Qucs-S, for one.
 QStringList modulesOf(const QString& osdiFile, bool* readable = nullptr);
 
+/// Whether \a file is a shared library the \a simulator program cannot
+/// load: of another format (a Mach-O one on Linux, an ELF one on macOS),
+/// or with code for none of its processors (an x86-64 one for an Arm
+/// ngspice). Without a program to read - a script, not found - this
+/// Qucs-S's platform stands for it (on macOS its format alone: Rosetta).
+/// A file of no format it knows is not said to be.
+bool builtForAnotherPlatform(const QString& file, const QString& simulator = QString());
+
 /// Whether the library defines \a module (any case): its modules when it
 /// can be loaded, else whether the name is a string in its bytes.
 bool defines(const QString& osdiFile, const QString& module);
@@ -66,14 +74,19 @@ struct Build {
     QString source;        ///< the .va
     QString library;       ///< what OpenVAF writes: NAME.osdi beside it
     QStringList modules;   ///< the modules the netlist uses that it defines
-    bool missing = false;  ///< no library has them yet (else: older than its source)
+    bool missing = false;  ///< no library has them yet (else: older than its source,
+    bool foreign = false;  ///< or built for another platform: builtForAnotherPlatform())
 };
 
 /// The sources of \a vaFiles to compile for a netlist that uses \a types:
 /// one defining a module used whose library (NAME.osdi beside it) is older
-/// than it or than a file it includes; or, when none of \a osdiFiles
+/// than it or than a file it includes, or was built for another platform
+/// (a library brought from elsewhere); or, when none of \a osdiFiles
 /// defines the module, whose library is not there yet.
-QList<Build> builds(const QStringList& vaFiles, const QStringList& osdiFiles, const QSet<QString>& types);
+/// \a simulator is the program that will load the libraries
+/// (builtForAnotherPlatform()).
+QList<Build> builds(const QStringList& vaFiles, const QStringList& osdiFiles, const QSet<QString>& types,
+                    const QString& simulator = QString());
 
 } // namespace qucs_s::osdi
 

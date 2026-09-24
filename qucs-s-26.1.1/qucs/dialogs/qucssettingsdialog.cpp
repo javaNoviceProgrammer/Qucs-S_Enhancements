@@ -204,6 +204,16 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                      "on the right."));
     appSettingsGrid->addWidget(showPinDirections, 14, 1);
 
+    appSettingsGrid->addWidget(new QLabel(tr("Embed Verilog-A and OSDI files in exported libraries:"), appSettingsTab), 15, 0);
+    embedVerilogA = new QCheckBox(appSettingsTab);
+    embedVerilogA->setObjectName(QStringLiteral("embedVerilogA"));
+    embedVerilogA->setToolTip(tr("Tools > Create Library copies the Verilog-A sources (.va) and the compiled "
+                                 "models (.osdi) its subcircuits use into the library's folder: the library "
+                                 "simulates wherever it is used, and on another platform the source is "
+                                 "compiled with OpenVAF.\n"
+                                 "Off: the library holds the subcircuits and their symbols only."));
+    appSettingsGrid->addWidget(embedVerilogA, 15, 1);
+
     // ...........................................................
     // The appearance settings tab
     QWidget *appAppearanceTab = new QWidget(t);
@@ -656,6 +666,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     contentFolderIcons->setChecked(QucsSettings.ContentFolderIcons);
     showPinNames->setChecked(QucsSettings.ShowPinNames);
     showPinDirections->setChecked(QucsSettings.ShowPinDirections);
+    embedVerilogA->setChecked(QucsSettings.EmbedVerilogAInLibraries);
 
     ShortcutButton->setText("Custom Shortcut");
 
@@ -901,6 +912,7 @@ void QucsSettingsDialog::slotApply()
     QucsSettings.ContentFolderIcons = contentFolderIcons->isChecked();
     QucsSettings.ShowPinNames = showPinNames->isChecked();
     QucsSettings.ShowPinDirections = showPinDirections->isChecked();
+    QucsSettings.EmbedVerilogAInLibraries = embedVerilogA->isChecked();
 
     QucsSettings.FileTypes.clear();
     for (int row=0; row < fileTypesTableWidget->rowCount(); row++)

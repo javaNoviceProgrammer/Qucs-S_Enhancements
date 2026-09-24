@@ -293,6 +293,13 @@ private slots:
         const QStringList libs{base + "/resa.osdi", base + "/pair.osdi"};
         QCOMPARE(osdi::needed(libs, {"resc"}), QStringList{base + "/pair.osdi"});
         QCOMPARE(osdi::needed(libs, {"resa", "r"}), QStringList{base + "/resa.osdi"});
+        // Built here: not for another platform - by this platform, by a
+        // program of it (this test), by the ngspice there is.
+        QVERIFY(!osdi::builtForAnotherPlatform(base + "/resa.osdi"));
+        QVERIFY(!osdi::builtForAnotherPlatform(base + "/resa.osdi", QCoreApplication::applicationFilePath()));
+        const QString ngspice = QFileInfo(QStandardPaths::findExecutable("ngspice")).canonicalFilePath();
+        if (!ngspice.isEmpty())
+            QVERIFY2(!osdi::builtForAnotherPlatform(base + "/resa.osdi", ngspice), qPrintable(ngspice));
     }
 
     // ---- the netlist -------------------------------------------------

@@ -87,6 +87,7 @@ void settingsManager::initDefaults()
     m_Defaults["ContentRefreshSeconds"] = 3;
     m_Defaults["ShowPinNames"] = true;
     m_Defaults["ShowPinDirections"] = false;
+    m_Defaults["EmbedVerilogAInLibraries"] = true;
     m_Defaults["PaperFollowsTheme"] = false;
     m_Defaults["GridMode"] = 0;
     m_Defaults["SimulationConsoleHost"] = 0;   // tQucsSettings::SimConsoleDock

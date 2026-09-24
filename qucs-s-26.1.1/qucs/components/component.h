@@ -52,6 +52,9 @@ public:
   virtual QString getSpiceModel();
   virtual QString getSpiceLibrary() { return QString(); }
   virtual QStringList getSpiceLibraryFiles() { return QStringList(); }
+  /// The Verilog-A sources (.va) and compiled models (.osdi) the component
+  /// brings with it, absolute: a library component's embedded ones.
+  virtual QStringList getVerilogAFiles() { return QStringList(); }
   virtual QString getNgspiceBeforeSim(QString sim, int lvl=0);
   virtual QString getNgspiceAfterSim(QString sim, int lvl=0);
   virtual QString getVAvariables() {return QString();};

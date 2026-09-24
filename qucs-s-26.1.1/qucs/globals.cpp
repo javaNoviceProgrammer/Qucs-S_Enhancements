@@ -129,6 +129,7 @@ bool loadSettings()
     QucsSettings.ContentRefreshSeconds = qBound(1, _settings::Get().item<int>("ContentRefreshSeconds"), 3600);
     QucsSettings.ShowPinNames = _settings::Get().item<bool>("ShowPinNames");
     QucsSettings.ShowPinDirections = _settings::Get().item<bool>("ShowPinDirections");
+    QucsSettings.EmbedVerilogAInLibraries = _settings::Get().item<bool>("EmbedVerilogAInLibraries");
     QucsSettings.PaperFollowsTheme = _settings::Get().item<bool>("PaperFollowsTheme");
     QucsSettings.GridMode = std::clamp(_settings::Get().item<int>("GridMode"), 0, 2);
     QucsSettings.SimulationConsoleHost = _settings::Get().item<int>("SimulationConsoleHost");
@@ -222,6 +223,7 @@ bool saveApplSettings()
     qs.setItem<int>("ContentRefreshSeconds",QucsSettings.ContentRefreshSeconds);
     qs.setItem<bool>("ShowPinNames",QucsSettings.ShowPinNames);
     qs.setItem<bool>("ShowPinDirections",QucsSettings.ShowPinDirections);
+    qs.setItem<bool>("EmbedVerilogAInLibraries",QucsSettings.EmbedVerilogAInLibraries);
     qs.setItem<bool>("PaperFollowsTheme",QucsSettings.PaperFollowsTheme);
     qs.setItem<int>("GridMode",QucsSettings.GridMode);
     qs.setItem<int>("SimulationConsoleHost",QucsSettings.SimulationConsoleHost);

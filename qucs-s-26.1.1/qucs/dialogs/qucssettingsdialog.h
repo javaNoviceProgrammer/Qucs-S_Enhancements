@@ -184,6 +184,7 @@ public:
     QCheckBox *contentFolderIcons;
     QCheckBox *showPinNames;
     QCheckBox *showPinDirections;
+    QCheckBox *embedVerilogA;        ///< Create Library copies the .va and .osdi files the subcircuits use.
 
     /// @brief Enables anti-aliasing for diagram graphs.
     QCheckBox *checkAntiAliasing;

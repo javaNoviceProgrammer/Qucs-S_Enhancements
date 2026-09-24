@@ -345,6 +345,11 @@ bool SimulationRun::startBuilds()
                             ? tr("%1 is not compiled, and there is no OpenVAF to compile it "
                                  "(Application Settings > Locations > OpenVAF Path)")
                                   .arg(QDir::toNativeSeparators(build.source))
+                        : build.foreign
+                            ? tr("%1 was built for another platform; with OpenVAF set (Application "
+                                 "Settings > Locations > OpenVAF Path) %2 is compiled here before a simulation")
+                                  .arg(QDir::toNativeSeparators(build.library),
+                                       QDir::toNativeSeparators(build.source))
                             : tr("%1 is older than %2; with OpenVAF set (Application Settings > "
                                  "Locations > OpenVAF Path) it is compiled before a simulation")
                                   .arg(QDir::toNativeSeparators(build.library),
@@ -378,11 +383,14 @@ void SimulationRun::compileNext()
     const QString openVAF = QucsSettings.OpenVAFExecutable.trimmed();
     if (a_console != nullptr)
         a_console->insertPlainText(QStringLiteral("%1 %2\n").arg(openVAF, QDir::toNativeSeparators(build.source)));
-    addLogEntry(build.missing ? tr("Compiling %1 (%2 has no library yet)")
-                                    .arg(QDir::toNativeSeparators(build.source), build.modules.join(QStringLiteral(", ")))
-                              : tr("Compiling %1 (changed since %2 was built)")
-                                    .arg(QDir::toNativeSeparators(build.source),
-                                         QFileInfo(build.library).fileName()),
+    addLogEntry(build.missing   ? tr("Compiling %1 (%2 has no library yet)")
+                                      .arg(QDir::toNativeSeparators(build.source), build.modules.join(QStringLiteral(", ")))
+                : build.foreign ? tr("Compiling %1 (%2 was built for another platform)")
+                                      .arg(QDir::toNativeSeparators(build.source),
+                                           QFileInfo(build.library).fileName())
+                                : tr("Compiling %1 (changed since %2 was built)")
+                                      .arg(QDir::toNativeSeparators(build.source),
+                                           QFileInfo(build.library).fileName()),
                 QApplication::style()->standardIcon(QStyle::SP_MessageBoxInformation));
     a_compiler = new QProcess(this);
     a_compiler->setProcessChannelMode(QProcess::MergedChannels);

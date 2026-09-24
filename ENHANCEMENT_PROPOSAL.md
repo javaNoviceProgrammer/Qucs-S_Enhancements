@@ -324,6 +324,41 @@ existing demand.
   pass/fail tally in the message dock, `.osdi` files appear in the tree.
   Points at the settings when OpenVAF is not configured. Covered by
   `qucs/tests/test_build_all_va` with a stand-in compiler.
+- *Done:* **Libraries that bring their Verilog-A.** *Create Library*
+  wrote the subcircuits' netlists and symbols; the `.osdi` models (and
+  the `.va` sources) their `.model` cards need stayed in the project, so
+  a library with Verilog-A in it could not simulate anywhere else.
+  `LibraryDialog::embedVerilogA()` (when `QucsSettings.
+  EmbedVerilogAInLibraries`, on by default, *Settings* tab) takes the
+  SPICE netlist of each subcircuit, `osdi::usedModelTypes()` of it, and
+  from the project's files and those of the libraries of the
+  subcircuit's components (`AbstractSpiceKernel::collectVerilogAFiles()`,
+  the new `Component::getVerilogAFiles()`) copies into the library's
+  folder the libraries `osdi::needed()` picks, the sources that define
+  the modules and the files they `` `include `` (their relative paths
+  kept; one from outside the source's folder is warned about), listed in
+  the component's `<SpiceAttach>` - which older versions read and
+  `getSpiceLibrary()` ignores for anything but netlists. Two files that
+  would share a name, a failed copy, fail the library; a module with a
+  source and no model is warned about. `LibComp::getVerilogAFiles()`
+  gives them back; `Ngspice::osdiLoads()` and `verilogABuilds()` take
+  them with the project's - and without a project too. A library built
+  for another platform (`osdi::builtForAnotherPlatform()`: the format
+  and processors of an ELF, Mach-O - universal too - or PE header against
+  the ngspice program's own, through PATH and links; without a program to
+  read, this platform's format and, off macOS, its processor) is not
+  loaded (a netlist comment says so) and `osdi::builds()` compiles its
+  source again (`Build::foreign`; the status log says why). A header of
+  no known format is not judged: the test stand-ins, and libraries
+  Qucs-S cannot load itself but ngspice can, are read for the module's
+  name as before. `test_library_verilog_a` covers the headers (formats,
+  processors, universal binaries, a script for a simulator), a library
+  made with the setting on (the model, the source, the file it
+  includes; not the unused module) and off, a circuit outside the
+  project that uses it (the `pre_osdi` line; with a foreign model none,
+  the note, and a build of the embedded source), and the setting in the
+  dialog; `test_osdi_selection` checks libraries OpenVAF really built
+  against this platform, the test program and the ngspice on PATH.
 - *Done:* **"Compile" on a .va file** of the Content panel: the file
   menu offers it on a `.va` row (the right-clicked file, or the `.va`
   files selected with it: *Compile N Files*), through the same queue as

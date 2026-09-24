@@ -33,6 +33,9 @@ public:
   bool createSubNetlist(QTextStream *, QStringList&, int type=1);
   QString getSubcircuitFile();
   QString getSpiceLibrary();
+  /// The .va and .osdi files attached to the component in its library
+  /// (Create Library embeds them), in the library's folder.
+  QStringList getVerilogAFiles() override;
 
 protected:
   QString netlist();
