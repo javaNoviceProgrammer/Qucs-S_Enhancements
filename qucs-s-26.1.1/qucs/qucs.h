@@ -154,7 +154,8 @@ public:
   /// settings and brings everything that depends on it in line.
   void applyTheme(int theme);
   /// What depends on the theme, after it changed: the component list's
-  /// colours and icons, the paper, the text editors, View > Theme.
+  /// colours and icons, the paper, the text editors, the tabs' close
+  /// buttons, View > Theme.
   void applyLook();
   /// Draws every open schematic again with the grid the settings say
   /// (QucsSettings.GridMode), and brings View > Show Grid in line.
@@ -532,6 +533,12 @@ private:
   void startPaneWithUntitled(ContextMenuTabWidget *pane);
   void dropPlaceholder(ContextMenuTabWidget *pane, QWidget *keep);
   ContextMenuTabWidget *createPane();
+  /// A pane's tab buttons where its style wants them: the close button on
+  /// the side the style puts it (Qt takes a click on it only there), the
+  /// "modified" marker (macOS) on the other. Again after a theme or style
+  /// change, which can move that side: the macOS style closes on the left,
+  /// Fusion and the designed themes on the right.
+  void placeTabButtons(ContextMenuTabWidget *pane);
   void removePane(ContextMenuTabWidget *pane);   // an empty pane; a neighbour becomes active
   QSplitter *rowOf(ContextMenuTabWidget *pane) const;
   PaneWidget *frameOf(ContextMenuTabWidget *pane) const;

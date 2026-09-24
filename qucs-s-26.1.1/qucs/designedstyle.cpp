@@ -108,6 +108,33 @@ void DesignedStyle::drawPrimitive(PrimitiveElement element, const QStyleOption* 
                      focus ? pal.color(QPalette::Highlight) : pal.color(QPalette::Mid), focus ? 1.5 : 1.0);
         return;
     }
+    case PE_IndicatorTabClose: {
+        // A thin cross in the text colour - dimmer on a tab not shown -
+        // on a rounded patch while the mouse is on it.
+        const bool hover = enabled && (option->state & State_Raised);
+        const bool down = option->state & State_Sunken;
+        const QColor window = pal.color(QPalette::Window), text = pal.color(QPalette::WindowText);
+        const qreal side = std::min(option->rect.width(), option->rect.height());
+        const QRectF r(QPointF(option->rect.center()) - QPointF(side / 2, side / 2) + QPointF(0.5, 0.5),
+                       QSizeF(side - 1, side - 1));
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        if (hover || down) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(mix(window, text, down ? 0.26 : 0.15));
+            painter->drawRoundedRect(r, 3.0, 3.0);
+        }
+        QColor mark = text;
+        if (!enabled) mark = pal.color(QPalette::Disabled, QPalette::WindowText);
+        else if (!hover && !down && !(option->state & State_Selected)) mark = mix(window, text, 0.55);
+        painter->setPen(QPen(mark, std::max(1.2, side / 11.0), Qt::SolidLine, Qt::RoundCap));
+        const qreal arm = side * 0.2;
+        const QPointF c = r.center();
+        painter->drawLine(c + QPointF(-arm, -arm), c + QPointF(arm, arm));
+        painter->drawLine(c + QPointF(-arm, arm), c + QPointF(arm, -arm));
+        painter->restore();
+        return;
+    }
     case PE_FrameFocusRect:
         // Buttons and boxes show their focus in their frames.
         if (qobject_cast<const QAbstractButton*>(widget) != nullptr) return;
