@@ -7,6 +7,8 @@
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QAction>
+#include <QLineEdit>
+#include <QPointer>
 #include <QMenu>
 #include <QMenuBar>
 #include <QSplitter>
@@ -354,6 +356,36 @@ private slots:
         QCOMPARE(app.panes().size(), 1);
         QVERIFY(!closePane->isEnabled());
         QVERIFY(app.closeAllFiles());
+    }
+
+    // The editor of a property on the canvas lives in the document's
+    // viewport while it is open. Closing one document takes it out first;
+    // Close All and Close all left/right/but current deleted the documents
+    // without, the editor went with the canvas, and the next use of
+    // QucsApp::editText read freed memory (a GUI-monkey walk).
+    void closingDocumentsLeavesThePropertyEditor()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        for (int round = 0; round < 2; ++round) {
+            QVERIFY(app.gotoPage(schA, false, false));
+            QVERIFY(app.gotoPage(schB, false, false));
+            auto* doc = dynamic_cast<Schematic*>(app.getDoc());
+            QVERIFY(doc != nullptr);
+            // what editing a property on the canvas does with it
+            app.editText->setParent(doc->viewport());
+            app.editText->show();
+            const QPointer<QLineEdit> editor(app.editText);
+
+            if (round == 0) {
+                QVERIFY(app.closeAllLeft(app.activePane()->indexOf(QucsApp::documentWidget(doc)) + 1));
+            } else {
+                QVERIFY(app.closeAllFiles());
+            }
+            QVERIFY(!editor.isNull());
+            QCOMPARE(editor->parent(), static_cast<QObject*>(&app));
+            QVERIFY(editor->isHidden());
+        }
     }
 };
 

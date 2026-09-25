@@ -1679,7 +1679,9 @@ public:
 
     // Prepare
     {
-        std::ranges::sort(distributedElements, CenterCoordinateSorter<x_axis>());
+        // Stable, so that elements on one coordinate keep the selection's
+        // order on every platform (std::sort's order of equals differs)
+        std::ranges::stable_sort(distributedElements, CenterCoordinateSorter<x_axis>());
 
         const auto* first = distributedElements.front();
         const auto* last = distributedElements.back();
@@ -2032,8 +2034,15 @@ bool Schematic::mirrorYComponents(Selection selection, bool doHeal)
 
 void Schematic::decoupleElements(Selection selection, bool keepNodeLabel)
 {
-    // store all new nodes created during decoupling
+    // store all new nodes created during decoupling, in the order made: of
+    // two on one place, the order decides which is kept and so which wire
+    // and label (it was the order of their addresses, as an unordered_set
+    // gave them, which change from run to run)
+    std::vector<Node*> new_nodes;
     std::unordered_set<Node*> nodeSet;
+    const auto keep = [&new_nodes, &nodeSet](Node* n) {
+        if (nodeSet.insert(n).second) new_nodes.push_back(n);
+    };
     // and the nodes the selection was connected to: those left with nothing
     // connected go at the end, in one pass over the list (one search of the
     // list for each made dragging a large selection quadratic)
@@ -2046,7 +2055,7 @@ void Schematic::decoupleElements(Selection selection, bool keepNodeLabel)
         }
         decoupleComp(pc, keepNodeLabel, /*remove_orphans=*/false);
         for (auto* port : pc->Ports) {
-            nodeSet.insert(port->Connection);
+            keep(port->Connection);
         }
     }
 
@@ -2055,8 +2064,8 @@ void Schematic::decoupleElements(Selection selection, bool keepNodeLabel)
         left_behind.push_back(pw->Port1);
         left_behind.push_back(pw->Port2);
         decoupleWire(pw, keepNodeLabel, /*remove_orphans=*/false);
-        nodeSet.insert(pw->Port1);
-        nodeSet.insert(pw->Port2);
+        keep(pw->Port1);
+        keep(pw->Port2);
     }
 
     std::unordered_set<Node*> orphans;
@@ -2074,7 +2083,7 @@ void Schematic::decoupleElements(Selection selection, bool keepNodeLabel)
     }
 
     // Remove all overlapping nodes
-    std::list<Node*> nodeList(nodeSet.begin(), nodeSet.end());
+    std::list<Node*> nodeList(new_nodes.begin(), new_nodes.end());
     internal::mergeOverlappingNodes(nodeList, *a_Nodes);
 }
 
@@ -2159,6 +2168,7 @@ void Schematic::insertComponentNodes(Component *component, bool noOptimize)
 // Used for example in moving components.
 void Schematic::insertRawComponent(Component *c, bool noOptimize)
 {
+    c->setSchematic(this);   // see insertComponent()
     // connect every node of component to corresponding schematic node
     insertComponentNodes(c, noOptimize);
     a_Components->push_back(c);
@@ -2227,6 +2237,12 @@ void Schematic::recreateComponent(Component* comp)
 // ---------------------------------------------------
 void Schematic::insertComponent(Component *c)
 {
+    // It belongs to this schematic now, whichever parsed it: a paste is
+    // parsed by the document current when it began and may be dropped into
+    // another, which kept the first as the component's schematic - freed
+    // with it when it closed, and read by the next recreate (Save All).
+    c->setSchematic(this);
+
     // connect every node of component to corresponding schematic node
     insertComponentNodes(c, false);
 

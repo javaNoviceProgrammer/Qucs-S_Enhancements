@@ -2217,8 +2217,10 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
 
   // if only an untitled document was open -> close it
   if(getDoc(0)->getDocName().isEmpty())
-    if(!getDoc(0)->getDocChanged())
+    if(!getDoc(0)->getDocChanged()) {
+      slotHideEdit();   // it may be in that document's canvas
       delete DocumentTab->widget(0);
+    }
 
   return true;
 }
@@ -2584,6 +2586,10 @@ bool QucsApp::closeAllFiles(int exceptTab)
   if(Result == SaveDialog::AbortClosing)
     return false;
 
+  // As closeFile() does: the property editor may sit in a closing
+  // document's canvas, which would take it along (and editText dangled)
+  slotHideEdit();
+  view->forgetDocumentElements();
   for (QucsDoc *doc : docs)
     if (doc != docToKeep)
       delete doc;
@@ -2633,7 +2639,10 @@ bool QucsApp::closeTabsRange(int startTab, int stopTab, int exceptTab)
   delete sd;
   if(Result == SaveDialog::AbortClosing)
     return false;
-  // remove documents
+  // remove documents - the property editor out of their canvas first, as
+  // in closeFile()
+  slotHideEdit();
+  view->forgetDocumentElements();
   QucsDoc *doc = nullptr;
   QucsDoc *stopDoc = getDoc(stopTab);
   int i = 0;

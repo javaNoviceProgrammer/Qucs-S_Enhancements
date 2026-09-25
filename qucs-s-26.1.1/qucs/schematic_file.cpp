@@ -836,6 +836,7 @@ bool Schematic::loadProperties(QTextStream *stream)
 // Inserts a component without performing logic for wire optimization.
 void Schematic::simpleInsertComponent(Component *c)
 {
+  c->setSchematic(this);   // see insertComponent()
   // connect every node of component
   for (Port *pp : c->Ports) {
     Node* pn = provideNode(c->cx + pp->x, c->cy + pp->y);
