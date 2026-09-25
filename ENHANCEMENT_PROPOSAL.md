@@ -338,8 +338,12 @@ Target the *classes* from §1, not the individual issues.
   (`qucs/tests/test_large_schematics` holds it to that). On the way, a
   monkey walk found a subcircuit pin numbered 2147483647 making 16.7
   million pins and hanging the load (numbers above 100,000 are refused),
-  and that healing depends on node addresses, so a partial edit can end
-  differently from run to run (open). Still open: two healer invariants
+  and that healing depended on node addresses, so a partial edit could
+  end differently from run to run (it goes by place now, `62b04d4`; the
+  walks that followed found a pasted component keeping the closed document
+  it was parsed in, and Close All freeing the canvas property editor -
+  both fixed there too).
+  Still open: two healer invariants
   fail - a node left within a unit or two of a diagonal wire without being
   connected, and labelled nodes with nothing under them when a component's
   library file is not found (Debug aborts; Release logs).
