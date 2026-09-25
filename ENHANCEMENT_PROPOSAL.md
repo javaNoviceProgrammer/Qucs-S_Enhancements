@@ -943,6 +943,38 @@ existing demand.
   `PYTHON_BASIC_REPL=1`. The program goes with the console (hang-up,
   then kill; `waitpid` so no zombie is left).
   `qucs/tests/test_process_console` drives `/bin/sh` and `python3`.
+- *Done:* **Claude Code dock** (`qucs/claudecode.*`, `qucs/claudecodepanel.*`).
+  Claude Code's own interface is a full-screen terminal program, which the
+  console above does not emulate; the dock drives it headless instead:
+  `claude -p --input-format stream-json --output-format stream-json
+  --verbose --include-partial-messages --permission-prompt-tool stdio`
+  (plus `--permission-mode`, `--model`, `--resume`, and
+  `--append-system-prompt` telling Claude where it runs), one process for
+  the conversation, a JSON line per prompt. `qucs_s::claude::Session`
+  parses the stream - `system/init` (session, model), `stream_event` text
+  deltas, whole `assistant` blocks (text, `tool_use`), `user` tool
+  results, `control_request`/`can_use_tool` (answered with a
+  `control_response` allow/deny, optionally `updatedPermissions` setMode
+  acceptEdits for the session), `result` (time, cost, steps, denials) -
+  into states (thinking, running a tool, waiting for permission, ready,
+  failed) and signals; an interrupt is a `control_request` and the program
+  goes if the turn does not end. A stopped program, or another mode or
+  model, starts again with `--resume` at the next prompt; another folder
+  starts a new conversation. `ClaudeCodePanel` renders the conversation
+  in a `QTextBrowser` (prompts on a tint, replies as Markdown with code
+  shaded, a line per tool with its mark, a summary per turn), asks for
+  permissions in a card (*Allow*, *Allow All Edits*, *Deny*), and has a
+  composer (Enter sends, the document in front attached on request), a
+  folder row and a menu (permission mode, model, folder, program). It
+  works in `QucsSettings.qucsWorkspaceDir` and follows it when the setting
+  changes. `QucsApp::reloadChangedFiles()` loads again the documents
+  Claude wrote or edited when they have no unsaved changes, and a status
+  bar chip (`statusClaude`) shows the session's state and toggles the
+  dock. The program is found by the setting, `PATH`, then its installers'
+  places (`findProgram()`); `QUCS_CLAUDE` overrides, and the tests point it
+  nowhere. The protocol was checked against Claude Code 2.1.267;
+  `qucs/tests/test_claude_code` drives the session and the dock with a
+  shell script that answers as claude does.
 - *Done:* **Login-shell environment at start** (`qucs/shellenvironment.*`).
   `importLoginShellEnvironment()` runs `$SHELL -l -i -c "printf marker;
   exec env -0"` (stdin from /dev/null, killed at a timeout; then `-l`

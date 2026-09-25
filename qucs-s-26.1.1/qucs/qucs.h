@@ -47,6 +47,7 @@ class tunerElement;
 class SimulationRun;
 class SimulationConsole;
 class ProcessConsole;
+class ClaudeCodePanel;
 class StatusPanel;
 
 class QLabel;
@@ -187,6 +188,15 @@ public:
   ProcessConsole *pythonConsole() const { return pythonShell; }
   QDockWidget *terminalDockWidget() const { return terminalDock; }
   QDockWidget *pythonDockWidget() const { return pythonDock; }
+  /// The Claude Code dock (claudecodepanel.h): a conversation with Claude
+  /// Code, in the workspace folder unless another is chosen.
+  ClaudeCodePanel *claudeCode() const { return claudePanel; }
+  QDockWidget *claudeDockWidget() const { return claudeDock; }
+  /// Shows the Claude Code dock, the prompt ready; hides it when it shows.
+  void toggleClaudeCode();
+  /// Claude changed \a files: those open in Qucs-S without changes of
+  /// their own are loaded again, the others left as they are.
+  void reloadChangedFiles(const QStringList &files);
   /// The shell the Terminal dock runs: $SHELL (or /bin/sh) as a login
   /// shell on Unix, PowerShell on Windows.
   static QString shellProgram();
@@ -524,6 +534,8 @@ private:
   ProcessConsole *terminal;
   QDockWidget *pythonDock;
   ProcessConsole *pythonShell;
+  QDockWidget *claudeDock = nullptr;
+  ClaudeCodePanel *claudePanel = nullptr;
 
   QListView *Projects;
   ProjectView *Content;

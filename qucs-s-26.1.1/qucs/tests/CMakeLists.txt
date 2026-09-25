@@ -25,7 +25,8 @@ function(qucs_add_test name)
   add_test(NAME ${name} COMMAND ${name})
   set_tests_properties(${name} PROPERTIES
     # UBSan only prints by default; make a report fail the test.
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
+    # QUCS_CLAUDE: no test reaches a claude program installed on the machine
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_CLAUDE=/nonexistent/claude"
     TIMEOUT 300)
 endfunction()
 
@@ -84,6 +85,7 @@ qucs_add_test(test_graph_autocolor)
 qucs_add_test(test_gui_monkey)
 qucs_add_test(test_stress_findings)
 qucs_add_test(test_large_schematics)
+qucs_add_test(test_claude_code)
 qucs_add_test(test_histogram_diagram)
 qucs_add_test(test_graphics_export)
 qucs_add_test(test_osdi_selection)

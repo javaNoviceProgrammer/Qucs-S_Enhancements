@@ -33,6 +33,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QDockWidget>
+#include "claudecodepanel.h"
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
@@ -1175,6 +1176,15 @@ void QucsApp::initMenuBar() {
   viewPython->setStatusTip(tr("Shows/hides the Python Shell dock"));
   connect(viewPython, &QAction::triggered, this, [this](bool on) { if (on) pythonDock->raise(); });
   viewMenu->addAction(viewPython);
+  QAction *viewClaude = claudeDock->toggleViewAction();
+  viewClaude->setText(tr("&Claude Code"));
+  viewClaude->setStatusTip(tr("Shows/hides the Claude Code dock, a conversation with Claude Code"));
+  connect(viewClaude, &QAction::triggered, this, [this](bool on) {
+    if (!on) return;
+    claudeDock->raise();
+    claudePanel->focusComposer();
+  });
+  viewMenu->addAction(viewClaude);
   // The Operating Point tab of the message dock (a DC bias run fills it).
   QAction *viewOperatingPoint = new QAction(tr("&Operating Point"), this);
   viewOperatingPoint->setObjectName("viewOperatingPoint");

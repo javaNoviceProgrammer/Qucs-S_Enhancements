@@ -15,6 +15,7 @@
 
 #include "apptheme.h"
 #include "autosave.h"
+#include "claudecodepanel.h"
 #include "erc.h"
 #include "ink.h"
 #include "main.h"
@@ -556,6 +557,7 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
     a_run = makeChip(a_row, "statusRun");
     a_simulator = makeChip(a_row, "statusSimulator");
     a_saved = makeChip(a_row, "statusSaved");
+    a_claude = makeChip(a_row, "statusClaude");
     a_theme = makeChip(a_row, "statusTheme");
     a_theme->setToolButtonStyle(Qt::ToolButtonIconOnly);
     a_theme->setIconSize(QSize(14, 14));
@@ -570,6 +572,7 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
     a_row->add(a_run, 0);
     a_row->add(a_simulator, 6);
     a_row->add(a_saved, 7);
+    a_row->add(a_claude, 1);
     a_row->add(a_theme, 9);
     bar->addPermanentWidget(a_row, 0);
 
@@ -616,6 +619,25 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
     connect(a_theme, &QToolButton::clicked, this, [this] {
         if (a_app->themeMenu != nullptr) popUp(a_theme, a_app->themeMenu);
     });
+    connect(a_claude, &QToolButton::clicked, this, [this] { a_app->toggleClaudeCode(); });
+    if (ClaudeCodePanel* claude = a_app->claudeCode()) {
+        connect(claude->session(), &qucs_s::claude::Session::stateChanged, this, [this] {
+            updateClaude();
+            a_row->fit();
+        });
+        // The seconds of a turn under way.
+        auto* tick = new QTimer(this);
+        tick->setInterval(1000);
+        connect(tick, &QTimer::timeout, this, [this, tick] {
+            ClaudeCodePanel* panel = a_app->claudeCode();
+            if (panel == nullptr || !panel->session()->isBusy()) tick->stop();
+            updateClaude();
+            a_row->fit();
+        });
+        connect(claude->session(), &qucs_s::claude::Session::stateChanged, tick, [claude, tick] {
+            if (claude->session()->isBusy() && !tick->isActive()) tick->start();
+        });
+    }
     // The simulator switched in the tool bar (the settings are written
     // after the combo box changed: the next turn of the loop sees them).
     connect(a_app->simulatorsCombobox, &QComboBox::currentIndexChanged, this, &StatusPanel::scheduleRefresh);
@@ -747,6 +769,7 @@ void StatusPanel::refresh()
     updateRun();
     updateSimulator();
     updateSaved();
+    updateClaude();
     a_row->fit();
 }
 
@@ -759,6 +782,65 @@ void StatusPanel::themeChanged()
 }
 
 // ----------------------------------------------------------------------
+void StatusPanel::updateClaude()
+{
+    ClaudeCodePanel* panel = a_app->claudeCode();
+    if (panel == nullptr) {
+        a_row->setWanted(a_claude, false);
+        return;
+    }
+    using qucs_s::claude::State;
+    const qucs_s::claude::Session* session = panel->session();
+    const QString claude = tr("Claude");
+    const QString dot = QStringLiteral(" \u00B7 ");
+    QString text = claude;
+    Tone tone = Tone::None;
+    QString tip;
+    switch (session->state()) {
+    case State::NotFound:
+        text = claude + dot + tr("not installed");
+        tip = tr("Claude Code was not found: the dock says how to get it");
+        break;
+    case State::Off:
+        tip = tr("Claude Code: ask it about your circuits and files");
+        break;
+    case State::Starting:
+    case State::Thinking:
+        text = claude + dot + tr("thinking");
+        tone = Tone::Busy;
+        break;
+    case State::Working:
+        text = claude + dot + (session->detail().isEmpty() ? tr("working") : session->detail());
+        tone = Tone::Busy;
+        break;
+    case State::Waiting:
+        text = claude + dot + tr("needs you");
+        tone = Tone::Warn;
+        tip = tr("Claude Code waits for your permission to %1").arg(session->detail());
+        break;
+    case State::Ready:
+        text = claude + dot + tr("ready");
+        tone = Tone::Ok;
+        break;
+    case State::Failed:
+        text = claude + dot + tr("failed");
+        tone = Tone::Error;
+        tip = session->detail();
+        break;
+    }
+    if (session->isBusy()) {
+        const qint64 s = session->turnElapsed() / 1000;
+        if (s >= 1) text += QStringLiteral(" ") + (s < 60 ? tr("%1 s").arg(s) : tr("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QLatin1Char('0')));
+    }
+    setChip(a_claude, text, tone);
+    if (tip.isEmpty())
+        tip = tr("Claude Code is %1").arg(qucs_s::claude::stateText(session->state()));
+    const QString dir = QDir::toNativeSeparators(panel->workingDirectory());
+    a_claude->setToolTip(tip + QStringLiteral("\n") + tr("Working in %1").arg(dir) + QStringLiteral("\n")
+                         + tr("Click to show or hide the Claude Code dock"));
+    a_row->setWanted(a_claude, true);
+}
+
 void StatusPanel::styleChips()
 {
     // Flat, a shade on the mouse, in every style: the macOS style would
