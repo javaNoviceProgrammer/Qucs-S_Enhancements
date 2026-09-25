@@ -39,6 +39,7 @@
 #include "config.h"
 #include "isolated_settings.h"
 #include "main.h"
+#include "messagedock.h"
 #include "misc.h"
 #include "module.h"
 #include "qucs.h"
@@ -1081,11 +1082,18 @@ private slots:
         QVERIFY(panel->permissionCard()->isVisibleTo(panel));
         panel->session()->reset();
         QVERIFY(!panel->permissionCard()->isVisibleTo(panel));
+        app.resize(1200, 800);
         app.show();
         chip->click();
         QVERIFY(app.claudeDockWidget()->isHidden());
         chip->click();
         QVERIFY(app.claudeDockWidget()->isVisible());
+        // It goes down to the status bar, the dock at the bottom beside it.
+        QDockWidget* bottom = app.messages()->msgDock;
+        bottom->show();
+        QTRY_VERIFY(bottom->isVisible() && bottom->height() > 0);
+        QTRY_VERIFY(bottom->geometry().right() < app.claudeDockWidget()->geometry().left());
+        QVERIFY(app.claudeDockWidget()->geometry().bottom() > bottom->geometry().top());
 
         // A second conversation waits behind the first: the chip says so
         // (and that another is there), and leads to it.
