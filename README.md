@@ -916,8 +916,8 @@ seq 1 100 | xargs -P 10 -I{} sh -c 'QT_QPA_PLATFORM=offscreen QUCS_MONKEY_SEED={
 What a walk finds gets a test of its own in `qucs/tests/test_stress_findings`,
 since the walk goes elsewhere after any change.
 
-`qucs/tests/test_large_schematics` times loading, rotating, undo, deleting,
-dragging and pasting on chains of 2,000 and 8,000 components and fails when
+`qucs/tests/test_large_schematics` times loading, rotating, undo, deleting
+and dragging on chains of 2,000 and 8,000 components and fails when
 four times the elements take ten times as long: these were quadratic until
 the node and wire lookups by place (`qucs/conductor_index.h`), and a
 16,000-component schematic stopped for nine seconds after each edit.
