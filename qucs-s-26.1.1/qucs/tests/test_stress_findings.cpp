@@ -11,8 +11,11 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <random>
+#include <tuple>
 
 #include "schematic.h"
 #include "mouseactions.h"
@@ -245,6 +248,43 @@ private slots:
         QVERIFY(pasted.empty());
     }
 
+    // A paste is parsed by the document current when it began and may be
+    // dropped into another: the pasted components kept the first as their
+    // schematic - freed with it when it closed, and read by the next
+    // recreate of a subcircuit (Save All, a GUI-monkey walk). A component
+    // inserted into a schematic belongs to it.
+    void aPastedComponentBelongsToTheDocumentItLandsIn()
+    {
+        write("paste_sub.sch", schematic(QStringLiteral(
+            "  <Port P1 1 100 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+            "  <Port P2 1 200 100 -23 12 0 0 \"2\" 1 \"analog\" 0>\n")));
+        write("paste_from.sch", schematic(sub("SUB1", "paste_sub.sch")));
+        auto* source = new Schematic(nullptr, dir.filePath("paste_from.sch"));
+        QVERIFY(source->load());
+        for (auto* c : source->a_DocComps) c->isSelected = true;
+        source->copy();
+        QString text = QApplication::clipboard()->text();
+        QTextStream stream(&text, QIODevice::ReadOnly);
+        std::list<Element*> pasted;
+        QVERIFY(source->paste(&stream, &pasted));
+
+        Schematic target(nullptr, dir.filePath("paste_to.sch"));
+        Component* comp = nullptr;
+        for (auto* e : pasted) {
+            if (auto* c = dynamic_cast<Component*>(e); c && comp == nullptr) comp = c;
+            else delete e;
+        }
+        QVERIFY(comp != nullptr);
+        QCOMPARE(comp->Ports.size(), qsizetype(2));
+        QCOMPARE(comp->getSchematic(), source);
+        target.insertComponent(comp);
+        QCOMPARE(comp->getSchematic(), &target);
+
+        delete source;
+        comp->recreate();   // finds its file through its schematic
+        QCOMPARE(comp->Ports.size(), qsizetype(2));
+    }
+
     // The search dialog stays up while its document is closed; closing
     // the dialog then disconnected from the freed document.
     void theSearchDialogOutlivesItsDocument()
@@ -400,6 +440,80 @@ private slots:
             QVERIFY2(t.elapsed() < 20000, qPrintable(number));
             QCOMPARE(sch.a_DocComps.size(), std::size_t(1));
             QCOMPARE(sch.a_DocComps.front()->Ports.size(), qsizetype(3));
+        }
+    }
+
+    // Healing went through the nodes in the order of their addresses (the
+    // healer's std::map<Node*, ...>, and an unordered_set when a drag
+    // began), and where two repairs interact the order decides: the same
+    // edits of the same schematic ended differently from run to run. The
+    // same edits of one schematic loaded twice - its nodes at other
+    // addresses the second time - must end the same.
+    void healingDoesNotDependOnWhereNodesAreInMemory()
+    {
+        const auto state = [](Schematic& sch) {
+            QStringList lines;
+            for (auto* c : sch.a_DocComps) lines << c->save();
+            QStringList wires;
+            for (auto* w : sch.a_DocWires) {
+                QPoint a = w->P1(), b = w->P2();
+                if (std::pair(b.x(), b.y()) < std::pair(a.x(), a.y())) std::swap(a, b);
+                wires << QStringLiteral("%1 %2 %3 %4 %5").arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y())
+                                                          .arg(w->hasLabel() ? w->label()->Name : QString());
+            }
+            QStringList nodes;
+            for (auto* n : sch.a_DocNodes)
+                nodes << QStringLiteral("%1 %2 %3 %4 %5").arg(n->x()).arg(n->y()).arg(n->wires().size())
+                                                          .arg(n->components().size()).arg(n->hasLabel() ? n->label()->Name : QString());
+            wires.sort();
+            nodes.sort();
+            return lines.join('\n') + "\n" + wires.join('\n') + "\n" + nodes.join('\n');
+        };
+        // every k-th component and wire, the wires taken by place
+        const auto select = [](Schematic& sch, int k, int offset) {
+            int i = 0;
+            for (auto* c : sch.a_DocComps) c->isSelected = (i++ % k) == offset;
+            std::vector<Wire*> wires(sch.a_DocWires.begin(), sch.a_DocWires.end());
+            std::ranges::stable_sort(wires, {}, [](Wire* w) {
+                return std::tuple(std::min(w->x1, w->x2), std::min(w->y1, w->y2), std::max(w->x1, w->x2), std::max(w->y1, w->y2));
+            });
+            i = 0;
+            for (auto* w : wires) w->isSelected = (i++ % k) == offset;
+        };
+        const auto edit = [&select](Schematic& sch, int step) {
+            switch (step) {
+            case 0: select(sch, 2, 1); sch.rotateElements(); break;
+            case 1: select(sch, 3, 0); sch.mirrorXComponents(); break;
+            case 2: select(sch, 2, 0); sch.decoupleElements(sch.currentSelection(), true);
+                    sch.currentSelection().moveCenter(20, 10); sch.healAfterMousyMutation(); break;
+            case 3: select(sch, 1, 0); sch.aligning(0); break;
+            case 4: select(sch, 3, 1); sch.rotateElements(); break;
+            default: select(sch, 1, 0); sch.distributeHorizontal(); break;
+            }
+        };
+
+        std::mt19937 rng(11);
+        for (const char* file : {"ngspice/General Electronics/Audio Amplifiers/audio_amp_thd.sch",
+                                 "ngspice/Digital/flip_flops_truth_tables.sch",
+                                 "xyce/Xyce_Examples/10-ActiveBesselFilter/Bessel7.sch"}) {
+            Schematic first(nullptr, example(file));
+            QVERIFY(first.load());
+
+            // Put the second copy's nodes elsewhere: hold on to every
+            // other block of a scrambled heap while it loads
+            std::vector<std::unique_ptr<Node>> blocks;
+            for (int i = 0; i < 20000; ++i) blocks.push_back(std::make_unique<Node>(0, 0));
+            std::ranges::shuffle(blocks, rng);
+            blocks.resize(blocks.size() / 2);
+            Schematic second(nullptr, example(file));
+            QVERIFY(second.load());
+            blocks.clear();
+
+            for (int step = 0; step < 6; ++step) {
+                edit(first, step);
+                edit(second, step);
+                QVERIFY2(state(first) == state(second), qPrintable(QStringLiteral("%1, edit %2").arg(file).arg(step)));
+            }
         }
     }
 };

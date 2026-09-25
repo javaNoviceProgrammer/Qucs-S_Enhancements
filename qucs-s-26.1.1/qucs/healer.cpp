@@ -12,6 +12,7 @@
 #include <memory>
 #include <ranges>
 #include <set>
+#include <unordered_map>
 #include "qucs_assert.h"
 
 
@@ -311,7 +312,12 @@ class Healer::HealerImpl
     std::size_t m_affectedCount;
 
     using PortGroup = std::vector<std::shared_ptr<GenericPort>>;
-    std::map<Node*, PortGroup> m_port_groups;
+    std::unordered_map<Node*, PortGroup> m_port_groups;
+    // The nodes of m_port_groups in the order they are healed in: by place,
+    // nodes on one place in the order they were first met. It was the order
+    // of their addresses (a map's), which change from run to run - and where
+    // two repairs interact, the order decides the result.
+    std::vector<Node*> m_joints;
 
     vector<Healer::HealingAction> processMisplacedNodeCase(Node* node, const JointStateAssessor& jsa) const;
     vector<Healer::HealingAction> processSpecialCase(Node* node, const JointStateAssessor& jsa) const;
@@ -328,15 +334,21 @@ Healer::HealerImpl::HealerImpl(const std::list<Component*>* components, const st
     : m_params{hp}
     , m_affectedCount{affected_count}
 {
+    const auto group_of = [this](Node* node) -> PortGroup& {
+        const auto [it, first] = m_port_groups.try_emplace(node);
+        if (first) m_joints.push_back(node);
+        return it->second;
+    };
     for (auto* comp : *components) {
         for (auto* port : comp->Ports) {
-            m_port_groups[port->Connection].push_back(std::make_unique<GenericPort>(port, comp));
+            group_of(port->Connection).push_back(std::make_unique<GenericPort>(port, comp));
         }
     }
     for (auto* wire : *wires) {
-        m_port_groups[wire->Port1].push_back(std::make_unique<GenericPort>(wire, GenericPort::WirePort::One));
-        m_port_groups[wire->Port2].push_back(std::make_unique<GenericPort>(wire, GenericPort::WirePort::Two));
+        group_of(wire->Port1).push_back(std::make_unique<GenericPort>(wire, GenericPort::WirePort::One));
+        group_of(wire->Port2).push_back(std::make_unique<GenericPort>(wire, GenericPort::WirePort::Two));
     }
+    std::ranges::stable_sort(m_joints, QPointCompare{}, [](const Node* n) { return n->center(); });
 }
 
 
@@ -347,8 +359,8 @@ vector<Healer::HealingAction> Healer::HealerImpl::planHealing() const
     // back to it) is planned for deletion from each end: delete it once.
     std::set<const Wire*> doomed;
 
-    for (const auto& [node, port_group] : m_port_groups) {
-        const JointStateAssessor joint_state{node, port_group};
+    for (Node* node : m_joints) {
+        const JointStateAssessor joint_state{node, m_port_groups.at(node)};
 
         if (joint_state.isOK()) {
             continue;
@@ -376,7 +388,9 @@ vector<Healer::HealingAction> Healer::HealerImpl::planHealing() const
         }
     }
 
-    std::ranges::sort(healing_plan, [](const auto& lhs, const auto& rhs) { return lhs->priority() > rhs->priority(); });
+    // Stable: within a priority, the order of the joints (std::sort's order
+    // of equals differs between standard libraries)
+    std::ranges::stable_sort(healing_plan, [](const auto& lhs, const auto& rhs) { return lhs->priority() > rhs->priority(); });
     return healing_plan;
 }
 
