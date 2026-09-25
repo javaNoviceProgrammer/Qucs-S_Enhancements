@@ -111,12 +111,14 @@ void printTrail()
     std::fflush(stderr);
 }
 
+#ifndef MONKEY_SANITIZER
 void onFatalSignal(int sig)
 {
     printTrail();
     std::signal(sig, SIG_DFL);
     std::raise(sig);
 }
+#endif
 
 // Aborts the main thread (its stack is what matters for a hang) when the
 // walk makes no progress for a while.
