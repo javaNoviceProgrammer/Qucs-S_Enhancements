@@ -45,6 +45,10 @@ struct Options {
 
 /// The margin around the drawing, in units of the schematic.
 constexpr int Margin = 30;
+/// The largest raster image written: an image is scaled down to fit
+/// (400 MB in 32-bit colour, 32000 pixels a side).
+constexpr double MaxImagePixels = 100e6;
+constexpr double MaxImageSide = 32000;
 
 /// The formats this build writes, in the order they are offered.
 QList<Format> formats();

@@ -123,10 +123,12 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
 {
   // First, check if clipboard contains image data or file path
   QClipboard* clipboard = QApplication::clipboard();
+  // Null when the platform has no clipboard (offscreen, some Wayland
+  // compositors) or nothing was ever copied.
   const QMimeData* mimeData = clipboard->mimeData();
 
   // Check for image data first
-  if (mimeData->hasImage()) {
+  if (mimeData && mimeData->hasImage()) {
     QImage clipboardImage = clipboard->image();
     if (!clipboardImage.isNull()) {
       // Create an ImagePainting with the clipboard image
@@ -147,7 +149,7 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
   }
 
   // Check for text that might be a file path to an image
-  if (mimeData->hasText()) {
+  if (mimeData && mimeData->hasText()) {
     QString clipboardText = clipboard->text().trimmed();
 
     // Check if the text looks like a file path and if it's an image file
@@ -166,7 +168,7 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
   }
 
   // Check for file URLs (drag and drop from file manager)
-  if (mimeData->hasUrls()) {
+  if (mimeData && mimeData->hasUrls()) {
     QList<QUrl> urls = mimeData->urls();
     for (const QUrl& url : urls) {
       if (url.isLocalFile()) {

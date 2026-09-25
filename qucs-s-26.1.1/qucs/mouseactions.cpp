@@ -80,9 +80,7 @@ void showWireModeHint(QucsApp* app, const qucs_s::wire::Planner)
 MouseActions::MouseActions(QucsApp *App_)
 {
     App = App_;          // pointer to main app
-    if(selElem != nullptr){
-      selElem = nullptr;         // no component/diagram is selected
-    }
+    selElem = nullptr;   // no component/diagram is selected
     isMoveEqual = false; // mouse cursor move x and y the same way
     focusElement = nullptr;    //element being interacted with mouse
 
@@ -117,6 +115,33 @@ void MouseActions::forgetDocumentElements()
         // is left alone; the dragged selection refers to the document.
         movingState = {};
     }
+}
+
+// -----------------------------------------------------------
+void MouseActions::dropStaleElements(Schematic* doc)
+{
+    if (doc == nullptr) return;
+    if (focusElement != nullptr && !doc->holds(focusElement))
+        focusElement = nullptr;
+    if (pActiveDiagram != nullptr && !doc->holds(pActiveDiagram))
+        pActiveDiagram = nullptr;
+
+    // The selection being dragged, unless it is a paste (floating elements
+    // that are not the document's yet): a delete in the middle of the drag
+    // frees what it lists.
+    const bool pasting = QucsMain != nullptr
+        && (QucsMain->MouseMoveAction == &MouseActions::MMovePaste
+            || QucsMain->MouseMoveAction == &MouseActions::MMovePaste2
+            || QucsMain->MouseReleaseAction == &MouseActions::MReleasePaste);
+    const SchematicSelection& sel = movingState.selection;
+    if (pasting || sel.isEmpty()) return;
+    const auto held = doc->heldElements();
+    const auto live = [&held](const auto& list) {
+        return std::ranges::all_of(list, [&held](const Element* e) { return held.contains(e); });
+    };
+    if (!live(sel.components) || !live(sel.wires) || !live(sel.paintings) || !live(sel.diagrams)
+        || !live(sel.labels) || !live(sel.markers) || !live(sel.nodes) || !live(sel.isoNodes))
+        movingState = {};
 }
 
 // -----------------------------------------------------------

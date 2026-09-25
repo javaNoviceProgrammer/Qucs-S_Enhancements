@@ -34,7 +34,9 @@
 #include "wire.h"
 
 
+#include <QFileInfo>
 #include <QPlainTextEdit>
+#include <QSet>
 #include <algorithm>
 
 /*!
@@ -1789,29 +1791,89 @@ bool AbstractSpiceKernel::waitEndOfSimulation()
     return a_simProcess->waitForFinished(10000);
 }
 
-QString AbstractSpiceKernel::collectSpiceLibs(Schematic* sch)
+namespace {
+
+void collectSpiceLibsIn(Schematic* sch, QSet<QString>& visited, QStringList& collected)
 {
-  QStringList collected_spicelib;
-  for(Component *pc : sch->a_DocComps) {
+  for (Component *pc : sch->a_DocComps) {
     if (pc->Model == "Sub") {
-      Schematic *sub = new Schematic(0, ((Subcircuit *)pc)->getSubcircuitFile());
-      if(!sub->loadDocument())      // load document if possible
-      {
-        delete sub;
-        continue;
-      }
-      QString libstr = collectSpiceLibs(sub);
-      if (!collected_spicelib.contains(libstr)) {
-        collected_spicelib.append(libstr);
-      }
-      delete sub;
+      const QString file = ((Subcircuit *)pc)->getSubcircuitFile();
+      if (!AbstractSpiceKernel::firstVisit(file, visited)) continue;
+      Schematic sub(nullptr, file);
+      if (!sub.loadDocument()) continue;   // load document if possible
+      collectSpiceLibsIn(&sub, visited, collected);
     } else {
       QString libstr = pc->getSpiceLibrary();
-      if (!collected_spicelib.contains(libstr)) {
-        collected_spicelib.append(libstr);
+      if (!collected.contains(libstr)) {
+        collected.append(libstr);
       }
     }
   }
+}
+
+void collectVerilogAFilesIn(Schematic* sch, QSet<QString>& visited, QStringList& collected)
+{
+  for (Component *pc : sch->a_DocComps) {
+    QStringList files;
+    if (pc->Model == "Sub") {
+      const QString file = ((Subcircuit *)pc)->getSubcircuitFile();
+      if (!AbstractSpiceKernel::firstVisit(file, visited)) continue;
+      Schematic sub(nullptr, file);
+      if (!sub.loadDocument()) continue;
+      collectVerilogAFilesIn(&sub, visited, collected);
+      continue;
+    }
+    files = pc->getVerilogAFiles();
+    for (const QString &f : std::as_const(files))
+      if (!collected.contains(f)) collected.append(f);
+  }
+}
+
+void collectSpiceLibraryFilesIn(Schematic* sch, QSet<QString>& visited, QStringList& collected)
+{
+  for (Component *pc : sch->a_DocComps) {
+    QStringList new_libs;
+    if (pc->Model == "Sub") {
+      const QString file = ((Subcircuit *)pc)->getSubcircuitFile();
+      if (!AbstractSpiceKernel::firstVisit(file, visited)) continue;
+      Schematic sub(nullptr, file);
+      if (!sub.loadDocument()) continue;   // load document if possible
+      collectSpiceLibraryFilesIn(&sub, visited, collected);
+      continue;
+    }
+    new_libs = pc->getSpiceLibraryFiles();
+    for (const auto& lib : new_libs) {
+      if (!collected.contains(lib)) {
+        collected.append(lib);
+      }
+    }
+  }
+}
+
+} // namespace
+
+bool AbstractSpiceKernel::firstVisit(const QString& file, QSet<QString>& visited)
+{
+  const QFileInfo info(file);
+  const QString key = info.exists() ? info.canonicalFilePath() : info.absoluteFilePath();
+  if (visited.contains(key)) return false;
+  visited.insert(key);
+  return true;
+}
+
+QSet<QString> AbstractSpiceKernel::hierarchyStart(Schematic* sch)
+{
+  QSet<QString> visited;
+  if (sch != nullptr && !sch->getDocName().isEmpty()) firstVisit(sch->getDocName(), visited);
+  return visited;
+}
+
+QString AbstractSpiceKernel::collectSpiceLibs(Schematic* sch)
+{
+  QStringList collected_spicelib;
+  if (sch == nullptr) return QString();
+  QSet<QString> visited = hierarchyStart(sch);
+  collectSpiceLibsIn(sch, visited, collected_spicelib);
   return collected_spicelib.join("");
 }
 
@@ -1820,44 +1882,17 @@ QStringList AbstractSpiceKernel::collectVerilogAFiles(Schematic *sch)
 {
   QStringList collected;
   if (sch == nullptr) return collected;
-  for (Component *pc : sch->a_DocComps) {
-    QStringList files;
-    if (pc->Model == "Sub") {
-      Schematic sub(nullptr, ((Subcircuit *)pc)->getSubcircuitFile());
-      if (!sub.loadDocument()) continue;
-      files = collectVerilogAFiles(&sub);
-    } else {
-      files = pc->getVerilogAFiles();
-    }
-    for (const QString &file : std::as_const(files))
-      if (!collected.contains(file)) collected.append(file);
-  }
+  QSet<QString> visited = hierarchyStart(sch);
+  collectVerilogAFilesIn(sch, visited, collected);
   return collected;
 }
 
 QStringList AbstractSpiceKernel::collectSpiceLibraryFiles(Schematic *sch)
 {
   QStringList collected_spicelib;
-  for(Component *pc : sch->a_DocComps) {
-    QStringList new_libs;
-    if (pc->Model == "Sub") {
-      Schematic *sub = new Schematic(nullptr, ((Subcircuit *)pc)->getSubcircuitFile());
-      if(!sub->loadDocument())      // load document if possible
-      {
-        delete sub;
-        continue;
-      }
-      new_libs = collectSpiceLibraryFiles(sub);
-      delete sub;
-    } else {
-      new_libs = pc->getSpiceLibraryFiles();
-    }
-    for (const auto&lib: new_libs) {
-      if (!collected_spicelib.contains(lib)) {
-        collected_spicelib.append(lib);
-      }
-    }
-  }
+  if (sch == nullptr) return collected_spicelib;
+  QSet<QString> visited = hierarchyStart(sch);
+  collectSpiceLibraryFilesIn(sch, visited, collected_spicelib);
   return collected_spicelib;
 }
 

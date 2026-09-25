@@ -92,6 +92,7 @@ void SearchDialog::slotSearch()
 // ---------------------------------------------------------------------
 void SearchDialog::slotDisconnect()
 {
+  if (doc.isNull()) return;   // closed: Qt dropped its connections already
   //hidden -> search
   if (ui->AskBox->isHidden()) {
     disconnect(this, SIGNAL(search(const QString &, bool, bool, bool)),

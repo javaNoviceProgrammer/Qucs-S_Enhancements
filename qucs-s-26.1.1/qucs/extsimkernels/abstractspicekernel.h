@@ -26,6 +26,7 @@
 #include <QDataStream>
 #include <QTextStream>
 #include <QProcess>
+#include <QSet>
 
 #include "schematic.h"
 #include "extsimkernels/spicecompat.h"
@@ -151,12 +152,20 @@ public:
     virtual void SaveNetlist(QString filename);
     virtual bool waitEndOfSimulation();
     void setConsole(QPlainTextEdit *console) { a_console = console; }
-    QStringList collectSpiceLibraryFiles(Schematic *sch);
+    static QStringList collectSpiceLibraryFiles(Schematic *sch);
     /// The .va files the components of \a sch and of its subcircuits
     /// bring with them, and the .osdi models compiled from them
     /// (Component::getVerilogAFiles()).
     static QStringList collectVerilogAFiles(Schematic *sch);
     static QString collectSpiceLibs(Schematic* sch);
+
+    /// For walks down the subcircuit hierarchy: true the first time
+    /// \a file (a subcircuit's schematic) is met, false after - also for
+    /// a subcircuit that includes itself, directly or through others,
+    /// which recursed until the stack ran out. hierarchyStart() is the
+    /// set to begin with: the top schematic itself.
+    static bool firstVisit(const QString& file, QSet<QString>& visited);
+    static QSet<QString> hierarchyStart(Schematic* sch);
 
 signals:
     void started();

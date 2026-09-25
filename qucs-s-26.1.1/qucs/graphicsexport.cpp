@@ -29,6 +29,7 @@
 #include <QSaveFile>
 #include <QSvgGenerator>
 
+#include <algorithm>
 #include <cmath>
 
 namespace qucs_s::graphicsexport {
@@ -299,8 +300,20 @@ QSize pixelSize(Schematic* schematic, const Options& options)
     if (a.isEmpty())
         return {};
     const double scale = options.scale > 0 ? options.scale : 1.0;
-    return QSize(std::max(1, int(std::lround(a.width() * scale))),
-                 std::max(1, int(std::lround(a.height() * scale))));
+    double width = a.width() * scale;
+    double height = a.height() * scale;
+    // A drawing stretched by one enormous text (a property value of a
+    // megabyte: a long PWL list) asked for an image of gigabytes, and
+    // twice that again to convert it. Such a drawing is fitted into at
+    // most MaxImagePixels, no side longer than MaxImageSide (JPEG takes
+    // 65535, and QPainter's raster engine counts in int); paint() fits
+    // the drawing to the image.
+    const double shrink = std::min({1.0, MaxImageSide / width, MaxImageSide / height,
+                                    std::sqrt(MaxImagePixels / (width * height))});
+    width *= shrink;
+    height *= shrink;
+    return QSize(std::max(1, int(std::lround(width))),
+                 std::max(1, int(std::lround(height))));
 }
 
 QImage image(Schematic* schematic, const Options& options)

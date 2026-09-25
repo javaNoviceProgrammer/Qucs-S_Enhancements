@@ -88,6 +88,7 @@ class DeleteWire : public AbstractAction {
     Wire* m_wire;
 public:
     DeleteWire(Wire* wire) : m_wire{wire} {}
+    Wire* wire() const { return m_wire; }
     void execute(SchematicMutator* mutator) override { mutator->deleteWire(m_wire); }
     int priority() const override { return 0; }
 };
@@ -342,6 +343,9 @@ Healer::HealerImpl::HealerImpl(const std::list<Component*>* components, const st
 vector<Healer::HealingAction> Healer::HealerImpl::planHealing() const
 {
     vector<HealingAction> healing_plan;
+    // A wire whose two ends are both in trouble (or that runs from a node
+    // back to it) is planned for deletion from each end: delete it once.
+    std::set<const Wire*> doomed;
 
     for (const auto& [node, port_group] : m_port_groups) {
         const JointStateAssessor joint_state{node, port_group};
@@ -366,6 +370,8 @@ vector<Healer::HealingAction> Healer::HealerImpl::planHealing() const
         }
 
         for (auto& a : healing_actions) {
+            if (const auto* deletion = dynamic_cast<const DeleteWire*>(a.get()))
+                if (!doomed.insert(deletion->wire()).second) continue;
             healing_plan.emplace_back(std::move(a));
         }
     }

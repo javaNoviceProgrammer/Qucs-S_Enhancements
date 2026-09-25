@@ -510,7 +510,8 @@ void ImagePainting::setImageFromPath(const QString& path) {
 
 void ImagePainting::setImageFromClipboard() {
   QClipboard* clipboard = QApplication::clipboard();
-  if (clipboard->mimeData()->hasImage()) {
+  const QMimeData* data = clipboard->mimeData();   // null: no clipboard
+  if (data && data->hasImage()) {
     QImage clipboardImage = clipboard->image();
     if (!clipboardImage.isNull()) {
       setImageFromPixmap(QPixmap::fromImage(clipboardImage));

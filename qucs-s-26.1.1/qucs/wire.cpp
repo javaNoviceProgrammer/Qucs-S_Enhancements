@@ -116,7 +116,8 @@ bool Wire::isHorizontal()
 
 QPoint coordinatesFromDistance(double distanceFromPort1, const QPoint& port1, const QPoint& port2)
 {
-    const auto ratio = distanceFromPort1 / qucs_s::geom::distance(port1, port2);
+    const auto length = qucs_s::geom::distance(port1, port2);
+    const auto ratio = length > 0 ? distanceFromPort1 / length : 0.0;
     const auto x = static_cast<int>(port1.x() + ratio * (port2.x() - port1.x()));
     const auto y = static_cast<int>(port1.y() + ratio * (port2.y() - port1.y()));
     return {x, y};
@@ -268,7 +269,9 @@ bool Wire::setP1(const QPoint& new_p1)
     const QPoint old_p1{x1, y1};
     const QPoint p2{x2, y2};
 
-    const auto ratio = qucs_s::geom::distance(old_p1, label()->root()) / qucs_s::geom::distance(old_p1, p2);
+    // A wire of no length (the healer merges them away) has no ratio.
+    const auto length = qucs_s::geom::distance(old_p1, p2);
+    const auto ratio = length > 0 ? qucs_s::geom::distance(old_p1, label()->root()) / length : 0.0;
     const auto x = static_cast<int>(std::round(new_p1.x() + ratio * (p2.x() - new_p1.x())));
     const auto y = static_cast<int>(std::round(new_p1.y() + ratio * (p2.y() - new_p1.y())));
 
@@ -295,7 +298,8 @@ bool Wire::setP2(const QPoint& new_p2)
     const QPoint p1{x1, y1};
     const QPoint old_p2{x2, y2};
 
-    const auto ratio = qucs_s::geom::distance(p1, label()->root()) / qucs_s::geom::distance(p1, old_p2);
+    const auto length = qucs_s::geom::distance(p1, old_p2);
+    const auto ratio = length > 0 ? qucs_s::geom::distance(p1, label()->root()) / length : 0.0;
     const auto x = static_cast<int>(std::round(p1.x() + ratio * (new_p2.x() - p1.x())));
     const auto y = static_cast<int>(std::round(p1.y() + ratio * (new_p2.y() - p1.y())));
 

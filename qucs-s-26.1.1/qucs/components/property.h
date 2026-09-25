@@ -33,6 +33,12 @@ struct Property {
   spicecompat::Simulator simulators;
   QRect boundingRect() const { return br; };
   void paint(int x, int y, QPainter* p);
+  /// "Name=Value" as the canvas shows it. A value longer than
+  /// MaxShownValue characters (a PWL list of thousands of points) is cut
+  /// short with an ellipsis: measured and drawn whole on every repaint, a
+  /// megabyte of it took seconds each time. The value itself is untouched.
+  QString displayText() const;
+  static constexpr int MaxShownValue = 1000;
 
   class Builder {
     QString m_name;

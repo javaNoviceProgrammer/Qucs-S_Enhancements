@@ -897,6 +897,25 @@ to a Qucs dataset exactly as the GUI does after a simulation:
 python3 scripts/ci/fuzz-simout.py build-asan/qucs/tests/simout_harness /tmp/smoke/simulate/work /tmp/fuzz-simout --count 500 --seed 7
 ```
 
+`qucs/tests/test_gui_monkey` does it to the main window: a seeded random
+walk over copies of the ngspice examples — clicks, drags (some interrupted
+by an undo or a delete), double clicks, the wheel and keys in every mouse
+mode, the menu and toolbar commands, tabs, symbol view and hierarchy,
+placing components, closing and reopening — where every dialog that comes
+up is cancelled or filled with odd values and accepted. It asserts nothing
+but that the application survives; a watchdog turns a step that never
+ends into an abort with the stack, and the last steps are printed with any
+failure. CTest runs a short walk; a stress run takes more steps and seeds,
+and a seed replays the same walk on every platform:
+
+```bash
+QT_QPA_PLATFORM=offscreen QUCS_MONKEY_SEED=42 QUCS_MONKEY_STEPS=2000 build-asan/qucs/tests/test_gui_monkey
+seq 1 100 | xargs -P 10 -I{} sh -c 'QT_QPA_PLATFORM=offscreen QUCS_MONKEY_SEED={} QUCS_MONKEY_STEPS=2000 build-asan/qucs/tests/test_gui_monkey > /tmp/monkey-{}.log 2>&1 || echo "seed {} failed"'
+```
+
+What a walk finds gets a test of its own in `qucs/tests/test_stress_findings`,
+since the walk goes elsewhere after any change.
+
 `qucs/tests/test_netlist_audit` places every built-in component on a
 schematic and checks that it netlists in every flavour without a crash and
 survives a save/load and a properties-dialog Apply unchanged. With

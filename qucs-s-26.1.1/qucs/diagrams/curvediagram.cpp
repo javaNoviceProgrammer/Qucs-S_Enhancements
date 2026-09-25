@@ -153,14 +153,14 @@ int CurveDiagram::calcDiagram()
   // ====  x grid  =======================================================
 if(xAxis.log) {
   if(xAxis.autoScale) {
-    if(xAxis.max*xAxis.min <= 0.0)  goto Frame;  // invalid
+    if(!(xAxis.max*xAxis.min > 0.0))  goto Frame;  // invalid (or nan)
   }
-  else  if(xAxis.limit_min*xAxis.limit_max <= 0.0)  goto Frame;  // invalid
+  else  if(!(xAxis.limit_min*xAxis.limit_max > 0.0))  goto Frame;  // invalid (or nan)
 
   back = calcAxisLogScale(&xAxis, z, zD, zDstep, corr, x2);
 
   if(back) z = x2;
-  while((z <= x2) && (z >= 0)) {    // create all grid lines
+  for (int gridLines = 0; (z <= x2) && (z >= 0) && gridLines < MaxGridLines; ++gridLines) {    // create all grid lines
     if(xAxis.GridOn)  if(z < x2)  if(z > 0)
       Lines.prepend(new qucs::Line(z, y2, z, 0, GridPen));  // x grid
 
@@ -176,11 +176,11 @@ if(xAxis.log) {
     zD += zDstep;
     if(zD > 9.5*zDstep)  zDstep *= 10.0;
     if(back) {
-      z = int(corr*log10(zD / fabs(xAxis.up)) + 0.5); // int() implies floor()
+      z = gridPixel(corr*log10(zD / fabs(xAxis.up)) + 0.5); // int() implies floor()
       z = x2 - z;
     }
     else
-      z = int(corr*log10(zD / fabs(xAxis.low)) + 0.5);// int() implies floor()
+      z = gridPixel(corr*log10(zD / fabs(xAxis.low)) + 0.5);// int() implies floor()
   }
 }
 else {  // not logarithmical
@@ -191,8 +191,8 @@ else {  // not logarithmical
   else  Expo = log10(fabs(xAxis.up));
 
   zD += 0.5;     // perform rounding
-  z = int(zD);   //  "int(...)" implies "floor(...)"
-  while((z <= x2) && (z >= 0)) {    // create all grid lines
+  z = gridPixel(zD);   //  "int(...)" implies "floor(...)"
+  for (int gridLines = 0; (z <= x2) && (z >= 0) && gridLines < MaxGridLines; ++gridLines) {    // create all grid lines
     if(fabs(GridNum) < 0.01*pow(10.0, Expo)) GridNum = 0.0;// make 0 really 0
     tmp = numberText(GridNum, GridStep);
     w = metrics.boundingRect(tmp).width();  // width of text
@@ -204,11 +204,11 @@ else {  // not logarithmical
       Lines.prepend(new qucs::Line(z, y2, z, 0, GridPen)); // x grid
     Lines.append(new qucs::Line(z, 5, z, -5, QPen(Qt::black,0)));   // x tick marks
     zD += zDstep;
-    z = int(zD);
+    z = gridPixel(zD);
   }
   
   if(xAxis.up >= 0.0) if(xAxis.low <= 0.0) {  // paint origin cross ?
-    z = int(double(x2) * fabs(xAxis.low / (xAxis.up-xAxis.low)) + 0.5);
+    z = gridPixel(double(x2) * fabs(xAxis.low / (xAxis.up-xAxis.low)) + 0.5);
     Lines.append(new qucs::Line(z, 0, z, y2, QPen(Qt::black,0)));
   }
 } // of "if(xlog) ... else ..."
@@ -219,7 +219,7 @@ else {  // not logarithmical
   if(yAxis.numGraphs > 0) if(calcYAxis(&yAxis, 0)) {
     valid |= 1;
     if(yAxis.up >= 0.0) if(yAxis.low <= 0.0) {  // paint origin cross ?
-      z = int(double(y2) * fabs(yAxis.low / (yAxis.up-yAxis.low)) + 0.5);
+      z = gridPixel(double(y2) * fabs(yAxis.low / (yAxis.up-yAxis.low)) + 0.5);
       Lines.append(new qucs::Line(0, z, x2, z, QPen(Qt::black,0)));
     }
   }

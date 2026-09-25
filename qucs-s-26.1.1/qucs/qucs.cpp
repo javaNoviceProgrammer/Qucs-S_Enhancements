@@ -2880,7 +2880,7 @@ void QucsApp::updatePortNumber(QucsDoc *currDoc, int No)
   QWidget *w;
 
   const auto needToRecreate = [&Model, &Name, &pathName](const Component* c) {
-    if (c->Model != Model) return false;
+    if (c->Model != Model || c->Props.isEmpty()) return false;
     auto file = c->Props.front()->Value;
     return file == pathName || file == Name;
   };
@@ -4252,6 +4252,7 @@ void QucsApp::slotPowerMatching()
 {
   QWidget *w = DocumentTab->currentWidget(); // remember from which Tab the tuner was started
   if (isTextDocument(w)) return;
+  view->dropStaleElements(currentSchematic());
   if(!view->focusElement) return;
   if(view->focusElement->Type != isMarker) return;
   Marker *pm = (Marker*)view->focusElement;
@@ -4281,6 +4282,7 @@ void QucsApp::slot2PortMatching()
 {
   QWidget *w = DocumentTab->currentWidget(); // remember from which Tab the tuner was started
   if (isTextDocument(w)) return;
+  view->dropStaleElements(currentSchematic());
   if(!view->focusElement) return;
   if(view->focusElement->Type != isMarker) return;
   Marker *pm = (Marker*)view->focusElement;

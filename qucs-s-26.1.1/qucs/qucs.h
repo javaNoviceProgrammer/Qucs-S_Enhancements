@@ -486,7 +486,7 @@ public:
   // The .va files the Content panel's menu was opened on.
   QStringList a_contentMenuVaFiles;
 
-  QAction *fileNew, *textNew, *symNew, *fileNewDpl, *fileOpen, *fileSave,
+  QAction *fileNew, *textNew, *symNew, *fileOpen, *fileSave,
       *fileSaveAs, *fileSaveAll, *fileClose, *fileCloseOthers,
       *fileCloseAllLeft, *fileCloseAllRight, *fileCloseAll, *fileExamples,
       *fileSettings, *filePrint, *fileQuit, *projNew, *projOpen, *projDel,
@@ -668,7 +668,7 @@ public:
 
   QAction *insWire, *insLabel, *insGround, *insPort, *insEquation, *magPlus,
       *editRotate, *editMirror, *editMirrorY, *editPaste, *select, *editStretch,
-      *editMove, *editActivate, *wire, *editDelete, *setMarker,
+      *editMove, *editActivate, *editDelete, *setMarker,
       *setDiagramLimits, *resetDiagramLimits, *showGrid, *onGrid, *moveText,
       *helpIndex, *helpGetStart, *callEditor, *callFilter, *callLine,
       *callActiveFilter, *showMsg, *showNet, *checkSchematicAction, *checkHierarchyAction, *alignTop, *alignBottom,
