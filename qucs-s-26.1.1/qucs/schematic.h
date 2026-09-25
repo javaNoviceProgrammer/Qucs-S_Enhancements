@@ -714,6 +714,15 @@ public:
   QString createNetlist(QTextStream&, int);
   bool isDigitalCircuit();
   bool loadDocument();
+  /// The document as its file would hold it: the one in memory, unsaved
+  /// changes and all.
+  QString documentText();
+  /// Puts the elements of \a text - a schematic file, or any of its
+  /// <Components>, <Wires>, <Diagrams> and <Paintings> sections (those
+  /// left out stay as they are) - in place of this schematic's, as one
+  /// step to undo. False, and why in \a error, when it does not read:
+  /// the schematic is then as it was.
+  bool replaceContent(const QString& text, QString* error = nullptr);
   void highlightWireLabels (void);
   void clearSignalsAndFileList();
   void clearSignals();
@@ -727,6 +736,7 @@ public:
 private:
   int  saveDocument();
   bool writeDocument(const QString& path);   // the serialisation part of saveDocument()
+  void writeDocumentTo(QTextStream& stream);
 
   bool loadProperties(QTextStream*);
   void simpleInsertComponent(Component*);

@@ -86,6 +86,24 @@ namespace misc {
   QString Verilog_Param(const QString);
   bool    checkVersion(QString&);
   void    reportError(const QString& text);
+  /// While one is alive, reportError() keeps its texts here instead of
+  /// showing them in a message box, and a file's unknown component is an
+  /// error rather than a question: for Claude's tools, which tell Claude
+  /// what went wrong and must not wait for a dialog. They nest.
+  class ErrorCapture {
+  public:
+    ErrorCapture();
+    ~ErrorCapture();
+    ErrorCapture(const ErrorCapture&) = delete;
+    ErrorCapture& operator=(const ErrorCapture&) = delete;
+    QStringList errors() const { return a_errors; }
+    /// Whether one is alive.
+    static bool active();
+  private:
+    friend void reportError(const QString& text);
+    QStringList a_errors;
+    ErrorCapture* a_outer;
+  };
   /// Coordinates read from a file are limited to this range so that the
   /// arithmetic done on them afterwards (bounding boxes, margins, zoom,
   /// printing scale) cannot overflow int. 16.7 M units is far beyond any

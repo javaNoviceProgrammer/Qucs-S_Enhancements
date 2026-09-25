@@ -16,6 +16,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
+#include <QMap>
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QSignalSpy>
@@ -125,6 +126,64 @@ while IFS= read -r line; do
 done
 )SH";
 
+// claude with a host's tool server: at the host's initialize, the MCP
+// handshake and tools/list; at the prompt, a permission request for a
+// tool that only looks and one for a tool that changes; once that is
+// allowed (with all the host's tools), a call of it, then another request
+// that needs no asking, then the end. What the session writes back goes
+// to mcp-in.
+const char* const kToolUser = R"SH(#!/bin/sh
+printf '%s\n' "$@" > "$QUCS_FAKE_DIR/mcp-args"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/mcp-in"
+  case "$line" in
+    *'"subtype":"initialize"'*)
+      echo '{"type":"control_request","request_id":"m1","request":{"subtype":"mcp_message","server_name":"fake","message":{"method":"initialize","params":{"protocolVersion":"2025-11-25"},"jsonrpc":"2.0","id":0}}}'
+      echo '{"type":"control_request","request_id":"m2","request":{"subtype":"mcp_message","server_name":"fake","message":{"jsonrpc":"2.0","method":"notifications/initialized"}}}'
+      echo '{"type":"control_request","request_id":"m3","request":{"subtype":"mcp_message","server_name":"fake","message":{"method":"tools/list","jsonrpc":"2.0","id":1}}}'
+      ;;
+    *'"type":"user"'*)
+      echo '{"type":"system","subtype":"init","session_id":"mcp-1","model":"claude-test-1"}'
+      echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"u1","name":"mcp__fake__change","input":{"what":"x"}}]}}'
+      echo '{"type":"control_request","request_id":"p1","request":{"subtype":"can_use_tool","tool_name":"mcp__fake__look","display_name":"Look","input":{},"permission_suggestions":[]}}'
+      echo '{"type":"control_request","request_id":"p2","request":{"subtype":"can_use_tool","tool_name":"mcp__fake__change","display_name":"Change","input":{"what":"x"},"permission_suggestions":[]}}'
+      ;;
+    *'"request_id":"p2"'*'"allow"'*)
+      echo '{"type":"control_request","request_id":"m4","request":{"subtype":"mcp_message","server_name":"fake","message":{"method":"tools/call","params":{"name":"change","arguments":{"what":"x"}},"jsonrpc":"2.0","id":2}}}'
+      ;;
+    *'"request_id":"m4"'*)
+      echo '{"type":"control_request","request_id":"p3","request":{"subtype":"can_use_tool","tool_name":"mcp__fake__change","display_name":"Change","input":{"what":"y"},"permission_suggestions":[]}}'
+      ;;
+    *'"request_id":"p3"'*'"allow"'*)
+      echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"mcp-1"}'
+      ;;
+  esac
+done
+)SH";
+
+// The host of tools the fake program is told of.
+class FakeHost : public qucs_s::claude::ToolHost
+{
+public:
+    QString serverName() const override { return QStringLiteral("fake"); }
+    QJsonArray tools() const override
+    {
+        return {QJsonObject{{"name", "look"}, {"description", "Looks"}, {"inputSchema", QJsonObject{{"type", "object"}}}},
+                QJsonObject{{"name", "change"}, {"description", "Changes"}, {"inputSchema", QJsonObject{{"type", "object"}}}}};
+    }
+    QStringList readOnlyTools() const override { return {QStringLiteral("look")}; }
+    QString actionOf(const QString&) const override { return QStringLiteral("change something in the fake"); }
+    QString subjectOf(const QString&, const QJsonObject& a) const override { return QStringLiteral("what: ") + a.value("what").toString(); }
+    QString instructions() const override { return QStringLiteral("Fake instructions."); }
+    void callTool(const QString& tool, const QJsonObject& a, std::function<void(const QJsonObject&)> done) override
+    {
+        calls << tool;
+        done(QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "changed " + a.value("what").toString()}}}},
+                         {"isError", false}});
+    }
+    QStringList calls;
+};
+
 // A program that fails at once.
 const char* const kBroken = "#!/bin/sh\necho 'Invalid API key' >&2\nexit 3\n";
 
@@ -204,7 +263,16 @@ private slots:
         QVERIFY(!plain.contains("--resume"));
         QVERIFY(!plain.contains("--model"));
 
-        const QStringList all = qucs_s::claude::arguments({"acceptEdits", "opus", "s-9", "Be brief."});
+        qucs_s::claude::Options options;
+        options.permissionMode = "acceptEdits";
+        options.model = "opus";
+        options.resume = "s-9";
+        options.appendSystemPrompt = "Be brief.";
+        options.mcpConfig = "{}";
+        options.allowedTools = {"mcp__a__b", "mcp__a__c"};
+        const QStringList all = qucs_s::claude::arguments(options);
+        QCOMPARE(all.at(all.indexOf("--mcp-config") + 1), QStringLiteral("{}"));
+        QCOMPARE(all.at(all.indexOf("--allowedTools") + 1), QStringLiteral("mcp__a__b,mcp__a__c"));
         QCOMPARE(all.at(all.indexOf("--permission-mode") + 1), QStringLiteral("acceptEdits"));
         QCOMPARE(all.at(all.indexOf("--model") + 1), QStringLiteral("opus"));
         QCOMPARE(all.at(all.indexOf("--resume") + 1), QStringLiteral("s-9"));
@@ -430,6 +498,81 @@ private slots:
         none.setProgram(QString());
         QCOMPARE(none.state(), State::NotFound);
         QVERIFY(!none.send("Hello"));
+    }
+
+    // The host's tools (an "sdk" MCP server) over the program's own
+    // stream: the program is told of the server and which tools need no
+    // asking; the handshake, tools/list and tools/call are answered from
+    // the host; a tool that looks is used without a question, one that
+    // changes asks - and once the host's tools are allowed, no more.
+    void theHostsToolsAreServedOverTheStream()
+    {
+        skipWithoutShell();
+        QFile::remove(dir.filePath("mcp-in"));
+        FakeHost host;
+        Session s;
+        s.setProgram(script("tooluser", kToolUser));
+        s.setWorkingDirectory(fresh("toolwork"));
+        s.setToolHost(&host);
+        QSignalSpy asks(&s, &Session::permissionRequested);
+        QSignalSpy tools(&s, &Session::toolStarted);
+        QSignalSpy turns(&s, &Session::turnFinished);
+        QVERIFY(s.send("Change x"));
+        QVERIFY(asks.wait(10000));
+        QCOMPARE(asks.count(), 1);   // not for the tool that looks
+        const auto request = asks.last().at(0).value<PermissionRequest>();
+        QCOMPARE(request.tool, QStringLiteral("mcp__fake__change"));
+        QCOMPARE(request.action, QStringLiteral("change something in the fake"));
+        QCOMPARE(request.subject, QStringLiteral("what: x"));
+        QVERIFY(request.canAllowTools);
+        QCOMPARE(tools.count(), 1);
+        QCOMPARE(tools.last().at(2).toString(), QStringLiteral("what: x"));   // the host says what a use is about
+        s.answer(request.id, true, false, true);
+        QVERIFY(turns.count() == 1 || turns.wait(10000));
+        QVERIFY(turns.last().at(0).value<TurnResult>().ok);
+        QCOMPARE(asks.count(), 1);   // the second use of it was not asked about
+        QVERIFY(s.toolsAllowed());
+        QCOMPARE(host.calls, QStringList{"change"});
+
+        const QStringList args = read(dir.filePath("mcp-args")).split('\n');
+        const QString config = args.value(args.indexOf("--mcp-config") + 1);
+        QVERIFY(config.contains("\"type\":\"sdk\""));
+        QVERIFY(config.contains("\"fake\""));
+        QCOMPARE(args.value(args.indexOf("--allowedTools") + 1), QStringLiteral("mcp__fake__look"));
+        // What the session wrote: the host's initialize, then the answers.
+        QMap<QString, QJsonObject> answers;
+        bool hostInit = false;
+        for (const QString& line : read(dir.filePath("mcp-in")).split('\n', Qt::SkipEmptyParts)) {
+            const QJsonObject m = QJsonDocument::fromJson(line.toUtf8()).object();
+            if (m.value("type").toString() == "control_request"
+                && m.value("request").toObject().value("sdkMcpServers").toArray().contains(QJsonValue("fake")))
+                hostInit = true;
+            if (m.value("type").toString() == "control_response") {
+                const QJsonObject r = m.value("response").toObject();
+                answers.insert(r.value("request_id").toString(), r.value("response").toObject());
+            }
+        }
+        QVERIFY(hostInit);
+        const QJsonObject init = answers.value("m1").value("mcp_response").toObject();
+        QCOMPARE(init.value("id").toInt(-1), 0);
+        QCOMPARE(init.value("result").toObject().value("serverInfo").toObject().value("name").toString(), QStringLiteral("fake"));
+        QCOMPARE(init.value("result").toObject().value("instructions").toString(), QStringLiteral("Fake instructions."));
+        QCOMPARE(init.value("result").toObject().value("protocolVersion").toString(), QStringLiteral("2025-11-25"));
+        QVERIFY(answers.contains("m2"));
+        const QJsonArray listed = answers.value("m3").value("mcp_response").toObject().value("result").toObject().value("tools").toArray();
+        QCOMPARE(listed.size(), 2);
+        QCOMPARE(answers.value("p1").value("behavior").toString(), QStringLiteral("allow"));
+        QCOMPARE(answers.value("p2").value("behavior").toString(), QStringLiteral("allow"));
+        const QJsonObject called = answers.value("m4").value("mcp_response").toObject();
+        QCOMPARE(called.value("id").toInt(), 2);
+        QCOMPARE(called.value("result").toObject().value("content").toArray().at(0).toObject().value("text").toString(),
+                 QStringLiteral("changed x"));
+        QCOMPARE(answers.value("p3").value("behavior").toString(), QStringLiteral("allow"));
+        s.stop();
+
+        // A new conversation asks again.
+        s.reset();
+        QVERIFY(!s.toolsAllowed());
     }
 
     // The models to choose: what the program offers, named by what they

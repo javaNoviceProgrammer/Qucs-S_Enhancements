@@ -95,6 +95,7 @@
 #include "processconsole.h"
 #include "claudecodepanel.h"
 #include "claudecodetabs.h"
+#include "qucscontrol.h"
 #include "dialogs/tuner.h"
 #include "octave_window.h"
 #include "printerwriter.h"
@@ -743,6 +744,8 @@ void QucsApp::initView()
   claudeDock->setWidget(claudeTabs);
   addDockWidget(Qt::RightDockWidgetArea, claudeDock);
   claudeDock->hide();
+  // Claude drives this window with its tools (qucscontrol.h).
+  claudeTabs->setToolHost(new QucsControl(this));
   connect(claudeTabs, &ClaudeCodeTabs::filesChanged, this, &QucsApp::reloadChangedFiles);
   connect(claudeTabs, &ClaudeCodeTabs::openFileRequested, this, [this](const QString &file) { gotoPage(file); });
 
@@ -2415,14 +2418,25 @@ bool QucsApp::saveAs()
 
     break;
   }
+  return saveDocumentAs(Doc, s);
+}
+
+bool QucsApp::saveDocumentAs(QucsDoc *Doc, const QString &fileName)
+{
+  QWidget *w = documentWidget(Doc);
+  ContextMenuTabWidget *pane = paneOf(w);
+  if (w == nullptr || pane == nullptr) return false;
+  const QString s = QFileInfo(fileName).absoluteFilePath();
+  const QString wasNamed = Doc->getDocName();
   Doc->setName(s);
-  DocumentTab->setTabText(DocumentTab->indexOf(w), misc::properFileName(s));
-  lastDirOpenSave = Info.absolutePath();  // remember last directory and file
+  pane->setTabText(pane->indexOf(w), misc::properFileName(s));
+  lastDirOpenSave = QFileInfo(s).absolutePath();  // remember last directory and file
 
   const int docIndex = allDocuments().indexOf(Doc);   // as autosaveAll() numbers it
-  n = Doc->save();   // SAVE
+  const int n = Doc->save();   // SAVE
   if(n < 0)  return false;
-  qucs_s::autosave::removeUntitled(docIndex, !isTextDocument(w));   // it was untitled before
+  if (wasNamed.isEmpty())
+    qucs_s::autosave::removeUntitled(docIndex, !isTextDocument(w));   // it was untitled before
   qucs_s::autosave::remove(s);
 
   // It's assumed that *.sym files contain *only* a symbol

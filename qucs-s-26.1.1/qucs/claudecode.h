@@ -22,6 +22,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 class QProcess;
 class QTimer;
 
@@ -51,6 +53,7 @@ struct PermissionRequest {
     QString detail;         ///< more of it: a file's new content, an edit
     QJsonObject input;      ///< the tool's input, as asked
     bool canAllowEdits = false;   ///< it offers "accept edits" for the session
+    bool canAllowTools = false;   ///< one of the host's tools (ToolHost): all of them may be allowed at once
 };
 
 /// How a turn ended.
@@ -75,6 +78,8 @@ struct Options {
     QString model;            ///< empty: the program's default; opus, sonnet, haiku, ...
     QString resume;           ///< a session to continue
     QString appendSystemPrompt;
+    QString mcpConfig;        ///< --mcp-config: the host's tool server
+    QStringList allowedTools; ///< tools used without asking
 };
 QStringList arguments(const Options& options);
 
@@ -90,6 +95,35 @@ QString toolSubject(const QString& tool, const QJsonObject& input, const QString
 
 /// What Claude is told about where it runs, after its own system prompt.
 QString qucsSystemPrompt();
+
+/*!
+ * Tools the host application offers Claude: an MCP server that runs in
+ * the host. The claude program is told of it as an "sdk" server and sends
+ * its messages over the stream it already has (control requests of the
+ * subtype "mcp_message", as the Agent SDKs do); the session answers them
+ * from here. To Claude the tools are mcp__<serverName>__<tool>.
+ */
+class ToolHost
+{
+public:
+    virtual ~ToolHost() = default;
+    virtual QString serverName() const = 0;
+    /// MCP's tools/list: name, description, inputSchema for each.
+    virtual QJsonArray tools() const = 0;
+    /// The tools that only look: used without asking.
+    virtual QStringList readOnlyTools() const = 0;
+    /// What a tool does, for "Claude wants to ...": "add a component".
+    virtual QString actionOf(const QString& tool) const = 0;
+    /// What a use of it is about, in one line.
+    virtual QString subjectOf(const QString& tool, const QJsonObject& arguments) const = 0;
+    /// What Claude is told of the server (MCP's instructions).
+    virtual QString instructions() const = 0;
+    /// Calls \a tool; \a done gets MCP's CallToolResult (content,
+    /// isError), now or later. Called from the event loop, not from within
+    /// the reading of the program's output.
+    virtual void callTool(const QString& tool, const QJsonObject& arguments,
+                          std::function<void(const QJsonObject&)> done) = 0;
+};
 
 /// Whether \a mode is the one where Claude asks before acting: not named,
 /// or as the program names it ("default", "manual").
@@ -176,6 +210,14 @@ public:
     void setModel(const QString& model);
     QString model() const { return a_model; }
     void setAppendSystemPrompt(const QString& prompt) { a_systemPrompt = prompt; }
+    /// The host's tools, offered from the next start on (not owned; it
+    /// outlives the session).
+    void setToolHost(ToolHost* host);
+    ToolHost* toolHost() const { return a_host; }
+    /// The host's tools are used without asking for the rest of the
+    /// conversation (answer() with \a allowTools, or set here).
+    void setToolsAllowed(bool allowed) { a_toolsAllowed = allowed; }
+    bool toolsAllowed() const { return a_toolsAllowed; }
 
     State state() const { return a_state; }
     QString detail() const { return a_detail; }
@@ -193,8 +235,10 @@ public:
     /// False when it cannot be sent: no program, a turn under way.
     bool send(const QString& prompt);
     /// Answers the permission request \a id: \a allow it or not; with
-    /// \a allowEdits, edits need no asking for the rest of the session.
-    void answer(const QString& id, bool allow, bool allowEdits = false);
+    /// \a allowEdits, edits need no asking for the rest of the session;
+    /// with \a allowTools, the host's tools (the other requests for them
+    /// are answered too).
+    void answer(const QString& id, bool allow, bool allowEdits = false, bool allowTools = false);
     /// Stops the turn under way (the program ends if it does not stop).
     void interrupt();
     /// Ends the program; the next prompt continues the conversation.
@@ -239,6 +283,10 @@ private:
     void handleUser(const QJsonObject& m);
     void handleStreamEvent(const QJsonObject& m);
     void handleControlRequest(const QJsonObject& m);
+    void handleMcpMessage(const QString& requestId, const QJsonObject& request);
+    void allowRequest(const QString& id, const QJsonObject& input);
+    /// The host's tool that \a tool (mcp__server__name) is, or empty.
+    QString hostTool(const QString& tool) const;
     void handleResult(const QJsonObject& m);
     void handleSystem(const QJsonObject& m);
     void endTurn();
@@ -275,6 +323,8 @@ private:
     QHash<QString, QString> a_editedFiles;  // tool use id -> file, until its result
     QStringList a_changedFiles;             // this turn's
     QHash<QString, PermissionRequest> a_pending;   // permission requests not yet answered
+    ToolHost* a_host = nullptr;
+    bool a_toolsAllowed = false;
     void withdrawRequests();
 };
 

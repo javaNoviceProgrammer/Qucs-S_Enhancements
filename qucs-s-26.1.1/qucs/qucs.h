@@ -119,6 +119,13 @@ public:
   /// Loads a document into a tab. With \a checkDataNames the user is asked to
   /// rename dataset/display files that do not match the schematic's name.
   bool gotoPage(const QString &, bool reloadPage = false, bool checkDataNames = true);
+  /// Saves a document (the current one by default) to its file; Save As
+  /// for one without.
+  bool saveFile(QucsDoc *Doc = 0);
+  bool saveAs();
+  /// Saves \a Doc under \a fileName from now on (Save As without its
+  /// dialogs: the caller checked the name).
+  bool saveDocumentAs(QucsDoc *Doc, const QString &fileName);
   /// The document in tab \a No of the active pane; the current one for
   /// No < 0.
   QucsDoc *getDoc(int No = -1);
@@ -578,8 +585,6 @@ private:
   /// The modified marker of a document's tab, in whichever pane it is.
   void setDocumentChanged(QWidget *document, bool changed);
   void printCurrentDocument(bool);
-  bool saveFile(QucsDoc *Doc = 0);
-  bool saveAs();
   void updatePortNumber(QucsDoc *, int);
   int fillComboBox(bool);
   void fillSimulatorsComboBox();

@@ -103,6 +103,7 @@ public:
     QFrame* permissionCard() const { return a_card; }
     QToolButton* allowButton() const { return a_allow; }
     QToolButton* allowEditsButton() const { return a_allowEdits; }
+    QToolButton* allowToolsButton() const { return a_allowTools; }
     QToolButton* denyButton() const { return a_deny; }
     QToolButton* newButton() const { return a_newButton; }
     QLabel* stateLabel() const { return a_stateText; }
@@ -177,7 +178,7 @@ private:
     void updateDirectory();
     void updateComposer();
     void showNextRequest();
-    void answer(bool allow, bool allowEdits);
+    void answer(bool allow, bool allowEdits, bool allowTools = false);
     void handleLink(const QUrl& url);
     QString programSetting() const;
     void findProgram();
@@ -243,6 +244,7 @@ private:
     QLabel* a_cardCount;
     QToolButton* a_allow;
     QToolButton* a_allowEdits;
+    QToolButton* a_allowTools;
     QToolButton* a_deny;
     // The composer.
     QFrame* a_composer;
