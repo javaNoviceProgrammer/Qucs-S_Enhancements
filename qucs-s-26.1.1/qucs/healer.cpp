@@ -265,7 +265,12 @@ QPoint findClosest(const R& points, const QPoint point)
     double min_dist = geom::distance(point, closest);
     for (auto& pt : points) {
         auto d = geom::distance(pt, point);
-        if (d < min_dist) closest = pt;
+        if (d < min_dist) {
+            closest = pt;
+            // (It was never updated: the last point closer than the
+            // first won, not the closest.)
+            min_dist = d;
+        }
     }
     return closest;
 }

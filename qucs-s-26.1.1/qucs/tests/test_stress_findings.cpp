@@ -38,6 +38,7 @@
 #include "extsimkernels/ngspice.h"
 #include "components/property.h"
 #include "graphicsexport.h"
+#include "healer.h"
 
 class TestStressFindings : public QObject
 {
@@ -246,6 +247,41 @@ private slots:
         std::list<Element*> pasted;
         QVERIFY(!sch.paste(&stream, &pasted));
         QVERIFY(pasted.empty());
+    }
+
+    // When a node sits at none of its ports' places, healing moves it to
+    // the closest of them - which findClosest() did not find: it never
+    // lowered its best distance, so the last place closer than the first
+    // won. Here the first place (in x order) is 100 away, 90 is 10 away
+    // and 150 is 50 away: it chose 150.
+    void aMisplacedNodeMovesToTheClosestPort()
+    {
+        struct Recorder : qucs_s::SchematicMutator {
+            std::vector<std::pair<Node*, QPoint>> moves;
+            void moveNode(Node* node, const QPoint& p) override { moves.emplace_back(node, p); }
+        };
+
+        Node node(100, 0);
+        std::vector<std::unique_ptr<Node>> ends;
+        std::list<Wire*> wires;
+        for (const int x : {0, 90, 150}) {
+            auto* w = new Wire(x, 0, x, 100);   // its first end is not at the node
+            ends.push_back(std::make_unique<Node>(x, 100));
+            w->Port1 = &node;
+            node.connect(w);
+            w->Port2 = ends.back().get();
+            ends.back()->connect(w);
+            wires.push_back(w);
+        }
+        const std::list<Component*> components;
+        qucs_s::Healer healer{&components, &wires, {.allowWireReshaping = false, .allowWireRelaying = false}};
+        Recorder recorder;
+        for (auto& action : healer.planHealing()) action->execute(&recorder);
+
+        QCOMPARE(recorder.moves.size(), std::size_t(1));
+        QCOMPARE(recorder.moves.front().first, &node);
+        QCOMPARE(recorder.moves.front().second, QPoint(90, 0));
+        qDeleteAll(wires);
     }
 
     // A paste is parsed by the document current when it began and may be
