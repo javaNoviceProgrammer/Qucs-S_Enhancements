@@ -322,12 +322,15 @@ Target the *classes* from §1, not the individual issues.
   The canvas shows 1,000 characters of a value (`Property::displayText()`)
   and a raster export is fitted into 100 megapixels, 32,000 a side.
   `qucs/tests/test_stress_findings` has a test for each finding (the ones
-  that compile against the old code fail or hang there). Known and left:
-  loading is quadratic in the number of nodes (`provideNode()` searches
-  them all; 16,000 components load in 5 s), and the healer's
-  `noNodesOnWires` invariant fails after some rotations of a whole
-  selection (Debug only; a node that ends up within a unit of a diagonal
-  wire).
+  that compile against the old code fail or hang there). Known and left,
+  written up in [docs/bug_hunts/2026-09-24-stress.md](docs/bug_hunts/2026-09-24-stress.md):
+  loading and every healing edit are quadratic in the size of the
+  schematic (a node search and all-pairs checks over the whole document;
+  at 16,000 components a load takes 3 s and a rotate of one resistor 9 s),
+  and two healer invariants fail - a node left within a unit or two of a
+  diagonal wire without being connected, and labelled nodes with nothing
+  under them when a component's library file is not found (Debug aborts;
+  Release logs).
 - Infrastructure that fell out of 1.3: the core sources are an object
   library (`qucs-core`) shared by the executable and `qucs/tests/`; the
   globals moved from `main.cpp` to `globals.cpp`; and the top-level CMake no
