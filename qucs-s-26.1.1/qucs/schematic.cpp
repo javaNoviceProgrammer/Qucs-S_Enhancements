@@ -907,6 +907,20 @@ void Schematic::PostPaintEvent(
 }
 
 // ---------------------------------------------------
+// The mouse handler the application has chosen, called on its MouseActions:
+// the handler and the object fetched first, then the call. Written as one
+// expression, (a_App->view->*(a_App->MousePressAction))(...), GCC's
+// -fsanitize=vptr reported the first press on a canvas as a member access
+// through a stack address that is no QucsApp (CI, Linux, GCC 13) - although
+// a_App had passed the same check two lines before, and clang's vptr check
+// never fired on the same walk; in two steps it passes.
+template <typename Handler, typename... Args>
+void Schematic::callView(Handler handler, Args... args)
+{
+    MouseActions* view = a_App->view;
+    (view->*handler)(args...);
+}
+
 void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
 {
     a_App->view->dropStaleElements(this);
@@ -953,7 +967,7 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
     }
 
     if (a_App->MouseMoveAction)
-        (a_App->view->*(a_App->MouseMoveAction))(this, Event);
+        callView(a_App->MouseMoveAction, this, Event);
 }
 
 // -----------------------------------------------------------
@@ -977,7 +991,7 @@ void Schematic::contentsMousePressEvent(QMouseEvent *Event)
             || a_App->MousePressAction == &MouseActions::MPressWire2)
         {
             if (a_App->MousePressAction) {
-                (a_App->view->*(a_App->MousePressAction))(this, Event, inModel.x(), inModel.y());
+                callView(a_App->MousePressAction, this, Event, inModel.x(), inModel.y());
             }
             return;
         }
@@ -986,7 +1000,7 @@ void Schematic::contentsMousePressEvent(QMouseEvent *Event)
         a_App->view->rightPressMenu(this, Event, inModel.x(), inModel.y());
         if (a_App->MouseReleaseAction)
             // Is not called automatically because menu has focus.
-            (a_App->view->*(a_App->MouseReleaseAction))(this, Event);
+            callView(a_App->MouseReleaseAction, this, Event);
         return;
     }
 
@@ -999,7 +1013,7 @@ void Schematic::contentsMousePressEvent(QMouseEvent *Event)
     }
 
     if (a_App->MousePressAction)
-        (a_App->view->*(a_App->MousePressAction))(this, Event, inModel.x(), inModel.y());
+        callView(a_App->MousePressAction, this, Event, inModel.x(), inModel.y());
 }
 
 // -----------------------------------------------------------
@@ -1013,7 +1027,7 @@ void Schematic::contentsMouseReleaseEvent(QMouseEvent *Event)
     }
 
     if (a_App->MouseReleaseAction)
-        (a_App->view->*(a_App->MouseReleaseAction))(this, Event);
+        callView(a_App->MouseReleaseAction, this, Event);
 }
 
 // -----------------------------------------------------------
@@ -1021,7 +1035,7 @@ void Schematic::contentsMouseDoubleClickEvent(QMouseEvent *Event)
 {
     a_App->view->dropStaleElements(this);
     if (a_App->MouseDoubleClickAction)
-        (a_App->view->*(a_App->MouseDoubleClickAction))(this, Event);
+        callView(a_App->MouseDoubleClickAction, this, Event);
 }
 
 void Schematic::print(QPrinter*, QPainter* painter, bool printAll,

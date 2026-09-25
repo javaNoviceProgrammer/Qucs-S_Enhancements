@@ -325,6 +325,11 @@ public:
   std::unordered_set<const Element*> heldElements() const;
 
 private:
+  /// Calls the mouse handler the application has chosen on its
+  /// MouseActions (a_App->view).
+  template <typename Handler, typename... Args>
+  void callView(Handler handler, Args... args);
+
   // What a_Components, a_Wires, a_Nodes and a_Diagrams point to in symbol
   // mode, where only paintings belong: empty, unless a tool put something
   // there anyway. Each document has its own (they were once shared by all
