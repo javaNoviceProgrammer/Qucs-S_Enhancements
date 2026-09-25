@@ -15,7 +15,9 @@
 #include <QByteArray>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QList>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -69,7 +71,7 @@ struct TurnResult {
 /// partial message, permission prompts to its host (us), and the
 /// options that are set.
 struct Options {
-    QString permissionMode;   ///< empty: ask; acceptEdits, plan, bypassPermissions
+    QString permissionMode;   ///< empty: ask; acceptEdits, auto, plan, bypassPermissions
     QString model;            ///< empty: the program's default; opus, sonnet, haiku, ...
     QString resume;           ///< a session to continue
     QString appendSystemPrompt;
@@ -88,6 +90,57 @@ QString toolSubject(const QString& tool, const QJsonObject& input, const QString
 
 /// What Claude is told about where it runs, after its own system prompt.
 QString qucsSystemPrompt();
+
+/// Whether \a mode is the one where Claude asks before acting: not named,
+/// or as the program names it ("default", "manual").
+bool isAskMode(const QString& mode);
+
+/// "claude-haiku-4-5-20251001": Haiku 4.5; "opus": Opus.
+QString modelName(const QString& id);
+
+/// A model to choose: one the program offers, or one Qucs-S knows of.
+struct ModelChoice {
+    QString value;          ///< what --model is given; empty: the program's default
+    QString name;           ///< "Fable 5.1", "Opus 5 with 1M context"
+    QString description;    ///< what it is for: "Efficient for routine tasks"
+    QString resolved;       ///< the model it is: claude-fable-5-1
+    bool autoMode = false;  ///< it works in auto mode
+    bool listed = false;    ///< the program offered it
+};
+
+/// The models the program offers (the "models" of its answer to
+/// "initialize"; the default first), then the newest of each family that
+/// it does not offer, by their full names.
+QList<ModelChoice> modelChoices(const QJsonArray& listed);
+
+/*!
+ * Asks the claude program which models it offers: it is started, asked
+ * ("initialize", as its SDKs do) and its input closed, so that it ends
+ * after the answer. Nothing goes to the model.
+ */
+class ModelQuery : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit ModelQuery(QObject* parent = nullptr);
+    ~ModelQuery() override;
+
+    /// Asks \a program, run in \a dir (the home directory when empty).
+    void start(const QString& program, const QString& dir);
+    bool isRunning() const { return a_process != nullptr; }
+
+signals:
+    /// Its "models"; empty when it did not answer.
+    void finished(const QJsonArray& models);
+
+private:
+    void finish();
+
+    QProcess* a_process = nullptr;
+    QByteArray a_output;
+    QTimer* a_timeout;
+};
 
 /*!
  * A conversation with Claude Code. The first prompt starts the claude
@@ -117,6 +170,9 @@ public:
     /// For the next start; a running program ends after its turn.
     void setPermissionMode(const QString& mode);
     QString permissionMode() const { return a_mode; }
+    /// The mode the program said it works in (not every model has every
+    /// mode: auto falls back to asking); empty until it says.
+    QString permissionModeInUse() const { return a_modeInUse; }
     void setModel(const QString& model);
     QString model() const { return a_model; }
     void setAppendSystemPrompt(const QString& prompt) { a_systemPrompt = prompt; }
@@ -204,6 +260,7 @@ private:
 
     QString a_sessionId;
     QString a_modelInUse;
+    QString a_modeInUse;
     QString a_version;
     bool a_stopping = false;   // stop() is ending the program
     double a_reportedCost = 0.0;       // the program's total so far (it counts from its start)

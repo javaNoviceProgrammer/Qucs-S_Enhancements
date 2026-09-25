@@ -203,7 +203,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   and cost. What Claude may do is chosen in the dock's menu: *Ask Before
   Acting* (a card asks before a command runs or a file changes — *Allow*,
   *Allow All Edits* for the rest of the conversation, *Deny*), *Accept
-  Edits*, *Plan Only* or *Bypass Permissions*; so is the model. A schematic
+  Edits*, *Auto* (Claude acts without asking and a safety check stops
+  risky actions; not every model has it, and the menu says which do not),
+  *Plan Only* or *Bypass Permissions*. So is the model: the models the
+  installed `claude` offers, by what they are (*Fable 5.1*, *Opus 5 with
+  1M context*), the newest of each family it does not offer yet (*Opus
+  5.5* — which needs a recent Claude Code), or any other by its name. The
+  header shows the model and the mode. A schematic
   Claude changed that is open without unsaved changes is loaded again. The
   status bar chip says what Claude is doing — thinking, the tool it runs,
   *needs you* when it waits for an answer — and shows or hides the dock.
@@ -946,7 +952,9 @@ the dock itself with a shell script that answers as `claude` does (stream
 events, a permission request, a result), and the GUI monkey has one
 (`qucs/tests/monkey_claude.sh`) that also dies now and then. No test
 reaches a `claude` installed on the machine: `QUCS_CLAUDE`, which names
-the program over the settings, points nowhere for them.
+the program over the settings, points nowhere for them. The same script
+answers the dock's question for the models on offer, and the test checks
+the menu it builds and which models have auto mode.
 
 `qucs/tests/test_netlist_audit` places every built-in component on a
 schematic and checks that it netlists in every flavour without a crash and

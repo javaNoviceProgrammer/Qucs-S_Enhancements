@@ -972,9 +972,22 @@ existing demand.
   bar chip (`statusClaude`) shows the session's state and toggles the
   dock. The program is found by the setting, `PATH`, then its installers'
   places (`findProgram()`); `QUCS_CLAUDE` overrides, and the tests point it
-  nowhere. The protocol was checked against Claude Code 2.1.267;
-  `qucs/tests/test_claude_code` drives the session and the dock with a
-  shell script that answers as claude does.
+  nowhere. The models in the menu are the program's own:
+  `qucs_s::claude::ModelQuery` starts it once when the dock is first shown,
+  sends the `control_request` `initialize` its SDKs send and closes its
+  input, so it answers (its `models`: value, resolved model, description,
+  `supportsAutoMode`) and ends without a model call (under a second);
+  `modelChoices()` names them from their descriptions, adds the newest of
+  each family the program does not list (Opus 5.5 by its full name - the
+  aliases stand for what that version thought newest) and the settings keep
+  the list for the next start. *Auto* permission mode (`--permission-mode
+  auto`) is offered where the model has it; the program falls back to
+  asking otherwise and says so only in `system/init`'s `permissionMode`,
+  which the session compares with what it asked for and reports once. The
+  protocol was checked against Claude Code 2.1.267 (which answers Opus 5.5
+  with "version 2.1.280 or newer is required", shown as the turn's
+  failure); `qucs/tests/test_claude_code` drives the session, the model
+  query and the dock with shell scripts that answer as claude does.
 - *Done:* **Login-shell environment at start** (`qucs/shellenvironment.*`).
   `importLoginShellEnvironment()` runs `$SHELL -l -i -c "printf marker;
   exec env -0"` (stdin from /dev/null, killed at a timeout; then `-l`

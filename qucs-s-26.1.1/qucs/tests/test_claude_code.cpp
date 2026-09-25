@@ -8,8 +8,12 @@
 #include <QtTest>
 #include <QApplication>
 #include <QDockWidget>
+#include <QAction>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QPlainTextEdit>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -30,6 +34,8 @@
 #include "components/component.h"
 #include "extsimkernels/spicecompat.h"
 
+using qucs_s::claude::ModelChoice;
+using qucs_s::claude::ModelQuery;
 using qucs_s::claude::PermissionRequest;
 using qucs_s::claude::Session;
 using qucs_s::claude::State;
@@ -88,6 +94,21 @@ while IFS= read -r line; do
       ;;
     *'"subtype":"interrupt"'*)
       echo '{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":300,"num_turns":1,"result":"","total_cost_usd":0.001,"permission_denials":[]}'
+      ;;
+  esac
+done
+)SH";
+
+// What claude answers when it is asked which models it offers: its
+// default, an alias, a model by its full name - and then it ends, its
+// input closed.
+const char* const kLister = R"SH(#!/bin/sh
+printf '%s\n' "$@" > "$QUCS_FAKE_DIR/lister-args"
+while IFS= read -r line; do
+  case "$line" in
+    *'"subtype":"initialize"'*)
+      printf '%s\n' "$line" > "$QUCS_FAKE_DIR/lister-request"
+      printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"qucs-models","response":{"models":[{"value":"default","resolvedModel":"claude-opus-5[1m]","displayName":"Default","description":"Opus 5 with 1M context \u00b7 Best for everyday tasks","supportsAutoMode":true},{"value":"claude-fable-5-1[1m]","resolvedModel":"claude-fable-5-1","displayName":"Fable","description":"Fable 5.1 \u00b7 Most capable","supportsAutoMode":true},{"value":"haiku","resolvedModel":"claude-haiku-4-5-20251001","displayName":"Haiku","description":"Haiku 4.5 \u00b7 Fastest"}]}}}'
       ;;
   esac
 done
@@ -386,6 +407,168 @@ private slots:
         none.setProgram(QString());
         QCOMPARE(none.state(), State::NotFound);
         QVERIFY(!none.send("Hello"));
+    }
+
+    // The models to choose: what the program offers, named by what they
+    // are (its descriptions: "Fable 5.1"), the default first; then the
+    // newest of each family it does not offer, by their full names.
+    void theModelsAreTheProgramsAndTheNewest()
+    {
+        const auto model = [](const char* value, const char* resolved, const QString& description, bool autoMode) {
+            QJsonObject o{{"value", value}, {"resolvedModel", resolved}, {"displayName", "x"}, {"description", description}};
+            if (autoMode) o.insert("supportsAutoMode", true);
+            return o;
+        };
+        const QString dot = QString::fromUtf8(" \u00b7 ");
+        const QJsonArray listed{model("default", "claude-opus-5[1m]", "Opus 5 with 1M context" + dot + "Best for everyday tasks", true),
+                                model("claude-fable-5-1[1m]", "claude-fable-5-1", "Fable 5.1" + dot + "Most capable", true),
+                                model("sonnet", "claude-sonnet-5", "Sonnet 5" + dot + "Efficient", true),
+                                model("haiku", "claude-haiku-4-5-20251001", "Haiku 4.5" + dot + "Fastest", false),
+                                model("opus", "claude-opus-5", "Opus 5" + dot + "Best for everyday tasks", true)};
+        const QList<ModelChoice> choices = qucs_s::claude::modelChoices(listed);
+        const auto find = [&choices](const QString& value) -> const ModelChoice* {
+            for (const ModelChoice& c : choices)
+                if (c.value == value) return &c;
+            return nullptr;
+        };
+        QCOMPARE(choices.first().value, QString());   // the default: no --model
+        QCOMPARE(choices.first().name, QStringLiteral("Default (Opus 5 with 1M context)"));
+        QVERIFY(choices.first().listed);
+        QCOMPARE(find("claude-fable-5-1[1m]")->name, QStringLiteral("Fable 5.1"));
+        QCOMPARE(find("claude-fable-5-1[1m]")->description, QStringLiteral("Most capable"));
+        QCOMPARE(find("opus")->name, QStringLiteral("Opus 5"));
+        QVERIFY(find("sonnet")->autoMode);
+        QVERIFY(!find("haiku")->autoMode);
+        // The newest it does not offer: Opus 5.5, by its full name; not
+        // Fable 5.1, Sonnet 5 or Haiku 4.5 again.
+        QVERIFY(find("claude-opus-5-5") != nullptr);
+        QCOMPARE(find("claude-opus-5-5")->name, QStringLiteral("Opus 5.5"));
+        QVERIFY(!find("claude-opus-5-5")->listed);
+        QVERIFY(find("claude-opus-5-5")->autoMode);
+        QCOMPARE(choices.size(), listed.size() + 1);
+
+        // A model the program was told of, which it calls a custom model.
+        const QList<ModelChoice> custom = qucs_s::claude::modelChoices(
+            {model("claude-opus-5-5", "claude-opus-5-5", "Custom model", true)});
+        QCOMPARE(custom.at(1).name, QStringLiteral("Opus 5.5"));
+        QCOMPARE(std::count_if(custom.cbegin(), custom.cend(), [](const ModelChoice& c) { return c.value == "claude-opus-5-5"; }), 1);
+
+        // Nothing heard from the program: its default, and the newest.
+        const QList<ModelChoice> none = qucs_s::claude::modelChoices({});
+        QStringList names;
+        for (const ModelChoice& c : none) names << c.name;
+        QCOMPARE(names, (QStringList{"Default", "Opus 5.5", "Fable 5.1", "Sonnet 5", "Haiku 4.5"}));
+        QCOMPARE(qucs_s::claude::modelName("claude-opus-5[1m]"), QStringLiteral("Opus 5"));
+    }
+
+    // The program is asked which models it offers - nothing goes to a
+    // model - and it ends; the dock's menu is what it said, kept for the
+    // next start. A program that does not answer changes nothing.
+    void theProgramIsAskedForItsModels()
+    {
+        skipWithoutShell();
+        QFile::remove(dir.filePath("lister-request"));
+        ModelQuery query;
+        QSignalSpy listed(&query, &ModelQuery::finished);
+        query.start(script("lister", kLister), fresh("listwork"));
+        QVERIFY(query.isRunning());
+        QVERIFY(listed.wait(10000));
+        QVERIFY(!query.isRunning());
+        QCOMPARE(listed.last().at(0).toJsonArray().size(), 3);
+        QVERIFY(read(dir.filePath("lister-request")).contains("\"subtype\":\"initialize\""));
+        const QStringList args = read(dir.filePath("lister-args")).split('\n');
+        QVERIFY(!args.contains("--model"));
+        QVERIFY(!args.contains("--resume"));
+
+        query.start(script("broken", kBroken), QString());
+        QVERIFY(listed.wait(10000));
+        QVERIFY(listed.last().at(0).toJsonArray().isEmpty());
+
+        {
+            ClaudeCodePanel panel;
+            panel.setDefaultDirectory(fresh("listdock"));
+            panel.session()->setProgram(script("lister", kLister));
+            panel.show();
+            QSignalSpy asked(panel.modelQuery(), &ModelQuery::finished);
+            QVERIFY(asked.wait(10000));
+            QStringList names;
+            for (QAction* a : panel.modelActions()) names << a->text();
+            QCOMPARE(names, (QStringList{"Default (Opus 5 with 1M context)", "Fable 5.1", "Haiku 4.5", "Opus 5.5",
+                                         "Sonnet 5", "Other…"}));
+        }
+        // The next dock has the list at once.
+        ClaudeCodePanel next;
+        QVERIFY(std::any_of(next.modelActions().cbegin(), next.modelActions().cend(),
+                            [](QAction* a) { return a->text() == "Fable 5.1"; }));
+    }
+
+    // Auto mode: Claude acts without asking and a safety check stops risky
+    // actions. Not every model has it - the menu says so - and a program
+    // that falls back to asking is reported.
+    void autoModeIsOfferedWhereTheModelHasIt()
+    {
+        qucs_s::claude::Options options;
+        options.permissionMode = "auto";
+        const QStringList args = qucs_s::claude::arguments(options);
+        QCOMPARE(args.at(args.indexOf("--permission-mode") + 1), QStringLiteral("auto"));
+
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("autodock"));
+        panel.session()->setProgram("claude");   // (not run)
+        const auto action = [](const QList<QAction*>& actions, const QString& data) -> QAction* {
+            for (QAction* a : actions)
+                if (a->data().toString() == data) return a;
+            return nullptr;
+        };
+        QAction* autoMode = action(panel.permissionActions(), "auto");
+        QVERIFY(autoMode != nullptr);
+        QCOMPARE(autoMode->text(), QStringLiteral("Auto"));
+        autoMode->trigger();
+        QVERIFY(autoMode->isChecked());
+        QCOMPARE(panel.session()->permissionMode(), QStringLiteral("auto"));
+        QVERIFY(panel.modelLabel()->text().endsWith("auto"));
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("safety check"));
+
+        // Haiku has no auto mode (the alias the program offers, or the
+        // full name when it has not been asked).
+        QAction* haiku = nullptr;
+        for (QAction* a : panel.modelActions())
+            if (a->text() == "Haiku 4.5") haiku = a;
+        QVERIFY(haiku != nullptr);
+        haiku->trigger();
+        QVERIFY(panel.session()->model().contains("haiku"));
+        QVERIFY(!autoMode->isEnabled());
+        QVERIFY(autoMode->toolTip().contains("Haiku 4.5"));
+        QVERIFY(!panel.modelLabel()->text().contains("auto"));   // it will ask
+        action(panel.modelActions(), "claude-opus-5-5")->trigger();
+        QVERIFY(autoMode->isEnabled());
+        QVERIFY(panel.modelLabel()->text().startsWith("Opus 5.5"));
+
+        // The program says in which mode it works: asking, with a model
+        // without auto mode - once, not at each turn.
+        Session s;
+        s.setProgram("claude");
+        s.setPermissionMode("auto");
+        QSignalSpy notices(&s, &Session::notice);
+        s.handleLine(R"({"type":"system","subtype":"init","session_id":"a","model":"claude-haiku-4-5-20251001","permissionMode":"default"})");
+        QCOMPARE(notices.count(), 1);
+        QVERIFY(notices.last().at(0).toString().contains("Auto mode is not available with Haiku 4.5"));
+        QCOMPARE(s.permissionModeInUse(), QStringLiteral("default"));
+        s.handleLine(R"({"type":"system","subtype":"init","session_id":"a","model":"claude-haiku-4-5-20251001","permissionMode":"default"})");
+        QCOMPARE(notices.count(), 1);
+        Session fine;
+        fine.setProgram("claude");
+        fine.setPermissionMode("auto");
+        QSignalSpy quiet(&fine, &Session::notice);
+        fine.handleLine(R"({"type":"system","subtype":"init","session_id":"b","model":"claude-opus-5-5","permissionMode":"auto"})");
+        QCOMPARE(quiet.count(), 0);
+
+        // As it was, for the tests after.
+        action(panel.permissionActions(), "")->trigger();
+        action(panel.modelActions(), "")->trigger();
+        QCOMPARE(panel.session()->model(), QString());
+        QVERIFY(!panel.modelLabel()->text().contains("auto"));
     }
 
     // The dock: the conversation as it goes, the permission card and its
