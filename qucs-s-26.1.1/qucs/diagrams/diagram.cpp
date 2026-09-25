@@ -1721,7 +1721,7 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
     double rMAXq = Axis->up * Axis->up;
     int theta, beta, phi, len, m, x, y;
 
-    int R1 = lround(x2 / Axis->up);
+    int R1 = gridPixel(std::round(x2 / Axis->up));
     // ....................................................
     // draw arcs with im(z)=const
     for (m = 1; m < GridY; m++) {
@@ -1729,7 +1729,7 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
         n_cos = cos(n_sin);
         n_sin = sin(n_sin);
         im = (1.0 - n_cos) / n_sin * pow(Axis->up, 0.7); // up^0.7 is beauty correction
-        y = lround(im / Axis->up * x2);  // diameter
+        y = gridPixel(std::round(im / Axis->up * x2));  // diameter
 
         if (Axis->up <= 1.0) {       // Smith chart with |r|=1
             beta = int(16.0 * 180.0 * atan2(n_sin - im, n_cos - 1.0) / pi - 0.5);
@@ -1789,7 +1789,7 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
 
     for (m = 1; m < GridX; m++) {
         im = m * (Axis->up + 1.0) / GridX - Axis->up;
-        y = lround((1.0 - im) / Axis->up * double(dx2));  // diameter
+        y = gridPixel(std::round((1.0 - im) / Axis->up * double(dx2)));  // diameter
 
         if (Zplane)
             x = ((x2 + R1) >> 1) - y;
@@ -1825,7 +1825,7 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
 
         // vertical line Re(r)=1 (visible only if |r|>1)
         if (Zplane) x = y;
-        y = lround(sqrt(rMAXq - 1) / Axis->up * dx2);
+        y = gridPixel(std::round(sqrt(rMAXq - 1) / Axis->up * dx2));
         if (Above) m = y;
         else m = 0;
         if (!Below) y = 0;
@@ -1912,8 +1912,8 @@ void Diagram::createPolarDiagram(Axis *Axis, int Mode) {
 
         double zDstep = zD;
         double GridNum = 0.0;
-        for (i = int(numGrids); i > 1; i--) {    // create all grid circles
-            z = int(zD);
+        for (i = std::min(gridPixel(numGrids), MaxGridLines); i > 1; i--) {    // create all grid circles
+            z = gridPixel(zD);
             GridNum += GridStep;
             QString lbl;
             lbl = numberText(GridNum, GridStep);
@@ -2114,7 +2114,7 @@ bool Diagram::calcAxisLogScale(Axis *Axis, int &z, double &zD,
     if (zD > 9.5 * zDstep) zDstep *= 10.0;
 
     corr = double(len) / log10(Axis->up / Axis->low);
-    z = lround(corr * log10(zD / Axis->low)); // int(..) implies floor(..)
+    z = gridPixel(std::round(corr * log10(zD / Axis->low))); // int(..) implies floor(..)
 
     if (mirror) {   // set back values ?
 	double tmp = Axis->low;
@@ -2137,14 +2137,15 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
 
     bool back = false;
     if (Axis->log) {
+        // (Negated, so that nan is invalid too.)
         if (Axis->autoScale) {
-            if (Axis->max <= 0.0 or Axis->min <= 0.0) return false;  // invalid
-        } else if (Axis->limit_min <= 0.0 or Axis->limit_max <= 0.0) return false;  // invalid
+            if (!(Axis->max > 0.0 and Axis->min > 0.0)) return false;  // invalid
+        } else if (!(Axis->limit_min > 0.0 and Axis->limit_max > 0.0)) return false;  // invalid
 
         back = calcAxisLogScale(Axis, z, zD, zDstep, corr, y2);
 
         if (back) z = y2;
-        while ((z <= y2) && (z >= 0)) {    // create all grid lines
+        for (int gridLines = 0; (z <= y2) && (z >= 0) && gridLines < MaxGridLines; ++gridLines) {    // create all grid lines
             if (Axis->GridOn)
                 if (z < y2)
                     if (z > 0) {
@@ -2176,10 +2177,10 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
             zD += zDstep;
             if (zD > 9.5 * zDstep) zDstep *= 10.0;
             if (back) {
-                z = lround(corr * log10(zD / fabs(Axis->up))); // int() implies floor()
+                z = gridPixel(std::round(corr * log10(zD / fabs(Axis->up)))); // int() implies floor()
                 z = y2 - z;
             } else
-                z = lround(corr * log10(zD / fabs(Axis->low)));// int() implies floor()
+                z = gridPixel(std::round(corr * log10(zD / fabs(Axis->low))));// int() implies floor()
         }
     } else {  // not logarithmical
         back = calcAxisScale(Axis, GridNum, zD, zDstep, GridStep, double(y2));
@@ -2189,8 +2190,8 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
         else Expo = log10(fabs(Axis->up));
 
         zD += 0.5;     // perform rounding
-        z = int(zD);   //  "int(...)" implies "floor(...)"
-        while ((z <= y2) && (z >= 0)) {  // create all grid lines
+        z = gridPixel(zD);   //  "int(...)" implies "floor(...)"
+        for (int gridLines = 0; (z <= y2) && (z >= 0) && gridLines < MaxGridLines; ++gridLines) {  // create all grid lines
             if (fabs(GridNum) < 0.01 * pow(10.0, Expo)) GridNum = 0.0;// make 0 really 0
             tmp = numberText(GridNum, GridStep);
 
@@ -2208,7 +2209,7 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
                         Lines.prepend(new qucs::Line(0, z, x2, z, GridPen));  // y grid
             Lines.append(new qucs::Line(x0 - 5, z, x0 + 5, z, QPen(Qt::black, 0))); // y marks
             zD += zDstep;
-            z = int(zD);
+            z = gridPixel(zD);
         }
     } // of "if(ylog) ... else ..."
     if (x0 == 0) x1 = maxWidth + 14;

@@ -45,7 +45,6 @@ private:
     QStringList a_sweeps;
 
     bool checkNodeNames(QStringList &incompat);
-    static QString collectSpiceinit(Schematic* sch);
     bool findMathFuncInc(QString &mathf_inc);
     QString getParentSWPscript(Component *pc_swp, QString sim, bool before, bool &hasDblSWP);
     QString getParentSWPCntVar(Component *pc_swp, QString sim);
@@ -55,6 +54,8 @@ private:
 
 public:
     explicit Ngspice(Schematic* schematic, QObject *parent = 0);
+    /// The .spiceinit blocks of \a sch and its subcircuits (each once).
+    static QString collectSpiceinit(Schematic* sch);
     void SaveNetlist(QString filename, bool netlist2Console);
     void setSimulatorCmd(QString cmd);
     void setSimulatorParameters(QString parameters);

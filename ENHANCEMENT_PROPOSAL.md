@@ -268,6 +268,66 @@ Target the *classes* from §1, not the individual issues.
   contains, keep only complete rows, and the conversion drops any short row
   before indexing. `qucs/tests/test_simout` covers it (three of its cases
   hang on the pre-fix code). 3,300 mutants clean so far.
+- 1.10 (new): stress. The fuzzers only reach what a file can say; the
+  interactive half of the application had no such test. `qucs/tests/
+  test_gui_monkey` walks the main window at random over copies of the
+  examples (gestures in every mouse mode, drags interrupted by undo or
+  delete, the menu commands, tabs, symbol view, hierarchy, component
+  placement, every dialog cancelled or filled with odd values and
+  accepted) under ASan/UBSan, with a watchdog for hangs. On the first 96
+  walks of 1,500 steps, 94 died. What it found:
+  - the element under the mouse outlived its element: a double click on a
+    wire is press, release, double click, and the release's healing merged
+    the wire away before the double click edited it; a delete in the
+    middle of a drag, or of a Move-mode drag, freed what the drag held.
+    `Schematic::holds()` / `heldElements()` say what the view shows now,
+    and `MouseActions::dropStaleElements()` runs before every handler and
+    every command that reads `focusElement` (five in `QucsApp`);
+  - one component in two documents: the lists symbol mode uses for
+    components, wires, nodes and diagrams were globals, and a double click
+    in the symbol view edited the component picked in the schematic view,
+    whose dialog then put the copy into those shared lists - so every open
+    symbol listed it and closing one document freed it for all. They are
+    per document now (and freed with it);
+  - the healer freed a wire twice (both its ends misplaced plan its
+    deletion twice) and left a wire with a lost end in the list, which the
+    next step dereferenced and a later action of the same heal split
+    towards the end it no longer had; a node two ports of one component share (port
+    symbols dragged onto each other) was freed twice on Save All;
+  - a zoom rectangle released outside the canvas (Debug abort), a paste
+    with nothing on the clipboard, a labelled wire of no length (0/0),
+    "1e308k" in a component dialog (log10(inf) to int), the search dialog
+    closed after its document, a subcircuit instance without properties;
+  - a hang: limits set by a zoom rectangle on a collapsed axis became nan,
+    the log axis took nan for valid and its grid loop never moved on. All
+    six grid loops are bounded (`Diagram::MaxGridLines`), nan limits are
+    invalid, and every grid position goes through `Diagram::gridPixel()`.
+  After the fixes, 412 further walks of 2,000 steps turned up two more
+  (the shared node and the split wire above); what still stops a walk
+  now and then is a Debug-only healer invariant (below). 3,000 more
+  schematic mutants and 1,500 mutants of a real NgSweep run's output
+  (`ngsweep::datasetBlocks`, new code) came through clean.
+  A scale suite (chains of 16,000 components, 160x160 wire meshes,
+  5-million-point waveforms in every diagram type, 20,000-curve sweep
+  families, 400 diagrams, 400-deep hierarchies, 8,000 labels on one net)
+  found three more: a subcircuit that includes itself (directly or through
+  others) sent the four walks that collect SPICE libraries, library files,
+  Verilog-A files and .spiceinit blocks down the hierarchy until the stack
+  ran out (the netlister itself always knew each file once) - they keep a
+  visited set now; a property value of a megabyte (a PWL list of many
+  thousand points) made the unit patterns of `spicecompat::normalize_value`
+  backtrack over every split of its digits, and the netlist never came
+  (possessive quantifiers: 0.3 s for 10 MB); and the same value, shown on
+  the canvas, stretched the drawing so that an image export asked for 43 GB.
+  The canvas shows 1,000 characters of a value (`Property::displayText()`)
+  and a raster export is fitted into 100 megapixels, 32,000 a side.
+  `qucs/tests/test_stress_findings` has a test for each finding (the ones
+  that compile against the old code fail or hang there). Known and left:
+  loading is quadratic in the number of nodes (`provideNode()` searches
+  them all; 16,000 components load in 5 s), and the healer's
+  `noNodesOnWires` invariant fails after some rotations of a whole
+  selection (Debug only; a node that ends up within a unit of a diagonal
+  wire).
 - Infrastructure that fell out of 1.3: the core sources are an object
   library (`qucs-core`) shared by the executable and `qucs/tests/`; the
   globals moved from `main.cpp` to `globals.cpp`; and the top-level CMake no

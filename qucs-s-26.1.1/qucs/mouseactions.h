@@ -61,6 +61,12 @@ public:
       close. Elements floating in a paste operation live outside the
       document and are kept. */
   void forgetDocumentElements();
+  /** Drops the cached pointers \a doc no longer holds (Schematic::holds):
+      elements a tool freed or replaced since they were picked - the
+      healer merging the wire under the mouse, a delete in the middle of
+      a drag - or elements of the other view (schematic/symbol). Called
+      before any handler runs, so that they only ever see live elements. */
+  void dropStaleElements(Schematic* doc);
   QMouseEvent *focusMEvent;
 
   int  MAx1, MAy1,MAx2, MAy2, MAx3, MAy3;  // cache for mouse movements

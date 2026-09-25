@@ -199,7 +199,7 @@ int Component::textSize(int &textPropertyMaxWidth, int &totalTextPropertiesHeigh
         if (!(p->display)) continue;
 
         // Update overall width if text of the current property is wider
-        auto w = metrics.size(flags, p->Name + "=" + p->Value).width();
+        auto w = metrics.size(flags, p->displayText()).width();
         if (w > textPropertyMaxWidth) {
             textPropertyMaxWidth = w;
         }
@@ -299,7 +299,7 @@ int Component::getTextSelected(int point_x, int point_y) {
             continue;
         }
 
-        QRect text_br{{tx, bounding_rect_top}, font_metrics.size(flags, prop->Name + "=" + prop->Value)};
+        QRect text_br{{tx, bounding_rect_top}, font_metrics.size(flags, prop->displayText())};
         if (text_br.contains(click)) {
             return text_index;
         }
@@ -669,7 +669,7 @@ bool Component::rotate() noexcept {
     for (Property *pp : Props)
         if (pp->display) {
             // get width of text
-            tmp = metrics.boundingRect(pp->Name + "=" + pp->Value).width();
+            tmp = metrics.boundingRect(pp->displayText()).width();
             if (tmp > dx) dx = tmp;
             dy += metrics.lineSpacing();
         }
@@ -835,7 +835,7 @@ bool Component::mirrorY() noexcept {
     for (Property *pp : Props)
         if (pp->display) {
             // get width of text
-            tmp = metrics.boundingRect(pp->Name + "=" + pp->Value).width();
+            tmp = metrics.boundingRect(pp->displayText()).width();
             if (tmp > dx) dx = tmp;
         }
     if ((ty > y1) && (ty < y2)) tx = -tx - dx;     // mirror text position

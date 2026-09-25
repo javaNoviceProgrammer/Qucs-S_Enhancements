@@ -39,12 +39,6 @@
 #include "misc.h"
 #include "qucs_assert.h"
 
-// just dummies for empty lists
-std::list<Wire*> SymbolWires;
-std::list<Node*> SymbolNodes;
-std::list<Diagram*> SymbolDiags;
-std::list<Component*> SymbolComps;
-
 /**
     If \c point does not lie within \c rect then returns a new
     rectangle made by enlarging the source rectangle to include
@@ -133,6 +127,10 @@ Schematic::~Schematic()
 {
     deleteAllElements();
     deleteSymbolPaintings();
+    for (auto* pc : a_SymbolComps) delete pc;
+    for (auto* pw : a_SymbolWires) delete pw;
+    for (auto* pn : a_SymbolNodes) delete pn;
+    for (auto* pd : a_SymbolDiags) delete pd;
     qDeleteAll(a_undoAction);
     qDeleteAll(a_undoSymbol);
 }
@@ -151,6 +149,50 @@ void Schematic::deleteAllElements()
     a_DocNodes.clear();
     a_DocDiags.clear();
     a_DocPaints.clear();
+}
+
+std::unordered_set<const Element*> Schematic::heldElements() const
+{
+    std::unordered_set<const Element*> held;
+    held.insert(a_Components->begin(), a_Components->end());
+    held.insert(a_Paintings->begin(), a_Paintings->end());
+    for (const Wire* w : *a_Wires) {
+        held.insert(w);
+        if (w->label() != nullptr) held.insert(w->label());
+    }
+    for (const Node* n : *a_Nodes) {
+        held.insert(n);
+        if (n->label() != nullptr) held.insert(n->label());
+    }
+    for (const Diagram* d : *a_Diagrams) {
+        held.insert(d);
+        for (const Graph* g : d->Graphs) {
+            held.insert(g);
+            held.insert(g->Markers.begin(), g->Markers.end());
+        }
+    }
+    return held;
+}
+
+bool Schematic::holds(const Element* e) const
+{
+    if (e == nullptr) return false;
+    const auto in = [e](const auto& list) {
+        return std::find(list.begin(), list.end(), e) != list.end();
+    };
+    if (in(*a_Components) || in(*a_Paintings)) return true;
+    for (const Wire* w : *a_Wires)
+        if (w == e || (w->label() != nullptr && w->label() == e)) return true;
+    for (const Node* n : *a_Nodes)
+        if (n == e || (n->label() != nullptr && n->label() == e)) return true;
+    for (const Diagram* d : *a_Diagrams) {
+        if (d == e) return true;
+        for (const Graph* g : d->Graphs) {
+            if (g == e) return true;
+            if (std::find(g->Markers.begin(), g->Markers.end(), e) != g->Markers.end()) return true;
+        }
+    }
+    return false;
 }
 
 void Schematic::deleteSymbolPaintings()
@@ -290,11 +332,11 @@ void Schematic::becomeCurrent(bool update)
     }
 
     if (a_symbolMode) {
-        a_Nodes = &SymbolNodes;
-        a_Wires = &SymbolWires;
-        a_Diagrams = &SymbolDiags;
+        a_Nodes = &a_SymbolNodes;
+        a_Wires = &a_SymbolWires;
+        a_Diagrams = &a_SymbolDiags;
         a_Paintings = &a_SymbolPaints;
-        a_Components = &SymbolComps;
+        a_Components = &a_SymbolComps;
 
         // "Schematic" is used to edit usual schematic files (containing
         // a schematic and a subcircuit symbol) and *.sym files (which
@@ -867,6 +909,7 @@ void Schematic::PostPaintEvent(
 // ---------------------------------------------------
 void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
 {
+    a_App->view->dropStaleElements(this);
     const QPoint modelPos = contentsToModel(Event->pos());
     auto xpos = modelPos.x();
     auto ypos = modelPos.y();
@@ -916,6 +959,7 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
 // -----------------------------------------------------------
 void Schematic::contentsMousePressEvent(QMouseEvent *Event)
 {
+    a_App->view->dropStaleElements(this);
     a_App->editText->setHidden(true); // disable text edit of component property
     this->setFocus();
     endKeyboardMove();   // the cursor-key move, if any, is done
@@ -961,6 +1005,7 @@ void Schematic::contentsMousePressEvent(QMouseEvent *Event)
 // -----------------------------------------------------------
 void Schematic::contentsMouseReleaseEvent(QMouseEvent *Event)
 {
+    a_App->view->dropStaleElements(this);
     // End "pan with mouse" action.
     if (Event->button() == Qt::MiddleButton) {
         unsetCursor();
@@ -974,6 +1019,7 @@ void Schematic::contentsMouseReleaseEvent(QMouseEvent *Event)
 // -----------------------------------------------------------
 void Schematic::contentsMouseDoubleClickEvent(QMouseEvent *Event)
 {
+    a_App->view->dropStaleElements(this);
     if (a_App->MouseDoubleClickAction)
         (a_App->view->*(a_App->MouseDoubleClickAction))(this, Event);
 }
@@ -1145,8 +1191,13 @@ void Schematic::paintSchToViewpainter(QPainter* painter, bool printAll) {
 void Schematic::zoomAroundPoint(double offeredScaleChange, QPoint coords, bool viewportRelative=true)
 {
     const double desiredScale = a_Scale * offeredScaleChange;
-    const auto viewportCoords =
+    auto viewportCoords =
         viewportRelative ? coords : coords - QPoint{contentsX(), contentsY()};
+    // A button released outside the canvas (it keeps the mouse while
+    // dragging) or a wheel turned on its border: zoom around the nearest
+    // point of the canvas; renderModel() needs one inside it.
+    viewportCoords.setX(std::clamp(viewportCoords.x(), 0, std::max(0, viewport()->width() - 1)));
+    viewportCoords.setY(std::clamp(viewportCoords.y(), 0, std::max(0, viewport()->height() - 1)));
     const auto focusPoint = viewportToModel(viewportCoords);
     const auto model = includePoint(modelRect(), focusPoint);
 
@@ -1693,10 +1744,10 @@ int Schematic::adjustPortNumbers()
     if (a_symbolMode)
         usedArea = allBoundingRect();
     else {
-        a_Components = &SymbolComps;
-        a_Wires = &SymbolWires;
-        a_Nodes = &SymbolNodes;
-        a_Diagrams = &SymbolDiags;
+        a_Components = &a_SymbolComps;
+        a_Wires = &a_SymbolWires;
+        a_Nodes = &a_SymbolNodes;
+        a_Diagrams = &a_SymbolDiags;
         a_Paintings = &a_SymbolPaints;
         usedArea = allBoundingRect();
         a_Components = &a_DocComps;

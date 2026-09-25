@@ -219,14 +219,14 @@ int RectDiagram::calcDiagram()
   // ====  x grid  =======================================================
 if(xAxis.log) {
   if(xAxis.autoScale) {
-    if(xAxis.max*xAxis.min < 1e-200)  goto Frame;  // invalid
+    if(!(xAxis.max*xAxis.min >= 1e-200))  goto Frame;  // invalid (or nan)
   }
-  else  if(xAxis.limit_min*xAxis.limit_max < 1e-200)  goto Frame;  // invalid
+  else  if(!(xAxis.limit_min*xAxis.limit_max >= 1e-200))  goto Frame;  // invalid (or nan)
 
   back = calcAxisLogScale(&xAxis, z, zD, zDstep, corr, x2);
 
   if(back) z = x2;
-  while((z <= x2) && (z >= 0)) {    // create all grid lines
+  for (int gridLines = 0; (z <= x2) && (z >= 0) && gridLines < MaxGridLines; ++gridLines) {    // create all grid lines
     if(xAxis.GridOn)  if(z < x2)  if(z > 0)
       Lines.prepend(new qucs::Line(z, y2, z, 0, GridPen));  // x grid
 
@@ -242,11 +242,11 @@ if(xAxis.log) {
     zD += zDstep;
     if(zD > 9.5*zDstep)  zDstep *= 10.0;
     if(back) {
-      z = lround(corr*log10(zD / fabs(xAxis.up)));
+      z = gridPixel(std::round(corr*log10(zD / fabs(xAxis.up))));
       z = x2 - z;
     }
     else
-      z = lround(corr*log10(zD / fabs(xAxis.low)));
+      z = gridPixel(std::round(corr*log10(zD / fabs(xAxis.low))));
   }
 }
 else {  // not logarithmical
@@ -257,8 +257,8 @@ else {  // not logarithmical
   else  Expo = log10(fabs(xAxis.up));
 
   zD += 0.5;     // perform rounding
-  z = int(zD);   //  "int(...)" implies "floor(...)"
-  while((z <= x2) && (z >= 0)) {    // create all grid lines
+  z = gridPixel(zD);   //  "int(...)" implies "floor(...)"
+  for (int gridLines = 0; (z <= x2) && (z >= 0) && gridLines < MaxGridLines; ++gridLines) {    // create all grid lines
     if(fabs(GridNum) < 0.01*pow(10.0, Expo)) GridNum = 0.0;// make 0 really 0
     tmp = numberText(GridNum, GridStep);
     w = metrics.boundingRect(tmp).width();  // width of text
@@ -270,7 +270,7 @@ else {  // not logarithmical
       Lines.prepend(new qucs::Line(z, y2, z, 0, GridPen)); // x grid
     Lines.append(new qucs::Line(z, 5, z, -5, QPen(Qt::black,0)));   // x tick marks
     zD += zDstep;
-    z = int(zD);
+    z = gridPixel(zD);
   }
 } // of "if(xlog) ... else ..."
 

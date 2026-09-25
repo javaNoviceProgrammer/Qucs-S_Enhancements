@@ -24,6 +24,9 @@
 
 #include <QTextStream>
 #include <QList>
+
+#include <algorithm>
+#include <cmath>
 #include "qucs_assert.h"
 
 #define MIN_SCROLLBAR_SIZE 8
@@ -107,6 +110,19 @@ double inline db2num(double zD, int unit) {
 
 class Diagram : public Element {
 public:
+  // At most this many grid lines per axis: limits so close together (a
+  // zoom rectangle a pixel wide) or so far apart that the step does not
+  // move the next line made the grid loops run forever.
+  static constexpr int MaxGridLines = 10000;
+  // A grid position (pixels) from what the axis arithmetic computed: nan
+  // (a collapsed axis, nan limits) is off the diagram, and inf or huge
+  // values are clamped - converting either to int is undefined.
+  static int gridPixel(double v)
+  {
+    if (std::isnan(v)) return -1;
+    return static_cast<int>(std::clamp(v, -1e9, 1e9));
+  }
+
   Diagram(int _cx=0, int _cy=0);
   virtual ~Diagram();
 

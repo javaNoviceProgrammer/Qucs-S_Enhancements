@@ -318,9 +318,10 @@ void QucsApp::slotSetDiagramLimits(bool on) {
 // -----------------------------------------------------------------------
 // Context menu option to reset the diagram limits to defaults.
 void QucsApp::slotResetDiagramLimits() {
-  if (view->focusElement && view->focusElement->Type == isDiagram) {
+  Schematic *Doc = currentSchematic();
+  view->dropStaleElements(Doc);
+  if (Doc && view->focusElement && view->focusElement->Type == isDiagram) {
     Diagram *diagram = dynamic_cast<Diagram *>(view->focusElement);
-    Schematic *Doc = dynamic_cast<Schematic *>(DocumentTab->currentWidget());
 
     diagram->xAxis.autoScale = true;
     diagram->yAxis.autoScale = true;
@@ -1382,6 +1383,14 @@ void QucsApp::slotCursorLeft(bool left) {
 
 // -----------------------------------------------------------
 void QucsApp::slotCursorUp(bool up) {
+  if (!editText->isHidden()) {
+    // The component whose property is being edited may be gone.
+    view->dropStaleElements(currentSchematic());
+    if (view->focusElement == nullptr) {
+      editText->setHidden(true);
+      return;
+    }
+  }
   if (editText->isHidden()) { // for edit of component property ?
   } else if (up) {
     if (view->MAx3 == 0)
@@ -1482,6 +1491,7 @@ void QucsApp::slotApplyCompText() {
   f.setPointSizeF(Doc->getScale() * float(f.pointSize()));
   editText->setFont(f);
 
+  view->dropStaleElements(Doc);
   Component *const component = dynamic_cast<Component *>(view->focusElement);
   if (!component)
     return; // should never happen
@@ -1628,6 +1638,7 @@ void QucsApp::slotImportData() {
 // -----------------------------------------------------------
 void QucsApp::slotExportGraphAsCsv() {
   slotHideEdit(); // disable text edit of component property
+  view->dropStaleElements(currentSchematic());
 
   for (;;) {
     if (view->focusElement)

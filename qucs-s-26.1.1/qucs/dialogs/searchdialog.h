@@ -25,6 +25,7 @@
 #define SEARCHDIALOG_H
 
 #include <QDialog>
+#include <QPointer>
 
 namespace Ui {
   class SearchDialog;
@@ -51,7 +52,7 @@ private slots:
 
 private:
   Ui::SearchDialog *ui;
-  QWidget *doc;
+  QPointer<QWidget> doc;   // the document may be closed while the dialog is up
 };
 
 #endif

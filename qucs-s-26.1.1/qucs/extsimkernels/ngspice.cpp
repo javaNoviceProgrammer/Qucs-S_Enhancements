@@ -17,6 +17,8 @@
 
 
 #include "ngspice.h"
+
+#include <functional>
 #include <QStandardPaths>
 #include "osdiselection.h"
 #include "ngoptimize.h"
@@ -693,21 +695,24 @@ bool Ngspice::checkNodeNames(QStringList &incompat)
  */
 QString Ngspice::collectSpiceinit(Schematic* sch)
 {
+    QSet<QString> visited = hierarchyStart(sch);
     QStringList collected_spiceinit;
-    for(Component *pc : sch->a_DocComps) {
-        if (pc->Model == "SPICEINIT") {
-            collected_spiceinit += ((SpiceSpiceinit*)pc)->getSpiceinit();
-        } else if (pc->Model == "Sub") {
-            Schematic *sub = new Schematic(0, ((Subcircuit *)pc)->getSubcircuitFile());
-            if(!sub->loadDocument())      // load document if possible
-            {
-                delete sub;
-                continue;
+    // Each subcircuit once (firstVisit()): one that includes itself
+    // recursed until the stack ran out.
+    std::function<void(Schematic*)> collect = [&](Schematic* doc) {
+        for (Component *pc : doc->a_DocComps) {
+            if (pc->Model == "SPICEINIT") {
+                collected_spiceinit += ((SpiceSpiceinit*)pc)->getSpiceinit();
+            } else if (pc->Model == "Sub") {
+                const QString file = ((Subcircuit *)pc)->getSubcircuitFile();
+                if (!firstVisit(file, visited)) continue;
+                Schematic sub(nullptr, file);
+                if (!sub.loadDocument()) continue;   // load document if possible
+                collect(&sub);
             }
-            collected_spiceinit += collectSpiceinit(sub);
-            delete sub;
         }
-    }
+    };
+    if (sch != nullptr) collect(sch);
     return collected_spiceinit.join("");
 }
 

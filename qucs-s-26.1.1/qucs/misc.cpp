@@ -261,6 +261,11 @@ void misc::str2num(const QString& s_, double& Number, QString& Unit, double& Fac
 QString misc::num2str(double Num, int Precision, QString unit)
 {
   char c = 0;
+  if (!std::isfinite(Num)) {   // "1e308k": no prefix for inf or nan
+    QString Str = QString::number(Num);
+    if (unit != "m") Str += unit;
+    return Str;
+  }
   double cal = fabs(Num);
   if(cal > 1e-20) {
     cal = log10(cal) / 3.0;

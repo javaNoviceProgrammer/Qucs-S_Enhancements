@@ -32,23 +32,28 @@ QString spicecompat::check_refdes(QString &Name,QString &SpiceModel)
  */
 QString spicecompat::normalize_value(QString Value)
 {
-    const QRegularExpression r_pattern("^[+-]?[0-9]+.*Ohm$");
-    const QRegularExpression p_pattern("^[+-]*[0-9]+.*dBm$");
-    const QRegularExpression c_pattern("^[+-]?[0-9]+.*F$");
-    const QRegularExpression l_pattern("^[+-]?[0-9]+.*H$");
-    const QRegularExpression v_pattern("^[+-]?[0-9]+.*V$");
-    const QRegularExpression i_pattern("^[+-]?[0-9]+.*A$");
-    const QRegularExpression hz_pattern("^[+-]?[0-9]+.*Hz$");
-    const QRegularExpression s_pattern("^[+-]?[0-9]+.*S$");
-    const QRegularExpression sec_pattern("^[+-]?[0-9]+.*s$");
-    const QRegularExpression var_pattern("^[A-Za-z].*$");
+    // The digit runs are possessive ([0-9]++): with ".*" after them any
+    // split of a long run of digits between the two was tried in turn, and
+    // a value of a few hundred thousand characters (a long PWL list) took
+    // minutes per pattern. ".*" matches digits anyway, so what the
+    // patterns match is the same.
+    static const QRegularExpression r_pattern("^[+-]?[0-9]++.*Ohm$");
+    static const QRegularExpression p_pattern("^[+-]*+[0-9]++.*dBm$");
+    static const QRegularExpression c_pattern("^[+-]?[0-9]++.*F$");
+    static const QRegularExpression l_pattern("^[+-]?[0-9]++.*H$");
+    static const QRegularExpression v_pattern("^[+-]?[0-9]++.*V$");
+    static const QRegularExpression i_pattern("^[+-]?[0-9]++.*A$");
+    static const QRegularExpression hz_pattern("^[+-]?[0-9]++.*Hz$");
+    static const QRegularExpression s_pattern("^[+-]?[0-9]++.*S$");
+    static const QRegularExpression sec_pattern("^[+-]?[0-9]++.*s$");
+    static const QRegularExpression var_pattern("^[A-Za-z].*$");
     // A number with a Qucs scale prefix and no unit (or the length unit m,
     // which no branch above knows): "10M", "4.7k", "10 cm".
-    const QRegularExpression bare_pattern("^([+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)([TGMkcmunpf])m?$");
+    static const QRegularExpression bare_pattern("^([+-]?(?:[0-9]++\\.?[0-9]*+|\\.[0-9]++)(?:[eE][+-]?[0-9]++)?)([TGMkcmunpf])m?$");
     // An expression that starts with a digit (2*R1, 1e3/f0): SPICE only
     // evaluates it inside braces. A sign in front, or after the exponent
     // of a number, is not an operator.
-    const QRegularExpression expr_pattern("^[+-]?[0-9.].*(?:[*/^(]|(?<![eE^*/(+-])[+-])");
+    static const QRegularExpression expr_pattern("^[+-]?[0-9.].*(?:[*/^(]|(?<![eE^*/(+-])[+-])");
 
     QString s = Value.remove(' ');
     if (s.startsWith('\'')&&s.endsWith('\'')) return Value; // Expression detected

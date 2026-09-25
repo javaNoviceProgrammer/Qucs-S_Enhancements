@@ -314,7 +314,27 @@ public:
 
   std::list<Painting*> a_SymbolPaints;  // symbol definition for subcircuit
 
+  /** Whether \a e is part of what is on screen now - the components,
+      wires, nodes, diagrams (with their graphs and markers), paintings
+      and labels of the schematic, or of the symbol in symbol mode. For
+      holders of an Element* that the document may have freed or replaced
+      since (the element under the mouse): a pointer it does not hold must
+      not be used. */
+  bool holds(const Element* e) const;
+  /// Every element holds() is true for, for checking many at once.
+  std::unordered_set<const Element*> heldElements() const;
+
 private:
+  // What a_Components, a_Wires, a_Nodes and a_Diagrams point to in symbol
+  // mode, where only paintings belong: empty, unless a tool put something
+  // there anyway. Each document has its own (they were once shared by all
+  // documents, so an element put there showed up in every symbol, and
+  // closing one document freed what the others still listed).
+  std::list<Wire*> a_SymbolWires;
+  std::list<Node*> a_SymbolNodes;
+  std::list<Diagram*> a_SymbolDiags;
+  std::list<Component*> a_SymbolComps;
+
   QList<PostedPaintEvent> a_PostedPaintEvents;
 
   bool a_symbolMode;  // true if in symbol painting mode

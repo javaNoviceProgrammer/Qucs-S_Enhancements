@@ -364,9 +364,12 @@ Node* Schematic::provideNode(int x, int y)
     // Create new node, if no existing one at given coordinates
     Node* new_node = createNode(x, y);
 
-    // Check if the new node lies upon an existing wire
+    // Check if the new node lies upon an existing wire - not one that lost
+    // an end in the middle of healing (GenericPort::replaceNodeWith()),
+    // which the healer deletes afterwards and which has no end to split to
     for (auto* wire : *a_Wires)
     {
+        if (wire->Port1 == nullptr || wire->Port2 == nullptr) continue;
         if (qucs_s::geom::is_between(new_node, wire->P1(), wire->P2())) {
             // split the wire into two wires
             splitWire(wire, new_node);
@@ -631,7 +634,8 @@ void Schematic::deleteWire(Wire *w, bool remove_orphans)
         delete w->Port1;
     }
 
-    if (wireStatus.port2.removed) {
+    // (A wire of no length may have both ends on one node.)
+    if (wireStatus.port2.removed && w->Port2 != w->Port1) {
         delete w->Port2;
     }
 
@@ -2266,12 +2270,16 @@ void Schematic::detachComp(Component *c, bool remove_orphans, bool keepNodeLabel
     // disconnect all ports from component, and remove them if remove_orphans=True
     auto compStatus = disconnectComp(c, remove_orphans, keepNodeLabel);
 
-    // loop over all ports, and delete if orphan
+    // loop over all ports, and delete if orphan - each node once: two
+    // ports on one node (port symbols dragged onto each other) both
+    // report it removed
+    std::unordered_set<Node*> orphans;
     for (qsizetype i = 0; i < c->Ports.size(); ++i) {
         if (compStatus.ports[i].removed) {
-            delete c->Ports[i]->Connection;
+            orphans.insert(c->Ports[i]->Connection);
         }
     }
+    for (Node* n : orphans) delete n;
     emit signalComponentDeleted(c);
     a_Components->remove(c);
 }
@@ -2793,7 +2801,11 @@ bool Schematic::heal(const HealingParams* params) {
     // Remove wires connecting nodes at same location
     {
         std::vector<Wire*> zerolen_wires;
-        std::ranges::copy_if(*a_Wires, std::back_inserter(zerolen_wires), [](const Wire* w) -> bool { return w->Port1->center() == w->Port2->center(); });
+        // A wire also lost an end when the healer moved its other end onto
+        // the same node (GenericPort::replaceNodeWith() lets go of it).
+        std::ranges::copy_if(*a_Wires, std::back_inserter(zerolen_wires), [](const Wire* w) -> bool {
+            return w->Port1 == nullptr || w->Port2 == nullptr || w->Port1->center() == w->Port2->center();
+        });
         std::ranges::for_each(zerolen_wires, [this](Wire* w) -> void { deleteWire(w); });
         thereWereChanges = !zerolen_wires.empty() || thereWereChanges;
         zerolen_wires.clear();
