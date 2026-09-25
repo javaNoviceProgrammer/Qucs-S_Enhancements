@@ -18,6 +18,7 @@
 #include <QKeyEvent>
 #include <QMap>
 #include <QLabel>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -792,6 +793,100 @@ private slots:
             for (auto it = b.begin(); !it.atEnd(); ++it)
                 if (it.fragment().charFormat().anchorHref() == "toggle:group:t1") linked = true;
         QVERIFY(linked);
+    }
+
+    // A conversation exported whole - as Markdown (the replies as Claude
+    // wrote them, each tool with its input and what it gave), as plain text
+    // (the Markdown read, the math as TeX) and as a PDF (drawn as in the
+    // dock, on pages) - from ⋯ › Export Conversation, which is there once
+    // there is something to export. The dock is as it was after.
+    void aConversationIsExported()
+    {
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("exportwork"));
+        panel.resize(420, 700);
+        Session* s = panel.session();
+        QMenu* exports = panel.findChild<QMenu*>("claudeExport");
+        QVERIFY(exports != nullptr);
+        auto* menu = qobject_cast<QMenu*>(exports->parent());
+        QVERIFY(menu != nullptr);
+        emit menu->aboutToShow();
+        QVERIFY(!exports->menuAction()->isEnabled());
+        QCOMPARE(exports->actions().size(), 3);
+
+        s->setProgram(dir.filePath("no-claude-here"));   // (the prompt is there; the turn fails)
+        panel.composer()->setPlainText("What is the cut-off frequency\nof R1 and C1?");
+        panel.sendComposer();
+        s->setProgram("claude");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la","description":"List the files"}}]}})");
+        s->handleLine(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"amp.sch\nfilter.sch","is_error":false}]}})");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ngspice -b amp.cir"}}]}})");
+        s->handleLine(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"no such file","is_error":true}]}})");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"text","text":"The **cut-off** is $f_c = \\frac{1}{2\\pi RC}$:\n\n- R1 = 1 k\n- C1 = 1 u\n\n| R | C |\n|---|---|\n| 1k | 1u |\n\n```\n.ac dec 10 1 1meg\n```"}]}})");
+        panel.addNote("A note from Qucs-S.");
+        panel.renderNow();
+        const QString before = panel.transcriptText();
+        emit menu->aboutToShow();
+        QVERIFY(exports->menuAction()->isEnabled());
+
+        const QString md = panel.conversationMarkdown();
+        QVERIFY2(md.startsWith("# What is the cut-off frequency"), qPrintable(md.left(80)));
+        QVERIFY(md.contains("- **Folder:** "));
+        QVERIFY(md.contains("### You\n\n> What is the cut-off frequency\n> of R1 and C1?"));
+        QVERIFY(md.contains("### Claude"));
+        QVERIFY(md.contains("- ✓ **Bash** `ls -la`"));
+        QVERIFY(md.contains("  ```\n  ls -la\n  # List the files\n  ```") || md.contains("  ```\n  # List the files\n  ls -la\n  ```"));
+        QVERIFY(md.contains("  amp.sch\n  filter.sch"));
+        QVERIFY(md.contains("- ✕ **Bash** `ngspice -b amp.cir`"));
+        QVERIFY(md.contains("Failed: no such file"));
+        QVERIFY(md.contains("The **cut-off** is $f_c = \\frac{1}{2\\pi RC}$"));
+        QVERIFY(md.contains("| 1k | 1u |"));
+        QVERIFY(md.contains("*A note from Qucs-S.*"));
+        QVERIFY(md.indexOf("ls -la") < md.indexOf("The **cut-off**"));
+
+        const QString text = panel.conversationText();
+        QVERIFY(text.startsWith("What is the cut-off frequency"));
+        QVERIFY(text.contains("You:\nWhat is the cut-off frequency\nof R1 and C1?"));
+        QVERIFY(text.contains("Claude:"));
+        QVERIFY2(text.contains("The cut-off is $f_c = \\frac{1}{2\\pi RC}$:"), qPrintable(text));
+        QVERIFY(!text.contains("**"));
+        QVERIFY2(text.contains("• R1 = 1 k\n• C1 = 1 u"), qPrintable(text));
+        QVERIFY(text.contains("1k | 1u"));
+        QVERIFY(text.contains("    .ac dec 10 1 1meg"));
+        QVERIFY(text.contains("  ✓ Bash   ls -la"));
+        QVERIFY(text.contains("      │ amp.sch"));
+        QVERIFY(text.contains("Failed: no such file"));
+        QVERIFY(text.contains("(A note from Qucs-S.)"));
+
+        QString error;
+        const QString mdFile = dir.filePath("exported.md");
+        QVERIFY(panel.exportConversation(mdFile, ClaudeCodePanel::ExportFormat::Markdown, &error));
+        QCOMPARE(read(mdFile), md);
+        const QString txtFile = dir.filePath("exported.txt");
+        QVERIFY(panel.exportConversation(txtFile, ClaudeCodePanel::ExportFormat::Text, &error));
+        QCOMPARE(read(txtFile), text);
+        const QString pdfFile = dir.filePath("exported.pdf");
+        QVERIFY2(panel.exportConversation(pdfFile, ClaudeCodePanel::ExportFormat::Pdf, &error), qPrintable(error));
+        QFile pdf(pdfFile);
+        QVERIFY(pdf.open(QIODevice::ReadOnly));
+        const QByteArray bytes = pdf.readAll();
+        QVERIFY(bytes.startsWith("%PDF-"));
+        QVERIFY(bytes.size() > 4000);
+        QCOMPARE(bytes.count("/Type /Page\n") + bytes.count("/Type /Page "), qsizetype(1));
+        QVERIFY(!panel.exportConversation(dir.filePath("no/such/folder/x.md"), ClaudeCodePanel::ExportFormat::Markdown, &error));
+        QVERIFY(!error.isEmpty());
+        // The dock draws what it drew: its tools folded, its links there.
+        panel.renderNow();
+        QCOMPARE(panel.transcriptText(), before);
+        QVERIFY(!panel.isExpanded("group:t1"));
+
+        // A long one: pages enough for it.
+        for (int i = 0; i < 12; ++i)
+            s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"text","text":"A paragraph that goes on for a while, so that there is enough of it to fill more than one page of paper when it is written out a good many times over, with $x^2$ in it.\n\nAnd another one after it, just as long, to take up the room that a page has on it."}]}})");
+        QVERIFY(panel.exportConversation(pdfFile, ClaudeCodePanel::ExportFormat::Pdf, &error));
+        QVERIFY(pdf.seek(0));
+        const QByteArray longer = pdf.readAll();
+        QVERIFY2(longer.count("/Type /Page\n") + longer.count("/Type /Page ") > 1, "one page only");
     }
 
     // TeX math: found in Markdown (not in code, not money), typeset (a

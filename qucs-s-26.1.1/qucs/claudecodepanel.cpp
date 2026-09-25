@@ -19,6 +19,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QClipboard>
+#include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
@@ -34,9 +35,15 @@
 #include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPageLayout>
+#include <QPageSize>
 #include <QPainter>
+#include <QPdfWriter>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
+#include <QSaveFile>
+#include <QScopedValueRollback>
+#include <QScreen>
 #include <QScrollBar>
 #include <QStyle>
 #include <QTextBlock>
@@ -45,6 +52,8 @@
 #include <QTextDocumentFragment>
 #include <QTextFormat>
 #include <QTextFrame>
+#include <QTextList>
+#include <QTextTable>
 #include <QTimer>
 #include <QToolButton>
 #include <QUrl>
@@ -66,6 +75,7 @@ const QString kModel = QStringLiteral("ClaudeCode/model");
 const QString kModels = QStringLiteral("ClaudeCode/models");          // what the program offers
 const QString kOtherModels = QStringLiteral("ClaudeCode/otherModels"); // chosen by name, the latest first
 const QString kAttach = QStringLiteral("ClaudeCode/attachDocument");
+const QString kExportDir = QStringLiteral("ClaudeCode/exportFolder");
 
 struct Colours {
     QColor base, text, muted, faint, border, accent, onAccent, bubble, code, ok, warn, error;
@@ -198,6 +208,133 @@ const Suggestion kSuggestions[] = {
     {QT_TRANSLATE_NOOP("ClaudeCodePanel", "Write an ngspice model for a part"),
      QT_TRANSLATE_NOOP("ClaudeCodePanel", "Write an ngspice .model or .subckt for "), false},
 };
+
+// ----------------------------------------------------------------------
+// Exports.
+
+// The mark of a tool's outcome, as in the dock.
+QString outcomeMark(int state)
+{
+    switch (state) {
+    case 1: return QStringLiteral("✓");
+    case 2: return QStringLiteral("✕");
+    case 3: return QStringLiteral("⊘");
+    default: return QStringLiteral("○");
+    }
+}
+
+// The longest run of \a c in \a text.
+int longestRun(const QString& text, QChar c)
+{
+    int longest = 0, run = 0;
+    for (QChar x : text) {
+        run = x == c ? run + 1 : 0;
+        longest = std::max(longest, run);
+    }
+    return longest;
+}
+
+// \a text as Markdown code in a line: between more backticks than it has
+// in a row.
+QString inlineCode(const QString& text)
+{
+    const QString ticks(longestRun(text, QLatin1Char('`')) + 1, QLatin1Char('`'));
+    const bool pad = text.startsWith(QLatin1Char('`')) || text.endsWith(QLatin1Char('`'));
+    return ticks + (pad ? QStringLiteral(" ") : QString()) + text + (pad ? QStringLiteral(" ") : QString()) + ticks;
+}
+
+// \a text as a fenced Markdown code block, each line after \a indent (in
+// a list item).
+QString codeBlock(const QString& text, const QString& indent)
+{
+    const QString fence(std::max(3, longestRun(text, QLatin1Char('`')) + 1), QLatin1Char('`'));
+    QString out = indent + fence + QLatin1Char('\n');
+    for (const QString& line : text.split(QLatin1Char('\n'))) out += (line.isEmpty() ? QString() : indent + line) + QLatin1Char('\n');
+    return out + indent + fence + QLatin1Char('\n');
+}
+
+// A reply's Markdown read as plain text: paragraphs apart, list items with
+// their marks, quotes after "> ", code indented, a table a row to a line
+// with " | " between its cells, the math as TeX between its $ signs.
+QString plainTextOf(const QString& markdown)
+{
+    const QList<qucs_s::math::Span> spans = qucs_s::math::findMath(markdown);
+    QString md = markdown;
+    for (qsizetype k = spans.size(); k-- > 0;)
+        md.replace(spans.at(k).start, spans.at(k).length, QString(QChar(char16_t(kMathMark + k))));
+    QTextDocument doc;
+    doc.setMarkdown(md, QTextDocument::MarkdownDialectGitHub);
+
+    QStringList out;
+    QSet<QTextTable*> tables;
+    enum { Paragraph, Item, Code } last = Paragraph;
+    const auto apart = [&out](bool yes) {
+        if (yes && !out.isEmpty() && !out.constLast().isEmpty()) out << QString();
+    };
+    for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+        if (QTextTable* table = QTextCursor(b).currentTable()) {
+            if (tables.contains(table)) continue;
+            tables.insert(table);
+            apart(true);
+            for (int r = 0; r < table->rows(); ++r) {
+                QStringList cells;
+                for (int k = 0; k < table->columns(); ++k) {
+                    const QTextTableCell cell = table->cellAt(r, k);
+                    QTextCursor cc = cell.firstCursorPosition();
+                    cc.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+                    cells << cc.selectedText().replace(QChar::ParagraphSeparator, QLatin1Char(' ')).trimmed();
+                }
+                out << cells.join(QStringLiteral(" | "));
+            }
+            last = Paragraph;
+            continue;
+        }
+        const QTextBlockFormat bf = b.blockFormat();
+        QString text = b.text().replace(QChar::LineSeparator, QLatin1Char('\n')).remove(QChar::ObjectReplacementCharacter);
+        const int quote = bf.intProperty(QTextFormat::BlockQuoteLevel);
+        const QString quoted = quote > 0 ? QString(quote, QLatin1Char('>')) + QLatin1Char(' ') : QString();
+        if (bf.hasProperty(QTextFormat::BlockTrailingHorizontalRulerWidth)) {
+            apart(true);
+            out << QStringLiteral("----");
+            last = Paragraph;
+        } else if (QTextList* list = b.textList()) {
+            apart(last != Item);
+            const QString lead(2 * std::max(0, list->format().indent() - 1), QLatin1Char(' '));
+            // (A bullet's item text is its suffix alone.)
+            QString mark = list->itemText(b).trimmed();
+            if (!mark.contains(QRegularExpression(QStringLiteral("[\\p{L}\\p{N}]"))))
+                mark = list->format().style() == QTextListFormat::ListCircle ? QStringLiteral("◦") : QStringLiteral("•");
+            out << quoted + lead + mark + QLatin1Char(' ') + text.replace(QLatin1Char('\n'), QLatin1Char('\n') + lead + QStringLiteral("  "));
+            last = Item;
+        } else if (bf.nonBreakableLines() || bf.hasProperty(QTextFormat::BlockCodeFence)) {
+            apart(last != Code);
+            out << quoted + QStringLiteral("    ") + text;
+            last = Code;
+        } else if (!text.trimmed().isEmpty()) {
+            apart(true);
+            out << quoted + text.replace(QLatin1Char('\n'), QLatin1Char('\n') + quoted);
+            last = Paragraph;
+        }
+    }
+    QString result = out.join(QLatin1Char('\n'));
+    for (qsizetype k = 0; k < spans.size(); ++k) {
+        const QString dollars = spans.at(k).display ? QStringLiteral("$$") : QStringLiteral("$");
+        result.replace(QChar(char16_t(kMathMark + k)), dollars + spans.at(k).tex + dollars);
+    }
+    return result;
+}
+
+// A file's name for a conversation about \a title: what a file name may not
+// hold made a dash.
+QString fileNameFor(const QString& title)
+{
+    QString name = title;
+    name.remove(QChar(0x2026));
+    name.replace(QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|\\x00-\\x1f]+")), QStringLiteral("-"));
+    name = name.simplified();
+    while (name.endsWith(QLatin1Char('.')) || name.endsWith(QLatin1Char('-'))) name.chop(1);
+    return name.isEmpty() ? QStringLiteral("Conversation") : name.left(60).trimmed();
+}
 
 } // namespace
 
@@ -367,7 +504,7 @@ void ClaudeCodePanel::buildHeader()
     a_menuButton = new QToolButton(a_header);
     a_menuButton->setObjectName(QStringLiteral("claudeHeaderButton"));
     a_menuButton->setText(QStringLiteral("⋯"));
-    a_menuButton->setToolTip(tr("Permissions, model, folder, program"));
+    a_menuButton->setToolTip(tr("Permissions, model, folder, program, export"));
     a_menuButton->setAutoRaise(true);
     a_menuButton->setPopupMode(QToolButton::InstantPopup);
     // (The dock's title bar names it: the state comes first.)
@@ -586,10 +723,16 @@ void ClaudeCodePanel::buildMenu()
                                                 : tr("Using %1.").arg(QDir::toNativeSeparators(a_session->program())));
     });
     a_menu->addSeparator();
+    QMenu* exports = a_menu->addMenu(tr("Export Conversation"));
+    exports->setObjectName(QStringLiteral("claudeExport"));
+    exports->addAction(tr("PDF…"), this, [this] { exportConversationAs(ExportFormat::Pdf); });
+    exports->addAction(tr("Markdown…"), this, [this] { exportConversationAs(ExportFormat::Markdown); });
+    exports->addAction(tr("Plain Text…"), this, [this] { exportConversationAs(ExportFormat::Text); });
     QAction* copyId = a_menu->addAction(tr("Copy Session ID"), this, [this] {
         QApplication::clipboard()->setText(a_session->sessionId());
     });
-    connect(a_menu, &QMenu::aboutToShow, this, [this, workspace, show, copyId, again] {
+    connect(a_menu, &QMenu::aboutToShow, this, [this, workspace, show, copyId, again, exports] {
+        exports->menuAction()->setEnabled(!a_entries.isEmpty());
         workspace->setEnabled(!a_chosenDir.isEmpty());
         show->setEnabled(QFileInfo(workingDirectory()).isDir());
         copyId->setEnabled(!a_session->sessionId().isEmpty());
@@ -1232,22 +1375,8 @@ void ClaudeCodePanel::render()
     doc->clear();
     doc->setDocumentMargin(12);
     QTextCursor c(doc);
-    if (a_entries.isEmpty()) {
-        renderWelcome(c);
-    } else {
-        bool captioned = false;
-        for (qsizetype i = 0; i < a_entries.size();) {
-            if (a_entries.at(i).kind == Entry::Tool) {
-                qsizetype j = i + 1;
-                while (j < a_entries.size() && a_entries.at(j).kind == Entry::Tool) ++j;
-                renderTools(c, i, j, captioned);
-                i = j;
-                continue;
-            }
-            renderEntry(c, a_entries.at(i), captioned);
-            ++i;
-        }
-    }
+    if (a_entries.isEmpty()) renderWelcome(c);
+    else renderConversation(c);
 
     if (follow) {
         QTimer::singleShot(0, this, [this] {
@@ -1258,9 +1387,42 @@ void ClaudeCodePanel::render()
     }
 }
 
+void ClaudeCodePanel::renderConversation(QTextCursor& c)
+{
+    bool captioned = false;
+    for (qsizetype i = 0; i < a_entries.size();) {
+        if (a_entries.at(i).kind == Entry::Tool) {
+            qsizetype j = i + 1;
+            while (j < a_entries.size() && a_entries.at(j).kind == Entry::Tool) ++j;
+            renderTools(c, i, j, captioned);
+            i = j;
+            continue;
+        }
+        renderEntry(c, a_entries.at(i), captioned);
+        ++i;
+    }
+}
+
+QPalette ClaudeCodePanel::drawingPalette() const
+{
+    if (!a_exporting) return palette();
+    // Paper: dark on white, whatever the dock's theme.
+    QPalette paper = palette();
+    const QColor ink(0x1f, 0x1f, 0x1f);
+    for (auto role : {QPalette::Base, QPalette::Window}) paper.setColor(role, Qt::white);
+    for (auto role : {QPalette::Text, QPalette::WindowText, QPalette::ButtonText}) paper.setColor(role, ink);
+    paper.setColor(QPalette::Link, QColor(0x1a, 0x5f, 0xb4));
+    return paper;
+}
+
+bool ClaudeCodePanel::isOpen(const QString& key) const
+{
+    return a_exporting || a_expanded.contains(key);
+}
+
 void ClaudeCodePanel::renderWelcome(QTextCursor& c)
 {
-    const Colours col = colours(palette());
+    const Colours col = colours(drawingPalette());
     const QString dir = shownPath(workingDirectory()).toHtmlEscaped();
     QString html = QStringLiteral("<div style='margin-top:10px'><span style='font-size:large; font-weight:600;'>%1</span></div>")
                        .arg(tr("Claude Code").toHtmlEscaped());
@@ -1294,7 +1456,7 @@ void ClaudeCodePanel::renderWelcome(QTextCursor& c)
 
 void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captioned)
 {
-    const Colours col = colours(palette());
+    const Colours col = colours(drawingPalette());
     const QFont base = a_view->font();
     QFont small = base;
     small.setPointSizeF(std::max(7.0, base.pointSizeF() * 0.88));
@@ -1350,7 +1512,7 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
         f.setTopMargin(2);
         startBlock(c, f);
         renderMarkdown(c, e.text);
-        if (e.streaming) {
+        if (e.streaming && !a_exporting) {
             QTextCharFormat cursor = plain;
             cursor.setForeground(col.accent);
             c.insertText(QStringLiteral(" ▍"), cursor);
@@ -1397,7 +1559,7 @@ void ClaudeCodePanel::renderCaption(QTextCursor& c, bool& captioned)
 {
     if (captioned) return;
     captioned = true;
-    const Colours col = colours(palette());
+    const Colours col = colours(drawingPalette());
     QFont small = a_view->font();
     small.setPointSizeF(std::max(7.0, small.pointSizeF() * 0.88));
     QTextCharFormat caption;
@@ -1492,14 +1654,14 @@ void ClaudeCodePanel::renderTools(QTextCursor& c, qsizetype from, qsizetype to, 
         roomAfter();
         return;
     }
-    const Colours col = colours(palette());
+    const Colours col = colours(drawingPalette());
     QFont small = a_view->font();
     small.setPointSizeF(std::max(7.0, small.pointSizeF() * 0.88));
     QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     mono.setPointSizeF(small.pointSizeF());
 
     const QString key = QStringLiteral("group:") + a_entries.at(from).id;
-    const bool open = a_expanded.contains(key);
+    const bool open = isOpen(key);
     int running = 0, failed = 0, denied = 0;
     const Entry* now = nullptr;
     for (qsizetype i = from; i < to; ++i) {
@@ -1516,13 +1678,15 @@ void ClaudeCodePanel::renderTools(QTextCursor& c, qsizetype from, qsizetype to, 
     f.setLeftMargin(2);
     startBlock(c, f);
     QTextCharFormat link;
-    link.setAnchor(true);
-    link.setAnchorHref(QStringLiteral("toggle:") + key);
-    link.setToolTip(open ? tr("Fold the tools away") : tr("Show each tool Claude used"));
+    if (!a_exporting) {
+        link.setAnchor(true);
+        link.setAnchorHref(QStringLiteral("toggle:") + key);
+        link.setToolTip(open ? tr("Fold the tools away") : tr("Show each tool Claude used"));
+    }
     QTextCharFormat twisty = link;
     twisty.setFont(small);
     twisty.setForeground(col.faint);
-    c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), twisty);
+    if (!a_exporting) c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), twisty);
     QTextCharFormat mark = twisty;
     mark.setFontWeight(QFont::DemiBold);
     QString glyph;
@@ -1554,7 +1718,7 @@ void ClaudeCodePanel::renderTools(QTextCursor& c, qsizetype from, qsizetype to, 
 
 void ClaudeCodePanel::renderTool(QTextCursor& c, const Entry& e, qreal indent)
 {
-    const Colours col = colours(palette());
+    const Colours col = colours(drawingPalette());
     QFont small = a_view->font();
     small.setPointSizeF(std::max(7.0, small.pointSizeF() * 0.88));
     QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -1562,13 +1726,13 @@ void ClaudeCodePanel::renderTool(QTextCursor& c, const Entry& e, qreal indent)
 
     const QString key = QStringLiteral("tool:") + e.id;
     const bool more = !e.detail.trimmed().isEmpty() || !e.result.trimmed().isEmpty();
-    const bool open = more && a_expanded.contains(key);
+    const bool open = more && isOpen(key);
     QTextBlockFormat f;
     f.setTopMargin(3);
     f.setLeftMargin(2 + indent);
     startBlock(c, f);
     QTextCharFormat link;
-    if (more) {
+    if (more && !a_exporting) {
         link.setAnchor(true);
         link.setAnchorHref(QStringLiteral("toggle:") + key);
         link.setToolTip(open ? tr("Fold it away") : tr("Show the whole of it, and what it gave"));
@@ -1576,7 +1740,7 @@ void ClaudeCodePanel::renderTool(QTextCursor& c, const Entry& e, qreal indent)
     QTextCharFormat twisty = link;
     twisty.setFont(small);
     twisty.setForeground(more ? col.faint : col.base);
-    c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), twisty);
+    if (!a_exporting) c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), twisty);
     QTextCharFormat mark = twisty;
     mark.setFontWeight(QFont::DemiBold);
     QString glyph;
@@ -1650,8 +1814,8 @@ void ClaudeCodePanel::toggle(const QString& key)
 
 qucs_s::math::Typeset ClaudeCodePanel::typesetMath(const QString& tex, const QFont& font, bool display)
 {
-    const QColor colour = colours(palette()).text;
-    const qreal dpr = a_view->devicePixelRatioF();
+    const QColor colour = colours(drawingPalette()).text;
+    const qreal dpr = a_exporting ? 4.0 : a_view->devicePixelRatioF();   // (on paper: sharp at 300 dpi)
     const QString key = tex + QChar(0) + font.key() + QChar(0) + colour.name() + (display ? QLatin1Char('D') : QLatin1Char('T'))
                         + QString::number(dpr);
     auto found = a_math.constFind(key);
@@ -1664,7 +1828,7 @@ qucs_s::math::Typeset ClaudeCodePanel::typesetMath(const QString& tex, const QFo
 
 void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
 {
-    const Colours col = colours(palette());
+    const Colours col = colours(drawingPalette());
     const QFont base = a_view->font();
 
     // The math out of the way of the Markdown: a mark for each formula.
@@ -1752,4 +1916,262 @@ void ClaudeCodePanel::setNewInTab(bool on)
 {
     a_newInTab = on;
     a_newButton->setToolTip(on ? tr("A new conversation, in a tab of its own") : tr("Start a new conversation"));
+}
+
+// ----------------------------------------------------------------------
+// Exports.
+
+QString ClaudeCodePanel::exportTitle() const
+{
+    for (const Entry& e : a_entries)
+        if (e.kind == Entry::You) {
+            QString t = e.text.simplified();
+            if (t.size() > 120) t = t.left(119).trimmed() + QChar(0x2026);
+            return t;
+        }
+    return tr("Conversation with Claude");
+}
+
+QList<QPair<QString, QString>> ClaudeCodePanel::exportFacts() const
+{
+    // The model named as the header names it.
+    const ModelChoice* choice = choiceFor(a_session->model());
+    QString model = modelName(a_session->modelInUse());
+    if (model.isEmpty() && choice != nullptr) model = modelName(choice->resolved);
+    if (model.isEmpty()) model = modelName(a_session->model());
+    QList<QPair<QString, QString>> facts;
+    facts << qMakePair(tr("Exported"), QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm")));
+    facts << qMakePair(tr("Folder"), QDir::toNativeSeparators(workingDirectory()));
+    facts << qMakePair(tr("Model"), model.isEmpty() ? tr("the default") : model);
+    if (!a_session->version().isEmpty()) facts << qMakePair(tr("Claude Code"), a_session->version());
+    if (!a_session->sessionId().isEmpty()) facts << qMakePair(tr("Session"), a_session->sessionId());
+    return facts;
+}
+
+QString ClaudeCodePanel::conversationMarkdown() const
+{
+    QString md = QStringLiteral("# ") + exportTitle() + QStringLiteral("\n\n");
+    for (const auto& [label, value] : exportFacts()) md += QStringLiteral("- **%1:** %2\n").arg(label, value);
+    md += QStringLiteral("\n---\n");
+    bool captioned = false;
+    const auto caption = [&] {
+        if (captioned) return;
+        captioned = true;
+        md += QStringLiteral("\n### ") + tr("Claude") + QLatin1Char('\n');
+    };
+    for (qsizetype i = 0; i < a_entries.size(); ++i) {
+        const Entry& e = a_entries.at(i);
+        switch (e.kind) {
+        case Entry::You:
+            captioned = false;
+            md += QStringLiteral("\n### ") + tr("You") + QStringLiteral("\n\n");
+            for (const QString& line : e.text.split(QLatin1Char('\n')))
+                md += (line.isEmpty() ? QStringLiteral(">") : QStringLiteral("> ") + line) + QLatin1Char('\n');
+            if (!e.extra.isEmpty()) md += QStringLiteral(">\n> ↳ ") + inlineCode(e.extra) + QLatin1Char('\n');
+            break;
+        case Entry::Claude:
+            caption();
+            md += QLatin1Char('\n') + e.text.trimmed() + QLatin1Char('\n');
+            break;
+        case Entry::Tool: {
+            caption();
+            // A row of tools is a list; each with its input and what it gave.
+            if (i == 0 || a_entries.at(i - 1).kind != Entry::Tool) md += QLatin1Char('\n');
+            md += QStringLiteral("- %1 **%2**").arg(outcomeMark(e.tool), toolName(e.text));
+            if (!e.extra.isEmpty()) md += QLatin1Char(' ') + inlineCode(e.extra);
+            md += QLatin1Char('\n');
+            if (!e.output.isEmpty() && e.tool != Entry::Succeeded)
+                md += QStringLiteral("\n  ") + (e.tool == Entry::Denied ? tr("Not allowed: %1") : tr("Failed: %1")).arg(e.output) + QLatin1Char('\n');
+            if (!e.detail.trimmed().isEmpty()) md += QLatin1Char('\n') + codeBlock(e.detail.trimmed(), QStringLiteral("  "));
+            if (!e.result.trimmed().isEmpty()) md += QLatin1Char('\n') + codeBlock(e.result.trimmed(), QStringLiteral("  "));
+            break;
+        }
+        case Entry::Note:
+            md += QStringLiteral("\n*") + e.text.trimmed() + QStringLiteral("*\n");
+            break;
+        case Entry::Problem:
+            md += QStringLiteral("\n> **⚠** ") + e.text.trimmed().replace(QLatin1Char('\n'), QStringLiteral("\n> ")) + QLatin1Char('\n');
+            break;
+        case Entry::Summary:
+            md += QStringLiteral("\n*") + e.text + QStringLiteral("*\n");
+            break;
+        }
+    }
+    return md;
+}
+
+QString ClaudeCodePanel::conversationText() const
+{
+    QStringList out;
+    out << exportTitle() << QString(exportTitle().size(), QLatin1Char('=')) << QString();
+    int width = 0;
+    const QList<QPair<QString, QString>> facts = exportFacts();
+    for (const auto& fact : facts) width = std::max(width, int(fact.first.size()));
+    for (const auto& [label, value] : facts) out << (label + QLatin1Char(':')).leftJustified(width + 2) + value;
+    const auto indented = [](const QString& text, const QString& by) {
+        QStringList lines = text.split(QLatin1Char('\n'));
+        for (QString& line : lines) line = line.isEmpty() ? QString() : by + line;
+        return lines.join(QLatin1Char('\n'));
+    };
+    bool captioned = false;
+    for (qsizetype i = 0; i < a_entries.size(); ++i) {
+        const Entry& e = a_entries.at(i);
+        const bool afterTool = i > 0 && a_entries.at(i - 1).kind == Entry::Tool;
+        if (e.kind != Entry::Tool || !afterTool) out << QString();
+        switch (e.kind) {
+        case Entry::You:
+            captioned = false;
+            out << tr("You:") << e.text.trimmed();
+            if (!e.extra.isEmpty()) out << QStringLiteral("↳ ") + e.extra;
+            break;
+        case Entry::Claude:
+            if (!captioned) out << tr("Claude:");
+            captioned = true;
+            out << plainTextOf(e.text.trimmed());
+            break;
+        case Entry::Tool: {
+            if (!captioned) out << tr("Claude:");
+            captioned = true;
+            QString line = QStringLiteral("  %1 %2").arg(outcomeMark(e.tool), toolName(e.text));
+            if (!e.extra.isEmpty()) line += QStringLiteral("   ") + e.extra;
+            out << line;
+            if (!e.output.isEmpty() && e.tool != Entry::Succeeded)
+                out << QStringLiteral("      ") + (e.tool == Entry::Denied ? tr("Not allowed: %1") : tr("Failed: %1")).arg(e.output);
+            if (!e.detail.trimmed().isEmpty()) out << indented(e.detail.trimmed(), QStringLiteral("      "));
+            if (!e.result.trimmed().isEmpty()) out << indented(e.result.trimmed(), QStringLiteral("      │ "));
+            break;
+        }
+        case Entry::Note:
+        case Entry::Summary:
+            out << QStringLiteral("(") + e.text.trimmed() + QStringLiteral(")");
+            break;
+        case Entry::Problem:
+            out << QStringLiteral("⚠ ") + e.text.trimmed();
+            break;
+        }
+    }
+    return out.join(QLatin1Char('\n')) + QLatin1Char('\n');
+}
+
+bool ClaudeCodePanel::exportConversation(const QString& path, ExportFormat format, QString* error)
+{
+    const auto fail = [error](const QString& why) {
+        if (error != nullptr) *error = why;
+        return false;
+    };
+    if (format != ExportFormat::Pdf) {
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return fail(file.errorString());
+        file.write((format == ExportFormat::Markdown ? conversationMarkdown() : conversationText()).toUtf8());
+        if (!file.commit()) return fail(file.errorString());
+        return true;
+    }
+
+    // The conversation drawn as in the dock - on paper, every tool open -
+    // then laid out on pages and painted onto them, a footer on each.
+    QTextDocument doc;
+    doc.setDefaultFont(a_view->font());
+    doc.setDocumentMargin(0);
+    qucs_s::math::MathObject::install(&doc);
+    QPalette paper;
+    {
+        const QScopedValueRollback<bool> onPaper(a_exporting, true);
+        paper = drawingPalette();
+        const Colours col = colours(paper);
+        QTextCursor c(&doc);
+        QTextCharFormat head;
+        QFont big = a_view->font();
+        big.setPointSizeF(big.pointSizeF() * 1.5);
+        big.setWeight(QFont::DemiBold);
+        head.setFont(big);
+        head.setForeground(col.text);
+        c.insertText(exportTitle(), head);
+        QTextCharFormat fact;
+        QFont small = a_view->font();
+        small.setPointSizeF(std::max(7.0, small.pointSizeF() * 0.88));
+        fact.setFont(small);
+        fact.setForeground(col.muted);
+        QTextBlockFormat line;
+        line.setTopMargin(2);
+        for (const auto& [label, value] : exportFacts()) {
+            c.insertBlock(line);
+            c.insertText(label + QStringLiteral(":  ") + value, fact);
+        }
+        QTextBlockFormat rule;
+        rule.setTopMargin(6);
+        rule.setBottomMargin(10);
+        rule.setProperty(QTextFormat::BlockTrailingHorizontalRulerWidth, QTextLength(QTextLength::PercentageLength, 100));
+        c.insertBlock(rule);
+        QTextBlockFormat next;
+        c.insertBlock(next);
+        renderConversation(c);
+    }
+
+    QPdfWriter pdf(path);
+    pdf.setTitle(exportTitle());
+    pdf.setCreator(QStringLiteral("Qucs-S"));
+    pdf.setResolution(300);
+    pdf.setPageSize(QPageSize(QLocale().measurementSystem() == QLocale::ImperialUSSystem ? QPageSize::Letter : QPageSize::A4));
+    pdf.setPageMargins(QMarginsF(16, 16, 16, 14), QPageLayout::Millimeter);
+    QPainter p;
+    if (!p.begin(&pdf)) return fail(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(path)));
+    // The document is laid out as on the screen; the page is that, larger.
+    const QScreen* screen = QGuiApplication::primaryScreen();
+    const qreal scale = pdf.resolution() / (screen != nullptr ? screen->logicalDotsPerInchY() : 96.0);
+    const QRect area = pdf.pageLayout().paintRectPixels(pdf.resolution());
+    // A footer under each: the title, the page's number.
+    QFont small = a_view->font();
+    small.setPointSizeF(std::max(7.0, small.pointSizeF() * 0.8));
+    const QFontMetricsF footing(small, &pdf);
+    const qreal footer = footing.height() * 2.2;   // (on the page)
+    const QSizeF page(area.width() / scale, (area.height() - footer) / scale);
+    doc.setPageSize(page);
+    const int pages = doc.pageCount();
+    const Colours col = colours(paper);
+    QAbstractTextDocumentLayout::PaintContext context;
+    context.palette = paper;
+    for (int i = 0; i < pages; ++i) {
+        if (i > 0) pdf.newPage();
+        p.save();
+        p.scale(scale, scale);
+        p.translate(0, -i * page.height());
+        context.clip = QRectF(QPointF(0, i * page.height()), page);
+        p.setClipRect(context.clip);
+        doc.documentLayout()->draw(&p, context);
+        p.restore();
+        const QRectF foot(0, area.height() - footer, area.width(), footer);
+        p.setFont(small);
+        p.setPen(col.muted);
+        p.drawText(foot, Qt::AlignLeft | Qt::AlignBottom, footing.elidedText(exportTitle(), Qt::ElideRight, area.width() * 0.75));
+        p.drawText(foot, Qt::AlignRight | Qt::AlignBottom, tr("%1 of %2").arg(i + 1).arg(pages));
+    }
+    if (!p.end()) return fail(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(path)));
+    return true;
+}
+
+void ClaudeCodePanel::exportConversationAs(ExportFormat format)
+{
+    if (a_entries.isEmpty()) return;
+    const QString suffix = format == ExportFormat::Pdf ? QStringLiteral(".pdf")
+                           : format == ExportFormat::Markdown ? QStringLiteral(".md")
+                                                              : QStringLiteral(".txt");
+    const QString filter = format == ExportFormat::Pdf ? tr("PDF (*.pdf)")
+                           : format == ExportFormat::Markdown ? tr("Markdown (*.md *.markdown)")
+                                                              : tr("Text (*.txt)");
+    QucsSettingsFile settings;
+    QString dir = settings.value(kExportDir).toString();
+    if (dir.isEmpty() || !QFileInfo(dir).isDir()) dir = workingDirectory();
+    QString path = QFileDialog::getSaveFileName(this, tr("Export the Conversation"),
+                                                QDir(dir).filePath(fileNameFor(exportTitle()) + suffix), filter);
+    if (path.isEmpty()) return;
+    if (QFileInfo(path).suffix().isEmpty()) path += suffix;
+    settings.setValue(kExportDir, QFileInfo(path).absolutePath());
+    QString error;
+    if (!exportConversation(path, format, &error)) {
+        QMessageBox::warning(this, tr("Claude Code"), tr("The conversation could not be exported: %1").arg(error));
+        return;
+    }
+    // Said for a moment where the state is.
+    a_stateText->setText(tr("Exported to %1").arg(QFileInfo(path).fileName()));
+    QTimer::singleShot(4000, this, &ClaudeCodePanel::updateState);
 }

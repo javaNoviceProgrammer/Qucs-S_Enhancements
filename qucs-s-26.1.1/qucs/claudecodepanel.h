@@ -17,6 +17,7 @@
 
 #include <QHash>
 #include <QList>
+#include <QPair>
 #include <QPixmap>
 #include <QSet>
 #include <QWidget>
@@ -38,7 +39,8 @@ class QUrl;
 /*!
  * The Claude Code dock. At the top, the state of the session, the model,
  * a new conversation and a menu (who decides what Claude may do, the
- * model, the folder, the program); under it the folder Claude works in -
+ * model, the folder, the program, the conversation exported as a PDF,
+ * Markdown or plain text); under it the folder Claude works in -
  * the workspace unless another is chosen. Then the conversation: the
  * prompts, the replies as they are written (Markdown), each tool Claude
  * uses and how it went, how each turn ended. A tool that needs permission
@@ -94,6 +96,21 @@ public:
     void setNewInTab(bool on);
     /// Claude's colour (its clay), for the palette given.
     static QColor accentColour(const QPalette& palette);
+
+    /// What a conversation is exported as.
+    enum class ExportFormat { Pdf, Markdown, Text };
+    /// The whole conversation - a header (what it is about, when, the
+    /// folder, the model, the session), then every prompt, reply, tool
+    /// (its input and what it gave, as when it is opened), note, problem
+    /// and how each turn ended - as Markdown (the replies as Claude wrote
+    /// them), as plain text (their Markdown read, the math as TeX), or
+    /// drawn as in the dock on paper, a PDF (the math typeset).
+    QString conversationMarkdown() const;
+    QString conversationText() const;
+    bool exportConversation(const QString& path, ExportFormat format, QString* error = nullptr);
+    /// Asks where to, then exports (⋯ › Export Conversation).
+    void exportConversationAs(ExportFormat format);
+    bool hasConversation() const { return !a_entries.isEmpty(); }
 
     // For the tests.
     QPlainTextEdit* composer() const { return a_input; }
@@ -163,6 +180,17 @@ private:
     void restyle();
     void scheduleRender();
     void render();
+    /// The entries, from the first prompt on.
+    void renderConversation(QTextCursor& c);
+    /// What the conversation is, for an export: [label, value] pairs.
+    QList<QPair<QString, QString>> exportFacts() const;
+    /// Its title at length, for an export (the first prompt, not cut short
+    /// as for a tab).
+    QString exportTitle() const;
+    /// The dock's palette - or paper's, while exporting.
+    QPalette drawingPalette() const;
+    /// Whether a line of tools or a tool is open (all are, exported).
+    bool isOpen(const QString& key) const;
     void renderWelcome(QTextCursor& c);
     void renderEntry(QTextCursor& c, const Entry& e, bool& captioned);
     void renderCaption(QTextCursor& c, bool& captioned);
@@ -212,6 +240,7 @@ private:
     QSet<QString> a_expanded;  // the tool lines opened
     QHash<QString, qucs_s::math::Typeset> a_math;   // typeset math, by TeX, size and colour
     bool a_newInTab = false;
+    bool a_exporting = false;  // drawing for paper: all open, no links
     QList<qucs_s::claude::PermissionRequest> a_requests;
     QTimer* a_renderTimer;
     QTimer* a_clock;           // the seconds of a turn under way
