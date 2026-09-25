@@ -1709,6 +1709,13 @@ void AbstractSpiceKernel::slotErrors(QProcess::ProcessError err)
     emit errors(err);
 }
 
+int AbstractSpiceKernel::exitCode() const
+{
+    if (a_simProcess->exitStatus() != QProcess::NormalExit || a_simProcess->error() == QProcess::FailedToStart)
+        return -1;
+    return a_simProcess->exitCode();
+}
+
 /*!
  * \brief AbstractSpiceKernel::slotFinished Simulation process normal finish handler
  */

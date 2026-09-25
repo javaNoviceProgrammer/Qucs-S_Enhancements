@@ -559,7 +559,12 @@ class TestGuiMonkey : public QObject
         if (!QFile::copy(source, path)) return;
         QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         qputenv("QUCS_CLAUDE", path.toUtf8());
-        qputenv("QUCS_FAKE_EDIT", a_schematics.at(int(g_seed % unsigned(a_schematics.size()))).toUtf8());
+        const QString edited = a_schematics.at(int(g_seed % unsigned(a_schematics.size())));
+        qputenv("QUCS_FAKE_EDIT", edited.toUtf8());
+        // Which of its tool calls it makes goes round with each prompt: a
+        // walk sends a few, so each seed starts elsewhere in the round.
+        QFile count(edited + QStringLiteral(".count"));
+        if (count.open(QIODevice::WriteOnly)) count.write(QByteArray::number(g_seed * 3u));
     }
 
     // Something done in the Claude Code dock.

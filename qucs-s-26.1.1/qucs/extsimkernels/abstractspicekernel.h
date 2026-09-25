@@ -138,6 +138,9 @@ public:
     /// command it was started with (for the messages of a failed start).
     QString processErrorString() const;
     QString simulatorCommand() const { return a_simulator_cmd; }
+    /// How the simulator process ended the last time: its exit code, or
+    /// -1 when it crashed or never ran.
+    int exitCode() const;
 
     virtual void setSimulatorCmd(QString cmd);
     virtual void setSimulatorParameters(QString parameters);

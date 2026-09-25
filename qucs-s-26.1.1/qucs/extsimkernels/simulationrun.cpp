@@ -151,14 +151,17 @@ void SimulationRun::slotProcessOutput()
     case spicecompat::simNgspice:
         ext = ".dat.ngspice";
         out = a_ngspice->getOutput();
+        a_exitCode = a_ngspice->exitCode();
         break;
     case spicecompat::simXyce:
         ext = ".dat.xyce";
         out = a_xyce->getOutput();
+        a_exitCode = a_xyce->exitCode();
         break;
     case spicecompat::simSpiceOpus:
         out = a_ngspice->getOutput();
         ext = ".dat.spopus";
+        a_exitCode = a_ngspice->exitCode();
         break;
     default:
         out = "dummy";
@@ -281,6 +284,7 @@ void SimulationRun::start()
     a_hasError = false;
     a_stopped = false;
     a_warningCount = 0;
+    a_exitCode = -1;
     if (a_progress != nullptr) a_progress->setValue(0);
     // The Verilog-A modules the netlist uses whose library is missing or
     // out of date are compiled first; compileNext() starts again then.

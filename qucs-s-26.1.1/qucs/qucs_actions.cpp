@@ -1033,6 +1033,20 @@ void QucsApp::slotShowLastNetlist() {
   }
 }
 
+void QucsApp::slotReloadSimulationData() {
+  int diagrams = 0;
+  for (QucsDoc *doc : allDocuments()) {
+    auto *sch = dynamic_cast<Schematic *>(doc);
+    if (sch == nullptr || sch->a_DocDiags.empty()) continue;
+    sch->reloadGraphs(true);
+    sch->viewport()->update();
+    diagrams += int(sch->a_DocDiags.size());
+  }
+  statusBar()->showMessage(diagrams == 0 ? tr("No open document has a diagram.")
+                                         : tr("The data of %n diagram(s) was read again.", nullptr, diagrams),
+                           4000);
+}
+
 // ------------------------------------------------------------------------
 // Is called to start the text editor.
 void QucsApp::slotCallEditor() { editFile(QString()); }

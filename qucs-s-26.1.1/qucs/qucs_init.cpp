@@ -899,6 +899,14 @@ void QucsApp::initActions() {
       tr("Show Last Netlist\n\nShows the netlist of the last simulation"));
   connect(showNet, SIGNAL(triggered()), SLOT(slotShowLastNetlist()));
 
+  reloadSimData = new QAction(tr("Reload Simulation Data"), this);
+  reloadSimData->setStatusTip(tr("Reads the simulation data of the diagrams again"));
+  reloadSimData->setWhatsThis(
+      tr("Reload Simulation Data\n\nThe diagrams of the open documents read their datasets again: after a "
+         "simulation outside Qucs-S, or when a plot shows nothing."));
+  reloadSimData->setObjectName(QStringLiteral("reloadSimulationData"));
+  connect(reloadSimData, &QAction::triggered, this, &QucsApp::slotReloadSimulationData);
+
   // The yellow check: this schematic only; the green one next to it
   // (checkHierarchyAction) takes its subcircuits too.
   checkSchematicAction = new QAction(QIcon(":/bitmaps/svg/check_current.svg"), tr("Check Schematic"), this);
@@ -1141,6 +1149,7 @@ void QucsApp::initMenuBar() {
   simMenu->addAction(checkHierarchyAction);
   simMenu->addAction(showMsg);
   simMenu->addAction(showNet);
+  simMenu->addAction(reloadSimData);
   simMenu->addAction(save_netlist);
   simMenu->addAction(generateNetlist);
   simMenu->addSeparator();
@@ -1767,6 +1776,9 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("Sim.Netlist", "Simulation", "Show Last Netlist", showNet,
                       QKeySequence(Qt::Key_F6));
+
+  mgr.registerCommand("Sim.ReloadData", "Simulation", "Reload Simulation Data", reloadSimData,
+                      QKeySequence());
 
   mgr.registerCommand("Sim.Check", "Simulation", "Check Schematic", checkSchematicAction,
                       QKeySequence(Qt::Key_F10));

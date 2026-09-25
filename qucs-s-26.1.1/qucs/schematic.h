@@ -222,7 +222,9 @@ public:
   /// label of the net the port sits on, or the port's own name when that
   /// net carries none. This is what the symbol writes beside the pin.
   QString portPinName(Component* port) const;
-  void  reloadGraphs();
+  /// Reads the diagrams' data again: that of the datasets changed since,
+  /// or (\a force) all of it.
+  void  reloadGraphs(bool force = false);
   bool  createSubcircuitSymbol();
   /// Throws the symbol's drawing away and lays the ports out around a
   /// fresh box; the port numbers stay as the schematic has them.

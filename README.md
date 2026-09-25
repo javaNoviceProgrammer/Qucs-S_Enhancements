@@ -236,7 +236,38 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   nets, delete, replace whole sections from text, undo and redo, each
   change one step of Edit > Undo - take a screenshot of it to see what it
   did, use any menu action and fill in and answer the dialog it opens,
-  and run a simulation and read its outcome. Tools that only look are
+  and run a simulation and read its outcome. **It reads the results as
+  numbers, not only as pictures**: `get_dataset` gives a dataset's
+  variables and, for those asked for, their statistics (min, max and
+  where, mean, RMS), samples over a range, values at given times or
+  frequencies, and measurements on the full data — rise and fall time,
+  overshoot, settling time, period, frequency, duty cycle, crossings of a
+  level, −3 dB bandwidth — each curve of a parameter sweep on its own.
+  `simulate` says it succeeded only when the simulator ran to its end,
+  reported no error and exited with 0 (it looks for `name.dat.ngspice`,
+  `.dat.xyce`, … — no longer for Qucsator's `name.dat` whatever the
+  simulator); its errors and warnings come each with the netlist line
+  they name, the part of the schematic (a device inside a subcircuit is
+  its subcircuit's part) and the node, and it says which traces of the
+  diagrams show no data and why; with `keep_as` it keeps a copy of the
+  run's dataset under a name, to read later or to plot beside the next
+  run (`ngspice/run1:tran.v(out)`). `get_netlist` gives the netlist a
+  simulation would run, or the last one run. **Diagrams by name**:
+  `add_diagram`, `edit_diagram`, `add_trace`, `edit_trace` (and `delete`
+  for diagrams and traces) take named fields — type, place and size,
+  each axis's label, log scale, limits and step, grid, legend; each
+  trace's variable (`v(out)` or `out` is found in the dataset and given
+  its simulator's and analysis's name), color, thickness, style, axis,
+  markers — instead of the positional fields of a `<Rect …>` line, and
+  every trace reads its data at once; replacing the `<Diagrams>` section
+  as text now does too, and `reload_data` (or *Simulation > Reload
+  Simulation Data*) reads the datasets again. `rename_net` renames a net
+  together with the traces, data displays and equations that name its
+  voltage; taking a label away warns of the traces it leaves without a
+  net. `describe_component_type` tells a type's properties in their
+  order with defaults, units and meaning, the netlist line it makes, and
+  the traps (a `Vpulse` is one pulse under SPICE; `Vrect` repeats).
+  Tools that only look are
   used without asking; the first change asks, and *Allow Qucs-S Control*
   lets the rest of the conversation go on without asking (as do the
   *Accept Edits*, *Auto* and *Bypass* modes). The system's own file and

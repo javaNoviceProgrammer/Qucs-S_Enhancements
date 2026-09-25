@@ -63,6 +63,7 @@ private:
     bool a_running;
     bool a_stopped = false;           // stop() ended it
     int a_warningCount = 0;           // the simulator's lines that warn
+    int a_exitCode = -1;              // the simulator's, when it finished
     bool a_optimizationAllowed = false;
     bool a_afterOptimization = false;   // the simulation of the best point
     Optimizer *a_optimizer = nullptr;
@@ -91,6 +92,9 @@ public:
     bool wasStopped() const { return a_stopped; }
     /// How many lines of the simulator's output warn (countWarnings()).
     int warningCount() const { return a_warningCount; }
+    /// The simulator's exit code when it finished (-1: it crashed, did not
+    /// start, or has not finished).
+    int exitCode() const { return a_exitCode; }
 
 private:
     void saveLog();
