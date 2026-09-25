@@ -193,6 +193,25 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   dir* (a `cd` / `os.chdir` to the open project). The interpreter is the
   one under *Application Settings → Locations → Python Path*, or `python3`
   on `PATH` when that is empty.
+- **Claude Code dock** (*View → Claude Code*, or the *Claude* chip in the
+  status bar): a conversation with [Claude Code](https://claude.com/claude-code)
+  beside the schematic. Claude works in the workspace folder (*Application
+  Settings → Locations*) unless another is chosen in the dock, and the
+  document in front goes along with a prompt when its chip is on. The reply
+  is drawn as it is written (Markdown, code on a shade), each tool Claude
+  uses shows as a line with how it went, and each turn ends with its time
+  and cost. What Claude may do is chosen in the dock's menu: *Ask Before
+  Acting* (a card asks before a command runs or a file changes — *Allow*,
+  *Allow All Edits* for the rest of the conversation, *Deny*), *Accept
+  Edits*, *Plan Only* or *Bypass Permissions*; so is the model. A schematic
+  Claude changed that is open without unsaved changes is loaded again. The
+  status bar chip says what Claude is doing — thinking, the tool it runs,
+  *needs you* when it waits for an answer — and shows or hides the dock.
+  It needs the `claude` program installed and signed in once in a terminal;
+  it is found on `PATH` or where its installers put it, or chosen under
+  the dock's *⋯* menu. It runs `claude -p` with stream-json both ways, so
+  the conversation carries on across prompts and after a restart
+  (`--resume`).
 - **The environment of your shell, even when started from the Finder or
   the Dock**: a desktop start gets a bare environment (`PATH` without
   Homebrew or `~/bin`, none of your exports), so simulators were not
@@ -921,6 +940,13 @@ and dragging on chains of 2,000 and 8,000 components and fails when
 four times the elements take ten times as long: these were quadratic until
 the node and wire lookups by place (`qucs/conductor_index.h`), and a
 16,000-component schematic stopped for nine seconds after each edit.
+
+`qucs/tests/test_claude_code` drives the Claude Code dock's session and
+the dock itself with a shell script that answers as `claude` does (stream
+events, a permission request, a result), and the GUI monkey has one
+(`qucs/tests/monkey_claude.sh`) that also dies now and then. No test
+reaches a `claude` installed on the machine: `QUCS_CLAUDE`, which names
+the program over the settings, points nowhere for them.
 
 `qucs/tests/test_netlist_audit` places every built-in component on a
 schematic and checks that it netlists in every flavour without a crash and

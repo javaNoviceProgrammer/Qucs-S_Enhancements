@@ -86,6 +86,8 @@ QString duration(qint64 milliseconds);
  *    simulation - running, its time, its warnings, failed (a click shows
  *    its output) - and the simulator with its version (a menu switches);
  *  - whether the document is saved, and when (a click saves it);
+ *  - Claude Code: whether it is at work, what it runs, whether it waits
+ *    for the user's permission (a click shows or hides its dock);
  *  - the theme (a menu).
  *
  * The application tells it about the cursor, the document in front, the
@@ -145,6 +147,7 @@ private:
     QToolButton* a_run;
     QToolButton* a_simulator;
     QToolButton* a_saved;
+    QToolButton* a_claude;
     QToolButton* a_theme;
 
     QTimer* a_refreshTimer;   // coalesces refresh()
@@ -177,6 +180,7 @@ private:
     void updateRun();
     void updateSimulator();
     void updateSaved();
+    void updateClaude();
     void updateTheme();
     QString modeHint(Schematic* doc) const;
     QString versionKey(int simulator) const;

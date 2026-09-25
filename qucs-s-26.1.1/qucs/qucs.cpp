@@ -93,6 +93,7 @@
 #include "extsimkernels/simulationrun.h"
 #include "simulationconsole.h"
 #include "processconsole.h"
+#include "claudecodepanel.h"
 #include "dialogs/tuner.h"
 #include "octave_window.h"
 #include "printerwriter.h"
@@ -726,6 +727,22 @@ void QucsApp::initView()
   tabifyDockWidget(terminalDock, pythonDock);
   pythonDock->hide();
   updateConsolePrograms();
+
+  // The Claude Code dock: on the right, hidden until asked for (the View
+  // menu, the status bar). Claude works in the workspace folder.
+  claudePanel = new ClaudeCodePanel;
+  claudePanel->setDefaultDirectory(QucsSettings.qucsWorkspaceDir.absolutePath());
+  claudePanel->setDocumentProvider([this] {
+    QucsDoc *doc = DocumentTab != nullptr && DocumentTab->count() > 0 ? getDoc() : nullptr;
+    return doc != nullptr ? doc->getDocName() : QString();
+  });
+  claudeDock = new QDockWidget(tr("Claude Code"), this);
+  claudeDock->setObjectName(QStringLiteral("ClaudeCodeDock"));
+  claudeDock->setWidget(claudePanel);
+  addDockWidget(Qt::RightDockWidgetArea, claudeDock);
+  claudeDock->hide();
+  connect(claudePanel, &ClaudeCodePanel::filesChanged, this, &QucsApp::reloadChangedFiles);
+  connect(claudePanel, &ClaudeCodePanel::openFileRequested, this, [this](const QString &file) { gotoPage(file); });
 
     // initial projects directory model
     a_homeDirModel = new QucsFileSystemModel(this);
@@ -2756,6 +2773,8 @@ void QucsApp::slotChangeView()
   Doc->becomeCurrent(true);
   if (a_status != nullptr)   // not yet while the window is being built
     a_status->documentChanged();
+  if (claudePanel != nullptr)
+    claudePanel->refreshDocument();
 
 //  TODO proper window title
 //  QFileInfo Info (Doc-> getDocName());
@@ -2816,6 +2835,48 @@ void QucsApp::slotApplSettings()
   d->exec();
   updateConsolePrograms();   // the Python interpreter may have changed
   Content->applyRefreshSettings();
+  // The workspace may have moved: Claude goes along, unless it works
+  // in a folder of the user's choosing.
+  claudePanel->setDefaultDirectory(QucsSettings.qucsWorkspaceDir.absolutePath());
+}
+
+// --------------------------------------------------------------
+void QucsApp::toggleClaudeCode()
+{
+  if (claudeDock->isVisible() && !claudeDock->visibleRegion().isEmpty()) {
+    claudeDock->hide();
+    return;
+  }
+  claudeDock->show();
+  claudeDock->raise();
+  claudePanel->focusComposer();
+}
+
+void QucsApp::reloadChangedFiles(const QStringList &files)
+{
+  for (const QString &file : files) {
+    const QString canonical = QFileInfo(file).canonicalFilePath();
+    if (canonical.isEmpty()) continue;   // gone again
+    for (QucsDoc *doc : allDocuments()) {
+      if (doc->getDocName().isEmpty() || QFileInfo(doc->getDocName()).canonicalFilePath() != canonical) continue;
+      const QString name = QFileInfo(file).fileName();
+      if (doc->getDocChanged()) {
+        claudePanel->addNote(tr("%1 has unsaved changes in Qucs-S, so it was not loaded again.").arg(name));
+        break;
+      }
+      bool loaded = false;
+      if (auto *schematic = dynamic_cast<Schematic *>(doc)) {
+        loaded = schematic->load();
+        schematic->viewport()->update();
+      } else if (auto *text = dynamic_cast<TextDoc *>(doc)) {
+        loaded = text->reload();
+      }
+      claudePanel->addNote(loaded ? tr("%1 loaded again with Claude's changes.").arg(name)
+                                  : tr("%1 could not be loaded again.").arg(name));
+      break;
+    }
+  }
+  if (a_status != nullptr) a_status->scheduleRefresh();
 }
 
 // --------------------------------------------------------------

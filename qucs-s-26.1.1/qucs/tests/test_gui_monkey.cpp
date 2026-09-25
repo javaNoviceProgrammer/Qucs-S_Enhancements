@@ -19,6 +19,8 @@
  * so that CI runs it on every push; stress runs take many seeds.
  */
 #include <QtTest>
+#include <QKeyEvent>
+#include <QToolButton>
 #include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
@@ -56,6 +58,7 @@
 
 #include "config.h"
 #include "qucs.h"
+#include "claudecodepanel.h"
 #include "schematic.h"
 #include "textdoc.h"
 #include "module.h"
@@ -529,9 +532,87 @@ class TestGuiMonkey : public QObject
                 note(QStringLiteral("zoom %1").arg(chance(0.5) ? "in" : "out"));
                 sch->zoomBy(chance(0.5) ? 8.0 : 0.125);
             }
+        } else if (what < 98) {
+            claudeStep();
         } else {
             note("escape");
             a_app->slotEscape();
+        }
+    }
+
+    // The claude of monkey_claude.sh (next to this file): it answers each
+    // prompt with a reply as it is written, a line that is not the
+    // protocol, Markdown, an edit of one of the open schematics (Qucs-S
+    // loads it again) that asks for permission - and now and then dies in
+    // the middle of the turn.
+    void writeFakeClaude()
+    {
+        const QString path = dir.filePath("fake-claude");
+        const QString source = QFileInfo(QStringLiteral(__FILE__)).absolutePath() + QStringLiteral("/monkey_claude.sh");
+        if (!QFile::copy(source, path)) return;
+        QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        qputenv("QUCS_CLAUDE", path.toUtf8());
+        qputenv("QUCS_FAKE_EDIT", a_schematics.at(int(g_seed % unsigned(a_schematics.size()))).toUtf8());
+    }
+
+    // Something done in the Claude Code dock.
+    void claudeStep()
+    {
+        ClaudeCodePanel* panel = a_app->claudeCode();
+        if (panel == nullptr) return;
+        switch (pick(9)) {
+        case 0:
+            note("claude: show or hide the dock");
+            a_app->toggleClaudeCode();
+            break;
+        case 1: {
+            note("claude: send a prompt");
+            panel->composer()->setPlainText(oddText(a_rng).left(300) + QStringLiteral(" ?"));
+            QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(panel->composer(), &enter);
+            break;
+        }
+        case 2: {
+            const int which = pick(3);
+            QToolButton* b = which == 0 ? panel->denyButton() : which == 1 ? panel->allowButton() : panel->allowEditsButton();
+            note(QStringLiteral("claude: %1").arg(b->text()));
+            if (panel->permissionCard()->isVisibleTo(panel) && b->isVisibleTo(panel)) b->click();
+            break;
+        }
+        case 3:
+            note("claude: stop");
+            panel->stopTurn();
+            break;
+        case 4:
+            note("claude: new conversation");
+            panel->newConversation();
+            break;
+        case 5: {
+            QList<QAction*> actions;
+            for (QMenu* menu : panel->findChildren<QMenu*>())
+                for (QAction* a : menu->actions())
+                    if (!a->isSeparator() && a->menu() == nullptr && a->objectName() != QLatin1String("claudeShowFolder"))
+                        actions << a;
+            if (actions.isEmpty()) break;
+            QAction* a = pickOf(actions);
+            note(QStringLiteral("claude: menu %1").arg(a->text().remove('&')));
+            if (a->isEnabled()) a->trigger();
+            break;
+        }
+        case 6:
+            note("claude: status bar chip");
+            if (auto* chip = a_app->findChild<QToolButton*>(QStringLiteral("statusClaude"))) chip->click();
+            break;
+        case 7:
+            note("claude: the open document along or not");
+            panel->attachButton()->toggle();
+            break;
+        default: {
+            const QString folder = chance(0.3) ? QString() : QFileInfo(pickOf(a_schematics)).absolutePath();
+            note(QStringLiteral("claude: work in %1").arg(folder.isEmpty() ? QStringLiteral("the workspace") : QDir(folder).dirName()));
+            panel->setWorkingDirectory(folder);
+            break;
+        }
         }
     }
 
@@ -592,6 +673,10 @@ private slots:
     void initTestCase()
     {
         QVERIFY(dir.isValid());
+        // The Claude Code dock gets clicks and keys too: never the real
+        // claude, which would be sent whatever the walk typed (on Unix a
+        // script that answers as it does, below).
+        qputenv("QUCS_CLAUDE", "/nonexistent/claude");
         g_seed = unsigned(envInt("QUCS_MONKEY_SEED", 1));
         g_verbose = !qEnvironmentVariableIsEmpty("QUCS_MONKEY_VERBOSE");
         a_rng.seed(g_seed);
@@ -629,6 +714,9 @@ private slots:
         qucs_s::crash::setReportDirectory(dir.filePath("crash-reports"));
         copyExamples();
         QVERIFY(a_schematics.size() > 20);
+#ifndef Q_OS_WIN
+        writeFakeClaude();
+#endif
 
         connect(&a_dialogTimer, &QTimer::timeout, this, &TestGuiMonkey::handleDialogs);
         a_dialogTimer.start(15);
