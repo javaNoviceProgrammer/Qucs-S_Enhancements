@@ -33,7 +33,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QDockWidget>
-#include "claudecodepanel.h"
+#include "claudecodetabs.h"
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
@@ -1182,7 +1182,7 @@ void QucsApp::initMenuBar() {
   connect(viewClaude, &QAction::triggered, this, [this](bool on) {
     if (!on) return;
     claudeDock->raise();
-    claudePanel->focusComposer();
+    claudeTabs->focusComposer();
   });
   viewMenu->addAction(viewClaude);
   // The Operating Point tab of the message dock (a DC bias run fills it).

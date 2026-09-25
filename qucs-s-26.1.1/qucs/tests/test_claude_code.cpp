@@ -1,9 +1,11 @@
 /*
  * The Claude Code dock: the session that drives the claude program over
- * stream-json (claudecode.h), the dock (claudecodepanel.h), and what the
- * application does with them - the dock works in the workspace folder,
- * the status bar follows the session, files Claude changed are loaded
- * again. The program is a shell script here that answers as claude does.
+ * stream-json (claudecode.h), a conversation (claudecodepanel.h) - its
+ * tools folded into lines, its math typeset (mathtypeset.h) - the
+ * conversations in tabs (claudecodetabs.h), and what the application
+ * does with them - the dock works in the workspace folder, the status bar
+ * follows the sessions, files Claude changed are loaded again. The
+ * program is a shell script here that answers as claude does.
  */
 #include <QtTest>
 #include <QApplication>
@@ -11,6 +13,7 @@
 #include <QAction>
 #include <QFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
@@ -18,12 +21,20 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTabWidget>
+#include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextDocument>
+#include <QTextFormat>
 #include <QToolButton>
+
+#include <cmath>
+#include <random>
 
 #include "claudecode.h"
 #include "claudecodepanel.h"
+#include "claudecodetabs.h"
+#include "mathtypeset.h"
 #include "config.h"
 #include "isolated_settings.h"
 #include "main.h"
@@ -141,6 +152,18 @@ class TestClaudeCode : public QObject
         QDir(path).removeRecursively();
         QDir().mkpath(path);
         return QFileInfo(path).canonicalFilePath();
+    }
+
+    // The math typeset in a transcript: each image's TeX (its tool tip).
+    static QStringList mathIn(QTextDocument* doc)
+    {
+        QStringList tex;
+        for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+            for (auto it = b.begin(); !it.atEnd(); ++it) {
+                const QTextCharFormat f = it.fragment().charFormat();
+                if (f.objectType() == qucs_s::math::MathObject::Type) tex << f.toolTip();
+            }
+        return tex;
     }
 
     static QString read(const QString& path)
@@ -571,6 +594,230 @@ private slots:
         QVERIFY(!panel.modelLabel()->text().contains("auto"));
     }
 
+    // The tools Claude uses in a row are one line, folded: what they did
+    // in words ("Ran 2 commands, read amp.sch"). Opened, a line each;
+    // each opens on the whole command and what it gave. One tool alone
+    // is its own line, folded the same way.
+    void toolsFoldIntoALine()
+    {
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("toolwork"));
+        panel.resize(420, 700);
+        Session* s = panel.session();
+        s->setProgram("claude");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"text","text":"Looking."}]}})");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la","description":"List the files"}}]}})");
+        s->handleLine(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"amp.sch\nfilter.sch","is_error":false}]}})");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"grep -c R amp.sch"}}]}})");
+        s->handleLine(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"7","is_error":false}]}})");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Read","input":{"file_path":"/w/amp.sch"}}]}})");
+        s->handleLine(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t3","content":"<Qucs Schematic>","is_error":false}]}})");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"text","text":"Found them."}]}})");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"ngspice -b amp.cir"}}]}})");
+        s->handleLine(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t4","content":"no such file","is_error":true}]}})");
+        panel.renderNow();
+        QString text = panel.transcriptText();
+        QVERIFY(text.contains("Ran 2 commands, read amp.sch"));
+        QVERIFY(!text.contains("ls -la"));
+        QVERIFY(!text.contains("grep -c"));
+        // One alone: its line, and why it failed; not its output.
+        QVERIFY(text.contains("ngspice -b amp.cir"));
+        QVERIFY(text.contains("no such file"));
+        QVERIFY(text.indexOf("Found them.") < text.indexOf("ngspice"));
+
+        // Opened with a click: a line each, folded.
+        emit panel.transcript()->anchorClicked(QUrl("toggle:group:t1"));
+        QVERIFY(panel.isExpanded("group:t1"));
+        text = panel.transcriptText();
+        QVERIFY(text.contains("ls -la"));
+        QVERIFY(text.contains("grep -c R amp.sch"));
+        QVERIFY(!text.contains("filter.sch"));
+        QVERIFY(!text.contains("List the files"));
+        // A command opened: the whole of it, its description, what it gave.
+        panel.toggle("tool:t1");
+        text = panel.transcriptText();
+        QVERIFY(text.contains("# List the files"));
+        QVERIFY(text.contains("filter.sch"));
+        panel.toggle("tool:t1");
+        panel.toggle("group:t1");
+        QVERIFY(!panel.transcriptText().contains("ls -la"));
+        // Folded lines are links that say so.
+        bool linked = false;
+        QTextDocument* doc = panel.transcript()->document();
+        for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+            for (auto it = b.begin(); !it.atEnd(); ++it)
+                if (it.fragment().charFormat().anchorHref() == "toggle:group:t1") linked = true;
+        QVERIFY(linked);
+    }
+
+    // TeX math: found in Markdown (not in code, not money), typeset (a
+    // fraction in display style is taller than in text), and set in the
+    // conversation as images with the TeX in their tool tip.
+    void mathIsTypeset()
+    {
+        using qucs_s::math::findMath;
+        auto spans = findMath("The cutoff is $f_c = \\frac{1}{2\\pi RC}$, and\n$$H(s) = \\frac{1}{1+sRC}$$\nwhere.");
+        QCOMPARE(spans.size(), 2);
+        QCOMPARE(spans.at(0).tex, QStringLiteral("f_c = \\frac{1}{2\\pi RC}"));
+        QVERIFY(!spans.at(0).display);
+        QVERIFY(spans.at(1).display);
+        QCOMPARE(findMath("It costs $5 and $10 a piece.").size(), 0);
+        QCOMPARE(findMath("A dollar: \\$x$ is not math").size(), 0);
+        QCOMPARE(findMath("Code `$x$` and\n```\n$$y$$\n```\nbut $z$").size(), 1);
+        QCOMPARE(findMath("Inline \\(a^2\\) and display \\[b^2\\]").size(), 2);
+        QCOMPARE(findMath("$ x $").size(), 0);
+
+        QFont font = QApplication::font();
+        const auto text = qucs_s::math::typeset("\\frac{a}{b}", font, Qt::black, false, 1.0);
+        const auto display = qucs_s::math::typeset("\\frac{a}{b}", font, Qt::black, true, 1.0);
+        QVERIFY(text.ok && display.ok);
+        QVERIFY(!text.image.isNull());
+        QVERIFY(display.ascent + display.descent > text.ascent + text.descent);
+        QVERIFY(qucs_s::math::typeset("\\sum_{n=0}^{\\infty} x^n \\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}", font, Qt::black, true).ok);
+        QVERIFY(!qucs_s::math::typeset("\\nosuchcommand x", font, Qt::black, false).ok);   // shown as written
+        QVERIFY(!qucs_s::math::typeset("\\frac{a}{", font, Qt::black, false).image.isNull());
+        // Its middle on the axis: an image as tall above as below the
+        // line's middle.
+        qreal height = 0.0;
+        const QImage centred = qucs_s::math::centredOnAxis(display, font, &height);
+        QVERIFY(height >= display.ascent + display.descent);
+        QVERIFY(!centred.isNull());
+
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("mathwork"));
+        panel.resize(420, 700);
+        panel.session()->setProgram("claude");
+        panel.session()->handleLine(QJsonDocument(QJsonObject{
+            {"type", "assistant"},
+            {"message", QJsonObject{{"content", QJsonArray{QJsonObject{
+                {"type", "text"},
+                {"text", "The cutoff is $f_c = \\frac{1}{2\\pi RC}$.\n\n$$Z = \\sqrt{\\frac{L}{C}}$$\n\n- in a list: $\\omega_0$\n\n`$not$ math`"}}}}}}}).toJson(QJsonDocument::Compact));
+        panel.renderNow();
+        const QStringList typeset = mathIn(panel.transcript()->document());
+        QCOMPARE(typeset, (QStringList{"f_c = \\frac{1}{2\\pi RC}", "Z = \\sqrt{\\frac{L}{C}}", "\\omega_0"}));
+        const QString shown = panel.transcriptText();
+        QVERIFY(!shown.contains("\\frac"));
+        QVERIFY(shown.contains("The cutoff is"));
+        QVERIFY(shown.contains("$not$ math"));
+        // Display math on its own lines is centred.
+        bool centredBlock = false;
+        QTextDocument* doc = panel.transcript()->document();
+        for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+            if (b.text().trimmed() == QString(QChar::ObjectReplacementCharacter) && b.blockFormat().alignment() & Qt::AlignHCenter)
+                centredBlock = true;
+        QVERIFY(centredBlock);
+    }
+
+    // Whatever Claude writes between dollars - TeX cut short, braces out of
+    // balance, environments not closed, commands nested deep - is set as
+    // far as it goes, and nothing breaks.
+    void mathSurvivesAnything()
+    {
+        const char* const tokens[] = {
+            "\\frac", "{", "}", "^", "_", "\\left(", "\\right)", "\\left.", "\\right|", "\\begin{pmatrix}",
+            "\\end{pmatrix}", "\\begin{aligned}", "\\end{aligned}", "\\begin{cases}", "&", "\\\\", "\\sqrt",
+            "[", "]", "x", "1", "\\alpha", "\\sum", "\\int", "\\text{", "\\over", "'", "\\not", "\\hat",
+            "\\color{red}", "\\displaystyle", "\\big(", "\\middle|", "\\operatorname*{", "\\SI{", "\\mathbb{",
+            "\\", "%", "~", "\\,", "\\tag{", "\\xrightarrow[", "\\underbrace", "\\overset", "\\binom",
+            "\\begin{array}{", "\\hspace{", "\\limits", "\\nosuch", "=", "-", "+", "(", ")", "|", "\\{", "\\}",
+            " ", "\\substack{", "\\phantom", "\\boxed", "\\mathrm{", "\\end{cases}", "\\right.", "\\;",
+        };
+        const QFont font = QApplication::font();
+        std::mt19937 rng(20260925);
+        for (int round = 0; round < 1500; ++round) {
+            QString tex;
+            const int n = 1 + int(rng() % 40);
+            for (int k = 0; k < n; ++k) tex += QString::fromUtf8(tokens[rng() % std::size(tokens)]);
+            const auto t = qucs_s::math::typeset(tex, font, Qt::black, round % 2 == 0, 2.0);
+            QVERIFY2(!t.image.isNull(), qPrintable(tex));
+            QVERIFY2(std::isfinite(t.width) && std::isfinite(t.ascent) && std::isfinite(t.descent), qPrintable(tex));
+            qreal height = 0.0;
+            QVERIFY(!qucs_s::math::centredOnAxis(t, font, &height).isNull());
+        }
+        // Deep: nested beyond reason, stopped, not overflowing the stack.
+        QVERIFY(!qucs_s::math::typeset(QString("\\not").repeated(5000) + "=", font, Qt::black, false).ok);
+        QVERIFY(!qucs_s::math::typeset(QString("{").repeated(5000), font, Qt::black, false).ok);
+        QVERIFY(!qucs_s::math::typeset(QString("\\frac{").repeated(3000), font, Qt::black, true).ok);
+        // And ordinary things are ordinary: 1.59 is a number, not 1. 59.
+        const auto number = qucs_s::math::typeset("1.59", font, Qt::black, false);
+        const auto spaced = qucs_s::math::typeset("1,59", font, Qt::black, false);
+        QVERIFY(number.width < spaced.width);
+    }
+
+    // Conversations in tabs: New opens one beside the first, which keeps
+    // its own; the tab says what it is about and how it stands; one that
+    // waits for permission behind another marks its tab and is the one
+    // the status bar leads to; closing a tab ends its conversation, and
+    // the last one leaves a new one.
+    void conversationsHaveTabsOfTheirOwn()
+    {
+        ClaudeCodeTabs tabs;
+        const QString work = fresh("tabwork");
+        tabs.setDefaultDirectory(work);
+        tabs.resize(440, 700);
+        tabs.show();
+        QCOMPARE(tabs.count(), 1);
+        ClaudeCodePanel* first = tabs.current();
+        QCOMPARE(first->workingDirectory(), work);
+        QCOMPARE(tabs.tabWidget()->tabText(0), QStringLiteral("New conversation"));
+        // (Another folder is a new conversation: chosen first.)
+        const QString elsewhere = fresh("tabwork2");
+        first->setWorkingDirectory(elsewhere);
+        first->session()->setProgram(dir.filePath("no-such-claude"));   // (it fails to start: the prompt stays)
+        first->composer()->setPlainText("Explain the amplifier");
+        first->sendComposer();
+        QCOMPARE(tabs.tabWidget()->tabText(0), QStringLiteral("Explain the amplifier"));
+
+        // New, in the header: a second tab, in front, in the same folder
+        // as the first when it was chosen there.
+        first->newButton()->click();
+        QCOMPARE(tabs.count(), 2);
+        ClaudeCodePanel* second = tabs.current();
+        QVERIFY(second != first);
+        QCOMPARE(second->workingDirectory(), elsewhere);
+        QVERIFY(second->session() != first->session());
+        first->renderNow();
+        QVERIFY(first->transcriptText().contains("Explain the amplifier"));
+        tabs.newTabButton()->click();
+        QCOMPARE(tabs.count(), 3);
+        tabs.closeConversation(tabs.current(), false);
+        QCOMPARE(tabs.count(), 2);
+
+        // A question behind the tab in front: the tab is marked, the one in
+        // front stays; the status bar's choice is the one waiting.
+        tabs.showConversation(first);
+        second->session()->setProgram("claude");
+        second->session()->handleLine(R"({"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}})");
+        QCOMPARE(tabs.current(), first);
+        QCOMPARE(tabs.needingAttention(), second);
+        QCOMPARE(tabs.mostUrgent(), second);
+        QVERIFY(tabs.tabWidget()->tabToolTip(1).contains("needs you"));
+        // In front, it asks at once.
+        second->session()->reset();
+        QCOMPARE(tabs.needingAttention(), nullptr);
+        tabs.showConversation(second);
+        second->session()->handleLine(R"({"type":"control_request","request_id":"r2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}})");
+        QVERIFY(second->permissionCard()->isVisibleTo(second));
+        second->session()->reset();
+
+        // A note about files goes to the conversation that changed them.
+        connect(&tabs, &ClaudeCodeTabs::filesChanged, &tabs, [&tabs] { tabs.addNote("reloaded here"); });
+        tabs.showConversation(second);
+        emit first->filesChanged({work + "/a.sch"});
+        first->renderNow();
+        second->renderNow();
+        QVERIFY(first->transcriptText().contains("reloaded here"));
+        QVERIFY(!second->transcriptText().contains("reloaded here"));
+
+        // Closed: the last one leaves a new one.
+        QVERIFY(tabs.closeConversation(first, false));
+        QCOMPARE(tabs.count(), 1);
+        QVERIFY(tabs.closeConversation(tabs.current(), false));
+        QCOMPARE(tabs.count(), 1);
+        QCOMPARE(tabs.tabWidget()->tabText(0), QStringLiteral("New conversation"));
+        QCOMPARE(tabs.current()->workingDirectory(), work);
+    }
+
     // The dock: the conversation as it goes, the permission card and its
     // buttons, Enter to send, the suggestions, a file Claude changed.
     void theDockShowsTheConversation()
@@ -672,7 +919,9 @@ private slots:
 
         QucsApp app(false);
         MainGuard guard(&app);
-        ClaudeCodePanel* panel = app.claudeCode();
+        ClaudeCodeTabs* tabs = app.claudeCode();
+        QVERIFY(tabs != nullptr);
+        ClaudeCodePanel* panel = tabs->current();
         QVERIFY(panel != nullptr);
         QCOMPARE(panel->workingDirectory(), QDir(workspace).absolutePath());
         QVERIFY(app.claudeDockWidget()->isHidden());
@@ -695,10 +944,25 @@ private slots:
         chip->click();
         QVERIFY(app.claudeDockWidget()->isVisible());
 
+        // A second conversation waits behind the first: the chip says so
+        // (and that another is there), and leads to it.
+        ClaudeCodePanel* second = tabs->newConversation();
+        tabs->showConversation(panel);
+        second->session()->setProgram("claude");
+        second->session()->handleLine(R"({"type":"control_request","request_id":"r2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}})");
+        QVERIFY(chip->text().contains("needs you"));
+        QVERIFY(chip->toolTip().contains("New conversation"));
+        chip->click();
+        QCOMPARE(tabs->current(), second);
+        QVERIFY(app.claudeDockWidget()->isVisible());
+        second->session()->reset();
+        QVERIFY(tabs->closeConversation(second, false));
+        QCOMPARE(tabs->current(), panel);
+
         // Another workspace: the dock goes along.
         const QString other = fresh("workspace2");
         QucsSettings.qucsWorkspaceDir.setPath(other);
-        panel->setDefaultDirectory(QucsSettings.qucsWorkspaceDir.absolutePath());
+        tabs->setDefaultDirectory(QucsSettings.qucsWorkspaceDir.absolutePath());
         QCOMPARE(panel->workingDirectory(), QDir(other).absolutePath());
 
         // A schematic Claude changed.

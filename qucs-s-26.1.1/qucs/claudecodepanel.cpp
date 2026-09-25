@@ -43,6 +43,7 @@
 #include <QTextBrowser>
 #include <QTextCursor>
 #include <QTextDocumentFragment>
+#include <QTextFormat>
 #include <QTextFrame>
 #include <QTimer>
 #include <QToolButton>
@@ -144,6 +145,18 @@ QString shownPath(const QString& path)
     if (native.startsWith(home + QDir::separator())) return QStringLiteral("~") + native.mid(home.size());
     return native;
 }
+
+// The programs asked in this run which models they offer: once each, for
+// every panel (the answer is kept in the settings, where they all read it).
+QSet<QString>& askedPrograms()
+{
+    static QSet<QString> asked;
+    return asked;
+}
+
+// Math in a reply is kept apart while the Markdown is read: a character
+// of the private use area stands for each formula.
+constexpr char16_t kMathMark = 0xE000;
 
 // A new block with \a format - the empty one the cursor is in, if it is.
 void startBlock(QTextCursor& c, const QTextBlockFormat& format)
@@ -255,6 +268,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     a_view->setOpenExternalLinks(false);
     a_view->setTextInteractionFlags(Qt::TextBrowserInteraction);
     connect(a_view, &QTextBrowser::anchorClicked, this, &ClaudeCodePanel::handleLink);
+    qucs_s::math::MathObject::install(a_view->document());
     layout->addWidget(a_view, 1);
 
     buildPermissionCard();
@@ -300,6 +314,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
         }
         listModels();   // the program changed while it was asked
     });
+    // Rebuilt in its own aboutToShow, not under a triggered action of it.
 
     const QucsSettingsFile settings;
     a_session->setPermissionMode(settings.value(kMode).toString());
@@ -354,6 +369,10 @@ void ClaudeCodePanel::buildHeader()
     layout->addWidget(a_newButton);
     layout->addWidget(a_menuButton);
     connect(a_newButton, &QToolButton::clicked, this, [this] {
+        if (a_newInTab) {
+            emit newConversationRequested();
+            return;
+        }
         if (a_session->isBusy()
             && QMessageBox::question(this, tr("Claude Code"), tr("Stop Claude and start a new conversation?"))
                    != QMessageBox::Yes)
@@ -544,6 +563,7 @@ void ClaudeCodePanel::buildMenu()
     });
     QAction* again = a_menu->addAction(tr("Look for the Program Again"), this, [this] {
         QucsSettingsFile().remove(kProgram);
+        askedPrograms().remove(a_session->program());   // (it may have been updated)
         findProgram();
         addNote(a_session->program().isEmpty() ? tr("Claude Code was not found.")
                                                 : tr("Using %1.").arg(QDir::toNativeSeparators(a_session->program())));
@@ -672,10 +692,16 @@ void ClaudeCodePanel::findProgram()
 
 void ClaudeCodePanel::listModels()
 {
+    // What another panel's program said meanwhile.
+    const QJsonArray kept = QJsonDocument::fromJson(QucsSettingsFile().value(kModels).toString().toUtf8()).array();
+    if (!kept.isEmpty() && kept != a_listedModels) {
+        a_listedModels = kept;
+        rebuildModelMenu();
+    }
     const QString program = a_session->program();
-    if (program.isEmpty() || program == a_modelsFrom || a_modelQuery->isRunning()) return;
+    if (program.isEmpty() || askedPrograms().contains(program) || a_modelQuery->isRunning()) return;
     if (!QFileInfo(program).isExecutable()) return;   // a program named, not found
-    a_modelsFrom = program;
+    askedPrograms().insert(program);
     a_modelQuery->start(program, workingDirectory());
 }
 
@@ -974,7 +1000,9 @@ void ClaudeCodePanel::newConversation()
 {
     a_session->reset();
     a_entries.clear();
+    a_expanded.clear();
     a_requests.clear();
+    emit titleChanged();
     showNextRequest();
     updateState();
     render();
@@ -992,8 +1020,11 @@ void ClaudeCodePanel::append(const Entry& e)
     // A reply being written ends where anything else begins.
     if (!a_entries.isEmpty() && a_entries.last().streaming && e.kind != Entry::Claude)
         a_entries.last().streaming = false;
+    const bool firstPrompt = e.kind == Entry::You
+                             && std::none_of(a_entries.cbegin(), a_entries.cend(), [](const Entry& x) { return x.kind == Entry::You; });
     a_entries.append(e);
     scheduleRender();
+    if (firstPrompt) emit titleChanged();
 }
 
 void ClaudeCodePanel::onReplyStreamed(const QString& text)
@@ -1019,9 +1050,11 @@ void ClaudeCodePanel::onReplyFinished(const QString& text)
     append({Entry::Claude, text, {}, {}});
 }
 
-void ClaudeCodePanel::onToolStarted(const QString& id, const QString& tool, const QString& subject)
+void ClaudeCodePanel::onToolStarted(const QString& id, const QString& tool, const QString& subject, const QString& detail)
 {
-    append({Entry::Tool, tool, subject, id});
+    Entry e{Entry::Tool, tool, subject, id};
+    e.detail = detail;
+    append(e);
 }
 
 void ClaudeCodePanel::onToolFinished(const QString& id, bool failed, const QString& output)
@@ -1029,6 +1062,13 @@ void ClaudeCodePanel::onToolFinished(const QString& id, bool failed, const QStri
     for (int i = a_entries.size() - 1; i >= 0; --i) {
         Entry& e = a_entries[i];
         if (e.kind != Entry::Tool || e.id != id) continue;
+        // What it gave, the first lines of it, for when it is opened.
+        QStringList lines = output.split(QLatin1Char('\n'));
+        while (!lines.isEmpty() && lines.last().trimmed().isEmpty()) lines.removeLast();
+        const int kept = 30;
+        e.result = lines.mid(0, kept).join(QLatin1Char('\n'));
+        if (e.result.size() > 6000) e.result = e.result.left(6000) + QChar(0x2026);
+        if (lines.size() > kept) e.result += QLatin1Char('\n') + tr("… %1 more lines").arg(lines.size() - kept);
         if (!failed) {
             e.tool = Entry::Succeeded;
         } else {
@@ -1047,13 +1087,9 @@ void ClaudeCodePanel::onToolFinished(const QString& id, bool failed, const QStri
 
 void ClaudeCodePanel::onPermissionRequested(const qucs_s::claude::PermissionRequest& request)
 {
+    // (Whoever holds the panel brings it forward: ClaudeCodeTabs.)
     a_requests.append(request);
     showNextRequest();
-    // Where the user looks: the dock comes forward.
-    if (QWidget* dock = parentWidget(); dock != nullptr) {
-        if (!dock->isVisible()) dock->show();
-        dock->raise();
-    }
 }
 
 void ClaudeCodePanel::onPermissionWithdrawn(const QString& id)
@@ -1129,6 +1165,10 @@ void ClaudeCodePanel::onTurnFinished(const qucs_s::claude::TurnResult& r)
 // ----------------------------------------------------------------------
 void ClaudeCodePanel::handleLink(const QUrl& url)
 {
+    if (url.scheme() == QLatin1String("toggle")) {
+        toggle(url.path());
+        return;
+    }
     if (url.scheme() == QLatin1String("prompt")) {
         const int n = url.path().toInt();
         if (n < 0 || n >= int(std::size(kSuggestions))) return;
@@ -1175,7 +1215,17 @@ void ClaudeCodePanel::render()
         renderWelcome(c);
     } else {
         bool captioned = false;
-        for (const Entry& e : std::as_const(a_entries)) renderEntry(c, e, captioned);
+        for (qsizetype i = 0; i < a_entries.size();) {
+            if (a_entries.at(i).kind == Entry::Tool) {
+                qsizetype j = i + 1;
+                while (j < a_entries.size() && a_entries.at(j).kind == Entry::Tool) ++j;
+                renderTools(c, i, j, captioned);
+                i = j;
+                continue;
+            }
+            renderEntry(c, a_entries.at(i), captioned);
+            ++i;
+        }
     }
 
     if (follow) {
@@ -1241,18 +1291,7 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
     muted.setFont(small);
     muted.setForeground(col.muted);
 
-    const auto claudeCaption = [&] {
-        if (captioned) return;
-        captioned = true;
-        QTextBlockFormat f;
-        f.setTopMargin(first ? 2 : 16);
-        f.setBottomMargin(4);
-        startBlock(c, f);
-        QTextCharFormat mark = caption;
-        mark.setForeground(col.accent);
-        c.insertText(QStringLiteral("● "), mark);
-        c.insertText(tr("Claude"), caption);
-    };
+    const auto claudeCaption = [&] { renderCaption(c, captioned); };
 
     switch (e.kind) {
     case Entry::You: {
@@ -1289,24 +1328,7 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
         QTextBlockFormat f;
         f.setTopMargin(2);
         startBlock(c, f);
-        const int from = c.position();
-        QTextDocument md;
-        md.setDefaultFont(base);
-        md.setMarkdown(e.text, QTextDocument::MarkdownDialectGitHub);
-        c.insertFragment(QTextDocumentFragment(&md));
-        // Code on a shade, set off from the text.
-        for (QTextBlock b = c.document()->findBlock(from); b.isValid() && b.position() <= c.position(); b = b.next()) {
-            const QTextBlockFormat bf = b.blockFormat();
-            if (bf.nonBreakableLines() || bf.hasProperty(QTextFormat::BlockCodeFence)
-                || bf.hasProperty(QTextFormat::BlockCodeLanguage)) {
-                QTextCursor bc(b);
-                QTextBlockFormat shaded = bf;
-                shaded.setBackground(col.code);
-                shaded.setLeftMargin(bf.leftMargin() + 4);
-                bc.setBlockFormat(shaded);
-            }
-            if (b == c.block()) break;
-        }
+        renderMarkdown(c, e.text);
         if (e.streaming) {
             QTextCharFormat cursor = plain;
             cursor.setForeground(col.accent);
@@ -1314,39 +1336,8 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
         }
         break;
     }
-    case Entry::Tool: {
-        claudeCaption();
-        QTextBlockFormat f;
-        f.setTopMargin(3);
-        f.setLeftMargin(2);
-        startBlock(c, f);
-        QTextCharFormat mark = caption;
-        QString glyph;
-        switch (e.tool) {
-        case Entry::Running: glyph = QStringLiteral("○"); mark.setForeground(col.accent); break;
-        case Entry::Succeeded: glyph = QStringLiteral("✓"); mark.setForeground(col.ok); break;
-        case Entry::Failed: glyph = QStringLiteral("✕"); mark.setForeground(col.error); break;
-        case Entry::Denied: glyph = QStringLiteral("⊘"); mark.setForeground(col.warn); break;
-        }
-        c.insertText(glyph + QStringLiteral("  "), mark);
-        QTextCharFormat name = caption;
-        name.setForeground(col.text);
-        c.insertText(e.text, name);
-        if (!e.extra.isEmpty()) {
-            QTextCharFormat subject = muted;
-            subject.setFont(mono);
-            c.insertText(QStringLiteral("   ") + e.extra, subject);
-        }
-        if (!e.output.isEmpty() && e.tool != Entry::Succeeded) {
-            QTextBlockFormat bf;
-            bf.setLeftMargin(22);
-            c.insertBlock(bf);
-            QTextCharFormat why = muted;
-            why.setForeground(e.tool == Entry::Denied ? col.warn : col.error);
-            c.insertText(e.output, why);
-        }
-        break;
-    }
+    case Entry::Tool:
+        break;   // (renderTools())
     case Entry::Note: {
         QTextBlockFormat f;
         f.setTopMargin(first ? 2 : 8);
@@ -1379,4 +1370,361 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
         break;
     }
     }
+}
+
+void ClaudeCodePanel::renderCaption(QTextCursor& c, bool& captioned)
+{
+    if (captioned) return;
+    captioned = true;
+    const Colours col = colours(palette());
+    QFont small = a_view->font();
+    small.setPointSizeF(std::max(7.0, small.pointSizeF() * 0.88));
+    QTextCharFormat caption;
+    caption.setFont(small);
+    caption.setFontWeight(QFont::DemiBold);
+    caption.setForeground(col.text);
+    QTextBlockFormat f;
+    f.setTopMargin(c.document()->isEmpty() ? 2 : 16);
+    f.setBottomMargin(4);
+    startBlock(c, f);
+    QTextCharFormat mark = caption;
+    mark.setForeground(col.accent);
+    c.insertText(QStringLiteral("● "), mark);
+    c.insertText(tr("Claude"), caption);
+}
+
+// ----------------------------------------------------------------------
+// Tools: a row of them is a line that opens; each opens on its input and
+// what it gave.
+
+QString ClaudeCodePanel::toolSummary(qsizetype from, qsizetype to) const
+{
+    struct Part {
+        QString key;
+        int count = 0;
+        QStringList files;
+        QString name;
+    };
+    QList<Part> parts;
+    const auto add = [&parts](const QString& key, const QString& file, const QString& name = QString()) {
+        for (Part& p : parts)
+            if (p.key == key) {
+                ++p.count;
+                if (!file.isEmpty() && !p.files.contains(file)) p.files << file;
+                return;
+            }
+        parts.append({key, 1, file.isEmpty() ? QStringList() : QStringList{file}, name});
+    };
+    for (qsizetype i = from; i < to; ++i) {
+        const Entry& e = a_entries.at(i);
+        const QString& tool = e.text;
+        const QString file = QFileInfo(e.extra).fileName();
+        if (tool == QLatin1String("Bash") || tool == QLatin1String("PowerShell")) add(QStringLiteral("run"), {});
+        else if (tool == QLatin1String("Read")) add(QStringLiteral("read"), file);
+        else if (tool == QLatin1String("Write")) add(QStringLiteral("write"), file);
+        else if (tool == QLatin1String("Edit") || tool == QLatin1String("MultiEdit") || tool == QLatin1String("NotebookEdit"))
+            add(QStringLiteral("edit"), file);
+        else if (tool == QLatin1String("Glob") || tool == QLatin1String("Grep") || tool == QLatin1String("LS"))
+            add(QStringLiteral("search"), {});
+        else if (tool == QLatin1String("WebFetch")) add(QStringLiteral("fetch"), {});
+        else if (tool == QLatin1String("WebSearch")) add(QStringLiteral("web"), {});
+        else if (tool == QLatin1String("TodoWrite")) add(QStringLiteral("todo"), {});
+        else if (tool == QLatin1String("Task") || tool == QLatin1String("Agent")) add(QStringLiteral("agent"), {});
+        else add(QStringLiteral("tool:") + tool, {}, tool);
+    }
+    QStringList words;
+    for (const Part& p : std::as_const(parts)) {
+        const int n = p.count;
+        const int files = int(p.files.size());
+        const QString one = files == 1 ? p.files.constFirst() : QString();
+        if (p.key == QLatin1String("run")) words << (n == 1 ? tr("ran a command") : tr("ran %1 commands").arg(n));
+        else if (p.key == QLatin1String("read")) words << (files <= 1 && !one.isEmpty() ? tr("read %1").arg(one) : tr("read %1 files").arg(std::max(files, n)));
+        else if (p.key == QLatin1String("write")) words << (files <= 1 && !one.isEmpty() ? tr("wrote %1").arg(one) : tr("wrote %1 files").arg(std::max(files, 1)));
+        else if (p.key == QLatin1String("edit")) words << (files <= 1 && !one.isEmpty() ? tr("edited %1").arg(one) : tr("edited %1 files").arg(std::max(files, 1)));
+        else if (p.key == QLatin1String("search")) words << (n == 1 ? tr("searched") : tr("searched %1 times").arg(n));
+        else if (p.key == QLatin1String("fetch")) words << (n == 1 ? tr("fetched a page") : tr("fetched %1 pages").arg(n));
+        else if (p.key == QLatin1String("web")) words << tr("searched the web");
+        else if (p.key == QLatin1String("todo")) words << tr("updated the to-do list");
+        else if (p.key == QLatin1String("agent")) words << (n == 1 ? tr("ran an agent") : tr("ran %1 agents").arg(n));
+        else words << (n == 1 ? tr("used %1").arg(p.name) : tr("used %1 %2 times").arg(p.name).arg(n));
+    }
+    QString text = words.join(QStringLiteral(", "));
+    if (!text.isEmpty()) text[0] = text.at(0).toUpper();
+    return text;
+}
+
+void ClaudeCodePanel::renderTools(QTextCursor& c, qsizetype from, qsizetype to, bool& captioned)
+{
+    renderCaption(c, captioned);
+    // A little room before what follows.
+    const auto roomAfter = [&c] {
+        QTextBlockFormat last = c.blockFormat();
+        last.setBottomMargin(std::max(last.bottomMargin(), 5.0));
+        c.setBlockFormat(last);
+    };
+    if (to - from == 1) {
+        renderTool(c, a_entries.at(from), 0);
+        roomAfter();
+        return;
+    }
+    const Colours col = colours(palette());
+    QFont small = a_view->font();
+    small.setPointSizeF(std::max(7.0, small.pointSizeF() * 0.88));
+    QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    mono.setPointSizeF(small.pointSizeF());
+
+    const QString key = QStringLiteral("group:") + a_entries.at(from).id;
+    const bool open = a_expanded.contains(key);
+    int running = 0, failed = 0, denied = 0;
+    const Entry* now = nullptr;
+    for (qsizetype i = from; i < to; ++i) {
+        const Entry& e = a_entries.at(i);
+        if (e.tool == Entry::Running) {
+            ++running;
+            now = &e;
+        }
+        if (e.tool == Entry::Failed) ++failed;
+        if (e.tool == Entry::Denied) ++denied;
+    }
+    QTextBlockFormat f;
+    f.setTopMargin(3);
+    f.setLeftMargin(2);
+    startBlock(c, f);
+    QTextCharFormat link;
+    link.setAnchor(true);
+    link.setAnchorHref(QStringLiteral("toggle:") + key);
+    link.setToolTip(open ? tr("Fold the tools away") : tr("Show each tool Claude used"));
+    QTextCharFormat twisty = link;
+    twisty.setFont(small);
+    twisty.setForeground(col.faint);
+    c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), twisty);
+    QTextCharFormat mark = twisty;
+    mark.setFontWeight(QFont::DemiBold);
+    QString glyph;
+    if (running > 0) glyph = QStringLiteral("○"), mark.setForeground(col.accent);
+    else if (failed > 0) glyph = QStringLiteral("✕"), mark.setForeground(col.error);
+    else if (denied > 0) glyph = QStringLiteral("⊘"), mark.setForeground(col.warn);
+    else glyph = QStringLiteral("✓"), mark.setForeground(col.ok);
+    c.insertText(glyph + QStringLiteral("  "), mark);
+    QTextCharFormat name = twisty;
+    name.setFontWeight(QFont::DemiBold);
+    name.setForeground(col.text);
+    c.insertText(toolSummary(from, to), name);
+    QTextCharFormat quiet = twisty;
+    quiet.setForeground(col.muted);
+    if (now != nullptr && !now->extra.isEmpty()) {
+        QTextCharFormat subject = quiet;
+        subject.setFont(mono);
+        c.insertText(QStringLiteral("   ") + now->extra, subject);
+    } else if (failed + denied > 0) {
+        QStringList notes;
+        if (failed > 0) notes << (failed == 1 ? tr("1 failed") : tr("%1 failed").arg(failed));
+        if (denied > 0) notes << (denied == 1 ? tr("1 not allowed") : tr("%1 not allowed").arg(denied));
+        c.insertText(QStringLiteral("  ·  ") + notes.join(QStringLiteral(", ")), quiet);
+    }
+    if (open)
+        for (qsizetype i = from; i < to; ++i) renderTool(c, a_entries.at(i), 16);
+    roomAfter();
+}
+
+void ClaudeCodePanel::renderTool(QTextCursor& c, const Entry& e, qreal indent)
+{
+    const Colours col = colours(palette());
+    QFont small = a_view->font();
+    small.setPointSizeF(std::max(7.0, small.pointSizeF() * 0.88));
+    QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    mono.setPointSizeF(small.pointSizeF());
+
+    const QString key = QStringLiteral("tool:") + e.id;
+    const bool more = !e.detail.trimmed().isEmpty() || !e.result.trimmed().isEmpty();
+    const bool open = more && a_expanded.contains(key);
+    QTextBlockFormat f;
+    f.setTopMargin(3);
+    f.setLeftMargin(2 + indent);
+    startBlock(c, f);
+    QTextCharFormat link;
+    if (more) {
+        link.setAnchor(true);
+        link.setAnchorHref(QStringLiteral("toggle:") + key);
+        link.setToolTip(open ? tr("Fold it away") : tr("Show the whole of it, and what it gave"));
+    }
+    QTextCharFormat twisty = link;
+    twisty.setFont(small);
+    twisty.setForeground(more ? col.faint : col.base);
+    c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), twisty);
+    QTextCharFormat mark = twisty;
+    mark.setFontWeight(QFont::DemiBold);
+    QString glyph;
+    switch (e.tool) {
+    case Entry::Running: glyph = QStringLiteral("○"); mark.setForeground(col.accent); break;
+    case Entry::Succeeded: glyph = QStringLiteral("✓"); mark.setForeground(col.ok); break;
+    case Entry::Failed: glyph = QStringLiteral("✕"); mark.setForeground(col.error); break;
+    case Entry::Denied: glyph = QStringLiteral("⊘"); mark.setForeground(col.warn); break;
+    }
+    c.insertText(glyph + QStringLiteral("  "), mark);
+    QTextCharFormat name = twisty;
+    name.setFontWeight(QFont::DemiBold);
+    name.setForeground(col.text);
+    c.insertText(e.text, name);
+    if (!e.extra.isEmpty()) {
+        QTextCharFormat subject = twisty;
+        subject.setFont(mono);
+        subject.setForeground(col.muted);
+        c.insertText(QStringLiteral("   ") + e.extra, subject);
+    }
+    QTextCharFormat quiet;
+    quiet.setFont(small);
+    quiet.setForeground(col.muted);
+    if (!e.output.isEmpty() && e.tool != Entry::Succeeded) {
+        QTextBlockFormat bf;
+        bf.setLeftMargin(22 + indent);
+        c.insertBlock(bf);
+        QTextCharFormat why = quiet;
+        why.setForeground(e.tool == Entry::Denied ? col.warn : col.error);
+        c.insertText(e.output, why);
+    }
+    if (!open) return;
+    // The input, then what came out, on a shade.
+    QTextCharFormat code;
+    code.setFont(mono);
+    code.setForeground(col.text);
+    QTextCharFormat out = code;
+    out.setForeground(col.muted);
+    const auto lines = [&](const QString& text, const QTextCharFormat& format, qreal top) {
+        const QStringList all = text.split(QLatin1Char('\n'));
+        for (int i = 0; i < all.size(); ++i) {
+            QTextBlockFormat bf;
+            bf.setLeftMargin(22 + indent);
+            bf.setBackground(col.code);
+            bf.setTopMargin(i == 0 ? top : 0);
+            bf.setLineHeight(100, QTextBlockFormat::ProportionalHeight);
+            c.insertBlock(bf);
+            QTextCharFormat cf = format;
+            if (all.at(i).startsWith(QLatin1String("# "))) cf.setForeground(col.muted);   // a command's description
+            c.insertText(all.at(i).isEmpty() ? QStringLiteral(" ") : all.at(i), cf);
+        }
+    };
+    if (!e.detail.trimmed().isEmpty()) lines(e.detail, code, 4);
+    if (!e.result.trimmed().isEmpty()) lines(e.result, out, e.detail.trimmed().isEmpty() ? 4 : 2);
+    else if (e.tool == Entry::Running) {
+        QTextBlockFormat bf;
+        bf.setLeftMargin(22 + indent);
+        c.insertBlock(bf);
+        c.insertText(tr("running…"), quiet);
+    }
+}
+
+void ClaudeCodePanel::toggle(const QString& key)
+{
+    if (!a_expanded.remove(key)) a_expanded.insert(key);
+    render();
+}
+
+// ----------------------------------------------------------------------
+// A reply: Markdown, its code on a shade, its math typeset.
+
+qucs_s::math::Typeset ClaudeCodePanel::typesetMath(const QString& tex, const QFont& font, bool display)
+{
+    const QColor colour = colours(palette()).text;
+    const qreal dpr = a_view->devicePixelRatioF();
+    const QString key = tex + QChar(0) + font.key() + QChar(0) + colour.name() + (display ? QLatin1Char('D') : QLatin1Char('T'))
+                        + QString::number(dpr);
+    auto found = a_math.constFind(key);
+    if (found != a_math.cend()) return *found;
+    if (a_math.size() > 400) a_math.clear();
+    const qucs_s::math::Typeset t = qucs_s::math::typeset(tex, font, colour, display, dpr);
+    a_math.insert(key, t);
+    return t;
+}
+
+void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
+{
+    const Colours col = colours(palette());
+    const QFont base = a_view->font();
+
+    // The math out of the way of the Markdown: a mark for each formula.
+    // Display math that stands on lines of its own is a paragraph of its
+    // own (indented as it was, in the list item it may be in).
+    const QList<qucs_s::math::Span> spans = qucs_s::math::findMath(text);
+    QString md = text;
+    for (qsizetype k = spans.size(); k-- > 0;) {
+        const qucs_s::math::Span& sp = spans.at(k);
+        const QString mark(QChar(char16_t(kMathMark + k)));
+        QString put = mark;
+        if (sp.display) {
+            const qsizetype lineStart = sp.start == 0 ? 0 : md.lastIndexOf(QLatin1Char('\n'), sp.start - 1) + 1;
+            const QString before = md.mid(lineStart, sp.start - lineStart);
+            const qsizetype end = sp.start + sp.length;
+            const qsizetype eol = md.indexOf(QLatin1Char('\n'), end);
+            const QString after = md.mid(end, eol < 0 ? -1 : eol - end);
+            if (before.trimmed().isEmpty() && after.trimmed().isEmpty())
+                put = QLatin1Char('\n') + before + mark + QLatin1Char('\n');
+        }
+        md.replace(sp.start, sp.length, put);
+    }
+
+    const int from = c.position();
+    QTextDocument doc;
+    doc.setDefaultFont(base);
+    doc.setMarkdown(md, QTextDocument::MarkdownDialectGitHub);
+    c.insertFragment(QTextDocumentFragment(&doc));
+    QTextDocument* target = c.document();
+    // Code on a shade, set off from the text.
+    for (QTextBlock b = target->findBlock(from); b.isValid() && b.position() <= c.position(); b = b.next()) {
+        const QTextBlockFormat bf = b.blockFormat();
+        if (bf.nonBreakableLines() || bf.hasProperty(QTextFormat::BlockCodeFence)
+            || bf.hasProperty(QTextFormat::BlockCodeLanguage)) {
+            QTextCursor bc(b);
+            QTextBlockFormat shaded = bf;
+            shaded.setBackground(col.code);
+            shaded.setLeftMargin(bf.leftMargin() + 4);
+            bc.setBlockFormat(shaded);
+        }
+        if (b == c.block()) break;
+    }
+    // The math, typeset where its marks are, in the size of the text
+    // around it (a heading's is bigger); its TeX in the tool tip.
+    for (qsizetype k = 0; k < spans.size(); ++k) {
+        QTextCursor hit = target->find(QString(QChar(char16_t(kMathMark + k))), from);
+        if (hit.isNull()) continue;
+        const qucs_s::math::Span& sp = spans.at(k);
+        const QFont font = hit.charFormat().font().resolve(base);
+        const qucs_s::math::Typeset t = typesetMath(sp.tex, font, sp.display);
+        hit.insertText(QString(QChar::ObjectReplacementCharacter), qucs_s::math::MathObject::format(t, font, sp.tex));
+        if (sp.display && hit.block().text().trimmed() == QString(QChar::ObjectReplacementCharacter)) {
+            QTextBlockFormat bf = hit.blockFormat();
+            bf.setAlignment(Qt::AlignHCenter);
+            bf.setTopMargin(std::max(bf.topMargin(), 4.0));
+            bf.setBottomMargin(std::max(bf.bottomMargin(), 4.0));
+            hit.setBlockFormat(bf);
+        }
+    }
+}
+
+// ----------------------------------------------------------------------
+QString ClaudeCodePanel::title() const
+{
+    for (const Entry& e : a_entries)
+        if (e.kind == Entry::You) {
+            QString t = e.text.simplified();
+            if (t.size() > 40) t = t.left(39).trimmed() + QChar(0x2026);
+            return t;
+        }
+    return tr("New conversation");
+}
+
+QPixmap ClaudeCodePanel::statePixmap() const
+{
+    return a_stateDot->pixmap();
+}
+
+QColor ClaudeCodePanel::accentColour(const QPalette& palette)
+{
+    return colours(palette).accent;
+}
+
+void ClaudeCodePanel::setNewInTab(bool on)
+{
+    a_newInTab = on;
+    a_newButton->setToolTip(on ? tr("A new conversation, in a tab of its own") : tr("Start a new conversation"));
 }

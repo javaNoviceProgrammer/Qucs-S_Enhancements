@@ -16,6 +16,7 @@
 #include "apptheme.h"
 #include "autosave.h"
 #include "claudecodepanel.h"
+#include "claudecodetabs.h"
 #include "erc.h"
 #include "ink.h"
 #include "main.h"
@@ -620,22 +621,23 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
         if (a_app->themeMenu != nullptr) popUp(a_theme, a_app->themeMenu);
     });
     connect(a_claude, &QToolButton::clicked, this, [this] { a_app->toggleClaudeCode(); });
-    if (ClaudeCodePanel* claude = a_app->claudeCode()) {
-        connect(claude->session(), &qucs_s::claude::Session::stateChanged, this, [this] {
-            updateClaude();
-            a_row->fit();
-        });
+    if (ClaudeCodeTabs* claude = a_app->claudeCode()) {
         // The seconds of a turn under way.
         auto* tick = new QTimer(this);
         tick->setInterval(1000);
-        connect(tick, &QTimer::timeout, this, [this, tick] {
-            ClaudeCodePanel* panel = a_app->claudeCode();
-            if (panel == nullptr || !panel->session()->isBusy()) tick->stop();
+        const auto busy = [claude] {
+            const QList<ClaudeCodePanel*> panels = claude->panels();
+            return std::any_of(panels.cbegin(), panels.cend(), [](ClaudeCodePanel* p) { return p->session()->isBusy(); });
+        };
+        connect(tick, &QTimer::timeout, this, [this, tick, busy] {
+            if (!busy()) tick->stop();
             updateClaude();
             a_row->fit();
         });
-        connect(claude->session(), &qucs_s::claude::Session::stateChanged, tick, [claude, tick] {
-            if (claude->session()->isBusy() && !tick->isActive()) tick->start();
+        connect(claude, &ClaudeCodeTabs::stateChanged, this, [this, tick, busy] {
+            if (busy() && !tick->isActive()) tick->start();
+            updateClaude();
+            a_row->fit();
         });
     }
     // The simulator switched in the tool bar (the settings are written
@@ -784,7 +786,10 @@ void StatusPanel::themeChanged()
 // ----------------------------------------------------------------------
 void StatusPanel::updateClaude()
 {
-    ClaudeCodePanel* panel = a_app->claudeCode();
+    // Of the dock's conversations, the one that most wants the user: one
+    // waiting for permission, else one at work.
+    ClaudeCodeTabs* tabs = a_app->claudeCode();
+    ClaudeCodePanel* panel = tabs != nullptr ? tabs->mostUrgent() : nullptr;
     if (panel == nullptr) {
         a_row->setWanted(a_claude, false);
         return;
@@ -832,12 +837,24 @@ void StatusPanel::updateClaude()
         const qint64 s = session->turnElapsed() / 1000;
         if (s >= 1) text += QStringLiteral(" ") + (s < 60 ? tr("%1 s").arg(s) : tr("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QLatin1Char('0')));
     }
+    // The others at work or waiting, counted.
+    const QList<ClaudeCodePanel*> panels = tabs->panels();
+    const auto others = std::count_if(panels.cbegin(), panels.cend(), [panel](ClaudeCodePanel* p) {
+        return p != panel && (p->session()->isBusy() || p->session()->state() == qucs_s::claude::State::Waiting);
+    });
+    if (others > 0) text += QStringLiteral(" +%1").arg(others);
     setChip(a_claude, text, tone);
     if (tip.isEmpty())
         tip = tr("Claude Code is %1").arg(qucs_s::claude::stateText(session->state()));
-    const QString dir = QDir::toNativeSeparators(panel->workingDirectory());
-    a_claude->setToolTip(tip + QStringLiteral("\n") + tr("Working in %1").arg(dir) + QStringLiteral("\n")
-                         + tr("Click to show or hide the Claude Code dock"));
+    if (panels.size() > 1) {
+        tip = tip + QStringLiteral("\n");
+        for (ClaudeCodePanel* p : panels)
+            tip += QStringLiteral("\n") + (p == panel ? QStringLiteral("\u25B8 ") : QStringLiteral("   ")) + p->title()
+                   + QStringLiteral(": ") + qucs_s::claude::stateText(p->session()->state());
+    } else {
+        tip += QStringLiteral("\n") + tr("Working in %1").arg(QDir::toNativeSeparators(panel->workingDirectory()));
+    }
+    a_claude->setToolTip(tip + QStringLiteral("\n") + tr("Click to show or hide the Claude Code dock"));
     a_row->setWanted(a_claude, true);
 }
 
