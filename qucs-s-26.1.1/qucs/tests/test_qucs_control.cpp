@@ -2,7 +2,9 @@
  * Claude's tools for the Qucs-S window (qucscontrol.h), used on the
  * application itself: documents opened, shown, saved and closed; a
  * schematic built part by part - components, wires, labels, changes, one
- * step to undo each - read back as a summary and as text, replaced from
+ * step to undo each; wires that join their ends' nets and nothing else,
+ * parts turned and moved with the circuit kept - read back as a summary
+ * (with the nets) and as text, replaced from
  * text (and left alone when the text does not read, without a message
  * box); a picture of it; the menus' actions, a dialog one opens read,
  * filled in and closed; a simulation waited for.
@@ -27,11 +29,13 @@
 #include "main.h"
 #include "misc.h"
 #include "module.h"
+#include "node.h"
 #include "qucs.h"
 #include "qucscontrol.h"
 #include "schematic.h"
 #include "simulationconsole.h"
 #include "wire.h"
+#include "wirelabel.h"
 
 namespace {
 
@@ -62,6 +66,22 @@ class TestQucsControl : public QObject
         return d.isArray() ? QJsonValue(d.array()) : QJsonValue(d.object());
     }
     Schematic* front() const { return app->currentSchematic(); }
+    // A schematic's text with each wire from its lesser end (as a rebuild
+    // - an undo - writes it), for comparing.
+    static QString sameText(const QString& text)
+    {
+        static const QRegularExpression wire(QStringLiteral("^  <(-?\\d+) (-?\\d+) (-?\\d+) (-?\\d+) (.*)$"));
+        QStringList lines = text.split('\n');
+        for (QString& line : lines) {
+            const QRegularExpressionMatch m = wire.match(line);
+            if (!m.hasMatch()) continue;
+            const QPoint a(m.captured(1).toInt(), m.captured(2).toInt()), b(m.captured(3).toInt(), m.captured(4).toInt());
+            const bool swap = std::pair(b.x(), b.y()) < std::pair(a.x(), a.y());
+            const QPoint p = swap ? b : a, q = swap ? a : b;
+            line = QStringLiteral("  <%1 %2 %3 %4 %5").arg(p.x()).arg(p.y()).arg(q.x()).arg(q.y()).arg(m.captured(5));
+        }
+        return lines.join('\n');
+    }
     static QJsonObject componentIn(const QJsonObject& summary, const QString& name)
     {
         for (const QJsonValue& v : summary.value("components").toArray())
@@ -210,6 +230,204 @@ private slots:
         QVERIFY(sch->getComponentByName("Vin")->isSelected);
         QVERIFY(!failed(call("zoom", {{"to", "all"}})));
         QVERIFY(failed(call("zoom", {{"to", "sideways"}})));
+    }
+
+    // A part turned, mirrored and moved keeps each pin on its net: one
+    // with nothing on its pins (whose nodes were once deleted from under
+    // it, and the turn crashed), one wired to a capacitor, one pin on pin
+    // with another, one with a net label on a pin. What would put a pin on
+    // another net is not done, the schematic left as it was; an open pin
+    // that lands on a wire joins it and is told of. Each change one step
+    // to undo, every pin and wire end on its node.
+    void aPartIsTurnedAndMovedKeepingItsNets()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(sch != nullptr);
+        const auto inOrder = [sch]() -> QString {
+            for (Component* c : sch->a_DocComps)
+                for (Port* p : c->Ports) {
+                    if (p->Connection == nullptr) return c->Name + " has a pin on no node";
+                    if (p->Connection->center() != c->center() + QPoint(p->x, p->y))
+                        return c->Name + " has a pin off its node";
+                }
+            for (Wire* w : sch->a_DocWires)
+                if (w->P1() != w->Port1->center() || w->P2() != w->Port2->center()) return QStringLiteral("a wire is off its nodes");
+            return {};
+        };
+        // Whether two pins are joined by wires.
+        const auto joined = [sch](const QString& a, int pa, const QString& b, int pb) {
+            Node* from = sch->getComponentByName(a)->Ports.at(pa - 1)->Connection;
+            Node* to = sch->getComponentByName(b)->Ports.at(pb - 1)->Connection;
+            QSet<Node*> seen{from};
+            QList<Node*> next{from};
+            while (!next.isEmpty()) {
+                Node* n = next.takeLast();
+                if (n == to) return true;
+                for (Wire* w : sch->a_DocWires)
+                    for (Node* m : {w->Port1 == n ? w->Port2 : nullptr, w->Port2 == n ? w->Port1 : nullptr})
+                        if (m != nullptr && !seen.contains(m)) {
+                            seen.insert(m);
+                            next << m;
+                        }
+            }
+            return false;
+        };
+
+        // Nothing on it: turned, mirrored and moved, over and over.
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}})));
+        for (int turn = 0; turn < 6; ++turn) {
+            QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"rotation", turn}, {"mirror", turn % 2 == 1},
+                                                    {"x", 100 + 20 * turn}, {"y", 100}})));
+            QCOMPARE(sch->getComponentByName("R1")->rotated, turn % 4);
+            QCOMPARE(sch->getComponentByName("R1")->mirroredX, turn % 2 == 1);
+            QCOMPARE(sch->getComponentByName("R1")->cx, 100 + 20 * turn);
+            QVERIFY2(inOrder().isEmpty(), qPrintable(inOrder()));
+        }
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"rotation", 0}, {"mirror", false}, {"x", 100}, {"y", 100}})));
+        QCOMPARE(sch->a_DocNodes.size(), std::size_t(2));
+
+        // Wired to a capacitor: turned, then moved and mirrored - pin 2
+        // still on the capacitor's net, pin 1 not.
+        QVERIFY(!failed(call("add_component", {{"type", "C"}, {"x", 300}, {"y", 100}})));
+        QVERIFY(!failed(call("connect", {{"from", "R1.2"}, {"to", "C1.1"}})));
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"rotation", 1}})));
+        QVERIFY2(inOrder().isEmpty(), qPrintable(inOrder()));
+        QVERIFY(joined("R1", 2, "C1", 1));
+        QVERIFY(!joined("R1", 1, "C1", 1));
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"x", 100}, {"y", 300}, {"mirror", true}})));
+        QVERIFY2(inOrder().isEmpty(), qPrintable(inOrder()));
+        QCOMPARE(sch->getComponentByName("R1")->cy, 300);
+        QVERIFY(joined("R1", 2, "C1", 1));
+        QVERIFY(!joined("R1", 1, "C1", 1));
+        QVERIFY(!joined("R1", 1, "R1", 2));
+        // One step back: where it was before.
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(sch->getComponentByName("R1")->cy, 100);
+        QCOMPARE(sch->getComponentByName("R1")->rotated, 1);
+        QVERIFY(joined("R1", 2, "C1", 1));
+
+        // Mirrored where it is, pin 1 comes where pin 2's wire ends: that
+        // wire is moved out of its way, and pin 2 wired to it again.
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"mirror", true}})));
+        QVERIFY2(inOrder().isEmpty(), qPrintable(inOrder()));
+        QVERIFY(joined("R1", 2, "C1", 1));
+        QVERIFY(!joined("R1", 1, "C1", 1));
+        QVERIFY(!joined("R1", 1, "R1", 2));
+        QVERIFY(!failed(call("undo")));
+        // Not where pin 2 would be on another part's pin, on another net:
+        // the capacitor's pin 2. Nothing changed.
+        const QString unchanged = text(call("get_schematic", {{"format", "text"}}));
+        const QJsonObject c1 = componentIn(json(call("get_schematic")).toObject(), "C1");
+        const QJsonObject c1pin2 = c1.value("pins").toArray().at(1).toObject();
+        QVERIFY(failed(call("edit_component", {{"name", "R1"}, {"rotation", 0}, {"x", c1pin2.value("x").toInt() - 30},
+                                               {"y", c1pin2.value("y").toInt()}})));
+        QCOMPARE(sameText(text(call("get_schematic", {{"format", "text"}}))), sameText(unchanged));
+
+        // Pin on pin with another part, moved off it: wired to it.
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", 500}, {"y", 100}, {"name", "Ra"}})));
+        const int raPin = componentIn(json(call("get_schematic")).toObject(), "Ra").value("pins").toArray().at(1).toObject().value("x").toInt();
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", raPin + 30}, {"y", 100}, {"name", "Rb"}})));
+        QVERIFY(joined("Ra", 2, "Rb", 1) || sch->getComponentByName("Ra")->Ports.at(1)->Connection == sch->getComponentByName("Rb")->Ports.at(0)->Connection);
+        QVERIFY(!failed(call("edit_component", {{"name", "Rb"}, {"x", 700}, {"y", 400}, {"rotation", 3}})));
+        QVERIFY2(inOrder().isEmpty(), qPrintable(inOrder()));
+        QVERIFY(joined("Ra", 2, "Rb", 1));
+        QVERIFY(!failed(call("edit_component", {{"name", "Ra"}, {"rotation", 2}, {"x", 500}, {"y", 200}})));
+        QVERIFY2(inOrder().isEmpty(), qPrintable(inOrder()));
+        QVERIFY(joined("Ra", 2, "Rb", 1));
+        QVERIFY(!joined("Ra", 1, "Rb", 1));
+
+        // A net label on a pin with nothing else: it goes with the pin.
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", 100}, {"y", 600}, {"name", "Rl"}})));
+        QVERIFY(!failed(call("set_label", {{"at", "Rl.1"}, {"name", "vin"}})));
+        QVERIFY(!failed(call("edit_component", {{"name", "Rl"}, {"x", 300}, {"y", 700}, {"rotation", 1}})));
+        Node* labelled = sch->getComponentByName("Rl")->Ports.at(0)->Connection;
+        QVERIFY(labelled->hasLabel());
+        QCOMPARE(labelled->label()->Name, QStringLiteral("vin"));
+        QCOMPARE(labelled->label()->root(), labelled->center());
+
+        // A pin put down on a wire of another net: the wire is moved out
+        // of its way, still joining what it joined.
+        QVERIFY(!failed(call("add_wire", {{"points", QJsonArray{QJsonArray{900, 100}, QJsonArray{900, 300}}}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", 1100}, {"y", 100}, {"name", "Ro"}})));
+        const QJsonObject aside = call("edit_component", {{"name", "Ro"}, {"rotation", 0}, {"x", 930}, {"y", 200}});
+        QVERIFY2(!failed(aside), qPrintable(text(aside)));
+        QVERIFY2(inOrder().isEmpty(), qPrintable(inOrder()));
+        QCOMPARE(sch->getComponentByName("Ro")->Ports.at(0)->Connection->conn_count(), 1);
+        {
+            Node* top = sch->findNode(900, 100);
+            Node* bottom = sch->findNode(900, 300);
+            QVERIFY(top != nullptr && bottom != nullptr);
+            QSet<Node*> seen{top};
+            QList<Node*> next{top};
+            while (!next.isEmpty()) {
+                Node* n = next.takeLast();
+                for (Wire* w : sch->a_DocWires)
+                    for (Node* m : {w->Port1 == n ? w->Port2 : nullptr, w->Port2 == n ? w->Port1 : nullptr})
+                        if (m != nullptr && !seen.contains(m)) {
+                            seen.insert(m);
+                            next << m;
+                        }
+            }
+            QVERIFY(seen.contains(bottom));
+        }
+        // A pin with nothing on it put down on another's pin: on its net,
+        // and told so.
+        const int roPin = componentIn(json(call("get_schematic")).toObject(), "Ro").value("pins").toArray().at(1).toObject().value("x").toInt();
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", 1300}, {"y", 400}, {"name", "Rp"}})));
+        const QJsonObject landed = json(call("edit_component", {{"name", "Rp"}, {"x", roPin + 30}, {"y", 200}})).toObject();
+        QVERIFY2(landed.value("note").toString().contains("Rp.1"), qPrintable(QJsonDocument(landed).toJson()));
+        QVERIFY2(inOrder().isEmpty(), qPrintable(inOrder()));
+
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A wire joins its two ends' nets and nothing else: connect goes
+    // around what is in the way (the wire tool's route from R1.2 to C1.1
+    // here runs over C1.2, and from C1.2 to ground over V1's pins - they
+    // once shorted the whole circuit), add_wire over another pin is not
+    // drawn. get_schematic names each pin's net and lists the nets.
+    void wiresJoinTheirEndsAndNothingElse()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(sch != nullptr);
+        QVERIFY(!failed(call("add_component", {{"type", "Vdc"}, {"x", 0}, {"y", 150}, {"name", "V1"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", 150}, {"y", 100}, {"name", "R1"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "C"}, {"x", 300}, {"y", 150}, {"name", "C1"}, {"rotation", 1}})));
+        QVERIFY(!failed(call("add_component", {{"type", "GND"}, {"x", 0}, {"y", 250}})));
+        for (const auto& [from, to] : {std::pair{"V1.1", "R1.1"}, {"R1.2", "C1.1"}, {"V1.2", "GND.1"}, {"C1.2", "GND.1"}}) {
+            const QJsonObject r = call("connect", {{"from", from}, {"to", to}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+        }
+        const QJsonObject summary = json(call("get_schematic")).toObject();
+        QStringList nets;
+        for (const QJsonValue& v : summary.value("nets").toArray()) {
+            QStringList pins;
+            for (const QJsonValue& p : v.toObject().value("pins").toArray()) pins << p.toString();
+            pins.sort();
+            nets << pins.join(' ');
+        }
+        nets.sort();
+        QCOMPARE(nets, QStringList({"C1.1 R1.2", "C1.2 GND.1 V1.2", "R1.1 V1.1"}));
+        const QJsonObject r1 = componentIn(summary, "R1");
+        QCOMPARE(r1.value("pins").toArray().at(1).toObject().value("net").toString(),
+                 componentIn(summary, "C1").value("pins").toArray().at(0).toObject().value("net").toString());
+        QCOMPARE(componentIn(summary, "V1").value("pins").toArray().at(1).toObject().value("net").toString(), QStringLiteral("gnd"));
+        // Already one net: nothing drawn.
+        const std::size_t wires = sch->a_DocWires.size();
+        QVERIFY(text(call("connect", {{"from", "V1.2"}, {"to", "C1.2"}})).contains("already"));
+        QCOMPARE(sch->a_DocWires.size(), wires);
+
+        // Straight over R1 from pin to pin: R1 shorted - not drawn.
+        const QString unchanged = text(call("get_schematic", {{"format", "text"}}));
+        const QJsonObject over = call("add_wire", {{"points", QJsonArray{QJsonArray{100, 100}, QJsonArray{200, 100}}}});
+        QVERIFY(failed(over));
+        QVERIFY2(text(over).contains("R1."), qPrintable(text(over)));
+        QCOMPARE(sameText(text(call("get_schematic", {{"format", "text"}}))), sameText(unchanged));
+        // Where nothing is in the way: drawn.
+        QVERIFY(!failed(call("add_wire", {{"points", QJsonArray{QJsonArray{500, 0}, QJsonArray{600, 0}, QJsonArray{600, 100}}}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
     // The schematic as its file's text, and replaced from text: sections

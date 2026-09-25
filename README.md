@@ -226,7 +226,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   conversation), so that it can open, show, save and close documents,
   read the schematic in front (its parts, their pins' places, or its
   `.sch` text) and change it as you watch - place components, set their
-  properties, move, turn and rename them, draw wires pin to pin, label
+  properties, move, turn and rename them (their wires follow, the
+  circuit kept as it was), draw wires pin to pin (routed around what
+  they must not touch: a wire never joins a net it was not meant to), label
   nets, delete, replace whole sections from text, undo and redo, each
   change one step of Edit > Undo - take a screenshot of it to see what it
   did, use any menu action and fill in and answer the dialog it opens,

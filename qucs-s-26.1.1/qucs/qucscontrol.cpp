@@ -15,6 +15,7 @@
 #include "diagrams/graph.h"
 #include "extsimkernels/spicecompat.h"
 #include "extsimkernels/simulationrun.h"
+#include "geometry/multi_point.h"
 #include "graphicsexport.h"
 #include "main.h"
 #include "misc.h"
@@ -91,7 +92,7 @@ const char* const kTools = R"JSON([
  "description": "Closes a document's tab (the one in front unless path names another). A document with unsaved changes is closed only when 'unsaved' says what to do with them.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "unsaved": {"type": "string", "enum": ["save", "discard"]}}}},
 {"name": "get_schematic",
- "description": "Reads a schematic as it is in Qucs-S now, unsaved changes included. 'summary' (the default) lists its components - name, type, place, rotation, mirroring, whether active, properties, and each pin's place, whether it is connected and the net label on it - its wires, net labels, diagrams and paintings. 'text' is the text its .sch file would have. Coordinates are the schematic's units; the grid is usually 10.",
+ "description": "Reads a schematic as it is in Qucs-S now, unsaved changes included. 'summary' (the default) lists its components - name, type, place, rotation, mirroring, whether active, properties, and each pin's place, whether anything is on it and its net (a label's name, gnd, or net1, net2, ...) - its nets with the pins on each (those with two pins or more, or a name), its wires, net labels, diagrams and paintings. 'text' is the text its .sch file would have. Coordinates are the schematic's units; the grid is usually 10.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "format": {"type": "string", "enum": ["summary", "text"]}}}},
 {"name": "set_schematic",
  "description": "Replaces the elements of a schematic with those of 'text': a .sch file's text, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are not taken). One step to undo; when the text does not read, the schematic stays as it was and the error is told.",
@@ -105,7 +106,7 @@ const char* const kTools = R"JSON([
    "rotation": {"type": "integer", "minimum": 0, "maximum": 3}, "mirror": {"type": "boolean"}},
    "required": ["type", "x", "y"]}},
 {"name": "edit_component",
- "description": "Changes a component: its properties (by name), its name, its place (x, y: where its centre goes), its rotation (0-3 quarter turns) and mirroring, whether it is active (an inactive one is left out of the simulation). What is not given stays.",
+ "description": "Changes a component: its properties (by name), its name, its place (x, y: where its centre goes), its rotation (0-3 quarter turns) and mirroring, whether it is active (an inactive one is left out of the simulation). What is not given stays. Turned or moved, the circuit stays as it was: its pins are wired again to the nets they were on, and wires of other nets that its pins would come down on are moved out of the way. A change that cannot keep every net as it was is not made, and the error says why. A pin with nothing on it that comes down on another part's pin joins that pin's net, and the result's 'note' says so.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "name": {"type": "string"}, "rename": {"type": "string"},
    "properties": {"type": "object", "additionalProperties": {"type": "string"}},
@@ -117,12 +118,12 @@ const char* const kTools = R"JSON([
    "path": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}},
    "wires": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4}}}}},
 {"name": "connect",
- "description": "Draws a wire between two pins or places, routed with right angles as the wire tool does. A pin is \"R1.1\" (the component's name and the pin's number, from 1, or the pin's name); a place is [x, y].",
+ "description": "Draws a wire between two pins or places, with right angles, by a way that goes over no other pin or wire (a wire joins whatever it runs over): around the parts when it can, else over them. It joins the two nets and nothing else - or, when no way would, draws nothing and says why. A pin is \"R1.1\" (the component's name and the pin's number, from 1, or the pin's name); a place is [x, y].",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"},
    "from": {"description": "\"R1.2\" or [x, y]; a ground is GND.1 when there is one"}, "to": {"description": "\"C1.1\" or [x, y]"}}, "required": ["from", "to"]}},
 {"name": "add_wire",
- "description": "Draws a wire through places, [[x, y], [x, y], ...], a segment from each to the next (a step that is not straight gets a right angle).",
+ "description": "Draws a wire through places, [[x, y], [x, y], ...], a segment from each to the next (a step that is not straight gets a right angle). What is at its places is joined; a wire that would run over another pin or wire between them is not drawn, and the error names what is in the way.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "points": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}, "minItems": 2}},
    "required": ["points"]}},
@@ -314,6 +315,452 @@ QString kindOf(QucsDoc* doc)
     if (suffix == QLatin1String("dpl")) return QStringLiteral("data display");
     if (suffix == QLatin1String("sym")) return QStringLiteral("symbol");
     return QStringLiteral("schematic");
+}
+
+// Which pins are on one net - through wires, net labels (one name, one
+// net) and ground - by a key for each: "R1.2" (a part without a name by
+// its type, "GND.1"); "@.2" for \a edited's (it changes places in the
+// list, the others keep their order); the second and later of parts of
+// one name "X#1.1"; and for a net label
+// "label out", for ground "ground", as if they were pins; and for each of
+// \a probes, a place, "at x,y": the net of what is there (a new one when
+// nothing is).
+struct Nets {
+    QHash<QString, int> netOf;
+    QHash<const Node*, int> nodeNet;   // every node's
+    QSet<QString> open;       // \a edited's pins with nothing else on them
+    QSet<QString> touching;   // \a edited's pins with something on them
+};
+
+// A part's name in netsOf's keys: its name, or its type when it has none
+// ("GND"), "#1", "#2" ... after the second and later of one name.
+QString keyBase(const Component* c, QHash<QString, int>& seen)
+{
+    const QString name = c->Name.isEmpty() ? c->Model : c->Name;
+    const int k = seen[name]++;
+    return k == 0 ? name : name + QLatin1Char('#') + QString::number(k);
+}
+
+Nets netsOf(Schematic* sch, const Component* edited, const QList<QPoint>& probes = {})
+{
+    std::vector<int> up;
+    QHash<const Node*, int> nodes;
+    QHash<QString, int> named;
+    const auto make = [&up] {
+        up.push_back(int(up.size()));
+        return int(up.size()) - 1;
+    };
+    const auto nodeId = [&](const Node* n) {
+        auto it = nodes.constFind(n);
+        return it != nodes.constEnd() ? *it : *nodes.insert(n, make());
+    };
+    const auto nameId = [&](const QString& name) {
+        auto it = named.constFind(name);
+        return it != named.constEnd() ? *it : *named.insert(name, make());
+    };
+    const auto root = [&up](int i) {
+        while (up[i] != i) i = up[i] = up[up[i]];
+        return i;
+    };
+    const auto join = [&](int a, int b) { up[root(a)] = root(b); };
+    const auto labelled = [&](const Conductor* c, int id) {
+        if (!c->hasLabel()) return;
+        const QString name = c->label()->Name;
+        join(id, nameId(name.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0 ? QStringLiteral("ground")
+                                                                                      : QStringLiteral("label ") + name));
+    };
+    for (const Wire* w : sch->a_DocWires) {
+        if (w->Port1 == nullptr || w->Port2 == nullptr) continue;
+        join(nodeId(w->Port1), nodeId(w->Port2));
+        labelled(w, nodeId(w->Port1));
+    }
+    for (const Node* n : sch->a_DocNodes) labelled(n, nodeId(n));
+
+    Nets nets;
+    QHash<QString, int> seen;
+    QHash<QString, int> pins;
+    for (const Component* c : sch->a_DocComps) {
+        const QString base = c == edited ? QStringLiteral("@") : keyBase(c, seen);
+        for (int i = 0; i < c->Ports.size(); ++i) {
+            const Node* n = c->Ports.at(i)->Connection;
+            if (n == nullptr) continue;
+            const QString key = base + QLatin1Char('.') + QString::number(i + 1);
+            const int id = nodeId(n);
+            if (c->Model == QLatin1String("GND")) join(id, nameId(QStringLiteral("ground")));
+            else if (c == edited) (n->conn_count() == 1 && !n->hasLabel() ? nets.open : nets.touching) << key;
+            pins.insert(key, id);
+        }
+    }
+    for (const QPoint& p : probes) {
+        int id = -1;
+        if (const Node* n = sch->findNode(p)) id = nodeId(n);
+        for (const Wire* w : sch->a_DocWires)
+            if (id < 0 && w->Port1 != nullptr && qucs_s::geom::is_between(p, w->P1(), w->P2())) id = nodeId(w->Port1);
+        pins.insert(QStringLiteral("at %1,%2").arg(p.x()).arg(p.y()), id >= 0 ? id : make());
+    }
+    for (auto it = pins.constBegin(); it != pins.constEnd(); ++it) nets.netOf.insert(it.key(), root(it.value()));
+    for (auto it = named.constBegin(); it != named.constEnd(); ++it) nets.netOf.insert(it.key(), root(it.value()));
+    for (auto it = nodes.constBegin(); it != nodes.constEnd(); ++it) nets.nodeNet.insert(it.key(), root(it.value()));
+    return nets;
+}
+
+// A key of netsOf in words (\a name for the "@" of the part changed).
+QString said(const QString& key, const QString& name)
+{
+    if (key == QLatin1String("ground")) return tr("ground");
+    if (key.startsWith(QLatin1String("label "))) return tr("the net label %1").arg(key.mid(6));
+    if (key.startsWith(QLatin1String("at "))) return tr("the place %1").arg(key.mid(3).replace(QLatin1Char(','), QStringLiteral(", ")));
+    QString pin = key;
+    if (pin.startsWith(QLatin1Char('@'))) pin = name + pin.mid(1);
+    return pin.remove(QRegularExpression(QStringLiteral("#\\d+(?=\\.)")));
+}
+
+// What became of the nets from \a before to \a after, in words, for the
+// part \a name (the "@" of netsOf): pins taken off a net they were on
+// (unless \a merged only) and nets joined. Its pins that were open may
+// come to be on a net - \a landed says which - but not on one with
+// another of its pins.
+QStringList netChanges(const Nets& before, const Nets& after, const QString& name, bool mergedOnly, QStringList* landed)
+{
+    const auto said = [&name](const QString& key) { return ::said(key, name); };
+    QStringList changes;
+    QStringList keys = before.netOf.keys();
+    keys.sort();   // (the same words each time)
+    if (!mergedOnly) {
+        QHash<int, QString> firstOf;   // a net before -> one of its keys
+        for (const QString& key : keys) {
+            const int was = before.netOf.value(key);
+            if (!after.netOf.contains(key)) {
+                changes << tr("%1 would be gone").arg(said(key));
+                continue;
+            }
+            auto it = firstOf.constFind(was);
+            if (it == firstOf.constEnd()) firstOf.insert(was, key);
+            else if (after.netOf.value(*it) != after.netOf.value(key))
+                changes << tr("%1 would no longer be on the net of %2").arg(said(key), said(*it));
+        }
+    }
+    QHash<int, QString> held;   // a net after -> a key of a part that was on something
+    QHash<int, QString> own;    // a net after -> a pin of the part
+    for (const QString& key : keys) {
+        if (!after.netOf.contains(key)) continue;
+        const int now = after.netOf.value(key);
+        if (key.startsWith(QLatin1Char('@'))) {
+            auto it = own.constFind(now);
+            if (it == own.constEnd()) own.insert(now, key);
+            else if (before.netOf.value(*it) != before.netOf.value(key))
+                changes << tr("%1 and %2 would be on one net").arg(said(*it), said(key));
+        }
+        if (before.open.contains(key)) continue;
+        auto it = held.constFind(now);
+        if (it == held.constEnd()) held.insert(now, key);
+        else if (before.netOf.value(*it) != before.netOf.value(key))
+            changes << tr("%1 would be on the net of %2").arg(said(key), said(*it));
+    }
+    if (landed != nullptr)
+        for (const QString& key : keys) {
+            if (!before.open.contains(key) || !after.touching.contains(key)) continue;
+            const auto it = held.constFind(after.netOf.value(key));
+            *landed << (it != held.constEnd() ? tr("%1 is now on the net of %2").arg(said(key), said(*it))
+                                               : tr("%1 is now on a wire").arg(said(key)));
+        }
+    changes.removeDuplicates();
+    return changes;
+}
+
+// What became of the nets from \a before to \a after beyond making the
+// nets of \a joined (keys) one, in words: nets split, nets joined.
+QStringList netChangesBeyond(const Nets& before, const Nets& after, const QStringList& joined)
+{
+    QHash<int, int> as;   // a net before -> the one it is to be part of
+    int one = -1;
+    for (const QString& key : joined)
+        if (before.netOf.contains(key)) {
+            if (one < 0) one = before.netOf.value(key);
+            as.insert(before.netOf.value(key), one);
+        }
+    const auto expected = [&](const QString& key) { return as.value(before.netOf.value(key), before.netOf.value(key)); };
+    QStringList changes;
+    QStringList keys = before.netOf.keys();
+    keys.sort();
+    QHash<int, QString> firstExpected, firstAfter;
+    for (const QString& key : keys) {
+        if (!after.netOf.contains(key)) {
+            changes << tr("%1 would be gone").arg(said(key, {}));
+            continue;
+        }
+        const int e = expected(key), a = after.netOf.value(key);
+        auto it = firstExpected.constFind(e);
+        if (it == firstExpected.constEnd()) firstExpected.insert(e, key);
+        else if (after.netOf.value(*it) != a)
+            changes << tr("%1 would no longer be on the net of %2").arg(said(key, {}), said(*it, {}));
+        auto jt = firstAfter.constFind(a);
+        if (jt == firstAfter.constEnd()) firstAfter.insert(a, key);
+        else if (expected(*jt) != e) changes << tr("%1 would be on the net of %2").arg(said(key, {}), said(*jt, {}));
+    }
+    changes.removeDuplicates();
+    return changes;
+}
+
+bool onSegment(const QPoint& p, const QPoint& a, const QPoint& b)
+{
+    return p == a || p == b || qucs_s::geom::is_between(p, a, b);
+}
+
+// Whether a wire along \a way (from \a way's first place to its last)
+// would touch nothing of another net than \a ours (nets of \a now) on its
+// way: no node (a pin, a wire's end) on it but at its two ends, none of
+// its bends on a wire - and, \a strict, no part's symbol crossed and every
+// piece straight across or up.
+bool clearWay(Schematic* sch, const std::vector<QPoint>& way, bool strict, const Nets& now, const QSet<int>& ours)
+{
+    const QPoint a = way.front(), b = way.back();
+    for (std::size_t k = 1; k < way.size(); ++k) {
+        const QPoint p = way[k - 1], q = way[k];
+        if (p == q) continue;
+        if (strict && p.x() != q.x() && p.y() != q.y()) return false;
+        for (const Node* n : sch->a_DocNodes) {
+            const QPoint c = n->center();
+            if (c != a && c != b && !ours.contains(now.nodeNet.value(n, -1)) && onSegment(c, p, q)) return false;
+        }
+        if (strict) {
+            const QRect piece = QRect(p, q).normalized();
+            for (const Component* c : sch->a_DocComps)
+                if (!c->Ports.isEmpty() && piece.intersects(c->boundingRect().adjusted(1, 1, -1, -1))) return false;
+        }
+    }
+    for (std::size_t k = 1; k + 1 < way.size(); ++k)
+        for (const Wire* w : sch->a_DocWires)
+            if (!ours.contains(now.nodeNet.value(w->Port1, -1)) && onSegment(way[k], w->P1(), w->P2())) return false;
+    return true;
+}
+
+// The ways a wire from \a a to \a b may go, in the order they are tried:
+// the wire planner's, then out to a line beside both ends - further and
+// further out, on each side - along it and in; last straight.
+std::vector<std::vector<QPoint>> waysBetween(Schematic* sch, const QPoint& a, const QPoint& b)
+{
+    using Plan = qucs_s::wire::Planner::PlanType;
+    std::vector<std::vector<QPoint>> ways;
+    for (Plan plan : {Plan::TwoStepXY, Plan::TwoStepYX, Plan::ThreeStepXY, Plan::ThreeStepYX})
+        ways.push_back(qucs_s::wire::Planner::plan(plan, a, b));
+    const int gx = std::max(sch->getGridX(), 1), gy = std::max(sch->getGridY(), 1);
+    for (int k = 1; k <= 20; ++k) {
+        for (int y : {std::min(a.y(), b.y()) - k * gy, std::max(a.y(), b.y()) + k * gy})
+            ways.push_back({a, {a.x(), y}, {b.x(), y}, b});
+        for (int x : {std::min(a.x(), b.x()) - k * gx, std::max(a.x(), b.x()) + k * gx})
+            ways.push_back({a, {x, a.y()}, {x, b.y()}, b});
+    }
+    ways.push_back(qucs_s::wire::Planner::plan(Plan::Straight, a, b));
+    return ways;
+}
+
+// Wires \a a to \a b the first way (waysBetween(): around the parts, then
+// over them) that touches nothing else and that \a check - what is wrong
+// with the nets, in words - finds nothing wrong with; a way it finds fault
+// with is taken back (\a sch put back as it was). False, and why in \a
+// why, when there is no such way. \a sch's elements may be new ones after.
+bool wireUp(Schematic* sch, const QPoint& a, const QPoint& b, const std::function<QStringList()>& check, QString* why)
+{
+    const QString state = sch->snapshot();
+    const std::vector<std::vector<QPoint>> ways = waysBetween(sch, a, b);
+    // What is on the two nets already the wire may touch.
+    Nets now;
+    QSet<int> ours;
+    const auto look = [&] {
+        now = netsOf(sch, nullptr, {a, b});
+        ours = {now.netOf.value(QStringLiteral("at %1,%2").arg(a.x()).arg(a.y())),
+                now.netOf.value(QStringLiteral("at %1,%2").arg(b.x()).arg(b.y()))};
+    };
+    look();
+    int tries = 0;
+    QStringList faults;
+    for (bool strict : {true, false})
+        for (const std::vector<QPoint>& way : ways) {
+            if (!clearWay(sch, way, strict, now, ours) || (!strict && clearWay(sch, way, true, now, ours))) continue;
+            for (std::size_t k = 1; k < way.size(); ++k)
+                if (way[k] != way[k - 1])
+                    sch->connectWithWire(way[k - 1], way[k], true, qucs_s::wire::Planner::PlanType::Straight);
+            faults = check();
+            if (faults.isEmpty()) return true;
+            sch->restore(state);
+            look();   // (new nodes)
+            if (++tries == 8) break;
+        }
+    *why = !faults.isEmpty() ? faults.join(QStringLiteral("; "))
+                             : tr("every way from %1, %2 to %3, %4 goes over another pin or wire")
+                                   .arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y());
+    return false;
+}
+
+// Joins again the nets of \a before that are in pieces now, each piece
+// to the closest of the others by a wire (wireUp()) that joins nothing
+// else - \a check says what that would join. False, and why in \a why,
+// when a piece cannot be reached. \a edited is the part "@" is, \a probes
+// the places before has.
+bool joinPieces(Schematic* sch, const Nets& before, const QString& edited, const QList<QPoint>& probes,
+                const std::function<QStringList()>& check, QString* why)
+{
+    for (int round = 0; round < 64; ++round) {
+        const Nets now = netsOf(sch, sch->getComponentByName(edited), probes);
+        // A net of before in pieces: the pieces' nodes.
+        QHash<int, QSet<int>> pieces;   // net before -> nets now
+        for (auto it = before.netOf.constBegin(); it != before.netOf.constEnd(); ++it)
+            if (now.netOf.contains(it.key())) pieces[it.value()].insert(now.netOf.value(it.key()));
+        QList<int> split;
+        for (auto it = pieces.constBegin(); it != pieces.constEnd(); ++it)
+            if (it.value().size() > 1) split << it.key();
+        if (split.isEmpty()) return true;
+        std::sort(split.begin(), split.end());
+        const QSet<int> parts = pieces.value(split.first());
+        QHash<int, QList<QPoint>> places;   // a piece -> its nodes' places
+        for (const Node* n : sch->a_DocNodes) {
+            const int piece = now.nodeNet.value(n, -1);
+            if (parts.contains(piece)) places[piece] << n->center();
+        }
+        for (const QPoint& p : probes) {   // (a place with nothing there now)
+            const int piece = now.netOf.value(QStringLiteral("at %1,%2").arg(p.x()).arg(p.y()), -1);
+            if (parts.contains(piece) && !places.value(piece).contains(p)) places[piece] << p;
+        }
+        // The two closest places of two pieces.
+        QPoint from, to;
+        qint64 best = -1;
+        const QList<int> ids = places.keys();
+        for (int i = 0; i < ids.size(); ++i)
+            for (int j = i + 1; j < ids.size(); ++j)
+                for (const QPoint& p : places.value(ids.at(i)))
+                    for (const QPoint& q : places.value(ids.at(j))) {
+                        const qint64 d = qAbs(qint64(p.x()) - q.x()) + qAbs(qint64(p.y()) - q.y());
+                        if (best < 0 || d < best) {
+                            best = d;
+                            from = p;
+                            to = q;
+                        }
+                    }
+        if (best < 0) {
+            *why = tr("a net is in pieces with nothing to wire");
+            return false;
+        }
+        if (!wireUp(sch, from, to, check, why)) return false;
+    }
+    *why = tr("its nets could not be joined again");
+    return false;
+}
+
+// Turns, mirrors and moves the part \a name of \a sch as \a args say,
+// keeping every net as it was: taken off its nodes, changed; the wires of
+// other nets under its pins' new places taken up (not labelled ones); put
+// down; and every net that is in pieces then - its own, those taken up -
+// joined again by wires that join nothing else (joinPieces()). A net label
+// on a pin alone goes with it. Null, and why in \a why, when the nets
+// cannot be kept: \a sch is then part way, for the caller to put back.
+Component* turnAndMove(Schematic* sch, const QString& name, const QJsonObject& args, QString* why, QStringList* landed)
+{
+    Component* c = sch->getComponentByName(name);
+    const Nets before = netsOf(sch, c);
+    // The wires' open ends as they are: those the change leaves (where a
+    // pin was, where a wire was taken up) are taken away after.
+    QSet<std::pair<int, int>> openEnds;
+    for (const Node* n : sch->a_DocNodes)
+        if (n->conn_count() == 1) openEnds.insert({n->cx, n->cy});
+    std::vector<QPoint> placeOf;
+    std::vector<std::unique_ptr<WireLabel>> labels;
+    for (Port* p : c->Ports) {
+        Node* n = p->Connection;
+        placeOf.push_back(n != nullptr ? n->center() : c->center() + QPoint(p->x, p->y));
+        labels.push_back(n != nullptr && n->conn_count() == 1 ? n->releaseLabel() : nullptr);
+    }
+    sch->detachComp(c);
+    for (Port* p : c->Ports) p->Connection = nullptr;   // (a turn or move moves a port's node)
+
+    if (args.contains(QLatin1String("mirror")) && args.value(QLatin1String("mirror")).toBool() != c->mirroredX) c->mirrorX();
+    if (args.contains(QLatin1String("rotation"))) {
+        const int want = ((args.value(QLatin1String("rotation")).toInt() % 4) + 4) % 4;
+        for (int i = 0; i < 4 && c->rotated != want; ++i) c->rotate();
+    }
+    if (args.contains(QLatin1String("x")) || args.contains(QLatin1String("y"))) {
+        int x = args.contains(QLatin1String("x")) ? args.value(QLatin1String("x")).toInt() : c->cx;
+        int y = args.contains(QLatin1String("y")) ? args.value(QLatin1String("y")).toInt() : c->cy;
+        const QPoint at = Schematic::withinModelLimit(QPoint(x, y));
+        x = at.x();
+        y = at.y();
+        sch->setOnGrid(x, y);
+        c->moveCenter(x - c->cx, y - c->cy);
+    }
+    // What another net has under a pin's new place is moved out of the
+    // way: its wire taken up here, its pieces joined again below.
+    std::vector<Wire*> doomed;
+    for (int i = 0; i < c->Ports.size(); ++i) {
+        const QPoint p = c->center() + QPoint(c->Ports.at(i)->x, c->Ports.at(i)->y);
+        const int mine = before.netOf.value(QStringLiteral("@.%1").arg(i + 1), -1);
+        for (Wire* w : sch->a_DocWires)
+            if (!w->hasLabel() && onSegment(p, w->P1(), w->P2()) && before.nodeNet.value(w->Port1, -2) != mine
+                && std::find(doomed.begin(), doomed.end(), w) == doomed.end())
+                doomed.push_back(w);
+    }
+    // A net with no pin or label on it - wires only - is kept by its
+    // wires' ends: they are to be joined again, but where a pin comes.
+    // (Those of others are kept by what is on them.)
+    QSet<int> keyed;
+    for (auto it = before.netOf.constBegin(); it != before.netOf.constEnd(); ++it) keyed.insert(it.value());
+    QList<QPoint> pinsAt, ends;
+    for (const Port* p : c->Ports) pinsAt << c->center() + QPoint(p->x, p->y);
+    Nets was = before;
+    for (const Wire* w : doomed)
+        for (const Node* n : {w->Port1, w->Port2}) {
+            if (keyed.contains(before.nodeNet.value(n))) continue;
+            const QPoint e = n->center();
+            if (pinsAt.contains(e) || ends.contains(e)) continue;
+            ends << e;
+            was.netOf.insert(QStringLiteral("at %1,%2").arg(e.x()).arg(e.y()), before.nodeNet.value(n));
+        }
+    sch->deleteWires(doomed);
+    sch->insertRawComponent(c, false);
+    for (int i = 0; i < c->Ports.size(); ++i) {
+        Node* n = c->Ports.at(i)->Connection;
+        if (labels[i] == nullptr || n->hasLabel()) continue;   // (one there already: the check tells)
+        const QPoint d = n->center() - placeOf[i];
+        labels[i]->moveRoot(d.x(), d.y());
+        labels[i]->moveCenter(d.x(), d.y());
+        n->acquireLabel(std::move(labels[i]));
+    }
+    const auto check = [&] { return netChanges(was, netsOf(sch, sch->getComponentByName(name), ends), name, true, nullptr); };
+    QStringList changes = check();
+    if (!changes.isEmpty()) {
+        *why = changes.join(QStringLiteral("; "));
+        return nullptr;
+    }
+    QString fault;
+    if (!joinPieces(sch, was, name, ends, check, &fault)) {
+        *why = tr("not every net could be wired together again (%1)").arg(fault);
+        return nullptr;
+    }
+    // The ends left open: a wire to nothing, taken away (and the one it
+    // came from, when that is left open in turn). A net is no different
+    // for it.
+    for (bool more = true; more;) {
+        more = false;
+        std::vector<Wire*> loose;
+        for (Wire* w : sch->a_DocWires) {
+            if (w->hasLabel()) continue;
+            for (const Node* n : {w->Port1, w->Port2})
+                if (n->conn_count() == 1 && !n->hasLabel() && !openEnds.contains({n->cx, n->cy}) && !ends.contains(n->center())) {
+                    loose.push_back(w);
+                    break;
+                }
+        }
+        if (!loose.empty()) {
+            sch->deleteWires(loose);
+            more = true;
+        }
+    }
+    c = sch->getComponentByName(name);
+    changes = netChanges(was, netsOf(sch, c, ends), name, false, landed);
+    if (!changes.isEmpty()) {
+        *why = changes.join(QStringLiteral("; "));
+        return nullptr;
+    }
+    return c;
 }
 
 } // namespace
@@ -683,8 +1130,41 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
     if (sch == nullptr) return errorResult(error);
     if (args.value(QLatin1String("format")).toString() == QLatin1String("text")) return textResult(sch->documentText());
 
-    QJsonArray components, wires, labels, diagrams, paintings;
-    for (Component* c : sch->a_DocComps) components.append(componentJson(c));
+    QJsonArray components, wires, labels, diagrams, paintings, netList;
+    // The nets: each pin's by name - its label's, gnd, or net1, net2, ...
+    // in the order the parts come - and the pins on each.
+    const Nets nets = netsOf(sch, nullptr);
+    QHash<int, QString> netNames;
+    QStringList keys = nets.netOf.keys();
+    keys.sort();
+    for (const QString& key : keys) {
+        const int id = nets.netOf.value(key);
+        if (key == QLatin1String("ground")) netNames.insert(id, QStringLiteral("gnd"));
+        else if (key.startsWith(QLatin1String("label ")) && !netNames.contains(id)) netNames.insert(id, key.mid(6));
+    }
+    QHash<int, QStringList> pinsOn;
+    QList<int> order;
+    QHash<QString, int> seen;
+    for (Component* c : sch->a_DocComps) {
+        QJsonObject json = componentJson(c);
+        QJsonArray pins = json.value(QStringLiteral("pins")).toArray();
+        const QString base = keyBase(c, seen);
+        for (int i = 0; i < pins.size(); ++i) {
+            const auto it = nets.netOf.constFind(base + QLatin1Char('.') + QString::number(i + 1));
+            if (it == nets.netOf.constEnd()) continue;
+            if (!netNames.contains(*it)) netNames.insert(*it, QStringLiteral("net%1").arg(order.size() + 1));
+            if (!order.contains(*it)) order << *it;
+            QJsonObject pin = pins.at(i).toObject();
+            pin.insert(QStringLiteral("net"), netNames.value(*it));
+            pins[i] = pin;
+            pinsOn[*it] << QStringLiteral("%1.%2").arg(c->Name.isEmpty() ? c->Model : c->Name).arg(i + 1);
+        }
+        json.insert(QStringLiteral("pins"), pins);
+        components.append(json);
+    }
+    for (int id : order)
+        if (pinsOn.value(id).size() > 1 || !netNames.value(id).startsWith(QLatin1String("net")))
+            netList.append(QJsonObject{{QStringLiteral("net"), netNames.value(id)}, {QStringLiteral("pins"), QJsonArray::fromStringList(pinsOn.value(id))}});
     for (Wire* w : sch->a_DocWires) {
         QJsonObject wire{{QStringLiteral("x1"), w->x1}, {QStringLiteral("y1"), w->y1}, {QStringLiteral("x2"), w->x2}, {QStringLiteral("y2"), w->y2}};
         if (w->hasLabel()) {
@@ -708,6 +1188,7 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
                                   {QStringLiteral("path"), sch->getDocName()},
                                   {QStringLiteral("grid"), QJsonArray{sch->getGridX(), sch->getGridY()}},
                                   {QStringLiteral("components"), components},
+                                  {QStringLiteral("nets"), netList},
                                   {QStringLiteral("wires"), wires},
                                   {QStringLiteral("labels"), labels},
                                   {QStringLiteral("diagrams"), diagrams},
@@ -774,6 +1255,9 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
     const QString name = args.value(QLatin1String("name")).toString().trimmed();
     Component* c = sch->getComponentByName(name);
     if (c == nullptr) return errorResult(tr("There is no component %1 in %2.").arg(name, titleOf(sch)));
+    int named = 0;
+    for (Component* pc : sch->a_DocComps) named += pc->Name.compare(name, Qt::CaseInsensitive) == 0 ? 1 : 0;
+    if (named > 1) return errorResult(tr("There are %1 components named %2 in %3.").arg(named).arg(name, titleOf(sch)));
     const QString rename = args.value(QLatin1String("rename")).toString().trimmed();
     if (!rename.isEmpty() && rename != name && sch->getComponentByName(rename) != nullptr)
         return errorResult(tr("There is a component named %1 already.").arg(rename));
@@ -783,37 +1267,31 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
         if (c->getProperty(it.key()) == nullptr)
             return errorResult(tr("%1 has no property %2; its properties are: %3.").arg(name, it.key(), propertyNames(c)));
     prepare(sch);
+    const QString before = sch->snapshot();
     if (!props.isEmpty()) {
         setProperties(c, props, &error);
         sch->recreateComponent(c);
     }
-    const bool move = args.contains(QLatin1String("x")) || args.contains(QLatin1String("y"));
-    const bool turn = args.contains(QLatin1String("rotation")) || args.contains(QLatin1String("mirror"));
-    if (move || turn) {
-        // Off its nodes, changed, and back on (as a recreate does).
-        sch->detachComp(c);
-        if (args.contains(QLatin1String("mirror")) && args.value(QLatin1String("mirror")).toBool() != c->mirroredX) c->mirrorX();
-        if (args.contains(QLatin1String("rotation"))) {
-            const int want = ((args.value(QLatin1String("rotation")).toInt() % 4) + 4) % 4;
-            for (int i = 0; i < 4 && c->rotated != want; ++i) c->rotate();
+    QStringList landed;
+    if (args.contains(QLatin1String("x")) || args.contains(QLatin1String("y")) || args.contains(QLatin1String("rotation"))
+        || args.contains(QLatin1String("mirror"))) {
+        QString why;
+        c = turnAndMove(sch, name, args, &why, &landed);
+        if (c == nullptr) {
+            sch->restore(before);
+            return errorResult(tr("%1 is not changed: turned or moved so, %2. Try another place or turn - or take "
+                                  "its wires away (delete), change it and connect it again.")
+                                   .arg(name, why));
         }
-        if (move) {
-            int x = args.contains(QLatin1String("x")) ? args.value(QLatin1String("x")).toInt() : c->cx;
-            int y = args.contains(QLatin1String("y")) ? args.value(QLatin1String("y")).toInt() : c->cy;
-            const QPoint at = Schematic::withinModelLimit(QPoint(x, y));
-            x = at.x();
-            y = at.y();
-            sch->setOnGrid(x, y);
-            c->moveCenter(x - c->cx, y - c->cy);
-        }
-        sch->insertRawComponent(c, false);
     }
     if (args.contains(QLatin1String("active")))
         c->isActive = args.value(QLatin1String("active")).toBool() ? COMP_IS_ACTIVE : COMP_IS_OPEN;
     if (!rename.isEmpty()) c->Name = rename;
     sch->enlargeView(c);
     finish(sch, {QPoint(c->cx, c->cy)});
-    return jsonResult(componentJson(c));
+    QJsonObject result = componentJson(c);
+    if (!landed.isEmpty()) result.insert(QStringLiteral("note"), landed.join(QStringLiteral("; ")) + QLatin1Char('.'));
+    return jsonResult(result);
 }
 
 QJsonObject QucsControl::remove(const QJsonObject& args)
@@ -936,13 +1414,23 @@ QJsonObject QucsControl::connectPins(const QJsonObject& args)
     if (!pointOf(sch, args.value(QLatin1String("from")), &a, &error) || !pointOf(sch, args.value(QLatin1String("to")), &b, &error))
         return errorResult(error);
     if (a == b) return errorResult(tr("The two ends are the same place."));
+    const QString from = args.value(QLatin1String("from")).isString() ? args.value(QLatin1String("from")).toString()
+                                                                     : QStringLiteral("%1, %2").arg(a.x()).arg(a.y());
+    const QString to = args.value(QLatin1String("to")).isString() ? args.value(QLatin1String("to")).toString()
+                                                                 : QStringLiteral("%1, %2").arg(b.x()).arg(b.y());
+    const Nets before = netsOf(sch, nullptr, {a, b});
+    const QStringList ends{QStringLiteral("at %1,%2").arg(a.x()).arg(a.y()), QStringLiteral("at %1,%2").arg(b.x()).arg(b.y())};
+    if (before.netOf.value(ends.at(0)) == before.netOf.value(ends.at(1)))
+        return textResult(tr("%1 and %2 are on one net already: nothing drawn.").arg(from, to));
     prepare(sch);
-    const std::size_t before = sch->a_DocWires.size();
-    sch->connectWithWire(a, b);
+    // A wire that joins these two nets and nothing else: one going over a
+    // pin on its way would join that pin's net too.
+    const auto check = [&] { return netChangesBeyond(before, netsOf(sch, nullptr, {a, b}), ends); };
+    if (!wireUp(sch, a, b, check, &error))
+        return errorResult(tr("Not wired: %1. Give the way with add_wire, or move a part out of it.").arg(error));
     finish(sch, {a, b});
-    return textResult(tr("Wired %1, %2 to %3, %4 (%5 wires now).")
-                          .arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y())
-                          .arg(sch->a_DocWires.size()) + (sch->a_DocWires.size() == before ? tr(" They were connected already.") : QString()));
+    return textResult(tr("Wired %1 to %2 (%3, %4 to %5, %6), going over no other pin or wire.")
+                          .arg(from, to).arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y()));
 }
 
 QJsonObject QucsControl::addWire(const QJsonObject& args)
@@ -957,9 +1445,22 @@ QJsonObject QucsControl::addWire(const QJsonObject& args)
         points << p;
     }
     if (points.size() < 2) return errorResult(tr("A wire needs two places at least."));
+    // What is at its places is joined; what it goes over between them must
+    // not be.
+    const Nets before = netsOf(sch, nullptr, points);
+    QStringList places;
+    for (const QPoint& p : points) places << QStringLiteral("at %1,%2").arg(p.x()).arg(p.y());
     prepare(sch);
+    const QString state = sch->snapshot();
     for (int i = 1; i < points.size(); ++i)
         if (points.at(i) != points.at(i - 1)) sch->connectWithWire(points.at(i - 1), points.at(i));
+    const QStringList faults = netChangesBeyond(before, netsOf(sch, nullptr, points), places);
+    if (!faults.isEmpty()) {
+        sch->restore(state);
+        return errorResult(tr("Not drawn: it goes over what is not at its places - %1. Give places that go around "
+                              "them (or use connect, which finds a way).")
+                               .arg(faults.join(QStringLiteral("; "))));
+    }
     finish(sch, points);
     return textResult(tr("Wire drawn through %1 places (%2 wires now).").arg(points.size()).arg(sch->a_DocWires.size()));
 }
