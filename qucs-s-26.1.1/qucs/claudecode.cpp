@@ -19,6 +19,7 @@
 #include <QJsonDocument>
 #include <QLocale>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTimer>
 
@@ -237,6 +238,170 @@ QString qucsSystemPrompt()
         "unless it has unsaved changes of its own: say which files you changed.");
 }
 
+bool isAskMode(const QString& mode)
+{
+    return mode.isEmpty() || mode == QLatin1String("default") || mode == QLatin1String("manual");
+}
+
+QString modelName(const QString& id)
+{
+    QString name = id.trimmed();
+    if (name.isEmpty()) return {};
+    if (name.startsWith(QLatin1String("claude-"))) name = name.mid(7);
+    name.remove(QRegularExpression(QStringLiteral("-\\d{8}$")));
+    name.remove(QRegularExpression(QStringLiteral("\\[.*\\]$")));
+    QStringList parts = name.split(QLatin1Char('-'), Qt::SkipEmptyParts);
+    if (parts.isEmpty()) return id;
+    QString family = parts.takeFirst();
+    family[0] = family[0].toUpper();
+    return parts.isEmpty() ? family : family + QLatin1Char(' ') + parts.join(QLatin1Char('.'));
+}
+
+namespace {
+
+// "claude-opus-5[1m]", "claude-haiku-4-5-20251001": claude-opus-5,
+// claude-haiku-4-5 - the model, whatever its context or its date.
+QString baseModel(const QString& id)
+{
+    QString base = id.trimmed();
+    base.remove(QRegularExpression(QStringLiteral("\\[.*\\]$")));
+    base.remove(QRegularExpression(QStringLiteral("-\\d{8}$")));
+    return base;
+}
+
+// The newest of each family, for a program that does not offer them (its
+// list has aliases, which stand for what its version thought newest).
+const struct {
+    const char* id;
+    const char* name;
+    bool autoMode;
+} kNewestModels[] = {
+    {"claude-opus-5-5", "Opus 5.5", true},
+    {"claude-fable-5-1", "Fable 5.1", true},
+    {"claude-sonnet-5", "Sonnet 5", true},
+    {"claude-haiku-4-5", "Haiku 4.5", false},
+};
+
+const char* const kModelsRequest = "qucs-models";
+
+} // namespace
+
+QList<ModelChoice> modelChoices(const QJsonArray& listed)
+{
+    // "Opus 5 with 1M context · Best for everyday, complex tasks"
+    const QString dot = QStringLiteral(" \u00b7 ");
+    QList<ModelChoice> choices;
+    const auto has = [&choices](const QString& value) {
+        return std::any_of(choices.cbegin(), choices.cend(), [&value](const ModelChoice& c) { return c.value == value; });
+    };
+    for (const QJsonValue& v : listed) {
+        const QJsonObject o = v.toObject();
+        ModelChoice c;
+        c.value = o.value(QLatin1String("value")).toString().trimmed();
+        if (c.value == QLatin1String("default")) c.value.clear();
+        if (has(c.value)) continue;
+        c.resolved = o.value(QLatin1String("resolvedModel")).toString();
+        c.autoMode = o.value(QLatin1String("supportsAutoMode")).toBool();
+        c.listed = true;
+        const QString about = o.value(QLatin1String("description")).toString().trimmed();
+        const QString what = about.contains(dot) ? about.section(dot, 0, 0).trimmed() : QString();
+        c.description = about.contains(dot) ? about.section(dot, 1).trimmed() : about;
+        if (c.value.isEmpty()) c.name = what.isEmpty() ? tr("Default") : tr("Default (%1)").arg(what);
+        else if (!what.isEmpty()) c.name = what;
+        else c.name = modelName(c.resolved.isEmpty() ? c.value : c.resolved);   // "Custom model"
+        choices << c;
+    }
+    if (!has(QString())) {
+        ModelChoice c;
+        c.name = tr("Default");
+        c.description = tr("The model Claude Code chooses");
+        c.autoMode = true;
+        choices.prepend(c);
+    }
+    for (const auto& newest : kNewestModels) {
+        const QString id = QString::fromLatin1(newest.id);
+        if (std::any_of(choices.cbegin(), choices.cend(), [&id](const ModelChoice& c) {
+                return c.value == id || (!c.resolved.isEmpty() && baseModel(c.resolved) == id);
+            }))
+            continue;
+        ModelChoice c;
+        c.value = id;
+        c.name = QString::fromLatin1(newest.name);
+        c.description = id;
+        c.resolved = id;
+        c.autoMode = newest.autoMode;
+        choices << c;
+    }
+    return choices;
+}
+
+// ----------------------------------------------------------------------
+ModelQuery::ModelQuery(QObject* parent) : QObject(parent), a_timeout(new QTimer(this))
+{
+    a_timeout->setSingleShot(true);
+    connect(a_timeout, &QTimer::timeout, this, [this] {
+        if (a_process != nullptr) a_process->kill();   // and finish() as it ends
+    });
+}
+
+ModelQuery::~ModelQuery()
+{
+    if (a_process != nullptr) {
+        a_process->disconnect(this);
+        a_process->kill();
+        a_process->waitForFinished(1000);
+    }
+}
+
+void ModelQuery::start(const QString& program, const QString& dir)
+{
+    if (a_process != nullptr || program.isEmpty()) return;
+    auto* process = new QProcess(this);
+    process->setProgram(program);
+    process->setArguments({QStringLiteral("-p"), QStringLiteral("--input-format"), QStringLiteral("stream-json"),
+                           QStringLiteral("--output-format"), QStringLiteral("stream-json"), QStringLiteral("--verbose")});
+    process->setWorkingDirectory(!dir.isEmpty() && QFileInfo(dir).isDir() ? dir : QDir::homePath());
+    process->setStandardErrorFile(QProcess::nullDevice());
+    connect(process, &QProcess::readyReadStandardOutput, this, [this, process] {
+        a_output += process->readAllStandardOutput();
+        if (a_output.size() > (8 << 20)) process->kill();   // not what was asked for
+    });
+    connect(process, &QProcess::finished, this, &ModelQuery::finish);
+    connect(process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) finish();
+    });
+    a_process = process;
+    a_output.clear();
+    process->start();
+    const QJsonObject request{{QStringLiteral("type"), QStringLiteral("control_request")},
+                              {QStringLiteral("request_id"), QString::fromLatin1(kModelsRequest)},
+                              {QStringLiteral("request"), QJsonObject{{QStringLiteral("subtype"), QStringLiteral("initialize")}}}};
+    process->write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
+    process->closeWriteChannel();   // it answers, and ends
+    a_timeout->start(30000);
+}
+
+void ModelQuery::finish()
+{
+    QProcess* process = a_process;
+    if (process == nullptr) return;
+    a_process = nullptr;
+    a_timeout->stop();
+    a_output += process->readAllStandardOutput();
+    process->disconnect(this);
+    process->deleteLater();
+    QJsonArray models;
+    for (const QByteArray& line : a_output.split('\n')) {
+        const QJsonObject m = QJsonDocument::fromJson(line.trimmed()).object();
+        if (m.value(QLatin1String("type")).toString() != QLatin1String("control_response")) continue;
+        const QJsonObject response = m.value(QLatin1String("response")).toObject();
+        if (response.value(QLatin1String("request_id")).toString() != QLatin1String(kModelsRequest)) continue;
+        models = response.value(QLatin1String("response")).toObject().value(QLatin1String("models")).toArray();
+    }
+    a_output.clear();
+    emit finished(models);
+}
+
 // ----------------------------------------------------------------------
 Session::Session(QObject* parent) : QObject(parent), a_stopTimer(new QTimer(this))
 {
@@ -341,6 +506,7 @@ void Session::start()
     a_stderr.clear();
     a_stopping = false;
     a_reportedCost = 0.0;
+    a_modeInUse.clear();
     setState(State::Starting);
     process->start();
     if (!process->waitForStarted(5000)) {
@@ -404,6 +570,7 @@ void Session::answer(const QString& id, bool allow, bool allowEdits)
                                                    {QStringLiteral("mode"), QStringLiteral("acceptEdits")},
                                                    {QStringLiteral("destination"), QStringLiteral("session")}}});
             a_mode = QStringLiteral("acceptEdits");
+            a_modeInUse = a_mode;
             emit permissionModeChanged(a_mode);
         }
     } else {
@@ -565,7 +732,21 @@ void Session::handleSystem(const QJsonObject& m)
         a_sessionId = m.value(QLatin1String("session_id")).toString();
         a_modelInUse = m.value(QLatin1String("model")).toString();
         a_version = m.value(QLatin1String("claude_code_version")).toString();
+        // Not every model has every mode (Haiku has no auto mode): the
+        // program falls back to asking, and says so only here.
+        const QString mode = m.value(QLatin1String("permissionMode")).toString();
+        const bool told = !a_modeInUse.isEmpty();
+        a_modeInUse = mode;
         emit sessionStarted(a_sessionId, a_modelInUse);
+        if (!told && !mode.isEmpty() && mode != a_mode && !(isAskMode(mode) && isAskMode(a_mode))) {
+            const QString model = modelName(a_modelInUse);
+            if (a_mode == QLatin1String("auto") && isAskMode(mode))
+                emit notice(model.isEmpty() ? tr("Auto mode is not available here: Claude asks before it acts.")
+                                            : tr("Auto mode is not available with %1: Claude asks before it acts.").arg(model));
+            else
+                emit notice(tr("Claude Code works in the %1 mode, not %2.").arg(isAskMode(mode) ? tr("asking") : mode,
+                                                                                    isAskMode(a_mode) ? tr("asking") : a_mode));
+        }
         if (a_busy && a_state == State::Starting) setState(State::Thinking);
     } else if (subtype == QLatin1String("permission_denied")) {
         const QString message = m.value(QLatin1String("message")).toString();
@@ -702,8 +883,11 @@ void Session::handleResult(const QJsonObject& m)
     if (!sessionId.isEmpty()) a_sessionId = sessionId;
 
     endTurn();
-    if (r.ok || r.stopped) setState(State::Ready);
-    else setState(State::Failed, failureOf(r.subtype, r.text));
+    if (r.ok || r.stopped) {
+        setState(State::Ready);
+    } else {
+        setState(State::Failed, failureOf(r.subtype, r.text));
+    }
     emit turnFinished(r);
     if (a_restartAfterTurn) {
         // A mode or model changed during the turn: the next prompt starts

@@ -27,6 +27,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QJsonDocument>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -51,7 +52,9 @@
 #include <algorithm>
 #include <iterator>
 
+using qucs_s::claude::ModelChoice;
 using qucs_s::claude::State;
+using qucs_s::claude::modelName;
 
 namespace {
 
@@ -59,6 +62,8 @@ namespace {
 const QString kProgram = QStringLiteral("ClaudeCode/program");
 const QString kMode = QStringLiteral("ClaudeCode/permissionMode");
 const QString kModel = QStringLiteral("ClaudeCode/model");
+const QString kModels = QStringLiteral("ClaudeCode/models");          // what the program offers
+const QString kOtherModels = QStringLiteral("ClaudeCode/otherModels"); // chosen by name, the latest first
 const QString kAttach = QStringLiteral("ClaudeCode/attachDocument");
 
 struct Colours {
@@ -106,19 +111,14 @@ QPixmap dot(const QColor& colour, bool ring, qreal ratio)
     return pixmap;
 }
 
-// "claude-haiku-4-5-20251001": Haiku 4.5.
-QString modelName(const QString& id)
+// The permission mode in a word, for the header; empty for asking.
+QString modeTag(const QString& mode)
 {
-    QString name = id.trimmed();
-    if (name.isEmpty()) return {};
-    if (name.startsWith(QLatin1String("claude-"))) name = name.mid(7);
-    name.remove(QRegularExpression(QStringLiteral("-\\d{8}$")));
-    name.remove(QRegularExpression(QStringLiteral("\\[.*\\]$")));
-    QStringList parts = name.split(QLatin1Char('-'), Qt::SkipEmptyParts);
-    if (parts.isEmpty()) return id;
-    QString family = parts.takeFirst();
-    family[0] = family[0].toUpper();
-    return parts.isEmpty() ? family : family + QLatin1Char(' ') + parts.join(QLatin1Char('.'));
+    if (mode == QLatin1String("acceptEdits")) return ClaudeCodePanel::tr("edits");
+    if (mode == QLatin1String("auto")) return ClaudeCodePanel::tr("auto");
+    if (mode == QLatin1String("plan")) return ClaudeCodePanel::tr("plan");
+    if (mode == QLatin1String("bypassPermissions")) return ClaudeCodePanel::tr("bypass");
+    return qucs_s::claude::isAskMode(mode) ? QString() : mode;
 }
 
 QString seconds(qint64 ms)
@@ -182,6 +182,7 @@ const Suggestion kSuggestions[] = {
 ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     : QWidget(parent),
       a_session(new qucs_s::claude::Session(this)),
+      a_modelQuery(new qucs_s::claude::ModelQuery(this)),
       a_renderTimer(new QTimer(this)),
       a_clock(new QTimer(this))
 {
@@ -291,10 +292,20 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
         append({Entry::Problem, message, {}, {}});
     });
     connect(a_session, &qucs_s::claude::Session::turnFinished, this, &ClaudeCodePanel::onTurnFinished);
+    connect(a_modelQuery, &qucs_s::claude::ModelQuery::finished, this, [this](const QJsonArray& models) {
+        if (!models.isEmpty() && models != a_listedModels) {
+            a_listedModels = models;
+            QucsSettingsFile().setValue(kModels, QString::fromUtf8(QJsonDocument(models).toJson(QJsonDocument::Compact)));
+            rebuildModelMenu();
+        }
+        listModels();   // the program changed while it was asked
+    });
 
     const QucsSettingsFile settings;
     a_session->setPermissionMode(settings.value(kMode).toString());
     a_session->setModel(settings.value(kModel).toString());
+    a_listedModels = QJsonDocument::fromJson(settings.value(kModels).toString().toUtf8()).array();
+    rebuildModelMenu();
     a_attach->setChecked(settings.value(kAttach, true).toBool());
     findProgram();
 
@@ -457,6 +468,7 @@ void ClaudeCodePanel::buildMenu()
     } modeList[] = {
         {QT_TR_NOOP("Ask Before Acting"), "", QT_TR_NOOP("Claude asks before it runs a command or changes a file")},
         {QT_TR_NOOP("Accept Edits"), "acceptEdits", QT_TR_NOOP("Claude changes files without asking; commands still need permission")},
+        {QT_TR_NOOP("Auto"), "auto", QT_TR_NOOP("Claude acts without asking; a safety check reviews each action first and blocks risky ones")},
         {QT_TR_NOOP("Plan Only"), "plan", QT_TR_NOOP("Claude reads and plans, and changes nothing")},
         {QT_TR_NOOP("Bypass Permissions"), "bypassPermissions", QT_TR_NOOP("Claude does anything without asking")},
     };
@@ -483,36 +495,35 @@ void ClaudeCodePanel::buildMenu()
         setPermissionMode(mode);
     });
 
-    QMenu* models = a_menu->addMenu(tr("Model"));
+    a_modelMenu = a_menu->addMenu(tr("Model"));
+    a_modelMenu->setToolTipsVisible(true);
     a_models = new QActionGroup(this);
-    const struct {
-        const char* label;
-        const char* model;
-    } modelList[] = {{QT_TR_NOOP("Default"), ""}, {"Opus", "opus"}, {"Sonnet", "sonnet"}, {"Haiku", "haiku"}};
-    for (const auto& m : modelList) {
-        QAction* a = models->addAction(tr(m.label));
-        a->setCheckable(true);
-        a->setData(QString::fromLatin1(m.model));
-        a_models->addAction(a);
-    }
-    QAction* other = models->addAction(tr("Other…"));
-    other->setCheckable(true);
-    other->setData(QStringLiteral("*"));
-    a_models->addAction(other);
     connect(a_models, &QActionGroup::triggered, this, [this](QAction* a) {
         QString model = a->data().toString();
         if (model == QLatin1String("*")) {
             bool ok = false;
-            model = QInputDialog::getText(this, tr("Claude Code"), tr("The model's name or alias:"), QLineEdit::Normal,
-                                          a_session->model(), &ok)
+            model = QInputDialog::getText(this, tr("Claude Code"),
+                                          tr("The model's full name (claude-opus-5-5, say) or an alias (opus):"),
+                                          QLineEdit::Normal, a_session->model(), &ok)
                         .trimmed();
             if (!ok) {
                 updateState();
                 return;
             }
+            if (!model.isEmpty() && choiceFor(model) == nullptr) {
+                // Kept in the menu, the latest first.
+                QucsSettingsFile settings;
+                QStringList others = settings.value(kOtherModels).toStringList();
+                others.removeAll(model);
+                others.prepend(model);
+                settings.setValue(kOtherModels, others.mid(0, 5));
+                QTimer::singleShot(0, this, &ClaudeCodePanel::rebuildModelMenu);   // not under the action
+            }
         }
         setModel(model);
     });
+    // Asked again when the menu opens: a program installed meanwhile.
+    connect(a_modelMenu, &QMenu::aboutToShow, this, &ClaudeCodePanel::listModels);
 
     a_menu->addSeparator();
     a_menu->addAction(tr("Choose Folder…"), a_dirButton, &QToolButton::click);
@@ -613,6 +624,7 @@ void ClaudeCodePanel::showEvent(QShowEvent* event)
     QWidget::showEvent(event);
     refreshDocument();
     if (a_session->program().isEmpty()) findProgram();
+    listModels();
 }
 
 bool ClaudeCodePanel::eventFilter(QObject* watched, QEvent* event)
@@ -655,6 +667,79 @@ void ClaudeCodePanel::findProgram()
     const QString forced = qEnvironmentVariable("QUCS_CLAUDE");
     a_session->setProgram(qucs_s::claude::findProgram(forced.isEmpty() ? programSetting() : forced));
     updateState();
+    if (isVisible()) listModels();
+}
+
+void ClaudeCodePanel::listModels()
+{
+    const QString program = a_session->program();
+    if (program.isEmpty() || program == a_modelsFrom || a_modelQuery->isRunning()) return;
+    if (!QFileInfo(program).isExecutable()) return;   // a program named, not found
+    a_modelsFrom = program;
+    a_modelQuery->start(program, workingDirectory());
+}
+
+const ModelChoice* ClaudeCodePanel::choiceFor(const QString& model) const
+{
+    for (const ModelChoice& c : a_choices)
+        if (c.value == model) return &c;
+    return nullptr;
+}
+
+// What the program offers (as it last said), the default first; then the
+// newest models it does not offer, and those chosen by name; then Other.
+void ClaudeCodePanel::rebuildModelMenu()
+{
+    a_choices = qucs_s::claude::modelChoices(a_listedModels);
+    a_modelMenu->clear();   // and out of the group, as they go
+    const auto add = [this](const QString& text, const QString& value, const QString& tip) {
+        QAction* a = a_modelMenu->addAction(text);
+        a->setCheckable(true);
+        a->setData(value);
+        a->setToolTip(tip);
+        a->setStatusTip(QString(tip).replace(QLatin1Char('\n'), QStringLiteral(" \u2014 ")));
+        a_models->addAction(a);
+    };
+    const auto tipOf = [](const ModelChoice& c) {
+        return c.resolved.isEmpty() || c.resolved == c.description ? c.description
+                                                                   : c.description + QLatin1Char('\n') + c.resolved;
+    };
+    bool apart = false;
+    for (const ModelChoice& c : a_choices) {
+        if (!c.listed && !c.value.isEmpty() && !apart) {
+            a_modelMenu->addSeparator();
+            apart = true;
+        }
+        add(c.name, c.value, tipOf(c));
+    }
+    QStringList others = QucsSettingsFile().value(kOtherModels).toStringList();
+    if (!a_session->model().isEmpty()) others.prepend(a_session->model());
+    others.removeDuplicates();
+    for (const QString& model : std::as_const(others)) {
+        if (choiceFor(model) != nullptr) continue;
+        if (!apart) {
+            a_modelMenu->addSeparator();
+            apart = true;
+        }
+        add(modelName(model), model, model);
+    }
+    a_modelMenu->addSeparator();
+    QAction* other = a_modelMenu->addAction(tr("Other…"));
+    other->setCheckable(true);
+    other->setData(QStringLiteral("*"));
+    other->setToolTip(tr("A model by its name"));
+    a_models->addAction(other);
+    updateState();
+}
+
+QList<QAction*> ClaudeCodePanel::modelActions() const
+{
+    return a_models->actions();
+}
+
+QList<QAction*> ClaudeCodePanel::permissionActions() const
+{
+    return a_modes->actions();
 }
 
 void ClaudeCodePanel::setPermissionMode(const QString& mode)
@@ -666,6 +751,7 @@ void ClaudeCodePanel::setPermissionMode(const QString& mode)
         QString name = a_modes->checkedAction() != nullptr ? a_modes->checkedAction()->text() : mode;
         addNote(tr("Permissions: %1, from the next prompt on.").arg(name.remove(QLatin1Char('&'))));
     }
+    if (a_entries.isEmpty()) scheduleRender();   // the welcome says what Claude may do
     updateState();
 }
 
@@ -789,14 +875,35 @@ void ClaudeCodePanel::updateState()
         a_clock->stop();
     }
 
-    // The model: the one in use, else the one asked for.
+    // The model: the one in use, else the one asked for; and the mode, when
+    // Claude does not ask before it acts - the one the program works in,
+    // which is not the one asked for when the model has not got it.
+    const ModelChoice* choice = choiceFor(a_session->model());
     QString model = modelName(a_session->modelInUse());
+    if (model.isEmpty() && choice != nullptr) model = modelName(choice->resolved);
     if (model.isEmpty()) model = modelName(a_session->model());
-    a_modelLabel->setText(model);
-    a_modelLabel->setToolTip(a_session->version().isEmpty() ? QString()
-                                                            : tr("Claude Code %1").arg(a_session->version()));
+    const QString inUse = a_session->permissionModeInUse();
+    QString mode = a_session->isRunning() && !inUse.isEmpty() ? inUse : a_session->permissionMode();
+    if (mode == QLatin1String("auto") && choice != nullptr && !choice->autoMode) mode.clear();   // it will ask
+    const QString tag = modeTag(mode);
+    a_modelLabel->setText(tag.isEmpty() ? model : model.isEmpty() ? tag : model + QStringLiteral(" \u00b7 ") + tag);
+    QStringList about;
+    if (!a_session->version().isEmpty()) about << tr("Claude Code %1").arg(a_session->version());
+    for (QAction* a : a_modes->actions())
+        if (a->data().toString() == mode || (a->data().toString().isEmpty() && qucs_s::claude::isAskMode(mode)))
+            about << tr("Permissions: %1").arg(a->text().remove(QLatin1Char('&')));
+    a_modelLabel->setToolTip(about.join(QLatin1Char('\n')));
 
-    for (QAction* a : a_modes->actions()) a->setChecked(a->data().toString() == a_session->permissionMode());
+    // Auto mode is not in every model.
+    const QString modelShown = choice != nullptr ? choice->name : modelName(a_session->model());
+    for (QAction* a : a_modes->actions()) {
+        a->setChecked(a->data().toString() == a_session->permissionMode());
+        if (a->data().toString() != QLatin1String("auto")) continue;
+        const bool can = choice == nullptr || choice->autoMode;
+        a->setEnabled(can);
+        a->setToolTip(can ? tr("Claude acts without asking; a safety check reviews each action first and blocks risky ones")
+                          : tr("Not available with %1").arg(modelShown));
+    }
     bool known = false;
     for (QAction* a : a_models->actions()) {
         const bool match = a->data().toString() == a_session->model();
@@ -1096,6 +1203,7 @@ void ClaudeCodePanel::renderWelcome(QTextCursor& c)
     } else {
         const QString mode = a_session->permissionMode();
         const QString asks = mode == QLatin1String("acceptEdits")  ? tr("It changes files without asking and asks before it runs a command.")
+                             : mode == QLatin1String("auto")       ? tr("It decides on its own what is safe to do; a safety check blocks risky actions.")
                              : mode == QLatin1String("plan")       ? tr("It reads and plans, and changes nothing.")
                              : mode == QLatin1String("bypassPermissions") ? tr("It does anything without asking.")
                                                                           : tr("It asks before it runs a command or changes a file.");

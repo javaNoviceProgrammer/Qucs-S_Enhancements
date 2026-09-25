@@ -19,6 +19,7 @@
 
 #include <functional>
 
+class QAction;
 class QActionGroup;
 class QFrame;
 class QLabel;
@@ -84,6 +85,10 @@ public:
     QToolButton* allowEditsButton() const { return a_allowEdits; }
     QToolButton* denyButton() const { return a_deny; }
     QLabel* stateLabel() const { return a_stateText; }
+    QLabel* modelLabel() const { return a_modelLabel; }
+    QList<QAction*> modelActions() const;
+    QList<QAction*> permissionActions() const;
+    qucs_s::claude::ModelQuery* modelQuery() const { return a_modelQuery; }
     QString transcriptText() const;
     /// The conversation drawn now rather than a moment later.
     void renderNow();
@@ -136,6 +141,11 @@ private:
     void handleLink(const QUrl& url);
     QString programSetting() const;
     void findProgram();
+    /// Asks the program which models it offers (once for each program).
+    void listModels();
+    void rebuildModelMenu();
+    /// The choice that \a model is, or null.
+    const qucs_s::claude::ModelChoice* choiceFor(const QString& model) const;
     void setPermissionMode(const QString& mode);
     void setModel(const QString& model);
 
@@ -153,6 +163,11 @@ private:
     QString a_chosenDir;       // empty: the default
     std::function<QString()> a_document;
 
+    qucs_s::claude::ModelQuery* a_modelQuery;
+    QString a_modelsFrom;      // the program asked which models it offers
+    QJsonArray a_listedModels; // what it answered (kept in the settings)
+    QList<qucs_s::claude::ModelChoice> a_choices;
+
     QList<Entry> a_entries;
     QList<qucs_s::claude::PermissionRequest> a_requests;
     QTimer* a_renderTimer;
@@ -168,6 +183,7 @@ private:
     QToolButton* a_menuButton;
     QMenu* a_menu;
     QActionGroup* a_modes;
+    QMenu* a_modelMenu;
     QActionGroup* a_models;
     // The folder.
     QWidget* a_dirRow;
