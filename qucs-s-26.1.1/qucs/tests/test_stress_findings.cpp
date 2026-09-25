@@ -39,6 +39,7 @@
 #include "components/property.h"
 #include "graphicsexport.h"
 #include "healer.h"
+#include "geometry/multi_point.h"
 
 class TestStressFindings : public QObject
 {
@@ -506,6 +507,11 @@ private slots:
             QVERIFY2(sch.contentsWidth() <= 2 * limit * 10 + 10000 && sch.contentsHeight() <= 2 * limit * 10 + 10000,
                      qPrintable(what));
         };
+        // The geometry of wires out there: products of such coordinates
+        // overflowed int.
+        QVERIFY(qucs_s::geom::is_it_line(QPoint(8000000, 8000000), QPoint(0, 0), QPoint(-8000000, -8000000)));
+        QVERIFY(!qucs_s::geom::is_it_line(QPoint(8000000, 8000000), QPoint(0, 1), QPoint(-8000000, -8000000)));
+        QVERIFY(qucs_s::geom::is_it_line(QPoint(8388430, 360), QPoint(8388430, -8388940), QPoint(8388430, 16777000)));
         for (const QString& view : views) {
             QString text = schematic(parts);
             text.replace(QStringLiteral("<View=0,0,800,600,1,0,0>"), QStringLiteral("<View=%1>").arg(view));

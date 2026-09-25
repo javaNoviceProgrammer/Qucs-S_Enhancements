@@ -17,6 +17,9 @@
 #include <functional>
 
 class ClaudeCodePanel;
+namespace qucs_s::claude {
+class ToolHost;
+}
 class QTabWidget;
 class QToolButton;
 
@@ -66,6 +69,8 @@ public:
     void setDefaultDirectory(const QString& dir);
     QString defaultDirectory() const { return a_defaultDir; }
     void setDocumentProvider(std::function<QString()> provider);
+    /// The application's tools, offered in every conversation (not owned).
+    void setToolHost(qucs_s::claude::ToolHost* host);
     void refreshDocument();
     /// A note in the conversation whose files are being loaded again
     /// (while filesChanged is handled), else in the one in front.
@@ -94,6 +99,7 @@ private:
     QToolButton* a_plus;
     QString a_defaultDir;
     std::function<QString()> a_document;
+    qucs_s::claude::ToolHost* a_host = nullptr;
     ClaudeCodePanel* a_reporting = nullptr;   // whose files are loaded again
 };
 

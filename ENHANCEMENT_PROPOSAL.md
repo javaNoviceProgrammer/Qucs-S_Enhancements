@@ -1000,6 +1000,52 @@ existing demand.
   status bar say so, and the chip leads to it), notes about reloaded
   files go to the conversation that changed them, and the status bar
   reports `mostUrgent()` with a count of the others at work.
+- *Done:* **Claude drives the Qucs-S window** (`qucs/qucscontrol.*`).
+  The dock's conversation could say which document was open and reload
+  files Claude wrote, but Claude had no way into the GUI. Qucs-S is now an
+  MCP server for it, without a socket or a helper process: the claude
+  program is told of an "sdk" server (`--mcp-config
+  {"mcpServers":{"qucs":{"type":"sdk","name":"qucs"}}}`, as the Agent SDKs
+  do), the session announces it in its `initialize` control request, and
+  the program sends the server's JSON-RPC as `control_request`s of subtype
+  `mcp_message`; `Session::handleMcpMessage()` answers initialize (with
+  the server's instructions), notifications, ping, tools/list and
+  tools/call (from the event loop, not the output's reader, since a tool
+  may run a dialog's event loop) through a `ToolHost`. `QucsControl` is
+  that host: 23 tools - get_state; open, new, show, save (as), close
+  documents; get_schematic (a summary with each pin's place, whether it is
+  connected and its net label, or the .sch text: `Schematic::
+  documentText()`), set_schematic (`Schematic::replaceContent()`: the
+  sections given in place of the document's, through the undo record's
+  rebuild, restored when they do not read), add_component
+  (`Module::getComponent()`, placed as a click places one), edit_component
+  (properties through recreateComponent(), place and turn by detaching and
+  inserting again), delete, connect and add_wire (`connectWithWire()`,
+  routed as the wire tool routes), set_label, select, zoom, undo, redo;
+  screenshot (graphicsexport's image, or the viewport's; an MCP image
+  content Claude sees); list_component_types; list_actions and
+  trigger_action (the menu bar walked; triggered from the event loop and
+  answered half a second later with the dialog it opened, if any; quitting
+  and the actions that open the system's file and print dialogs refused);
+  get_dialog and set_dialog (the controls of the open dialog - on every
+  tab, labelled from forms, buddies, their layout's row - set as a user
+  would, the tab brought forward, a button pressed from the event loop);
+  simulate (Simulation > Simulate from the event loop, the SimulationRun
+  watched to its end, the dataset's time checked). Each change is one
+  `setChanged(true, true)`, the document comes to the front and the view
+  follows what changed. What Qucs-S would put in a message box while a
+  tool runs is told to Claude instead (`misc::ErrorCapture`, which also
+  makes a file's unknown component an error rather than a question).
+  Permissions: the tools that look are `--allowedTools`; the others ask,
+  with *Allow Qucs-S Control* for the rest of the conversation
+  (`PermissionRequest::canAllowTools`; the session then answers them
+  itself, as it does in the Accept Edits, Auto and Bypass modes).
+  `QucsApp::saveDocumentAs()` is Save As without its dialogs. Checked with
+  Claude Code 2.1.267 and Haiku: it found the tools with ToolSearch, placed
+  R1, V1 and a ground, wired them, took a screenshot and described the
+  circuit (16 s, $0.12). The GUI monkey's tool calls found products of
+  far-away coordinates overflowing int in `geom::is_it_line()`, now
+  computed in 64 bits.
 - *Done:* **TeX math in the Claude Code dock** (`qucs/mathtypeset.*`).
   QTextDocument's Markdown has no math, and a web engine for KaTeX would
   be a heavy dependency for a panel, so the math is typeset here: a

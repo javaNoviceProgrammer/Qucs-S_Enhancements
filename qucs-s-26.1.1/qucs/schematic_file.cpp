@@ -565,7 +565,80 @@ bool Schematic::writeDocument(const QString& path)
     return false;
 
   QTextStream stream(&file);
+  writeDocumentTo(stream);
+  stream.flush();
+  file.close();
+  return true;
+}
 
+QString Schematic::documentText()
+{
+  QString text;
+  QTextStream stream(&text);
+  writeDocumentTo(stream);
+  stream.flush();
+  return text;
+}
+
+bool Schematic::replaceContent(const QString& text, QString* error)
+{
+  const auto fail = [error](const QString& why) {
+    if (error != nullptr) *error = why;
+    return false;
+  };
+  if (a_symbolMode)
+    return fail(QObject::tr("The document shows its symbol: switch to the schematic first."));
+
+  // The sections as they are now, from the undo record: components, wires
+  // (and labels), diagrams, paintings, each ended by "</>".
+  const QString before = createUndoString('*');
+  QStringList parts = before.section(QLatin1Char('\n'), 1).split(QStringLiteral("</>\n"));
+  while (parts.size() < 4) parts << QString();
+
+  // Those the text gives, in their place.
+  const char* const names[] = {"Components", "Wires", "Diagrams", "Paintings"};
+  bool any = false;
+  for (int i = 0; i < 4; ++i) {
+    const QString open = QStringLiteral("<%1>").arg(QLatin1String(names[i]));
+    const QString close = QStringLiteral("</%1>").arg(QLatin1String(names[i]));
+    const qsizetype from = text.indexOf(open);
+    if (from < 0) continue;
+    const qsizetype to = text.indexOf(close, from);
+    if (to < 0) return fail(QObject::tr("The <%1> section is not closed.").arg(QLatin1String(names[i])));
+    QString body = text.mid(from + open.size(), to - from - open.size()).trimmed();
+    if (!body.isEmpty()) body += QLatin1Char('\n');
+    parts[i] = body;
+    any = true;
+  }
+  if (!any)
+    return fail(QObject::tr("There is no <Components>, <Wires>, <Diagrams> or <Paintings> section in it."));
+
+  QString next = QStringLiteral("*\n");
+  for (int i = 0; i < 4; ++i) {
+    // One element to a line, as the loaders read them.
+    QStringList lines;
+    for (const QString& line : parts[i].split(QLatin1Char('\n')))
+      if (!line.trimmed().isEmpty()) lines << QStringLiteral("  ") + line.trimmed();
+    next += lines.join(QLatin1Char('\n')) + (lines.isEmpty() ? QString() : QStringLiteral("\n")) + QStringLiteral("</>\n");
+  }
+
+  misc::ErrorCapture capture;
+  if (!rebuild(&next)) {
+    QString back = before;
+    rebuild(&back);
+    updateAllBoundingRect();
+    viewport()->update();
+    const QStringList why = capture.errors();
+    return fail(why.isEmpty() ? QObject::tr("It does not read as a schematic.") : why.join(QLatin1Char('\n')));
+  }
+  setChanged(true, true);
+  updateAllBoundingRect();
+  viewport()->update();
+  return true;
+}
+
+void Schematic::writeDocumentTo(QTextStream& stream)
+{
   stream << "<Qucs Schematic " << PACKAGE_VERSION << ">\n";
 
   // Special case of saving a file when we want to save *only*
@@ -576,8 +649,7 @@ bool Schematic::writeDocument(const QString& path)
           stream << "  <" << pp->save() << ">\n";
       }
       stream << "</Symbol>\n";
-      file.close();
-      return true;
+      return;
   }
 
   stream << "<Properties>\n";
@@ -639,9 +711,6 @@ bool Schematic::writeDocument(const QString& path)
   for(auto* pp : a_DocPaints)
     stream << "  <" << pp->save() << ">\n";
   stream << "</Paintings>\n";
-
-  file.close();
-  return true;
 }
 
 int Schematic::saveDocument()

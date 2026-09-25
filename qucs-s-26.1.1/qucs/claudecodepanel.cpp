@@ -112,6 +112,16 @@ QPixmap dot(const QColor& colour, bool ring, qreal ratio)
     return pixmap;
 }
 
+// "mcp__qucs__add_component": Qucs-S · add component.
+QString toolName(const QString& tool)
+{
+    if (!tool.startsWith(QLatin1String("mcp__"))) return tool;
+    const QStringList parts = tool.split(QStringLiteral("__"));
+    if (parts.size() < 3) return tool;
+    const QString server = parts.at(1) == QLatin1String("qucs") ? QStringLiteral("Qucs-S") : parts.at(1);
+    return server + QStringLiteral(" \u00b7 ") + QString(parts.mid(2).join(QStringLiteral("__"))).replace(QLatin1Char('_'), QLatin1Char(' '));
+}
+
 // The permission mode in a word, for the header; empty for asking.
 QString modeTag(const QString& mode)
 {
@@ -420,16 +430,23 @@ void ClaudeCodePanel::buildPermissionCard()
     a_allowEdits->setObjectName(QStringLiteral("claudeAllowEdits"));
     a_allowEdits->setText(tr("Allow All Edits"));
     a_allowEdits->setToolTip(tr("Allow this, and file changes without asking for the rest of the conversation"));
+    a_allowTools = new QToolButton(a_card);
+    a_allowTools->setObjectName(QStringLiteral("claudeAllowTools"));
+    a_allowTools->setText(tr("Allow Qucs-S Control"));
+    a_allowTools->setToolTip(tr("Allow this, and Claude's use of the Qucs-S window without asking for the rest of the "
+                                "conversation (each change can be undone)"));
     a_allow = new QToolButton(a_card);
     a_allow->setObjectName(QStringLiteral("claudeAllow"));
     a_allow->setText(tr("Allow"));
     buttons->addStretch(1);
     buttons->addWidget(a_deny);
     buttons->addWidget(a_allowEdits);
+    buttons->addWidget(a_allowTools);
     buttons->addWidget(a_allow);
     layout->addLayout(buttons);
     connect(a_allow, &QToolButton::clicked, this, [this] { answer(true, false); });
     connect(a_allowEdits, &QToolButton::clicked, this, [this] { answer(true, true); });
+    connect(a_allowTools, &QToolButton::clicked, this, [this] { answer(true, false, true); });
     connect(a_deny, &QToolButton::clicked, this, [this] { answer(false, false); });
     a_card->hide();
 }
@@ -618,9 +635,10 @@ void ClaudeCodePanel::restyle()
         "QToolButton#claudeAllow { background: %5; color: %8; border: none; border-radius: 7px; padding: 4px 14px;"
         " font-weight: 600; }"
         "QToolButton#claudeAllow:hover { background: %9; }"
-        "QToolButton#claudeDeny, QToolButton#claudeAllowEdits { background: %6; color: %7; border: 1px solid %2;"
-        " border-radius: 7px; padding: 4px 12px; }"
-        "QToolButton#claudeDeny:hover, QToolButton#claudeAllowEdits:hover { background: %4; }")
+        "QToolButton#claudeDeny, QToolButton#claudeAllowEdits, QToolButton#claudeAllowTools { background: %6; color: %7;"
+        " border: 1px solid %2; border-radius: 7px; padding: 4px 12px; }"
+        "QToolButton#claudeDeny:hover, QToolButton#claudeAllowEdits:hover, QToolButton#claudeAllowTools:hover"
+        " { background: %4; }")
                       .arg(window.name(), c.border.name(), c.muted.name(), hover.name(), c.accent.name(),
                            c.base.name(), c.text.name(), c.onAccent.name(), c.accent.darker(112).name())
                       .arg(mix(c.base, c.text, 0.14).name(), c.bubble.name(), c.faint.name(), c.code.name());
@@ -1120,15 +1138,18 @@ void ClaudeCodePanel::showNextRequest()
         a_cardDetail->setFixedHeight(lines * a_cardDetail->fontMetrics().lineSpacing() + 14);
     }
     a_allowEdits->setVisible(r.canAllowEdits);
+    a_allowTools->setVisible(r.canAllowTools);
     a_cardCount->setText(a_requests.size() > 1 ? tr("1 of %1").arg(a_requests.size()) : QString());
     a_card->show();
 }
 
-void ClaudeCodePanel::answer(bool allow, bool allowEdits)
+void ClaudeCodePanel::answer(bool allow, bool allowEdits, bool allowTools)
 {
     if (a_requests.isEmpty()) return;
     const qucs_s::claude::PermissionRequest r = a_requests.takeFirst();
-    a_session->answer(r.id, allow, allowEdits);
+    a_session->answer(r.id, allow, allowEdits, allowTools);
+    if (allow && allowTools && r.canAllowTools)
+        addNote(tr("Claude may use the Qucs-S window without asking for the rest of this conversation."));
     showNextRequest();
     updateState();
 }
@@ -1430,6 +1451,8 @@ QString ClaudeCodePanel::toolSummary(qsizetype from, qsizetype to) const
         else if (tool == QLatin1String("WebSearch")) add(QStringLiteral("web"), {});
         else if (tool == QLatin1String("TodoWrite")) add(QStringLiteral("todo"), {});
         else if (tool == QLatin1String("Task") || tool == QLatin1String("Agent")) add(QStringLiteral("agent"), {});
+        else if (tool.startsWith(QLatin1String("mcp__"))) add(QStringLiteral("mcp:") + toolName(tool).section(QStringLiteral(" \u00b7 "), 0, 0), {}, toolName(tool).section(QStringLiteral(" \u00b7 "), 0, 0));
+        else if (tool == QLatin1String("ToolSearch")) add(QStringLiteral("search tools"), {});
         else add(QStringLiteral("tool:") + tool, {}, tool);
     }
     QStringList words;
@@ -1446,6 +1469,8 @@ QString ClaudeCodePanel::toolSummary(qsizetype from, qsizetype to) const
         else if (p.key == QLatin1String("web")) words << tr("searched the web");
         else if (p.key == QLatin1String("todo")) words << tr("updated the to-do list");
         else if (p.key == QLatin1String("agent")) words << (n == 1 ? tr("ran an agent") : tr("ran %1 agents").arg(n));
+        else if (p.key.startsWith(QLatin1String("mcp:"))) words << (n == 1 ? tr("used %1").arg(p.name) : tr("used %1 %2 times").arg(p.name).arg(n));
+        else if (p.key == QLatin1String("search tools")) words << tr("found its tools");
         else words << (n == 1 ? tr("used %1").arg(p.name) : tr("used %1 %2 times").arg(p.name).arg(n));
     }
     QString text = words.join(QStringLiteral(", "));
@@ -1565,7 +1590,7 @@ void ClaudeCodePanel::renderTool(QTextCursor& c, const Entry& e, qreal indent)
     QTextCharFormat name = twisty;
     name.setFontWeight(QFont::DemiBold);
     name.setForeground(col.text);
-    c.insertText(e.text, name);
+    c.insertText(toolName(e.text), name);
     if (!e.extra.isEmpty()) {
         QTextCharFormat subject = twisty;
         subject.setFont(mono);

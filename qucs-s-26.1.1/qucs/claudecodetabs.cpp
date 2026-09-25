@@ -93,6 +93,7 @@ ClaudeCodePanel* ClaudeCodeTabs::addPanel(ClaudeCodePanel* like)
     if (like != nullptr && like->workingDirectory() != like->defaultDirectory())
         panel->setWorkingDirectory(like->workingDirectory());
     if (a_document) panel->setDocumentProvider(a_document);
+    panel->session()->setToolHost(a_host);
 
     connect(panel, &ClaudeCodePanel::newConversationRequested, this, [this] { newConversation(); });
     connect(panel, &ClaudeCodePanel::titleChanged, this, [this, panel] { updateTab(panel); });
@@ -218,6 +219,12 @@ void ClaudeCodeTabs::setDocumentProvider(std::function<QString()> provider)
 {
     a_document = std::move(provider);
     for (ClaudeCodePanel* panel : panels()) panel->setDocumentProvider(a_document);
+}
+
+void ClaudeCodeTabs::setToolHost(qucs_s::claude::ToolHost* host)
+{
+    a_host = host;
+    for (ClaudeCodePanel* panel : panels()) panel->session()->setToolHost(host);
 }
 
 void ClaudeCodeTabs::refreshDocument()

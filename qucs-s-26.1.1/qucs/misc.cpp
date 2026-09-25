@@ -662,8 +662,31 @@ bool misc::checkVersion(QString& Line)
 // Reports an error from loading or saving a document. While the GUI is
 // running it is shown to the user; from the command line and in tests a
 // modal box would wait forever for a click, so it goes to the log instead.
+namespace {
+misc::ErrorCapture* s_errorCapture = nullptr;
+}
+
+misc::ErrorCapture::ErrorCapture() : a_outer(s_errorCapture)
+{
+  s_errorCapture = this;
+}
+
+misc::ErrorCapture::~ErrorCapture()
+{
+  s_errorCapture = a_outer;
+}
+
+bool misc::ErrorCapture::active()
+{
+  return s_errorCapture != nullptr;
+}
+
 void misc::reportError(const QString& text)
 {
+  if (s_errorCapture != nullptr) {
+    s_errorCapture->a_errors << text;
+    return;
+  }
   if (QucsMain != nullptr)
     QMessageBox::critical(nullptr, QObject::tr("Error"), text);
   else

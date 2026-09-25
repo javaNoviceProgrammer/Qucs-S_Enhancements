@@ -2048,6 +2048,10 @@ Component *getComponentFromName(QString &Line, Schematic *p) {
 
     if (!c) {
         /// \todo enable user to load partial schematic, skip unknown components
+        if (misc::ErrorCapture::active()) {
+            misc::reportError(QObject::tr("Unknown component: %1").arg(cstr));
+            return 0;
+        }
         if (QucsMain != nullptr) {
             QMessageBox *msg = new QMessageBox(QMessageBox::Warning, QObject::tr("Warning"),
                                                QObject::tr("Format Error:\nUnknown component!\n"

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <functional>
 #include <iterator>
+#include <type_traits>
 #include <vector>
 
 namespace internal {
@@ -237,9 +238,12 @@ bool is_it_line(P a, P b, P c)
     using internal::get_x;
     using internal::get_y;
 
-    double determinant = (get_x(a) * (get_y(b) - get_y(c))) +
-                         (get_x(b) * (get_y(c) - get_y(a))) +
-                         (get_x(c) * (get_y(a) - get_y(b)));
+    // Wide enough for products of two coordinates: exact for int ones
+    // (points far out - a file may put them 16 million units away - made
+    // the products overflow int).
+    using W = std::conditional_t<std::is_integral_v<std::remove_cvref_t<decltype(get_x(a))>>, long long, double>;
+    const W ax = get_x(a), ay = get_y(a), bx = get_x(b), by = get_y(b), cx = get_x(c), cy = get_y(c);
+    const W determinant = ax * (by - cy) + bx * (cy - ay) + cx * (ay - by);
 
     return determinant == 0;
 }

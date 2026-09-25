@@ -221,6 +221,20 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *needs you* when it waits for an answer, and how many other
   conversations are at work — shows or hides the dock, and leads to a
   conversation that waits behind another.
+  **Claude drives the window**: Qucs-S offers Claude tools of its own
+  (an MCP server inside Qucs-S, served over the same stream as the
+  conversation), so that it can open, show, save and close documents,
+  read the schematic in front (its parts, their pins' places, or its
+  `.sch` text) and change it as you watch - place components, set their
+  properties, move, turn and rename them, draw wires pin to pin, label
+  nets, delete, replace whole sections from text, undo and redo, each
+  change one step of Edit > Undo - take a screenshot of it to see what it
+  did, use any menu action and fill in and answer the dialog it opens,
+  and run a simulation and read its outcome. Tools that only look are
+  used without asking; the first change asks, and *Allow Qucs-S Control*
+  lets the rest of the conversation go on without asking (as do the
+  *Accept Edits*, *Auto* and *Bypass* modes). The system's own file and
+  print dialogs are not driven: Claude opens and saves by file name.
   It needs the `claude` program installed and signed in once in a terminal;
   it is found on `PATH` or where its installers put it, or chosen under
   the dock's *⋯* menu. It runs `claude -p` with stream-json both ways, so
@@ -967,7 +981,20 @@ tools folding into a line and opening, the conversations in tabs (what
 their tabs say, which one the status bar leads to, closing them), and
 the math: found in Markdown but not in code or money, typeset, and
 1,500 random scraps of TeX set without harm (the test runs under the
-address sanitizer too).
+address sanitizer too), and the host's tool server over the stream: the
+handshake, tools/list and tools/call answered, a tool that looks used
+without asking, one that changes asked about, and none after *Allow
+Qucs-S Control*. `qucs/tests/test_qucs_control` uses Claude's tools on
+the application itself: a schematic built part by part (placed, wired
+pin to pin, labelled, changed, turned, moved, deleted, each one step to
+undo), read back as a summary and as text and replaced from text (and
+left alone, without a message box, when the text does not read), a
+picture of it, documents saved, closed and opened, menu actions used,
+Document Settings opened by its action and filled in and answered from
+within its own event loop, and a simulation waited for. The GUI
+monkey's fake claude calls the tools too, some with arguments no one
+would give (coordinates of two billion, junk .sch text, pins that do not
+exist).
 
 `qucs/tests/test_netlist_audit` places every built-in component on a
 schematic and checks that it netlists in every flavour without a crash and
