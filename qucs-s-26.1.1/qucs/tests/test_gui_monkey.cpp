@@ -63,6 +63,7 @@
 #include "qucs.h"
 #include "claudecodepanel.h"
 #include "claudecodetabs.h"
+#include "filebrowser.h"
 #include "schematic.h"
 #include "textdoc.h"
 #include "module.h"
@@ -536,8 +537,10 @@ class TestGuiMonkey : public QObject
                 note(QStringLiteral("zoom %1").arg(chance(0.5) ? "in" : "out"));
                 sch->zoomBy(chance(0.5) ? 8.0 : 0.125);
             }
-        } else if (what < 98) {
+        } else if (what < 97) {
             claudeStep();
+        } else if (what < 99) {
+            fileBrowserStep();
         } else {
             note("escape");
             a_app->slotEscape();
@@ -560,6 +563,91 @@ class TestGuiMonkey : public QObject
     }
 
     // Something done in the Claude Code dock.
+    // The File Browser: its views, filters and options, its folders -
+    // within the walk's copies of the examples - and a schematic or data
+    // display opened from it. Nothing it would hand to the system (a file
+    // Qucs-S does not open itself, the file manager, the trash), and no
+    // Enter, which opens a file where it is the activation key.
+    void fileBrowserStep()
+    {
+        FileBrowser* fb = a_app->fileBrowserPanel();
+        if (fb == nullptr) return;
+        const QString home = QDir::cleanPath(dir.filePath("examples"));
+        const auto within = [&home](const QString& path) { return path == home || path.startsWith(home + QLatin1Char('/')); };
+        if (!within(fb->location())) fb->setLocation(home);
+        const QStringList shown = fb->shownNames();
+        const auto some = [&]() -> QString {
+            return shown.isEmpty() ? QString() : QDir(fb->location()).filePath(pickOf(shown));
+        };
+        switch (pick(9)) {
+        case 0: {
+            const auto view = FileBrowser::View(pick(6));
+            note(QStringLiteral("files: view %1").arg(int(view)));
+            fb->setView(view);
+            break;
+        }
+        case 1: {
+            const QString text = chance(0.5) ? QString() : oddText(a_rng).left(1 + pick(3));
+            note(QStringLiteral("files: filter \"%1\"").arg(text));
+            fb->setFilterText(text);
+            break;
+        }
+        case 2:
+            note("files: hidden, Qucs-S files only");
+            if (chance(0.5)) fb->setShowHidden(!fb->showHidden());
+            else fb->setQucsFilesOnly(!fb->qucsFilesOnly());
+            break;
+        case 3:
+            note("files: back, forward or up");
+            if (chance(0.3)) fb->back();
+            else if (chance(0.5)) fb->forward();
+            else if (fb->location() != home) fb->up();
+            if (!within(fb->location())) fb->setLocation(home);
+            break;
+        case 4: {
+            // A folder entered or opened in place; a schematic or display opened.
+            const QString path = some();
+            const QFileInfo info(path);
+            if (path.isEmpty() || !within(path)) break;
+            if (info.isDir() || info.suffix() == QLatin1String("sch") || info.suffix() == QLatin1String("dpl")) {
+                note(QStringLiteral("files: activate %1").arg(info.fileName()));
+                fb->activate(path);
+            }
+            if (!within(fb->location())) fb->setLocation(home);
+            break;
+        }
+        case 5:
+            note("files: select");
+            fb->selectPath(some());
+            break;
+        case 6: {
+            note("files: keys");
+            QAbstractItemView* view = fb->currentView();
+            view->setFocus();
+            const Qt::Key keys[] = {Qt::Key_Down, Qt::Key_Up, Qt::Key_Left, Qt::Key_Right, Qt::Key_Home, Qt::Key_End,
+                                    Qt::Key_PageDown, Qt::Key_Backspace, Qt::Key_A};
+            for (int i = 0; i < 1 + pick(4); ++i) QTest::keyClick(view, keys[pick(int(std::size(keys)))]);
+            if (!within(fb->location())) fb->setLocation(home);
+            break;
+        }
+        case 7: {
+            note("files: new folder");
+            if (!fb->createFolder(fb->location()).isEmpty()) a_app->slotEscape();
+            break;
+        }
+        default: {
+            // Its context menu, built; only copying a path is done.
+            const QString path = chance(0.8) ? some() : QString();
+            note(QStringLiteral("files: menu of %1").arg(QFileInfo(path).fileName()));
+            QMenu* menu = fb->contextMenuFor(path);
+            for (QAction* a : menu->actions())
+                if (a->text() == QLatin1String("Copy Path")) a->trigger();
+            delete menu;
+            break;
+        }
+        }
+    }
+
     void claudeStep()
     {
         ClaudeCodeTabs* tabs = a_app->claudeCode();

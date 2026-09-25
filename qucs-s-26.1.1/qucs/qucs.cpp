@@ -95,6 +95,7 @@
 #include "processconsole.h"
 #include "claudecodepanel.h"
 #include "claudecodetabs.h"
+#include "filebrowser.h"
 #include "qucscontrol.h"
 #include "dialogs/tuner.h"
 #include "octave_window.h"
@@ -670,10 +671,28 @@ void QucsApp::initView()
   slotSetCompView(0);
 
   TabView->addTab (LibGroup, tr("Libraries"));
-  TabView->setTabToolTip (TabView->indexOf (CompGroup), tr ("system and user component libraries"));
+  TabView->setTabToolTip (TabView->indexOf (LibGroup), tr ("system and user component libraries"));
 
   connect(libTreeWidget, SIGNAL(itemPressed (QTreeWidgetItem*, int)),
            SLOT(slotSelectLibComponent (QTreeWidgetItem*)));
+
+  // ----------------------------------------------------------
+  // "File Browser" Tab of the left QTabWidget: the file system from the
+  // workspace, in the view the user chooses; a file opens as it does from
+  // the Content tab.
+  fileBrowser = new FileBrowser;
+  fileBrowser->setHomePath(QucsSettings.qucsWorkspaceDir.absolutePath());
+  fileBrowser->setRecentFiles(QucsSettings.RecentDocs);
+  fileBrowser->setDocumentProvider([this] {
+    QucsDoc *doc = DocumentTab != nullptr && DocumentTab->count() > 0 ? getDoc() : nullptr;
+    return doc != nullptr ? doc->getDocName() : QString();
+  });
+  TabView->addTab(fileBrowser, tr("File Browser"));
+  TabView->setTabToolTip(TabView->indexOf(fileBrowser), tr("files and folders, in the view you choose"));
+  connect(fileBrowser, &FileBrowser::openRequested, this, [this](const QString &path) {
+    editText->setHidden(true); // disable text edit of component property
+    openFileFromProjectView(QFileInfo(path), QString());
+  });
 
   // ----------------------------------------------------------
   // put the tab widget in the dock
@@ -1823,6 +1842,7 @@ void QucsApp::openProject(const QString& PathGiven)
   useProjectScratch(true);
 
   Content->setProjPath(QucsSettings.QucsWorkDir.absolutePath());
+  fileBrowser->setProjectPath(QucsSettings.QucsWorkDir.absolutePath());
 
   TabView->setCurrentIndex(1);   // switch to "Content"-Tab
 
@@ -1896,6 +1916,7 @@ void QucsApp::slotMenuProjClose()
   useProjectScratch(false);
 
   Content->setProjPath("");
+  fileBrowser->setProjectPath(QString());
 
   TabView->setCurrentIndex(0);   // switch to "Projects"-Tab
   ProjName = "";
@@ -2857,6 +2878,7 @@ void QucsApp::slotApplSettings()
   // The workspace may have moved: Claude goes along, unless it works
   // in a folder of the user's choosing.
   claudeTabs->setDefaultDirectory(QucsSettings.qucsWorkspaceDir.absolutePath());
+  fileBrowser->setHomePath(QucsSettings.qucsWorkspaceDir.absolutePath());
 }
 
 // --------------------------------------------------------------

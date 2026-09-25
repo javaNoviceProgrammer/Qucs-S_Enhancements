@@ -48,6 +48,7 @@ class SimulationRun;
 class SimulationConsole;
 class ProcessConsole;
 class ClaudeCodeTabs;
+class FileBrowser;
 class StatusPanel;
 
 class QLabel;
@@ -198,6 +199,7 @@ public:
   /// The Claude Code dock (claudecodetabs.h): conversations with Claude
   /// Code, a tab each, in the workspace folder unless another is chosen.
   ClaudeCodeTabs *claudeCode() const { return claudeTabs; }
+  FileBrowser *fileBrowserPanel() const { return fileBrowser; }
   QDockWidget *claudeDockWidget() const { return claudeDock; }
   /// Shows the Claude Code dock, the prompt ready; hides it when it shows.
   void toggleClaudeCode();
@@ -543,6 +545,7 @@ private:
   ProcessConsole *pythonShell;
   QDockWidget *claudeDock = nullptr;
   ClaudeCodeTabs *claudeTabs = nullptr;
+  FileBrowser *fileBrowser = nullptr;   // the left dock's File Browser tab
 
   QListView *Projects;
   ProjectView *Content;

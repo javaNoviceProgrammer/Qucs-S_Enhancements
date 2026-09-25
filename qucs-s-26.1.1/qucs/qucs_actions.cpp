@@ -65,6 +65,7 @@
 #include "portsymbol.h"
 #include "projectView.h"
 #include "qucs.h"
+#include "filebrowser.h"
 #include "statusbar.h"
 #include "schematic.h"
 #include "spicecomponents/sp_nutmeg.h"
@@ -1733,6 +1734,7 @@ void QucsApp::slotUpdateRecentFiles() {
       fileRecentAction[i]->setVisible(false);
     }
   }
+  if (fileBrowser != nullptr) fileBrowser->setRecentFiles(QucsSettings.RecentDocs);
 }
 
 void QucsApp::slotClearRecentFiles() {
