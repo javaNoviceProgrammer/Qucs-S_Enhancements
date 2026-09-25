@@ -36,6 +36,7 @@
 #include "qt3_compat/q3scrollview.h"
 #include <QVector>
 #include <algorithm>
+#include <unordered_map>
 #include <unordered_set>
 #include <QStringList>
 
@@ -59,6 +60,7 @@ class Node;
 class Painting;
 class Wire;
 class WireLabel;
+namespace qucs_s { class InsertionIndex; }
 
 // digital signal data
 struct DigSignal {
@@ -340,6 +342,12 @@ private:
   std::list<Diagram*> a_SymbolDiags;
   std::list<Component*> a_SymbolComps;
 
+  // Set while an IndexedInsertion is alive
+  qucs_s::InsertionIndex* a_insertionIndex = nullptr;
+  // Set while a BulkNaming is alive: for each name prefix asked for, the
+  // number insertComponent() gives the next component named with it
+  std::unordered_map<QString, int>* a_nextNumbers = nullptr;
+
   QList<PostedPaintEvent> a_PostedPaintEvents;
 
   bool a_symbolMode;  // true if in symbol painting mode
@@ -583,6 +591,23 @@ public:
   Node* provideNode(const QPoint& p) { return provideNode(p.x(), p.y()); }
   Node* selectedNode(int, int);
 
+  // While one is alive, findNode() and provideNode() look nodes and wires up
+  // by place instead of going through all of them: for the loader, which
+  // inserts every element of a document and moves or deletes none, and the
+  // healer's run of node replacements. (Without it, loading took time
+  // quadratic in the size of the document.) Nothing may move or delete a
+  // node or a wire meanwhile.
+  class IndexedInsertion {
+  public:
+    explicit IndexedInsertion(Schematic* doc);
+    ~IndexedInsertion();
+    IndexedInsertion(const IndexedInsertion&) = delete;
+    IndexedInsertion& operator=(const IndexedInsertion&) = delete;
+  private:
+    Schematic* m_doc;
+    bool m_owner;
+  };
+
   qucs_s::wire::Planner a_wirePlanner;
   std::pair<bool,Node*> connectWithWire(const QPoint& a, const QPoint& b) noexcept;
   std::pair<bool,Node*> connectWithWire(const QPoint& a, const QPoint& b, bool optimize, qucs_s::wire::Planner::PlanType planType) noexcept;
@@ -602,8 +627,9 @@ public:
   Wire* selectedWire(int, int);
   Wire* splitWire(Wire*, Node*);
   void  deleteWire(Wire*, bool remove_orphans=true);
+  void  deleteWires(const std::vector<Wire*>&, bool remove_orphans=true);
   WireDisconnectResult disconnectWire(Wire*, bool remove_orphans=true, bool keepNodeLabel=false);
-  void  decoupleWire(Wire*, bool keepNodeLabel=false);
+  void  decoupleWire(Wire*, bool keepNodeLabel=false, bool remove_orphans=true);
 
   Marker* setMarker(int, int);
   void    markerLeftRight(bool, const std::vector<Marker*>& markers);
@@ -622,14 +648,32 @@ public:
   void       insertRawComponent(Component*, bool noOptimize=true);
   void       recreateComponent(Component*);
   void       insertComponent(Component*);
+
+  // While one is alive, insertComponent() numbers the name of a new
+  // component from a table of the numbers in use for each name prefix, not
+  // by going through every component (and every name to a number) for each:
+  // for pasting many components into a large schematic. Nothing else may
+  // rename components meanwhile.
+  class BulkNaming {
+  public:
+    explicit BulkNaming(Schematic* doc);
+    ~BulkNaming();
+    BulkNaming(const BulkNaming&) = delete;
+    BulkNaming& operator=(const BulkNaming&) = delete;
+  private:
+    Schematic* m_doc;
+    bool m_owner;
+  };
+
   void       activateCompsWithinRect(int, int, int, int);
   bool       activateSpecifiedComponent(int, int);
   bool       activateSelectedComponents();
   Component* selectCompText(int, int, int&, int&) const;
   Component* searchSelSubcircuit();
   void       deleteComp(Component*, bool remove_orphans=true);
+  void       deleteComps(const std::vector<Component*>&);
   void       detachComp(Component*, bool remove_orphans=true, bool keepNodeLabel=false);
-  void       decoupleComp(Component*, bool keepNodeLabel=false);
+  void       decoupleComp(Component*, bool keepNodeLabel=false, bool remove_orphans=true);
   Component* getComponentByName(const QString& compname) const;
   CompDisconnectResult disconnectComp(Component*, bool remove_orphans=true, bool keepNodeLabel=false);
 

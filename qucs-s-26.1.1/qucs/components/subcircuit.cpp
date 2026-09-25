@@ -77,16 +77,7 @@ void Subcircuit::createSymbol() {
       tx = x1 + 4;
     if (ty == INT_MIN)
       ty = y2 + 4;
-    // remove unused ports
-    QMutableListIterator<Port *> ip(Ports);
-    Port *pp;
-    while (ip.hasNext()) {
-      pp = ip.next();
-      if (!pp->avail) {
-        pp = ip.peekNext();
-        ip.remove();
-      }
-    }
+    removeUnusedPorts();
   } else {
     No = Schematic::testFile(FileName);
     if (No < 0)

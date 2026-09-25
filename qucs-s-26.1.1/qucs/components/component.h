@@ -130,6 +130,11 @@ protected:
   QString form_spice_param_list(QStringList& ignore_list, QStringList& convert_list);
 
   int  analyseLine(const QString&, int);
+  // The highest pin number a symbol may give (".PortSym x y number"): each
+  // number up to it makes a pin, so a number in the millions made millions
+  static constexpr int MaxPinNumber = 100000;
+  // Takes the pins a symbol line did not give out of Ports, and frees them
+  void removeUnusedPorts();
   bool getIntegers(const QString&, int *i1=0, int *i2=0, int *i3=0,
                    int *i4=0, int *i5=0, int *i6=0);
   bool getPen(const QString&, QPen&, int);

@@ -42,11 +42,14 @@
 #include "components/sparamfile.h"
 #include "module.h"
 #include "misc.h"
+#include "conductor_index.h"
 #include "extsimkernels/abstractspicekernel.h"
 #include "extsimkernels/s2spice.h"
 #include "vamodule.h"
 #include <QJsonDocument>
 #include <QJsonObject>
+
+#include <optional>
 
 
 // Here the subcircuits, SPICE components etc are collected. It must be
@@ -853,6 +856,8 @@ bool Schematic::loadComponents(QTextStream *stream, std::list<Component*> *List)
 {
   QString Line, cstr;
   Component *c;
+  std::optional<IndexedInsertion> indexed;
+  if (List == nullptr) indexed.emplace(this);
   while(!stream->atEnd()) {
     Line = stream->readLine();
     if(Line.startsWith("</")) return true;
@@ -896,6 +901,9 @@ void Schematic::simpleInsertWire(Wire *pw)
   pw->Port2 = pn;
 
   a_DocWires.push_back(pw);
+  if (a_insertionIndex != nullptr) {
+    a_insertionIndex->add(pw);
+  }
 }
 
 // -------------------------------------------------------------
@@ -903,6 +911,8 @@ bool Schematic::loadWires(QTextStream *stream, std::list<Element*> *List)
 {
   Wire *w;
   QString Line;
+  std::optional<IndexedInsertion> indexed;
+  if (List == nullptr) indexed.emplace(this);
   while(!stream->atEnd()) {
     Line = stream->readLine();
     if(Line.startsWith("</")) return true;

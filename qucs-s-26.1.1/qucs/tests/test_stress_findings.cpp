@@ -373,6 +373,35 @@ private slots:
         QVERIFY(double(size.width()) * size.height() <= qucs_s::graphicsexport::MaxImagePixels * 1.01);
         QVERIFY(!qucs_s::graphicsexport::image(&sch, options).isNull());
     }
+
+    // A subcircuit port numbered 2147483647 (typed into a Port's number and
+    // saved): its symbol made a pin for every number up to it - sixteen
+    // million after the coordinate clamp - and took the unused ones out one
+    // at a time, which never ended. A number below 1 read Ports.at(-1). Such
+    // a symbol is refused now, and the instance gets the standard symbol
+    // with a pin for each port.
+    void aSubcircuitPinNumberedInTheBillionsLoads()
+    {
+        for (const QString number : {QStringLiteral("2147483647"), QStringLiteral("-1"), QStringLiteral("0")}) {
+            write("pins_sub.sch", QStringLiteral(
+                "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <View=0,0,800,600,1,0,0>\n"
+                "  <Grid=10,10,1>\n</Properties>\n<Symbol>\n  <.PortSym -30 0 1 0 A>\n"
+                "  <.PortSym 30 0 2 180 B>\n  <.PortSym 0 30 %1 0 C>\n</Symbol>\n<Components>\n"
+                "  <Port A 1 100 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+                "  <Port B 1 200 100 -23 12 0 0 \"2\" 1 \"analog\" 0>\n"
+                "  <Port C 1 300 100 -23 12 0 0 \"%1\" 1 \"analog\" 0>\n"
+                "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n").arg(number));
+            write("pins_top.sch", schematic(sub("SUB1", "pins_sub.sch")));
+
+            QElapsedTimer t;
+            t.start();
+            Schematic sch(nullptr, dir.filePath("pins_top.sch"));
+            QVERIFY(sch.loadDocument());
+            QVERIFY2(t.elapsed() < 20000, qPrintable(number));
+            QCOMPARE(sch.a_DocComps.size(), std::size_t(1));
+            QCOMPARE(sch.a_DocComps.front()->Ports.size(), qsizetype(3));
+        }
+    }
 };
 
 QTEST_MAIN(TestStressFindings)
