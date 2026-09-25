@@ -265,6 +265,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Settings* has the interval (default 3 s) and a checkbox to turn it off;
   *Refresh* on the right-click menu of the panel's empty area does it on
   the spot.
+- **File Browser** (a tab of the left panel): the file system, from the
+  workspace, in the view you choose — *Tree* (folders open in place),
+  *List* (a double-click enters a folder), *Icons*, *Details* (size, kind
+  and date, sorted by any), *Columns* (a column for each folder and a
+  preview of the file selected, as Finder's) or *Recent Documents*. Every
+  file has an icon for its kind — schematics, symbols, data displays,
+  datasets, netlists and libraries, Verilog-A and HDL sources, compiled
+  models, S-parameters, scripts, text, images, archives — its tag and
+  colour on a page, drawn for the light or dark theme, and folders come
+  first, in natural order (R2 before R10). Back, forward, up, and places
+  (the workspace, the open project, the examples, home, the volumes); the
+  path as buttons, or typed (Ctrl+Shift+G); a filter by name, and *Show
+  Only Qucs-S Files*. A double-click opens a file as the Content panel
+  does; its menu opens it with the system, shows it in the file manager,
+  copies its path, renames it in place, makes a folder or moves it to the
+  trash. The folder, the view and the options are kept for the next start.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

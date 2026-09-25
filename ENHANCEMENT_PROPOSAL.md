@@ -1077,6 +1077,40 @@ existing demand.
   moved it off the baseline. With `AlignMiddle` and padding computed
   from the text's x-height, the math's baseline is the line's. The
   system prompt tells Claude that math between dollars is typeset.
+- *Done:* **File Browser panel** (`qucs/filebrowser.*`). A tab of the left
+  dock (after Libraries, so the tabs' indices the code switches to stay)
+  over one QFileSystemModel through a SortProxy - folders first whatever
+  the order (Qt's model mixes them on macOS), names by QCollator's numeric
+  mode, size, kind and date for the Details columns; the name filter on
+  files and, in the flat views, on folders too, never on the folders on
+  the way to the one shown (the views' roots); "only Qucs-S files" by
+  kind - and six views on a QStackedWidget: a QTreeView (folders opened
+  in place by activate(), not by Qt's double-click, so Enter does too), a
+  list, icons, a Details tree with its header, a QColumnView with a
+  preview of the file selected, and the recent documents (QucsSettings'
+  list, through slotUpdateRecentFiles()). The icons are a
+  QAbstractFileIconProvider whose QIconEngines draw at the size and
+  pixel ratio asked for, cached by kind, size and theme: a page with its
+  fold, the kind's tag on a band of its colour and a drawing of what it
+  holds (a resistor for a schematic, an amplifier for a symbol, axes and
+  a curve for a display or S-parameters, a table for a dataset, < / >
+  for sources), a colour band alone below 24 px; folders, a project's
+  with Qucs-S's badge. The provider is thread-safe (the model asks it
+  from its gatherer thread) and deleted after the model. QColumnView
+  given a folder still loading makes its first column the preview and
+  keeps it when the entries come: the browser gives it the folder again
+  on directoryLoaded(). The main window's shortcuts on the arrows (a
+  diagram's marker) and, on macOS, Backspace (Delete) took those keys
+  from the lists: the views accept the ShortcutOverride of the keys they
+  handle. On macOS the main window's style sheet (QToolButton padding 0)
+  drew a menu's arrow over a tool button's icon and shrank a split
+  button's: the browser styles its own. Places: workspace, project (set when one opens), examples,
+  home, desktop, documents, downloads, volumes. A double-click on a file
+  goes to QucsApp::openFileFromProjectView(). test_file_browser covers
+  the kinds and icons, listing, navigation, every view, filters, the
+  recent list, menus, the keys and the application's tab; the GUI monkey
+  switches views, filters, navigates within its copies of the examples
+  and opens schematics from it.
 - *Done:* **A Claude Code conversation exported** (`qucs/claudecodepanel.*`).
   *⋯ → Export Conversation → PDF / Markdown / Plain Text*, from the
   panel's entries rather than from what the dock shows (where the tools
