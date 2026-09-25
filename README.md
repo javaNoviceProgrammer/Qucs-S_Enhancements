@@ -12,9 +12,9 @@ with Claude Code, reviewed and driven by a human.
 
 Ready-made bundles for macOS, Linux and Windows are on the
 [Releases page](https://github.com/javaNoviceProgrammer/Qucs-S_Enhancements/releases).
-This build calls itself **26.1.2** (`qucs-s-26.1.1/VERSION`; the source
+This build calls itself **26.1.3** (`qucs-s-26.1.1/VERSION`; the source
 directory keeps the name of the upstream version it started from). Documents
-it saves say `<Qucs Schematic 26.1.2>`; upstream 26.1.1 asks before opening a
+it saves say `<Qucs Schematic 26.1.3>`; upstream 26.1.1 asks before opening a
 file from a newer version unless *Load documents from future versions* is on.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how the upstream code base is put together
@@ -1035,7 +1035,7 @@ fixed in WS1.1; it is blocking.
 Nothing either workflow builds goes into git: CI keeps logs as short-lived
 artifacts, and the Release workflow uploads the bundles as release assets
 only. A manual run publishes to the rolling `continuous` pre-release
-(replaced each time); a tag push (`git tag -a v26.1.2 && git push origin v26.1.2`)
+(replaced each time); a tag push (`git tag -a v26.1.3 && git push origin v26.1.3`)
 publishes a permanent release named after the tag, with the annotated tag's
 message as its notes and the generated change list below it. All platforms, the ARM
 ones included, are built by default; deselect any in the dispatch form, or
@@ -1055,7 +1055,7 @@ directories (checksums verified; needs the GitHub CLI):
 
 ```bash
 scripts/fetch-binaries.sh              # latest "continuous" pre-release
-scripts/fetch-binaries.sh v26.1.2      # a tagged release
+scripts/fetch-binaries.sh v26.1.3      # a tagged release
 scripts/fetch-binaries.sh --run 12345  # artifacts of one workflow run
 ```
 
