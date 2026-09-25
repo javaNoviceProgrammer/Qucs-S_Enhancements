@@ -743,6 +743,9 @@ void QucsApp::initView()
   claudeDock->setObjectName(QStringLiteral("ClaudeCodeDock"));
   claudeDock->setWidget(claudeTabs);
   addDockWidget(Qt::RightDockWidgetArea, claudeDock);
+  // It goes down to the status bar: the docks at the bottom (messages,
+  // simulation, terminal) end where it begins, as they do at the left.
+  setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
   claudeDock->hide();
   // Claude drives this window with its tools (qucscontrol.h).
   claudeTabs->setToolHost(new QucsControl(this));
