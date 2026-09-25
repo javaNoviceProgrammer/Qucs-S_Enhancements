@@ -41,12 +41,14 @@ public:
   // Remove element from the node's connections.
   void disconnect(Wire* wire) { m_wires.remove(wire); }
   void disconnect(Component* comp) { m_components.remove(comp); }
+  // Remove every wire pred is true for, in one pass over the connections
+  template <typename Pred> void disconnectWiresIf(Pred pred) { m_wires.remove_if(pred); }
 
   // Tells if an element is among node's connections.
   bool is_connected(Wire* wire) const { return std::ranges::find(m_wires, wire) != m_wires.end(); }
   bool is_connected(Component* comp) const { return std::ranges::find(m_components, comp) != m_components.end(); }
 
-  bool isOverlapping(int, int) const;
+  bool isOverlapping(int otherX, int otherY) const { return otherX == cx && otherY == cy; }
   bool isOverlapping(const Node*) const;
 
   std::size_t conn_count() const { return m_wires.size() + m_components.size(); }

@@ -18,6 +18,7 @@
 #include <optional>
 #include <stdlib.h>
 
+#include "conductor_index.h"
 #include "geometry/multi_point.h"
 #include "healer.h"
 #include "portsymbol.h"
@@ -103,9 +104,10 @@ static bool shouldBeSelected(const QRect& elementBoundingRect, const QRect& sele
 // easier we can check invariants after changing something. In correct schematic
 // all of them must hold.
 //
-// Code below is not very efficient or beatiful and it's not intended to be used
-// "in production". Its main purpose is to help debugging and changing other
-// schematic logic.
+// QUCS_ASSERT evaluates them in release builds too (it logs instead of
+// aborting), after every edit, so none may cost more than about N log N: the
+// all-pairs checks they once were took a third of every edit's time in a
+// large schematic.
 namespace invariants {
 
 bool noOrphanNodes(const std::list<Node*>* nodes)
@@ -119,22 +121,21 @@ bool noOrphanNodes(const std::list<Node*>* nodes)
 bool noSamePlaceNodes(const std::list<Node*>* nodes)
 {
     bool is_ok = true;
-    for (auto* n1 : *nodes) {
-        for (auto* n2 : *nodes) {
-            if (n1 == n2) continue;
-
-            if (n1->center() == n2->center()) {
-                qCritical() << "Two different nodes at the same location!"
-                            << "node 1:"
-                            << n1
-                            << "at" << n1->center()
-                            << "with" << n1->conn_count() << "connections"
-                            << "node 2:"
-                            << n2
-                            << "at" << n2->center()
-                            << "with" << n2->conn_count() << "connections";
-                is_ok = false;
-            }
+    std::unordered_map<QPoint, Node*, qucs_s::PointHash> first_at;
+    for (auto* n2 : *nodes) {
+        const auto [it, first] = first_at.try_emplace(n2->center(), n2);
+        if (!first) {
+            auto* n1 = it->second;
+            qCritical() << "Two different nodes at the same location!"
+                        << "node 1:"
+                        << n1
+                        << "at" << n1->center()
+                        << "with" << n1->conn_count() << "connections"
+                        << "node 2:"
+                        << n2
+                        << "at" << n2->center()
+                        << "with" << n2->conn_count() << "connections";
+            is_ok = false;
         }
     }
     return is_ok;
@@ -146,17 +147,16 @@ bool noSamePlaceNodes(const std::list<Node*>* nodes)
 bool noNodesOnWires(const std::list<Node*>* nodes, const std::list<Wire*>* wires)
 {
     bool is_ok = true;
+    const qucs_s::NodesByPlace nodes_by_place{*nodes};
     for (auto* w : *wires) {
-        for (auto* n : *nodes) {
-            if (qucs_s::geom::is_between(n, w->Port1, w->Port2)) {
-                qCritical() << "A node lies on a wire withou splitting it!"
-                            << "node:" << n << "at" << n->center()
-                            << "wire:" << w
-                            << "from" << w->Port1->center()
-                            << "to" << w->Port2->center();
+        for (auto* n : nodes_by_place.between(w->Port1->center(), w->Port2->center())) {
+            qCritical() << "A node lies on a wire withou splitting it!"
+                        << "node:" << n << "at" << n->center()
+                        << "wire:" << w
+                        << "from" << w->Port1->center()
+                        << "to" << w->Port2->center();
 
-                is_ok = false;
-            }
+            is_ok = false;
         }
     }
     return is_ok;
@@ -338,12 +338,19 @@ Node* Schematic::createNode(int x, int y) const
 {
     Node* node = new Node(x, y);
     a_Nodes->push_back(node);
+    if (a_insertionIndex != nullptr) {
+        a_insertionIndex->add(node);
+    }
     return node;
 }
 
 // Returns Node* at (x,y), else nullptr
 Node* Schematic::findNode(int x, int y) const
 {
+    if (a_insertionIndex != nullptr) {
+        return a_insertionIndex->nodeAt({x, y});
+    }
+
     for (auto* node : *a_Nodes) {
         if (node->isOverlapping(x, y)) {
             return node;
@@ -367,16 +374,58 @@ Node* Schematic::provideNode(int x, int y)
     // Check if the new node lies upon an existing wire - not one that lost
     // an end in the middle of healing (GenericPort::replaceNodeWith()),
     // which the healer deletes afterwards and which has no end to split to
-    for (auto* wire : *a_Wires)
-    {
-        if (wire->Port1 == nullptr || wire->Port2 == nullptr) continue;
+    const auto split_if_on = [this, new_node](Wire* wire) {
+        if (wire->Port1 == nullptr || wire->Port2 == nullptr) return;
         if (qucs_s::geom::is_between(new_node, wire->P1(), wire->P2())) {
             // split the wire into two wires
-            splitWire(wire, new_node);
+            Wire* piece = splitWire(wire, new_node);
+            if (a_insertionIndex != nullptr) {
+                a_insertionIndex->add(piece);
+            }
+        }
+    };
+
+    if (a_insertionIndex != nullptr) {
+        std::ranges::for_each(a_insertionIndex->wiresNear(new_node->center()), split_if_on);
+    } else {
+        for (auto* wire : *a_Wires) {
+            split_if_on(wire);
         }
     }
 
     return new_node;
+}
+
+Schematic::IndexedInsertion::IndexedInsertion(Schematic* doc)
+    : m_doc{doc}, m_owner{doc->a_insertionIndex == nullptr}
+{
+    if (m_owner) {
+        doc->a_insertionIndex = new qucs_s::InsertionIndex{*doc->a_Nodes, *doc->a_Wires};
+    }
+}
+
+Schematic::IndexedInsertion::~IndexedInsertion()
+{
+    if (m_owner) {
+        delete m_doc->a_insertionIndex;
+        m_doc->a_insertionIndex = nullptr;
+    }
+}
+
+Schematic::BulkNaming::BulkNaming(Schematic* doc)
+    : m_doc{doc}, m_owner{doc->a_nextNumbers == nullptr}
+{
+    if (m_owner) {
+        doc->a_nextNumbers = new std::unordered_map<QString, int>;
+    }
+}
+
+Schematic::BulkNaming::~BulkNaming()
+{
+    if (m_owner) {
+        delete m_doc->a_nextNumbers;
+        m_doc->a_nextNumbers = nullptr;
+    }
 }
 
 namespace internal {
@@ -406,34 +455,28 @@ bool is_redundant(const Node* node) {
     return qucs_s::geom::is_between(node, node_a, node_b);
 }
 
-template<typename NodeContainer>
-Node* find_redundant_node(NodeContainer* nodes) {
-    for (auto* n : *nodes) {
-      if (is_redundant(n)) return n;
-    }
-
-    return nullptr;
-}
-
+// The groups of nodes that share a place, in the order of their first node.
+// A group lists its nodes in list order but for the first, which comes last:
+// the second receives the others when they are merged.
 template<typename NodeContainer>
 std::vector<std::vector<Node*>> sameloc_nodes(NodeContainer& nodes) {
-    std::set<Node*> processed;
+    std::unordered_map<QPoint, std::size_t, qucs_s::PointHash> group_at;
+    std::vector<std::vector<Node*>> groups;
+
+    for (auto* n : nodes) {
+        const auto [it, first] = group_at.try_emplace(n->center(), groups.size());
+        if (first) {
+            groups.push_back({n});
+        } else {
+            groups[it->second].push_back(n);
+        }
+    }
+
     std::vector<std::vector<Node*>> ret;
-
-    for (auto* n1 : nodes) {
-        if (processed.contains(n1)) continue;
-
-        std::vector<Node*> s;
-        for (auto* n2 : nodes) {
-            if (n1->isOverlapping(n2)) {
-                s.push_back(n2);
-                processed.insert(n2);
-            }
-        }
-        if (!s.empty()) {
-            s.push_back(n1);
-            ret.push_back(s);
-        }
+    for (auto& group : groups) {
+        if (group.size() < 2) continue;
+        std::ranges::rotate(group, group.begin() + 1);
+        ret.push_back(std::move(group));
     }
     return ret;
 }
@@ -443,20 +486,27 @@ std::vector<std::vector<Node*>> sameloc_nodes(NodeContainer& nodes) {
 // remove the donor nodes from both @nodes and @globalList
 template<typename NodeContainer>
 bool mergeOverlappingNodes(NodeContainer& nodes, NodeContainer& globalList) {
-    bool anyChanges = false;
-    for (auto nodeGroup : sameloc_nodes(nodes)) {
+    std::vector<Node*> donors;
+    for (const auto& nodeGroup : sameloc_nodes(nodes)) {
         auto recipient = nodeGroup.front();
         for (auto donor = (nodeGroup.begin() + 1);
         donor != nodeGroup.end(); donor++) {
             recipient->merge(*donor);
-            nodes.remove(*donor);
-            // NOTE: doesn't do anything if nodes == globalList
-            globalList.remove(*donor);
-            delete *donor;
-            anyChanges = true;
+            donors.push_back(*donor);
         }
     }
-    return anyChanges;
+    if (donors.empty()) return false;
+
+    // Out of the lists in one go each, not one search of the list per donor
+    const std::unordered_set<Node*> doomed(donors.begin(), donors.end());
+    const auto is_donor = [&doomed](Node* n) { return doomed.contains(n); };
+    nodes.remove_if(is_donor);
+    // NOTE: doesn't do anything if nodes == globalList
+    globalList.remove_if(is_donor);
+    for (auto* donor : donors) {
+        delete donor;
+    }
+    return true;
 }
 
 // Override: Used for checking and removing from the same container, @nodes
@@ -523,19 +573,43 @@ Wire* merge_wires_at_node(Node* node) {
 bool Schematic::optimizeWires() {
     bool thereWereChanges = false;
 
-    while (auto* redundant_node = internal::find_redundant_node(a_Nodes)) {
-        auto* obsolete_wire = internal::merge_wires_at_node(redundant_node);
+    // Merging the wires at a node leaves the other nodes as redundant as they
+    // were, so one pass in list order merges at the same nodes, in the same
+    // order, as looking for the first redundant node again after each merge
+    // did (in time quadratic in the number of nodes). Another pass only in
+    // case the tolerance of a diagonal wire makes a difference.
+    for (bool merged = true; merged;) {
+        merged = false;
+        std::vector<Wire*> obsolete_wires;
+        std::vector<Node*> redundant_nodes;
 
-        QUCS_ASSERT(obsolete_wire->Port1 == nullptr);
-        QUCS_ASSERT(obsolete_wire->Port2 == nullptr);
-        QUCS_ASSERT(redundant_node->conn_count() == 0);
+        for (auto* redundant_node : *a_Nodes) {
+            if (!internal::is_redundant(redundant_node)) continue;
 
-        a_Wires->remove(obsolete_wire);
-        delete obsolete_wire;
+            auto* obsolete_wire = internal::merge_wires_at_node(redundant_node);
 
-        a_Nodes->remove(redundant_node);
-        delete redundant_node;
+            QUCS_ASSERT(obsolete_wire->Port1 == nullptr);
+            QUCS_ASSERT(obsolete_wire->Port2 == nullptr);
+            QUCS_ASSERT(redundant_node->conn_count() == 0);
 
+            obsolete_wires.push_back(obsolete_wire);
+            redundant_nodes.push_back(redundant_node);
+        }
+
+        if (redundant_nodes.empty()) break;
+
+        const std::unordered_set<Wire*> doomed_wires(obsolete_wires.begin(), obsolete_wires.end());
+        const std::unordered_set<Node*> doomed_nodes(redundant_nodes.begin(), redundant_nodes.end());
+        a_Wires->remove_if([&doomed_wires](Wire* w) { return doomed_wires.contains(w); });
+        a_Nodes->remove_if([&doomed_nodes](Node* n) { return doomed_nodes.contains(n); });
+        for (auto* w : obsolete_wires) {
+            delete w;
+        }
+        for (auto* n : redundant_nodes) {
+            delete n;
+        }
+
+        merged = true;
         thereWereChanges = true;
     }
 
@@ -643,6 +717,47 @@ void Schematic::deleteWire(Wire *w, bool remove_orphans)
     delete w;
 }
 
+// Deletes the wires, and the nodes left with nothing connected when
+// remove_orphans is set, as deleteWire() does for each - with one pass over
+// the document's lists for all of them rather than one per wire, which made
+// deleting many wires take time quadratic in the size of the document.
+void Schematic::deleteWires(const std::vector<Wire*>& wires, bool remove_orphans)
+{
+    std::vector<Wire*> doomed_wires;
+    std::unordered_set<Wire*> doomed;
+    std::vector<Node*> ends;
+    std::unordered_set<Node*> known_ends;
+    for (auto* w : wires) {
+        if (!doomed.insert(w).second) continue;
+        doomed_wires.push_back(w);
+        // (A wire of no length may have both ends on one node.)
+        for (Node* n : {w->Port1, w->Port2}) {
+            if (n != nullptr && known_ends.insert(n).second) {
+                ends.push_back(n);
+            }
+        }
+    }
+    if (doomed_wires.empty()) return;
+
+    // Each end lets go of all its doomed wires at once
+    const auto is_doomed = [&doomed](Wire* w) { return doomed.contains(w); };
+    std::vector<Node*> orphans;
+    for (auto* n : ends) {
+        n->disconnectWiresIf(is_doomed);
+        if (remove_orphans && n->conn_count() == 0) {
+            orphans.push_back(n);
+        }
+    }
+
+    a_Wires->remove_if(is_doomed);
+    if (!orphans.empty()) {
+        const std::unordered_set<Node*> orphaned(orphans.begin(), orphans.end());
+        a_Nodes->remove_if([&orphaned](Node* n) { return orphaned.contains(n); });
+    }
+    for (auto* n : orphans) delete n;
+    for (auto* w : doomed_wires) delete w;
+}
+
 /** Disconnects a wire from the schematic by disconnecting both its port nodes.
  *
  * @param wire The wire to disconnect.
@@ -664,17 +779,18 @@ Schematic::WireDisconnectResult Schematic::disconnectWire(Wire* wire, bool remov
  *
  * @param wire The wire to decouple
  * @param keepNodeLabel If true, nodes with labels are preserved. Default: false.
+ * @param remove_orphans If true, nodes left with nothing connected are removed from a_Nodes. Default: true
  *
  * @note: Caller is responsible for reconnecting the wire, or deallocating it. 
  */
-void Schematic::decoupleWire(Wire* wire, bool keepNodeLabel)
+void Schematic::decoupleWire(Wire* wire, bool keepNodeLabel, bool remove_orphans)
 {
     // Store coordinates for ports
     QPoint P1 = wire->P1();
     QPoint P2 = wire->P2();
 
     // Disconnect wire ports
-    auto wireStatus = disconnectWire(wire, /*remove_orphans=*/true, keepNodeLabel);
+    auto wireStatus = disconnectWire(wire, remove_orphans, keepNodeLabel);
 
     // Create and connect new isolated port to Port1 if it was disconnected
     if (wireStatus.port1.disconnected) {
@@ -1334,15 +1450,11 @@ bool Schematic::deleteElements()
         sel = true;
     }
 
-    for (auto* comp : selection.components) {     // all selected component
-        deleteComp(comp);
-        sel = true;
-    }
-
-    for (auto* wire : selection.wires) {
-        deleteWire(wire);
-        sel = true;
-    }
+    // all at once: one by one, deleting a large selection took time
+    // quadratic in the size of the document
+    deleteComps(selection.components);
+    deleteWires(selection.wires);
+    sel = sel || !selection.components.empty() || !selection.wires.empty();
 
     optimizeWires();
     QUCS_ASSERT(invariants::allComponentsAreConsistent(a_Components));
@@ -1922,10 +2034,17 @@ void Schematic::decoupleElements(Selection selection, bool keepNodeLabel)
 {
     // store all new nodes created during decoupling
     std::unordered_set<Node*> nodeSet;
+    // and the nodes the selection was connected to: those left with nothing
+    // connected go at the end, in one pass over the list (one search of the
+    // list for each made dragging a large selection quadratic)
+    std::vector<Node*> left_behind;
 
     // decouple all components and save nodes
     for (auto* pc : selection.components) {
-        decoupleComp(pc, keepNodeLabel);
+        for (auto* port : pc->Ports) {
+            left_behind.push_back(port->Connection);
+        }
+        decoupleComp(pc, keepNodeLabel, /*remove_orphans=*/false);
         for (auto* port : pc->Ports) {
             nodeSet.insert(port->Connection);
         }
@@ -1933,9 +2052,25 @@ void Schematic::decoupleElements(Selection selection, bool keepNodeLabel)
 
     // decouple all wire segments and save nodes
     for (auto* pw : selection.wires) {
-        decoupleWire(pw, keepNodeLabel);
+        left_behind.push_back(pw->Port1);
+        left_behind.push_back(pw->Port2);
+        decoupleWire(pw, keepNodeLabel, /*remove_orphans=*/false);
         nodeSet.insert(pw->Port1);
         nodeSet.insert(pw->Port2);
+    }
+
+    std::unordered_set<Node*> orphans;
+    for (auto* n : left_behind) {
+        if (n != nullptr && n->conn_count() == 0 && !nodeSet.contains(n)) {
+            orphans.insert(n);
+        }
+    }
+    if (!orphans.empty()) {
+        a_Nodes->remove_if([&orphans](Node* n) { return orphans.contains(n); });
+        // (Taken out of the list and forgotten, they used to leak.)
+        for (auto* n : orphans) {
+            delete n;
+        }
     }
 
     // Remove all overlapping nodes
@@ -2095,9 +2230,7 @@ void Schematic::insertComponent(Component *c)
     // connect every node of component to corresponding schematic node
     insertComponentNodes(c, false);
 
-    bool ok;
-    QString s;
-    int  max=1, len = c->Name.length(), z;
+    int  max=1;
     if(c->Name.isEmpty())
     {
         // a ground symbol erases an existing label on the wire line
@@ -2116,14 +2249,35 @@ void Schematic::insertComponent(Component *c)
     {
         // determines the name by looking for names with the same
         // prefix and increment the number
-        for(Component *pc : *a_Components)
-            if(pc->Name.left(len) == c->Name)
-            {
-                s = pc->Name.right(pc->Name.length()-len);
-                z = s.toInt(&ok);
-                if(ok) if(z >= max) max = z + 1;
-            }
+        const auto number_after = [](const QString& name, const QString& prefix) -> std::optional<int> {
+            const QStringView view{name};   // no copies: this is done a lot
+            if (!view.startsWith(prefix)) return std::nullopt;
+            bool ok;
+            const int z = view.mid(prefix.length()).toInt(&ok);
+            return ok ? std::optional<int>{z} : std::nullopt;
+        };
+        const auto next_number = [this, &number_after](const QString& prefix) {
+            int next = 1;
+            for (Component *pc : *a_Components)
+                if (const auto z = number_after(pc->Name, prefix); z && *z >= next) next = *z + 1;
+            return next;
+        };
+
+        if (a_nextNumbers == nullptr) {
+            max = next_number(c->Name);
+        } else {
+            auto it = a_nextNumbers->find(c->Name);
+            if (it == a_nextNumbers->end())
+                it = a_nextNumbers->emplace(c->Name, next_number(c->Name)).first;
+            max = it->second;
+        }
         c->Name += QString::number(max);  // create name with new number
+
+        // The new name counts, for every prefix in the table, as it would
+        // in the next look through the components
+        if (a_nextNumbers != nullptr)
+            for (auto& [prefix, next] : *a_nextNumbers)
+                if (const auto z = number_after(c->Name, prefix); z && *z >= next) next = *z + 1;
     }
 
     setComponentNumber(c); // important for power sources and subcircuit ports
@@ -2291,6 +2445,38 @@ void Schematic::deleteComp(Component *c, bool remove_orphans)
     delete c;
 }
 
+// Deletes the components and the nodes left with nothing connected, as
+// deleteComp() does for each, with one pass over the document's lists for
+// all of them (see deleteWires()).
+void Schematic::deleteComps(const std::vector<Component*>& comps)
+{
+    std::vector<Component*> doomed_comps;
+    std::unordered_set<Component*> doomed;
+    std::vector<Node*> orphans;
+    std::unordered_set<Node*> orphaned;
+    for (auto* c : comps) {
+        if (!doomed.insert(c).second) continue;
+        doomed_comps.push_back(c);
+        for (auto* port : c->Ports) {
+            Node* n = port->Connection;
+            if (n == nullptr) continue;
+            n->disconnect(c);
+            if (n->conn_count() == 0 && orphaned.insert(n).second) {
+                orphans.push_back(n);
+            }
+        }
+        emit signalComponentDeleted(c);
+    }
+    if (doomed_comps.empty()) return;
+
+    if (!orphans.empty()) {
+        a_Nodes->remove_if([&orphaned](Node* n) { return orphaned.contains(n); });
+    }
+    for (auto* n : orphans) delete n;
+    a_Components->remove_if([&doomed](Component* c) { return doomed.contains(c); });
+    for (auto* c : doomed_comps) delete c;
+}
+
 /** Disconnects a component from the schematic by disconnecting all of its ports.
  *
  * @param component The component to disconnect.
@@ -2313,10 +2499,11 @@ Schematic::CompDisconnectResult Schematic::disconnectComp(Component* component, 
  *
  * @param component The component to decouple
  * @param keepNodeLabel If true, nodes with labels are preserved. Default: false.
+ * @param remove_orphans If true, nodes left with nothing connected are removed from a_Nodes. Default: true
  *
  * @note: Caller is responsible for reconnecting the component ports, or deallocating them. 
  */
-void Schematic::decoupleComp(Component* component, bool keepNodeLabel)
+void Schematic::decoupleComp(Component* component, bool keepNodeLabel, bool remove_orphans)
 {
     // store all port position
     std::vector<QPoint> portPos;
@@ -2324,7 +2511,7 @@ void Schematic::decoupleComp(Component* component, bool keepNodeLabel)
         portPos.push_back(port->Connection->center());
     }
 
-    auto compStatus = disconnectComp(component, /*remove_orphans=*/true, keepNodeLabel);
+    auto compStatus = disconnectComp(component, remove_orphans, keepNodeLabel);
 
     // Loop over all ports, and create new (isolated) nodes for all ports that got disconnected
     for (qsizetype i = 0; i < component->Ports.size(); ++i) {
@@ -2739,15 +2926,24 @@ public:
 
 class ActualMutator : public qucs_s::SchematicMutator {
     Schematic* sch;
+    // Replacing a node only finds or makes nodes and splits wires, which an
+    // index keeps up with: one for each run of replacements (the plan puts
+    // them together), dropped before anything else changes
+    std::optional<Schematic::IndexedInsertion> indexed;
 public:
     ActualMutator(Schematic* s) : sch{s} {}
-    void deleteWire(Wire* w) override { sch->deleteWire(w, false); }
+    void deleteWire(Wire* w) override {
+        indexed.reset();
+        sch->deleteWire(w, false);
+    }
 
     void connectWithWire(const QPoint& a, const QPoint& b) override {
+        indexed.reset();
         sch->dumbConnectWithWire(a, b);
     }
 
     void putLabel(WireLabel* label, Node* dest_node) override {
+        indexed.reset();
         dest_node->dropLabel();
 
         // Transfer label to a new host
@@ -2756,14 +2952,17 @@ public:
     }
 
     void moveNode(Node* node, const QPoint& p) override {
+        indexed.reset();
         node->moveCenterTo(p);
     }
 
     void movePort(qucs_s::GenericPort* port, const QPoint& p) override {
+        indexed.reset();
         port->moveCenterTo(p);
     }
 
     void replaceNode(qucs_s::GenericPort* port) override {
+        if (!indexed) indexed.emplace(sch);
         port->replaceNodeWith(sch->provideNode(port->center()));
     }
 };
@@ -2789,11 +2988,13 @@ bool Schematic::heal(const HealingParams* params) {
     // Fix geometric anomalies
 
     auto old_plan = a_wirePlanner.setType(params->m_wire_plan);
-    qucs_s::Healer healer{a_Components, a_Wires, params->m_healer_params};
-    internal::ActualMutator mut{this};
-    for (auto& mutation : healer.planHealing()) {
-        mutation->execute(&mut);
-        thereWereChanges = true;
+    {
+        qucs_s::Healer healer{a_Components, a_Wires, params->m_healer_params};
+        internal::ActualMutator mut{this};
+        for (auto& mutation : healer.planHealing()) {
+            mutation->execute(&mut);
+            thereWereChanges = true;
+        }
     }
     a_wirePlanner.setType(old_plan);
 
@@ -2806,7 +3007,7 @@ bool Schematic::heal(const HealingParams* params) {
         std::ranges::copy_if(*a_Wires, std::back_inserter(zerolen_wires), [](const Wire* w) -> bool {
             return w->Port1 == nullptr || w->Port2 == nullptr || w->Port1->center() == w->Port2->center();
         });
-        std::ranges::for_each(zerolen_wires, [this](Wire* w) -> void { deleteWire(w); });
+        deleteWires(zerolen_wires);
         thereWereChanges = !zerolen_wires.empty() || thereWereChanges;
         zerolen_wires.clear();
     }
@@ -2815,16 +3016,35 @@ bool Schematic::heal(const HealingParams* params) {
     // Merge nodes having the same location
     thereWereChanges = internal::mergeOverlappingNodes(*a_Nodes) || thereWereChanges;
 
-    // Fix "node above wire" anomalies
+    // Fix "node above wire" anomalies: split each wire at every node on it.
+    // Splitting makes and moves no node, so the nodes are looked up by place
+    // (comparing each node with each wire took most of an edit's time in a
+    // large schematic).
     {
-        for (auto* n : *a_Nodes) {
-            for (auto wit = a_Wires->begin(); wit != a_Wires->end(); wit++) {
-                auto w = *wit;
-                if (qucs_s::geom::is_between(n, w->Port1, w->Port2)) {
+        const qucs_s::NodesByPlace nodes_by_place{*a_Nodes};
+        std::vector<Wire*> pending(a_Wires->begin(), a_Wires->end());
+        while (!pending.empty()) {
+            Wire* w = pending.back();
+            pending.pop_back();
+            const QPoint p1 = w->Port1->center();
+            const QPoint p2 = w->Port2->center();
+            auto on_wire = nodes_by_place.between(p1, p2);
+            if (on_wire.empty()) continue;
+            thereWereChanges = true;
+
+            if (p1.x() == p2.x() || p1.y() == p2.y()) {
+                // Exactly on the line: split at each, the farthest from Port1
+                // first, which leaves the others on the piece that keeps Port1
+                std::ranges::sort(on_wire, std::ranges::greater{},
+                                  [p1](const Node* n) { return (n->center() - p1).manhattanLength(); });
+                for (auto* n : on_wire) {
                     splitWire(w, n);
-                    wit = a_Wires->begin();
-                    thereWereChanges = true;
                 }
+            } else {
+                // Both pieces again: with the tolerance of a diagonal wire a
+                // node on the whole need not be on the piece it falls in
+                pending.push_back(splitWire(w, on_wire[on_wire.size() / 2]));
+                pending.push_back(w);
             }
         }
     }
@@ -2847,10 +3067,8 @@ bool Schematic::heal(const HealingParams* params) {
             }
         }
 
-        for (auto* wire : wire_duplicates) {
-            deleteWire(wire);
-            thereWereChanges = true;
-        }
+        deleteWires(wire_duplicates);
+        thereWereChanges = !wire_duplicates.empty() || thereWereChanges;
     }
 
 
@@ -2883,10 +3101,8 @@ bool Schematic::heal(const HealingParams* params) {
             }
         }
 
-        for (auto* wire : shorts) {
-            deleteWire(wire);
-            thereWereChanges = true;
-        }
+        deleteWires({shorts.begin(), shorts.end()});
+        thereWereChanges = !shorts.empty() || thereWereChanges;
     }
 
     thereWereChanges = optimizeWires() || thereWereChanges;

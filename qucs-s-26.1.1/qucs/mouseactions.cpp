@@ -1688,10 +1688,13 @@ void MouseActions::MReleasePaste(Schematic *Doc, QMouseEvent *Event)
     case Qt::LeftButton: {
         // insert all moved elements into document
         // NOTE: Markers and nodes are excluded
-        for (auto* pc : movingState.selection.components) {
-            pc->isSelected = false;
-            Doc->insertComponent(pc);
-            Doc->enlargeView(pc);
+        {
+            Schematic::BulkNaming naming{Doc};
+            for (auto* pc : movingState.selection.components) {
+                pc->isSelected = false;
+                Doc->insertComponent(pc);
+                Doc->enlargeView(pc);
+            }
         }
 
         for (auto* pw : movingState.selection.wires) {

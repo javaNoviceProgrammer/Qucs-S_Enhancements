@@ -1300,6 +1300,15 @@ bool Component::load(const QString &_s) {
 // ***  The following functions are used to load the schematic symbol
 // ***  from file. (e.g. subcircuit, library component)
 
+void Component::removeUnusedPorts() {
+    // In one pass: one removal at a time moved the rest of the list each time
+    Ports.removeIf([](Port* p) {
+        if (p->avail) return false;
+        delete p;
+        return true;
+    });
+}
+
 int Component::analyseLine(const QString &Row, int numProps) {
     QPen Pen;
     QBrush Brush;
@@ -1310,6 +1319,8 @@ int Component::analyseLine(const QString &Row, int numProps) {
     s = Row.section(' ', 0, 0);    // component type
     if ((s == "PortSym") || (s == ".PortSym")) {  // backward compatible
         if (!getIntegers(Row, &i1, &i2, &i3))
+            return -1;
+        if (i3 < 1 || i3 > MaxPinNumber)
             return -1;
         for (i6 = Ports.count(); i6 < i3; i6++)  // if ports not in numerical order
             Ports.append(new Port(0, 0, false));
