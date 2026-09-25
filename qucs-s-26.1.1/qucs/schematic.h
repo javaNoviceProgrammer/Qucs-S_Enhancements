@@ -723,6 +723,12 @@ public:
   /// step to undo. False, and why in \a error, when it does not read:
   /// the schematic is then as it was.
   bool replaceContent(const QString& text, QString* error = nullptr);
+  /// The elements as they are now, to come back to with restore().
+  QString snapshot();
+  /// Back to \a state (from snapshot()), as an undo goes back; nothing is
+  /// recorded to undo. The elements are new ones: pointers to the old are
+  /// left dangling.
+  void restore(const QString& state);
   void highlightWireLabels (void);
   void clearSignalsAndFileList();
   void clearSignals();

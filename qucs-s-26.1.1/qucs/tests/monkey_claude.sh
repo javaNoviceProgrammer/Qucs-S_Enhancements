@@ -6,7 +6,12 @@ while IFS= read -r line; do
       n=$((n+1))
       # Qucs-S's own tools (qucscontrol.h), now and then with arguments no
       # one would give: called as claude calls them, their answers ignored.
-      case $((n % 8)) in
+      # (Counted in a file beside the one it edits: one dies every fifth
+      # prompt, and its own count would start again.)
+      k=$(cat "$QUCS_FAKE_EDIT.count" 2>/dev/null || echo 0)
+      k=$((k + 1))
+      echo "$k" > "$QUCS_FAKE_EDIT.count"
+      case $((k % 10)) in
         0) printf '%s\n' '{"type":"control_request","request_id":"q'$n'a","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"add_component","arguments":{"type":"R","x":'$((n * 10))',"y":100,"properties":{"R":"2147483647"}}},"jsonrpc":"2.0","id":'$((n * 10))'}}}'
            printf '%s\n' '{"type":"control_request","request_id":"q'$n'b","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"connect","arguments":{"from":"R1.1","to":[0,0]}},"jsonrpc":"2.0","id":'$((n * 10 + 1))'}}}' ;;
         1) printf '%s\n' '{"type":"control_request","request_id":"q'$n'a","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"edit_component","arguments":{"name":"R1","rotation":7,"x":99999999,"y":-2147483648,"properties":{"R":"1e308k"},"rename":"","active":false}},"jsonrpc":"2.0","id":'$((n * 10))'}}}'
@@ -21,6 +26,10 @@ while IFS= read -r line; do
            printf '%s\n' '{"type":"control_request","request_id":"q'$n'b","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"get_dialog","arguments":{}},"jsonrpc":"2.0","id":'$((n * 10 + 1))'}}}' ;;
         6) printf '%s\n' '{"type":"control_request","request_id":"q'$n'a","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"set_schematic","arguments":{"text":"<Wires>\n  <0 0 100 0 \"\" 0 0 0 \"\">\n</Wires>"}},"jsonrpc":"2.0","id":'$((n * 10))'}}}'
            printf '%s\n' '{"type":"control_request","request_id":"q'$n'b","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"zoom","arguments":{"to":"out"}},"jsonrpc":"2.0","id":'$((n * 10 + 1))'}}}' ;;
+        8) printf '%s\n' '{"type":"control_request","request_id":"q'$n'a","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"add_component","arguments":{"type":"R","name":"Rt","x":'$((n * 30 % 600))',"y":300}},"jsonrpc":"2.0","id":'$((n * 10))'}}}'
+           printf '%s\n' '{"type":"control_request","request_id":"q'$n'b","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"edit_component","arguments":{"name":"Rt","rotation":'$((n % 4))',"mirror":'$([ $((n % 2)) -eq 0 ] && echo true || echo false)',"x":'$((n * 40 % 700))'}},"jsonrpc":"2.0","id":'$((n * 10 + 1))'}}}' ;;
+        9) printf '%s\n' '{"type":"control_request","request_id":"q'$n'a","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"connect","arguments":{"from":"Rt.2","to":"R1.1"}},"jsonrpc":"2.0","id":'$((n * 10))'}}}'
+           printf '%s\n' '{"type":"control_request","request_id":"q'$n'b","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"edit_component","arguments":{"name":"R1","rotation":'$((n % 4))',"mirror":true,"y":'$((n * 20 % 500))'}},"jsonrpc":"2.0","id":'$((n * 10 + 1))'}}}' ;;
         *) printf '%s\n' '{"type":"control_request","request_id":"q'$n'a","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"get_state","arguments":{}},"jsonrpc":"2.0","id":'$((n * 10))'}}}'
            printf '%s\n' '{"type":"control_request","request_id":"q'$n'b","request":{"subtype":"mcp_message","server_name":"qucs","message":{"method":"tools/call","params":{"name":"select","arguments":{"names":["R1",7,null]}},"jsonrpc":"2.0","id":'$((n * 10 + 1))'}}}' ;;
       esac

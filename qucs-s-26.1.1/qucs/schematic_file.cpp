@@ -637,6 +637,20 @@ bool Schematic::replaceContent(const QString& text, QString* error)
   return true;
 }
 
+QString Schematic::snapshot()
+{
+  return createUndoString('*');
+}
+
+void Schematic::restore(const QString& state)
+{
+  QString s = state;
+  rebuild(&s);
+  reloadGraphs();
+  updateAllBoundingRect();
+  viewport()->update();
+}
+
 void Schematic::writeDocumentTo(QTextStream& stream)
 {
   stream << "<Qucs Schematic " << PACKAGE_VERSION << ">\n";

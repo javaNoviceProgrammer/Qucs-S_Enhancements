@@ -1013,15 +1013,21 @@ existing demand.
   tools/call (from the event loop, not the output's reader, since a tool
   may run a dialog's event loop) through a `ToolHost`. `QucsControl` is
   that host: 23 tools - get_state; open, new, show, save (as), close
-  documents; get_schematic (a summary with each pin's place, whether it is
-  connected and its net label, or the .sch text: `Schematic::
-  documentText()`), set_schematic (`Schematic::replaceContent()`: the
+  documents; get_schematic (a summary with each pin's place and net -
+  a label's name, gnd, net1, ... - and the nets with their pins, or the
+  .sch text: `Schematic::documentText()`), set_schematic (`Schematic::replaceContent()`: the
   sections given in place of the document's, through the undo record's
   rebuild, restored when they do not read), add_component
   (`Module::getComponent()`, placed as a click places one), edit_component
-  (properties through recreateComponent(), place and turn by detaching and
-  inserting again), delete, connect and add_wire (`connectWithWire()`,
-  routed as the wire tool routes), set_label, select, zoom, undo, redo;
+  (properties through recreateComponent(); turned and moved keeping the
+  circuit - off its nodes, the wires of other nets under its pins' new
+  places taken up, put down, every net then in pieces joined again, the
+  nets through wires, labels and ground compared before and after, the
+  edit undone with the reason when they differ), delete, connect (by a
+  route that runs over nothing of another net - a wire joins every node
+  it runs over - around the parts first; it joins its ends' nets and
+  nothing else, or draws nothing and says why) and add_wire (not drawn
+  over another pin), set_label, select, zoom, undo, redo;
   screenshot (graphicsexport's image, or the viewport's; an MCP image
   content Claude sees); list_component_types; list_actions and
   trigger_action (the menu bar walked; triggered from the event loop and
@@ -1045,7 +1051,12 @@ existing demand.
   R1, V1 and a ground, wired them, took a screenshot and described the
   circuit (16 s, $0.12). The GUI monkey's tool calls found products of
   far-away coordinates overflowing int in `geom::is_it_line()`, now
-  computed in 64 bits.
+  computed in 64 bits. A user's session found edit_component turning a
+  part whose ports pointed at nodes `detachComp()` had deleted, and a
+  real Claude run checked net by net found connect's routes shorting the
+  circuit it built (see the stress hunt's findings); the router and the
+  net checks came of them, `Schematic::snapshot()` and `restore()` being
+  what a route found wrong is taken back with.
 - *Done:* **TeX math in the Claude Code dock** (`qucs/mathtypeset.*`).
   QTextDocument's Markdown has no math, and a web engine for KaTeX would
   be a heavy dependency for a panel, so the math is typeset here: a
