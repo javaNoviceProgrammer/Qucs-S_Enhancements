@@ -1632,12 +1632,16 @@ Schematic::Selection Schematic::elementsToSelection(const std::list<Element*> &e
 }
 
 // ---------------------------------------------------
-// Updates the graph data of all diagrams (load from data files).
-void Schematic::reloadGraphs()
+// Updates the graph data of all diagrams (load from data files): those
+// whose dataset changed since they read it, or all of them (force).
+void Schematic::reloadGraphs(bool force)
 {
     QFileInfo Info(a_DocName);
-    for (Diagram *pd : *a_Diagrams)
+    for (Diagram *pd : *a_Diagrams) {
+        if (force)
+            for (Graph *pg : pd->Graphs) pg->lastLoaded = QDateTime();
         pd->loadGraphData(Info.path() + QDir::separator() + a_DataSet);
+    }
 }
 
 // Copy function,

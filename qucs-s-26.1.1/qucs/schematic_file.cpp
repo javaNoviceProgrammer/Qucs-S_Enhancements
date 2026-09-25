@@ -631,6 +631,8 @@ bool Schematic::replaceContent(const QString& text, QString* error)
     const QStringList why = capture.errors();
     return fail(why.isEmpty() ? QObject::tr("It does not read as a schematic.") : why.join(QLatin1Char('\n')));
   }
+  // The diagrams are new: their traces read the dataset (undo does so too).
+  reloadGraphs();
   setChanged(true, true);
   updateAllBoundingRect();
   viewport()->update();

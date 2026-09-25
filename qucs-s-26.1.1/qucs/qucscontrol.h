@@ -33,7 +33,9 @@ class QWidget;
  * text, and changed as text or part by part (add, edit, connect, wire,
  * label, delete), each change one step to undo; a picture of it; the
  * menus' actions and the dialogs they open, read, filled in and closed;
- * a simulation run and its outcome.
+ * a simulation run and its outcome - its errors each with its netlist
+ * line and part - the netlist, the dataset read as numbers and measured,
+ * and the diagrams that show it, made and changed by their named fields.
  *
  * Everything is done as the user would do it, in the window in front of
  * them: a document being changed comes to the front, and what goes wrong
@@ -92,9 +94,25 @@ private:
     void triggerAction(const QJsonObject& args, const Done& done);
     QJsonObject getDialog();
     void setDialog(const QJsonObject& args, const Done& done);
-    // Simulation.
+    // Simulation and its results.
     void simulate(const QJsonObject& args, const Done& done);
+    QJsonObject getNetlist(const QJsonObject& args);
+    QJsonObject getDataset(const QJsonObject& args);
+    QJsonObject reloadData(const QJsonObject& args);
+    // Diagrams and their traces.
+    QJsonObject addDiagram(const QJsonObject& args);
+    QJsonObject editDiagram(const QJsonObject& args);
+    QJsonObject addTrace(const QJsonObject& args);
+    QJsonObject editTrace(const QJsonObject& args);
+    QJsonObject renameNet(const QJsonObject& args);
+    QJsonObject describeComponentType(const QJsonObject& args);
 
+    /// The dataset get_dataset reads for \a args: a dataset file, or the
+    /// one of a schematic or data display (open or not) for a simulator.
+    QString datasetPath(const QJsonObject& args, QString* error) const;
+    /// The open documents that show \a sch's dataset: itself and its data
+    /// displays.
+    QList<Schematic*> showingDataOf(Schematic* sch) const;
     QucsDoc* document(const QJsonObject& args, QString* error) const;
     Schematic* schematic(const QJsonObject& args, QString* error, bool forChange) const;
     /// The document in front, the property editor closed: before a change.

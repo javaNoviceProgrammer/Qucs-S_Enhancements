@@ -691,7 +691,7 @@ public:
       *editMove, *editActivate, *editDelete, *setMarker,
       *setDiagramLimits, *resetDiagramLimits, *showGrid, *onGrid, *moveText,
       *helpIndex, *helpGetStart, *callEditor, *callFilter, *callLine,
-      *callActiveFilter, *showMsg, *showNet, *checkSchematicAction, *checkHierarchyAction, *alignTop, *alignBottom,
+      *callActiveFilter, *showMsg, *showNet, *reloadSimData, *checkSchematicAction, *checkHierarchyAction, *alignTop, *alignBottom,
       *alignLeft, *alignRight, *distrHor, *distrVert, *selectAll, *callMatch,
       *changeProps, *addToProj, *editFind, *insEntity, *selectMarker,
       *createLib, *callConverter, *graph2csv, *callAtt, *centerHor, *centerVert,
@@ -745,6 +745,9 @@ public slots:
   void slotSelectMarker();
   void slotShowLastMsg();
   void slotShowLastNetlist();
+  /// Simulation > Reload Simulation Data: every open document's diagrams
+  /// read their datasets again (a simulation outside Qucs-S, a blank plot).
+  void slotReloadSimulationData();
   /// Simulation > Check Schematic: the electrical rule check of the
   /// schematic in front, listed on the Problems tab of the message dock.
   void slotCheckSchematic();
