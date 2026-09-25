@@ -53,6 +53,21 @@
 #include "schematic.h"
 #include "qucs_assert.h"
 
+#include <algorithm>
+#include <cmath>
+
+QRect Schematic::withinModelLimit(const QRect& rect)
+{
+    const auto cut = [](int v) { return std::clamp(v, -ModelLimit, ModelLimit); };
+    // left() and right() are the corners as stored: no width is computed.
+    return QRect{QPoint{cut(rect.left()), cut(rect.top())}, QPoint{cut(rect.right()), cut(rect.bottom())}};
+}
+
+QPoint Schematic::withinModelLimit(const QPoint& point)
+{
+    return QPoint{std::clamp(point.x(), -ModelLimit, ModelLimit), std::clamp(point.y(), -ModelLimit, ModelLimit)};
+}
+
 QRect Schematic::modelRect()
 {
     return QRect{a_ViewX1, a_ViewY1, a_ViewX2 - a_ViewX1, a_ViewY2 - a_ViewY1};
@@ -112,9 +127,13 @@ QPoint Schematic::modelToContents(const QPoint& coordinates)
     // 2. Adjust resulting coordinates so thay they become having the same scale
     //    as contents
 
-    QPoint contentsCoords{coordinates.x() - a_ViewX1, coordinates.y() - a_ViewY1};
-    contentsCoords *= a_Scale;
-    return contentsCoords;
+    // In double: an element far beyond the model plane (see ModelLimit)
+    // maps far off the canvas, not to an overflowed int.
+    const auto toContents = [this](int v, int origin) {
+        const double c = (static_cast<double>(v) - origin) * a_Scale;
+        return static_cast<int>(std::lround(std::clamp(c, -1.0e9, 1.0e9)));
+    };
+    return QPoint{toContents(coordinates.x(), a_ViewX1), toContents(coordinates.y(), a_ViewY1)};
 }
 
 /**
@@ -129,6 +148,9 @@ constexpr double maxScale = 10.0;
 
 inline double clipScale(double offeredScale)
 {
+    if (!std::isfinite(offeredScale)) {
+        return 1.0;
+    }
     if (offeredScale > maxScale) {
         return maxScale;
     }
@@ -145,11 +167,16 @@ bool Schematic::shouldRender(const double& newScale, const QRect& newModelBounds
     return a_Scale != newScale || toBeDisplayed != currenlyDisplayed || currentModelBounds != newModelBounds;
 }
 
-double Schematic::renderModel(const double offeredScale, QRect newModel, const QPoint modelPoint, const QPoint viewportPoint)
+double Schematic::renderModel(const double offeredScale, QRect newModel, QPoint modelPoint, const QPoint viewportPoint)
 {
     // DO NOT alter model bounds or scale and DO NOT call resizeContens() outside
     // of this method. It may break the state and lead to hard-to-find bugs.
     // Pass the desired model bounds or scale as the argument to this method.
+
+    // The model plane within its limits, whatever was asked (the point in
+    // it stays in it: both are cut alike).
+    newModel = withinModelLimit(newModel);
+    modelPoint = withinModelLimit(modelPoint);
 
     QUCS_ASSERT(modelPoint.x() >= newModel.left() && modelPoint.x() <= newModel.right());
     QUCS_ASSERT(modelPoint.y() >= newModel.top() && modelPoint.y() <= newModel.bottom());
@@ -179,7 +206,7 @@ double Schematic::renderModel(const double offeredScale, QRect newModel, const Q
     };
 
     QRect viewportOnModelPlane{vpTopLeftOnModelPlane, viewportSizeOnModelPlane};
-    newModel |= viewportOnModelPlane;
+    newModel = withinModelLimit(newModel | viewportOnModelPlane);
 
     // At this point everything is ready for rendering and positioning
 
@@ -190,8 +217,9 @@ double Schematic::renderModel(const double offeredScale, QRect newModel, const Q
     a_ViewY2 = newModel.top() + newModel.height();
 
     a_Scale = newScale;
-    resizeContents(static_cast<int>(std::round(newModel.width() * a_Scale)),
-                   static_cast<int>(std::round(newModel.height() * a_Scale)));
+    // At most 2 * ModelLimit * maxScale pixels: well within int.
+    resizeContents(static_cast<int>(std::lround(newModel.width() * a_Scale)),
+                   static_cast<int>(std::lround(newModel.height() * a_Scale)));
 
     auto contentTopLeft = modelToContents(vpTopLeftOnModelPlane);
     setContentsPos(contentTopLeft.x(), contentTopLeft.y());

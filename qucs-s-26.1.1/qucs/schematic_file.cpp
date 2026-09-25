@@ -33,6 +33,9 @@
 #include "node.h"
 #include "wire.h"
 #include "schematic.h"
+
+#include <algorithm>
+#include <cmath>
 #include "diagrams/diagrams.h"
 #include "paintings/paintings.h"
 #include "components/spicefile.h"
@@ -790,6 +793,19 @@ bool Schematic::loadProperties(QTextStream *stream)
       a_Scale  = nstr.section(',',4,4).toDouble(&ok); if(ok) {
       a_tmpViewX1 = nstr.section(',',5,5).toInt(&ok); if(ok)
       a_tmpViewY1 = nstr.section(',',6,6).toInt(&ok); }}}}}
+      // What a file says of its view, within reason: a plane within the
+      // model's limits, corners in order, a scale that is a number.
+      const QRect view = withinModelLimit(QRect(QPoint(std::min(a_ViewX1, a_ViewX2), std::min(a_ViewY1, a_ViewY2)),
+                                                QPoint(std::max(a_ViewX1, a_ViewX2), std::max(a_ViewY1, a_ViewY2))));
+      a_ViewX1 = view.left();
+      a_ViewY1 = view.top();
+      a_ViewX2 = view.right();
+      a_ViewY2 = view.bottom();
+      if (!std::isfinite(a_Scale) || a_Scale <= 0.0) a_Scale = 1.0;
+      a_Scale = std::clamp(a_Scale, 0.1, 10.0);
+      const QPoint symbolView = withinModelLimit(QPoint(a_tmpViewX1, a_tmpViewY1));
+      a_tmpViewX1 = symbolView.x();
+      a_tmpViewY1 = symbolView.y();
     }
     else if(cstr == "Grid") {
       setGridX(nstr.section(',',0,0).toInt(&ok)); if(ok) {

@@ -1096,7 +1096,7 @@ void Schematic::print(QPrinter*, QPainter* painter, bool printAll,
 }
 
 QRect Schematic::printedArea(bool printAll, QMargins margins) {
-    QRect area = printAll ? allBoundingRect() : currentSelection().bounds;
+    QRect area = printAll ? allBoundingRect() : withinModelLimit(currentSelection().bounds);
 
     if (printAll && a_showFrame != FrameSize::None) {
         int frame_width, frame_height;
@@ -1269,7 +1269,7 @@ void Schematic::zoomToSelection() {
         return;
     }
 
-    const QRect selectedBoundingRect(currentSelection().bounds);
+    const QRect selectedBoundingRect(withinModelLimit(currentSelection().bounds));
 
     if (selectedBoundingRect.width() == 0 || selectedBoundingRect.height() == 0) {
         // If nothing is selected, then what should be shown? Probably it's best
@@ -1319,9 +1319,9 @@ void Schematic::showNoZoom()
  }
 
 void Schematic::enlargeView(const Element* e) {
-    const auto br = e->boundingRect();
+    const auto br = withinModelLimit(e->boundingRect());
 
-    a_UsedArea |= br;
+    a_UsedArea = withinModelLimit(a_UsedArea | br);
 
     QRect newModel = modelRect()
         .united(br.marginsAdded({40, 40, 40, 40}));
@@ -1494,7 +1494,9 @@ void Schematic::updateAllBoundingRect()
         internal::unite(totalBounds, pp->boundingRect());
     }
 
-    a_UsedArea = totalBounds.has_value() ? *totalBounds : QRect();
+    // Within the model plane's limits: what lies beyond is not shown, and
+    // its width would overflow.
+    a_UsedArea = totalBounds.has_value() ? withinModelLimit(*totalBounds) : QRect();
 }
 
 Schematic::Selection Schematic::currentSelection() const {
