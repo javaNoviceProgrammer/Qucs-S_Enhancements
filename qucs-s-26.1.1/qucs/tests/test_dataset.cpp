@@ -32,13 +32,6 @@ QString datasetText(const QList<std::tuple<QString, QString, QStringList>>& vars
     return s;
 }
 
-QStringList numbers(const QVector<double>& values)
-{
-    QStringList list;
-    for (double v : values) list << QString::number(v, 'e', 12);
-    return list;
-}
-
 ds::Curve curve(int n, double x0, double x1, const std::function<double(double)>& f)
 {
     ds::Curve c;

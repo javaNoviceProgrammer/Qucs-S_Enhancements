@@ -1834,7 +1834,8 @@ bool FileBrowser::eventFilter(QObject* watched, QEvent* event)
         }
         if (event->type() == QEvent::FocusOut && static_cast<QFocusEvent*>(event)->reason() != Qt::PopupFocusReason)
             a_pathStack->setCurrentWidget(a_crumbBar);
-    } else if (qobject_cast<QAbstractItemView*>(watched) != nullptr) {
+    } else if (qobject_cast<QAbstractItemView*>(watched) != nullptr
+               && (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress)) {
         auto* key = static_cast<QKeyEvent*>(event);
         // Its keys before the window's shortcuts for them.
         if (event->type() == QEvent::ShortcutOverride && listKey(key)) {
