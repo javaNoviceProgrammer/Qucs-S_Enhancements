@@ -9,4 +9,4 @@ entry it closes.
 | date | area | report |
 |---|---|---|
 | 2026-09-21 | every built-in component and the netlist it generates (ngspice, Xyce, Qucsator) | [2026-09-21-component-netlists.md](2026-09-21-component-netlists.md) — A/B fixed in `984660c`, C/D in `db4f676` |
-| 2026-09-24 | stress: a random walk over the main window, schematics far beyond the usual size, the fuzzers again | [2026-09-24-stress.md](2026-09-24-stress.md) — crashes and hangs fixed in `53bbb26` (C); A (quadratic edits and loads) and B (healer invariants) open |
+| 2026-09-24 | stress: a random walk over the main window, schematics far beyond the usual size, the fuzzers again | [2026-09-24-stress.md](2026-09-24-stress.md) — crashes and hangs fixed in `53bbb26` (C); A (quadratic edits and loads) fixed in `46332a5`; B (healer invariants) open |
