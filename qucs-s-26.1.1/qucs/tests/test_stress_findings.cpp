@@ -479,6 +479,76 @@ private slots:
         }
     }
 
+    // Elements billions of units apart (a file or a dialog can put them
+    // anywhere an int reaches) and a view that says anything: the canvas -
+    // the model plane times the scale - was sized in int, and zooming out
+    // on such a schematic overflowed it, Q3ScrollView's arithmetic and
+    // QRect's width. The model plane now stays within Schematic::ModelLimit
+    // of the origin, whatever is further is not scrolled to, and every
+    // zoom, scroll and view of it is sane.
+    void farAwayElementsDoNotOverflowTheCanvas()
+    {
+        const QString parts = QStringLiteral(
+            "  <R R1 1 2000000000 2000000000 15 -26 0 0 \"1 kOhm\" 1>\n"
+            "  <R R2 1 -2000000000 -2000000000 15 -26 0 0 \"1 kOhm\" 1>\n"
+            "  <R R3 1 100 100 15 -26 0 0 \"1 kOhm\" 1>\n");
+        const QStringList views = {QStringLiteral("0,0,800,600,1,0,0"),
+                                   QStringLiteral("-2147483648,-2147483648,2147483647,2147483647,10,-2147483648,2147483647"),
+                                   QStringLiteral("0,0,800,600,0,0,0"), QStringLiteral("5,5,-5,-5,nan,0,0"),
+                                   QStringLiteral("0,0,800,600,1e300,0,0")};
+        const auto sane = [](Schematic& sch, const QString& what) {
+            const QRect model = sch.modelRect();
+            const qint64 limit = Schematic::ModelLimit;
+            QVERIFY2(model.left() >= -limit && model.right() <= limit && model.top() >= -limit && model.bottom() <= limit,
+                     qPrintable(what));
+            QVERIFY2(std::isfinite(sch.getScale()) && sch.getScale() >= 0.1 && sch.getScale() <= 10.0, qPrintable(what));
+            QVERIFY2(sch.contentsWidth() > 0 && sch.contentsHeight() > 0, qPrintable(what));
+            QVERIFY2(sch.contentsWidth() <= 2 * limit * 10 + 10000 && sch.contentsHeight() <= 2 * limit * 10 + 10000,
+                     qPrintable(what));
+        };
+        for (const QString& view : views) {
+            QString text = schematic(parts);
+            text.replace(QStringLiteral("<View=0,0,800,600,1,0,0>"), QStringLiteral("<View=%1>").arg(view));
+            write("far.sch", text);
+            Schematic sch(nullptr, dir.filePath("far.sch"));
+            sch.resize(800, 600);
+            sch.show();
+            QVERIFY(sch.loadDocument());
+            sane(sch, view + " loaded");
+            for (int i = 0; i < 40; ++i) sch.zoomBy(0.5);
+            sane(sch, view + " zoomed out");
+            for (int i = 0; i < 40; ++i) sch.zoomBy(2.0);
+            sane(sch, view + " zoomed in");
+            sch.showAll();
+            sane(sch, view + " all shown");
+            for (auto* c : sch.a_DocComps) c->isSelected = true;
+            sch.zoomToSelection();
+            sane(sch, view + " selection");
+            sch.showNoZoom();
+            sane(sch, view + " no zoom");
+            for (int i = 0; i < 200; ++i) {
+                sch.scrollUp(5000);
+                sch.scrollLeft(5000);
+            }
+            sane(sch, view + " scrolled up and left");
+            for (int i = 0; i < 400; ++i) {
+                sch.scrollDown(5000);
+                sch.scrollRight(5000);
+            }
+            sane(sch, view + " scrolled down and right");
+            sch.zoomAroundPoint(0.1, QPoint(799, 599), true);
+            sch.zoomAroundPoint(100.0, QPoint(0, 0), true);
+            sane(sch, view + " zoomed around a corner");
+            // What is near the origin is still where it was.
+            sch.centerOn(QPoint(100, 100));
+            const QPoint at = sch.modelToViewport(QPoint(100, 100));
+            QVERIFY2(sch.viewportRect().contains(at), qPrintable(view));
+            // A far element is mapped without overflow (clamped).
+            const QPoint far = sch.modelToViewport(QPoint(2000000000, 2000000000));
+            QVERIFY(far.x() > 0 && far.y() > 0);
+        }
+    }
+
     // Healing went through the nodes in the order of their addresses (the
     // healer's std::map<Node*, ...>, and an unordered_set when a drag
     // began), and where two repairs interact the order decides: the same

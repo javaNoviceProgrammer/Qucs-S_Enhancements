@@ -187,6 +187,29 @@ public:
   /// Scrolls so that \a modelPoint sits at the centre of the viewport, at
   /// the current scale (the model is widened if the point is outside it).
   void centerOn(const QPoint& modelPoint);
+
+  /**
+    Returns a rectangle which describes the model plane of the schematic.
+    The rectangle is a copy, changes made to it do not affect schematic state.
+  */
+  QRect modelRect();
+
+  /**
+    Returns a rectangle which describes the viewport. Top-left corner is (0,0),
+    width and height are equal to viewport's width and height.
+  */
+  QRect viewportRect();
+
+  /// How far from the origin the model plane reaches, in model units.
+  /// Elements further away (a file or a dialog can put them anywhere an
+  /// int reaches) are not scrolled to, and the canvas - the model plane
+  /// times the scale, which is at most 10 - stays well within the int
+  /// arithmetic of QRect and Q3ScrollView.
+  static constexpr int ModelLimit = 1 << 23;
+  /// \a rect, \a point cut to the model plane's limits (corner by corner,
+  /// without computing a width that could overflow).
+  static QRect withinModelLimit(const QRect& rect);
+  static QPoint withinModelLimit(const QPoint& point);
   void zoomToSelection();
   void  showNoZoom();
   void  enlargeView(const Element* e);
@@ -442,18 +465,6 @@ private:
   bool a_dragIsOkay;
   /*! \brief hold system-independent information about a schematic file */
   QFileInfo a_FileInfo;
-
-  /**
-    Returns a rectangle which describes the model plane of the schematic.
-    The rectangle is a copy, changes made to it do not affect schematic state.
-  */
-  QRect modelRect();
-
-  /**
-    Returns a rectangle which describes the viewport. Top-left corner is (0,0),
-    width and height are equal to viewport's width and height.
-  */
-  QRect viewportRect();
 
   /**
     Tells whether the model should be rerendered. Model should be rendered
