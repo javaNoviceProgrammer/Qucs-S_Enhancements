@@ -216,7 +216,9 @@ signals:
     void replyStreamed(const QString& text);
     /// A finished part of the reply.
     void replyFinished(const QString& text);
-    void toolStarted(const QString& id, const QString& tool, const QString& subject);
+    /// A tool Claude uses: what about (a line) and more of it (the whole
+    /// command, the edit).
+    void toolStarted(const QString& id, const QString& tool, const QString& subject, const QString& detail);
     void toolFinished(const QString& id, bool failed, const QString& output);
     void permissionRequested(const qucs_s::claude::PermissionRequest& request);
     /// A permission request is no longer asked (the turn was stopped).

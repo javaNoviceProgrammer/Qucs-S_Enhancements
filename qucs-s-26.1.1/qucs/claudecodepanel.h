@@ -13,8 +13,12 @@
 #define QUCS_CLAUDECODEPANEL_H
 
 #include "claudecode.h"
+#include "mathtypeset.h"
 
+#include <QHash>
 #include <QList>
+#include <QPixmap>
+#include <QSet>
 #include <QWidget>
 
 #include <functional>
@@ -40,7 +44,12 @@ class QUrl;
  * uses and how it went, how each turn ended. A tool that needs permission
  * is asked about in a card above the prompt, which is written at the
  * bottom: Enter sends, Shift+Enter starts a line, and the document in
- * front can go along with it.
+ * front can go along with it. The tools Claude uses in a row fold into a
+ * line ("Ran 3 commands, read 2 files") that opens on a click, and each
+ * of them opens on the whole command and what it gave; TeX math in the
+ * replies is typeset (mathtypeset.h).
+ *
+ * One panel is one conversation; ClaudeCodeTabs keeps several.
  *
  * The program is the one the settings name, else claude as installed
  * (qucs_s::claude::findProgram()); QUCS_CLAUDE in the environment names
@@ -75,6 +84,17 @@ public:
     /// reloaded, say).
     void addNote(const QString& text);
 
+    /// What the conversation is about: its first prompt, shortened; "New
+    /// conversation" before one.
+    QString title() const;
+    /// The mark of its state, as in the header.
+    QPixmap statePixmap() const;
+    /// New starts a conversation in a tab of its own
+    /// (newConversationRequested) rather than here.
+    void setNewInTab(bool on);
+    /// Claude's colour (its clay), for the palette given.
+    static QColor accentColour(const QPalette& palette);
+
     // For the tests.
     QPlainTextEdit* composer() const { return a_input; }
     QTextBrowser* transcript() const { return a_view; }
@@ -84,6 +104,7 @@ public:
     QToolButton* allowButton() const { return a_allow; }
     QToolButton* allowEditsButton() const { return a_allowEdits; }
     QToolButton* denyButton() const { return a_deny; }
+    QToolButton* newButton() const { return a_newButton; }
     QLabel* stateLabel() const { return a_stateText; }
     QLabel* modelLabel() const { return a_modelLabel; }
     QList<QAction*> modelActions() const;
@@ -92,6 +113,10 @@ public:
     QString transcriptText() const;
     /// The conversation drawn now rather than a moment later.
     void renderNow();
+    /// Opens or folds a line of tools ("group:<first tool's id>") or a
+    /// tool ("tool:<id>"), as a click on it does.
+    void toggle(const QString& key);
+    bool isExpanded(const QString& key) const { return a_expanded.contains(key); }
 
 public slots:
     void focusComposer();
@@ -106,6 +131,11 @@ signals:
     void filesChanged(const QStringList& files);
     /// A file named in the conversation was clicked.
     void openFileRequested(const QString& path);
+    /// New was pressed, and new conversations open in tabs.
+    void newConversationRequested();
+    /// The title changed (the first prompt was sent, or the conversation
+    /// began again).
+    void titleChanged();
 
 protected:
     void changeEvent(QEvent* event) override;
@@ -121,6 +151,8 @@ private:
         QString output = QString();   // why a tool failed
         enum ToolState { Running, Succeeded, Failed, Denied } tool = Running;
         bool streaming = false;
+        QString detail = QString();   // a tool's input: the command, the edit
+        QString result = QString();   // what it gave (the first lines)
     };
 
     void buildHeader();
@@ -132,6 +164,14 @@ private:
     void render();
     void renderWelcome(QTextCursor& c);
     void renderEntry(QTextCursor& c, const Entry& e, bool& captioned);
+    void renderCaption(QTextCursor& c, bool& captioned);
+    /// The tools a_entries[from, to) used in a row: one line that opens.
+    void renderTools(QTextCursor& c, qsizetype from, qsizetype to, bool& captioned);
+    void renderTool(QTextCursor& c, const Entry& e, qreal indent);
+    QString toolSummary(qsizetype from, qsizetype to) const;
+    /// A reply's Markdown, its math typeset.
+    void renderMarkdown(QTextCursor& c, const QString& text);
+    qucs_s::math::Typeset typesetMath(const QString& tex, const QFont& font, bool display);
     void append(const Entry& e);
     void updateState();
     void updateDirectory();
@@ -152,7 +192,7 @@ private:
     // Session events.
     void onReplyStreamed(const QString& text);
     void onReplyFinished(const QString& text);
-    void onToolStarted(const QString& id, const QString& tool, const QString& subject);
+    void onToolStarted(const QString& id, const QString& tool, const QString& subject, const QString& detail);
     void onToolFinished(const QString& id, bool failed, const QString& output);
     void onPermissionRequested(const qucs_s::claude::PermissionRequest& request);
     void onPermissionWithdrawn(const QString& id);
@@ -164,11 +204,13 @@ private:
     std::function<QString()> a_document;
 
     qucs_s::claude::ModelQuery* a_modelQuery;
-    QString a_modelsFrom;      // the program asked which models it offers
-    QJsonArray a_listedModels; // what it answered (kept in the settings)
+    QJsonArray a_listedModels; // what the program offers (kept in the settings)
     QList<qucs_s::claude::ModelChoice> a_choices;
 
     QList<Entry> a_entries;
+    QSet<QString> a_expanded;  // the tool lines opened
+    QHash<QString, qucs_s::math::Typeset> a_math;   // typeset math, by TeX, size and colour
+    bool a_newInTab = false;
     QList<qucs_s::claude::PermissionRequest> a_requests;
     QTimer* a_renderTimer;
     QTimer* a_clock;           // the seconds of a turn under way

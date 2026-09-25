@@ -988,6 +988,38 @@ existing demand.
   with "version 2.1.280 or newer is required", shown as the turn's
   failure); `qucs/tests/test_claude_code` drives the session, the model
   query and the dock with shell scripts that answer as claude does.
+  Tools in a row are one line that opens (`toggle:group:<id>` and
+  `toggle:tool:<id>` anchors in the transcript; the session passes each
+  tool's input - the whole command, the edit - with `toolStarted`, and
+  the panel keeps the first 30 lines of what it gave).
+  `ClaudeCodeTabs` (`qucs/claudecodetabs.*`) holds the conversations, a
+  `ClaudeCodePanel` and a session each: New in a panel's header asks it
+  for a tab (`setNewInTab`), a new one works in the folder of the one it
+  was opened from, a permission request brings its tab forward only when
+  the dock is hidden or it is in front (else the tab's mark and the
+  status bar say so, and the chip leads to it), notes about reloaded
+  files go to the conversation that changed them, and the status bar
+  reports `mostUrgent()` with a count of the others at work.
+- *Done:* **TeX math in the Claude Code dock** (`qucs/mathtypeset.*`).
+  QTextDocument's Markdown has no math, and a web engine for KaTeX would
+  be a heavy dependency for a panel, so the math is typeset here: a
+  recursive parser (amsmath's commands, environments, siunitx units,
+  `\left`/`\right`, `\not`, fonts and alphabets; what it does not know
+  it shows as written, and nesting is bounded) builds boxes laid out as
+  TeX does - four styles, the atom classes and the space between them,
+  fractions and scripts by TeX's shifts around the math axis, limits
+  above and below in display style, delimiters drawn to height (glyphs
+  when small), radicals, accents, matrices and aligned rows - painted
+  with STIX Two (or Cambria, Latin Modern, Times) at the text's x-height.
+  `findMath()` takes `$...$`, `$$...$$`, `\(...\)`, `\[...\]` out of the
+  Markdown before it is read (not in code, and not money: a `$` opens
+  before a non-space and closes after one, not before a digit), and the
+  formulas go back as `MathObject`s, a text object of its own: Qt's
+  image handler rounds an image to whole pixels and scales it by the
+  screen's dots per inch over 96, which on macOS shrank the math and
+  moved it off the baseline. With `AlignMiddle` and padding computed
+  from the text's x-height, the math's baseline is the line's. The
+  system prompt tells Claude that math between dollars is typeset.
 - *Done:* **Login-shell environment at start** (`qucs/shellenvironment.*`).
   `importLoginShellEnvironment()` runs `$SHELL -l -i -c "printf marker;
   exec env -0"` (stdin from /dev/null, killed at a timeout; then `-l`

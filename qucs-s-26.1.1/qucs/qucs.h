@@ -47,7 +47,7 @@ class tunerElement;
 class SimulationRun;
 class SimulationConsole;
 class ProcessConsole;
-class ClaudeCodePanel;
+class ClaudeCodeTabs;
 class StatusPanel;
 
 class QLabel;
@@ -188,9 +188,9 @@ public:
   ProcessConsole *pythonConsole() const { return pythonShell; }
   QDockWidget *terminalDockWidget() const { return terminalDock; }
   QDockWidget *pythonDockWidget() const { return pythonDock; }
-  /// The Claude Code dock (claudecodepanel.h): a conversation with Claude
-  /// Code, in the workspace folder unless another is chosen.
-  ClaudeCodePanel *claudeCode() const { return claudePanel; }
+  /// The Claude Code dock (claudecodetabs.h): conversations with Claude
+  /// Code, a tab each, in the workspace folder unless another is chosen.
+  ClaudeCodeTabs *claudeCode() const { return claudeTabs; }
   QDockWidget *claudeDockWidget() const { return claudeDock; }
   /// Shows the Claude Code dock, the prompt ready; hides it when it shows.
   void toggleClaudeCode();
@@ -535,7 +535,7 @@ private:
   QDockWidget *pythonDock;
   ProcessConsole *pythonShell;
   QDockWidget *claudeDock = nullptr;
-  ClaudeCodePanel *claudePanel = nullptr;
+  ClaudeCodeTabs *claudeTabs = nullptr;
 
   QListView *Projects;
   ProjectView *Content;

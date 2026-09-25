@@ -95,17 +95,28 @@ QString actionOf(const QString& tool)
     return tr("use %1").arg(tool);
 }
 
-QString detailOf(const QString& tool, const QJsonObject& input)
+// More of what a tool is asked than its subject: a command, a file's
+// content, an edit. \a scale: how many lines of it, from the permission
+// card's few (1) up.
+QString detailOf(const QString& tool, const QJsonObject& input, int scale = 1)
 {
     const auto str = [&input](const char* key) { return input.value(QLatin1String(key)).toString(); };
     if (tool == QLatin1String("Bash") || tool == QLatin1String("PowerShell")) {
         const QString description = str("description");
-        return firstLines(str("command"), 12) + (description.isEmpty() ? QString() : QStringLiteral("\n# ") + description);
+        return firstLines(str("command"), 12 * scale) + (description.isEmpty() ? QString() : QStringLiteral("\n# ") + description);
     }
-    if (tool == QLatin1String("Write")) return firstLines(str("content"), 14);
+    if (tool == QLatin1String("Write")) return firstLines(str("content"), 14 * scale);
+    if (tool == QLatin1String("Read") || tool == QLatin1String("Glob") || tool == QLatin1String("LS")) return {};
+    if (tool == QLatin1String("Grep")) {
+        QStringList parts{str("pattern")};
+        if (!str("path").isEmpty()) parts << tr("in %1").arg(str("path"));
+        if (!str("glob").isEmpty()) parts << tr("files %1").arg(str("glob"));
+        return parts.join(QLatin1Char(' '));
+    }
+    if (tool == QLatin1String("Task") || tool == QLatin1String("Agent")) return firstLines(str("prompt"), 6 * scale);
     if (tool == QLatin1String("Edit")) {
-        const auto marked = [](const QString& text, QChar mark) {
-            QStringList lines = firstLines(text, 7).split(QLatin1Char('\n'));
+        const auto marked = [scale](const QString& text, QChar mark) {
+            QStringList lines = firstLines(text, 7 * scale).split(QLatin1Char('\n'));
             for (QString& line : lines) line.prepend(mark + QLatin1Char(' '));
             return lines.join(QLatin1Char('\n'));
         };
@@ -116,8 +127,8 @@ QString detailOf(const QString& tool, const QJsonObject& input)
         return n == 1 ? tr("1 change") : tr("%1 changes").arg(n);
     }
     if (tool == QLatin1String("WebFetch")) return str("prompt");
-    if (tool == QLatin1String("NotebookEdit")) return firstLines(str("new_source"), 10);
-    return firstLines(QString::fromUtf8(QJsonDocument(input).toJson(QJsonDocument::Indented)), 12);
+    if (tool == QLatin1String("NotebookEdit")) return firstLines(str("new_source"), 10 * scale);
+    return firstLines(QString::fromUtf8(QJsonDocument(input).toJson(QJsonDocument::Indented)), 12 * scale);
 }
 
 QString failureOf(const QString& subtype, const QString& text)
@@ -235,7 +246,8 @@ QString qucsSystemPrompt()
         "in .dat datasets; a project is a folder whose name ends in _prj. It netlists for "
         "ngspice, Xyce and Qucsator. When the user refers to \"this schematic\" or \"the "
         "open document\", the prompt names the file. Qucs-S reloads a document you change "
-        "unless it has unsaved changes of its own: say which files you changed.");
+        "unless it has unsaved changes of its own: say which files you changed. The panel typesets "
+        "TeX math between $...$ (inline) and $$...$$ (display): write formulas that way, not as code.");
 }
 
 bool isAskMode(const QString& mode)
@@ -805,7 +817,7 @@ void Session::handleAssistant(const QJsonObject& m)
             const QJsonObject input = block.value(QLatin1String("input")).toObject();
             a_tools.insert(id, tool);
             if (isFileTool(tool)) a_editedFiles.insert(id, fileOf(input));
-            emit toolStarted(id, tool, toolSubject(tool, input, a_workDir));
+            emit toolStarted(id, tool, toolSubject(tool, input, a_workDir), detailOf(tool, input, 4));
             if (a_busy) setState(State::Working, tool);
         }
     }

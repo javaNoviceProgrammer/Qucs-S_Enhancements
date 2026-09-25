@@ -94,6 +94,7 @@
 #include "simulationconsole.h"
 #include "processconsole.h"
 #include "claudecodepanel.h"
+#include "claudecodetabs.h"
 #include "dialogs/tuner.h"
 #include "octave_window.h"
 #include "printerwriter.h"
@@ -729,20 +730,21 @@ void QucsApp::initView()
   updateConsolePrograms();
 
   // The Claude Code dock: on the right, hidden until asked for (the View
-  // menu, the status bar). Claude works in the workspace folder.
-  claudePanel = new ClaudeCodePanel;
-  claudePanel->setDefaultDirectory(QucsSettings.qucsWorkspaceDir.absolutePath());
-  claudePanel->setDocumentProvider([this] {
+  // menu, the status bar); a conversation in each of its tabs. Claude
+  // works in the workspace folder.
+  claudeTabs = new ClaudeCodeTabs;
+  claudeTabs->setDefaultDirectory(QucsSettings.qucsWorkspaceDir.absolutePath());
+  claudeTabs->setDocumentProvider([this] {
     QucsDoc *doc = DocumentTab != nullptr && DocumentTab->count() > 0 ? getDoc() : nullptr;
     return doc != nullptr ? doc->getDocName() : QString();
   });
   claudeDock = new QDockWidget(tr("Claude Code"), this);
   claudeDock->setObjectName(QStringLiteral("ClaudeCodeDock"));
-  claudeDock->setWidget(claudePanel);
+  claudeDock->setWidget(claudeTabs);
   addDockWidget(Qt::RightDockWidgetArea, claudeDock);
   claudeDock->hide();
-  connect(claudePanel, &ClaudeCodePanel::filesChanged, this, &QucsApp::reloadChangedFiles);
-  connect(claudePanel, &ClaudeCodePanel::openFileRequested, this, [this](const QString &file) { gotoPage(file); });
+  connect(claudeTabs, &ClaudeCodeTabs::filesChanged, this, &QucsApp::reloadChangedFiles);
+  connect(claudeTabs, &ClaudeCodeTabs::openFileRequested, this, [this](const QString &file) { gotoPage(file); });
 
     // initial projects directory model
     a_homeDirModel = new QucsFileSystemModel(this);
@@ -2773,8 +2775,8 @@ void QucsApp::slotChangeView()
   Doc->becomeCurrent(true);
   if (a_status != nullptr)   // not yet while the window is being built
     a_status->documentChanged();
-  if (claudePanel != nullptr)
-    claudePanel->refreshDocument();
+  if (claudeTabs != nullptr)
+    claudeTabs->refreshDocument();
 
 //  TODO proper window title
 //  QFileInfo Info (Doc-> getDocName());
@@ -2837,19 +2839,27 @@ void QucsApp::slotApplSettings()
   Content->applyRefreshSettings();
   // The workspace may have moved: Claude goes along, unless it works
   // in a folder of the user's choosing.
-  claudePanel->setDefaultDirectory(QucsSettings.qucsWorkspaceDir.absolutePath());
+  claudeTabs->setDefaultDirectory(QucsSettings.qucsWorkspaceDir.absolutePath());
 }
 
 // --------------------------------------------------------------
 void QucsApp::toggleClaudeCode()
 {
+  // A conversation behind the others that waits for permission comes
+  // forward first.
+  ClaudeCodePanel *waiting = claudeTabs->needingAttention();
   if (claudeDock->isVisible() && !claudeDock->visibleRegion().isEmpty()) {
+    if (waiting != nullptr && waiting != claudeTabs->current()) {
+      claudeTabs->showConversation(waiting);
+      return;
+    }
     claudeDock->hide();
     return;
   }
   claudeDock->show();
   claudeDock->raise();
-  claudePanel->focusComposer();
+  if (waiting != nullptr) claudeTabs->showConversation(waiting);
+  claudeTabs->focusComposer();
 }
 
 void QucsApp::reloadChangedFiles(const QStringList &files)
@@ -2861,7 +2871,7 @@ void QucsApp::reloadChangedFiles(const QStringList &files)
       if (doc->getDocName().isEmpty() || QFileInfo(doc->getDocName()).canonicalFilePath() != canonical) continue;
       const QString name = QFileInfo(file).fileName();
       if (doc->getDocChanged()) {
-        claudePanel->addNote(tr("%1 has unsaved changes in Qucs-S, so it was not loaded again.").arg(name));
+        claudeTabs->addNote(tr("%1 has unsaved changes in Qucs-S, so it was not loaded again.").arg(name));
         break;
       }
       bool loaded = false;
@@ -2871,8 +2881,8 @@ void QucsApp::reloadChangedFiles(const QStringList &files)
       } else if (auto *text = dynamic_cast<TextDoc *>(doc)) {
         loaded = text->reload();
       }
-      claudePanel->addNote(loaded ? tr("%1 loaded again with Claude's changes.").arg(name)
-                                  : tr("%1 could not be loaded again.").arg(name));
+      claudeTabs->addNote(loaded ? tr("%1 loaded again with Claude's changes.").arg(name)
+                                 : tr("%1 could not be loaded again.").arg(name));
       break;
     }
   }

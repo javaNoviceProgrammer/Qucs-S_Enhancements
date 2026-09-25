@@ -43,6 +43,9 @@
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTextBlock>
+#include <QTextBrowser>
+#include <QTextDocument>
 #include <QTextEdit>
 #include <QWheelEvent>
 
@@ -59,6 +62,7 @@
 #include "config.h"
 #include "qucs.h"
 #include "claudecodepanel.h"
+#include "claudecodetabs.h"
 #include "schematic.h"
 #include "textdoc.h"
 #include "module.h"
@@ -558,9 +562,11 @@ class TestGuiMonkey : public QObject
     // Something done in the Claude Code dock.
     void claudeStep()
     {
-        ClaudeCodePanel* panel = a_app->claudeCode();
+        ClaudeCodeTabs* tabs = a_app->claudeCode();
+        if (tabs == nullptr) return;
+        ClaudeCodePanel* panel = tabs->current();
         if (panel == nullptr) return;
-        switch (pick(9)) {
+        switch (pick(13)) {
         case 0:
             note("claude: show or hide the dock");
             a_app->toggleClaudeCode();
@@ -587,6 +593,36 @@ class TestGuiMonkey : public QObject
             note("claude: new conversation");
             panel->newConversation();
             break;
+        case 9:
+            note("claude: a conversation in a new tab");
+            if (tabs->count() < 6) panel->newButton()->click();
+            break;
+        case 10: {
+            const QList<ClaudeCodePanel*> all = tabs->panels();
+            ClaudeCodePanel* closing = pickOf(all);
+            note(QStringLiteral("claude: close the tab of %1").arg(closing->title()));
+            tabs->closeConversation(closing, false);
+            break;
+        }
+        case 11: {
+            const QList<ClaudeCodePanel*> all = tabs->panels();
+            note("claude: another tab");
+            tabs->showConversation(pickOf(all));
+            break;
+        }
+        case 12: {
+            // A line of tools, or one, opened or folded.
+            note("claude: open or fold the tools");
+            QStringList keys;
+            QTextDocument* doc = panel->transcript()->document();
+            for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+                for (auto it = b.begin(); !it.atEnd(); ++it) {
+                    const QString href = it.fragment().charFormat().anchorHref();
+                    if (href.startsWith(QLatin1String("toggle:"))) keys << href;
+                }
+            if (!keys.isEmpty()) emit panel->transcript()->anchorClicked(QUrl(pickOf(keys)));
+            break;
+        }
         case 5: {
             QList<QAction*> actions;
             for (QMenu* menu : panel->findChildren<QMenu*>())

@@ -148,7 +148,7 @@ ADD_SUBDIRECTORY( spicecomponents )
 SET(QUCS_SRCS
   element.cpp	octave_window.cpp	qucsdoc.cpp
   textdoc.cpp  main.cpp	schematic.cpp
-  mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp claudecodepanel.cpp
+  mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp claudecodepanel.cpp claudecodetabs.cpp mathtypeset.cpp
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
   mouseactions.cpp qucs_actions.cpp	qucs_panes.cpp schematic_file.cpp
   wirelabel.cpp node.cpp qucs_init.cpp
