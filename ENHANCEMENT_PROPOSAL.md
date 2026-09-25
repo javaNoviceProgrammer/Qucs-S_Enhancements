@@ -1077,6 +1077,25 @@ existing demand.
   moved it off the baseline. With `AlignMiddle` and padding computed
   from the text's x-height, the math's baseline is the line's. The
   system prompt tells Claude that math between dollars is typeset.
+- *Done:* **A Claude Code conversation exported** (`qucs/claudecodepanel.*`).
+  *⋯ → Export Conversation → PDF / Markdown / Plain Text*, from the
+  panel's entries rather than from what the dock shows (where the tools
+  are folded): a header (the first prompt as the title, when, the
+  folder, the model, the Claude Code version, the session to resume),
+  then every prompt, reply, tool - its input and what it gave, as when
+  opened - note, problem and turn summary. Markdown keeps the replies as
+  Claude wrote them (math between dollars as it was), a prompt as a
+  quote, the tools as a list with their input and output in code
+  fences longer than any backtick run in them. Plain text reads each
+  reply's Markdown with QTextDocument and writes its blocks back out:
+  list marks, quotes, code indented, a table a row to a line, the math
+  as TeX. The PDF is the dock's own drawing (`renderConversation()`)
+  with the colours of paper - dark on white whatever the theme - every
+  tool open, no links, math typeset at four times the resolution; the
+  document laid out as on the screen is paginated with
+  `setPageSize()`, painted page by page onto a QPdfWriter scaled from
+  the screen's dots per inch to 300, with the title and "n of N" in a
+  footer (A4, or Letter where the measurement system is American).
 - *Done:* **Login-shell environment at start** (`qucs/shellenvironment.*`).
   `importLoginShellEnvironment()` runs `$SHELL -l -i -c "printf marker;
   exec env -0"` (stdin from /dev/null, killed at a timeout; then `-l`
