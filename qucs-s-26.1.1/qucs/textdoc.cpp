@@ -760,7 +760,7 @@ bool TextDoc::hasFileChangedOnDisk() const
 }
 
 
-int TextDoc::lineNumberAreaWidth()
+int TextDoc::lineNumberAreaWidth() const
 {
     int digits = 1;
     int max = qMax(1, blockCount());
@@ -775,7 +775,8 @@ int TextDoc::lineNumberAreaWidth()
 
 void TextDoc::updateLineNumberAreaWidth(int /* newBlockCount */)
 {
-    setViewportMargins(lineNumberAreaWidth(), 0, 0, 0);
+    const QMargins extra = extraMargins();
+    setViewportMargins(lineNumberAreaWidth() + extra.left(), extra.top(), extra.right(), extra.bottom());
 }
 
 void TextDoc::updateLineNumberArea(const QRect &rect, int dy)
@@ -795,9 +796,10 @@ void TextDoc::resizeEvent(QResizeEvent *e)
 {
     QPlainTextEdit::resizeEvent(e);
 
+    const QMargins extra = extraMargins();
     QRect cr = contentsRect();
-    lineNumberArea->setGeometry(QRect(cr.left(), cr.top(),
-        lineNumberAreaWidth(), cr.height()));
+    lineNumberArea->setGeometry(QRect(cr.left(), cr.top() + extra.top(),
+        lineNumberAreaWidth(), cr.height() - extra.top() - extra.bottom()));
 }
 
 void TextDoc::lineNumberAreaPaintEvent(QPaintEvent *event)

@@ -290,6 +290,8 @@ public:
   static bool isTextDocument(QWidget *);
   /// Whether a tab holds a PDF document (pdfdoc.h), read and not edited.
   static bool isPdfDocument(QWidget *);
+  /// Whether a file is Markdown (.md, .markdown): opened in a MarkdownDoc.
+  static bool isMarkdownFile(const QString &name);
   /// The schematic (or data display, or symbol) a tab holds; nullptr for
   /// a text or a PDF document.
   static Schematic *schematicIn(QWidget *);
