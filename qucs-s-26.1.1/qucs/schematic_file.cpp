@@ -1135,6 +1135,7 @@ bool Schematic::loadPaintings(QTextStream *stream, std::list<Painting*> *List)
     else if(cstr == "Ellipse") p = new qucs::Ellipse();
     else if(cstr == "ImagePainting") p = new ImagePainting();
     else if(cstr == "Polyline") p = new PolylinePainting();
+    else if((p = Painting::newNamed(cstr)) != nullptr) {}   // the shapes, a dimension, a formula
     else {
       misc::reportError(QObject::tr("Format Error:\nUnknown painting!"));
       return false;

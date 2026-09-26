@@ -20,6 +20,16 @@
 
 #include "element.h"
 
+#include <QList>
+
+/// Drawing primitives of a component's symbol, as a painting drawn in a
+/// subcircuit's symbol becomes them in the instances.
+struct SymbolPrimitives {
+  QList<qucs::Line*> lines;
+  QList<qucs::Polyline*> polylines;
+  QList<Text*> texts;
+  QList<qucs::Image*> images;
+};
 
 class Painting : public Element  {
 public:
@@ -51,6 +61,15 @@ public:
   QRect boundingRect() const noexcept override;
 
   virtual bool Dialog(QWidget* parent = nullptr) { Q_UNUSED(parent) return false; };
+
+  /// The painting as a symbol's drawing primitives (new, for the caller to
+  /// own): how one drawn in a subcircuit's symbol reaches its instances.
+  /// False for the kinds a symbol reads by their own lines.
+  virtual bool symbolPrimitives(SymbolPrimitives& /*into*/) const { return false; }
+  /// A painting of the kinds made of primitives (shapes, a dimension, a
+  /// formula) by the word its line begins with; nullptr for any other.
+  static Painting* newNamed(const QString& type);
+
   QString Name; // name of painting, e.g. for saving
 
 protected:

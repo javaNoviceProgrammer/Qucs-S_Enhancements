@@ -946,6 +946,49 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   other net already answers to is never borrowed — that would join two
   nets that are not connected — and *Check Schematic* says so when it
   happens.
+- **More paintings**: the *paintings* group of the component panel has
+  thirteen new entries, each with its own icon:
+  - **Rounded Rectangle** (outline or filled): a block of a block
+    diagram, with a corner radius you choose.
+  - **Triangle**, **Regular Polygon** and **Star**:
+    - fitted to the box you draw;
+    - the triangle points right, as an amplifier does;
+    - the number of sides or points, the star's inner radius and where
+      the first corner points can all be set.
+  - **Brace**: a curly brace, square bracket or parenthesis, to group
+    parts of a schematic.
+  - **Waveform**: a few cycles of sine, square, triangle, sawtooth,
+    pulse (with its width) or damped sine, with an optional line through
+    the middle. Use it to mark a source or a signal.
+  - **Text Box**, **Note** and **Callout**:
+    - text wrapped inside a box with round corners, with its size,
+      colour, bold and alignment;
+    - a Note is yellow and a Callout has a pointer to what it is about,
+      whose tip you drag by its handle.
+  - **Table**:
+    - rows and columns of text, with an optional header row in its own
+      colour;
+    - the cells are edited in a grid in its dialog.
+  - **Dimension**:
+    - click two points to measure the distance between them, drawn with
+      extension lines and arrows, ticks or dots;
+    - the middle handle drags the dimension line off the points;
+    - the label is the length times a scale with a unit (e.g. "12.5 mm"),
+      or a text of your own.
+  - **Formula**:
+    - TeX maths typeset on the schematic, e.g.
+      `f_c = \frac{1}{2\pi RC}`: fractions, roots, sums and integrals with
+      limits, matrices, Greek;
+    - redrawn sharp at any zoom, and its handle scales it.
+
+  The box shapes are drawn like a rectangle: click one corner, then the
+  other (a single click gives a default size). Corner handles resize them.
+  They rotate in quarter turns and mirror, and all of them work in copy
+  and paste, undo, printing and export. Each opens a properties dialog
+  with a live preview. Drawn in a subcircuit's symbol, they reach every
+  instance: the shapes become polylines, text boxes and tables become
+  texts, and a formula becomes an image. The Claude Code tools know
+  their line formats.
 - **Images, and images on a symbol**: an image is placed from the
   *paintings* group of the component panel, pasted from the clipboard, or
   dropped on the schematic from a file manager, and it can now be in any
