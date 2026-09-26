@@ -32,5 +32,8 @@
 #include "id_text.h"
 #include "imagepainting.h"
 #include "polylinepainting.h"
+#include "shapes.h"
+#include "dimensionpainting.h"
+#include "formulapainting.h"
 
 #endif

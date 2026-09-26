@@ -31,6 +31,9 @@
 #include "module.h"
 #include "node.h"
 #include "misc.h"
+#include "paintings/painting.h"
+
+#include <memory>
 
 #include <QPen>
 #include <QString>
@@ -1588,6 +1591,22 @@ int Component::analyseLine(const QString &Row, int numProps) {
         if (i4 < y1) y1 = i4;
         if (i3 > x2) x2 = i3;
         if (i4 > y2) y2 = i4;
+        return 1;
+    } else if (std::unique_ptr<Painting> painting{Painting::newNamed(s)}) {
+        // The shapes, a dimension, a formula: drawn in the symbol as the
+        // primitives they are made of.
+        if (!painting->load(Row)) return -1;
+        SymbolPrimitives parts;
+        painting->symbolPrimitives(parts);
+        for (qucs::Line *l : parts.lines) Lines.append(l);
+        for (qucs::Polyline *p : parts.polylines) Polylines.append(p);
+        for (Text *t : parts.texts) Texts.append(t);
+        for (qucs::Image *i : parts.images) Images.append(i);
+        const QRect r = painting->boundingRect();
+        if (r.left() < x1) x1 = r.left();  // keep track of component boundings
+        if (r.top() < y1) y1 = r.top();
+        if (r.right() > x2) x2 = r.right();
+        if (r.bottom() > y2) y2 = r.bottom();
         return 1;
     }
 

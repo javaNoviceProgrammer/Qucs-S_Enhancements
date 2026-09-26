@@ -15,6 +15,22 @@
  *                                                                         *
  ***************************************************************************/
 #include "painting.h"
+#include "dimensionpainting.h"
+#include "formulapainting.h"
+#include "shapes.h"
+
+Painting* Painting::newNamed(const QString& type)
+{
+  if (type == QLatin1String("RoundRect")) return new RoundedRectangle();
+  if (type == QLatin1String("RegPolygon")) return new RegularPolygon();
+  if (type == QLatin1String("Brace")) return new BracePainting();
+  if (type == QLatin1String("Waveform")) return new WaveformPainting();
+  if (type == QLatin1String("TextBox")) return new TextBoxPainting();
+  if (type == QLatin1String("Table")) return new TablePainting();
+  if (type == QLatin1String("Dimension")) return new DimensionPainting();
+  if (type == QLatin1String("Formula")) return new FormulaPainting();
+  return nullptr;
+}
 
 
 QString Painting::save()

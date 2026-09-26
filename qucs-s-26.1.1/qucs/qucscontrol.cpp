@@ -1893,7 +1893,18 @@ QJsonObject QucsControl::describeFormat(const QJsonObject& args)
              "<Line x y dx dy #rrggbb width style>, <Arrow x y dx dy headLength headWidth #rrggbb width style kind>, "
              "<Rectangle x y width height #rrggbb width style #fillColour fillStyle filled>, "
              "<Ellipse ...> as a rectangle, <EArc x y width height startAngle spanAngle #rrggbb width style> (angles in "
-             "sixteenths of a degree), <Image ...>. get_schematic lists each painting with its line.")},
+             "sixteenths of a degree), <Image ...>. Shapes in a box share \"x y width height #rrggbb width style "
+             "#fillColour fillStyle filled angle mirrored\" (angle 0/90/180/270, counter-clockwise), then their own fields: "
+             "<RoundRect ... radius>, <RegPolygon ... kind sides star innerPercent firstCornerDegrees> (kind 0 triangle, "
+             "1 polygon, 2 star; a triangle points right), <Brace ... kind> (0 curly, 1 square, 2 round; opens to the "
+             "right), <Waveform ... shape cycles dutyPercent baseline> (shape 0 sine, 1 square, 2 triangle, 3 sawtooth, "
+             "4 pulse, 5 damped sine), <TextBox ... kind radius padding #textColour size bold align valign pointer tipX "
+             "tipY ~text> (kind 0 block, 1 note, 2 callout; align 0 left 1 centre 2 right; valign 0 top 1 middle 2 bottom; "
+             "pointer 1: a wedge to the tip), <Table ... rows columns header #headerColour #textColour size align ~cell ...> "
+             "(the cells row by row). <Dimension x1 y1 x2 y2 offset #rrggbb width style ends size scale decimals ~unit "
+             "~text> (ends 0 arrows, 1 ticks, 2 dots; an empty text: the length times scale, with the unit), <Formula x y "
+             "size #rrggbb angle display ~tex> (TeX math, no dollars). What follows a ~ is percent-encoded: %20 a space, "
+             "%0A a new line, %22 a quote, %3C < and %3E >. get_schematic lists each painting with its line.")},
     };
     const QString element = args.value(QLatin1String("element")).toString().trimmed().toLower();
     if (element.isEmpty()) {

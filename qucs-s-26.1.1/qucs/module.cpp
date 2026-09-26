@@ -259,6 +259,8 @@ REGISTER_COMP_2 (QObject::tr("microelectronics"),val,inf1,inf2)
   REGISTER_MOD_1 (QObject::tr("paintings"),val)
 #define REGISTER_PAINT_2(val,inf1,inf2) \
   REGISTER_MOD_2 (QObject::tr("paintings"),val,inf1,inf2)
+#define REGISTER_PAINT_3(val,inf1,inf2,inf3) \
+  REGISTER_MOD_3 (QObject::tr("paintings"),val,inf1,inf2,inf3)
 #define REGISTER_EXTERNAL_1(val) \
   REGISTER_COMP_1 (QObject::tr("external sim components"),val)
 #define REGISTER_SPICE_1(val) \
@@ -652,6 +654,14 @@ void Module::registerModules (void) {
   REGISTER_PAINT_1 (EllipseArc);
   REGISTER_PAINT_1 (ImagePainting);
   REGISTER_PAINT_2 (PolylinePainting, info, info_filled);
+  REGISTER_PAINT_2 (RoundedRectangle, info, info_filled);
+  REGISTER_PAINT_3 (RegularPolygon, info, info_polygon, info_star);
+  REGISTER_PAINT_1 (BracePainting);
+  REGISTER_PAINT_1 (WaveformPainting);
+  REGISTER_PAINT_3 (TextBoxPainting, info, info_note, info_callout);
+  REGISTER_PAINT_1 (TablePainting);
+  REGISTER_PAINT_1 (DimensionPainting);
+  REGISTER_PAINT_1 (FormulaPainting);
 
 }
 

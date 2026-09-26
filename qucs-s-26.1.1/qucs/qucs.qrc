@@ -68,6 +68,19 @@
         <file>bitmaps/svg/rectangle.svg</file>
         <file>bitmaps/svg/filledrect.svg</file>
         <file>bitmaps/svg/ellipsearc.svg</file>
+        <file>bitmaps/svg/roundrect.svg</file>
+        <file>bitmaps/svg/filledroundrect.svg</file>
+        <file>bitmaps/svg/triangle.svg</file>
+        <file>bitmaps/svg/regpolygon.svg</file>
+        <file>bitmaps/svg/star.svg</file>
+        <file>bitmaps/svg/brace.svg</file>
+        <file>bitmaps/svg/waveform.svg</file>
+        <file>bitmaps/svg/textbox.svg</file>
+        <file>bitmaps/svg/note.svg</file>
+        <file>bitmaps/svg/callout.svg</file>
+        <file>bitmaps/svg/table.svg</file>
+        <file>bitmaps/svg/dimension.svg</file>
+        <file>bitmaps/svg/formula.svg</file>
         <file>bitmaps/svg/ac.svg</file>
         <file>bitmaps/svg/dc.svg</file>
         <file>bitmaps/svg/tran.svg</file>
