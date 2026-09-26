@@ -51,6 +51,9 @@
 #include "ink.h"
 #include "qucsdoc.h"
 #include "textdoc.h"
+#ifdef QUCS_HAVE_QTPDF
+#include "pdfdoc.h"
+#endif
 #include "autosave.h"
 #include "crashhandler.h"
 #include <QTimer>
@@ -145,6 +148,9 @@ QucsApp::QucsApp(bool netlist2Console) :
     tr("Verilog-A Sources") + " (*.va);;" +
     tr("Octave Scripts") + " (*.m *.oct);;" +
     tr("Spice Files") + QStringLiteral(" (") + QucsSettings.spiceExtensions.join(" ") + QStringLiteral(");;") +
+#ifdef QUCS_HAVE_QTPDF
+    tr("PDF Documents") + " (*.pdf);;" +
+#endif
     tr("Any File")+" (*)";
 
   //updateSchNameHash();
@@ -920,14 +926,7 @@ QucsDoc* QucsApp::getDoc(int No)
   else
     w = DocumentTab->widget(No);
 
-  if(w) {
-    if(isTextDocument (w))
-      return (QucsDoc*) ((TextDoc*)w);
-    else
-      return (QucsDoc*) ((Schematic*)w);
-  }
-
-  return 0;
+  return docIn(w);
 }
 
 // ---------------------------------------------------------------
@@ -937,10 +936,8 @@ QucsDoc * QucsApp::findDoc (QString File, int * Pos)
   File = QDir::toNativeSeparators (File);
   for (ContextMenuTabWidget *pane : panes())
     for (int i = 0; i < pane->count(); ++i) {
-      QWidget *w = pane->widget(i);
-      QucsDoc *d = isTextDocument(w) ? static_cast<QucsDoc *>(static_cast<TextDoc *>(w))
-                                     : static_cast<QucsDoc *>(static_cast<Schematic *>(w));
-      if (QDir::toNativeSeparators (d->getDocName()) == File) {
+      QucsDoc *d = docIn(pane->widget(i));
+      if (d != nullptr && QDir::toNativeSeparators (d->getDocName()) == File) {
         if (Pos) *Pos = i;
         return d;
       }
@@ -2208,8 +2205,7 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     // if reloadPage is set AND it's a textDocument AND it has changed on disk -> reload
     if (reloadPage) {
       QWidget *w = DocumentTab->currentWidget();
-      if (isTextDocument(w)) {
-        TextDoc *tDoc = dynamic_cast<TextDoc*>(w);
+      if (auto *tDoc = qobject_cast<TextDoc*>(w)) {
         if (tDoc->hasFileChangedOnDisk()) {
           if(!tDoc -> reload()) {
             return false;
@@ -2223,19 +2219,29 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
 
   QFileInfo Info(Name);
   bool is_sch = false;
+  bool is_pdf = false;
   if(Info.suffix() == "sch" || Info.suffix() == "dpl" ||
      Info.suffix() == "sym") {
     d = new Schematic(this, Name);
     i = addDocumentTab((Schematic *)d, Info.fileName());
     is_sch = true;
   }
+#ifdef QUCS_HAVE_QTPDF
+  else if (Info.suffix().compare("pdf", Qt::CaseInsensitive) == 0) {
+    // Read in a tab of its own (pdfdoc.h), not edited as text.
+    auto *pdf = new PdfDoc(this, Name);
+    d = pdf;
+    i = addDocumentTab(pdf, Info.fileName());
+    is_pdf = true;
+  }
+#endif
   else {
     d = new TextDoc(this, Name);
     i = addDocumentTab((TextDoc *)d, Info.fileName());
   }
   DocumentTab->setCurrentIndex(i);
 
-  if (!Info.isWritable()) {
+  if (!Info.isWritable() && !is_pdf) {
       QMessageBox::warning(this,tr("Open file"),
                            tr("Document opened in read-only mode! "
                            "Simulation will not work. Please copy the document "
@@ -2262,7 +2268,7 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
   }
 
   // if only an untitled document was open -> close it
-  if(getDoc(0)->getDocName().isEmpty())
+  if(getDoc(0) != nullptr && getDoc(0)->getDocName().isEmpty())
     if(!getDoc(0)->getDocChanged()) {
       slotHideEdit();   // it may be in that document's canvas
       delete DocumentTab->widget(0);
@@ -2367,7 +2373,10 @@ bool QucsApp::saveAs()
     QString ext = "vhdl;vhd;v;va;sch;dpl;m;oct;net;qnet;ckt;cir;sp;txt;sym";
     QStringList extlist = ext.split (';');
 
-    if(isTextDocument (w)) {
+    if (isPdfDocument (w)) {
+      Filter = tr("PDF Documents") + " (*.pdf)";
+      selfilter = Filter;
+    } else if(isTextDocument (w)) {
       Filters << tr("VHDL Sources")+" (*.vhdl *.vhd);;"
               << tr("Verilog Sources")+" (*.v);;"
               << tr("Verilog-A Sources")+" (*.va);;"
@@ -2390,8 +2399,8 @@ bool QucsApp::saveAs()
         selfilter = Filters.first();
       }
     } else {
-      Schematic *sch = (Schematic *) Doc;
-      if (sch->getIsSymbolOnly()) {
+      Schematic *sch = schematicIn (w);
+      if (sch != nullptr && sch->getIsSymbolOnly()) {
         Filter = tr("Subcircuit symbol") + "(*.sym)";
         selfilter = tr("Subcircuit symbol") + "(*.sym)";
       } else {
@@ -2406,7 +2415,10 @@ bool QucsApp::saveAs()
     Info.setFile(s);               // try to guess the best extension ...
     ext = Info.suffix();
 
-    if(ext.isEmpty() || !extlist.contains(ext))
+    if (isPdfDocument (w)) {
+      if (ext.compare("pdf", Qt::CaseInsensitive) != 0) s += ".pdf";
+    }
+    else if(ext.isEmpty() || !extlist.contains(ext))
     {
       // if no extension was specified or is unknown
       if (!isTextDocument (w))
@@ -2460,7 +2472,7 @@ bool QucsApp::saveDocumentAs(QucsDoc *Doc, const QString &fileName)
   const int n = Doc->save();   // SAVE
   if(n < 0)  return false;
   if (wasNamed.isEmpty())
-    qucs_s::autosave::removeUntitled(docIndex, !isTextDocument(w));   // it was untitled before
+    qucs_s::autosave::removeUntitled(docIndex, schematicIn(w) != nullptr);   // it was untitled before
   qucs_s::autosave::remove(s);
 
   // It's assumed that *.sym files contain *only* a symbol
@@ -2515,8 +2527,8 @@ void QucsApp::slotFileSaveAll()
     pane->blockSignals(true);
     for (int i = 0; i < pane->count(); ++i) {
       QWidget *w = pane->widget(i);
-      QucsDoc *Doc = isTextDocument(w) ? static_cast<QucsDoc *>(static_cast<TextDoc *>(w))
-                                       : static_cast<QucsDoc *>(static_cast<Schematic *>(w));
+      QucsDoc *Doc = docIn(w);
+      if (Doc == nullptr || isPdfDocument(w)) continue;   // a PDF is only read
       if(Doc->getDocName().isEmpty()) {  // make document the current ?
         setActivePane(pane);
         pane->setCurrentIndex(i);
@@ -2582,7 +2594,7 @@ void QucsApp::closeFile(int index)
     if (Doc == nullptr)
       return;
     const QString closingName = Doc->getDocName();
-    const bool closingSchematic = !isTextDocument(DocumentTab->widget(index));
+    const bool closingSchematic = schematicIn(DocumentTab->widget(index)) != nullptr;
     if(Doc->getDocChanged()) {
       switch(QMessageBox::warning(this,tr("Closing Qucs document"),
         tr("The document contains unsaved changes!\n")+
@@ -2778,22 +2790,29 @@ void QucsApp::slotChangeView()
 {
   QWidget *w = DocumentTab->currentWidget();
   editText->setHidden (true); // disable text edit of component property
-  QucsDoc * Doc;
-  if(w==nullptr)return;
+  QucsDoc * Doc = docIn(w);
+  if(w==nullptr || Doc==nullptr)return;
   // for text documents
   if (isTextDocument (w)) {
-    TextDoc *d = (TextDoc*)w;
-    Doc = (QucsDoc*)d;
     // update menu entries, etc. if necessary
     magAll->setDisabled(true);
     magSel->setDisabled(true);
     if(cursorLeft->isEnabled())
       switchSchematicDoc (false);
+    insEntity->setEnabled(true);   // after a PDF, too
+    buildModule->setEnabled(true);
+  }
+  // for PDF documents: read; View All fits a page, Zoom to Selection the width
+  else if (isPdfDocument (w)) {
+    magAll->setDisabled(false);
+    magSel->setDisabled(false);
+    if(cursorLeft->isEnabled())
+      switchSchematicDoc (false);
+    insEntity->setEnabled(false);
+    buildModule->setEnabled(false);
   }
   // for schematic documents
-  else {
-    Schematic *d = (Schematic*)w;
-    Doc = (QucsDoc*)d;
+  else if (Schematic *d = schematicIn(w)) {
     magAll->setDisabled(false);
     magSel->setDisabled(false);
     // already in schematic?
@@ -2838,6 +2857,7 @@ void QucsApp::slotFileSettings ()
   editText->setHidden (true); // disable text edit of component property
 
   QWidget * w = DocumentTab->currentWidget ();
+  if (isPdfDocument (w)) return;   // nothing to set
   if (isTextDocument (w)) {
     QucsDoc * Doc = (QucsDoc *) ((TextDoc *) w);
     QString ext = Doc->fileSuffix ();
@@ -2856,8 +2876,8 @@ void QucsApp::slotFileSettings ()
     }
   }
   // schematic properties
-  else {
-    SettingsDialog * d = new SettingsDialog ((Schematic *) w);
+  else if (Schematic *sch = schematicIn (w)) {
+    SettingsDialog * d = new SettingsDialog (sch);
     d->exec ();
 
     // TODO: It would be better to emit a signal to notify all subscribers
@@ -3005,10 +3025,8 @@ void QucsApp::updatePortNumber(QucsDoc *currDoc, int No)
   };
 
   while((w=DocumentTab->widget(No++)) != nullptr) {
-    if(isTextDocument (w))  continue;
-
-    Schematic* Doc = dynamic_cast<Schematic*>(w);
-    QUCS_ASSERT(Doc != nullptr);
+    Schematic* Doc = schematicIn(w);
+    if (Doc == nullptr) continue;   // a text or a PDF document
 
     // Possibly there are components which need to be recreated by calling
     // Schematic::recreateComponent on them. But there is a pitfall: invocation
@@ -3234,7 +3252,7 @@ void QucsApp::slotTune(bool checked)
     if (checked)
     {
         QWidget *w = DocumentTab->currentWidget(); // remember from which Tab the tuner was started
-        if (isTextDocument(w))
+        if (schematicIn(w) == nullptr)
         {
             //Probably digital Simulation
             QMessageBox::warning(this, "Not implemented",
@@ -3366,11 +3384,14 @@ void QucsApp::slotSimulate(QWidget *w)
 
   if (w == nullptr)
       w = DocumentTab->currentWidget();
+  if (w == nullptr || isPdfDocument(w)) {
+      statusBar()->showMessage(tr("A PDF document is not simulated."), 3000);
+      return;
+  }
 
   //Check is schematic digital
   bool isDigital = false;
-  if (!isTextDocument(w)) {
-      Schematic* schematicPtr = (Schematic*)w;
+  if (Schematic* schematicPtr = schematicIn(w)) {
       isDigital = schematicPtr->isDigitalCircuit();
 
       if (isDigital && schematicPtr->getShowBias() == 0) {
@@ -3640,8 +3661,8 @@ void QucsApp::slotChangePage(const QString& DocName, const QString& DataDisplay)
 
 
   if(DocumentTab->currentWidget() == w)      // if page not ...
-    if(!isTextDocument (w))
-      ((Schematic*)w)->reloadGraphs();  // ... changes, reload here !
+    if(Schematic *sch = schematicIn (w))
+      sch->reloadGraphs();  // ... changes, reload here !
 
   TabView->setCurrentIndex(2);   // switch to "Component"-Tab
   if (Name.right(4) == ".dpl") {
@@ -3656,6 +3677,7 @@ void QucsApp::slotChangePage(const QString& DocName, const QString& DataDisplay)
 void QucsApp::slotToPage()
 {
   QucsDoc *d = getDoc();
+  if (d == nullptr || isPdfDocument(DocumentTab->currentWidget())) return;   // no data display
   if(d->getDataDisplay().isEmpty()) {
     QMessageBox::critical(this, tr("Error"), tr("No page set !"));
     return;
@@ -3755,6 +3777,14 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
     }
     return;
   }
+
+#ifdef QUCS_HAVE_QTPDF
+  // PDF documents: read in a tab of their own (pdfdoc.h).
+  if (extName == "pdf") {
+    openTextOrSchematicTab(absolutePath);
+    return;
+  }
+#endif
 
   // The text documents Qucs edits itself: HDL and Verilog-A sources,
   // Octave scripts, netlists, SPICE files.
@@ -4183,7 +4213,19 @@ void QucsApp::changeSchematicSymbolMode(Schematic *Doc)
 
 // ---------------------------------------------------------
 bool QucsApp::isTextDocument(QWidget *w) {
-  return w->inherits("QPlainTextEdit");
+  return w != nullptr && w->inherits("QPlainTextEdit");
+}
+
+bool QucsApp::isPdfDocument(QWidget *w) {
+  return w != nullptr && w->inherits("PdfDoc");
+}
+
+Schematic *QucsApp::schematicIn(QWidget *w) {
+  return qobject_cast<Schematic *>(w);
+}
+
+QucsDoc *QucsApp::docIn(QWidget *w) {
+  return dynamic_cast<QucsDoc *>(w);
 }
 
 // ---------------------------------------------------------
@@ -4202,8 +4244,8 @@ Schematic* QucsApp::symbolDocument()
     return nullptr;
   }
 
-  Schematic* Doc = (Schematic*)w;
-  if (Doc == nullptr) return nullptr;
+  Schematic* Doc = schematicIn(w);
+  if (Doc == nullptr) return nullptr;   // a PDF document
   if (Doc->getIsSymbolOnly()) {
     QMessageBox::information(this, tr("Symbol"),
         tr("This document is a symbol already; it has no schematic to read the ports from."));
@@ -4354,8 +4396,7 @@ void QucsApp::slotSymbolEdit()
     SDoc->viewport()->update();
   }
   // in a normal schematic, symbol file
-  else {
-    Schematic *SDoc = (Schematic*)w;
+  else if (Schematic *SDoc = schematicIn(w)) {
     if (!SDoc->getIsSymbolOnly()) {
       slotHideEdit(); // disable text edit of component property
       SDoc->switchPaintMode();   // twist the view coordinates
@@ -4370,7 +4411,7 @@ void QucsApp::slotSymbolEdit()
 void QucsApp::slotPowerMatching()
 {
   QWidget *w = DocumentTab->currentWidget(); // remember from which Tab the tuner was started
-  if (isTextDocument(w)) return;
+  if (schematicIn(w) == nullptr) return;
   view->dropStaleElements(currentSchematic());
   if(!view->focusElement) return;
   if(view->focusElement->Type != isMarker) return;
@@ -4400,7 +4441,7 @@ void QucsApp::slotPowerMatching()
 void QucsApp::slot2PortMatching()
 {
   QWidget *w = DocumentTab->currentWidget(); // remember from which Tab the tuner was started
-  if (isTextDocument(w)) return;
+  if (schematicIn(w) == nullptr) return;
   view->dropStaleElements(currentSchematic());
   if(!view->focusElement) return;
   if(view->focusElement->Type != isMarker) return;
@@ -4738,9 +4779,8 @@ void QucsApp::slotSimSettings()
 
 void QucsApp::slotSimulateWithSpice()
 {
-    if (!isTextDocument(DocumentTab->currentWidget()))
+    if (Schematic* schematic = schematicIn(DocumentTab->currentWidget()))
     {
-        Schematic* schematic(dynamic_cast<Schematic*>(DocumentTab->currentWidget()));
         if (TuningMode)
         {
             QFileInfo Info(schematic->getDocName());
@@ -4810,11 +4850,8 @@ void QucsApp::slotSaveNetlist()
         return;
     }
 
-    if (!isTextDocument(DocumentTab->currentWidget()))
+    if (Schematic* schematic = schematicIn(DocumentTab->currentWidget()))
     {
-        Schematic* schematic(dynamic_cast<Schematic*>(DocumentTab->currentWidget()));
-        Q_ASSERT(schematic != nullptr);
-
         SimulationRun run(schematic, a_netlist2Console);   // netlist only: nothing attached
         run.saveNetlist();
     }
@@ -4875,11 +4912,8 @@ void QucsApp::slotCdlSettings()
 
 void QucsApp::slotSaveCdlNetlist()
 {
-    if (!isTextDocument(DocumentTab->currentWidget()))
+    if (Schematic* schematic = schematicIn(DocumentTab->currentWidget()))
     {
-        Schematic* schematic = dynamic_cast<Schematic*>(DocumentTab->currentWidget());
-        Q_ASSERT(schematic != nullptr);
-
         if (a_netlist2Console)
         {
             QString netlistString;

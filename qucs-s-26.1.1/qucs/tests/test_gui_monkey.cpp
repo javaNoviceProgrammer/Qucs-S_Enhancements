@@ -64,6 +64,10 @@
 #include "claudecodepanel.h"
 #include "claudecodetabs.h"
 #include "filebrowser.h"
+#ifdef QUCS_HAVE_QTPDF
+#include "pdfdoc.h"
+#include <QPdfWriter>
+#endif
 #include "schematic.h"
 #include "textdoc.h"
 #include "module.h"
@@ -188,6 +192,7 @@ class TestGuiMonkey : public QObject
 
     QTemporaryDir dir;
     QStringList a_schematics;           // copies of the examples
+    QStringList a_pdfs;                 // PDF documents to read beside them
     std::mt19937 a_rng;
     QPointer<QucsApp> a_app;
     QTimer a_dialogTimer;
@@ -475,10 +480,123 @@ class TestGuiMonkey : public QObject
         }
     }
 
+#ifdef QUCS_HAVE_QTPDF
+    static void writePdf(const QString& path, int pages)
+    {
+        QPdfWriter writer(path);
+        writer.setPageSize(QPageSize(QPageSize::A4));
+        QTextDocument doc;
+        QString html = QStringLiteral("<h1>Datasheet</h1><p>Absolute maximum ratings: 5 V, 20 mA.</p>");
+        for (int i = 2; i <= pages; ++i)
+            html += QStringLiteral("<p style='page-break-before:always'>Page %1: the needle, the gain, the noise.</p>").arg(i);
+        doc.setHtml(html);
+        doc.print(&writer);
+    }
+
+    // Something done in a PDF document in front: scrolled, zoomed, text
+    // selected and copied, searched, its pages at the side, its page
+    // typed, the file written anew.
+    void pdfStep(PdfDoc* pdf)
+    {
+        qucs_s::pdf::PageView* view = pdf->view();
+        QWidget* vp = view->viewport();
+        const QPoint a(pick(std::max(1, vp->width())), pick(std::max(1, vp->height())));
+        const QPoint b(pick(std::max(1, vp->width())), pick(std::max(1, vp->height())));
+        switch (pick(12)) {
+        case 0: {
+            const int delta = (pick(2) ? 120 : -120) * (1 + pick(3));
+            const Qt::KeyboardModifiers m = chance(0.4) ? Qt::ControlModifier : Qt::NoModifier;
+            note(QStringLiteral("pdf: wheel %1 mods %2").arg(delta).arg(int(m)));
+            QWheelEvent ev(a, vp->mapToGlobal(a), QPoint(), QPoint(0, delta), Qt::NoButton, m, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(vp, &ev);
+            break;
+        }
+        case 1:
+        case 2: {
+            const Qt::MouseButton button = chance(0.2) ? Qt::MiddleButton : Qt::LeftButton;
+            note(QStringLiteral("pdf: drag %1,%2 to %3,%4").arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y()));
+            QTest::mousePress(vp, button, Qt::NoModifier, a);
+            for (int i = 1; i <= 3; ++i) {
+                const QPoint p = a + (b - a) * i / 3;
+                QMouseEvent move(QEvent::MouseMove, QPointF(p), vp->mapToGlobal(QPointF(p)), button, button, Qt::NoModifier);
+                QApplication::sendEvent(vp, &move);
+            }
+            QTest::mouseRelease(vp, button, Qt::NoModifier, b);
+            break;
+        }
+        case 3:
+            note(QStringLiteral("pdf: double click %1,%2").arg(a.x()).arg(a.y()));
+            QTest::mouseDClick(vp, Qt::LeftButton, Qt::NoModifier, a);
+            break;
+        case 4: {
+            static const QList<int> keys = {Qt::Key_Home, Qt::Key_End, Qt::Key_Space, Qt::Key_PageDown, Qt::Key_PageUp,
+                                            Qt::Key_Up, Qt::Key_Down, Qt::Key_Escape, Qt::Key_C};
+            const int key = pickOf(keys);
+            const Qt::KeyboardModifiers m = key == Qt::Key_C ? Qt::ControlModifier : Qt::NoModifier;
+            note(QStringLiteral("pdf: key %1").arg(key, 0, 16));
+            QKeyEvent press(QEvent::KeyPress, key, m);
+            QApplication::sendEvent(view, &press);
+            break;
+        }
+        case 5: {
+            const QString text = pickOf(QStringList{"needle", "Page", "gain", "", "x", oddText(a_rng).left(12)});
+            note(QStringLiteral("pdf: find %1").arg(text));
+            pdf->find(text);
+            for (int i = pick(4); i > 0; --i) pdf->findNext(chance(0.3));
+            if (chance(0.3)) pdf->hideSearch();
+            break;
+        }
+        case 6:
+            note("pdf: sidebar");
+            pdf->setSidebarShown(!pdf->sidebar()->isVisible());
+            if (pdf->thumbnails()->count() > 0 && chance(0.5)) pdf->thumbnails()->setCurrentRow(pick(pdf->thumbnails()->count()));
+            break;
+        case 7: {
+            const int mode = pick(4);
+            note(QStringLiteral("pdf: zoom %1").arg(mode));
+            if (mode == 0) view->setFit(qucs_s::pdf::PageView::Fit::Width);
+            else if (mode == 1) view->setFit(qucs_s::pdf::PageView::Fit::Page);
+            else view->setZoom(qucs_s::pdf::PageView::MinZoom + pick(1000) / 1000.0 * 6);
+            break;
+        }
+        case 8: {
+            const int pages = 1 + pick(6);
+            note(QStringLiteral("pdf: written anew, %1 pages").arg(pages));
+            writePdf(pdf->getDocName(), pages);
+            break;
+        }
+        case 9: {
+            const QString text = pickOf(QStringList{"1", "2", "99", "0", "-3", "iv", ""});
+            note(QStringLiteral("pdf: page %1").arg(text));
+            pdf->pageField()->setText(text);
+            QMetaObject::invokeMethod(pdf->pageField(), "returnPressed");
+            break;
+        }
+        case 10:
+            note("pdf: select the page, copy");
+            pdf->selectAll();
+            pdf->copySelection();
+            break;
+        default:
+            note("pdf: next and previous pages");
+            pdf->nextPage();
+            if (chance(0.5)) pdf->previousPage();
+            if (chance(0.2)) pdf->lastPage();
+            break;
+        }
+    }
+#endif
+
     void step()
     {
         Schematic* sch = schematic();
         const int what = pick(100);
+#ifdef QUCS_HAVE_QTPDF
+        if (auto* pdf = qobject_cast<PdfDoc*>(a_app->DocumentTab->currentWidget()); pdf != nullptr && what < 45) {
+            pdfStep(pdf);
+            return;
+        }
+#endif
         if (sch && what < 45) {
             if (chance(0.3)) {
                 QAction* mode = pickOf(modeActions());
@@ -493,7 +611,7 @@ class TestGuiMonkey : public QObject
             note(QStringLiteral("action %1%2").arg(act->text().remove('&'), act->isEnabled() ? "" : " (disabled)"));
             if (act->isEnabled()) act->trigger();
         } else if (what < 82) {
-            const QString file = pickOf(a_schematics);
+            const QString file = !a_pdfs.isEmpty() && chance(0.2) ? pickOf(a_pdfs) : pickOf(a_schematics);
             note(QStringLiteral("open %1").arg(QFileInfo(file).fileName()));
             a_app->gotoPage(file);
         } else if (what < 86 && sch) {
@@ -774,6 +892,12 @@ class TestGuiMonkey : public QObject
             if (f.endsWith(".sch")) a_schematics << dst;
         }
         a_schematics.sort();
+#ifdef QUCS_HAVE_QTPDF
+        // A datasheet to read: several pages of text, no link (a link
+        // clicked would open a browser).
+        a_pdfs << dir.filePath("examples/datasheet.pdf");
+        writePdf(a_pdfs.first(), 4);
+#endif
         // A sweep family to plot, so that the auto colours, markers and the
         // per-curve legend are on the canvas too.
         const QString sweep = dir.filePath("examples/NGspice features/RC_lowpass_ngsweep.dat.ngspice");
