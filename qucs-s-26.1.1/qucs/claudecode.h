@@ -201,9 +201,10 @@ private:
  * program in the working directory; it stays for the next prompts (a turn
  * each) and reports as it goes: the reply as it is written, each tool
  * used and how it went, a tool that needs the user's permission (answer()
- * gives it), the end of the turn. Stopped, or changed to another mode or
- * model, the program ends; the next prompt starts it again, continuing
- * the conversation (--resume).
+ * gives it), the end of the turn. Another mode or model it takes as it
+ * runs, for the turns after (a program that will not is started again
+ * with it once its turn is over). Stopped, the program ends; the next
+ * prompt starts it again, continuing the conversation (--resume).
  */
 class Session : public QObject
 {
@@ -221,12 +222,14 @@ public:
     void setWorkingDirectory(const QString& dir);
     QString workingDirectory() const { return a_workDir; }
 
-    /// For the next start; a running program ends after its turn.
+    /// For the turns after this one: a running program is told at once.
     void setPermissionMode(const QString& mode);
     QString permissionMode() const { return a_mode; }
     /// The mode the program said it works in (not every model has every
-    /// mode: auto falls back to asking); empty until it says.
+    /// mode: auto falls back to asking); empty until it says, and again
+    /// after another is chosen.
     QString permissionModeInUse() const { return a_modeInUse; }
+    /// For the turns after this one, as the mode.
     void setModel(const QString& model);
     QString model() const { return a_model; }
     void setAppendSystemPrompt(const QString& prompt) { a_systemPrompt = prompt; }
@@ -261,7 +264,8 @@ public:
     /// terminal has), as it said when it started: "compact", "context",
     /// skills...; empty before it has.
     QStringList slashCommands() const { return a_slashCommands; }
-    /// The model and the program's version, as it said when it started.
+    /// The model and the program's version, as it said when it started;
+    /// the model is empty after another is chosen, until it says again.
     QString modelInUse() const { return a_modelInUse; }
     QString version() const { return a_version; }
 
@@ -290,6 +294,8 @@ signals:
     /// The permission mode changed from within (edits allowed for the
     /// session from a permission request).
     void permissionModeChanged(const QString& mode);
+    /// The program said which mode it now works in (permissionModeInUse()).
+    void modeInUseChanged();
     /// The reply being written, so far (as a whole, not the new part).
     void replyStreamed(const QString& text);
     /// A finished part of the reply.
@@ -317,6 +323,12 @@ private:
     void handleUser(const QJsonObject& m);
     void handleStreamEvent(const QJsonObject& m);
     void handleControlRequest(const QJsonObject& m);
+    void handleControlResponse(const QJsonObject& m);
+    /// Asks the running program to change something as it runs: a
+    /// control request of \a subtype, with \a fields.
+    void askProgram(const QString& subtype, const QJsonObject& fields);
+    /// A notice when the program works in \a inUse, not the mode asked for.
+    void reportMode(const QString& inUse);
     void handleMcpMessage(const QString& requestId, const QJsonObject& request);
     void allowRequest(const QString& id, const QJsonObject& input);
     /// The host's tool that \a tool (mcp__server__name) is, or empty.
@@ -335,7 +347,8 @@ private:
     QString a_mode;
     QString a_model;
     QString a_systemPrompt;
-    bool a_restartAfterTurn = false;   // a mode or model changed during a turn
+    bool a_restartAfterTurn = false;   // the program would not take another mode or model
+    QHash<QString, QString> a_asked;   // askProgram() not answered yet: request id -> subtype
 
     State a_state = State::Off;
     QString a_detail;
