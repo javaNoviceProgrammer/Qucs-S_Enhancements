@@ -124,6 +124,56 @@ while IFS= read -r line; do
 done
 )SH";
 
+// claude that changes its model and mode as it runs, when told: a turn
+// says which it works with; "claude-refused" it will not change to - and
+// a turn under way then ends at the refusal. Each start is a line in
+// switcher-starts, what it reads goes to switcher-in.
+const char* const kSwitcher = R"SH(#!/bin/sh
+printf '%s\n' "$@" > "$QUCS_FAKE_DIR/switcher-args"
+echo start >> "$QUCS_FAKE_DIR/switcher-starts"
+model=claude-default-1
+mode=default
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --model) model=$2 ;;
+    --permission-mode) mode=$2 ;;
+  esac
+  shift
+done
+busy=
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/switcher-in"
+  id=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"type":"user"'*)
+      echo '{"type":"system","subtype":"init","session_id":"sw-1","model":"'"$model"'","permissionMode":"'"$mode"'"}'
+      case "$line" in
+        *'Take long'*) busy=1 ;;
+        *) echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"sw-1"}' ;;
+      esac
+      ;;
+    *'"subtype":"set_model"'*)
+      wanted=$(printf '%s' "$line" | sed -n 's/.*"model":"\([^"]*\)".*/\1/p')
+      if [ "$wanted" = claude-refused ]; then
+        echo '{"type":"control_response","response":{"subtype":"error","request_id":"'"$id"'","error":"not that one"}}'
+      else
+        [ "$wanted" = default ] && wanted=claude-default-1
+        model=$wanted
+        echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'"}}'
+      fi
+      if [ -n "$busy" ]; then
+        busy=
+        echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"sw-1"}'
+      fi
+      ;;
+    *'"subtype":"set_permission_mode"'*)
+      mode=$(printf '%s' "$line" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')
+      echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"mode":"'"$mode"'"}}}'
+      ;;
+  esac
+done
+)SH";
+
 // What claude answers when it is asked which models it offers: its
 // default, an alias, a model by its full name - and then it ends, its
 // input closed.
@@ -507,6 +557,114 @@ private slots:
         QVERIFY(qAbs(turns.last().at(0).value<TurnResult>().conversationCostUsd - 0.0163) < 1e-9);
         QVERIFY(read(dir.filePath("answers")).contains("\"behavior\":\"deny\""));
         s.stop();
+    }
+
+    // Another model or mode, chosen in a conversation: the program takes
+    // it as it runs, for the next turn - not ended and started again. One
+    // it will not take, it is started with, once the turn is over.
+    void theModelAndModeChangeAsTheProgramRuns()
+    {
+        skipWithoutShell();
+        for (const char* f : {"switcher-starts", "switcher-in"}) QFile::remove(dir.filePath(f));
+        const auto starts = [this] { return int(read(dir.filePath("switcher-starts")).count("start")); };
+        const auto readIn = [this] { return read(dir.filePath("switcher-in")); };
+        Session s;
+        s.setProgram(script("switcher", kSwitcher));
+        s.setWorkingDirectory(fresh("switchwork"));
+        s.setModel("claude-opus-5-5");
+        QSignalSpy turns(&s, &Session::turnFinished);
+        QSignalSpy modes(&s, &Session::modeInUseChanged);
+        QVERIFY(s.send("Hello"));
+        QVERIFY(turns.wait(10000));
+        QCOMPARE(s.modelInUse(), QStringLiteral("claude-opus-5-5"));
+        const QStringList args = read(dir.filePath("switcher-args")).split('\n');
+        QCOMPARE(args.value(args.indexOf("--model") + 1), QStringLiteral("claude-opus-5-5"));
+
+        // The model: asked for at once, which one is in use no longer known
+        // - and the next turn says.
+        s.setModel("claude-fable-5-1");
+        QVERIFY(s.isRunning());
+        QVERIFY(s.modelInUse().isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(readIn().contains(R"("request":{"model":"claude-fable-5-1","subtype":"set_model"})"), 10000);
+        QVERIFY(s.send("Again"));
+        QVERIFY(turns.wait(10000));
+        QCOMPARE(s.modelInUse(), QStringLiteral("claude-fable-5-1"));
+        // The default by its name to the program.
+        s.setModel(QString());
+        QTRY_VERIFY_WITH_TIMEOUT(readIn().contains(R"("model":"default","subtype":"set_model")"), 10000);
+
+        // The mode: the program says the one it works in.
+        s.setPermissionMode("acceptEdits");
+        QVERIFY(s.permissionModeInUse().isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(s.permissionModeInUse(), QStringLiteral("acceptEdits"), 10000);
+        QCOMPARE(modes.count(), 1);
+        s.setPermissionMode(QString());   // asking: "default" to every version
+        QTRY_VERIFY_WITH_TIMEOUT(readIn().contains(R"("mode":"default","subtype":"set_permission_mode")"), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(s.permissionModeInUse(), QStringLiteral("default"), 10000);
+        QVERIFY(s.isRunning());
+        QCOMPARE(starts(), 1);
+        // Bypassing, only from its start: not asked, ended.
+        s.setPermissionMode("bypassPermissions");
+        QTRY_VERIFY_WITH_TIMEOUT(!s.isRunning(), 10000);
+        QVERIFY(!readIn().contains("bypassPermissions"));
+        s.setPermissionMode(QString());
+        QVERIFY(s.send("Hello again"));
+        QVERIFY(turns.wait(10000));
+        QCOMPARE(starts(), 2);
+
+        // Refused, when no turn is under way: said, ended, and the next
+        // prompt starts it with that model, continuing the conversation.
+        QSignalSpy notices(&s, &Session::notice);
+        s.setModel("claude-refused");
+        QTRY_VERIFY_WITH_TIMEOUT(!s.isRunning(), 10000);
+        QCOMPARE(notices.count(), 1);
+        QCOMPARE(notices.last().at(0).toString(), QStringLiteral("not that one"));
+        QVERIFY(s.send("Once more"));
+        QVERIFY(turns.wait(10000));
+        QCOMPARE(starts(), 3);
+        const QStringList again = read(dir.filePath("switcher-args")).split('\n');
+        QCOMPARE(again.value(again.indexOf("--model") + 1), QStringLiteral("claude-refused"));
+        QCOMPARE(again.value(again.indexOf("--resume") + 1), QStringLiteral("sw-1"));
+        QCOMPARE(s.modelInUse(), QStringLiteral("claude-refused"));
+
+        // Refused during a turn: it ends once the turn is over, not before.
+        s.setModel("claude-opus-5-5");
+        QVERIFY(s.send("Take long"));
+        QTRY_COMPARE_WITH_TIMEOUT(s.modelInUse(), QStringLiteral("claude-opus-5-5"), 10000);   // (taken meanwhile)
+        s.setModel("claude-refused");
+        QVERIFY(turns.wait(10000));
+        QTRY_VERIFY_WITH_TIMEOUT(!s.isRunning(), 10000);
+        QCOMPARE(starts(), 3);
+
+        // In the dock: the header names the model chosen at once, in the
+        // middle of a conversation.
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("switchdock"));
+        panel.session()->setProgram(script("switcher", kSwitcher));
+        QSignalSpy docked(panel.session(), &Session::turnFinished);
+        panel.composer()->setPlainText("Hello");
+        panel.sendComposer();
+        QVERIFY(docked.wait(10000));
+        QVERIFY(panel.modelLabel()->text().startsWith("Default 1"));
+        QAction* fable = nullptr;
+        for (QAction* a : panel.modelActions())
+            if (a->text() == "Fable 5.1") fable = a;
+        QVERIFY(fable != nullptr);
+        fable->trigger();
+        QVERIFY2(panel.modelLabel()->text().startsWith("Fable 5.1"), qPrintable(panel.modelLabel()->text()));
+        QVERIFY(panel.session()->isRunning());
+        panel.renderNow();
+        QCOMPARE(panel.transcriptText().count("Fable 5.1 from the next prompt on."), 1);
+        panel.composer()->setPlainText("/model Fable 5.1");   // (the same: said once more, not twice)
+        panel.sendComposer();
+        panel.renderNow();
+        QCOMPARE(panel.transcriptText().count("from the next prompt on."), 2);
+        QCOMPARE(panel.transcriptText().count("The model: Fable 5.1, from the next prompt on."), 1);
+        // As it was, for the tests after.
+        for (QAction* a : panel.modelActions())
+            if (a->data().toString().isEmpty()) a->trigger();
+        QVERIFY(!panel.modelLabel()->text().contains("Fable"));
+        panel.session()->stop();
     }
 
     // Stop in the middle of a turn: an interrupt request, and the turn

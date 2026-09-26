@@ -494,6 +494,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
 
     connect(a_session, &qucs_s::claude::Session::stateChanged, this, [this] { updateState(); });
     connect(a_session, &qucs_s::claude::Session::sessionStarted, this, [this] { updateState(); });
+    connect(a_session, &qucs_s::claude::Session::modeInUseChanged, this, [this] { updateState(); });
     connect(a_session, &qucs_s::claude::Session::replyStreamed, this, &ClaudeCodePanel::onReplyStreamed);
     connect(a_session, &qucs_s::claude::Session::replyFinished, this, &ClaudeCodePanel::onReplyFinished);
     connect(a_session, &qucs_s::claude::Session::toolStarted, this, &ClaudeCodePanel::onToolStarted);
@@ -1076,9 +1077,9 @@ QList<QAction*> ClaudeCodePanel::permissionActions() const
 void ClaudeCodePanel::setPermissionMode(const QString& mode)
 {
     QucsSettingsFile().setValue(kMode, mode);
-    const bool running = a_session->isRunning();
+    const bool told = a_session->isRunning() && !a_entries.isEmpty() && mode != a_session->permissionMode();
     a_session->setPermissionMode(mode);
-    if (running && !a_entries.isEmpty()) {
+    if (told) {
         QString name = a_modes->checkedAction() != nullptr ? a_modes->checkedAction()->text() : mode;
         addNote(tr("Permissions: %1, from the next prompt on.").arg(name.remove(QLatin1Char('&'))));
     }
@@ -1089,9 +1090,9 @@ void ClaudeCodePanel::setPermissionMode(const QString& mode)
 void ClaudeCodePanel::setModel(const QString& model)
 {
     QucsSettingsFile().setValue(kModel, model);
-    const bool running = a_session->isRunning();
+    const bool told = a_session->isRunning() && !a_entries.isEmpty() && model != a_session->model();
     a_session->setModel(model);
-    if (running && !a_entries.isEmpty())
+    if (told)
         addNote(model.isEmpty() ? tr("The default model from the next prompt on.")
                                 : tr("%1 from the next prompt on.").arg(modelName(model)));
     updateState();
@@ -2501,10 +2502,12 @@ bool ClaudeCodePanel::runCommand(const QString& text)
                     && (a->data().toString().compare(args, Qt::CaseInsensitive) == 0
                         || cleanLabel(a->text()).compare(args, Qt::CaseInsensitive) == 0))
                     chosen = a;
+            const int notes = int(a_entries.size());
             if (chosen != nullptr) chosen->trigger();
             else setModel(args);
             const QString model = chosen != nullptr ? chosen->data().toString() : args;
-            addNote(tr("The model: %1, from the next prompt on.").arg(modelName(model).isEmpty() ? model : modelName(model)));
+            if (a_entries.size() == notes)   // (not said already)
+                addNote(tr("The model: %1, from the next prompt on.").arg(modelName(model).isEmpty() ? model : modelName(model)));
         }
     } else if (name == QLatin1String("permissions") || name == QLatin1String("mode")) {
         static const QHash<QString, QString> modes = {

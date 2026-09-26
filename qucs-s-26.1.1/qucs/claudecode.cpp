@@ -496,8 +496,16 @@ void Session::setPermissionMode(const QString& mode)
     if (mode == a_mode) return;
     a_mode = mode;
     if (!isRunning()) return;
-    if (a_busy) a_restartAfterTurn = true;
-    else stop();
+    // Asking is "default" to every version. The one it works in, it says.
+    a_modeInUse.clear();
+    if (mode == QLatin1String("bypassPermissions")) {
+        // Only from its start (it refuses it as it runs).
+        if (a_busy) a_restartAfterTurn = true;
+        else stop();
+        return;
+    }
+    askProgram(QStringLiteral("set_permission_mode"),
+               {{QStringLiteral("mode"), isAskMode(mode) ? QStringLiteral("default") : mode}});
 }
 
 void Session::setModel(const QString& model)
@@ -505,6 +513,44 @@ void Session::setModel(const QString& model)
     if (model == a_model) return;
     a_model = model;
     if (!isRunning()) return;
+    // Which it is ("opus" is a model of its version), the next turn says.
+    a_modelInUse.clear();
+    askProgram(QStringLiteral("set_model"),
+               {{QStringLiteral("model"), model.isEmpty() ? QStringLiteral("default") : model}});
+}
+
+void Session::askProgram(const QString& subtype, const QJsonObject& fields)
+{
+    static int count = 0;
+    const QString id = QStringLiteral("qucs-change-%1").arg(++count);
+    QJsonObject request = fields;
+    request.insert(QStringLiteral("subtype"), subtype);
+    a_asked.insert(id, subtype);
+    write({{QStringLiteral("type"), QStringLiteral("control_request")},
+           {QStringLiteral("request_id"), id},
+           {QStringLiteral("request"), request}});
+}
+
+void Session::handleControlResponse(const QJsonObject& m)
+{
+    const QJsonObject response = m.value(QLatin1String("response")).toObject();
+    const QString subtype = a_asked.take(response.value(QLatin1String("request_id")).toString());
+    if (subtype.isEmpty()) return;
+    if (response.value(QLatin1String("subtype")).toString() == QLatin1String("success")) {
+        // The mode it now works in, which newer versions say.
+        const QString mode = response.value(QLatin1String("response")).toObject().value(QLatin1String("mode")).toString();
+        if (subtype == QLatin1String("set_permission_mode") && !mode.isEmpty()) {
+            a_modeInUse = mode;
+            reportMode(mode);
+            emit modeInUseChanged();
+        }
+        return;
+    }
+    // Refused (a version without it, a model it does not know): it is
+    // started with it, once the turn is over. What is wrong with a model
+    // is said ("Model 'x' not found").
+    const QString error = response.value(QLatin1String("error")).toString().trimmed();
+    if (subtype == QLatin1String("set_model") && !error.isEmpty()) emit notice(oneLine(error, 300));
     if (a_busy) a_restartAfterTurn = true;
     else stop();
 }
@@ -580,6 +626,8 @@ void Session::start()
     a_stopping = false;
     a_reportedCost = 0.0;
     a_modeInUse.clear();
+    a_asked.clear();
+    a_restartAfterTurn = false;
     setState(State::Starting);
     process->start();
     if (a_host != nullptr) {
@@ -828,6 +876,7 @@ void Session::handleLine(const QByteArray& line)
     else if (type == QLatin1String("assistant")) handleAssistant(m);
     else if (type == QLatin1String("user")) handleUser(m);
     else if (type == QLatin1String("control_request")) handleControlRequest(m);
+    else if (type == QLatin1String("control_response")) handleControlResponse(m);
     else if (type == QLatin1String("control_cancel_request")) {
         const QString id = m.value(QLatin1String("request_id")).toString();
         if (a_pending.remove(id) > 0) emit permissionWithdrawn(id);
@@ -865,15 +914,7 @@ void Session::handleSystem(const QJsonObject& m)
         const bool told = !a_modeInUse.isEmpty();
         a_modeInUse = mode;
         emit sessionStarted(a_sessionId, a_modelInUse);
-        if (!told && !mode.isEmpty() && mode != a_mode && !(isAskMode(mode) && isAskMode(a_mode))) {
-            const QString model = modelName(a_modelInUse);
-            if (a_mode == QLatin1String("auto") && isAskMode(mode))
-                emit notice(model.isEmpty() ? tr("Auto mode is not available here: Claude asks before it acts.")
-                                            : tr("Auto mode is not available with %1: Claude asks before it acts.").arg(model));
-            else
-                emit notice(tr("Claude Code works in the %1 mode, not %2.").arg(isAskMode(mode) ? tr("asking") : mode,
-                                                                                    isAskMode(a_mode) ? tr("asking") : a_mode));
-        }
+        if (!told) reportMode(mode);
         if (a_busy && a_state == State::Starting) setState(State::Thinking);
     } else if (subtype == QLatin1String("permission_denied")) {
         const QString message = m.value(QLatin1String("message")).toString();
@@ -882,6 +923,18 @@ void Session::handleSystem(const QJsonObject& m)
     } else if (subtype == QLatin1String("status")) {
         if (a_busy && a_state == State::Starting) setState(State::Thinking);
     }
+}
+
+void Session::reportMode(const QString& inUse)
+{
+    if (inUse.isEmpty() || inUse == a_mode || (isAskMode(inUse) && isAskMode(a_mode))) return;
+    const QString model = modelName(a_modelInUse.isEmpty() ? a_model : a_modelInUse);
+    if (a_mode == QLatin1String("auto") && isAskMode(inUse))
+        emit notice(model.isEmpty() ? tr("Auto mode is not available here: Claude asks before it acts.")
+                                    : tr("Auto mode is not available with %1: Claude asks before it acts.").arg(model));
+    else
+        emit notice(tr("Claude Code works in the %1 mode, not %2.").arg(isAskMode(inUse) ? tr("asking") : inUse,
+                                                                            isAskMode(a_mode) ? tr("asking") : a_mode));
 }
 
 void Session::handleStreamEvent(const QJsonObject& m)
@@ -1103,8 +1156,8 @@ void Session::handleResult(const QJsonObject& m)
     }
     emit turnFinished(r);
     if (a_restartAfterTurn) {
-        // A mode or model changed during the turn: the next prompt starts
-        // the program with it.
+        // A mode or model it would not take during the turn: the next
+        // prompt starts the program with it.
         a_restartAfterTurn = false;
         stop();
     }
