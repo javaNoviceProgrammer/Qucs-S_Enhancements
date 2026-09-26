@@ -13,9 +13,17 @@
 #include "apptheme.h"
 #include "claudecodepanel.h"
 
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFileInfo>
 #include <QDockWidget>
+#include <QHeaderView>
+#include <QJsonArray>
+#include <QLocale>
+#include <QPushButton>
+#include <QTreeWidget>
+#include <QUuid>
 #include <QEvent>
 #include <QIcon>
 #include <QKeyEvent>
@@ -79,12 +87,20 @@ ClaudeCodeTabs::ClaudeCodeTabs(QWidget* parent) : QWidget(parent)
         if (auto* panel = qobject_cast<ClaudeCodePanel*>(a_tabs->widget(index))) renameConversation(panel);
     });
     a_tabs->tabBar()->installEventFilter(this);
+    // Kept a moment after they change (a reply streams in pieces).
+    a_saveTimer = new QTimer(this);
+    a_saveTimer->setSingleShot(true);
+    a_saveTimer->setInterval(700);
+    connect(a_saveTimer, &QTimer::timeout, this, &ClaudeCodeTabs::saveConversations);
+    connect(a_tabs, &QTabWidget::currentChanged, a_saveTimer, qOverload<>(&QTimer::start));
+    connect(a_tabs->tabBar(), &QTabBar::tabMoved, a_saveTimer, qOverload<>(&QTimer::start));
     addPanel(nullptr);
     restyle();
 }
 
 ClaudeCodeTabs::~ClaudeCodeTabs()
 {
+    saveConversations();   // (as Qucs-S closes: they come back as they are)
     delete a_renameEditor;
     // The panels' sessions end with them; nothing of theirs comes here then.
     for (ClaudeCodePanel* panel : panels()) {
@@ -133,6 +149,17 @@ ClaudeCodePanel* ClaudeCodeTabs::addPanel(ClaudeCodePanel* like)
         updateTab(panel);
         emit stateChanged();
     });
+    connect(panel, &ClaudeCodePanel::conversationChanged, this, [this, panel] {
+        a_unsaved.insert(panel);
+        a_saveTimer->start();
+    });
+    connect(panel, &ClaudeCodePanel::conversationEnding, this, [this, panel] {
+        if (a_unsaved.contains(panel)) saveConversation(panel);
+    });
+    // (From the event loop: not under the panel's own sending.)
+    connect(panel, &ClaudeCodePanel::closeRequested, this, [this, panel] { closeConversation(panel); }, Qt::QueuedConnection);
+    connect(panel, &ClaudeCodePanel::resumeRequested, this,
+            [this, panel](const QString& query) { showResume(panel, query); }, Qt::QueuedConnection);
     connect(panel, &ClaudeCodePanel::filesChanged, this, [this, panel](const QStringList& files) {
         a_reporting = panel;
         emit filesChanged(files);
@@ -176,6 +203,8 @@ bool ClaudeCodeTabs::closeConversation(ClaudeCodePanel* panel, bool ask)
                != QMessageBox::Yes)
         return false;
     if (panel == a_renaming) finishRenaming(false, false);
+    if (a_unsaved.contains(panel)) saveConversation(panel);   // (kept: /resume brings it back)
+    a_unsaved.remove(panel);
     panel->disconnect(this);
     panel->session()->disconnect(this);
     a_tabs->removeTab(index);
@@ -183,9 +212,233 @@ bool ClaudeCodeTabs::closeConversation(ClaudeCodePanel* panel, bool ask)
     panel->hide();
     panel->deleteLater();
     if (a_tabs->count() == 0) newConversation();
+    saveOpen();
     emit stateChanged();
     return true;
 }
+
+// ----------------------------------------------------------------------
+// Kept, and gone on with.
+
+void ClaudeCodeTabs::saveConversation(ClaudeCodePanel* panel)
+{
+    a_unsaved.remove(panel);
+    if (!panel->hasConversation()) return;
+    if (panel->conversationId().isEmpty()) panel->setConversationId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    qucs_s::claude::history::save(panel->conversationId(), panel->conversationJson());
+}
+
+void ClaudeCodeTabs::saveOpen()
+{
+    QStringList ids;
+    for (ClaudeCodePanel* panel : panels())
+        if (!panel->conversationId().isEmpty() && panel->hasConversation()) ids << panel->conversationId();
+    ClaudeCodePanel* front = current();
+    qucs_s::claude::history::setOpen(ids, front != nullptr ? front->conversationId() : QString());
+}
+
+void ClaudeCodeTabs::saveConversations()
+{
+    for (ClaudeCodePanel* panel : panels())
+        if (a_unsaved.contains(panel)) saveConversation(panel);
+    a_unsaved.clear();
+    saveOpen();
+}
+
+bool ClaudeCodeTabs::restoreConversations()
+{
+    if (!qucs_s::claude::history::reopenAtStart()) return false;
+    QString front;
+    const QStringList ids = qucs_s::claude::history::open(&front);
+    ClaudeCodePanel* shown = nullptr;
+    bool any = false;
+    for (const QString& id : ids) {
+        const QJsonObject conversation = qucs_s::claude::history::load(id);
+        if (conversation.value(QLatin1String("entries")).toArray().isEmpty()) continue;
+        // The empty one there at first takes the first.
+        ClaudeCodePanel* panel = !any && count() == 1 && !current()->hasConversation() ? current() : addPanel(nullptr);
+        panel->setConversationId(id);
+        panel->restoreConversation(conversation);
+        updateTab(panel);
+        if (id == front) shown = panel;
+        any = true;
+    }
+    if (shown != nullptr) showConversation(shown);
+    a_unsaved.clear();   // (as they were kept)
+    emit stateChanged();
+    return any;
+}
+
+QList<qucs_s::claude::history::Summary> ClaudeCodeTabs::resumable(const QString& folder) const
+{
+    using namespace qucs_s::claude;
+    QList<history::Summary> list = history::saved();
+    QSet<QString> sessions;
+    for (const history::Summary& s : std::as_const(list))
+        if (!s.sessionId.isEmpty()) sessions << s.sessionId;
+    for (ClaudeCodePanel* panel : panels())
+        if (!panel->session()->sessionId().isEmpty()) sessions << panel->session()->sessionId();
+    for (const history::Summary& s : history::claudeSessions(folder))
+        if (!sessions.contains(s.sessionId)) list << s;
+    return list;
+}
+
+ClaudeCodePanel* ClaudeCodeTabs::resume(const qucs_s::claude::history::Summary& conversation)
+{
+    using namespace qucs_s::claude;
+    // Open already: in front.
+    for (ClaudeCodePanel* panel : panels())
+        if ((conversation.claudeFile.isEmpty() && panel->conversationId() == conversation.id)
+            || (!conversation.sessionId.isEmpty() && panel->session()->sessionId() == conversation.sessionId)) {
+            showConversation(panel);
+            return panel;
+        }
+    QJsonObject kept;
+    if (conversation.claudeFile.isEmpty()) {
+        kept = history::load(conversation.id);
+        if (kept.isEmpty()) return nullptr;
+    } else if (!QFileInfo::exists(conversation.claudeFile)) {
+        return nullptr;
+    }
+    ClaudeCodePanel* front = current();
+    ClaudeCodePanel* panel = front != nullptr && !front->hasConversation() && !front->session()->isBusy() ? front : newConversation();
+    if (conversation.claudeFile.isEmpty()) {
+        panel->setConversationId(conversation.id);
+        panel->restoreConversation(kept);
+    } else if (!panel->importClaudeSession(conversation.claudeFile)) {
+        // Nothing of it to show: its session gone on with all the same.
+        const history::Summary what = history::claudeSessionSummary(conversation.claudeFile);
+        if (!what.folder.isEmpty() && QFileInfo(what.folder).isDir()) panel->setWorkingDirectory(what.folder);
+        panel->session()->resume(what.sessionId);
+        panel->addNote(tr("Going on with Claude Code's session %1 (what was said in it is not shown here).").arg(what.sessionId));
+    }
+    showConversation(panel);
+    updateTab(panel);
+    a_unsaved.insert(panel);
+    a_saveTimer->start();
+    emit stateChanged();
+    return panel;
+}
+
+namespace {
+
+// When a conversation was last changed, as the list says it.
+QString whenOf(const QDateTime& time)
+{
+    const QDateTime local = time.toLocalTime();
+    const qint64 days = local.date().daysTo(QDate::currentDate());
+    if (days == 0) return QLocale().toString(local.time(), QLocale::ShortFormat);
+    if (days == 1) return ClaudeCodeTabs::tr("Yesterday");
+    return QLocale().toString(local.date(), QLocale::ShortFormat);
+}
+
+} // namespace
+
+QDialog* ClaudeCodeTabs::resumeDialog(const QString& folder, const QString& query)
+{
+    using namespace qucs_s::claude;
+    auto* dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("claudeResumeDialog"));
+    dialog->setWindowTitle(tr("Resume a Conversation"));
+    dialog->resize(680, 420);
+    auto* layout = new QVBoxLayout(dialog);
+    auto* filter = new QLineEdit(dialog);
+    filter->setObjectName(QStringLiteral("claudeResumeFilter"));
+    filter->setPlaceholderText(tr("Search the conversations"));
+    filter->setClearButtonEnabled(true);
+    auto* list = new QTreeWidget(dialog);
+    list->setObjectName(QStringLiteral("claudeResumeList"));
+    list->setHeaderLabels({tr("Conversation"), tr("Folder"), tr("When"), tr("From")});
+    list->setRootIsDecorated(false);
+    list->setUniformRowHeights(true);
+    list->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    const QList<history::Summary> all = resumable(folder);
+    for (qsizetype i = 0; i < all.size(); ++i) {
+        const history::Summary& s = all.at(i);
+        auto* item = new QTreeWidgetItem(list, {s.title.isEmpty() ? tr("(no prompt)") : s.title,
+                                                QDir::toNativeSeparators(s.folder), whenOf(s.updated),
+                                                s.claudeFile.isEmpty() ? tr("the dock") : tr("Claude Code")});
+        item->setData(0, Qt::UserRole, int(i));
+        item->setToolTip(0, s.title);
+        item->setToolTip(1, QDir::toNativeSeparators(s.folder));
+    }
+    auto* buttons = new QDialogButtonBox(dialog);
+    QPushButton* open = buttons->addButton(tr("Resume"), QDialogButtonBox::AcceptRole);
+    open->setObjectName(QStringLiteral("claudeResumeOpen"));
+    QPushButton* forget = buttons->addButton(tr("Delete"), QDialogButtonBox::ActionRole);
+    forget->setObjectName(QStringLiteral("claudeResumeDelete"));
+    forget->setToolTip(tr("Forget a conversation the dock kept (Claude Code's own sessions are left as they are)"));
+    buttons->addButton(QDialogButtonBox::Cancel);
+    layout->addWidget(filter);
+    layout->addWidget(list, 1);
+    layout->addWidget(buttons);
+
+    const auto chosen = [list]() -> int {
+        const QTreeWidgetItem* item = list->currentItem();
+        return item != nullptr && !item->isHidden() ? item->data(0, Qt::UserRole).toInt() : -1;
+    };
+    const auto refresh = [open, forget, chosen, all] {
+        open->setEnabled(chosen() >= 0);
+        forget->setEnabled(chosen() >= 0 && all.at(chosen()).claudeFile.isEmpty());
+    };
+    connect(filter, &QLineEdit::textChanged, dialog, [list, refresh](const QString& text) {
+        QTreeWidgetItem* first = nullptr;
+        for (int i = 0; i < list->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* item = list->topLevelItem(i);
+            const bool shown = text.trimmed().isEmpty() || item->text(0).contains(text.trimmed(), Qt::CaseInsensitive)
+                               || item->text(1).contains(text.trimmed(), Qt::CaseInsensitive);
+            item->setHidden(!shown);
+            if (shown && first == nullptr) first = item;
+        }
+        if (list->currentItem() == nullptr || list->currentItem()->isHidden()) list->setCurrentItem(first);
+        refresh();
+    });
+    connect(list, &QTreeWidget::currentItemChanged, dialog, refresh);
+    connect(list, &QTreeWidget::itemDoubleClicked, dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(forget, &QPushButton::clicked, dialog, [list, chosen, all, refresh] {
+        const int index = chosen();
+        if (index < 0 || !all.at(index).claudeFile.isEmpty()) return;
+        history::remove(all.at(index).id);
+        delete list->currentItem();
+        refresh();
+    });
+    list->setCurrentItem(list->topLevelItem(0));
+    filter->setText(query);
+    refresh();
+    return dialog;
+}
+
+void ClaudeCodeTabs::showResume(ClaudeCodePanel* from, const QString& query)
+{
+    using namespace qucs_s::claude;
+    const QString folder = from != nullptr ? from->workingDirectory() : a_defaultDir;
+    const QList<history::Summary> all = resumable(folder);
+    // Named: gone on with at once.
+    const QString wanted = query.trimmed();
+    if (!wanted.isEmpty()) {
+        for (const history::Summary& s : all)
+            if (s.id == wanted || s.sessionId == wanted) {
+                resume(s);
+                return;
+            }
+        // One of Claude Code's sessions, of any folder.
+        const QString file = history::claudeSessionFile(wanted);
+        if (!file.isEmpty()) {
+            resume(history::claudeSessionSummary(file));
+            return;
+        }
+    }
+    QDialog* dialog = resumeDialog(folder, wanted);
+    auto* list = dialog->findChild<QTreeWidget*>(QStringLiteral("claudeResumeList"));
+    if (dialog->exec() == QDialog::Accepted && list->currentItem() != nullptr && !list->currentItem()->isHidden()) {
+        const history::Summary chosen = all.at(list->currentItem()->data(0, Qt::UserRole).toInt());
+        if (resume(chosen) == nullptr) QMessageBox::warning(this, tr("Claude Code"), tr("That conversation could not be read."));
+    }
+    delete dialog;
+}
+
 
 void ClaudeCodeTabs::showConversation(ClaudeCodePanel* panel)
 {

@@ -288,6 +288,34 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   lets the rest of the conversation go on without asking (as do the
   *Accept Edits*, *Auto* and *Bypass* modes). The system's own file and
   print dialogs are not driven: Claude opens and saves by file name.
+  - **Quick**: the tools are always loaded (never behind Claude Code's
+    tool search, which cost a turn before the first use); their answers
+    are compact JSON (a third of the tokens and less); `batch` runs many
+    calls in one - place and wire a circuit, set properties, add a
+    diagram and its traces - each change still one step to undo; a menu
+    action answers as soon as it is over (not half a second later).
+    While a dialog waits for an answer (the user's, or one Claude
+    opened), the tools that change a document wait too - the dialog
+    holds on to what it edits - and so does loading a file Claude
+    changed.
+- **Conversations kept, and gone on with**: every conversation is kept
+  as it goes; those open when Qucs-S closes come back when it opens
+  again - what was said, their names, folders and pinned schematics -
+  and the next prompt continues the same Claude Code session
+  (`--resume`; if Claude Code no longer has it, Claude begins afresh and
+  the dock says so). *⋯ → Reopen Conversations at Start* turns this off.
+  `/resume` (or *⋯ → Resume a Conversation…*) lists the kept ones and
+  Claude Code's own sessions of the folder - from a terminal, say - to
+  search and go on with (brought back from Claude Code's session file);
+  `/resume <session id>` goes on with one at once.
+- **Slash commands** in the prompt: typing `/` lists them (↑↓ to choose,
+  Tab to complete, Enter to run). The dock's own: `/clear` (`/new`),
+  `/resume`, `/quit` (`/exit`), `/help`, `/model [name]`,
+  `/permissions [ask|edits|auto|plan|bypass]`, `/rename <name>`,
+  `/export [pdf|md|txt]`, `/status`, `/pin`, `/unpin`; Claude Code's -
+  `/compact`, `/context`, `/cost`, `/init`, `/review`, your skills… as it
+  lists them - are sent to it as typed, without the note of the open
+  document that would have become their arguments.
   It needs the `claude` program installed and signed in once in a terminal;
   it is found on `PATH` or where its installers put it, or chosen under
   the dock's *⋯* menu. It runs `claude -p` with stream-json both ways, so

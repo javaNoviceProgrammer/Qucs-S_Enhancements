@@ -28,6 +28,7 @@ class QAction;
 class QActionGroup;
 class QFrame;
 class QLabel;
+class QListWidget;
 class QMenu;
 class QPlainTextEdit;
 class QTextBrowser;
@@ -120,6 +121,38 @@ public:
     /// Claude's colour (its clay), for the palette given.
     static QColor accentColour(const QPalette& palette);
 
+    /// The conversation as it is kept (claudehistory.h): its title and
+    /// name, its folder, the schematic pinned, Claude Code's session, and
+    /// what was said.
+    QJsonObject conversationJson() const;
+    /// Brings back one kept (conversationJson()): what was said shown as
+    /// it was, its session continued from the next prompt (--resume).
+    void restoreConversation(const QJsonObject& conversation);
+    /// Brings back one of Claude Code's own sessions from its file: what
+    /// was said, as far as it reads, and the session continued.
+    bool importClaudeSession(const QString& file);
+    /// Where it is kept (claudehistory.h): empty until it is, and again
+    /// once it begins anew.
+    QString conversationId() const { return a_conversationId; }
+    void setConversationId(const QString& id) { a_conversationId = id; }
+
+    /// A command typed as "/name arguments": the dock's own - /clear,
+    /// /resume, /quit, /help, /model, /permissions, /rename, /export,
+    /// /status, /pin... - or Claude Code's (its skills too), which is sent
+    /// to it as typed.
+    struct Command {
+        QString name;          ///< without its slash
+        QString arguments;     ///< what it takes, as help shows it
+        QString description;
+        bool local = false;    ///< run by the dock
+    };
+    /// Every command, the dock's first, then Claude Code's (those it
+    /// said it has, kept from its last start).
+    QList<Command> commands() const;
+    /// Runs \a text when it is one of the dock's commands; false when it
+    /// is not (Claude Code's, or no command at all).
+    bool runCommand(const QString& text);
+
     /// What a conversation is exported as.
     enum class ExportFormat { Pdf, Markdown, Text };
     /// Whether an export holds what the boxes that fold hold - each tool's
@@ -149,6 +182,8 @@ public:
     QToolButton* sendButton() const { return a_send; }
     QToolButton* attachButton() const { return a_attach; }
     QToolButton* pinButton() const { return a_pin; }
+    /// The commands matching what is typed, as the composer offers them.
+    QListWidget* commandList() const { return a_commandList; }
     QMenu* pinMenu() const { return a_pinMenu; }
     QFrame* permissionCard() const { return a_card; }
     QToolButton* allowButton() const { return a_allow; }
@@ -189,6 +224,16 @@ signals:
     void titleChanged();
     /// The conversation was pinned to a schematic, or unpinned.
     void pinChanged();
+    /// What it holds changed: to be kept again.
+    void conversationChanged();
+    /// It is about to begin anew, or to take another one's place: kept
+    /// now, as it is.
+    void conversationEnding();
+    /// /quit, /exit: its tab to close.
+    void closeRequested();
+    /// /resume (\a query: what was typed after it), ⋯ > Resume a
+    /// Conversation.
+    void resumeRequested(const QString& query);
 
 protected:
     void changeEvent(QEvent* event) override;
@@ -213,6 +258,11 @@ private:
     void buildPermissionCard();
     void buildMenu();
     void fillPinMenu();
+    /// The commands matching what the composer holds, offered above it.
+    void updateCommandList();
+    /// The command chosen in the list put in the composer; \a send: and
+    /// sent, when it needs no arguments.
+    void completeCommand(bool send);
     void restyle();
     void scheduleRender();
     void render();
@@ -275,6 +325,7 @@ private:
     std::function<QString()> a_document;
     std::function<QStringList()> a_schematics;
     QString a_pinned;          // the schematic pinned (its file), or empty
+    QString a_conversationId;  // where it is kept
 
     qucs_s::claude::ModelQuery* a_modelQuery;
     QJsonArray a_listedModels; // what the program offers (kept in the settings)
@@ -327,6 +378,7 @@ private:
     QToolButton* a_attach;
     QToolButton* a_pin;        // pins the schematic in front; pinned, names it
     QMenu* a_pinMenu;          // ⋯ > Pin to a Schematic
+    QListWidget* a_commandList = nullptr;   // the commands matching what is typed
     QLabel* a_hint;
     QToolButton* a_send;
 };

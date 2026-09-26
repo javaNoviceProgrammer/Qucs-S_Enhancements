@@ -13,6 +13,7 @@
  * traces; a component type described; the netlist.
  */
 #include <QtTest>
+#include <QElapsedTimer>
 #include <QAction>
 #include <QApplication>
 #include <QDialog>
@@ -1067,6 +1068,87 @@ private slots:
         panel->pinDocument(QString());
         QVERIFY(panel->session()->document().isEmpty());
         open(dir.filePath("workspace/pinned_a2.sch"))->setChanged(false);
+    }
+
+    // Quick: several calls in one (batch) - in order, each change a step to
+    // undo, stopped at one that fails unless keep_going, a batch not held
+    // in another, images kept, the pinned document given to each; a menu
+    // action answered as soon as it is over; the answers compact JSON.
+    void aBatchRunsManyCallsInOne()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("save_document", {{"as", "batched"}})));
+        const QJsonObject r = call("batch", {{"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"x", 100}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "C"}, {"x", 300}, {"y", 100}, {"rotation", 90}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "GND"}, {"x", 300}, {"y", 200}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.2"}, {"to", "C1.1"}}}},
+            QJsonObject{{"tool", "get_schematic"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString all = text(r);
+        QVERIFY2(all.startsWith("5 of 5 calls done."), qPrintable(all.left(200)));
+        QVERIFY(all.contains("[1] add_component:"));
+        QVERIFY(all.contains("[5] get_schematic:"));
+        QVERIFY(front()->getComponentByName("R1") && front()->getComponentByName("C1"));
+        // Each change a step to undo, as alone: four undo it all.
+        for (int i = 0; i < 4; ++i) QVERIFY(!failed(call("undo")));
+        QVERIFY(front()->getComponentByName("R1") == nullptr);
+        QVERIFY(front()->getComponentByName("C1") == nullptr);
+        for (int i = 0; i < 4; ++i) QVERIFY(!failed(call("redo")));
+        QVERIFY(front()->getComponentByName("C1") != nullptr);
+
+        // Stopped at a failure; keep_going goes on.
+        const QJsonArray three{QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"x", 100}, {"y", 300}}}},
+                               QJsonObject{{"tool", "edit_component"}, {"arguments", QJsonObject{{"name", "NoSuch"}, {"properties", QJsonObject{{"R", "1"}}}}}},
+                               QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "L"}, {"x", 400}, {"y", 300}}}}};
+        const QJsonObject stopped = call("batch", {{"calls", three}});
+        QVERIFY(failed(stopped));
+        QVERIFY2(text(stopped).startsWith("1 of 3 calls done, 1 failed; stopped there"), qPrintable(text(stopped).left(200)));
+        QVERIFY(text(stopped).contains("[2] edit_component failed:"));
+        QVERIFY(front()->getComponentByName("L1") == nullptr);
+        const QJsonObject going = call("batch", {{"calls", three}, {"keep_going", true}});
+        QVERIFY(text(going).startsWith("2 of 3 calls done, 1 failed."));
+        QVERIFY(front()->getComponentByName("L1") != nullptr);
+
+        // Not within another; not empty; a screenshot's image kept; a menu
+        // action (answered later) in its turn.
+        const QJsonObject inner{{"tool", "batch"}, {"arguments", QJsonObject{{"calls", QJsonArray{}}}}};
+        QVERIFY(text(call("batch", {{"calls", QJsonArray{inner}}})).contains("cannot hold another"));
+        QVERIFY(failed(call("batch", {{"calls", QJsonArray{}}})));
+        const QJsonObject mixed = call("batch", {{"calls", QJsonArray{
+            QJsonObject{{"tool", "trigger_action"}, {"arguments", QJsonObject{{"action", "View > View All"}}}},
+            QJsonObject{{"tool", "screenshot"}},
+            QJsonObject{{"tool", "get_state"}}}}});
+        QVERIFY2(!failed(mixed), qPrintable(text(mixed)));
+        bool image = false;
+        for (const QJsonValue& v : mixed.value("content").toArray()) image = image || v.toObject().value("type").toString() == "image";
+        QVERIFY(image);
+        QVERIFY(text(mixed).contains("View All: done."));
+
+        // Pinned: each call given the document; the permission card sums it up.
+        const QJsonObject batch{{"calls", QJsonArray{QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}}}},
+                                                     QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}}}},
+                                                     QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{}}},
+                                                     QJsonObject{{"tool", "list_component_types"}}}}};
+        const QJsonObject pinned = control->forDocument("batch", batch, "/w/amp.sch");
+        const QJsonArray calls = pinned.value("calls").toArray();
+        QCOMPARE(calls.at(0).toObject().value("arguments").toObject().value("path").toString(), QStringLiteral("/w/amp.sch"));
+        QCOMPARE(calls.at(2).toObject().value("arguments").toObject().value("path").toString(), QStringLiteral("/w/amp.sch"));
+        QVERIFY(!calls.at(3).toObject().value("arguments").toObject().contains("path"));
+        QCOMPARE(control->subjectOf("batch", batch), QStringLiteral("add_component ×2, connect, list_component_types"));
+        QVERIFY(!control->readOnlyTools().contains("batch"));
+
+        // A menu action without a dialog: answered at once, not half a
+        // second later; the answers compact.
+        QElapsedTimer clock;
+        clock.start();
+        QVERIFY(!failed(call("trigger_action", {{"action", "View > View All"}})));
+        QVERIFY2(clock.elapsed() < 300, qPrintable(QString::number(clock.elapsed())));
+        const QString state = text(call("get_state"));
+        QVERIFY(!state.contains("\n    "));
+        QVERIFY(json(call("get_state")).isObject());
+        front()->setChanged(false);
+        QVERIFY(!failed(call("close_document")));
     }
 
     // Pinned calls among everything else - schematics opened, closed,

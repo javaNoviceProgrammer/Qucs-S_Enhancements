@@ -11,8 +11,11 @@
 #ifndef QUCS_CLAUDECODETABS_H
 #define QUCS_CLAUDECODETABS_H
 
+#include "claudehistory.h"
+
 #include <QList>
 #include <QPointer>
+#include <QSet>
 #include <QWidget>
 
 #include <functional>
@@ -21,8 +24,10 @@ class ClaudeCodePanel;
 namespace qucs_s::claude {
 class ToolHost;
 }
+class QDialog;
 class QLineEdit;
 class QMenu;
+class QTimer;
 class QTabWidget;
 class QToolButton;
 
@@ -39,6 +44,11 @@ class QToolButton;
  * A conversation that asks for permission comes forward when the dock is
  * hidden or it is the one in front; one behind others marks its tab and
  * the status bar, which leads to it.
+ *
+ * The conversations are kept as they go (claudehistory.h): those open when
+ * Qucs-S closes come back when it opens again, each going on where it was,
+ * and any kept one - or one of Claude Code's own sessions of the folder -
+ * is gone on with from /resume.
  */
 class ClaudeCodeTabs : public QWidget
 {
@@ -71,6 +81,27 @@ public:
     /// The menu of the tab at \a index, as a right click on it opens it:
     /// Rename, Reset Name, Close. The caller's to delete.
     QMenu* tabMenu(int index);
+    /// The conversations open when Qucs-S last closed, brought back (when
+    /// ⋯ > Reopen Conversations at Start is on): each as it was, going on
+    /// where it was. False when there were none.
+    bool restoreConversations();
+    /// Keeps every conversation that changed, and which are open, now.
+    void saveConversations();
+    /// The conversations to go on with: those the dock kept, then Claude
+    /// Code's own sessions of \a folder not among them.
+    QList<qucs_s::claude::history::Summary> resumable(const QString& folder) const;
+    /// Goes on with \a conversation - in front if it is open already, else
+    /// in the tab in front when that is empty, else in a new one. Null
+    /// when it cannot be read.
+    ClaudeCodePanel* resume(const qucs_s::claude::history::Summary& conversation);
+    /// /resume: \a query naming one (its session's id, or its kept id)
+    /// goes on with it at once; else the list of them to choose from,
+    /// \a query in its filter.
+    void showResume(ClaudeCodePanel* from, const QString& query);
+    /// The list /resume shows, for \a folder, \a query in its filter (not
+    /// shown: showResume() runs it).
+    QDialog* resumeDialog(const QString& folder, const QString& query);
+
     /// A conversation waiting for the user's permission (the one in
     /// front, if it is), or null.
     ClaudeCodePanel* needingAttention() const;
@@ -118,6 +149,10 @@ private:
     void placeRenameEditor();
     void updateTab(ClaudeCodePanel* panel);
     void permissionAsked(ClaudeCodePanel* panel);
+    /// Keeps \a panel's conversation (a new id for it when it has none).
+    void saveConversation(ClaudeCodePanel* panel);
+    /// Which conversations are open, and the one in front.
+    void saveOpen();
     void restyle();
 
     QTabWidget* a_tabs;
@@ -127,6 +162,8 @@ private:
     std::function<QStringList()> a_schematics;
     qucs_s::claude::ToolHost* a_host = nullptr;
     ClaudeCodePanel* a_reporting = nullptr;   // whose files are loaded again
+    QSet<ClaudeCodePanel*> a_unsaved;         // changed since kept
+    QTimer* a_saveTimer = nullptr;            // keeps them a moment later
     QPointer<QLineEdit> a_renameEditor;       // a rename under way
     QPointer<ClaudeCodePanel> a_renaming;     // of this one
 };

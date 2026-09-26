@@ -238,7 +238,14 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["from", "to"]}},
 {"name": "describe_component_type",
  "description": "A component type of the library described: what it is, its category, how its parts are named, its pins (their places relative to its centre, unturned), its properties in their order - name, default value, unit, what it means, whether shown on the schematic, and the simulators it counts for - the simulators it works with, the netlist line it makes with its defaults under the simulator in the settings, and notes on what is easy to get wrong with it (a Vpulse is one pulse: Vrect repeats).",
- "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "description": "As list_component_types gives it: R, Vpulse, .TR, ..."}}, "required": ["type"]}}
+ "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "description": "As list_component_types gives it: R, Vpulse, .TR, ..."}}, "required": ["type"]}},
+{"name": "batch",
+ "description": "Runs several of these tools in one call, in order - far quicker than one call each: place and wire a circuit, set many properties, add a diagram and its traces at once. Each change is one step of Edit > Undo, as when called alone. It stops at the first that fails unless 'keep_going'; it gives each one's result in order.",
+ "inputSchema": {"type": "object", "properties": {
+   "calls": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
+     "tool": {"type": "string", "description": "A tool's name: add_component, connect, ..."},
+     "arguments": {"type": "object"}}, "required": ["tool"]}},
+   "keep_going": {"type": "boolean", "description": "Go on after one that fails"}}, "required": ["calls"]}}
 ])JSON";
 
 const struct {
@@ -266,6 +273,7 @@ const struct {
     {"add_trace", QT_TRANSLATE_NOOP("QucsControl", "add a trace to a diagram in Qucs-S")},
     {"edit_trace", QT_TRANSLATE_NOOP("QucsControl", "change a trace in Qucs-S")},
     {"rename_net", QT_TRANSLATE_NOOP("QucsControl", "rename a net in Qucs-S")},
+    {"batch", QT_TRANSLATE_NOOP("QucsControl", "use several Qucs-S tools at once")},
 };
 
 // Tools that only look (or move the view): used without asking.
@@ -289,9 +297,11 @@ QJsonObject textResult(const QString& text, bool error)
             {QStringLiteral("isError"), error}};
 }
 
-QJsonObject jsonResult(const QJsonValue& value, bool compact)
+QJsonObject jsonResult(const QJsonValue& value, bool indented)
 {
-    const QJsonDocument::JsonFormat format = compact ? QJsonDocument::Compact : QJsonDocument::Indented;
+    // Compact: what Claude reads is tokens, and indentation is a third of
+    // them and more.
+    const QJsonDocument::JsonFormat format = indented ? QJsonDocument::Indented : QJsonDocument::Compact;
     const QByteArray json = value.isObject() ? QJsonDocument(value.toObject()).toJson(format)
                                              : QJsonDocument(value.toArray()).toJson(format);
     return textResult(QString::fromUtf8(json));
@@ -957,6 +967,27 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
         subject = tr("%1 lines").arg(s("text").count(QLatin1Char('\n')) + 1);
     else if (tool == QLatin1String("trigger_action"))
         subject = s("path").isEmpty() ? s("action") : tr("%1 on %2").arg(s("action"), QFileInfo(s("path")).fileName());
+    else if (tool == QLatin1String("batch")) {
+        // Its tools in order, a run of one counted: "add_component ×3, connect ×2".
+        QStringList parts;
+        QString last;
+        int run = 0;
+        const auto flush = [&] {
+            if (run > 0) parts << (run == 1 ? last : QStringLiteral("%1 ×%2").arg(last).arg(run));
+        };
+        for (const QJsonValue& v : a.value(QLatin1String("calls")).toArray()) {
+            const QString t = v.toObject().value(QLatin1String("tool")).toString();
+            if (t == last) {
+                ++run;
+                continue;
+            }
+            flush();
+            last = t;
+            run = 1;
+        }
+        flush();
+        subject = parts.join(QStringLiteral(", "));
+    }
     else if (tool == QLatin1String("set_dialog")) {
         QStringList parts;
         for (const QJsonValue& v : a.value(QLatin1String("set")).toArray())
@@ -1000,7 +1031,9 @@ QString QucsControl::instructions() const
         "edit_component, connect (pin to pin, e.g. \"R1.2\" to \"C1.1\"), add_wire, set_label, delete, or "
         "set_schematic (new .sch sections at once); select, zoom, undo, redo; screenshot to see it. "
         "list_component_types gives add_component's types, describe_component_type a type's properties. "
-        "rename_net renames a net with the traces that show it. Menus: list_actions, trigger_action; a dialog it opens "
+        "rename_net renames a net with the traces that show it. batch runs several of these in one call: use it for "
+        "several changes at once (place and wire parts, set properties, add a diagram and its traces) rather than a "
+        "call each. Menus: list_actions, trigger_action; a dialog it opens "
         "is read with get_dialog and answered with set_dialog. simulate runs the simulator and reports its errors; "
         "get_netlist gives the netlist. get_dataset reads the results as numbers and measures them (rise time, "
         "overshoot, values at a time, ...): use it rather than a screenshot to tell what a simulation gave. "
@@ -1014,7 +1047,21 @@ QString QucsControl::instructions() const
 
 QJsonObject QucsControl::forDocument(const QString& tool, const QJsonObject& arguments, const QString& document) const
 {
-    if (document.isEmpty() || !arguments.value(QLatin1String("path")).toString().trimmed().isEmpty()) return arguments;
+    if (document.isEmpty()) return arguments;
+    if (tool == QLatin1String("batch")) {
+        // Each of its calls, as it would be alone.
+        QJsonArray calls;
+        for (const QJsonValue& v : arguments.value(QLatin1String("calls")).toArray()) {
+            QJsonObject call = v.toObject();
+            call.insert(QStringLiteral("arguments"),
+                        forDocument(call.value(QLatin1String("tool")).toString(), call.value(QLatin1String("arguments")).toObject(), document));
+            calls.append(call);
+        }
+        QJsonObject a = arguments;
+        a.insert(QStringLiteral("calls"), calls);
+        return a;
+    }
+    if (!arguments.value(QLatin1String("path")).toString().trimmed().isEmpty()) return arguments;
     // The tools whose 'path' is the document they act on, the one in
     // front when not given; and get_state, which names it.
     bool onDocument = tool == QLatin1String("get_state");
@@ -1126,7 +1173,8 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("rename_net")) return renameNet(args);
     if (tool == QLatin1String("describe_component_type")) return describeComponentType(args);
     async = true;
-    if (tool == QLatin1String("trigger_action")) triggerAction(args, done);
+    if (tool == QLatin1String("batch")) runBatch(args, done);
+    else if (tool == QLatin1String("trigger_action")) triggerAction(args, done);
     else if (tool == QLatin1String("set_dialog")) setDialog(args, done);
     else if (tool == QLatin1String("simulate")) simulate(args, done);
     else {
@@ -2054,20 +2102,116 @@ void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
         done(errorResult(tr("%1 cannot be used now.").arg(cleanText(action->text()))));
         return;
     }
-    // Triggered from the event loop, the answer given a moment later: a
-    // dialog it opens runs an event loop of its own until it is answered.
+    // Triggered from the event loop; answered as soon as it is known: when
+    // the action is over (a moment later, for a dialog it opens after
+    // it), or when a dialog it opened is up - a modal one runs an event
+    // loop of its own until it is answered, and the action returns only
+    // then.
     QPointer<QAction> target(action);
     const QString name = cleanText(action->text());
-    QTimer::singleShot(0, a_app, [target] {
-        if (target) target->trigger();
-    });
-    QTimer::singleShot(500, this, [this, done, name] {
+    auto answered = std::make_shared<bool>(false);
+    const auto answer = [this, done, name, answered] {
+        if (*answered) return;
+        *answered = true;
         QWidget* dialog = openDialog();
         done(textResult(dialog != nullptr
                             ? tr("%1: it opened “%2”, which waits for an answer (get_dialog reads it, set_dialog answers it).")
                                   .arg(name, dialog->windowTitle())
                             : tr("%1: done.").arg(name)));
+    };
+    auto* watch = new QTimer(this);
+    watch->setInterval(10);
+    connect(watch, &QTimer::timeout, this, [this, watch, answer, answered] {
+        if (!*answered && openDialog() != nullptr) answer();
+        if (*answered) watch->deleteLater();
     });
+    watch->start();
+    QTimer::singleShot(0, a_app, [this, target, answer] {
+        if (target) target->trigger();
+        QTimer::singleShot(30, this, answer);
+    });
+}
+
+namespace {
+
+// A batch under way: its calls one after another - each may answer later
+// (a dialog, a simulation), the next going on from there - and their
+// results together at the end, each under a line that names it (images, a
+// screenshot's, as they are).
+class BatchRun : public QObject
+{
+public:
+    BatchRun(QucsControl* control, const QJsonArray& calls, bool keepGoing, std::function<void(const QJsonObject&)> done)
+        : QObject(control), a_control(control), a_calls(calls), a_keepGoing(keepGoing), a_done(std::move(done))
+    {
+    }
+
+    void next()
+    {
+        if (a_stopped || a_next >= a_calls.size()) {
+            finish();
+            return;
+        }
+        const int index = a_next++;
+        const QJsonObject call = a_calls.at(index).toObject();
+        const QString tool = call.value(QLatin1String("tool")).toString();
+        const QPointer<BatchRun> self(this);
+        const auto answered = [self, index, tool](const QJsonObject& result) {
+            if (!self) return;
+            self->record(index, tool, result);
+            QTimer::singleShot(0, self, [self] {
+                if (self) self->next();
+            });
+        };
+        if (tool == QLatin1String("batch")) answered(errorResult(tr("A batch cannot hold another batch.")));
+        else a_control->callTool(tool, call.value(QLatin1String("arguments")).toObject(), answered);
+    }
+
+private:
+    void record(int index, const QString& tool, const QJsonObject& result)
+    {
+        const bool error = result.value(QLatin1String("isError")).toBool();
+        (error ? a_failed : a_succeeded)++;
+        if (error && !a_keepGoing) a_stopped = true;
+        a_content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                     {QStringLiteral("text"),
+                                      QStringLiteral("[%1] %2%3:").arg(index + 1).arg(tool, error ? tr(" failed") : QString())}});
+        for (const QJsonValue& v : result.value(QLatin1String("content")).toArray()) a_content.append(v);
+    }
+
+    void finish()
+    {
+        QString head = tr("%1 of %2 calls done").arg(a_succeeded).arg(a_calls.size());
+        if (a_failed > 0) head += tr(", %1 failed").arg(a_failed);
+        if (a_stopped && a_next < a_calls.size()) head += tr("; stopped there, the rest not run (keep_going goes on)");
+        QJsonArray content{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")}, {QStringLiteral("text"), head + QLatin1Char('.')}}};
+        for (const QJsonValue& v : std::as_const(a_content)) content.append(v);
+        const auto done = std::move(a_done);
+        deleteLater();
+        done(QJsonObject{{QStringLiteral("content"), content}, {QStringLiteral("isError"), a_failed > 0}});
+    }
+
+    QucsControl* a_control;
+    QJsonArray a_calls;
+    bool a_keepGoing;
+    std::function<void(const QJsonObject&)> a_done;
+    QJsonArray a_content;
+    int a_next = 0;
+    int a_succeeded = 0;
+    int a_failed = 0;
+    bool a_stopped = false;
+};
+
+} // namespace
+
+void QucsControl::runBatch(const QJsonObject& args, const Done& done)
+{
+    const QJsonArray calls = args.value(QLatin1String("calls")).toArray();
+    if (calls.isEmpty()) {
+        done(errorResult(tr("batch needs 'calls': [{\"tool\": ..., \"arguments\": {...}}, ...].")));
+        return;
+    }
+    (new BatchRun(this, calls, args.value(QLatin1String("keep_going")).toBool(), done))->next();
 }
 
 QWidget* QucsControl::openDialog() const

@@ -8,6 +8,10 @@
  * program is a shell script here that answers as claude does.
  */
 #include <QtTest>
+#include <QDialog>
+#include <QListWidget>
+#include <QPushButton>
+#include <QTreeWidget>
 #include <QApplication>
 #include <QDockWidget>
 #include <QAction>
@@ -41,6 +45,7 @@
 #include "claudecode.h"
 #include "claudecodepanel.h"
 #include "claudecodetabs.h"
+#include "claudehistory.h"
 #include "mathtypeset.h"
 #include "config.h"
 #include "isolated_settings.h"
@@ -50,6 +55,7 @@
 #include "module.h"
 #include "qucs.h"
 #include "schematic.h"
+#include "settings.h"
 #include "components/component.h"
 #include "extsimkernels/spicecompat.h"
 
@@ -204,6 +210,30 @@ public:
     QStringList calls;
     QList<QJsonObject> arguments;
 };
+
+// A program that has no conversation to continue (--resume): it says so as
+// Claude Code does, and ends; without, it answers, with its commands.
+const char* const kResumer = R"SH(#!/bin/sh
+printf '%s\n' "$@" >> "$QUCS_FAKE_DIR/resumer-args"
+case " $* " in
+  *" --resume gone-1 "*)
+    read -r line
+    echo '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"session_id":"gone-1","total_cost_usd":0}'
+    echo 'No conversation found with session ID: gone-1' >&2
+    exit 1
+    ;;
+esac
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"user"'*)
+      printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/resumer-prompts"
+      echo '{"type":"system","subtype":"init","session_id":"fresh-1","model":"claude-test-1","slash_commands":["compact","context","doctor","my-skill"],"terminal_slash_commands":["doctor"]}'
+      echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Fresh."}]}}'
+      echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"Fresh.","total_cost_usd":0.001,"session_id":"fresh-1"}'
+      ;;
+  esac
+done
+)SH";
 
 // A program that fails at once.
 const char* const kBroken = "#!/bin/sh\necho 'Invalid API key' >&2\nexit 3\n";
@@ -559,6 +589,7 @@ private slots:
         const QString config = args.value(args.indexOf("--mcp-config") + 1);
         QVERIFY(config.contains("\"type\":\"sdk\""));
         QVERIFY(config.contains("\"fake\""));
+        QVERIFY(config.contains("\"alwaysLoad\":true"));   // (not behind the tool search: no turn to find them)
         QCOMPARE(args.value(args.indexOf("--allowedTools") + 1), QStringLiteral("mcp__fake__look"));
         // What the session wrote: the host's initialize, then the answers.
         QMap<QString, QJsonObject> answers;
@@ -1495,6 +1526,388 @@ private slots:
         QVERIFY(panel->session()->document().isEmpty());
     }
 
+    // Kept on disk: saved, read back, listed the latest first, forgotten;
+    // which are open; only the latest kept, not those open; ids that would
+    // leave the folder refused.
+    void theHistoryKeepsConversations()
+    {
+        namespace history = qucs_s::claude::history;
+        QDir(history::directory()).removeRecursively();
+        QVERIFY(history::directory().startsWith(dir.path()));   // (not the user's)
+        QVERIFY(history::saved().isEmpty());
+        QVERIFY(history::save("a1", {{"title", "First"}, {"sessionId", "s-a"}, {"folder", "/w"}, {"entries", QJsonArray{1}}}));
+        QTest::qWait(5);
+        QVERIFY(history::save("b2", {{"title", "Second"}, {"sessionId", "s-b"}, {"folder", "/w"}}));
+        QList<history::Summary> all = history::saved();
+        QCOMPARE(all.size(), 2);
+        QCOMPARE(all.at(0).id, QStringLiteral("b2"));   // the latest first
+        QCOMPARE(all.at(1).title, QStringLiteral("First"));
+        QCOMPARE(all.at(1).sessionId, QStringLiteral("s-a"));
+        QCOMPARE(history::load("a1").value("entries").toArray().size(), 1);
+        QVERIFY(!history::save("../evil", {}));
+        QVERIFY(history::load("../evil").isEmpty());
+
+        history::setOpen({"a1", "b2"}, "b2");
+        QString current;
+        QCOMPARE(history::open(&current), QStringList({"a1", "b2"}));
+        QCOMPARE(current, QStringLiteral("b2"));
+        // The latest two kept - and a1, open, whatever its age.
+        QVERIFY(history::save("c3", {{"title", "Third"}}, 2));
+        QVERIFY(history::save("d4", {{"title", "Fourth"}}, 2));
+        QStringList ids;
+        for (const history::Summary& s : history::saved()) ids << s.id;
+        QVERIFY(ids.contains("a1") && ids.contains("d4") && ids.contains("c3"));
+        QVERIFY(!ids.contains("b2") || ids.size() <= 4);
+        history::remove("a1");
+        QVERIFY(history::load("a1").isEmpty());
+        QVERIFY(!history::open().contains("a1"));
+        QDir(history::directory()).removeRecursively();
+    }
+
+    // A session to continue: the next start carries --resume; when Claude
+    // Code no longer has it, the prompt goes to a new conversation and a
+    // notice says so. The program's commands, less its terminal's, are
+    // kept from its start.
+    void aSessionIsResumedOrBegunAfresh()
+    {
+        skipWithoutShell();
+        QFile::remove(dir.filePath("resumer-args"));
+        QFile::remove(dir.filePath("resumer-prompts"));
+        Session s;
+        s.setProgram(script("resumer", kResumer));
+        s.setWorkingDirectory(fresh("resumework1"));
+        QSignalSpy notices(&s, &Session::notice);
+        QSignalSpy turns(&s, &Session::turnFinished);
+        QSignalSpy failures(&s, &Session::failed);
+        s.resume("gone-1");
+        QCOMPARE(s.sessionId(), QStringLiteral("gone-1"));
+        QVERIFY(s.send("Hello again"));
+        QVERIFY(turns.wait(10000));
+        QVERIFY(turns.last().at(0).value<TurnResult>().ok);
+        QCOMPARE(failures.count(), 0);
+        bool told = false;
+        for (const QList<QVariant>& n : notices) told = told || n.at(0).toString().contains("no longer has");
+        QVERIFY(told);
+        const QString args = read(dir.filePath("resumer-args"));
+        QVERIFY(args.contains("--resume\ngone-1"));   // tried first...
+        QCOMPARE(args.count("--resume"), 1);            // ...then without
+        QCOMPARE(read(dir.filePath("resumer-prompts")).count("Hello again"), 1);
+        QCOMPARE(s.sessionId(), QStringLiteral("fresh-1"));
+        QCOMPARE(s.slashCommands(), QStringList({"compact", "context", "my-skill"}));   // (doctor: its terminal's)
+        s.stop();
+        // One it has: continued, no notice.
+        notices.clear();
+        s.resume("fresh-1");
+        QVERIFY(s.send("And more"));
+        QVERIFY(turns.wait(10000));
+        QVERIFY(read(dir.filePath("resumer-args")).contains("--resume\nfresh-1"));
+        s.stop();
+    }
+
+    // A conversation kept and brought back: what was said, its name, its
+    // folder, its pin, its session (continued from the next prompt); a
+    // tool that had not finished is said not to have. The tabs keep them
+    // as they change and which are open; a new set of tabs brings those
+    // back (unless told not to); /quit closes one, which stays kept.
+    void aConversationIsKeptAndBroughtBack()
+    {
+        namespace history = qucs_s::claude::history;
+        QDir(history::directory()).removeRecursively();
+        const QString work = fresh("keptwork");
+        const QString schematic = work + "/amp.sch";
+        QFile(schematic).open(QIODevice::WriteOnly);
+        {
+            ClaudeCodePanel panel;
+            panel.setDefaultDirectory(work);
+            panel.restoreConversation({{"name", "Amplifier"}, {"folder", work}, {"pinned", schematic}, {"sessionId", "s-kept"},
+                                       {"entries", QJsonArray{QJsonObject{{"kind", 0}, {"text", "Check the gain"}},
+                                                              QJsonObject{{"kind", 1}, {"text", "It is **20 dB**."}},
+                                                              QJsonObject{{"kind", 2}, {"text", "Bash"}, {"extra", "ls"}, {"id", "t1"}, {"tool", 0}},
+                                                              QJsonObject{{"kind", 9}, {"text", "junk"}}}}});
+            QCOMPARE(panel.title(), QStringLiteral("Amplifier"));
+            QVERIFY(panel.isPinnedTo(schematic));
+            QCOMPARE(panel.session()->sessionId(), QStringLiteral("s-kept"));
+            QCOMPARE(panel.workingDirectory(), work);
+            const QString md = panel.conversationMarkdown();
+            QVERIFY(md.contains("Check the gain"));
+            QVERIFY(md.contains("It is **20 dB**."));
+            QVERIFY(md.contains("- ✕ **Bash** `ls`"));
+            QVERIFY(md.contains("It had not finished"));
+            QVERIFY(!md.contains("junk"));
+            // As kept: the same again.
+            const QJsonObject kept = panel.conversationJson();
+            QCOMPARE(kept.value("title").toString(), QStringLiteral("Amplifier"));
+            QCOMPARE(kept.value("sessionId").toString(), QStringLiteral("s-kept"));
+            QCOMPARE(kept.value("entries").toArray().size(), 3);
+        }
+
+        QString first;
+        {
+            ClaudeCodeTabs tabs;
+            tabs.setDefaultDirectory(work);
+            ClaudeCodePanel* panel = tabs.current();
+            panel->session()->setProgram(dir.filePath("no-such-claude"));   // (the prompt stays; the turn fails)
+            panel->composer()->setPlainText("Explain the filter");
+            panel->sendComposer();
+            panel->setName("Filter");
+            tabs.saveConversations();
+            first = panel->conversationId();
+            QVERIFY(!first.isEmpty());
+            QCOMPARE(history::open(), QStringList{first});
+            QCOMPARE(history::saved().first().title, QStringLiteral("Filter"));
+            // A second, in front; the empty third not kept.
+            ClaudeCodePanel* second = tabs.newConversation();
+            second->session()->setProgram(dir.filePath("no-such-claude"));
+            second->composer()->setPlainText("Size the capacitor");
+            second->sendComposer();
+            tabs.newConversation();
+            tabs.showConversation(second);
+            QTRY_COMPARE(history::open().size(), 2);   // (a moment later)
+        }   // (closed: kept)
+        {
+            ClaudeCodeTabs again;
+            again.setDefaultDirectory(work);
+            QVERIFY(again.restoreConversations());
+            QCOMPARE(again.count(), 2);
+            QCOMPARE(again.panels().at(0)->title(), QStringLiteral("Filter"));
+            QCOMPARE(again.panels().at(0)->conversationId(), first);
+            QCOMPARE(again.current(), again.panels().at(1));   // the one in front
+            again.panels().at(0)->renderNow();
+            QVERIFY(again.panels().at(0)->transcriptText().contains("Explain the filter"));
+            // /quit: closed, and kept to resume.
+            ClaudeCodePanel* quitting = again.panels().at(0);
+            quitting->composer()->setPlainText("/quit");
+            quitting->sendComposer();
+            QTRY_COMPARE(again.count(), 1);
+            QVERIFY(!history::load(first).isEmpty());
+            QCOMPARE(history::open().size(), 1);
+            // /resume with its id: back.
+            ClaudeCodePanel* front = again.current();
+            front->composer()->setPlainText("/resume " + first);
+            front->sendComposer();
+            QTRY_COMPARE(again.count(), 2);
+            QCOMPARE(again.current()->conversationId(), first);
+            QCOMPARE(again.current()->title(), QStringLiteral("Filter"));
+        }
+        // Not reopened when told not to.
+        qucs_s::claude::history::setReopenAtStart(false);
+        {
+            ClaudeCodeTabs none;
+            QVERIFY(!none.restoreConversations());
+            QCOMPARE(none.count(), 1);
+            QVERIFY(!none.current()->hasConversation());
+        }
+        qucs_s::claude::history::setReopenAtStart(true);
+        QDir(history::directory()).removeRecursively();
+    }
+
+    // Claude Code's own sessions of the folder: listed (a title given with
+    // /rename, else the first prompt), brought back from their file - the
+    // prompts, replies and tools; what it adds itself, a subagent's, left
+    // out - and continued; /resume with a session's id goes on with it; the
+    // list filters, and forgets only the dock's own.
+    void claudeCodesOwnSessionsAreResumed()
+    {
+        namespace history = qucs_s::claude::history;
+        QDir(history::directory()).removeRecursively();
+        const QString work = fresh("claudesessions");
+        QString folderName = work;
+        for (QChar& c : folderName)
+            if (!(c.isLetterOrNumber() && c.unicode() < 128)) c = '-';
+        const QString projects = history::claudeDirectory() + "/projects/" + folderName;
+        QVERIFY(projects.startsWith(dir.path()));   // (not the user's)
+        QDir().mkpath(projects);
+        const QString id = "5e55ion-0000-1111";
+        QFile file(projects + "/" + id + ".jsonl");
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        const auto line = [&](const QJsonObject& o) { file.write(QJsonDocument(o).toJson(QJsonDocument::Compact) + "\n"); };
+        const auto msg = [](const QJsonValue& content) { return QJsonObject{{"role", "user"}, {"content", content}}; };
+        line({{"type", "user"}, {"cwd", work}, {"sessionId", id}, {"message", msg("Explain the filter")}});
+        line({{"type", "user"}, {"isMeta", true}, {"cwd", work}, {"message", msg("meta stuff")}});
+        line({{"type", "assistant"}, {"cwd", work}, {"message", QJsonObject{{"content", QJsonArray{
+             QJsonObject{{"type", "thinking"}, {"thinking", "hmm"}}, QJsonObject{{"type", "text"}, {"text", "It is a **low-pass**."}}}}}}});
+        line({{"type", "assistant"}, {"cwd", work}, {"message", QJsonObject{{"content", QJsonArray{
+             QJsonObject{{"type", "tool_use"}, {"id", "tu1"}, {"name", "Bash"}, {"input", QJsonObject{{"command", "ls"}}}}}}}}});
+        line({{"type", "user"}, {"cwd", work}, {"message", msg(QJsonArray{QJsonObject{{"type", "tool_result"}, {"tool_use_id", "tu1"}, {"content", "a.sch\nb.sch"}}})}});
+        line({{"type", "assistant"}, {"cwd", work}, {"message", QJsonObject{{"content", QJsonArray{
+             QJsonObject{{"type", "tool_use"}, {"id", "tu2"}, {"name", "Bash"}, {"input", QJsonObject{{"command", "cat x"}}}}}}}}});
+        line({{"type", "user"}, {"cwd", work}, {"message", msg(QJsonArray{QJsonObject{{"type", "tool_result"}, {"tool_use_id", "tu2"}, {"is_error", true},
+             {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "no such file\nmore"}}}}}})}});
+        line({{"type", "user"}, {"cwd", work}, {"message", msg("<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args>keep the math</command-args>")}});
+        line({{"type", "user"}, {"cwd", work}, {"message", msg("<local-command-stdout>Compacted</local-command-stdout>")}});
+        line({{"type", "assistant"}, {"isSidechain", true}, {"cwd", work}, {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "subagent says"}}}}}}});
+        line({{"type", "custom-title"}, {"customTitle", "Filter talk"}, {"sessionId", id}});
+        file.close();
+
+        const QList<history::Summary> sessions = history::claudeSessions(work);
+        QCOMPARE(sessions.size(), 1);
+        QCOMPARE(sessions.first().title, QStringLiteral("Filter talk"));
+        QCOMPARE(sessions.first().sessionId, id);
+        QCOMPARE(sessions.first().folder, work);
+        QCOMPARE(history::claudeSessionFile(id), file.fileName());
+        QVERIFY(history::claudeSessionFile("no-such-session").isEmpty());
+
+        ClaudeCodeTabs tabs;
+        tabs.setDefaultDirectory(work);
+        QVERIFY(history::save("kept1", {{"title", "Kept one"}, {"folder", work}, {"sessionId", "s-k"},
+                                        {"entries", QJsonArray{QJsonObject{{"kind", 0}, {"text", "Old prompt"}}}}}));
+        const QList<history::Summary> all = tabs.resumable(work);
+        QCOMPARE(all.size(), 2);
+        QCOMPARE(all.at(0).id, QStringLiteral("kept1"));
+        QCOMPARE(all.at(1).claudeFile, file.fileName());
+
+        // The list: filtered; the dock's one forgotten; Claude Code's kept.
+        QScopedPointer<QDialog> dialog(tabs.resumeDialog(work, QString()));
+        auto* list = dialog->findChild<QTreeWidget*>("claudeResumeList");
+        auto* filter = dialog->findChild<QLineEdit*>("claudeResumeFilter");
+        auto* forget = dialog->findChild<QPushButton*>("claudeResumeDelete");
+        QVERIFY(list && filter && forget);
+        QCOMPARE(list->topLevelItemCount(), 2);
+        filter->setText("filter talk");
+        QVERIFY(list->topLevelItem(0)->isHidden());
+        QVERIFY(!list->topLevelItem(1)->isHidden());
+        QVERIFY(!forget->isEnabled());   // (Claude Code's own)
+        filter->clear();
+        list->setCurrentItem(list->topLevelItem(0));
+        QVERIFY(forget->isEnabled());
+        forget->click();
+        QCOMPARE(list->topLevelItemCount(), 1);
+        QVERIFY(history::load("kept1").isEmpty());
+
+        // Brought back from its file, and continued.
+        ClaudeCodePanel* panel = tabs.resume(sessions.first());
+        QVERIFY(panel != nullptr);
+        QCOMPARE(panel->title(), QStringLiteral("Filter talk"));
+        QCOMPARE(panel->session()->sessionId(), id);
+        QCOMPARE(panel->workingDirectory(), work);
+        const QString md = panel->conversationMarkdown();
+        QVERIFY(md.contains("> Explain the filter"));
+        QVERIFY(md.contains("It is a **low-pass**."));
+        QVERIFY(md.contains("- ✓ **Bash** `ls`"));
+        QVERIFY(md.contains("a.sch"));
+        QVERIFY(md.contains("- ✕ **Bash** `cat x`"));
+        QVERIFY(md.contains("Failed: no such file"));
+        QVERIFY(md.contains("> /compact keep the math"));
+        QVERIFY(!md.contains("meta stuff"));
+        QVERIFY(!md.contains("subagent says"));
+        QVERIFY(!md.contains("Compacted"));
+        QVERIFY(!md.contains("hmm"));
+        // Open already: the same, in front.
+        QCOMPARE(tabs.resume(sessions.first()), panel);
+        const int tabsNow = tabs.count();
+        // /resume with its id: that one (open: in front).
+        tabs.newConversation()->composer()->setPlainText("/resume " + id);
+        tabs.current()->sendComposer();
+        QTRY_COMPARE(tabs.current(), panel);
+        QCOMPARE(tabs.count(), tabsNow + 1);
+        QDir(history::directory()).removeRecursively();
+    }
+
+    // Slash commands: the dock's own run here (never sent to Claude), Claude
+    // Code's sent as typed - no note of the document, which would be taken
+    // for arguments; a path is no command. Typing "/" offers them: the
+    // arrows choose, Tab puts one in, Enter runs it, Esc puts them away.
+    void slashCommandsAreUnderstood()
+    {
+        QucsSettingsFile().remove("ClaudeCode/slashCommands");
+        const QString work = fresh("slashwork");
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(work);
+        panel.setDocumentProvider([work] { return work + "/amp.sch"; });
+        panel.resize(440, 700);
+        panel.show();
+        QSignalSpy closing(&panel, &ClaudeCodePanel::closeRequested);
+        QSignalSpy resuming(&panel, &ClaudeCodePanel::resumeRequested);
+        QSignalSpy ending(&panel, &ClaudeCodePanel::conversationEnding);
+
+        // The dock's.
+        QVERIFY(panel.runCommand("/help"));
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("/resume"));
+        QVERIFY(panel.transcriptText().contains("/compact"));   // Claude Code's, named
+        QVERIFY(panel.runCommand("/status"));
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("not started yet"));
+        QVERIFY(panel.runCommand("/rename Filter work"));
+        QCOMPARE(panel.title(), QStringLiteral("Filter work"));
+        QVERIFY(panel.runCommand("/permissions plan"));
+        bool plan = false;
+        for (QAction* a : panel.permissionActions()) plan = plan || (a->isChecked() && a->data().toString() == "plan");
+        QVERIFY(plan);
+        QVERIFY(panel.runCommand("/permissions ask"));
+        QString some;
+        for (QAction* a : panel.modelActions())
+            if (!a->data().toString().isEmpty() && some.isEmpty()) some = a->data().toString();
+        QVERIFY(!some.isEmpty());
+        QVERIFY(panel.runCommand("/model " + some));
+        QCOMPARE(panel.session()->model(), some);
+        QVERIFY(panel.runCommand("/quit"));
+        QCOMPARE(closing.count(), 1);
+        QVERIFY(panel.runCommand("/resume filter"));
+        QCOMPARE(resuming.last().at(0).toString(), QStringLiteral("filter"));
+        QVERIFY(panel.runCommand("/clear"));
+        QVERIFY(ending.count() >= 1);
+        QVERIFY(!panel.hasConversation());
+        QCOMPARE(panel.title(), QStringLiteral("New conversation"));
+        // Not the dock's: Claude Code's, or none.
+        QVERIFY(!panel.runCommand("/compact keep the math"));
+        QVERIFY(!panel.runCommand("/Users/me/amp.sch explain it"));
+        QVERIFY(!panel.runCommand("plain words"));
+
+#ifndef Q_OS_WIN   // (the fake claude is a shell script)
+        QFile::remove(dir.filePath("prompts"));
+        panel.session()->setProgram(script("writer", kWriter));
+        panel.composer()->setPlainText("/compact keep the math");
+        panel.sendComposer();
+        QTRY_VERIFY_WITH_TIMEOUT(read(dir.filePath("prompts")).contains("keep the math"), 10000);
+        QVERIFY(!read(dir.filePath("prompts")).contains("The document open in Qucs-S"));
+        panel.session()->stop();
+        QTRY_VERIFY(!panel.session()->isBusy());
+        panel.session()->reset();
+        QFile::remove(dir.filePath("prompts"));
+        panel.composer()->setPlainText("/Users/me/amp.sch explain it");
+        panel.sendComposer();
+        QTRY_VERIFY_WITH_TIMEOUT(read(dir.filePath("prompts")).contains("explain it"), 10000);
+        QVERIFY(read(dir.filePath("prompts")).contains("The document open in Qucs-S"));   // (a prompt)
+        panel.session()->stop();
+        QTRY_VERIFY(!panel.session()->isBusy());
+        panel.session()->reset();
+#endif
+
+        // The list as "/" is typed.
+        QListWidget* list = panel.commandList();
+        panel.composer()->setPlainText("/re");
+        QVERIFY(list->isVisible());
+        QStringList offered;
+        for (int i = 0; i < list->count(); ++i) offered << list->item(i)->data(Qt::UserRole).toString();
+        QCOMPARE(offered.mid(0, 3), QStringList({"resume", "rename", "review"}));
+        QVERIFY(offered.contains("security-review"));   // (containing it, after)
+        QTest::keyClick(panel.composer(), Qt::Key_Down);
+        QTest::keyClick(panel.composer(), Qt::Key_Tab);
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("/rename "));
+        QVERIFY(!list->isVisible());
+        panel.composer()->setPlainText("/sta");
+        QVERIFY(list->isVisible());
+        QTest::keyClick(panel.composer(), Qt::Key_Escape);
+        QVERIFY(!list->isVisible());
+        panel.composer()->setPlainText("/hel");
+        QTest::keyClick(panel.composer(), Qt::Key_Return);   // runs /help
+        QVERIFY(panel.composer()->toPlainText().isEmpty());
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("Commands"));
+        panel.composer()->setPlainText("/nothing-like-it");
+        QVERIFY(!list->isVisible());
+        panel.composer()->setPlainText("/re x");
+        QVERIFY(!list->isVisible());
+        // Claude Code's, as it said at its start, kept for the list.
+        QucsSettingsFile().setValue("ClaudeCode/slashCommands", QStringList{"my-skill", "compact"});
+        panel.composer()->setPlainText("/my");
+        QCOMPARE(list->count(), 1);
+        QCOMPARE(list->item(0)->data(Qt::UserRole).toString(), QStringLiteral("my-skill"));
+        panel.composer()->clear();
+        QucsSettingsFile().remove("ClaudeCode/slashCommands");
+    }
+
     // Renames among everything else the tabs go through - opened, closed,
     // moved, brought forward, begun again, their menus - in any order:
     // one editor at most, over a tab that is there, and every tab says
@@ -1664,6 +2077,7 @@ private slots:
         Module::registerModules();
         const QString workspace = fresh("workspace");
         QucsSettings.qucsWorkspaceDir.setPath(workspace);
+        QDir(qucs_s::claude::history::directory()).removeRecursively();   // (none to reopen)
 
         QucsApp app(false);
         MainGuard guard(&app);
