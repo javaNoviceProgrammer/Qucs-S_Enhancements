@@ -134,6 +134,18 @@ bool loadSettings()
     for (const QString& key : settings.childKeys())
         QucsSettings.ContentPatterns.insert(key, settings.value(key).toString());
     settings.endGroup();
+    // The syntax highlighting's formats the user changed ("python/Keyword"),
+    // and the languages chosen for suffixes.
+    QucsSettings.SyntaxFormats.clear();
+    settings.beginGroup("SyntaxFormats");
+    for (const QString& key : settings.allKeys())
+        QucsSettings.SyntaxFormats.insert(key, settings.value(key).toString());
+    settings.endGroup();
+    QucsSettings.SyntaxForSuffix.clear();
+    settings.beginGroup("SyntaxForSuffix");
+    for (const QString& key : settings.childKeys())
+        QucsSettings.SyntaxForSuffix.insert(key, settings.value(key).toString());
+    settings.endGroup();
     QucsSettings.ShowPinNames = _settings::Get().item<bool>("ShowPinNames");
     QucsSettings.ShowPinDirections = _settings::Get().item<bool>("ShowPinDirections");
     QucsSettings.EmbedVerilogAInLibraries = _settings::Get().item<bool>("EmbedVerilogAInLibraries");
@@ -232,6 +244,16 @@ bool saveApplSettings()
     settings.remove("ContentPatterns");
     settings.beginGroup("ContentPatterns");
     for (auto it = QucsSettings.ContentPatterns.cbegin(); it != QucsSettings.ContentPatterns.cend(); ++it)
+        settings.setValue(it.key(), it.value());
+    settings.endGroup();
+    settings.remove("SyntaxFormats");
+    settings.beginGroup("SyntaxFormats");
+    for (auto it = QucsSettings.SyntaxFormats.cbegin(); it != QucsSettings.SyntaxFormats.cend(); ++it)
+        settings.setValue(it.key(), it.value());
+    settings.endGroup();
+    settings.remove("SyntaxForSuffix");
+    settings.beginGroup("SyntaxForSuffix");
+    for (auto it = QucsSettings.SyntaxForSuffix.cbegin(); it != QucsSettings.SyntaxForSuffix.cend(); ++it)
         settings.setValue(it.key(), it.value());
     settings.endGroup();
     qs.setItem<bool>("ShowPinNames",QucsSettings.ShowPinNames);

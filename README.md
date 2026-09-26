@@ -178,6 +178,26 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   built-in editor; a suffix registered with any program takes precedence
   over the defaults, and a program path may contain slashes (upstream cut
   it at the first one).
+- **Syntax highlighting in the text editor**: a file is highlighted as the
+  language of its suffix — C/C++, JSON, Markdown, Octave/MATLAB, Python,
+  Qucs netlists, shell scripts, SPICE (`.cir`, `.sp`, `.lib`, `.inc`,
+  `.mod`, ...), Verilog and SystemVerilog, Verilog-A, VHDL and XML (the
+  first four were all it had, Octave with the wrong comment mark).
+  Keywords, types, built-ins, numbers, directives (SPICE's dot commands,
+  the preprocessor, decorators), strings and comments, those over several
+  lines too (`/* */`, `"""`, `<!-- -->`, fenced code), and a `#` in a
+  string is not a comment. *Comment/Uncomment* uses each language's mark.
+  A button in the status bar names the language of the text document in
+  front; its menu chooses another, kept for every file of that suffix
+  (open, opened later, after a restart) until *Back to the Default*. A
+  document without a suffix keeps its choice for itself. *Application
+  Settings → Source Code Editor* lists the languages with a radio button
+  each; the one chosen shows its styles — a colour, bold and italic each,
+  under the language's own names ("Dot command", "Decorator") — on a
+  preview of the language. OK or Apply saves the changes of every
+  language, and the open documents take them at once; only the styles
+  changed are saved. (The tab's nine colour buttons, which nothing ever
+  used, are gone.)
 - **Embedded simulation console**: a simulation runs in a *Simulation*
   dock at the bottom of the window (tabbed with the build messages) instead
   of the modal "Simulate with external simulator" dialog, so the schematic

@@ -24,6 +24,7 @@
 
 class QucsApp;
 class Schematic;
+class TextDoc;
 class SimulationRun;
 class Diagram;
 struct MappedPoint;
@@ -80,7 +81,9 @@ QString duration(qint64 milliseconds);
  *
  *  - the diagram readout under the cursor, the selection (a click zooms
  *    to it), the cursor position (line and column in a text document),
- *    the grid (a click shows or hides it) and the zoom (a menu);
+ *    the language a text document is highlighted as (a menu chooses it
+ *    for the files of its suffix), the grid (a click shows or hides it)
+ *    and the zoom (a menu);
  *  - the electrical rule check of the schematic, again after each edit
  *    (a click lists the problems and goes to the first), the last
  *    simulation - running, its time, its warnings, failed (a click shows
@@ -141,6 +144,7 @@ private:
     QLabel* a_readout;
     QToolButton* a_selection;
     QLabel* a_position;
+    QToolButton* a_language;
     QToolButton* a_grid;
     QToolButton* a_zoom;
     QToolButton* a_problems;
@@ -177,6 +181,7 @@ private:
     void updateSelection(Schematic* doc);
     void updateGrid(Schematic* doc);
     void updateZoom(Schematic* doc);
+    void updateLanguage(TextDoc* doc);
     void updateRun();
     void updateSimulator();
     void updateSaved();
@@ -190,6 +195,7 @@ private:
     void setChip(QToolButton* chip, const QString& text, Tone tone);
     void popUp(QToolButton* chip, QMenu* menu);
     QMenu* zoomMenu();
+    QMenu* languageMenu();
     QMenu* simulatorMenu();
     void follow(QWidget* document);
 };

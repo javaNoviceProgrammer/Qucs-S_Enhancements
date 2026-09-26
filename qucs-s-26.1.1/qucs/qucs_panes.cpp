@@ -16,6 +16,7 @@
 #include "schematic.h"
 #include "textdoc.h"
 #include "misc.h"
+#include "statusbar.h"
 
 #include <QApplication>
 #include <QEvent>
@@ -178,6 +179,13 @@ QList<QucsDoc *> QucsApp::allDocuments() const
         docs << doc;
     }
   return docs;
+}
+
+void QucsApp::applySyntaxSettings()
+{
+  for (QucsDoc *doc : allDocuments())
+    if (auto *text = dynamic_cast<TextDoc *>(doc)) text->refreshLanguage();
+  if (a_status != nullptr) a_status->scheduleRefresh();
 }
 
 void QucsApp::setActivePane(ContextMenuTabWidget *pane)

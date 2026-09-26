@@ -38,6 +38,7 @@ class QIntValidator;
 class QRegExpValidator;
 class QStandardItemModel;
 class QTableWidget;
+class SyntaxSettingsPage;
 
 ///
 /// @class QucsSettingsDialog class
@@ -87,33 +88,6 @@ private slots:
 
     /// @brief Removes the selected file type entry from the file types table.
     void slotRemoveFileType();
-
-    /// @brief Opens the color picker for the comment syntax highlight color.
-    void slotColorComment();
-
-    /// @brief Opens the color picker for the string syntax highlight color.
-    void slotColorString();
-
-    /// @brief Opens the color picker for the integer number syntax highlight color.
-    void slotColorInteger();
-
-    /// @brief Opens the color picker for the real number syntax highlight color.
-    void slotColorReal();
-
-    /// @brief Opens the color picker for the character syntax highlight color.
-    void slotColorCharacter();
-
-    /// @brief Opens the color picker for the data type syntax highlight color.
-    void slotColorDataType();
-
-    /// @brief Opens the color picker for the attribute syntax highlight color
-    void slotColorAttribute();
-
-    /// @brief Opens the color picker for the directive syntax highlight color.
-    void slotColorDirective();
-
-    /// @brief Opens the color picker for the task syntax highlight color.
-    void slotColorTask();
 
     /// @brief Populates the suffix and program fields when a file type row is clicked.
     void slotTableClicked(int,int);
@@ -251,15 +225,8 @@ public:
     QTableWidget *pathsTableWidget;
     QStandardItemModel *model;
 
-    QPushButton *ColorComment;    ///< Sets the syntax highlight color for comments.
-    QPushButton *ColorString;     ///< Sets the syntax highlight color for strings.
-    QPushButton *ColorInteger;    ///< Sets the syntax highlight color for integer numbers.
-    QPushButton *ColorReal;       ///< Sets the syntax highlight color for real numbers.
-    QPushButton *ColorCharacter;  ///< Sets the syntax highlight color for characters.
-    QPushButton *ColorDataType;   ///< Sets the syntax highlight color for data types.
-    QPushButton *ColorAttribute;  ///< Sets the syntax highlight color for attributes.
-    QPushButton *ColorDirective;  ///< Sets the syntax highlight color for directives.
-    QPushButton *ColorTask;       ///< Sets the syntax highlight color for tasks.
+    /// @brief The Source Code Editor tab: how each language is highlighted.
+    SyntaxSettingsPage *syntaxPage;
 
     /// @brief Opens the custom shortcut configuration dialog.
     QPushButton *ShortcutButton;
