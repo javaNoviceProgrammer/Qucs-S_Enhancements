@@ -662,6 +662,39 @@ QString IconProvider::type(const QFileInfo& info) const
     return kindOf(info).name;
 }
 
+// Names in natural order, case aside: runs of digits by their value (R2
+// before R10), the rest by the collator. QCollator's numeric mode does it
+// only with ICU, which not every Qt has (not the Linux one of the CI).
+static int naturalCompare(const QCollator& collator, QStringView a, QStringView b)
+{
+    qsizetype i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        const bool digits = a[i].isDigit();
+        if (digits != b[j].isDigit()) break;   // a number against a word: as the collator has them
+        qsizetype i2 = i, j2 = j;
+        while (i2 < a.size() && a[i2].isDigit() == digits) ++i2;
+        while (j2 < b.size() && b[j2].isDigit() == digits) ++j2;
+        QStringView x = a.sliced(i, i2 - i), y = b.sliced(j, j2 - j);
+        int c = 0;
+        if (digits) {
+            while (x.size() > 1 && x.front() == QLatin1Char('0')) x = x.sliced(1);
+            while (y.size() > 1 && y.front() == QLatin1Char('0')) y = y.sliced(1);
+            c = x.size() != y.size() ? (x.size() < y.size() ? -1 : 1) : x.compare(y);
+        } else {
+            c = collator.compare(x, y);
+        }
+        if (c != 0) return c;
+        i = i2;
+        j = j2;
+    }
+    if (i < a.size() && j < b.size()) {
+        const int c = collator.compare(a.sliced(i), b.sliced(j));
+        if (c != 0) return c;
+    }
+    if (a.size() - i != b.size() - j) return a.size() - i < b.size() - j ? -1 : 1;
+    return collator.compare(a, b);
+}
+
 // The file system as the browser shows it: folders first, then names in
 // natural order (or by the column sorted on); files filtered by the name
 // typed and, if asked, to those of Qucs-S; in the flat views folders by
@@ -671,7 +704,6 @@ class SortProxy : public QSortFilterProxyModel
 public:
     explicit SortProxy(QObject* parent) : QSortFilterProxyModel(parent)
     {
-        a_collator.setNumericMode(true);
         a_collator.setCaseSensitivity(Qt::CaseInsensitive);
     }
     void configure(const QString& text, bool qucsOnly, bool flat, const QString& location)
@@ -712,7 +744,7 @@ protected:
         const auto* fs = static_cast<QFileSystemModel*>(sourceModel());
         const bool leftDir = fs->isDir(left), rightDir = fs->isDir(right);
         if (leftDir != rightDir) return sortOrder() == Qt::AscendingOrder ? leftDir : rightDir;
-        const auto byName = [&] { return a_collator.compare(fs->fileName(left), fs->fileName(right)) < 0; };
+        const auto byName = [&] { return naturalCompare(a_collator, fs->fileName(left), fs->fileName(right)) < 0; };
         switch (left.column()) {
         case 1:
             if (fs->size(left) != fs->size(right)) return fs->size(left) < fs->size(right);

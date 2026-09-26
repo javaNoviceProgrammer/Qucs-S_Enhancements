@@ -299,6 +299,23 @@ private slots:
         QCOMPARE(value.first().component, QStringLiteral("R1"));
         QVERIFY(value.last().message.startsWith(QLatin1String("incomplete or empty netlist or no")));
 
+        // Older ngspice (42): "Netlist line no. 4:" and why.
+        const QList<qucs_s::simlog::Problem> older = qucs_s::simlog::problems(
+            QStringLiteral("Ngspice started...\n"
+                           "Netlist line no. 3:\n"
+                           "Undefined parameter [nosuch]\n"
+                           "Netlist line no. 3:\n"
+                           "Cannot compute substitute\n"
+                           "\n"
+                           "ERROR: fatal error in ngspice, exit(1)\n"),
+            netlist, parts);
+        QCOMPARE(older.size(), 3);
+        QCOMPARE(older.first().line, 3);
+        QCOMPARE(older.first().message, QStringLiteral("Undefined parameter [nosuch]"));
+        QCOMPARE(older.first().netlistLine, QStringLiteral("R1 in out 1k"));
+        QCOMPARE(older.first().component, QStringLiteral("R1"));
+        QCOMPARE(older.last().message, QStringLiteral("fatal error in ngspice, exit(1)"));
+
         // A device in a subcircuit: the subcircuit's part.
         const QList<qucs_s::simlog::Problem> inside = qucs_s::simlog::problems(
             QStringLiteral("Error on line 3 or its substitute:\n"

@@ -28,7 +28,7 @@ int severityOf(const QString& line)
                        "|simulation\\(s\\) aborted|simulation aborted|analysis aborted|timestep too small"
                        "|cannot proceed|^no ground found|^no simulation found|^only dc simulation found"
                        "|singular matrix|gmin stepping failed|source stepping failed|transient op failed"
-                       "|failed to start simulator|simulator crashed"),
+                       "|failed to start simulator|simulator crashed|^netlist line no\\.\\s*\\d+"),
         QRegularExpression::CaseInsensitiveOption);
     static const QRegularExpression warning(QStringLiteral("^(warning\\b|msg_warning)"),
                                             QRegularExpression::CaseInsensitiveOption);
@@ -53,7 +53,7 @@ QString prefixless(QString message)
     static const QRegularExpression prefix(QStringLiteral("^(error|warning)(\\s+from\\s+\\w+)?\\s*:\\s*"),
                                            QRegularExpression::CaseInsensitiveOption);
     // "Error on line 3 or its substitute:": the line is told on its own.
-    static const QRegularExpression onLine(QStringLiteral("^(error|warning)\\s+on\\s+line\\s+\\d+(\\s+or its substitute)?\\s*:\\s*"),
+    static const QRegularExpression onLine(QStringLiteral("^((error|warning)\\s+on\\s+line\\s+\\d+(\\s+or its substitute)?|netlist line no\\.\\s*\\d+)\\s*:\\s*"),
                                            QRegularExpression::CaseInsensitiveOption);
     message.remove(prefix);
     message.remove(onLine);
@@ -97,7 +97,9 @@ QList<Problem> problems(const QString& output, const QStringList& netlist, const
             if (severityOf(text) >= 0 || isProgress(text)) break;
             const bool indented = raw.startsWith(QLatin1Char(' ')) || raw.startsWith(QLatin1Char('\t'));
             if (!indented) {
-                if (!namesALine || reasonTaken || p.netlistLine.isEmpty()) break;
+                // "on line 6 :" and its line, then why; or "Netlist line
+                // no. 4:" and why at once (older ngspice).
+                if (!namesALine || reasonTaken) break;
                 message << text;
                 reasonTaken = true;
                 continue;
