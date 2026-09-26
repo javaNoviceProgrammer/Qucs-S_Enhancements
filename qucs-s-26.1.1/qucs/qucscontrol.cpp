@@ -461,6 +461,7 @@ QString kindOf(QucsDoc* doc)
 {
     if (qobject_cast<TextDoc*>(QucsApp::documentWidget(doc)) != nullptr) return QStringLiteral("text");
     if (QucsApp::isPdfDocument(QucsApp::documentWidget(doc))) return QStringLiteral("pdf");
+    if (QucsApp::isSheetDocument(QucsApp::documentWidget(doc))) return QStringLiteral("spreadsheet");
     const QString suffix = QFileInfo(doc->getDocName()).suffix().toLower();
     if (suffix == QLatin1String("dpl")) return QStringLiteral("data display");
     if (suffix == QLatin1String("sym")) return QStringLiteral("symbol");
