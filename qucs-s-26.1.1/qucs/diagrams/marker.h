@@ -22,6 +22,8 @@
 
 #include "element.h"
 
+#include <QColor>
+
 class QPainter;
 class Diagram;
 class Graph;
@@ -100,6 +102,15 @@ private:
 public:
   QString Text;     // the string to be displayed in the marker text
   bool transparent; // background shines through marker body
+  // The colours of its text and of its background, chosen in its dialog;
+  // invalid: automatic - the text in the ink of the paper it is on, the
+  // background that paper (the light card a diagram is on dark paper,
+  // white on prints).
+  QColor textColor;
+  QColor fillColor;
+  /// The colours it is drawn in: the chosen ones, or the paper's.
+  QColor shownTextColor() const;
+  QColor shownFillColor() const;
 
 // private: // not yet, cross-manipulated by MarkerDialog
   int Precision; // number of digits to show

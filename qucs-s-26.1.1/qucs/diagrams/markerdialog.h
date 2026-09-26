@@ -23,6 +23,8 @@
 class QLineEdit;
 class QComboBox;
 class QCheckBox;
+class QPushButton;
+class QToolButton;
 
 class MarkerDialog : public QDialog  {
 Q_OBJECT
@@ -30,8 +32,19 @@ public:
   MarkerDialog(Marker *pm_, QWidget *parent=0);
  ~MarkerDialog();
 
+  /// The colours chosen for the text and the background (invalid:
+  /// automatic, the paper's), as the dialog shows them.
+  void setTextColor(const QColor& color);
+  void setFillColor(const QColor& color);
+  QColor textColor() const { return a_textColor; }
+  QColor fillColor() const { return a_fillColor; }
+
 private slots:
   void slotAcceptValues();
+
+private:
+  void showColors();
+  QColor a_textColor, a_fillColor;
 
 public:
   Marker *pMarker;
@@ -42,6 +55,8 @@ public:
   QComboBox  *IndicatorBox;
   QLineEdit  *SourceImpedance;
   QCheckBox  *TransBox;
+  QPushButton *TextColorButton, *FillColorButton;   // a colour chosen
+  QToolButton *TextColorAuto, *FillColorAuto;       // back to automatic
 };
 
 #endif
