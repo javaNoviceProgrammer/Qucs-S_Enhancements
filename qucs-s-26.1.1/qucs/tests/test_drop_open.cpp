@@ -194,14 +194,14 @@ private slots:
         view->setProjPath(project);
         QStandardItemModel* m = view->model();
         const QModelIndex va = m->index(ProjectView::VerilogA, 0);
-        const QModelIndex others = m->index(ProjectView::Others, 0);
+        const QModelIndex text = m->index(ProjectView::Text, 0);
         QVERIFY(!(m->flags(va) & Qt::ItemIsDragEnabled));                 // category rows cannot be dragged
         QVERIFY(m->flags(m->index(0, 0, va)) & Qt::ItemIsDragEnabled);    // files can
 
         view->selectionModel()->select(m->index(0, 0, va), QItemSelectionModel::Select | QItemSelectionModel::Rows);
         QModelIndex notes;
-        for (int r = 0; r < m->rowCount(others); ++r)
-            if (m->index(r, 0, others).data().toString() == "notes.txt") notes = m->index(r, 0, others);
+        for (int r = 0; r < m->rowCount(text); ++r)
+            if (m->index(r, 0, text).data().toString() == "notes.txt") notes = m->index(r, 0, text);
         QVERIFY(notes.isValid());
         view->selectionModel()->select(notes, QItemSelectionModel::Select | QItemSelectionModel::Rows);
         QList<QUrl> urls = view->selectedFileUrls();

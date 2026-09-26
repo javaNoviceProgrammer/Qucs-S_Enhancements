@@ -127,6 +127,13 @@ bool loadSettings()
     QucsSettings.ContentFolderIcons = _settings::Get().item<bool>("ContentFolderIcons");
     QucsSettings.ContentAutoRefresh = _settings::Get().item<bool>("ContentAutoRefresh");
     QucsSettings.ContentRefreshSeconds = qBound(1, _settings::Get().item<int>("ContentRefreshSeconds"), 3600);
+    // The categories' patterns the user changed; the others keep their
+    // defaults, those of this version.
+    QucsSettings.ContentPatterns.clear();
+    settings.beginGroup("ContentPatterns");
+    for (const QString& key : settings.childKeys())
+        QucsSettings.ContentPatterns.insert(key, settings.value(key).toString());
+    settings.endGroup();
     QucsSettings.ShowPinNames = _settings::Get().item<bool>("ShowPinNames");
     QucsSettings.ShowPinDirections = _settings::Get().item<bool>("ShowPinDirections");
     QucsSettings.EmbedVerilogAInLibraries = _settings::Get().item<bool>("EmbedVerilogAInLibraries");
@@ -222,6 +229,11 @@ bool saveApplSettings()
     qs.setItem<bool>("ContentFolderIcons",QucsSettings.ContentFolderIcons);
     qs.setItem<bool>("ContentAutoRefresh",QucsSettings.ContentAutoRefresh);
     qs.setItem<int>("ContentRefreshSeconds",QucsSettings.ContentRefreshSeconds);
+    settings.remove("ContentPatterns");
+    settings.beginGroup("ContentPatterns");
+    for (auto it = QucsSettings.ContentPatterns.cbegin(); it != QucsSettings.ContentPatterns.cend(); ++it)
+        settings.setValue(it.key(), it.value());
+    settings.endGroup();
     qs.setItem<bool>("ShowPinNames",QucsSettings.ShowPinNames);
     qs.setItem<bool>("ShowPinDirections",QucsSettings.ShowPinDirections);
     qs.setItem<bool>("EmbedVerilogAInLibraries",QucsSettings.EmbedVerilogAInLibraries);

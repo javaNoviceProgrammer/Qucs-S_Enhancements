@@ -24,6 +24,7 @@
 
 #include <QFont>
 #include <QColor>
+#include <QMap>
 #include <QStringList>
 #include <QDir>
 #include <QtGlobal>
@@ -115,6 +116,9 @@ struct tQucsSettings {
   bool ContentFolderIcons = false;   // Content panel: a folder icon on the sub-trees' folder rows
   bool ContentAutoRefresh = true;   // Content panel: look for files that came or went, every ...
   int ContentRefreshSeconds = 3;    // ... this many seconds
+  // Content panel: the file name patterns of the categories the user
+  // changed, by category key (ProjectView::patterns() has the defaults).
+  QMap<QString, QString> ContentPatterns;
   // Symbols: write the name of each pin of a subcircuit inside its
   // symbol, and mark which way the pin points (in, out, inout).
   bool ShowPinNames = true;

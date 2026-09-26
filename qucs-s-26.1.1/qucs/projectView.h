@@ -26,6 +26,7 @@
 
 #include <QTreeView>
 #include <QString>
+#include <QStringList>
 #include <QStandardItem>
 #include <QUrl>
 
@@ -41,7 +42,34 @@ public:
   // Scratch holds whatever is in the project's Scratch folder (temporary
   // files of the simulations), named relative to that folder.
   enum Category { Datasets = 0, DataDisplays, Verilog, VerilogA, Osdi, VHDL,
-                  Octave, Schematics, Symbols, SPICE, Python, Images, Others, Scratch };
+                  Octave, Schematics, Symbols, SPICE, Python, Images, Text, Others, Scratch,
+                  CategoryCount };
+
+  // Which files a category lists: those whose names match its patterns
+  // ("*.dat", "notes*.md"), matched without regard to case. A file is
+  // listed under the first category from the top that matches it (a
+  // schematic only when it is one): the default "*" of Others takes
+  // whatever no other took. Scratch lists the files of the Scratch folder
+  // that match its own. The user's patterns are in
+  // QucsSettings.ContentPatterns, under the categories' keys.
+
+  /// What a category's patterns are saved under ("DataDisplays"): not
+  /// translated.
+  static QString categoryKey(int category);
+  /// Its name, as the panel shows it.
+  static QString categoryName(int category);
+  /// The patterns it has by default, as text ("*.v").
+  static QString defaultPatterns(int category);
+  /// The patterns in use: the user's, or the default.
+  static QString patterns(int category);
+  /// Sets a category's patterns from \a text as typed; set to its
+  /// defaults, it is no longer a change of the user's.
+  static void setPatterns(int category, const QString& text);
+  /// The patterns of \a text: separated by commas, semicolons or spaces;
+  /// an extension alone (txt, .txt) taken for *.txt; each once.
+  static QStringList parsePatterns(const QString& text);
+  /// \a text as the patterns it has, written "*.txt, *.md".
+  static QString normalizedPatterns(const QString& text);
 
   /// The suffixes listed under Images (lower case): what QImageReader
   /// can show plus SVG.
@@ -84,7 +112,9 @@ public:
   /// Automatic refresh, as the settings say (QucsSettings.ContentAutoRefresh,
   /// ContentRefreshSeconds): every so many seconds the project's files are
   /// listed again and, only when a file came, went or changed, the panel
-  /// is rebuilt. Called at start and after the settings were changed.
+  /// is rebuilt. Called at start and after the settings were changed: the
+  /// panel is rebuilt then if the settings its rows are built with (folder
+  /// icons, the categories' patterns) changed.
   void applyRefreshSettings();
   bool autoRefreshEnabled() const;
   /// What the listing is compared by: every project file with its size
@@ -113,6 +143,7 @@ private:
   QTimer *m_pollTimer;
   QString m_signature;   // listingSignature() of what is shown
   bool m_folderIcons = false;   // QucsSettings.ContentFolderIcons the listing was built with
+  QStringList m_patterns;       // the categories' patterns the listing was built with
 
   /// Adds a file row (path relative to the project, optional note) under
   /// its category, inside the folder rows of its directory in tree view.

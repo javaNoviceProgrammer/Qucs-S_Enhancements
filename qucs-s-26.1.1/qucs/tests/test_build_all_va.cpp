@@ -172,7 +172,8 @@ private slots:
         QStandardItem* schematics = view->model()->item(ProjectView::Schematics, 0);
         QCOMPARE(schematics->child(1, 1)->text(), QString("2-port"));
         QVERIFY(schematics->child(0, 1) == nullptr || schematics->child(0, 1)->text().isEmpty());
-        QCOMPARE(children(view, ProjectView::Others), QStringList({"models/nested/notes.txt"}));
+        QCOMPARE(children(view, ProjectView::Text), QStringList({"models/nested/notes.txt"}));
+        QCOMPARE(children(view, ProjectView::Others), QStringList());
         QCOMPARE(children(view, ProjectView::Osdi), QStringList());
         for (int cat = 0; cat < view->model()->rowCount(); ++cat)
             for (const QString& name : children(view, cat))
