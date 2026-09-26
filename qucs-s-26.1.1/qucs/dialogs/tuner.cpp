@@ -21,6 +21,8 @@
 #include "extsimkernels/spicecompat.h"
 
 #include <QCloseEvent>
+#include <QKeyEvent>
+#include <QScrollArea>
 
 bool isPropertyTunable(Component* propertyOwner, Property* property) {
   // Simulation parameters
@@ -630,7 +632,7 @@ float getScale(int index)
     case 7: return pow(10, 6);//mega
     case 8: return pow(10, 9);//giga
     }
-    return 0;
+    return 1;   // no prefix (a value without one leaves its index at -1: taken for 0, any such value was "changed")
 }
 
 // Reads the value from the user interface
@@ -675,7 +677,7 @@ tunerElement::~tunerElement()
 
 //Main window. It contains zero or more tunerElement objects
 TunerDialog::TunerDialog(QWidget *_w, QWidget *parent) :
- QDialog(parent), w(_w)
+ QWidget(parent), w(_w)
 {
     setAttribute(Qt::WA_DeleteOnClose);//This attribute forces the widget to be destroyed after closing
     qDebug() << "Tuner::TunerDialog";
@@ -684,7 +686,7 @@ TunerDialog::TunerDialog(QWidget *_w, QWidget *parent) :
     gbox = new QGridLayout();
     this->setLayout(gbox);
 
-    splitter = new QSplitter(parent);
+    splitter = new QSplitter();
     ButtonsPanel = new QWidget();
     QGridLayout * buttonsLayout = new QGridLayout();
     ButtonsPanel->setLayout(buttonsLayout);
@@ -707,9 +709,18 @@ TunerDialog::TunerDialog(QWidget *_w, QWidget *parent) :
     buttonsLayout->addWidget(updateValues);
     buttonsLayout->addWidget(closeButton);
 
+    // The buttons, the hints and the progress on the left; the tuned
+    // properties side by side on the right, scrolled when the dock is
+    // smaller than they are.
+    QScrollArea *elements = new QScrollArea(this);
+    elements->setObjectName(QStringLiteral("tunerElements"));
+    elements->setWidgetResizable(true);
+    elements->setFrameShape(QFrame::NoFrame);
+    elements->setWidget(splitter);
     gbox->addWidget(ButtonsPanel, 0, 0, Qt::AlignTop);
     gbox->addWidget(info, 1, 0, Qt::AlignBottom);
-    gbox->addWidget(splitter,0, 1, Qt::AlignRight);
+    gbox->addWidget(elements, 0, 1, 3, 1);
+    gbox->setColumnStretch(1, 1);
 
     progressBar = new QProgressBar();
     progressBar->setMaximum(100);
@@ -723,9 +734,27 @@ TunerDialog::TunerDialog(QWidget *_w, QWidget *parent) :
     connect(resetValues, SIGNAL(released()),this, SLOT(slotResetValues()));
     connect(updateValues, SIGNAL(released()), this, SLOT(slotUpdateValues()));
 
-    //Management of the Esc shortcut. Otherwise, it will exit the tuner and leave the toogle button activated
-    QShortcut *shortcut_Esc = new QShortcut(Qt::Key_Escape, this);
-    QObject::connect(shortcut_Esc, SIGNAL(activated()), this, SLOT(close()));
+}
+
+// Esc in the tuner closes it (and stops tuning). Docked, the tuner is in
+// the main window, whose own Esc (the schematic's tool) is a shortcut: the
+// tuner takes the key before it, but only while it has the focus.
+bool TunerDialog::event(QEvent *e)
+{
+    if (e->type() == QEvent::ShortcutOverride && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
+        e->accept();
+        return true;
+    }
+    return QWidget::event(e);
+}
+
+void TunerDialog::keyPressEvent(QKeyEvent *e)
+{
+    if (e->key() == Qt::Key_Escape) {
+        close();
+        return;
+    }
+    QWidget::keyPressEvent(e);
 }
 
 void TunerDialog::slotUpdateProgressBar(int value)
@@ -770,7 +799,7 @@ void TunerDialog::addTunerElement(tunerElement *element)
         splitter->addWidget(element);
         currentProps.append(element->getElementProperty());
         currentElements.append(element);
-        this->adjustSize();
+        this->updateGeometry();
         this->update();
     }
     else
@@ -962,5 +991,16 @@ void TunerDialog::showEvent(QShowEvent *e)
 TunerDialog::~TunerDialog()
 {
 
+}
+
+TunerDock::TunerDock(QWidget *parent) : QDockWidget(tr("Tuner"), parent)
+{
+    setObjectName(QStringLiteral("TunerDock"));
+}
+
+void TunerDock::closeEvent(QCloseEvent *event)
+{
+    event->ignore();   // hidden when the tuner closes
+    emit closeRequested();
 }
 

@@ -215,6 +215,8 @@ public:
   ClaudeCodeTabs *claudeCode() const { return claudeTabs; }
   FileBrowser *fileBrowserPanel() const { return fileBrowser; }
   QDockWidget *claudeDockWidget() const { return claudeDock; }
+  /// The dock the tuner is shown in while tuning is on (made the first time).
+  QDockWidget *tunerDockWidget() const { return tunerDock; }
   /// Shows the Claude Code dock, the prompt ready; hides it when it shows.
   void toggleClaudeCode();
   /// Claude changed \a files: those open in Qucs-S without changes of
@@ -568,6 +570,7 @@ private:
   QDockWidget *pythonDock;
   ProcessConsole *pythonShell;
   QDockWidget *claudeDock = nullptr;
+  QDockWidget *tunerDock = nullptr;
   ClaudeCodeTabs *claudeTabs = nullptr;
   FileBrowser *fileBrowser = nullptr;   // the left dock's File Browser tab
 

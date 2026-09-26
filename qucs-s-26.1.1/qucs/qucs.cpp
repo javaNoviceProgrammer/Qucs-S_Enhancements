@@ -3332,9 +3332,19 @@ void QucsApp::slotTune(bool checked)
         }
 
 
-        // instance of tuner
+        // instance of tuner, in its dock: beside the simulation output at
+        // the bottom the first time, where the user left it after that
         TuningMode = true;
-        tunerDia = new TunerDialog(w, this);//The object can be instantiated here since when checked == false the memory will be freed
+        if (tunerDock == nullptr) {
+            auto *dock = new TunerDock(this);
+            addDockWidget(Qt::BottomDockWidgetArea, dock, Qt::Horizontal);
+            connect(dock, &TunerDock::closeRequested, this, [this] {
+                if (tune->isChecked()) tune->setChecked(false);   // closes the tuner, which asks about its values
+            });
+            tunerDock = dock;
+        }
+        tunerDia = new TunerDialog(w, tunerDock);//The object can be instantiated here since when checked == false the memory will be freed
+        tunerDock->setWidget(tunerDia);
         // inform the Tuner Dialog when a component is deleted
         connect(d, SIGNAL(signalComponentDeleted(Component *)),
                 tunerDia, SLOT(slotComponentDeleted(Component *)));
@@ -3349,6 +3359,10 @@ void QucsApp::slotTune(bool checked)
         MouseReleaseAction = nullptr; //While Tune is active release is not needed. This puts Press Action back to normal select
 
         tunerDia->show();
+        tunerDock->show();
+        tunerDock->raise();
+        if (!tunerDock->isFloating())   // tall enough for the sliders
+            resizeDocks({tunerDock}, {std::max(tunerDia->sizeHint().height(), 360)}, Qt::Vertical);
     }
     else
     {
@@ -3357,6 +3371,7 @@ void QucsApp::slotTune(bool checked)
         // MouseActions are reset in closing of tunerDialog class
         tunerDia->close();//According to QWidget documentation (http://doc.qt.io/qt-4.8/qwidget.html#close),
                           //the object is removed since it has the Qt::WA_DeleteOnClose flag
+        if (tunerDock != nullptr) tunerDock->hide();
         TuningMode = false;
     }
 }
