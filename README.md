@@ -434,6 +434,46 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   written again it is read again where you were. *Save As* copies it;
   *Print* prints its pages. Built with Qt's PDF module (all the release
   bundles have it); without it PDFs open in the system's viewer as before.
+- **Tuner in a dock**: *Simulation → Tune* shows the tuner in a dock of
+  the main window — at the bottom beside the simulation output the first
+  time, where you left it after that, or floated as a window of its own —
+  not in a separate window; its sliders scroll when the dock is small.
+  Closing the dock stops tuning, as its *Close* button does. Esc in the
+  tuner closes it; elsewhere Esc is the window's again (docked, the two
+  were ambiguous and neither worked). Closing no longer asks whether to
+  keep values nobody changed (a value without a unit prefix, as a
+  resistor's `30`, was taken for changed).
+- **Markdown viewer and editor**: a `.md` file opens in a tab of its own
+  (from anywhere a file opens, whatever text editor the settings name) —
+  its text, highlighted and edited as any text document (undo, find and
+  replace, save), and the text rendered: GitHub's Markdown (headings,
+  lists, task lists, tables, code on a shade, links, images beside the
+  file) and TeX math between dollars, typeset. A bar at the top chooses
+  *Edit* (the text), *Split* (the text and the rendering side by side, a
+  handle sharing the width; the rendering scrolls with the text) or
+  *Preview* (the rendering alone); the choice is kept for the next file.
+  The rendering follows the edits; a link to a heading scrolls to it, one
+  to a file opens it (in Qucs-S when it is one of its documents), others
+  open in the browser.
+- **CSV and Excel workbooks**: `.csv`, `.tsv` and `.xlsx` files open in a
+  table, read and written by Qucs-S itself (no Excel, no library). Above
+  the table, the cell in front — its name, its value or formula — is
+  edited, or type in the table; edits are undone and redone (*Edit →
+  Undo*); cells are cut, copied and pasted as tab-separated text (to and
+  from other spreadsheets), a value pasted into a range fills it, Delete
+  clears them. A CSV file keeps its delimiter (detected: `,` `;` tab
+  `|`), quotes, encoding (UTF-8 with or without a byte order mark, else
+  Latin-1) and line ends; its rows and columns are inserted and deleted.
+  A workbook shows its sheets in tabs, its column widths and merged
+  cells, numbers, dates (by their styles), booleans, errors, and formulas
+  by their values (their text above the table). Saved, it keeps all but
+  the cells changed as they were — formatting, charts, names, the other
+  sheets — and Excel calculates its formulas again when it opens it
+  (Qucs-S does not calculate them: a changed one shows its formula until
+  then). Rows and columns are not inserted into a workbook (its formulas
+  would not follow). *Save As* writes CSV, TSV or a workbook (a CSV
+  file's numbers as numbers; a workbook's sheet in front as CSV). The old
+  binary `.xls` is not read: save it as `.xlsx`.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

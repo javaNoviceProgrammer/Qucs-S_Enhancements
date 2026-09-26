@@ -70,6 +70,7 @@
 #include "schematic.h"
 #include "spicecomponents/sp_nutmeg.h"
 #include "textdoc.h"
+#include "sheetdoc.h"
 #include "wire.h"
 #include "wirelabel.h"
 
@@ -369,7 +370,7 @@ void QucsApp::slotMoveText(bool on) {
 // Is called, when "Zoom in" action is triggered.
 void QucsApp::slotZoomIn(bool on) {
   QWidget *w = DocumentTab->currentWidget();
-  if (isTextDocument(w) || isPdfDocument(w)) {
+  if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w)) {
     docIn(w)->zoomBy(1.5f);
     magPlus->blockSignals(true);
     magPlus->setChecked(false);
@@ -395,7 +396,7 @@ void QucsApp::slotEscape() {
 // Is called when the select toolbar button is pressed.
 void QucsApp::slotSelect(bool on) {
   QWidget *w = DocumentTab->currentWidget();
-  if (isTextDocument(w) || isPdfDocument(w)) {
+  if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w)) {
     if (auto *text = qobject_cast<TextDoc *>(w)) text->viewport()->setFocus();
     else w->setFocus();
     select->blockSignals(true);
@@ -436,6 +437,8 @@ void QucsApp::slotEditCut() {
   QWidget *Doc = DocumentTab->currentWidget();
   if (isTextDocument(Doc)) {
     ((TextDoc *)Doc)->cut();
+  } else if (auto *sheet = qobject_cast<SheetDoc *>(Doc)) {
+    sheet->cut();
   } else if (Schematic *sch = schematicIn(Doc)) {
     sch->cut();
   }   // nothing to cut from a PDF document
@@ -452,6 +455,8 @@ void QucsApp::slotEditCopy() {
     ((TextDoc *)Doc)->copy();
   } else if (isPdfDocument(Doc)) {
     QMetaObject::invokeMethod(Doc, "copySelection");   // the text selected
+  } else if (auto *sheet = qobject_cast<SheetDoc *>(Doc)) {
+    sheet->copy();
   } else if (Schematic *sch = schematicIn(Doc)) {
     sch->copy();
   }
@@ -466,6 +471,14 @@ void QucsApp::slotEditPaste(bool on) {
 
   // Nothing is pasted into a PDF document.
   if (Doc == nullptr || isPdfDocument(Doc)) {
+    editPaste->blockSignals(true);
+    editPaste->setChecked(false);
+    editPaste->blockSignals(false);
+    return;
+  }
+  // A spreadsheet: the clipboard's cells from the one in front.
+  if (auto *sheet = qobject_cast<SheetDoc *>(Doc)) {
+    sheet->paste();
     editPaste->blockSignals(true);
     editPaste->setChecked(false);
     editPaste->blockSignals(false);
@@ -635,6 +648,10 @@ void QucsApp::slotInsertPort(bool on) {
 // --------------------------------------------------------------
 // Is called, when "Undo"-Button is pressed.
 void QucsApp::slotEditUndo() {
+  if (auto *sheet = qobject_cast<SheetDoc *>(DocumentTab->currentWidget())) {
+    sheet->undo();
+    return;
+  }
   if (TextDoc *Text = qobject_cast<TextDoc *>(DocumentTab->currentWidget())) {
     Text->viewport()->setFocus();
     Text->undo();
@@ -653,6 +670,10 @@ void QucsApp::slotEditUndo() {
 // --------------------------------------------------------------
 // Is called, when "Undo"-Button is pressed.
 void QucsApp::slotEditRedo() {
+  if (auto *sheet = qobject_cast<SheetDoc *>(DocumentTab->currentWidget())) {
+    sheet->redo();
+    return;
+  }
   if (TextDoc *Text = qobject_cast<TextDoc *>(DocumentTab->currentWidget())) {
     Text->viewport()->setFocus();
     Text->redo();
@@ -788,6 +809,8 @@ void QucsApp::slotSelectAll() {
     ((TextDoc *)Doc)->selectAll();
   } else if (isPdfDocument(Doc)) {
     QMetaObject::invokeMethod(Doc, "selectAll");   // the page's text
+  } else if (auto *sheet = qobject_cast<SheetDoc *>(Doc)) {
+    sheet->selectAll();
   } else if (Schematic *sch = schematicIn(Doc)) {
     auto selectionRect = sch->allBoundingRect().marginsAdded(QMargins{1, 1, 1, 1});
     sch->selectElements(selectionRect, true, false);
@@ -1252,6 +1275,7 @@ void QucsApp::slotEditFind() {
     QMetaObject::invokeMethod(Doc, "showSearch");   // its own find bar
     return;
   }
+  if (isSheetDocument(Doc)) return;   // not searched yet
   if (isTextDocument(Doc)) {
     SearchDia->initSearch(Doc, ((TextDoc *)Doc)->textCursor().selectedText(),
                           false);
@@ -1270,6 +1294,7 @@ void QucsApp::slotChangeProps() {
     QMetaObject::invokeMethod(Doc, "showSearch");   // nothing to replace in it
     return;
   }
+  if (isSheetDocument(Doc)) return;
   if (isTextDocument(Doc)) {
     ((TextDoc *)Doc)->viewport()->setFocus();
 
@@ -1908,7 +1933,8 @@ void QucsApp::slotLoadModule() {
 void QucsApp::slotBuildModule() {
   qDebug() << "slotBuildModule";
   // A Verilog-A (or Verilog) source is built: not a PDF document.
-  if (getDoc() == nullptr || isPdfDocument(DocumentTab->currentWidget())) return;
+  if (getDoc() == nullptr || isPdfDocument(DocumentTab->currentWidget())
+      || isSheetDocument(DocumentTab->currentWidget())) return;
 
   // reset message dock on entry
   messageDock->reset();

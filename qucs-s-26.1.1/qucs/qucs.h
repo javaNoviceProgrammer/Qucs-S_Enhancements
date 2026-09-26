@@ -292,6 +292,11 @@ public:
   static bool isPdfDocument(QWidget *);
   /// Whether a file is Markdown (.md, .markdown): opened in a MarkdownDoc.
   static bool isMarkdownFile(const QString &name);
+  /// Whether a tab holds a spreadsheet (sheetdoc.h).
+  static bool isSheetDocument(QWidget *);
+  /// Whether a file is a spreadsheet (.csv, .tsv, .xlsx, .xlsm, .xls):
+  /// opened in a SheetDoc.
+  static bool isSheetFile(const QString &name);
   /// The schematic (or data display, or symbol) a tab holds; nullptr for
   /// a text or a PDF document.
   static Schematic *schematicIn(QWidget *);

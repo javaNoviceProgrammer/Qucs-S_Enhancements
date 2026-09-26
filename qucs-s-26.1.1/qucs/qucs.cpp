@@ -102,6 +102,7 @@
 #include "qucscontrol.h"
 #include "dialogs/tuner.h"
 #include "markdowndoc.h"
+#include "sheetdoc.h"
 #include "octave_window.h"
 #include "printerwriter.h"
 #include "imagewriter.h"
@@ -2246,6 +2247,12 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     is_pdf = true;
   }
 #endif
+  else if (isSheetFile(Name)) {
+    // Its cells in a table (sheetdoc.h).
+    auto *sheet = new SheetDoc(this, Name);
+    d = sheet;
+    i = addDocumentTab(sheet, Info.fileName());
+  }
   else if (isMarkdownFile(Name)) {
     // Its text and its rendering (markdowndoc.h).
     auto *md = new MarkdownDoc(this, Name);
@@ -2393,6 +2400,13 @@ bool QucsApp::saveAs()
     if (isPdfDocument (w)) {
       Filter = tr("PDF Documents") + " (*.pdf)";
       selfilter = Filter;
+    } else if (isSheetDocument (w)) {
+      const QString csv = tr("CSV Files") + " (*.csv)";
+      const QString tsv = tr("Tab-Separated Files") + " (*.tsv)";
+      const QString xlsx = tr("Excel Workbooks") + " (*.xlsx)";
+      Filter = csv + ";;" + tsv + ";;" + xlsx;
+      const QString now = Info.suffix().toLower();
+      selfilter = now == "tsv" ? tsv : now.startsWith("xls") ? xlsx : csv;
     } else if(isTextDocument (w)) {
       Filters << tr("VHDL Sources")+" (*.vhdl *.vhd);;"
               << tr("Verilog Sources")+" (*.v);;"
@@ -2434,6 +2448,11 @@ bool QucsApp::saveAs()
 
     if (isPdfDocument (w)) {
       if (ext.compare("pdf", Qt::CaseInsensitive) != 0) s += ".pdf";
+    }
+    else if (isSheetDocument (w)) {
+      // The filter chosen says which, when the name does not.
+      if (!QStringList({"csv", "tsv", "xlsx", "xlsm"}).contains(ext.toLower()))
+        s += selfilter.contains("*.xlsx") ? ".xlsx" : selfilter.contains("*.tsv") ? ".tsv" : ".csv";
     }
     else if(ext.isEmpty() || !extlist.contains(ext))
     {
@@ -2821,8 +2840,9 @@ void QucsApp::slotChangeView()
     insEntity->setEnabled(true);   // after a PDF, too
     buildModule->setEnabled(true);
   }
-  // for PDF documents: read; View All fits a page, Zoom to Selection the width
-  else if (isPdfDocument (w)) {
+  // for PDF documents: read; View All fits a page, Zoom to Selection the
+  // width; for spreadsheets: cells
+  else if (isPdfDocument (w) || isSheetDocument (w)) {
     magAll->setDisabled(false);
     magSel->setDisabled(false);
     if(cursorLeft->isEnabled())
@@ -2876,7 +2896,7 @@ void QucsApp::slotFileSettings ()
   editText->setHidden (true); // disable text edit of component property
 
   QWidget * w = DocumentTab->currentWidget ();
-  if (isPdfDocument (w)) return;   // nothing to set
+  if (isPdfDocument (w) || isSheetDocument (w)) return;   // nothing to set
   if (isTextDocument (w)) {
     QucsDoc * Doc = (QucsDoc *) ((TextDoc *) w);
     QString ext = Doc->fileSuffix ();
@@ -3441,6 +3461,10 @@ void QucsApp::slotSimulate(QWidget *w)
       statusBar()->showMessage(tr("A PDF document is not simulated."), 3000);
       return;
   }
+  if (isSheetDocument(w)) {
+      statusBar()->showMessage(tr("A spreadsheet is not simulated."), 3000);
+      return;
+  }
 
   //Check is schematic digital
   bool isDigital = false;
@@ -3730,7 +3754,8 @@ void QucsApp::slotChangePage(const QString& DocName, const QString& DataDisplay)
 void QucsApp::slotToPage()
 {
   QucsDoc *d = getDoc();
-  if (d == nullptr || isPdfDocument(DocumentTab->currentWidget())) return;   // no data display
+  if (d == nullptr || isPdfDocument(DocumentTab->currentWidget())
+      || isSheetDocument(DocumentTab->currentWidget())) return;   // no data display
   if(d->getDataDisplay().isEmpty()) {
     QMessageBox::critical(this, tr("Error"), tr("No page set !"));
     return;
@@ -3831,9 +3856,10 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
     return;
   }
 
-  // Markdown: its text and its rendering, in a tab of its own
-  // (markdowndoc.h), whatever the text editor of the settings.
-  if (isMarkdownFile(absolutePath)) {
+  // Spreadsheets (CSV files, Excel workbooks) and Markdown: in tabs of
+  // their own (sheetdoc.h, markdowndoc.h), whatever the text editor of
+  // the settings.
+  if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath)) {
     openTextOrSchematicTab(absolutePath);
     return;
   }
@@ -4278,6 +4304,15 @@ bool QucsApp::isTextDocument(QWidget *w) {
 
 bool QucsApp::isPdfDocument(QWidget *w) {
   return w != nullptr && w->inherits("PdfDoc");
+}
+
+bool QucsApp::isSheetDocument(QWidget *w) {
+  return w != nullptr && w->inherits("SheetDoc");
+}
+
+bool QucsApp::isSheetFile(const QString &name) {
+  static const QStringList suffixes = {"csv", "tsv", "xlsx", "xlsm", "xls"};
+  return suffixes.contains(QFileInfo(name).suffix().toLower());
 }
 
 bool QucsApp::isMarkdownFile(const QString &name) {
