@@ -39,7 +39,10 @@
 #include <QFileIconProvider>
 #include <QMimeData>
 #include <QPainter>
+#include <QRegularExpression>
+#include <algorithm>
 #include <functional>
+#include <iterator>
 
 ProjectView::ProjectView(QWidget *parent)
   : QTreeView(parent)
@@ -76,6 +79,113 @@ const QStringList& ProjectView::imageSuffixes()
     "ico", "icns", "pbm", "pgm", "ppm", "xbm", "xpm", "heic", "heif", "jp2", "avif",
   };
   return suffixes;
+}
+
+namespace {
+struct CategoryInfo {
+  const char* key;
+  const char* name;
+  const char* patterns;   // (Images: imageSuffixes())
+};
+
+// In the Category enum's order.
+constexpr CategoryInfo kCategories[] = {
+  {"Datasets", QT_TRANSLATE_NOOP("ProjectView", "Datasets"), "*.dat, *.dat.ngspice, *.dat.xyce, *.dat.spopus"},
+  {"DataDisplays", QT_TRANSLATE_NOOP("ProjectView", "Data Displays"), "*.dpl"},
+  {"Verilog", QT_TRANSLATE_NOOP("ProjectView", "Verilog"), "*.v"},
+  {"VerilogA", QT_TRANSLATE_NOOP("ProjectView", "Verilog-A"), "*.va"},
+  {"Osdi", QT_TRANSLATE_NOOP("ProjectView", "Osdi"), "*.osdi"},
+  {"VHDL", QT_TRANSLATE_NOOP("ProjectView", "VHDL"), "*.vhdl, *.vhd"},
+  {"Octave", QT_TRANSLATE_NOOP("ProjectView", "Octave"), "*.m, *.oct"},
+  {"Schematics", QT_TRANSLATE_NOOP("ProjectView", "Schematics"), "*.sch"},
+  {"Symbols", QT_TRANSLATE_NOOP("ProjectView", "Symbols"), "*.sym"},
+  {"SPICE", QT_TRANSLATE_NOOP("ProjectView", "SPICE"), "*.cir, *.ckt, *.sp"},
+  {"Python", QT_TRANSLATE_NOOP("ProjectView", "Python"), "*.py, *.pyw"},
+  {"Images", QT_TRANSLATE_NOOP("ProjectView", "Images"), nullptr},
+  {"Text", QT_TRANSLATE_NOOP("ProjectView", "Text"), "*.txt"},
+  {"Others", QT_TRANSLATE_NOOP("ProjectView", "Others"), "*"},
+  {"Scratch", QT_TRANSLATE_NOOP("ProjectView", "Scratch"), "*"},
+};
+static_assert(std::size(kCategories) == ProjectView::CategoryCount);
+
+bool isCategory(int category) { return category >= 0 && category < ProjectView::CategoryCount; }
+
+// A category's patterns, ready to match a file's name.
+QList<QRegularExpression> matchers(int category)
+{
+  QList<QRegularExpression> list;
+  for (const QString& pattern : ProjectView::parsePatterns(ProjectView::patterns(category))) {
+    const QRegularExpression re(
+        QRegularExpression::wildcardToRegularExpression(pattern, QRegularExpression::NonPathWildcardConversion),
+        QRegularExpression::CaseInsensitiveOption);
+    if (re.isValid()) list.append(re);
+  }
+  return list;
+}
+
+bool matches(const QList<QRegularExpression>& patterns, const QString& name)
+{
+  return std::any_of(patterns.begin(), patterns.end(),
+                     [&name](const QRegularExpression& re) { return re.match(name).hasMatch(); });
+}
+} // namespace
+
+QString ProjectView::categoryKey(int category)
+{
+  return isCategory(category) ? QString::fromLatin1(kCategories[category].key) : QString();
+}
+
+QString ProjectView::categoryName(int category)
+{
+  return isCategory(category) ? QCoreApplication::translate("ProjectView", kCategories[category].name) : QString();
+}
+
+QString ProjectView::defaultPatterns(int category)
+{
+  if (!isCategory(category)) return QString();
+  if (category == Images) {
+    QStringList patterns;
+    for (const QString& suffix : imageSuffixes()) patterns.append("*." + suffix);
+    return patterns.join(", ");
+  }
+  return QString::fromLatin1(kCategories[category].patterns);
+}
+
+QString ProjectView::patterns(int category)
+{
+  if (!isCategory(category)) return QString();
+  const auto chosen = QucsSettings.ContentPatterns.constFind(categoryKey(category));
+  return chosen != QucsSettings.ContentPatterns.constEnd() ? *chosen : defaultPatterns(category);
+}
+
+void ProjectView::setPatterns(int category, const QString& text)
+{
+  if (!isCategory(category)) return;
+  const QString patterns = normalizedPatterns(text);
+  if (patterns == defaultPatterns(category))
+    QucsSettings.ContentPatterns.remove(categoryKey(category));
+  else
+    QucsSettings.ContentPatterns.insert(categoryKey(category), patterns);
+}
+
+QStringList ProjectView::parsePatterns(const QString& text)
+{
+  static const QRegularExpression separators(QStringLiteral("[,;\\s]+"));
+  static const QRegularExpression wildcards(QStringLiteral("[*?\\[]"));
+  QStringList patterns;
+  for (QString pattern : text.split(separators, Qt::SkipEmptyParts)) {
+    if (pattern.startsWith('.'))
+      pattern.prepend('*');                       // .txt
+    else if (!pattern.contains('.') && !pattern.contains(wildcards))
+      pattern.prepend(QStringLiteral("*."));     // txt
+    if (!patterns.contains(pattern, Qt::CaseInsensitive)) patterns.append(pattern);
+  }
+  return patterns;
+}
+
+QString ProjectView::normalizedPatterns(const QString& text)
+{
+  return parsePatterns(text).join(QStringLiteral(", "));
 }
 
 int ProjectView::categoryOf(const QModelIndex& idx) const
@@ -261,79 +371,36 @@ ProjectView::refresh()
   header << tr("Content of %1").arg(m_projName) << tr("Note");
   m_model->setHorizontalHeaderLabels(header);
 
-  appendRow(m_model->invisibleRootItem(), tr("Datasets"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Data Displays"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Verilog"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Verilog-A"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Osdi"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("VHDL"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Octave"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Schematics"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Symbols"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("SPICE"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Python"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Images"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Others"), QString(""));
-  appendRow(m_model->invisibleRootItem(), tr("Scratch"), QString(""));
+  for (int category = 0; category < CategoryCount; ++category)
+    appendRow(m_model->invisibleRootItem(), categoryName(category), QString(""));
 
   if (m_valid) {
     // put all files into "Content"-ListView: those of the project directory
     // and of any subdirectory, named relative to the project (the files of
     // one directory arrive together, so a folder row's files come first,
-    // then its sub-folders)
+    // then its sub-folders), each under the first category that takes it
+    QList<QList<QRegularExpression>> taken;   // by category
+    for (int category = 0; category < CategoryCount; ++category)
+      taken.append(matchers(category));
     const QDir workPath(m_projPath);
     const QString scratchPrefix = QString::fromLatin1(misc::ScratchFolder) + QLatin1Char('/');
     for (const QString& fileName : misc::projectFiles(workPath)) {
       const QFileInfo info(workPath.filePath(fileName));
-      const QString extName = info.suffix().toLower();
-      const QString fullExtName = info.completeSuffix().toLower();
-
-      if(fileName.startsWith(scratchPrefix)) {
-        appendFile(Scratch, fileName);   // temporary files, whatever their type
+      if (fileName.startsWith(scratchPrefix)) {   // temporary files, of whatever type
+        if (matches(taken[Scratch], info.fileName())) appendFile(Scratch, fileName);
+        continue;
       }
-      else if(extName == "dat" || fullExtName == "dat.ngspice" ||
-         fullExtName == "dat.xyce" || fullExtName == "dat.spopus" ) {
-        appendFile(Datasets, fileName);
-      }
-      else if(extName == "dpl") {
-        appendFile(DataDisplays, fileName);
-      }
-      else if(extName == "v") {
-        appendFile(Verilog, fileName);
-      }
-      else if(extName == "va") {
-        appendFile(VerilogA, fileName);
-      }
-      else if(extName == "osdi") {
-        appendFile(Osdi, fileName);
-      }
-      else if((extName == "vhdl") || (extName == "vhd")) {
-        appendFile(VHDL, fileName);
-      }
-      else if((extName == "m") || (extName == "oct")) {
-        appendFile(Octave, fileName);
-      }
-      else if(extName == "sch") {
-        // test if it's a valid schematic file
-        int n = Schematic::testFile(info.filePath());
-        if(n >= 0) {
-          // a subcircuit gets its port count as the note
-          appendFile(Schematics, fileName, n > 0 ? QString::number(n)+tr("-port") : QString());
+      for (int category = 0; category < Scratch; ++category) {
+        if (!matches(taken[category], info.fileName())) continue;
+        if (category == Schematics) {
+          // Only a schematic; a subcircuit gets its port count as the note.
+          const int n = Schematic::testFile(info.filePath());
+          if (n < 0) continue;
+          appendFile(Schematics, fileName, n > 0 ? QString::number(n) + tr("-port") : QString());
+        } else {
+          appendFile(category, fileName);
         }
-      } else if (extName == "sym") {
-          appendFile(Symbols, fileName);
-      } else if ((extName == "cir") || (extName=="ckt") ||
-               (extName=="sp")) {
-          appendFile(SPICE, fileName);
-      }
-      else if (extName == "py" || extName == "pyw") {
-        appendFile(Python, fileName);
-      }
-      else if (imageSuffixes().contains(extName)) {
-        appendFile(Images, fileName);
-      }
-      else {
-        appendFile(Others, fileName);
+        break;
       }
     }
   }
@@ -342,6 +409,9 @@ ProjectView::refresh()
   resizeColumnToContents(0);
   m_signature = listingSignature();
   m_folderIcons = QucsSettings.ContentFolderIcons;
+  m_patterns.clear();
+  for (int category = 0; category < CategoryCount; ++category)
+    m_patterns.append(patterns(category));
 }
 
 QString ProjectView::listingSignature() const
@@ -365,7 +435,11 @@ void ProjectView::applyRefreshSettings()
     m_pollTimer->start();
   else
     m_pollTimer->stop();
-  if (m_folderIcons != QucsSettings.ContentFolderIcons) refresh();   // the rows are built with it
+  // The rows are built with these.
+  QStringList patternsNow;
+  for (int category = 0; category < CategoryCount; ++category)
+    patternsNow.append(patterns(category));
+  if (m_folderIcons != QucsSettings.ContentFolderIcons || m_patterns != patternsNow) refresh();
 }
 
 bool ProjectView::autoRefreshEnabled() const

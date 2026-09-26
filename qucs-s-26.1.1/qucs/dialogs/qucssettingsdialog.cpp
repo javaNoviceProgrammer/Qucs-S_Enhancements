@@ -37,10 +37,12 @@
 #include "settings.h"
 #include "misc.h"
 #include "apptheme.h"
+#include "projectView.h"
 
 #include <QWidget>
 #include <QLabel>
 #include <QTabWidget>
+#include <QScrollArea>
 #include <QLayout>
 #include <QColorDialog>
 #include <QFontDialog>
@@ -502,6 +504,52 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     t->addTab(fileTypesTab, tr("File Types"));
 
     // ...........................................................
+    // The contents tab: which files each category of the Content panel lists
+    QWidget *contentsTab = new QWidget(t);
+    QVBoxLayout *contentsLayout = new QVBoxLayout(contentsTab);
+    QLabel *contentsNote = new QLabel(
+        tr("Each category of the Content panel lists the project's files whose names match its patterns: "
+           "extensions (*.txt, .txt or txt) or names with wildcards (notes*.md), separated by commas. "
+           "A file is listed under the first category from the top that matches it; * in Others takes "
+           "whatever no other category took. Scratch lists the files of the project's Scratch folder "
+           "that match."), contentsTab);
+    contentsNote->setWordWrap(true);
+    contentsLayout->addWidget(contentsNote);
+
+    // The rows in a scroll area: the tab does not make the dialog taller.
+    QScrollArea *contentsScroll = new QScrollArea(contentsTab);
+    contentsScroll->setWidgetResizable(true);
+    contentsScroll->setFrameShape(QFrame::NoFrame);
+    QWidget *contentsRows = new QWidget(contentsScroll);
+    QGridLayout *contentsGrid = new QGridLayout(contentsRows);
+    for (int category = 0; category < ProjectView::CategoryCount; ++category) {
+        QLabel *name = new QLabel(ProjectView::categoryName(category) + ":", contentsRows);
+        QLineEdit *patterns = new QLineEdit(ProjectView::patterns(category), contentsRows);
+        patterns->setObjectName("contentPatterns" + ProjectView::categoryKey(category));
+        patterns->setCursorPosition(0);   // a long list shows its start
+        patterns->setPlaceholderText(tr("none: the category lists no files"));
+        patterns->setToolTip(tr("Default: %1").arg(ProjectView::defaultPatterns(category)));
+        name->setBuddy(patterns);
+        contentsGrid->addWidget(name, category, 0);
+        contentsGrid->addWidget(patterns, category, 1);
+        contentPatternEdits.append(patterns);
+    }
+    contentsGrid->setColumnStretch(1, 1);
+    contentsGrid->setRowStretch(ProjectView::CategoryCount, 1);
+    contentsScroll->setWidget(contentsRows);
+    contentsScroll->viewport()->setAutoFillBackground(false);   // on the tab's own background
+    contentsRows->setAutoFillBackground(false);
+    contentsLayout->addWidget(contentsScroll, 1);
+
+    QHBoxLayout *contentsButtons = new QHBoxLayout();
+    contentsButtons->addStretch();
+    QPushButton *restorePatterns = new QPushButton(tr("Restore Default Patterns"), contentsTab);
+    connect(restorePatterns, &QPushButton::clicked, this, &QucsSettingsDialog::slotRestoreContentPatterns);
+    contentsButtons->addWidget(restorePatterns);
+    contentsLayout->addLayout(contentsButtons);
+    t->addTab(contentsTab, tr("Contents"));
+
+    // ...........................................................
     // The locations tab
     QWidget *locationsTab = new QWidget(t);
     QGridLayout *locationsGrid = new QGridLayout(locationsTab);
@@ -924,6 +972,11 @@ void QucsSettingsDialog::slotApply()
     QucsSettings.ContentAutoRefresh = contentAutoRefresh->isChecked();
     QucsSettings.ContentRefreshSeconds = contentRefreshSeconds->value();
     QucsSettings.ContentFolderIcons = contentFolderIcons->isChecked();
+    for (int category = 0; category < contentPatternEdits.size(); ++category) {
+        ProjectView::setPatterns(category, contentPatternEdits[category]->text());
+        contentPatternEdits[category]->setText(ProjectView::patterns(category));   // as read
+        contentPatternEdits[category]->setCursorPosition(0);
+    }
     QucsSettings.ShowPinNames = showPinNames->isChecked();
     QucsSettings.ShowPinDirections = showPinDirections->isChecked();
     QucsSettings.EmbedVerilogAInLibraries = embedVerilogA->isChecked();
@@ -988,6 +1041,8 @@ void QucsSettingsDialog::slotApply()
     }
 
     saveApplSettings();  // also sets the small and large font
+    // The Content panel as the settings now say (its categories' patterns).
+    if (App->projectView() != nullptr) App->projectView()->applyRefreshSettings();
 
     // if QucsHome is changed, refresh projects tree
     // do this after updating the other paths
@@ -1074,6 +1129,15 @@ void QucsSettingsDialog::slotGridColorDialog()
 }
 
 // -----------------------------------------------------------
+void QucsSettingsDialog::slotRestoreContentPatterns()
+{
+    for (int category = 0; category < contentPatternEdits.size(); ++category) {
+        contentPatternEdits[category]->setText(ProjectView::defaultPatterns(category));
+        contentPatternEdits[category]->setCursorPosition(0);
+    }
+}
+
+// -----------------------------------------------------------
 void QucsSettingsDialog::slotDefaultValues()
 {
     QPalette p;
@@ -1134,6 +1198,7 @@ void QucsSettingsDialog::slotDefaultValues()
     contentAutoRefresh->setChecked(true);
     contentRefreshSeconds->setValue(3);
     contentFolderIcons->setChecked(false);
+    slotRestoreContentPatterns();
     showPinNames->setChecked(true);
     showPinDirections->setChecked(false);
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));

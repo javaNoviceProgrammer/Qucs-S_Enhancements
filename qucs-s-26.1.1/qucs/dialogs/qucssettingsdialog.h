@@ -79,6 +79,8 @@ private slots:
 
     /// @brief Resets all settings fields to their default values.
     void slotDefaultValues();
+    /// The Contents tab: every category's patterns back to its defaults.
+    void slotRestoreContentPatterns();
 
     /// @brief Adds or updates a file type entry in the file types table.
     void slotAddFileType();
@@ -182,6 +184,9 @@ public:
 
     /// @brief Folder icons on the Content panel's sub-tree folder rows.
     QCheckBox *contentFolderIcons;
+    // The Contents tab: the patterns of each category of the Content panel,
+    // in its order (ProjectView::Category).
+    QList<QLineEdit*> contentPatternEdits;
     QCheckBox *showPinNames;
     QCheckBox *showPinDirections;
     QCheckBox *embedVerilogA;        ///< Create Library copies the .va and .osdi files the subcircuits use.

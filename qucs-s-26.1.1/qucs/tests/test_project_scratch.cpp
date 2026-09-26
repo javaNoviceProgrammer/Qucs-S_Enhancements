@@ -305,7 +305,7 @@ private slots:
     }
 
     // Python scripts and images have categories of their own, between
-    // SPICE and Others; an image in Scratch stays under Scratch.
+    // SPICE and Text (then Others); an image in Scratch stays under Scratch.
     void pythonAndImagesHaveTheirOwnCategories()
     {
         write(project + "/analyse.py", "print(1)\n");
@@ -323,7 +323,7 @@ private slots:
         QStandardItemModel* m = view->model();
         QCOMPARE(ProjectView::Python, ProjectView::SPICE + 1);
         QCOMPARE(ProjectView::Images, ProjectView::Python + 1);
-        QCOMPARE(ProjectView::Others, ProjectView::Images + 1);
+        QCOMPARE(ProjectView::Text, ProjectView::Images + 1);
         QCOMPARE(m->item(ProjectView::Python, 0)->text(), QString("Python"));
         QCOMPARE(m->item(ProjectView::Images, 0)->text(), QString("Images"));
         QCOMPARE(childrenOf(m->item(ProjectView::Python, 0)), QStringList({"analyse.py", "tools/helper.pyw"}));

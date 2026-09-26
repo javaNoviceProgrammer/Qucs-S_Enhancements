@@ -94,6 +94,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   text editor) and *Images* (`.png`, `.jpg`/`.jpeg`, `.svg`, `.gif`,
   `.bmp`, `.tif`, `.webp` and the other formats Qt reads; they open with
   the system's viewer). Files in *Scratch* stay under *Scratch*.
+- **Content panel categories are yours to set**: a *Text* category, right
+  before *Others*, lists the `.txt` files. *Application Settings →
+  Contents* has a row per category, its name and the patterns of the
+  files it lists: extensions (`*.txt`, `.txt` or `txt`) or names with
+  wildcards (`notes*.md`), separated by commas — `*.txt, *.md, *.log`
+  under *Text*, say. A file is listed under the first category from the
+  top that matches it (a `.sch` only when it is a schematic); *Others*
+  has `*`, whatever no other category took, and without it such files are
+  not listed; *Scratch* lists the files of the Scratch folder that match
+  its own. *Restore Default Patterns* puts the defaults back, and only
+  the categories changed are saved.
 - **ngspice loads only the Verilog-A models a circuit uses**: the netlist
   loaded (`pre_osdi`) every `.osdi` of the project, whatever the circuit
   used — with a few libraries of compiled models in the project, every
