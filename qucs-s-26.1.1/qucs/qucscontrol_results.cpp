@@ -1082,7 +1082,7 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
         result.insert(QStringLiteral("not found"), QJsonArray::fromStringList(missing));
     }
     result.insert(QStringLiteral("variables"), out);
-    return jsonResult(result, true);
+    return jsonResult(result);
 }
 
 QJsonObject QucsControl::reloadData(const QJsonObject& args)

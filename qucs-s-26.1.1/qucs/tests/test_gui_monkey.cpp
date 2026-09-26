@@ -779,7 +779,7 @@ class TestGuiMonkey : public QObject
         if (tabs == nullptr) return;
         ClaudeCodePanel* panel = tabs->current();
         if (panel == nullptr) return;
-        switch (pick(16)) {
+        switch (pick(17)) {
         case 0:
             note("claude: show or hide the dock");
             a_app->toggleClaudeCode();
@@ -838,6 +838,18 @@ class TestGuiMonkey : public QObject
                     QApplication::sendEvent(editor, &key);
                 }
             }
+            break;
+        }
+        case 16: {
+            // A slash command: the dock's, or Claude Code's (to the fake
+            // claude), now and then with odd arguments.
+            const QList<ClaudeCodePanel::Command> commands = panel->commands();
+            const ClaudeCodePanel::Command& c = commands.at(pick(int(commands.size())));
+            const QString typed = QLatin1Char('/') + c.name + (chance(0.4) ? QLatin1Char(' ') + oddText(a_rng).left(40) : QString());
+            note(QStringLiteral("claude: command %1").arg(typed.left(60)));
+            panel->composer()->setPlainText(typed);
+            QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(panel->composer(), &enter);
             break;
         }
         case 15:

@@ -463,6 +463,12 @@ void Session::setWorkingDirectory(const QString& dir)
     if (a_state != State::NotFound) setState(State::Off);
 }
 
+void Session::resume(const QString& sessionId)
+{
+    if (isRunning()) stop();
+    a_sessionId = sessionId;
+}
+
 void Session::setToolHost(ToolHost* host)
 {
     a_host = host;
@@ -541,9 +547,13 @@ void Session::start()
         // The host's tools, as an "sdk" MCP server: their messages come over
         // this stream. Those that only look need no asking.
         const QString name = a_host->serverName();
+        // Always loaded: with its tools deferred behind the program's tool
+        // search, Claude spent a turn finding them before the first use.
         options.mcpConfig = QString::fromUtf8(QJsonDocument(QJsonObject{
             {QStringLiteral("mcpServers"),
-             QJsonObject{{name, QJsonObject{{QStringLiteral("type"), QStringLiteral("sdk")}, {QStringLiteral("name"), name}}}}}})
+             QJsonObject{{name, QJsonObject{{QStringLiteral("type"), QStringLiteral("sdk")},
+                                            {QStringLiteral("name"), name},
+                                            {QStringLiteral("alwaysLoad"), true}}}}}})
                                                   .toJson(QJsonDocument::Compact));
         for (const QString& tool : a_host->readOnlyTools())
             options.allowedTools << QStringLiteral("mcp__") + name + QStringLiteral("__") + tool;
@@ -559,6 +569,9 @@ void Session::start()
     a_process = process;
     a_buffer.clear();
     a_stderr.clear();
+    a_resumedFrom = a_sessionId;
+    a_initSeen = false;
+    a_resumeFailed = false;
     a_stopping = false;
     a_reportedCost = 0.0;
     a_modeInUse.clear();
@@ -602,6 +615,7 @@ bool Session::send(const QString& prompt)
     }
     a_busy = true;
     a_interrupted = false;
+    a_lastPrompt = prompt;
     a_turnClock.start();
     a_tools.clear();
     a_editedFiles.clear();
@@ -757,6 +771,23 @@ void Session::processFinished(int exitCode)
     a_buffer.clear();
     for (const QByteArray& line : rest.split('\n')) handleLine(line);
 
+    // A conversation it no longer has (its files are kept for a while):
+    // the prompt goes to a new one.
+    if (a_resumeFailed) {
+        a_resumeFailed = false;
+        if (QString::fromUtf8(a_stderr).contains(QLatin1String("No conversation found"))) {
+            const QString prompt = a_lastPrompt;
+            endTurn();
+            a_sessionId.clear();
+            a_stderr.clear();
+            emit notice(tr("Claude Code no longer has the conversation this one continued: Claude begins afresh, "
+                           "without what was said before."));
+            if (!prompt.isEmpty() && send(prompt)) return;
+            setState(State::Off);
+            return;
+        }
+    }
+
     const bool wasBusy = a_busy;
     const bool stopping = a_stopping;
     a_stopping = false;
@@ -813,7 +844,14 @@ void Session::handleSystem(const QJsonObject& m)
 {
     const QString subtype = m.value(QLatin1String("subtype")).toString();
     if (subtype == QLatin1String("init")) {
+        a_initSeen = true;
         a_sessionId = m.value(QLatin1String("session_id")).toString();
+        // Its commands, less those only its terminal has.
+        QStringList commands;
+        const QJsonArray terminal = m.value(QLatin1String("terminal_slash_commands")).toArray();
+        for (const QJsonValue& v : m.value(QLatin1String("slash_commands")).toArray())
+            if (!terminal.contains(v) && !v.toString().startsWith(QLatin1String("__"))) commands << v.toString();
+        if (!commands.isEmpty()) a_slashCommands = commands;
         a_modelInUse = m.value(QLatin1String("model")).toString();
         a_version = m.value(QLatin1String("claude_code_version")).toString();
         // Not every model has every mode (Haiku has no auto mode): the
@@ -1044,6 +1082,12 @@ void Session::handleResult(const QJsonObject& m)
     r.changedFiles = a_changedFiles;
     r.stopped = a_interrupted && !r.ok;
     const QString sessionId = m.value(QLatin1String("session_id")).toString();
+    // Not started at all, continuing one it does not have: said when it
+    // ends (processFinished()), and the prompt sent to a new one.
+    if (!a_initSeen && !a_resumedFrom.isEmpty() && !r.ok && r.turns == 0) {
+        a_resumeFailed = true;
+        return;
+    }
     if (!sessionId.isEmpty()) a_sessionId = sessionId;
 
     endTurn();

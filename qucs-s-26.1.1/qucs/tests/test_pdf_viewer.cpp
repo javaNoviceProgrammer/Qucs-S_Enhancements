@@ -175,7 +175,7 @@ private slots:
 
         auto* control = app->findChild<QucsControl*>();
         QVERIFY(control != nullptr);
-        QVERIFY(QucsControl::textOf(control->callNow("get_state", {})).contains("\"kind\": \"pdf\""));
+        QVERIFY(QucsControl::textOf(control->callNow("get_state", {})).remove(' ').contains("\"kind\":\"pdf\""));
         QVERIFY(control->callNow("get_schematic", {}).value("isError").toBool());   // not a schematic
     }
 

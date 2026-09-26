@@ -97,6 +97,9 @@ private:
     // Menus and dialogs.
     QJsonObject listActions(const QJsonObject& args);
     void triggerAction(const QJsonObject& args, const Done& done);
+    /// batch: the calls one after another (each may answer later), their
+    /// results together.
+    void runBatch(const QJsonObject& args, const Done& done);
     QJsonObject getDialog();
     void setDialog(const QJsonObject& args, const Done& done);
     // Simulation and its results.

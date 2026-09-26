@@ -781,6 +781,9 @@ void QucsApp::initView()
     return files;
   });
   claudeTabs->setToolHost(new QucsControl(this));
+  // The conversations open when Qucs-S last closed, each going on where it
+  // was (unless ⋯ > Reopen Conversations at Start is off).
+  claudeTabs->restoreConversations();
   connect(claudeTabs, &ClaudeCodeTabs::filesChanged, this, &QucsApp::reloadChangedFiles);
   connect(claudeTabs, &ClaudeCodeTabs::openFileRequested, this, [this](const QString &file) { gotoPage(file); });
 

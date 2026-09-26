@@ -29,7 +29,9 @@ QString tr(const char* text);
 QJsonObject textResult(const QString& text, bool error = false);
 /// \a value as JSON text: indented, or on one line (\a compact) - numbers
 /// by the hundred read better so, and cost less.
-QJsonObject jsonResult(const QJsonValue& value, bool compact = false);
+/// \a value as JSON text: compact (fewer tokens for Claude), or
+/// \a indented.
+QJsonObject jsonResult(const QJsonValue& value, bool indented = false);
 QJsonObject errorResult(const QString& text);
 bool sameFile(const QString& a, const QString& b);
 /// A path as given, or taken from the workspace folder.

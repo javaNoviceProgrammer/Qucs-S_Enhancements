@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "claudecodepanel.h"
+#include "claudehistory.h"
 
 #include "apptheme.h"
 #include "ink.h"
@@ -22,6 +23,7 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -31,7 +33,9 @@
 #include <QJsonDocument>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QJsonArray>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
@@ -77,6 +81,7 @@ const QString kOtherModels = QStringLiteral("ClaudeCode/otherModels"); // chosen
 const QString kAttach = QStringLiteral("ClaudeCode/attachDocument");
 const QString kExportDir = QStringLiteral("ClaudeCode/exportFolder");
 const QString kExportDetails = QStringLiteral("ClaudeCode/exportToolDetails");
+const QString kCommands = QStringLiteral("ClaudeCode/slashCommands");   // Claude Code's, as it last said
 
 struct Colours {
     QColor base, text, muted, faint, border, accent, onAccent, bubble, code, ok, warn, error;
@@ -459,6 +464,19 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     layout->addWidget(cardHolder);
 
     buildComposer();
+    // The commands matching a "/" typed, above the composer.
+    a_commandList = new QListWidget(this);
+    a_commandList->setObjectName(QStringLiteral("claudeCommands"));
+    a_commandList->setFocusPolicy(Qt::NoFocus);
+    a_commandList->setUniformItemSizes(true);
+    a_commandList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    a_commandList->hide();
+    connect(a_commandList, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) {
+        a_commandList->setCurrentItem(item);
+        completeCommand(false);
+        focusComposer();
+    });
+    connect(a_input, &QPlainTextEdit::textChanged, this, &ClaudeCodePanel::updateCommandList);
     auto* composerHolder = new QWidget(this);
     auto* composerLayout = new QVBoxLayout(composerHolder);
     composerLayout->setContentsMargins(10, 6, 10, 10);
@@ -486,6 +504,16 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
         append({Entry::Problem, message, {}, {}});
     });
     connect(a_session, &qucs_s::claude::Session::turnFinished, this, &ClaudeCodePanel::onTurnFinished);
+    // Kept again as it changes (ClaudeCodeTabs keeps it).
+    connect(this, &ClaudeCodePanel::titleChanged, this, &ClaudeCodePanel::conversationChanged);
+    connect(this, &ClaudeCodePanel::pinChanged, this, &ClaudeCodePanel::conversationChanged);
+    connect(a_session, &qucs_s::claude::Session::turnFinished, this, &ClaudeCodePanel::conversationChanged);
+    connect(a_session, &qucs_s::claude::Session::sessionStarted, this, [this] {
+        // Its commands, for the list before its next start too.
+        const QStringList commands = a_session->slashCommands();
+        if (!commands.isEmpty()) QucsSettingsFile().setValue(kCommands, commands);
+        emit conversationChanged();
+    });
     connect(a_modelQuery, &qucs_s::claude::ModelQuery::finished, this, [this](const QJsonArray& models) {
         if (!models.isEmpty() && models != a_listedModels) {
             a_listedModels = models;
@@ -751,6 +779,16 @@ void ClaudeCodePanel::buildMenu()
     a_pinMenu->setToolTipsVisible(true);
     connect(a_pinMenu, &QMenu::aboutToShow, this, &ClaudeCodePanel::fillPinMenu);
     a_menu->addSeparator();
+    QAction* resume = a_menu->addAction(tr("Resume a Conversation…"), this, [this] { emit resumeRequested(QString()); });
+    resume->setObjectName(QStringLiteral("claudeResume"));
+    QAction* reopen = a_menu->addAction(tr("Reopen Conversations at Start"));
+    reopen->setObjectName(QStringLiteral("claudeReopen"));
+    reopen->setCheckable(true);
+    reopen->setToolTip(tr("The conversations open when Qucs-S closes come back when it opens again, each going on "
+                          "where it was"));
+    connect(reopen, &QAction::triggered, this, [](bool on) { qucs_s::claude::history::setReopenAtStart(on); });
+    connect(a_menu, &QMenu::aboutToShow, this, [reopen] { reopen->setChecked(qucs_s::claude::history::reopenAtStart()); });
+    a_menu->addSeparator();
     a_menu->addAction(tr("Claude Program…"), this, [this] {
         const QString program = QFileDialog::getOpenFileName(this, tr("The Claude Code Program"),
                                                              QFileInfo(a_session->program()).absolutePath());
@@ -828,6 +866,9 @@ void ClaudeCodePanel::restyle()
         " background: transparent; }"
         "QToolButton#claudeAttach:checked { background: %11; border-color: %5; color: %7; }"
         "QToolButton#claudeAttach:disabled { color: %12; }"
+        "QListWidget#claudeCommands { background: %6; border: 1px solid %2; border-radius: 8px; color: %7; padding: 2px; }"
+        "QListWidget#claudeCommands::item { padding: 3px 6px; border-radius: 5px; }"
+        "QListWidget#claudeCommands::item:selected { background: %11; color: %7; }"
         "QToolButton#claudePin { border: 1px solid transparent; border-radius: 9px; padding: 1px 2px; background: transparent; }"
         "QToolButton#claudePin:hover { border-color: %2; }"
         "QToolButton#claudePin[pinned=\"true\"] { border-color: %5; background: %5; color: %8; padding: 1px 8px;"
@@ -876,6 +917,33 @@ bool ClaudeCodePanel::eventFilter(QObject* watched, QEvent* event)
         return false;
     }
     if (watched == a_input) {
+        if (event->type() == QEvent::KeyPress && a_commandList->isVisible()) {
+            // The commands offered: chosen with the arrows, put in with Tab,
+            // run with Enter; Esc puts them away.
+            auto* key = static_cast<QKeyEvent*>(event);
+            const int rows = a_commandList->count();
+            switch (key->key()) {
+            case Qt::Key_Down:
+            case Qt::Key_Up: {
+                const int step = key->key() == Qt::Key_Down ? 1 : -1;
+                a_commandList->setCurrentRow((a_commandList->currentRow() + step + rows) % rows);
+                return true;
+            }
+            case Qt::Key_Tab:
+                completeCommand(false);
+                return true;
+            case Qt::Key_Return:
+            case Qt::Key_Enter:
+                if (key->modifiers() & (Qt::ShiftModifier | Qt::AltModifier)) break;
+                completeCommand(true);
+                return true;
+            case Qt::Key_Escape:
+                a_commandList->hide();
+                return true;
+            default:
+                break;
+            }
+        }
         if (event->type() == QEvent::KeyPress) {
             auto* key = static_cast<QKeyEvent*>(event);
             if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
@@ -1281,7 +1349,14 @@ void ClaudeCodePanel::focusComposer()
 void ClaudeCodePanel::sendComposer()
 {
     const QString text = a_input->toPlainText().trimmed();
-    if (text.isEmpty() || a_session->isBusy()) return;
+    if (text.isEmpty()) return;
+    // The dock's own commands: run here, whatever Claude is doing and with
+    // no program needed.
+    if (text.startsWith(QLatin1Char('/')) && runCommand(text)) {
+        a_input->clear();
+        return;
+    }
+    if (a_session->isBusy()) return;
     if (a_session->program().isEmpty()) findProgram();
     if (a_session->program().isEmpty()) {
         append({Entry::Problem,
@@ -1291,6 +1366,18 @@ void ClaudeCodePanel::sendComposer()
         return;
     }
     if (a_session->workingDirectory() != workingDirectory()) a_session->setWorkingDirectory(workingDirectory());
+
+    // Claude Code's commands sent as typed - with no note of the document,
+    // which would be taken for their arguments.
+    if (text.startsWith(QLatin1Char('/'))) {
+        static const QRegularExpression command(QStringLiteral("^/[A-Za-z0-9][A-Za-z0-9:_.-]*(\\s|$)"));
+        if (command.match(text).hasMatch()) {
+            append({Entry::You, text, {}, {}});
+            if (a_session->send(text)) a_input->clear();
+            updateState();
+            return;
+        }
+    }
 
     QString prompt = text;
     QString attached;
@@ -1318,6 +1405,8 @@ void ClaudeCodePanel::stopTurn()
 
 void ClaudeCodePanel::newConversation()
 {
+    emit conversationEnding();   // (kept as it is: /resume brings it back)
+    a_conversationId.clear();
     a_session->reset();
     a_name.clear();
     pinDocument(QString());   // (a new one is pinned to nothing, as at first)
@@ -1347,6 +1436,7 @@ void ClaudeCodePanel::append(const Entry& e)
     a_entries.append(e);
     scheduleRender();
     if (firstPrompt) emit titleChanged();
+    emit conversationChanged();
 }
 
 void ClaudeCodePanel::onReplyStreamed(const QString& text)
@@ -1367,6 +1457,7 @@ void ClaudeCodePanel::onReplyFinished(const QString& text)
         a_entries.last().text = text;
         a_entries.last().streaming = false;
         scheduleRender();
+        emit conversationChanged();
         return;
     }
     append({Entry::Claude, text, {}, {}});
@@ -1405,6 +1496,7 @@ void ClaudeCodePanel::onToolFinished(const QString& id, bool failed, const QStri
         break;
     }
     scheduleRender();
+    emit conversationChanged();
 }
 
 void ClaudeCodePanel::onPermissionRequested(const qucs_s::claude::PermissionRequest& request)
@@ -2101,6 +2193,389 @@ void ClaudeCodePanel::setNewInTab(bool on)
 {
     a_newInTab = on;
     a_newButton->setToolTip(on ? tr("A new conversation, in a tab of its own") : tr("Start a new conversation"));
+}
+
+// ----------------------------------------------------------------------
+// Kept, and brought back.
+
+QJsonObject ClaudeCodePanel::conversationJson() const
+{
+    QJsonArray entries;
+    for (const Entry& e : a_entries) {
+        QJsonObject o{{QStringLiteral("kind"), int(e.kind)}, {QStringLiteral("text"), e.text}};
+        if (!e.extra.isEmpty()) o.insert(QStringLiteral("extra"), e.extra);
+        if (!e.id.isEmpty()) o.insert(QStringLiteral("id"), e.id);
+        if (!e.output.isEmpty()) o.insert(QStringLiteral("output"), e.output);
+        if (e.kind == Entry::Tool) o.insert(QStringLiteral("tool"), int(e.tool));
+        if (!e.detail.isEmpty()) o.insert(QStringLiteral("detail"), e.detail);
+        if (!e.result.isEmpty()) o.insert(QStringLiteral("result"), e.result);
+        entries.append(o);
+    }
+    return {{QStringLiteral("title"), exportTitle()},
+            {QStringLiteral("name"), a_name},
+            {QStringLiteral("folder"), workingDirectory()},
+            {QStringLiteral("pinned"), a_pinned},
+            {QStringLiteral("sessionId"), a_session->sessionId()},
+            {QStringLiteral("entries"), entries}};
+}
+
+void ClaudeCodePanel::restoreConversation(const QJsonObject& conversation)
+{
+    emit conversationEnding();
+    a_session->reset();
+    // In its folder: Claude Code keeps a session with the folder it ran in.
+    const QString folder = conversation.value(QLatin1String("folder")).toString();
+    if (!folder.isEmpty() && QFileInfo(folder).isDir()) setWorkingDirectory(folder);
+    a_entries.clear();
+    a_expanded.clear();
+    a_requests.clear();
+    for (const QJsonValue& v : conversation.value(QLatin1String("entries")).toArray()) {
+        const QJsonObject o = v.toObject();
+        const int kind = o.value(QLatin1String("kind")).toInt(-1);
+        if (kind < Entry::You || kind > Entry::Summary) continue;
+        Entry e{static_cast<Entry::Kind>(kind), o.value(QLatin1String("text")).toString(),
+                o.value(QLatin1String("extra")).toString(), o.value(QLatin1String("id")).toString()};
+        e.output = o.value(QLatin1String("output")).toString();
+        e.detail = o.value(QLatin1String("detail")).toString();
+        e.result = o.value(QLatin1String("result")).toString();
+        if (e.kind == Entry::Tool) {
+            const int tool = o.value(QLatin1String("tool")).toInt(Entry::Failed);
+            e.tool = tool >= Entry::Running && tool <= Entry::Denied ? static_cast<Entry::ToolState>(tool) : Entry::Failed;
+            if (e.tool == Entry::Running) {   // (Qucs-S closed under it)
+                e.tool = Entry::Failed;
+                if (e.output.isEmpty()) e.output = tr("It had not finished when Qucs-S closed.");
+            }
+        }
+        a_entries.append(e);
+    }
+    a_name = conversation.value(QLatin1String("name")).toString().simplified();
+    pinDocument(conversation.value(QLatin1String("pinned")).toString());
+    a_session->resume(conversation.value(QLatin1String("sessionId")).toString());
+    showNextRequest();
+    updateState();
+    scheduleRender();
+    emit titleChanged();
+}
+
+bool ClaudeCodePanel::importClaudeSession(const QString& file)
+{
+    QFile f(file);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    const qucs_s::claude::ToolHost* host = a_session->toolHost();
+    const QString hostPrefix = host != nullptr ? QStringLiteral("mcp__") + host->serverName() + QStringLiteral("__") : QString();
+    static const QRegularExpression typedCommand(QStringLiteral("<command-name>([^<]*)</command-name>"));
+    static const QRegularExpression typedArguments(QStringLiteral("<command-args>([^<]*)</command-args>"),
+                                                   QRegularExpression::DotMatchesEverythingOption);
+    QString folder, title;
+    QList<Entry> entries;
+    QHash<QString, qsizetype> tools;   // a tool use's id: its entry
+    // What a tool gave: its text, the first lines.
+    const auto outputOf = [](const QJsonValue& content) {
+        QString text = content.toString();
+        for (const QJsonValue& v : content.toArray())
+            if (v.toObject().value(QLatin1String("type")).toString() == QLatin1String("text"))
+                text += v.toObject().value(QLatin1String("text")).toString();
+        QStringList lines = text.split(QLatin1Char('\n'));
+        while (!lines.isEmpty() && lines.last().trimmed().isEmpty()) lines.removeLast();
+        return lines.mid(0, 30).join(QLatin1Char('\n')).left(6000);
+    };
+    while (!f.atEnd()) {
+        const QJsonObject o = QJsonDocument::fromJson(f.readLine()).object();
+        if (o.isEmpty()) continue;
+        const QString type = o.value(QLatin1String("type")).toString();
+        if (type == QLatin1String("custom-title")) {
+            title = o.value(QLatin1String("customTitle")).toString();
+            continue;
+        }
+        if (o.value(QLatin1String("isSidechain")).toBool()) continue;   // (a subagent's)
+        if (folder.isEmpty()) folder = o.value(QLatin1String("cwd")).toString();
+        const QJsonValue content = o.value(QLatin1String("message")).toObject().value(QLatin1String("content"));
+        if (type == QLatin1String("user")) {
+            if (o.value(QLatin1String("isMeta")).toBool()) continue;
+            QString text = content.toString();
+            for (const QJsonValue& v : content.toArray()) {
+                const QJsonObject part = v.toObject();
+                const QString kind = part.value(QLatin1String("type")).toString();
+                if (kind == QLatin1String("text")) {
+                    text += part.value(QLatin1String("text")).toString();
+                } else if (kind == QLatin1String("tool_result")) {
+                    const auto it = tools.constFind(part.value(QLatin1String("tool_use_id")).toString());
+                    if (it == tools.cend()) continue;
+                    Entry& e = entries[*it];
+                    const QString output = outputOf(part.value(QLatin1String("content")));
+                    if (part.value(QLatin1String("is_error")).toBool()) {
+                        e.tool = Entry::Failed;
+                        e.output = output.section(QLatin1Char('\n'), 0, 0).left(200);
+                    } else {
+                        e.result = output;
+                    }
+                }
+            }
+            text = text.trimmed();
+            if (const auto m = typedCommand.match(text); m.hasMatch()) {
+                // A command typed: as it was typed.
+                text = (m.captured(1).trimmed() + QLatin1Char(' ') + typedArguments.match(text).captured(1).trimmed()).trimmed();
+            } else if (text.startsWith(QLatin1Char('<')) || text.startsWith(QLatin1String("Caveat:"))) {
+                continue;   // (what Claude Code adds itself)
+            }
+            if (!text.isEmpty()) entries.append({Entry::You, text, {}, {}});
+        } else if (type == QLatin1String("assistant")) {
+            for (const QJsonValue& v : content.toArray()) {
+                const QJsonObject part = v.toObject();
+                const QString kind = part.value(QLatin1String("type")).toString();
+                if (kind == QLatin1String("text")) {
+                    const QString reply = part.value(QLatin1String("text")).toString().trimmed();
+                    if (!reply.isEmpty()) entries.append({Entry::Claude, reply, {}, {}});
+                } else if (kind == QLatin1String("tool_use")) {
+                    const QString name = part.value(QLatin1String("name")).toString();
+                    const QJsonObject input = part.value(QLatin1String("input")).toObject();
+                    const bool own = !hostPrefix.isEmpty() && name.startsWith(hostPrefix);
+                    Entry e{Entry::Tool, name,
+                            own ? host->subjectOf(name.mid(hostPrefix.size()), input) : qucs_s::claude::toolSubject(name, input, folder),
+                            part.value(QLatin1String("id")).toString()};
+                    e.tool = Entry::Succeeded;   // (unless its result says otherwise)
+                    tools.insert(e.id, entries.size());
+                    entries.append(e);
+                }
+            }
+        }
+    }
+    if (entries.isEmpty()) return false;
+
+    emit conversationEnding();
+    a_session->reset();
+    a_conversationId.clear();   // (kept as one of ours from now on)
+    if (!folder.isEmpty() && QFileInfo(folder).isDir()) setWorkingDirectory(folder);
+    a_entries = entries;
+    a_expanded.clear();
+    a_requests.clear();
+    a_name = title.simplified();
+    pinDocument(QString());
+    a_session->resume(QFileInfo(file).completeBaseName());
+    showNextRequest();
+    updateState();
+    scheduleRender();
+    emit titleChanged();
+    return true;
+}
+
+// ----------------------------------------------------------------------
+// Commands.
+
+QList<ClaudeCodePanel::Command> ClaudeCodePanel::commands() const
+{
+    static const struct {
+        const char* name;
+        const char* arguments;
+        const char* description;
+    } local[] = {
+        {"clear", "", QT_TR_NOOP("Begin a new conversation here (this one is kept: /resume brings it back)")},
+        {"new", "", QT_TR_NOOP("Begin a new conversation here, as /clear")},
+        {"resume", "[words or a session id]", QT_TR_NOOP("Go on with a conversation from before - one of the dock's, or one of Claude Code's in this folder")},
+        {"quit", "", QT_TR_NOOP("End this conversation and close its tab (it is kept: /resume)")},
+        {"exit", "", QT_TR_NOOP("End this conversation and close its tab, as /quit")},
+        {"help", "", QT_TR_NOOP("The commands")},
+        {"model", "[name]", QT_TR_NOOP("The model: the one in use, or another from the next prompt on")},
+        {"permissions", "[ask | edits | auto | plan | bypass]", QT_TR_NOOP("What Claude may do without asking")},
+        {"rename", "<name>", QT_TR_NOOP("Name this conversation")},
+        {"export", "[pdf | md | txt]", QT_TR_NOOP("Save the whole conversation to a file")},
+        {"status", "", QT_TR_NOOP("This conversation: its session, model, permissions, folder, schematic")},
+        {"pin", "", QT_TR_NOOP("Pin the schematic in front to this conversation")},
+        {"unpin", "", QT_TR_NOOP("Unpin its schematic")},
+    };
+    static const QHash<QString, const char*> theirs = {
+        {QStringLiteral("compact"), QT_TR_NOOP("Compacts the conversation so far (what to keep may follow)")},
+        {QStringLiteral("context"), QT_TR_NOOP("How full Claude's context is, and with what")},
+        {QStringLiteral("cost"), QT_TR_NOOP("Usage and its limits")},
+        {QStringLiteral("usage"), QT_TR_NOOP("Usage and its limits")},
+        {QStringLiteral("init"), QT_TR_NOOP("Writes a CLAUDE.md about this folder")},
+        {QStringLiteral("review"), QT_TR_NOOP("Reviews a pull request")},
+        {QStringLiteral("security-review"), QT_TR_NOOP("Reviews the changes for security")},
+        {QStringLiteral("recap"), QT_TR_NOOP("Sums up the conversation")},
+        {QStringLiteral("mcp"), QT_TR_NOOP("The MCP servers")},
+        {QStringLiteral("agents"), QT_TR_NOOP("The subagents")},
+        {QStringLiteral("effort"), QT_TR_NOOP("How hard Claude thinks")},
+        {QStringLiteral("fast"), QT_TR_NOOP("Fast mode on or off")},
+        {QStringLiteral("insights"), QT_TR_NOOP("A report on your sessions")},
+    };
+    QList<Command> list;
+    QSet<QString> names;
+    for (const auto& c : local) {
+        list << Command{QString::fromLatin1(c.name), QString::fromLatin1(c.arguments), tr(c.description), true};
+        names << QString::fromLatin1(c.name);
+    }
+    // Claude Code's, as it said at its last start; before it ever has,
+    // those it always has here.
+    QStringList program = a_session->slashCommands();
+    if (program.isEmpty()) program = QucsSettingsFile().value(kCommands).toStringList();
+    if (program.isEmpty())
+        program = {QStringLiteral("compact"), QStringLiteral("context"), QStringLiteral("cost"), QStringLiteral("usage"),
+                   QStringLiteral("init"), QStringLiteral("review"), QStringLiteral("security-review")};
+    for (const QString& name : std::as_const(program)) {
+        if (name.isEmpty() || names.contains(name)) continue;
+        names << name;
+        list << Command{name, QString(),
+                        theirs.contains(name) ? tr(theirs.value(name)) : tr("Claude Code's: a skill or a command of its"), false};
+    }
+    return list;
+}
+
+bool ClaudeCodePanel::runCommand(const QString& text)
+{
+    static const QRegularExpression form(QStringLiteral("^/([A-Za-z0-9][A-Za-z0-9:_.-]*)(?:\\s+(.*))?$"),
+                                         QRegularExpression::DotMatchesEverythingOption);
+    const QRegularExpressionMatch m = form.match(text.trimmed());
+    if (!m.hasMatch()) return false;
+    const QString name = m.captured(1).toLower();
+    const QString args = m.captured(2).trimmed();
+    const auto cleanLabel = [](QString label) { return label.remove(QLatin1Char('&')); };
+
+    if (name == QLatin1String("clear") || name == QLatin1String("new") || name == QLatin1String("reset")) {
+        newConversation();
+    } else if (name == QLatin1String("resume") || name == QLatin1String("continue")) {
+        emit resumeRequested(args);
+    } else if (name == QLatin1String("quit") || name == QLatin1String("exit")) {
+        emit closeRequested();
+    } else if (name == QLatin1String("help")) {
+        QStringList lines{tr("Commands (type / for the list):")};
+        QStringList program;
+        for (const Command& c : commands()) {
+            if (c.local) lines << QStringLiteral("/%1%2 - %3").arg(c.name, c.arguments.isEmpty() ? QString() : QLatin1Char(' ') + c.arguments, c.description);
+            else program << QLatin1Char('/') + c.name;
+        }
+        if (!program.isEmpty()) lines << tr("Claude Code's, sent to it as typed: %1").arg(program.join(QStringLiteral(", ")));
+        addNote(lines.join(QLatin1Char('\n')));
+    } else if (name == QLatin1String("model")) {
+        if (args.isEmpty()) {
+            QStringList choices;
+            for (QAction* a : modelActions())
+                if (!a->data().toString().isEmpty()) choices << a->data().toString();
+            const QString inUse = modelName(a_session->modelInUse().isEmpty() ? a_session->model() : a_session->modelInUse());
+            addNote(tr("The model: %1. Another, from the next prompt on: /model <name> - %2.")
+                        .arg(inUse.isEmpty() ? tr("the default") : inUse, choices.join(QStringLiteral(", "))));
+        } else {
+            QAction* chosen = nullptr;
+            for (QAction* a : modelActions())
+                if (!a->data().toString().isEmpty()
+                    && (a->data().toString().compare(args, Qt::CaseInsensitive) == 0
+                        || cleanLabel(a->text()).compare(args, Qt::CaseInsensitive) == 0))
+                    chosen = a;
+            if (chosen != nullptr) chosen->trigger();
+            else setModel(args);
+            const QString model = chosen != nullptr ? chosen->data().toString() : args;
+            addNote(tr("The model: %1, from the next prompt on.").arg(modelName(model).isEmpty() ? model : modelName(model)));
+        }
+    } else if (name == QLatin1String("permissions") || name == QLatin1String("mode")) {
+        static const QHash<QString, QString> modes = {
+            {QStringLiteral("ask"), QString()}, {QStringLiteral("default"), QString()},
+            {QStringLiteral("edits"), QStringLiteral("acceptEdits")}, {QStringLiteral("acceptedits"), QStringLiteral("acceptEdits")},
+            {QStringLiteral("auto"), QStringLiteral("auto")}, {QStringLiteral("plan"), QStringLiteral("plan")},
+            {QStringLiteral("bypass"), QStringLiteral("bypassPermissions")},
+            {QStringLiteral("bypasspermissions"), QStringLiteral("bypassPermissions")}};
+        QAction* current = nullptr;
+        for (QAction* a : permissionActions())
+            if (a->isChecked()) current = a;
+        if (args.isEmpty() || !modes.contains(args.toLower())) {
+            addNote(tr("Permissions: %1. Others: /permissions ask, edits, auto, plan or bypass.")
+                        .arg(current != nullptr ? cleanLabel(current->text()) : tr("Ask Before Acting")));
+        } else {
+            for (QAction* a : permissionActions())
+                if (a->data().toString() == modes.value(args.toLower()) && !a->isChecked()) a->trigger();
+        }
+    } else if (name == QLatin1String("rename")) {
+        if (args.isEmpty()) addNote(tr("A name for it: /rename <name>."));
+        else setName(args);
+    } else if (name == QLatin1String("export")) {
+        const QString format = args.toLower();
+        if (a_entries.isEmpty()) addNote(tr("There is nothing to export yet."));
+        else if (format.startsWith(QLatin1String("md")) || format.startsWith(QLatin1String("markdown"))) exportConversationAs(ExportFormat::Markdown);
+        else if (format.startsWith(QLatin1String("t"))) exportConversationAs(ExportFormat::Text);
+        else exportConversationAs(ExportFormat::Pdf);
+    } else if (name == QLatin1String("status")) {
+        QAction* mode = nullptr;
+        for (QAction* a : permissionActions())
+            if (a->isChecked()) mode = a;
+        const QString model = modelName(a_session->modelInUse().isEmpty() ? a_session->model() : a_session->modelInUse());
+        QStringList lines;
+        lines << tr("Session: %1").arg(a_session->sessionId().isEmpty() ? tr("not started yet") : a_session->sessionId());
+        lines << tr("Model: %1").arg(model.isEmpty() ? tr("the default") : model);
+        lines << tr("Permissions: %1").arg(mode != nullptr ? cleanLabel(mode->text()) : tr("Ask Before Acting"));
+        lines << tr("Folder: %1").arg(QDir::toNativeSeparators(workingDirectory()));
+        if (!a_pinned.isEmpty()) lines << tr("Pinned to: %1").arg(QDir::toNativeSeparators(a_pinned));
+        if (!a_session->version().isEmpty()) lines << tr("Claude Code: %1").arg(a_session->version());
+        addNote(lines.join(QLatin1Char('\n')));
+    } else if (name == QLatin1String("pin")) {
+        const QString schematic = pinnableDocument();
+        if (schematic.isEmpty()) addNote(tr("No saved schematic is in front to pin (⋯ > Pin to a Schematic lists them all)."));
+        else pinDocument(schematic);
+    } else if (name == QLatin1String("unpin")) {
+        pinDocument(QString());
+    } else {
+        return false;   // Claude Code's
+    }
+    return true;
+}
+
+void ClaudeCodePanel::updateCommandList()
+{
+    static const QRegularExpression typing(QStringLiteral("^/([A-Za-z0-9:_.-]*)$"));
+    const QRegularExpressionMatch m = typing.match(a_input->toPlainText());
+    if (!m.hasMatch()) {
+        a_commandList->hide();
+        return;
+    }
+    const QString typed = m.captured(1).toLower();
+    QList<Command> starting, containing;
+    for (const Command& c : commands()) {
+        const QString name = c.name.toLower();
+        if (name.startsWith(typed)) starting << c;
+        else if (!typed.isEmpty() && name.contains(typed)) containing << c;
+    }
+    const QList<Command> shown = starting + containing;
+    a_commandList->clear();
+    if (shown.isEmpty()) {
+        a_commandList->hide();
+        return;
+    }
+    for (const Command& c : shown) {
+        auto* item = new QListWidgetItem(QStringLiteral("/%1%2   %3")
+                                             .arg(c.name, c.arguments.isEmpty() ? QString() : QLatin1Char(' ') + c.arguments,
+                                                  c.description),
+                                         a_commandList);
+        item->setData(Qt::UserRole, c.name);
+        item->setData(Qt::UserRole + 1, c.arguments);
+        item->setToolTip(c.description);
+    }
+    a_commandList->setCurrentRow(0);
+    // Above the composer, as wide as it.
+    const int rows = std::min<int>(int(shown.size()), 8);
+    const int height = rows * std::max(1, a_commandList->sizeHintForRow(0)) + 2 * a_commandList->frameWidth() + 2;
+    const QRect composer(a_composer->mapTo(this, QPoint(0, 0)), a_composer->size());
+    a_commandList->setGeometry(composer.left(), std::max(0, composer.top() - height - 3), composer.width(), height);
+    a_commandList->show();
+    a_commandList->raise();
+}
+
+void ClaudeCodePanel::completeCommand(bool send)
+{
+    QListWidgetItem* item = a_commandList->currentItem();
+    a_commandList->hide();
+    if (item == nullptr) {
+        if (send) sendComposer();
+        return;
+    }
+    const QString name = item->data(Qt::UserRole).toString();
+    // One that needs something after it waits for it to be written.
+    const bool needsMore = item->data(Qt::UserRole + 1).toString().startsWith(QLatin1Char('<'));
+    if (send && !needsMore) {
+        a_input->setPlainText(QLatin1Char('/') + name);
+        sendComposer();
+        return;
+    }
+    a_input->setPlainText(QLatin1Char('/') + name + QLatin1Char(' '));
+    QTextCursor end = a_input->textCursor();
+    end.movePosition(QTextCursor::End);
+    a_input->setTextCursor(end);
 }
 
 // ----------------------------------------------------------------------

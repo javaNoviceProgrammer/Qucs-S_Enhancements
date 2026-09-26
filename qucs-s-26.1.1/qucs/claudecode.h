@@ -242,6 +242,15 @@ public:
     qint64 turnElapsed() const;
 
     QString sessionId() const { return a_sessionId; }
+    /// The next start continues the conversation \a sessionId (--resume):
+    /// one kept from before Qucs-S was closed, or one of Claude Code's
+    /// own. When Claude Code no longer has it, the prompt is sent again to
+    /// a new conversation (and a notice says so).
+    void resume(const QString& sessionId);
+    /// The slash commands the program runs here (not those only its
+    /// terminal has), as it said when it started: "compact", "context",
+    /// skills...; empty before it has.
+    QStringList slashCommands() const { return a_slashCommands; }
     /// The model and the program's version, as it said when it started.
     QString modelInUse() const { return a_modelInUse; }
     QString version() const { return a_version; }
@@ -324,6 +333,11 @@ private:
     QElapsedTimer a_turnClock;
 
     QString a_sessionId;
+    QString a_resumedFrom;     // the session a start continued
+    bool a_initSeen = false;   // the program said it started
+    bool a_resumeFailed = false;   // it could not continue a_resumedFrom
+    QString a_lastPrompt;      // (sent again to a new conversation then)
+    QStringList a_slashCommands;
     QString a_modelInUse;
     QString a_modeInUse;
     QString a_version;
