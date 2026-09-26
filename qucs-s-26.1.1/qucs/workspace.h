@@ -31,6 +31,21 @@ struct Result {
     QString message;
 };
 
+/// Whether a folder named \a name can be a project: one named NAME_prj, or
+/// with QucsSettings.AnyFolderIsProject any folder - but a hidden one, and
+/// "user_lib", where the workspace keeps the user libraries.
+bool isProjectName(const QString& name);
+/// Whether the folder \a path shows as a project (the Projects panel, the
+/// file browser): one named NAME_prj anywhere, or with AnyFolderIsProject
+/// any folder of the workspace too.
+bool isProjectFolder(const QString& path);
+/// A project's name, from its folder's: "amp_prj" is amp; "amp", a folder
+/// that is a project only with AnyFolderIsProject, amp too.
+QString projectName(const QString& folderName);
+/// The folder of the new project \a name: NAME_prj, or with
+/// AnyFolderIsProject the name as it is.
+QString folderFor(const QString& name);
+
 /// Whether \a path is a link - a symbolic link, or a Windows junction -
 /// rather than the directory itself.
 bool isLink(const QString& path);
@@ -39,8 +54,9 @@ QString linkTarget(const QString& path);
 
 /// Checks that the project directory \a source can come into \a workspace
 /// as \a name (its own name if empty): a directory whose name, and \a name,
-/// end in "_prj", that is not in the workspace already, and that does not
-/// hold the workspace; nothing of that name in the workspace yet.
+/// are a project's (isProjectName()), that is not in the workspace already,
+/// and that does not hold the workspace; nothing of that name in the
+/// workspace yet.
 Result check(const QString& source, const QString& workspace, const QString& name = QString());
 
 /// Copies the project \a source - everything in it, links inside it as
@@ -54,7 +70,7 @@ Result importProject(const QString& source, const QString& workspace, const QStr
 Result linkProject(const QString& source, const QString& workspace, const QString& name = QString());
 
 /// The first name in \a workspace free for a project like \a name:
-/// "amp_2_prj", "amp_3_prj", ...
+/// "amp_2_prj", "amp_3_prj", ... - or for a plain "amp", "amp_2", "amp_3".
 QString freeName(const QString& workspace, const QString& name);
 
 /// Removes the link \a path and nothing it points to; false (and why, in

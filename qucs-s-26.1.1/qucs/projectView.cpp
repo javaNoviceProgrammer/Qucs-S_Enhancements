@@ -27,6 +27,7 @@
 #include "main.h"
 #include "qucs.h"
 #include "simulationconsole.h"
+#include "workspace.h"
 
 #include <QString>
 #include <QStringList>
@@ -267,12 +268,8 @@ ProjectView::setProjPath(const QString &path)
 
   if (m_valid) {
     m_projPath = path; // full path
-    m_projName = QDir(m_projPath).dirName(); // only project directory name
-    if (m_projName.endsWith("_prj")) {
-      m_projName.chop(4);// remove "_prj" from name
-    } else { // should not happen
-      qWarning() << "ProjectView::setProjPath() : path does not end in '_prj' (" << m_projName << ")";
-    }
+    // "amp_prj" is amp; a folder that is any folder keeps its name
+    m_projName = qucs_s::workspace::projectName(QDir(m_projPath).dirName());
   }
   refresh();
   // A freshly opened project shows its schematics.

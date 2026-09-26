@@ -120,6 +120,9 @@ public:
 
     bool showHidden() const { return a_showHidden; }
     void setShowHidden(bool on);
+    /// The folders' kinds (and icons) looked at again: which are projects
+    /// changed (QucsSettings.AnyFolderIsProject).
+    void refreshKinds();
     /// Only the files Qucs-S makes or reads (folders stay).
     bool qucsFilesOnly() const { return a_qucsOnly; }
     void setQucsFilesOnly(bool on);

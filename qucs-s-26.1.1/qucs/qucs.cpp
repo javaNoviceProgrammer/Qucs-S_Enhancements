@@ -1769,6 +1769,13 @@ void QucsApp::readProjects()
     Projects->setRootIndex(a_proxyModel->mapFromSource(rootModelIndex));
 }
 
+void QucsApp::applyProjectSettings()
+{
+    a_proxyModel->invalidate();   // projects first, with the project icon
+    Projects->viewport()->update();
+    fileBrowser->refreshKinds();
+}
+
 // ----------------------------------------------------------
 // Is called, when "Create New Project" button is pressed.
 void QucsApp::slotButtonProjNew()
@@ -1782,9 +1789,7 @@ void QucsApp::slotButtonProjNew()
   QString name = d->ProjName->text();
   bool open = d->OpenProj->isChecked();
 
-  if (!name.endsWith("_prj")) {
-    name += "_prj";
-  }
+  name = qucs_s::workspace::folderFor(name);   // NAME_prj, or as typed
 
   if(!projDir.mkdir(name)) {
     QMessageBox::information(this, tr("Info"),
@@ -1833,9 +1838,12 @@ void QucsApp::openProject(const QString& PathGiven)
     return;
   }
 
-  if (!openProjName.endsWith("_prj")) { // should not happen
+  if (!qucs_s::workspace::isProjectName(openProjName)) {
     QMessageBox::critical(this, tr("Error"),
-                          tr("Project directory name does not end in '_prj'(%1)").arg(openProjName));
+                          QucsSettings.AnyFolderIsProject
+                              ? tr("%1 cannot be a project: it is hidden, or it is the workspace's folder of user libraries.").arg(openProjName)
+                              : tr("Project directory name does not end in '_prj' (%1). "
+                                   "Any folder is a project when the settings say so (Locations).").arg(openProjName));
     return;
   }
 
@@ -1855,8 +1863,7 @@ void QucsApp::openProject(const QString& PathGiven)
 
   TabView->setCurrentIndex(1);   // switch to "Content"-Tab
 
-  openProjName.chop(4); // remove "_prj" from name
-  ProjName = openProjName;   // remember the name of project
+  ProjName = qucs_s::workspace::projectName(openProjName);   // "amp_prj" is amp
   QDir parentDir = QucsSettings.QucsWorkDir;
   parentDir.cdUp();
     // show name in title of main window
@@ -1897,7 +1904,7 @@ void QucsApp::slotButtonProjOpen()
 void QucsApp::slotListProjOpen(const QModelIndex &idx)
 {
     QString dName = idx.data().toString();
-    if (dName.endsWith("_prj")) { // it's a Qucs project
+    if (qucs_s::workspace::isProjectFolder(QucsSettings.projsDir.filePath(dName))) { // it's a Qucs project
         openProject(QucsSettings.projsDir.filePath(dName));
     } else { // it's a normal directory
         // change projects directory to the selected one
@@ -1956,13 +1963,15 @@ bool QucsApp::deleteProject(const QString& PathGiven)
 
   QString delProjName = QDir(Path).dirName(); // only project directory name
 
-  if (!delProjName.endsWith("_prj")) { // should not happen
+  if (!qucs_s::workspace::isProjectName(delProjName)) { // should not happen
     QMessageBox::critical(this, tr("Error"),
-                          tr("Project directory name does not end in '_prj' (%1)").arg(delProjName));
+                          QucsSettings.AnyFolderIsProject
+                              ? tr("%1 is not a project's folder.").arg(delProjName)
+                              : tr("Project directory name does not end in '_prj' (%1)").arg(delProjName));
     return false;
   }
 
-  delProjName.chop(4); // remove "_prj" from name
+  delProjName = qucs_s::workspace::projectName(delProjName);   // "amp_prj" is amp
 
   if(delProjName == ProjName) {
     QMessageBox::information(this, tr("Info"),
@@ -2029,7 +2038,9 @@ void QucsApp::slotSwitchWorkspace()
 void QucsApp::slotImportProject()
 {
   const QString source = QFileDialog::getExistingDirectory(
-      this, tr("Choose a Project Folder (NAME_prj) to Copy into the Workspace"), QDir::homePath(),
+      this, QucsSettings.AnyFolderIsProject ? tr("Choose a Project Folder to Copy into the Workspace")
+                                            : tr("Choose a Project Folder (NAME_prj) to Copy into the Workspace"),
+      QDir::homePath(),
       QFileDialog::ShowDirsOnly);
   if (source.isEmpty()) return;
   const QString path = bringProjectIn(source, false);
@@ -2040,7 +2051,9 @@ void QucsApp::slotImportProject()
 void QucsApp::slotLinkProject()
 {
   const QString source = QFileDialog::getExistingDirectory(
-      this, tr("Choose a Project Folder (NAME_prj) to Link into the Workspace"), QDir::homePath(),
+      this, QucsSettings.AnyFolderIsProject ? tr("Choose a Project Folder to Link into the Workspace")
+                                            : tr("Choose a Project Folder (NAME_prj) to Link into the Workspace"),
+      QDir::homePath(),
       QFileDialog::ShowDirsOnly);
   if (source.isEmpty()) return;
   const QString path = bringProjectIn(source, true);
@@ -2084,15 +2097,16 @@ QString QucsApp::bringProjectIn(const QString &sourceGiven, bool link)
   // The workspace has a project of that name: another name, or nothing.
   while (r.status == qucs_s::workspace::Result::Exists) {
     QString name = qucs_s::workspace::freeName(workspace, QDir(source).dirName());
-    name.chop(4);   // asked without "_prj", as for a new project
+    // Asked without "_prj", as for a new project; a folder that is any
+    // folder keeps its name as it is.
+    if (!QucsSettings.AnyFolderIsProject) name = qucs_s::workspace::projectName(name);
     bool ok = false;
     name = QInputDialog::getText(this, title,
                                  tr("The workspace has a project named %1 already.\n"
-                                    "Name of the one coming in:").arg(QDir(r.path).dirName().chopped(4)),
+                                    "Name of the one coming in:").arg(qucs_s::workspace::projectName(QDir(r.path).dirName())),
                                  QLineEdit::Normal, name, &ok).trimmed();
     if (!ok || name.isEmpty()) return QString();
-    if (!name.endsWith("_prj")) name += "_prj";
-    r = bring(name);
+    r = bring(qucs_s::workspace::folderFor(name));
   }
   if (r.status != qucs_s::workspace::Result::Done) {
     QMessageBox::warning(this, title, r.message);
@@ -4000,7 +4014,7 @@ int QucsApp::openFromSystem(const QStringList &items)
     if (path.isEmpty()) {
       refused << item;
     } else if (info.isDir()) {
-      if (info.fileName().endsWith("_prj") && project.isEmpty())
+      if (qucs_s::workspace::isProjectName(info.fileName()) && project.isEmpty())
         project = path;
       else
         refused << QDir::toNativeSeparators(path);
@@ -4037,7 +4051,9 @@ int QucsApp::openFromSystem(const QStringList &items)
     if (!missing.isEmpty())
       lines << tr("No such file:") << missing;
     if (!refused.isEmpty())
-      lines << tr("Not a document or a project directory (its name ends in \"_prj\"):") << refused;
+      lines << (QucsSettings.AnyFolderIsProject ? tr("Not a document, or a project past the first (one opens at a time):")
+                                                : tr("Not a document or a project directory (its name ends in \"_prj\"):"))
+            << refused;
     QMessageBox::warning(this, tr("Open"), lines.join('\n'));
   }
   if (opened > 0) {
@@ -5337,8 +5353,7 @@ void QucsApp::runPostSimCommands(Schematic* sch)
 QVariant QucsFileSystemModel::data( const QModelIndex& index, int role ) const
 {
     if (role == Qt::DecorationRole) { // it's an icon
-        QString dName = fileName(index);
-        if (dName.endsWith("_prj")) { // it's a Qucs project
+        if (isDir(index) && qucs_s::workspace::isProjectFolder(filePath(index))) { // it's a Qucs project
             // for some reason SVG does not always work on Windows, so use PNG
             return QIcon(":bitmaps/hicolor/128x128/apps/qucs.png");
         }
@@ -5370,8 +5385,6 @@ bool QucsSortFilterProxyModel::lessThan(const QModelIndex &left, const QModelInd
 
         QFileInfo leftFileInfo = model->fileInfo(left);
         QFileInfo rightFileInfo = model->fileInfo(right);
-        QString leftFileName = model->fileName(left);
-        QString rightFileName = model->fileName(right);
 
         // If DotAndDot move in the beginning
         if (sourceModel()->data(left).toString() == "..")
@@ -5386,12 +5399,14 @@ bool QucsSortFilterProxyModel::lessThan(const QModelIndex &left, const QModelInd
         if (leftFileInfo.isDir() && !rightFileInfo.isDir()) {
             return asc;
         }
-        // move dirs ending in '_prj' upper
+        // move projects upper
         if (leftFileInfo.isDir() && rightFileInfo.isDir()) {
-            if (!leftFileName.endsWith("_prj") && rightFileName.endsWith("_prj")) {
+            const bool leftProject = qucs_s::workspace::isProjectFolder(leftFileInfo.absoluteFilePath());
+            const bool rightProject = qucs_s::workspace::isProjectFolder(rightFileInfo.absoluteFilePath());
+            if (!leftProject && rightProject) {
                 return !asc;
             }
-            if (leftFileName.endsWith("_prj") && !rightFileName.endsWith("_prj")) {
+            if (leftProject && !rightProject) {
                 return asc;
             }
         }

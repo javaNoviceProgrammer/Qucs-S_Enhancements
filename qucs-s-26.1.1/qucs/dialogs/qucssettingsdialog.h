@@ -210,6 +210,9 @@ public:
     QLineEdit *Input_Suffix;        ///< File suffix field for file type registration.
     QLineEdit *Input_Program;       ///< Program field for file type registration.
     QLineEdit *homeEdit;            ///< Qucs home directory path.
+    /// A project is any folder, not only one named NAME_prj
+    /// (QucsSettings.AnyFolderIsProject).
+    QCheckBox *anyFolderIsProject;
     QLineEdit *admsXmlEdit;         ///< AdmsXml binary directory path.
     QLineEdit *ascoEdit;            ///< ASCO binary directory path.
     QLineEdit *octaveEdit;          ///< Octave executable path.

@@ -958,6 +958,24 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     symbolic links need Developer Mode.)
   When the workspace already has a project of that name, you are asked
   for another one.
+- **Any folder can be a project**: by default a project is a folder
+  whose name ends in `_prj`. With *Application Settings → Locations →
+  Projects → Any folder is a project* on, a folder of any name is one:
+  - every folder of the workspace is listed and opens as a project
+    (except `user_lib`, which holds the user libraries, and hidden
+    folders);
+  - *Import Project...* and *Link Project...* take any folder and keep its
+    name (a folder with a name already in the workspace is offered
+    `name_2`, not `name_2_prj`);
+  - *Open Project*, a folder dropped on the window and `qucs-s FOLDER`
+    open any folder as the project;
+  - *New Project* names the folder exactly as typed.
+  The project's name is its folder's name, with a `_prj` ending dropped.
+  Folders named `NAME_prj` are always projects. Other Qucs-S
+  installations still recognise only those, so a workspace of plain
+  folders shows no projects there. The option is off by default, and
+  turning it on or off updates the Projects panel and the File Browser
+  straight away.
 - **Export to SVG, PDF, EPS, JPEG and more, without Inkscape** (*File →
   Export as image...*, or *Export...* on the context menu of the empty
   canvas; *Export Diagram...* on a diagram for the diagram alone):

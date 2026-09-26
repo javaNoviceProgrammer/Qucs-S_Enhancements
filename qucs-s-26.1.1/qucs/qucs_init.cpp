@@ -474,14 +474,15 @@ void QucsApp::initActions() {
   projImport = new QAction(tr("&Import Project..."), this);
   projImport->setObjectName("projImport");
   projImport->setStatusTip(tr("Copies a project folder from elsewhere into the workspace"));
-  projImport->setWhatsThis(tr("Import Project\n\nCopies a project folder (NAME_prj) from elsewhere into the "
-                              "workspace"));
+  projImport->setWhatsThis(tr("Import Project\n\nCopies a project folder (NAME_prj, or any folder when the "
+                              "settings say any folder is a project) from elsewhere into the workspace"));
   connect(projImport, &QAction::triggered, this, &QucsApp::slotImportProject);
 
   projLink = new QAction(tr("&Link Project..."), this);
   projLink->setObjectName("projLink");
   projLink->setStatusTip(tr("Puts a link to a project folder elsewhere into the workspace; nothing is copied"));
-  projLink->setWhatsThis(tr("Link Project\n\nPuts a link to a project folder (NAME_prj) elsewhere into the "
+  projLink->setWhatsThis(tr("Link Project\n\nPuts a link to a project folder (NAME_prj, or any folder when the "
+                            "settings say any folder is a project) elsewhere into the "
                             "workspace: it is listed and opens as any project there, and its files stay where "
                             "they are. Deleting it from the workspace removes the link only."));
   connect(projLink, &QAction::triggered, this, &QucsApp::slotLinkProject);
