@@ -23,6 +23,7 @@
 #include "numberformat.h"
 
 #include <QTextStream>
+#include <QFontMetricsF>
 #include <QList>
 
 #include <algorithm>
@@ -144,6 +145,11 @@ public:
   void    paintScheme(Schematic*) override;
   void    Bounding(int&, int&, int&, int&);
   QRect boundingRect() const noexcept override;
+  /// All it draws, in the schematic's coordinates, its texts measured
+  /// with \a metrics (those of the font it is drawn in). boundingRect()
+  /// leaves out the numbers of its axes, which are centred on the edges
+  /// of its frame. Its markers, which draw their own boxes, are not in it.
+  virtual QRectF paintedRect(const QFontMetricsF& metrics) const;
   bool    getSelected(int, int);
   bool    resizeTouched(float, float, float);
   QString save();
@@ -207,6 +213,9 @@ protected:
   /// (y downwards), before the legend.
   virtual void paintBehindGraphs(QPainter*) {}
   virtual void paintInFront(QPainter*) {}
+  /// Where \a text is drawn, in the diagram's coordinates (origin at the
+  /// lower left corner, y downwards): from its baseline, turned.
+  virtual QRectF textRect(const Text& text, const QFontMetricsF& metrics) const;
 
   void calcSmithAxisScale(Axis*, int&, int&);
   void createSmithChart(Axis*, int Mode=7);

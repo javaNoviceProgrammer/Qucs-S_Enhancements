@@ -11,7 +11,8 @@
  * in a paint of the whole (nothing passed over that reaches into it, over
  * the examples' symbols); that small texts are left out of the canvas and
  * kept in prints; that a step of a gesture shows what a whole paint would,
- * also after an edit or a selection from elsewhere; and the times.
+ * also after an edit or a selection from elsewhere; and the times. Also:
+ * that a diagram on dark paper is all on its light card.
  *
  *   CANVAS_ALL_EXAMPLES=1  every example, not every fifteenth (minutes)
  *   CANVAS_GRABS=<dir>     the images of the first part that differs
@@ -32,6 +33,7 @@
 #include "main.h"
 #include "misc.h"
 #include "autosave.h"
+#include "ink.h"
 #include "levelofdetail.h"
 #include "mouseactions.h"
 #include "schematic.h"
@@ -361,6 +363,84 @@ private slots:
                     ++checked;
                 }
         QVERIFY(checked >= 3);
+        s->setChanged(false);
+    }
+
+    // On dark paper a diagram is drawn on a light card: all of it, the
+    // numbers of its axes too. They are centred on the edges of its frame,
+    // and the top one and the right one were cut in half by the card's edge.
+    // A table's scroll bar, left of its frame, was off the card.
+    void aDiagramOnDarkPaperIsAllOnItsCard()
+    {
+        QString text = schematic(QString());
+        text.replace(QStringLiteral("<Diagrams>\n"),
+                     QStringLiteral("<Diagrams>\n  <Rect 100 400 500 300 3 #c0c0c0 1 00 0 0 10 100 0 0 5 25 1 -0.1 0.5 1.1 "
+                                    "315 0 225 1 0 0 0 -1 \"Voltage (V)\" \"Transmission (dB)\" \"\">\n"
+                                    "    <\"y\" #ff0000 2 3 0 0 0>\n  </Rect>\n"
+                                    "  <Tab 700 400 200 150 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 1 0 0 0 -1 \"\" \"\" \"\">\n"
+                                    "    <\"y\" #0000ff 0 3 1 0 0>\n  </Tab>\n"));
+        // A line of 51 points: the table's rows need a scroll bar, left of it.
+        QString xs, ys;
+        for (int k = 0; k <= 50; ++k) {
+            xs += QStringLiteral("  %1\n").arg(2 * k);
+            ys += QStringLiteral("  %1\n").arg(0.44 * k);
+        }
+        write(QStringLiteral("card.dat"), QStringLiteral("<Qucs Dataset " PACKAGE_VERSION ">\n<indep x 51>\n") + xs
+                                              + QStringLiteral("</indep>\n<dep y x>\n") + ys + QStringLiteral("</dep>\n"));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        Schematic* s = open(app, write(QStringLiteral("card.sch"), text));
+        QVERIFY(s != nullptr);
+        QCOMPARE(s->a_DocDiags.size(), 2);
+        QVERIFY(s->a_DocDiags.back()->x1 > 0);   // (its scroll bar)
+        const QColor dark = qucs_s::ink::darkPaperColour();
+        const auto paintOn = [s](const QColor& paper) {
+            QPalette palette = s->viewport()->palette();
+            palette.setColor(s->viewport()->backgroundRole(), paper);
+            s->viewport()->setPalette(palette);
+            return canvasImage(s);
+        };
+
+        // The whole of the plot; at twice the size, its top left corner (the
+        // "25" of its y axis) and its lower right one (the "100" of its x
+        // axis); the table, and its scroll bar. Each view with a point clear
+        // of the diagrams, off the cards.
+        const struct View {
+            double zoom;
+            QPoint centre, clear;
+        } views[] = {{1.0, {350, 250}, {350, 60}}, {2.0, {100, 100}, {100, 60}}, {2.0, {600, 400}, {650, 400}},
+                     {1.0, {800, 325}, {800, 200}}, {2.0, {700, 330}, {650, 330}}};
+        for (const View& view : views) {
+            const QString what = QStringLiteral("zoomed %1 on (%2,%3)").arg(view.zoom).arg(view.centre.x()).arg(view.centre.y());
+            s->showNoZoom();
+            s->zoomBy(view.zoom);
+            s->centerOn(view.centre);
+            pump();
+            const QImage onWhite = paintOn(Qt::white);
+            const QImage onDark = paintOn(dark);
+            if (const QString grabs = qEnvironmentVariable("CANVAS_GRABS"); !grabs.isEmpty())
+                onDark.save(grabs + QStringLiteral("/card %1.png").arg(what));
+            // Each pixel the diagram inks on white paper, and those around
+            // it, is on the card on dark paper.
+            int inkedPixels = 0;
+            for (int y = 0; y < onWhite.height(); ++y)
+                for (int x = 0; x < onWhite.width(); ++x) {
+                    if (onWhite.pixelColor(x, y) == QColor(Qt::white)) continue;
+                    ++inkedPixels;
+                    for (int dy = -2; dy <= 2; ++dy)
+                        for (int dx = -2; dx <= 2; ++dx) {
+                            const QPoint at(x + dx, y + dy);
+                            if (!onDark.rect().contains(at) || onDark.pixelColor(at) != dark) continue;
+                            const QPoint model = s->viewportToModel(QPoint(x, y));
+                            QFAIL(qPrintable(QStringLiteral("%1: the diagram's ink at (%2,%3), in the model (%4,%5), is off its card")
+                                                 .arg(what).arg(x).arg(y).arg(model.x()).arg(model.y())));
+                        }
+                }
+            QVERIFY2(inkedPixels > 1000, qPrintable(what));
+            const QPoint clear = s->modelToViewport(view.clear);
+            QVERIFY2(onDark.rect().contains(clear), qPrintable(what));
+            QVERIFY2(onDark.pixelColor(clear) == dark, qPrintable(what));
+        }
         s->setChanged(false);
     }
 
