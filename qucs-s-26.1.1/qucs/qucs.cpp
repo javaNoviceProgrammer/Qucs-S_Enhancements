@@ -701,6 +701,7 @@ void QucsApp::initView()
     editText->setHidden(true); // disable text edit of component property
     openFileFromProjectView(QFileInfo(path), QString());
   });
+  connect(fileBrowser, &FileBrowser::moved, this, &QucsApp::documentsMoved);
 
   // ----------------------------------------------------------
   // put the tab widget in the dock
@@ -2540,6 +2541,26 @@ bool QucsApp::saveDocumentAs(QucsDoc *Doc, const QString &fileName)
   // A conversation pinned to it follows it.
   if (claudeTabs != nullptr && !wasNamed.isEmpty()) claudeTabs->documentRenamed(wasNamed, s);
   return true;
+}
+
+void QucsApp::documentsMoved(const QStringList &from, const QStringList &to)
+{
+  for (QucsDoc *doc : allDocuments()) {
+    const QString was = doc->getDocName();
+    if (was.isEmpty()) continue;
+    for (qsizetype i = 0; i < from.size() && i < to.size(); ++i) {
+      const QString moved = QDir::cleanPath(from.at(i));
+      QString now;
+      if (was == moved) now = to.at(i);
+      else if (was.startsWith(moved + QLatin1Char('/'))) now = to.at(i) + was.mid(moved.size());   // in a folder moved
+      else continue;
+      doc->setName(now);
+      QWidget *w = documentWidget(doc);
+      if (ContextMenuTabWidget *pane = paneOf(w)) pane->setTabText(pane->indexOf(w), misc::properFileName(now));
+      if (claudeTabs != nullptr) claudeTabs->documentRenamed(was, now);
+      break;
+    }
+  }
 }
 
 // --------------------------------------------------------------
