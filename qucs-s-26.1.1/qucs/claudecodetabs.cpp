@@ -132,6 +132,7 @@ ClaudeCodePanel* ClaudeCodeTabs::addPanel(ClaudeCodePanel* like)
     auto* panel = new ClaudeCodePanel;
     panel->setNewInTab(true);
     if (!a_defaultDir.isEmpty()) panel->setDefaultDirectory(a_defaultDir);
+    if (!a_projectDir.isEmpty()) panel->setProjectDirectory(a_projectDir);
     // In the folder of the conversation it was opened from.
     if (like != nullptr && like->workingDirectory() != like->defaultDirectory())
         panel->setWorkingDirectory(like->workingDirectory());
@@ -630,6 +631,12 @@ void ClaudeCodeTabs::setDefaultDirectory(const QString& dir)
         panel->setDefaultDirectory(dir);
         updateTab(panel);
     }
+}
+
+void ClaudeCodeTabs::setProjectDirectory(const QString& dir)
+{
+    a_projectDir = dir;
+    for (ClaudeCodePanel* panel : panels()) panel->setProjectDirectory(dir);
 }
 
 void ClaudeCodeTabs::setDocumentProvider(std::function<QString()> provider)

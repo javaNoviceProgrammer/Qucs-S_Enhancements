@@ -112,6 +112,9 @@ public:
     /// As ClaudeCodePanel's, for every conversation.
     void setDefaultDirectory(const QString& dir);
     QString defaultDirectory() const { return a_defaultDir; }
+    /// The project open in Qucs-S (its folder), or empty: what the git
+    /// bars are about (ClaudeCodePanel::setProjectDirectory()).
+    void setProjectDirectory(const QString& dir);
     void setDocumentProvider(std::function<QString()> provider);
     void setSchematicsProvider(std::function<QStringList()> provider);
     /// A document was saved under another name (Save As): a conversation
@@ -158,6 +161,7 @@ private:
     QTabWidget* a_tabs;
     QToolButton* a_plus;
     QString a_defaultDir;
+    QString a_projectDir;
     std::function<QString()> a_document;
     std::function<QStringList()> a_schematics;
     qucs_s::claude::ToolHost* a_host = nullptr;

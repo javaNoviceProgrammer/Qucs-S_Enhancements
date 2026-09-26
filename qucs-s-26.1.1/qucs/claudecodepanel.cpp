@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "claudecodepanel.h"
+#include "claudegitbar.h"
 #include "claudehistory.h"
 
 #include "apptheme.h"
@@ -480,6 +481,12 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     auto* composerHolder = new QWidget(this);
     auto* composerLayout = new QVBoxLayout(composerHolder);
     composerLayout->setContentsMargins(10, 6, 10, 10);
+    composerLayout->setSpacing(6);
+    // The git repository the project is in, right above the prompt.
+    a_gitBar = new ClaudeGitBar(composerHolder);
+    connect(a_gitBar, &ClaudeGitBar::promptRequested, this, [this](const QString& prompt) { sendPrompt(prompt); });
+    connect(a_gitBar, &ClaudeGitBar::openFileRequested, this, &ClaudeCodePanel::openFileRequested);
+    composerLayout->addWidget(a_gitBar);
     composerLayout->addWidget(a_composer);
     layout->addWidget(composerHolder);
 
@@ -773,6 +780,13 @@ void ClaudeCodePanel::buildMenu()
         QDesktopServices::openUrl(QUrl::fromLocalFile(workingDirectory()));
     });
     show->setObjectName(QStringLiteral("claudeShowFolder"));   // (the GUI monkey leaves it alone)
+    QAction* git = a_menu->addAction(tr("Show Git Status"));
+    git->setObjectName(QStringLiteral("claudeGitStatus"));
+    git->setCheckable(true);
+    git->setToolTip(tr("When the project (or the folder Claude works in) is in a git repository, a bar above the "
+                       "prompt shows its branch and the lines changed, and offers to create a pull request - in "
+                       "every conversation"));
+    connect(git, &QAction::triggered, this, [](bool on) { ClaudeGitBar::setOn(on); });
     a_menu->addSeparator();
     a_pinMenu = a_menu->addMenu(tr("Pin to a Schematic"));
     a_pinMenu->setObjectName(QStringLiteral("claudePinMenu"));
@@ -823,8 +837,9 @@ void ClaudeCodePanel::buildMenu()
     QAction* copyId = a_menu->addAction(tr("Copy Session ID"), this, [this] {
         QApplication::clipboard()->setText(a_session->sessionId());
     });
-    connect(a_menu, &QMenu::aboutToShow, this, [this, workspace, show, copyId, again, exports, details] {
+    connect(a_menu, &QMenu::aboutToShow, this, [this, workspace, show, git, copyId, again, exports, details] {
         exports->menuAction()->setEnabled(!a_entries.isEmpty());
+        git->setChecked(ClaudeGitBar::isOn());
         fillPinMenu();
         details->setChecked(exportsToolDetails());   // (another conversation may have changed it)
         workspace->setEnabled(!a_chosenDir.isEmpty());
@@ -1131,6 +1146,21 @@ void ClaudeCodePanel::updateDirectory()
     a_dirLabel->setToolTip(a_chosenDir.isEmpty() ? tr("Claude works in the workspace folder, %1").arg(dir)
                                                  : tr("Claude works in %1").arg(dir));
     a_dirReset->setVisible(!a_chosenDir.isEmpty());
+    if (a_gitBar != nullptr) a_gitBar->setDirectory(gitDirectory());
+}
+
+void ClaudeCodePanel::setProjectDirectory(const QString& dir)
+{
+    const QString clean = dir.isEmpty() ? QString() : QDir::cleanPath(dir);
+    if (clean == a_projectDir) return;
+    a_projectDir = clean;
+    updateDirectory();
+}
+
+QString ClaudeCodePanel::gitDirectory() const
+{
+    if (!a_chosenDir.isEmpty()) return a_chosenDir;
+    return a_projectDir.isEmpty() ? a_defaultDir : a_projectDir;
 }
 
 void ClaudeCodePanel::setDocumentProvider(std::function<QString()> provider)
@@ -1251,6 +1281,7 @@ void ClaudeCodePanel::updateState()
     const Colours c = colours(palette());
     const State s = a_session->state();
     const bool busy = a_session->isBusy();
+    if (a_gitBar != nullptr) a_gitBar->setBusy(busy);
     QString text = qucs_s::claude::stateText(s);
     QColor colour = c.faint;
     switch (s) {
@@ -1348,22 +1379,28 @@ void ClaudeCodePanel::focusComposer()
 
 void ClaudeCodePanel::sendComposer()
 {
-    const QString text = a_input->toPlainText().trimmed();
-    if (text.isEmpty()) return;
+    if (sendText(a_input->toPlainText().trimmed(), true)) a_input->clear();
+}
+
+bool ClaudeCodePanel::sendPrompt(const QString& text)
+{
+    return sendText(text.trimmed(), false);
+}
+
+bool ClaudeCodePanel::sendText(const QString& text, bool withDocument)
+{
+    if (text.isEmpty()) return false;
     // The dock's own commands: run here, whatever Claude is doing and with
     // no program needed.
-    if (text.startsWith(QLatin1Char('/')) && runCommand(text)) {
-        a_input->clear();
-        return;
-    }
-    if (a_session->isBusy()) return;
+    if (text.startsWith(QLatin1Char('/')) && runCommand(text)) return true;
+    if (a_session->isBusy()) return false;
     if (a_session->program().isEmpty()) findProgram();
     if (a_session->program().isEmpty()) {
         append({Entry::Problem,
                 tr("Claude Code was not found. Install it (claude.com/claude-code), sign in once with "
                    "\"claude\" in a terminal, and send again - or choose the program under ⋯."),
                 {}, {}});
-        return;
+        return false;
     }
     if (a_session->workingDirectory() != workingDirectory()) a_session->setWorkingDirectory(workingDirectory());
 
@@ -1373,16 +1410,18 @@ void ClaudeCodePanel::sendComposer()
         static const QRegularExpression command(QStringLiteral("^/[A-Za-z0-9][A-Za-z0-9:_.-]*(\\s|$)"));
         if (command.match(text).hasMatch()) {
             append({Entry::You, text, {}, {}});
-            if (a_session->send(text)) a_input->clear();
+            const bool sent = a_session->send(text);
             updateState();
-            return;
+            return sent;
         }
     }
 
     QString prompt = text;
     QString attached;
     refreshDocument();
-    if (!a_pinned.isEmpty()) {
+    if (!withDocument) {
+        // (a prompt of the dock's own, the git bar's: about no document)
+    } else if (!a_pinned.isEmpty()) {
         // Pinned: always said, as the tools act on it.
         attached = a_pinned;
         prompt += QStringLiteral("\n\n") + tr("(This conversation is pinned to %1 in Qucs-S: its tools act on it when "
@@ -1394,8 +1433,9 @@ void ClaudeCodePanel::sendComposer()
             prompt += QStringLiteral("\n\n") + tr("(The document open in Qucs-S: %1)").arg(QDir::toNativeSeparators(attached));
     }
     append({Entry::You, text, attached.isEmpty() ? QString() : QFileInfo(attached).fileName(), {}});
-    if (a_session->send(prompt)) a_input->clear();
+    const bool sent = a_session->send(prompt);
     updateState();
+    return sent;
 }
 
 void ClaudeCodePanel::stopTurn()
@@ -1576,6 +1616,7 @@ void ClaudeCodePanel::onTurnFinished(const qucs_s::claude::TurnResult& r)
     a_requests.clear();
     showNextRequest();
     updateState();
+    if (a_gitBar != nullptr) a_gitBar->refresh(true);   // committed, pushed, a pull request opened...
     if (!r.changedFiles.isEmpty()) emit filesChanged(r.changedFiles);
 }
 

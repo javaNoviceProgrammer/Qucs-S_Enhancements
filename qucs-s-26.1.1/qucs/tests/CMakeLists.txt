@@ -26,7 +26,8 @@ function(qucs_add_test name)
   set_tests_properties(${name} PROPERTIES
     # UBSan only prints by default; make a report fail the test.
     # QUCS_CLAUDE: no test reaches a claude program installed on the machine
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_CLAUDE=/nonexistent/claude"
+    # QUCS_GH: nor GitHub, through a gh the Claude Code dock's git bar would ask
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_CLAUDE=/nonexistent/claude;QUCS_GH=/nonexistent/gh"
     TIMEOUT 300)
 endfunction()
 
@@ -85,6 +86,7 @@ qucs_add_test(test_system_open)
 qucs_add_test(test_operating_point)
 qucs_add_test(test_workspace_projects)
 qucs_add_test(test_project_folders)
+qucs_add_test(test_claude_git)
 qucs_add_test(test_verilog_a_components)
 qucs_add_test(test_optimization)
 qucs_add_test(test_ngopt)

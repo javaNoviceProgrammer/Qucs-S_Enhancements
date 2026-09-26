@@ -1860,6 +1860,7 @@ void QucsApp::openProject(const QString& PathGiven)
 
   Content->setProjPath(QucsSettings.QucsWorkDir.absolutePath());
   fileBrowser->setProjectPath(QucsSettings.QucsWorkDir.absolutePath());
+  if (claudeTabs != nullptr) claudeTabs->setProjectDirectory(QucsSettings.QucsWorkDir.absolutePath());
 
   TabView->setCurrentIndex(1);   // switch to "Content"-Tab
 
@@ -1933,6 +1934,7 @@ void QucsApp::slotMenuProjClose()
 
   Content->setProjPath("");
   fileBrowser->setProjectPath(QString());
+  if (claudeTabs != nullptr) claudeTabs->setProjectDirectory(QString());
 
   TabView->setCurrentIndex(0);   // switch to "Projects"-Tab
   ProjName = "";
