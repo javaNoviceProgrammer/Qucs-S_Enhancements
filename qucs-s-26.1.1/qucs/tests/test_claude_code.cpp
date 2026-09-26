@@ -817,7 +817,8 @@ private slots:
         QVERIFY(menu != nullptr);
         emit menu->aboutToShow();
         QVERIFY(!exports->menuAction()->isEnabled());
-        QCOMPARE(exports->actions().size(), 3);
+        QCOMPARE(exports->actions().size(), 5);   // PDF, Markdown, text; Include Tool Details
+        QVERIFY(ClaudeCodePanel::exportsToolDetails());   // (at first)
 
         s->setProgram(dir.filePath("no-claude-here"));   // (the prompt is there; the turn fails)
         panel.composer()->setPlainText("What is the cut-off frequency\nof R1 and C1?");
@@ -892,6 +893,122 @@ private slots:
         QVERIFY(pdf.seek(0));
         const QByteArray longer = pdf.readAll();
         QVERIFY2(longer.count("/Type /Page\n") + longer.count("/Type /Page ") > 1, "one page only");
+    }
+
+    // Export Conversation > Include Tool Details, off: what the boxes that
+    // fold hold is left out - each tool's input and what it gave - and a
+    // row of tools is the one line that sums it up, as the dock shows it
+    // folded; a tool alone keeps its line (and why it failed). The chat is
+    // all there. The choice is kept, and every conversation's menu shows it.
+    void anExportLeavesTheToolDetailsOutWhenAsked()
+    {
+        const auto restore = qScopeGuard([] { ClaudeCodePanel::setExportsToolDetails(true); });
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("exportbrief"));
+        panel.resize(420, 700);
+        Session* s = panel.session();
+        s->setProgram(dir.filePath("no-claude-here"));
+        panel.composer()->setPlainText("Check the filter");
+        panel.sendComposer();
+        s->setProgram("claude");
+        // A row of three tools, one failing; a reply; a tool alone, failing; a reply.
+        QString output;
+        for (int i = 0; i < 300; ++i) output += QStringLiteral("line %1 of what the netlist said\\n").arg(i);
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"r1","name":"Bash","input":{"command":"ls -la"}}]}})");
+        s->handleLine(QStringLiteral(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":"%1","is_error":false}]}})").arg(output).toUtf8());
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"r2","name":"Read","input":{"file_path":"/w/filter.sch"}}]}})");
+        s->handleLine(QStringLiteral(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r2","content":"%1","is_error":false}]}})").arg(output).toUtf8());
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"r3","name":"Bash","input":{"command":"ngspice -b filter.cir"}}]}})");
+        s->handleLine(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r3","content":"no such file","is_error":true}]}})");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"text","text":"The filter is a **second-order** low-pass."}]}})");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"a1","name":"Bash","input":{"command":"cat filter.cir"}}]}})");
+        s->handleLine(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a1","content":"cannot open","is_error":true}]}})");
+        s->handleLine(R"({"type":"assistant","message":{"content":[{"type":"text","text":"Its cut-off is 1 kHz."}]}})");
+        panel.renderNow();
+        const QString dock = panel.transcriptText();
+
+        // The details, as before.
+        const QString fullMd = panel.conversationMarkdown();
+        QVERIFY(fullMd.contains("line 29 of what the netlist said"));   // (the dock keeps 30)
+        QVERIFY(fullMd.contains("- ✓ **Bash** `ls -la`"));
+        QString error;
+        const QString fullPdf = dir.filePath("full.pdf");
+        QVERIFY2(panel.exportConversation(fullPdf, ClaudeCodePanel::ExportFormat::Pdf, &error), qPrintable(error));
+
+        // Off, from the menu.
+        QMenu* exports = panel.findChild<QMenu*>("claudeExport");
+        QAction* details = nullptr;
+        for (QAction* a : exports->actions())
+            if (a->objectName() == QLatin1String("claudeExportToolDetails")) details = a;
+        QVERIFY(details != nullptr);
+        QVERIFY(details->isCheckable());
+        QVERIFY(details->isChecked());
+        details->trigger();
+        QVERIFY(!details->isChecked());
+        QVERIFY(!ClaudeCodePanel::exportsToolDetails());
+
+        const QString md = panel.conversationMarkdown();
+        QVERIFY2(md.contains("\n- ✕ **Ran 2 commands, read filter.sch** · 1 failed\n"), qPrintable(md));
+        QVERIFY(!md.contains("**Read**"));
+        QVERIFY(!md.contains("line 0 of what"));
+        QVERIFY(!md.contains("```"));
+        QVERIFY(!md.contains("no such file"));
+        QVERIFY(md.contains("- ✕ **Bash** `cat filter.cir`"));   // alone: its line
+        QVERIFY(md.contains("Failed: cannot open"));
+        QVERIFY(md.contains("### You\n\n> Check the filter"));
+        QVERIFY(md.contains("The filter is a **second-order** low-pass."));
+        QVERIFY(md.contains("Its cut-off is 1 kHz."));
+        QVERIFY(md.indexOf("Ran 2 commands") < md.indexOf("second-order"));
+        QVERIFY(md.indexOf("second-order") < md.indexOf("cat filter.cir"));
+        QVERIFY(md.indexOf("cat filter.cir") < md.indexOf("1 kHz"));
+
+        const QString text = panel.conversationText();
+        QVERIFY2(text.contains("\n  ✕ Ran 2 commands, read filter.sch  ·  1 failed\n"), qPrintable(text));
+        QVERIFY(!text.contains("│"));
+        QVERIFY(!text.contains("line 0 of what"));
+        QVERIFY(!text.contains("no such file"));
+        QVERIFY(text.contains("  ✕ Bash   cat filter.cir\n      Failed: cannot open"));
+        QVERIFY(text.contains("The filter is a second-order low-pass."));
+        QVERIFY(text.contains("Its cut-off is 1 kHz."));
+
+        // The files are what these say; the PDF is the shorter by the
+        // output left out (60 lines of it: a page and more).
+        const QString mdFile = dir.filePath("brief.md");
+        QVERIFY(panel.exportConversation(mdFile, ClaudeCodePanel::ExportFormat::Markdown, &error));
+        QCOMPARE(read(mdFile), md);
+        const QString txtFile = dir.filePath("brief.txt");
+        QVERIFY(panel.exportConversation(txtFile, ClaudeCodePanel::ExportFormat::Text, &error));
+        QCOMPARE(read(txtFile), text);
+        const QString briefPdf = dir.filePath("brief.pdf");
+        QVERIFY2(panel.exportConversation(briefPdf, ClaudeCodePanel::ExportFormat::Pdf, &error), qPrintable(error));
+        const auto pages = [](const QString& path) {
+            QFile f(path);
+            const QByteArray bytes = f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            return bytes.count("/Type /Page\n") + bytes.count("/Type /Page ");
+        };
+        QCOMPARE(pages(briefPdf), qsizetype(1));
+        QVERIFY2(pages(fullPdf) > 1, qPrintable(QString::number(pages(fullPdf))));
+
+        // The dock is as it was: its tools as the user left them.
+        panel.renderNow();
+        QCOMPARE(panel.transcriptText(), dock);
+        panel.toggle("group:r1");
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("ls -la"));
+
+        // Kept, and shown in another conversation's menu.
+        ClaudeCodePanel other;
+        QMenu* otherExports = other.findChild<QMenu*>("claudeExport");
+        QAction* otherDetails = nullptr;
+        for (QAction* a : otherExports->actions())
+            if (a->objectName() == QLatin1String("claudeExportToolDetails")) otherDetails = a;
+        QVERIFY(otherDetails != nullptr);
+        QVERIFY(!otherDetails->isChecked());
+        details->trigger();   // on again, in the first
+        QVERIFY(ClaudeCodePanel::exportsToolDetails());
+        emit qobject_cast<QMenu*>(otherExports->parent())->aboutToShow();
+        QVERIFY(otherDetails->isChecked());
+        QVERIFY(panel.conversationMarkdown().contains("line 29 of what the netlist said"));
     }
 
     // TeX math: found in Markdown (not in code, not money), typeset (a

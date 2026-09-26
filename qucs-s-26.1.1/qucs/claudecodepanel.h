@@ -105,12 +105,20 @@ public:
 
     /// What a conversation is exported as.
     enum class ExportFormat { Pdf, Markdown, Text };
+    /// Whether an export holds what the boxes that fold hold - each tool's
+    /// input and what it gave - or, off, a row of tools as the one line
+    /// that sums it up, as the dock shows it folded: the chat alone
+    /// (Export Conversation > Include Tool Details; kept in the settings,
+    /// on at first).
+    static bool exportsToolDetails();
+    static void setExportsToolDetails(bool on);
     /// The whole conversation - a header (what it is about, when, the
     /// folder, the model, the session), then every prompt, reply, tool
-    /// (its input and what it gave, as when it is opened), note, problem
-    /// and how each turn ended - as Markdown (the replies as Claude wrote
-    /// them), as plain text (their Markdown read, the math as TeX), or
-    /// drawn as in the dock on paper, a PDF (the math typeset).
+    /// (its input and what it gave, as when it is opened, unless
+    /// exportsToolDetails() is off), note, problem and how each turn ended
+    /// - as Markdown (the replies as Claude wrote them), as plain text
+    /// (their Markdown read, the math as TeX), or drawn as in the dock on
+    /// paper, a PDF (the math typeset).
     QString conversationMarkdown() const;
     QString conversationText() const;
     bool exportConversation(const QString& path, ExportFormat format, QString* error = nullptr);
@@ -204,6 +212,12 @@ private:
     void renderTools(QTextCursor& c, qsizetype from, qsizetype to, bool& captioned);
     void renderTool(QTextCursor& c, const Entry& e, qreal indent);
     QString toolSummary(qsizetype from, qsizetype to) const;
+    /// How a row of tools a_entries[from, to) stands as one: running while
+    /// one runs, else failed, not allowed, or done (an Entry::ToolState).
+    int rowOutcome(qsizetype from, qsizetype to) const;
+    /// What went wrong in a row of tools ("1 failed, 2 not allowed"), or
+    /// empty.
+    QString rowTrouble(qsizetype from, qsizetype to) const;
     /// A reply's Markdown, its math typeset.
     void renderMarkdown(QTextCursor& c, const QString& text);
     qucs_s::math::Typeset typesetMath(const QString& tex, const QFont& font, bool display);
@@ -247,7 +261,8 @@ private:
     QHash<QString, qucs_s::math::Typeset> a_math;   // typeset math, by TeX, size and colour
     bool a_newInTab = false;
     QString a_name;            // given by the user; empty: the first prompt
-    bool a_exporting = false;  // drawing for paper: all open, no links
+    bool a_exporting = false;  // drawing for paper: no links
+    bool a_exportDetails = true;   // and, exporting, every tool open
     QList<qucs_s::claude::PermissionRequest> a_requests;
     QTimer* a_renderTimer;
     QTimer* a_clock;           // the seconds of a turn under way
