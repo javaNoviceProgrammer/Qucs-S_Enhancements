@@ -29,6 +29,22 @@
 #include "qucs_assert.h"
 #include "ink.h"
 
+#include <algorithm>
+#include <cmath>
+
+namespace {
+
+// A head's size as read or typed: finite, and no bigger than a coordinate
+// may be (its points are ints: a huge one overflowed them, and so did its
+// save).
+double headSize(double v, double fallback)
+{
+  if (!std::isfinite(v)) return fallback;
+  return std::clamp(v, -double(misc::MaxCoordinate), double(misc::MaxCoordinate));
+}
+
+} // namespace
+
 
 Arrow::Arrow() : headStyle(ArrowHeadStyle::empty), headHeight(20.0), headWidth(8.0), headWingLength(sqrt(headWidth*headWidth + headHeight*headHeight)), headAngle(atan2(headWidth, headHeight))
 {
@@ -121,11 +137,11 @@ bool Arrow::load(const QString& s)
   updateCenter();
 
   n  = s.section(' ',5,5);    // height
-  headHeight = n.toDouble(&ok);
+  headHeight = headSize(n.toDouble(&ok), 20.0);
   if(!ok) return false;
 
   n  = s.section(' ',6,6);    // width
-  headWidth = n.toDouble(&ok);
+  headWidth = headSize(n.toDouble(&ok), 8.0);
   if(!ok) return false;
 
   headAngle      = atan2(headWidth, headHeight);
@@ -356,12 +372,14 @@ bool Arrow::Dialog(QWidget *parent)
     return false;
   }
 
-  if (headWidth != d->HeadWidth->text().toDouble()) {
-    headWidth = d->HeadWidth->text().toDouble();
+  const double width = headSize(d->HeadWidth->text().toDouble(), headWidth);
+  if (headWidth != width) {
+    headWidth = width;
     changed = true;
   }
-  if (headHeight != d->HeadLength->text().toDouble()) {
-    headHeight = d->HeadLength->text().toDouble();
+  const double length = headSize(d->HeadLength->text().toDouble(), headHeight);
+  if (headHeight != length) {
+    headHeight = length;
     changed = true;
   }
   if (pen.color() !=

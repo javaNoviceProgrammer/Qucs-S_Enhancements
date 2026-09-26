@@ -6,6 +6,8 @@
  * behaviour before; run under ASan/UBSan.
  */
 #include <QtTest>
+#include <QImage>
+#include <QPainter>
 #include <QClipboard>
 #include <QElapsedTimer>
 #include <QSignalSpy>
@@ -39,6 +41,7 @@
 #include "components/property.h"
 #include "graphicsexport.h"
 #include "healer.h"
+#include "paintings/arrow.h"
 #include "geometry/multi_point.h"
 
 class TestStressFindings : public QObject
@@ -190,6 +193,25 @@ private slots:
         QVERIFY(sch.a_Nodes->empty());
         for (auto* p : *sch.a_Paintings) p->isSelected = true;
         sch.mirrorXComponents();
+    }
+
+    // An arrow whose head is huge (typed in its dialog, or in a file), or
+    // not a number: its head's points overflowed an int (UBSan), and so
+    // did its save. The head is kept within a coordinate's range.
+    void anArrowWithAHugeHeadIsDrawn()
+    {
+        for (const char* line : {"Arrow 0 0 100 50 1e300 1e300 #000000 0 1 0", "Arrow 0 0 100 50 -1e300 4e9 #000000 0 1 0",
+                                 "Arrow 0 0 100 50 nan inf #000000 0 1 0", "Arrow 16777216 16777216 16777216 16777216 3e9 3e9 #000000 0 1 0"}) {
+            Arrow arrow;
+            QVERIFY2(arrow.load(QString::fromLatin1(line)), line);
+            const QStringList saved = arrow.save().split(' ');
+            bool ok = false;
+            QVERIFY2(std::abs(saved.value(5).toLongLong(&ok)) <= misc::MaxCoordinate && ok, qPrintable(arrow.save()));
+            QVERIFY2(std::abs(saved.value(6).toLongLong(&ok)) <= misc::MaxCoordinate && ok, qPrintable(arrow.save()));
+            QImage image(64, 64, QImage::Format_RGB32);
+            QPainter p(&image);
+            arrow.paint(&p);   // (its head's points: no overflow)
+        }
     }
 
     // Moving the end of a wire of no length that carries a label: the
