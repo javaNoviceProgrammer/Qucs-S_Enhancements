@@ -18,19 +18,24 @@
 #include <QKeyEvent>
 #include <QMap>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTabBar>
 #include <QTabWidget>
+#include <QTimer>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextDocument>
 #include <QTextFormat>
 #include <QToolButton>
 
+#include <algorithm>
 #include <cmath>
+#include <memory>
 #include <random>
 
 #include "claudecode.h"
@@ -1055,6 +1060,200 @@ private slots:
         QCOMPARE(tabs.count(), 1);
         QCOMPARE(tabs.tabWidget()->tabText(0), QStringLiteral("New conversation"));
         QCOMPARE(tabs.current()->workingDirectory(), work);
+    }
+
+    // A tab renamed: Rename in its menu (a right click) or a double click
+    // puts an editor over it; Enter keeps the name, Esc leaves it, a click
+    // elsewhere keeps it, empty gives the first prompt back. The name is
+    // the conversation's everywhere (its tab, an export) until New.
+    void aConversationIsRenamedInItsTab()
+    {
+        ClaudeCodeTabs tabs;
+        tabs.setDefaultDirectory(fresh("renamework"));
+        tabs.resize(440, 700);
+        tabs.show();
+        tabs.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&tabs));
+        QTabBar* bar = tabs.tabWidget()->tabBar();
+        ClaudeCodePanel* first = tabs.current();
+        first->session()->setProgram(dir.filePath("no-such-claude"));
+        first->composer()->setPlainText("Explain the amplifier");
+        first->sendComposer();
+        QCOMPARE(tabs.tabWidget()->tabText(0), QStringLiteral("Explain the amplifier"));
+
+        // The menu of a right click on the tab.
+        QStringList items;
+        QTimer::singleShot(50, &tabs, [&items] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (menu == nullptr) return;
+            for (QAction* a : menu->actions())
+                if (!a->isSeparator()) items << a->text() + (a->isEnabled() ? QString() : QStringLiteral(" (off)"));
+            menu->findChild<QAction*>(QStringLiteral("claudeRenameTab"))->trigger();
+            menu->close();
+        });
+        const QPoint at = bar->tabRect(0).center();
+        QContextMenuEvent right(QContextMenuEvent::Mouse, at, bar->mapToGlobal(at));
+        QApplication::sendEvent(bar, &right);
+        QCOMPARE(items, QStringList({"Rename…", "Reset Name (off)", "Close Conversation"}));
+        QTRY_VERIFY(tabs.renameEditor() != nullptr);
+        QLineEdit* editor = tabs.renameEditor();
+        QVERIFY(editor->isVisible());
+        QCOMPARE(editor->text(), QStringLiteral("Explain the amplifier"));
+        QCOMPARE(editor->selectedText(), editor->text());
+        QVERIFY(bar->tabRect(0).intersects(editor->geometry()));
+        QVERIFY(bar->rect().contains(editor->geometry()));
+        // (Offscreen, the menu leaves no window active; a desktop's stays.)
+        tabs.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&tabs));
+        QTRY_VERIFY(editor->hasFocus());
+
+        // Enter keeps it; an & is an &, not a shortcut.
+        QSignalSpy changes(&tabs, &ClaudeCodeTabs::stateChanged);
+        QTest::keyClicks(editor, "  Amplifier   & bias  ");
+        QTest::keyClick(editor, Qt::Key_Return);
+        QCOMPARE(tabs.renameEditor(), nullptr);
+        QCOMPARE(first->name(), QStringLiteral("Amplifier & bias"));
+        QCOMPARE(first->title(), QStringLiteral("Amplifier & bias"));
+        QCOMPARE(tabs.tabWidget()->tabText(0), QStringLiteral("Amplifier && bias"));
+        QVERIFY(tabs.tabWidget()->tabToolTip(0).startsWith("Amplifier & bias"));
+        QVERIFY(first->conversationMarkdown().startsWith("# Amplifier & bias"));
+        QVERIFY(changes.count() > 0);
+        QTRY_VERIFY(first->composer()->hasFocus());
+        // Another prompt does not rename it.
+        first->composer()->setPlainText("And the gain?");
+        first->sendComposer();
+        QCOMPARE(first->title(), QStringLiteral("Amplifier & bias"));
+
+        // Esc leaves it as it was.
+        tabs.renameConversation(first);
+        QCOMPARE(tabs.renameEditor()->text(), QStringLiteral("Amplifier & bias"));
+        QTest::keyClicks(tabs.renameEditor(), "Forgotten");
+        QTest::keyClick(tabs.renameEditor(), Qt::Key_Escape);
+        QCOMPARE(tabs.renameEditor(), nullptr);
+        QCOMPARE(first->name(), QStringLiteral("Amplifier & bias"));
+
+        // Reset Name, in the menu now: the first prompt names it again.
+        {
+            std::unique_ptr<QMenu> menu(tabs.tabMenu(0));
+            QAction* reset = menu->findChild<QAction*>(QStringLiteral("claudeResetTabName"));
+            QVERIFY(reset->isEnabled());
+            reset->trigger();
+        }
+        QCOMPARE(first->name(), QString());
+        QCOMPARE(tabs.tabWidget()->tabText(0), QStringLiteral("Explain the amplifier"));
+        // Kept as it was shown, it still follows the first prompt; emptied,
+        // too.
+        tabs.renameConversation(first);
+        QTest::keyClick(tabs.renameEditor(), Qt::Key_Return);
+        QCOMPARE(first->name(), QString());
+        first->setName("Named");
+        tabs.renameConversation(first);
+        tabs.renameEditor()->clear();
+        QTest::keyClick(tabs.renameEditor(), Qt::Key_Return);
+        QCOMPARE(first->name(), QString());
+        QCOMPARE(first->title(), QStringLiteral("Explain the amplifier"));
+
+        // A double click on a tab; a click elsewhere keeps what was written.
+        ClaudeCodePanel* second = tabs.newConversation();
+        QTest::mouseDClick(bar, Qt::LeftButton, Qt::NoModifier, bar->tabRect(1).center());
+        QVERIFY(tabs.renameEditor() != nullptr);
+        QVERIFY(bar->tabRect(1).intersects(tabs.renameEditor()->geometry()));
+        tabs.renameEditor()->setText("Filter design");
+        tabs.renameEditor()->setFocus();
+        second->composer()->setFocus();
+        QTRY_COMPARE(second->name(), QStringLiteral("Filter design"));
+        QCOMPARE(tabs.renameEditor(), nullptr);
+        // Another conversation brought forward keeps it too.
+        tabs.renameConversation(second);
+        tabs.renameEditor()->setText("Filter design, 2nd order");
+        tabs.showConversation(first);
+        QCOMPARE(second->name(), QStringLiteral("Filter design, 2nd order"));
+        QCOMPARE(tabs.renameEditor(), nullptr);
+
+        // A tab closed while it is renamed; the editor goes with it.
+        tabs.renameConversation(second);
+        QPointer<QLineEdit> gone = tabs.renameEditor();
+        QVERIFY(tabs.closeConversation(second, false));
+        QCOMPARE(tabs.renameEditor(), nullptr);
+        QTRY_VERIFY(gone == nullptr);
+        QCOMPARE(first->name(), QString());
+
+        // New begins a conversation without its name.
+        first->setName("Old");
+        first->newConversation();
+        QCOMPARE(first->name(), QString());
+        QCOMPARE(first->title(), QStringLiteral("New conversation"));
+    }
+
+    // Renames among everything else the tabs go through - opened, closed,
+    // moved, brought forward, begun again, their menus - in any order:
+    // one editor at most, over a tab that is there, and every tab says
+    // its conversation's title.
+    void renamingSurvivesAnything()
+    {
+        ClaudeCodeTabs tabs;
+        tabs.setDefaultDirectory(fresh("renamefuzz"));
+        tabs.resize(360, 500);
+        tabs.show();
+        tabs.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&tabs));
+        QTabBar* bar = tabs.tabWidget()->tabBar();
+        std::mt19937 rng(20260925);
+        const auto pick = [&rng](int n) { return int(rng() % unsigned(n)); };
+        const QStringList words{"", " ", "Amplifier", "&&", "a & b", "  spaced   out  ", "Ω filter",
+                                QString(150, QLatin1Char('x')), "\t", "New conversation", "émoji 🎛"};
+        int renaming = 0;   // rounds with a rename under way
+        for (int round = 0; round < 1500; ++round) {
+            const QList<ClaudeCodePanel*> all = tabs.panels();
+            ClaudeCodePanel* some = all.at(pick(int(all.size())));
+            QLineEdit* editor = tabs.renameEditor();
+            switch (pick(14)) {
+            case 0: tabs.renameConversation(some); break;
+            case 1: if (editor) editor->insert(words.at(pick(int(words.size())))); break;   // (typed)
+            case 2: if (editor) QTest::keyClick(editor, Qt::Key_Return); break;
+            case 3: if (editor) QTest::keyClick(editor, Qt::Key_Escape); break;
+            case 4: if (editor) some->composer()->setFocus(); break;
+            case 5: if (tabs.count() < 7) tabs.newConversation(); break;
+            case 6: tabs.closeConversation(some, false); break;
+            case 7: tabs.showConversation(some); break;
+            case 8: if (tabs.count() > 1) bar->moveTab(pick(tabs.count()), pick(tabs.count())); break;
+            case 9: some->setName(words.at(pick(int(words.size())))); break;
+            case 10: some->newConversation(); break;
+            case 11: {
+                std::unique_ptr<QMenu> menu(tabs.tabMenu(pick(tabs.count())));
+                const QList<QAction*> actions = menu->actions();
+                QAction* a = actions.at(pick(int(actions.size())));
+                if (!a->isSeparator() && a->isEnabled()) a->trigger();
+                break;
+            }
+            case 12: {
+                const QRect r = bar->tabRect(pick(tabs.count()));
+                QTest::mouseDClick(bar, Qt::LeftButton, Qt::NoModifier, r.center());
+                break;
+            }
+            default:
+                if (editor) editor->setText(words.at(pick(int(words.size()))));
+                QCoreApplication::processEvents();   // (the menus' queued items)
+                break;
+            }
+            QVERIFY(tabs.count() >= 1);
+            if (QLineEdit* now = tabs.renameEditor()) {
+                ++renaming;
+                QVERIFY(now->isVisible());
+                QVERIFY(bar->rect().intersects(now->geometry()));
+            }
+            // (One that finished goes a moment later, hidden.)
+            const QList<QLineEdit*> editors = bar->findChildren<QLineEdit*>();
+            QCOMPARE(std::count_if(editors.cbegin(), editors.cend(), [](QLineEdit* e) { return !e->isHidden(); }),
+                     tabs.renameEditor() != nullptr ? 1 : 0);
+            for (int i = 0; i < tabs.count(); ++i) {
+                auto* panel = qobject_cast<ClaudeCodePanel*>(tabs.tabWidget()->widget(i));
+                QVERIFY(panel != nullptr);
+                QCOMPARE(tabs.tabWidget()->tabText(i), QString(panel->title()).replace("&", "&&"));
+                QCOMPARE(panel->name(), panel->name().simplified());
+            }
+        }
+        QVERIFY(renaming > 150);
     }
 
     // The dock: the conversation as it goes, the permission card and its

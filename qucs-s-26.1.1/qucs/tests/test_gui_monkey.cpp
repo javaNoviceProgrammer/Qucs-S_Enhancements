@@ -53,6 +53,7 @@
 #include <chrono>
 #include <cstdio>
 #include <csignal>
+#include <memory>
 #include <random>
 #include <thread>
 #ifndef _WIN32
@@ -777,7 +778,7 @@ class TestGuiMonkey : public QObject
         if (tabs == nullptr) return;
         ClaudeCodePanel* panel = tabs->current();
         if (panel == nullptr) return;
-        switch (pick(13)) {
+        switch (pick(15)) {
         case 0:
             note("claude: show or hide the dock");
             a_app->toggleClaudeCode();
@@ -819,6 +820,36 @@ class TestGuiMonkey : public QObject
             const QList<ClaudeCodePanel*> all = tabs->panels();
             note("claude: another tab");
             tabs->showConversation(pickOf(all));
+            break;
+        }
+        case 13: {
+            // A tab renamed: written in, then kept, left, or left open for
+            // what comes next.
+            const QList<ClaudeCodePanel*> all = tabs->panels();
+            ClaudeCodePanel* named = pickOf(all);
+            note(QStringLiteral("claude: rename the tab of %1").arg(named->title()));
+            tabs->renameConversation(named);
+            if (QLineEdit* editor = tabs->renameEditor()) {
+                editor->setText(chance(0.2) ? QString() : oddText(a_rng).left(120));
+                const int how = pick(3);
+                if (how < 2) {
+                    QKeyEvent key(QEvent::KeyPress, how == 0 ? Qt::Key_Return : Qt::Key_Escape, Qt::NoModifier);
+                    QApplication::sendEvent(editor, &key);
+                }
+            }
+            break;
+        }
+        case 14: {
+            // An item of a tab's menu.
+            const int index = pick(tabs->count());
+            std::unique_ptr<QMenu> menu(tabs->tabMenu(index));
+            QList<QAction*> actions;
+            for (QAction* a : menu->actions())
+                if (!a->isSeparator()) actions << a;
+            if (actions.isEmpty()) break;
+            QAction* a = pickOf(actions);
+            note(QStringLiteral("claude: tab menu %1").arg(a->text()));
+            if (a->isEnabled()) a->trigger();
             break;
         }
         case 12: {

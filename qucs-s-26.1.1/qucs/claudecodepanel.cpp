@@ -1160,6 +1160,7 @@ void ClaudeCodePanel::stopTurn()
 void ClaudeCodePanel::newConversation()
 {
     a_session->reset();
+    a_name.clear();
     a_entries.clear();
     a_expanded.clear();
     a_requests.clear();
@@ -1893,6 +1894,7 @@ void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
 // ----------------------------------------------------------------------
 QString ClaudeCodePanel::title() const
 {
+    if (!a_name.isEmpty()) return a_name;
     for (const Entry& e : a_entries)
         if (e.kind == Entry::You) {
             QString t = e.text.simplified();
@@ -1900,6 +1902,14 @@ QString ClaudeCodePanel::title() const
             return t;
         }
     return tr("New conversation");
+}
+
+void ClaudeCodePanel::setName(const QString& name)
+{
+    const QString tidy = name.simplified();
+    if (tidy == a_name) return;
+    a_name = tidy;
+    emit titleChanged();
 }
 
 QPixmap ClaudeCodePanel::statePixmap() const
@@ -1923,6 +1933,7 @@ void ClaudeCodePanel::setNewInTab(bool on)
 
 QString ClaudeCodePanel::exportTitle() const
 {
+    if (!a_name.isEmpty()) return a_name;
     for (const Entry& e : a_entries)
         if (e.kind == Entry::You) {
             QString t = e.text.simplified();
