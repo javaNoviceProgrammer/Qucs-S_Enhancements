@@ -42,6 +42,7 @@
 #include <QDebug>
 #include <QShortcut>
 #include <QProgressBar>
+#include <QDockWidget>
 
 extern QucsApp *QucsMain;  // the Qucs application itself
 
@@ -111,7 +112,12 @@ class tunerElement : public QWidget
         void updateSlider();
 };
 
-class TunerDialog : public QDialog
+/*!
+ * The tuner: a panel of the tuned properties, each with its slider, shown
+ * in a dock of the main window (TunerDock) while tuning is on - docked
+ * beside the simulation output, or floating as a window of its own.
+ */
+class TunerDialog : public QWidget
 {
     Q_OBJECT
 public:
@@ -133,6 +139,8 @@ public slots:
     void slotDocumentDestroyed();
 protected:
     virtual void showEvent(QShowEvent *);
+    bool event(QEvent *e) override;
+    void keyPressEvent(QKeyEvent *e) override;
 
 private:
     QWidget *w; // widget holding the Qucs document to be tuned
@@ -158,6 +166,22 @@ private slots:
     void slotResetValues();
     bool checkChanges();
     void slotUpdateProgressBar(int);
+};
+
+/// The dock the tuner is shown in. Closed (its title bar's button, or
+/// the Close action of a floating one), it asks for tuning to stop - which
+/// closes the tuner - rather than hiding with the tuner still on.
+class TunerDock : public QDockWidget
+{
+    Q_OBJECT
+public:
+    explicit TunerDock(QWidget *parent = nullptr);
+
+signals:
+    void closeRequested();
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 };
 
 #endif // TUNER_H
