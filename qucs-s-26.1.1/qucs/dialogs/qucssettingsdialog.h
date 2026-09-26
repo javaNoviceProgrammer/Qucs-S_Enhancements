@@ -208,6 +208,7 @@ public:
     QComboBox *ThemeCombo;
     QCheckBox *paperFollowsTheme;
     QComboBox *gridModeCombo;
+    QCheckBox *lockToolbarsCheck;
 
     /// @brief Opens the schematic font picker dialog.
     QPushButton *FontButton;

@@ -135,6 +135,9 @@ struct tQucsSettings {
   // The application's colours: the system's (0), dark (1) or light (2) -
   // qucs_s::apptheme::Theme.
   int Theme = 0;
+  // The toolbars stay where they are: they cannot be dragged elsewhere
+  // (View > Toolbars > Lock Toolbars).
+  bool LockToolbars = false;
 
   bool firstRun;
 };

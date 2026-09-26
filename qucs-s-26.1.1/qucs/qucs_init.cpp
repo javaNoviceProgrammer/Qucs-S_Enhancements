@@ -21,6 +21,7 @@
 
 #include "extsimkernels/spicecompat.h"
 #include "main.h"
+#include "settings.h"
 #include "misc.h"
 #include "octave_window.h"
 #include "qucs.h"
@@ -885,6 +886,14 @@ void QucsApp::initActions() {
       "Show / Hide Grid\n\nShow or hide the grid for the current document."));
   connect(showGrid, SIGNAL(triggered()), SLOT(slotShowGrid()));
 
+  lockToolbars = new QAction(tr("&Lock Toolbars"), this);
+  lockToolbars->setObjectName("lockToolbars");
+  lockToolbars->setCheckable(true);
+  lockToolbars->setStatusTip(tr("Keeps the toolbars where they are, so that they are not dragged elsewhere by accident"));
+  lockToolbars->setWhatsThis(tr("Lock Toolbars\n\nKeeps the toolbars where they are: their handles go, and they "
+                                "cannot be dragged to another place or off the window. Unlock them to arrange them."));
+  connect(lockToolbars, &QAction::triggered, this, &QucsApp::setToolbarsLocked);
+
   showMsg = new QAction(tr("Show Last Messages"), this);
   showMsg->setShortcut(Qt::Key_F5);
   showMsg->setStatusTip(tr("Shows last simulation messages"));
@@ -1203,6 +1212,9 @@ void QucsApp::initMenuBar() {
   connect(viewOperatingPoint, &QAction::triggered, this, [this] { messageDock->raiseOperatingPoint(); });
   viewMenu->addAction(viewOperatingPoint);
   viewMenu->addSeparator();
+  // Each toolbar shown or hidden, and all locked in place (filled once
+  // they are made, initToolBar()).
+  toolbarsMenu = viewMenu->addMenu(tr("Tool&bars"));
   QMenu *panesMenu = viewMenu->addMenu(tr("&Panes"));
   panesMenu->addAction(splitPaneRight);
   panesMenu->addAction(splitPaneDown);
@@ -1378,6 +1390,50 @@ void QucsApp::initToolBar() {
   hierarchyToolbar->addAction(checkHierarchyAction);   // green: and its subcircuits
   hierarchyToolbar->addAction(generateNetlist);
   hierarchyToolbar->addAction(save_netlist);
+
+  fileToolbar->setObjectName("fileToolbar");
+  editToolbar->setObjectName("editToolbar");
+  viewToolbar->setObjectName("viewToolbar");
+  workToolbar->setObjectName("workToolbar");
+  simulateToolbar->setObjectName("simulateToolbar");
+  hierarchyToolbar->setObjectName("hierarchyToolbar");
+  for (QToolBar *bar : toolbars())
+    toolbarsMenu->addAction(bar->toggleViewAction());
+  toolbarsMenu->addSeparator();
+  toolbarsMenu->addAction(lockToolbars);
+  setToolbarsLocked(QucsSettings.LockToolbars);
+}
+
+bool QucsApp::toolbarsLocked() const {
+  return QucsSettings.LockToolbars;
+}
+
+QList<QToolBar *> QucsApp::toolbars() const {
+  return {fileToolbar, editToolbar, viewToolbar, workToolbar, simulateToolbar, hierarchyToolbar};
+}
+
+void QucsApp::setToolbarsLocked(bool locked) {
+  if (QucsSettings.LockToolbars != locked) {
+    QucsSettings.LockToolbars = locked;
+    _settings::Get().setItem<bool>("LockToolbars", locked);
+  }
+  lockToolbars->setChecked(locked);
+  for (QToolBar *bar : toolbars()) {
+    // One floating could not be brought back without its handle.
+    if (locked && bar->isFloating()) {
+      const Qt::ToolBarArea area = toolBarArea(bar);
+      addToolBar(area == Qt::NoToolBarArea ? Qt::TopToolBarArea : area, bar);
+    }
+    bar->setMovable(!locked);
+  }
+}
+
+QMenu *QucsApp::createPopupMenu() {
+  QMenu *menu = QMainWindow::createPopupMenu();
+  if (menu == nullptr) menu = new QMenu(this);
+  menu->addSeparator();
+  menu->addAction(lockToolbars);
+  return menu;
 }
 
 // ----------------------------------------------------------
@@ -1818,6 +1874,8 @@ void QucsApp::setDefaultShortcut() {
                       QKeySequence());
 
   mgr.registerCommand("View.Octave", "View", "Octave Window", viewOctaveDock,
+                      QKeySequence());
+  mgr.registerCommand("View.LockToolbars", "View", "Lock Toolbars", lockToolbars,
                       QKeySequence());
   mgr.registerCommand("View.SplitRight", "View", "Split Pane Right", splitPaneRight,
                       QKeySequence(Qt::CTRL | Qt::Key_Backslash));

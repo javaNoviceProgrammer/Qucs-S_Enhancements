@@ -341,6 +341,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Next Pane* (Ctrl+`) and *Close Pane* (its documents go to a
   neighbour); a pane whose last document is closed goes by itself. Save
   All, Close All and Find span every pane.
+- **Toolbars locked in place** (*View → Toolbars → Lock Toolbars*, the
+  menu of a right click on the toolbars, or *Application Settings →
+  Appearance*): the toolbars lose their handles and cannot be dragged to
+  another place or off the window by accident; one left floating comes
+  back to the window. Unlock them to arrange them. The lock is kept
+  between sessions (off by default), *View → Toolbars* also shows or
+  hides each toolbar, and the lock can be given a shortcut
+  (*View.LockToolbars*).
 - **Theme** (*Application Settings → Appearance → Theme*, or *View →
   Theme* to switch at once): *System*, *Dark* or *Light* — the
   platform's own look — or one of ten designed themes that look the same

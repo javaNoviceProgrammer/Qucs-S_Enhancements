@@ -410,7 +410,8 @@ class TestGuiMonkey : public QObject
                 a->alignTop, a->alignBottom, a->alignLeft, a->alignRight, a->distrHor, a->distrVert,
                 a->selectAll, a->selectAll, a->changeProps, a->editFind, a->selectMarker,
                 a->centerHor, a->centerVert, a->checkSchematicAction, a->symRecreate,
-                a->symPinOrder, a->showNet, a->dpl_sch, a->fileOpen, a->symLoad, a->symSaveAs};
+                a->symPinOrder, a->showNet, a->dpl_sch, a->fileOpen, a->symLoad, a->symSaveAs,
+                a->findChild<QAction*>(QStringLiteral("lockToolbars"))};
     }
 
     void gesture(Schematic* sch)
