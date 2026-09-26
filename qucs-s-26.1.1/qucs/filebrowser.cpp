@@ -831,6 +831,56 @@ bool listKey(const QKeyEvent* key)
     }
 }
 
+/*!
+ * The Columns view. Qt's shows a folder with nothing in it (yet) as its
+ * preview column alone, which has no selection model - and when its cursor
+ * moves, or a scroll's animation ends, it takes the selection model of its
+ * first column: a current entry then (one left from the folder before, or
+ * a key's: Right with none went to the top of the file system) crashed it.
+ * Here the cursor stays in the folder shown, and there is none while the
+ * folder has no column of its own.
+ */
+class ColumnView : public QColumnView
+{
+public:
+    using QColumnView::QColumnView;
+
+    /// Whether the folder shown has a column (not the preview alone).
+    bool hasColumn() const
+    {
+        const auto columns = viewport()->findChildren<QAbstractItemView*>(Qt::FindDirectChildrenOnly);
+        return std::any_of(columns.cbegin(), columns.cend(), [this](const QAbstractItemView* c) {
+            return !c->isHidden() && c->model() != nullptr && c->rootIndex() == rootIndex();
+        });
+    }
+
+    void setRootIndex(const QModelIndex& index) override
+    {
+        QColumnView::setRootIndex(index);
+        if (!hasColumn() && currentIndex().isValid()) setCurrentIndex(QModelIndex());
+    }
+
+protected:
+    QModelIndex moveCursor(CursorAction action, Qt::KeyboardModifiers modifiers) override
+    {
+        if (!hasColumn()) return {};
+        const QModelIndex current = currentIndex();
+        if (!within(current)) return model()->index(0, 0, rootIndex());
+        const QModelIndex to = QColumnView::moveCursor(action, modifiers);
+        return within(to) ? to : current;
+    }
+
+private:
+    // Whether \a index is an entry of the folder shown, or of one in it.
+    bool within(const QModelIndex& index) const
+    {
+        if (!index.isValid()) return false;
+        for (QModelIndex p = index.parent(); p.isValid(); p = p.parent())
+            if (p == rootIndex()) return true;
+        return !rootIndex().isValid();
+    }
+};
+
 } // namespace
 
 // ----------------------------------------------------------------------
@@ -1114,7 +1164,7 @@ void FileBrowser::buildViews()
     });
     common(a_details, "fbDetails");
 
-    a_columns = new QColumnView;
+    a_columns = new ColumnView;
     a_columns->setModel(a_proxy);
     a_columns->setIconSize(QSize(16, 16));
     a_columns->setColumnWidths(QList<int>(24, 150));
@@ -1591,6 +1641,8 @@ void FileBrowser::selectPath(const QString& path)
     QAbstractItemView* v = currentView();
     const QModelIndex index = indexOf(path);
     if (!index.isValid()) return;
+    // (Columns: once its folder has a column - selected again then.)
+    if (v == a_columns && !static_cast<ColumnView*>(a_columns)->hasColumn()) return;
     if (v == a_tree)
         for (QModelIndex p = index.parent(); p.isValid() && p != a_tree->rootIndex(); p = p.parent()) a_tree->expand(p);
     v->setCurrentIndex(index);
@@ -1640,8 +1692,8 @@ void FileBrowser::activate(const QString& path)
         break;
     }
     case View::Columns:
-        if (inView(path)) a_columns->setCurrentIndex(indexOf(path));
-        else go(path, true);
+        if (!inView(path)) go(path, true);
+        else if (static_cast<ColumnView*>(a_columns)->hasColumn()) a_columns->setCurrentIndex(indexOf(path));
         break;
     case View::Recent:
         setView(a_fileView);
