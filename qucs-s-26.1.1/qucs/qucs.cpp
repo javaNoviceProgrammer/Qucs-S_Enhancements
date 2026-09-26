@@ -2935,7 +2935,20 @@ void QucsApp::reloadChangedFiles(const QStringList &files)
       }
       bool loaded = false;
       if (auto *schematic = dynamic_cast<Schematic *>(doc)) {
+        // Loaded as a schematic; back to its symbol when that was being
+        // edited (a .sym file is nothing else).
+        const bool symbol = schematic->getSymbolMode();
+        const bool current = schematic == currentSchematic();
+        if (current) slotHideEdit();   // (the component edited goes)
         loaded = schematic->load();
+        if (loaded && symbol) {
+          schematic->switchPaintMode();
+          if (current) changeSchematicSymbolMode(schematic);
+          schematic->becomeCurrent(current);
+        }
+        // Loading made it the menus' document; the one in front is again.
+        if (!current)
+          if (Schematic *front = currentSchematic()) front->becomeCurrent(false);
         schematic->viewport()->update();
       } else if (auto *text = dynamic_cast<TextDoc *>(doc)) {
         loaded = text->reload();
