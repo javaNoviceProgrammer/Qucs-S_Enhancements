@@ -81,6 +81,23 @@ public:
     void setDocumentProvider(std::function<QString()> provider);
     /// The document in front changed.
     void refreshDocument();
+    /// What names the open schematics a conversation can be pinned to
+    /// (their files).
+    void setSchematicsProvider(std::function<QStringList()> provider);
+    /// The schematic the conversation is pinned to (its file), or empty:
+    /// none, it follows the document in front - as at first. Pinned, its
+    /// prompts name that schematic, not the document in front, and
+    /// Qucs-S's tools act on it when Claude names no document
+    /// (Session::setDocument()). Chosen by the user: the pin by the
+    /// composer, or ⋯ > Pin to a Schematic.
+    QString pinnedDocument() const { return a_pinned; }
+    /// Pins the conversation to \a path; empty: unpins it.
+    void pinDocument(const QString& path);
+    /// Whether it is pinned to the file \a path.
+    bool isPinnedTo(const QString& path) const;
+    /// The schematic in front, when it has a file (what the pin pins), or
+    /// empty.
+    QString pinnableDocument() const;
 
     /// A line in the conversation from the application (a document
     /// reloaded, say).
@@ -131,6 +148,8 @@ public:
     QTextBrowser* transcript() const { return a_view; }
     QToolButton* sendButton() const { return a_send; }
     QToolButton* attachButton() const { return a_attach; }
+    QToolButton* pinButton() const { return a_pin; }
+    QMenu* pinMenu() const { return a_pinMenu; }
     QFrame* permissionCard() const { return a_card; }
     QToolButton* allowButton() const { return a_allow; }
     QToolButton* allowEditsButton() const { return a_allowEdits; }
@@ -168,6 +187,8 @@ signals:
     /// The title changed (the first prompt was sent, the conversation was
     /// named, or it began again).
     void titleChanged();
+    /// The conversation was pinned to a schematic, or unpinned.
+    void pinChanged();
 
 protected:
     void changeEvent(QEvent* event) override;
@@ -191,6 +212,7 @@ private:
     void buildComposer();
     void buildPermissionCard();
     void buildMenu();
+    void fillPinMenu();
     void restyle();
     void scheduleRender();
     void render();
@@ -251,6 +273,8 @@ private:
     QString a_defaultDir;
     QString a_chosenDir;       // empty: the default
     std::function<QString()> a_document;
+    std::function<QStringList()> a_schematics;
+    QString a_pinned;          // the schematic pinned (its file), or empty
 
     qucs_s::claude::ModelQuery* a_modelQuery;
     QJsonArray a_listedModels; // what the program offers (kept in the settings)
@@ -301,6 +325,8 @@ private:
     QFrame* a_composer;
     QPlainTextEdit* a_input;
     QToolButton* a_attach;
+    QToolButton* a_pin;        // pins the schematic in front; pinned, names it
+    QMenu* a_pinMenu;          // ⋯ > Pin to a Schematic
     QLabel* a_hint;
     QToolButton* a_send;
 };

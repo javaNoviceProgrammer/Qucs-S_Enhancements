@@ -14,6 +14,7 @@
 #include "claudecodepanel.h"
 
 #include <QDir>
+#include <QFileInfo>
 #include <QDockWidget>
 #include <QEvent>
 #include <QIcon>
@@ -119,6 +120,7 @@ ClaudeCodePanel* ClaudeCodeTabs::addPanel(ClaudeCodePanel* like)
     if (like != nullptr && like->workingDirectory() != like->defaultDirectory())
         panel->setWorkingDirectory(like->workingDirectory());
     if (a_document) panel->setDocumentProvider(a_document);
+    if (a_schematics) panel->setSchematicsProvider(a_schematics);
     panel->session()->setToolHost(a_host);
 
     connect(panel, &ClaudeCodePanel::newConversationRequested, this, [this] { newConversation(); });
@@ -127,6 +129,10 @@ ClaudeCodePanel* ClaudeCodeTabs::addPanel(ClaudeCodePanel* like)
         emit stateChanged();
     });
     connect(panel, &ClaudeCodePanel::openFileRequested, this, &ClaudeCodeTabs::openFileRequested);
+    connect(panel, &ClaudeCodePanel::pinChanged, this, [this, panel] {
+        updateTab(panel);
+        emit stateChanged();
+    });
     connect(panel, &ClaudeCodePanel::filesChanged, this, [this, panel](const QStringList& files) {
         a_reporting = panel;
         emit filesChanged(files);
@@ -356,10 +362,12 @@ void ClaudeCodeTabs::updateTab(ClaudeCodePanel* panel)
     QString title = panel->title();
     a_tabs->setTabText(index, title.replace(QLatin1Char('&'), QLatin1String("&&")));
     a_tabs->setTabIcon(index, QIcon(panel->statePixmap()));
-    a_tabs->setTabToolTip(index, panel->title() + QLatin1Char('\n')
-                                     + tr("Claude: %1").arg(qucs_s::claude::stateText(panel->session()->state()))
-                                     + QLatin1Char('\n')
-                                     + tr("Working in %1").arg(QDir::toNativeSeparators(panel->workingDirectory())));
+    QString tip = panel->title() + QLatin1Char('\n')
+                  + tr("Claude: %1").arg(qucs_s::claude::stateText(panel->session()->state())) + QLatin1Char('\n')
+                  + tr("Working in %1").arg(QDir::toNativeSeparators(panel->workingDirectory()));
+    if (!panel->pinnedDocument().isEmpty())
+        tip += QLatin1Char('\n') + tr("Pinned to %1").arg(QDir::toNativeSeparators(panel->pinnedDocument()));
+    a_tabs->setTabToolTip(index, tip);
 }
 
 void ClaudeCodeTabs::setDefaultDirectory(const QString& dir)
@@ -375,6 +383,19 @@ void ClaudeCodeTabs::setDocumentProvider(std::function<QString()> provider)
 {
     a_document = std::move(provider);
     for (ClaudeCodePanel* panel : panels()) panel->setDocumentProvider(a_document);
+}
+
+void ClaudeCodeTabs::setSchematicsProvider(std::function<QStringList()> provider)
+{
+    a_schematics = std::move(provider);
+    for (ClaudeCodePanel* panel : panels()) panel->setSchematicsProvider(a_schematics);
+}
+
+void ClaudeCodeTabs::documentRenamed(const QString& from, const QString& to)
+{
+    if (from.isEmpty()) return;
+    for (ClaudeCodePanel* panel : panels())
+        if (panel->isPinnedTo(from)) panel->pinDocument(to);
 }
 
 void ClaudeCodeTabs::setToolHost(qucs_s::claude::ToolHost* host)

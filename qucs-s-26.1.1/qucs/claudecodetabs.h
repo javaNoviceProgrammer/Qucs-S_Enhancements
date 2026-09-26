@@ -82,6 +82,10 @@ public:
     void setDefaultDirectory(const QString& dir);
     QString defaultDirectory() const { return a_defaultDir; }
     void setDocumentProvider(std::function<QString()> provider);
+    void setSchematicsProvider(std::function<QStringList()> provider);
+    /// A document was saved under another name (Save As): a conversation
+    /// pinned to \a from is pinned to \a to.
+    void documentRenamed(const QString& from, const QString& to);
     /// The application's tools, offered in every conversation (not owned).
     void setToolHost(qucs_s::claude::ToolHost* host);
     void refreshDocument();
@@ -120,6 +124,7 @@ private:
     QToolButton* a_plus;
     QString a_defaultDir;
     std::function<QString()> a_document;
+    std::function<QStringList()> a_schematics;
     qucs_s::claude::ToolHost* a_host = nullptr;
     ClaudeCodePanel* a_reporting = nullptr;   // whose files are loaded again
     QPointer<QLineEdit> a_renameEditor;       // a rename under way

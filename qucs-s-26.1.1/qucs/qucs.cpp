@@ -773,6 +773,13 @@ void QucsApp::initView()
   setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
   claudeDock->hide();
   // Claude drives this window with its tools (qucscontrol.h).
+  // The schematics a conversation can be pinned to: the open ones with a file.
+  claudeTabs->setSchematicsProvider([this] {
+    QStringList files;
+    for (QucsDoc *doc : allDocuments())
+      if (schematicIn(documentWidget(doc)) != nullptr && !doc->getDocName().isEmpty()) files << doc->getDocName();
+    return files;
+  });
   claudeTabs->setToolHost(new QucsControl(this));
   connect(claudeTabs, &ClaudeCodeTabs::filesChanged, this, &QucsApp::reloadChangedFiles);
   connect(claudeTabs, &ClaudeCodeTabs::openFileRequested, this, [this](const QString &file) { gotoPage(file); });
@@ -2485,6 +2492,8 @@ bool QucsApp::saveDocumentAs(QucsDoc *Doc, const QString &fileName)
 
   slotUpdateTreeview();
   updateRecentFilesList(s);
+  // A conversation pinned to it follows it.
+  if (claudeTabs != nullptr && !wasNamed.isEmpty()) claudeTabs->documentRenamed(wasNamed, s);
   return true;
 }
 
