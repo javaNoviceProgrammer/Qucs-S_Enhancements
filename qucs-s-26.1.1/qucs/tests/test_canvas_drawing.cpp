@@ -599,7 +599,9 @@ private slots:
               corner / 1e6, whole / 1e6, step / 1e6);
         QVERIFY2(corner * 3 < whole, qPrintable(QStringLiteral("a corner %1 ms, the whole %2 ms")
                                                     .arg(corner / 1e6).arg(whole / 1e6)));
-        QVERIFY2(step * 4 < whole, qPrintable(QStringLiteral("a step %1 ms, a whole paint %2 ms")
+        // (A step is some ten times cheaper here; a shared CI runner, busy,
+        // has come out at not quite four.)
+        QVERIFY2(step * 3 < whole, qPrintable(QStringLiteral("a step %1 ms, a whole paint %2 ms")
                                                   .arg(step / 1e6).arg(whole / 1e6)));
     }
 };
