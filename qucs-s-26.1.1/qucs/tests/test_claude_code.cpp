@@ -180,15 +180,29 @@ public:
     }
     QStringList readOnlyTools() const override { return {QStringLiteral("look")}; }
     QString actionOf(const QString&) const override { return QStringLiteral("change something in the fake"); }
-    QString subjectOf(const QString&, const QJsonObject& a) const override { return QStringLiteral("what: ") + a.value("what").toString(); }
+    QString subjectOf(const QString&, const QJsonObject& a) const override
+    {
+        return QStringLiteral("what: ") + a.value("what").toString()
+               + (a.contains("document") ? QStringLiteral(" in ") + a.value("document").toString() : QString());
+    }
     QString instructions() const override { return QStringLiteral("Fake instructions."); }
     void callTool(const QString& tool, const QJsonObject& a, std::function<void(const QJsonObject&)> done) override
     {
         calls << tool;
+        arguments << a;
         done(QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "changed " + a.value("what").toString()}}}},
                          {"isError", false}});
     }
+    // A conversation pinned: "change" is given the document.
+    QJsonObject forDocument(const QString& tool, const QJsonObject& a, const QString& document) const override
+    {
+        if (tool != QLatin1String("change")) return a;
+        QJsonObject with = a;
+        with.insert("document", document);
+        return with;
+    }
     QStringList calls;
+    QList<QJsonObject> arguments;
 };
 
 // A program that fails at once.
@@ -580,6 +594,50 @@ private slots:
         // A new conversation asks again.
         s.reset();
         QVERIFY(!s.toolsAllowed());
+    }
+
+    // A conversation pinned to a document: the host is asked what its
+    // tools are given for it (ToolHost::forDocument()) - in the question
+    // put to the user, the tool's line and the call. Not pinned, the
+    // arguments are Claude's.
+    void aPinnedConversationsToolsAreGivenItsDocument()
+    {
+        skipWithoutShell();
+        FakeHost host;
+        Session s;
+        s.setProgram(script("tooluser", kToolUser));
+        s.setWorkingDirectory(fresh("pinwork"));
+        s.setToolHost(&host);
+        QCOMPARE(s.document(), QString());
+        s.setDocument("/w/amp.sch");
+        QSignalSpy asks(&s, &Session::permissionRequested);
+        QSignalSpy tools(&s, &Session::toolStarted);
+        QSignalSpy turns(&s, &Session::turnFinished);
+        QVERIFY(s.send("Change x"));
+        QVERIFY(asks.wait(10000));
+        const auto request = asks.last().at(0).value<PermissionRequest>();
+        QCOMPARE(request.subject, QStringLiteral("what: x in /w/amp.sch"));
+        QCOMPARE(tools.last().at(2).toString(), QStringLiteral("what: x in /w/amp.sch"));
+        s.answer(request.id, true, false, true);
+        QVERIFY(turns.count() == 1 || turns.wait(10000));
+        QCOMPARE(host.calls, QStringList{"change"});
+        QCOMPARE(host.arguments.last().value("document").toString(), QStringLiteral("/w/amp.sch"));
+        QCOMPARE(host.arguments.last().value("what").toString(), QStringLiteral("x"));
+        s.stop();
+
+        // Unpinned: as Claude gave them.
+        s.reset();
+        s.setDocument(QString());
+        host.calls.clear();
+        host.arguments.clear();
+        QVERIFY(s.send("Change x"));
+        QVERIFY(asks.wait(10000));
+        QCOMPARE(asks.last().at(0).value<PermissionRequest>().subject, QStringLiteral("what: x"));
+        s.answer(asks.last().at(0).value<PermissionRequest>().id, true, false, true);
+        QVERIFY(turns.wait(10000));
+        QCOMPARE(host.arguments.size(), 1);
+        QVERIFY(!host.arguments.last().contains("document"));
+        s.stop();
     }
 
     // The models to choose: what the program offers, named by what they
@@ -1300,6 +1358,141 @@ private slots:
         first->newConversation();
         QCOMPARE(first->name(), QString());
         QCOMPARE(first->title(), QStringLiteral("New conversation"));
+    }
+
+    // Pinning, the user's choice: not pinned at first (the prompts name
+    // the document in front, as always); the pin by the composer pins the
+    // schematic in front, ⋯ > Pin to a Schematic any open one; pinned, the
+    // prompts name it (the document chip or not) and the session's tools
+    // are given it; one closed is said to be; Unpin, and New, unpin; the
+    // tab says it; a Save As moves it.
+    void aConversationIsPinnedToASchematic()
+    {
+        const QString work = fresh("pins");
+        const QString a = work + "/amp.sch", b = work + "/filter.sch", t = work + "/notes.txt";
+        for (const QString& f : {a, b, t}) {
+            QFile file(f);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+        }
+        QString front = a;
+        QStringList open{a, b};
+        ClaudeCodeTabs tabs;
+        tabs.setDefaultDirectory(work);
+        tabs.setDocumentProvider([&front] { return front; });
+        tabs.setSchematicsProvider([&open] { return open; });
+        tabs.resize(440, 700);
+        tabs.show();
+        ClaudeCodePanel* panel = tabs.current();
+        QToolButton* pin = panel->pinButton();
+        QVERIFY(panel->pinnedDocument().isEmpty());
+        QVERIFY(panel->session()->document().isEmpty());
+        QVERIFY(pin->isEnabled());
+        QVERIFY(!pin->isChecked());
+        QVERIFY(pin->text().isEmpty());
+        QVERIFY(panel->attachButton()->isVisibleTo(panel));
+        QCOMPARE(panel->attachButton()->text(), QStringLiteral("amp.sch"));
+        // A text document in front: nothing to pin.
+        front = t;
+        tabs.refreshDocument();
+        QVERIFY(!pin->isEnabled());
+        QCOMPARE(panel->pinnableDocument(), QString());
+
+        // Pinned from the composer.
+        front = a;
+        tabs.refreshDocument();
+        QSignalSpy pinned(panel, &ClaudeCodePanel::pinChanged);
+        pin->click();
+        QCOMPARE(pinned.count(), 1);
+        QVERIFY(panel->isPinnedTo(a));
+        QCOMPARE(panel->session()->document(), panel->pinnedDocument());
+        QVERIFY(pin->isChecked());
+        QCOMPARE(pin->text(), QStringLiteral("amp.sch"));
+        QVERIFY(pin->property("pinned").toBool());
+        QVERIFY(!panel->attachButton()->isVisibleTo(panel));
+        QVERIFY(tabs.tabWidget()->tabToolTip(0).contains("Pinned to"));
+        QVERIFY(tabs.tabWidget()->tabToolTip(0).contains("amp.sch"));
+        // The document in front changes; the pin stays.
+        front = b;
+        tabs.refreshDocument();
+        QVERIFY(panel->isPinnedTo(a));
+        QCOMPARE(pin->text(), QStringLiteral("amp.sch"));
+
+        // The menu: every open schematic, the pinned one checked; another
+        // chosen.
+        QMenu* menu = panel->pinMenu();
+        emit menu->aboutToShow();
+        QStringList items;
+        QAction* other = nullptr;
+        QAction* unpin = nullptr;
+        for (QAction* x : menu->actions()) {
+            if (x->isSeparator()) continue;
+            items << x->text() + (x->isChecked() ? "*" : "") + (x->isEnabled() ? "" : " (off)");
+            if (x->text() == "filter.sch") other = x;
+            if (x->objectName() == "claudeUnpin") unpin = x;
+        }
+        QCOMPARE(items, QStringList({"amp.sch*", "filter.sch", "Unpin"}));
+        other->trigger();
+        QVERIFY(panel->isPinnedTo(b));
+        QCOMPARE(panel->session()->document(), panel->pinnedDocument());
+
+        // The prompts name it - with the document chip off too - and not
+        // the document in front.
+#ifndef Q_OS_WIN   // (the fake claude is a shell script)
+        {
+            QFile::remove(dir.filePath("prompts"));
+            panel->session()->setProgram(script("writer", kWriter));
+            front = a;
+            panel->attachButton()->setChecked(false);
+            panel->composer()->setPlainText("Check the gain");
+            panel->sendComposer();
+            QTRY_VERIFY_WITH_TIMEOUT(read(dir.filePath("prompts")).contains("Check the gain"), 10000);
+            const QString sent = read(dir.filePath("prompts"));
+            QVERIFY2(sent.contains("pinned to") && sent.contains("filter.sch"), qPrintable(sent));
+            QVERIFY(!sent.contains("The document open in Qucs-S"));
+            QVERIFY(!sent.contains("amp.sch"));
+            panel->session()->stop();
+            panel->attachButton()->setChecked(true);
+        }
+#endif
+
+        // Closed: said so, and still pinned.
+        open = {a};
+        tabs.refreshDocument();
+        QVERIFY(pin->toolTip().contains("not open"));
+        emit menu->aboutToShow();
+        QStringList later;
+        for (QAction* x : menu->actions())
+            if (!x->isSeparator()) later << x->text() + (x->isChecked() ? "*" : "");
+        QCOMPARE(later, QStringList({"amp.sch", "filter.sch (not open)*", "Unpin"}));
+
+        // Unpinned from the menu: as at first.
+        for (QAction* x : menu->actions())
+            if (x->objectName() == "claudeUnpin") unpin = x;
+        QVERIFY(unpin != nullptr && unpin->isEnabled());
+        unpin->trigger();
+        QVERIFY(panel->pinnedDocument().isEmpty());
+        QVERIFY(panel->session()->document().isEmpty());
+        QVERIFY(panel->attachButton()->isVisibleTo(panel));
+        QVERIFY(!pin->isChecked());
+        QVERIFY(!tabs.tabWidget()->tabToolTip(0).contains("Pinned to"));
+        emit menu->aboutToShow();
+        for (QAction* x : menu->actions())
+            if (x->objectName() == "claudeUnpin") QVERIFY(!x->isEnabled());
+
+        // A Save As moves it; another conversation, pinned to nothing, is
+        // not touched; New unpins.
+        open = {a, b};
+        panel->pinDocument(a);
+        ClaudeCodePanel* second = tabs.newConversation();
+        QVERIFY(second->pinnedDocument().isEmpty());   // (a new one: not pinned)
+        const QString moved = work + "/amp2.sch";
+        QVERIFY(QFile::copy(a, moved));
+        tabs.documentRenamed(a, moved);
+        QVERIFY(panel->isPinnedTo(moved));
+        QVERIFY(second->pinnedDocument().isEmpty());
+        panel->newConversation();
+        QVERIFY(panel->pinnedDocument().isEmpty());
+        QVERIFY(panel->session()->document().isEmpty());
     }
 
     // Renames among everything else the tabs go through - opened, closed,

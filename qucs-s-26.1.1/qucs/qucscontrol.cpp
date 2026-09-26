@@ -159,7 +159,9 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string"}}}},
 {"name": "trigger_action",
  "description": "Uses a menu action as a click on it would: 'action' is its menu path (\"Edit > Rotate\") or its object name. When it opens a dialog, the dialog stays open: get_dialog reads it, set_dialog fills it in and closes it. Actions that open the system's file or print dialogs are refused: use open_document and save_document.",
- "inputSchema": {"type": "object", "properties": {"action": {"type": "string"}}, "required": ["action"]}},
+ "inputSchema": {"type": "object", "properties": {"action": {"type": "string"},
+   "path": {"type": "string", "description": "The document to use it on, brought to the front first; the one in front when not given"}},
+  "required": ["action"]}},
 {"name": "get_dialog",
  "description": "The dialog of Qucs-S that waits for an answer (or another window of it that is open): its title, its texts and its controls - fields, lists, check boxes, tabs, tables, buttons - each with its label, value and an id for set_dialog.",
  "inputSchema": {"type": "object", "properties": {}}},
@@ -953,7 +955,8 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
         subject = point(a.value(QLatin1String("at"))) + QStringLiteral(": ") + s("name");
     else if (tool == QLatin1String("set_schematic"))
         subject = tr("%1 lines").arg(s("text").count(QLatin1Char('\n')) + 1);
-    else if (tool == QLatin1String("trigger_action")) subject = s("action");
+    else if (tool == QLatin1String("trigger_action"))
+        subject = s("path").isEmpty() ? s("action") : tr("%1 on %2").arg(s("action"), QFileInfo(s("path")).fileName());
     else if (tool == QLatin1String("set_dialog")) {
         QStringList parts;
         for (const QJsonValue& v : a.value(QLatin1String("set")).toArray())
@@ -1004,7 +1007,27 @@ QString QucsControl::instructions() const
         "Diagrams: add_diagram, edit_diagram, add_trace, edit_trace, delete; reload_data reads the data again. Changes "
         "appear in the window at once, each one step to undo: prefer these tools to editing the file of a schematic "
         "that is open. Coordinates are the schematic's (grid 10 as a rule; place pins on it). The system's file and "
-        "print dialogs cannot be filled: use open_document and save_document instead.");
+        "print dialogs cannot be filled: use open_document and save_document instead. A conversation the user has "
+        "pinned to a schematic says so in its prompts: then the tools act on that schematic when given no path, "
+        "whichever document is in front, and trigger_action brings it to the front first.");
+}
+
+QJsonObject QucsControl::forDocument(const QString& tool, const QJsonObject& arguments, const QString& document) const
+{
+    if (document.isEmpty() || !arguments.value(QLatin1String("path")).toString().trimmed().isEmpty()) return arguments;
+    // The tools whose 'path' is the document they act on, the one in
+    // front when not given; and get_state, which names it.
+    bool onDocument = tool == QLatin1String("get_state");
+    if (tool != QLatin1String("open_document") && tool != QLatin1String("show_document")
+        && tool != QLatin1String("reload_data"))
+        for (const QJsonValue& t : a_tools)
+            if (t.toObject().value(QLatin1String("name")).toString() == tool)
+                onDocument = onDocument || t.toObject().value(QLatin1String("inputSchema")).toObject()
+                                               .value(QLatin1String("properties")).toObject().contains(QLatin1String("path"));
+    if (!onDocument) return arguments;
+    QJsonObject a = arguments;
+    a.insert(QStringLiteral("path"), document);
+    return a;
 }
 
 // ----------------------------------------------------------------------
@@ -1056,7 +1079,7 @@ QString QucsControl::textOf(const QJsonObject& result)
 
 QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, const Done& done, bool& async)
 {
-    if (tool == QLatin1String("get_state")) return getState();
+    if (tool == QLatin1String("get_state")) return getState(args);
     if (tool == QLatin1String("open_document")) return openDocument(args);
     if (tool == QLatin1String("new_document")) return newDocument(args);
     if (tool == QLatin1String("show_document")) return showDocument(args);
@@ -1159,16 +1182,23 @@ void QucsControl::finish(Schematic* sch, const QList<QPoint>& where)
     sch->viewport()->update();
 }
 
-QJsonObject QucsControl::getState()
+QJsonObject QucsControl::getState(const QJsonObject& args)
 {
     QJsonArray docs;
     QucsDoc* front = a_app->DocumentTab->count() > 0 ? a_app->getDoc() : nullptr;
+    // The document of a conversation pinned to one (forDocument()).
+    const QString pinned = args.value(QLatin1String("path")).toString().trimmed();
+    bool pinnedOpen = false;
     for (QucsDoc* doc : a_app->allDocuments()) {
         QJsonObject d{{QStringLiteral("title"), titleOf(doc)},
                       {QStringLiteral("path"), doc->getDocName()},
                       {QStringLiteral("kind"), kindOf(doc)},
                       {QStringLiteral("unsaved changes"), doc->getDocChanged()},
                       {QStringLiteral("in front"), doc == front}};
+        if (!pinned.isEmpty() && !doc->getDocName().isEmpty() && sameFile(doc->getDocName(), absolute(pinned))) {
+            d.insert(QStringLiteral("this conversation's document"), true);
+            pinnedOpen = true;
+        }
         if (auto* sch = dynamic_cast<Schematic*>(doc)) {
             d.insert(QStringLiteral("components"), int(sch->a_DocComps.size()));
             d.insert(QStringLiteral("wires"), int(sch->a_DocWires.size()));
@@ -1195,6 +1225,9 @@ QJsonObject QucsControl::getState()
                        a_app->simulationConsole() != nullptr && a_app->simulationConsole()->isRunning()}};
     if (QWidget* dialog = openDialog())
         state.insert(QStringLiteral("dialog open"), dialog->windowTitle().isEmpty() ? dialog->metaObject()->className() : dialog->windowTitle());
+    if (!pinned.isEmpty())
+        state.insert(QStringLiteral("this conversation works on"),
+                     pinnedOpen ? pinned : tr("%1 (not open: open_document opens it)").arg(pinned));
     return jsonResult(state);
 }
 
@@ -1966,6 +1999,17 @@ QJsonObject QucsControl::listActions(const QJsonObject& args)
 
 void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
 {
+    // The document it is for in front first: the menus act on that one.
+    if (!args.value(QLatin1String("path")).toString().trimmed().isEmpty()) {
+        QString error;
+        QucsDoc* doc = document(args, &error);
+        if (doc == nullptr) {
+            done(errorResult(error));
+            return;
+        }
+        a_app->showDocument(QucsApp::documentWidget(doc));
+        QMetaObject::invokeMethod(a_app, "slotHideEdit", Qt::DirectConnection);
+    }
     const QString wanted = args.value(QLatin1String("action")).toString().trimmed();
     QStringList paths;
     const QList<QAction*> actions = menuActions(&paths);

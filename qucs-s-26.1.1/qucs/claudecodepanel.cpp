@@ -213,6 +213,38 @@ const Suggestion kSuggestions[] = {
 // ----------------------------------------------------------------------
 // Exports.
 
+// Whether \a a and \a b are the same file.
+bool sameFile(const QString& a, const QString& b)
+{
+    if (a.isEmpty() || b.isEmpty()) return false;
+    const QString ca = QFileInfo(a).canonicalFilePath();
+    const QString cb = QFileInfo(b).canonicalFilePath();
+    if (!ca.isEmpty() && !cb.isEmpty()) return ca == cb;
+    return QDir::cleanPath(QFileInfo(a).absoluteFilePath()) == QDir::cleanPath(QFileInfo(b).absoluteFilePath());
+}
+
+// A push pin, in \a ink.
+QIcon pinIcon(const QColor& ink)
+{
+    QPixmap pixmap(QSize(32, 32));
+    pixmap.fill(Qt::transparent);
+    QPainter p(&pixmap);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.translate(16, 16);
+    p.rotate(40);
+    p.setPen(Qt::NoPen);
+    p.setBrush(ink);
+    p.drawRoundedRect(QRectF(-6.5, -15, 13, 5), 2, 2);    // the head
+    p.drawRect(QRectF(-3.5, -11, 7, 9));                  // its body
+    p.drawRoundedRect(QRectF(-8.5, -3, 17, 4), 2, 2);     // the collar
+    QPen needle(ink, 2.6);
+    needle.setCapStyle(Qt::RoundCap);
+    p.setPen(needle);
+    p.drawLine(QPointF(0, 1), QPointF(0, 14));
+    p.end();
+    return QIcon(pixmap);
+}
+
 // The mark of a tool's outcome, as in the dock.
 QString outcomeMark(int state)
 {
@@ -612,18 +644,25 @@ void ClaudeCodePanel::buildComposer()
     a_attach->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
     a_attach->setIconSize(QSize(12, 12));
     a_attach->setToolTip(tr("Tell Claude which document is open in Qucs-S"));
+    a_pin = new QToolButton(a_composer);
+    a_pin->setObjectName(QStringLiteral("claudePin"));
+    a_pin->setCheckable(true);
+    a_pin->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    a_pin->setIconSize(QSize(12, 12));
     a_hint = new QLabel(tr("⏎ send  ·  ⇧⏎ new line"), a_composer);
     a_hint->setObjectName(QStringLiteral("claudeMuted"));
     a_send = new QToolButton(a_composer);
     a_send->setObjectName(QStringLiteral("claudeSend"));
     a_send->setText(tr("Send"));
     row->addWidget(a_attach);
+    row->addWidget(a_pin);
     row->addStretch(1);
     row->addWidget(a_hint);
     row->addWidget(a_send);
     layout->addLayout(row);
     connect(a_input, &QPlainTextEdit::textChanged, this, &ClaudeCodePanel::updateComposer);
     connect(a_attach, &QToolButton::toggled, this, [](bool on) { QucsSettingsFile().setValue(kAttach, on); });
+    connect(a_pin, &QToolButton::clicked, this, [this] { pinDocument(a_pinned.isEmpty() ? pinnableDocument() : QString()); });
     connect(a_send, &QToolButton::clicked, this, [this] {
         if (a_session->isBusy()) stopTurn();
         else sendComposer();
@@ -707,6 +746,11 @@ void ClaudeCodePanel::buildMenu()
     });
     show->setObjectName(QStringLiteral("claudeShowFolder"));   // (the GUI monkey leaves it alone)
     a_menu->addSeparator();
+    a_pinMenu = a_menu->addMenu(tr("Pin to a Schematic"));
+    a_pinMenu->setObjectName(QStringLiteral("claudePinMenu"));
+    a_pinMenu->setToolTipsVisible(true);
+    connect(a_pinMenu, &QMenu::aboutToShow, this, &ClaudeCodePanel::fillPinMenu);
+    a_menu->addSeparator();
     a_menu->addAction(tr("Claude Program…"), this, [this] {
         const QString program = QFileDialog::getOpenFileName(this, tr("The Claude Code Program"),
                                                              QFileInfo(a_session->program()).absolutePath());
@@ -743,6 +787,7 @@ void ClaudeCodePanel::buildMenu()
     });
     connect(a_menu, &QMenu::aboutToShow, this, [this, workspace, show, copyId, again, exports, details] {
         exports->menuAction()->setEnabled(!a_entries.isEmpty());
+        fillPinMenu();
         details->setChecked(exportsToolDetails());   // (another conversation may have changed it)
         workspace->setEnabled(!a_chosenDir.isEmpty());
         show->setEnabled(QFileInfo(workingDirectory()).isDir());
@@ -783,6 +828,11 @@ void ClaudeCodePanel::restyle()
         " background: transparent; }"
         "QToolButton#claudeAttach:checked { background: %11; border-color: %5; color: %7; }"
         "QToolButton#claudeAttach:disabled { color: %12; }"
+        "QToolButton#claudePin { border: 1px solid transparent; border-radius: 9px; padding: 1px 2px; background: transparent; }"
+        "QToolButton#claudePin:hover { border-color: %2; }"
+        "QToolButton#claudePin[pinned=\"true\"] { border-color: %5; background: %5; color: %8; padding: 1px 8px;"
+        " font-weight: 600; }"
+        "QToolButton#claudePin[pinned=\"true\"]:hover { background: %9; }"
         "QFrame#claudePermission { background: %11; border: 1px solid %5; border-radius: 10px; }"
         "QLabel#claudeCardTitle { font-weight: 600; }"
         "QPlainTextEdit#claudeCardDetail { background: %13; border: 1px solid %2; border-radius: 6px; color: %7; }"
@@ -1023,6 +1073,27 @@ void ClaudeCodePanel::setDocumentProvider(std::function<QString()> provider)
 
 void ClaudeCodePanel::refreshDocument()
 {
+    const Colours col = colours(palette());
+    // Pinned: the pin, named, says so (the document in front is not told).
+    const bool pinned = !a_pinned.isEmpty();
+    a_attach->setVisible(!pinned);
+    if (a_pin->property("pinned").toBool() != pinned) {
+        a_pin->setProperty("pinned", pinned);
+        a_pin->style()->unpolish(a_pin);
+        a_pin->style()->polish(a_pin);
+    }
+    a_pin->setChecked(pinned);
+    if (pinned) {
+        const QStringList open = a_schematics ? a_schematics() : QStringList();
+        const bool isOpen = std::any_of(open.cbegin(), open.cend(), [this](const QString& f) { return sameFile(f, a_pinned); });
+        a_pin->setText(QFileInfo(a_pinned).fileName());
+        a_pin->setIcon(pinIcon(col.onAccent));
+        a_pin->setEnabled(true);
+        a_pin->setToolTip(tr("This conversation is pinned to %1%2: its prompts name it, and Qucs-S's tools act on it "
+                             "when Claude names no document, whichever document is in front. Click to unpin it.")
+                              .arg(QDir::toNativeSeparators(a_pinned), isOpen ? QString() : tr(" (not open now; Claude can open it)")));
+        return;
+    }
     const QString doc = a_document ? a_document() : QString();
     if (doc.isEmpty()) {
         a_attach->setText(tr("No document"));
@@ -1033,6 +1104,77 @@ void ClaudeCodePanel::refreshDocument()
         a_attach->setEnabled(true);
         a_attach->setToolTip(tr("Tell Claude that %1 is open in Qucs-S").arg(QDir::toNativeSeparators(doc)));
     }
+    const QString pinnable = pinnableDocument();
+    a_pin->setText(QString());
+    a_pin->setIcon(pinIcon(pinnable.isEmpty() ? col.border : col.faint));
+    a_pin->setEnabled(!pinnable.isEmpty());
+    a_pin->setToolTip(pinnable.isEmpty()
+                          ? tr("Pin a schematic to this conversation: a saved one in front, or any open one from the "
+                               "menu (⋯ > Pin to a Schematic)")
+                          : tr("Pin %1 to this conversation: its prompts name it, and Qucs-S's tools act on it when "
+                               "Claude names no document, whichever document is in front")
+                                .arg(QFileInfo(pinnable).fileName()));
+}
+
+void ClaudeCodePanel::setSchematicsProvider(std::function<QStringList()> provider)
+{
+    a_schematics = std::move(provider);
+    refreshDocument();
+}
+
+QString ClaudeCodePanel::pinnableDocument() const
+{
+    const QString front = a_document ? a_document() : QString();
+    if (front.isEmpty() || !a_schematics) return {};
+    for (const QString& file : a_schematics())
+        if (sameFile(file, front)) return file;
+    return {};
+}
+
+void ClaudeCodePanel::pinDocument(const QString& path)
+{
+    const QString file = path.isEmpty() ? QString() : QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    if (file == a_pinned) return;
+    a_pinned = file;
+    a_session->setDocument(file);
+    refreshDocument();
+    emit pinChanged();
+}
+
+bool ClaudeCodePanel::isPinnedTo(const QString& path) const
+{
+    return sameFile(a_pinned, path);
+}
+
+void ClaudeCodePanel::fillPinMenu()
+{
+    a_pinMenu->clear();
+    const QStringList open = a_schematics ? a_schematics() : QStringList();
+    bool listed = false;
+    for (const QString& file : open) {
+        const QString name = QFileInfo(file).fileName();
+        const bool twice = std::count_if(open.cbegin(), open.cend(), [&name](const QString& f) {
+                               return QFileInfo(f).fileName() == name;
+                           }) > 1;
+        QAction* a = a_pinMenu->addAction(
+            twice ? name + QStringLiteral("  —  ") + QDir::toNativeSeparators(QFileInfo(file).absolutePath()) : name, this,
+            [this, file] { pinDocument(file); });
+        a->setCheckable(true);
+        a->setChecked(sameFile(file, a_pinned));
+        a->setToolTip(QDir::toNativeSeparators(file));
+        listed = listed || a->isChecked();
+    }
+    if (!a_pinned.isEmpty() && !listed) {
+        QAction* a = a_pinMenu->addAction(tr("%1 (not open)").arg(QFileInfo(a_pinned).fileName()));
+        a->setCheckable(true);
+        a->setChecked(true);
+        a->setToolTip(QDir::toNativeSeparators(a_pinned));
+    }
+    if (open.isEmpty() && a_pinned.isEmpty()) a_pinMenu->addAction(tr("No saved schematic is open"))->setEnabled(false);
+    a_pinMenu->addSeparator();
+    QAction* unpin = a_pinMenu->addAction(tr("Unpin"), this, [this] { pinDocument(QString()); });
+    unpin->setObjectName(QStringLiteral("claudeUnpin"));
+    unpin->setEnabled(!a_pinned.isEmpty());
 }
 
 // ----------------------------------------------------------------------
@@ -1153,7 +1295,13 @@ void ClaudeCodePanel::sendComposer()
     QString prompt = text;
     QString attached;
     refreshDocument();
-    if (a_attach->isEnabled() && a_attach->isChecked() && a_document) {
+    if (!a_pinned.isEmpty()) {
+        // Pinned: always said, as the tools act on it.
+        attached = a_pinned;
+        prompt += QStringLiteral("\n\n") + tr("(This conversation is pinned to %1 in Qucs-S: its tools act on it when "
+                                              "given no path, whichever document is in front.)")
+                                               .arg(QDir::toNativeSeparators(a_pinned));
+    } else if (a_attach->isEnabled() && a_attach->isChecked() && a_document) {
         attached = a_document();
         if (!attached.isEmpty())
             prompt += QStringLiteral("\n\n") + tr("(The document open in Qucs-S: %1)").arg(QDir::toNativeSeparators(attached));
@@ -1172,6 +1320,7 @@ void ClaudeCodePanel::newConversation()
 {
     a_session->reset();
     a_name.clear();
+    pinDocument(QString());   // (a new one is pinned to nothing, as at first)
     a_entries.clear();
     a_expanded.clear();
     a_requests.clear();

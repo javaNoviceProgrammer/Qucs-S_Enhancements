@@ -468,6 +468,11 @@ void Session::setToolHost(ToolHost* host)
     a_host = host;
 }
 
+QJsonObject Session::forDocument(const QString& tool, const QJsonObject& input) const
+{
+    return a_host != nullptr && !a_document.isEmpty() ? a_host->forDocument(tool, input, a_document) : input;
+}
+
 QString Session::hostTool(const QString& tool) const
 {
     if (a_host == nullptr) return {};
@@ -885,7 +890,7 @@ void Session::handleAssistant(const QJsonObject& m)
             a_tools.insert(id, tool);
             if (isFileTool(tool)) a_editedFiles.insert(id, fileOf(input));
             const QString own = hostTool(tool);
-            emit toolStarted(id, tool, own.isEmpty() ? toolSubject(tool, input, a_workDir) : a_host->subjectOf(own, input),
+            emit toolStarted(id, tool, own.isEmpty() ? toolSubject(tool, input, a_workDir) : a_host->subjectOf(own, forDocument(own, input)),
                              detailOf(tool, input, 4));
             if (a_busy) setState(State::Working, tool);
         }
@@ -946,7 +951,7 @@ void Session::handleControlRequest(const QJsonObject& m)
             return;
         }
         p.action = a_host->actionOf(tool);
-        p.subject = a_host->subjectOf(tool, p.input);
+        p.subject = a_host->subjectOf(tool, forDocument(tool, p.input));
         p.canAllowTools = true;
     }
     for (const QJsonValue& s : request.value(QLatin1String("permission_suggestions")).toArray()) {
@@ -1009,7 +1014,8 @@ void Session::handleMcpMessage(const QString& requestId, const QJsonObject& requ
         const QProcess* process = a_process;
         QTimer::singleShot(0, this, [self, process, tool, arguments, reply] {
             if (!self || self->a_host == nullptr) return;
-            self->a_host->callTool(tool, arguments, [self, process, reply](const QJsonObject& result) {
+            // (The document pinned now: the conversation's when it runs.)
+            self->a_host->callTool(tool, self->forDocument(tool, arguments), [self, process, reply](const QJsonObject& result) {
                 // (For the program that asked: not one started since.)
                 if (self && self->a_process == process) reply(result, false);
             });

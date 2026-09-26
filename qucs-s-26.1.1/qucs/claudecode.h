@@ -123,6 +123,16 @@ public:
     /// the reading of the program's output.
     virtual void callTool(const QString& tool, const QJsonObject& arguments,
                           std::function<void(const QJsonObject&)> done) = 0;
+    /// \a arguments for a conversation pinned to \a document (a file;
+    /// empty: none): a tool that acts on the document in front when it is
+    /// given none is given that one. As they are, unless the host says
+    /// otherwise.
+    virtual QJsonObject forDocument(const QString& tool, const QJsonObject& arguments, const QString& document) const
+    {
+        Q_UNUSED(tool);
+        Q_UNUSED(document);
+        return arguments;
+    }
 };
 
 /// Whether \a mode is the one where Claude asks before acting: not named,
@@ -214,6 +224,11 @@ public:
     /// outlives the session).
     void setToolHost(ToolHost* host);
     ToolHost* toolHost() const { return a_host; }
+    /// The document the conversation is pinned to (its file), or empty:
+    /// the host's tools that act on the document in front when they are
+    /// given none act on this one (ToolHost::forDocument()).
+    void setDocument(const QString& path) { a_document = path; }
+    QString document() const { return a_document; }
     /// The host's tools are used without asking for the rest of the
     /// conversation (answer() with \a allowTools, or set here).
     void setToolsAllowed(bool allowed) { a_toolsAllowed = allowed; }
@@ -324,7 +339,10 @@ private:
     QStringList a_changedFiles;             // this turn's
     QHash<QString, PermissionRequest> a_pending;   // permission requests not yet answered
     ToolHost* a_host = nullptr;
+    QString a_document;        // pinned: the host's tools act on it
     bool a_toolsAllowed = false;
+    /// \a input of the host's \a tool, for the document pinned.
+    QJsonObject forDocument(const QString& tool, const QJsonObject& input) const;
     void withdrawRequests();
 };
 

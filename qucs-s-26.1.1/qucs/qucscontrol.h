@@ -56,6 +56,11 @@ public:
     QString instructions() const override;
     void callTool(const QString& tool, const QJsonObject& arguments,
                   std::function<void(const QJsonObject&)> done) override;
+    /// The tools that take the document they act on as 'path' (the one in
+    /// front when not given) are given \a document, and get_state names
+    /// it; open_document and show_document name theirs, reload_data
+    /// without one reads every document's data.
+    QJsonObject forDocument(const QString& tool, const QJsonObject& arguments, const QString& document) const override;
 
     /// The result of a call, the event loop run until it comes (for the
     /// tests); an error result after \a timeoutMs.
@@ -69,7 +74,7 @@ private:
     QJsonObject call(const QString& tool, const QJsonObject& args, const Done& done, bool& async);
 
     // Documents.
-    QJsonObject getState();
+    QJsonObject getState(const QJsonObject& args);
     QJsonObject openDocument(const QJsonObject& args);
     QJsonObject newDocument(const QJsonObject& args);
     QJsonObject showDocument(const QJsonObject& args);

@@ -26,6 +26,7 @@
 
 #include <cmath>
 #include <functional>
+#include <random>
 
 #include "claudecodepanel.h"
 #include "claudecodetabs.h"
@@ -963,6 +964,159 @@ private slots:
         QVERIFY(!failed(call("undo")));
         QVERIFY(!failed(call("save_document")));
         QucsSettings.NgspiceExecutable = before;
+    }
+
+    // A conversation pinned to a schematic (forDocument()): the tools that
+    // act on the document in front act on it when given none, whichever is
+    // in front; one given a path, open_document, show_document and
+    // reload_data are as they were; get_state names it; a menu action
+    // brings it to the front first; saved under another name, it stays
+    // pinned. Not pinned, nothing changes.
+    void aPinnedConversationWorksOnItsSchematic()
+    {
+        const auto made = [this](const QString& name) {
+            QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+            QVERIFY(!failed(call("save_document", {{"as", name}})));
+        };
+        made("pinned_a");
+        made("pinned_b");   // (in front)
+        const QString a = QFileInfo(dir.filePath("workspace/pinned_a.sch")).canonicalFilePath();
+        const QString b = QFileInfo(dir.filePath("workspace/pinned_b.sch")).canonicalFilePath();
+        QVERIFY(!a.isEmpty() && !b.isEmpty());
+        QCOMPARE(QFileInfo(front()->getDocName()).canonicalFilePath(), b);
+
+        // What the tools are given.
+        const QJsonObject resistor{{"type", "R"}, {"x", 100}, {"y", 100}};
+        QCOMPARE(control->forDocument("add_component", resistor, a).value("path").toString(), a);
+        QCOMPARE(control->forDocument("add_component", resistor, QString()), resistor);   // not pinned
+        QJsonObject named = resistor;
+        named.insert("path", b);
+        QCOMPARE(control->forDocument("add_component", named, a).value("path").toString(), b);
+        for (const char* own : {"get_schematic", "simulate", "get_dataset", "save_document", "undo", "screenshot",
+                                "trigger_action", "get_state", "add_trace", "rename_net"})
+            QVERIFY2(control->forDocument(own, {}, a).value("path").toString() == a, own);
+        for (const char* other : {"open_document", "show_document", "reload_data", "new_document", "list_actions",
+                                  "list_component_types", "get_dialog", "describe_component_type"})
+            QVERIFY2(!control->forDocument(other, {}, a).contains("path"), other);
+
+        // Changes go to it, with the other in front.
+        QVERIFY(!failed(call("add_component", control->forDocument("add_component", resistor, a))));
+        const auto open = [this](const QString& file) -> Schematic* {
+            for (QucsDoc* doc : app->allDocuments())
+                if (QFileInfo(doc->getDocName()).canonicalFilePath() == QFileInfo(file).canonicalFilePath())
+                    return dynamic_cast<Schematic*>(doc);
+            return nullptr;
+        };
+        const auto has = [&open](const QString& file, const char* part) {
+            Schematic* sch = open(file);
+            return sch != nullptr && sch->getComponentByName(part) != nullptr;
+        };
+        QVERIFY(has(a, "R1"));
+        QVERIFY(!has(b, "R1"));
+        const QJsonObject summary = json(call("get_schematic", control->forDocument("get_schematic", {}, a))).toObject();
+        QVERIFY(!componentIn(summary, "R1").isEmpty());
+
+        // get_state names it.
+        const QJsonObject state = json(call("get_state", control->forDocument("get_state", {}, a))).toObject();
+        QCOMPARE(QFileInfo(state.value("this conversation works on").toString()).canonicalFilePath(), a);
+        int marked = 0;
+        for (const QJsonValue& d : state.value("documents").toArray())
+            if (d.toObject().value("this conversation's document").toBool()) {
+                ++marked;
+                QCOMPARE(QFileInfo(d.toObject().value("path").toString()).canonicalFilePath(), a);
+            }
+        QCOMPARE(marked, 1);
+        QVERIFY(!json(call("get_state")).toObject().contains("this conversation works on"));
+
+        // A menu action: on it, brought to the front first.
+        QVERIFY(!failed(call("show_document", {{"path", b}})));
+        QVERIFY(!failed(call("trigger_action", control->forDocument("trigger_action", {{"action", "View > View All"}}, a))));
+        QCOMPARE(QFileInfo(front()->getDocName()).canonicalFilePath(), a);
+        QCOMPARE(control->subjectOf("trigger_action", control->forDocument("trigger_action", {{"action", "View > View All"}}, a)),
+                 QStringLiteral("View > View All on pinned_a.sch"));
+        QVERIFY(failed(call("trigger_action", {{"action", "View > View All"}, {"path", "no_such.sch"}})));
+
+        // Pinned to one not open: said so.
+        QVERIFY(!failed(call("close_document", {{"path", b}})));
+        QVERIFY(text(call("add_component", control->forDocument("add_component", resistor, b))).contains("not open"));
+        QVERIFY(json(call("get_state", control->forDocument("get_state", {}, b))).toObject()
+                    .value("this conversation works on").toString().contains("not open"));
+
+        // The dock's conversation pinned to it follows a Save As.
+        ClaudeCodeTabs* tabs = app->claudeCode();
+        ClaudeCodePanel* panel = tabs->current();
+        QVERIFY(!failed(call("show_document", {{"path", a}})));
+        QCOMPARE(panel->pinnableDocument(), open(a)->getDocName());
+        panel->pinButton()->click();
+        QVERIFY(panel->isPinnedTo(a));
+        QCOMPARE(panel->session()->document(), panel->pinnedDocument());
+        QVERIFY(!failed(call("save_document", {{"path", a}, {"as", "pinned_a2"}})));
+        QVERIFY(panel->isPinnedTo(dir.filePath("workspace/pinned_a2.sch")));
+        QVERIFY(panel->session()->document().endsWith("pinned_a2.sch"));
+        panel->pinDocument(QString());
+        QVERIFY(panel->session()->document().isEmpty());
+        open(dir.filePath("workspace/pinned_a2.sch"))->setChanged(false);
+    }
+
+    // Pinned calls among everything else - schematics opened, closed,
+    // brought forward, saved, the pin moved or on one that is closed - in
+    // any order: a part added goes to the pinned schematic and nowhere
+    // else, one closed is said to be, nothing breaks (ASan).
+    void pinnedCallsSurviveAnything()
+    {
+        QStringList files;
+        for (int i = 0; i < 3; ++i) {
+            QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+            QVERIFY(!failed(call("save_document", {{"as", QStringLiteral("fuzzpin_%1").arg(i)}})));
+            files << QFileInfo(dir.filePath(QStringLiteral("workspace/fuzzpin_%1.sch").arg(i))).canonicalFilePath();
+        }
+        const auto open = [this](const QString& file) -> Schematic* {
+            for (QucsDoc* doc : app->allDocuments())
+                if (QFileInfo(doc->getDocName()).canonicalFilePath() == file) return dynamic_cast<Schematic*>(doc);
+            return nullptr;
+        };
+        const auto parts = [&open, &files] {
+            QList<int> n;
+            for (const QString& f : files) n << (open(f) != nullptr ? int(open(f)->a_DocComps.size()) : -1);
+            return n;
+        };
+        std::mt19937 rng(20260926);
+        const auto pick = [&rng](int n) { return int(rng() % unsigned(n)); };
+        int landed = 0;
+        for (int round = 0; round < 300; ++round) {
+            const int which = pick(4);   // 3: none
+            const QString pinned = which < 3 ? files.at(which) : QString();
+            const auto given = [&](const QString& tool, const QJsonObject& a) { return control->forDocument(tool, a, pinned); };
+            const QList<int> before = parts();
+            switch (pick(10)) {
+            case 0: case 1: {
+                const QJsonObject r = call("add_component", given("add_component", {{"type", "R"}, {"x", 20 * pick(40)}, {"y", 20 * pick(30)}}));
+                if (pinned.isEmpty()) break;
+                const QList<int> after = parts();
+                if (open(pinned) == nullptr) {
+                    QVERIFY(failed(r));
+                    QVERIFY(text(r).contains("not open"));
+                    QCOMPARE(after, before);
+                    break;
+                }
+                QVERIFY2(!failed(r), qPrintable(text(r)));
+                for (int i = 0; i < 3; ++i) QCOMPARE(after.at(i), before.at(i) + (i == which ? 1 : 0));
+                ++landed;
+                break;
+            }
+            case 2: call("get_schematic", given("get_schematic", {})); break;
+            case 3: call("undo", given("undo", {})); break;
+            case 4: call("trigger_action", given("trigger_action", {{"action", pick(2) ? "View > View All" : "Edit > Select All"}})); break;
+            case 5: call("close_document", {{"path", files.at(pick(3))}, {"unsaved", "discard"}}); break;
+            case 6: call("open_document", {{"path", files.at(pick(3))}}); break;
+            case 7: call("show_document", {{"path", files.at(pick(3))}}); break;
+            case 8: call("get_state", given("get_state", {})); break;
+            default: call("save_document", given("save_document", {})); break;
+            }
+        }
+        QVERIFY2(landed > 20, qPrintable(QString::number(landed)));
+        for (const QString& f : files)
+            if (Schematic* sch = open(f)) sch->setChanged(false);
     }
 };
 

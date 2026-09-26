@@ -779,7 +779,7 @@ class TestGuiMonkey : public QObject
         if (tabs == nullptr) return;
         ClaudeCodePanel* panel = tabs->current();
         if (panel == nullptr) return;
-        switch (pick(15)) {
+        switch (pick(16)) {
         case 0:
             note("claude: show or hide the dock");
             a_app->toggleClaudeCode();
@@ -840,6 +840,13 @@ class TestGuiMonkey : public QObject
             }
             break;
         }
+        case 15:
+            // Pinned to the schematic in front, or unpinned (the fake
+            // claude's tool calls then go to the pinned one).
+            note(panel->pinnedDocument().isEmpty() ? QStringLiteral("claude: pin the schematic in front")
+                                                   : QStringLiteral("claude: unpin"));
+            if (panel->pinButton()->isEnabled()) panel->pinButton()->click();
+            break;
         case 14: {
             // An item of a tab's menu.
             const int index = pick(tabs->count());
