@@ -45,6 +45,12 @@ namespace misc {
   /// The font a symbol writes its pin names in: the application font, a
   /// little smaller, so a name fits between two pins.
   QFont pinFont();
+  /// \a font as the canvas draws with it: antialiased in grey, never in a
+  /// screen's subpixel colours. A gesture's held scene is an image, whose
+  /// texts Qt draws in grey; on the widget, where fontconfig asks for
+  /// subpixel antialiasing (Linux), it drew them in colours, and the two
+  /// differed.
+  QFont canvasFont(QFont font);
   QString properAbsFileName(const QString&, Schematic* sch = nullptr);
   QString properFileName(const QString&);
   /// The files of a project: every regular file below root, at any depth,
