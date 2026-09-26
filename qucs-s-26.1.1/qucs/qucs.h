@@ -266,6 +266,9 @@ public:
   QString bringProjectIn(const QString &source, bool link);
   /// Lists the workspace in the Projects panel with \a path selected.
   void showProjectInList(const QString &path);
+  /// Files and folders moved (the File Browser): \a from[i] is \a to[i]
+  /// now - the documents open from them follow, their tabs renamed.
+  void documentsMoved(const QStringList &from, const QStringList &to);
   /// Opens a file the way a double-click in the Content panel does: by its
   /// suffix, in the schematic view, the text editor, a registered program
   /// or the system's application. \a note is the panel's note column

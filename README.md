@@ -442,6 +442,28 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   does; its menu opens it with the system, shows it in the file manager,
   copies its path, renames it in place, makes a folder or moves it to the
   trash. The folder, the view and the options are kept for the next start.
+  **Drag and drop**: select one or several entries (⌘/Ctrl-click,
+  Shift-click) and drag them.
+  - **Where they go:** onto a folder's row, into that folder. Beside the
+    rows, into the folder shown. Onto a button of the path, into that
+    parent. A column of the Columns view takes the folder it shows.
+  - **Move or copy:** within one disk they are moved. With Option (Ctrl on
+    Windows and Linux) they are copied, and they are also copied to
+    another disk. Command (Shift) forces a move.
+  - **From other programs:** files dragged in from the Finder or the
+    Explorer are copied in.
+  - **To the document area:** entries dragged there open.
+  - **While dragging:** the target folder is highlighted. Holding the drag
+    over a folder for a moment opens it, and near an edge the view
+    scrolls.
+  - **Same name:** if the folder already has an item with that name, you
+    choose *Replace* (the old one goes to the trash), *Keep Both*
+    (`name 2`), *Skip* or *Stop*, and you can apply the choice to the
+    rest. A copy into its own folder is named `name copy`.
+  - **Not allowed:** moving a folder into itself, or moving the workspace
+    or the open project.
+  - **Open documents:** documents open from moved files or folders follow
+    them; their tabs and names update.
 - **PDF viewer**: a PDF document — a datasheet, an application note, a
   report written by a script — opens in a tab of its own, from the File
   Browser, the Content panel, *File → Open*, a drop, or Claude's

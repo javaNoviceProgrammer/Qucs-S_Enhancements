@@ -40,13 +40,17 @@
 #include <QLineEdit>
 #include <QListView>
 #include <QLocale>
+#include <QCheckBox>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMimeData>
+#include <QScrollBar>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmapCache>
 #include <QProcess>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QShortcut>
 #include <QSortFilterProxyModel>
@@ -63,6 +67,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <system_error>
 
 using qucs_s::files::IconProvider;
 using qucs_s::files::Kind;
@@ -846,6 +852,9 @@ class ColumnView : public QColumnView
 public:
     using QColumnView::QColumnView;
 
+    /// What watches the columns' drags (the browser).
+    void setDropFilter(QObject* filter) { a_dropFilter = filter; }
+
     /// Whether the folder shown has a column (not the preview alone).
     bool hasColumn() const
     {
@@ -862,6 +871,20 @@ public:
     }
 
 protected:
+    // As Qt's, and the column takes drops: the browser handles them.
+    QAbstractItemView* createColumn(const QModelIndex& index) override
+    {
+        auto* view = new QListView(viewport());
+        initializeColumn(view);
+        view->setRootIndex(index);
+        if (model()->canFetchMore(index)) model()->fetchMore(index);
+        if (a_dropFilter != nullptr) {
+            view->viewport()->setAcceptDrops(true);
+            view->viewport()->installEventFilter(a_dropFilter);
+        }
+        return view;
+    }
+
     QModelIndex moveCursor(CursorAction action, Qt::KeyboardModifiers modifiers) override
     {
         if (!hasColumn()) return {};
@@ -880,7 +903,103 @@ private:
             if (p == rootIndex()) return true;
         return !rootIndex().isValid();
     }
+
+    QObject* a_dropFilter = nullptr;
 };
+
+// Two paths of one place, as the platform compares names.
+bool samePath(const QString& a, const QString& b)
+{
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return a.compare(b, Qt::CaseInsensitive) == 0;
+#else
+    return a == b;
+#endif
+}
+
+// Whether \a path is in the folder \a folder (at any depth).
+bool isInside(const QString& path, const QString& folder)
+{
+    const QString prefix = folder.endsWith(QLatin1Char('/')) ? folder : folder + QLatin1Char('/');
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return path.startsWith(prefix, Qt::CaseInsensitive);
+#else
+    return path.startsWith(prefix);
+#endif
+}
+
+// The local files and folders a drag carries.
+QStringList localPaths(const QMimeData* mime)
+{
+    QStringList paths;
+    if (mime == nullptr || !mime->hasUrls()) return paths;
+    for (const QUrl& url : mime->urls())
+        if (url.isLocalFile()) {
+            const QString path = QDir::cleanPath(url.toLocalFile());
+            if (!path.isEmpty() && !paths.contains(path)) paths << path;
+        }
+    return paths;
+}
+
+// A path for std::filesystem, spelled as the file system has it.
+std::filesystem::path fsPath(const QString& path)
+{
+#ifdef Q_OS_WIN
+    return std::filesystem::path(QDir::toNativeSeparators(path).toStdWString());
+#else
+    return std::filesystem::path(QFile::encodeName(path).toStdString());
+#endif
+}
+
+bool exists(const QString& path)
+{
+    const QFileInfo info(path);
+    return info.exists() || info.isSymLink();
+}
+
+// A free name in \a dir like \a name: "amp copy.sch", "amp copy 2.sch"...
+// for a copy, "amp 2.sch", "amp 3.sch"... to keep both.
+QString freeNameIn(const QString& dir, const QString& name, bool folder, bool copy)
+{
+    QString base = name, suffix;
+    const qsizetype dot = folder ? -1 : name.lastIndexOf(QLatin1Char('.'));
+    if (dot > 0) {
+        base = name.left(dot);
+        suffix = name.mid(dot);
+    }
+    for (int n = copy ? 1 : 2; n < 100000; ++n) {
+        const QString middle = !copy ? QStringLiteral(" %1").arg(n)
+                               : n == 1 ? trf(" copy")
+                                        : trf(" copy %1").arg(n);
+        const QString candidate = QDir(dir).filePath(base + middle + suffix);
+        if (!exists(candidate)) return candidate;
+    }
+    return QString();
+}
+
+// Copies a file or a folder with all in it (links as links); what was
+// made of it goes again when it fails.
+bool copyEntry(const QString& source, const QString& target)
+{
+    std::error_code ec;
+    std::filesystem::copy(fsPath(source), fsPath(target),
+                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::copy_symlinks, ec);
+    if (!ec) return true;
+    const QFileInfo made(target);
+    if (made.isDir() && !made.isSymLink()) QDir(target).removeRecursively();
+    else if (exists(target)) QFile::remove(target);
+    return false;
+}
+
+// Moves a file or a folder: renamed on one disk, else copied and then
+// taken away.
+bool moveEntry(const QString& source, const QString& target)
+{
+    if (QDir().rename(source, target)) return true;
+    if (!copyEntry(source, target)) return false;
+    const QFileInfo info(source);
+    return info.isDir() && !info.isSymLink() ? QDir(source).removeRecursively() : QFile::remove(source);
+}
 
 } // namespace
 
@@ -891,7 +1010,9 @@ FileBrowser::FileBrowser(QWidget* parent)
       a_model(new QFileSystemModel(this)),
       a_proxy(new qucs_s::files::SortProxy(this)),
       a_recentModel(new QStandardItemModel(this)),
-      a_statusTimer(new QTimer(this))
+      a_statusTimer(new QTimer(this)),
+      a_springTimer(new QTimer(this)),
+      a_scrollTimer(new QTimer(this))
 {
     setObjectName(QStringLiteral("fileBrowser"));
     a_model->setIconProvider(a_icons);
@@ -916,6 +1037,28 @@ FileBrowser::FileBrowser(QWidget* parent)
     shortcut(QKeySequence::Forward, &FileBrowser::forward);
     shortcut(QKeySequence(Qt::ALT | Qt::Key_Up), &FileBrowser::up);
     shortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G), &FileBrowser::editPath);
+
+    // A drag: a folder held under it opens; near a view's edge, it scrolls.
+    a_springTimer->setSingleShot(true);
+    a_springTimer->setInterval(900);
+    connect(a_springTimer, &QTimer::timeout, this, &FileBrowser::springOpen);
+    a_scrollTimer->setInterval(40);
+    connect(a_scrollTimer, &QTimer::timeout, this, [this] {
+        QWidget* viewport = a_dragViewport;
+        auto* area = viewport != nullptr ? qobject_cast<QAbstractScrollArea*>(viewport->parentWidget()) : nullptr;
+        if (area == nullptr) {
+            a_scrollTimer->stop();
+            return;
+        }
+        const QPoint at = viewport->mapFromGlobal(QCursor::pos());
+        if (!viewport->rect().contains(at)) return;
+        constexpr int edge = 18;
+        const auto nudge = [](QScrollBar* bar, int direction) { bar->setValue(bar->value() + direction * bar->singleStep()); };
+        if (at.y() < edge) nudge(area->verticalScrollBar(), -1);
+        else if (at.y() > viewport->height() - edge) nudge(area->verticalScrollBar(), 1);
+        if (at.x() < edge) nudge(area->horizontalScrollBar(), -1);
+        else if (at.x() > viewport->width() - edge) nudge(area->horizontalScrollBar(), 1);
+    });
 
     // What was shown last time.
     QucsSettingsFile settings;
@@ -1108,8 +1251,10 @@ void FileBrowser::buildViews()
         v->setFrameShape(QFrame::NoFrame);
         v->setContextMenuPolicy(Qt::CustomContextMenu);
         v->setDragEnabled(true);
-        v->setDragDropMode(QAbstractItemView::DragOnly);
-        v->setDefaultDropAction(Qt::CopyAction);
+        v->setDragDropMode(QAbstractItemView::DragOnly);   // (the drops are the browser's: dragEvent())
+        v->setDefaultDropAction(Qt::CopyAction);           // (a drag out of it copies, unless the target says)
+        v->viewport()->setAcceptDrops(true);
+        v->viewport()->installEventFilter(this);
         v->setEditTriggers(QAbstractItemView::EditKeyPressed);
         v->setSelectionMode(QAbstractItemView::SingleSelection);
         v->setAttribute(Qt::WA_MacShowFocusRect, false);
@@ -1129,12 +1274,14 @@ void FileBrowser::buildViews()
     a_tree->setUniformRowHeights(true);
     a_tree->setExpandsOnDoubleClick(false);   // (activate() opens and folds)
     common(a_tree, "fbTree");
+    a_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);   // (several dragged at once)
 
     a_list = new QListView;
     a_list->setModel(a_proxy);
     a_list->setIconSize(QSize(18, 18));
     a_list->setUniformItemSizes(true);
     common(a_list, "fbList");
+    a_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
 
     a_grid = new QListView;
     a_grid->setModel(a_proxy);
@@ -1147,6 +1294,7 @@ void FileBrowser::buildViews()
     a_grid->setResizeMode(QListView::Adjust);
     a_grid->setMovement(QListView::Static);   // (the grid sizes the cells; the first item must not)
     common(a_grid, "fbIcons");
+    a_grid->setSelectionMode(QAbstractItemView::ExtendedSelection);
 
     a_details = new QTreeView;
     a_details->setModel(a_proxy);
@@ -1164,8 +1312,10 @@ void FileBrowser::buildViews()
         if (section != 0) fitDetails();
     });
     common(a_details, "fbDetails");
+    a_details->setSelectionMode(QAbstractItemView::ExtendedSelection);
 
     a_columns = new ColumnView;
+    static_cast<ColumnView*>(a_columns)->setDropFilter(this);
     a_columns->setModel(a_proxy);
     a_columns->setIconSize(QSize(16, 16));
     a_columns->setColumnWidths(QList<int>(24, 150));
@@ -1203,6 +1353,7 @@ void FileBrowser::buildViews()
     a_recent->setUniformItemSizes(true);
     common(a_recent, "fbRecent");
     a_recent->setDragEnabled(false);
+    a_recent->viewport()->setAcceptDrops(false);   // (nowhere to drop into)
     a_recent->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
     for (QAbstractItemView* v : {static_cast<QAbstractItemView*>(a_tree), static_cast<QAbstractItemView*>(a_list),
@@ -1438,6 +1589,8 @@ void FileBrowser::rebuildCrumbs()
             if (a_view == View::Recent) setView(a_fileView);
             go(path, true);
         });
+        b->setAcceptDrops(true);   // (dropped on, into that folder)
+        b->installEventFilter(this);
         a_crumbLayout->insertWidget(at++, b);
         a_crumbButtons << b;
     }
@@ -1762,6 +1915,290 @@ void FileBrowser::moveToTrash(const QString& path)
         QMessageBox::warning(this, tr("File Browser"), tr("“%1” could not be moved to the trash.").arg(info.fileName()));
 }
 
+// ----------------------------------------------------------------------
+// Dragged and dropped.
+
+Qt::DropAction FileBrowser::dropAction(bool fromBrowser, Qt::KeyboardModifiers modifiers, const QStringList& sources,
+                                       const QString& target)
+{
+#ifdef Q_OS_MACOS
+    const bool copyKey = modifiers & Qt::AltModifier;       // Option
+    const bool moveKey = modifiers & Qt::ControlModifier;   // Command (Qt's Ctrl on macOS)
+#else
+    const bool copyKey = modifiers & Qt::ControlModifier;
+    const bool moveKey = modifiers & Qt::ShiftModifier;
+#endif
+    if (copyKey) return Qt::CopyAction;
+    if (moveKey) return Qt::MoveAction;
+    if (!fromBrowser) return Qt::CopyAction;   // (from the Finder: the original stays)
+    // Within the browser: moved on one disk, copied to another - as the
+    // Finder and the Explorer do.
+    const QString disk = QStorageInfo(target).rootPath();
+    for (qsizetype i = 0; i < sources.size() && i < 20; ++i)
+        if (QStorageInfo(sources.at(i)).rootPath() != disk) return Qt::CopyAction;
+    return Qt::MoveAction;
+}
+
+QString FileBrowser::refusal(const QStringList& sources, const QString& targetGiven, Qt::DropAction action) const
+{
+    const QString target = QDir::cleanPath(targetGiven);
+    const QFileInfo folder(target);
+    if (target.isEmpty() || !folder.isDir()) return tr("There is no folder to put them in.");
+    if (!folder.isWritable()) return tr("“%1” cannot be written to.").arg(folder.fileName());
+    bool somewhere = false;
+    for (const QString& given : sources) {
+        const QString source = QDir::cleanPath(given);
+        if (samePath(source, target) || isInside(target, source)) return tr("A folder cannot go into itself.");
+        if (action == Qt::MoveAction) {
+            for (const QString& kept : {a_home, a_project})
+                if (!kept.isEmpty() && (samePath(source, kept) || isInside(kept, source)))
+                    return tr("The workspace and the open project stay where they are.");
+            if (!samePath(QFileInfo(source).absolutePath(), target)) somewhere = true;
+        } else {
+            somewhere = true;
+        }
+    }
+    return somewhere ? QString() : tr("They are there already.");
+}
+
+QString FileBrowser::dropTarget(QAbstractItemView* view, const QPoint& pos, QRect* area) const
+{
+    if (view == nullptr || view == a_recent) return {};
+    const auto rowRect = [view](const QModelIndex& index) {
+        QRect r = view->visualRect(index);
+        if (qobject_cast<QTreeView*>(view) != nullptr) r = QRect(0, r.top(), view->viewport()->width(), r.height());
+        return r;
+    };
+    const QModelIndex index = view->indexAt(pos);
+    if (index.isValid()) {
+        const QModelIndex first = index.sibling(index.row(), 0);
+        const QString path = pathOf(first);
+        if (QFileInfo(path).isDir() && !QFileInfo(path).isSymLink()) {
+            if (area != nullptr) *area = rowRect(first);
+            return path;
+        }
+        // A file of a folder opened in the tree: into that folder.
+        if (view == a_tree) {
+            const QString folder = QFileInfo(path).absolutePath();
+            const QModelIndex row = a_proxy->mapFromSource(a_model->index(folder));
+            if (!samePath(folder, a_location) && row.isValid() && view->visualRect(row).intersects(view->viewport()->rect())) {
+                if (area != nullptr) *area = rowRect(row);
+                return folder;
+            }
+        }
+    }
+    // The folder the view (a column) shows.
+    QString shown = view->rootIndex().isValid() ? pathOf(view->rootIndex()) : QString();
+    if (shown.isEmpty()) shown = a_location;
+    if (area != nullptr) *area = view->viewport()->rect();
+    return shown;
+}
+
+bool FileBrowser::dragEvent(QWidget* watched, QEvent* event)
+{
+    if (event->type() == QEvent::DragLeave) {
+        endDrag();
+        return false;
+    }
+    auto* drop = static_cast<QDropEvent*>(event);
+    const QStringList sources = localPaths(drop->mimeData());
+    if (sources.isEmpty()) {
+        endDrag();
+        drop->ignore();
+        return true;
+    }
+    auto* view = qobject_cast<QAbstractItemView*>(watched->parentWidget());
+    QRect area;
+    const QString target = view != nullptr ? dropTarget(view, drop->position().toPoint(), &area)
+                                           : watched->property("path").toString();
+    if (view == nullptr) area = watched->rect();
+    auto* from = qobject_cast<QWidget*>(drop->source());
+    const bool fromBrowser = from != nullptr && (from == this || isAncestorOf(from));
+    const Qt::DropAction action = dropAction(fromBrowser, drop->modifiers(), sources, target);
+    const bool can = (drop->possibleActions() & action) && refusal(sources, target, action).isEmpty();
+
+    if (event->type() == QEvent::Drop) {
+        endDrag();
+        if (!can) {
+            drop->ignore();
+            return true;
+        }
+        drop->setDropAction(action);
+        drop->accept();
+        // After the drag has ended: a question about a name must not come
+        // up inside it.
+        QTimer::singleShot(0, this, [this, sources, target, action] { transfer(sources, target, action); });
+        return true;
+    }
+
+    // Entering, moving.
+    if (view != nullptr) {
+        a_dragViewport = watched;
+        if (!a_scrollTimer->isActive()) a_scrollTimer->start();
+    }
+    if (!can) {
+        if (a_dropHighlight) a_dropHighlight->hide();
+        a_springTimer->stop();
+        a_springPath.clear();
+        // Entered, it is told of the moves that follow (one is at once).
+        if (event->type() == QEvent::DragEnter) drop->acceptProposedAction();
+        else drop->ignore();
+        return true;
+    }
+    drop->setDropAction(action);
+    drop->accept();
+    showDropHighlight(watched, area);
+    // A folder held under it opens - not the one the view shows.
+    const QString shown = view != nullptr && view->rootIndex().isValid() ? pathOf(view->rootIndex()) : a_location;
+    const QString spring = samePath(target, shown) || samePath(target, a_location) ? QString() : target;
+    if (spring != a_springPath || a_springWidget != watched) {
+        a_springPath = spring;
+        a_springWidget = watched;
+        if (spring.isEmpty()) a_springTimer->stop();
+        else a_springTimer->start();
+    }
+    return true;
+}
+
+void FileBrowser::showDropHighlight(QWidget* on, const QRect& area)
+{
+    if (!a_dropHighlight) {
+        auto* frame = new QFrame;
+        frame->setObjectName(QStringLiteral("fbDropHighlight"));
+        frame->setAttribute(Qt::WA_TransparentForMouseEvents);
+        a_dropHighlight = frame;
+    }
+    if (a_dropHighlight->parentWidget() != on) a_dropHighlight->setParent(on);
+    const QColor accent = palette().color(QPalette::Highlight);
+    QColor fill = accent;
+    fill.setAlpha(40);
+    a_dropHighlight->setStyleSheet(QStringLiteral("QFrame#fbDropHighlight { border: 2px solid %1; border-radius: 5px;"
+                                                  " background: rgba(%2, %3, %4, %5); }")
+                                       .arg(accent.name())
+                                       .arg(fill.red())
+                                       .arg(fill.green())
+                                       .arg(fill.blue())
+                                       .arg(fill.alpha()));
+    a_dropHighlight->setGeometry(area.adjusted(1, 0, -1, 0));
+    a_dropHighlight->raise();
+    a_dropHighlight->show();
+}
+
+void FileBrowser::endDrag()
+{
+    if (a_dropHighlight) a_dropHighlight->hide();
+    a_springTimer->stop();
+    a_springPath.clear();
+    a_springWidget = nullptr;
+    a_scrollTimer->stop();
+    a_dragViewport = nullptr;
+}
+
+void FileBrowser::springOpen()
+{
+    const QString path = a_springPath;
+    QWidget* on = a_springWidget;
+    a_springPath.clear();
+    if (path.isEmpty() || !QFileInfo(path).isDir()) return;
+    if (a_crumbButtons.contains(on)) {
+        go(path, true);
+    } else if (a_view == View::Tree) {
+        a_tree->expand(a_proxy->mapFromSource(a_model->index(path)));
+    } else if (a_view == View::Columns) {
+        a_columns->setCurrentIndex(a_proxy->mapFromSource(a_model->index(path)));
+    } else {
+        go(path, true);
+    }
+}
+
+QStringList FileBrowser::transfer(const QStringList& sources, const QString& targetGiven, Qt::DropAction action)
+{
+    const QString target = QDir::cleanPath(targetGiven);
+    QStringList done, from, to, failed;
+    const QString why = refusal(sources, target, action);
+    if (!why.isEmpty()) {
+        if (why != tr("They are there already.")) QMessageBox::warning(this, tr("File Browser"), why);
+        return done;
+    }
+    enum Clash { Ask, Replace, KeepBoth, Skip, Stop };
+    Clash always = Ask;
+    for (qsizetype i = 0; i < sources.size(); ++i) {
+        const QString source = QDir::cleanPath(sources.at(i));
+        const QFileInfo info(source);
+        if (!exists(source)) continue;
+        const bool folder = info.isDir() && !info.isSymLink();
+        QString dest = QDir(target).filePath(info.fileName());
+        if (samePath(info.absolutePath(), target)) {
+            if (action == Qt::MoveAction) continue;   // where it is
+            dest = freeNameIn(target, info.fileName(), folder, true);   // a copy beside it
+        } else if (exists(dest)) {
+            Clash clash = always;
+            if (clash == Ask) {
+                QMessageBox box(QMessageBox::Question, tr("File Browser"),
+                                tr("“%1” has an item named “%2” already.").arg(QFileInfo(target).fileName(), info.fileName()),
+                                QMessageBox::NoButton, this);
+                box.setObjectName(QStringLiteral("fbClash"));
+                box.setInformativeText(action == Qt::MoveAction ? tr("Replace it with the one being moved?")
+                                                                : tr("Replace it with the one being copied?"));
+                QPushButton* replace = box.addButton(tr("Replace"), QMessageBox::DestructiveRole);
+                replace->setObjectName(QStringLiteral("fbClashReplace"));
+                replace->setToolTip(tr("The one there goes to the trash"));
+                QPushButton* both = box.addButton(tr("Keep Both"), QMessageBox::AcceptRole);
+                both->setObjectName(QStringLiteral("fbClashKeepBoth"));
+                QPushButton* skip = box.addButton(tr("Skip"), QMessageBox::RejectRole);
+                skip->setObjectName(QStringLiteral("fbClashSkip"));
+                QPushButton* stop = box.addButton(tr("Stop"), QMessageBox::RejectRole);
+                stop->setObjectName(QStringLiteral("fbClashStop"));
+                box.setDefaultButton(both);
+                box.setEscapeButton(stop);
+                QCheckBox* rest = nullptr;
+                if (i + 1 < sources.size()) {
+                    rest = new QCheckBox(tr("Do the same for the rest"), &box);
+                    rest->setObjectName(QStringLiteral("fbClashRest"));
+                    box.setCheckBox(rest);
+                }
+                box.exec();
+                const QAbstractButton* chosen = box.clickedButton();
+                clash = chosen == replace ? Replace : chosen == both ? KeepBoth : chosen == skip ? Skip : Stop;
+                if (rest != nullptr && rest->isChecked() && clash != Stop) always = clash;
+            }
+            if (clash == Stop) break;
+            if (clash == Skip) continue;
+            if (clash == KeepBoth) {
+                dest = freeNameIn(target, info.fileName(), folder, false);
+            } else if (!QFile::moveToTrash(dest)) {   // Replace: the one there to the trash
+                failed << info.fileName();
+                continue;
+            }
+        }
+        const bool ok = action == Qt::MoveAction ? moveEntry(source, dest) : copyEntry(source, dest);
+        if (!ok) {
+            failed << info.fileName();
+            continue;
+        }
+        done << dest;
+        if (action == Qt::MoveAction) {
+            from << source;
+            to << dest;
+        }
+    }
+    if (!failed.isEmpty())
+        QMessageBox::warning(this, tr("File Browser"),
+                             (action == Qt::MoveAction ? tr("These could not be moved into “%1”:")
+                                                       : tr("These could not be copied into “%1”:"))
+                                     .arg(QFileInfo(target).fileName())
+                                 + QLatin1Char('\n') + failed.join(QLatin1Char('\n')));
+    if (!from.isEmpty()) emit moved(from, to);
+    // What came into the folder shown, selected once the view has it.
+    if (!done.isEmpty() && samePath(target, a_location)) {
+        const QString first = done.first();
+        QTimer::singleShot(250, this, [this, first] {
+            if (exists(first)) selectPath(first);
+        });
+    }
+    return done;
+}
+
 QMenu* FileBrowser::contextMenuFor(const QString& path)
 {
     auto* menu = new QMenu(this);
@@ -1913,6 +2350,20 @@ void FileBrowser::resizeEvent(QResizeEvent* event)
 
 bool FileBrowser::eventFilter(QObject* watched, QEvent* event)
 {
+    switch (event->type()) {
+    case QEvent::DragEnter:
+    case QEvent::DragMove:
+    case QEvent::DragLeave:
+    case QEvent::Drop:
+        if (auto* widget = qobject_cast<QWidget*>(watched);
+            widget != nullptr
+            && (a_crumbButtons.contains(widget)
+                || (qobject_cast<QAbstractItemView*>(widget->parentWidget()) != nullptr && a_stack->isAncestorOf(widget))))
+            return dragEvent(widget, event);
+        break;
+    default:
+        break;
+    }
     if (a_details != nullptr && watched == a_details->viewport() && event->type() == QEvent::Resize) {
         fitDetails();
     } else if (watched == a_crumbBar) {

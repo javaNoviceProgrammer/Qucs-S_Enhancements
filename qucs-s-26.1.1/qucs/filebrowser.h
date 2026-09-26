@@ -15,6 +15,7 @@
 #include <QAbstractFileIconProvider>
 #include <QColor>
 #include <QStringList>
+#include <QPointer>
 #include <QWidget>
 
 #include <functional>
@@ -86,8 +87,12 @@ public:
  * and a filter. A double-click on a file opens it (openRequested: Qucs-S
  * opens it as the Content panel does); its context menu opens it with the
  * system, shows it in the file manager, copies its path, renames it, makes
- * a folder, moves it to the trash. The folder, the view and the options
- * are kept for the next start.
+ * a folder, moves it to the trash. Entries are dragged: onto a folder (a
+ * row, the folder shown, a button of the path) they move there - copied
+ * with Option (Ctrl elsewhere), or to another disk; onto the document area
+ * they open; from the Finder or the Explorer they are copied in. A folder
+ * held under a drag opens. The folder, the view and the options are kept
+ * for the next start.
  */
 class FileBrowser : public QWidget
 {
@@ -143,6 +148,25 @@ public:
     QString selectedPath() const;
     void selectPath(const QString& path);
 
+    /// Moves (\a action Qt::MoveAction) or copies \a sources into the
+    /// folder \a target, as a drop does: a name the folder has already is
+    /// asked about (replace it - the one there goes to the trash -, keep
+    /// both, skip); an entry copied into its own folder becomes "name
+    /// copy". Returns where they went. Open documents moved follow (moved()).
+    QStringList transfer(const QStringList& sources, const QString& target, Qt::DropAction action);
+    /// Why \a sources cannot go into \a target (a folder into itself, the
+    /// workspace or the open project moved, all there already), or empty.
+    QString refusal(const QStringList& sources, const QString& target, Qt::DropAction action) const;
+    /// What a drop does: copied with the copy key (Option on macOS, Ctrl
+    /// elsewhere), moved with the move key (Command, Shift); else moved
+    /// when dragged within the browser on one disk, copied otherwise.
+    static Qt::DropAction dropAction(bool fromBrowser, Qt::KeyboardModifiers modifiers, const QStringList& sources,
+                                     const QString& target);
+    /// The folder a drop at \a pos of \a view's viewport goes into: the
+    /// folder under it, else the folder \a view shows (a file's folder in
+    /// the tree); \a area is what to light up.
+    QString dropTarget(QAbstractItemView* view, const QPoint& pos, QRect* area = nullptr) const;
+
     // For the tests.
     QAbstractItemView* currentView() const;
     QFileSystemModel* fileModel() const { return a_model; }
@@ -154,6 +178,7 @@ public:
     /// The index of \a path in the current view (the file system's views).
     QModelIndex indexOf(const QString& path) const;
     QList<QToolButton*> crumbs() const { return a_crumbButtons; }
+    QWidget* dropHighlight() const { return a_dropHighlight; }
     QLineEdit* filterEdit() const { return a_filter; }
     QLabel* statusLabel() const { return a_status; }
     QMenu* contextMenuFor(const QString& path);
@@ -169,6 +194,8 @@ public slots:
 signals:
     /// A file was double-clicked (or opened from its menu).
     void openRequested(const QString& path);
+    /// Entries moved: \a from[i] is \a to[i] now (a folder with all in it).
+    void moved(const QStringList& from, const QStringList& to);
     void locationChanged(const QString& path);
 
 protected:
@@ -198,6 +225,13 @@ private:
     void rename(const QString& path);
     void moveToTrash(const QString& path);
     QAbstractItemView* viewFor(View view) const;
+    /// A drag over \a watched (a view's viewport, a button of the path):
+    /// lit up and accepted where it can drop; dropped.
+    bool dragEvent(QWidget* watched, QEvent* event);
+    void showDropHighlight(QWidget* on, const QRect& area);
+    void endDrag();
+    /// The folder held under a drag opens.
+    void springOpen();
     /// Whether \a path is in what the view shows (under the folder shown).
     bool inView(const QString& path) const;
 
@@ -257,6 +291,13 @@ private:
     QLabel* a_previewFacts = nullptr;
     QLabel* a_status = nullptr;
     QTimer* a_statusTimer = nullptr;
+    // A drag over it.
+    QPointer<QWidget> a_dropHighlight;     // the folder it would drop into, lit up
+    QTimer* a_springTimer = nullptr;       // a folder held under the drag opens
+    QString a_springPath;
+    QPointer<QWidget> a_springWidget;
+    QTimer* a_scrollTimer = nullptr;       // near an edge, the view scrolls
+    QPointer<QWidget> a_dragViewport;
 };
 
 #endif // QUCS_FILEBROWSER_H
