@@ -15,6 +15,7 @@
 #include "ink.h"
 #include "main.h"
 #include "settings.h"
+#include "workspace.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -603,7 +604,7 @@ Kind kindOf(const QFileInfo& info)
 {
     Kind kind;
     if (info.isDir()) {
-        const bool project = info.fileName().endsWith(QLatin1String("_prj"));
+        const bool project = qucs_s::workspace::isProjectFolder(info.absoluteFilePath());
         kind.name = project ? trf("Qucs-S project") : trf("Folder");
         kind.glyph = project ? Kind::Project : Kind::Folder;
         kind.colour = QColor(0x4f94dd);
@@ -1368,9 +1369,7 @@ void FileBrowser::fillPlaces(QMenu* menu)
     };
     add(tr("Workspace"), a_home);
     if (!a_project.isEmpty()) {
-        QString name = QFileInfo(a_project).fileName();
-        if (name.endsWith(QLatin1String("_prj"))) name.chop(4);
-        add(tr("Project %1").arg(name), a_project, true);
+        add(tr("Project %1").arg(qucs_s::workspace::projectName(QFileInfo(a_project).fileName())), a_project, true);
     }
     add(tr("Examples"), QucsSettings.ExamplesDir);
     menu->addSeparator();
@@ -1556,6 +1555,17 @@ void FileBrowser::setShowHidden(bool on)
     if (on) filter |= QDir::Hidden;
     a_model->setFilter(filter);
     save();
+}
+
+void FileBrowser::refreshKinds()
+{
+    // QFileSystemModel keeps each entry's icon and kind: asked again, the
+    // icons by the provider set anew, the kinds as for another language.
+    a_model->setIconProvider(a_icons);
+    QEvent retranslate(QEvent::LanguageChange);
+    QCoreApplication::sendEvent(a_model, &retranslate);
+    if (a_view == View::Recent) fillRecent();
+    for (QAbstractItemView* v : a_stack->findChildren<QAbstractItemView*>()) v->viewport()->update();
 }
 
 void FileBrowser::setQucsFilesOnly(bool on)

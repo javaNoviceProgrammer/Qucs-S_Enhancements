@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "claudecode.h"
+#include "main.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -242,12 +243,16 @@ QString toolSubject(const QString& tool, const QJsonObject& input, const QString
 
 QString qucsSystemPrompt()
 {
+    const QString projects = QucsSettings.AnyFolderIsProject
+                                 ? QStringLiteral("a project is a folder - any folder of the workspace, or one "
+                                                  "opened as a project, not only one named NAME_prj")
+                                 : QStringLiteral("a project is a folder whose name ends in _prj");
     return QStringLiteral(
         "You are running inside the Claude Code panel of Qucs-S, a circuit simulator with a "
         "schematic editor. The user sees your replies in that panel, rendered as Markdown. "
         "Qucs-S keeps schematics in .sch files (its own text format: <Components>, <Wires>, "
         "<Diagrams> sections), symbols in .sym, data displays in .dpl and simulation results "
-        "in .dat datasets; a project is a folder whose name ends in _prj. It netlists for "
+        "in .dat datasets; ") + projects + QStringLiteral(". It netlists for "
         "ngspice, Xyce and Qucsator. When the user refers to \"this schematic\" or \"the "
         "open document\", the prompt names the file. Qucs-S reloads a document you change "
         "unless it has unsaved changes of its own: say which files you changed. The panel typesets "

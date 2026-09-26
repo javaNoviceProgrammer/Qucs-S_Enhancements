@@ -104,6 +104,9 @@ struct tQucsSettings {
   QStringList RecentDocs;
 
   QStringList RecentProjects;
+  // A project is any folder (in the workspace, or opened as one), not only
+  // one named NAME_prj: qucs_s::workspace (workspace.h) says which are.
+  bool AnyFolderIsProject = false;
 
   bool IgnoreFutureVersion;
   bool GraphAntiAliasing;

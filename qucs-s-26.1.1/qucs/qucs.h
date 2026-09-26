@@ -243,7 +243,8 @@ public:
   static const QStringList &textFileSuffixes();
   /// The program registered for a suffix under File Types, or empty.
   QString userProgramFor(const QString &suffix) const;
-  /// Opens the project directory (".../name_prj"): closes the open
+  /// Opens the project directory (".../name_prj", or any folder when
+  /// QucsSettings.AnyFolderIsProject - workspace.h): closes the open
   /// documents, points the work directory, the Content panel and the
   /// Scratch folder at it.
   void openProject(const QString &);
@@ -283,7 +284,8 @@ public:
   /// Opens what the system hands over - the command line, the Finder or
   /// the Dock (QFileOpenEvent), a desktop's file manager: paths or file:
   /// URLs of documents, and of a project directory (its name ends in
-  /// "_prj"), which opens as the project first. Brings the window to the
+  /// "_prj"; any folder when QucsSettings.AnyFolderIsProject), which opens
+  /// as the project first. Brings the window to the
   /// front. Returns how many documents and projects were opened.
   int openFromSystem(const QStringList &items);
   QString fileType(const QString &);
@@ -644,6 +646,9 @@ private:
 
 public:
   void readProjects();
+  /// Which folders are projects changed (QucsSettings.AnyFolderIsProject):
+  /// the Projects panel sorts and marks them anew, the file browser too.
+  void applyProjectSettings();
   void
   updatePathList(void); // update the list of paths, pruning non-existing paths
   void updatePathList(QStringList);

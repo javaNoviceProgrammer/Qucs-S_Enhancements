@@ -541,6 +541,25 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
 
     locationsGrid->addWidget(stdPathsGroup, 0, 0, 1, 3);
 
+    // Which folders are projects: those named NAME_prj, or any folder.
+    QGroupBox *projectsGroup = new QGroupBox(tr("Projects"), locationsTab);
+    projectsGroup->setObjectName("projectFolders");
+    QVBoxLayout *projectsBox = new QVBoxLayout(projectsGroup);
+    anyFolderIsProject = new QCheckBox(tr("Any folder is a project, not only one named NAME_prj"), projectsGroup);
+    anyFolderIsProject->setObjectName("anyFolderIsProject");
+    anyFolderIsProject->setToolTip(tr("Open Project and a folder dropped on the window open any folder as a "
+                                      "project, and New Project names the folder as typed (no \"_prj\" added). "
+                                      "A folder named NAME_prj is always a project; other Qucs-S installations "
+                                      "know only those."));
+    projectsBox->addWidget(anyFolderIsProject);
+    QLabel *projectsNote = new QLabel(
+        tr("When on, every folder of the workspace but user_lib (the user libraries) is a project, and "
+           "Import Project and Link Project keep a folder's name."),
+        projectsGroup);
+    projectsNote->setWordWrap(true);
+    projectsBox->addWidget(projectsNote);
+    locationsGrid->addWidget(projectsGroup, 1, 0, 1, 3);
+
 
     // The widgets related to the path searh are put in a groupbox widget
     QGroupBox *pathsGroup = new QGroupBox(tr("Subcircuit Search Paths"), locationsTab);
@@ -662,6 +681,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
 
     /*! Load paths from settings */
     homeEdit->setText(QucsSettings.qucsWorkspaceDir.canonicalPath());
+    anyFolderIsProject->setChecked(QucsSettings.AnyFolderIsProject);
     admsXmlEdit->setText(misc::canonicalDir(QucsSettings.AdmsXmlBinDir));
     ascoEdit->setText(misc::canonicalDir(QucsSettings.AscoBinDir));
     octaveEdit->setText(QucsSettings.OctaveExecutable);
@@ -925,8 +945,14 @@ void QucsSettingsDialog::slotApply()
         changed = true;
     }
 
+    // Which folders are projects: the Projects panel and the file browser
+    // show them anew (after the workspace, which may have changed above).
+    const bool projectsChanged = QucsSettings.AnyFolderIsProject != anyFolderIsProject->isChecked();
+    QucsSettings.AnyFolderIsProject = anyFolderIsProject->isChecked();
+
     saveApplSettings();  // also sets the small and large font
     App->applySyntaxSettings();   // the text documents in the formats set
+    if (projectsChanged) App->applyProjectSettings();
     // The Content panel as the settings now say (its categories' patterns).
     if (App->projectView() != nullptr) App->projectView()->applyRefreshSettings();
 
@@ -1051,6 +1077,7 @@ void QucsSettingsDialog::slotDefaultValues()
     contentRefreshSeconds->setValue(3);
     contentFolderIcons->setChecked(false);
     slotRestoreContentPatterns();
+    anyFolderIsProject->setChecked(false);
     showPinNames->setChecked(true);
     showPinDirections->setChecked(false);
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));

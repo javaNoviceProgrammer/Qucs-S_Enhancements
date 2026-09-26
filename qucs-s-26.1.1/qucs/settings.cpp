@@ -82,6 +82,7 @@ void settingsManager::initDefaults()
     m_Defaults["TextAntiAliasing"] = false;
     m_Defaults["fullTraceName"] = false;
     m_Defaults["ContentTreeView"] = false;
+    m_Defaults["AnyFolderIsProject"] = false;
     m_Defaults["ContentFolderIcons"] = false;
     m_Defaults["ContentAutoRefresh"] = true;
     m_Defaults["ContentRefreshSeconds"] = 3;

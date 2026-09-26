@@ -9,6 +9,7 @@
  * (at your option) any later version.
  */
 #include "workspace.h"
+#include "main.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -51,7 +52,7 @@ QString clean(const QString& path)
     return path.isEmpty() ? path : QDir::cleanPath(path);
 }
 
-bool isProjectName(const QString& name)
+bool hasSuffix(const QString& name)
 {
     return name.size() > 4 && name.endsWith(QLatin1String("_prj"));
 }
@@ -84,7 +85,41 @@ bool linkLike(const QFileInfo& info)
 #endif
 }
 
+// Whether \a folder is the workspace: as spelled, or where it is (a
+// workspace reached through a link; macOS' /var, which is /private/var).
+bool isWorkspace(const QString& folder)
+{
+    const QString workspace = clean(QucsSettings.qucsWorkspaceDir.absolutePath());
+    if (samePath(folder, workspace)) return true;
+    const QString real = QFileInfo(folder).canonicalFilePath();
+    return !real.isEmpty() && samePath(real, QFileInfo(workspace).canonicalFilePath());
+}
+
 } // namespace
+
+bool isProjectName(const QString& name)
+{
+    if (hasSuffix(name)) return true;
+    return QucsSettings.AnyFolderIsProject && !name.isEmpty() && !name.startsWith('.') && !name.contains('/')
+           && !name.contains('\\') && !samePath(name, QStringLiteral("user_lib"));
+}
+
+bool isProjectFolder(const QString& path)
+{
+    const QFileInfo info(clean(path));
+    if (hasSuffix(info.fileName())) return true;
+    return QucsSettings.AnyFolderIsProject && isProjectName(info.fileName()) && isWorkspace(info.absolutePath());
+}
+
+QString projectName(const QString& folderName)
+{
+    return hasSuffix(folderName) ? folderName.chopped(4) : folderName;
+}
+
+QString folderFor(const QString& name)
+{
+    return QucsSettings.AnyFolderIsProject || hasSuffix(name) ? name : name + QLatin1String("_prj");
+}
 
 bool isLink(const QString& path)
 {
@@ -114,11 +149,18 @@ Result check(const QString& sourceGiven, const QString& workspaceGiven, const QS
         return r;
     }
     if (!isProjectName(from.fileName())) {
-        r.message = tr("%1 is not a project: the name of a project's folder ends in \"_prj\".").arg(shown(source));
+        r.message = QucsSettings.AnyFolderIsProject
+                        ? tr("%1 cannot be a project: it is hidden, or it is named user_lib, as the workspace's "
+                             "folder of user libraries is.").arg(shown(source))
+                        : tr("%1 is not a project: the name of a project's folder ends in \"_prj\" - unless "
+                             "\"Any folder is a project\" is on (Settings, Locations).").arg(shown(source));
         return r;
     }
     if (!isProjectName(wanted) || wanted.contains('/') || wanted.contains('\\') || wanted.startsWith('.')) {
-        r.message = tr("\"%1\" is no name for a project: it ends in \"_prj\" and has no \"/\".").arg(wanted);
+        r.message = QucsSettings.AnyFolderIsProject
+                        ? tr("\"%1\" is no name for a project: it has no \"/\", does not begin with \".\" and "
+                             "is not user_lib.").arg(wanted)
+                        : tr("\"%1\" is no name for a project: it ends in \"_prj\" and has no \"/\".").arg(wanted);
         return r;
     }
     const QString space = QFileInfo(workspace).canonicalFilePath();
@@ -201,11 +243,11 @@ Result linkProject(const QString& sourceGiven, const QString& workspaceGiven, co
 
 QString freeName(const QString& workspace, const QString& name)
 {
-    QString base = name;
-    if (base.endsWith(QLatin1String("_prj"))) base.chop(4);
+    const bool suffixed = hasSuffix(name);
+    const QString base = suffixed ? name.chopped(4) : name;
     const QDir dir(workspace);
     for (int n = 2; n < 100000; ++n) {
-        const QString candidate = QStringLiteral("%1_%2_prj").arg(base).arg(n);
+        const QString candidate = base + QLatin1Char('_') + QString::number(n) + (suffixed ? QStringLiteral("_prj") : QString());
         const QString path = dir.absoluteFilePath(candidate);
         if (!QFileInfo::exists(path) && !isLink(path)) return candidate;
     }
