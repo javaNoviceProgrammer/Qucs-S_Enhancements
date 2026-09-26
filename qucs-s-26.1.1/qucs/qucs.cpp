@@ -2932,6 +2932,12 @@ void QucsApp::toggleClaudeCode()
 
 void QucsApp::reloadChangedFiles(const QStringList &files)
 {
+  // Not under a dialog waiting for an answer (editing a part of one of
+  // them, say): loading again frees what it holds. Once it is closed.
+  if (QApplication::activeModalWidget() != nullptr) {
+    QTimer::singleShot(300, this, [this, files] { reloadChangedFiles(files); });
+    return;
+  }
   for (const QString &file : files) {
     const QString canonical = QFileInfo(file).canonicalFilePath();
     if (canonical.isEmpty()) continue;   // gone again

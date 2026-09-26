@@ -546,8 +546,14 @@ private slots:
         // File > Document Settings (by the last part of its path).
         const QString settings = app->fileSettings->text();
 
-        QJsonObject seen, answered;
+        QJsonObject seen, answered, refused, undone, state;
+        const auto parts = sch->a_DocComps.size();
         QTimer::singleShot(800, this, [&] {
+            // While it waits: what changes waits too (the dialog holds on to
+            // what it edits); what looks goes on.
+            refused = call("add_component", {{"type", "R"}, {"x", 500}, {"y", 500}});
+            undone = call("undo");
+            state = call("get_state");
             seen = json(call("get_dialog")).toObject();
             answered = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "horizontal Grid"}, {"value", "20"}}}},
                                            {"press", "OK"}});
@@ -561,6 +567,11 @@ private slots:
         for (const QJsonValue& v : seen.value("controls").toArray())
             grid = grid || v.toObject().value("label").toString().contains("horizontal Grid", Qt::CaseInsensitive);
         QVERIFY2(grid, QJsonDocument(seen).toJson().constData());
+        QVERIFY(failed(refused));
+        QVERIFY2(text(refused).contains("waits for an answer"), qPrintable(text(refused)));
+        QVERIFY(failed(undone));
+        QVERIFY(!failed(state));
+        QCOMPARE(sch->a_DocComps.size(), parts);
         QVERIFY2(!failed(answered), qPrintable(text(answered)));
         QVERIFY2(text(answered).contains("no dialog is open"), qPrintable(text(answered)));
         QCOMPARE(sch->getGridX(), 20);

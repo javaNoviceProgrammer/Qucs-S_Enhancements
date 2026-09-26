@@ -1079,6 +1079,21 @@ QString QucsControl::textOf(const QJsonObject& result)
 
 QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, const Done& done, bool& async)
 {
+    // A dialog waiting for an answer - the user's, editing a part or a
+    // diagram, or one Claude opened - holds on to what it edits: a change
+    // under it (an undo rebuilds the whole schematic) freed what it held.
+    // Only what looks, and what answers the dialog, runs until it closes.
+    static const QSet<QString> whileADialogWaits{
+        QStringLiteral("get_state"), QStringLiteral("get_schematic"), QStringLiteral("screenshot"),
+        QStringLiteral("list_component_types"), QStringLiteral("list_actions"), QStringLiteral("get_dialog"),
+        QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"),
+        QStringLiteral("describe_component_type"), QStringLiteral("batch")};
+    if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool))
+        return errorResult(tr("“%1” is open in Qucs-S and waits for an answer: %2 waits until it is closed (get_dialog "
+                              "reads it, set_dialog answers it - or ask the user to).")
+                               .arg(dialog->windowTitle().isEmpty() ? QString::fromLatin1(dialog->metaObject()->className())
+                                                                    : dialog->windowTitle(),
+                                    tool));
     if (tool == QLatin1String("get_state")) return getState(args);
     if (tool == QLatin1String("open_document")) return openDocument(args);
     if (tool == QLatin1String("new_document")) return newDocument(args);
