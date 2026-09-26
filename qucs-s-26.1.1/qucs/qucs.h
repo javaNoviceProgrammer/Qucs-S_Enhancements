@@ -173,6 +173,13 @@ public:
   /// View > Show Grid: for the current document, or - when the settings
   /// show or hide the grid everywhere - for all schematics.
   void updateGridAction();
+  /// Locks the toolbars where they are - none can be dragged elsewhere,
+  /// one left floating goes back to the window - or unlocks them; kept in
+  /// the settings (View > Toolbars > Lock Toolbars).
+  void setToolbarsLocked(bool locked);
+  bool toolbarsLocked() const;
+  /// The window's toolbars: File, Edit, View, Work, Simulate, Hierarchy.
+  QList<QToolBar *> toolbars() const;
   /// The find bar under a pane's documents.
   FindBar *findBarOf(ContextMenuTabWidget *pane) const;
   /// All open documents, pane by pane, in tab order.
@@ -308,6 +315,9 @@ public:
 
 protected:
   void closeEvent(QCloseEvent *);
+  /// The right click on the toolbars or the docks' titles: the toolbars
+  /// and docks to show or hide, and Lock Toolbars.
+  QMenu *createPopupMenu() override;
 
 public slots:
   void slotFileNew();         // generate a new schematic in the view TabBar
@@ -665,6 +675,8 @@ private:
       *viewMenu, *helpMenu, *alignMenu, *toolMenu, *recentFilesMenu, *cmMenu,
       *symbolMenu;
   QMenu *themeMenu = nullptr;          // View > Theme
+  QMenu *toolbarsMenu = nullptr;       // View > Toolbars
+  QAction *lockToolbars = nullptr;     // View > Toolbars > Lock Toolbars
   QActionGroup *themeActions = nullptr;
   QAction *fileRecentAction[MaxRecentFiles];
   QAction *fileClearRecent;

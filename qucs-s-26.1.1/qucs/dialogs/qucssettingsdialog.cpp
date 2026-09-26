@@ -330,6 +330,15 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     gridModeCombo->setCurrentIndex(gridModeCombo->findData(QucsSettings.GridMode));
     appAppearanceGrid->addWidget(gridModeCombo, 12, 1);
 
+    appAppearanceGrid->addWidget(new QLabel(tr("Lock the toolbars:"), appSettingsTab), 13, 0);
+    lockToolbarsCheck = new QCheckBox(appSettingsTab);
+    lockToolbarsCheck->setObjectName("lockToolbarsCheck");
+    lockToolbarsCheck->setToolTip(tr("The toolbars stay where they are: they cannot be dragged to another "
+                                     "place or off the window by accident. Also under View > Toolbars, "
+                                     "and in the menu of a right click on the toolbars."));
+    lockToolbarsCheck->setChecked(QucsSettings.LockToolbars);
+    appAppearanceGrid->addWidget(lockToolbarsCheck, 13, 1);
+
     t->addTab(appAppearanceTab, tr("Appearance"));
 
     // ...........................................................
@@ -792,6 +801,11 @@ void QucsSettingsDialog::slotApply()
         App->applyGridSetting();
         changed = true;
     }
+    if (QucsSettings.LockToolbars != lockToolbarsCheck->isChecked())
+    {
+        App->setToolbarsLocked(lockToolbarsCheck->isChecked());
+        changed = true;
+    }
     if (QucsSettings.PaperFollowsTheme != paperFollowsTheme->isChecked())
     {
         QucsSettings.PaperFollowsTheme = paperFollowsTheme->isChecked();
@@ -1125,6 +1139,7 @@ void QucsSettingsDialog::slotDefaultValues()
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));
     paperFollowsTheme->setChecked(false);
     gridModeCombo->setCurrentIndex(gridModeCombo->findData(0));
+    lockToolbarsCheck->setChecked(false);
     checkLoadFromFutureVersions->setChecked(false);
     checkAntiAliasing->setChecked(false);
     checkTextAntiAliasing->setChecked(true);
