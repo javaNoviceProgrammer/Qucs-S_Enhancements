@@ -2986,7 +2986,11 @@ public:
 }
 
 void Schematic::displayMutations() {
-    qucs_s::Healer healer{a_Components, a_Wires, mousyMutationParams().m_healer_params};
+    // At every step of a drag: what healing would do once it is dropped -
+    // planned from what it would find trouble in (healer.h), not from the
+    // whole of a large schematic at each step.
+    const qucs_s::HealingScope scope = qucs_s::scopeOfTrouble(*a_Components, *a_Wires);
+    qucs_s::Healer healer{&scope.components, &scope.wires, mousyMutationParams().m_healer_params};
     internal::ChangesPainter p{this};
 
     for (auto& mutation : healer.planHealing()) {

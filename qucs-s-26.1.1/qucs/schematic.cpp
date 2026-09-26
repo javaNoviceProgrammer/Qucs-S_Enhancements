@@ -16,6 +16,7 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <array>
 #include <QString>
 #include <unordered_set>
 
@@ -31,6 +32,7 @@
 #include "schematic.h"
 #include "statusbar.h"
 #include "ink.h"
+#include "levelofdetail.h"
 #include <QHelpEvent>
 #include <QToolTip>
 #include "settings.h"
@@ -390,6 +392,7 @@ void Schematic::setChanged(bool c, bool fillStack, char Op)
     a_DocChanged = c;
     if (c)
         emit signalEdited();
+    ++a_sceneGeneration;   // a gesture's scene is drawn again
 
     a_showBias = -1; // schematic changed => bias points may be invalid
 
@@ -569,7 +572,33 @@ void Schematic::paintFrame(QPainter* painter) {
 
 // -----------------------------------------------------------
 // Is called when the content (schematic or data display) has to be drawn.
-void Schematic::drawContents(QPainter *p, int, int, int, int)
+void Schematic::drawContents(QPainter *p, int clipx, int clipy, int clipw, int cliph)
+{
+    // A step of a gesture is painted once (contentsMouseMoveEvent()).
+    const Gesture gesture = std::exchange(a_gesture, Gesture::None);
+    const QTransform base = p->transform();
+    setUpModelPainter(p);
+
+    // What is drawn on the canvas is drawn on its paper: on a dark one,
+    // the colours meant for light paper are fitted to it (ink.h).
+    const qucs_s::ink::Paper paper(viewport()->palette().color(viewport()->backgroundRole()));
+    // Texts a pixel or two tall are left out (levelofdetail.h).
+    const qucs_s::lod::HiddenTexts hidden(p->fontMetrics().lineSpacing() * a_Scale < qucs_s::lod::kSmallestLine);
+
+    const QRectF area = modelArea(QRect(clipx, clipy, clipw, cliph));
+    if (gesture == Gesture::None) {
+        a_heldScene.reset();
+        drawScene(p, area, Layer::All);
+    } else {
+        showHeldScene(p, gesture, base);
+        if (gesture == Gesture::Moving)
+            drawElements(p, area, Layer::Moving);
+    }
+
+    drawPostPaintEvents(p);
+}
+
+void Schematic::setUpModelPainter(QPainter* p) const
 {
     QTransform trf{p->transform()};
     trf
@@ -584,22 +613,104 @@ void Schematic::drawContents(QPainter *p, int, int, int, int)
         .setFlag(QPainter::SmoothPixmapTransform);
     p->setRenderHints(renderHints);
 
-    // What is drawn on the canvas is drawn on its paper: on a dark one,
-    // the colours meant for light paper are fitted to it (ink.h).
-    const qucs_s::ink::Paper paper(viewport()->palette().color(viewport()->backgroundRole()));
-
     p->setFont(QucsSettings.font);
+}
+
+QRectF Schematic::modelArea(const QRect& contents) const
+{
+    // A few pixels, whatever the zoom (cosmetic pens, antialiasing), and a
+    // few units of the model (the widest pens, a selected node's ring).
+    const double margin = 10 + 4 / a_Scale;
+    return QRectF(contents.x() / a_Scale + a_ViewX1, contents.y() / a_Scale + a_ViewY1,
+                  contents.width() / a_Scale, contents.height() / a_Scale)
+        .adjusted(-margin, -margin, margin, margin);
+}
+
+void Schematic::drawScene(QPainter* p, const QRectF& area, Layer layer)
+{
     drawGrid(p);
 
     if (!a_symbolMode)
         paintFrame(p);
 
-    drawElements(p);
+    drawElements(p, area, layer);
     if (a_showBias > 0) {
         drawDcBiasPoints(p);
     }
+}
 
-    drawPostPaintEvents(p);
+Schematic::SceneKey Schematic::sceneKey(Gesture gesture, const QTransform& base) const
+{
+    SceneKey key{};
+    key.gesture = gesture;
+    key.base = base;
+    key.scale = a_Scale;
+    key.viewX1 = a_ViewX1;
+    key.viewY1 = a_ViewY1;
+    key.size = viewport()->size();
+    key.ratio = viewport()->devicePixelRatioF();
+    key.paper = viewport()->palette().color(viewport()->backgroundRole()).rgba();
+    key.generation = a_sceneGeneration;
+    key.components = a_Components->size();
+    key.wires = a_Wires->size();
+    key.nodes = a_Nodes->size();
+    key.paintings = a_Paintings->size();
+    key.diagrams = a_Diagrams->size();
+    // The selection, told apart cheaply: how much, and where. (A selection
+    // changed from elsewhere - Claude's tools - need not be an edit.)
+    const auto note = [&key](const Element* e) {
+        if (e == nullptr || !e->isSelected) return;
+        ++key.selected;
+        key.selectedSum += reinterpret_cast<quintptr>(e);
+    };
+    for (const Component* c : *a_Components) note(c);
+    for (const Wire* w : *a_Wires) {
+        note(w);
+        note(w->label());
+    }
+    for (const Node* n : *a_Nodes) {
+        note(n);
+        note(n->label());
+    }
+    for (const Painting* pp : *a_Paintings) note(pp);
+    for (const Diagram* d : *a_Diagrams) {
+        note(d);
+        for (const Graph* g : d->Graphs) {
+            note(g);
+            for (const Marker* m : g->Markers) note(m);
+        }
+    }
+    key.showBias = a_showBias;
+    key.grid = gridShown();
+    key.gridX = a_GridX;
+    key.gridY = a_GridY;
+    key.symbolMode = a_symbolMode;
+    key.texts = qucs_s::lod::textsShown();
+    return key;
+}
+
+void Schematic::showHeldScene(QPainter* p, Gesture gesture, const QTransform& base)
+{
+    const SceneKey key = sceneKey(gesture, base);
+    if (!a_heldScene || !(a_heldScene->key == key)) {
+        // The whole canvas, as a paint of it would draw it - while a
+        // selection is dragged, without what moves.
+        const qreal ratio = viewport()->devicePixelRatioF();
+        QPixmap pixmap(viewport()->size() * ratio);
+        pixmap.setDevicePixelRatio(ratio);
+        pixmap.fill(viewport()->palette().color(viewport()->backgroundRole()));
+        QPainter scene(&pixmap);
+        scene.setTransform(base);
+        setUpModelPainter(&scene);
+        const QRect canvas(contentsX(), contentsY(), viewport()->width(), viewport()->height());
+        drawScene(&scene, modelArea(canvas), gesture == Gesture::Moving ? Layer::Staying : Layer::All);
+        scene.end();
+        a_heldScene = HeldScene{key, pixmap};
+    }
+    p->save();
+    p->resetTransform();
+    p->drawPixmap(0, 0, a_heldScene->pixmap);
+    p->restore();
 }
 
 Schematic::Net Schematic::netOf(Wire* start) const {
@@ -666,7 +777,7 @@ Schematic::Net Schematic::selectedNet() const {
     return net;
 }
 
-void Schematic::drawNetHighlight(QPainter* painter, const Net& net) {
+void Schematic::drawNetHighlight(QPainter* painter, const Net& net, const QRectF& area) {
     if (net.empty()) return;
     painter->save();
     // A translucent glow: readable on a light or a dark paper, and the
@@ -674,37 +785,132 @@ void Schematic::drawNetHighlight(QPainter* painter, const Net& net) {
     const QColor glow(255, 140, 0, 120);
     painter->setPen(QPen(glow, 9, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     for (Wire* w : net.wires)
-        painter->drawLine(w->x1, w->y1, w->x2, w->y2);
+        if (area.intersects(QRectF(w->boundingRect()).adjusted(-1, -1, 1, 1)))
+            painter->drawLine(w->x1, w->y1, w->x2, w->y2);
     painter->setPen(Qt::NoPen);
     painter->setBrush(glow);
     for (Node* n : net.nodes)
-        painter->drawEllipse(QPoint(n->x(), n->y()), 6, 6);
+        if (area.contains(n->x(), n->y()))
+            painter->drawEllipse(QPoint(n->x(), n->y()), 6, 6);
     painter->restore();
 }
 
-void Schematic::drawElements(QPainter* painter) {
+namespace {
+
+// Whether an element's rectangle - of no width or height, a wire's -
+// lies within an area, or touches it.
+bool touches(const QRectF& area, const QRect& r)
+{
+    return r.left() <= area.right() && r.right() >= area.left()
+        && r.top() <= area.bottom() && r.bottom() >= area.top();
+}
+
+// The measures of a text's reach: the font's widest character and its
+// lines' spacing. (Qt works the widest out again at every call.)
+struct TextMeasure {
+    int widest;
+    int line;
+};
+
+// What a component may draw: its symbol, and its texts from (tx, ty) on,
+// each measured as though every character were the font's widest - to go
+// without laying the texts out, which is what drawing them costs.
+bool componentTouches(const QRectF& area, const Component* c, const TextMeasure& measure)
+{
+    if (touches(area, c->boundingRect())) return true;
+    if (!qucs_s::lod::textsShown()) return false;
+    // A symbol's own texts may lie outside its bounds ("NPN" beside a
+    // transistor): as far round where each begins as it can be long, at its
+    // size, in whichever direction it turns.
+    for (const Text* t : c->Texts) {
+        const double reach = (t->s.size() + 1) * std::max(t->Size, 1.0);
+        const QRectF around(c->cx + t->x - reach, c->cy + t->y - reach, 2 * reach, 2 * reach);
+        if (around.intersects(area)) return true;
+    }
+    // Its name and properties run right and down from (tx, ty): an area
+    // above or to the left of there they do not reach, however long.
+    if (area.right() < c->cx + c->tx || area.bottom() < c->cy + c->ty - 1) return false;
+    int lines = 0;
+    qsizetype chars = 0;
+    if (c->showName) {
+        lines = 1;
+        chars = c->Name.size();
+    }
+    for (const Property* prop : c->Props) {
+        if (!prop->display) continue;
+        // (A value is shown up to MaxShownValue characters: displayText().)
+        const QStringView shown = QStringView(prop->Value).left(Property::MaxShownValue + 1);
+        lines += 1 + int(shown.count(QLatin1Char('\n')));
+        chars = std::max(chars, prop->Name.size() + 1 + shown.size());
+    }
+    if (lines == 0) return false;
+    const qint64 width = std::min<qint64>(qint64(chars) * measure.widest, misc::MaxCoordinate);
+    const QRect texts(c->cx + c->tx, c->cy + c->ty - 1, int(width), lines * measure.line);
+    return touches(area, texts);
+}
+
+// A label's text, drawn bold when highlighted: a little wider than it was
+// measured.
+QRect labelReach(const WireLabel* label)
+{
+    const QRect r = label->boundingRect();
+    return r.adjusted(-r.height(), -r.height(), r.width() / 2 + r.height(), r.height());
+}
+
+} // namespace
+
+void Schematic::drawElements(QPainter* painter, const QRectF& area, Layer layer) {
+    const QFontMetrics metrics = painter->fontMetrics();
+    const TextMeasure measure{metrics.maxWidth(), metrics.lineSpacing()};
+    // Whether an element that moves, or stays, while a selection is
+    // dragged is of the layer drawn.
+    const auto of = [layer](bool moving) {
+        return layer == Layer::All || (layer == Layer::Moving) == moving;
+    };
+    const auto selected = [](const Element* e) { return e->isSelected; };
+    // A node moves with what it joins.
+    const auto nodeMoves = [&](const Node* n) {
+        return layer != Layer::All
+            && (n->isSelected || std::ranges::any_of(n->components(), selected)
+                || std::ranges::any_of(n->wires(), selected));
+    };
+
     for (auto* component : *a_Components) {
-        component->paint(painter);
+        if (of(component->isSelected) && componentTouches(area, component, measure))
+            component->paint(painter);
     }
 
-    if (!a_symbolMode)
-        drawNetHighlight(painter, selectedNet());
+    // The glow of the selected wires' nets: while a selection is dragged,
+    // those wires move, and it with them.
+    if (!a_symbolMode && layer != Layer::Staying)
+        drawNetHighlight(painter, selectedNet(), area);
 
     for (auto* wire : *a_Wires) {
-        wire->paint(painter);
+        if (of(wire->isSelected) && touches(area, wire->boundingRect()))
+            wire->paint(painter);
         if (wire->hasLabel()) {
-            wire->label()->paint(painter); // separate because of paintSelected
+            const bool moves = wire->isSelected || wire->label()->isSelected;
+            if (of(moves) && touches(area, labelReach(wire->label())))
+                wire->label()->paint(painter); // separate because of paintSelected
         }
     }
 
     for (auto* node : *a_Nodes) {
-        node->paint(painter);
+        const bool moves = nodeMoves(node);
+        if (of(moves) && area.contains(node->x(), node->y()))
+            node->paint(painter);
         if (node->hasLabel()) {
-            node->label()->paint(painter); // separate because of paintSelected
+            if (of(moves || node->label()->isSelected) && touches(area, labelReach(node->label())))
+                node->label()->paint(painter); // separate because of paintSelected
         }
     }
 
     for (auto* diagram : *a_Diagrams) {
+        // A marker dragged moves on its diagram.
+        const bool moves = diagram->isSelected || std::ranges::any_of(diagram->Graphs, [](const Graph* g) {
+            return std::ranges::any_of(g->Markers, [](const Marker* m) { return m->isSelected; });
+        });
+        if (!of(moves)) continue;
         if (qucs_s::ink::darkPaper()) {
             // On dark paper a diagram is a light card, drawn as it is
             // printed: its axes, grid, texts and header bars keep their
@@ -718,7 +924,8 @@ void Schematic::drawElements(QPainter* painter) {
     }
 
     for (auto* painting : *a_Paintings) {
-        painting->paint(painter);
+        if (of(painting->isSelected))
+            painting->paint(painter);
     }
 }
 
@@ -966,6 +1173,22 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
         a_previousCursorPosition = currentCursorPosition;
     }
 
+    // What the step paints (drawContents()): only what the gesture draws
+    // over the schematic, or also the selection it drags - the rest as it
+    // was. Anything else (the first step of a drag, which sets it up, or a
+    // painting resized) is painted as a whole.
+    using M = MouseActions;
+    static const std::array drawing{
+        &M::MMoveSelect, &M::MMoveElement, &M::MMoveWire1, &M::MMoveWire2, &M::MMovePaste,
+        &M::MMovePaste2, &M::MMoveDelete, &M::MMoveLabel, &M::MMoveMarker, &M::MMoveMirrorX,
+        &M::MMoveMirrorY, &M::MMoveRotate, &M::MMoveActivate, &M::MMoveOnGrid, &M::MMoveMoveTextB,
+        &M::MMoveMoveText, &M::MMoveZoomIn, &M::MMoveSetLimits};
+    static const std::array moving{&M::MMoveMoving2, &M::MMoveFree2};
+    const auto action = a_App->MouseMoveAction;
+    a_gesture = std::ranges::find(drawing, action) != drawing.end() ? Gesture::Drawing
+              : std::ranges::find(moving, action) != moving.end()   ? Gesture::Moving
+                                                                     : Gesture::None;
+
     if (a_App->MouseMoveAction)
         callView(a_App->MouseMoveAction, this, Event);
 }
@@ -973,6 +1196,7 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
 // -----------------------------------------------------------
 void Schematic::contentsMousePressEvent(QMouseEvent *Event)
 {
+    a_gesture = Gesture::None;   // what it does is painted as a whole
     a_App->view->dropStaleElements(this);
     a_App->editText->setHidden(true); // disable text edit of component property
     this->setFocus();
@@ -1019,6 +1243,7 @@ void Schematic::contentsMousePressEvent(QMouseEvent *Event)
 // -----------------------------------------------------------
 void Schematic::contentsMouseReleaseEvent(QMouseEvent *Event)
 {
+    a_gesture = Gesture::None;   // what it does is painted as a whole
     a_App->view->dropStaleElements(this);
     // End "pan with mouse" action.
     if (Event->button() == Qt::MiddleButton) {
@@ -1033,6 +1258,7 @@ void Schematic::contentsMouseReleaseEvent(QMouseEvent *Event)
 // -----------------------------------------------------------
 void Schematic::contentsMouseDoubleClickEvent(QMouseEvent *Event)
 {
+    a_gesture = Gesture::None;   // what it does is painted as a whole
     a_App->view->dropStaleElements(this);
     if (a_App->MouseDoubleClickAction)
         callView(a_App->MouseDoubleClickAction, this, Event);
@@ -1636,6 +1862,7 @@ Schematic::Selection Schematic::elementsToSelection(const std::list<Element*> &e
 // whose dataset changed since they read it, or all of them (force).
 void Schematic::reloadGraphs(bool force)
 {
+    ++a_sceneGeneration;   // (new data: not an edit, but a new picture)
     QFileInfo Info(a_DocName);
     for (Diagram *pd : *a_Diagrams) {
         if (force)
@@ -1685,6 +1912,7 @@ bool Schematic::load()
     deleteSymbolPaintings();
 
     const bool loaded = loadDocument();
+    ++a_sceneGeneration;
     emit signalDocumentRebuilt(this);
     if (!loaded)
         return false;
@@ -2222,6 +2450,7 @@ void Schematic::switchPaintMode()
 // *********************************************************************
 void Schematic::contentsWheelEvent(QWheelEvent *Event)
 {
+    a_gesture = Gesture::None;   // what it does is painted as a whole
     a_App->editText->setHidden(true); // disable edit of component property
 
     // A mouse wheel angle delta of a single step is typically 120,

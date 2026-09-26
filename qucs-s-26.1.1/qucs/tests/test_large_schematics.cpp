@@ -27,6 +27,8 @@
 #include "misc.h"
 #include "config.h"
 #include "conductor_index.h"
+#include "healer.h"
+#include "wirelabel.h"
 #include "geometry/multi_point.h"
 #include "components/component.h"
 #include "components/resistor.h"
@@ -86,6 +88,33 @@ void selectEvery(Schematic& sch, int k)
 std::size_t orphans(const Schematic& sch)
 {
     return std::ranges::count_if(sch.a_DocNodes, [](const Node* n) { return n->conn_count() == 0; });
+}
+
+// What a healing plan would do, written down (not done).
+struct PlanRecorder : qucs_s::SchematicMutator {
+    QStringList steps;
+    static QString at(const QPoint& p) { return QStringLiteral("(%1,%2)").arg(p.x()).arg(p.y()); }
+    static QString of(const void* p) { return QString::number(quintptr(p), 16); }
+    static QString port(const qucs_s::GenericPort* port)
+    {
+        const void* host = port->isOfWire() ? static_cast<const void*>(port->hostWire())
+                                            : static_cast<const void*>(port->hostComponent());
+        return of(host) + at(port->center()) + of(port->node());
+    }
+    void deleteWire(Wire* w) override { steps << "delete " + of(w); }
+    void connectWithWire(const QPoint& a, const QPoint& b) override { steps << "connect " + at(a) + at(b); }
+    void putLabel(WireLabel* l, Node* n) override { steps << "label " + of(l) + " " + of(n); }
+    void moveNode(Node* n, const QPoint& p) override { steps << "node " + of(n) + at(p); }
+    void movePort(qucs_s::GenericPort* p, const QPoint& to) override { steps << "port " + port(p) + at(to); }
+    void replaceNode(qucs_s::GenericPort* p) override { steps << "replace " + port(p); }
+};
+
+QStringList plan(const std::list<Component*>& components, const std::list<Wire*>& wires, bool reshaping)
+{
+    const qucs_s::Healer healer{&components, &wires, {.allowWireReshaping = reshaping, .allowWireRelaying = false, .wireRelayingDepth = 2}};
+    PlanRecorder recorder;
+    for (auto& action : healer.planHealing()) action->execute(&recorder);
+    return recorder.steps;
 }
 
 } // namespace
@@ -296,6 +325,47 @@ private slots:
         QCOMPARE(sch.a_DocNodes.size(), nodes);
         QCOMPARE(orphans(sch), std::size_t(0));
         QCOMPARE(g_violations, 0);
+    }
+
+    // At each step of a drag the canvas shows what healing will do once it
+    // is dropped: planned from the elements joined to a node something has
+    // left (and the selection), not from the whole schematic - the plan
+    // must be the one the whole schematic gives, step for step. Selections
+    // of components, of wires, of both, dragged over steps; with trouble
+    // elsewhere too, left by an element moved without healing.
+    void aDragPreviewPlansWhatTheWholeSchematicWould()
+    {
+        const QString file = write(QStringLiteral("preview.sch"), chain(300));
+        std::mt19937 rng(20260926);
+        int planned = 0;
+        for (int round = 0; round < 40; ++round) {
+            Schematic sch(nullptr, file);
+            QVERIFY(sch.load());
+            selectNone(sch);
+            std::vector<Component*> comps(sch.a_DocComps.begin(), sch.a_DocComps.end());
+            std::vector<Wire*> wires(sch.a_DocWires.begin(), sch.a_DocWires.end());
+            if (round % 4 == 3) {
+                // Trouble away from the selection
+                Component* stray = comps[rng() % comps.size()];
+                stray->moveCenter(10, 0);
+            }
+            const int picks = 1 + int(rng() % 6);
+            for (int k = 0; k < picks; ++k) {
+                if (round % 3 != 1) comps[rng() % comps.size()]->isSelected = true;
+                if (round % 3 != 0) wires[rng() % wires.size()]->isSelected = true;
+            }
+            for (int step = 0; step < 4; ++step) {
+                sch.currentSelection().moveCenter(10 * (int(rng() % 5) - 2), 10 * (int(rng() % 5) - 2));
+                const qucs_s::HealingScope scope = qucs_s::scopeOfTrouble(sch.a_DocComps, sch.a_DocWires);
+                QVERIFY(scope.components.size() < sch.a_DocComps.size());
+                for (const bool reshaping : {true, false}) {
+                    const QStringList whole = plan(sch.a_DocComps, sch.a_DocWires, reshaping);
+                    QCOMPARE(plan(scope.components, scope.wires, reshaping), whole);
+                    planned += int(whole.size());
+                }
+            }
+        }
+        QVERIFY(planned > 100);   // the drags did leave something to heal
     }
 
     // Four times the elements, about four times the time (sixteen when
