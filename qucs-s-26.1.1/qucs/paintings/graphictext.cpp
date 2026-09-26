@@ -283,7 +283,7 @@ QRectF GraphicText::getTextBounds(QPainter* painter) const {
     }
 
     // Setup font
-    QFont f = font;
+    QFont f = misc::canvasFont(font);
     f.setPixelSize(QFontInfo{font}.pixelSize());
     p->setFont(f);
 

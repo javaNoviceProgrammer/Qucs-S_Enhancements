@@ -435,7 +435,7 @@ void Component::drawPins(QPainter* p) {
 
     p->save();
     p->setPen(qucs_s::ink::on(QPen(Qt::black, 1)));
-    p->setFont(pinFont());
+    p->setFont(misc::canvasFont(pinFont()));
 
     for (const Port* port : Ports) {
         if (!port->avail) continue;

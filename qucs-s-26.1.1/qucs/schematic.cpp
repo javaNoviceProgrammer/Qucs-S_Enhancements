@@ -615,7 +615,7 @@ void Schematic::setUpModelPainter(QPainter* p) const
         .setFlag(QPainter::SmoothPixmapTransform);
     p->setRenderHints(renderHints);
 
-    p->setFont(QucsSettings.font);
+    p->setFont(misc::canvasFont(QucsSettings.font));
 }
 
 QRectF Schematic::modelArea(const QRect& contents) const

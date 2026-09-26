@@ -489,6 +489,12 @@ QFont misc::pinFont()
   return font;
 }
 
+QFont misc::canvasFont(QFont font)
+{
+  font.setStyleStrategy(QFont::StyleStrategy(font.styleStrategy() | QFont::NoSubpixelAntialias));
+  return font;
+}
+
 // #########################################################################
 QString misc::properName(const QString& Name)
 {
