@@ -123,6 +123,16 @@ public:
     /// the reading of the program's output.
     virtual void callTool(const QString& tool, const QJsonObject& arguments,
                           std::function<void(const QJsonObject&)> done) = 0;
+    /// As callTool(), for the conversation \a caller (a number of its
+    /// own, the same at each of its calls): a host may tell it what has
+    /// changed since its last call that it did not change itself - the
+    /// user's edits, a simulation the user ran.
+    virtual void callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
+                             std::function<void(const QJsonObject&)> done)
+    {
+        Q_UNUSED(caller);
+        callTool(tool, arguments, std::move(done));
+    }
     /// \a arguments for a conversation pinned to \a document (a file;
     /// empty: none): a tool that acts on the document in front when it is
     /// given none is given that one. As they are, unless the host says
@@ -337,6 +347,14 @@ private:
     bool a_initSeen = false;   // the program said it started
     bool a_resumeFailed = false;   // it could not continue a_resumedFrom
     QString a_lastPrompt;      // (sent again to a new conversation then)
+    // Who this conversation is to the tools' host: a number no other
+    // conversation of this run has (ToolHost::callToolFor()).
+    const quint64 a_caller = nextCaller();
+    static quint64 nextCaller()
+    {
+        static quint64 last = 0;
+        return ++last;
+    }
     QStringList a_slashCommands;
     QString a_modelInUse;
     QString a_modeInUse;

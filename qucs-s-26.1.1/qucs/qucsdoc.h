@@ -20,6 +20,7 @@
 
 #include <QString>
 #include <QDateTime>
+#include <QList>
 
 class QucsApp;
 class QPrinter;
@@ -73,6 +74,26 @@ public:
   QDateTime getLastSaved() const { return a_lastSaved; }
   void setLastSaved(const QDateTime& value) { a_lastSaved = value; }
 
+  /// The revision of the content: it counts every edit, undo, redo and
+  /// reload, whoever made it - so that a reader can tell the document
+  /// changed under it.
+  quint64 revision() const { return a_revision; }
+  /// An edit, and who made it: the conversation whose tool call made it
+  /// (editor()), or 0 for the user.
+  struct Edit {
+    quint64 revision;
+    quint64 by;
+    QDateTime at;
+  };
+  /// The latest edits, the last one last (a few dozen of them).
+  const QList<Edit>& recentEdits() const { return a_recentEdits; }
+  /// Counts an edit of the content, made by editor().
+  void edited();
+  /// Who edits now: the conversation whose tool call runs (a number of its
+  /// own), or 0 - the user. Set by whoever runs the tool calls.
+  static quint64 editor();
+  static void setEditor(quint64 who);
+
 protected:
   QString a_DocName;
   QString a_DataSet;     // name of the default dataset
@@ -90,6 +111,9 @@ protected:
   bool a_GridOn;
   int a_tmpPosX;
   int a_tmpPosY;
+private:
+  quint64 a_revision = 0;
+  QList<Edit> a_recentEdits;
 };
 
 #endif

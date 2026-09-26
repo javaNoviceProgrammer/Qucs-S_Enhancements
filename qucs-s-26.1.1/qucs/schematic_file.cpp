@@ -1326,6 +1326,7 @@ bool Schematic::rebuild(QString *s)
 
   // Whoever cached pointers into the old document must let go of them now.
   ++a_sceneGeneration;
+  edited();
   emit signalDocumentRebuilt(this);
   return ok;
 }
@@ -1348,6 +1349,7 @@ bool Schematic::rebuildSymbol(QString *s)
   const bool ok = loadPaintings(&stream, &a_SymbolPaints);
 
   ++a_sceneGeneration;
+  edited();
   emit signalDocumentRebuilt(this);
   return ok;
 }

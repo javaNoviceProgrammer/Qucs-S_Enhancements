@@ -17,12 +17,16 @@
 #include "components/component.h"
 #include "dataset.h"
 #include "diagrams/diagrams.h"
+#include "diagrams/marker.h"
+#include "extsimkernels/CdlNetlistWriter.h"
 #include "extsimkernels/simulationrun.h"
 #include "extsimkernels/spicecompat.h"
 #include "main.h"
 #include "misc.h"
 #include "module.h"
 #include "node.h"
+#include "oppoint.h"
+#include "projectView.h"
 #include "qucs.h"
 #include "schematic.h"
 #include "settings.h"
@@ -42,6 +46,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 
 using namespace qucs_s::control;
 namespace ds = qucs_s::dataset;
@@ -126,6 +131,7 @@ const char* const kMarkers[] = {"none", "auto", "circle", "square", "triangle", 
 const char* const kLegends[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
 const char* const kUnits[] = {"none", "dB", "dBuV", "dBm"};
 const char* const kNumbers[] = {"real_imaginary", "magnitude_degrees", "magnitude_radians"};
+const char* const kIndicators[] = {"off", "square", "triangle"};
 
 template <size_t N>
 int indexIn(const char* const (&names)[N], const QString& wanted)
@@ -504,9 +510,48 @@ struct ReadOptions {
     QList<double> at;
     QStringList measure;
     ds::MeasureOptions measureOptions;
+    std::optional<bool> decibels;   // as said; else told from the unit
     ds::Form form = ds::Form::MagnitudePhase;
     QString prefix;   // the simulator's, for the name of a trace
+    QHash<QString, QString> definitions;   // the equations' variables (lower case): what they are defined as
 };
+
+// What an equation of the schematic defines a variable of the dataset as
+// ("y" of ac.y: db(norm(v(out)))), or empty.
+QString definitionOf(const ReadOptions& o, const QString& name)
+{
+    return o.definitions.value(ds::bareName(ds::withoutSimulator(name)).toLower());
+}
+
+// The unit, the definition and how a variable was written: what tells a
+// reader what its numbers are before measuring them.
+void describe(QJsonObject& out, const ds::Variable& v, const ReadOptions& o)
+{
+    const QString definition = definitionOf(o, v.name);
+    const QString unit = ds::unitOf(v.name, definition);
+    if (!unit.isEmpty()) out.insert(QStringLiteral("units"), unit);
+    if (!definition.isEmpty()) out.insert(QStringLiteral("defined as"), definition);
+    if (v.writtenComplex) {
+        out.insert(QStringLiteral("real"), true);
+        out.insert(QStringLiteral("written"), QStringLiteral("complex, with no imaginary part: read as real, sign and all"));
+    }
+}
+
+// The variables a schematic's equations define - Qucsator's Eqn, ngspice's
+// NutmegEq - and what each is defined as, by name in lower case (ngspice
+// writes its vectors so).
+QHash<QString, QString> definitionsIn(Schematic* sch)
+{
+    QHash<QString, QString> definitions;
+    for (Component* c : sch->a_DocComps) {
+        if (c->Model != QLatin1String("Eqn") && c->Model != QLatin1String("NutmegEq")) continue;
+        for (const Property* p : c->Props) {
+            if (p->Name == QLatin1String("Export") || p->Name == QLatin1String("Simulation")) continue;
+            definitions.insert(p->Name.trimmed().toLower(), p->Value.trimmed());
+        }
+    }
+    return definitions;
+}
 
 // A complex value as the form gives it.
 QJsonArray complexParts(double re, double im, ds::Form form)
@@ -526,9 +571,89 @@ QJsonValue number(double v)
     return std::isfinite(v) ? QJsonValue(ds::rounded(v)) : QJsonValue(QJsonValue::Null);
 }
 
+// A device's quantity as the dataset names it (@jt1[id]): the device and
+// the quantity.
+bool deviceQuantity(const QString& name, QString* device, QString* quantity)
+{
+    static const QRegularExpression re(QStringLiteral("^@([^\\[\\]]+)\\[([^\\[\\]]+)\\]$"));
+    const QRegularExpressionMatch m = re.match(name);
+    if (!m.hasMatch()) return false;
+    *device = m.captured(1);
+    *quantity = m.captured(2);
+    return true;
+}
+
+QString operatingUnit(const QString& name)
+{
+    QString device, quantity;
+    if (deviceQuantity(name, &device, &quantity)) return qucs_s::oppoint::unitOf(QString(), quantity);
+    return ds::unitOf(name);
+}
+
+// The operating point in a dataset - an op analysis's node values and,
+// with ngspice, every device's quantities - each device under the
+// component of the schematic it is (T1 for ngspice's jt1). With
+// \a devicesInFull false, only which devices there are when there are many.
+QJsonObject operatingPointJson(const ds::Dataset& data, Schematic* sch, bool devicesInFull)
+{
+    QJsonObject nodes;
+    QList<qucs_s::oppoint::Device> devices;
+    QJsonObject units;
+    for (const ds::Variable& v : data.variables()) {
+        if (!ds::isOperatingPointValue(data, v)) continue;
+        QString device, quantity;
+        if (deviceQuantity(v.name, &device, &quantity)) {
+            auto it = std::find_if(devices.begin(), devices.end(), [&device](const auto& d) { return d.name == device; });
+            if (it == devices.end()) {
+                devices.append(qucs_s::oppoint::Device{});
+                devices.last().name = device;
+                it = devices.end() - 1;
+            }
+            it->parameters.append({quantity, v.re.first()});
+            if (const QString u = operatingUnit(v.name); !u.isEmpty()) units.insert(quantity, u);
+        } else {
+            nodes.insert(v.name, number(v.re.first()));
+            if (const QString u = operatingUnit(v.name); !u.isEmpty()) units.insert(v.name, u);
+        }
+    }
+    if (nodes.isEmpty() && devices.isEmpty()) return {};
+    if (sch != nullptr) {
+        QStringList names;
+        for (Component* c : sch->a_DocComps) names << c->Name;
+        qucs_s::oppoint::attribute(devices, names);
+    }
+    QJsonObject op;
+    if (!nodes.isEmpty()) op.insert(QStringLiteral("nodes"), nodes);
+    if (!devices.isEmpty()) {
+        QJsonArray list;
+        const bool full = devicesInFull || devices.size() <= 12;
+        for (const auto& d : devices) {
+            QJsonObject e{{QStringLiteral("device"), d.name}};
+            if (!d.component.isEmpty()) e.insert(QStringLiteral("component"), d.component);
+            if (!d.inside.isEmpty()) e.insert(QStringLiteral("inside"), d.inside);
+            if (full) {
+                QJsonObject values;
+                for (const auto& p : d.parameters) values.insert(p.name, number(p.value));
+                e.insert(QStringLiteral("values"), values);
+            }
+            list.append(e);
+        }
+        op.insert(QStringLiteral("devices"), list);
+        if (!full) op.insert(QStringLiteral("note"), tr("operating_point: true gives the devices' values."));
+    }
+    op.insert(QStringLiteral("units"), units);
+    return op;
+}
+
 QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const ReadOptions& o)
 {
     QJsonObject out{{QStringLiteral("name"), v.name}};
+    if (ds::isOperatingPointValue(data, v)) {
+        out.insert(QStringLiteral("operating point"), true);
+        out.insert(QStringLiteral("value"), number(v.re.first()));
+        if (const QString u = operatingUnit(v.name); !u.isEmpty()) out.insert(QStringLiteral("units"), u);
+        return out;
+    }
     if (v.independent) {
         double lo = std::numeric_limits<double>::infinity(), hi = -lo;
         for (double x : v.re)
@@ -545,6 +670,9 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
         return out;
     }
     if (!o.prefix.isEmpty()) out.insert(QStringLiteral("trace"), o.prefix + QLatin1Char('/') + v.name);
+    describe(out, v, o);
+    ds::MeasureOptions measureOptions = o.measureOptions;
+    measureOptions.decibels = o.decibels.value_or(ds::isDecibels(ds::unitOf(v.name, definitionOf(o, v.name))));
     const QString xName = v.dependencies.value(0, QStringLiteral("index"));
     out.insert(QStringLiteral("x"), xName);
     if (v.dependencies.size() > 1) out.insert(QStringLiteral("swept"), QJsonArray::fromStringList(v.dependencies.mid(1)));
@@ -626,7 +754,7 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
         }
         if (!o.measure.isEmpty()) {
             QJsonObject m;
-            for (const QString& what : o.measure) m.insert(what, ds::measure(part, what, o.measureOptions));
+            for (const QString& what : o.measure) m.insert(what, ds::measure(part, what, measureOptions));
             c.insert(QStringLiteral("measurements"), m);
         }
         if (o.points > 0) {
@@ -790,6 +918,63 @@ QString datasetFile(const QString& schematic, const QString& dataSet, int simula
     }
 }
 
+QList<Marker*> markersOf(const Diagram* d)
+{
+    QList<Marker*> list;
+    for (Graph* g : d->Graphs) list << g->Markers;
+    return list;
+}
+
+QJsonObject markerJson(const Diagram* d, Marker* m, int index)
+{
+    const Graph* g = m->graph();
+    QJsonObject o{{QStringLiteral("marker"), index},
+                  {QStringLiteral("trace"), int(d->Graphs.indexOf(const_cast<Graph*>(g))) + 1},
+                  {QStringLiteral("variable"), g->Var}};
+    // The sample it shows: its independent variables' values, and the value.
+    QJsonObject at;
+    const std::vector<double>& pos = m->varPos();
+    for (unsigned i = 0; i < g->numAxes() && i < pos.size(); ++i) at.insert(g->axis(i)->Var, number(pos[i]));
+    if (!at.isEmpty()) o.insert(QStringLiteral("at"), at);
+    if (!g->isEmpty())
+        o.insert(QStringLiteral("value"), m->powImag() == 0 ? number(m->powReal()) : QJsonValue(QJsonArray{number(m->powReal()), number(m->powImag())}));
+    else
+        o.insert(QStringLiteral("no data"), tr("its trace shows no data"));
+    o.insert(QStringLiteral("text"), m->Text.trimmed());
+    o.insert(QStringLiteral("label"), QJsonArray{d->cx + m->x1, d->cy + m->y1});
+    o.insert(QStringLiteral("precision"), m->Precision);
+    if (m->numMode >= 0 && m->numMode < int(std::size(kNumbers))) o.insert(QStringLiteral("format"), QString::fromLatin1(kNumbers[m->numMode]));
+    o.insert(QStringLiteral("transparent"), m->transparent);
+    if (int(m->indicatorMode) >= 0 && int(m->indicatorMode) < int(std::size(kIndicators)))
+        o.insert(QStringLiteral("indicator"), QString::fromLatin1(kIndicators[int(m->indicatorMode)]));
+    const auto colour = [](const QColor& c) {
+        return !c.isValid() ? QStringLiteral("auto") : c.name(c.alpha() < 255 ? QColor::HexArgb : QColor::HexRgb);
+    };
+    o.insert(QStringLiteral("text_color"), colour(m->textColor));
+    o.insert(QStringLiteral("fill_color"), colour(m->fillColor));
+    return o;
+}
+
+Marker* markerOf(const Diagram* d, const QJsonValue& which, QString* error)
+{
+    const QList<Marker*> all = markersOf(d);
+    if (all.isEmpty()) {
+        *error = tr("The diagram has no marker (add_marker places one).");
+        return nullptr;
+    }
+    if (which.isUndefined() || which.isNull()) {
+        if (all.size() == 1) return all.first();
+        *error = tr("The diagram has %1 markers: say which ('marker', its number as get_schematic gives it).").arg(all.size());
+        return nullptr;
+    }
+    const int n = which.toInt(which.toString().toInt());
+    if (n < 1 || n > all.size()) {
+        *error = tr("There is no marker %1: they are numbered 1 to %2.").arg(n).arg(all.size());
+        return nullptr;
+    }
+    return all.at(n - 1);
+}
+
 QJsonArray diagramsJson(Schematic* sch)
 {
     QJsonArray list;
@@ -814,6 +999,10 @@ QJsonArray diagramsJson(Schematic* sch)
         int t = 0;
         for (Graph* g : d->Graphs) traces.append(traceJson(sch, d, g, ++t));
         o.insert(QStringLiteral("traces"), traces);
+        QJsonArray markers;
+        int m = 0;
+        for (Marker* mk : markersOf(d)) markers.append(markerJson(d, mk, ++m));
+        if (!markers.isEmpty()) o.insert(QStringLiteral("markers"), markers);
         list.append(o);
     }
     return list;
@@ -988,6 +1177,23 @@ QString QucsControl::datasetPath(const QJsonObject& args, QString* error) const
     return QString();
 }
 
+Schematic* QucsControl::schematicOfDataset(const QString& file, const QJsonObject& args) const
+{
+    // The document asked for, when it is the one whose dataset this is;
+    // else an open schematic that writes this dataset.
+    QString ignored;
+    const auto writes = [&file](Schematic* sch) {
+        if (sch == nullptr || sch->getDocName().isEmpty()) return false;
+        for (int sim : {int(spicecompat::simNgspice), int(spicecompat::simXyce), int(spicecompat::simSpiceOpus), int(spicecompat::simQucsator)})
+            if (sameFile(datasetFile(sch->getDocName(), sch->getDataSet(), sim), file)) return true;
+        return false;
+    };
+    if (auto* sch = dynamic_cast<Schematic*>(document(args, &ignored)); writes(sch)) return sch;
+    for (QucsDoc* doc : a_app->allDocuments())
+        if (auto* sch = dynamic_cast<Schematic*>(doc); writes(sch)) return sch;
+    return nullptr;
+}
+
 QList<Schematic*> QucsControl::showingDataOf(Schematic* sch) const
 {
     QList<Schematic*> list{sch};
@@ -1014,11 +1220,24 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
     ReadOptions o;
     const qsizetype dot = info.fileName().indexOf(QLatin1String(".dat."));
     if (dot >= 0) o.prefix = info.fileName().mid(dot + 5);
+    if (Schematic* definer = schematicOfDataset(file, args)) o.definitions = definitionsIn(definer);
+    if (args.value(QLatin1String("decibels")).isBool()) o.decibels = args.value(QLatin1String("decibels")).toBool();
 
+    Schematic* sch = schematicOfDataset(file, args);
+    if (args.value(QLatin1String("operating_point")).toBool()) {
+        const QJsonObject op = operatingPointJson(data, sch, true);
+        if (op.isEmpty())
+            return errorResult(tr("%1 holds no operating point: the schematic needs a DC simulation (op) - its node "
+                                  "values, and with ngspice every device's, are written with the others.")
+                                   .arg(info.fileName()));
+        result.insert(QStringLiteral("operating point"), op);
+        return jsonResult(result);
+    }
     const QJsonArray wanted = args.value(QLatin1String("variables")).toArray();
     if (wanted.isEmpty()) {
         QJsonArray independent, variables;
         for (const ds::Variable& v : data.variables()) {
+            if (ds::isOperatingPointValue(data, v)) continue;
             if (v.independent) {
                 independent.append(variableJson(data, v, o));
                 continue;
@@ -1027,6 +1246,7 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
                           {QStringLiteral("points"), v.size()}};
             if (!o.prefix.isEmpty()) e.insert(QStringLiteral("trace"), o.prefix + QLatin1Char('/') + v.name);
             if (v.isComplex()) e.insert(QStringLiteral("complex"), true);
+            describe(e, v, o);
             const ds::Curve all{QVector<double>(v.size(), 0), [&v] {
                                     QVector<double> y(v.size());
                                     for (int i = 0; i < v.size(); ++i) y[i] = v.isComplex() ? std::hypot(v.re.at(i), v.im.at(i)) : v.re.at(i);
@@ -1040,6 +1260,8 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
         }
         result.insert(QStringLiteral("independent variables"), independent);
         result.insert(QStringLiteral("variables"), variables);
+        if (const QJsonObject op = operatingPointJson(data, sch, false); !op.isEmpty())
+            result.insert(QStringLiteral("operating point"), op);
         return jsonResult(result);
     }
 
@@ -1128,6 +1350,38 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
     QString error;
     Schematic* sch = schematic(args, &error, false);
     if (sch == nullptr) return errorResult(error);
+    const QString format = args.value(QLatin1String("format")).toString(QStringLiteral("spice"));
+    if (format != QLatin1String("spice") && format != QLatin1String("cdl"))
+        return errorResult(tr("'format' is spice or cdl."));
+    // Saved to a file, as Simulation > Save netlist and Save CDL netlist
+    // do - without their file dialogs.
+    const QString saveAs = args.value(QLatin1String("save_as")).toString().trimmed();
+    const auto write = [&](const QString& text) -> QJsonObject {
+        const QString target = absolute(saveAs);
+        if (!QFileInfo(target).absoluteDir().exists())
+            return errorResult(tr("There is no folder %1.").arg(QDir::toNativeSeparators(QFileInfo(target).absolutePath())));
+        QFile out(target);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
+            return errorResult(tr("%1 cannot be written: %2").arg(QDir::toNativeSeparators(target), out.errorString()));
+        out.write(text.toUtf8());
+        out.close();
+        a_app->projectView()->refresh();
+        return jsonResult(QJsonObject{{QStringLiteral("written"), QDir::toNativeSeparators(target)},
+                                      {QStringLiteral("format"), format},
+                                      {QStringLiteral("lines"), int(text.count(QLatin1Char('\n')))}});
+    };
+    if (format == QLatin1String("cdl")) {
+        QString text;
+        {
+            QTextStream stream(&text);
+            misc::ErrorCapture capture;
+            CdlNetlistWriter writer(stream, sch, QucsSettings.ResolveSpicePrefix);
+            if (!writer.write())
+                return errorResult(tr("The CDL netlist could not be written. %1").arg(capture.errors().join(QLatin1Char('\n'))));
+        }
+        if (!saveAs.isEmpty()) return write(text);
+        return textResult(tr("The CDL netlist of %1:").arg(titleOf(sch)) + QStringLiteral("\n\n") + text);
+    }
     const bool last = args.value(QLatin1String("last")).toBool();
     const int simulator = QucsSettings.DefaultSimulator;
     const QString simName = spicecompat::getDefaultSimulatorName(simulator);
@@ -1165,6 +1419,14 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
         if (!run.writeNetlist(file))
             return errorResult(tr("The netlist could not be written. %1").arg(capture.errors().join(QLatin1Char('\n'))));
         files << file;
+    }
+    if (!saveAs.isEmpty()) {
+        QString whole;
+        for (const QString& f : std::as_const(files)) {
+            QFile file(f);
+            if (file.open(QIODevice::ReadOnly | QIODevice::Text)) whole += QString::fromUtf8(file.readAll());
+        }
+        return write(whole);
     }
     QString text;
     const bool numbered = args.value(QLatin1String("numbered")).toBool();
@@ -1323,6 +1585,259 @@ QJsonObject QucsControl::editTrace(const QJsonObject& args)
     QJsonObject result = traceJson(sch, d, g, int(d->Graphs.indexOf(g)) + 1);
     if (!note.isEmpty()) result.insert(QStringLiteral("note"), note);
     return jsonResult(result);
+}
+
+namespace {
+
+// The first curve of a trace as it shows it: x, and y real (a complex value
+// with no imaginary part keeps its sign) or the magnitude.
+ds::Curve shownCurve(const Graph* g)
+{
+    ds::Curve c;
+    const DataX* x = g->axis(0);
+    if (x == nullptr || g->cPointsY == nullptr) return c;
+    const int n = int(x->count);
+    bool real = true;
+    for (int i = 0; i < n; ++i)
+        if (g->cPointsY[2 * i + 1] != 0) real = false;
+    for (int i = 0; i < n; ++i) {
+        c.x << x->Points[i];
+        const double re = g->cPointsY[2 * i], im = g->cPointsY[2 * i + 1];
+        c.y << (real ? re : std::hypot(re, im));
+    }
+    return c;
+}
+
+// Where a marker goes on \a g: at x, or where 'at' says - "peak" (or
+// "max"), "min", "-3dB" (3 dB below the peak on a curve in dB, 1/sqrt(2)
+// of it on a magnitude; on the far side of the peak first), "crossing:<y>".
+// What it found, in \a found.
+bool markerPlace(Schematic* sch, const Graph* g, const QJsonValue& at, double* x, QJsonObject* found, QString* error)
+{
+    if (at.isDouble()) {
+        *x = at.toDouble();
+        return true;
+    }
+    const QString w = at.toString().trimmed().toLower().remove(QLatin1Char(' '));
+    if (w.isEmpty()) {
+        *error = tr("Say where: 'at', an x value or peak, min, -3dB, crossing:<y>.");
+        return false;
+    }
+    const ds::Curve c = shownCurve(g);
+    if (c.x.size() < 2) {
+        *error = tr("The trace has too few points to find %1 on.").arg(at.toString());
+        return false;
+    }
+    const ds::Stats s = ds::statsOf(c);
+    if (w == QLatin1String("peak") || w == QLatin1String("max")) {
+        *x = s.xMax;
+        found->insert(QStringLiteral("peak"), number(s.max));
+        return true;
+    }
+    if (w == QLatin1String("min")) {
+        *x = s.xMin;
+        found->insert(QStringLiteral("min"), number(s.min));
+        return true;
+    }
+    double level = NaN;
+    if (w == QLatin1String("-3db") || w == QLatin1String("3db")) {
+        const QString unit = ds::unitOf(g->Var, definitionsIn(sch).value(ds::bareName(ds::withoutSimulator(g->Var)).toLower()));
+        const bool decibels = ds::isDecibels(unit);
+        if (!decibels && s.min < 0) {
+            *error = tr("%1 goes below 0 and is not known to be in dB: where 3 dB below its peak is cannot be told.").arg(g->Var);
+            return false;
+        }
+        level = decibels ? s.max - 3 : s.max / std::sqrt(2.0);
+        found->insert(QStringLiteral("peak"), number(s.max));
+        found->insert(QStringLiteral("at peak"), number(s.xMax));
+        found->insert(QStringLiteral("level"), number(level));
+        found->insert(QStringLiteral("measured on"), decibels ? QStringLiteral("dB: 3 below the peak") : QStringLiteral("a magnitude: the peak over sqrt(2)"));
+    } else if (w.startsWith(QLatin1String("crossing:"))) {
+        bool ok = false;
+        level = w.mid(9).toDouble(&ok);
+        if (!ok) {
+            *error = tr("crossing:<y> takes a number: crossing:-3.");
+            return false;
+        }
+        found->insert(QStringLiteral("level"), number(level));
+    } else {
+        *error = tr("'at' is an x value or peak, min, -3dB, crossing:<y> - not %1.").arg(at.toString());
+        return false;
+    }
+    const QList<ds::Crossing> all = ds::crossings(c, level);
+    if (all.isEmpty()) {
+        *error = tr("%1 does not reach %2 (it runs from %3 to %4).").arg(g->Var).arg(level).arg(s.min).arg(s.max);
+        return false;
+    }
+    // For -3 dB: past the peak first (a low pass), else before it.
+    const ds::Crossing* chosen = &all.first();
+    if (w != QLatin1String("-3db") && w != QLatin1String("3db")) {
+    } else if (auto after = std::find_if(all.cbegin(), all.cend(), [&s](const ds::Crossing& k) { return k.x > s.xMax; }); after != all.cend()) {
+        chosen = &*after;
+    } else {
+        chosen = &all.last();
+    }
+    *x = chosen->x;
+    found->insert(QStringLiteral("crossing"), number(chosen->x));
+    return true;
+}
+
+bool colourOf(const QJsonValue& v, QColor* colour, QString* error)
+{
+    const QString name = v.toString().trimmed();
+    if (name.isEmpty() || name == QLatin1String("auto")) {
+        *colour = QColor();
+        return true;
+    }
+    const QColor c(name);
+    if (!c.isValid()) {
+        *error = tr("%1 is not a colour (#rrggbb, #aarrggbb, a name, or auto).").arg(name);
+        return false;
+    }
+    *colour = c;
+    return true;
+}
+
+// The settings of a marker 'args' give: its label (where its box's top
+// left corner is, or how far from the point it marks), precision, format,
+// transparency, indicator and colours.
+bool applyMarker(Marker* m, const Diagram* d, const QJsonObject& args, QString* error)
+{
+    if (args.contains(QLatin1String("label"))) {
+        const QJsonArray p = args.value(QLatin1String("label")).toArray();
+        if (p.size() != 2) {
+            *error = tr("'label' is [x, y]: where its box's top left corner goes.");
+            return false;
+        }
+        m->x1 = misc::clampCoordinate(p.at(0).toInt() - d->cx);
+        m->y1 = misc::clampCoordinate(p.at(1).toInt() - d->cy);
+    } else if (args.contains(QLatin1String("label_offset"))) {
+        const QJsonArray p = args.value(QLatin1String("label_offset")).toArray();
+        if (p.size() != 2) {
+            *error = tr("'label_offset' is [dx, dy]: from the point it marks to its box's top left corner (y down).");
+            return false;
+        }
+        m->x1 = misc::clampCoordinate(m->cx + p.at(0).toInt());
+        m->y1 = misc::clampCoordinate(-m->cy + p.at(1).toInt());
+    }
+    if (args.contains(QLatin1String("precision"))) m->Precision = std::clamp(args.value(QLatin1String("precision")).toInt(), 1, 12);
+    if (args.contains(QLatin1String("format"))) {
+        const int n = indexIn(kNumbers, args.value(QLatin1String("format")).toString());
+        if (n < 0) {
+            *error = tr("'format' is %1.").arg(namesOf(kNumbers));
+            return false;
+        }
+        m->numMode = n;
+    }
+    if (args.contains(QLatin1String("transparent"))) m->transparent = args.value(QLatin1String("transparent")).toBool();
+    if (args.contains(QLatin1String("indicator"))) {
+        const int n = indexIn(kIndicators, args.value(QLatin1String("indicator")).toString());
+        if (n < 0) {
+            *error = tr("'indicator' is %1.").arg(namesOf(kIndicators));
+            return false;
+        }
+        m->indicatorMode = indicatorMode_t(n);
+    }
+    if (args.contains(QLatin1String("text_color")) && !colourOf(args.value(QLatin1String("text_color")), &m->textColor, error)) return false;
+    if (args.contains(QLatin1String("fill_color")) && !colourOf(args.value(QLatin1String("fill_color")), &m->fillColor, error)) return false;
+    return true;
+}
+
+bool drawsMarkers(const Diagram* d)
+{
+    return d->Name != QLatin1String("Tab") && d->Name != QLatin1String("Truth");
+}
+
+} // namespace
+
+QJsonObject QucsControl::addMarker(const QJsonObject& args)
+{
+    QString error;
+    Schematic* sch = schematic(args, &error, true);
+    if (sch == nullptr) return errorResult(error);
+    Diagram* d = diagramOf(sch, args.value(QLatin1String("diagram")), &error);
+    if (d == nullptr) return errorResult(error);
+    if (!drawsMarkers(d)) return errorResult(tr("A %1 diagram has no markers.").arg(kindName(d)));
+    Graph* g = traceOf(d, args.value(QLatin1String("trace")), &error);
+    if (g == nullptr) return errorResult(error);
+    if (g->isEmpty()) return errorResult(tr("%1 shows no data (%2): a marker needs it.").arg(g->Var, whyNoData(sch, g)));
+    double x = NaN;
+    QJsonObject found;
+    if (!markerPlace(sch, g, args.value(QLatin1String("at")), &x, &found, &error)) return errorResult(error);
+
+    auto m = std::make_unique<Marker>(g);
+    m->setPos(x);
+    m->createText();   // (on the sample nearest x)
+    m->x1 = m->cx + 20;
+    m->y1 = -m->cy - 40;
+    if (!applyMarker(m.get(), d, args, &error)) return errorResult(error);
+    prepare(sch);
+    Marker* placed = m.release();
+    g->Markers.append(placed);
+    placed->createText();
+    finish(sch, {QPoint(d->cx + placed->x1, d->cy + placed->y1)});
+    QJsonObject result = markerJson(d, placed, int(markersOf(d).indexOf(placed)) + 1);
+    if (!found.isEmpty()) {
+        found.insert(QStringLiteral("marker on the nearest sample"), number(placed->varPos().at(0)));
+        result.insert(QStringLiteral("found"), found);
+    }
+    return jsonResult(result);
+}
+
+QJsonObject QucsControl::editMarker(const QJsonObject& args)
+{
+    QString error;
+    Schematic* sch = schematic(args, &error, true);
+    if (sch == nullptr) return errorResult(error);
+    Diagram* d = diagramOf(sch, args.value(QLatin1String("diagram")), &error);
+    if (d == nullptr) return errorResult(error);
+    Marker* m = markerOf(d, args.value(QLatin1String("marker")), &error);
+    if (m == nullptr) return errorResult(error);
+    const Graph* g = m->graph();
+    double x = NaN;
+    QJsonObject found;
+    if (args.contains(QLatin1String("at")) && !markerPlace(sch, g, args.value(QLatin1String("at")), &x, &found, &error))
+        return errorResult(error);
+    // Tried on a copy first.
+    Marker trial(const_cast<Graph*>(g));
+    trial.x1 = m->x1;
+    trial.y1 = m->y1;
+    if (!applyMarker(&trial, d, args, &error)) return errorResult(error);
+    prepare(sch);
+    if (!std::isnan(x)) {
+        // The label keeps its place beside the point, moved with it.
+        const int dx = m->x1 - m->cx, dy = m->y1 + m->cy;
+        m->setPos(x);
+        m->createText();
+        m->x1 = m->cx + dx;
+        m->y1 = -m->cy + dy;
+    }
+    applyMarker(m, d, args, &error);
+    m->createText();
+    finish(sch, {QPoint(d->cx + m->x1, d->cy + m->y1)});
+    QJsonObject result = markerJson(d, m, int(markersOf(d).indexOf(m)) + 1);
+    if (!found.isEmpty()) {
+        found.insert(QStringLiteral("marker on the nearest sample"), number(m->varPos().at(0)));
+        result.insert(QStringLiteral("found"), found);
+    }
+    return jsonResult(result);
+}
+
+QJsonObject QucsControl::deleteMarker(const QJsonObject& args)
+{
+    QString error;
+    Schematic* sch = schematic(args, &error, true);
+    if (sch == nullptr) return errorResult(error);
+    Diagram* d = diagramOf(sch, args.value(QLatin1String("diagram")), &error);
+    if (d == nullptr) return errorResult(error);
+    Marker* m = markerOf(d, args.value(QLatin1String("marker")), &error);
+    if (m == nullptr) return errorResult(error);
+    prepare(sch);
+    const QString text = m->Text.trimmed().replace(QLatin1Char('\n'), QStringLiteral("; "));
+    for (Graph* g : d->Graphs) g->Markers.removeOne(m);
+    delete m;
+    finish(sch, {QPoint(d->cx, d->cy)});
+    return textResult(tr("The marker (%1) is deleted (one step to undo).").arg(text));
 }
 
 QJsonObject QucsControl::describeComponentType(const QJsonObject& args)

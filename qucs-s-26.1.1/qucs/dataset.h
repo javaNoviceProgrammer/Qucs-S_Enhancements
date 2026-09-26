@@ -29,6 +29,10 @@ struct Variable {
     QStringList dependencies;
     QVector<double> re;
     QVector<double> im;   // empty unless complex
+    /// Written as complex numbers whose imaginary parts are all zero (a
+    /// Nutmeg equation's db(...) is): read as real, sign and all - its
+    /// magnitude would turn -52 dB into +52.
+    bool writtenComplex = false;
     bool isComplex() const { return !im.isEmpty(); }
     int size() const { return int(re.size()); }
 };
@@ -47,7 +51,8 @@ public:
     /// case; the name without the analysis the simulator put before it
     /// ("v(out)" for tran.v(out) and ac.v(out)); a node's voltage ("out"
     /// for v(out), out.v, out.Vt). A simulator's prefix ("ngspice/") is
-    /// left out. The first of these that finds any gives them all.
+    /// left out. The first of these that finds any gives them all - but
+    /// the operating point's v(out) comes with the analyses' v(out).
     QStringList resolve(const QString& wanted) const;
 
 private:
@@ -56,11 +61,22 @@ private:
     QHash<QString, int> a_index;
 };
 
+/// A value of an operating point: an independent variable of one value
+/// that nothing depends on - a node voltage or branch current an op
+/// analysis printed (v(out), i(v1)), a device's quantity (@jt1[id]).
+bool isOperatingPointValue(const Dataset& data, const Variable& v);
+
 /// "ngspice/tran.v(out)" is tran.v(out) in the dataset of ngspice; the
 /// simulator ("ngspice", "xyce", "spopus") in \a simulator.
 QString withoutSimulator(const QString& name, QString* simulator = nullptr);
 /// The analysis a name begins with ("tran" of tran.v(out)), or empty.
 QString analysisOf(const QString& name);
+/// The unit of a variable, from its name or \a definition (the equation
+/// that makes it, if any): "dB" for db(...), vdb(...), 20*log10(...);
+/// degrees for a phase; V, A, s, Hz; empty when it cannot be told.
+QString unitOf(const QString& name, const QString& definition = QString());
+/// Whether a unit is a logarithmic one (dB).
+inline bool isDecibels(const QString& unit) { return unit == QLatin1String("dB"); }
 /// The name without its analysis ("v(out)" of tran.v(out)).
 QString bareName(const QString& name);
 
@@ -111,11 +127,15 @@ struct MeasureOptions {
     double level = qQNaN();       // crossings, period: the level (else the middle of min and max)
     double tolerance = 0.02;      // settling: the band, a fraction of the step
     double low = 0.1, high = 0.9; // rise and fall: the fractions of the swing
+    bool decibels = false;        // bandwidth: the curve is in dB (3 dB below its peak, not 1/sqrt(2) of it)
 };
 /// \a what measured on \a c - "rise_time", "fall_time", "overshoot",
 /// "settling_time", "period", "frequency", "duty_cycle", "crossings",
 /// "bandwidth" - as an object of numbers and what they mean; an object
-/// with "error" when it cannot be measured on this curve.
+/// with "error" when it cannot be measured on this curve. The bandwidth
+/// of a magnitude is where it falls to 1/sqrt(2) of its peak; of a curve
+/// in dB (options.decibels), 3 dB below it; of a real curve that goes
+/// below 0 and is not in dB, it cannot be told.
 QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& options);
 
 /// \a v written with 7 significant digits (as the dataset has more than

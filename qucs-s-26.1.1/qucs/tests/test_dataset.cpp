@@ -7,6 +7,7 @@
  * net's new name put into the traces that show its voltage.
  */
 #include <QtTest>
+#include <QJsonDocument>
 #include <QTemporaryDir>
 
 #include <cmath>
@@ -221,6 +222,79 @@ private slots:
 
         QVERIFY(ds::measure(rc, QStringLiteral("no_such"), o).contains("error"));
         QVERIFY(ds::measure(ds::Curve{{0}, {1}}, QStringLiteral("rise_time"), o).contains("error"));
+    }
+
+    // A Nutmeg equation's db(...) is written as complex numbers with no
+    // imaginary part: read as real, it keeps its sign - as a magnitude, a
+    // curve falling to -52.8 dB rose to +52.8 dB, and its bandwidth was
+    // 27 times what it is. A vector with an imaginary part stays complex.
+    void aComplexVectorWithNoImaginaryPartIsReal()
+    {
+        QStringList freq, y, v;
+        for (int i = 0; i <= 400; ++i) {
+            const double f = std::pow(10.0, i / 50.0);   // 1 Hz to 100 MHz
+            freq << QString::number(f, 'e', 12);
+            const double mag = 1 / std::sqrt(1 + std::pow(f / 6.1e6, 2));
+            y << QString::number(20 * std::log10(mag), 'e', 12) + QStringLiteral("+j0.000000000000e+00");
+            v << QString::number(mag, 'e', 12) + QStringLiteral("-j") + QString::number(1e-3, 'e', 12);
+        }
+        const QString path = write("db.dat.ngspice", datasetText({{"indep frequency 401", "", freq}, {"dep ac.y", "frequency", y},
+                                                                   {"dep ac.v(out)", "frequency", v}}));
+        ds::Dataset data;
+        QVERIFY(data.read(path));
+        const ds::Variable* db = data.find("ac.y");
+        QVERIFY(db != nullptr);
+        QVERIFY(!db->isComplex());
+        QVERIFY(db->writtenComplex);
+        QVERIFY(db->re.last() < -20);   // falling, not rising
+        QVERIFY(data.find("ac.v(out)")->isComplex());
+        QVERIFY(!data.find("ac.v(out)")->writtenComplex);
+
+        const ds::Curve curve = ds::curvesOf(data, *db).first();
+        QVERIFY(ds::statsOf(curve).max <= 0.001);
+        ds::MeasureOptions o;
+        // Not known to be in dB: a curve below 0 is not a magnitude either.
+        QVERIFY(ds::measure(curve, QStringLiteral("bandwidth"), o).value("error").toString().contains("below 0"));
+        o.decibels = true;
+        const QJsonObject band = ds::measure(curve, QStringLiteral("bandwidth"), o);
+        QVERIFY2(near(band.value("value").toDouble(), 6.1e6, 2e-2), QJsonDocument(band).toJson().constData());
+        QCOMPARE(band.value("level").toDouble(), -3.0);
+    }
+
+    // What a variable's numbers are: dB, degrees, V, A, s, Hz - from its
+    // name, or the equation that makes it.
+    void unitsAreToldFromNamesAndEquations()
+    {
+        QCOMPARE(ds::unitOf("ac.y", "db(norm(v(out)))"), QStringLiteral("dB"));
+        QCOMPARE(ds::unitOf("ac.y", "20*log10(mag(v(out)))"), QStringLiteral("dB"));
+        QCOMPARE(ds::unitOf("ngspice/ac.vdb(out)"), QStringLiteral("dB"));
+        QCOMPARE(ds::unitOf("gain", "dB(out.v)"), QStringLiteral("dB"));
+        QCOMPARE(ds::unitOf("ac.cph(out)"), QString(QChar(0x00B0)));
+        QCOMPARE(ds::unitOf("tran.v(out)"), QStringLiteral("V"));
+        QCOMPARE(ds::unitOf("tran.i(v1)"), QStringLiteral("A"));
+        QCOMPARE(ds::unitOf("out.Vt"), QStringLiteral("V"));
+        QCOMPARE(ds::unitOf("time"), QStringLiteral("s"));
+        QCOMPARE(ds::unitOf("frequency"), QStringLiteral("Hz"));
+        QVERIFY(ds::unitOf("ac.y").isEmpty());
+        QVERIFY(ds::unitOf("ac.y", "v(out)/v(in)").isEmpty());   // a ratio: no unit said
+    }
+
+    // An op analysis's values - a node's, a device's quantity - are one
+    // value each that nothing depends on; asking for v(out) gives the
+    // operating point's with the analyses'.
+    void anOperatingPointIsTold()
+    {
+        const QString path = write("op.dat.ngspice", datasetText({{"indep v(out) 1", "", {"2.5"}},
+                                                                   {"indep @jt1[id] 1", "", {"1e-2"}},
+                                                                   {"indep time 3", "", {"0", "1", "2"}},
+                                                                   {"dep tran.v(out)", "time", {"0", "1", "2"}}}));
+        ds::Dataset data;
+        QVERIFY(data.read(path));
+        QVERIFY(ds::isOperatingPointValue(data, *data.find("v(out)")));
+        QVERIFY(ds::isOperatingPointValue(data, *data.find("@jt1[id]")));
+        QVERIFY(!ds::isOperatingPointValue(data, *data.find("time")));
+        QCOMPARE(data.resolve("v(out)"), (QStringList{"v(out)", "tran.v(out)"}));
+        QCOMPARE(data.resolve("out"), (QStringList{"v(out)", "tran.v(out)"}));
     }
 
     // ngspice's errors and warnings as it prints them: the message, the

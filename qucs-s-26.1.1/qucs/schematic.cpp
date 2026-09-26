@@ -390,8 +390,10 @@ void Schematic::setChanged(bool c, bool fillStack, char Op)
     else if (a_DocChanged && (!c))
         emit signalFileChanged(false);
     a_DocChanged = c;
-    if (c)
+    if (c) {
+        edited();
         emit signalEdited();
+    }
     ++a_sceneGeneration;   // a gesture's scene is drawn again
 
     a_showBias = -1; // schematic changed => bias points may be invalid
@@ -1925,6 +1927,7 @@ bool Schematic::load()
 
     const bool loaded = loadDocument();
     ++a_sceneGeneration;
+    edited();
     emit signalDocumentRebuilt(this);
     if (!loaded)
         return false;

@@ -191,6 +191,10 @@ public:
   bool canClosePane() const { return panes().size() > 1; }
   /// Moves a document to another pane, keeping its tab title and marker.
   void moveDocument(QWidget *document, ContextMenuTabWidget *to);
+  /// Where a pane is in the grid: its row and column, from 0.
+  QPoint paneCell(ContextMenuTabWidget *pane) const;
+  /// A pane's rectangle in the window, its tabs and all.
+  QRect paneRect(ContextMenuTabWidget *pane) const;
 
   ProjectView *projectView() const { return Content; }
   QListView *projectsView() const { return Projects; }
