@@ -312,8 +312,8 @@ int Component::getTextSelected(int point_x, int point_y) {
     return -1;
 }
 
-QPoint Component::textOrigin(const Property* shown) const {
-    const QFontMetrics metrics(QucsSettings.font, 0);
+QPoint Component::textOrigin(const Property* shown, const QPaintDevice* device) const {
+    const QFontMetrics metrics(QucsSettings.font, device);
     // As paint() draws them: each text where the one before ends.
     QRect before{tx, ty, 0, 0};
     if (showName) before = QRect{QPoint{tx, ty}, metrics.size(0, Name)};

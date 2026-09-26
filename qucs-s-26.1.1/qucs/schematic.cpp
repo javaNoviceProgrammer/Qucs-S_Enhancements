@@ -639,8 +639,11 @@ void Schematic::drawScene(QPainter* p, const QRectF& area, Layer layer)
     }
 }
 
-Schematic::SceneKey Schematic::sceneKey(Gesture gesture, const QTransform& base) const
+Schematic::SceneKey Schematic::sceneKey(Gesture gesture, const QTransform& base, const QPainter* p) const
 {
+    const QPaintDevice* canvas = p->device();
+    const QPaintEngine* engine = p->paintEngine();
+    const QPaintDevice* target = engine != nullptr && engine->paintDevice() != nullptr ? engine->paintDevice() : canvas;
     SceneKey key{};
     key.gesture = gesture;
     key.base = base;
@@ -648,7 +651,11 @@ Schematic::SceneKey Schematic::sceneKey(Gesture gesture, const QTransform& base)
     key.viewX1 = a_ViewX1;
     key.viewY1 = a_ViewY1;
     key.size = viewport()->size();
-    key.ratio = viewport()->devicePixelRatioF();
+    key.ratio = target->devicePixelRatioF();
+    key.dpiX = canvas->logicalDpiX();
+    key.dpiY = canvas->logicalDpiY();
+    key.format = target->devType() == QInternal::Image ? static_cast<const QImage*>(target)->format()
+                                                        : QImage::Format_ARGB32_Premultiplied;
     key.paper = viewport()->palette().color(viewport()->backgroundRole()).rgba();
     key.generation = a_sceneGeneration;
     key.components = a_Components->size();
@@ -691,25 +698,30 @@ Schematic::SceneKey Schematic::sceneKey(Gesture gesture, const QTransform& base)
 
 void Schematic::showHeldScene(QPainter* p, Gesture gesture, const QTransform& base)
 {
-    const SceneKey key = sceneKey(gesture, base);
+    // Drawn on an image like the one painted on - the window's backing
+    // store, or the image the canvas is rendered to: of its format (one
+    // without alpha may antialias texts in colour) and pixel ratio - at the
+    // resolution of the canvas, for which the painter lays texts out.
+    const SceneKey key = sceneKey(gesture, base, p);
     if (!a_heldScene || !(a_heldScene->key == key)) {
         // The whole canvas, as a paint of it would draw it - while a
         // selection is dragged, without what moves.
-        const qreal ratio = viewport()->devicePixelRatioF();
-        QPixmap pixmap(viewport()->size() * ratio);
-        pixmap.setDevicePixelRatio(ratio);
-        pixmap.fill(viewport()->palette().color(viewport()->backgroundRole()));
-        QPainter scene(&pixmap);
+        QImage image(viewport()->size() * key.ratio, key.format);
+        image.setDevicePixelRatio(key.ratio);
+        image.setDotsPerMeterX(qRound(key.dpiX / 0.0254));
+        image.setDotsPerMeterY(qRound(key.dpiY / 0.0254));
+        image.fill(viewport()->palette().color(viewport()->backgroundRole()));
+        QPainter scene(&image);
         scene.setTransform(base);
         setUpModelPainter(&scene);
         const QRect canvas(contentsX(), contentsY(), viewport()->width(), viewport()->height());
         drawScene(&scene, modelArea(canvas), gesture == Gesture::Moving ? Layer::Staying : Layer::All);
         scene.end();
-        a_heldScene = HeldScene{key, pixmap};
+        a_heldScene = HeldScene{key, image};
     }
     p->save();
     p->resetTransform();
-    p->drawPixmap(0, 0, a_heldScene->pixmap);
+    p->drawImage(0, 0, a_heldScene->image);
     p->restore();
 }
 

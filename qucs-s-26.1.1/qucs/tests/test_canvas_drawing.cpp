@@ -218,6 +218,9 @@ private slots:
         QucsSettings.maxUndo = 20;
         QucsSettings.GridMode = 0;
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
+        // As main() sets it: a font of no size is sized differently by each
+        // who lays text out with it.
+        QucsSettings.font = QApplication::font();
         Module::registerModules();
         qucs_s::autosave::setDirectory(dir.filePath("autosave"));
     }
@@ -285,8 +288,11 @@ private slots:
         Schematic* s = open(app, file);
         QVERIFY(s != nullptr);
         Component* r = s->a_DocComps.front();
+        // (The canvas lays its texts out for its own resolution, rendered to
+        // an image or not.)
         const int line = QFontMetrics(QucsSettings.font, s->viewport()).lineSpacing();
-        const QRect textsInModel(r->cx + r->tx, r->cy + r->ty, 5 * line, 2 * line);
+        // (Wide of the texts: they start at (tx, ty), run right and down.)
+        const QRect textsInModel(r->cx + r->tx, r->cy + r->ty, 12 * line, 4 * line);
 
         const auto show = [&](double lineOnScreen) {
             s->showNoZoom();
@@ -303,12 +309,12 @@ private slots:
             return inked(canvas, body.adjusted(-1, -1, 1, 1), paperOf(s)) > 0;
         };
 
-        show(qucs_s::lod::kSmallestLine + 1.5);
+        show(2.5 * qucs_s::lod::kSmallestLine);
         QImage canvas = canvasImage(s);
         QVERIFY(textsShown(canvas));
         QVERIFY(symbolShown(canvas));
 
-        show(qucs_s::lod::kSmallestLine - 1.5);
+        show(0.5 * qucs_s::lod::kSmallestLine);
         canvas = canvasImage(s);
         QVERIFY2(!textsShown(canvas), "texts too small to read are drawn on the canvas");
         QVERIFY(symbolShown(canvas));
@@ -331,7 +337,7 @@ private slots:
 
     // The editor of a property opens over its text: where a paint puts
     // the text, measured without one (texts too small to read, or off the
-    // screen, are not painted).
+    // screen, are not painted) - on the device painted on.
     void theEditorOpensOverTheTextItEdits()
     {
         QString comps = resistor("R1", 100, 100, -26, 15);
@@ -351,7 +357,7 @@ private slots:
         for (Component* c : s->a_DocComps)
             for (Property* prop : c->Props)
                 if (prop->display && (prop->simulators & sim) == sim) {   // (as paint() shows them)
-                    QCOMPARE(c->textOrigin(prop), prop->boundingRect().topLeft());
+                    QCOMPARE(c->textOrigin(prop, s->viewport()), prop->boundingRect().topLeft());
                     ++checked;
                 }
         QVERIFY(checked >= 3);
