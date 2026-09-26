@@ -1247,6 +1247,22 @@ private slots:
         panel->renderNow();
         QVERIFY(panel->transcriptText().contains("unsaved changes"));
         doc->setChanged(false);
+
+        // Changed while its symbol is edited: loaded, the symbol still in
+        // front, and the schematic's nodes are its own.
+        app.symEdit->trigger();
+        QVERIFY(doc->getSymbolMode());
+        doc->setChanged(false);   // (the symbol it had not, made)
+        rewrite("\"68\"", "\"56\"");
+        app.reloadChangedFiles({file});
+        QCOMPARE(resistance(), QStringLiteral("56"));
+        QVERIFY(doc->getSymbolMode());
+        QVERIFY(doc->a_Nodes->empty());
+        QCOMPARE(app.symEdit->text(), QStringLiteral("Edit Schematic"));
+        app.symEdit->trigger();
+        QVERIFY(!doc->getSymbolMode());
+        QVERIFY(!doc->a_DocNodes.empty());
+        doc->setChanged(false);   // (made again, the file has none)
         QVERIFY(app.closeAllFiles());
     }
 };

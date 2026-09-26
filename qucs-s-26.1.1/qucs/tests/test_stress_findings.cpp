@@ -169,6 +169,29 @@ private slots:
         delete a;   // frees its resistor and node, once (ASan)
     }
 
+    // A schematic read again while its symbol was edited (Claude changed
+    // its file): its nodes went among the symbol's, pointing at its wires,
+    // and once an undo had freed those, Mirror X in the symbol read them.
+    void aSchematicReadAgainFromItsSymbolKeepsItsNodes()
+    {
+        Schematic sch(nullptr, example("ngspice/RF/Miscellaneous/RCL_resonance.sch"));
+        QVERIFY(sch.load());
+        const std::size_t nodes = sch.a_DocNodes.size();
+        QVERIFY(nodes > 0);
+        enterSymbolMode(sch);
+        QVERIFY(sch.load());
+        QVERIFY(!sch.getSymbolMode());
+        QCOMPARE(sch.a_Nodes, &sch.a_DocNodes);
+        QCOMPARE(sch.a_DocNodes.size(), nodes);
+        // Its wires freed and read anew, as an undo does; the symbol has
+        // no nodes, and walking it reads nothing freed (ASan).
+        QVERIFY(sch.load());
+        enterSymbolMode(sch);
+        QVERIFY(sch.a_Nodes->empty());
+        for (auto* p : *sch.a_Paintings) p->isSelected = true;
+        sch.mirrorXComponents();
+    }
+
     // Moving the end of a wire of no length that carries a label: the
     // label keeps its place along the wire by a ratio of two lengths, 0/0.
     void aLabelledWireOfNoLengthMoves()

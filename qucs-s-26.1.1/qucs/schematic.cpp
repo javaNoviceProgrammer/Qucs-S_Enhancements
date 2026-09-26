@@ -1674,6 +1674,13 @@ bool Schematic::paste(QTextStream *stream, std::list<Element*> *pe)
 // Loads this Qucs document.
 bool Schematic::load()
 {
+    // Read as a schematic, as it is shown after: in the symbol's lists the
+    // schematic's nodes (provideNode() adds to a_Nodes) were left pointing
+    // at its wires once an undo or the next load freed them.
+    if (a_symbolMode) {
+        switchPaintMode();   // the schematic's view back
+        becomeCurrent(false);
+    }
     deleteAllElements();
     deleteSymbolPaintings();
 
