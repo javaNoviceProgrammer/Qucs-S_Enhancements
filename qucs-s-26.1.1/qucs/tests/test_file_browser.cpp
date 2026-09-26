@@ -280,6 +280,51 @@ private slots:
         QCOMPARE(again.location(), root);
     }
 
+    // The Columns view on a folder with nothing in it: Qt's shows its
+    // preview column alone, and a current entry left from the folder
+    // before, or the keys' (Right with none went to the top of the file
+    // system), crashed it once its scroll's animation ended. The cursor
+    // stays in the folder shown.
+    void theColumnsViewTakesAnEmptyFolder()
+    {
+        const QString empty = top + "/nothing_here";
+        QVERIFY(QDir().mkpath(empty));
+        FileBrowser fb;
+        fb.resize(320, 600);
+        fb.show();
+        fb.setView(FileBrowser::View::Columns);
+        auto* columns = qobject_cast<QColumnView*>(fb.currentView());
+        QVERIFY(columns != nullptr);
+        fb.setLocation(root);
+        settled(fb, "amp.sch");
+        QTRY_VERIFY_WITH_TIMEOUT(fb.indexOf(root + "/models/inner.sch").isValid(), 10000);
+
+        // An entry deep in the folder, scrolled to, and then the empty
+        // folder: none current there.
+        columns->setCurrentIndex(fb.indexOf(root + "/models"));
+        columns->setCurrentIndex(fb.indexOf(root + "/models/inner.sch"));
+        fb.setLocation(empty);
+        QVERIFY(!columns->currentIndex().isValid());
+        QTest::qWait(500);   // (the scroll's animation ends)
+        // Keys move nothing there.
+        for (const auto key : {Qt::Key_Right, Qt::Key_Down, Qt::Key_Left, Qt::Key_Up, Qt::Key_End, Qt::Key_Home}) {
+            QTest::keyClick(columns, key);
+            QVERIFY(!columns->currentIndex().isValid());
+        }
+        QTest::qWait(500);
+        fb.selectPath(empty);
+        QVERIFY(!columns->currentIndex().isValid());
+
+        // With entries and none current, Right goes to the first of them,
+        // not out of the folder.
+        fb.setLocation(root);
+        QCOMPARE(settled(fb, "amp.sch").first(), QStringLiteral("models"));
+        columns->setCurrentIndex(QModelIndex());
+        QTest::keyClick(columns, Qt::Key_Right);
+        QCOMPARE(fb.pathOf(columns->currentIndex()), root + "/models");
+        QTest::qWait(500);
+    }
+
     // The name typed filters the entries - in the flat views the folders
     // too, in the Tree only the files; "only Qucs-S files" leaves the
     // schematics, datasets, netlists, sources and S-parameters, and the
