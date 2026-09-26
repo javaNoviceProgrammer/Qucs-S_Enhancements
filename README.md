@@ -206,7 +206,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   what it gave - and each turn ends with its time and cost. *New* (or *+*
   by the tabs) opens another conversation in a tab of its own, with its
   own Claude Code session; a tab shows what its conversation is about and
-  how it stands, and closing it ends that session. *⋯ → Export
+  how it stands, and closing it ends that session. *Rename…* in a tab's
+  right-click menu (or a double click on it) names the conversation in
+  place - the name its tab, the status bar and an export use - and
+  *Reset Name* gives it back its first prompt. *⋯ → Export
   Conversation* saves the whole conversation - every prompt, reply and
   tool with its input and output - as a **PDF** (drawn as in the dock,
   on paper, math typeset), **Markdown** (the replies as Claude wrote

@@ -86,9 +86,15 @@ public:
     /// reloaded, say).
     void addNote(const QString& text);
 
-    /// What the conversation is about: its first prompt, shortened; "New
-    /// conversation" before one.
+    /// What the conversation is about: the name it was given, else its
+    /// first prompt, shortened; "New conversation" before one.
     QString title() const;
+    /// The name given to the conversation (Rename, in its tab's menu), or
+    /// empty: its first prompt names it. A new conversation has none.
+    QString name() const { return a_name; }
+    /// Names the conversation \a name (its spaces tidied); empty: its
+    /// first prompt names it again.
+    void setName(const QString& name);
     /// The mark of its state, as in the header.
     QPixmap statePixmap() const;
     /// New starts a conversation in a tab of its own
@@ -151,8 +157,8 @@ signals:
     void openFileRequested(const QString& path);
     /// New was pressed, and new conversations open in tabs.
     void newConversationRequested();
-    /// The title changed (the first prompt was sent, or the conversation
-    /// began again).
+    /// The title changed (the first prompt was sent, the conversation was
+    /// named, or it began again).
     void titleChanged();
 
 protected:
@@ -240,6 +246,7 @@ private:
     QSet<QString> a_expanded;  // the tool lines opened
     QHash<QString, qucs_s::math::Typeset> a_math;   // typeset math, by TeX, size and colour
     bool a_newInTab = false;
+    QString a_name;            // given by the user; empty: the first prompt
     bool a_exporting = false;  // drawing for paper: all open, no links
     QList<qucs_s::claude::PermissionRequest> a_requests;
     QTimer* a_renderTimer;
