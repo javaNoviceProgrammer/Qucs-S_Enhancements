@@ -1053,7 +1053,7 @@ void Session::handleMcpMessage(const QString& requestId, const QJsonObject& requ
         QTimer::singleShot(0, this, [self, process, tool, arguments, reply] {
             if (!self || self->a_host == nullptr) return;
             // (The document pinned now: the conversation's when it runs.)
-            self->a_host->callTool(tool, self->forDocument(tool, arguments), [self, process, reply](const QJsonObject& result) {
+            self->a_host->callToolFor(self->a_caller, tool, self->forDocument(tool, arguments), [self, process, reply](const QJsonObject& result) {
                 // (For the program that asked: not one started since.)
                 if (self && self->a_process == process) reply(result, false);
             });

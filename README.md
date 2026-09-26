@@ -284,6 +284,36 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   net. `describe_component_type` tells a type's properties in their
   order with defaults, units and meaning, the netlist line it makes, and
   the traps (a `Vpulse` is one pulse under SPICE; `Vrect` repeats).
+  **Results it can trust**: a curve written as complex numbers with no
+  imaginary part — a Nutmeg equation's `db(...)` — is read as real, its
+  sign kept (as a magnitude, −52.8 dB rose to +52.8 dB and its bandwidth
+  was 27 times too wide); each variable says its units (dB, V, A,
+  degrees — from its name, or the equation that defines it, which it
+  quotes), and `bandwidth` is 3 dB below the peak of a curve in dB, the
+  peak over √2 of a magnitude, and refused on a signed curve that is
+  neither. A DC simulation's **operating point** is read as one: each
+  node's value and, with ngspice, each device's quantities — id, gm,
+  vgs, … — under its component (T1 for ngspice's `jt1`), written into the
+  dataset by the run itself; a DC bias run's files are removed before
+  every run, so none is read a day later. **What changed under it**:
+  every tool's result says what changed since Claude's last call that it
+  did not change — the user's edits, another conversation's, a
+  simulation the user ran, documents opened or closed — and `get_state`
+  gives each document's revision (it counts every edit, undo and reload)
+  and who made the last edit. **Markers**: `add_marker` places one at an
+  x, the peak, 3 dB below it or a crossing of a level (the exact point
+  found, the marker on the nearest sample), with its label, precision,
+  format, indicator and colours; `edit_marker` and `delete_marker`; and
+  `get_schematic` lists them. `get_schematic` lists the properties not at
+  their type's default (or those shown, or all), the parts named or in a
+  region, 200 at most with what is left out, the paintings and the
+  document's settings; `set_schematic` says what it read of each section
+  it replaced, and `describe_format` explains every field of a `.sch`
+  line. `export_netlist` writes a SPICE or CDL netlist to a file (the
+  menu's dialogs cannot be answered); `get_state` lists the panes and
+  `move_to_pane` puts a document beside another; `screenshot` takes the
+  document on white paper (`paper`), the canvas as the user sees it in
+  the theme (`screen`), or the whole window with each dialog over it.
   Tools that only look are
   used without asking; the first change asks, and *Allow Qucs-S Control*
   lets the rest of the conversation go on without asking (as do the

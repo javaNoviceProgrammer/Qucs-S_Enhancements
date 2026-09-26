@@ -65,6 +65,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextEdit>
+#include <QSet>
 #include <QTimer>
 #include <QToolButton>
 
@@ -77,8 +78,11 @@ namespace {
 // The tools, as MCP's tools/list gives them.
 const char* const kTools = R"JSON([
 {"name": "get_state",
- "description": "The state of the Qucs-S window: the documents open (path, title, kind, unsaved changes, which is in front), the simulator in the settings, the workspace folder, a simulation under way, a dialog waiting for an answer. Start here.",
+ "description": "The state of the Qucs-S window: its panes (each one's number, row and column, rectangle, documents and the one in front, which is active; move_to_pane arranges them), the documents open (path, title, kind, unsaved changes, which is in front, its pane; each one's revision - it counts every edit, undo and reload, whoever made it - and who made the last edit: you, the user or another conversation; when its dataset was last written), the simulator in the settings, the workspace folder, a simulation under way, a dialog waiting for an answer. Start here. Every tool's result also says what changed since your last call that you did not change: the user's edits, a simulation the user ran.",
  "inputSchema": {"type": "object", "properties": {}}},
+{"name": "move_to_pane",
+ "description": "Puts a document (the one in front unless path names another) in another pane, to see documents side by side: 'pane' is a pane's number as get_state lists them, or right or below - a new pane beside the document's (at most two a row, two rows). Returns the state with the panes.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "pane": {"description": "A pane's number, or \"right\" or \"below\""}}, "required": ["pane"]}},
 {"name": "open_document",
  "description": "Opens a file in a tab of Qucs-S - a schematic (.sch), a symbol (.sym), a data display (.dpl), a netlist or any text file, a PDF document (read in Qucs-S's viewer: a datasheet, a report) - or brings it to the front if it is open. A relative path is taken from the workspace folder.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file"}}, "required": ["path"]}},
@@ -95,11 +99,17 @@ const char* const kTools = R"JSON([
  "description": "Closes a document's tab (the one in front unless path names another). A document with unsaved changes is closed only when 'unsaved' says what to do with them.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "unsaved": {"type": "string", "enum": ["save", "discard"]}}}},
 {"name": "get_schematic",
- "description": "Reads a schematic as it is in Qucs-S now, unsaved changes included. 'summary' (the default) lists its components - name, type, place, rotation, mirroring, whether active, properties, and each pin's place, whether anything is on it and its net (a label's name, gnd, or net1, net2, ...) - its nets with the pins on each (those with two pins or more, or a name), its wires, net labels, paintings, and its diagrams, numbered as the diagram tools take them, with their axes and traces - each trace's variable, look, and points or why it shows no data. 'text' is the text its .sch file would have. Coordinates are the schematic's units; the grid is usually 10.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "format": {"type": "string", "enum": ["summary", "text"]}}}},
+ "description": "Reads a schematic as it is in Qucs-S now, unsaved changes included. 'summary' (the default) lists its components - name, type, place, rotation, mirroring, whether active, properties ('properties': non_default - those shown or not at the type's default, the default; shown; all), and each pin's place, whether anything is on it and its net (a label's name, gnd, or net1, net2, ...) - its nets with the pins on each (those with two pins or more, or a name), its wires, net labels, paintings (each as its .sch line), its settings (dataset, data display, frame), and its diagrams, numbered as the diagram tools take them, with their axes, traces - each trace's variable, look, and points or why it shows no data - and markers. 'components' (names) or 'region' ([x1, y1, x2, y2]) lists only those components, with their nets and wires; a list of more than 200 is cut short and says what is left out. 'text' is the text its .sch file would have. Coordinates are the schematic's units; the grid is usually 10.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "format": {"type": "string", "enum": ["summary", "text"]},
+   "properties": {"type": "string", "enum": ["non_default", "shown", "all"]},
+   "components": {"type": "array", "items": {"type": "string"}},
+   "region": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4}}}},
 {"name": "set_schematic",
- "description": "Replaces the elements of a schematic with those of 'text': a .sch file's text, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are not taken). One step to undo; the diagrams read their data again. When the text does not read, the schematic stays as it was and the error is told. For diagrams and traces add_diagram, edit_diagram, add_trace and edit_trace are simpler and safer.",
+ "description": "Replaces the elements of a schematic with those of 'text': a .sch file's text, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are not taken). One step to undo; the diagrams read their data again. Returns what it read of each section it replaced: the components by name and type, the wires' count, the diagrams as get_schematic lists them (each trace's points or why it has none, each marker and the sample it shows), the paintings' lines. When the text does not read, the schematic stays as it was and the error is told. describe_format gives the lines' fields. For diagrams, traces and markers add_diagram, edit_diagram, add_trace, edit_trace, add_marker and edit_marker are simpler and safer.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "text": {"type": "string"}}, "required": ["text"]}},
+{"name": "describe_format",
+ "description": "The lines of a .sch file, field by field - a component, a wire, a diagram (all its ~30 fields), a trace, a marker, a painting - as set_schematic takes them and get_schematic's 'text' gives them. Without 'element', all of them.",
+ "inputSchema": {"type": "object", "properties": {"element": {"type": "string", "enum": ["component", "wire", "diagram", "trace", "marker", "painting"]}}}},
 {"name": "add_component",
  "description": "Places a component from the library at x, y (snapped to the grid): 'type' is its model - R, C, L, GND, Vdc, Vac, Idc, Iac, Diode, _BJT, _MOSFET, OpAmp, Sub, .DC, .AC, .TR, .SP, ... (list_component_types lists them all). Properties by name (as get_schematic shows them, e.g. {\"R\": \"4.7k\"}); rotation in quarter turns as Rotate makes them; mirror about the x axis. Returns the component with its pins' places.",
  "inputSchema": {"type": "object", "properties": {
@@ -149,8 +159,8 @@ const char* const kTools = R"JSON([
  "description": "Redoes the last change undone, as Edit > Redo.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
 {"name": "screenshot",
- "description": "A picture of a schematic (PNG): all of it (the default), or 'visible' - what the window shows of it now, at its zoom. For a text document, what its window shows.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "area": {"type": "string", "enum": ["all", "visible"]}}}},
+ "description": "A picture (PNG). 'area': paper (or all, the default) - the whole schematic drawn as it is printed and exported: on white paper, whatever the theme, in its print colours; screen (or visible) - the canvas as the user sees it now: the theme's paper and colours (a dark canvas in the dark theme), its zoom, what is scrolled into view - take this one to see what the user sees, a problem of how something looks on screen above all; window - the whole Qucs-S window (its panes and tabs, docks, the status bar), and each dialog open over it, as pictures of their own. For a text document or a PDF, paper and screen are what its tab shows.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "area": {"type": "string", "enum": ["paper", "screen", "window", "all", "visible"]}}}},
 {"name": "list_component_types",
  "description": "The components of the library: the type to give add_component, what it is, its category. 'search' keeps those whose type, name or category has it. describe_component_type tells a type's properties.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string"}}}},
@@ -175,10 +185,15 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "timeout": {"type": "integer"},
    "keep_as": {"type": "string", "description": "A name of letters, digits, _ and -: the copy is <name>.dat.ngspice (or .xyce, ...) beside the schematic"}}}},
 {"name": "get_netlist",
- "description": "The netlist of a schematic as text: as a simulation with the simulator in the settings would write it now, or with 'last' the one the last simulation ran (Simulation > Show Last Netlist; the one the line numbers of simulate's errors are of). 'numbered' puts each line's number before it.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "last": {"type": "boolean"}, "numbered": {"type": "boolean"}}}},
+ "description": "The netlist of a schematic as text: as a simulation with the simulator in the settings would write it now, or with 'last' the one the last simulation ran (Simulation > Show Last Netlist; the one the line numbers of simulate's errors are of). 'numbered' puts each line's number before it. 'format': spice (the default) or cdl (Simulation > Save CDL netlist, with the CDL settings). export_netlist writes it to a file.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "last": {"type": "boolean"}, "numbered": {"type": "boolean"},
+   "format": {"type": "string", "enum": ["spice", "cdl"]}}}},
+{"name": "export_netlist",
+ "description": "Writes the netlist of a schematic to a file, as Simulation > Save netlist and Save CDL netlist do - their file dialogs cannot be answered: 'save_as' (a path, or a name in the workspace folder; one there is written over), 'format' spice (the default) or cdl, 'last' the one the last simulation ran. Returns the file and its lines.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "save_as": {"type": "string"}, "last": {"type": "boolean"},
+   "format": {"type": "string", "enum": ["spice", "cdl"]}}, "required": ["save_as"]}},
 {"name": "get_dataset",
- "description": "Reads a simulation's results as numbers, from the dataset the simulator wrote. Without 'variables': the variables it holds - the independent ones (time, frequency, a swept parameter: their range and points) and the others (what they depend on, their points, whether complex, their range) with the name a trace takes. With 'variables': for each, over the range from 'from' to 'to' of its x, its statistics (min and max and where, mean and RMS weighted over x, initial and final value) and, as asked, samples ('points': at most so many, spread evenly over the samples in the range), values at given x ('at': interpolated), and measurements on the full data ('measure'): rise_time and fall_time (10%-90% of the swing, the first edge), overshoot (percent of the step), settling_time (within 'tolerance' of the step, 0.02 unless given, from 'from'), period, frequency and duty_cycle (at 'level', the middle of the swing unless given), crossings (of 'level'), bandwidth (-3 dB points of a magnitude). A variable swept over a parameter gives a curve for each of its values. Complex values (AC) come as magnitude and phase in degrees unless 'form' says otherwise; statistics and measurements are of the magnitude.",
+ "description": "Reads a simulation's results as numbers, from the dataset the simulator wrote (its 'written' time says which run). Without 'variables': the variables it holds - the independent ones (time, frequency, a swept parameter: their range and points) and the others (what they depend on, their points, whether complex, their range, their units when known - dB, V, A, degrees - and what an equation defines them as) with the name a trace takes - and the operating point of a DC simulation (op): each node's value and, with ngspice, each device's quantities (id, gm, vgs, ...) under its component. 'operating_point': only that, every device in full. With 'variables': for each, over the range from 'from' to 'to' of its x, its statistics (min and max and where, mean and RMS weighted over x, initial and final value) and, as asked, samples ('points': at most so many, spread evenly over the samples in the range), values at given x ('at': interpolated), and measurements on the full data ('measure'): rise_time and fall_time (10%-90% of the swing, the first edge), overshoot (percent of the step), settling_time (within 'tolerance' of the step, 0.02 unless given, from 'from'), period, frequency and duty_cycle (at 'level', the middle of the swing unless given), crossings (of 'level'), bandwidth (the -3 dB points: of a magnitude, 1/sqrt(2) of its peak; of a curve in dB - db(...), vdb(...), an equation making one; 'decibels' says so when that cannot be told - 3 dB below its peak; refused on a curve that goes below 0 and is not in dB). A variable swept over a parameter gives a curve for each of its values. Complex values (AC) come as magnitude and phase in degrees unless 'form' says otherwise; statistics and measurements are of the magnitude. A variable written as complex numbers with no imaginary part (a Nutmeg equation's db(...)) is read as real, its sign kept, and says so.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "A schematic or data display, open or not (the document in front when not given), or a dataset file (.dat, .dat.ngspice, ...)"},
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "Whose dataset of a schematic: the simulator in the settings unless given (else the newest there is)"},
@@ -188,6 +203,8 @@ const char* const kTools = R"JSON([
    "at": {"type": "array", "items": {"type": "number"}},
    "measure": {"type": "array", "items": {"type": "string", "enum": ["rise_time", "fall_time", "overshoot", "settling_time", "period", "frequency", "duty_cycle", "crossings", "bandwidth"]}},
    "level": {"type": "number"}, "tolerance": {"type": "number"},
+   "decibels": {"type": "boolean", "description": "Whether the variables' values are in dB (bandwidth: 3 dB below the peak); told from their names and equations when not given"},
+   "operating_point": {"type": "boolean", "description": "Only the operating point: every node's value and every device's quantities"},
    "form": {"type": "string", "enum": ["magnitude_phase", "db_phase", "real_imaginary"]}}}},
 {"name": "reload_data",
  "description": "Reads the datasets again and redraws the diagrams of a document (the document named by path, or every open one), as Simulation > Reload Simulation Data: after a simulation outside Qucs-S, or when a plot is blank. Says which traces still show no data, and why.",
@@ -233,6 +250,32 @@ const char* const kTools = R"JSON([
    "marker": {"type": "string", "enum": ["none", "auto", "circle", "square", "triangle", "diamond", "triangle_down", "cross", "plus"]},
    "auto_color": {"type": "boolean"}, "precision": {"type": "integer"},
    "numbers": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"]}}}},
+{"name": "add_marker",
+ "description": "Places a marker on a trace of a diagram (it shows the sample nearest where it is put, and the value there). 'at': an x value, or where on the trace: peak (or max), min, -3dB (3 dB below the peak - of a curve in dB, its peak less 3; of a magnitude, the peak over sqrt(2) - past the peak first, else before it), crossing:<y> (the first crossing of y). Returns the marker as get_schematic lists it and what 'at' found (the exact crossing; the sample the marker is on). 'label' is where its box's top left corner goes, [x, y] on the schematic; 'label_offset' [dx, dy] puts it that far from the point it marks (y down). 'precision': digits; 'format' of complex values; 'transparent' background; 'indicator' at the point; text and background colours (#rrggbb, #aarrggbb, a name, or auto). One step to undo.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string"}, "diagram": {"type": "integer"}, "trace": {"description": "Its number (from 1) or its variable"},
+   "at": {"description": "An x value (a number), or \"peak\", \"max\", \"min\", \"-3dB\", \"crossing:<y>\""},
+   "label": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+   "label_offset": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+   "precision": {"type": "integer", "minimum": 1, "maximum": 12},
+   "format": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"]},
+   "transparent": {"type": "boolean"}, "indicator": {"type": "string", "enum": ["off", "square", "triangle"]},
+   "text_color": {"type": "string"}, "fill_color": {"type": "string"}},
+  "required": ["at"]}},
+{"name": "edit_marker",
+ "description": "Changes a marker of a diagram - 'marker' is its number as get_schematic lists them - as add_marker takes it: 'at' moves it (its label moves with it), and its label, precision, format, transparency, indicator, colours. What is not given stays. One step to undo.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string"}, "diagram": {"type": "integer"}, "marker": {"type": "integer"},
+   "at": {"description": "An x value (a number), or \"peak\", \"max\", \"min\", \"-3dB\", \"crossing:<y>\""},
+   "label": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+   "label_offset": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+   "precision": {"type": "integer", "minimum": 1, "maximum": 12},
+   "format": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"]},
+   "transparent": {"type": "boolean"}, "indicator": {"type": "string", "enum": ["off", "square", "triangle"]},
+   "text_color": {"type": "string"}, "fill_color": {"type": "string"}}}},
+{"name": "delete_marker",
+ "description": "Deletes a marker of a diagram ('marker': its number as get_schematic lists them). One step to undo.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "diagram": {"type": "integer"}, "marker": {"type": "integer"}}}},
 {"name": "rename_net",
  "description": "Renames a net - its labels, or a net get_schematic calls net1, net2, ... gets a label - and whatever names its voltage: the traces of the schematic's diagrams and of its data displays (open ones as a change to undo; the .dpl file of a closed one is rewritten) and its equations: v(out) becomes v(out1), out.v out1.v. Refused when a net has the new name already (that would join the two). The dataset keeps the old name until the next simulation.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["from", "to"]}},
@@ -272,6 +315,12 @@ const struct {
     {"edit_diagram", QT_TRANSLATE_NOOP("QucsControl", "change a diagram in Qucs-S")},
     {"add_trace", QT_TRANSLATE_NOOP("QucsControl", "add a trace to a diagram in Qucs-S")},
     {"edit_trace", QT_TRANSLATE_NOOP("QucsControl", "change a trace in Qucs-S")},
+    {"describe_format", QT_TRANSLATE_NOOP("QucsControl", "read the format of a schematic file")},
+    {"export_netlist", QT_TRANSLATE_NOOP("QucsControl", "write a netlist of Qucs-S to a file")},
+    {"move_to_pane", QT_TRANSLATE_NOOP("QucsControl", "move a document to another pane in Qucs-S")},
+    {"add_marker", QT_TRANSLATE_NOOP("QucsControl", "place a marker on a diagram in Qucs-S")},
+    {"edit_marker", QT_TRANSLATE_NOOP("QucsControl", "change a marker in Qucs-S")},
+    {"delete_marker", QT_TRANSLATE_NOOP("QucsControl", "delete a marker in Qucs-S")},
     {"rename_net", QT_TRANSLATE_NOOP("QucsControl", "rename a net in Qucs-S")},
     {"batch", QT_TRANSLATE_NOOP("QucsControl", "use several Qucs-S tools at once")},
 };
@@ -279,7 +328,7 @@ const struct {
 // Tools that only look (or move the view): used without asking.
 const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "list_component_types", "list_actions",
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
-                                 "reload_data", "describe_component_type"};
+                                 "reload_data", "describe_component_type", "describe_format"};
 
 } // namespace
 
@@ -1003,6 +1052,7 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
         subject = names.join(QStringLiteral(", "));
     } else if (tool == QLatin1String("list_component_types") || tool == QLatin1String("list_actions")) subject = s("search");
     else if (tool == QLatin1String("simulate") || tool == QLatin1String("get_netlist") || tool == QLatin1String("reload_data")) subject = s("path");
+    else if (tool == QLatin1String("export_netlist")) subject = s("save_as");
     else if (tool == QLatin1String("get_dataset")) {
         QStringList vars;
         for (const QJsonValue& v : a.value(QLatin1String("variables")).toArray()) vars << v.toString();
@@ -1014,6 +1064,14 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
         subject = (s("type").isEmpty() ? QStringLiteral("rect") : s("type")) + (vars.isEmpty() ? QString() : QStringLiteral(": ") + vars.join(QStringLiteral(", ")));
     } else if (tool == QLatin1String("edit_diagram")) subject = tr("diagram %1").arg(a.value(QLatin1String("diagram")).toInt(1));
     else if (tool == QLatin1String("add_trace")) subject = s("variable");
+    else if (tool == QLatin1String("move_to_pane"))
+        subject = (s("path").isEmpty() ? tr("the document in front") : s("path")) + QStringLiteral(" → ")
+                  + (a.value(QLatin1String("pane")).isDouble() ? tr("pane %1").arg(a.value(QLatin1String("pane")).toInt()) : s("pane"));
+    else if (tool == QLatin1String("add_marker"))
+        subject = tr("diagram %1: %2").arg(a.value(QLatin1String("diagram")).toInt(1))
+                      .arg(a.value(QLatin1String("at")).isDouble() ? QString::number(a.value(QLatin1String("at")).toDouble()) : s("at"));
+    else if (tool == QLatin1String("edit_marker") || tool == QLatin1String("delete_marker"))
+        subject = tr("diagram %1, marker %2").arg(a.value(QLatin1String("diagram")).toInt(1)).arg(a.value(QLatin1String("marker")).toInt(1));
     else if (tool == QLatin1String("edit_trace"))
         subject = a.value(QLatin1String("trace")).isString() ? s("trace") : tr("trace %1").arg(a.value(QLatin1String("trace")).toInt(1));
     else if (tool == QLatin1String("rename_net")) subject = s("from") + QStringLiteral(" → ") + s("to");
@@ -1037,7 +1095,8 @@ QString QucsControl::instructions() const
         "is read with get_dialog and answered with set_dialog. simulate runs the simulator and reports its errors; "
         "get_netlist gives the netlist. get_dataset reads the results as numbers and measures them (rise time, "
         "overshoot, values at a time, ...): use it rather than a screenshot to tell what a simulation gave. "
-        "Diagrams: add_diagram, edit_diagram, add_trace, edit_trace, delete; reload_data reads the data again. Changes "
+        "Diagrams: add_diagram, edit_diagram, add_trace, edit_trace, delete; markers: add_marker (at x, the peak, "
+        "-3 dB, a crossing), edit_marker, delete_marker; reload_data reads the data again. Changes "
         "appear in the window at once, each one step to undo: prefer these tools to editing the file of a schematic "
         "that is open. Coordinates are the schematic's (grid 10 as a rule; place pins on it). The system's file and "
         "print dialogs cannot be filled: use open_document and save_document instead. A conversation the user has "
@@ -1095,7 +1154,93 @@ void QucsControl::callTool(const QString& tool, const QJsonObject& arguments, st
     done(result);
 }
 
-QJsonObject QucsControl::callNow(const QString& tool, const QJsonObject& arguments, int timeoutMs)
+void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
+                              std::function<void(const QJsonObject&)> done)
+{
+    const QStringList changes = changesSince(caller);
+    a_callers.append(caller);
+    QucsDoc::setEditor(caller);
+    callTool(tool, arguments, [this, caller, changes, done](const QJsonObject& r) {
+        a_callers.removeOne(caller);
+        QucsDoc::setEditor(a_callers.isEmpty() ? 0 : a_callers.last());
+        noteSeen(caller);
+        QJsonObject result = r;
+        if (!changes.isEmpty()) {
+            QJsonArray content = result.value(QStringLiteral("content")).toArray();
+            content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                       {QStringLiteral("text"), tr("Since your last call: %1").arg(changes.join(QLatin1Char(' ')))}});
+            result.insert(QStringLiteral("content"), content);
+        }
+        done(result);
+    });
+}
+
+QString QucsControl::seenKey(QucsDoc* doc)
+{
+    // (One not saved yet has no file: its place in memory, while it lives.)
+    return doc->getDocName().isEmpty() ? QStringLiteral("#%1").arg(quintptr(doc), 0, 16) : doc->getDocName();
+}
+
+QDateTime QucsControl::datasetWritten(QucsDoc* doc)
+{
+    if (dynamic_cast<Schematic*>(doc) == nullptr || doc->getDocName().isEmpty()) return {};
+    const QFileInfo info(datasetFile(doc->getDocName(), doc->getDataSet(), QucsSettings.DefaultSimulator));
+    return info.exists() ? info.lastModified() : QDateTime();
+}
+
+QString QucsControl::whoMade(quint64 by, quint64 caller) const
+{
+    if (by == 0) return tr("the user");
+    return by == caller ? tr("you") : tr("another conversation");
+}
+
+QStringList QucsControl::changesSince(quint64 caller) const
+{
+    const auto seenIt = a_seen.constFind(caller);
+    if (seenIt == a_seen.cend()) return {};   // (its first call: nothing to compare with)
+    const QHash<QString, Seen>& seen = *seenIt;
+    QStringList lines;
+    QSet<QString> open;
+    for (QucsDoc* doc : a_app->allDocuments()) {
+        const QString key = seenKey(doc);
+        open.insert(key);
+        const auto it = seen.constFind(key);
+        if (it == seen.cend()) {
+            lines << tr("%1 has been opened (revision %2).").arg(titleOf(doc)).arg(doc->revision());
+            continue;
+        }
+        int byUser = 0, byOthers = 0;
+        QDateTime last;
+        for (const QucsDoc::Edit& e : doc->recentEdits()) {
+            if (e.revision <= it->revision || e.by == caller) continue;
+            (e.by == 0 ? byUser : byOthers)++;
+            last = e.at;
+        }
+        if (byUser + byOthers > 0) {
+            const QString who = byOthers == 0 ? tr("the user") : byUser == 0 ? tr("another conversation") : tr("the user and another conversation");
+            lines << tr("%1 was changed by %2 - %3 edit(s), the last at %4; now revision %5, it was %6. What you read of it before may no longer hold: read it again.")
+                         .arg(titleOf(doc), who).arg(byUser + byOthers).arg(last.toString(QStringLiteral("HH:mm:ss")))
+                         .arg(doc->revision()).arg(it->revision);
+        }
+        const QDateTime written = datasetWritten(doc);
+        if (written.isValid() && (!it->dataset.isValid() || written > it->dataset))
+            lines << tr("%1 was simulated again (its dataset written at %2): results you read before are not these.")
+                         .arg(titleOf(doc), written.toString(QStringLiteral("HH:mm:ss")));
+    }
+    for (auto it = seen.cbegin(); it != seen.cend(); ++it)
+        if (!open.contains(it.key()) && !it.key().startsWith(QLatin1Char('#')))
+            lines << tr("%1 has been closed.").arg(QFileInfo(it.key()).fileName());
+    return lines;
+}
+
+void QucsControl::noteSeen(quint64 caller)
+{
+    QHash<QString, Seen> seen;
+    for (QucsDoc* doc : a_app->allDocuments()) seen.insert(seenKey(doc), Seen{doc->revision(), datasetWritten(doc)});
+    a_seen.insert(caller, seen);
+}
+
+QJsonObject QucsControl::callNow(const QString& tool, const QJsonObject& arguments, int timeoutMs, quint64 caller)
 {
     QJsonObject result;
     bool finished = false;
@@ -1103,11 +1248,13 @@ QJsonObject QucsControl::callNow(const QString& tool, const QJsonObject& argumen
     QTimer timer;
     timer.setSingleShot(true);
     QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    callTool(tool, arguments, [&](const QJsonObject& r) {
+    const auto take = [&](const QJsonObject& r) {
         result = r;
         finished = true;
         loop.quit();
-    });
+    };
+    if (caller != 0) callToolFor(caller, tool, arguments, take);
+    else callTool(tool, arguments, take);
     if (!finished) {
         timer.start(timeoutMs);
         loop.exec();
@@ -1134,7 +1281,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("get_state"), QStringLiteral("get_schematic"), QStringLiteral("screenshot"),
         QStringLiteral("list_component_types"), QStringLiteral("list_actions"), QStringLiteral("get_dialog"),
         QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"),
-        QStringLiteral("describe_component_type"), QStringLiteral("batch")};
+        QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch")};
     if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool))
         return errorResult(tr("“%1” is open in Qucs-S and waits for an answer: %2 waits until it is closed (get_dialog "
                               "reads it, set_dialog answers it - or ask the user to).")
@@ -1163,13 +1310,27 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("list_component_types")) return listComponentTypes(args);
     if (tool == QLatin1String("list_actions")) return listActions(args);
     if (tool == QLatin1String("get_dialog")) return getDialog();
-    if (tool == QLatin1String("get_netlist")) return getNetlist(args);
+    if (tool == QLatin1String("get_netlist")) {
+        QJsonObject looking = args;
+        looking.remove(QStringLiteral("save_as"));   // (export_netlist writes)
+        return getNetlist(looking);
+    }
+    if (tool == QLatin1String("export_netlist")) {
+        if (args.value(QLatin1String("save_as")).toString().trimmed().isEmpty())
+            return errorResult(tr("'save_as' names the file to write."));
+        return getNetlist(args);
+    }
     if (tool == QLatin1String("get_dataset")) return getDataset(args);
     if (tool == QLatin1String("reload_data")) return reloadData(args);
     if (tool == QLatin1String("add_diagram")) return addDiagram(args);
     if (tool == QLatin1String("edit_diagram")) return editDiagram(args);
     if (tool == QLatin1String("add_trace")) return addTrace(args);
     if (tool == QLatin1String("edit_trace")) return editTrace(args);
+    if (tool == QLatin1String("add_marker")) return addMarker(args);
+    if (tool == QLatin1String("describe_format")) return describeFormat(args);
+    if (tool == QLatin1String("move_to_pane")) return moveToPane(args);
+    if (tool == QLatin1String("edit_marker")) return editMarker(args);
+    if (tool == QLatin1String("delete_marker")) return deleteMarker(args);
     if (tool == QLatin1String("rename_net")) return renameNet(args);
     if (tool == QLatin1String("describe_component_type")) return describeComponentType(args);
     async = true;
@@ -1245,6 +1406,45 @@ void QucsControl::finish(Schematic* sch, const QList<QPoint>& where)
     sch->viewport()->update();
 }
 
+QJsonObject QucsControl::moveToPane(const QJsonObject& args)
+{
+    QString error;
+    QucsDoc* doc = document(args, &error);
+    if (doc == nullptr) return errorResult(error);
+    QWidget* w = QucsApp::documentWidget(doc);
+    ContextMenuTabWidget* from = a_app->paneOf(w);
+    if (from == nullptr) return errorResult(tr("%1 is in no pane.").arg(titleOf(doc)));
+    const QJsonValue where = args.value(QLatin1String("pane"));
+    ContextMenuTabWidget* to = nullptr;
+    if (where.isDouble()) {
+        const QList<ContextMenuTabWidget*> all = a_app->panes();
+        const int n = where.toInt();
+        if (n < 1 || n > all.size()) return errorResult(tr("There is no pane %1: they are numbered 1 to %2 (get_state lists them).").arg(n).arg(all.size()));
+        to = all.at(n - 1);
+        if (to == from) return textResult(tr("%1 is in pane %2 already.").arg(titleOf(doc)).arg(n));
+    } else {
+        const QString side = where.toString();
+        if (side != QLatin1String("right") && side != QLatin1String("below"))
+            return errorResult(tr("'pane' is a pane's number, or right or below: a new pane beside the document's."));
+        // (Moved out of a pane it is alone in, the pane would go again.)
+        if (from->count() < 2)
+            return errorResult(tr("%1 is the only document in its pane: moved to a new pane, it would leave that one empty, "
+                                  "and it would close. Open another document beside it first, or move another one.").arg(titleOf(doc)));
+        a_app->setActivePane(from);
+        if (side == QLatin1String("right")) {
+            if (!a_app->canSplitRight()) return errorResult(tr("There is a pane to the right already (at most two a row): give its number."));
+            a_app->slotSplitPaneRight();
+        } else {
+            if (!a_app->canSplitDown()) return errorResult(tr("There is a row below already (at most two rows): give a pane's number."));
+            a_app->slotSplitPaneDown();
+        }
+        to = a_app->activePane();   // the new one, with a placeholder the document replaces
+    }
+    a_app->moveDocument(w, to);
+    a_app->showDocument(w);
+    return getState(QJsonObject());
+}
+
 QJsonObject QucsControl::getState(const QJsonObject& args)
 {
     QJsonArray docs;
@@ -1252,12 +1452,24 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
     // The document of a conversation pinned to one (forDocument()).
     const QString pinned = args.value(QLatin1String("path")).toString().trimmed();
     bool pinnedOpen = false;
+    const QList<ContextMenuTabWidget*> panes = a_app->panes();
     for (QucsDoc* doc : a_app->allDocuments()) {
         QJsonObject d{{QStringLiteral("title"), titleOf(doc)},
                       {QStringLiteral("path"), doc->getDocName()},
                       {QStringLiteral("kind"), kindOf(doc)},
                       {QStringLiteral("unsaved changes"), doc->getDocChanged()},
-                      {QStringLiteral("in front"), doc == front}};
+                      {QStringLiteral("in front"), doc == front},
+                      {QStringLiteral("revision"), qint64(doc->revision())}};
+        if (panes.size() > 1)
+            d.insert(QStringLiteral("pane"), int(panes.indexOf(a_app->paneOf(QucsApp::documentWidget(doc)))) + 1);
+        // Who changed it last: "you" only for this conversation's calls.
+        if (!doc->recentEdits().isEmpty()) {
+            const QucsDoc::Edit& e = doc->recentEdits().last();
+            d.insert(QStringLiteral("last edit"), QJsonObject{{QStringLiteral("by"), whoMade(e.by, a_callers.isEmpty() ? 0 : a_callers.last())},
+                                                               {QStringLiteral("at"), e.at.toString(Qt::ISODate)}});
+        }
+        if (const QDateTime written = datasetWritten(doc); written.isValid())
+            d.insert(QStringLiteral("dataset written"), written.toString(Qt::ISODate));
         if (!pinned.isEmpty() && !doc->getDocName().isEmpty() && sameFile(doc->getDocName(), absolute(pinned))) {
             d.insert(QStringLiteral("this conversation's document"), true);
             pinnedOpen = true;
@@ -1281,7 +1493,26 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
     case spicecompat::simQucsator: simulator = QStringLiteral("Qucsator"); break;
     default: break;
     }
+    // The panes: where each is, what it holds, which is active.
+    QJsonArray paneList;
+    for (int i = 0; i < panes.size(); ++i) {
+        ContextMenuTabWidget* pane = panes.at(i);
+        const QPoint cell = a_app->paneCell(pane);
+        const QRect rect = a_app->paneRect(pane);
+        QJsonArray held;
+        for (int t = 0; t < pane->count(); ++t)
+            if (QucsDoc* doc = QucsApp::docIn(pane->widget(t))) held.append(titleOf(doc));
+        QJsonObject p{{QStringLiteral("pane"), i + 1},
+                      {QStringLiteral("row"), cell.y() + 1},
+                      {QStringLiteral("column"), cell.x() + 1},
+                      {QStringLiteral("rectangle"), QJsonArray{rect.x(), rect.y(), rect.width(), rect.height()}},
+                      {QStringLiteral("documents"), held},
+                      {QStringLiteral("active"), pane == a_app->activePane()}};
+        if (QucsDoc* current = QucsApp::docIn(pane->currentWidget())) p.insert(QStringLiteral("in front"), titleOf(current));
+        paneList.append(p);
+    }
     QJsonObject state{{QStringLiteral("documents"), docs},
+                      {QStringLiteral("panes"), paneList},
                       {QStringLiteral("workspace"), QucsSettings.qucsWorkspaceDir.absolutePath()},
                       {QStringLiteral("simulator"), simulator},
                       {QStringLiteral("simulation running"),
@@ -1378,6 +1609,40 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
     if (sch == nullptr) return errorResult(error);
     if (args.value(QLatin1String("format")).toString() == QLatin1String("text")) return textResult(sch->documentText());
 
+    // Which properties: those shown or not at the type's default (a JFET
+    // has 27, most of them at theirs), those shown, or all.
+    const QString propertyMode = args.value(QLatin1String("properties")).toString(QStringLiteral("non_default"));
+    if (propertyMode != QLatin1String("non_default") && propertyMode != QLatin1String("shown") && propertyMode != QLatin1String("all"))
+        return errorResult(tr("'properties' is non_default, shown or all."));
+    // Which components: by name, or in a region.
+    QSet<QString> wantedNames;
+    for (const QJsonValue& v : args.value(QLatin1String("components")).toArray()) wantedNames.insert(v.toString().trimmed());
+    QRect region;
+    if (args.contains(QLatin1String("region"))) {
+        const QJsonArray r = args.value(QLatin1String("region")).toArray();
+        if (r.size() != 4) return errorResult(tr("'region' is [x1, y1, x2, y2]."));
+        region = QRect(QPoint(r.at(0).toInt(), r.at(1).toInt()), QPoint(r.at(2).toInt(), r.at(3).toInt())).normalized();
+    }
+    const bool filtered = !wantedNames.isEmpty() || region.isValid();
+    const auto wanted = [&](Component* c) {
+        if (!wantedNames.isEmpty() && !wantedNames.contains(c->Name)) return false;
+        return !region.isValid() || region.contains(c->cx, c->cy);
+    };
+    // What most can take in: a schematic of thousands of parts is listed
+    // in part, and says how to see the rest.
+    constexpr int kMost = 200;
+    QHash<QString, QHash<QString, QString>> defaults;   // by type
+    const auto defaultsOf = [&defaults](Component* c) -> const QHash<QString, QString>& {
+        auto it = defaults.find(c->Model);
+        if (it != defaults.end()) return *it;
+        QHash<QString, QString> values;
+        if (std::unique_ptr<Component> fresh{newComponent(c->Model)})
+            for (const Property* p : fresh->Props) values.insert(p->Name, p->Value);
+        return *defaults.insert(c->Model, values);
+    };
+    int omittedProperties = 0, omittedComponents = 0;
+    QSet<QPoint> pinPlaces;   // of the components listed: the wires to them
+
     QJsonArray components, wires, labels, diagrams, paintings, netList;
     // The nets: each pin's by name - its label's, gnd, or net1, net2, ...
     // in the order the parts come - and the pins on each.
@@ -1393,10 +1658,30 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
     QHash<int, QStringList> pinsOn;
     QList<int> order;
     QHash<QString, int> seen;
+    QSet<int> netsListed;
     for (Component* c : sch->a_DocComps) {
-        QJsonObject json = componentJson(c);
-        QJsonArray pins = json.value(QStringLiteral("pins")).toArray();
         const QString base = keyBase(c, seen);
+        if (!wanted(c)) continue;
+        if (components.size() >= kMost) {
+            ++omittedComponents;
+            continue;
+        }
+        QJsonObject json = componentJson(c);
+        if (propertyMode != QLatin1String("all")) {
+            const QHash<QString, QString>& byDefault = defaultsOf(c);
+            QJsonArray kept;
+            for (const QJsonValue& v : json.value(QStringLiteral("properties")).toArray()) {
+                const QJsonObject p = v.toObject();
+                const bool shown = p.value(QStringLiteral("shown")).toBool();
+                const QString name = p.value(QStringLiteral("name")).toString();
+                const bool changed = !byDefault.contains(name) || byDefault.value(name) != p.value(QStringLiteral("value")).toString();
+                if (shown || (propertyMode == QLatin1String("non_default") && changed)) kept.append(p);
+                else ++omittedProperties;
+            }
+            json.insert(QStringLiteral("properties"), kept);
+        }
+        for (const Port* pp : c->Ports) pinPlaces.insert(QPoint(c->cx + pp->x, c->cy + pp->y));
+        QJsonArray pins = json.value(QStringLiteral("pins")).toArray();
         for (int i = 0; i < pins.size(); ++i) {
             const auto it = nets.netOf.constFind(base + QLatin1Char('.') + QString::number(i + 1));
             if (it == nets.netOf.constEnd()) continue;
@@ -1405,15 +1690,51 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
             QJsonObject pin = pins.at(i).toObject();
             pin.insert(QStringLiteral("net"), netNames.value(*it));
             pins[i] = pin;
-            pinsOn[*it] << QStringLiteral("%1.%2").arg(c->Name.isEmpty() ? c->Model : c->Name).arg(i + 1);
+            netsListed.insert(*it);
         }
         json.insert(QStringLiteral("pins"), pins);
         components.append(json);
     }
-    for (int id : order)
-        if (pinsOn.value(id).size() > 1 || !netNames.value(id).startsWith(QLatin1String("net")))
-            netList.append(QJsonObject{{QStringLiteral("net"), netNames.value(id)}, {QStringLiteral("pins"), QJsonArray::fromStringList(pinsOn.value(id))}});
+    // The pins on each net: of every component (a net's pins are all of
+    // them, whichever are listed).
+    {
+        QHash<QString, int> again;
+        for (Component* c : sch->a_DocComps) {
+            const QString base = keyBase(c, again);
+            for (int i = 0; i < c->Ports.size(); ++i) {
+                const auto it = nets.netOf.constFind(base + QLatin1Char('.') + QString::number(i + 1));
+                if (it == nets.netOf.constEnd()) continue;
+                if (!netNames.contains(*it)) netNames.insert(*it, QStringLiteral("net%1").arg(order.size() + 1));
+                if (!order.contains(*it)) order << *it;
+                pinsOn[*it] << QStringLiteral("%1.%2").arg(c->Name.isEmpty() ? c->Model : c->Name).arg(i + 1);
+            }
+        }
+    }
+    int omittedNets = 0, omittedWires = 0;
+    for (int id : order) {
+        if (filtered && !netsListed.contains(id)) continue;
+        if (pinsOn.value(id).size() > 1 || !netNames.value(id).startsWith(QLatin1String("net"))) {
+            if (netList.size() >= kMost) {
+                ++omittedNets;
+                continue;
+            }
+            // (Ground may join thousands of pins.)
+            const QStringList& pins = pinsOn[id];
+            QJsonObject net{{QStringLiteral("net"), netNames.value(id)}, {QStringLiteral("pins"), QJsonArray::fromStringList(pins.mid(0, 60))}};
+            if (pins.size() > 60) net.insert(QStringLiteral("more pins"), int(pins.size() - 60));
+            netList.append(net);
+        }
+    }
     for (Wire* w : sch->a_DocWires) {
+        if (filtered) {
+            const bool inRegion = region.isValid() && (region.contains(w->P1()) || region.contains(w->P2()));
+            const bool toPin = wantedNames.isEmpty() ? false : (pinPlaces.contains(w->P1()) || pinPlaces.contains(w->P2()));
+            if (!inRegion && !toPin) continue;
+        }
+        if (wires.size() >= kMost) {
+            ++omittedWires;
+            continue;
+        }
         QJsonObject wire{{QStringLiteral("x1"), w->x1}, {QStringLiteral("y1"), w->y1}, {QStringLiteral("x2"), w->x2}, {QStringLiteral("y2"), w->y2}};
         if (w->hasLabel()) {
             wire.insert(QStringLiteral("net"), w->label()->Name);
@@ -1426,16 +1747,52 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
         if (n->hasLabel())
             labels.append(QJsonObject{{QStringLiteral("net"), n->label()->Name}, {QStringLiteral("x"), n->cx}, {QStringLiteral("y"), n->cy}});
     diagrams = diagramsJson(sch);
-    for (Painting* p : sch->a_DocPaints) paintings.append(p->Name.trimmed());
-    return jsonResult(QJsonObject{{QStringLiteral("document"), titleOf(sch)},
-                                  {QStringLiteral("path"), sch->getDocName()},
-                                  {QStringLiteral("grid"), QJsonArray{sch->getGridX(), sch->getGridY()}},
-                                  {QStringLiteral("components"), components},
-                                  {QStringLiteral("nets"), netList},
-                                  {QStringLiteral("wires"), wires},
-                                  {QStringLiteral("labels"), labels},
-                                  {QStringLiteral("diagrams"), diagrams},
-                                  {QStringLiteral("paintings"), paintings}});
+    // Each painting as the file has it (its type, place, text, look).
+    for (Painting* p : sch->a_DocPaints) {
+        const QRect box = p->boundingRect();
+        paintings.append(QJsonObject{{QStringLiteral("type"), p->Name.trimmed().remove(QLatin1Char('.'))},
+                                     {QStringLiteral("x"), box.x()}, {QStringLiteral("y"), box.y()},
+                                     {QStringLiteral("line"), QStringLiteral("<%1>").arg(p->save().trimmed())}});
+    }
+    // The document's own settings: those of its <Properties>.
+    QJsonObject settings{{QStringLiteral("dataset"), sch->getDataSet()},
+                         {QStringLiteral("data display"), sch->getDataDisplay()},
+                         {QStringLiteral("open data display after simulation"), sch->getSimOpenDpl()},
+                         {QStringLiteral("grid shown"), sch->getGridOn()}};
+    if (!sch->getScript().isEmpty()) {
+        settings.insert(QStringLiteral("script"), sch->getScript());
+        settings.insert(QStringLiteral("run script after simulation"), sch->getSimRunScript());
+    }
+    if (sch->getShowFrame() != FrameSize::None)
+        settings.insert(QStringLiteral("frame"), QJsonObject{{QStringLiteral("size"), int(sch->getShowFrame())},
+                                                             {QStringLiteral("texts"), QJsonArray{sch->getFrame_Text0(), sch->getFrame_Text1(),
+                                                                                                  sch->getFrame_Text2(), sch->getFrame_Text3()}}});
+    QJsonObject result{{QStringLiteral("document"), titleOf(sch)},
+                       {QStringLiteral("path"), sch->getDocName()},
+                       {QStringLiteral("grid"), QJsonArray{sch->getGridX(), sch->getGridY()}},
+                       {QStringLiteral("settings"), settings},
+                       {QStringLiteral("components"), components},
+                       {QStringLiteral("nets"), netList},
+                       {QStringLiteral("wires"), wires},
+                       {QStringLiteral("labels"), labels},
+                       {QStringLiteral("diagrams"), diagrams},
+                       {QStringLiteral("paintings"), paintings}};
+    QStringList left;
+    if (omittedProperties > 0 && propertyMode == QLatin1String("non_default"))
+        left << tr("%1 properties at their types' defaults and not shown (properties: all lists them)").arg(omittedProperties);
+    else if (omittedProperties > 0)
+        left << tr("%1 properties not shown (properties: all lists them)").arg(omittedProperties);
+    if (omittedComponents > 0) left << tr("%1 more components").arg(omittedComponents);
+    if (omittedNets > 0) left << tr("%1 more nets").arg(omittedNets);
+    if (omittedWires > 0) left << tr("%1 more wires").arg(omittedWires);
+    if (!left.isEmpty()) {
+        QString note = tr("Left out: %1.").arg(left.join(QStringLiteral("; ")));
+        if (omittedComponents + omittedNets + omittedWires > 0)
+            note += tr(" %1 components, %2 wires in all: 'components' (names) or 'region' ([x1, y1, x2, y2]) lists a part.")
+                        .arg(sch->a_DocComps.size()).arg(sch->a_DocWires.size());
+        result.insert(QStringLiteral("left out"), note);
+    }
+    return jsonResult(result);
 }
 
 QJsonObject QucsControl::setSchematic(const QJsonObject& args)
@@ -1444,10 +1801,110 @@ QJsonObject QucsControl::setSchematic(const QJsonObject& args)
     Schematic* sch = schematic(args, &error, true);
     if (sch == nullptr) return errorResult(error);
     prepare(sch);
-    if (!sch->replaceContent(args.value(QLatin1String("text")).toString(), &error))
+    const QString text = args.value(QLatin1String("text")).toString();
+    if (!sch->replaceContent(text, &error))
         return errorResult(tr("Not changed: %1").arg(error));
-    return textResult(tr("%1 now has %2 components and %3 wires (one step to undo).")
-                          .arg(titleOf(sch)).arg(sch->a_DocComps.size()).arg(sch->a_DocWires.size()));
+    // What it read, section by section: of the diagrams all get_schematic
+    // tells - each trace's points or why it has none, each marker and the
+    // sample it shows.
+    const bool whole = !text.contains(QLatin1String("<Components>")) && !text.contains(QLatin1String("<Wires>"))
+                    && !text.contains(QLatin1String("<Diagrams>")) && !text.contains(QLatin1String("<Paintings>"));
+    const auto replaced = [&](const char* section) { return whole || text.contains(QLatin1String(section)); };
+    QJsonObject result{{QStringLiteral("document"), titleOf(sch)}, {QStringLiteral("one step to undo"), true}};
+    QJsonArray sections;
+    if (replaced("<Components>")) {
+        sections.append(QStringLiteral("components"));
+        QJsonArray list;
+        for (Component* c : sch->a_DocComps) {
+            if (list.size() >= 200) break;
+            list.append(QJsonObject{{QStringLiteral("name"), c->Name}, {QStringLiteral("type"), c->Model}});
+        }
+        result.insert(QStringLiteral("components"), list);
+        result.insert(QStringLiteral("component count"), int(sch->a_DocComps.size()));
+    }
+    if (replaced("<Wires>")) {
+        sections.append(QStringLiteral("wires"));
+        result.insert(QStringLiteral("wire count"), int(sch->a_DocWires.size()));
+    }
+    if (replaced("<Diagrams>")) {
+        sections.append(QStringLiteral("diagrams"));
+        result.insert(QStringLiteral("diagrams"), diagramsJson(sch));
+    }
+    if (replaced("<Paintings>")) {
+        sections.append(QStringLiteral("paintings"));
+        QJsonArray list;
+        for (Painting* p : sch->a_DocPaints) list.append(QStringLiteral("<%1>").arg(p->save().trimmed()));
+        result.insert(QStringLiteral("paintings"), list);
+    }
+    result.insert(QStringLiteral("replaced"), sections);
+    return jsonResult(result);
+}
+
+QJsonObject QucsControl::describeFormat(const QJsonObject& args)
+{
+    // The lines of a .sch file, field by field: what set_schematic takes.
+    static const QHash<QString, QString> formats{
+        {QStringLiteral("component"), QStringLiteral(
+             "<Model Name flags x y tx ty mirrored rotation \"value\" shown \"value\" shown ...>\n"
+             "Model: the type (R, C, Vdc, J_SPICE, ...; list_component_types). Name: its name, * for none (a ground). "
+             "flags: 1 active, 0 off (left out of the netlist), 2 shorted; plus 4 when its name is hidden. x y: its centre. "
+             "tx ty: where its texts begin, from the centre. mirrored: 1 mirrored about the x axis. rotation: 0-3, "
+             "quarter turns counterclockwise. Then each property in order (describe_component_type gives the order): its "
+             "value in quotes, then 1 when it is shown on the schematic, 0 when not; an equation's properties are "
+             "\"name=expression\". A quote in a value is written '' and a new line \\n.")},
+        {QStringLiteral("wire"), QStringLiteral(
+             "<x1 y1 x2 y2 \"label\" labelX labelY distance \"initial\">\n"
+             "Its two ends; then its net label: the name (\"\" for none), where the label's text is, how far along the wire "
+             "from (x1, y1) the label is fixed, and the node's initial value (\"\" for none). Without a label: "
+             "<x1 y1 x2 y2 \"\" 0 0 0 \"\">.")},
+        {QStringLiteral("diagram"), QStringLiteral(
+             "<Type x y width height flags gridColor gridStyle logs xAuto xMin xStep xMax yAuto yMin yStep yMax "
+             "zAuto zMin zStep zMax rotX rotY rotZ notation yUnits zUnits legend decimals [extra] \"xLabel\" \"yLabel\" \"zLabel\">\n"
+             "  <\"variable\" ...> a trace, one line each (see trace), each followed by its markers (see marker)\n"
+             "</Type>\n"
+             "Type: Rect, Polar, Smith, ySmith, PS, SP, Tab, Time, Truth, Rect3D, Curve (locus), Histogram. x y: its lower left corner; "
+             "width height. flags: 1 grid on, plus 2 to hide the lines (a table). gridColor: #rrggbb; gridStyle: a Qt pen style "
+             "(1 solid, 2 dash, 3 dot, ...). logs: two digits written together - the x axis logarithmic (1) or not (0), then "
+             "the y and right y axes (1 y, 2 right y, 3 both): \"10\" is a log x axis. Each axis (x, y, right y = z): "
+             "automatic (1) or not (0), and its minimum, step and maximum (used when not automatic). rotX rotY rotZ: the "
+             "view of a 3D diagram. notation of the numbers: 0 automatic, 1 engineering, 2 scientific, 3 engineering "
+             "exponent. yUnits zUnits: of a log y axis, 0 none, 1 dB, 2 dBuV, 3 dBm. legend: 0 off, 1 top left, 2 top "
+             "right, 3 bottom left, 4 bottom right. decimals: -1 automatic. extra, a histogram's only: bins, height (0 counts, "
+             "1 percent, 2 density), flags (1 normal fit, 2 statistics), lower and upper limit. The labels last, in quotes. "
+             "add_diagram and edit_diagram set all of this by name.")},
+        {QStringLiteral("trace"), QStringLiteral(
+             "<\"variable\" #rrggbb thickness precision numbers style axis [autoColor [pointMarker]]>\n"
+             "variable: as a trace names it (ngspice/tran.v(out)). precision: a table's digits. numbers of complex values in "
+             "a table: 0 real/imaginary, 1 magnitude/degrees, 2 magnitude/radians. style: 0 solid, 1 dash, 2 dot, 3 long "
+             "dash, 4 stars, 5 circles, 6 arrows. axis: 0 left, 1 right. autoColor: 1 each swept curve a colour of its own. "
+             "pointMarker: 0 none, 1 auto, 2 circle, 3 square, 4 triangle, 5 diamond, 6 triangle down, 7 cross, 8 plus. "
+             "add_trace and edit_trace set all of this by name.")},
+        {QStringLiteral("marker"), QStringLiteral(
+             "<Mkr x[/y...] labelX labelY precision numbers transparent [indicator [textColor fillColor]]>\n"
+             "On the line after its trace's. x: the value of the independent variable it marks (and of a swept one after "
+             "a /); it shows the sample nearest it. labelX labelY: the top left corner of its box, from the diagram's "
+             "lower left corner (y up is negative). precision: digits. numbers: 0 real/imaginary, 1 magnitude/degrees, "
+             "2 magnitude/radians. transparent: 1 a clear background. indicator: 0 off, 1 square, 2 triangle (the default). "
+             "textColor fillColor: #rrggbb or #aarrggbb, - for automatic. add_marker and edit_marker set all of this, and "
+             "place a marker at a peak, 3 dB below it or a crossing.")},
+        {QStringLiteral("painting"), QStringLiteral(
+             "<Text x y size #rrggbb angle \"text\"> a text (size in points, angle in degrees; \\n a new line); "
+             "<Line x y dx dy #rrggbb width style>, <Arrow x y dx dy headLength headWidth #rrggbb width style kind>, "
+             "<Rectangle x y width height #rrggbb width style #fillColour fillStyle filled>, "
+             "<Ellipse ...> as a rectangle, <EArc x y width height startAngle spanAngle #rrggbb width style> (angles in "
+             "sixteenths of a degree), <Image ...>. get_schematic lists each painting with its line.")},
+    };
+    const QString element = args.value(QLatin1String("element")).toString().trimmed().toLower();
+    if (element.isEmpty()) {
+        QString all;
+        for (const QString& k : {QStringLiteral("component"), QStringLiteral("wire"), QStringLiteral("diagram"), QStringLiteral("trace"),
+                                 QStringLiteral("marker"), QStringLiteral("painting")})
+            all += QStringLiteral("%1:\n%2\n\n").arg(k, formats.value(k));
+        return textResult(all.trimmed());
+    }
+    if (!formats.contains(element))
+        return errorResult(tr("'element' is component, wire, diagram, trace, marker or painting."));
+    return textResult(formats.value(element));
 }
 
 QJsonObject QucsControl::addComponent(const QJsonObject& args)
@@ -1964,14 +2421,55 @@ QJsonObject QucsControl::undoRedo(const QJsonObject& args, bool redo)
     return textResult(redo ? tr("Redone.") : tr("Undone."));
 }
 
+namespace {
+
+QJsonObject pngContent(const QImage& image)
+{
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "PNG");
+    return {{QStringLiteral("type"), QStringLiteral("image")},
+            {QStringLiteral("data"), QString::fromLatin1(png.toBase64())},
+            {QStringLiteral("mimeType"), QStringLiteral("image/png")}};
+}
+
+// Not wider than a picture to look at needs to be (a window on a Retina
+// screen is twice its size in pixels).
+QImage fitted(const QImage& image)
+{
+    return image.width() > 1800 ? image.scaledToWidth(1800, Qt::SmoothTransformation) : image;
+}
+
+} // namespace
+
 QJsonObject QucsControl::screenshot(const QJsonObject& args)
 {
+    QString area = args.value(QLatin1String("area")).toString(QStringLiteral("paper"));
+    if (area == QLatin1String("all")) area = QStringLiteral("paper");
+    if (area == QLatin1String("visible")) area = QStringLiteral("screen");
+    if (area != QLatin1String("paper") && area != QLatin1String("screen") && area != QLatin1String("window"))
+        return errorResult(tr("'area' is paper (all), screen (visible) or window."));
+    // The whole window - its panes, tabs, docks - and each dialog open over it.
+    if (area == QLatin1String("window")) {
+        QJsonArray content{pngContent(fitted(a_app->grab().toImage()))};
+        QStringList shown{tr("the window, %1 x %2").arg(a_app->width()).arg(a_app->height())};
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            if (w == a_app || !w->isVisible() || w->isMinimized()) continue;
+            if (qobject_cast<QDialog*>(w) == nullptr && !w->isModal()) continue;
+            content.append(pngContent(fitted(w->grab().toImage())));
+            shown << tr("the dialog \"%1\"").arg(w->windowTitle().isEmpty() ? QString::fromLatin1(w->metaObject()->className()) : w->windowTitle());
+        }
+        content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                   {QStringLiteral("text"), tr("Pictures of %1.").arg(shown.join(QStringLiteral(", ")))}});
+        return {{QStringLiteral("content"), content}, {QStringLiteral("isError"), false}};
+    }
     QString error;
     QucsDoc* doc = document(args, &error);
     if (doc == nullptr) return errorResult(error);
     QImage image;
     auto* sch = dynamic_cast<Schematic*>(doc);
-    if (sch != nullptr && args.value(QLatin1String("area")).toString() != QLatin1String("visible")) {
+    if (sch != nullptr && area == QLatin1String("paper")) {
         const QRect area = qucs_s::graphicsexport::area(sch, false);
         if (area.isEmpty()) return errorResult(tr("%1 is empty.").arg(titleOf(doc)));
         // Big enough to read, not bigger than a picture should be.
@@ -1984,16 +2482,13 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
         image = (sch != nullptr ? sch->viewport() : w)->grab().toImage();
     }
     if (image.isNull()) return errorResult(tr("No picture could be made of %1.").arg(titleOf(doc)));
-    QByteArray png;
-    QBuffer buffer(&png);
-    buffer.open(QIODevice::WriteOnly);
-    image.save(&buffer, "PNG");
+    const QString what = sch == nullptr ? tr("as its window shows it")
+                       : area == QLatin1String("paper") ? tr("all of it on white paper, as printed and exported")
+                                                        : tr("as the canvas shows it now, in the theme's colours, at its zoom");
     return {{QStringLiteral("content"),
-             QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("image")},
-                                    {QStringLiteral("data"), QString::fromLatin1(png.toBase64())},
-                                    {QStringLiteral("mimeType"), QStringLiteral("image/png")}},
+             QJsonArray{pngContent(fitted(image)),
                         QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
-                                    {QStringLiteral("text"), tr("%1, %2 x %3 pixels.").arg(titleOf(doc)).arg(image.width()).arg(image.height())}}}},
+                                    {QStringLiteral("text"), tr("%1, %2 - %3 x %4 pixels.").arg(titleOf(doc), what).arg(image.width()).arg(image.height())}}}},
             {QStringLiteral("isError"), false}};
 }
 

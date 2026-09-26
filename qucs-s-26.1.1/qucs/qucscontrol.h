@@ -56,6 +56,13 @@ public:
     QString instructions() const override;
     void callTool(const QString& tool, const QJsonObject& arguments,
                   std::function<void(const QJsonObject&)> done) override;
+    /// A call by the conversation \a caller: its result also says what
+    /// changed since that conversation's last call that it did not change
+    /// itself (the user's edits, another conversation's, a simulation the
+    /// user ran, documents opened or closed); edits the call makes are
+    /// the conversation's (QucsDoc::editor()).
+    void callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
+                     std::function<void(const QJsonObject&)> done) override;
     /// The tools that take the document they act on as 'path' (the one in
     /// front when not given) are given \a document, and get_state names
     /// it; open_document and show_document name theirs, reload_data
@@ -64,12 +71,31 @@ public:
 
     /// The result of a call, the event loop run until it comes (for the
     /// tests); an error result after \a timeoutMs.
-    QJsonObject callNow(const QString& tool, const QJsonObject& arguments, int timeoutMs = 30000);
+    QJsonObject callNow(const QString& tool, const QJsonObject& arguments, int timeoutMs = 30000, quint64 caller = 0);
     /// The text of a result (its text parts, joined).
     static QString textOf(const QJsonObject& result);
 
 private:
     using Done = std::function<void(const QJsonObject&)>;
+
+    // What each conversation saw of each document at the end of its last
+    // call: its revision, and when its dataset was written.
+    struct Seen {
+        quint64 revision = 0;
+        QDateTime dataset;
+    };
+    QHash<quint64, QHash<QString, Seen>> a_seen;   // by conversation, by document (seenKey())
+    QList<quint64> a_callers;   // the conversations whose calls run now: the last edits
+    static QString seenKey(QucsDoc* doc);
+    /// When the dataset a simulation of \a doc writes was written, if it is.
+    static QDateTime datasetWritten(QucsDoc* doc);
+    /// What changed since \a caller's last call that it did not change:
+    /// a line for each document.
+    QStringList changesSince(quint64 caller) const;
+    void noteSeen(quint64 caller);
+    /// Who made an edit, as \a caller is told: "you", "the user",
+    /// "another conversation".
+    QString whoMade(quint64 by, quint64 caller) const;
 
     QJsonObject call(const QString& tool, const QJsonObject& args, const Done& done, bool& async);
 
@@ -112,12 +138,20 @@ private:
     QJsonObject editDiagram(const QJsonObject& args);
     QJsonObject addTrace(const QJsonObject& args);
     QJsonObject editTrace(const QJsonObject& args);
+    QJsonObject addMarker(const QJsonObject& args);
+    QJsonObject moveToPane(const QJsonObject& args);
+    QJsonObject describeFormat(const QJsonObject& args);
+    QJsonObject editMarker(const QJsonObject& args);
+    QJsonObject deleteMarker(const QJsonObject& args);
     QJsonObject renameNet(const QJsonObject& args);
     QJsonObject describeComponentType(const QJsonObject& args);
 
     /// The dataset get_dataset reads for \a args: a dataset file, or the
     /// one of a schematic or data display (open or not) for a simulator.
     QString datasetPath(const QJsonObject& args, QString* error) const;
+    /// The open schematic whose simulations write the dataset \a file (the
+    /// document \a args name first), or nullptr.
+    Schematic* schematicOfDataset(const QString& file, const QJsonObject& args) const;
     /// The open documents that show \a sch's dataset: itself and its data
     /// displays.
     QList<Schematic*> showingDataOf(Schematic* sch) const;

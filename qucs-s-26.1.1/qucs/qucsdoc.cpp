@@ -76,3 +76,26 @@ QString QucsDoc::fileBase (void) {
   return fileBase (a_DocName);
 }
 
+namespace {
+quint64& currentEditor()
+{
+  static quint64 who = 0;
+  return who;
+}
+} // namespace
+
+quint64 QucsDoc::editor() { return currentEditor(); }
+
+void QucsDoc::setEditor(quint64 who) { currentEditor() = who; }
+
+void QucsDoc::edited()
+{
+  // Its first content, as it was opened: no one's edit.
+  if (a_revision == 0) {
+    a_revision = 1;
+    return;
+  }
+  ++a_revision;
+  a_recentEdits.append({a_revision, currentEditor(), QDateTime::currentDateTime()});
+  if (a_recentEdits.size() > 48) a_recentEdits.removeFirst();
+}

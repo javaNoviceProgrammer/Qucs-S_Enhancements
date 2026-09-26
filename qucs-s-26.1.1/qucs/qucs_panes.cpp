@@ -438,6 +438,20 @@ void QucsApp::slotMoveDocumentToNextPane()
   moveDocument(document, all.at((at + 1) % all.size()));
 }
 
+QPoint QucsApp::paneCell(ContextMenuTabWidget *pane) const
+{
+  QSplitter *row = rowOf(pane);
+  if (row == nullptr || a_paneArea == nullptr) return QPoint(-1, -1);
+  return QPoint(row->indexOf(frameOf(pane)), a_paneArea->indexOf(row));
+}
+
+QRect QucsApp::paneRect(ContextMenuTabWidget *pane) const
+{
+  QWidget *frame = frameOf(pane);
+  if (frame == nullptr) frame = pane;
+  return QRect(frame->mapTo(this, QPoint(0, 0)), frame->size());
+}
+
 void QucsApp::slotNextPane()
 {
   const QList<ContextMenuTabWidget *> all = panes();

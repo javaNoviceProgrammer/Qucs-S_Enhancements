@@ -437,6 +437,10 @@ void Ngspice::createNetlist(
             QString out = "spice4qucs." + sim_name + ".ngspice.dc.print";
             spiceNetlist.append(QStringLiteral("print %1 > %2\n").arg(nods).arg(out));
             outputs.append(out);
+            // The operating point of every device too - id, gm, vgs, ... -
+            // for the dataset, beside the node values (convertToQucsData()).
+            if (QucsSettings.DefaultSimulator == spicecompat::simNgspice)
+                spiceNetlist.append(QStringLiteral("show all > spice4qucs.%1.ngspice.op_dev\n").arg(sim_name));
         } 
         else if (sim_typ == ".NOISE") {
             nods = nods.simplified();

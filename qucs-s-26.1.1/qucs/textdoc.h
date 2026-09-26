@@ -85,6 +85,9 @@ public:
   int devtype;       // device type
 
   bool SetChanged;
+
+  int a_textRevision = -1;   // the document's revision() last counted as an edit
+  bool a_countsEdits = false;   // set up (and loaded): its changes are edits
   int language;
 
   bool loadSettings (void);

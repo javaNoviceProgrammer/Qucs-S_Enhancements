@@ -15,11 +15,13 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QList>
 #include <QString>
 
 class Component;
 class Diagram;
 class Graph;
+class Marker;
 class Module;
 class Schematic;
 
@@ -54,6 +56,14 @@ QJsonArray diagramsJson(Schematic* sch);
 Diagram* diagramOf(Schematic* sch, const QJsonValue& which, QString* error);
 /// The trace \a which (its number in the diagram, or its variable) of \a d.
 Graph* traceOf(Diagram* d, const QJsonValue& which, QString* error);
+/// The markers of a diagram, numbered from 1 as the tools take them: those
+/// of its first trace, then of its second...
+QList<Marker*> markersOf(const Diagram* d);
+/// A marker as get_schematic lists it: its trace, the sample it shows and
+/// the value there, its text, where its label is, how it is drawn.
+QJsonObject markerJson(const Diagram* d, Marker* m, int index);
+/// The marker \a which (its number) of \a d; the only one when not given.
+Marker* markerOf(const Diagram* d, const QJsonValue& which, QString* error);
 /// Why trace \a g of \a sch shows nothing (no dataset; no such variable,
 /// and those there are like it); empty when it shows data.
 QString whyNoData(Schematic* sch, Graph* g);

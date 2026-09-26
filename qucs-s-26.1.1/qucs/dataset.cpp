@@ -16,6 +16,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QRegularExpression>
 
 #include <algorithm>
 #include <cmath>
@@ -127,6 +128,14 @@ bool Dataset::read(const QString& path, QString* error)
         if (!v.im.isEmpty()) v.im.append(im);
     }
     if (a_variables.isEmpty()) return fail(tr("%1 holds no variables.").arg(path));
+    // Complex in the file, real in fact: read as real, with its sign.
+    for (Variable& v : a_variables) {
+        if (!v.isComplex()) continue;
+        if (std::all_of(v.im.cbegin(), v.im.cend(), [](double i) { return i == 0; })) {
+            v.im.clear();
+            v.writtenComplex = true;
+        }
+    }
     return true;
 }
 
@@ -160,6 +169,36 @@ QString analysisOf(const QString& name)
     return name.left(dot);
 }
 
+bool isOperatingPointValue(const Dataset& data, const Variable& v)
+{
+    if (!v.independent || v.size() != 1) return false;
+    for (const Variable& other : data.variables())
+        if (other.dependencies.contains(v.name)) return false;
+    return true;
+}
+
+QString unitOf(const QString& name, const QString& definition)
+{
+    // The equation says what it is; else the name (without the analysis,
+    // and as it is: Qucsator's out.Vt has none).
+    for (const QString& text : {definition, bareName(withoutSimulator(name)), withoutSimulator(name)}) {
+        const QString t = text.trimmed().toLower().remove(QLatin1Char(' '));
+        if (t.isEmpty()) continue;
+        static const QRegularExpression db(QStringLiteral("^(db|vdb|idb|dbv|dbm)\\(|^20\\*log10\\(|^10\\*log10\\(|^db\\[|^vdb\\["));
+        if (db.match(t).hasMatch()) return QStringLiteral("dB");
+        static const QRegularExpression phase(QStringLiteral("^(phase|cph|vp|ip|arg|angle|ph|unwrap)\\("));
+        if (phase.match(t).hasMatch()) return QString(QChar(0x00B0));
+        if (text == definition) continue;   // (a definition that is not one of these says nothing of the name)
+        if (t == QLatin1String("time")) return QStringLiteral("s");
+        if (t.contains(QLatin1String("freq"))) return QStringLiteral("Hz");
+        static const QRegularExpression voltage(QStringLiteral("^(v|vm|vr|vi)\\(|\\.vt?$"));
+        if (voltage.match(t).hasMatch()) return QStringLiteral("V");
+        static const QRegularExpression current(QStringLiteral("^(i|im|ir|ii)\\(|\\.it?$|#branch$"));
+        if (current.match(t).hasMatch()) return QStringLiteral("A");
+    }
+    return QString();
+}
+
 QString bareName(const QString& name)
 {
     const QString analysis = analysisOf(name);
@@ -170,10 +209,17 @@ QStringList Dataset::resolve(const QString& wanted) const
 {
     const QString w = withoutSimulator(wanted.trimmed());
     if (w.isEmpty()) return {};
-    if (find(w) != nullptr) return {w};
     // A SPICE simulator's dataset names its variables after the analysis
     // (tran.v(out)); Qucsator's after the node or the part (out.Vt).
     const bool spice = !a_path.endsWith(QLatin1String(".dat"));
+    if (const Variable* exact = find(w)) {
+        QStringList names{w};
+        // The op analysis prints v(out) as it is: the others' come too.
+        if (spice && isOperatingPointValue(*this, *exact))
+            for (const Variable& v : a_variables)
+                if (!v.independent && bareName(v.name).compare(w, Qt::CaseInsensitive) == 0 && !names.contains(v.name)) names << v.name;
+        return names;
+    }
     const auto all = [this](const std::function<bool(const QString&)>& keep) {
         QStringList names;
         for (const Variable& v : a_variables)
@@ -525,12 +571,20 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
         return r;
     }
     if (w == QLatin1String("bandwidth")) {
-        if (s.max <= 0) return cannot(tr("the magnitude is never above 0"));
-        const double level = s.max / std::sqrt(2.0);
+        // 3 dB below the peak: in dB, the peak less 3; of a magnitude, the
+        // peak over sqrt(2). A curve that goes below 0 is neither a
+        // magnitude nor known to be in dB: the one or the other would be
+        // a guess, and a wrong guess a wrong number.
+        if (!o.decibels && s.min < 0)
+            return cannot(tr("the curve goes below 0: it is not a magnitude, and not known to be in dB (say decibels: true if it is)"));
+        if (!o.decibels && s.max <= 0) return cannot(tr("the magnitude is never above 0"));
+        const double level = o.decibels ? s.max - 3.0 : s.max / std::sqrt(2.0);
         QJsonArray points;
         for (const Crossing& x : crossings(c, level)) points.append(rounded(x.x));
         QJsonObject r{{QStringLiteral("peak"), rounded(s.max)},
                       {QStringLiteral("at"), rounded(s.xMax)},
+                      {QStringLiteral("level"), rounded(level)},
+                      {QStringLiteral("measured on"), o.decibels ? QStringLiteral("dB: 3 below the peak") : QStringLiteral("a magnitude: the peak over sqrt(2)")},
                       {QStringLiteral("-3 dB points"), points}};
         double below = NaN, above = NaN;
         for (const QJsonValue& p : points) {

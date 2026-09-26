@@ -38,6 +38,7 @@
 #include <QPlainTextEdit>
 #include <QSet>
 #include <algorithm>
+#include <cmath>
 
 /*!
   \file abstractspicekernel.cpp
@@ -1596,6 +1597,22 @@ void AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
         }
     }
 
+    // The operating point of every device of an op analysis, from ngspice's
+    // "show all" after it: with the node values the analysis printed, one
+    // value each, named as ngspice names them (@jt1[id]).
+    {
+        QDir dir(a_workdir);
+        for (const QString& shown : dir.entryList({QStringLiteral("*.op_dev")}, QDir::Files, QDir::Name)) {
+            QFile f(dir.filePath(shown));
+            if (!f.open(QIODevice::ReadOnly)) continue;
+            for (const qucs_s::oppoint::Device& d : qucs_s::oppoint::parseShow(QString::fromUtf8(f.readAll())))
+                for (const qucs_s::oppoint::Parameter& p : d.parameters)
+                    if (qucs_s::oppoint::isOperatingQuantity(d.type, p.name) && std::isfinite(p.value))
+                        ds_stream << QStringLiteral("<indep @%1[%2] 1>\n%3\n</indep>\n")
+                                         .arg(d.name, p.name, QString::number(p.value, 'e', 12));
+        }
+    }
+
     QFile dataset(qucs_dataset);
     if (dataset.open(QFile::WriteOnly)) {
         QTextStream ts(&dataset);
@@ -1623,7 +1640,11 @@ void AbstractSpiceKernel::removeAllSimulatorOutputs()
         QFile::remove(full_outfile);
     }
     QDir dir(a_workdir);
-    dir.setNameFilters(QStringList() << "*.cir.res*");
+    // And the operating points of any earlier run - a DC bias run's, or an
+    // op analysis's devices: what is read after this run must be its own.
+    // (A DC bias run's files outlived every simulation after it, and told
+    // of a circuit that was no more.)
+    dir.setNameFilters(QStringList() << "*.cir.res*" << "*.dc_op" << "*.dc_op_dev" << "*.dc_op_xyce" << "*.op_dev");
     dir.setFilter(QDir::Files);
     foreach(QString file, dir.entryList())
         dir.remove(file);

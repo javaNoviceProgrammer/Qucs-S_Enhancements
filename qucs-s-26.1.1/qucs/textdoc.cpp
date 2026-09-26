@@ -95,6 +95,12 @@ TextDoc::TextDoc(QucsApp *App_, const QString& Name_) : QPlainTextEdit(), QucsDo
   connect(this, SIGNAL(cursorPositionChanged()), SLOT(highlightCurrentLine()));
 
   updateLineNumberAreaWidth(0);
+  // A new document: what is typed from now on. (One read from a file
+  // counts from the end of its load().)
+  if (a_DocName.isEmpty()) {
+    a_textRevision = document()->revision();
+    a_countsEdits = true;
+  }
 }
 
 /*!
@@ -350,6 +356,12 @@ void TextDoc::slotCursorPosChanged()
  */
 void TextDoc::slotSetChanged()
 {
+  // An edit of the text (typed, undone) - not a highlighting, nor what
+  // setting the document up and loading it do (load() counts itself).
+  if (a_countsEdits && document()->revision() != a_textRevision) {
+    a_textRevision = document()->revision();
+    edited();
+  }
   if((document()->isModified() && !a_DocChanged) || SetChanged) {
     a_DocChanged = true;
   }
@@ -390,6 +402,7 @@ bool TextDoc::load ()
   setLanguage (a_DocName);
 
   QTextStream stream (&file);
+  a_countsEdits = false;
   insertPlainText(stream.readAll());
   // Store timestamp
   QFileInfo fileInfo(a_DocName);
@@ -401,6 +414,10 @@ bool TextDoc::load ()
   loadSettings ();
   a_SimOpenDpl = simulation ? true : false;
   refreshLanguage();
+  // Its content: the first, or, read again, an edit.
+  a_textRevision = document()->revision();
+  a_countsEdits = true;
+  edited();
   return true;
 }
 
