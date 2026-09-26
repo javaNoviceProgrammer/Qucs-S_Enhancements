@@ -1890,7 +1890,7 @@ void MouseActions::editElement(Schematic *Doc, QMouseEvent *Event)
         }
 
         Doc->setChanged(true, true);
-        Doc->enlargeView(c);
+        if (Doc->holds(c)) Doc->enlargeView(c);   // (not one freed while its dialog was open)
         break;
 
     case isDiagram:
@@ -1916,7 +1916,7 @@ void MouseActions::editElement(Schematic *Doc, QMouseEvent *Event)
         if (ddia->exec() != QDialog::Rejected) // is WDestructiveClose
             Doc->setChanged(true, true);
 
-        Doc->enlargeView(dia);
+        if (Doc->holds(dia)) Doc->enlargeView(dia);   // (not one freed while its dialog was open)
         break;
 
     case isGraph:
