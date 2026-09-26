@@ -450,6 +450,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   symbols — as an orange glow under the wires, for as long as the
   selection lasts. Several selected wires light their nets together.
   Exports and prints never show it.
+- **Marker colours** (double-click a marker): *Text color* and
+  *Background color* each *Automatic* - dark text on the paper the
+  diagram is drawn on, the light card it is in the dark theme (the label
+  was a dark box around black text there) - or any colour, the
+  background with transparency too; *Reset* goes back to automatic, and
+  *Transparent background* is in sight again (the buttons covered it).
+  Saved with the marker, as is its indicator (off, square or triangle),
+  which was lost on reading; files of before load as they did.
 - **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
   can show a legend — a sample of each graph's line (colour, thickness,
   style or symbol) with its variable — in a corner of its choice:

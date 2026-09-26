@@ -24,6 +24,7 @@
 #include "marker.h"
 #include "diagram.h"
 #include "graph.h"
+#include "ink.h"
 #include "one_point.h"
 #include "main.h"
 
@@ -430,6 +431,18 @@ void square_marker(QPainter* p, const QPointF& square_center) {
 }
 } // namespace
 
+QColor Marker::shownTextColor() const
+{
+  return textColor.isValid() ? textColor : qucs_s::ink::on(Qt::black);
+}
+
+QColor Marker::shownFillColor() const
+{
+  // The paper drawn on - not the widget's background, which eraseRect()
+  // took: the dark canvas's, around black text, in the dark theme.
+  return fillColor.isValid() ? fillColor : qucs_s::ink::paper();
+}
+
 void Marker::paint(QPainter* painter) {
   // Marker inherits from Element four member vars: cx, cy, x1, y1
   // and uses them like this:
@@ -446,13 +459,13 @@ void Marker::paint(QPainter* painter) {
                         text_size};
 
   if (!transparent) {
-    painter->eraseRect(text_box);
+    painter->fillRect(text_box, shownFillColor());
   }
 
-  painter->setPen(QPen(Qt::black, 1));
+  painter->setPen(QPen(shownTextColor(), 1));
   painter->drawText(x1, y1, 1, 1, Qt::TextDontClip, Text);
 
-  painter->setPen(QPen(Qt::darkMagenta, 0));
+  painter->setPen(QPen(qucs_s::ink::on(Qt::darkMagenta), 0));
   painter->drawRect(text_box);
 
   // `cy` is inverted because painter's Y-axis grows downwards but marker's `cy`
@@ -515,10 +528,17 @@ QString Marker::save()
 
   s += QString::number(x1) +" "+ QString::number(y1) +" "
       +QString::number(Precision) +" "+ QString::number(numMode);
-  if(transparent)  s += " 1>";
-  else  s += " 0>";
-
-  return s;
+  s += transparent ? " 1" : " 0";
+  // Then, when they are not the defaults (older files end above, and
+  // older versions stop reading there): the indicator, the text's and
+  // the background's colours ("-": automatic).
+  const auto colour = [](const QColor& c) {
+    return !c.isValid() ? QStringLiteral("-") : c.name(c.alpha() < 255 ? QColor::HexArgb : QColor::HexRgb);
+  };
+  const bool colours = textColor.isValid() || fillColor.isValid();
+  if (indicatorMode != indicator_Triangle || colours) s += " " + QString::number(int(indicatorMode));
+  if (colours) s += " " + colour(textColor) + " " + colour(fillColor);
+  return s + ">";
 }
 
 // ---------------------------------------------------------------------
@@ -546,6 +566,10 @@ bool Marker::load(const QString& Line)
     if(!ok) return false;
     i = j+1;
   } while(j >= 0);
+  // As many as were read: the two more kept were saved too, each save
+  // lengthening the line while the data was missing (createText() pads
+  // it to the graph's axes when there is data).
+  VarPos.resize(nVarPos);
 
   n  = s.section(' ',2,2);    // x1
   x1 = misc::clampCoordinate(n.toInt(&ok));
@@ -566,6 +590,19 @@ bool Marker::load(const QString& Line)
   n  = s.section(' ',6,6);      // transparent
   if(n.isEmpty()) return true;  // is optional
   transparent = n != "0";
+
+  n  = s.section(' ',7,7);      // the indicator (optional)
+  if(n.isEmpty()) return true;
+  const int indicator = n.toInt(&ok);
+  if(ok && indicator >= indicator_Off && indicator <= indicator_Triangle)
+    indicatorMode = static_cast<indicatorMode_t>(indicator);
+
+  // The text's and the background's colours (optional; "-": automatic).
+  const auto colour = [](const QString& text) {
+    return text.isEmpty() || text == QLatin1String("-") ? QColor() : QColor::fromString(text);
+  };
+  textColor = colour(s.section(' ',8,8));
+  fillColor = colour(s.section(' ',9,9));
 
   return true;
 }
@@ -601,10 +638,13 @@ Marker* Marker::sameNewOne(Graph *pGraph_)
 
   pm->VarPos = VarPos;
 
-  pm->Text        = Text;
-  pm->transparent = transparent;
-  pm->Precision   = Precision;
-  pm->numMode     = numMode;
+  pm->Text          = Text;
+  pm->transparent   = transparent;
+  pm->Precision     = Precision;
+  pm->numMode       = numMode;
+  pm->indicatorMode = indicatorMode;
+  pm->textColor     = textColor;
+  pm->fillColor     = fillColor;
 
   return pm;
 }

@@ -24,7 +24,32 @@
 #include <QGridLayout>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QColorDialog>
+#include <QPainter>
+#include <QToolButton>
 #include "qucs_assert.h"
+
+namespace {
+
+// A swatch of \a color for a button, a checkerboard under it when it is
+// see-through.
+QIcon swatch(const QColor& color)
+{
+  QPixmap pixmap(28, 16);
+  pixmap.fill(Qt::transparent);
+  QPainter p(&pixmap);
+  const QRect box(0, 0, 27, 15);
+  if (color.alpha() < 255)
+    for (int y = 0; y < 16; y += 4)
+      for (int x = 0; x < 28; x += 4)
+        p.fillRect(x, y, 4, 4, ((x + y) / 4) % 2 ? QColor(0xcc, 0xcc, 0xcc) : Qt::white);
+  p.fillRect(box, color);
+  p.setPen(QColor(0x80, 0x80, 0x80));
+  p.drawRect(box);
+  return QIcon(pixmap);
+}
+
+} // namespace
 
 
 MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
@@ -90,9 +115,49 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
       g->addWidget(SourceImpedance, 4, 1);
   }
   
-  TransBox = new QCheckBox(tr("transparent"));
+  // The colours of its text and its background: automatic (the paper's
+  // ink and the paper - a diagram's light card in the dark theme) or
+  // chosen.
+  const auto colorRow = [this, g](int row, const QString& label, QPushButton*& button, QToolButton*& automatic,
+                                  const char* name) {
+    button = new QPushButton();
+    button->setObjectName(QLatin1String(name));
+    button->setIconSize(QSize(28, 16));
+    automatic = new QToolButton();
+    automatic->setObjectName(QLatin1String(name) + QStringLiteral("Auto"));
+    automatic->setText(tr("Reset"));
+    automatic->setToolTip(tr("Back to automatic: the paper's colours, dark text on the light background the "
+                             "diagram is drawn on"));
+    auto* both = new QHBoxLayout();
+    both->setSpacing(4);
+    both->addWidget(button, 1);
+    both->addWidget(automatic);
+    g->addWidget(new QLabel(label), row, 0);
+    g->addLayout(both, row, 1);
+  };
+  colorRow(5, tr("Text color:"), TextColorButton, TextColorAuto, "markerTextColor");
+  colorRow(6, tr("Background color:"), FillColorButton, FillColorAuto, "markerFillColor");
+  connect(TextColorButton, &QPushButton::clicked, this, [this] {
+    const QColor c = QColorDialog::getColor(a_textColor.isValid() ? a_textColor : pMarker->shownTextColor(), this,
+                                            tr("Marker Text Color"));
+    if (c.isValid()) setTextColor(c);
+  });
+  connect(FillColorButton, &QPushButton::clicked, this, [this] {
+    const QColor c = QColorDialog::getColor(a_fillColor.isValid() ? a_fillColor : pMarker->shownFillColor(), this,
+                                            tr("Marker Background Color"), QColorDialog::ShowAlphaChannel);
+    if (c.isValid()) setFillColor(c);
+  });
+  connect(TextColorAuto, &QToolButton::clicked, this, [this] { setTextColor(QColor()); });
+  connect(FillColorAuto, &QToolButton::clicked, this, [this] { setFillColor(QColor()); });
+
+  TransBox = new QCheckBox(tr("Transparent background"));
+  TransBox->setObjectName(QStringLiteral("markerTransparent"));
   TransBox->setChecked(pMarker->transparent);
-  g->addWidget(TransBox, 5, 0);
+  g->addWidget(TransBox, 7, 0, 1, 2);
+  connect(TransBox, &QCheckBox::toggled, this, &MarkerDialog::showColors);
+  a_textColor = pMarker->textColor;
+  a_fillColor = pMarker->fillColor;
+  showColors();
 
   // first => activated by pressing RETURN
   QPushButton *ButtOK = new QPushButton(tr("OK"));
@@ -105,13 +170,41 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
   b->setSpacing(5);
   b->addWidget(ButtOK);
   b->addWidget(ButtCancel);
-  g->addLayout(b,5,0,1,2);
+  g->addLayout(b,8,0,1,2);   // (under the rest: it covered the check box once)
 
   this->setLayout(g);
 }
 
 MarkerDialog::~MarkerDialog()
 {
+}
+
+void MarkerDialog::setTextColor(const QColor& color)
+{
+  a_textColor = color;
+  showColors();
+}
+
+void MarkerDialog::setFillColor(const QColor& color)
+{
+  a_fillColor = color;
+  showColors();
+}
+
+void MarkerDialog::showColors()
+{
+  const auto show = [this](QPushButton* button, QToolButton* automatic, const QColor& chosen, const QColor& shown) {
+    button->setIcon(swatch(chosen.isValid() ? chosen : shown));
+    button->setText(chosen.isValid() ? chosen.name(chosen.alpha() < 255 ? QColor::HexArgb : QColor::HexRgb).toUpper()
+                                     : tr("Automatic"));
+    automatic->setEnabled(chosen.isValid());
+  };
+  // (Automatic: as it is drawn - black on the light background.)
+  show(TextColorButton, TextColorAuto, a_textColor, QColor(Qt::black));
+  show(FillColorButton, FillColorAuto, a_fillColor, QColor(Qt::white));
+  const bool filled = !TransBox->isChecked();
+  FillColorButton->setEnabled(filled);
+  FillColorAuto->setEnabled(filled && a_fillColor.isValid());
 }
 
 // ----------------------------------------------------------
@@ -143,6 +236,14 @@ void MarkerDialog::slotAcceptValues()
   }
   if(TransBox->isChecked() != pMarker->transparent) {
     pMarker->transparent = TransBox->isChecked();
+    changed = true;
+  }
+  if (a_textColor != pMarker->textColor) {
+    pMarker->textColor = a_textColor;
+    changed = true;
+  }
+  if (a_fillColor != pMarker->fillColor) {
+    pMarker->fillColor = a_fillColor;
     changed = true;
   }
 
