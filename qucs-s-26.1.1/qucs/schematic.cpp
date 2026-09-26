@@ -928,9 +928,12 @@ void Schematic::drawElements(QPainter* painter, const QRectF& area, Layer layer)
         if (qucs_s::ink::darkPaper()) {
             // On dark paper a diagram is a light card, drawn as it is
             // printed: its axes, grid, texts and header bars keep their
-            // colours on it.
+            // colours on it. The card holds all it draws, with a margin.
             const qucs_s::ink::Paper card(Qt::white);
-            painter->fillRect(diagram->boundingRect(), Qt::white);
+            constexpr qreal margin = 6;
+            const QRectF drawn = diagram->paintedRect(QFontMetricsF(painter->font()));
+            painter->fillRect(drawn.adjusted(-margin, -margin, margin, margin) | QRectF(diagram->boundingRect()),
+                              Qt::white);
             diagram->paint(painter);
         } else {
             diagram->paint(painter);

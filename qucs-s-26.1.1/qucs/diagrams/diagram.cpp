@@ -2243,6 +2243,26 @@ QRect Diagram::boundingRect() const noexcept
     return QRect{QPoint{x1_, y1_}, QPoint{x2_, y2_}}.normalized();
 }
 
+QRectF Diagram::paintedRect(const QFontMetricsF& metrics) const
+{
+    // Where it is selected: its frame, with the room of its axes' labels
+    // or of its scroll bar.
+    QRectF drawn(QPointF(-x1, -y2), QPointF(x3, y1));
+    for (const qucs::Line* line : Lines)
+        drawn |= QRectF(QPointF(line->x1, -line->y1), QPointF(line->x2, -line->y2)).normalized();
+    for (const qucs::Arc* arc : Arcs)
+        drawn |= QRectF(arc->x, -arc->y, arc->w, arc->h).normalized();
+    for (const Text* text : Texts)
+        drawn |= textRect(*text, metrics);
+    return drawn.translated(cx, cy);
+}
+
+QRectF Diagram::textRect(const Text& text, const QFontMetricsF& metrics) const
+{
+    const QRectF box(0, -metrics.ascent(), metrics.horizontalAdvance(text.s), metrics.height());
+    return QTransform().translate(text.x, -text.y).rotate(text.angle()).mapRect(box);
+}
+
 //void Diagram::SetLimitsBySelectionRect(QRectF) {}
 
 

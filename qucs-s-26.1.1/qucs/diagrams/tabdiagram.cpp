@@ -125,6 +125,11 @@ void TabDiagram::paintDiagram(QPainter *painter) {
   painter->restore();
 }
 
+QRectF TabDiagram::textRect(const Text& text, const QFontMetricsF& metrics) const
+{
+  return QRectF(text.x, -text.y, metrics.horizontalAdvance(text.s), metrics.height());
+}
+
 // ------------------------------------------------------------
 // calculates the text in the tabular
 int TabDiagram::calcDiagram()

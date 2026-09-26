@@ -38,6 +38,8 @@ public:
 
 protected:
   void calcData(Graph*) {};  // no graph data
+  /// (Its texts are drawn from their top left corners.)
+  QRectF textRect(const Text& text, const QFontMetricsF& metrics) const override;
 };
 
 #endif
