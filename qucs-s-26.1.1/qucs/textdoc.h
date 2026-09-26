@@ -20,6 +20,7 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 
 #include <QPlainTextEdit>
 #include <QFont>
+#include <QMargins>
 #include <QColor>
 #include <utility>
 #include <qdatetime.h>
@@ -106,7 +107,7 @@ public:
   QMenu* createStandardContextMenu();
 
   void lineNumberAreaPaintEvent(QPaintEvent *event);
-  int lineNumberAreaWidth();
+  int lineNumberAreaWidth() const;
 
 signals:
   void signalCursorPosChanged(int, int, QString);
@@ -123,6 +124,11 @@ public slots:
 
 protected:
       void resizeEvent(QResizeEvent *event) override;
+      /// Room around the text beside the line numbers' (a subclass puts
+      /// widgets of its own there: MarkdownDoc its bar and preview).
+      virtual QMargins extraMargins() const { return {}; }
+      /// The text's margins set again (after extraMargins() changed).
+      void updateMargins() { updateLineNumberAreaWidth(0); }
 
 private:
   SyntaxHighlighter * syntaxHighlight = nullptr;

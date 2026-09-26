@@ -159,7 +159,7 @@ ADD_SUBDIRECTORY( spicecomponents )
 
 SET(QUCS_SRCS
   element.cpp	octave_window.cpp	qucsdoc.cpp
-  textdoc.cpp  main.cpp	schematic.cpp
+  textdoc.cpp  markdowndoc.cpp  main.cpp	schematic.cpp
   mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp claudecodepanel.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp dataset.cpp simulatorlog.cpp filebrowser.cpp
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
   mouseactions.cpp qucs_actions.cpp	qucs_panes.cpp schematic_file.cpp
@@ -222,6 +222,7 @@ settings.h
 syntax.h
 symbolwidget.h
 textdoc.h
+markdowndoc.h
 wire.h
 wirelabel.h
 wire_planner.h
@@ -239,6 +240,7 @@ SET(QUCS_MOC_HDRS
   qucs.h
   schematic.h
   textdoc.h
+  markdowndoc.h
   messagedock.h
   simulationconsole.h
   processconsole.h

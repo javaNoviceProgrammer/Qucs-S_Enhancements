@@ -101,6 +101,7 @@
 #include "filebrowser.h"
 #include "qucscontrol.h"
 #include "dialogs/tuner.h"
+#include "markdowndoc.h"
 #include "octave_window.h"
 #include "printerwriter.h"
 #include "imagewriter.h"
@@ -2245,6 +2246,12 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     is_pdf = true;
   }
 #endif
+  else if (isMarkdownFile(Name)) {
+    // Its text and its rendering (markdowndoc.h).
+    auto *md = new MarkdownDoc(this, Name);
+    d = md;
+    i = addDocumentTab(md, Info.fileName());
+  }
   else {
     d = new TextDoc(this, Name);
     i = addDocumentTab((TextDoc *)d, Info.fileName());
@@ -3824,6 +3831,13 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
     return;
   }
 
+  // Markdown: its text and its rendering, in a tab of its own
+  // (markdowndoc.h), whatever the text editor of the settings.
+  if (isMarkdownFile(absolutePath)) {
+    openTextOrSchematicTab(absolutePath);
+    return;
+  }
+
 #ifdef QUCS_HAVE_QTPDF
   // PDF documents: read in a tab of their own (pdfdoc.h).
   if (extName == "pdf") {
@@ -4264,6 +4278,11 @@ bool QucsApp::isTextDocument(QWidget *w) {
 
 bool QucsApp::isPdfDocument(QWidget *w) {
   return w != nullptr && w->inherits("PdfDoc");
+}
+
+bool QucsApp::isMarkdownFile(const QString &name) {
+  const QString suffix = QFileInfo(name).suffix().toLower();
+  return suffix == QLatin1String("md") || suffix == QLatin1String("markdown");
 }
 
 Schematic *QucsApp::schematicIn(QWidget *w) {
