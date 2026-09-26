@@ -26,6 +26,7 @@
 #include "qucs.h"
 #include "schematic.h"
 #include "simulationconsole.h"
+#include "syntax.h"
 #include "textdoc.h"
 #include "wire.h"
 #include "wirelabel.h"
@@ -551,6 +552,7 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
     a_readout = makeLabel(a_row, "statusReadout");
     a_selection = makeChip(a_row, "statusSelection");
     a_position = makeLabel(a_row, "statusPosition");
+    a_language = makeChip(a_row, "statusLanguage");
     a_grid = makeChip(a_row, "statusGrid");
     a_grid->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     a_zoom = makeChip(a_row, "statusZoom");
@@ -567,6 +569,7 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
     a_row->add(a_readout, 3);
     a_row->add(a_selection, 5);
     a_row->add(a_position, 2);
+    a_row->add(a_language, 3);
     a_row->add(a_grid, 8);
     a_row->add(a_zoom, 4);
     a_row->add(a_problems, 1);
@@ -601,6 +604,7 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
         scheduleRefresh();
     });
     connect(a_zoom, &QToolButton::clicked, this, [this] { popUp(a_zoom, zoomMenu()); });
+    connect(a_language, &QToolButton::clicked, this, [this] { popUp(a_language, languageMenu()); });
     connect(a_problems, &QToolButton::clicked, this, [this] {
         Schematic* doc = a_app->currentSchematic();
         if (doc == nullptr) return;
@@ -761,6 +765,7 @@ void StatusPanel::refresh()
     updateSelection(doc);
     updateGrid(doc);
     updateZoom(doc);
+    updateLanguage(qobject_cast<TextDoc*>(front));
     if (!isCircuit(doc)) a_row->setWanted(a_problems, false);
     else if (QucsSettings.DefaultSimulator != a_checkedSimulator && !a_checkTimer->isActive())
         a_checkTimer->start(0);   // the checks depend on the simulator
@@ -1060,6 +1065,52 @@ void StatusPanel::updateZoom(Schematic* doc)
     if (doc == nullptr) return;
     setChip(a_zoom, QStringLiteral("%1%").arg(qRound(doc->getScale() * 100.0)), Tone::None);
     a_zoom->setToolTip(tr("Zoom: click to fit, zoom to the selection or pick a scale"));
+}
+
+void StatusPanel::updateLanguage(TextDoc* doc)
+{
+    a_row->setWanted(a_language, doc != nullptr);
+    if (doc == nullptr) return;
+    setChip(a_language, qucs_s::syntax::name(doc->language), Tone::None);
+    const QString suffix = QFileInfo(doc->getDocName()).suffix().toLower();
+    a_language->setToolTip(suffix.isEmpty()
+                               ? tr("Syntax highlighting: click to choose the language of this document")
+                               : tr("Syntax highlighting: click to choose the language of the .%1 files").arg(suffix));
+}
+
+// The languages; the one chosen is kept for every file of the document's
+// suffix (for the document alone when it has none).
+QMenu* StatusPanel::languageMenu()
+{
+    auto* text = qobject_cast<TextDoc*>(a_app->DocumentTab != nullptr ? a_app->DocumentTab->currentWidget() : nullptr);
+    if (text == nullptr) return nullptr;
+    auto* menu = new QMenu(a_language);
+    menu->setObjectName(QStringLiteral("statusLanguageMenu"));
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    const QString suffix = QFileInfo(text->getDocName()).suffix().toLower();
+    menu->addSection(suffix.isEmpty() ? tr("Highlight This Document As") : tr("Highlight .%1 Files As").arg(suffix));
+    const QPointer<TextDoc> doc(text);
+    const auto choose = [this, doc](int language) {
+        if (doc == nullptr) return;
+        doc->chooseLanguage(language);
+        a_app->applySyntaxSettings();
+    };
+    auto* group = new QActionGroup(menu);
+    for (int language : qucs_s::syntax::languages()) {
+        QAction* a = menu->addAction(qucs_s::syntax::name(language));
+        a->setCheckable(true);
+        a->setChecked(language == text->language);
+        a->setActionGroup(group);
+        connect(a, &QAction::triggered, this, [choose, language] { choose(language); });
+    }
+    if (!suffix.isEmpty() && qucs_s::syntax::chosenFor(suffix)) {
+        menu->addSeparator();
+        const int byDefault = qucs_s::syntax::defaultLanguageFor(suffix);
+        QAction* back = menu->addAction(tr("Back to the Default: %1").arg(qucs_s::syntax::name(byDefault)));
+        back->setObjectName(QStringLiteral("statusLanguageDefault"));
+        connect(back, &QAction::triggered, this, [choose, byDefault] { choose(byDefault); });
+    }
+    return menu;
 }
 
 QMenu* StatusPanel::zoomMenu()

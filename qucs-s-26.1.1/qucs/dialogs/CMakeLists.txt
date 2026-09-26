@@ -32,6 +32,7 @@ set(DIALOGS_HDRS
     tuner.h
     fillfromspicedialog.h
     selfromlibdialog.h
+    syntaxsettings.h
 )
 
 # Source files
@@ -60,6 +61,7 @@ set(DIALOGS_SRCS
     fillfromspicedialog.cpp
     qucsshortcutdialog.cpp
     selfromlibdialog.cpp
+    syntaxsettings.cpp
 )
 
 # Headers that need Qt MOC generation
@@ -88,6 +90,7 @@ set(DIALOGS_MOC_HDRS
     fillfromspicedialog.h
     qucsshortcutdialog.h
     selfromlibdialog.h
+    syntaxsettings.h
 )
 
 # Qt Designer UI files

@@ -79,9 +79,8 @@ TextDoc::TextDoc(QucsApp *App_, const QString& Name_) : QPlainTextEdit(), QucsDo
         App_, SLOT(slotFileChanged(bool)));
   }
 
-  syntaxHighlight = new SyntaxHighlighter(this);
+  syntaxHighlight = new SyntaxHighlighter(this);   // on its document
   syntaxHighlight->setLanguage(language);
-  syntaxHighlight->setDocument(document());
   syntaxHighlight->setPaper(a_paper);
 
   connect(this, SIGNAL(cursorPositionChanged()), this, SLOT(highlightCurrentLine()));
@@ -122,18 +121,21 @@ TextDoc::~TextDoc()
  */
 void TextDoc::setLanguage (const QString& FileName)
 {
-  QFileInfo Info (FileName);
-  QString ext = Info.suffix();
-  if (ext == "vhd" || ext == "vhdl")
-    setLanguage (LANG_VHDL);
-  else if (ext == "v")
-    setLanguage (LANG_VERILOG);
-  else if (ext == "va")
-    setLanguage (LANG_VERILOGA);
-  else if (ext == "m" || ext == "oct")
-    setLanguage (LANG_OCTAVE);
-  else
-    setLanguage (LANG_NONE);
+  // The language chosen for this document alone, else the one of its
+  // suffix (chosen in the status bar, or the default one).
+  setLanguage (a_chosenLanguage >= 0 ? a_chosenLanguage : qucs_s::syntax::languageFor (FileName));
+}
+
+void TextDoc::chooseLanguage (int lang)
+{
+  const QString suffix = QFileInfo (a_DocName).suffix ();
+  if (suffix.isEmpty ()) {
+    a_chosenLanguage = lang;
+  } else {
+    a_chosenLanguage = -1;
+    qucs_s::syntax::chooseFor (suffix, lang);
+  }
+  refreshLanguage ();
 }
 
 /*!
@@ -544,10 +546,19 @@ void TextDoc::commentSelected ()
     break;
   case LANG_VERILOG:
   case LANG_VERILOGA:
+  case LANG_CPP:
     co = "//";
     break;
   case LANG_OCTAVE:
     co = "%";
+    break;
+  case LANG_PYTHON:
+  case LANG_SHELL:
+  case LANG_QUCS_NETLIST:
+    co = "#";
+    break;
+  case LANG_SPICE:
+    co = "*";
     break;
   default:
     co = "";
@@ -704,16 +715,21 @@ void TextDoc::highlightCurrentLine()
  * time the editor is shown), which took a palette set here away and made
  * the editor follow the theme's base colour.
  */
+std::pair<QColor, QColor> TextDoc::paperAndInk()
+{
+  if (const auto *theme = qucs_s::apptheme::designedTheme(qucs_s::apptheme::current()))
+    return {theme->colours.base, theme->colours.text};
+  return {QColor(Qt::white), QColor(Qt::black)};
+}
+
 void TextDoc::applyDocumentColors()
 {
-  QColor paper(Qt::white), text(Qt::black);
+  const auto [paper, text] = paperAndInk();
   a_currentLine = QColor(Qt::blue).lighter(195);
   a_margin = Qt::lightGray;
   a_marginText = Qt::black;
   if (const auto *theme = qucs_s::apptheme::designedTheme(qucs_s::apptheme::current())) {
     const qucs_s::apptheme::Colours &c = theme->colours;
-    paper = c.base;
-    text = c.text;
     a_currentLine = qucs_s::apptheme::mix(c.base, c.accent, theme->dark ? 0.16 : 0.10);
     a_margin = c.surface;
     a_marginText = c.muted;
@@ -729,8 +745,7 @@ void TextDoc::applyDocumentColors()
 void TextDoc::refreshLanguage()
 {
     this->setLanguage(a_DocName);
-    syntaxHighlight->setLanguage(language);
-    syntaxHighlight->setDocument(document());
+    syntaxHighlight->setLanguage(language);   // highlighted again, in the formats of the settings
 }
 
 // Returns true if file on disk has a lastModified timestamp newer than the object's

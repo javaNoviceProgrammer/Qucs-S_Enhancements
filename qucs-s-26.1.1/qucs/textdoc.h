@@ -20,6 +20,8 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 
 #include <QPlainTextEdit>
 #include <QFont>
+#include <QColor>
+#include <utility>
 #include <qdatetime.h>
 
 #include "qucsdoc.h"
@@ -66,6 +68,11 @@ public:
   void  insertSkeleton ();
   void  setLanguage (int);
   void  setLanguage (const QString&);
+  /// Highlights it as \a language from now on: every file with its suffix
+  /// (qucs_s::syntax::chooseFor()), or this document alone when it has none.
+  void  chooseLanguage (int language);
+  /// The paper and the ink of the editor under the current theme.
+  static std::pair<QColor, QColor> paperAndInk();
   QString getModuleName (void);
 
   virtual void wheelEvent(QWheelEvent* event) override;
@@ -88,7 +95,8 @@ public:
 
   int a_textRevision = -1;   // the document's revision() last counted as an edit
   bool a_countsEdits = false;   // set up (and loaded): its changes are edits
-  int language;
+  int language;   // language_type (syntax.h): its highlighting, comments, skeletons
+  int a_chosenLanguage = -1;   // chosen for it alone (it has no suffix), -1: its file's
 
   bool loadSettings (void);
   bool saveSettings (void);

@@ -184,6 +184,9 @@ public:
   FindBar *findBarOf(ContextMenuTabWidget *pane) const;
   /// All open documents, pane by pane, in tab order.
   QList<QucsDoc *> allDocuments() const;
+  /// Every text document highlighted again, as the settings now say (the
+  /// formats, the language chosen for each suffix); the status bar too.
+  void applySyntaxSettings();
   /// The widget a document is shown in (a Schematic or a TextDoc).
   static QWidget *documentWidget(QucsDoc *doc);
   bool canSplitRight() const;

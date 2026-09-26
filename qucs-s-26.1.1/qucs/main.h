@@ -119,6 +119,11 @@ struct tQucsSettings {
   // Content panel: the file name patterns of the categories the user
   // changed, by category key (ProjectView::patterns() has the defaults).
   QMap<QString, QString> ContentPatterns;
+  // The text editor's syntax highlighting: the formats the user changed
+  // ("python/Keyword" -> "#00007f bold"), and the language chosen for a
+  // suffix ("inc" -> "spice"); qucs_s::syntax (syntax.h) has the defaults.
+  QMap<QString, QString> SyntaxFormats;
+  QMap<QString, QString> SyntaxForSuffix;
   // Symbols: write the name of each pin of a subcircuit inside its
   // symbol, and mark which way the pin points (in, out, inout).
   bool ShowPinNames = true;
