@@ -370,6 +370,30 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Claude Code's own sessions of the folder - from a terminal, say - to
   search and go on with (brought back from Claude Code's session file);
   `/resume <session id>` goes on with one at once.
+- **Git status above the prompt**, as in the Claude desktop app. When the
+  open project (or the folder chosen for Claude, else the workspace) is
+  in a git repository, a bar above the prompt shows:
+  - the repository's folder and the branch (↑2 ↓1 for commits to push
+    and to pull);
+  - the lines changed, e.g. **+2,096 −3**, counted from where the branch
+    left the remote's default branch, committed or not, new files
+    included (on the default branch itself, from its upstream). Click
+    the numbers to see the changes file by file, with coloured diffs;
+    double-click a file to open it;
+  - **Create PR**, which asks Claude to commit, push the branch (on a new
+    one if you are on the default branch) and open the pull request with
+    `gh`. Once the branch has an open pull request (asked of `gh`, when
+    installed), the button shows **PR #12** and opens it. The menu next
+    to it has *Create Draft Pull Request*, *Update Pull Request*, *Commit
+    Changes*, *Push Branch*, *Show Changes…*, *Refresh* and *Copy Branch
+    Name*. What changes files or pushes goes to Claude as a prompt in the
+    conversation, with the permissions it has.
+  - **✕** hides the bar until the repository or branch changes.
+  The bar refreshes when the folder changes, after each turn, when
+  Qucs-S comes to the front, and every 10 seconds while it is shown.
+  git runs in the background, never blocking the window. *⋯ → Show Git
+  Status* turns the bar off (or on) for every conversation; it is on by
+  default.
 - **Slash commands** in the prompt: typing `/` lists them (↑↓ to choose,
   Tab to complete, Enter to run). The dock's own: `/clear` (`/new`),
   `/resume`, `/quit` (`/exit`), `/help`, `/model [name]`,

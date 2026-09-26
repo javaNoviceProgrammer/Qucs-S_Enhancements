@@ -24,6 +24,7 @@
 
 #include <functional>
 
+class ClaudeGitBar;
 class QAction;
 class QActionGroup;
 class QFrame;
@@ -77,6 +78,13 @@ public:
     /// Works in \a dir from now on - a new conversation; empty: the
     /// default directory.
     void setWorkingDirectory(const QString& dir);
+    /// The project open in Qucs-S (its folder), or empty. Claude still
+    /// works in the workspace, but the git bar is about the project.
+    void setProjectDirectory(const QString& dir);
+    QString projectDirectory() const { return a_projectDir; }
+    /// The folder the git bar is about: the one chosen for Claude, else
+    /// the project's, else the workspace.
+    QString gitDirectory() const;
 
     /// What names the document in front (its file, empty for none).
     void setDocumentProvider(std::function<QString()> provider);
@@ -176,7 +184,13 @@ public:
     void exportConversationAs(ExportFormat format);
     bool hasConversation() const { return !a_entries.isEmpty(); }
 
+    /// Sends \a text to Claude as a prompt, as if typed - but leaves the
+    /// composer as it is, and names no document. False when it was not
+    /// sent (Claude busy, no program).
+    bool sendPrompt(const QString& text);
+
     // For the tests.
+    ClaudeGitBar* gitBar() const { return a_gitBar; }
     QPlainTextEdit* composer() const { return a_input; }
     QTextBrowser* transcript() const { return a_view; }
     QToolButton* sendButton() const { return a_send; }
@@ -294,6 +308,10 @@ private:
     void renderMarkdown(QTextCursor& c, const QString& text);
     qucs_s::math::Typeset typesetMath(const QString& tex, const QFont& font, bool display);
     void append(const Entry& e);
+    /// Runs \a text as a command or sends it as a prompt (with the note of
+    /// the document in front when \a withDocument); true when it is done
+    /// with - what the composer held can go.
+    bool sendText(const QString& text, bool withDocument);
     void updateState();
     void updateDirectory();
     void updateComposer();
@@ -322,6 +340,7 @@ private:
     qucs_s::claude::Session* a_session;
     QString a_defaultDir;
     QString a_chosenDir;       // empty: the default
+    QString a_projectDir;      // the project open in Qucs-S, or empty
     std::function<QString()> a_document;
     std::function<QStringList()> a_schematics;
     QString a_pinned;          // the schematic pinned (its file), or empty
@@ -372,6 +391,8 @@ private:
     QToolButton* a_allowEdits;
     QToolButton* a_allowTools;
     QToolButton* a_deny;
+    // The git repository, above the composer.
+    ClaudeGitBar* a_gitBar = nullptr;
     // The composer.
     QFrame* a_composer;
     QPlainTextEdit* a_input;
