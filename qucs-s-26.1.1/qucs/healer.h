@@ -115,5 +115,17 @@ public:
     std::vector<HealingAction> planHealing() const;
 };
 
+/// What a healer has to be given to plan what it would for the whole of
+/// \a components and \a wires: those joined to a node that one of their
+/// pins or ends has left - healing sees trouble nowhere else, and there it
+/// needs all that is joined - and the selected ones, which it counts; in
+/// the order of the lists. A preview of healing at every step of a drag
+/// goes over these, not over a whole large schematic.
+struct HealingScope {
+    std::list<Component*> components;
+    std::list<Wire*> wires;
+};
+HealingScope scopeOfTrouble(const std::list<Component*>& components, const std::list<Wire*>& wires);
+
 }
 #endif

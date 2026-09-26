@@ -35,7 +35,10 @@
 
 #include "qt3_compat/q3scrollview.h"
 #include <QVector>
+#include <QPixmap>
+#include <QTransform>
 #include <algorithm>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <QStringList>
@@ -525,7 +528,64 @@ private:
     @return new scale value
   */
   double renderModel(double scale, QRect newModelBounds, QPoint modelPlaneCoords, QPoint viewportCoords);
-  void drawElements(QPainter* painter);
+
+  // Which of the elements drawElements() draws: all of them, or, while a
+  // selection is dragged, those that stay or those that move.
+  enum class Layer { All, Staying, Moving };
+  /// Draws the elements of \a layer within \a area of the model: those
+  /// elsewhere are passed over, not drawn to be clipped away.
+  void drawElements(QPainter* painter, const QRectF& area, Layer layer = Layer::All);
+  /// The grid, the frame, the elements and the DC bias: all but what a
+  /// gesture draws over them.
+  void drawScene(QPainter* painter, const QRectF& area, Layer layer);
+  /// Sets up \a painter, on the canvas, to draw the model: the transform
+  /// of the zoom and the view, the hints, the font.
+  void setUpModelPainter(QPainter* painter) const;
+  /// The area of the model the rectangle \a contents of the canvas (in
+  /// contents coordinates) shows, and around it what an element's pens
+  /// and antialiasing reach beyond its bounds.
+  QRectF modelArea(const QRect& contents) const;
+
+  // A gesture's scene. At each step of a gesture only what the gesture
+  // draws over the schematic changes - a selection rectangle, a wire being
+  // drawn, a symbol being placed, the cursor of a mode - or the selection
+  // it drags: the rest is drawn once and shown again at each step, with
+  // what moves drawn over it.
+  enum class Gesture { None, Drawing, Moving };
+  /// What the mouse move being painted is doing (contentsMouseMoveEvent()).
+  Gesture a_gesture = Gesture::None;
+  /// What the held scene was drawn for: when anything of it differs, it is
+  /// drawn again.
+  struct SceneKey {
+    Gesture gesture;
+    QTransform base;
+    double scale;
+    int viewX1, viewY1;
+    QSize size;
+    qreal ratio;
+    QRgb paper;
+    quint64 generation;
+    std::size_t components, wires, nodes, paintings, diagrams, selected;
+    quintptr selectedSum;
+    int showBias;
+    bool grid;
+    int gridX, gridY;
+    bool symbolMode;
+    bool texts;
+    bool operator==(const SceneKey&) const = default;
+  };
+  SceneKey sceneKey(Gesture gesture, const QTransform& base) const;
+  struct HeldScene {
+    SceneKey key;
+    QPixmap pixmap;
+  };
+  std::optional<HeldScene> a_heldScene;
+  /// Counts the edits and the rebuilds of the document: a scene held
+  /// across them is drawn again.
+  quint64 a_sceneGeneration = 0;
+  /// Shows the scene held for \a gesture, drawn first if need be, on the
+  /// painter \a p of the canvas (its transform \a base, before the model's).
+  void showHeldScene(QPainter* p, Gesture gesture, const QTransform& base);
 
 public:
   /// The electrical net of the selected wires: every wire and node
@@ -569,7 +629,7 @@ public:
   QString operatingPointTooltip(const QPoint& viewportPos);
 private:
   QList<qucs_s::oppoint::Device> a_operatingPoint;
-  void drawNetHighlight(QPainter* painter, const Net& net);
+  void drawNetHighlight(QPainter* painter, const Net& net, const QRectF& area);
   void drawDcBiasPoints(QPainter* painter);
   void drawPostPaintEvents(QPainter* painter);
   void paintFrame(QPainter* painter);

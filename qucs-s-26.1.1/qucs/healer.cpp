@@ -13,6 +13,7 @@
 #include <ranges>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include "qucs_assert.h"
 
 
@@ -520,6 +521,31 @@ Healer::~Healer() = default;
 std::vector<Healer::HealingAction>Healer::planHealing() const
 {
     return pimpl->planHealing();
+}
+
+
+HealingScope scopeOfTrouble(const std::list<Component*>& components, const std::list<Wire*>& wires)
+{
+    // A node is in trouble when not every pin or end joined to it is where
+    // it is (JointStateAssessor::isOK()).
+    std::unordered_set<const Node*> left;
+    for (const Component* c : components)
+        for (const Port* port : c->Ports)
+            if (port->Connection != nullptr && port->Connection->center() != c->center() + QPoint{port->x, port->y})
+                left.insert(port->Connection);
+    for (const Wire* w : wires) {
+        if (w->Port1 != nullptr && w->Port1->center() != w->P1()) left.insert(w->Port1);
+        if (w->Port2 != nullptr && w->Port2->center() != w->P2()) left.insert(w->Port2);
+    }
+
+    HealingScope scope;
+    for (Component* c : components)
+        if (c->isSelected || std::ranges::any_of(c->Ports, [&left](const Port* port) { return left.contains(port->Connection); }))
+            scope.components.push_back(c);
+    for (Wire* w : wires)
+        if (w->isSelected || left.contains(w->Port1) || left.contains(w->Port2))
+            scope.wires.push_back(w);
+    return scope;
 }
 
 }

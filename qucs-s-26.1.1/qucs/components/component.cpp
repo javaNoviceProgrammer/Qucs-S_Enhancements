@@ -26,6 +26,7 @@
 #include "spicecomponents/isffm.h"
 #include "main.h"
 #include "ink.h"
+#include "levelofdetail.h"
 #include "schematic.h"
 #include "module.h"
 #include "node.h"
@@ -311,6 +312,21 @@ int Component::getTextSelected(int point_x, int point_y) {
     return -1;
 }
 
+QPoint Component::textOrigin(const Property* shown) const {
+    const QFontMetrics metrics(QucsSettings.font, 0);
+    // As paint() draws them: each text where the one before ends.
+    QRect before{tx, ty, 0, 0};
+    if (showName) before = QRect{QPoint{tx, ty}, metrics.size(0, Name)};
+    for (const Property* prop : Props) {
+        if (!prop->display) continue;
+        if ((prop->simulators & QucsSettings.DefaultSimulator) != QucsSettings.DefaultSimulator) continue;
+        const QPoint origin{before.left(), before.bottom()};
+        if (prop == shown) return origin;
+        before = QRect{origin, metrics.size(0, prop->displayText())};
+    }
+    return {before.left(), before.bottom()};
+}
+
 void Component::paint(QPainter *p) {
     p->save();
     p->translate(cx, cy);
@@ -318,17 +334,21 @@ void Component::paint(QPainter *p) {
     drawSymbol(p);
 
     p->setPen(qucs_s::ink::on(QPen(Qt::black, 1)));
-    QRect text_br{tx, ty, 0, 0};
 
-    if (showName) {
-        p->drawText(tx, ty, 1, 1, Qt::TextDontClip, Name, &text_br);
-    }
+    // (Left out when too small to read: levelofdetail.h.)
+    if (qucs_s::lod::textsShown()) {
+        QRect text_br{tx, ty, 0, 0};
 
-    for (auto *prop : Props) {
-        if (!prop->display) continue;
-        if ((prop->simulators & QucsSettings.DefaultSimulator) != QucsSettings.DefaultSimulator) continue;
-        prop->paint(text_br.left(), text_br.bottom(), p);
-        text_br = prop->boundingRect();
+        if (showName) {
+            p->drawText(tx, ty, 1, 1, Qt::TextDontClip, Name, &text_br);
+        }
+
+        for (auto *prop : Props) {
+            if (!prop->display) continue;
+            if ((prop->simulators & QucsSettings.DefaultSimulator) != QucsSettings.DefaultSimulator) continue;
+            prop->paint(text_br.left(), text_br.bottom(), p);
+            text_br = prop->boundingRect();
+        }
     }
 
     if (isActive == COMP_IS_OPEN)
@@ -354,13 +374,17 @@ void Component::paint(QPainter *p) {
 void Component::drawSymbol(QPainter* p) {
     const bool correctSimulator = (Simulator & QucsSettings.DefaultSimulator) == QucsSettings.DefaultSimulator;
 
+    // A primitive draws with the pen and brush it is given, and nothing
+    // else of the painter changes (a text or an image keeps to itself): a
+    // whole save and restore of the painter for each line of each symbol
+    // was a good part of a repaint of a large schematic.
+    const QPen pen = p->pen();
+    const QBrush brush = p->brush();
     auto draw_primitive = [&](qucs::DrawingPrimitive* prim, QPainter* p) {
-        p->save();
         // Colours meant for light paper, fitted to the paper in use.
         p->setPen(qucs_s::ink::on(correctSimulator ? prim->penHint() : WrongSimulatorPen));
         p->setBrush(qucs_s::ink::on(prim->brushHint()));
         prim->draw(p);
-        p->restore();
     };
 
     for (qucs::DrawingPrimitive *image: Images) {
@@ -387,9 +411,13 @@ void Component::drawSymbol(QPainter* p) {
         draw_primitive(ellips, p);
     }
 
-    for (qucs::DrawingPrimitive *text: Texts) {
-        draw_primitive(text, p);
+    if (qucs_s::lod::textsShown()) {
+        for (qucs::DrawingPrimitive *text: Texts) {
+            draw_primitive(text, p);
+        }
     }
+    p->setPen(pen);
+    p->setBrush(brush);
 
     drawPins(p);
 }
@@ -398,7 +426,7 @@ void Component::drawSymbol(QPainter* p) {
 // library component) know what they are called and which way they
 // point; both are written into the drawing, under the settings.
 void Component::drawPins(QPainter* p) {
-    const bool names = QucsSettings.ShowPinNames;
+    const bool names = QucsSettings.ShowPinNames && qucs_s::lod::textsShown();
     const bool directions = QucsSettings.ShowPinDirections;
     if (!names && !directions) return;
 

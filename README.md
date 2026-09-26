@@ -889,6 +889,19 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   formats by the extension, `--dpi` for an image's resolution and
   `--color BW`; a PDF is the size of the drawing unless `--page` or
   `--orin` asks for a page.
+- **Large schematics stay responsive**: an RC ladder of 24,000
+  components took 170 ms to repaint, whatever part of it was on show, so
+  a selection rectangle, a drag or a wire being drawn moved at six frames
+  a second. Now the canvas draws only what reaches the part being
+  painted (a corner at 1:1: 6 ms); zoomed out so far that a line of text
+  would be under four pixels tall it leaves out component names and
+  values, symbol texts and pin names, which no one could read (prints and
+  exports keep them; 175 ms to 69 ms for the whole ladder); and a gesture
+  draws the rest of the schematic once and, at each step, only what it
+  drags or draws over it: a step of a selection rectangle, a drag, a wire
+  or a symbol being placed takes 4 to 13 ms. The preview of the wires a
+  drop will mend is planned from the nodes something has left, not from
+  the whole schematic at every step.
 
 The detailed record — root causes, what each change does and how it is
 tested — is in [ENHANCEMENT_PROPOSAL.md](ENHANCEMENT_PROPOSAL.md).
@@ -1097,6 +1110,12 @@ and dragging on chains of 2,000 and 8,000 components and fails when
 four times the elements take ten times as long: these were quadratic until
 the node and wire lookups by place (`qucs/conductor_index.h`), and a
 16,000-component schematic stopped for nine seconds after each edit.
+`qucs/tests/test_canvas_drawing` paints the canvas of the examples (every
+symbol of the symbol galleries) in parts and checks each looks as in a
+paint of the whole, checks that a step of a gesture shows what a whole
+paint would, also after an edit or a selection made from elsewhere, and
+times a corner and a gesture's step against a whole paint of 16,000
+components.
 
 `qucs/tests/test_claude_code` drives the Claude Code dock's session and
 the dock itself with a shell script that answers as `claude` does (stream

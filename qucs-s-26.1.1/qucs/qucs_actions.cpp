@@ -1574,7 +1574,7 @@ void QucsApp::slotApplyCompText() {
   if (component_property) { // is it a property ?
     editTextTopLeft =
         Doc->modelToViewport(QPoint{component->cx, component->cy} +
-                             component_property->boundingRect().topLeft());
+                             component->textOrigin(component_property));
     editTextTopLeft.rx() +=
         editText->fontMetrics()
             .boundingRect(component_property->Name + "=" + '\u0020')
