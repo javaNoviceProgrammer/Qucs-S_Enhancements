@@ -80,7 +80,7 @@ const char* const kTools = R"JSON([
  "description": "The state of the Qucs-S window: the documents open (path, title, kind, unsaved changes, which is in front), the simulator in the settings, the workspace folder, a simulation under way, a dialog waiting for an answer. Start here.",
  "inputSchema": {"type": "object", "properties": {}}},
 {"name": "open_document",
- "description": "Opens a file in a tab of Qucs-S - a schematic (.sch), a symbol (.sym), a data display (.dpl), a netlist or any text file - or brings it to the front if it is open. A relative path is taken from the workspace folder.",
+ "description": "Opens a file in a tab of Qucs-S - a schematic (.sch), a symbol (.sym), a data display (.dpl), a netlist or any text file, a PDF document (read in Qucs-S's viewer: a datasheet, a report) - or brings it to the front if it is open. A relative path is taken from the workspace folder.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file"}}, "required": ["path"]}},
 {"name": "new_document",
  "description": "Opens a new, untitled document in front: a schematic, or a text document.",
@@ -399,6 +399,7 @@ bool setProperties(Component* c, const QJsonObject& properties, QString* error)
 QString kindOf(QucsDoc* doc)
 {
     if (qobject_cast<TextDoc*>(QucsApp::documentWidget(doc)) != nullptr) return QStringLiteral("text");
+    if (QucsApp::isPdfDocument(QucsApp::documentWidget(doc))) return QStringLiteral("pdf");
     const QString suffix = QFileInfo(doc->getDocName()).suffix().toLower();
     if (suffix == QLatin1String("dpl")) return QStringLiteral("data display");
     if (suffix == QLatin1String("sym")) return QStringLiteral("symbol");

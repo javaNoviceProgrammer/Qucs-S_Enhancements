@@ -828,8 +828,8 @@ void QucsSettingsDialog::slotApply()
 
         for (int tab = 0; tab < App->DocumentTab->count(); tab++) {
             QWidget* widget = App->DocumentTab->widget(tab);
-            if (!QucsApp::isTextDocument(widget)) {
-                static_cast<Schematic*>(widget)->setGridColor(_settings::Get().item<QColor>("GridColor"));
+            if (Schematic* sch = QucsApp::schematicIn(widget)) {
+                sch->setGridColor(_settings::Get().item<QColor>("GridColor"));
             }
         }
 

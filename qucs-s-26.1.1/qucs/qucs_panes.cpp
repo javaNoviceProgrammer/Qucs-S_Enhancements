@@ -165,10 +165,8 @@ ContextMenuTabWidget *QucsApp::paneOf(QWidget *document) const
 
 QWidget *QucsApp::documentWidget(QucsDoc *doc)
 {
-  if (doc == nullptr) return nullptr;
-  if (auto *sch = dynamic_cast<Schematic *>(doc)) return sch;
-  if (auto *text = dynamic_cast<TextDoc *>(doc)) return text;
-  return nullptr;
+  // Schematic, TextDoc and PdfDoc are each a widget and a QucsDoc.
+  return dynamic_cast<QWidget *>(doc);
 }
 
 QList<QucsDoc *> QucsApp::allDocuments() const
@@ -176,11 +174,8 @@ QList<QucsDoc *> QucsApp::allDocuments() const
   QList<QucsDoc *> docs;
   for (ContextMenuTabWidget *pane : panes())
     for (int i = 0; i < pane->count(); ++i) {
-      QWidget *w = pane->widget(i);
-      if (isTextDocument(w))
-        docs << static_cast<QucsDoc *>(static_cast<TextDoc *>(w));
-      else
-        docs << static_cast<QucsDoc *>(static_cast<Schematic *>(w));
+      if (QucsDoc *doc = docIn(pane->widget(i)))
+        docs << doc;
     }
   return docs;
 }
@@ -395,8 +390,8 @@ void QucsApp::moveDocument(QWidget *document, ContextMenuTabWidget *to)
   if (from == nullptr || to == nullptr || from == to) return;
   const int index = from->indexOf(document);
   const QString title = from->tabText(index);
-  QucsDoc *doc = isTextDocument(document) ? static_cast<QucsDoc *>(static_cast<TextDoc *>(document))
-                                          : static_cast<QucsDoc *>(static_cast<Schematic *>(document));
+  QucsDoc *doc = docIn(document);
+  if (doc == nullptr) return;
   from->removeTab(index);
   const int at = addDocumentTabTo(to, static_cast<QFrame *>(document), title);
   to->setCurrentIndex(at);
@@ -414,9 +409,8 @@ void QucsApp::dropPlaceholder(ContextMenuTabWidget *pane, QWidget *keep)
   for (int i = pane->count() - 1; i >= 0; --i) {
     QWidget *w = pane->widget(i);
     if (w == keep) continue;
-    QucsDoc *doc = isTextDocument(w) ? static_cast<QucsDoc *>(static_cast<TextDoc *>(w))
-                                     : static_cast<QucsDoc *>(static_cast<Schematic *>(w));
-    if (doc->getDocName().isEmpty() && !doc->getDocChanged() && pane->count() > 1) {
+    QucsDoc *doc = docIn(w);
+    if (doc != nullptr && doc->getDocName().isEmpty() && !doc->getDocChanged() && pane->count() > 1) {
       pane->removeTab(i);
       delete doc;
     }

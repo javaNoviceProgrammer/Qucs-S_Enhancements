@@ -272,6 +272,13 @@ public:
   int openFromSystem(const QStringList &items);
   QString fileType(const QString &);
   static bool isTextDocument(QWidget *);
+  /// Whether a tab holds a PDF document (pdfdoc.h), read and not edited.
+  static bool isPdfDocument(QWidget *);
+  /// The schematic (or data display, or symbol) a tab holds; nullptr for
+  /// a text or a PDF document.
+  static Schematic *schematicIn(QWidget *);
+  /// The document a tab holds, whichever kind it is.
+  static QucsDoc *docIn(QWidget *);
 
   QString ProjName; // name of the project, that is open
   /// The Scratch folder of the schematic in front - or, with a text

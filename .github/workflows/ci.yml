@@ -54,7 +54,7 @@ jobs:
           host: linux
           target: desktop
           arch: linux_gcc_64
-          modules: qtcharts
+          modules: qtcharts qtpdf
           cache: true
           install-deps: true
 
@@ -128,7 +128,7 @@ jobs:
           host: mac
           target: desktop
           arch: clang_64
-          modules: qtcharts
+          modules: qtcharts qtpdf
           cache: true
 
       - name: Install build dependencies
@@ -174,7 +174,7 @@ jobs:
           update: true
           cache: true
           install: bison flex dos2unix
-          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p make:p ninja:p gperf:p
+          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p make:p ninja:p gperf:p
 
       - name: Configure and build (Release)
         run: |

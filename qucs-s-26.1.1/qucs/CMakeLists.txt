@@ -60,6 +60,18 @@ add_compile_definitions(HAVE_CONFIG_H)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg SvgWidgets Xml PrintSupport)
+# Qt's PDF module, when there is one: PDF documents open in a tab of Qucs-S
+# (pdfdoc.h); without it they open in the system's viewer.
+option(QUCS_PDF_VIEWER "Open PDF documents in Qucs-S itself, with Qt's PDF module" ON)
+if(QUCS_PDF_VIEWER)
+  find_package(Qt6 QUIET COMPONENTS Pdf)
+endif()
+if(QUCS_PDF_VIEWER AND Qt6Pdf_FOUND)
+  message(STATUS "PDF viewer: on (Qt PDF ${Qt6Pdf_VERSION})")
+  add_compile_definitions(QUCS_HAVE_QTPDF)
+else()
+  message(STATUS "PDF viewer: off - no Qt PDF module; PDF documents open in the system's viewer")
+endif()
 include_directories(
       ${Qt6Core_INCLUDE_DIRS}
       ${Qt6Widgets_INCLUDE_DIRS}
@@ -306,12 +318,18 @@ set(app_icon_resource_windows "${CMAKE_CURRENT_SOURCE_DIR}/qucs_icon.rc")
 # Everything except the entry point is compiled once into an object library
 # that the application and the unit tests (tests/) link identically.
 #
+if(QUCS_PDF_VIEWER AND Qt6Pdf_FOUND)
+  list(APPEND QUCS_SRCS pdfdoc.cpp)
+endif()
 set(QUCS_CORE_SRCS ${QUCS_SRCS})
 list(REMOVE_ITEM QUCS_CORE_SRCS main.cpp)
 add_library(qucs-core OBJECT ${QUCS_HDRS} ${QUCS_CORE_SRCS} ${QUCS_MOC_SRCS})
 set(QUCS_LINK_LIBRARIES
     components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat
     Qt6::Core  Qt6::Gui  Qt6::Widgets Qt6::Svg  Qt6::SvgWidgets Qt6::Xml  Qt6::PrintSupport )
+if(QUCS_PDF_VIEWER AND Qt6Pdf_FOUND)
+  list(APPEND QUCS_LINK_LIBRARIES Qt6::Pdf)
+endif()
 if(UNIX AND NOT APPLE)
   # forkpty() for the Terminal and Python Shell docks (processconsole.cpp)
   list(APPEND QUCS_LINK_LIBRARIES util)

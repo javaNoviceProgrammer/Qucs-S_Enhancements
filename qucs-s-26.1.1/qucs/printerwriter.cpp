@@ -86,8 +86,11 @@ PrinterWriter::noGuiPrint(QWidget *doc, QString printFile,
     return;
   }
 
-  static_cast<Schematic *>(doc)->print(Printer, &Painter,
-    Printer->printRange() == QPrinter::AllPages, fitToPage);
+  // (Schematic::print() takes margins too: not QucsDoc's.)
+  if (Schematic *sch = QucsApp::schematicIn(doc))
+    sch->print(Printer, &Painter, Printer->printRange() == QPrinter::AllPages, fitToPage);
+  else if (QucsDoc *d = QucsApp::docIn(doc))
+    d->print(Printer, &Painter, Printer->printRange() == QPrinter::AllPages, fitToPage);
 }
 
 void
@@ -104,7 +107,8 @@ PrinterWriter::print(QWidget *doc)
     }
   }
   else {
-    Printer->setPageOrientation(QPageLayout::Landscape);
+    // A schematic lies on its side; a PDF document's pages are upright.
+    Printer->setPageOrientation(QucsApp::isPdfDocument(doc) ? QPageLayout::Portrait : QPageLayout::Landscape);
 
     if (dialog->exec() == QDialog::Accepted)
     {
@@ -118,8 +122,10 @@ PrinterWriter::print(QWidget *doc)
           break;
         }
 
-        static_cast<Schematic *>(doc)->print(Printer, &Painter,
-                Printer->printRange() == QPrinter::AllPages, fitToPage);
+        if (Schematic *sch = QucsApp::schematicIn(doc))
+          sch->print(Printer, &Painter, Printer->printRange() == QPrinter::AllPages, fitToPage);
+        else if (QucsDoc *d = QucsApp::docIn(doc))
+          d->print(Printer, &Painter, Printer->printRange() == QPrinter::AllPages, fitToPage);
         if (z > 1 && !Printer->newPage()) {
           delete dialog;
           return;

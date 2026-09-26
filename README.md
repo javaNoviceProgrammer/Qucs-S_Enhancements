@@ -312,6 +312,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   does; its menu opens it with the system, shows it in the file manager,
   copies its path, renames it in place, makes a folder or moves it to the
   trash. The folder, the view and the options are kept for the next start.
+- **PDF viewer**: a PDF document — a datasheet, an application note, a
+  report written by a script — opens in a tab of its own, from the File
+  Browser, the Content panel, *File → Open*, a drop, or Claude's
+  `open_document`. Its pages one under the other, drawn sharp at any zoom
+  (in tiles, only those in sight); the toolbar has the page (typed, or
+  with the arrows), zoom in and out, *Fit Width*, *Fit Page* and set
+  sizes, a find bar with the matches marked and gone through (*Edit →
+  Find*), and a menu to open it with the system's viewer, show it in the
+  file manager or copy its path. The sidebar shows the pages small and the
+  document's outline. Text is selected with a drag (a word with a double
+  click, the page with *Edit → Select All*) and copied; links are
+  followed; Ctrl+wheel or a pinch zooms, the middle button pans; *View
+  All*, *View 1:1* and the zoom commands work on it. When its file is
+  written again it is read again where you were. *Save As* copies it;
+  *Print* prints its pages. Built with Qt's PDF module (all the release
+  bundles have it); without it PDFs open in the system's viewer as before.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

@@ -170,7 +170,7 @@ jobs:
           host: ${{ matrix.qt_host }}
           target: desktop
           arch: ${{ matrix.qt_arch }}
-          modules: qtcharts
+          modules: qtcharts qtpdf
           cache: true
           install-deps: true
 
@@ -249,7 +249,7 @@ jobs:
           host: mac
           target: desktop
           arch: clang_64
-          modules: qtcharts
+          modules: qtcharts qtpdf
           cache: true
 
       - name: Use the newest Xcode
@@ -344,7 +344,7 @@ jobs:
           update: true
           cache: true
           install: bison flex dos2unix curl zip p7zip
-          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p make:p ninja:p gperf:p
+          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p make:p ninja:p gperf:p
 
       - name: Configure and build
         if: ${{ matrix.enabled }}
