@@ -35,7 +35,7 @@
 
 #include "qt3_compat/q3scrollview.h"
 #include <QVector>
-#include <QPixmap>
+#include <QImage>
 #include <QTransform>
 #include <algorithm>
 #include <optional>
@@ -563,6 +563,8 @@ private:
     int viewX1, viewY1;
     QSize size;
     qreal ratio;
+    int dpiX, dpiY;
+    QImage::Format format;
     QRgb paper;
     quint64 generation;
     std::size_t components, wires, nodes, paintings, diagrams, selected;
@@ -574,10 +576,10 @@ private:
     bool texts;
     bool operator==(const SceneKey&) const = default;
   };
-  SceneKey sceneKey(Gesture gesture, const QTransform& base) const;
+  SceneKey sceneKey(Gesture gesture, const QTransform& base, const QPainter* p) const;
   struct HeldScene {
     SceneKey key;
-    QPixmap pixmap;
+    QImage image;
   };
   std::optional<HeldScene> a_heldScene;
   /// Counts the edits and the rebuilds of the document: a scene held

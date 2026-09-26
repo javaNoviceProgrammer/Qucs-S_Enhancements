@@ -70,10 +70,10 @@ public:
   bool    getSelected(int x, int y) const { return boundingRect().contains(x, y); }
   int     getTextSelected(int, int);
   /// Where the text of \a shown, a property on show, begins: relative to
-  /// the centre, laid out as paint() lays the texts out - measured, not
-  /// taken from the last paint, which left out texts off the screen or
-  /// too small to read.
-  QPoint  textOrigin(const Property* shown) const;
+  /// the centre, laid out as paint() lays the texts out on \a device (the
+  /// canvas; the screen when none) - measured, not taken from the last
+  /// paint, which left out texts off the screen or too small to read.
+  QPoint  textOrigin(const Property* shown, const QPaintDevice* device = nullptr) const;
   bool    moveCenter(int, int)   noexcept override;
   bool    rotate() noexcept override;
   bool    mirrorX() noexcept override;
