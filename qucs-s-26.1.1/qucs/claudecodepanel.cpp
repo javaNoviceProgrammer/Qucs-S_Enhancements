@@ -76,6 +76,7 @@ const QString kModels = QStringLiteral("ClaudeCode/models");          // what th
 const QString kOtherModels = QStringLiteral("ClaudeCode/otherModels"); // chosen by name, the latest first
 const QString kAttach = QStringLiteral("ClaudeCode/attachDocument");
 const QString kExportDir = QStringLiteral("ClaudeCode/exportFolder");
+const QString kExportDetails = QStringLiteral("ClaudeCode/exportToolDetails");
 
 struct Colours {
     QColor base, text, muted, faint, border, accent, onAccent, bubble, code, ok, warn, error;
@@ -728,11 +729,21 @@ void ClaudeCodePanel::buildMenu()
     exports->addAction(tr("PDF…"), this, [this] { exportConversationAs(ExportFormat::Pdf); });
     exports->addAction(tr("Markdown…"), this, [this] { exportConversationAs(ExportFormat::Markdown); });
     exports->addAction(tr("Plain Text…"), this, [this] { exportConversationAs(ExportFormat::Text); });
+    exports->addSeparator();
+    QAction* details = exports->addAction(tr("Include Tool Details"));
+    details->setObjectName(QStringLiteral("claudeExportToolDetails"));
+    details->setCheckable(true);
+    details->setChecked(exportsToolDetails());
+    details->setToolTip(tr("Each tool's input and what it gave, as the boxes that fold hold them. Off, a row "
+                           "of tools is the one line that sums it up, and the export is the chat alone."));
+    exports->setToolTipsVisible(true);
+    connect(details, &QAction::triggered, this, [](bool on) { setExportsToolDetails(on); });
     QAction* copyId = a_menu->addAction(tr("Copy Session ID"), this, [this] {
         QApplication::clipboard()->setText(a_session->sessionId());
     });
-    connect(a_menu, &QMenu::aboutToShow, this, [this, workspace, show, copyId, again, exports] {
+    connect(a_menu, &QMenu::aboutToShow, this, [this, workspace, show, copyId, again, exports, details] {
         exports->menuAction()->setEnabled(!a_entries.isEmpty());
+        details->setChecked(exportsToolDetails());   // (another conversation may have changed it)
         workspace->setEnabled(!a_chosenDir.isEmpty());
         show->setEnabled(QFileInfo(workingDirectory()).isDir());
         copyId->setEnabled(!a_session->sessionId().isEmpty());
@@ -1418,7 +1429,8 @@ QPalette ClaudeCodePanel::drawingPalette() const
 
 bool ClaudeCodePanel::isOpen(const QString& key) const
 {
-    return a_exporting || a_expanded.contains(key);
+    if (a_exporting) return a_exportDetails;
+    return a_expanded.contains(key);
 }
 
 void ClaudeCodePanel::renderWelcome(QTextCursor& c)
@@ -1641,6 +1653,31 @@ QString ClaudeCodePanel::toolSummary(qsizetype from, qsizetype to) const
     return text;
 }
 
+int ClaudeCodePanel::rowOutcome(qsizetype from, qsizetype to) const
+{
+    int outcome = Entry::Succeeded;
+    for (qsizetype i = from; i < to; ++i) {
+        const int tool = a_entries.at(i).tool;
+        if (tool == Entry::Running) return Entry::Running;
+        if (tool == Entry::Failed) outcome = Entry::Failed;
+        else if (tool == Entry::Denied && outcome != Entry::Failed) outcome = Entry::Denied;
+    }
+    return outcome;
+}
+
+QString ClaudeCodePanel::rowTrouble(qsizetype from, qsizetype to) const
+{
+    int failed = 0, denied = 0;
+    for (qsizetype i = from; i < to; ++i) {
+        if (a_entries.at(i).tool == Entry::Failed) ++failed;
+        if (a_entries.at(i).tool == Entry::Denied) ++denied;
+    }
+    QStringList notes;
+    if (failed > 0) notes << (failed == 1 ? tr("1 failed") : tr("%1 failed").arg(failed));
+    if (denied > 0) notes << (denied == 1 ? tr("1 not allowed") : tr("%1 not allowed").arg(denied));
+    return notes.join(QStringLiteral(", "));
+}
+
 void ClaudeCodePanel::renderTools(QTextCursor& c, qsizetype from, qsizetype to, bool& captioned)
 {
     renderCaption(c, captioned);
@@ -1663,17 +1700,9 @@ void ClaudeCodePanel::renderTools(QTextCursor& c, qsizetype from, qsizetype to, 
 
     const QString key = QStringLiteral("group:") + a_entries.at(from).id;
     const bool open = isOpen(key);
-    int running = 0, failed = 0, denied = 0;
-    const Entry* now = nullptr;
-    for (qsizetype i = from; i < to; ++i) {
-        const Entry& e = a_entries.at(i);
-        if (e.tool == Entry::Running) {
-            ++running;
-            now = &e;
-        }
-        if (e.tool == Entry::Failed) ++failed;
-        if (e.tool == Entry::Denied) ++denied;
-    }
+    const Entry* now = nullptr;   // the one running
+    for (qsizetype i = from; i < to; ++i)
+        if (a_entries.at(i).tool == Entry::Running) now = &a_entries.at(i);
     QTextBlockFormat f;
     f.setTopMargin(3);
     f.setLeftMargin(2);
@@ -1690,12 +1719,12 @@ void ClaudeCodePanel::renderTools(QTextCursor& c, qsizetype from, qsizetype to, 
     if (!a_exporting) c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), twisty);
     QTextCharFormat mark = twisty;
     mark.setFontWeight(QFont::DemiBold);
-    QString glyph;
-    if (running > 0) glyph = QStringLiteral("○"), mark.setForeground(col.accent);
-    else if (failed > 0) glyph = QStringLiteral("✕"), mark.setForeground(col.error);
-    else if (denied > 0) glyph = QStringLiteral("⊘"), mark.setForeground(col.warn);
-    else glyph = QStringLiteral("✓"), mark.setForeground(col.ok);
-    c.insertText(glyph + QStringLiteral("  "), mark);
+    const int outcome = rowOutcome(from, to);
+    mark.setForeground(outcome == Entry::Running  ? col.accent
+                       : outcome == Entry::Failed ? col.error
+                       : outcome == Entry::Denied ? col.warn
+                                                  : col.ok);
+    c.insertText(outcomeMark(outcome) + QStringLiteral("  "), mark);
     QTextCharFormat name = twisty;
     name.setFontWeight(QFont::DemiBold);
     name.setForeground(col.text);
@@ -1706,11 +1735,8 @@ void ClaudeCodePanel::renderTools(QTextCursor& c, qsizetype from, qsizetype to, 
         QTextCharFormat subject = quiet;
         subject.setFont(mono);
         c.insertText(QStringLiteral("   ") + now->extra, subject);
-    } else if (failed + denied > 0) {
-        QStringList notes;
-        if (failed > 0) notes << (failed == 1 ? tr("1 failed") : tr("%1 failed").arg(failed));
-        if (denied > 0) notes << (denied == 1 ? tr("1 not allowed") : tr("%1 not allowed").arg(denied));
-        c.insertText(QStringLiteral("  ·  ") + notes.join(QStringLiteral(", ")), quiet);
+    } else if (const QString trouble = rowTrouble(from, to); !trouble.isEmpty()) {
+        c.insertText(QStringLiteral("  ·  ") + trouble, quiet);
     }
     if (open)
         for (qsizetype i = from; i < to; ++i) renderTool(c, a_entries.at(i), 16);
@@ -1959,8 +1985,19 @@ QList<QPair<QString, QString>> ClaudeCodePanel::exportFacts() const
     return facts;
 }
 
+bool ClaudeCodePanel::exportsToolDetails()
+{
+    return QucsSettingsFile().value(kExportDetails, true).toBool();
+}
+
+void ClaudeCodePanel::setExportsToolDetails(bool on)
+{
+    QucsSettingsFile().setValue(kExportDetails, on);
+}
+
 QString ClaudeCodePanel::conversationMarkdown() const
 {
+    const bool details = exportsToolDetails();
     QString md = QStringLiteral("# ") + exportTitle() + QStringLiteral("\n\n");
     for (const auto& [label, value] : exportFacts()) md += QStringLiteral("- **%1:** %2\n").arg(label, value);
     md += QStringLiteral("\n---\n");
@@ -1987,12 +2024,25 @@ QString ClaudeCodePanel::conversationMarkdown() const
         case Entry::Tool: {
             caption();
             // A row of tools is a list; each with its input and what it gave.
-            if (i == 0 || a_entries.at(i - 1).kind != Entry::Tool) md += QLatin1Char('\n');
+            if (i == 0 || a_entries.at(i - 1).kind != Entry::Tool) {
+                md += QLatin1Char('\n');
+                qsizetype end = i + 1;
+                while (end < a_entries.size() && a_entries.at(end).kind == Entry::Tool) ++end;
+                if (!details && end - i > 1) {
+                    // Without the details, the row as the dock shows it folded.
+                    md += QStringLiteral("- %1 **%2**").arg(outcomeMark(rowOutcome(i, end)), toolSummary(i, end));
+                    if (const QString trouble = rowTrouble(i, end); !trouble.isEmpty()) md += QStringLiteral(" · ") + trouble;
+                    md += QLatin1Char('\n');
+                    i = end - 1;
+                    break;
+                }
+            }
             md += QStringLiteral("- %1 **%2**").arg(outcomeMark(e.tool), toolName(e.text));
             if (!e.extra.isEmpty()) md += QLatin1Char(' ') + inlineCode(e.extra);
             md += QLatin1Char('\n');
             if (!e.output.isEmpty() && e.tool != Entry::Succeeded)
                 md += QStringLiteral("\n  ") + (e.tool == Entry::Denied ? tr("Not allowed: %1") : tr("Failed: %1")).arg(e.output) + QLatin1Char('\n');
+            if (!details) break;
             if (!e.detail.trimmed().isEmpty()) md += QLatin1Char('\n') + codeBlock(e.detail.trimmed(), QStringLiteral("  "));
             if (!e.result.trimmed().isEmpty()) md += QLatin1Char('\n') + codeBlock(e.result.trimmed(), QStringLiteral("  "));
             break;
@@ -2013,6 +2063,7 @@ QString ClaudeCodePanel::conversationMarkdown() const
 
 QString ClaudeCodePanel::conversationText() const
 {
+    const bool details = exportsToolDetails();
     QStringList out;
     out << exportTitle() << QString(exportTitle().size(), QLatin1Char('=')) << QString();
     int width = 0;
@@ -2043,11 +2094,24 @@ QString ClaudeCodePanel::conversationText() const
         case Entry::Tool: {
             if (!captioned) out << tr("Claude:");
             captioned = true;
+            if (!details && !afterTool) {
+                qsizetype end = i + 1;
+                while (end < a_entries.size() && a_entries.at(end).kind == Entry::Tool) ++end;
+                if (end - i > 1) {
+                    // Without the details, the row as the dock shows it folded.
+                    QString row = QStringLiteral("  %1 %2").arg(outcomeMark(rowOutcome(i, end)), toolSummary(i, end));
+                    if (const QString trouble = rowTrouble(i, end); !trouble.isEmpty()) row += QStringLiteral("  ·  ") + trouble;
+                    out << row;
+                    i = end - 1;
+                    break;
+                }
+            }
             QString line = QStringLiteral("  %1 %2").arg(outcomeMark(e.tool), toolName(e.text));
             if (!e.extra.isEmpty()) line += QStringLiteral("   ") + e.extra;
             out << line;
             if (!e.output.isEmpty() && e.tool != Entry::Succeeded)
                 out << QStringLiteral("      ") + (e.tool == Entry::Denied ? tr("Not allowed: %1") : tr("Failed: %1")).arg(e.output);
+            if (!details) break;
             if (!e.detail.trimmed().isEmpty()) out << indented(e.detail.trimmed(), QStringLiteral("      "));
             if (!e.result.trimmed().isEmpty()) out << indented(e.result.trimmed(), QStringLiteral("      │ "));
             break;
@@ -2078,8 +2142,9 @@ bool ClaudeCodePanel::exportConversation(const QString& path, ExportFormat forma
         return true;
     }
 
-    // The conversation drawn as in the dock - on paper, every tool open -
-    // then laid out on pages and painted onto them, a footer on each.
+    // The conversation drawn as in the dock - on paper, every tool open
+    // (or, without the details, every one folded) - then laid out on pages
+    // and painted onto them, a footer on each.
     QTextDocument doc;
     doc.setDefaultFont(a_view->font());
     doc.setDocumentMargin(0);
@@ -2087,6 +2152,7 @@ bool ClaudeCodePanel::exportConversation(const QString& path, ExportFormat forma
     QPalette paper;
     {
         const QScopedValueRollback<bool> onPaper(a_exporting, true);
+        const QScopedValueRollback<bool> open(a_exportDetails, exportsToolDetails());
         paper = drawingPalette();
         const Colours col = colours(paper);
         QTextCursor c(&doc);

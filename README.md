@@ -213,7 +213,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Conversation* saves the whole conversation - every prompt, reply and
   tool with its input and output - as a **PDF** (drawn as in the dock,
   on paper, math typeset), **Markdown** (the replies as Claude wrote
-  them) or **plain text**. What Claude may do is chosen in the dock's menu: *Ask Before
+  them) or **plain text**. *Include Tool Details* in the same menu (on
+  by default, and remembered) decides whether the contents of the boxes
+  that fold go along: off, a row of tools is the one line that sums it
+  up ("✓ Ran 3 commands, read amp.sch"), as the dock shows it folded, and
+  the export is the chat itself. What Claude may do is chosen in the dock's menu: *Ask Before
   Acting* (a card asks before a command runs or a file changes — *Allow*,
   *Allow All Edits* for the rest of the conversation, *Deny*), *Accept
   Edits*, *Auto* (Claude acts without asking and a safety check stops
