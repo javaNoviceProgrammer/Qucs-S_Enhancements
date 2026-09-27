@@ -296,11 +296,28 @@ bool fieldFrom(const PaintingField& f, const QString& name, const QJsonValue& v,
             *error = tr("'%1' is rows of texts: [[\"a\", \"b\"], [\"c\", \"d\"]].").arg(name);
             return false;
         }
+        // Rows of texts; a flat list of texts is one row, the first. A row
+        // that is not a list is refused, not taken as an empty one.
+        const QJsonArray given = v.toArray();
+        const bool flat = !given.isEmpty() && std::none_of(given.begin(), given.end(), [](const QJsonValue& r) { return r.isArray(); });
+        const auto text = [](const QJsonValue& c) {
+            return c.isString() ? c.toString() : c.isDouble() ? QString::number(c.toDouble(), 'g', 12) : QString();
+        };
         QVariantList rows;
-        for (const QJsonValue& r : v.toArray()) {
+        if (flat) {
             QStringList row;
-            for (const QJsonValue& c : r.toArray()) row << (c.isString() ? c.toString() : c.isDouble() ? QString::number(c.toDouble(), 'g', 12) : QString());
-            rows << row;
+            for (const QJsonValue& c : given) row << text(c);
+            rows << QVariant(row);
+        } else {
+            for (const QJsonValue& r : given) {
+                if (!r.isArray()) {
+                    *error = tr("'%1' is rows of texts, each a list: [[\"a\", \"b\"], [\"c\", \"d\"]].").arg(name);
+                    return false;
+                }
+                QStringList row;
+                for (const QJsonValue& c : r.toArray()) row << text(c);
+                rows << QVariant(row);
+            }
         }
         *out = rows;
         return true;
