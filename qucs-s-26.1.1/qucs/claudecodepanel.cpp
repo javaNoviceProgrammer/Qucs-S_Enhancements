@@ -2827,8 +2827,8 @@ int ClaudeCodePanel::usageShown()
 {
     const QucsSettingsFile settings;
     int usage = 0;
-    if (settings.value(kShowPromptTokens, true).toBool()) usage |= PromptTokens;
-    if (settings.value(kShowConversationTokens, true).toBool()) usage |= ConversationTokens;
+    if (settings.value(kShowPromptTokens, false).toBool()) usage |= PromptTokens;
+    if (settings.value(kShowConversationTokens, false).toBool()) usage |= ConversationTokens;
     if (settings.value(kShowPromptCost, false).toBool()) usage |= PromptCost;
     if (settings.value(kShowConversationCost, false).toBool()) usage |= ConversationCost;
     return usage;
