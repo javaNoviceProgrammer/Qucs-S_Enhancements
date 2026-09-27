@@ -18,7 +18,7 @@ PDF documents), macOS arm64, Qt 6.11.2, with:
    one of 600.
 4. **Reading the code** of the new features; entries found that way say so.
 
-*Status:* nothing fixed; everything below is open. Most urgent: A1 (a PDF deleted by Save As),
+*Status:* F1 (the CI timeout) fixed in `7c8dd74`; everything else below is open. Most urgent: A1 (a PDF deleted by Save As),
 A2 (a folder sent to the Trash by Replace), A3 (permanent deletion of any folder), A4 and A5 (text
 corrupted / a document emptied by Undo), B1 and B2 (programs run from an untrusted project), C1
 and C2 (tiny files that exhaust memory), C3 (a big folder as project freezes the app), A8
@@ -837,6 +837,15 @@ outside a list) and `<code>`/`<pre>` elements, as GitHub does.
 ## F. CI
 
 ### F1. CI - test_file_browser_drop hangs (timeout) on the Linux ASan job; main and the tag are red
+
+**Fixed in `7c8dd74`.** Cause: the test set `XDG_DATA_HOME` to a folder it never created. Qt's
+Linux `moveToTrash()` (`qfilesystemengine_unix.cpp`, `openHomeTrashLocation` -> `getTrashDir`)
+makes `$XDG_DATA_HOME/Trash` with `mkdirat()`, one level only: with the parent missing it fails
+(ENOENT, then EBADF from `fstat(-1)`) and, not being EXDEV, Qt tries no other trash. Replace then
+reported "These could not be moved" in a sixth box - the log shows six boxes shown - that the
+test's `answering()` never answered, having stopped after the clash question. The test now makes
+the folder, and `answering()` closes and fails on any box it did not expect. The product's
+behaviour was right: where no trash can be made, Replace says so.
 
 **Severity:** medium (CI red on main and on v26.1.3 since the drag-and-drop commit; the release itself built)
 **Area:** File Browser drag and drop - `tests/test_file_browser_drop.cpp` (added in dba62e7) and
