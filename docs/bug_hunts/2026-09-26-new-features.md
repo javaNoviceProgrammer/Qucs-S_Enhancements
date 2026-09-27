@@ -18,12 +18,10 @@ PDF documents), macOS arm64, Qt 6.11.2, with:
    one of 600.
 4. **Reading the code** of the new features; entries found that way say so.
 
-*Status:* F1 (the CI timeout) fixed in `7c8dd74`; everything else below is open. Most urgent: A1 (a PDF deleted by Save As),
-A2 (a folder sent to the Trash by Replace), A3 (permanent deletion of any folder), A4 and A5 (text
-corrupted / a document emptied by Undo), B1 and B2 (programs run from an untrusted project), C1
-and C2 (tiny files that exhaust memory), C3 (a big folder as project freezes the app), A8
-(workbooks Excel calls damaged), B3 (a one-conversation permission that becomes the default),
-F1 (CI red on main and on the tag).
+*Status:* F1 (the CI timeout) fixed in `7c8dd74`; A1-A10 (data lost or corrupted) fixed in `119974d`;
+everything else below is open. Most urgent now: B1 and B2 (programs run from an untrusted
+project), C1 and C2 (tiny files that exhaust memory), C3 (a big folder as project freezes the
+app), B3 (a one-conversation permission that becomes the default).
 
 | | severity | area | finding |
 |---|---|---|---|
@@ -63,6 +61,14 @@ F1 (CI red on main and on the tag).
 
 ### A1. PDF Save As onto the same file under another spelling deletes the PDF
 
+**Fixed in `119974d`.** `PdfDoc::save()` compares the files themselves (`misc::isSameFile()`:
+device and inode, volume and file index on Windows) and copies with `misc::copyFileOver()`, which
+writes beside the target and renames over it - a copy that fails leaves the file that was there.
+The same helpers now serve Claude's `simulate` `keep_as` (its schematic's own name is refused: "not
+kept: ... is the dataset of this run itself"), the library dialog and `copy_document`'s datasets.
+Tests: `test_pdf_viewer` `itIsSavedAsItselfUnderAnotherSpelling`, `test_file_browser_drop`
+`filesComparedAndCopiedSafely`, `test_qucs_control` `aRealSimulationIsReported`.
+
 **Severity:** high (the document is permanently deleted - `QFile::remove`, not the Trash)
 **Area:** PDF viewer (new) - `pdfdoc.cpp` `PdfDoc::save()` (lines ~1150-1170)
 
@@ -99,6 +105,12 @@ Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `pdfSaveAsSameFileOtherSpelli
 
 ### A2. File Browser "Replace" can trash the very folder the moved item lives in (and its siblings)
 
+**Fixed in `119974d`.** Replace is not offered when the item there holds the one being moved or
+copied, compared as written and as the file system resolves the paths (links, case): "It cannot be
+replaced: it holds the one being moved. Keep both?"; a Replace chosen "for the rest" asks again for
+such an item. `refusal()`'s "a folder into itself" uses the same comparison. Test:
+`test_file_browser_drop` `aFolderHoldingTheOneMovedIsNotReplaced`.
+
 **Severity:** high (a whole folder goes to the Trash; the move then fails)
 **Area:** File Browser drag and drop (new) - `filebrowser.cpp`, `FileBrowser::transfer` / `FileBrowser::refusal`
 
@@ -129,6 +141,13 @@ Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `fileBrowserReplaceAncestor`.
 
 ### A3. With "Any folder is a project", Delete Project permanently erases any workspace folder - the question does not even name it
 
+**Fixed in `119974d`.** Delete Project moves the folder to the trash. The question (Move to
+Trash / Cancel, Cancel the default) names the project, the folder's path, its files and size
+(counted up to 20,000 files or 1.5 s) and, for a folder that is a project only by "Any folder is
+a project", says so and that everything in it goes. A document open from it with unsaved changes
+stops it; the others close. Where there is no trash, deleting for good is a second, separate
+question. Test: `test_project_folders` `deletingAProjectAsksAndTrashes`.
+
 **Severity:** medium-high (unrecoverable data loss, made reachable for every folder by the new setting)
 **Area:** Projects - `qucs.cpp` `QucsApp::deleteProject` (lines 2002-2011) / `recurRemove` (1945-1953)
 **Found by:** code inspection
@@ -153,6 +172,13 @@ its size / file count) in the question; for folders that are not `NAME_prj` (i.e
 the setting), at least a second, explicit confirmation - or offer "Remove from workspace" only.
 
 ### A4. Edit > Comment/Uncomment corrupts the text (duplicated fragments, an extra line)
+
+**Fixed in `119974d`.** The lines are the document's blocks (`findBlock()`), a selection
+ending at column 0 does not take that line, each line is edited in place and the whole is one undo
+step; a language without line comments is left alone. And all lines are commented unless every
+non-blank one is a comment already, then all are uncommented: the old line-by-line toggle turned a
+comment inside the selection into a line of the netlist. Indented comments count. Tests:
+`test_text_editing` `commentedLinesAndNothingElse`, `wrappedLinesAreOneLine`.
 
 **Severity:** high (silent corruption of netlists/sources with an everyday command)
 **Area:** Text editor - `textdoc.cpp` `TextDoc::commentSelected` (lines 524-579)
@@ -188,6 +214,9 @@ without a line comment.
 
 ### A5. Undo right after opening a text document empties it (the load is an undoable edit)
 
+**Fixed in `119974d`.** Loaded with `setPlainText()`: the undo history starts at the file as it
+was read, after a reload too. Test: `test_text_editing` `undoAfterOpeningKeepsTheFile`.
+
 **Severity:** medium-high (one habitual Cmd+Z wipes the document; a Save then writes an empty file)
 **Area:** Text editor (and Markdown, a TextDoc) - `textdoc.cpp` `TextDoc::load` (line ~408) / `reload` (430)
 
@@ -209,6 +238,15 @@ undo history starts at the file as loaded; `setModified(false)` already marks it
 
 ### A6. The text editor corrupts every non-UTF-8 character of a file when it is saved
 
+**Fixed in `119974d`.** A new `textcodec` reads a file as its byte order mark says (UTF-8,
+UTF-16, UTF-32), UTF-16 without one by its NUL bytes, UTF-8 when it is valid, and otherwise - bytes
+that would not be written back as they were read too (a UTF-8 mark and then no UTF-8, UTF-16 cut
+short) - as Windows-1252: every byte one character and back, so nothing is lost. Saved in
+the same encoding, with CR LF kept where the file had it. A character the encoding has no bytes
+for (Ω in Windows-1252) is asked about: Save as UTF-8, or Cancel (nothing written); Claude's tools,
+with no one to ask, get UTF-8. Tests: `test_text_editing` `encodingsAreFoundAndKept`,
+`savedAsItWasRead`, `aCharacterItLacksIsAskedAbout`.
+
 **Severity:** medium (vendor model libraries, old netlists and scripts lose their °, µ, ©, Ω)
 **Area:** Text editor - `textdoc.cpp` `TextDoc::load` / `TextDoc::save` (QTextStream, UTF-8 only)
 
@@ -227,6 +265,12 @@ Detect the encoding on load (UTF-8 valid? BOM? else the local 8-bit code page), 
 save in it - or at least warn when a file with invalid UTF-8 is about to be saved.
 
 ### A7. CSV not in UTF-8 - "Ω" typed into it is saved as "?"; UTF-16 files are read as garbage
+
+**Fixed in `119974d`.** The CSV reader uses `textcodec` (UTF-16 with or without a mark;
+Windows-1252 rather than Latin-1, so € and curly quotes read right). `writeCsv()` never writes "?":
+text the file's encoding lacks makes it UTF-8 with the mark Excel reads UTF-8 by, and the
+spreadsheet's Save asks before that. Tests: `test_spreadsheet` `csvEncodingsAreKept`,
+`test_sheet_doc` `aCharacterTheCsvFileLacksIsAskedAbout`.
 
 **Severity:** medium (silent data loss on save; unreadable Excel "Unicode Text" exports)
 **Area:** Spreadsheets (new) - `spreadsheet.cpp` `readCsv` (lines 680-685) / `writeCsv` (line ~760)
@@ -254,6 +298,14 @@ save in it - or at least warn when a file with invalid UTF-8 is about to be save
   to UTF-8 with a BOM) instead of writing `?`.
 
 ### A8. Editing the first cell of a shared formula leaves the workbook damaged for Excel
+
+**Fixed in `119974d`.** Read, a shared formula's other cells get their own formula - the first
+cell's moved as Excel fills it (`sheet::shiftedFormula()`: relative references moved, `$` and
+quoted text kept, #REF! off the sheet) - so they show `=A2*2`. Written, when any cell of a shared
+formula changed, all its cells are written each with its own formula, their values kept until Excel
+calculates; an array or data table with a cell changed inside is written as its first cell's
+formula and values. Tests: `test_spreadsheet` `formulasAreMovedAsExcelFillsThem`,
+`sharedFormulasSurviveTheirFirstCell`.
 
 **Severity:** medium-high (Excel: "We found a problem with some content..."; formulas of other cells lost)
 **Area:** Spreadsheets (new) - `spreadsheet.cpp` `cellXml` (line ~356) / `readSheet` (formula read at line ~303)
@@ -287,6 +339,12 @@ Probe files: `2026-09-26-new-features/make_xlsx.py` (the sheet XML above).
 
 ### A9. Renaming a file or folder in the File Browser leaves open documents on the old path
 
+**Fixed in `119974d`.** A rename in place (`QFileSystemModel::fileRenamed`) and one by the Rename
+dialog (`FileBrowser::renameEntry()`) emit `moved()`, so open documents and the conversations
+pinned to them follow. Move to Trash names the open documents it holds and closes them, and is
+refused while one has unsaved changes. Tests: `test_file_browser_drop` `renamedAsAName`,
+`openDocumentsFollowARenameAndATrash`.
+
 **Severity:** medium (the next Save writes the old name again: two copies, edits in the "wrong" one)
 **Area:** File Browser (new) - `filebrowser.cpp` rename (in place through `QFileSystemModel` with
 `setReadOnly(false)`, line 1019, and the Rename dialog, line 1903); `qucs.cpp:704`
@@ -316,6 +374,10 @@ without telling anyone either: the tabs stay open on paths that no longer exist,
 silently recreates the trashed file (or the whole folder path) in place.
 
 ### A10. File Browser Rename: a case-only rename is refused, and a name with "../" moves the file
+
+**Fixed in `119974d`.** `renameEntry()` takes another case of the file's own name (by way of a
+temporary name where the file system refuses it) and refuses names with "/" (and "\\" on
+Windows), "." and "..". Test: `test_file_browser_drop` `renamedAsAName`.
 
 **Severity:** low-medium
 **Area:** File Browser (new) - `filebrowser.cpp` `FileBrowser::rename` (lines 1896-1904; the dialog
