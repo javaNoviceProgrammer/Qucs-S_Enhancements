@@ -48,16 +48,31 @@ QByteArray read(const QString& path)
     return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
 }
 
-// Runs fn and answers the dialog it brings up with answer(dialog).
+// Runs fn and answers the dialog it brings up with answer(dialog). Any
+// other box (one more after it: a transfer reporting a failure, say) is
+// closed and fails the test - rather than waiting for an answer until the
+// test is killed.
 void answering(const std::function<void()>& fn, const std::function<bool(QWidget*)>& answer)
 {
+    bool answered = false;
+    QStringList unexpected;
     QTimer timer;
     QObject::connect(&timer, &QTimer::timeout, [&] {
-        if (QWidget* modal = QApplication::activeModalWidget())
-            if (answer(modal)) timer.stop();
+        QWidget* modal = QApplication::activeModalWidget();
+        if (modal == nullptr) return;
+        if (!answered && answer(modal)) {
+            answered = true;
+            return;
+        }
+        if (auto* box = qobject_cast<QMessageBox*>(modal)) {
+            unexpected << (box->text() + QLatin1Char(' ') + box->informativeText()).trimmed();
+            box->done(QDialog::Rejected);
+        }
     });
     timer.start(20);
     fn();
+    if (!unexpected.isEmpty())
+        QTest::qFail(qPrintable(QStringLiteral("unexpected box: ") + unexpected.join(QStringLiteral(" | "))), __FILE__, __LINE__);
 }
 
 // Answers the question about a name with the button \a name (and the box
@@ -136,7 +151,12 @@ private slots:
         useIsolatedSettings(dir.filePath("settings"));
         top = QFileInfo(dir.path()).canonicalFilePath();
 #ifdef Q_OS_LINUX
-        qputenv("XDG_DATA_HOME", QFile::encodeName(top + "/xdg"));   // the trash in here, not the user's
+        // The trash in here, not the user's. The folder must be there, as
+        // ~/.local/share is: Qt makes $XDG_DATA_HOME/Trash but not
+        // $XDG_DATA_HOME, and without it moveToTrash() fails (Replace then
+        // reports the file as not moved).
+        qputenv("XDG_DATA_HOME", QFile::encodeName(top + "/xdg"));
+        QVERIFY(QDir().mkpath(top + "/xdg"));
 #endif
     }
 
