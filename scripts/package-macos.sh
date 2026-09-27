@@ -15,8 +15,10 @@
 #     qucs-s.app/Contents/MacOS/bin, and examples/library/symbols/spicelibrary/
 #     lang into Contents/MacOS/share/qucs-s (main.cpp resolves resources relative to
 #     the executable, so this layout is what the app expects);
-#   * runs macdeployqt on the main app and every nested app so the Qt
-#     frameworks and plugins travel with the bundle;
+#   * runs macdeployqt on the main app, the tool apps' executables along,
+#     so the Qt frameworks and plugins travel with the bundle - once: the
+#     tool apps use the main app's (each with a copy of its own, the
+#     bundle was six times its size), and what nothing links is left out;
 #   * ad-hoc code-signs the bundle;
 #   * packs a compressed .dmg with an /Applications shortcut (hdiutil, no
 #     extra dependencies).
@@ -84,9 +86,21 @@ cp -pR "$src/library/spicelibrary/." "$res/spicelibrary/"
 cp -p  "$build"/translations/*.qm "$res/lang/" 2>/dev/null || echo "    warning: no translations found" >&2
 
 echo "==> Bundling Qt (macdeployqt)"
-macdeployqt "$app" -verbose=1 >/dev/null
+# Once, into the main app: the tool apps' executables along, so that what
+# they need and qucs-s does not is there too. They load it from there (see
+# "One Qt for every program" below), not from a copy of their own each.
+tools=()
 for nested in "$bin"/*.app; do
-  macdeployqt "$nested" -verbose=1 >/dev/null
+  exe="$nested/Contents/MacOS/$(basename "$nested" .app)"
+  [ -f "$exe" ] && tools+=("-executable=$exe")
+done
+macdeployqt "$app" "${tools[@]}" -verbose=1 >/dev/null
+for nested in "$bin"/*.app; do
+  rm -rf "$nested/Contents/Frameworks" "$nested/Contents/PlugIns"
+  # Qt reads the plugins' place from here, relative to the tool app's
+  # Contents: the main app's.
+  mkdir -p "$nested/Contents/Resources"
+  printf '[Paths]\nPlugins = ../../../../PlugIns\n' > "$nested/Contents/Resources/qt.conf"
 done
 strip "$bin/qucsator_rf" "$bin/qucsconv_rf" 2>/dev/null || true
 
@@ -137,6 +151,33 @@ machos() {
       done
 }
 
+# One Qt for every program. macdeployqt names each framework, and each
+# framework the others, as @executable_path/../Frameworks/...: from a tool
+# app's executable (Contents/MacOS/bin/x.app/Contents/MacOS/x) that is
+# x.app/Contents/Frameworks, where nothing is. So every reference into
+# Contents/Frameworks becomes @rpath/..., and each binary is told where
+# that is from where it lies.
+machos | while IFS= read -r f; do
+  otool -L "$f" | tail -n +2 | awk '{print $1}' | { grep '^@executable_path/\.\./Frameworks/' || true; } | while IFS= read -r dep; do
+    install_name_tool -change "$dep" "@rpath/${dep#@executable_path/../Frameworks/}" "$f"
+  done
+  id="$(otool -D "$f" | sed -n '2p')"
+  case "$id" in
+    @executable_path/../Frameworks/*) install_name_tool -id "@rpath/${id#@executable_path/../Frameworks/}" "$f" ;;
+  esac
+  case "$f" in
+    "$app/Contents/MacOS/qucs-s")        rp='@executable_path/../Frameworks' ;;
+    "$bin"/*.app/Contents/MacOS/*)       rp='@executable_path/../../../../../Frameworks' ;;
+    */Contents/Frameworks/*.framework/Versions/*) rp='@loader_path/../../..' ;;
+    */Contents/Frameworks/*)             rp='@loader_path' ;;
+    */Contents/PlugIns/*/*)              rp='@loader_path/../../Frameworks' ;;
+    *)                                   rp='' ;;
+  esac
+  if [ -n "$rp" ] && ! otool -l "$f" | awk '/LC_RPATH/ {r=1} r && /path / {print $2; r=0}' | grep -qxF "$rp"; then
+    install_name_tool -add_rpath "$rp" "$f"
+  fi
+done
+
 # The build's rpath into the Homebrew Qt (CMake's, so the tree runs from
 # the build directory) stays on the binaries after macdeployqt. On a
 # machine without that Qt it is dead; on one with it, anything the bundle
@@ -176,6 +217,34 @@ find "$app" -path '*/Contents/PlugIns/*' -name '*.dylib' -type f | while IFS= re
   done
 done
 
+# What nothing in the bundle links - the frameworks the virtual keyboard
+# plugin dropped above wanted (QtQuick, the QtQml ones), and whatever only
+# they wanted - is left out, until everything left is linked by something.
+while :; do
+  # Each reference as the name of what it is in Contents/Frameworks: the
+  # framework (QtCore.framework), or the library's file name.
+  refs="$(machos | while IFS= read -r f; do
+    self="$(otool -D "$f" | sed -n '2p')"   # (a framework or a library naming itself is no reference)
+    otool -L "$f" | tail -n +2 | awk '{print $1}' | { grep -vxF "${self:-//}" || true; } | while IFS= read -r dep; do
+      # (No case here: bash 3.2 cannot parse one in a command substitution.)
+      if printf '%s' "$dep" | grep -q '\.framework/'; then
+        printf '%s\n' "$dep" | grep -o '[^/]*\.framework' | head -1
+      else
+        basename "$dep"
+      fi
+    done
+  done | sort -u)"
+  removed=0
+  for item in "$app/Contents/Frameworks"/*; do
+    if ! printf '%s\n' "$refs" | grep -qxF "$(basename "$item")"; then
+      echo "    leaving out ${item#$app/Contents/} (nothing links it)"
+      rm -rf "$item"
+      removed=1
+    fi
+  done
+  [ "$removed" = 1 ] || break
+done
+
 echo "==> Signing (ad hoc)"
 codesign --force --deep --sign - "$app"
 
@@ -203,6 +272,33 @@ for want in examples/ngspice library/Ideal.lib library/BJT_Darlington symbols \
             spicelibrary/coax.cir spicelibrary/core.cir spicelibrary/winding.cir; do
   [ -e "$res/$want" ] || { echo "error: share/qucs-s/$want is missing from the bundle" >&2; exit 1; }
 done
+# Each program starts from the bundle, with the main app's Qt: qucs-s
+# makes a netlist of an example headless; each tool app is started
+# headless - one that cannot load a library ends at once, one that runs is
+# still running after a while (and is ended).
+log="$stage/start.log"
+if ! QT_QPA_PLATFORM=offscreen QUCS_CLAUDE=/nonexistent/claude QUCS_GH=/nonexistent/gh \
+     "$app/Contents/MacOS/qucs-s" -n -i "$res/examples/templates_ngspice/S-parameter_active_analysis.sch" \
+     -o "$stage/start.cir" --ngspice > "$log" 2>&1 || ! grep -q '^\.END' "$stage/start.cir"; then
+  echo "error: qucs-s did not make a netlist from the bundle:" >&2
+  cat "$log" >&2
+  exit 1
+fi
+for exe in "$bin"/*.app/Contents/MacOS/*; do
+  [ -f "$exe" ] || continue
+  QT_QPA_PLATFORM=offscreen QUCS_CLAUDE=/nonexistent/claude QUCS_GH=/nonexistent/gh "$exe" > "$log" 2>&1 &
+  pid=$!
+  sleep 3
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+  else
+    wait "$pid" 2>/dev/null && code=0 || code=$?
+    echo "error: ${exe#$app/Contents/} did not start from the bundle (exit $code):" >&2
+    cat "$log" >&2
+    exit 1
+  fi
+done
+
 # codesign refuses a symbolic link that points out of the bundle.
 if find "$res" -type l | grep -q .; then
   echo "error: symbolic links under share/qucs-s:" >&2; find "$res" -type l >&2; exit 1
