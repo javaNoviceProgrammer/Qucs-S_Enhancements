@@ -56,7 +56,11 @@ needs() {
     echo "? timed-out"
     return 0
   fi
+  # api-ms-win-* and ext-ms-win-* are Windows's API sets, which its loader
+  # maps to its own DLLs - never shipped; ldd on Windows on Arm finds them
+  # nowhere.
   awk -v env="/$msys/" '
+    tolower($1) ~ /^(api|ext)-ms-win-/ { next }
     index($3, env) == 1 { print $1, $3; next }
     /not found/         { print $1, "not-found" }' <<< "$out"
 }
