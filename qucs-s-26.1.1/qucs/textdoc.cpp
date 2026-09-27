@@ -57,6 +57,7 @@ TextDoc::TextDoc(QucsApp *App_, const QString& Name_) : QPlainTextEdit(), QucsDo
   SetChanged = false;
   recreate = false;   // written with the settings; read back only when a file has it
   devtype = DEV_DEF;
+  a_defaultSettings = settingsText ();
 
   a_tmpPosX = a_tmpPosY = 1;  // set to 1 to trigger line highlighting
   setLanguage (Name_);
@@ -160,7 +161,18 @@ bool TextDoc::saveSettings (void)
 
   QTextStream stream (&file);
   stream << "Textfile settings file, Qucs " PACKAGE_VERSION "\n"
-    << "Simulation=" << simulation << "\n"
+    << settingsText ();
+
+  file.close ();
+  SetChanged = false;
+  return true;
+}
+
+QString TextDoc::settingsText () const
+{
+  QString text;
+  QTextStream stream (&text);
+  stream << "Simulation=" << simulation << "\n"
     << "Duration=" << a_SimTime << "\n"
     << "Module=" << (!simulation) << "\n"
     << "Library=" << Library << "\n"
@@ -170,10 +182,16 @@ bool TextDoc::saveSettings (void)
     << "Icon=" << Icon << "\n"
     << "Recreate=" << recreate << "\n"
     << "DeviceType=" << devtype << "\n";
+  return text;
+}
 
-  file.close ();
-  SetChanged = false;
-  return true;
+bool TextDoc::writesSettings () const
+{
+  // A file of a new document's settings says nothing: without it the
+  // document is read with the same. A change is written, so that a file
+  // already there does not keep settings that were changed back.
+  return QucsSettings.WriteTextDocSettings || SetChanged
+      || settingsText () != a_defaultSettings;
 }
 
 /*!
@@ -450,7 +468,8 @@ bool TextDoc::writeTo(const QString& path)
 
 int TextDoc::save ()
 {
-  saveSettings ();
+  if (writesSettings ())
+    saveSettings ();
 
   QFile file (a_DocName);
   if (!file.open (QIODevice::WriteOnly))

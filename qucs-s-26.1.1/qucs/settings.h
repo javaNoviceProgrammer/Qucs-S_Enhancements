@@ -37,7 +37,9 @@ public:
   template<class T>
   T itemDefault(const QString& key)
   {
-    return value(key).value<T>();
+    // The default itself - not the value stored, which a key may have.
+    const auto it = m_Defaults.find(key);
+    return it != m_Defaults.end() ? it->second.value<T>() : T();
   }
 
   /** \brief Store a setting.
