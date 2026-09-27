@@ -38,9 +38,10 @@ class ProjectView : public QTreeView
 {
   Q_OBJECT
 public:
-  // Top-level rows of the tree, in the order refresh() creates them.
-  // Scratch holds whatever is in the project's Scratch folder (temporary
-  // files of the simulations), named relative to that folder.
+  // The built-in categories: the top-level rows of the tree, in this
+  // order, with the user's categories (UserCategory, below) between Text
+  // and Others. Scratch holds whatever is in the project's Scratch folder
+  // (temporary files of the simulations), named relative to that folder.
   enum Category { Datasets = 0, DataDisplays, Verilog, VerilogA, Osdi, VHDL,
                   Octave, Schematics, Symbols, SPICE, Python, Images, Text, Others, Scratch,
                   CategoryCount };
@@ -53,8 +54,21 @@ public:
   // that match its own. The user's patterns are in
   // QucsSettings.ContentPatterns, under the categories' keys.
 
+  // The categories the user added (QucsSettings.ContentUserCategories)
+  // are UserCategory + their place in that list: shown - and matched -
+  // after Text, before Others and Scratch.
+  static constexpr int UserCategory = 100;
+  /// Whether \a category is one the user added (and still there).
+  static bool isUserCategory(int category);
+  /// Every category in the panel's order, which is the order a file is
+  /// matched in: the built-in ones up to Text, the user's, Others, Scratch.
+  static QList<int> categories();
+  /// The top-level row of \a category in that order, -1 for none. With no
+  /// category of the user's it is the Category itself.
+  static int rowOf(int category);
+
   /// What a category's patterns are saved under ("DataDisplays"): not
-  /// translated.
+  /// translated. A user's: "User1", "User2", ...
   static QString categoryKey(int category);
   /// Its name, as the panel shows it.
   static QString categoryName(int category);
@@ -78,7 +92,7 @@ public:
   /// Item data: the file's path relative to the project ("models/bjt.va")
   /// on every file row, whatever the row shows; empty on category and
   /// folder rows.
-  enum { FilePathRole = Qt::UserRole + 1 };
+  enum { FilePathRole = Qt::UserRole + 1, CategoryRole };   ///< (CategoryRole: on the category rows)
 
   ProjectView (QWidget *parent);
   virtual ~ProjectView ();
@@ -147,7 +161,7 @@ private:
   QString m_signature;   // listingSignature() of what is shown
   bool m_looking = false;   // refreshIfChanged() is looking at the files
   bool m_folderIcons = false;   // QucsSettings.ContentFolderIcons the listing was built with
-  QStringList m_patterns;       // the categories' patterns the listing was built with
+  QStringList m_patterns;       // the categories (names, patterns) the listing was built with
 
   /// Adds a file row (path relative to the project, optional note) under
   /// its category, inside the folder rows of its directory in tree view.

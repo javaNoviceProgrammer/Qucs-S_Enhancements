@@ -135,6 +135,15 @@ bool loadSettings()
     for (const QString& key : settings.childKeys())
         QucsSettings.ContentPatterns.insert(key, settings.value(key).toString());
     settings.endGroup();
+    // The categories the user added.
+    QucsSettings.ContentUserCategories.clear();
+    const int userCategories = settings.beginReadArray("ContentUserCategories");
+    for (int i = 0; i < userCategories; ++i) {
+        settings.setArrayIndex(i);
+        const QString name = settings.value("name").toString().trimmed();
+        if (!name.isEmpty()) QucsSettings.ContentUserCategories.append({name, settings.value("patterns").toString()});
+    }
+    settings.endArray();
     // The syntax highlighting's formats the user changed ("python/Keyword"),
     // and the languages chosen for suffixes.
     QucsSettings.SyntaxFormats.clear();
@@ -251,6 +260,16 @@ bool saveApplSettings()
     for (auto it = QucsSettings.ContentPatterns.cbegin(); it != QucsSettings.ContentPatterns.cend(); ++it)
         settings.setValue(it.key(), it.value());
     settings.endGroup();
+    settings.remove("ContentUserCategories");
+    if (!QucsSettings.ContentUserCategories.isEmpty()) {
+        settings.beginWriteArray("ContentUserCategories", int(QucsSettings.ContentUserCategories.size()));
+        for (int i = 0; i < QucsSettings.ContentUserCategories.size(); ++i) {
+            settings.setArrayIndex(i);
+            settings.setValue("name", QucsSettings.ContentUserCategories.at(i).name);
+            settings.setValue("patterns", QucsSettings.ContentUserCategories.at(i).patterns);
+        }
+        settings.endArray();
+    }
     settings.remove("SyntaxFormats");
     settings.beginGroup("SyntaxFormats");
     for (auto it = QucsSettings.SyntaxFormats.cbegin(); it != QucsSettings.SyntaxFormats.cend(); ++it)

@@ -59,6 +59,7 @@
 #include "textdoc.h"
 #ifdef QUCS_HAVE_QTPDF
 #include "pdfdoc.h"
+#include "zipdoc.h"
 #endif
 #include "autosave.h"
 #include "crashhandler.h"
@@ -2376,6 +2377,13 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     d = sheet;
     i = addDocumentTab(sheet, Info.fileName());
   }
+  else if (isArchiveFile(Name)) {
+    // Its files and folders (zipdoc.h).
+    auto *zip = new ZipDoc(this, Name);
+    d = zip;
+    i = addDocumentTab(zip, Info.fileName());
+    is_pdf = true;   // (no word about simulating a read-only one)
+  }
   else if (isMarkdownFile(Name)) {
     // Its text and its rendering (markdowndoc.h).
     auto *md = new MarkdownDoc(this, Name);
@@ -2523,6 +2531,9 @@ bool QucsApp::saveAs()
     if (isPdfDocument (w)) {
       Filter = tr("PDF Documents") + " (*.pdf)";
       selfilter = Filter;
+    } else if (isArchiveDocument (w)) {
+      Filter = tr("ZIP Archives") + " (*.zip)";
+      selfilter = Filter;
     } else if (isSheetDocument (w)) {
       const QString csv = tr("CSV Files") + " (*.csv)";
       const QString tsv = tr("Tab-Separated Files") + " (*.tsv)";
@@ -2571,6 +2582,9 @@ bool QucsApp::saveAs()
 
     if (isPdfDocument (w)) {
       if (ext.compare("pdf", Qt::CaseInsensitive) != 0) s += ".pdf";
+    }
+    else if (isArchiveDocument (w)) {
+      if (ext.compare("zip", Qt::CaseInsensitive) != 0) s += ".zip";
     }
     else if (isSheetDocument (w)) {
       // The filter chosen says which, when the name does not.
@@ -3000,7 +3014,7 @@ void QucsApp::slotChangeView()
   }
   // for PDF documents: read; View All fits a page, Zoom to Selection the
   // width; for spreadsheets: cells
-  else if (isPdfDocument (w) || isSheetDocument (w)) {
+  else if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w)) {
     magAll->setDisabled(false);
     magSel->setDisabled(false);
     if(cursorLeft->isEnabled())
@@ -3054,7 +3068,7 @@ void QucsApp::slotFileSettings ()
   editText->setHidden (true); // disable text edit of component property
 
   QWidget * w = DocumentTab->currentWidget ();
-  if (isPdfDocument (w) || isSheetDocument (w)) return;   // nothing to set
+  if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w)) return;   // nothing to set
   if (isTextDocument (w)) {
     QucsDoc * Doc = (QucsDoc *) ((TextDoc *) w);
     QString ext = Doc->fileSuffix ();
@@ -3874,6 +3888,10 @@ void QucsApp::slotSimulate(QWidget *w)
       statusBar()->showMessage(tr("A spreadsheet is not simulated."), 3000);
       return;
   }
+  if (isArchiveDocument(w)) {
+      statusBar()->showMessage(tr("An archive is not simulated: open a schematic of it."), 3000);
+      return;
+  }
 
   //Check is schematic digital
   bool isDigital = false;
@@ -4164,7 +4182,8 @@ void QucsApp::slotToPage()
 {
   QucsDoc *d = getDoc();
   if (d == nullptr || isPdfDocument(DocumentTab->currentWidget())
-      || isSheetDocument(DocumentTab->currentWidget())) return;   // no data display
+      || isSheetDocument(DocumentTab->currentWidget())
+      || isArchiveDocument(DocumentTab->currentWidget())) return;   // no data display
   if(d->getDataDisplay().isEmpty()) {
     QMessageBox::critical(this, tr("Error"), tr("No page set !"));
     return;
@@ -4268,7 +4287,7 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
   // Spreadsheets (CSV files, Excel workbooks) and Markdown: in tabs of
   // their own (sheetdoc.h, markdowndoc.h), whatever the text editor of
   // the settings.
-  if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath)) {
+  if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isArchiveFile(absolutePath)) {
     openTextOrSchematicTab(absolutePath);
     return;
   }
@@ -4724,6 +4743,14 @@ bool QucsApp::isSheetDocument(QWidget *w) {
 bool QucsApp::isSheetFile(const QString &name) {
   static const QStringList suffixes = {"csv", "tsv", "xlsx", "xlsm", "xls"};
   return suffixes.contains(QFileInfo(name).suffix().toLower());
+}
+
+bool QucsApp::isArchiveDocument(QWidget *w) {
+  return w != nullptr && w->inherits("ZipDoc");
+}
+
+bool QucsApp::isArchiveFile(const QString &name) {
+  return QFileInfo(name).suffix().compare(QLatin1String("zip"), Qt::CaseInsensitive) == 0;
 }
 
 bool QucsApp::isMarkdownFile(const QString &name) {

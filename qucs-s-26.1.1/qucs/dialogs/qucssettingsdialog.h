@@ -38,6 +38,7 @@ class QIntValidator;
 class QRegExpValidator;
 class QStandardItemModel;
 class QTableWidget;
+struct ContentCategory;
 class SyntaxSettingsPage;
 
 ///
@@ -82,6 +83,10 @@ private slots:
     void slotDefaultValues();
     /// The Contents tab: every category's patterns back to its defaults.
     void slotRestoreContentPatterns();
+    /// The Contents tab: a category of the user's own added (named "New
+    /// Category", its name being edited), the one selected removed.
+    void slotAddContentCategory();
+    void slotRemoveContentCategory();
 
     /// @brief Adds or updates a file type entry in the file types table.
     void slotAddFileType();
@@ -161,6 +166,11 @@ public:
     // The Contents tab: the patterns of each category of the Content panel,
     // in its order (ProjectView::Category).
     QList<QLineEdit*> contentPatternEdits;
+    /// The user's categories: a row each, name and patterns.
+    QTableWidget *contentUserCategories = nullptr;
+    void fillUserCategories(const QList<ContentCategory>& categories);
+    /// The selected category of the user's one place up (-1) or down (1).
+    void moveContentCategory(int by);
     QCheckBox *showPinNames;
     QCheckBox *showPinDirections;
     QCheckBox *embedVerilogA;        ///< Create Library copies the .va and .osdi files the subcircuits use.
