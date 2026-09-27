@@ -96,12 +96,12 @@ while IFS= read -r line; do
         *'"allow"'*)
           echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"written","is_error":false}]}}'
           echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Done: wrote **out.txt**."}]}}'
-          echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"num_turns":2,"result":"Done","total_cost_usd":0.0123,"permission_denials":[],"session_id":"s-1"}'
+          echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"num_turns":2,"result":"Done","total_cost_usd":0.0123,"modelUsage":{"claude-opus-5-5":{"inputTokens":1200,"outputTokens":340,"cacheReadInputTokens":10500,"cacheCreationInputTokens":800,"costUSD":0.0123}},"permission_denials":[],"session_id":"s-1"}'
           ;;
         *)
           echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"The user did not allow this.","is_error":true}]}}'
           echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Understood, I left it."}]}}'
-          echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":900,"num_turns":2,"result":"x","total_cost_usd":0.004,"permission_denials":[{"tool_name":"Write"}],"session_id":"s-1"}'
+          echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":900,"num_turns":2,"result":"x","total_cost_usd":0.004,"modelUsage":{"claude-opus-5-5":{"inputTokens":300,"outputTokens":50,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.004}},"permission_denials":[{"tool_name":"Write"}],"session_id":"s-1"}'
           ;;
       esac
       ;;
@@ -287,6 +287,15 @@ done
 
 // A program that fails at once.
 const char* const kBroken = "#!/bin/sh\necho 'Invalid API key' >&2\nexit 3\n";
+
+// The tooltip of the text \a text in the document, where it is drawn.
+QString toolTipOf(const QTextDocument* doc, const QString& text)
+{
+    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+        for (auto it = b.begin(); !it.atEnd(); ++it)
+            if (it.fragment().text() == text) return it.fragment().charFormat().toolTip();
+    return QString();
+}
 
 } // namespace
 
@@ -475,7 +484,7 @@ private slots:
         s.handleLine("a warning that is not JSON");
         QCOMPARE(notices.count(), 2);
 
-        s.handleLine(R"({"type":"result","subtype":"success","is_error":false,"duration_ms":4200,"num_turns":3,"result":"Hello","total_cost_usd":0.25,"permission_denials":[{"tool_name":"Bash"}]})");
+        s.handleLine(R"({"type":"result","subtype":"success","is_error":false,"duration_ms":4200,"num_turns":3,"result":"Hello","total_cost_usd":0.25,"modelUsage":{"claude-opus-5-5":{"inputTokens":10,"outputTokens":200,"cacheReadInputTokens":3000,"cacheCreationInputTokens":400,"costUSD":0.24},"claude-haiku-4-5":{"inputTokens":5,"outputTokens":15,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.01}},"usage":{"input_tokens":10,"output_tokens":200},"permission_denials":[{"tool_name":"Bash"}]})");
         QCOMPARE(turns.count(), 1);
         const auto result = turns.last().at(0).value<TurnResult>();
         QVERIFY(result.ok);
@@ -483,17 +492,76 @@ private slots:
         QCOMPARE(result.turns, 3);
         QCOMPARE(result.denials, 1);
         QCOMPARE(result.costUsd, 0.25);
+        // Its tokens: every model's (the main loop's "usage" leaves the
+        // others out).
+        QCOMPARE(result.tokens.input, qint64(15));
+        QCOMPARE(result.tokens.output, qint64(215));
+        QCOMPARE(result.tokens.cacheRead, qint64(3000));
+        QCOMPARE(result.tokens.cacheWrite, qint64(400));
+        QCOMPARE(result.tokens.total(), qint64(3630));
+        QCOMPARE(result.conversationTokens, result.tokens);
         QCOMPARE(result.changedFiles, QStringList{"/work/a.sch"});
         QCOMPARE(s.state(), State::Ready);
 
         // The program counts its cost from its start: a turn's is what it added.
-        s.handleLine(R"({"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"x","total_cost_usd":0.30})");
+        // Its tokens likewise.
+        s.handleLine(R"({"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"x","total_cost_usd":0.30,"modelUsage":{"claude-opus-5-5":{"inputTokens":20,"outputTokens":260,"cacheReadInputTokens":7000,"cacheCreationInputTokens":500},"claude-haiku-4-5":{"inputTokens":5,"outputTokens":15,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}})");
         QVERIFY(qAbs(turns.last().at(0).value<TurnResult>().costUsd - 0.05) < 1e-9);
         QVERIFY(qAbs(turns.last().at(0).value<TurnResult>().conversationCostUsd - 0.30) < 1e-9);
+        const auto second = turns.last().at(0).value<TurnResult>();
+        QCOMPARE(second.tokens.input, qint64(10));
+        QCOMPARE(second.tokens.output, qint64(60));
+        QCOMPARE(second.tokens.cacheRead, qint64(4000));
+        QCOMPARE(second.tokens.cacheWrite, qint64(100));
+        QCOMPARE(second.conversationTokens.total(), qint64(3630 + 4170));
+        QCOMPARE(s.conversationTokens(), second.conversationTokens);
 
         s.handleLine(R"({"type":"result","subtype":"error_max_turns","is_error":true,"duration_ms":1,"num_turns":9,"result":""})");
         QCOMPARE(s.state(), State::Failed);
         QVERIFY(s.detail().contains("too many steps"));
+        // (A result with no tokens takes none away.)
+        QVERIFY(turns.last().at(0).value<TurnResult>().tokens.isEmpty());
+        QCOMPARE(s.conversationTokens().total(), qint64(3630 + 4170));
+    }
+
+    // The tokens of a result: its "modelUsage" is the program's running
+    // total, each turn what it added (a zeroed one, as a crash's, takes
+    // nothing away); without one, its "usage" is the turn's own.
+    void aTurnsTokensAreCounted()
+    {
+        using qucs_s::claude::TokenUsage;
+        const auto result = [](const char* usage) {
+            return QByteArray(R"({"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"x",)") + usage + "}";
+        };
+        {
+            Session s;
+            QSignalSpy turns(&s, &Session::turnFinished);
+            s.handleLine(result(R"("modelUsage":{"m":{"inputTokens":100,"outputTokens":10,"cacheReadInputTokens":1000,"cacheCreationInputTokens":50}})"));
+            s.handleLine(result(R"("modelUsage":{"m":{"inputTokens":0,"outputTokens":0,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}})"));
+            QVERIFY(turns.last().at(0).value<TurnResult>().tokens.isEmpty());
+            s.handleLine(result(R"("modelUsage":{"m":{"inputTokens":130,"outputTokens":30,"cacheReadInputTokens":2500,"cacheCreationInputTokens":50}})"));
+            const auto r = turns.last().at(0).value<TurnResult>();
+            QCOMPARE(r.tokens.total(), qint64(30 + 20 + 1500));
+            QCOMPARE(r.conversationTokens.total(), qint64(2710));
+        }
+        {
+            Session s;
+            QSignalSpy turns(&s, &Session::turnFinished);
+            const QByteArray turn = result(R"("usage":{"input_tokens":7,"output_tokens":9,"cache_read_input_tokens":100,"cache_creation_input_tokens":20})");
+            s.handleLine(turn);
+            s.handleLine(turn);
+            const auto r = turns.last().at(0).value<TurnResult>();
+            QCOMPARE(r.tokens.total(), qint64(136));
+            QCOMPARE(r.conversationTokens.total(), qint64(272));
+            // Continued from a conversation kept, and forgotten with it.
+            s.setConversationTotals(TokenUsage{1000, 2000, 3000, 4000}, 1.5);
+            s.handleLine(turn);
+            QCOMPARE(turns.last().at(0).value<TurnResult>().conversationTokens.total(), qint64(10136));
+            QVERIFY(qAbs(s.conversationCost() - 1.5) < 1e-9);
+            s.reset();
+            QVERIFY(s.conversationTokens().isEmpty());
+            QCOMPARE(s.conversationCost(), 0.0);
+        }
     }
 
     // A whole turn with the program: the prompt goes in, the permission
@@ -524,6 +592,7 @@ private slots:
         const auto result = turns.last().at(0).value<TurnResult>();
         QVERIFY(result.ok);
         QCOMPARE(result.changedFiles, QStringList{work + "/out.txt"});
+        QCOMPARE(result.tokens.total(), qint64(12840));
         QCOMPARE(s.state(), State::Ready);
         QVERIFY(!s.isBusy());
         QCOMPARE(s.sessionId(), QStringLiteral("s-1"));
@@ -555,6 +624,8 @@ private slots:
         // A new program counts from nothing again; the conversation goes on.
         QVERIFY(qAbs(turns.last().at(0).value<TurnResult>().costUsd - 0.004) < 1e-9);
         QVERIFY(qAbs(turns.last().at(0).value<TurnResult>().conversationCostUsd - 0.0163) < 1e-9);
+        QCOMPARE(turns.last().at(0).value<TurnResult>().tokens.total(), qint64(350));
+        QCOMPARE(turns.last().at(0).value<TurnResult>().conversationTokens.total(), qint64(13190));
         QVERIFY(read(dir.filePath("answers")).contains("\"behavior\":\"deny\""));
         s.stop();
     }
@@ -1898,6 +1969,98 @@ private slots:
         QDir(history::directory()).removeRecursively();
     }
 
+    // What each turn took is shown as chosen (⋯ > Show Usage), in every
+    // conversation at once, in its exports and in /status; kept with the
+    // conversation, its totals going on from there. A conversation kept
+    // before, whose lines hold their costs as text, shows them as chosen
+    // too.
+    void usageIsShownAsChosen()
+    {
+        using qucs_s::claude::TokenUsage;
+        {
+            QucsSettingsFile settings;
+            for (const char* key : {"ClaudeCode/showPromptTokens", "ClaudeCode/showConversationTokens",
+                                    "ClaudeCode/showPromptCost", "ClaudeCode/showConversationCost"})
+                settings.remove(QLatin1String(key));
+        }
+        QCOMPARE(ClaudeCodePanel::usageShown(), int(ClaudeCodePanel::PromptTokens | ClaudeCodePanel::ConversationTokens));
+        const QString work = fresh("usagework");
+        const QJsonObject tokens{{"input", 2000}, {"output", 1500}, {"cacheRead", 40000}, {"cacheWrite", 3000}};
+        const QJsonObject allTokens{{"input", 5000}, {"output", 4000}, {"cacheRead", 300000}, {"cacheWrite", 9000}};
+        const QJsonObject conversation{
+            {"folder", work},
+            {"entries", QJsonArray{QJsonObject{{"kind", 0}, {"text", "Size R1"}},
+                                   QJsonObject{{"kind", 1}, {"text", "R1 is 4.7k."}},
+                                   // Kept before: its costs are text.
+                                   QJsonObject{{"kind", 5}, {"text", "Done in 3.0 s  ·  $0.021  ·  $0.150 in all  ·  4 steps"}},
+                                   QJsonObject{{"kind", 0}, {"text", "And R2?"}},
+                                   QJsonObject{{"kind", 5}, {"text", "Done in 2.0 s"}, {"result", "changed amp.sch"},
+                                               {"tokens", tokens}, {"allTokens", allTokens}, {"cost", 0.046}, {"allCost", 0.196}}}}};
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(work);
+        panel.restoreConversation(conversation);
+        ClaudeCodePanel other;
+        other.setDefaultDirectory(work);
+        other.restoreConversation(conversation);
+        // Its totals go on from its last turn's.
+        QCOMPARE(panel.session()->conversationTokens().total(), qint64(318000));
+        QVERIFY(qAbs(panel.session()->conversationCost() - 0.196) < 1e-9);
+
+        panel.renderNow();
+        QString text = panel.transcriptText();
+        QVERIFY2(text.contains("Done in 3.0 s  ·  4 steps"), qPrintable(text));
+        QVERIFY(text.contains("Done in 2.0 s  ·  46.5k tokens  ·  318k tokens in all  ·  changed amp.sch"));
+        QVERIFY(!text.contains("$"));
+        QVERIFY(!panel.conversationMarkdown().contains("$"));
+        QVERIFY(panel.conversationMarkdown().contains("*Done in 2.0 s  ·  46.5k tokens  ·  318k tokens in all  ·  changed amp.sch*"));
+        QVERIFY(panel.conversationMarkdown().contains("- **Tokens:** "));
+        QVERIFY(!panel.conversationMarkdown().contains("- **Cost:**"));
+        QVERIFY(panel.conversationText().contains("(Done in 2.0 s  ·  46.5k tokens  ·  318k tokens in all  ·  changed amp.sch)"));
+
+        // Chosen in the menu of one conversation: shown in both, the
+        // other drawn again.
+        other.renderNow();
+        QVERIFY(other.transcriptText().contains("46.5k tokens"));
+        auto* promptCost = panel.findChild<QAction*>(QStringLiteral("claudeShowPromptCost"));
+        auto* allCost = panel.findChild<QAction*>(QStringLiteral("claudeShowConversationCost"));
+        auto* promptTokens = panel.findChild<QAction*>(QStringLiteral("claudeShowPromptTokens"));
+        QVERIFY(promptCost && allCost && promptTokens);
+        QVERIFY(promptTokens->isChecked());
+        QVERIFY(!promptCost->isChecked());
+        promptCost->trigger();
+        allCost->trigger();
+        promptTokens->trigger();
+        QCOMPARE(ClaudeCodePanel::usageShown(),
+                 int(ClaudeCodePanel::ConversationTokens | ClaudeCodePanel::PromptCost | ClaudeCodePanel::ConversationCost));
+        QTRY_VERIFY(other.transcriptText().contains("Done in 2.0 s  ·  318k tokens in all  ·  $0.046  ·  $0.196 in all  ·  changed amp.sch"));
+        // The line kept before shows its costs as the others.
+        QVERIFY(other.transcriptText().contains("Done in 3.0 s  ·  $0.021  ·  $0.150 in all  ·  4 steps"));
+        QVERIFY(other.conversationMarkdown().contains("- **Cost:** $0.196"));
+        other.composer()->setPlainText("/status");
+        other.sendComposer();
+        other.renderNow();
+        QVERIFY(other.transcriptText().contains("Cost: $0.196"));
+        QVERIFY(other.transcriptText().contains(QLocale().toString(318000) + " tokens"));
+
+        // Kept with its numbers, and read back as they were.
+        const QJsonArray kept = panel.conversationJson().value("entries").toArray();
+        const QJsonObject last = kept.last().toObject();
+        QCOMPARE(last.value("tokens").toObject(), tokens);
+        QCOMPARE(last.value("allCost").toDouble(), 0.196);
+        const QJsonObject before = kept.at(2).toObject();
+        QCOMPARE(before.value("text").toString(), QStringLiteral("Done in 3.0 s"));
+        QCOMPARE(before.value("result").toString(), QStringLiteral("4 steps"));
+        QCOMPARE(before.value("cost").toDouble(), 0.021);
+        QCOMPARE(before.value("allCost").toDouble(), 0.150);
+
+        // Nothing of it: the line says how the turn went, alone.
+        ClaudeCodePanel::setUsageShown(0);
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("Done in 2.0 s  ·  changed amp.sch"));
+        QVERIFY(!panel.transcriptText().contains("tokens"));
+        ClaudeCodePanel::setUsageShown(ClaudeCodePanel::PromptTokens | ClaudeCodePanel::ConversationTokens);
+    }
+
     // Claude Code's own sessions of the folder: listed (a title given with
     // /rename, else the first prompt), brought back from their file - the
     // prompts, replies and tools; what it adds itself, a subagent's, left
@@ -2221,8 +2384,26 @@ private slots:
         QVERIFY(text.contains("I will write the file."));
         QVERIFY(text.contains("Write"));
         QVERIFY(text.contains("Done: wrote out.txt."));   // Markdown, drawn
-        QVERIFY(text.contains("$0.012"));
+        // What the turn took: its tokens, and not its cost, at first.
+        QCOMPARE(ClaudeCodePanel::usageShown(), int(ClaudeCodePanel::PromptTokens | ClaudeCodePanel::ConversationTokens));
+        QVERIFY2(text.contains("12.8k tokens"), qPrintable(text));
+        QVERIFY(!text.contains("tokens in all"));   // (the conversation's is the prompt's)
+        QVERIFY(!text.contains("$"));
+        // Each kind of them in its tooltip.
+        QVERIFY(toolTipOf(panel.transcript()->document(), "12.8k tokens").contains(QLocale().toString(10500)));
         QVERIFY(text.contains("changed out.txt"));
+        // The costs shown, and the tokens not, as soon as chosen.
+        ClaudeCodePanel::setUsageShown(ClaudeCodePanel::PromptCost | ClaudeCodePanel::ConversationCost);
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("Done in 1.2 s  ·  $0.012  ·  2 steps  ·  changed out.txt"));
+        QVERIFY(!panel.transcriptText().contains("tokens"));
+        ClaudeCodePanel::setUsageShown(ClaudeCodePanel::ConversationTokens);
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("12.8k tokens in all"));
+        ClaudeCodePanel::setUsageShown(0);
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("Done in 1.2 s  ·  2 steps  ·  changed out.txt"));
+        ClaudeCodePanel::setUsageShown(ClaudeCodePanel::PromptTokens | ClaudeCodePanel::ConversationTokens);
         QCOMPARE(panel.sendButton()->text(), QStringLiteral("Send"));
         QVERIFY(panel.stateLabel()->text().contains("ready"));
 

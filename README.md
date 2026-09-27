@@ -260,7 +260,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   their limits, matrices, cases, aligned equations, Greek, units), the
   tools Claude uses in a row fold into one line ("Ran 3 commands, read
   amp.sch") that opens on a click - each tool on its whole command and
-  what it gave - and each turn ends with its time and cost. *New* (or *+*
+  what it gave - and each turn ends with its time and what it took: the
+  tokens of the prompt and of the conversation so far (a tooltip tells
+  input, output and the cache read and written), and, when chosen, their
+  cost (*⋯ → Show Usage*: each of the four on or off, for every
+  conversation, its exports and `/status`; the cost is off by default).
+  *New* (or *+*
   by the tabs) opens another conversation in a tab of its own, with its
   own Claude Code session; a tab shows what its conversation is about and
   how it stands, and closing it ends that session. *Rename…* in a tab's
@@ -1261,6 +1266,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   or a symbol being placed takes 4 to 13 ms. The preview of the wires a
   drop will mend is planned from the nodes something has left, not from
   the whole schematic at every step.
+- **View All with diagrams on the schematic** shows all of it, filling
+  the window. A marker's bounds were in its diagram's own coordinates, so
+  each marker added a box near the origin and View All zoomed out to
+  show it, the schematic small in a corner (a selection rectangle there
+  also selected markers far away). A diagram's title, and the numbers of
+  its axes on the top and right edges, were left out of its bounds - a
+  title wider than its plot was cut off; Print, Zoom to Selection and the
+  image export use the same bounds. A Smith chart's drawing counted as the
+  circles its grid arcs are parts of, many times its size, and its white
+  card in the dark theme was as large.
 
 The detailed record — root causes, what each change does and how it is
 tested — is in [ENHANCEMENT_PROPOSAL.md](ENHANCEMENT_PROPOSAL.md).

@@ -1814,6 +1814,14 @@ void unite(std::optional<QRect>& left, const QRect& right)
     }
 }
 
+// All a diagram draws: its bounds leave out the numbers of its axes,
+// centred on the edges of its frame (its markers have their own).
+QRect drawnRect(const Diagram* diagram)
+{
+    const QFontMetricsF metrics(QucsSettings.font);
+    return diagram->boundingRect() | diagram->paintedRect(metrics).toAlignedRect();
+}
+
 }
 
 // ---------------------------------------------------
@@ -1835,7 +1843,7 @@ void Schematic::updateAllBoundingRect()
     }
 
     for (auto* pd : *a_Diagrams) {
-        internal::unite(totalBounds, pd->boundingRect());
+        internal::unite(totalBounds, internal::drawnRect(pd));
 
         for (auto* pg : pd->Graphs)
             for (auto* pm : pg->Markers) {
@@ -1900,7 +1908,7 @@ Schematic::Selection Schematic::currentSelection() const {
     for (auto* pd : *a_Diagrams) {
         if (pd->isSelected) {
             selection.diagrams.push_back(pd);
-            internal::unite(totalBounds, pd->boundingRect());
+            internal::unite(totalBounds, internal::drawnRect(pd));
         }
 
         for (Graph* pg : pd->Graphs) {
