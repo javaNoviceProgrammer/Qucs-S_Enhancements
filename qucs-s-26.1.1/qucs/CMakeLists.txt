@@ -168,7 +168,7 @@ SET(QUCS_SRCS
   settings.cpp
   imagewriter.cpp printerwriter.cpp projectView.cpp
   symbolwidget.cpp wire_planner.cpp
-  qucsshortcutmanager.cpp globals.cpp settingsio.cpp textcodec.cpp
+  qucsshortcutmanager.cpp globals.cpp settingsio.cpp textcodec.cpp links.cpp
   autosave.cpp crashhandler.cpp shellenvironment.cpp apptheme.cpp designedstyle.cpp statusbar.cpp erc.cpp
   embeddedimage.cpp componentsearch.cpp findbar.cpp biaslabels.cpp ink.cpp levelofdetail.cpp valuereading.cpp
   systemopen.cpp oppoint.cpp workspace.cpp vamodule.cpp optimization.cpp ngoptimize.cpp
@@ -235,6 +235,7 @@ autosave.h
 crashhandler.h
 settingsio.h
 textcodec.h
+links.h
 qucs_assert.h
 )
 

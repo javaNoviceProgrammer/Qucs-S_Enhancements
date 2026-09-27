@@ -279,7 +279,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   up ("✓ Ran 3 commands, read amp.sch"), as the dock shows it folded, and
   the export is the chat itself. What Claude may do is chosen in the dock's menu: *Ask Before
   Acting* (a card asks before a command runs or a file changes — *Allow*,
-  *Allow All Edits* for the rest of the conversation, *Deny*), *Accept
+  *Allow All Edits* for the rest of that conversation alone, *Deny*), *Accept
   Edits*, *Auto* (Claude acts without asking and a safety check stops
   risky actions; not every model has it, and the menu says which do not),
   *Plan Only* or *Bypass Permissions*. So is the model: the models the
@@ -472,7 +472,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   - **✕** hides the bar until the repository or branch changes.
   The bar refreshes when the folder changes, after each turn, when
   Qucs-S comes to the front, and every 10 seconds while it is shown.
-  git runs in the background, never blocking the window. *⋯ → Show Git
+  git runs in the background, never blocking the window, and never runs
+  what a repository's own configuration names (a file system monitor,
+  filters, text conversions): a project downloaded with its `.git` runs
+  nothing by being opened. *⋯ → Show Git
   Status* turns the bar off (or on) for every conversation; it is on by
   default.
 - **Slash commands** in the prompt: typing `/` lists them (↑↓ to choose,
@@ -559,7 +562,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   file manager or copy its path. The sidebar shows the pages small and the
   document's outline. Text is selected with a drag (a word with a double
   click, the page with *Edit → Select All*) and copied; links are
-  followed; Ctrl+wheel or a pinch zooms, the middle button pans; *View
+  followed as a Markdown file's are (below); Ctrl+wheel or a pinch
+  zooms, the middle button pans; *View
   All*, *View 1:1* and the zoom commands work on it. When its file is
   written again it is read again where you were. *Save As* copies it;
   *Print* prints its pages. Built with Qt's PDF module (all the release
@@ -583,8 +587,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   handle sharing the width; the rendering scrolls with the text) or
   *Preview* (the rendering alone); the choice is kept for the next file.
   The rendering follows the edits; a link to a heading scrolls to it, one
-  to a file opens it (in Qucs-S when it is one of its documents), others
-  open in the browser.
+  to a Qucs-S document (a schematic, a text, a spreadsheet, a PDF) opens
+  it in a tab, and web pages and mail open in the browser or the mail
+  program. Nothing else is handed to the system to open — a program
+  shipped with a project would run: another file is only shown in the
+  Finder or the Explorer once you say so, and a link of another kind
+  opens only once you agree, the link named in the question.
 - **CSV and Excel workbooks**: `.csv`, `.tsv` and `.xlsx` files open in a
   table, read and written by Qucs-S itself (no Excel, no library). Above
   the table, the cell in front — its name, its value or formula — is

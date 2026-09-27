@@ -25,6 +25,8 @@
 #include <QPdfLinkModel>
 #include <QPdfSearchModel>
 #include <QPdfWriter>
+#include <QPushButton>
+#include <QTimer>
 #include <QPrinter>
 #include <QScrollBar>
 #include <QStandardPaths>
@@ -351,6 +353,61 @@ private slots:
         QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, at);
         QTRY_COMPARE(catcher.urls.size(), 1);
         QCOMPARE(catcher.urls.first(), QUrl("https://example.org/datasheet"));
+    }
+
+    // A link of a PDF to a program is not handed to the system (it ran -
+    // bug hunt 2026-09-26, B2): asked about, shown in the file manager at
+    // most.
+    void aLinkToAProgramIsNotRun()
+    {
+        const QString evil = dir.filePath("ws/evil.command");
+        {
+            QFile f(evil);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("#!/bin/sh\necho ran > ran.txt\n");
+        }
+        QFile::setPermissions(evil, QFile::permissions(evil) | QFileDevice::ExeOwner);
+        const QString bait = dir.filePath("ws/bait.pdf");
+        {
+            QPdfWriter writer(bait);
+            QTextDocument doc;
+            QFont font(QStringLiteral("Helvetica"));
+            font.setPointSize(28);
+            doc.setDefaultFont(font);
+            doc.setHtml(QStringLiteral("<p><a href='%1'>Open the schematic</a></p>").arg(QUrl::fromLocalFile(evil).toString()));
+            doc.print(&writer);
+        }
+        QDesktopServices::setUrlHandler(QStringLiteral("file"), &catcher, "open");
+        catcher.urls.clear();
+        QVERIFY(app->gotoPage(bait));
+        PdfDoc* doc = pdf();
+        QVERIFY(doc != nullptr && doc->getDocName().endsWith("bait.pdf"));
+        PageView* view = doc->view();
+        QPdfLinkModel links;
+        links.setDocument(doc->document());
+        links.setPage(0);
+        QVERIFY(links.rowCount(QModelIndex()) >= 1);
+        QCOMPARE(links.data(links.index(0), int(QPdfLinkModel::Role::Url)).toUrl(), QUrl::fromLocalFile(evil));
+        const QRectF rect = links.data(links.index(0), int(QPdfLinkModel::Role::Rectangle)).toRectF();
+        const QPoint at = (view->pageRect(0).topLeft() + rect.center() * view->pixelsPerPoint()).toPoint();
+        QString said;
+        QTimer timer;
+        connect(&timer, &QTimer::timeout, this, [&] {
+            auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (box == nullptr || !box->isVisible()) return;
+            said = box->objectName() + ": " + box->text();
+            box->button(QMessageBox::Cancel) != nullptr ? box->button(QMessageBox::Cancel)->click() : box->reject();
+        });
+        timer.start(20);
+        QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, at);
+        QTRY_VERIFY(!said.isEmpty());
+        timer.stop();
+        QDesktopServices::unsetUrlHandler(QStringLiteral("file"));
+        QVERIFY2(said.startsWith("linkQuestion") && said.contains("evil.command"), qPrintable(said));
+        QVERIFY(catcher.urls.isEmpty());
+        QVERIFY(!QFileInfo::exists(dir.filePath("ws/ran.txt")));
+        QVERIFY(QMetaObject::invokeMethod(app, "slotFileClose", Q_ARG(int, app->DocumentTab->currentIndex())));
+        QVERIFY(app->gotoPage(file));
     }
 
     // Written again (a report made anew): read again, the page kept.

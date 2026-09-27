@@ -7,6 +7,10 @@
  */
 #include <QtTest>
 #include <QAbstractButton>
+#include <QDesktopServices>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QTimer>
 #include <QScrollBar>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -60,6 +64,40 @@ const char* kReadme =
     "```\n"
     "\n"
     "The gain is $A = \\frac{R_2}{R_1}$.\n";
+// Collects what is handed to the system (QDesktopServices).
+class Handed : public QObject
+{
+    Q_OBJECT
+public slots:
+    void open(const QUrl& url) { urls << url; }
+
+public:
+    QList<QUrl> urls;
+};
+
+// Answers the link question with the button named \a button (empty:
+// Cancel); what it said, and whether it was asked.
+struct LinkAnswer {
+    bool asked = false;
+    QString said;
+};
+LinkAnswer answeringLink(const std::function<void()>& fn, const QString& button = QString())
+{
+    LinkAnswer a;
+    QTimer timer;
+    QObject::connect(&timer, &QTimer::timeout, [&] {
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (box == nullptr || !box->isVisible()) return;
+        a.asked = true;
+        a.said = box->text() + QLatin1Char('\n') + box->informativeText();
+        if (box->objectName() == "linkQuestion" && !button.isEmpty()) box->findChild<QPushButton*>(button)->click();
+        else box->button(QMessageBox::Cancel) != nullptr ? box->button(QMessageBox::Cancel)->click() : box->reject();
+    });
+    timer.start(20);
+    fn();
+    return a;
+}
+
 } // namespace
 
 class TestMarkdownDoc : public QObject
@@ -252,6 +290,57 @@ private slots:
         MarkdownDoc* other = current(app);
         QVERIFY(other != nullptr);
         QCOMPARE(QFileInfo(other->getDocName()).fileName(), QString("other.md"));
+        app.closeAllFiles();
+    }
+
+    // A link never hands a program to the system (it ran: a .command in
+    // Terminal, an .app, an .exe - bug hunt 2026-09-26, B2): another file
+    // is shown in the file manager once asked, a URL of another scheme goes
+    // to the system once asked; web pages and mail go straight there; a
+    // document Qucs-S opens opens in a tab.
+    void linksNeverRunPrograms()
+    {
+        QVERIFY(QDir().mkpath(dir.filePath("project")));
+        const QString readme = write("project/README.md", "# Project\n\n[Open the schematic](evil.command)\n");
+        const QString evil = write("project/evil.command", "#!/bin/sh\necho ran > ran.txt\n");
+        QFile::setPermissions(evil, QFile::permissions(evil) | QFileDevice::ExeOwner);
+        write("project/notes.txt", "notes\n");
+        Handed handed;
+        for (const char* scheme : {"file", "x-custom", "https", "mailto"})
+            QDesktopServices::setUrlHandler(QString::fromLatin1(scheme), &handed, "open");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.gotoPage(readme));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+
+        LinkAnswer a = answeringLink([&] { md->followLink(QUrl("evil.command")); });
+        QVERIFY(a.asked);
+        QVERIFY2(a.said.contains("evil.command") && a.said.contains("not open"), qPrintable(a.said));
+        a = answeringLink([&] { md->followLink(QUrl::fromLocalFile(evil)); });   // as a file: URL
+        QVERIFY(a.asked);
+        QVERIFY2(handed.urls.isEmpty(), qPrintable(handed.urls.value(0).toString()));
+
+        a = answeringLink([&] { md->followLink(QUrl("x-custom://whatever/x")); });
+        QVERIFY(a.asked);
+        QVERIFY2(a.said.contains("x-custom://whatever/x"), qPrintable(a.said));
+        QVERIFY(handed.urls.isEmpty());
+        a = answeringLink([&] { md->followLink(QUrl("x-custom://whatever/x")); }, "linkOpen");
+        QCOMPARE(handed.urls, QList<QUrl>{QUrl("x-custom://whatever/x")});
+        handed.urls.clear();
+
+        a = answeringLink([&] {
+            md->followLink(QUrl("https://example.org/datasheet"));
+            md->followLink(QUrl("mailto:someone@example.org"));
+            md->followLink(QUrl("missing.command"));   // not there: nothing
+        });
+        QVERIFY(!a.asked);
+        QCOMPARE(handed.urls, QList<QUrl>({QUrl("https://example.org/datasheet"), QUrl("mailto:someone@example.org")}));
+
+        md->followLink(QUrl("notes.txt"));
+        QCOMPARE(QFileInfo(app.getDoc()->getDocName()).fileName(), QString("notes.txt"));
+        QVERIFY(!QFileInfo::exists(dir.filePath("project/ran.txt")));
+        for (const char* scheme : {"file", "x-custom", "https", "mailto"}) QDesktopServices::unsetUrlHandler(QString::fromLatin1(scheme));
         app.closeAllFiles();
     }
 };

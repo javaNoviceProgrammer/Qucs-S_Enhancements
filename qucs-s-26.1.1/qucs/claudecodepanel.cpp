@@ -501,9 +501,12 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     connect(a_session, &qucs_s::claude::Session::toolFinished, this, &ClaudeCodePanel::onToolFinished);
     connect(a_session, &qucs_s::claude::Session::permissionRequested, this, &ClaudeCodePanel::onPermissionRequested);
     connect(a_session, &qucs_s::claude::Session::permissionWithdrawn, this, &ClaudeCodePanel::onPermissionWithdrawn);
-    connect(a_session, &qucs_s::claude::Session::permissionModeChanged, this, [this](const QString& mode) {
-        QucsSettingsFile().setValue(kMode, mode);
+    // Allow All Edits on a card: this conversation's alone, as the note
+    // says. The saved default - what every new conversation starts with,
+    // after a restart too - is the Permissions menu's to change.
+    connect(a_session, &qucs_s::claude::Session::permissionModeChanged, this, [this](const QString&) {
         addNote(tr("Claude may change files without asking for the rest of this conversation."));
+        updateState();
     });
     connect(a_session, &qucs_s::claude::Session::notice, this, [this](const QString& text) {
         append({Entry::Note, text, {}, {}});
@@ -1461,6 +1464,8 @@ void ClaudeCodePanel::newConversation()
     emit conversationEnding();   // (kept as it is: /resume brings it back)
     a_conversationId.clear();
     a_session->reset();
+    // With the saved permissions, not what the last one was allowed.
+    a_session->setPermissionMode(QucsSettingsFile().value(kMode).toString());
     a_name.clear();
     pinDocument(QString());   // (a new one is pinned to nothing, as at first)
     a_entries.clear();

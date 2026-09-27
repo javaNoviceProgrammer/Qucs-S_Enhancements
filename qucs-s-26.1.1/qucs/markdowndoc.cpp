@@ -9,6 +9,7 @@
  * (at your option) any later version.
  */
 #include "markdowndoc.h"
+#include "links.h"
 
 #include "mathtypeset.h"
 #include "qucs.h"
@@ -384,21 +385,11 @@ void MarkdownDoc::followLink(const QUrl& url)
         }
         return;
     }
-    // Outside: the system's application (a browser, the mail program).
-    if (!url.scheme().isEmpty() && url.scheme() != QLatin1String("file")) {
-        QDesktopServices::openUrl(url);
-        return;
-    }
-    // A file, beside this one: a document Qucs-S opens, or the system's.
-    QString path = url.isLocalFile() ? url.toLocalFile() : url.path();
-    if (QFileInfo(path).isRelative() && !a_DocName.isEmpty())
-        path = QFileInfo(a_DocName).absoluteDir().absoluteFilePath(path);
-    const QFileInfo info(path);
-    if (!info.exists()) return;
-    static const QStringList ours = {"md", "markdown", "sch", "dpl", "sym", "txt", "csv", "tsv", "xlsx",
-                                     "cir", "net", "va", "v", "vhd", "vhdl", "m", "py", "pdf"};
-    if (ours.contains(info.suffix().toLower()) && a_App != nullptr)
-        a_App->gotoPage(info.absoluteFilePath());
-    else
-        QDesktopServices::openUrl(QUrl::fromLocalFile(info.absoluteFilePath()));
+    // A web page or mail: the system's; a document Qucs-S opens, beside this
+    // one or anywhere: here; anything else - a program would run - only
+    // shown in the file manager, or asked about (links.h).
+    const QString base = a_DocName.isEmpty() ? QString() : QFileInfo(a_DocName).absolutePath();
+    qucs_s::links::follow(this, url, base, [this](const QString& path) {
+        if (a_App != nullptr) a_App->gotoPage(path);
+    });
 }

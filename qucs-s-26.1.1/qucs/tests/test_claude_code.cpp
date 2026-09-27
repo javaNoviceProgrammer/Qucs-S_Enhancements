@@ -922,6 +922,45 @@ private slots:
                             [](QAction* a) { return a->text() == "Fable 5.1"; }));
     }
 
+    // Allow All Edits on a card is that conversation's alone, as its note
+    // says: the saved permissions - what every new conversation starts
+    // with, after a restart too - stay as the Permissions menu set them.
+    // They became every conversation's (bug hunt 2026-09-26, B3).
+    void allowAllEditsIsOneConversationsAlone()
+    {
+        QucsSettingsFile().remove("ClaudeCode/permissionMode");   // asking, the default
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("allowall"));
+        panel.session()->setProgram("claude");   // (not run)
+        panel.session()->handleLine(R"({"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Edit","input":{"file_path":"/work/a.sch","old_string":"1k","new_string":"2k"},"permission_suggestions":[{"type":"setMode","mode":"acceptEdits","destination":"session"}]}})");
+        auto* allowEdits = panel.findChild<QToolButton*>("claudeAllowEdits");
+        QVERIFY(allowEdits != nullptr && allowEdits->isVisibleTo(&panel));
+        allowEdits->click();
+        QCOMPARE(panel.session()->permissionMode(), QStringLiteral("acceptEdits"));
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("rest of this conversation"));
+        const auto checked = [](ClaudeCodePanel& p) {
+            for (QAction* a : p.permissionActions())
+                if (a->isChecked()) return a->data().toString();
+            return QStringLiteral("?");
+        };
+        QCOMPARE(checked(panel), QStringLiteral("acceptEdits"));   // the menu says what this one may do
+        QVERIFY(QucsSettingsFile().value("ClaudeCode/permissionMode").toString().isEmpty());
+
+        ClaudeCodePanel another;   // a new tab, or after a restart
+        QVERIFY(qucs_s::claude::isAskMode(another.session()->permissionMode()));
+        panel.newConversation();   // a new conversation in the same tab
+        QVERIFY(qucs_s::claude::isAskMode(panel.session()->permissionMode()));
+
+        // Chosen in the menu: saved, the new conversations' too.
+        for (QAction* a : panel.permissionActions())
+            if (a->data().toString() == "acceptEdits") a->trigger();
+        QCOMPARE(QucsSettingsFile().value("ClaudeCode/permissionMode").toString(), QStringLiteral("acceptEdits"));
+        ClaudeCodePanel third;
+        QCOMPARE(third.session()->permissionMode(), QStringLiteral("acceptEdits"));
+        QucsSettingsFile().remove("ClaudeCode/permissionMode");
+    }
+
     // Auto mode: Claude acts without asking and a safety check stops risky
     // actions. Not every model has it - the menu says so - and a program
     // that falls back to asking is reported.
