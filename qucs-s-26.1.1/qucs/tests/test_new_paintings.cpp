@@ -414,6 +414,44 @@ private slots:
     qDeleteAll(parts.images);
   }
 
+  // A big formula zoomed in is drawn from an image of at most 64 MB and
+  // 8192 pixels a side - a size-400 transfer function at 8 pixels a unit
+  // asked for 4.6 GB (bug hunt 2026-09-26, C4); so is its image in a
+  // symbol. A small one keeps every pixel the zoom gives.
+  void aBigFormulaZoomedInStaysSmall()
+  {
+    FormulaPainting big;
+    big.setField("tex", QStringLiteral("H(s) = \\frac{\\omega_0^2}{s^2 + \\frac{\\omega_0}{Q}s + \\omega_0^2} = "
+                                       "\\sum_{k=0}^{N} a_k s^k"));
+    big.setField("size", 400);
+    const QSizeF size = big.formulaSize();
+    QVERIFY2(size.width() * size.height() * 64 > 16.0 * 1024 * 1024, qPrintable(QString::number(size.width())));
+    for (const qreal wanted : {8.0, 4.0, 1.0}) {
+      const qreal ratio = big.cappedRatio(wanted);
+      QVERIFY(ratio <= wanted);
+      const QImage picture = big.image(Qt::black, ratio);
+      QVERIFY(!picture.isNull());
+      QVERIFY2(qint64(picture.width()) * picture.height() <= 16ll * 1024 * 1024 + 2 * (picture.width() + picture.height()),
+               qPrintable(QStringLiteral("%1 x %2").arg(picture.width()).arg(picture.height())));
+      QVERIFY(picture.width() <= 8193 && picture.height() <= 8193);
+    }
+    // Painted at 8 times (the paint's image capped the same way).
+    QImage canvas(600, 300, QImage::Format_ARGB32_Premultiplied);
+    canvas.fill(Qt::white);
+    {
+      QPainter p(&canvas);
+      p.scale(8, 8);
+      big.paint(&p);
+    }
+    SymbolPrimitives parts;
+    QVERIFY(big.symbolPrimitives(parts));
+    QCOMPARE(parts.images.size(), 1);
+    qDeleteAll(parts.images);
+
+    FormulaPainting small;
+    QCOMPARE(small.cappedRatio(8.0), 8.0);
+  }
+
   // Drawn in a subcircuit's symbol, they reach its instances: polylines,
   // texts, an image - and turn with them.
   void inASymbolTheyReachTheInstances()

@@ -18,6 +18,7 @@
 #include "main.h"
 #include "misc.h"
 #include "module.h"
+#include "numberformat.h"
 #include "schematic.h"
 #include "diagrams/graph.h"
 #include "diagrams/marker.h"
@@ -96,6 +97,33 @@ private slots:
     {
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
         Module::registerModules();
+    }
+
+    // A precision from a file is kept to what the dialogs allow (a marker's
+    // 0..12, a trace's 0..99), and a notation never writes more than 20
+    // places: a marker line with 999999999 made a label of gigabytes (bug
+    // hunt 2026-09-26, C5).
+    void aPrecisionFromAFileIsKeptInBounds()
+    {
+        QString body = "<\"ngspice/ac.v(out)\" #0000ff 2 999999999 0 0 0>\n  <Mkr 2e+06 100 -100 999999999 0 0>\n</Rect>\n";
+        QTextStream stream(&body, QIODevice::ReadOnly);
+        RectDiagram d;
+        QVERIFY(d.load(kRectLine, &stream));
+        QCOMPARE(d.Graphs.first()->Precision, 99);
+        Marker* m = markerOf(&d);
+        QVERIFY(m != nullptr);
+        QCOMPARE(m->precision(), 12);
+        QString negative = "<\"ngspice/ac.v(out)\" #0000ff 2 -5 0 0 0>\n  <Mkr 2e+06 100 -100 -7 0 0>\n</Rect>\n";
+        QTextStream again(&negative, QIODevice::ReadOnly);
+        RectDiagram e;
+        QVERIFY(e.load(kRectLine, &again));
+        QCOMPARE(e.Graphs.first()->Precision, 0);
+        QCOMPARE(markerOf(&e)->precision(), 0);
+        for (const auto notation : {qucs_s::numberformat::Notation::Decimal, qucs_s::numberformat::Notation::Automatic,
+                                    qucs_s::numberformat::Notation::Scientific, qucs_s::numberformat::Notation::Engineering,
+                                    qucs_s::numberformat::Notation::Power})
+            QVERIFY(qucs_s::numberformat::format(1.41295e7, notation, 999999999).size() < 40);
+        QCOMPARE(qucs_s::numberformat::format(1.5, qucs_s::numberformat::Notation::Decimal, 3), QStringLiteral("1.500"));
     }
 
     // The label is filled with the paper - the diagram's light card - and

@@ -23,6 +23,7 @@
 #include <QPaintDevice>
 #include <QPixmap>
 
+#include <algorithm>
 #include <cmath>
 
 using qucs_s::paintings::decodeText;
@@ -70,11 +71,24 @@ QSizeF FormulaPainting::formulaSize() const
   const QString key = QStringLiteral("%1|%2|%3").arg(m_tex).arg(m_size).arg(m_display);
   if (key == m_sizeKey) return m_sizeCache;
   m_sizeKey = key;
-  const QImage one = qucs_s::math::typeset(m_tex.trimmed().isEmpty() ? QStringLiteral("?") : m_tex, textFont(m_size),
-                                           QColor(0, 0, 0), m_display, 1.0)
-                         .image;
-  m_sizeCache = one.isNull() ? QSizeF(20, 12) : QSizeF(one.size()) / one.devicePixelRatio();
+  // Measured, not drawn: the size the image at 1.0 would have.
+  const qucs_s::math::Typeset one =
+      qucs_s::math::measure(m_tex.trimmed().isEmpty() ? QStringLiteral("?") : m_tex, textFont(m_size), m_display);
+  m_sizeCache = QSizeF(std::max(1.0, std::ceil(one.width)), std::max(1.0, std::ceil(one.ascent + one.descent)));
   return m_sizeCache;
+}
+
+qreal FormulaPainting::cappedRatio(qreal wanted) const
+{
+  // At most MaxPixels (64 MB) and MaxSide pixels a side, however big the
+  // formula and near the zoom: a size-400 formula at 8 pixels a unit was
+  // an image of 4.6 GB. A big formula zoomed in is drawn from fewer
+  // pixels than the screen has - a little soft, not out of memory.
+  constexpr qreal MaxPixels = 16.0 * 1024 * 1024, MaxSide = 8192.0;
+  const QSizeF size = formulaSize();
+  const qreal fits = std::min({std::sqrt(MaxPixels / std::max(1.0, size.width() * size.height())),
+                               MaxSide / std::max(1.0, size.width()), MaxSide / std::max(1.0, size.height())});
+  return std::max(0.05, std::min(wanted, fits));
 }
 
 QTransform FormulaPainting::transform() const
@@ -106,7 +120,7 @@ void FormulaPainting::paint(QPainter* painter)
   const QTransform& world = painter->worldTransform();
   const qreal zoom = std::sqrt(std::abs(world.determinant()));
   const qreal device = painter->device() != nullptr ? painter->device()->devicePixelRatioF() : 1.0;
-  const qreal ratio = std::clamp(std::ceil(zoom * device * 2) / 2, 1.0, 8.0);
+  const qreal ratio = cappedRatio(std::clamp(std::ceil(zoom * device * 2) / 2, 1.0, 8.0));
   const QImage picture = image(qucs_s::ink::on(m_colour), ratio);
   const QSizeF size = formulaSize();
 
@@ -242,7 +256,7 @@ bool FormulaPainting::rotate(int xc, int yc) noexcept
 
 bool FormulaPainting::symbolPrimitives(SymbolPrimitives& into) const
 {
-  QImage picture = image(m_colour, 4.0);
+  QImage picture = image(m_colour, cappedRatio(4.0));
   if (picture.isNull()) return true;
   if (m_angle != 0) picture = picture.transformed(QTransform().rotate(-m_angle), Qt::SmoothTransformation);
   qucs_s::EmbeddedImage embedded;

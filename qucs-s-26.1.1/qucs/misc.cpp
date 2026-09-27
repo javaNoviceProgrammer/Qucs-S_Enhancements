@@ -407,22 +407,38 @@ namespace {
 // no hidden entries (dot names, checked here as well - Qt 6.10 on macOS
 // let a ".hidden" directory through the QDir filter), and no symbolic
 // links to directories (cycles).
-void collectProjectFiles(const QDir& base, const QDir& dir, const QStringList& nameFilters, QStringList& files)
+// Folders other programs fill with untold files, never a project's own:
+// not entered. (A CMake build tree has its CMakeCache.txt.)
+bool heavyFolder(const QFileInfo& folder)
 {
-  for (const QFileInfo& fi : dir.entryInfoList(nameFilters, QDir::Files, QDir::Unsorted))
-    if (!fi.fileName().startsWith(QLatin1Char('.')))
-      files.append(base.relativeFilePath(fi.filePath()));
+  static const QStringList names = {QStringLiteral("node_modules"), QStringLiteral("__pycache__"), QStringLiteral("venv")};
+  return names.contains(folder.fileName()) || QFileInfo::exists(folder.filePath() + QStringLiteral("/CMakeCache.txt"));
+}
+
+// \a budget: the files and folders still to be looked at; false once it is spent.
+bool collectProjectFiles(const QDir& base, const QDir& dir, const QStringList& nameFilters, QStringList& files, int& budget)
+{
+  if (--budget < 0) return false;
+  for (const QFileInfo& fi : dir.entryInfoList(nameFilters, QDir::Files, QDir::Unsorted)) {
+    if (fi.fileName().startsWith(QLatin1Char('.'))) continue;
+    if (--budget < 0) return false;
+    files.append(base.relativeFilePath(fi.filePath()));
+  }
   for (const QFileInfo& fi : dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Unsorted))
-    if (!fi.fileName().startsWith(QLatin1Char('.')))
-      collectProjectFiles(base, QDir(fi.filePath()), nameFilters, files);
+    if (!fi.fileName().startsWith(QLatin1Char('.')) && !heavyFolder(fi)
+        && !collectProjectFiles(base, QDir(fi.filePath()), nameFilters, files, budget))
+      return false;
+  return true;
 }
 } // namespace
 
-QStringList misc::projectFiles(const QDir& root, const QStringList& nameFilters)
+QStringList misc::projectFiles(const QDir& root, const QStringList& nameFilters, bool* complete)
 {
   const QDir base(root.absolutePath());
   QStringList files;
-  collectProjectFiles(base, base, nameFilters, files);
+  int budget = MaxProjectEntries;
+  const bool all = collectProjectFiles(base, base, nameFilters, files, budget);
+  if (complete != nullptr) *complete = all;
 
   // Sorted by directory first, so the root's files come first and the
   // files of one subdirectory stay together.

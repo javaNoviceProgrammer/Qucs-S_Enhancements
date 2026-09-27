@@ -211,8 +211,11 @@ Qt::ItemFlags SheetModel::flags(const QModelIndex& index) const
 void SheetModel::refresh()
 {
     const Sheet& s = a_doc->sheet();
-    const int rows = std::max(s.rowCount() + kMoreRows, kLeastRows);
-    const int columns = std::max(s.columnCount() + kMoreColumns, kLeastColumns);
+    // Some more rows and columns than it has, to type into - never past
+    // Excel's (1,048,576 rows, 16,384 columns): what is typed there would
+    // make a workbook Excel refuses.
+    const int rows = std::min(std::max(s.rowCount() + kMoreRows, kLeastRows), qucs_s::sheet::MaxRows);
+    const int columns = std::min(std::max(s.columnCount() + kMoreColumns, kLeastColumns), qucs_s::sheet::MaxColumns);
     if (rows > a_rows) {
         beginInsertRows(QModelIndex(), a_rows, rows - 1);
         a_rows = rows;
@@ -642,6 +645,7 @@ void SheetDoc::paste()
         for (int row = 0; row < from.rowCount(); ++row)
             for (int column = 0; column < from.rows.at(row).cells.size(); ++column) {
                 const int r = at.row() + row, c = at.column() + column;
+                if (r >= qucs_s::sheet::MaxRows || c >= qucs_s::sheet::MaxColumns) continue;   // (past Excel's)
                 changes << Change{r, c, sheet().at(r, c), entered(r, c, from.at(row, column).text)};
             }
     }

@@ -14,6 +14,7 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
+#include <QLocale>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QXmlStreamReader>
@@ -251,10 +252,24 @@ QRect rangeOf(const QString& ref)
 }
 
 // A sheet's part read: its cells, each with the XML it had; the cells of a
-// shared formula each given its own.
-Sheet readSheet(const QByteArray& data, const QStringList& strings, const Workbook& book)
+// shared formula each given its own. Read sparse, then laid out: rows and
+// cells far past the last with anything in them (styles on far rows and
+// columns) kept aside (Sheet::tail, Row::tail), so that a styled cell at
+// row 1,048,576 does not make every row before it. Beyond Excel's rows and
+// columns, or more cells than MaxCells: refused, \a error said.
+Sheet readSheet(const QByteArray& data, const QStringList& strings, const Workbook& book, QString* error)
 {
+    const auto fail = [error](const QString& why) {
+        if (error != nullptr) *error = why;
+        return Sheet();
+    };
     Sheet sheet;
+    struct ParsedRow {
+        QString attributes;
+        QMap<int, Cell> cells;
+    };
+    QMap<int, ParsedRow> parsed;
+    qint64 cellCount = 0;
     const QString text = QString::fromUtf8(data);
     QXmlStreamReader xml(text);
     int rowIndex = -1;
@@ -276,21 +291,27 @@ Sheet readSheet(const QByteArray& data, const QStringList& strings, const Workbo
             if (r.isValid()) sheet.merged << r;
         } else if (name == QLatin1String("row")) {
             const QXmlStreamAttributes a = xml.attributes();
-            const int r = a.value(QLatin1String("r")).toInt();
-            rowIndex = r > 0 ? r - 1 : rowIndex + 1;
-            if (rowIndex >= sheet.rows.size()) sheet.rows.resize(rowIndex + 1);
+            const qint64 r = a.value(QLatin1String("r")).toLongLong();
+            const qint64 index = r > 0 ? r - 1 : qint64(rowIndex) + 1;
+            if (index >= MaxRows)
+                return fail(tr("It has a row %1: a worksheet has %2 at most.").arg(index + 1).arg(MaxRows));
+            rowIndex = int(index);
             QString kept;
             for (const QXmlStreamAttribute& at : a)
                 if (at.qualifiedName() != QLatin1String("r") && at.qualifiedName() != QLatin1String("spans"))
                     kept += QStringLiteral(" %1=\"%2\"").arg(at.qualifiedName(), escaped(at.value().toString()));
-            sheet.rows[rowIndex].attributes = kept;
+            parsed[rowIndex].attributes = kept;
             nextColumn = 0;
         } else if (name == QLatin1String("c") && rowIndex >= 0) {
             const qint64 start = before;
             const QXmlStreamAttributes a = xml.attributes();
             int column = columnOf(a.value(QLatin1String("r")).toString());
             if (column < 0) column = nextColumn;
+            if (column >= MaxColumns)
+                return fail(tr("It has a cell past column %1, the last a worksheet has.").arg(columnName(MaxColumns - 1)));
             nextColumn = column + 1;
+            if (++cellCount > MaxCells)
+                return fail(tr("It has more than %1 cells, more than is opened here.").arg(QLocale().toString(MaxCells)));
             const QString type = a.value(QLatin1String("t")).toString();
             Cell cell;
             cell.style = a.hasAttribute(QLatin1String("s")) ? a.value(QLatin1String("s")).toInt() : -1;
@@ -344,9 +365,7 @@ Sheet readSheet(const QByteArray& data, const QStringList& strings, const Workbo
                     cell.text = numberText(value);
                 }
             }
-            Row& row = sheet.rows[rowIndex];
-            if (column >= row.cells.size()) row.cells.resize(column + 1);
-            row.cells[column] = cell;
+            parsed[rowIndex].cells.insert(column, cell);
         }
     }
     // A shared formula's other cells name it only: each is given its own,
@@ -358,19 +377,54 @@ Sheet readSheet(const QByteArray& data, const QStringList& strings, const Workbo
         QString formula;
     };
     QHash<int, First> firsts;
-    for (int r = 0; r < sheet.rows.size(); ++r)
-        for (int c = 0; c < sheet.rows.at(r).cells.size(); ++c) {
-            const Cell& cell = sheet.rows.at(r).cells.at(c);
-            if (cell.shared >= 0 && !cell.formula.isEmpty() && !firsts.contains(cell.shared))
-                firsts.insert(cell.shared, First{r, c, cell.formula});
+    for (auto r = parsed.cbegin(); r != parsed.cend(); ++r)
+        for (auto c = r->cells.cbegin(); c != r->cells.cend(); ++c)
+            if (c->shared >= 0 && !c->formula.isEmpty() && !firsts.contains(c->shared))
+                firsts.insert(c->shared, First{r.key(), c.key(), c->formula});
+    for (auto r = parsed.begin(); r != parsed.end(); ++r)
+        for (auto c = r->cells.begin(); c != r->cells.end(); ++c) {
+            if (c->shared < 0 || !c->formula.isEmpty() || !firsts.contains(c->shared)) continue;
+            const First& first = firsts.value(c->shared);
+            c->formula = shiftedFormula(first.formula, r.key() - first.row, c.key() - first.column);
         }
-    for (int r = 0; r < sheet.rows.size(); ++r)
-        for (Cell& cell : sheet.rows[r].cells) {
-            if (cell.shared < 0 || !cell.formula.isEmpty() || !firsts.contains(cell.shared)) continue;
-            const First& first = firsts.value(cell.shared);
-            const int column = int(&cell - sheet.rows[r].cells.data());
-            cell.formula = shiftedFormula(first.formula, r - first.row, column - first.column);
+    // Laid out: the rows up to the last with anything in a cell, each with
+    // its cells up to its last with anything in it - and what is near them
+    // (a merged cell's empty part, a border a few rows on). The rest aside.
+    constexpr int Near = 64;
+    const auto denseEnd = [](const auto& keyed, int last) {   // the last key within Near of \a last
+        int end = last;
+        for (auto it = keyed.cbegin(); it != keyed.cend(); ++it)
+            if (it.key() > last && it.key() <= last + Near) end = it.key();
+        return end;
+    };
+    const auto lastFilled = [](const QMap<int, Cell>& cells) {
+        int last = -1;
+        for (auto c = cells.cbegin(); c != cells.cend(); ++c)
+            if (!c->isEmpty()) last = c.key();
+        return last;
+    };
+    int lastRow = -1;
+    for (auto r = parsed.cbegin(); r != parsed.cend(); ++r)
+        if (lastFilled(r->cells) >= 0) lastRow = r.key();
+    lastRow = denseEnd(parsed, lastRow);
+    qint64 room = lastRow + 1;   // (a row takes room too)
+    for (auto r = parsed.cbegin(); r != parsed.cend() && r.key() <= lastRow; ++r)
+        room += denseEnd(r->cells, lastFilled(r->cells)) + 1;
+    if (room > MaxCells)
+        return fail(tr("Its cells span more than %1, more than is opened here.").arg(QLocale().toString(MaxCells)));
+    sheet.rows.resize(lastRow + 1);
+    for (auto r = parsed.begin(); r != parsed.end(); ++r) {
+        Row row;
+        row.attributes = r->attributes;
+        const int last = r.key() <= lastRow ? denseEnd(r->cells, lastFilled(r->cells)) : -1;
+        row.cells.resize(last + 1);
+        for (auto c = r->cells.cbegin(); c != r->cells.cend(); ++c) {
+            if (c.key() <= last) row.cells[c.key()] = c.value();
+            else row.tail.insert(c.key(), c.value());
         }
+        if (r.key() <= lastRow) sheet.rows[r.key()] = row;
+        else sheet.tail.insert(r.key(), row);
+    }
     return sheet;
 }
 
@@ -445,21 +499,20 @@ QString sheetDataXml(const Sheet& sheet, const QString& p)
                 if (range.contains(c, r)) return true;
         return false;
     };
-    QString out = QStringLiteral("<%1sheetData>").arg(p);
-    for (int r = 0; r < sheet.rows.size(); ++r) {
-        const Row& row = sheet.rows.at(r);
+    const auto one = [&](const Cell& cell, int r, int c) {
+        return !cell.changed && !cell.xml.isEmpty() && !rewritten(cell, r, c) ? cell.xml : cellXml(cell, r, c, p);
+    };
+    const auto rowXml = [&](const Row& row, int r) {
         QString cells;
-        for (int c = 0; c < row.cells.size(); ++c) {
-            const Cell& cell = row.cells.at(c);
-            if (!cell.changed && !cell.xml.isEmpty() && !rewritten(cell, r, c))
-                cells += cell.xml;
-            else
-                cells += cellXml(cell, r, c, p);
-        }
-        if (cells.isEmpty() && row.attributes.isEmpty()) continue;
-        out += QStringLiteral("<%1row r=\"%2\"%3>").arg(p).arg(r + 1).arg(row.attributes) + cells
+        for (int c = 0; c < row.cells.size(); ++c) cells += one(row.cells.at(c), r, c);
+        for (auto t = row.tail.cbegin(); t != row.tail.cend(); ++t) cells += one(t.value(), r, t.key());   // (aside: as read)
+        if (cells.isEmpty() && row.attributes.isEmpty()) return QString();
+        return QStringLiteral("<%1row r=\"%2\"%3>").arg(p).arg(r + 1).arg(row.attributes) + cells
                + QStringLiteral("</%1row>").arg(p);
-    }
+    };
+    QString out = QStringLiteral("<%1sheetData>").arg(p);
+    for (int r = 0; r < sheet.rows.size(); ++r) out += rowXml(sheet.rows.at(r), r);
+    for (auto t = sheet.tail.cbegin(); t != sheet.tail.cend(); ++t) out += rowXml(t.value(), t.key());
     return out + QStringLiteral("</%1sheetData>").arg(p);
 }
 
@@ -654,16 +707,39 @@ int Sheet::columnCount() const
 
 const Cell& Sheet::at(int row, int column) const
 {
-    if (row < 0 || row >= rows.size() || column < 0 || column >= rows.at(row).cells.size()) return noCell();
-    return rows.at(row).cells.at(column);
+    if (row < 0 || column < 0) return noCell();
+    const Row* r = nullptr;
+    if (row < rows.size()) {
+        r = &rows.at(row);
+    } else {   // a row kept aside
+        const auto aside = tail.constFind(row);
+        if (aside == tail.cend()) return noCell();
+        r = &aside.value();
+    }
+    if (column < r->cells.size()) return r->cells.at(column);
+    const auto aside = r->tail.constFind(column);
+    return aside == r->tail.cend() ? noCell() : aside.value();
 }
 
 Cell& Sheet::cell(int row, int column)
 {
-    if (row >= rows.size()) rows.resize(row + 1);
-    QVector<Cell>& cells = rows[row].cells;
-    if (column >= cells.size()) cells.resize(column + 1);
-    return cells[column];
+    if (row >= rows.size()) {
+        rows.resize(row + 1);
+        // Rows kept aside (tail) come into the table when it reaches them.
+        for (auto it = tail.begin(); it != tail.end() && it.key() <= row;) {
+            rows[it.key()] = it.value();
+            it = tail.erase(it);
+        }
+    }
+    Row& r = rows[row];
+    if (column >= r.cells.size()) {
+        r.cells.resize(column + 1);
+        for (auto it = r.tail.begin(); it != r.tail.end() && it.key() <= column;) {
+            r.cells[it.key()] = it.value();
+            it = r.tail.erase(it);
+        }
+    }
+    return r.cells[column];
 }
 
 void Sheet::trim()
@@ -1010,7 +1086,12 @@ bool readXlsx(const QByteArray& bytes, Workbook& book, QString* error)
         const Relationship r = rels.value(id);
         const zip::Entry* e = part(package, r.target);
         if (e == nullptr || !r.type.endsWith(QLatin1String("/worksheet"))) continue;   // a chart sheet
-        Sheet sheet = readSheet(e->data, strings, read);
+        QString why;
+        Sheet sheet = readSheet(e->data, strings, read, &why);
+        if (!why.isEmpty()) {
+            if (error != nullptr) *error = tr("%1: %2").arg(name, why);
+            return false;
+        }
         sheet.name = name;
         sheet.part = r.target;
         read.sheets << sheet;

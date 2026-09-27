@@ -24,10 +24,18 @@ struct Entry {
     QByteArray data;
 };
 
+/// The most a file of an archive may hold, and all of them together, once
+/// inflated: read() refuses more (a few kilobytes of DEFLATE can say
+/// gigabytes).
+constexpr quint32 MaxEntrySize = 128u * 1024 * 1024;
+constexpr qint64 MaxArchiveSize = 256ll * 1024 * 1024;
+
 /// The files of a ZIP archive, in the order of its directory: stored or
 /// deflated, as an archive of Office's files has them. Empty, with
 /// \a error said, for what is not one (or one of ZIP64's sizes, split,
-/// encrypted, or compressed otherwise).
+/// encrypted, or compressed otherwise), or holds more than MaxEntrySize
+/// or MaxArchiveSize, or a file that inflates past the size the archive
+/// gives it.
 QList<Entry> read(const QByteArray& archive, QString* error = nullptr);
 
 /// A ZIP archive of \a entries, each deflated (stored when that is not
@@ -35,8 +43,9 @@ QList<Entry> read(const QByteArray& archive, QString* error = nullptr);
 QByteArray write(const QList<Entry>& entries);
 
 /// DEFLATE data (RFC 1951, as a ZIP archive has it: no zlib header)
-/// inflated; \a ok false for data that is not.
-QByteArray inflate(const QByteArray& deflated, bool* ok = nullptr);
+/// inflated; \a ok false for data that is not, or that inflates past
+/// \a limit bytes (-1: no limit).
+QByteArray inflate(const QByteArray& deflated, bool* ok = nullptr, qsizetype limit = -1);
 /// \a data deflated (raw, as inflate() reads it).
 QByteArray deflate(const QByteArray& data);
 

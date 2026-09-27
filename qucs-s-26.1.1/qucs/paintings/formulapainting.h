@@ -61,6 +61,9 @@ public:
   QSizeF formulaSize() const;
   /// Typeset in \a colour at \a pixelRatio device pixels a unit.
   QImage image(const QColor& colour, qreal pixelRatio) const;
+  /// \a wanted pixels a unit, fewer when the image would pass 64 MB or
+  /// 8192 pixels a side.
+  qreal cappedRatio(qreal wanted) const;
 
 protected:
   void afterMove(int dx, int dy) noexcept override;
