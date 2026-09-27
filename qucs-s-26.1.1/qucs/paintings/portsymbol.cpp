@@ -19,7 +19,15 @@
 #include "portsymbol.h"
 #include "schematic.h"
 
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QGridLayout>
+#include <QGroupBox>
 #include <QInputDialog>
+#include <QLineEdit>
+#include <QRadioButton>
+#include <QVBoxLayout>
 #include <QMargins>
 #include <QPainter>
 #include "misc.h"
@@ -88,6 +96,35 @@ std::pair<QRect, QPoint> boundingAndTextOffset(int angle, const QString& portNam
 } // namespace helper
 
 
+namespace qucs_s::portsym {
+
+Name read(const QString& rest)
+{
+  Name n;
+  const QString s = rest.trimmed();
+  // A label is the line's end, in quotes (it has none inside).
+  const qsizetype quote = s.indexOf(QLatin1Char('"'));
+  if (quote >= 0 && s.size() - quote >= 2 && s.endsWith(QLatin1Char('"'))) {
+    n.name = s.left(quote).trimmed();
+    n.label = s.mid(quote + 1, s.size() - quote - 2);
+    n.labelSet = !n.label.contains(QLatin1Char('"'));
+    if (n.labelSet) return n;
+    n.label.clear();
+  }
+  n.name = s;
+  return n;
+}
+
+QString write(const Name& n)
+{
+  if (!n.labelSet) return n.name;
+  QString label = n.label;
+  label.remove(QLatin1Char('"'));
+  return n.name + QStringLiteral(" \"") + label + QLatin1Char('"');
+}
+
+} // namespace qucs_s::portsym
+
 constexpr int portCircleRadius = 4;
 constexpr int portCircleDiameter = 2 * portCircleRadius;
 
@@ -147,7 +184,7 @@ void PortSymbol::paint(QPainter *painter)
 
     // Port name
     painter->setPen(qucs_s::ink::on(Qt::black));
-    painter->drawText(m_textOrigin.x(), m_textOrigin.y(), 1, 1, Qt::TextDontClip, nameStr.isEmpty() ? numberStr : nameStr);
+    painter->drawText(m_textOrigin.x(), m_textOrigin.y(), 1, 1, Qt::TextDontClip, editorText());
     painter->restore();
   }
 
@@ -197,10 +234,13 @@ bool PortSymbol::load(const QString& s)
   angle = n.toInt(&ok);
   if(!ok) return false;
 
-  // name string
+  // name string, and the label its instances show instead (in quotes)
   n = s.section(' ', 5);
   if (n.isEmpty()) return true;
-  nameStr = n;
+  const qucs_s::portsym::Name named = qucs_s::portsym::read(n);
+  nameStr = named.name;
+  labelStr = named.label;
+  labelSet = named.labelSet;
 
   updateBounds();
   return true;
@@ -209,8 +249,15 @@ bool PortSymbol::load(const QString& s)
 QString PortSymbol::save()
 {
   QString s = Name+QString::number(cx)+" "+QString::number(cy)+" ";
-  s += numberStr+" "+QString::number(angle) + " " + nameStr;
+  s += numberStr+" "+QString::number(angle) + " " + qucs_s::portsym::write({nameStr, labelStr, labelSet});
   return s;
+}
+
+QString PortSymbol::editorText() const
+{
+  const QString name = nameStr.isEmpty() ? numberStr : nameStr;
+  if (!labelSet) return name;
+  return labelStr.isEmpty() ? QObject::tr("%1 (not shown)").arg(name) : QObject::tr("%1 (shown as %2)").arg(name, labelStr);
 }
 
 QString PortSymbol::saveCpp()
@@ -318,35 +365,66 @@ Painting* PortSymbol::newOne() {
 // Returned bool signal whether the object has changed as a result of
 // the invocation.
 bool PortSymbol::Dialog(QWidget* /*parent*/Doc) {
-  // Forbid manual editing, change port name on schematic to change it in the symbol
-  // Allow to edit ports only for SymbolOnly documents (*.sym).
+  // The name follows the schematic's Port component (it is the net's), so
+  // it is typed only in a symbol file (*.sym), which has none. What the
+  // instances show beside the pin can be set in either.
   Schematic *sch = (Schematic *) Doc;
-  if (!sch->getIsSymbolOnly()) {
-    return false;
-  }
+  const bool symbolOnly = sch->getIsSymbolOnly();
 
-  // When nameStr is empty, we're dealing with just a symbol without
-  // a corresponding schematic. In that case allow to user to input
-  // port name
-  QString text = QInputDialog::getText(nullptr, QObject::tr("Port name"),
-                                        QObject::tr("Input port name:"),
-                                        QLineEdit::Normal,
-                                        nameStr);
-  if (text.isNull() || text.isEmpty()) {
-    return false;
-  }
+  QDialog dialog(sch);
+  dialog.setObjectName(QStringLiteral("portSymbolDialog"));
+  dialog.setWindowTitle(QObject::tr("Port %1").arg(numberStr));
+  auto* form = new QFormLayout;
+  auto* name = new QLineEdit(nameStr, &dialog);
+  name->setObjectName(QStringLiteral("portName"));
+  name->setReadOnly(!symbolOnly);
+  if (!symbolOnly) name->setToolTip(QObject::tr("The name of the schematic's Port component: change it there"));
+  form->addRow(QObject::tr("Name:"), name);
 
-  // nameStr is auto derived from corresponding port in schematic.
-  // When there is no such port, fallback value is used.
-  nameStr = text;
+  auto* shown = new QGroupBox(QObject::tr("Beside the pin, the instances show"), &dialog);
+  auto* asName = new QRadioButton(QObject::tr("Its name"), shown);
+  auto* nothing = new QRadioButton(QObject::tr("Nothing"), shown);
+  auto* asText = new QRadioButton(QObject::tr("This text:"), shown);
+  auto* label = new QLineEdit(labelStr, shown);
+  asName->setObjectName(QStringLiteral("portShowName"));
+  nothing->setObjectName(QStringLiteral("portShowNothing"));
+  asText->setObjectName(QStringLiteral("portShowText"));
+  label->setObjectName(QStringLiteral("portLabel"));
+  label->setPlaceholderText(QObject::tr("+, -, CLK, ..."));
+  (labelSet ? (labelStr.isEmpty() ? nothing : asText) : asName)->setChecked(true);
+  label->setEnabled(asText->isChecked());
+  QObject::connect(asText, &QRadioButton::toggled, label, &QLineEdit::setEnabled);
+  QObject::connect(label, &QLineEdit::textEdited, asText, [asText] { asText->setChecked(true); });
+  auto* choices = new QGridLayout(shown);
+  choices->addWidget(asName, 0, 0, 1, 2);
+  choices->addWidget(nothing, 1, 0, 1, 2);
+  choices->addWidget(asText, 2, 0);
+  choices->addWidget(label, 2, 1);
 
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+  QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->addLayout(form);
+  layout->addWidget(shown);
+  layout->addWidget(buttons);
+  if (dialog.exec() != QDialog::Accepted) return false;
+
+  const QString newName = symbolOnly && !name->text().trimmed().isEmpty() ? name->text().trimmed() : nameStr;
+  const bool newSet = !asName->isChecked();
+  QString newLabel = asText->isChecked() ? label->text().trimmed() : QString();
+  newLabel.remove(QLatin1Char('"'));
+  if (newName == nameStr && newSet == labelSet && newLabel == labelStr) return false;
+  nameStr = newName;
+  labelSet = newSet;
+  labelStr = newLabel;
   updateBounds();
   return true;
 }
 
 void PortSymbol::updateBounds()
 {
-  const QString& text = nameStr.isEmpty() ? numberStr : nameStr;
+  const QString text = editorText();
   auto [br, to] = helper::boundingAndTextOffset(angle, text, portCircleRadius);
 
   m_textOrigin = to;

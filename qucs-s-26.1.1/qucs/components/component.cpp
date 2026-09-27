@@ -32,6 +32,7 @@
 #include "node.h"
 #include "misc.h"
 #include "paintings/painting.h"
+#include "paintings/portsymbol.h"
 
 #include <memory>
 
@@ -442,7 +443,7 @@ void Component::drawPins(QPainter* p) {
 
     for (const Port* port : Ports) {
         if (!port->avail) continue;
-        if (port->Name.isEmpty() && port->Dir.isEmpty()) continue;
+        if (port->shownName().isEmpty() && port->Dir.isEmpty()) continue;
 
         const QPoint anchor = pinAnchor(port, Lines);
         const QPoint in = inwards(port, anchor, body);
@@ -455,13 +456,16 @@ void Component::drawPins(QPainter* p) {
             if (took > 0) gap = took + 2;
         }
 
-        if (!names || port->Name.isEmpty()) continue;
+        // Its label in place of its name, when the symbol gives it one
+        // ("" for nothing).
+        const QString& shown = port->shownName();
+        if (!names || shown.isEmpty()) continue;
         // A symbol that writes the name itself does not need it twice.
         const bool drawnAlready = std::any_of(Texts.begin(), Texts.end(),
-                                              [&](const Text* t) { return t->s == port->Name; });
+                                              [&](const Text* t) { return t->s == shown; });
         if (drawnAlready) continue;
 
-        drawPinName(p, at, in, port->Name, gap);
+        drawPinName(p, at, in, shown, gap);
     }
 
     p->restore();
@@ -1361,8 +1365,12 @@ int Component::analyseLine(const QString &Row, int numProps) {
         po->y = i2;
         po->avail = true;
         // ".PortSym cx cy number angle name": what the symbol calls the
-        // pin, which is what the netlist calls the net behind it.
-        po->Name = Row.section(' ', 5).trimmed();
+        // pin, which is what the netlist calls the net behind it - and,
+        // in quotes after it, what the symbol shows beside the pin instead.
+        const qucs_s::portsym::Name named = qucs_s::portsym::read(Row.section(' ', 5));
+        po->Name = named.name;
+        po->Label = named.label;
+        po->LabelSet = named.labelSet;
 
         if (i1 < x1) x1 = i1;  // keep track of component boundings
         if (i1 > x2) x2 = i1;

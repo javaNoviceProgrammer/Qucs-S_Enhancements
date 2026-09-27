@@ -144,6 +144,12 @@ struct Port {
   //! "in", "out", "inout" or "analog", as the subcircuit's port declares
   //! it; empty when the symbol does not say.
   QString Dir;
+  //! What the symbol draws beside the pin instead of Name, when LabelSet:
+  //! "+" for an input named inp, or nothing ("").
+  QString Label;
+  bool LabelSet = false;
+  //! What is drawn beside the pin: its label, else its name.
+  const QString& shownName() const { return LabelSet ? Label : Name; }
   Node *Connection;
 };
 

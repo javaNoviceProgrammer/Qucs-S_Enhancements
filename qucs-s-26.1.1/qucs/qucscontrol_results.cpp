@@ -955,6 +955,10 @@ QStringList notesOn(const QString& type)
         notes << tr("Its properties are its equations - name = value, as many as wanted: add_component and "
                     "edit_component set them with 'equations' ({\"gain_db\": \"db(v(out))\"}, or a list of "
                     "\"name=value\" in their order).");
+    if (type == QLatin1String("SpiceOptions"))
+        notes << tr("An option with no value is a flag, written alone (.OPTION noinit): 'flags' ([\"noinit\", "
+                    "\"keepopinfo\"]) or {\"noinit\": true} in 'equations' on add_component and edit_component; "
+                    "{\"noinit\": \"\"} takes it away. get_schematic marks it \"flag\": true.");
     if (type == QLatin1String(qucs_s::ngstats::kMonteCarloModel) || type == QLatin1String(qucs_s::ngstats::kCornersModel))
         notes << tr("What it records for each sample and the limits a sample passes within: 'records' ([{\"name\": "
                     "\"gain\", \"expression\": \"db(v(out))\"}]) and 'specs' ([{\"expression\": \"gain\", \"min\": "
@@ -2367,10 +2371,131 @@ static QJsonObject describeVerilogAModule(const QString& type, const QList<QucsD
     return result;
 }
 
+namespace {
+
+// Another value for a property, to see whether a netlist line uses it: a
+// number (with its unit, if any) for a number, else the text altered.
+QString probeValue(const QString& value)
+{
+    static const QRegularExpression number(QStringLiteral("^\\s*[-+]?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?\\s*([A-Za-z]*)\\s*(.*)$"));
+    const QRegularExpressionMatch m = number.match(value);
+    if (value.trimmed().isEmpty()) return QStringLiteral("1.234567");
+    if (m.hasMatch()) {
+        QString probe = QStringLiteral("1.234567");
+        // (A scale letter, k or m, kept - "15 V" gives "1.234567 V".)
+        if (!m.captured(3).isEmpty()) probe += (value.contains(QLatin1Char(' ')) ? QStringLiteral(" ") : QString()) + m.captured(3);
+        if (!m.captured(4).isEmpty()) probe += QLatin1Char(' ') + m.captured(4);
+        return probe;
+    }
+    return value + QStringLiteral("_q7");
+}
+
+// Where two netlist lines differ, as the first has it: the words around
+// the change (up to some 90 characters).
+QString differingPart(const QString& a, const QString& b)
+{
+    qsizetype pre = 0;
+    while (pre < a.size() && pre < b.size() && a.at(pre) == b.at(pre)) ++pre;
+    qsizetype suf = 0;
+    while (suf < a.size() - pre && suf < b.size() - pre && a.at(a.size() - 1 - suf) == b.at(b.size() - 1 - suf)) ++suf;
+    qsizetype from = pre, to = a.size() - suf;
+    const auto boundary = [](QChar ch) { return ch.isSpace() || ch == QLatin1Char('\n'); };
+    while (from > 0 && !boundary(a.at(from - 1))) --from;
+    while (to < a.size() && !boundary(a.at(to))) ++to;
+    QString part = a.mid(from, to - from).simplified();
+    if (part.size() > 90) part = part.left(87) + QStringLiteral("...");
+    return part;
+}
+
+// A new Verilog-A module that OpenVAF compiles as it is, and that runs in
+// ngspice with no warning: the parameters' attributes before them, an
+// instance parameter, every pin a DC path through the module.
+const char* const kVerilogATemplate = R"VA(// A Verilog-A module for Qucs-S: OpenVAF compiles it (build_verilog_a),
+// ngspice simulates it through OSDI. The module's name is the component's,
+// its ports in order its pins.
+`include "disciplines.vams"
+`include "constants.vams"
+
+module amp(inp, inn, out);
+    inout inp, inn, out;
+    electrical inp, inn, out;
+
+    // Attributes come BEFORE the declaration they describe.
+    (* desc = "open-loop voltage gain", units = "V/V" *)
+    parameter real gain = 1e5 from (0:inf);
+    (* desc = "input resistance", units = "Ohm" *)
+    parameter real rin = 1e12 from (0:inf);
+    (* desc = "output resistance", units = "Ohm" *)
+    parameter real rout = 1 from [0:inf);
+    // An instance parameter: set on each part, not in the model card.
+    (* desc = "input offset voltage", units = "V", type = "instance" *)
+    parameter real vos = 0;
+
+    analog begin
+        // Every node needs a DC path: a resistance between the inputs...
+        I(inp, inn) <+ V(inp, inn) / rin;
+        // ...and the output a potential contribution - a voltage source,
+        // with rout in series (the branch's own current, I(out)).
+        V(out) <+ gain * (V(inp, inn) + vos) + rout * I(out);
+    end
+endmodule
+)VA";
+
+bool asksForVerilogATemplate(const QString& type)
+{
+    QString t = type.toLower();
+    t.remove(QRegularExpression(QStringLiteral("[\\s_\\-]")));
+    static const QStringList asked{QStringLiteral("veriloga"), QStringLiteral("va"), QStringLiteral("newveriloga"),
+                                   QStringLiteral("verilogamodule"), QStringLiteral("newverilogamodule"),
+                                   QStringLiteral("verilogatemplate")};
+    return asked.contains(t);
+}
+
+QJsonObject verilogATemplate()
+{
+    QJsonArray rules;
+    rules << QObject::tr("Attributes come before the declaration they describe: (* desc = \"...\", units = \"V\" *) "
+                         "parameter real gain = 1e5; - after it (parameter real gain = 1e5 (* desc = \"...\" *);) OpenVAF "
+                         "stops: \"unexpected token '(*'; expected ',' or ';'\".")
+          << QObject::tr("desc and units are what describe_component_type and the part's dialog show. type = \"instance\" makes "
+                         "a parameter the instance's, set on each part; the others are the model's, in its .model card.")
+          << QObject::tr("from (0:inf) leaves 0 out, from [0:inf) takes it; a value outside the range is refused when the model "
+                         "loads.")
+          << QObject::tr("V(a, b) <+ is a potential contribution - a voltage source from a to b; I(a, b) <+ a flow contribution - "
+                         "a current. Contribute to a branch one way only. A series resistance goes on a potential "
+                         "contribution with the branch's own current: V(out) <+ ... + rout * I(out).")
+          << QObject::tr("Every node needs a DC path to ground. An input the module draws no current from, reached only through "
+                         "a capacitor, is a node ngspice finds none for: it warns (\"no DC path from node ... to ground; gmin "
+                         "installed\") or the matrix is singular. A large resistance across the inputs, I(inp, inn) <+ "
+                         "V(inp, inn) / rin, gives one; a potential contribution gives its output one. (check_schematic takes a "
+                         "Verilog-A part as conducting between its pins: it does not see this.)")
+          << QObject::tr("`include \"disciplines.vams\" and \"constants.vams\" (OpenVAF has them): electrical, V(), I(), "
+                         "`M_PI, ... A module's ports are declared twice: inout (their direction), electrical (their "
+                         "discipline).");
+    QJsonArray steps;
+    steps << QObject::tr("Write it to a .va file in the project - the module's name is the part's, its ports in order the pins "
+                         "(the template: amp, pins inp, inn, out).")
+          << QObject::tr("build_verilog_a compiles it: each error with its line and column.")
+          << QObject::tr("describe_component_type with the module's name then lists its parameters and gives the .model card "
+                         "ngspice takes.");
+    return {{QStringLiteral("type"), QObject::tr("a new Verilog-A module")},
+            {QStringLiteral("kind"), QObject::tr("template")},
+            {QStringLiteral("template"), QString::fromUtf8(kVerilogATemplate)},
+            {QStringLiteral("rules"), rules},
+            {QStringLiteral("steps"), steps},
+            {QStringLiteral("checked"), QObject::tr("The template compiles with OpenVAF as it is and, in ngspice, amplifies "
+                                                     "without a warning: an inverter of gain -10 made with it gives -1.0 V "
+                                                     "for 0.1 V in.")}};
+}
+
+} // namespace
+
 QJsonObject QucsControl::describeComponentType(const QJsonObject& args)
 {
     const QString type = args.value(QLatin1String("type")).toString().trimmed();
     if (type.isEmpty()) return errorResult(tr("Which type? ('type', as list_component_types gives it)"));
+    // "Verilog-A": a module to start from, and how OpenVAF wants it written.
+    if (asksForVerilogATemplate(type)) return jsonResult(verilogATemplate());
     Module* m = nullptr;
     std::unique_ptr<Component> c(newComponent(type, &m));
     if (!c) {
@@ -2444,13 +2569,41 @@ QJsonObject QucsControl::describeComponentType(const QJsonObject& args)
             c->Ports.at(i)->Connection = nodes.back().get();
         }
         const spicecompat::SpiceDialect dialect = sim == spicecompat::simXyce ? spicecompat::SPICEXyce : spicecompat::SPICEDefault;
-        QString line = c->isEquation ? c->getExpression(dialect) : c->getSpiceNetlist(dialect);
-        for (Port* p : c->Ports) p->Connection = nullptr;
-        line = line.trimmed();
+        const auto lineOf = [&] { return (c->isEquation ? c->getExpression(dialect) : c->getSpiceNetlist(dialect)).trimmed(); };
+        const QString line = lineOf();
+        // The properties not shown on the schematic that the line uses all
+        // the same (an OpAmp's Umax clips its output at 15 V): each given
+        // another value in turn, the line compared.
+        QJsonArray hidden;
         if (!line.isEmpty())
-            result.insert(QStringLiteral("netlist"), QJsonObject{{QStringLiteral("simulator"), spicecompat::getDefaultSimulatorName(sim)},
-                                                                 {QStringLiteral("pins as"), QStringLiteral("n1, n2, ...")},
-                                                                 {QStringLiteral("with the defaults"), line}});
+            for (Property* p : c->Props) {
+                if (p->display) continue;
+                const QString was = p->Value;
+                p->Value = probeValue(was);
+                const QString probed = lineOf();
+                p->Value = was;
+                if (probed == line) continue;
+                QJsonObject o{{QStringLiteral("name"), p->Name}, {QStringLiteral("default"), was},
+                              {QStringLiteral("in the line"), differingPart(line, probed)}};
+                if (!p->Description.isEmpty()) o.insert(QStringLiteral("description"), p->Description);
+                hidden.append(o);
+            }
+        for (Port* p : c->Ports) p->Connection = nullptr;
+        if (!line.isEmpty()) {
+            QJsonObject netlist{{QStringLiteral("simulator"), spicecompat::getDefaultSimulatorName(sim)},
+                                {QStringLiteral("pins as"), QStringLiteral("n1, n2, ...")},
+                                {QStringLiteral("with the defaults"), line}};
+            if (!hidden.isEmpty()) {
+                netlist.insert(QStringLiteral("hidden but in it"), hidden);
+                QStringList names;
+                for (const QJsonValue& h : std::as_const(hidden)) names << h.toObject().value(QStringLiteral("name")).toString();
+                result.insert(QStringLiteral("hidden properties"),
+                              tr("%1 not shown on the schematic, yet in the netlist: their values count (netlist, "
+                                 "'hidden but in it', says where). edit_component 'shown' shows one.")
+                                  .arg(names.join(QStringLiteral(", "))));
+            }
+            result.insert(QStringLiteral("netlist"), netlist);
+        }
     }
     const QStringList notes = notesOn(type);
     if (!notes.isEmpty()) result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(notes));

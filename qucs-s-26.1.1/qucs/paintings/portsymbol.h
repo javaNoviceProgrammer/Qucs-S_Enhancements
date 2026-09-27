@@ -21,6 +21,19 @@
 #include "painting.h"
 
 
+namespace qucs_s::portsym {
+//! The name part of a ".PortSym cx cy number angle name" line - the name,
+//! then, when the symbol shows something else beside the pin on its
+//! instances, that in quotes: inp "+" (and "" for nothing).
+struct Name {
+  QString name;
+  QString label;
+  bool labelSet = false;
+};
+Name read(const QString& rest);
+QString write(const Name& n);
+} // namespace qucs_s::portsym
+
 class PortSymbol : public Painting  {
 public:
   PortSymbol(int cx_=0, int cy_=0, const QString& numberStr_="1",
@@ -54,9 +67,17 @@ public:
   //! adjusted, not stored in the file, and only drawn when the setting
   //! asks for it.
   QString dirStr;
+  //! What the instances draw beside the pin, when labelSet: in place of
+  //! the name (the net's, which the netlist keeps) - "+", or "" for
+  //! nothing. Saved after the name, in quotes.
+  QString labelStr;
+  bool labelSet = false;
   void setPortName(const QString& newName);
   //! Put this port where another one is, at the same angle.
   void placeLike(const PortSymbol& other);
+  //! What the symbol editor writes beside the port: its name, and the
+  //! label its instances show instead, if any.
+  QString editorText() const;
 private:
   int angle;
   QPoint m_textOrigin;

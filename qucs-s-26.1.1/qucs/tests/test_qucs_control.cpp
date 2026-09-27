@@ -22,6 +22,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
+#include <QRadioButton>
 #include <QStandardPaths>
 #include <QRandomGenerator>
 #include <QTemporaryDir>
@@ -54,6 +55,7 @@
 #include "wirelabel.h"
 #include "diagrams/graph.h"
 #include "qucscontrol_p.h"
+#include "paintings/portsymbol.h"
 #include "dialogs/simmessage.h"
 #include "textdoc.h"
 
@@ -916,7 +918,7 @@ private slots:
                                    "add_marker", "edit_marker", "delete_marker", "describe_format", "export_netlist", "set_schematic",
                                    "add_painting", "edit_painting", "list_documents", "export_image", "set_simulator",
                                    "check_schematic", "move", "add_analysis", "undo_history", "find_library_component",
-                                   "read_pdf", "edit_component", "add_component"};
+                                   "read_pdf", "edit_component", "add_component", "replace_component"};
         const QStringList words = {"", "out", "in", "v(out)", "tran.v(out)", "ngspice/tran.v(out)", "ac.v(out)", "x:y@z", "../up",
                                    "auto", "red", "#zzz", "rect", "smith", "tab", "timing", "3d", "histogram", "left", "right",
                                    "dash", "arrows", "top_left", "dB", "bandwidth", "rise_time", "crossings", "net1", "gnd",
@@ -1757,9 +1759,15 @@ private slots:
         QVERIFY(failed(call("delete", {{"paintings", QJsonArray{port}}})));
         QVERIFY(failed(call("add_painting", {{"type", "port"}, {"x", 0}, {"y", 0}})));
         QVERIFY(failed(call("edit_painting", {{"painting", port}, {"number", "7"}})));
-        // The schematic's tools wait for the schematic; a painting of it
-        // switches back.
-        QVERIFY(failed(call("add_component", {{"type", "R"}, {"x", 0}, {"y", 0}})));
+        // The schematic's tools switch back to the schematic themselves, and
+        // say so; a painting of the symbol shows it again, one of the
+        // schematic ('symbol': false) switches back too.
+        r = call("add_component", {{"type", "R"}, {"name", "Rback"}, {"x", 300}, {"y", 300}});
+        QVERIFY2(!failed(r) && text(r).contains("shows its schematic again"), qPrintable(text(r)));
+        QVERIFY(!sch->getSymbolMode());
+        QVERIFY(!failed(call("delete", {{"names", QJsonArray{"Rback"}}})));
+        QVERIFY(!failed(call("edit_painting", {{"symbol", true}, {"painting", port}, {"x", -70}})));
+        QVERIFY(sch->getSymbolMode());
         r = call("add_painting", {{"symbol", false}, {"type", "text"}, {"x", 0}, {"y", 0}, {"text", "the schematic"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(!sch->getSymbolMode());
@@ -3295,6 +3303,438 @@ private slots:
         QVERIFY(QFileInfo::exists(ws + "/orig.dat.ngspice"));   // datasets only when asked
         QVERIFY(!failed(call("clean_scratch", {{"datasets", true}})));
         QVERIFY(!QFileInfo::exists(ws + "/orig.dat.ngspice"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // ---- round 6: the gaps of one session (qucs-mcp-wishlist)
+
+    // An ngspice .OPTIONS option with no value - a flag, written alone - is
+    // set by 'flags', by true in 'equations' or by its name alone in a list;
+    // "" takes it away; no other block takes one.
+    void optionsTakeFlags()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QJsonObject r = call("add_component", {{"type", "SpiceOptions"}, {"name", "OPT1"}, {"x", 100}, {"y", 100},
+                                               {"equations", QJsonObject{{"reltol", "1e-4"}}}, {"flags", QJsonArray{"noinit"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Component* opt = sch->getComponentByName("OPT1");
+        QVERIFY(opt->getProperty("noinit") != nullptr);
+        QVERIFY(opt->getProperty("noinit")->Value.isEmpty());
+        QString expr = opt->getExpression(spicecompat::SPICEDefault);
+        QVERIFY2(expr.contains(".OPTION noinit\n") && expr.contains(".OPTION reltol = 1e-4"), qPrintable(expr));
+        QVERIFY2(sch->documentText().contains("\"noinit=\""), qPrintable(opt->save()));
+        // Marked so where it is read.
+        bool marked = false;
+        for (const QJsonValue& v : componentIn(json(call("get_schematic")).toObject(), "OPT1").value("properties").toArray())
+            marked = marked || (v.toObject().value("name").toString() == "noinit" && v.toObject().value("flag").toBool());
+        QVERIFY(marked);
+        // true in 'equations', a name alone in a list.
+        QVERIFY(!failed(call("edit_component", {{"name", "OPT1"}, {"equations", QJsonObject{{"keepopinfo", true}}}})));
+        QVERIFY(!failed(call("edit_component", {{"name", "OPT1"}, {"equations", QJsonArray{"noopiter", "gmin=1e-13"}}})));
+        expr = sch->getComponentByName("OPT1")->getExpression(spicecompat::SPICEDefault);
+        QVERIFY2(expr.contains(".OPTION keepopinfo\n") && expr.contains(".OPTION noopiter\n") && expr.contains(".OPTION gmin = 1e-13"),
+                 qPrintable(expr));
+        // Taken away by "" (and by false).
+        QVERIFY(!failed(call("edit_component", {{"name", "OPT1"}, {"equations", QJsonObject{{"noinit", ""}, {"noopiter", false}}}})));
+        expr = sch->getComponentByName("OPT1")->getExpression(spicecompat::SPICEDefault);
+        QVERIFY2(!expr.contains("noinit") && !expr.contains("noopiter") && expr.contains("keepopinfo"), qPrintable(expr));
+        // Nowhere else: an equation of Eqn has a value.
+        QVERIFY(!failed(call("add_component", {{"type", "Eqn"}, {"name", "Eqn1"}, {"x", 300}, {"y", 100}})));
+        r = call("edit_component", {{"name", "Eqn1"}, {"flags", QJsonArray{"x"}}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains(".OPTIONS"), qPrintable(text(r)));
+        QVERIFY(failed(call("edit_component", {{"name", "Eqn1"}, {"equations", QJsonObject{{"y", true}}}})));
+        QVERIFY(failed(call("add_component", {{"type", "R"}, {"name", "R9"}, {"x", 500}, {"y", 100}, {"flags", QJsonArray{"x"}}})));
+        QVERIFY(failed(call("edit_component", {{"name", "OPT1"}, {"flags", QJsonArray{"has space"}}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A symbol's port shows its instances a label beside the pin in place of
+    // its name (the net's, which the netlist keeps), or nothing: set with
+    // edit_painting, saved after the name in quotes, read back by the
+    // symbol and by each instance.
+    void aPortShowsALabel()
+    {
+        using qucs_s::portsym::read;
+        QCOMPARE(read("inp").name, QStringLiteral("inp"));
+        QVERIFY(!read("inp").labelSet);
+        QCOMPARE(read("inp \"+\"").name, QStringLiteral("inp"));
+        QCOMPARE(read("inp \"+\"").label, QStringLiteral("+"));
+        QVERIFY(read("out \"\"").labelSet);
+        QVERIFY(read("out \"\"").label.isEmpty());
+        QCOMPARE(read("a \"two words\"").label, QStringLiteral("two words"));
+        QVERIFY(!read("odd\"").labelSet);   // (one quote: no label)
+        QCOMPARE(qucs_s::portsym::write({"inp", "+", true}), QStringLiteral("inp \"+\""));
+        QCOMPARE(qucs_s::portsym::write({"inp", "", false}), QStringLiteral("inp"));
+
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sub = front();
+        int y = 100;
+        for (const char* name : {"inp", "inn", "out"}) {
+            QVERIFY(!failed(call("add_component", {{"type", "Port"}, {"name", name}, {"x", 100}, {"y", y}})));
+            y += 60;
+        }
+        QVERIFY(!failed(call("save_document", {{"as", "labelled"}})));
+        QVERIFY(!failed(call("make_symbol", {{"sides", QJsonObject{{"inp", "left"}, {"inn", "left"}, {"out", "right"}}}})));
+        // The ports, by number among the symbol's paintings.
+        QJsonArray paintings = json(call("get_schematic", {{"symbol", true}})).toObject().value("symbol paintings").toArray();
+        QHash<QString, int> portAt;   // a port's name: its painting's number
+        for (const QJsonValue& v : std::as_const(paintings))
+            if (v.toObject().value("type").toString() == "port")
+                portAt.insert(v.toObject().value("name").toString(), v.toObject().value("painting").toInt());
+        QVERIFY2(portAt.size() == 3, qPrintable(QJsonDocument(paintings).toJson()));
+        const auto numberOf = [&](const QString& port) { return portAt.value(port, -1); };
+        QJsonObject r = call("edit_painting", {{"symbol", true}, {"painting", numberOf("inp")}, {"label", "+"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("edit_painting", {{"symbol", true}, {"painting", numberOf("inn")}, {"label", "-"}})));
+        QVERIFY(!failed(call("edit_painting", {{"symbol", true}, {"painting", numberOf("out")}, {"label", ""}})));
+        QVERIFY(failed(call("edit_painting", {{"symbol", true}, {"painting", numberOf("out")}, {"label", "say \"x\""}})));
+        paintings = json(call("get_schematic", {{"symbol", true}})).toObject().value("symbol paintings").toArray();
+        QCOMPARE(paintings.at(numberOf("inp") - 1).toObject().value("label").toString(), QStringLiteral("+"));
+        QVERIFY(paintings.at(numberOf("out") - 1).toObject().value("label").isString());
+        QVERIFY(paintings.at(numberOf("out") - 1).toObject().value("label").toString().isEmpty());
+        // The file: after the name, in quotes; the name - the net's - kept.
+        const QString file = sub->documentText();
+        QVERIFY2(file.contains(" inp \"+\">") && file.contains(" inn \"-\">") && file.contains(" out \"\">"), qPrintable(file));
+        // Kept when the ports are matched with the schematic's again.
+        QVERIFY(!failed(call("save_document")));
+        // An instance: its pins keep their names, and draw the labels.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("add_component", {{"type", "Sub"}, {"name", "X1"}, {"x", 300}, {"y", 200},
+                                   {"properties", QJsonObject{{"File", "labelled.sch"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Component* x1 = front()->getComponentByName("X1");
+        QCOMPARE(x1->Ports.size(), 3);
+        QHash<QString, const Port*> byName;
+        for (const Port* p : x1->Ports) byName.insert(p->Name, p);
+        QVERIFY(byName.contains("inp") && byName.contains("inn") && byName.contains("out"));
+        QCOMPARE(byName.value("inp")->shownName(), QStringLiteral("+"));
+        QCOMPARE(byName.value("inn")->shownName(), QStringLiteral("-"));
+        QVERIFY(byName.value("out")->shownName().isEmpty());
+        QString pins = QJsonDocument(json(r).toObject().value("pins").toArray()).toJson(QJsonDocument::Compact);
+        QVERIFY2(pins.contains("\"label\":\"+\"") && pins.contains("\"name\":\"inp\""), qPrintable(pins));
+        // null: its name again.
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(!failed(call("show_document", {{"path", "labelled.sch"}})));
+        // And in the symbol editor: a double-click on a port asks what its
+        // instances show - here a text, CLK.
+        {
+            auto* inn = static_cast<PortSymbol*>(*std::next(front()->a_SymbolPaints.begin(), numberOf("inn") - 1));
+            QVERIFY(inn->Name == ".PortSym ");
+            QTimer::singleShot(0, [] {
+                QDialog* d = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                if (d == nullptr || d->objectName() != "portSymbolDialog") return;
+                d->findChild<QRadioButton*>("portShowText")->setChecked(true);
+                d->findChild<QLineEdit*>("portLabel")->setText("CLK");
+                QVERIFY(d->findChild<QLineEdit*>("portName")->isReadOnly());   // (the schematic's Port's name)
+                d->accept();
+            });
+            QVERIFY(inn->Dialog(front()));
+            QVERIFY(inn->labelSet);
+            QCOMPARE(inn->labelStr, QStringLiteral("CLK"));
+            QCOMPARE(inn->editorText(), QStringLiteral("inn (shown as CLK)"));
+            QTimer::singleShot(0, [] {
+                QDialog* d = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                if (d == nullptr) return;
+                d->findChild<QRadioButton*>("portShowNothing")->setChecked(true);
+                d->accept();
+            });
+            QVERIFY(inn->Dialog(front()));
+            QVERIFY(inn->labelSet && inn->labelStr.isEmpty());
+            QTimer::singleShot(0, [] {
+                if (QDialog* d = qobject_cast<QDialog*>(QApplication::activeModalWidget())) d->reject();
+            });
+            QVERIFY(!inn->Dialog(front()));   // cancelled: nothing changes
+        }
+        QVERIFY(!failed(call("edit_painting", {{"symbol", true}, {"painting", numberOf("inp")}, {"label", QJsonValue()}})));
+        QVERIFY2(front()->documentText().contains(" inp>"), qPrintable(front()->documentText()));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A schematic tool on a document that shows its symbol switches it
+    // back to its schematic - and says so, naming File > Edit Schematic.
+    void theSchematicToolsLeaveTheSymbol()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QJsonObject r = call("add_painting", {{"symbol", true}, {"type", "text"}, {"x", 0}, {"y", 0}, {"text", "sym"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(sch->getSymbolMode());
+        r = call("add_component", {{"type", "C"}, {"name", "C1"}, {"x", 300}, {"y", 100}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!sch->getSymbolMode());
+        QVERIFY2(text(r).contains("shows its schematic again") && text(r).contains("File > Edit Schematic"), qPrintable(text(r)));
+        QVERIFY(sch->getComponentByName("C1") != nullptr);
+        // And said once: the next call has no such note.
+        r = call("edit_component", {{"name", "C1"}, {"properties", QJsonObject{{"C", "2 pF"}}}});
+        QVERIFY(!text(r).contains("shows its schematic again"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // "Verilog-A": a module to start from - that OpenVAF compiles as it is,
+    // where there is one - and how to write one.
+    void aVerilogAModuleToStartFrom()
+    {
+        for (const char* asked : {"Verilog-A", "verilog_a", "new Verilog-A module"}) {
+            const QJsonObject o = json(call("describe_component_type", {{"type", asked}})).toObject();
+            QVERIFY2(o.value("template").toString().contains("module amp(inp, inn, out);"), asked);
+        }
+        const QJsonObject o = json(call("describe_component_type", {{"type", "Verilog-A"}})).toObject();
+        const QString rules = QJsonDocument(o.value("rules").toArray()).toJson();
+        QVERIFY(rules.contains("before the declaration") && rules.contains("type = \\\"instance\\\"") && rules.contains("DC path"));
+        const QString va = o.value("template").toString();
+        // Attributes before what they describe, every one of them: no
+        // declaration with one after it.
+        for (const QString& line : va.split('\n'))
+            if (line.trimmed().startsWith("parameter")) QVERIFY2(!line.contains("(*"), qPrintable(line));
+        const QString openvaf = QStandardPaths::findExecutable("openvaf");
+        if (openvaf.isEmpty()) QSKIP("no OpenVAF here: the template is not compiled");
+        {
+            QFile f(dir.filePath("workspace/amp.va"));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(va.toUtf8());
+        }
+        const QString before = QucsSettings.OpenVAFExecutable;
+        QucsSettings.OpenVAFExecutable = openvaf;
+        const QJsonObject r = call("build_verilog_a", {{"file", "amp.va"}}, 120000);
+        QucsSettings.OpenVAFExecutable = before;
+        QVERIFY2(json(r).toObject().value("compiled").toBool(), qPrintable(text(r)));
+        QVERIFY(json(r).toObject().value("errors").toArray().isEmpty());
+        // Its parameters as they are described.
+        const QJsonObject module = json(call("describe_component_type", {{"type", "amp"}})).toObject();
+        const QString params = QJsonDocument(module.value("parameters").toArray()).toJson(QJsonDocument::Compact);
+        QVERIFY2(params.contains("\"name\":\"vos\"") && params.contains("\"kind\":\"instance\"") && params.contains("open-loop voltage gain"),
+                 qPrintable(params));
+    }
+
+    // Saving a subcircuit says which open schematics' instances took its new
+    // symbol, and each pin that moved - and whether it no longer meets its
+    // wiring.
+    void aSavedSymbolIsTakenByItsInstances()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        for (const auto& [name, y] : {std::pair{"a", 100}, std::pair{"b", 200}})
+            QVERIFY(!failed(call("add_component", {{"type", "Port"}, {"name", name}, {"x", 100}, {"y", y}})));
+        QVERIFY(!failed(call("save_document", {{"as", "twopin"}})));
+        QVERIFY(!failed(call("make_symbol", {{"sides", QJsonObject{{"a", "left"}, {"b", "right"}}}})));
+        QVERIFY(!failed(call("save_document")));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Sub"}, {"name", "X1"}, {"x", 300}, {"y", 200},
+                                               {"properties", QJsonObject{{"File", "twopin.sch"}}}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 300}})));
+        QJsonObject r = call("connect", {{"from", "X1.1"}, {"to", "R1.1"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"as", "usestwopin"}})));
+        // Saved as it is: the instance refreshed, its pins where they were.
+        r = call("save_document", {{"path", "twopin.sch"}});
+        QVERIFY2(text(r).contains("usestwopin.sch (X1)") && text(r).contains("where they were"), qPrintable(text(r)));
+        // A port moved on the symbol: its pin moved, off its wire.
+        QVERIFY(!failed(call("show_document", {{"path", "twopin.sch"}})));
+        const QJsonArray paintings = json(call("get_schematic", {{"symbol", true}})).toObject().value("symbol paintings").toArray();
+        int a = -1;
+        QJsonObject port;
+        for (const QJsonValue& v : paintings)
+            if (v.toObject().value("type").toString() == "port" && v.toObject().value("name").toString() == "a") {
+                a = v.toObject().value("painting").toInt();
+                port = v.toObject();
+            }
+        QVERIFY(a > 0);
+        QVERIFY(!failed(call("edit_painting", {{"symbol", true}, {"painting", a}, {"y", port.value("y").toInt() + 20}})));
+        r = call("save_document", {{"path", "twopin.sch"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("usestwopin.sch (X1)") && text(r).contains("X1.1 (a) in usestwopin.sch moved from")
+                     && text(r).contains("no longer meets its wiring"),
+                 qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"path", "usestwopin.sch"}, {"unsaved", "discard"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "twopin.sch"}, {"unsaved", "discard"}})));
+    }
+
+    // A part of another type put in one's place, its pins taking the old
+    // pins' nets - by 'pins', by name, by number - turned and placed so the
+    // pins meet their wiring; one step to undo.
+    void aComponentIsReplacedKeepingItsNets()
+    {
+        // A subcircuit of three ports: inp, inn, out.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        int y = 100;
+        for (const char* name : {"inp", "inn", "out"}) {
+            QVERIFY(!failed(call("add_component", {{"type", "Port"}, {"name", name}, {"x", 100}, {"y", y}})));
+            y += 60;
+        }
+        QVERIFY(!failed(call("save_document", {{"as", "amp3"}})));
+        QVERIFY(!failed(call("make_symbol", {{"sides", QJsonObject{{"inp", "left"}, {"inn", "left"}, {"out", "right"}}}})));
+        QVERIFY(!failed(call("save_document")));
+        // An inverter's op-amp, its three pins on labelled nets.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_component", {{"type", "OpAmp"}, {"name", "OP1"}, {"x", 400}, {"y", 300}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 200}, {"rotation", 1}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R2"}, {"x", 200}, {"y", 420}, {"rotation", 1}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R3"}, {"x", 600}, {"y", 300}, {"rotation", 1}})));
+        QVERIFY(!failed(call("connect", {{"from", "OP1.1"}, {"to", "R2.2"}})));
+        QVERIFY(!failed(call("connect", {{"from", "OP1.2"}, {"to", "R1.2"}})));
+        QVERIFY(!failed(call("connect", {{"from", "OP1.3"}, {"to", "R3.1"}})));
+        // (The OpAmp's pin 1 is its - input, pin 2 its +.)
+        QVERIFY(!failed(call("set_label", {{"at", "R2.2"}, {"name", "minus"}})));
+        QVERIFY(!failed(call("set_label", {{"at", "R1.2"}, {"name", "plus"}})));
+        QVERIFY(!failed(call("set_label", {{"at", "R3.1"}, {"name", "vo"}})));
+        QVERIFY(!failed(call("add_component", {{"type", ".DC"}, {"name", "DC1"}, {"x", 100}, {"y", 600}})));
+        QVERIFY(!failed(call("save_document", {{"as", "inverter6"}})));
+        // What the old pins are on, by net label.
+        const auto netOfPin = [&](const QString& pin) {
+            const QJsonObject s = json(call("get_schematic")).toObject();
+            for (const QJsonValue& n : s.value("nets").toArray())
+                for (const QJsonValue& p : n.toObject().value("pins").toArray())
+                    if (p.toString() == pin) return n.toObject().value("net").toString();
+            return QString();
+        };
+        QCOMPARE(netOfPin("OP1.1"), QStringLiteral("minus"));
+        QCOMPARE(netOfPin("OP1.2"), QStringLiteral("plus"));
+        QCOMPARE(netOfPin("OP1.3"), QStringLiteral("vo"));
+        // Refused: a pin mapped to one the new part has not; an old pin with
+        // wiring left out; a type there is not.
+        QJsonObject r = call("replace_component", {{"name", "OP1"}, {"type", "Sub"}, {"properties", QJsonObject{{"File", "amp3.sch"}}},
+                                                   {"pins", QJsonObject{{"1", "nope"}}}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("inp") && text(r).contains("inn"), qPrintable(text(r)));
+        r = call("replace_component", {{"name", "OP1"}, {"type", "Sub"}, {"properties", QJsonObject{{"File", "amp3.sch"}}},
+                                       {"pins", QJsonObject{{"1", "inn"}, {"2", "inp"}}}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("OP1.3"), qPrintable(text(r)));
+        QVERIFY(failed(call("replace_component", {{"name", "OP1"}, {"type", "NoSuchType"}})));
+        QVERIFY(sch->getComponentByName("OP1")->Model == QLatin1String("OpAmp"));
+        // Replaced: - to inn, + to inp, out to out.
+        r = call("replace_component", {{"name", "OP1"}, {"type", "Sub"}, {"properties", QJsonObject{{"File", "amp3.sch"}}},
+                                       {"pins", QJsonObject{{"1", "inn"}, {"2", "inp"}, {"3", "out"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject o = json(r).toObject();
+        QCOMPARE(o.value("name").toString(), QStringLiteral("OP1"));   // (the name kept)
+        QCOMPARE(o.value("type").toString(), QStringLiteral("Sub"));
+        QCOMPARE(o.value("pins taken").toArray().size(), 3);
+        QVERIFY2(o.value("placed").toString().contains("centred at"), qPrintable(text(r)));
+        Component* c = sch->getComponentByName("OP1");
+        QCOMPARE(c->Model, QStringLiteral("Sub"));
+        const auto pinOf = [&](const QString& port) {
+            for (int i = 0; i < c->Ports.size(); ++i)
+                if (c->Ports.at(i)->Name == port) return QStringLiteral("OP1.%1").arg(i + 1);
+            return QString();
+        };
+        QCOMPARE(netOfPin(pinOf("inp")), QStringLiteral("plus"));
+        QCOMPARE(netOfPin(pinOf("inn")), QStringLiteral("minus"));
+        QCOMPARE(netOfPin(pinOf("out")), QStringLiteral("vo"));
+        // Each resistor still on its net.
+        QCOMPARE(netOfPin("R2.2"), QStringLiteral("minus"));
+        QCOMPARE(netOfPin("R1.2"), QStringLiteral("plus"));
+        QCOMPARE(netOfPin("R3.1"), QStringLiteral("vo"));
+        // No wire drawn across the new symbol (hard to read): placed so -
+        // a wire's last stretch to one of its pins, along the pin's stub,
+        // aside.
+        const QRect bounds = QRect(QPoint(c->x1, c->y1), QPoint(c->x2, c->y2)).normalized().translated(c->center()).adjusted(1, 1, -1, -1);
+        for (const Wire* w : sch->a_DocWires) {
+            QPoint a = w->P1(), b = w->P2();
+            const QPoint along((b.x() > a.x()) - (b.x() < a.x()), (b.y() > a.y()) - (b.y() < a.y()));
+            const int length = std::abs(b.x() - a.x()) + std::abs(b.y() - a.y());
+            const auto onPin = [&](const QPoint& p) {
+                for (const Port* port : c->Ports)
+                    if (c->center() + QPoint(port->x, port->y) == p) return true;
+                return false;
+            };
+            const int from = onPin(a) ? std::min(12, length) : 0, to = onPin(b) ? std::max(length - 12, 0) : length;
+            if (from >= to) continue;
+            QVERIFY2(!QRect(a + along * from, a + along * to).normalized().intersects(bounds),
+                     qPrintable(QStringLiteral("a wire %1,%2 - %3,%4 across %5").arg(w->x1).arg(w->y1).arg(w->x2).arg(w->y2).arg(text(r))));
+        }
+        // In the netlist: the subcircuit's line with its nodes in its ports' order.
+        const QString netlist = text(call("get_netlist"));
+        static const QRegularExpression line(QStringLiteral("(?m)^XOP1 plus minus vo "));
+        QVERIFY2(line.match(netlist).hasMatch(), qPrintable(netlist));
+        // One step back is the op-amp, wired as it was.
+        QVERIFY(!failed(call("undo")));
+        c = sch->getComponentByName("OP1");
+        QCOMPARE(c->Model, QStringLiteral("OpAmp"));
+        QCOMPARE(netOfPin("OP1.3"), QStringLiteral("vo"));
+        // By number when the pins have no names in common (a resistor for a
+        // resistor): in place, turned as it was.
+        r = call("replace_component", {{"name", "R3"}, {"type", "R"}, {"properties", QJsonObject{{"R", "47k"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("mapped").toString(), QStringLiteral("by number"));
+        QVERIFY2(json(r).toObject().value("placed").toString().contains("every pin on its old place"), qPrintable(text(r)));
+        QCOMPARE(sch->getComponentByName("R3")->getProperty("R")->Value, QStringLiteral("47k"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "amp3.sch"}, {"unsaved", "discard"}})));
+    }
+
+    // Where each shown text of a component is: its name, then each
+    // property shown, one under the other from its text's corner.
+    void aComponentsTextsHaveTheirBoxes()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const QJsonObject r = call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 200}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Component* c = front()->getComponentByName("R1");
+        const QJsonArray texts = json(r).toObject().value("texts").toArray();
+        int shown = c->showName ? 1 : 0;
+        for (const Property* p : c->Props) shown += p->display ? 1 : 0;
+        QCOMPARE(texts.size(), shown);
+        QCOMPARE(texts.first().toObject().value("text").toString(), QStringLiteral("R1"));
+        const QJsonArray first = texts.first().toObject().value("box").toArray();
+        QCOMPARE(first.at(0).toInt(), c->cx + c->tx);
+        QCOMPARE(first.at(1).toInt(), c->cy + c->ty);
+        // One under the other, all within what the part's bounds hold.
+        const QRect all = c->boundingRectIncludingProperties();
+        for (int i = 0; i < texts.size(); ++i) {
+            const QJsonArray b = texts.at(i).toObject().value("box").toArray();
+            QVERIFY(b.at(2).toInt() > b.at(0).toInt() && b.at(3).toInt() > b.at(1).toInt());
+            QVERIFY2(all.adjusted(-2, -2, 2, 2).contains(QRect(QPoint(b.at(0).toInt(), b.at(1).toInt()), QPoint(b.at(2).toInt(), b.at(3).toInt()))),
+                     qPrintable(QJsonDocument(texts).toJson()));
+            if (i > 0) QCOMPARE(b.at(1).toInt(), texts.at(i - 1).toObject().value("box").toArray().at(3).toInt());
+        }
+        // In get_schematic too.
+        QVERIFY(componentIn(json(call("get_schematic")).toObject(), "R1").value("texts").toArray().size() == shown);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // The properties not shown on the schematic that the netlist line uses
+    // all the same are flagged, with where they are in it: an OpAmp's Umax.
+    void hiddenPropertiesInTheNetlistAreFlagged()
+    {
+        const QJsonObject o = json(call("describe_component_type", {{"type", "OpAmp"}})).toObject();
+        QVERIFY2(o.value("hidden properties").toString().contains("Umax"), qPrintable(QJsonDocument(o).toJson()));
+        bool umax = false;
+        for (const QJsonValue& h : o.value("netlist").toObject().value("hidden but in it").toArray())
+            if (h.toObject().value("name").toString() == "Umax") {
+                umax = true;
+                QVERIFY(!h.toObject().value("in the line").toString().isEmpty());
+                QCOMPARE(h.toObject().value("default").toString(), QStringLiteral("15 V"));
+            }
+        QVERIFY(umax);
+        // G is shown: not among them.
+        QVERIFY(!QJsonDocument(o.value("netlist").toObject().value("hidden but in it").toArray()).toJson().contains("\"G\""));
+    }
+
+    // A file with a component line of more values than its type has
+    // properties: said when it is opened (read positionally, one too many
+    // shifts the rest).
+    void aLineWithAValueTooManyIsSaidOnOpening()
+    {
+        const QString file = dir.filePath("workspace/shifted.sch");
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n<Components>\n"
+                    "  <R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0 \"extra\" 0 \"more\" 0>\n"
+                    "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        }
+        QJsonObject r = call("open_document", {{"path", "shifted.sch"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("R1 (R)") && text(r).contains("left out"), qPrintable(text(r)));
+        // Brought to the front again: nothing to say.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("open_document", {{"path", "shifted.sch"}});
+        QVERIFY(!text(r).contains("left out"));
+        QVERIFY(!failed(call("close_document", {{"path", "shifted.sch"}, {"unsaved", "discard"}})));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 

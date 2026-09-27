@@ -1247,6 +1247,7 @@ bool Schematic::loadDocument()
   // Keep reference to source file (the schematic file)
   setFileInfo(a_DocName);
   a_loadNotes.clear();
+  a_loadShortNotes.clear();
 
   QString Line;
   QTextStream stream(&file);
