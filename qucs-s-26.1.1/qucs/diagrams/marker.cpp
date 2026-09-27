@@ -22,6 +22,8 @@
 */
 
 #include "marker.h"
+
+#include <algorithm>
 #include "diagram.h"
 #include "graph.h"
 #include "ink.h"
@@ -582,6 +584,8 @@ bool Marker::load(const QString& Line)
   n  = s.section(' ',4,4);      // Precision
   Precision = n.toInt(&ok);
   if(!ok) return false;
+  // As the dialog allows: a file's 999999999 made a label of gigabytes.
+  Precision = std::clamp(Precision, 0, 12);
 
   n  = s.section(' ',5,5);      // numMode
   numMode = n.toInt(&ok);

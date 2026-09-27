@@ -14,7 +14,10 @@
 #include <QCoreApplication>
 #include <QtEndian>
 
+#include <algorithm>
 #include <array>
+#include <cstring>
+#include <limits>
 
 namespace qucs_s::zip {
 
@@ -105,12 +108,16 @@ constexpr int kDistanceBase[] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97
 constexpr short kDistanceExtra[] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6,
                                     6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
 
-bool codes(Bits& in, QByteArray& out, const Huffman& lengths, const Huffman& distances)
+// \a limit: the most bytes \a out may reach (a ZIP archive says how big
+// each of its files is: one that inflates past that is not what it says -
+// a "bomb" of a few kilobytes that would fill the memory).
+bool codes(Bits& in, QByteArray& out, const Huffman& lengths, const Huffman& distances, qsizetype limit)
 {
     for (;;) {
         int symbol = decode(in, lengths);
         if (symbol < 0) return false;
         if (symbol < 256) {
+            if (out.size() >= limit) return false;
             out.append(char(symbol));
             continue;
         }
@@ -121,13 +128,22 @@ bool codes(Bits& in, QByteArray& out, const Huffman& lengths, const Huffman& dis
         const int d = decode(in, distances);
         if (d < 0 || d >= 30) return false;
         const int distance = kDistanceBase[d] + in.take(kDistanceExtra[d]);
-        if (in.failed || distance > out.size()) return false;
-        const qsizetype from = out.size() - distance;
-        for (int k = 0; k < length; ++k) out.append(out.at(from + k));   // it may overlap
+        if (in.failed || distance > out.size() || out.size() + length > limit) return false;
+        // Copied within the buffer (a byte at a time through append() took
+        // seconds a hundred megabytes); it may overlap what it copies.
+        const qsizetype at = out.size();
+        out.resize(at + length);
+        char* p = out.data();
+        const qsizetype from = at - distance;
+        if (distance >= length) {
+            std::memcpy(p + at, p + from, size_t(length));
+        } else {
+            for (int k = 0; k < length; ++k) p[at + k] = p[from + k];
+        }
     }
 }
 
-bool fixedBlock(Bits& in, QByteArray& out)
+bool fixedBlock(Bits& in, QByteArray& out, qsizetype limit)
 {
     static const auto tables = [] {
         std::pair<Huffman, Huffman> t;
@@ -142,10 +158,10 @@ bool fixedBlock(Bits& in, QByteArray& out)
         build(t.second, lengths, 30);
         return t;
     }();
-    return codes(in, out, tables.first, tables.second);
+    return codes(in, out, tables.first, tables.second, limit);
 }
 
-bool dynamicBlock(Bits& in, QByteArray& out)
+bool dynamicBlock(Bits& in, QByteArray& out, qsizetype limit)
 {
     static constexpr short order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
     const int nlen = in.take(5) + 257;
@@ -179,10 +195,10 @@ bool dynamicBlock(Bits& in, QByteArray& out)
     }
     if (lengths[256] == 0) return false;   // no end of block
     if (!build(lencode, lengths, nlen) || !build(distcode, lengths + nlen, ndist)) return false;
-    return codes(in, out, lencode, distcode);
+    return codes(in, out, lencode, distcode, limit);
 }
 
-bool storedBlock(Bits& in, QByteArray& out)
+bool storedBlock(Bits& in, QByteArray& out, qsizetype limit)
 {
     in.buffer = 0;   // to the next byte
     in.count = 0;
@@ -190,7 +206,7 @@ bool storedBlock(Bits& in, QByteArray& out)
     const quint16 len = qFromLittleEndian<quint16>(in.data + in.pos);
     const quint16 nlen = qFromLittleEndian<quint16>(in.data + in.pos + 2);
     in.pos += 4;
-    if (quint16(~nlen) != len || in.pos + len > in.size) return false;
+    if (quint16(~nlen) != len || in.pos + len > in.size || out.size() + len > limit) return false;
     out.append(reinterpret_cast<const char*>(in.data + in.pos), len);
     in.pos += len;
     return true;
@@ -241,11 +257,12 @@ quint32 crc32(const QByteArray& data)
     return c ^ 0xFFFFFFFFu;
 }
 
-QByteArray inflate(const QByteArray& deflated, bool* ok)
+QByteArray inflate(const QByteArray& deflated, bool* ok, qsizetype limit)
 {
     Bits in{reinterpret_cast<const uchar*>(deflated.constData()), deflated.size()};
+    if (limit < 0) limit = std::numeric_limits<qsizetype>::max();
     QByteArray out;
-    out.reserve(deflated.size() * 4);
+    out.reserve(std::min<qsizetype>(deflated.size() * 4, limit));
     bool fine = true;
     for (bool last = false; !last && fine;) {
         last = in.take(1) == 1;
@@ -255,9 +272,9 @@ QByteArray inflate(const QByteArray& deflated, bool* ok)
             break;
         }
         switch (type) {
-        case 0: fine = storedBlock(in, out); break;
-        case 1: fine = fixedBlock(in, out); break;
-        case 2: fine = dynamicBlock(in, out); break;
+        case 0: fine = storedBlock(in, out, limit); break;
+        case 1: fine = fixedBlock(in, out, limit); break;
+        case 2: fine = dynamicBlock(in, out, limit); break;
         default: fine = false; break;
         }
     }
@@ -297,6 +314,7 @@ QList<Entry> read(const QByteArray& archive, QString* error)
 
     QList<Entry> files;
     qsizetype at = dirStart;
+    qint64 total = 0;
     for (int k = 0; k < entries; ++k) {
         if (at + 46 > end || le32(archive, at) != kCentral) return fail(tr("The archive's directory is damaged."));
         const quint16 flags = le16(archive, at + 8);
@@ -321,13 +339,22 @@ QList<Entry> read(const QByteArray& archive, QString* error)
             return fail(tr("%1: its header is damaged.").arg(entry.name));
         const qsizetype data = local + 30 + le16(archive, local + 26) + le16(archive, local + 28);
         if (data + packed > archive.size()) return fail(tr("%1 is cut short.").arg(entry.name));
+        // What it says it holds, checked before anything is inflated; and
+        // it is inflated no further than that.
+        total += size;
+        if (size > MaxEntrySize || total > MaxArchiveSize)
+            return fail(tr("%1 holds more than is opened here (%2 MB inflated; at most %3 MB a file, %4 MB in all).")
+                            .arg(entry.name)
+                            .arg(size / (1024 * 1024))
+                            .arg(MaxEntrySize / (1024 * 1024))
+                            .arg(MaxArchiveSize / (1024 * 1024)));
         const QByteArray raw = archive.mid(data, packed);
         if (method == 0) {
             entry.data = raw;
         } else if (method == 8) {
             bool ok = false;
-            entry.data = inflate(raw, &ok);
-            if (!ok) return fail(tr("%1 cannot be inflated.").arg(entry.name));
+            entry.data = inflate(raw, &ok, size);
+            if (!ok) return fail(tr("%1 cannot be inflated, or is bigger than the archive says.").arg(entry.name));
         } else {
             return fail(tr("%1 is compressed in a way not read (method %2).").arg(entry.name).arg(method));
         }

@@ -35,6 +35,11 @@
 #include <QDir>
 #include <QStandardItemModel>
 #include <QTimer>
+#include <QFutureWatcher>
+#include <QLocale>
+#include <QPromise>
+#include <QThreadPool>
+#include <memory>
 #include <QDebug>
 #include <QDrag>
 #include <QFileIconProvider>
@@ -364,8 +369,15 @@ ProjectView::refresh()
 
   m_model->clear();
 
+  // The project's files, looked at once (at most misc::MaxProjectEntries
+  // files and folders: said in the header when that was not all).
+  bool complete = true;
+  const QStringList files = m_valid ? misc::projectFiles(QDir(m_projPath), QStringList(), &complete) : QStringList();
   QStringList header;
-  header << tr("Content of %1").arg(m_projName) << tr("Note");
+  header << (complete ? tr("Content of %1").arg(m_projName)
+                      : tr("Content of %1 (the first %2 files and folders)")
+                            .arg(m_projName, QLocale().toString(misc::MaxProjectEntries)))
+         << tr("Note");
   m_model->setHorizontalHeaderLabels(header);
 
   for (int category = 0; category < CategoryCount; ++category)
@@ -381,7 +393,7 @@ ProjectView::refresh()
       taken.append(matchers(category));
     const QDir workPath(m_projPath);
     const QString scratchPrefix = QString::fromLatin1(misc::ScratchFolder) + QLatin1Char('/');
-    for (const QString& fileName : misc::projectFiles(workPath)) {
+    for (const QString& fileName : files) {
       const QFileInfo info(workPath.filePath(fileName));
       if (fileName.startsWith(scratchPrefix)) {   // temporary files, of whatever type
         if (matches(taken[Scratch], info.fileName())) appendFile(Scratch, fileName);
@@ -404,24 +416,29 @@ ProjectView::refresh()
 
   restoreExpanded(QModelIndex(), expanded);
   resizeColumnToContents(0);
-  m_signature = listingSignature();
+  m_signature = m_valid ? signatureOf(m_projPath, files) : QString();
   m_folderIcons = QucsSettings.ContentFolderIcons;
   m_patterns.clear();
   for (int category = 0; category < CategoryCount; ++category)
     m_patterns.append(patterns(category));
 }
 
-QString ProjectView::listingSignature() const
+QString ProjectView::signatureOf(const QString& projPath, const QStringList& files)
 {
-  if (!m_valid) return QString();
-  const QDir workPath(m_projPath);
+  const QDir workPath(projPath);
   QString signature;
-  for (const QString& fileName : misc::projectFiles(workPath)) {
+  for (const QString& fileName : files) {
     const QFileInfo info(workPath.filePath(fileName));
     signature += fileName + QLatin1Char('|') + QString::number(info.size()) + QLatin1Char('|')
                  + QString::number(info.lastModified().toMSecsSinceEpoch()) + QLatin1Char('\n');
   }
   return signature;
+}
+
+QString ProjectView::listingSignature() const
+{
+  if (!m_valid) return QString();
+  return signatureOf(m_projPath, misc::projectFiles(QDir(m_projPath)));
 }
 
 void ProjectView::applyRefreshSettings()
@@ -455,7 +472,27 @@ void ProjectView::refreshIfChanged()
     return;
   if (QApplication::activePopupWidget() != nullptr || state() == DraggingState)
     return;
-  if (listingSignature() != m_signature) refresh();
+  // Looked at aside, not on the window's thread: a big folder took seconds
+  // - half a minute for a home folder - every few seconds, and the window
+  // never answered. One look at a time.
+  if (m_looking) return;
+  m_looking = true;
+  const QString path = m_projPath;
+  auto promise = std::make_shared<QPromise<QString>>();
+  auto* watcher = new QFutureWatcher<QString>(this);
+  connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, path] {
+    watcher->deleteLater();
+    m_looking = false;
+    if (!m_valid || path != m_projPath) return;   // another project meanwhile
+    if (QApplication::activePopupWidget() != nullptr || state() == DraggingState) return;   // (the next look)
+    if (watcher->result() != m_signature) refresh();
+  });
+  watcher->setFuture(promise->future());
+  promise->start();
+  QThreadPool::globalInstance()->start([promise, path] {
+    promise->addResult(signatureOf(path, misc::projectFiles(QDir(path))));
+    promise->finish();
+  });
 }
 
 QStringList ProjectView::exportSchematic()

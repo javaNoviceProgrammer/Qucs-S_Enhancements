@@ -30,6 +30,7 @@
 #include "markdowndoc.h"
 #include "sheetdoc.h"
 #include "spreadsheet.h"
+#include "zipfile.h"
 #include "extsimkernels/spicecompat.h"
 #include "excel_fixture.h"
 #include "isolated_settings.h"
@@ -197,6 +198,30 @@ private slots:
         QVERIFY(!asked.isEmpty());
         QCOMPARE(contents(file), QByteArray("\xEF\xBB\xBF") + QString::fromUtf8("part;value\nR1;4.7 kΩ\n").toUtf8());
         QCOMPARE(shown(doc, 1, 1), QString::fromUtf8("4.7 kΩ"));
+        app.closeAllFiles();
+    }
+
+    // The table offers rows and columns to type into - never past Excel's
+    // 1,048,576 rows (a value in the last row: rowCount() + 30 overflowed
+    // for the 2^31 rows a file could make) or 16,384 columns (bug hunt
+    // 2026-09-26, C1).
+    void theTableStopsAtExcelsLastRow()
+    {
+        QList<qucs_s::zip::Entry> package = qucs_s::zip::read(excelLike());
+        for (qucs_s::zip::Entry& e : package)
+            if (e.name == "xl/worksheets/sheet1.xml")
+                e.data = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+                         "<sheetData><row r=\"1\"><c r=\"A1\"><v>1</v></c></row>"
+                         "<row r=\"1048576\"><c r=\"XFD1048576\"><v>2</v></c></row></sheetData></worksheet>";
+        const QString file = write("last.xlsx", qucs_s::zip::write(package));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.gotoPage(file));
+        SheetDoc* doc = current(app);
+        QVERIFY(doc != nullptr);
+        QCOMPARE(doc->view()->model()->rowCount(), qucs_s::sheet::MaxRows);
+        QCOMPARE(doc->view()->model()->columnCount(), qucs_s::sheet::MaxColumns);
+        QCOMPARE(shown(doc, qucs_s::sheet::MaxRows - 1, qucs_s::sheet::MaxColumns - 1), QString("2"));
         app.closeAllFiles();
     }
 

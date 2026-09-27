@@ -79,8 +79,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   built (OSDI 0.3 or 0.4, the module of the file's name) while it is as
   new as the source, and from the source itself otherwise.
 - **Content panel sees the whole project**: files in subdirectories of the
-  project (at any depth, hidden directories excluded) are listed under
-  their category, either as `sub/dir/name.ext` rows or as sub-trees with
+  project (at any depth; hidden directories, `node_modules`,
+  `__pycache__`, `venv` and CMake build trees excluded; at most 20,000
+  files and folders looked at, the panel's header saying so when a folder
+  holds more) are listed under their category, either as `sub/dir/name.ext` rows or as sub-trees with
   one folder row per directory — right-click the empty area of the panel,
   *Toggle hierarchy search view*, to switch; the choice is remembered.
   The folder rows are plain; *Application Settings → Settings → Folder
@@ -503,7 +505,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   it added on stderr. `QUCS_NO_SHELL_ENV=1` turns it off. Windows starts
   already carry the user's environment.
 - **Content panel keeps itself current**: every few seconds it looks at
-  the project's files and, only when one came, went or changed — saved by
+  the project's files — on another thread, the window never waiting — and,
+  only when one came, went or changed — saved by
   Qucs, written by a script in the Terminal dock, copied in by hand —
   lists them again (never while a simulation is writing its scratch
   files, under an open menu, or during a drag). *Application Settings →
@@ -614,7 +617,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   then). Rows and columns are not inserted into a workbook (its formulas
   would not follow). *Save As* writes CSV, TSV or a workbook (a CSV
   file's numbers as numbers; a workbook's sheet in front as CSV). The old
-  binary `.xls` is not read: save it as `.xlsx`.
+  binary `.xls` is not read: save it as `.xlsx`. A workbook is opened up
+  to Excel's limits (1,048,576 rows, 16,384 columns) and 2,000,000 cells,
+  its files at most 256 MB unpacked — a small file that unpacks to
+  gigabytes is refused; styles set on far rows and columns take no room.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

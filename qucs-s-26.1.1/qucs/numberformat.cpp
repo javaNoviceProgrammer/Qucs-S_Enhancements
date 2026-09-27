@@ -143,6 +143,9 @@ Notation fromInt(int value)
 
 QString format(double value, Notation notation, int decimals, double step)
 {
+    // More places than a double has digits say nothing - and a precision
+    // of a billion was a label of gigabytes.
+    decimals = std::min(decimals, 20);
     if (!std::isfinite(value))
         return QString::number(value);
     if (std::fabs(value) < 1e-300) {   // 0, and no "-0"

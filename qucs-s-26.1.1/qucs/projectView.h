@@ -120,10 +120,13 @@ public:
   /// What the listing is compared by: every project file with its size
   /// and modification time.
   QString listingSignature() const;
+  /// That of the project in \a projPath, its \a files listed already.
+  static QString signatureOf(const QString& projPath, const QStringList& files);
 
 public slots:
   /// A refresh, if the project's files differ from what is shown - not
-  /// while a simulation is writing its scratch files.
+  /// while a simulation is writing its scratch files. They are looked at
+  /// on another thread; the refresh follows when they have been.
   void refreshIfChanged();
   /// The project-relative paths of the subcircuit schematics.
   QStringList exportSchematic();
@@ -142,6 +145,7 @@ private:
   QString m_projName;
   QTimer *m_pollTimer;
   QString m_signature;   // listingSignature() of what is shown
+  bool m_looking = false;   // refreshIfChanged() is looking at the files
   bool m_folderIcons = false;   // QucsSettings.ContentFolderIcons the listing was built with
   QStringList m_patterns;       // the categories' patterns the listing was built with
 

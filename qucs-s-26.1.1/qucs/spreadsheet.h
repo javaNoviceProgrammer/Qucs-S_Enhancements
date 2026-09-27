@@ -18,6 +18,7 @@
 #include <QDateTime>
 #include <QHash>
 #include <QList>
+#include <QMap>
 #include <QRect>
 #include <QSet>
 #include <QString>
@@ -69,7 +70,19 @@ struct Cell {
 struct Row {
     QVector<Cell> cells;
     QString attributes;   ///< (.xlsx) the row's own attributes (height, style), written back
+    /// (.xlsx) Its cells far past the last with anything in them (a style
+    /// on a far column; within 64 columns they stay in \c cells), by column: kept aside to take no room, written back
+    /// as they were; into \c cells once the row reaches them (Sheet::cell()).
+    QMap<int, Cell> tail;
 };
+
+/// Excel's rows and columns (XFD); a workbook's sheet with a row or a
+/// column past them is refused.
+constexpr int MaxRows = 1048576;
+constexpr int MaxColumns = 16384;
+/// The most cells a workbook's sheet is opened with here (each takes room,
+/// an empty one before a far one too): about 340 MB.
+constexpr qint64 MaxCells = 2000000;
 
 struct Sheet {
     QString name;
@@ -78,13 +91,20 @@ struct Sheet {
     bool changed = false;         ///< (.xlsx) its cells are written again
     QHash<int, double> widths;    ///< (.xlsx) column widths, in characters
     QList<QRect> merged;          ///< (.xlsx) merged cells: x the column, y the row
+    /// (.xlsx) The rows far past the last with anything in a cell (a style
+    /// set on far rows, empty cells with a style down to row 1,048,576;
+    /// within 64 rows they stay in \c rows), by row: kept aside to take no room and no rows of the table, written
+    /// back where they were; into \c rows once the table reaches them.
+    QMap<int, Row> tail;
 
     int rowCount() const { return int(rows.size()); }
     /// The columns of its widest row.
     int columnCount() const;
-    /// The cell at \a row, \a column (an empty one outside).
+    /// The cell at \a row, \a column (one kept aside too; an empty one
+    /// outside).
     const Cell& at(int row, int column) const;
-    /// The cell, the sheet grown to have it.
+    /// The cell, the sheet grown to have it (rows and cells kept aside
+    /// coming into the table as it reaches them).
     Cell& cell(int row, int column);
     /// The rows and columns past the last cell with anything dropped.
     void trim();

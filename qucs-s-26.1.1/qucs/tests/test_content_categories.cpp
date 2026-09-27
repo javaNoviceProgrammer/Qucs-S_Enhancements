@@ -7,6 +7,7 @@
  * from the defaults are saved.
  */
 #include <QtTest>
+#include <QElapsedTimer>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -148,6 +149,56 @@ private slots:
         // listed at all).
         QCOMPARE(shown[ProjectView::Others], QStringList({"broken.sch", "readme.md", "run.log", "sheet.pdf"}));
         QCOMPARE(shown[ProjectView::Scratch], QStringList({"log.txt", "spice4qucs.cir"}));
+    }
+
+    // A big folder as the project: other programs' folders (node_modules,
+    // __pycache__, venv, a CMake build tree) are not walked, at most
+    // misc::MaxProjectEntries files and folders are looked at - the header
+    // says so -, and the look every few seconds is taken aside: a home
+    // folder froze the window for half a minute, every 3 s (bug hunt
+    // 2026-09-26, C3).
+    void aBigFolderIsListedInPart()
+    {
+        const QString big = dir.filePath("big");
+        const auto put = [&](const QString& name) {
+            const QString path = big + "/" + name;
+            QDir().mkpath(QFileInfo(path).path());
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+        };
+        put("amp.sch");
+        put("node_modules/pkg/index.js");
+        put("__pycache__/x.pyc");
+        put("venv/lib/site.py");
+        put("build/CMakeCache.txt");
+        put("build/objects/amp.o");
+        put("models/deep.va");
+        QStringList few = misc::projectFiles(QDir(big));
+        few.sort();
+        QCOMPARE(few, QStringList({"amp.sch", "models/deep.va"}));
+        bool complete = false;
+        misc::projectFiles(QDir(big), {}, &complete);
+        QVERIFY(complete);
+
+        for (int i = 0; i < misc::MaxProjectEntries + 100; ++i) put(QStringLiteral("data/f%1.txt").arg(i));
+        QElapsedTimer clock;
+        clock.start();
+        const QStringList many = misc::projectFiles(QDir(big), {}, &complete);
+        QVERIFY(!complete);
+        QVERIFY(many.size() < misc::MaxProjectEntries);
+        qInfo() << "a walk of the big folder:" << clock.elapsed() << "ms";
+
+        QucsApp app(false);
+        MainGuard guard(&app);
+        ProjectView* view = app.projectView();
+        view->setProjPath(big);
+        const QString header = view->model()->horizontalHeaderItem(0)->text();
+        QVERIFY2(header.contains("the first 20,000") || header.contains("the first 20000"), qPrintable(header));
+        clock.restart();
+        view->refreshIfChanged();   // looked at aside
+        QVERIFY2(clock.elapsed() < 150, qPrintable(QString::number(clock.elapsed())));
+        QTest::qWait(1500);          // (its look ends)
+        view->setProjPath(project);
     }
 
     // Patterns set: a category lists what they match, the first from the

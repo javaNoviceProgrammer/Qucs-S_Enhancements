@@ -2241,7 +2241,9 @@ private:
 } // namespace
 
 // ----------------------------------------------------------------------
-Typeset typeset(const QString& tex, const QFont& font, const QColor& colour, bool display, qreal devicePixelRatio)
+namespace {
+Typeset typesetOrMeasure(const QString& tex, const QFont& font, const QColor& colour, bool display,
+                         qreal devicePixelRatio, bool draw)
 {
     Ctx ctx;
     ctx.base = font;
@@ -2267,6 +2269,7 @@ Typeset typeset(const QString& tex, const QFont& font, const QColor& colour, boo
     t.width = root->w + root->italic() + 2 * margin;
     t.ascent = root->a + margin;
     t.descent = root->d + margin;
+    if (!draw) return t;
     const QSize size(std::max(1, int(std::ceil(t.width * ctx.dpr))),
                      std::max(1, int(std::ceil((t.ascent + t.descent) * ctx.dpr))));
     QImage image(size, QImage::Format_ARGB32_Premultiplied);
@@ -2283,6 +2286,17 @@ Typeset typeset(const QString& tex, const QFont& font, const QColor& colour, boo
     image.setDevicePixelRatio(ctx.dpr);
     t.image = image;
     return t;
+}
+} // namespace
+
+Typeset typeset(const QString& tex, const QFont& font, const QColor& colour, bool display, qreal devicePixelRatio)
+{
+    return typesetOrMeasure(tex, font, colour, display, devicePixelRatio, true);
+}
+
+Typeset measure(const QString& tex, const QFont& font, bool display)
+{
+    return typesetOrMeasure(tex, font, QColor(0, 0, 0), display, 1.0, false);
 }
 
 QImage centredOnAxis(const Typeset& math, const QFont& font, qreal* height)

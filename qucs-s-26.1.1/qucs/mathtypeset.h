@@ -47,6 +47,9 @@ struct Typeset {
 /// Typesets \a tex (what is between the dollars) in the size of \a font:
 /// \a display for $$...$$ (bigger operators, limits above and below).
 Typeset typeset(const QString& tex, const QFont& font, const QColor& colour, bool display, qreal devicePixelRatio = 1.0);
+/// Its size alone (width, ascent, descent - as typeset() at 1.0 gives
+/// them), no image drawn.
+Typeset measure(const QString& tex, const QFont& font, bool display);
 
 /// \a math in an image whose middle is on the math axis of text in
 /// \a font: set in a line with QTextCharFormat::AlignMiddle, its baseline

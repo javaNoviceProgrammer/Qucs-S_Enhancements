@@ -54,11 +54,16 @@ namespace misc {
   QString properAbsFileName(const QString&, Schematic* sch = nullptr);
   QString properFileName(const QString&);
   /// The files of a project: every regular file below root, at any depth,
-  /// as paths relative to root ("models/bjt.va"). Hidden directories and
-  /// symbolic links to directories are not entered. With nameFilters
-  /// ("*.va") only matching names are returned. Sorted with the root's
-  /// own files first, then directory by directory.
-  QStringList projectFiles(const QDir& root, const QStringList& nameFilters = QStringList());
+  /// as paths relative to root ("models/bjt.va"). Hidden directories,
+  /// symbolic links to directories and folders other programs fill with
+  /// untold files (node_modules, __pycache__, venv, a CMake build tree)
+  /// are not entered. With nameFilters ("*.va") only matching names are
+  /// returned. Sorted with the root's own files first, then directory by
+  /// directory. At most MaxProjectEntries files and folders are looked at
+  /// - a whole home folder opened as a project took half a minute -:
+  /// \a complete, when given, says whether that was all of them.
+  QStringList projectFiles(const QDir& root, const QStringList& nameFilters = QStringList(), bool* complete = nullptr);
+  constexpr int MaxProjectEntries = 20000;
   /// The canonical path of a folder setting, empty while it is not set: a
   /// QDir given an empty path (the AdmsXml and ASCO folders of most
   /// configurations) keeps it, and its canonicalPath() warns.

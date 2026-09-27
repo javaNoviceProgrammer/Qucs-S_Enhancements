@@ -8,7 +8,9 @@
  * calculation asked for; a CSV file saved as a workbook.
  */
 #include <QtTest>
+#include <QElapsedTimer>
 #include <QRandomGenerator>
+#include <QtEndian>
 
 #include "excel_fixture.h"
 #include "spreadsheet.h"
@@ -429,6 +431,138 @@ private slots:
         QVERIFY2(!xml.contains("t=\"array\""), xml.constData());
         QVERIFY2(xml.contains("<c r=\"D1\"><f>A1:A3*10</f><v>10</v></c>"), xml.constData());
         QVERIFY2(xml.contains("<c r=\"D2\"><v>25</v></c>") && xml.contains("<c r=\"D3\"><v>30</v></c>"), xml.constData());
+    }
+
+    // A workbook with the given sheet XML in place of the fixture's first.
+    static QByteArray withSheet(const QByteArray& sheetData)
+    {
+        QList<zip::Entry> package = zip::read(excelLike());
+        for (zip::Entry& e : package)
+            if (e.name == "xl/worksheets/sheet1.xml")
+                e.data = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+                         "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" + sheetData + "</worksheet>";
+        return zip::write(package);
+    }
+
+    // Far rows and columns take no room: a row past Excel's is refused (one
+    // at 2,147,483,647 took 25 GB), a style on the last row or column is
+    // kept aside and written back where it was, the table grows into it; a
+    // sheet whose cells would span more than MaxCells is refused (bug hunt
+    // 2026-09-26, C1).
+    void farRowsAndColumnsTakeNoRoom()
+    {
+        sheet::Workbook book;
+        QString why;
+        QVERIFY(!sheet::readXlsx(withSheet("<sheetData><row r=\"2147483647\"><c r=\"A2147483647\"><v>1</v></c></row></sheetData>"),
+                                 book, &why));
+        QVERIFY2(why.contains("2147483647") && why.contains("1048576"), qPrintable(why));
+        QByteArray wide = "<sheetData><row r=\"1\">";
+        for (int c = 0; c <= sheet::MaxColumns; ++c) wide += "<c><v>1</v></c>";   // (no references: one after another)
+        QVERIFY(!sheet::readXlsx(withSheet(wide + "</row></sheetData>"), book, &why));
+        QVERIFY2(why.contains("XFD"), qPrintable(why));
+        QByteArray spread = "<sheetData>";
+        for (int r = 1; r <= 200; ++r) spread += "<row r=\"" + QByteArray::number(r) + "\"><c r=\"XFA" + QByteArray::number(r) + "\"><v>1</v></c></row>";
+        QVERIFY(!sheet::readXlsx(withSheet(spread + "</sheetData>"), book, &why));   // 200 x 16,000 cells in the table
+        QVERIFY2(why.contains("more than"), qPrintable(why));
+
+        const QByteArray styled = "<sheetData><row r=\"1\"><c r=\"A1\"><v>1</v></c><c r=\"C1\" s=\"1\"/><c r=\"XFD1\" s=\"1\"/></row>"
+                                  "<row r=\"2\"><c r=\"A2\"><v>2</v></c></row>"
+                                  "<row r=\"1048576\" ht=\"20\" customHeight=\"1\"><c r=\"A1048576\" s=\"1\"/></row></sheetData>";
+        QElapsedTimer clock;
+        clock.start();
+        QVERIFY2(sheet::readXlsx(withSheet(styled), book, &why), qPrintable(why));
+        QVERIFY(clock.elapsed() < 5000);
+        sheet::Sheet& m = book.sheets[0];
+        QCOMPARE(m.rowCount(), 2);
+        QCOMPARE(m.columnCount(), 3);          // A..C: the near styled cell kept, XFD aside
+        QCOMPARE(m.at(0, 2).style, 1);
+        QCOMPARE(m.at(0, 16383).style, 1);      // aside, still there
+        QCOMPARE(m.at(1048575, 0).style, 1);
+        QVERIFY(m.tail.contains(1048575));
+        sheet::enter(m.cell(1, 1), "3", book);  // a change: the sheet written again
+        m.changed = true;
+        QByteArray xml = entry(zip::read(sheet::writeXlsx(book)), "xl/worksheets/sheet1.xml")->data;
+        QVERIFY2(xml.contains("<c r=\"XFD1\" s=\"1\"/></row>"), xml.constData());
+        QVERIFY2(xml.contains("<row r=\"1048576\" ht=\"20\" customHeight=\"1\"><c r=\"A1048576\" s=\"1\"/></row></sheetData>"), xml.constData());
+        // The table grows into what was aside: it is there once.
+        sheet::enter(m.cell(1048575, 1), "4", book);
+        sheet::enter(m.cell(0, 16382), "5", book);
+        QVERIFY(m.tail.isEmpty());
+        xml = entry(zip::read(sheet::writeXlsx(book)), "xl/worksheets/sheet1.xml")->data;
+        QCOMPARE(xml.count("<row r=\"1048576\""), 1);
+        QVERIFY2(xml.contains("<c r=\"A1048576\" s=\"1\"/><c r=\"B1048576\"><v>4</v></c>"), xml.constData());
+        QVERIFY2(xml.contains("<c r=\"XFC1\"><v>5</v></c><c r=\"XFD1\" s=\"1\"/>"), xml.constData());
+        QCOMPARE(xml.count("r=\"XFD1\""), 1);
+    }
+
+    // A small archive that says it holds more than is opened here, or
+    // whose file inflates past the size it says, is refused - and never
+    // inflated past it (200 KB held 200 MB of spaces: 1.9 GB of memory).
+    // A long run inflates quickly (bug hunt 2026-09-26, C2).
+    void aZipBombIsRefused()
+    {
+        const QByteArray spaces(4 * 1024 * 1024, ' ');
+        bool ok = true;
+        const QByteArray deflated = zip::deflate(spaces);
+        QVERIFY(deflated.size() < 50000);
+        QVERIFY(zip::inflate(deflated, &ok, 1000).isEmpty());
+        QVERIFY(!ok);
+        QCOMPARE(zip::inflate(deflated, &ok, spaces.size()), spaces);
+        QVERIFY(ok);
+        QRandomGenerator random(1926);
+        QByteArray noise(200000, Qt::Uninitialized);   // stored blocks
+        for (char& c : noise) c = char(random.bounded(256));
+        QVERIFY(zip::inflate(zip::deflate(noise), &ok, 1000).isEmpty());
+        QVERIFY(!ok);
+        QCOMPARE(zip::inflate(zip::deflate(noise), &ok, noise.size()), noise);
+        // Literals alone: one fixed-Huffman block of "a" x 5000 (no copies).
+        QByteArray literals;
+        quint32 bits = 0;
+        int count = 0;
+        const auto put = [&](quint32 value, int n, bool huffman) {   // a Huffman code goes most significant bit first
+            for (int k = 0; k < n; ++k) {
+                const int bit = huffman ? (value >> (n - 1 - k)) & 1 : (value >> k) & 1;
+                bits |= quint32(bit) << count;
+                if (++count == 8) {
+                    literals.append(char(bits));
+                    bits = 0;
+                    count = 0;
+                }
+            }
+        };
+        put(1, 1, false);   // the last block
+        put(1, 2, false);   // fixed codes
+        for (int k = 0; k < 5000; ++k) put(0x30 + 'a', 8, true);
+        put(0, 7, true);    // the end of the block
+        if (count > 0) literals.append(char(bits));
+        QCOMPARE(zip::inflate(literals, &ok), QByteArray(5000, 'a'));
+        QVERIFY(zip::inflate(literals, &ok, 1000).isEmpty());
+        QVERIFY(!ok);
+        const QByteArray pattern = QByteArray("ab").repeated(300000);   // copies that overlap what they copy
+        QCOMPARE(zip::inflate(zip::deflate(pattern), &ok), pattern);
+
+        // The directory's size of the file (its uncompressed size) changed.
+        const auto withDeclared = [](const QByteArray& archive, quint32 size) {
+            QByteArray a = archive;
+            const qsizetype central = a.indexOf(QByteArray("PK\x01\x02", 4));
+            if (central >= 0) qToLittleEndian(size, reinterpret_cast<uchar*>(a.data()) + central + 24);
+            return a;
+        };
+        const QByteArray archive = zip::write({zip::Entry{"xl/worksheets/sheet1.xml", spaces}});
+        QString why;
+        QCOMPARE(zip::read(archive, &why).size(), 1);
+        QVERIFY(zip::read(withDeclared(archive, 1000), &why).isEmpty());
+        QVERIFY2(why.contains("bigger than the archive says"), qPrintable(why));
+        QVERIFY(zip::read(withDeclared(archive, 200u * 1024 * 1024), &why).isEmpty());
+        QVERIFY2(why.contains("more than is opened here"), qPrintable(why));
+
+        QElapsedTimer clock;
+        clock.start();
+        const QByteArray many(100 * 1024 * 1024, 'x');
+        const QByteArray packed = zip::deflate(many);
+        clock.restart();
+        QCOMPARE(zip::inflate(packed, &ok, many.size()).size(), many.size());
+        QVERIFY2(clock.elapsed() < 20000, qPrintable(QString::number(clock.elapsed())));
     }
 
     // What is typed into a workbook's cell.

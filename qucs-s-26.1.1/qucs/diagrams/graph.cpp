@@ -159,6 +159,7 @@ bool Graph::load(const QString& _s)
   n  = s.section(' ',3,3);    // Precision
   Precision = n.toInt(&ok);
   if(!ok) return false;
+  Precision = std::clamp(Precision, 0, 99);   // as the dialog allows (a file's billion: a label of gigabytes)
 
   n  = s.section(' ',4,4);    // numMode
   numMode = n.toInt(&ok);
