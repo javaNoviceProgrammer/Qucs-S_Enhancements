@@ -19,8 +19,8 @@ PDF documents), macOS arm64, Qt 6.11.2, with:
 4. **Reading the code** of the new features; entries found that way say so.
 
 *Status:* F1 (the CI timeout) fixed in `7c8dd74`; A1-A10 (data lost or corrupted) fixed in `119974d`;
-B1-B3 (security) fixed in `01ccb44`; everything else below is open. Most urgent now: C1 and C2 (tiny
-files that exhaust memory), C3 (a big folder as project freezes the app).
+B1-B3 (security) fixed in `01ccb44`; C1-C5 (memory and time) fixed in `c9e7afc`; D, E and the rest
+open.
 
 | | severity | area | finding |
 |---|---|---|---|
@@ -516,6 +516,15 @@ changes only when the user picks a mode in the Permissions menu.
 
 ### C1. A 1.3 KB .xlsx with one cell at row 2,147,483,647 takes 25 GB and a minute to open
 
+**Fixed in `c9e7afc`.** A sheet is read sparse first: a row past Excel's 1,048,576 or a cell past
+column XFD refuses the workbook (saying which), and so does one whose cells would take more than
+`sheet::MaxCells` (2,000,000, ~340 MB) in the table. Rows and cells far past the last with anything
+in them (a style on row 1,048,576 or column XFD; within 64 of the content they stay) are kept aside
+(`Sheet::tail`, `Row::tail`) - no room, no rows in the table -, read by `at()`, written back where
+they were, and taken into the table when an edit reaches them. The table offers rows and columns up
+to Excel's limits, no further (the overflow gone), and a paste stops there. Tests: `test_spreadsheet`
+`farRowsAndColumnsTakeNoRoom`, `test_sheet_doc` `theTableStopsAtExcelsLastRow`.
+
 **Severity:** high (denial of service from a tiny file; out of memory on most machines)
 **Area:** Spreadsheets (new) - `spreadsheet.cpp` `readSheet` (lines ~277-281) and `Sheet::cell`
 
@@ -547,6 +556,12 @@ rejects.
 
 ### C2. A small .xlsx can exhaust memory - the ZIP reader inflates without any limit
 
+**Fixed in `c9e7afc`.** `zip::read` refuses an archive whose files say they hold more than 128 MB
+each or 256 MB in all, before inflating anything, and inflates each file no further than the size
+the archive gives it (`zip::inflate`'s limit): a bomb fails at once. Back-references are copied
+within the buffer (`memcpy` where they do not overlap), not a byte at a time through `append()`: 100
+MB inflates in well under a second. Test: `test_spreadsheet` `aZipBombIsRefused`.
+
 **Severity:** medium-high (a 200 KB file -> 1.9 GB of memory; a few MB -> out of memory / crash)
 **Area:** Spreadsheets (new) - `zipfile.cpp` `zip::inflate` / `zip::read`, used by `sheet::readXlsx`
 
@@ -572,6 +587,14 @@ Open `bomb200.xlsx` in Qucs-S (File Browser, Content panel, File > Open, a drop)
 Probes: `2026-09-26-new-features/make_bomb.py`, `2026-09-26-new-features/probe_hunt.cpp` -> `xlsxZipBomb`.
 
 ### C3. A large folder opened as a project freezes Qucs-S - the Content panel walks the whole tree on the GUI thread every 3 s
+
+**Fixed in `c9e7afc`.** `misc::projectFiles` (the Content panel, and the searches for OSDI models
+before a simulation, ERC, find and replace, ...) does not enter `node_modules`, `__pycache__`, `venv`
+or a CMake build tree (a folder with a `CMakeCache.txt`), and looks at no more than
+`misc::MaxProjectEntries` (20,000) files and folders, saying when that was not all - the panel's
+header does ("the first 20,000 files and folders"). The look every few seconds runs on the thread
+pool; the panel is rebuilt on the window's thread only when something changed, from one walk (the
+signature no longer walks again). Test: `test_content_categories` `aBigFolderIsListedInPart`.
 
 **Severity:** high once "Any folder is a project" is on (the app becomes unusable); low before it
 **Area:** Content panel - `projectView.cpp` `refresh()` / `listingSignature()` / `refreshIfChanged()`
@@ -603,6 +626,12 @@ Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `contentPollOfLargeFolder` (P
 
 ### C4. A large Formula painting, zoomed in, allocates a 4.6 GB image
 
+**Fixed in `c9e7afc`.** The formula's image is typeset at the zoom's pixels a unit, but never past
+64 MB or 8192 pixels a side (`FormulaPainting::cappedRatio()`): a size-400 formula zoomed in is drawn
+from fewer pixels, a little soft, not out of memory; the symbol's image (for every instance) is
+capped the same way. Its size is measured without drawing an image (`math::measure()`). Test:
+`test_new_paintings` `aBigFormulaZoomedInStaysSmall`.
+
 **Severity:** medium (out of memory / a frozen window from a legal painting and an ordinary zoom)
 **Area:** Paintings (new) - `paintings/formulapainting.cpp` `paint()` (lines 103-117) / `image()`
 
@@ -632,6 +661,10 @@ done again for every instance of the subcircuit when its symbol is read (`Compon
 creates a new painting each time), so five instances hold five such images.
 
 ### C5. A marker's (or trace's) precision from a file is not clamped - one label can become gigabytes
+
+**Fixed in `c9e7afc`.** A marker's precision read from a file is kept to the dialog's 0..12, a
+trace's to its 0..99, and `numberformat::format()` writes no more than 20 places whatever it is
+given. Test: `test_marker_colors` `aPrecisionFromAFileIsKeptInBounds`.
 
 **Severity:** low-medium (from a file; hang / out of memory when the diagram draws)
 **Area:** Diagrams - `diagrams/marker.cpp:583` (`Precision = n.toInt(&ok)`), `diagrams/graph.cpp:160`;
