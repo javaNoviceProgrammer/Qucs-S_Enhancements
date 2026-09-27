@@ -260,11 +260,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   their limits, matrices, cases, aligned equations, Greek, units), the
   tools Claude uses in a row fold into one line ("Ran 3 commands, read
   amp.sch") that opens on a click - each tool on its whole command and
-  what it gave - and each turn ends with its time and what it took: the
-  tokens of the prompt and of the conversation so far (a tooltip tells
-  input, output and the cache read and written), and, when chosen, their
+  what it gave - and each turn ends with its time and, when chosen, what
+  it took: the tokens of the prompt and of the conversation so far (a
+  tooltip tells input, output and the cache read and written) and their
   cost (*⋯ → Show Usage*: each of the four on or off, for every
-  conversation, its exports and `/status`; the cost is off by default).
+  conversation, its exports and `/status`; all off by default).
   *New* (or *+*
   by the tabs) opens another conversation in a tab of its own, with its
   own Claude Code session; a tab shows what its conversation is about and

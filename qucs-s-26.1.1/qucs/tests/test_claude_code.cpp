@@ -1983,7 +1983,7 @@ private slots:
                                     "ClaudeCode/showPromptCost", "ClaudeCode/showConversationCost"})
                 settings.remove(QLatin1String(key));
         }
-        QCOMPARE(ClaudeCodePanel::usageShown(), int(ClaudeCodePanel::PromptTokens | ClaudeCodePanel::ConversationTokens));
+        QCOMPARE(ClaudeCodePanel::usageShown(), 0);   // none of it at first
         const QString work = fresh("usagework");
         const QJsonObject tokens{{"input", 2000}, {"output", 1500}, {"cacheRead", 40000}, {"cacheWrite", 3000}};
         const QJsonObject allTokens{{"input", 5000}, {"output", 4000}, {"cacheRead", 300000}, {"cacheWrite", 9000}};
@@ -2006,27 +2006,37 @@ private slots:
         QCOMPARE(panel.session()->conversationTokens().total(), qint64(318000));
         QVERIFY(qAbs(panel.session()->conversationCost() - 0.196) < 1e-9);
 
+        // At first the line says how the turn went, alone - the one kept
+        // before too, its costs as text taken out.
         panel.renderNow();
         QString text = panel.transcriptText();
         QVERIFY2(text.contains("Done in 3.0 s  ·  4 steps"), qPrintable(text));
-        QVERIFY(text.contains("Done in 2.0 s  ·  46.5k tokens  ·  318k tokens in all  ·  changed amp.sch"));
+        QVERIFY(text.contains("Done in 2.0 s  ·  changed amp.sch"));
+        QVERIFY(!text.contains("tokens"));
         QVERIFY(!text.contains("$"));
         QVERIFY(!panel.conversationMarkdown().contains("$"));
-        QVERIFY(panel.conversationMarkdown().contains("*Done in 2.0 s  ·  46.5k tokens  ·  318k tokens in all  ·  changed amp.sch*"));
-        QVERIFY(panel.conversationMarkdown().contains("- **Tokens:** "));
-        QVERIFY(!panel.conversationMarkdown().contains("- **Cost:**"));
-        QVERIFY(panel.conversationText().contains("(Done in 2.0 s  ·  46.5k tokens  ·  318k tokens in all  ·  changed amp.sch)"));
+        QVERIFY(!panel.conversationMarkdown().contains("tokens"));
+        QVERIFY(!panel.conversationMarkdown().contains("- **Tokens:**"));
 
         // Chosen in the menu of one conversation: shown in both, the
         // other drawn again.
         other.renderNow();
-        QVERIFY(other.transcriptText().contains("46.5k tokens"));
+        QVERIFY(!other.transcriptText().contains("tokens"));
         auto* promptCost = panel.findChild<QAction*>(QStringLiteral("claudeShowPromptCost"));
         auto* allCost = panel.findChild<QAction*>(QStringLiteral("claudeShowConversationCost"));
         auto* promptTokens = panel.findChild<QAction*>(QStringLiteral("claudeShowPromptTokens"));
-        QVERIFY(promptCost && allCost && promptTokens);
-        QVERIFY(promptTokens->isChecked());
-        QVERIFY(!promptCost->isChecked());
+        auto* allTokens_ = panel.findChild<QAction*>(QStringLiteral("claudeShowConversationTokens"));
+        QVERIFY(promptCost && allCost && promptTokens && allTokens_);
+        for (const QAction* a : {promptCost, allCost, promptTokens, allTokens_}) QVERIFY(!a->isChecked());
+        promptTokens->trigger();
+        allTokens_->trigger();
+        QCOMPARE(ClaudeCodePanel::usageShown(), int(ClaudeCodePanel::PromptTokens | ClaudeCodePanel::ConversationTokens));
+        QTRY_VERIFY(other.transcriptText().contains("Done in 2.0 s  ·  46.5k tokens  ·  318k tokens in all  ·  changed amp.sch"));
+        QVERIFY(!other.transcriptText().contains("$"));
+        QVERIFY(panel.conversationMarkdown().contains("*Done in 2.0 s  ·  46.5k tokens  ·  318k tokens in all  ·  changed amp.sch*"));
+        QVERIFY(panel.conversationMarkdown().contains("- **Tokens:** "));
+        QVERIFY(!panel.conversationMarkdown().contains("- **Cost:**"));
+        QVERIFY(panel.conversationText().contains("(Done in 2.0 s  ·  46.5k tokens  ·  318k tokens in all  ·  changed amp.sch)"));
         promptCost->trigger();
         allCost->trigger();
         promptTokens->trigger();
@@ -2058,7 +2068,6 @@ private slots:
         panel.renderNow();
         QVERIFY(panel.transcriptText().contains("Done in 2.0 s  ·  changed amp.sch"));
         QVERIFY(!panel.transcriptText().contains("tokens"));
-        ClaudeCodePanel::setUsageShown(ClaudeCodePanel::PromptTokens | ClaudeCodePanel::ConversationTokens);
     }
 
     // Claude Code's own sessions of the folder: listed (a title given with
@@ -2384,14 +2393,18 @@ private slots:
         QVERIFY(text.contains("I will write the file."));
         QVERIFY(text.contains("Write"));
         QVERIFY(text.contains("Done: wrote out.txt."));   // Markdown, drawn
-        // What the turn took: its tokens, and not its cost, at first.
-        QCOMPARE(ClaudeCodePanel::usageShown(), int(ClaudeCodePanel::PromptTokens | ClaudeCodePanel::ConversationTokens));
-        QVERIFY2(text.contains("12.8k tokens"), qPrintable(text));
-        QVERIFY(!text.contains("tokens in all"));   // (the conversation's is the prompt's)
+        // What the turn took: none of it at first (as usageShown() has it
+        // before any is chosen).
+        QCOMPARE(ClaudeCodePanel::usageShown(), 0);
+        QVERIFY2(text.contains("Done in 1.2 s  ·  2 steps  ·  changed out.txt"), qPrintable(text));
+        QVERIFY(!text.contains("tokens"));
         QVERIFY(!text.contains("$"));
-        // Each kind of them in its tooltip.
+        // Its tokens, as soon as chosen; each kind of them in its tooltip.
+        ClaudeCodePanel::setUsageShown(ClaudeCodePanel::PromptTokens | ClaudeCodePanel::ConversationTokens);
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("Done in 1.2 s  ·  12.8k tokens  ·  2 steps  ·  changed out.txt"));
+        QVERIFY(!panel.transcriptText().contains("tokens in all"));   // (the conversation's is the prompt's)
         QVERIFY(toolTipOf(panel.transcript()->document(), "12.8k tokens").contains(QLocale().toString(10500)));
-        QVERIFY(text.contains("changed out.txt"));
         // The costs shown, and the tokens not, as soon as chosen.
         ClaudeCodePanel::setUsageShown(ClaudeCodePanel::PromptCost | ClaudeCodePanel::ConversationCost);
         panel.renderNow();
@@ -2403,7 +2416,6 @@ private slots:
         ClaudeCodePanel::setUsageShown(0);
         panel.renderNow();
         QVERIFY(panel.transcriptText().contains("Done in 1.2 s  ·  2 steps  ·  changed out.txt"));
-        ClaudeCodePanel::setUsageShown(ClaudeCodePanel::PromptTokens | ClaudeCodePanel::ConversationTokens);
         QCOMPARE(panel.sendButton()->text(), QStringLiteral("Send"));
         QVERIFY(panel.stateLabel()->text().contains("ready"));
 

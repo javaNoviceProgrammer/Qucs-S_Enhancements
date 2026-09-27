@@ -9,7 +9,8 @@ Two requests:
 2. The Claude chat showed each turn's cost in dollars. The user wanted
    settings for the tokens of each prompt, the tokens of the whole
    conversation, the cost of each prompt and the cost of the conversation.
-   By default only the tokens are shown and the cost is hidden.
+   At first the user asked for the tokens to be shown by default and the
+   cost hidden; then for none of the four to be shown by default.
 
 ## View All with diagrams
 
@@ -53,8 +54,8 @@ Each fix was taken out in turn, and the full sweep was run each time:
 
 | Asked | Now |
 |---|---|
-| Tokens of each prompt | "46.5k tokens" on the line that ends the turn. The count covers every model call the turn made (the main loop, subagents, compaction) and every kind of token: input, output, and the context read from the cache and written to it. A tooltip gives each kind in full. On by default. |
-| Tokens of the conversation | "318k tokens in all", the sum so far. It is left out on a turn where it equals the prompt's (the first turn), unless the prompt's tokens are hidden. On by default. |
+| Tokens of each prompt | "46.5k tokens" on the line that ends the turn. The count covers every model call the turn made (the main loop, subagents, compaction) and every kind of token: input, output, and the context read from the cache and written to it. A tooltip gives each kind in full. Off by default. |
+| Tokens of the conversation | "318k tokens in all", the sum so far. It is left out on a turn where it equals the prompt's (the first turn), unless the prompt's tokens are hidden. Off by default. |
 | Cost of each prompt | "$0.046", as Claude Code estimates it. Off by default. |
 | Cost of the conversation | "$0.196 in all". Off by default. |
 | Where | *⋯ → Show Usage* in the dock: four switches that apply to every conversation. Each conversation redraws its lines as soon as a switch changes, and the switches are kept in the settings (`ClaudeCode/show…`, carried by *Export Settings*). |
@@ -91,8 +92,10 @@ from its last turn's totals.
 - `aTurnsTokensAreCounted`: a zeroed result, `usage` alone, and totals
   continued and then forgotten.
 - `aTurnWithTheProgram`: a new program counts from nothing.
-- `theDockShowsTheConversation`: the tokens are shown and the cost is not
-  at first, with a tooltip for each kind. Each switch changes the line.
-- `usageIsShownAsChosen`: a conversation brought back, in the new format
-  and the old one. The menu of one conversation changes both. Exports,
+- `theDockShowsTheConversation`: at first the line shows no usage at
+  all. The tokens are shown as soon as they are chosen, with a tooltip for
+  each kind. Each switch changes the line.
+- `usageIsShownAsChosen`: none of the four is on before any is chosen. A
+  conversation brought back, in the new format and the old one. The menu
+  of one conversation changes both. Exports,
   `/status`, and what is kept.

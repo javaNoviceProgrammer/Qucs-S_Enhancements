@@ -172,8 +172,8 @@ public:
     static void setExportsToolDetails(bool on);
     /// What the line that ends each turn tells of what it took, in every
     /// conversation, its exports and /status (⋯ › Show Usage; kept in the
-    /// settings): the tokens of the prompt and of the conversation so far
-    /// (on at first), and their cost (off at first).
+    /// settings): the tokens of the prompt and of the conversation so far,
+    /// and their cost - none of them at first.
     enum Usage { PromptTokens = 1, ConversationTokens = 2, PromptCost = 4, ConversationCost = 8 };
     static int usageShown();
     /// Each conversation shows it at once.
