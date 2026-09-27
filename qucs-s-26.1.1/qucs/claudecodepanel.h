@@ -170,6 +170,14 @@ public:
     /// on at first).
     static bool exportsToolDetails();
     static void setExportsToolDetails(bool on);
+    /// What the line that ends each turn tells of what it took, in every
+    /// conversation, its exports and /status (⋯ › Show Usage; kept in the
+    /// settings): the tokens of the prompt and of the conversation so far
+    /// (on at first), and their cost (off at first).
+    enum Usage { PromptTokens = 1, ConversationTokens = 2, PromptCost = 4, ConversationCost = 8 };
+    static int usageShown();
+    /// Each conversation shows it at once.
+    static void setUsageShown(int usage);
     /// The whole conversation - a header (what it is about, when, the
     /// folder, the model, the session), then every prompt, reply, tool
     /// (its input and what it gave, as when it is opened, unless
@@ -267,8 +275,16 @@ private:
         enum ToolState { Running, Succeeded, Failed, Denied } tool = Running;
         bool streaming = false;
         QString detail = QString();   // a tool's input: the command, the edit
-        QString result = QString();   // what it gave (the first lines)
+        QString result = QString();   // what it gave (the first lines); after a turn's usage, the rest of its line
+        // How a turn ended (Summary: text "Done in 4 s", result "3 steps"):
+        // what it took, and the conversation so far, shown as usageShown()
+        // says. A cost below 0 is not known.
+        qucs_s::claude::TokenUsage tokens = {}, allTokens = {};
+        double cost = -1.0, allCost = -1.0;
     };
+    /// A turn's line, as usageShown() has it: each part, with its tooltip.
+    static QList<QPair<QString, QString>> summaryParts(const Entry& e);
+    static QString summaryText(const Entry& e);
 
     void buildHeader();
     void buildComposer();

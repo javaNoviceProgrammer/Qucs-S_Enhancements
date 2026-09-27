@@ -40,6 +40,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <limits>
 #include <clocale>
 #include <cstring>
 #include <new>
@@ -2263,12 +2264,45 @@ QRect Diagram::boundingRect() const noexcept
     // Despite of having "Bounding_" in the name these are apparently
     // not boungings at all. Computations are taken "as is" from legacy
     // implementation, they work though it's hard to tell how.
+    // (Its title too, above the frame, as Bounding() and getSelected()
+    // have it.)
     int x1_ = cx - Bounding_x1;
-    int y1_ = cy - y2 - Bounding_y2;
+    int y1_ = cy - y2 - std::max(Bounding_y2, titleHeight());
     int x2_ = cx + x2 + Bounding_x2;
     int y2_ = cy - Bounding_y1;
     return QRect{QPoint{x1_, y1_}, QPoint{x2_, y2_}}.normalized();
 }
+
+namespace {
+
+// Where QPainter::drawArc(r, angle, span) draws (angles in 1/16 degree,
+// counterclockwise from 3 o'clock): its ends, and the points of the circle
+// straight up, down, left and right of its centre that it passes. A Smith
+// chart's circles are arcs of circles many times its size.
+QRectF arcRect(const QRectF& r, int angle, int span)
+{
+    if (std::abs(span) >= 16 * 360) return r;
+    double from = angle / 16.0, to = (angle + span) / 16.0;
+    if (to < from) std::swap(from, to);
+    const QPointF c = r.center();
+    const double rx = r.width() / 2, ry = r.height() / 2;
+    double left = std::numeric_limits<double>::max(), top = left;
+    double right = std::numeric_limits<double>::lowest(), bottom = right;
+    const auto take = [&](double degrees) {
+        const double t = qDegreesToRadians(degrees);
+        const double x = c.x() + rx * std::cos(t), y = c.y() - ry * std::sin(t);
+        left = std::min(left, x);
+        right = std::max(right, x);
+        top = std::min(top, y);
+        bottom = std::max(bottom, y);
+    };
+    take(from);
+    take(to);
+    for (double quarter = std::ceil(from / 90) * 90; quarter < to; quarter += 90) take(quarter);
+    return QRectF(QPointF(left, top), QPointF(right, bottom));
+}
+
+} // namespace
 
 QRectF Diagram::paintedRect(const QFontMetricsF& metrics) const
 {
@@ -2277,8 +2311,11 @@ QRectF Diagram::paintedRect(const QFontMetricsF& metrics) const
     QRectF drawn(QPointF(-x1, -y2), QPointF(x3, y1));
     for (const qucs::Line* line : Lines)
         drawn |= QRectF(QPointF(line->x1, -line->y1), QPointF(line->x2, -line->y2)).normalized();
-    for (const qucs::Arc* arc : Arcs)
-        drawn |= QRectF(arc->x, -arc->y, arc->w, arc->h).normalized();
+    for (const qucs::Arc* arc : Arcs) {
+        // (A line's width at most: the arc drawn with a pen of 0 or 1.)
+        const QRectF r = arcRect(QRectF(arc->x, -arc->y, arc->w, arc->h).normalized(), arc->angle, arc->arclen);
+        drawn |= r.adjusted(-1, -1, 1, 1);
+    }
     for (const Text* text : Texts)
         drawn |= textRect(*text, metrics);
     if (!title.isEmpty()) {

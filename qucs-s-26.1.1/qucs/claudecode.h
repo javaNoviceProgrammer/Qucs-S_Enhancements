@@ -56,6 +56,24 @@ struct PermissionRequest {
     bool canAllowTools = false;   ///< one of the host's tools (ToolHost): all of them may be allowed at once
 };
 
+/// Tokens the models took and gave: what was read anew, read from the
+/// cache and written to it, and what they wrote.
+struct TokenUsage {
+    qint64 input = 0;
+    qint64 output = 0;
+    qint64 cacheRead = 0;
+    qint64 cacheWrite = 0;
+    qint64 total() const { return input + output + cacheRead + cacheWrite; }
+    bool isEmpty() const { return total() == 0; }
+    TokenUsage& operator+=(const TokenUsage& other);
+    bool operator==(const TokenUsage&) const = default;
+};
+/// The tokens a result reports (its "modelUsage", every model's summed:
+/// the program's totals since it started; or, from a program that has
+/// none, its "usage": the turn's, of the main loop alone). \a running
+/// says which.
+TokenUsage tokensOf(const QJsonObject& result, bool* running = nullptr);
+
 /// How a turn ended.
 struct TurnResult {
     bool ok = false;
@@ -64,6 +82,8 @@ struct TurnResult {
     qint64 durationMs = 0;
     double costUsd = 0.0;           ///< this turn's
     double conversationCostUsd = 0.0;   ///< the conversation's so far
+    TokenUsage tokens;                  ///< this turn's
+    TokenUsage conversationTokens;      ///< the conversation's so far
     int turns = 0;
     int denials = 0;        ///< tool uses that were not allowed
     bool stopped = false;   ///< the user stopped it
@@ -260,6 +280,11 @@ public:
     /// own. When Claude Code no longer has it, the prompt is sent again to
     /// a new conversation (and a notice says so).
     void resume(const QString& sessionId);
+    /// What the conversation has taken so far - one kept from before, its
+    /// last turn's totals -: the next turns' are added to it.
+    void setConversationTotals(const TokenUsage& tokens, double costUsd);
+    TokenUsage conversationTokens() const { return a_conversationTokens; }
+    double conversationCost() const { return a_conversationCost; }
     /// The slash commands the program runs here (not those only its
     /// terminal has), as it said when it started: "compact", "context",
     /// skills...; empty before it has.
@@ -375,6 +400,8 @@ private:
     bool a_stopping = false;   // stop() is ending the program
     double a_reportedCost = 0.0;       // the program's total so far (it counts from its start)
     double a_conversationCost = 0.0;
+    TokenUsage a_reportedTokens;       // (as its cost)
+    TokenUsage a_conversationTokens;
     bool a_interrupted = false;   // the user stopped the turn under way
 
     QString a_streamed;        // the reply being written

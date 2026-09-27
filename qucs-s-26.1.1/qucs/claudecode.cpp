@@ -159,6 +159,42 @@ QString stateText(State state)
     return {};
 }
 
+TokenUsage& TokenUsage::operator+=(const TokenUsage& other)
+{
+    input += other.input;
+    output += other.output;
+    cacheRead += other.cacheRead;
+    cacheWrite += other.cacheWrite;
+    return *this;
+}
+
+TokenUsage tokensOf(const QJsonObject& result, bool* running)
+{
+    const auto count = [](const QJsonObject& o, const char* name) {
+        return std::max<qint64>(0, qint64(o.value(QLatin1String(name)).toDouble()));
+    };
+    TokenUsage tokens;
+    const QJsonObject models = result.value(QLatin1String("modelUsage")).toObject();
+    if (!models.isEmpty()) {
+        for (auto it = models.begin(); it != models.end(); ++it) {
+            const QJsonObject m = it.value().toObject();
+            tokens.input += count(m, "inputTokens");
+            tokens.output += count(m, "outputTokens");
+            tokens.cacheRead += count(m, "cacheReadInputTokens");
+            tokens.cacheWrite += count(m, "cacheCreationInputTokens");
+        }
+        if (running != nullptr) *running = true;
+        return tokens;
+    }
+    const QJsonObject usage = result.value(QLatin1String("usage")).toObject();
+    tokens.input = count(usage, "input_tokens");
+    tokens.output = count(usage, "output_tokens");
+    tokens.cacheRead = count(usage, "cache_read_input_tokens");
+    tokens.cacheWrite = count(usage, "cache_creation_input_tokens");
+    if (running != nullptr) *running = false;
+    return tokens;
+}
+
 QStringList arguments(const Options& options)
 {
     QStringList args = {QStringLiteral("-p"),
@@ -465,6 +501,7 @@ void Session::setWorkingDirectory(const QString& dir)
     a_toolsAllowed = false;
     a_modelInUse.clear();
     a_conversationCost = 0.0;
+    a_conversationTokens = {};
     if (a_state != State::NotFound) setState(State::Off);
 }
 
@@ -472,6 +509,12 @@ void Session::resume(const QString& sessionId)
 {
     if (isRunning()) stop();
     a_sessionId = sessionId;
+}
+
+void Session::setConversationTotals(const TokenUsage& tokens, double costUsd)
+{
+    a_conversationTokens = tokens;
+    a_conversationCost = std::max(0.0, costUsd);
 }
 
 void Session::setToolHost(ToolHost* host)
@@ -625,6 +668,7 @@ void Session::start()
     a_resumeFailed = false;
     a_stopping = false;
     a_reportedCost = 0.0;
+    a_reportedTokens = {};
     a_modeInUse.clear();
     a_asked.clear();
     a_restartAfterTurn = false;
@@ -785,6 +829,7 @@ void Session::reset()
     endTurn();   // and any permission request asked without a program
     a_sessionId.clear();
     a_conversationCost = 0.0;
+    a_conversationTokens = {};
     a_modelInUse.clear();
     a_toolsAllowed = false;
     setState(a_program.isEmpty() ? State::NotFound : State::Off);
@@ -1135,6 +1180,25 @@ void Session::handleResult(const QJsonObject& m)
     a_reportedCost = std::max(a_reportedCost, reported);
     a_conversationCost += r.costUsd;
     r.conversationCostUsd = a_conversationCost;
+    // Its tokens likewise, each kind (a result with none, a failure's,
+    // takes nothing away).
+    bool running = false;
+    const TokenUsage reportedTokens = tokensOf(m, &running);
+    if (running) {
+        const auto added = [](qint64 now, qint64& before) {
+            const qint64 turn = std::max<qint64>(0, now - before);
+            before = std::max(before, now);
+            return turn;
+        };
+        r.tokens.input = added(reportedTokens.input, a_reportedTokens.input);
+        r.tokens.output = added(reportedTokens.output, a_reportedTokens.output);
+        r.tokens.cacheRead = added(reportedTokens.cacheRead, a_reportedTokens.cacheRead);
+        r.tokens.cacheWrite = added(reportedTokens.cacheWrite, a_reportedTokens.cacheWrite);
+    } else {
+        r.tokens = reportedTokens;
+    }
+    a_conversationTokens += r.tokens;
+    r.conversationTokens = a_conversationTokens;
     r.turns = m.value(QLatin1String("num_turns")).toInt();
     r.denials = int(m.value(QLatin1String("permission_denials")).toArray().size());
     r.changedFiles = a_changedFiles;

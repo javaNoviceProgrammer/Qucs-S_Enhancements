@@ -656,9 +656,13 @@ Marker* Marker::sameNewOne(Graph *pGraph_)
 
 QRect Marker::boundingRect() const noexcept
 {
-  return QRect{QPoint{cx, cy}, QPoint{x1, y1}}
-    .normalized()
-    .united(QRect{x1, y1, x2, y2}.normalized());
+  // Where paint() draws it, on the schematic: its label, with the frame
+  // drawn round it when it is selected, and the point it marks (y upwards
+  // from the diagram's lower left corner) with its indicator.
+  const QPoint origin = diag() ? QPoint{diag()->cx, diag()->cy} : QPoint{};
+  const QRect label = QRect{x1, y1, x2, y2}.normalized().marginsAdded({5, 5, 5, 5});
+  const QRect root = QRect{0, 0, IND_SIZE + 2, IND_SIZE + 2}.translated(cx - IND_SIZE / 2 - 1, -cy - IND_SIZE / 2 - 1);
+  return label.united(root).translated(origin);
 }
 
 

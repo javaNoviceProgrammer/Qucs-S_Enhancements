@@ -83,6 +83,11 @@ const QString kAttach = QStringLiteral("ClaudeCode/attachDocument");
 const QString kExportDir = QStringLiteral("ClaudeCode/exportFolder");
 const QString kExportDetails = QStringLiteral("ClaudeCode/exportToolDetails");
 const QString kCommands = QStringLiteral("ClaudeCode/slashCommands");   // Claude Code's, as it last said
+// What each turn's line tells of what it took.
+const QString kShowPromptTokens = QStringLiteral("ClaudeCode/showPromptTokens");
+const QString kShowConversationTokens = QStringLiteral("ClaudeCode/showConversationTokens");
+const QString kShowPromptCost = QStringLiteral("ClaudeCode/showPromptCost");
+const QString kShowConversationCost = QStringLiteral("ClaudeCode/showConversationCost");
 
 struct Colours {
     QColor base, text, muted, faint, border, accent, onAccent, bubble, code, ok, warn, error;
@@ -162,6 +167,49 @@ QString seconds(qint64 ms)
 QString cost(double usd)
 {
     return QStringLiteral("$") + QLocale::c().toString(usd, 'f', usd < 1.0 ? 3 : 2);
+}
+
+// A number of tokens, short: 812, 12.3k, 1.24M.
+QString tokenCount(qint64 n)
+{
+    const QLocale c = QLocale::c();
+    if (n < 1000) return QString::number(n);
+    if (n < 99950) return c.toString(n / 1000.0, 'f', 1) + QLatin1Char('k');
+    if (n < 999500) return QString::number(qRound64(n / 1000.0)) + QLatin1Char('k');
+    return c.toString(n / 1e6, 'f', n < 99995000 ? 2 : 1) + QLatin1Char('M');
+}
+
+// Each kind of them, in full.
+QString tokenDetail(const qucs_s::claude::TokenUsage& t)
+{
+    const QLocale locale;
+    return ClaudeCodePanel::tr("%1 tokens: %2 input, %3 output, %4 read from the cache, %5 written to it")
+        .arg(locale.toString(t.total()), locale.toString(t.input), locale.toString(t.output),
+             locale.toString(t.cacheRead), locale.toString(t.cacheWrite));
+}
+
+QJsonObject tokensJson(const qucs_s::claude::TokenUsage& t)
+{
+    return {{QStringLiteral("input"), double(t.input)}, {QStringLiteral("output"), double(t.output)},
+            {QStringLiteral("cacheRead"), double(t.cacheRead)}, {QStringLiteral("cacheWrite"), double(t.cacheWrite)}};
+}
+
+qucs_s::claude::TokenUsage tokensFromJson(const QJsonObject& o)
+{
+    const auto count = [&o](const char* name) { return std::max<qint64>(0, qint64(o.value(QLatin1String(name)).toDouble())); };
+    qucs_s::claude::TokenUsage t;
+    t.input = count("input");
+    t.output = count("output");
+    t.cacheRead = count("cacheRead");
+    t.cacheWrite = count("cacheWrite");
+    return t;
+}
+
+// The dock's conversations: each shows the usage chosen at once.
+QList<ClaudeCodePanel*>& openPanels()
+{
+    static QList<ClaudeCodePanel*> panels;
+    return panels;
 }
 
 // A folder as the user knows it: ~ for the home directory.
@@ -386,6 +434,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
       a_clock(new QTimer(this))
 {
     setObjectName(QStringLiteral("claudeCodePanel"));
+    openPanels().append(this);
     a_renderTimer->setSingleShot(true);
     a_renderTimer->setInterval(40);
     connect(a_renderTimer, &QTimer::timeout, this, &ClaudeCodePanel::render);
@@ -550,7 +599,10 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     render();
 }
 
-ClaudeCodePanel::~ClaudeCodePanel() = default;
+ClaudeCodePanel::~ClaudeCodePanel()
+{
+    openPanels().removeAll(this);
+}
 
 // ----------------------------------------------------------------------
 void ClaudeCodePanel::buildHeader()
@@ -791,6 +843,43 @@ void ClaudeCodePanel::buildMenu()
                        "prompt shows its branch and the lines changed, and offers to create a pull request - in "
                        "every conversation"));
     connect(git, &QAction::triggered, this, [](bool on) { ClaudeGitBar::setOn(on); });
+    // What the line that ends each turn tells of what it took.
+    QMenu* usage = a_menu->addMenu(tr("Show Usage"));
+    usage->setObjectName(QStringLiteral("claudeUsageMenu"));
+    usage->setToolTipsVisible(true);
+    const struct {
+        Usage flag;
+        const char* name;
+        const char* label;
+        const char* tip;
+    } usages[] = {
+        {PromptTokens, "claudeShowPromptTokens", QT_TR_NOOP("Tokens of Each Prompt"),
+         QT_TR_NOOP("The tokens the models read and wrote for the prompt: its input, the context read from the "
+                    "cache and written to it, and Claude's output (a tooltip tells each)")},
+        {ConversationTokens, "claudeShowConversationTokens", QT_TR_NOOP("Tokens of the Conversation"),
+         QT_TR_NOOP("The tokens of all the conversation's prompts so far")},
+        {PromptCost, "claudeShowPromptCost", QT_TR_NOOP("Cost of Each Prompt"),
+         QT_TR_NOOP("What the prompt cost in US dollars, as Claude Code estimates it at the models' prices")},
+        {ConversationCost, "claudeShowConversationCost", QT_TR_NOOP("Cost of the Conversation"),
+         QT_TR_NOOP("What all the conversation's prompts have cost so far, as Claude Code estimates it")},
+    };
+    QList<QAction*> usageActions;
+    for (const auto& u : usages) {
+        QAction* a = usage->addAction(tr(u.label));
+        a->setObjectName(QLatin1String(u.name));
+        a->setCheckable(true);
+        a->setData(int(u.flag));
+        a->setChecked(usageShown() & u.flag);
+        a->setToolTip(tr(u.tip));
+        connect(a, &QAction::triggered, this, [flag = int(u.flag)](bool on) {
+            setUsageShown(on ? usageShown() | flag : usageShown() & ~flag);
+        });
+        usageActions << a;
+    }
+    connect(usage, &QMenu::aboutToShow, this, [usageActions] {
+        const int shown = usageShown();   // (another conversation may have changed it)
+        for (QAction* a : usageActions) a->setChecked(shown & a->data().toInt());
+    });
     a_menu->addSeparator();
     a_pinMenu = a_menu->addMenu(tr("Pin to a Schematic"));
     a_pinMenu->setObjectName(QStringLiteral("claudePinMenu"));
@@ -1611,26 +1700,32 @@ void ClaudeCodePanel::answer(bool allow, bool allowEdits, bool allowTools)
 void ClaudeCodePanel::onTurnFinished(const qucs_s::claude::TurnResult& r)
 {
     for (Entry& e : a_entries) e.streaming = false;
-    QStringList parts;
+    // How it ended, what it took (shown as usageShown() says), the rest.
+    Entry summary{Entry::Summary, QString(), {}, {}};
+    QStringList rest;
     if (r.stopped) {
-        parts << tr("Stopped");
+        summary.text = tr("Stopped");
     } else if (r.ok) {
-        parts << tr("Done in %1").arg(seconds(r.durationMs));
+        summary.text = tr("Done in %1").arg(seconds(r.durationMs));
     } else {
         append({Entry::Problem, a_session->detail().isEmpty() ? tr("The turn failed.") : a_session->detail(), {}, {}});
     }
     if (r.ok || r.stopped) {
-        if (r.costUsd > 0.0) parts << cost(r.costUsd);
-        if (r.conversationCostUsd > r.costUsd + 0.0005) parts << tr("%1 in all").arg(cost(r.conversationCostUsd));
-        if (r.turns > 1) parts << tr("%1 steps").arg(r.turns);
-        if (r.denials > 0) parts << (r.denials == 1 ? tr("1 action not allowed") : tr("%1 actions not allowed").arg(r.denials));
+        summary.tokens = r.tokens;
+        summary.allTokens = r.conversationTokens;
+        summary.cost = r.costUsd;
+        summary.allCost = r.conversationCostUsd;
+        if (r.turns > 1) rest << tr("%1 steps").arg(r.turns);
+        if (r.denials > 0) rest << (r.denials == 1 ? tr("1 action not allowed") : tr("%1 actions not allowed").arg(r.denials));
     }
     if (!r.changedFiles.isEmpty()) {
         QStringList names;
         for (const QString& f : r.changedFiles) names << QFileInfo(f).fileName();
-        parts << tr("changed %1").arg(names.join(QStringLiteral(", ")));
+        rest << tr("changed %1").arg(names.join(QStringLiteral(", ")));
     }
-    if (!parts.isEmpty()) append({Entry::Summary, parts.join(QStringLiteral("  ·  ")), {}, {}});
+    summary.result = rest.join(QStringLiteral("  ·  "));
+    if (!summary.text.isEmpty() || !summary.result.isEmpty() || !summary.allTokens.isEmpty() || summary.allCost > 0.0)
+        append(summary);
     a_requests.clear();
     showNextRequest();
     updateState();
@@ -1859,10 +1954,18 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
         break;
     }
     case Entry::Summary: {
+        // (Nothing when all it would tell is hidden.)
+        const QList<QPair<QString, QString>> parts = summaryParts(e);
+        if (parts.isEmpty()) break;
         QTextBlockFormat f;
         f.setTopMargin(8);
         startBlock(c, f);
-        c.insertText(e.text, muted);
+        for (qsizetype i = 0; i < parts.size(); ++i) {
+            if (i > 0) c.insertText(QStringLiteral("  ·  "), muted);
+            QTextCharFormat part = muted;
+            part.setToolTip(parts.at(i).second);
+            c.insertText(parts.at(i).first, part);
+        }
         break;
     }
     }
@@ -2268,6 +2371,14 @@ QJsonObject ClaudeCodePanel::conversationJson() const
         if (e.kind == Entry::Tool) o.insert(QStringLiteral("tool"), int(e.tool));
         if (!e.detail.isEmpty()) o.insert(QStringLiteral("detail"), e.detail);
         if (!e.result.isEmpty()) o.insert(QStringLiteral("result"), e.result);
+        if (e.kind == Entry::Summary) {
+            if (!e.allTokens.isEmpty()) {
+                o.insert(QStringLiteral("tokens"), tokensJson(e.tokens));
+                o.insert(QStringLiteral("allTokens"), tokensJson(e.allTokens));
+            }
+            if (e.cost >= 0.0) o.insert(QStringLiteral("cost"), e.cost);
+            if (e.allCost >= 0.0) o.insert(QStringLiteral("allCost"), e.allCost);
+        }
         entries.append(o);
     }
     return {{QStringLiteral("title"), exportTitle()},
@@ -2297,6 +2408,31 @@ void ClaudeCodePanel::restoreConversation(const QJsonObject& conversation)
         e.output = o.value(QLatin1String("output")).toString();
         e.detail = o.value(QLatin1String("detail")).toString();
         e.result = o.value(QLatin1String("result")).toString();
+        if (e.kind == Entry::Summary) {
+            e.tokens = tokensFromJson(o.value(QLatin1String("tokens")).toObject());
+            e.allTokens = tokensFromJson(o.value(QLatin1String("allTokens")).toObject());
+            e.cost = o.value(QLatin1String("cost")).toDouble(-1.0);
+            e.allCost = o.value(QLatin1String("allCost")).toDouble(-1.0);
+            // Kept before the line was made as it is shown: its costs
+            // ("$0.012", "$0.05 in all") taken out of its text, to be
+            // shown as usageShown() says - the rest before and after them.
+            if (!o.contains(QLatin1String("cost")) && e.text.contains(QLatin1Char('$'))) {
+                static const QRegularExpression amount(QStringLiteral("^\\$(\\d+(?:\\.\\d+)?)(\\s+\\S.*)?$"));
+                QStringList before, after;
+                for (const QString& part : e.text.split(QStringLiteral("  ·  "))) {
+                    const QRegularExpressionMatch m = amount.match(part);
+                    if (!m.hasMatch()) {
+                        (e.cost < 0.0 && e.allCost < 0.0 ? before : after) << part;
+                    } else if (m.captured(2).isEmpty()) {
+                        e.cost = m.captured(1).toDouble();
+                    } else {
+                        e.allCost = m.captured(1).toDouble();
+                    }
+                }
+                e.text = before.join(QStringLiteral("  ·  "));
+                if (!after.isEmpty()) e.result = after.join(QStringLiteral("  ·  "));
+            }
+        }
         if (e.kind == Entry::Tool) {
             const int tool = o.value(QLatin1String("tool")).toInt(Entry::Failed);
             e.tool = tool >= Entry::Running && tool <= Entry::Denied ? static_cast<Entry::ToolState>(tool) : Entry::Failed;
@@ -2310,6 +2446,12 @@ void ClaudeCodePanel::restoreConversation(const QJsonObject& conversation)
     a_name = conversation.value(QLatin1String("name")).toString().simplified();
     pinDocument(conversation.value(QLatin1String("pinned")).toString());
     a_session->resume(conversation.value(QLatin1String("sessionId")).toString());
+    // Its totals go on from its last turn's.
+    for (auto it = a_entries.crbegin(); it != a_entries.crend(); ++it) {
+        if (it->kind != Entry::Summary || (it->allTokens.isEmpty() && it->allCost < 0.0)) continue;
+        a_session->setConversationTotals(it->allTokens, it->allCost);
+        break;
+    }
     showNextRequest();
     updateState();
     scheduleRender();
@@ -2564,6 +2706,12 @@ bool ClaudeCodePanel::runCommand(const QString& text)
         lines << tr("Folder: %1").arg(QDir::toNativeSeparators(workingDirectory()));
         if (!a_pinned.isEmpty()) lines << tr("Pinned to: %1").arg(QDir::toNativeSeparators(a_pinned));
         if (!a_session->version().isEmpty()) lines << tr("Claude Code: %1").arg(a_session->version());
+        // What it has taken so far, as the turns' lines show it.
+        const int usage = usageShown();
+        if ((usage & (PromptTokens | ConversationTokens)) && !a_session->conversationTokens().isEmpty())
+            lines << tr("Used: %1").arg(tokenDetail(a_session->conversationTokens()));
+        if ((usage & (PromptCost | ConversationCost)) && a_session->conversationCost() > 0.0)
+            lines << tr("Cost: %1, as Claude Code estimates it").arg(cost(a_session->conversationCost()));
         addNote(lines.join(QLatin1Char('\n')));
     } else if (name == QLatin1String("pin")) {
         const QString schematic = pinnableDocument();
@@ -2667,7 +2815,63 @@ QList<QPair<QString, QString>> ClaudeCodePanel::exportFacts() const
     facts << qMakePair(tr("Model"), model.isEmpty() ? tr("the default") : model);
     if (!a_session->version().isEmpty()) facts << qMakePair(tr("Claude Code"), a_session->version());
     if (!a_session->sessionId().isEmpty()) facts << qMakePair(tr("Session"), a_session->sessionId());
+    const int usage = usageShown();
+    if ((usage & (PromptTokens | ConversationTokens)) && !a_session->conversationTokens().isEmpty())
+        facts << qMakePair(tr("Tokens"), tokenDetail(a_session->conversationTokens()));
+    if ((usage & (PromptCost | ConversationCost)) && a_session->conversationCost() > 0.0)
+        facts << qMakePair(tr("Cost"), cost(a_session->conversationCost()));
     return facts;
+}
+
+int ClaudeCodePanel::usageShown()
+{
+    const QucsSettingsFile settings;
+    int usage = 0;
+    if (settings.value(kShowPromptTokens, true).toBool()) usage |= PromptTokens;
+    if (settings.value(kShowConversationTokens, true).toBool()) usage |= ConversationTokens;
+    if (settings.value(kShowPromptCost, false).toBool()) usage |= PromptCost;
+    if (settings.value(kShowConversationCost, false).toBool()) usage |= ConversationCost;
+    return usage;
+}
+
+void ClaudeCodePanel::setUsageShown(int usage)
+{
+    {
+        QucsSettingsFile settings;
+        settings.setValue(kShowPromptTokens, bool(usage & PromptTokens));
+        settings.setValue(kShowConversationTokens, bool(usage & ConversationTokens));
+        settings.setValue(kShowPromptCost, bool(usage & PromptCost));
+        settings.setValue(kShowConversationCost, bool(usage & ConversationCost));
+    }
+    for (ClaudeCodePanel* panel : std::as_const(openPanels())) panel->scheduleRender();
+}
+
+QList<QPair<QString, QString>> ClaudeCodePanel::summaryParts(const Entry& e)
+{
+    QList<QPair<QString, QString>> parts;
+    if (!e.text.isEmpty()) parts << qMakePair(e.text, QString());
+    const int usage = usageShown();
+    // The conversation's, unless it is the prompt's shown already (the
+    // first turn's).
+    if ((usage & PromptTokens) && !e.tokens.isEmpty())
+        parts << qMakePair(tr("%1 tokens").arg(tokenCount(e.tokens.total())), tokenDetail(e.tokens));
+    if ((usage & ConversationTokens) && !e.allTokens.isEmpty()
+        && (!(usage & PromptTokens) || e.allTokens.total() > e.tokens.total()))
+        parts << qMakePair(tr("%1 tokens in all").arg(tokenCount(e.allTokens.total())),
+                           tr("The conversation so far: %1").arg(tokenDetail(e.allTokens)));
+    if ((usage & PromptCost) && e.cost > 0.0)
+        parts << qMakePair(cost(e.cost), tr("What the prompt cost, as Claude Code estimates it"));
+    if ((usage & ConversationCost) && e.allCost > 0.0 && (!(usage & PromptCost) || e.allCost > e.cost + 0.0005))
+        parts << qMakePair(tr("%1 in all").arg(cost(e.allCost)), tr("What the conversation has cost so far, as Claude Code estimates it"));
+    if (!e.result.isEmpty()) parts << qMakePair(e.result, QString());
+    return parts;
+}
+
+QString ClaudeCodePanel::summaryText(const Entry& e)
+{
+    QStringList texts;
+    for (const auto& part : summaryParts(e)) texts << part.first;
+    return texts.join(QStringLiteral("  ·  "));
 }
 
 bool ClaudeCodePanel::exportsToolDetails()
@@ -2739,7 +2943,7 @@ QString ClaudeCodePanel::conversationMarkdown() const
             md += QStringLiteral("\n> **⚠** ") + e.text.trimmed().replace(QLatin1Char('\n'), QStringLiteral("\n> ")) + QLatin1Char('\n');
             break;
         case Entry::Summary:
-            md += QStringLiteral("\n*") + e.text + QStringLiteral("*\n");
+            if (const QString line = summaryText(e); !line.isEmpty()) md += QStringLiteral("\n*") + line + QStringLiteral("*\n");
             break;
         }
     }
@@ -2802,8 +3006,10 @@ QString ClaudeCodePanel::conversationText() const
             break;
         }
         case Entry::Note:
-        case Entry::Summary:
             out << QStringLiteral("(") + e.text.trimmed() + QStringLiteral(")");
+            break;
+        case Entry::Summary:
+            if (const QString line = summaryText(e); !line.isEmpty()) out << QStringLiteral("(") + line + QStringLiteral(")");
             break;
         case Entry::Problem:
             out << QStringLiteral("⚠ ") + e.text.trimmed();
