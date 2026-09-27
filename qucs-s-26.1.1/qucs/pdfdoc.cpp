@@ -13,6 +13,7 @@
 
 #include "misc.h"
 #include "qucs.h"
+#include "settings.h"
 
 #include <QApplication>
 #include <QBoxLayout>
@@ -1012,11 +1013,11 @@ void PdfDoc::buildUi()
     connect(unlockButton, &QPushButton::clicked, this, unlockNow);
 
     // What the controls do.
-    QSettings settings;
+    const QucsSettingsFile settings;
     setSidebarShown(settings.value(QLatin1String(kSidebarKey), false).toBool());
     connect(a_sidebarButton, &QToolButton::toggled, this, [this](bool on) {
         setSidebarShown(on);
-        QSettings().setValue(QLatin1String(kSidebarKey), on);
+        QucsSettingsFile().setValue(QLatin1String(kSidebarKey), on);
     });
     connect(a_prevButton, &QToolButton::clicked, this, &PdfDoc::previousPage);
     connect(a_nextButton, &QToolButton::clicked, this, &PdfDoc::nextPage);

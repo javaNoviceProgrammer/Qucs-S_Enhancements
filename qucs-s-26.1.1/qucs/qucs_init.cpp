@@ -246,6 +246,25 @@ void QucsApp::initActions() {
       tr("Qucs Settings\n\nSets properties of the application"));
   connect(applSettings, SIGNAL(triggered()), SLOT(slotApplSettings()));
 
+  // Not moved to the application menu on macOS (the menu roles look for
+  // "settings" in a text).
+  exportSettings = new QAction(tr("Export Settings..."), this);
+  exportSettings->setMenuRole(QAction::NoRole);
+  exportSettings->setStatusTip(tr("Writes all the settings into a file, to share or keep"));
+  exportSettings->setWhatsThis(
+      tr("Export Settings\n\nWrites every setting - the application's, the "
+         "simulators', Claude Code's, the shortcuts - into a file that Import "
+         "Settings takes in, here or on another computer"));
+  connect(exportSettings, SIGNAL(triggered()), SLOT(slotExportSettings()));
+
+  importSettings = new QAction(tr("Import Settings..."), this);
+  importSettings->setMenuRole(QAction::NoRole);
+  importSettings->setStatusTip(tr("Takes in the settings of a file made by Export Settings"));
+  importSettings->setWhatsThis(
+      tr("Import Settings\n\nReplaces the settings with those of a file made by "
+         "Export Settings and applies them; the current ones are saved first"));
+  connect(importSettings, SIGNAL(triggered()), SLOT(slotImportSettings()));
+
   refreshSchPath = new QAction(tr("Refresh Search Path..."), this);
   // refreshSchPath->setShortcut(Qt::CTRL+Qt::Key_Comma);
   refreshSchPath->setStatusTip(tr("Refresh Search Path"));
@@ -1044,6 +1063,8 @@ void QucsApp::initMenuBar() {
   fileMenu->addMenu(symbolMenu);
   fileMenu->addSeparator();
   fileMenu->addAction(applSettings);
+  fileMenu->addAction(exportSettings);
+  fileMenu->addAction(importSettings);
   fileMenu->addAction(refreshSchPath);
   fileMenu->addSeparator();
   fileMenu->addAction(fileQuit);
@@ -1604,6 +1625,8 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("File.AppSettings", "File", "Application Settings",
                       applSettings, QKeySequence(Qt::CTRL | Qt::Key_Comma));
+  mgr.registerCommand("File.ExportSettings", "File", "Export Settings", exportSettings, QKeySequence());
+  mgr.registerCommand("File.ImportSettings", "File", "Import Settings", importSettings, QKeySequence());
 
   mgr.registerCommand("File.Refresh", "File", "Refresh Search Path",
                       refreshSchPath,
@@ -1903,4 +1926,7 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("Help.AboutQt", "Help", "About Qt", helpAboutQt,
                       QKeySequence());
+
+  // The shortcuts the user changed (Shortcut Manager), as kept.
+  mgr.loadFromSettings();
 }
