@@ -1620,11 +1620,20 @@ private slots:
         QCOMPARE(p.value("color").toString(), QStringLiteral("#0000ff"));
         QVERIFY(!failed(call("edit_painting", {{"painting", 1}, {"text", "BW = 2 kHz"}, {"color", "red"}})));
         QVERIFY2(sch->documentText().contains("<Text 253 762 10 #ff0000 0 \"BW = 2 kHz\">"), qPrintable(sch->documentText()));
-        r = call("edit_painting", {{"painting", 4}, {"cells", QJsonArray{QJsonArray{"x"}}}});
+        // (Built by append: QJsonArray{QJsonArray{"x"}} is ["x"] to some
+        // compilers - one element of the class's own type is a copy.)
+        QJsonArray firstRow;
+        firstRow.append(QJsonArray{"x", "y"});
+        r = call("edit_painting", {{"painting", 4}, {"cells", firstRow}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QJsonArray cells = json(r).toObject().value("changed").toObject().value("cells").toArray();
         QCOMPARE(cells.at(0).toArray().at(0).toString(), QStringLiteral("x"));
+        QCOMPARE(cells.at(0).toArray().at(1).toString(), QStringLiteral("y"));
         QCOMPARE(cells.at(1).toArray().at(0).toString(), QStringLiteral("1 kHz"));
+        // A flat list of texts is the first row; a row that is not a list is refused.
+        QVERIFY(!failed(call("edit_painting", {{"painting", 4}, {"cells", QJsonArray{"x", "z"}}})));
+        QVERIFY(failed(call("edit_painting", {{"painting", 4}, {"cells", QJsonArray{QJsonArray{"a", "b"}, "c"}}})));
+        QVERIFY(!failed(call("undo")));
         QVERIFY(!failed(call("edit_painting", {{"painting", 7}, {"angle", 180}, {"mirrored", true}})));
         QVERIFY(!failed(call("undo")));
         QVERIFY(!failed(call("undo")));
@@ -1649,7 +1658,7 @@ private slots:
             QJsonObject{{"type", "port"}, {"x", 0}, {"y", 0}},
             QJsonObject{{"type", "hexagon"}, {"x", 0}, {"y", 0}},
             QJsonObject{{"type", "image"}, {"x", 0}, {"y", 0}, {"file", "no-such.png"}},
-            QJsonObject{{"type", "polyline"}, {"points", QJsonArray{QJsonArray{0, 0}}}},
+            QJsonObject{{"type", "polyline"}, {"points", QJsonArray{QJsonArray{0, 0}, "x"}}},
             QJsonObject{}};
         for (const QJsonObject& bad : refused) {
             const QJsonObject rr = call("add_painting", bad);
