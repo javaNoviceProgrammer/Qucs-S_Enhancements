@@ -1151,18 +1151,19 @@ void PdfDoc::setName(const QString& name)
 int PdfDoc::save()
 {
     // A copy of the file, when it is saved under another name; nothing
-    // else to write.
-    if (a_source.isEmpty() || QFileInfo(a_source).absoluteFilePath() == a_DocName) {
+    // else to write. The same file under another spelling (Report.pdf for
+    // report.pdf on macOS, a path through a link) is not another name.
+    if (a_source.isEmpty() || misc::isSameFile(a_source, a_DocName)) {
         if (!a_DocName.isEmpty() && QFileInfo::exists(a_DocName) && !a_watcher->files().contains(a_DocName))
             a_watcher->addPath(a_DocName);
         return 0;
     }
-    if (QFileInfo::exists(a_DocName) && !QFile::remove(a_DocName)) {
-        misc::reportError(tr("%1 cannot be replaced.").arg(QDir::toNativeSeparators(a_DocName)));
-        return -1;
-    }
-    if (!QFile::copy(a_source, a_DocName)) {
-        misc::reportError(tr("%1 could not be copied to %2.").arg(QDir::toNativeSeparators(a_source), QDir::toNativeSeparators(a_DocName)));
+    // Copied beside and renamed over: a copy that fails leaves the file
+    // that was there.
+    QString error;
+    if (!misc::copyFileOver(a_source, a_DocName, &error)) {
+        misc::reportError(tr("%1 could not be copied to %2.").arg(QDir::toNativeSeparators(a_source), QDir::toNativeSeparators(a_DocName))
+                          + QLatin1Char('\n') + error);
         return -1;
     }
     a_source = a_DocName;

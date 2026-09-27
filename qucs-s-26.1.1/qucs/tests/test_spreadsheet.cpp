@@ -12,6 +12,7 @@
 
 #include "excel_fixture.h"
 #include "spreadsheet.h"
+#include "textcodec.h"
 #include "zipfile.h"
 
 using namespace qucs_s;
@@ -132,7 +133,7 @@ private slots:
                                 "\"007\",42,\r\n";
         sheet::Workbook book = sheet::readCsv(text);
         QCOMPARE(book.delimiter, QChar(','));
-        QVERIFY(book.bom);
+        QVERIFY(book.encoding.bom);
         QCOMPARE(book.newline, QString("\r\n"));
         const sheet::Sheet& s = book.sheets.first();
         QCOMPARE(s.rowCount(), 5);
@@ -153,10 +154,11 @@ private slots:
         const sheet::Workbook semi = sheet::readCsv("a;b\n1,5;2\n");
         QCOMPARE(semi.sheets.first().at(1, 0).text, QString("1,5"));
 
-        // Latin-1, read and written as it was; no final line break kept.
+        // Not UTF-8 (a Windows program's ANSI), read and written as it was;
+        // no final line break kept.
         const QByteArray latin = "Wert;Einheit\n5;\xB5" "F";
         const sheet::Workbook l = sheet::readCsv(latin);
-        QVERIFY(l.latin1);
+        QCOMPARE(l.encoding.kind, qucs_s::textcodec::Encoding::Kind::Windows1252);
         QCOMPARE(l.sheets.first().at(1, 1).text, QString::fromUtf8("µF"));
         QCOMPARE(sheet::writeCsv(l.sheets.first(), l), latin);
 
@@ -278,6 +280,155 @@ private slots:
         const QList<zip::Entry> same = zip::read(sheet::writeXlsx(unchanged));
         QCOMPARE(same.size(), original.size());
         for (int i = 0; i < same.size(); ++i) QCOMPARE(same[i].data, original[i].data);
+    }
+
+    // A CSV file in a Windows program's ANSI code page: "Ω" typed into it
+    // made UTF-8 with the mark Excel reads UTF-8 by - it was written as
+    // "?"; a UTF-16 file (Excel's "Unicode Text") read as text, not NULs,
+    // and written back as it was (bug hunt 2026-09-26, A7).
+    void csvEncodingsAreKept()
+    {
+        sheet::Workbook ansi = sheet::readCsv("part;value\nR1;10 k\xB5\nC1;5 \x80\n");
+        QCOMPARE(ansi.encoding.kind, textcodec::Encoding::Kind::Windows1252);
+        QCOMPARE(ansi.sheets.first().at(1, 1).text, QString::fromUtf8("10 kµ"));
+        QCOMPARE(ansi.sheets.first().at(2, 1).text, QString::fromUtf8("5 €"));
+        QVERIFY(sheet::unencodable(ansi.sheets.first(), ansi).isEmpty());
+        QCOMPARE(sheet::writeCsv(ansi.sheets.first(), ansi), QByteArray("part;value\nR1;10 k\xB5\nC1;5 \x80\n"));
+        sheet::enter(ansi.sheets.first().cell(1, 1), QString::fromUtf8("4.7 kΩ"), ansi);
+        QCOMPARE(sheet::unencodable(ansi.sheets.first(), ansi), QString::fromUtf8("Ω"));
+        const QByteArray saved = sheet::writeCsv(ansi.sheets.first(), ansi);
+        QCOMPARE(saved, QByteArray("\xEF\xBB\xBF") + QString::fromUtf8("part;value\nR1;4.7 kΩ\nC1;5 €\n").toUtf8());
+        const sheet::Workbook again = sheet::readCsv(saved);
+        QCOMPARE(again.sheets.first().at(1, 1).text, QString::fromUtf8("4.7 kΩ"));
+
+        QStringEncoder le(QStringConverter::Utf16LE);
+        const QByteArray unicode = QByteArray("\xFF\xFE") + QByteArray(le.encode(QString::fromUtf8("part\tvalue\r\nR1\t4.7 kΩ\r\n")));
+        const sheet::Workbook u = sheet::readCsv(unicode);
+        QCOMPARE(u.encoding.kind, textcodec::Encoding::Kind::Utf16LE);
+        QCOMPARE(u.delimiter, QChar('\t'));
+        QCOMPARE(u.newline, QString("\r\n"));
+        QCOMPARE(u.sheets.first().at(0, 0).text, QString("part"));
+        QCOMPARE(u.sheets.first().at(1, 1).text, QString::fromUtf8("4.7 kΩ"));
+        QCOMPARE(sheet::writeCsv(u.sheets.first(), u), unicode);
+    }
+
+    // A formula filled over cells, as Excel moves it: relative references
+    // moved, absolute ones and what is quoted kept.
+    void formulasAreMovedAsExcelFillsThem()
+    {
+        QCOMPARE(sheet::shiftedFormula("A1*2", 1, 0), QString("A2*2"));
+        QCOMPARE(sheet::shiftedFormula("$A$1+A1+SUM(A$1:A1)", 2, 0), QString("$A$1+A3+SUM(A$1:A3)"));
+        QCOMPARE(sheet::shiftedFormula("$A1+B$1", 1, 1), QString("$A2+C$1"));
+        QCOMPARE(sheet::shiftedFormula("LOG10(A1)+ATAN2(B1,C1)", 1, 1), QString("LOG10(B2)+ATAN2(C2,D2)"));
+        QCOMPARE(sheet::shiftedFormula("\"A1\"&A1", 1, 0), QString("\"A1\"&A2"));
+        QCOMPARE(sheet::shiftedFormula("'Sheet 1'!A1+Sheet2!B$2", 1, 1), QString("'Sheet 1'!B2+Sheet2!C$2"));
+        QCOMPARE(sheet::shiftedFormula("SUM(A:A)+SUM(1:1)+SUM($A:B)", 1, 1), QString("SUM(B:B)+SUM(2:2)+SUM($A:C)"));
+        QCOMPARE(sheet::shiftedFormula("Table1[Col1]+A1", 1, 0), QString("Table1[Col1]+A2"));
+        QCOMPARE(sheet::shiftedFormula("1.5E3*A1+X1Y", 1, 0), QString("1.5E3*A2+X1Y"));
+        QCOMPARE(sheet::shiftedFormula("Z9+AA10", 0, 1), QString("AA9+AB10"));
+        QCOMPARE(sheet::shiftedFormula("A1", -1, 0), QString("#REF!"));
+        QCOMPARE(sheet::shiftedFormula("XFD1", 0, 1), QString("#REF!"));
+        QCOMPARE(sheet::shiftedFormula("A1*2", 0, 0), QString("A1*2"));
+    }
+
+    // Any text as a formula, moved any way: no crash, nothing read past
+    // its end; not moved, it is as it was. Seeded.
+    void anyFormulaIsMovedSafely()
+    {
+        QRandomGenerator random(926);
+        const QString alphabet = QStringLiteral("ABCXYZabc0123456789$:!'\"[]()+-*/,. #_\u00e9");
+        for (int n = 0; n < 5000; ++n) {
+            QString formula;
+            const int length = int(random.bounded(24));
+            for (int i = 0; i < length; ++i) formula += alphabet.at(random.bounded(int(alphabet.size())));
+            QCOMPARE(sheet::shiftedFormula(formula, 0, 0), formula);
+            const QString moved = sheet::shiftedFormula(formula, int(random.bounded(2000001)) - 1000000, int(random.bounded(40001)) - 20000);
+            Q_UNUSED(moved);
+        }
+        QCOMPARE(sheet::shiftedFormula("A1", 1048575, 0), QString("A1048576"));   // the last row
+        QCOMPARE(sheet::shiftedFormula("A1", 1048576, 0), QString("#REF!"));
+        QCOMPARE(sheet::shiftedFormula("A1", 1048574, 16383), QString("XFD1048575"));
+    }
+
+    // Excel writes a formula filled down as one shared formula: the first
+    // cell holds it, the others name it. Their own formulas are read (they
+    // showed none), and when the first cell changes they are written each
+    // on its own - they named a shared formula that was no more, and Excel
+    // called the workbook damaged. An array changed inside is written so
+    // too (bug hunt 2026-09-26, A8).
+    void sharedFormulasSurviveTheirFirstCell()
+    {
+        const QByteArray sheetXml =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+            "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><dimension ref=\"A1:D3\"/><sheetData>"
+            "<row r=\"1\"><c r=\"A1\"><v>1</v></c><c r=\"B1\"><f t=\"shared\" ref=\"B1:B3\" si=\"0\">A1*2</f><v>2</v></c>"
+            "<c r=\"C1\"><f t=\"shared\" ref=\"C1:C3\" si=\"1\">$A$1+A1+SUM(A$1:A1)</f><v>3</v></c>"
+            "<c r=\"D1\"><f t=\"array\" ref=\"D1:D3\">A1:A3*10</f><v>10</v></c></row>"
+            "<row r=\"2\"><c r=\"A2\"><v>2</v></c><c r=\"B2\"><f t=\"shared\" si=\"0\"/><v>4</v></c>"
+            "<c r=\"C2\"><f t=\"shared\" si=\"1\"/><v>6</v></c><c r=\"D2\"><v>20</v></c></row>"
+            "<row r=\"3\"><c r=\"A3\"><v>3</v></c><c r=\"B3\"><f t=\"shared\" si=\"0\"/><v>6</v></c>"
+            "<c r=\"C3\"><f t=\"shared\" si=\"1\"/><v>10</v></c><c r=\"D3\"><v>30</v></c></row>"
+            "</sheetData></worksheet>";
+        QList<zip::Entry> package = zip::read(excelLike());
+        for (zip::Entry& e : package)
+            if (e.name == "xl/worksheets/sheet1.xml") e.data = sheetXml;
+        const QByteArray workbook = zip::write(package);
+
+        sheet::Workbook book;
+        QString why;
+        QVERIFY2(sheet::readXlsx(workbook, book, &why), qPrintable(why));
+        const sheet::Sheet& read = book.sheets[0];
+        QCOMPARE(read.at(1, 1).formula, QString("A2*2"));
+        QCOMPARE(read.at(2, 1).formula, QString("A3*2"));
+        QCOMPARE(read.at(2, 1).text, QString("6"));
+        QCOMPARE(sheet::editText(read.at(2, 1)), QString("=A3*2"));
+        QCOMPARE(read.at(2, 2).formula, QString("$A$1+A3+SUM(A$1:A3)"));
+
+        const auto sheet1 = [](const QByteArray& written) {
+            return entry(zip::read(written), "xl/worksheets/sheet1.xml")->data;
+        };
+        // Its first cell changed.
+        sheet::Workbook edited = book;
+        sheet::enter(edited.sheets[0].cell(0, 1), "=A1*3", edited);
+        edited.sheets[0].changed = true;
+        QByteArray xml = sheet1(sheet::writeXlsx(edited));
+        QVERIFY2(!xml.contains("si=\"0\""), xml.constData());
+        QVERIFY2(xml.contains("<c r=\"B1\"><f>A1*3</f></c>"), xml.constData());
+        QVERIFY2(xml.contains("<c r=\"B2\"><f>A2*2</f><v>4</v></c>"), xml.constData());
+        QVERIFY2(xml.contains("<c r=\"B3\"><f>A3*2</f><v>6</v></c>"), xml.constData());
+        QVERIFY2(xml.contains("<c r=\"C2\"><f t=\"shared\" si=\"1\"/><v>6</v></c>"), xml.constData());   // the other as it was
+        QVERIFY2(xml.contains("<f t=\"array\" ref=\"D1:D3\">"), xml.constData());
+        sheet::Workbook back;
+        QVERIFY(sheet::readXlsx(sheet::writeXlsx(edited), back));
+        QCOMPARE(back.sheets[0].at(1, 1).formula, QString("A2*2"));
+        QCOMPARE(back.sheets[0].at(2, 2).formula, QString("$A$1+A3+SUM(A$1:A3)"));
+
+        // Cleared.
+        sheet::Workbook cleared = book;
+        sheet::enter(cleared.sheets[0].cell(0, 1), "", cleared);
+        cleared.sheets[0].changed = true;
+        xml = sheet1(sheet::writeXlsx(cleared));
+        QVERIFY2(!xml.contains("si=\"0\"") && xml.contains("<c r=\"B2\"><f>A2*2</f><v>4</v></c>"), xml.constData());
+
+        // A cell of the other shared formula changed (not its first).
+        sheet::Workbook dependent = book;
+        sheet::enter(dependent.sheets[0].cell(2, 2), "7", dependent);
+        dependent.sheets[0].changed = true;
+        xml = sheet1(sheet::writeXlsx(dependent));
+        QVERIFY2(!xml.contains("si=\"1\""), xml.constData());
+        QVERIFY2(xml.contains("<c r=\"C1\"><f>$A$1+A1+SUM(A$1:A1)</f><v>3</v></c>"), xml.constData());
+        QVERIFY2(xml.contains("<c r=\"C2\"><f>$A$1+A2+SUM(A$1:A2)</f><v>6</v></c>"), xml.constData());
+        QVERIFY2(xml.contains("<c r=\"C3\"><v>7</v></c>"), xml.constData());
+
+        // A cell inside the array changed: the array written as its first
+        // cell's formula, the rest as values.
+        sheet::Workbook array = book;
+        sheet::enter(array.sheets[0].cell(1, 3), "25", array);
+        array.sheets[0].changed = true;
+        xml = sheet1(sheet::writeXlsx(array));
+        QVERIFY2(!xml.contains("t=\"array\""), xml.constData());
+        QVERIFY2(xml.contains("<c r=\"D1\"><f>A1:A3*10</f><v>10</v></c>"), xml.constData());
+        QVERIFY2(xml.contains("<c r=\"D2\"><v>25</v></c>") && xml.contains("<c r=\"D3\"><v>30</v></c>"), xml.constData());
     }
 
     // What is typed into a workbook's cell.

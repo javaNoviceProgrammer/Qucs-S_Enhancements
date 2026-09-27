@@ -14,6 +14,7 @@
 #include "apptheme.h"
 #include "ink.h"
 #include "main.h"
+#include "misc.h"
 #include "settings.h"
 #include "workspace.h"
 
@@ -928,6 +929,17 @@ bool isInside(const QString& path, const QString& folder)
 #endif
 }
 
+// Whether \a path is \a folder itself or in it (at any depth) - as
+// written, or as the file system resolves the two (a link, another
+// spelling): what the trash would take with \a folder.
+bool holds(const QString& folder, const QString& path)
+{
+    const QString f = QDir::cleanPath(folder), p = QDir::cleanPath(path);
+    if (samePath(f, p) || isInside(p, f)) return true;
+    const QString realFolder = QFileInfo(f).canonicalFilePath(), realPath = QFileInfo(p).canonicalFilePath();
+    return !realFolder.isEmpty() && !realPath.isEmpty() && (samePath(realFolder, realPath) || isInside(realPath, realFolder));
+}
+
 // The local files and folders a drag carries.
 QStringList localPaths(const QMimeData* mime)
 {
@@ -1017,6 +1029,10 @@ FileBrowser::FileBrowser(QWidget* parent)
     setObjectName(QStringLiteral("fileBrowser"));
     a_model->setIconProvider(a_icons);
     a_model->setReadOnly(false);   // (renamed in place)
+    // Renamed in place: open documents follow, as they do a move.
+    connect(a_model, &QFileSystemModel::fileRenamed, this, [this](const QString& dir, const QString& was, const QString& now) {
+        emit moved({QDir::cleanPath(QDir(dir).filePath(was))}, {QDir::cleanPath(QDir(dir).filePath(now))});
+    });
     a_model->setFilter(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::AllDirs);
     a_proxy->setSourceModel(a_model);
     a_proxy->setDynamicSortFilter(true);
@@ -1885,7 +1901,7 @@ void FileBrowser::rename(const QString& path)
 {
     QAbstractItemView* v = currentView();
     if (v != a_recent && inView(path)) {
-        // In place, where it is.
+        // In place, where it is (the model's fileRenamed() tells moved()).
         const QModelIndex index = indexOf(path);
         if (index.isValid()) {
             selectPath(path);
@@ -1899,20 +1915,85 @@ void FileBrowser::rename(const QString& path)
                                                QLineEdit::Normal, info.fileName(), &ok)
                              .trimmed();
     if (!ok || name.isEmpty() || name == info.fileName()) return;
-    const QString target = info.dir().filePath(name);
-    if (QFileInfo::exists(target) || !QDir().rename(path, target))
-        QMessageBox::warning(this, tr("File Browser"), tr("“%1” could not be renamed to “%2”.").arg(info.fileName(), name));
+    const QString why = renameEntry(path, name);
+    if (!why.isEmpty()) QMessageBox::warning(this, tr("File Browser"), why);
 }
 
-void FileBrowser::moveToTrash(const QString& path)
+QString FileBrowser::renameEntry(const QString& pathGiven, const QString& name)
 {
+    const QString path = QDir::cleanPath(pathGiven);
     const QFileInfo info(path);
-    if (QMessageBox::question(this, tr("File Browser"), tr("Move “%1” to the trash?").arg(info.fileName()),
-                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+    if (!exists(path)) return tr("“%1” is not there any more.").arg(info.fileName());
+    if (name == info.fileName()) return {};
+    // A name, not a path: "../x", "sub/x" or "/x" would move it elsewhere,
+    // with none of a move's questions.
+#ifdef Q_OS_WIN
+    const QString separators = QStringLiteral("/\\");
+#else
+    const QString separators = QStringLiteral("/");
+#endif
+    const bool separator = std::any_of(separators.begin(), separators.end(), [&name](QChar c) { return name.contains(c); });
+    if (name.isEmpty() || name == QLatin1String(".") || name == QLatin1String("..") || separator)
+        return tr("“%1” is not a name for a file or folder: a name has no “%2” in it and is not “.” or “..”.")
+            .arg(name, QStringList(QString(separators).split(QString(), Qt::SkipEmptyParts)).join(QStringLiteral("”, “")));
+    const QString target = QDir::cleanPath(info.dir().filePath(name));
+    // Another case of its own name (amp.sch to Amp.sch): on macOS and
+    // Windows the same file, found by that name already.
+    const bool caseOnly = name.compare(info.fileName(), Qt::CaseInsensitive) == 0 && misc::isSameFile(path, target);
+    const QString failed = tr("“%1” could not be renamed to “%2”.").arg(info.fileName(), name);
+    if (exists(target) && !caseOnly) return failed + QLatin1Char(' ') + tr("There is one of that name already.");
+    bool renamed = QDir().rename(path, target);
+    if (!renamed && caseOnly) {
+        // A file system that refuses a name it has: by way of another.
+        const QString step = freeNameIn(info.absolutePath(), info.fileName() + QStringLiteral(".renaming"), info.isDir(), false);
+        if (!step.isEmpty() && QDir().rename(path, step)) {
+            renamed = QDir().rename(step, target);
+            if (!renamed) QDir().rename(step, path);
+        }
+    }
+    if (!renamed) return failed;
+    emit moved({path}, {target});
+    return {};
+}
+
+void FileBrowser::setOpenDocumentsProvider(std::function<QList<OpenDocument>()> provider)
+{
+    a_openDocuments = std::move(provider);
+}
+
+void FileBrowser::moveToTrash(const QString& pathGiven)
+{
+    const QString path = QDir::cleanPath(pathGiven);
+    const QFileInfo info(path);
+    // The open documents in it: they would be saved again where they were,
+    // in place of what went to the trash. Closed with it - when none holds
+    // unsaved changes, which would be lost.
+    QStringList open, unsaved;
+    if (a_openDocuments)
+        for (const OpenDocument& doc : a_openDocuments())
+            if (!doc.path.isEmpty() && holds(path, doc.path)) (doc.modified ? unsaved : open) << doc.path;
+    const auto names = [](const QStringList& paths) {
+        QStringList list;
+        for (const QString& p : paths) list << QFileInfo(p).fileName();
+        return list.join(QStringLiteral(", "));
+    };
+    if (!unsaved.isEmpty()) {
+        QMessageBox::warning(this, tr("File Browser"),
+                             tr("“%1” is not moved to the trash: %2 open here with unsaved changes. Save or close it first.")
+                                 .arg(info.fileName(), names(unsaved)));
+        return;
+    }
+    QString question = tr("Move “%1” to the trash?").arg(info.fileName());
+    if (!open.isEmpty())
+        question += QLatin1Char('\n') + tr("It holds documents open here, which close: %1.").arg(names(open));
+    if (QMessageBox::question(this, tr("File Browser"), question, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
         != QMessageBox::Yes)
         return;
-    if (!QFile::moveToTrash(path))
+    if (!QFile::moveToTrash(path)) {
         QMessageBox::warning(this, tr("File Browser"), tr("“%1” could not be moved to the trash.").arg(info.fileName()));
+        return;
+    }
+    emit trashed(path, open);
 }
 
 // ----------------------------------------------------------------------
@@ -1948,7 +2029,7 @@ QString FileBrowser::refusal(const QStringList& sources, const QString& targetGi
     bool somewhere = false;
     for (const QString& given : sources) {
         const QString source = QDir::cleanPath(given);
-        if (samePath(source, target) || isInside(target, source)) return tr("A folder cannot go into itself.");
+        if (holds(source, target)) return tr("A folder cannot go into itself.");
         if (action == Qt::MoveAction) {
             for (const QString& kept : {a_home, a_project})
                 if (!kept.isEmpty() && (samePath(source, kept) || isInside(kept, source)))
@@ -2132,17 +2213,30 @@ QStringList FileBrowser::transfer(const QStringList& sources, const QString& tar
             if (action == Qt::MoveAction) continue;   // where it is
             dest = freeNameIn(target, info.fileName(), folder, true);   // a copy beside it
         } else if (exists(dest)) {
+            // The one there holds the one being moved or copied (W/x/x
+            // onto W, where W/x is): the trash would take the source - and
+            // all beside it - with it. Not replaced; kept both or skipped.
+            const bool holdsSource = holds(dest, source);
             Clash clash = always;
+            if (clash == Replace && holdsSource) clash = Ask;
             if (clash == Ask) {
                 QMessageBox box(QMessageBox::Question, tr("File Browser"),
                                 tr("“%1” has an item named “%2” already.").arg(QFileInfo(target).fileName(), info.fileName()),
                                 QMessageBox::NoButton, this);
                 box.setObjectName(QStringLiteral("fbClash"));
-                box.setInformativeText(action == Qt::MoveAction ? tr("Replace it with the one being moved?")
-                                                                : tr("Replace it with the one being copied?"));
-                QPushButton* replace = box.addButton(tr("Replace"), QMessageBox::DestructiveRole);
-                replace->setObjectName(QStringLiteral("fbClashReplace"));
-                replace->setToolTip(tr("The one there goes to the trash"));
+                if (holdsSource)
+                    box.setInformativeText(action == Qt::MoveAction
+                                               ? tr("It cannot be replaced: it holds the one being moved. Keep both?")
+                                               : tr("It cannot be replaced: it holds the one being copied. Keep both?"));
+                else
+                    box.setInformativeText(action == Qt::MoveAction ? tr("Replace it with the one being moved?")
+                                                                    : tr("Replace it with the one being copied?"));
+                QPushButton* replace = nullptr;
+                if (!holdsSource) {
+                    replace = box.addButton(tr("Replace"), QMessageBox::DestructiveRole);
+                    replace->setObjectName(QStringLiteral("fbClashReplace"));
+                    replace->setToolTip(tr("The one there goes to the trash"));
+                }
                 QPushButton* both = box.addButton(tr("Keep Both"), QMessageBox::AcceptRole);
                 both->setObjectName(QStringLiteral("fbClashKeepBoth"));
                 QPushButton* skip = box.addButton(tr("Skip"), QMessageBox::RejectRole);
@@ -2159,7 +2253,10 @@ QStringList FileBrowser::transfer(const QStringList& sources, const QString& tar
                 }
                 box.exec();
                 const QAbstractButton* chosen = box.clickedButton();
-                clash = chosen == replace ? Replace : chosen == both ? KeepBoth : chosen == skip ? Skip : Stop;
+                clash = replace != nullptr && chosen == replace ? Replace
+                        : chosen == both                           ? KeepBoth
+                        : chosen == skip                           ? Skip
+                                                                   : Stop;
                 if (rest != nullptr && rest->isChecked() && clash != Stop) always = clash;
             }
             if (clash == Stop) break;

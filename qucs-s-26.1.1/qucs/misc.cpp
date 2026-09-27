@@ -38,8 +38,18 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QMimeData>
+#include <QSaveFile>
 #include <QUrl>
 #include <algorithm>
+
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX   // std::max below, not the macro
+#endif
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 #include <QtWidgets>
 
@@ -475,6 +485,76 @@ QStringList misc::localFiles(const QMimeData* data)
   for (const QUrl& url : data->urls())
     if (url.isLocalFile()) files.append(QDir::toNativeSeparators(url.toLocalFile()));
   return files;
+}
+
+// #########################################################################
+namespace {
+// The file a path names, as the file system knows it: its device and
+// inode (volume serial number and file index on Windows). False when the
+// path names nothing.
+bool fileIdentity(const QString& path, quint64& device, quint64& index)
+{
+#ifdef Q_OS_WIN
+  const QString native = QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
+  HANDLE h = CreateFileW(reinterpret_cast<const wchar_t*>(native.utf16()), 0,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  BY_HANDLE_FILE_INFORMATION info;
+  const bool ok = GetFileInformationByHandle(h, &info);
+  CloseHandle(h);
+  if (!ok) return false;
+  device = info.dwVolumeSerialNumber;
+  index = (quint64(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+  return true;
+#else
+  struct stat st;
+  if (::stat(QFile::encodeName(path).constData(), &st) != 0) return false;
+  device = quint64(st.st_dev);
+  index = quint64(st.st_ino);
+  return true;
+#endif
+}
+}
+
+bool misc::isSameFile(const QString& a, const QString& b)
+{
+  if (a.isEmpty() || b.isEmpty()) return false;
+  if (QDir::cleanPath(QFileInfo(a).absoluteFilePath()) == QDir::cleanPath(QFileInfo(b).absoluteFilePath()))
+    return true;
+  quint64 deviceA = 0, indexA = 0, deviceB = 0, indexB = 0;
+  if (!fileIdentity(a, deviceA, indexA) || !fileIdentity(b, deviceB, indexB)) return false;
+  return deviceA == deviceB && indexA == indexB;
+}
+
+bool misc::copyFileOver(const QString& source, const QString& target, QString* error)
+{
+  auto fail = [error](const QString& why) {
+    if (error != nullptr) *error = why;
+    return false;
+  };
+  if (isSameFile(source, target)) return true;
+  QFile in(source);
+  if (!in.open(QIODevice::ReadOnly))
+    return fail(QObject::tr("%1 cannot be read: %2").arg(QDir::toNativeSeparators(source), in.errorString()));
+  // QSaveFile writes beside the target and renames over it on commit();
+  // until then, and when anything fails, the target is left as it was.
+  QSaveFile out(target);
+  if (!out.open(QIODevice::WriteOnly))
+    return fail(QObject::tr("%1 cannot be written: %2").arg(QDir::toNativeSeparators(target), out.errorString()));
+  QByteArray block;
+  while (!(block = in.read(1 << 20)).isEmpty())
+    if (out.write(block) != block.size()) {
+      out.cancelWriting();
+      return fail(QObject::tr("%1 cannot be written: %2").arg(QDir::toNativeSeparators(target), out.errorString()));
+    }
+  if (in.error() != QFileDevice::NoError) {
+    out.cancelWriting();
+    return fail(QObject::tr("%1 cannot be read: %2").arg(QDir::toNativeSeparators(source), in.errorString()));
+  }
+  if (!out.commit())
+    return fail(QObject::tr("%1 cannot be written: %2").arg(QDir::toNativeSeparators(target), out.errorString()));
+  return true;
 }
 
 // #########################################################################

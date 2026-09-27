@@ -405,6 +405,37 @@ private slots:
         file = copy;
     }
 
+    // Saved as itself under another spelling - a path through a link to
+    // its folder, another case where the file system has none: nothing to
+    // write, the file whole. It was deleted, and the copy then failed (bug
+    // hunt 2026-09-26, A1).
+    void itIsSavedAsItselfUnderAnotherSpelling()
+    {
+        PdfDoc* doc = pdf();
+        QFile original(file);
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        const QByteArray before = original.readAll();
+        original.close();
+        const auto whole = [&](const QString& path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) && f.readAll() == before;
+        };
+#ifndef Q_OS_WIN
+        const QString link = dir.filePath("wslink");
+        QVERIFY(QFile::link(QFileInfo(file).absolutePath(), link));
+        QVERIFY(app->saveDocumentAs(doc, link + "/" + QFileInfo(file).fileName()));
+        QVERIFY(whole(file));
+#endif
+        const QString upper = QFileInfo(file).absolutePath() + "/" + QFileInfo(file).fileName().toUpper();
+        if (QFileInfo::exists(upper)) {   // (a file system without case: macOS, Windows)
+            QVERIFY(app->saveDocumentAs(doc, upper));
+            QVERIFY(whole(upper));
+        }
+        QVERIFY(app->saveDocumentAs(doc, file));
+        QVERIFY(whole(file));
+        QCOMPARE(doc->getDocName(), QFileInfo(file).absoluteFilePath());
+    }
+
     // Not a PDF: refused, said why, no tab left.
     void aFileThatIsNotAPdfIsRefused()
     {

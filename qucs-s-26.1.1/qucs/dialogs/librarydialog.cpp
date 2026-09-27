@@ -377,14 +377,15 @@ bool LibraryDialog::copyIntoLibrary(const QString &from, const QString &name)
     return false;
   }
   const QString target = folder.absoluteFilePath(name);
-  if (QFileInfo(target).canonicalFilePath() == QFileInfo(source).canonicalFilePath()) {
+  if (misc::isSameFile(target, source)) {
     a_copied.insert(name, source);   // there already: the library made again, a component of it in use
     return true;
   }
   QDir().mkpath(QFileInfo(target).absolutePath());
-  QFile::remove(target);
-  if (!QFile::copy(source, target)) {
-    ErrText->insertPlainText(QObject::tr("ERROR: Cannot create file \"%1\".\n").arg(name));
+  // Copied beside and renamed over: a copy that fails leaves the old file.
+  QString why;
+  if (!misc::copyFileOver(source, target, &why)) {
+    ErrText->insertPlainText(QObject::tr("ERROR: Cannot create file \"%1\".\n").arg(name) + why + QLatin1Char('\n'));
     return false;
   }
   a_copied.insert(name, source);

@@ -26,6 +26,7 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 #include <qdatetime.h>
 
 #include "qucsdoc.h"
+#include "textcodec.h"
 
 /*!
  * \file textdoc.h
@@ -61,6 +62,12 @@ public:
   bool  hasFileChangedOnDisk() const;
   int   save ();
   bool  writeTo(const QString& path) override;
+  /// How its file's bytes are characters (textcodec.h): found when it was
+  /// read, and how save() writes it back - UTF-8 once a character it has
+  /// no bytes for was typed and the user agreed.
+  const qucs_s::textcodec::Encoding& encoding() const { return a_encoding; }
+  /// Its file's lines end in CR LF (and are written back so).
+  bool crlf() const { return a_crlf; }
   virtual double zoomBy (double zoom) override;
   virtual void showNoZoom () override;
   void  becomeCurrent (bool);
@@ -145,6 +152,13 @@ private:
   QColor a_margin = Qt::lightGray;
   QColor a_marginText = Qt::black;
   QDateTime lastLoadModTime; // Timestamp of last successful load
+  qucs_s::textcodec::Encoding a_encoding;   // of its file (encoding())
+  bool a_crlf = false;                      // its file's lines end in CR LF
+  /// The text as its file's bytes (encoding(), crlf()). A character the
+  /// encoding has no bytes for (Ω in a Windows-1252 file): with \a ask,
+  /// UTF-8 once the user agrees (false when they do not: not saved);
+  /// without, UTF-8 for this writing alone.
+  bool encodedText(QByteArray* bytes, bool ask);
   LineNumberArea *lineNumberArea = nullptr;
 
 private slots:

@@ -1356,8 +1356,7 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
         for (const QString& suffix : {QStringLiteral(".dat"), QStringLiteral(".dat.ngspice"), QStringLiteral(".dat.xyce"), QStringLiteral(".dat.spopus")}) {
             const QString a = src.absoluteDir().filePath(base + suffix), b = dst.absoluteDir().filePath(newBase + suffix);
             if (!QFileInfo::exists(a)) continue;
-            QFile::remove(b);
-            if (QFile::copy(a, b)) written << QFileInfo(b).fileName();
+            if (misc::copyFileOver(a, b)) written << QFileInfo(b).fileName();
         }
         const QString dpl = src.absoluteDir().filePath(base + QStringLiteral(".dpl"));
         if (QFileInfo::exists(dpl)) {
