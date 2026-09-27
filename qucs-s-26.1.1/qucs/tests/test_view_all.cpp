@@ -29,6 +29,7 @@
 #include "diagrams/marker.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
+#include "levelofdetail.h"
 
 namespace {
 
@@ -312,7 +313,13 @@ private slots:
                                  .arg(ink.x()).arg(ink.y()).arg(ink.width()).arg(ink.height())
                                  .arg(canvas.width()).arg(canvas.height()).arg(s->getScale());
         QVERIFY2(canvas.rect().adjusted(2, 2, -2, -2).contains(ink), qPrintable(what));
-        QVERIFY2(ink.width() > canvas.width() * 3 / 4 || ink.height() > canvas.height() * 3 / 4, qPrintable(what));
+        // Zoomed out so far that the canvas leaves texts out (they would be
+        // under four pixels tall - with a smaller font, sooner), the ink is
+        // not all the schematic: a long text (a .model line) has no ink
+        // then. Only that nothing is cut off is told then.
+        const bool textsDrawn = QFontMetrics(s->viewport()->font()).lineSpacing() * s->getScale() >= qucs_s::lod::kSmallestLine;
+        if (textsDrawn)
+            QVERIFY2(ink.width() > canvas.width() * 3 / 4 || ink.height() > canvas.height() * 3 / 4, qPrintable(what));
         s->setChanged(false);
     }
 };
