@@ -86,6 +86,7 @@ private:
     struct Seen {
         quint64 revision = 0;
         QDateTime dataset;
+        QString state;   // a schematic as it was (snapshot()): what changed since is told part by part
     };
     QHash<quint64, QHash<QString, Seen>> a_seen;   // by conversation, by document (seenKey())
     QList<quint64> a_callers;   // the conversations whose calls run now: the last edits
@@ -137,6 +138,18 @@ private:
     void setDialog(const QJsonObject& args, const Done& done);
     // Simulation and its results.
     void simulate(const QJsonObject& args, const Done& done);
+    void buildVerilogA(const QJsonObject& args, const Done& done);
+    void tune(const QJsonObject& args, const Done& done);
+    QJsonObject readPdf(const QJsonObject& args);
+    QJsonObject undoHistory(const QJsonObject& args);
+    QJsonObject newProject(const QJsonObject& args);
+    QJsonObject openProject(const QJsonObject& args);
+    QJsonObject copyDocument(const QJsonObject& args);
+    QJsonObject cleanScratch(const QJsonObject& args);
+    QJsonObject makeSymbol(const QJsonObject& args);
+    QJsonObject importNetlist(const QJsonObject& args);
+    QJsonObject findLibraryComponent(const QJsonObject& args);
+    QJsonObject datasetOfRun(Schematic* doc, int simulator, const QDateTime& started, const QString& keepAs, bool* written);
     QJsonObject getNetlist(const QJsonObject& args);
     QJsonObject getDataset(const QJsonObject& args);
     QJsonObject reloadData(const QJsonObject& args);
@@ -151,6 +164,11 @@ private:
     QJsonObject editMarker(const QJsonObject& args);
     QJsonObject deleteMarker(const QJsonObject& args);
     QJsonObject renameNet(const QJsonObject& args);
+    /// What names a net or a part - the traces of the schematic's diagrams
+    /// and of its data displays (a closed one's file rewritten), its
+    /// equations - passed through \a rename; what changed told.
+    void renameEverywhere(Schematic* sch, const std::function<QString(const QString&)>& rename, QStringList* changed,
+                          QString* rewritten);
     // Paintings, of the schematic or its symbol.
     QJsonObject addPainting(const QJsonObject& args);
     QJsonObject editPainting(const QJsonObject& args);
@@ -174,6 +192,10 @@ private:
     /// displays.
     QList<Schematic*> showingDataOf(Schematic* sch) const;
     QucsDoc* document(const QJsonObject& args, QString* error) const;
+    /// \a args of \a tool with the user's selection in them ("selection":
+    /// true): its parts' names, its diagrams, paintings and wires - or, for
+    /// add_painting ("around": "selection"), a place about it.
+    QJsonObject withSelection(const QString& tool, const QJsonObject& args, QString* error) const;
     Schematic* schematic(const QJsonObject& args, QString* error, bool forChange) const;
     /// The document in front, the property editor closed: before a change.
     void prepare(Schematic* sch);

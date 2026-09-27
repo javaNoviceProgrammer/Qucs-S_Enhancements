@@ -176,6 +176,13 @@ public:
 
   int x3, y3;
   Axis  xAxis, yAxis, zAxis;   // axes (x, y left, y right)
+  /// Its title, drawn centred above its frame: part of the diagram, it is
+  /// selected, moved and exported with it. Saved after the axes' labels,
+  /// only when there is one (older versions read the line without it).
+  QString title;
+  QFont titleFont() const;
+  /// The room above the frame the title takes (0 without one).
+  int titleHeight() const;
   int State;  // to remember which resize area was touched
   // How the numbers on the axes, in the markers and in the cursor
   // readout are written, and with how many places after the point (-1:

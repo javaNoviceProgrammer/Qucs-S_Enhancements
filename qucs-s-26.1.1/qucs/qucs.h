@@ -78,6 +78,7 @@ class QPushButton;
 class QTextEdit;
 class QFrame;
 class QTimer;
+class QFileSystemWatcher;
 namespace qucs_s { namespace autosave { struct Entry; } }
 
 class SymbolWidget;
@@ -225,6 +226,15 @@ public:
   /// Claude changed \a files: those open in Qucs-S without changes of
   /// their own are loaded again, the others left as they are.
   void reloadChangedFiles(const QStringList &files);
+  /// Loads an open document again from its file, where the user was in
+  /// it (a text document keeps its cursor and scroll). False when it could
+  /// not be read.
+  bool reloadDocument(QucsDoc *doc);
+  /// The files of the open documents changed on disk by another program
+  /// (a script, a shell command, OpenVAF): each without unsaved changes is
+  /// loaded again, as Claude's changes are; one with them is left, and
+  /// the status bar says so.
+  void documentsChangedOnDisk();
   /// The shell the Terminal dock runs: $SHELL (or /bin/sh) as a login
   /// shell on Unix, PowerShell on Windows.
   static QString shellProgram();
@@ -598,6 +608,10 @@ private:
   QDockWidget *claudeDock = nullptr;
   QDockWidget *tunerDock = nullptr;
   ClaudeCodeTabs *claudeTabs = nullptr;
+  QFileSystemWatcher *a_docWatcher = nullptr;   // the open documents' files
+  QSet<QString> a_changedOnDisk;                // changed, waiting for the files to settle
+  QTimer *a_changedTimer = nullptr;
+  void watchDocuments();                        // the watched files: the open documents
   FileBrowser *fileBrowser = nullptr;   // the left dock's File Browser tab
 
   QListView *Projects;

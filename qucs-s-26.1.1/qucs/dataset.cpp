@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "dataset.h"
+#include "spreadsheet.h"
 
 #include <QByteArrayView>
 #include <QCoreApplication>
@@ -70,8 +71,101 @@ bool readValue(QByteArrayView text, double* re, double* im, bool* complex)
 
 } // namespace
 
+bool Dataset::isTable(const QString& path)
+{
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    return suffix == QLatin1String("csv") || suffix == QLatin1String("tsv") || suffix == QLatin1String("xlsx");
+}
+
+bool Dataset::readTable(const QString& path, QString* error)
+{
+    a_path = path;
+    a_variables.clear();
+    a_index.clear();
+    namespace sh = qucs_s::sheet;
+    sh::Workbook book;
+    QString why;
+    if (!sh::readFile(path, book, &why) || book.sheets.isEmpty()) {
+        if (error != nullptr) *error = why.isEmpty() ? tr("%1 cannot be read.").arg(path) : why;
+        return false;
+    }
+    const sh::Sheet& sheet = book.sheets.first();
+    const auto numberAt = [&sheet](int row, int column, double* x) {
+        const sh::Cell& c = sheet.at(row, column);
+        if (c.kind != sh::Cell::Kind::Number && c.kind != sh::Cell::Kind::Date) {
+            // A CSV file's numbers come as text.
+            bool ok = false;
+            *x = c.text.trimmed().toDouble(&ok);
+            return ok;
+        }
+        bool ok = false;
+        *x = c.value.toDouble(&ok);
+        return ok;
+    };
+    // The header: the first row with text in it (and no number).
+    int header = -1, columns = sheet.columnCount();
+    for (int r = 0; r < std::min(5, sheet.rowCount()) && header < 0; ++r) {
+        bool text = false, number = false;
+        for (int c = 0; c < columns; ++c) {
+            double x;
+            if (numberAt(r, c, &x)) number = true;
+            else if (!sheet.at(r, c).text.trimmed().isEmpty()) text = true;
+        }
+        if (text && !number) header = r;
+        if (number) break;
+    }
+    QList<Variable> columnsRead;
+    for (int c = 0; c < columns; ++c) {
+        Variable v;
+        v.name = header >= 0 ? sheet.at(header, c).text.trimmed() : QString();
+        if (v.name.isEmpty()) v.name = sh::columnName(c);
+        int numbers = 0;
+        for (int r = header + 1; r < sheet.rowCount(); ++r) {
+            double x = qQNaN();
+            if (numberAt(r, c, &x)) ++numbers;
+            else x = qQNaN();
+            v.re << x;
+        }
+        if (numbers > 0) columnsRead << v;
+    }
+    // Rows with nothing in any column at the end: dropped.
+    int rows = columnsRead.isEmpty() ? 0 : int(columnsRead.first().re.size());
+    while (rows > 0) {
+        bool any = false;
+        for (const Variable& v : std::as_const(columnsRead)) any = any || !std::isnan(v.re.at(rows - 1));
+        if (any) break;
+        --rows;
+    }
+    if (columnsRead.isEmpty() || rows == 0) {
+        if (error != nullptr) *error = tr("%1 has no columns of numbers.").arg(QFileInfo(path).fileName());
+        return false;
+    }
+    for (Variable& v : columnsRead) v.re.resize(rows);
+    // Over the first column when it rises steadily, else over the row.
+    bool rises = columnsRead.size() > 1 && rows > 1;
+    for (int i = 1; rises && i < rows; ++i)
+        rises = !std::isnan(columnsRead.first().re.at(i)) && columnsRead.first().re.at(i) > columnsRead.first().re.at(i - 1);
+    Variable x;
+    if (rises) {
+        x = columnsRead.takeFirst();
+    } else {
+        x.name = QStringLiteral("row");
+        for (int i = 1; i <= rows; ++i) x.re << i;
+    }
+    x.independent = true;
+    a_index.insert(x.name, 0);
+    a_variables << x;
+    for (Variable& v : columnsRead) {
+        v.dependencies = {x.name};
+        a_index.insert(v.name, int(a_variables.size()));
+        a_variables << v;
+    }
+    return true;
+}
+
 bool Dataset::read(const QString& path, QString* error)
 {
+    if (isTable(path)) return readTable(path, error);
     a_path = path;
     a_variables.clear();
     a_index.clear();
@@ -815,12 +909,15 @@ bool evaluate(const Dataset& data, const QString& expression, Variable* out, QSt
 // ----------------------------------------------------------------------
 // Measurements
 
+constexpr double kPi = 3.14159265358979323846;
+
 QStringList measurements()
 {
     return {QStringLiteral("rise_time"), QStringLiteral("fall_time"), QStringLiteral("overshoot"),
             QStringLiteral("settling_time"), QStringLiteral("period"), QStringLiteral("frequency"),
             QStringLiteral("duty_cycle"), QStringLiteral("crossings"), QStringLiteral("bandwidth"),
-            QStringLiteral("thd"), QStringLiteral("gain"), QStringLiteral("phase_margin"), QStringLiteral("gain_margin")};
+            QStringLiteral("thd"), QStringLiteral("gain"), QStringLiteral("phase_margin"), QStringLiteral("gain_margin"),
+            QStringLiteral("distribution"), QStringLiteral("fft"), QStringLiteral("eye")};
 }
 
 namespace {
@@ -1185,6 +1282,173 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
                                                     "(this is -T), its phase crossover is where it falls through 0 degrees")
                                                      .arg(rounded(start)));
         }
+        return r;
+    }
+    if (w == QLatin1String("distribution")) {
+        // The values as samples, one per run - not a time average.
+        QVector<double> v;
+        for (double y : c.y)
+            if (std::isfinite(y)) v << y;
+        std::sort(v.begin(), v.end());
+        const int n = int(v.size());
+        double sum = 0;
+        for (double y : v) sum += y;
+        const double mean = sum / n;
+        double squares = 0;
+        for (double y : v) squares += (y - mean) * (y - mean);
+        const double sd = n > 1 ? std::sqrt(squares / (n - 1)) : 0;
+        const auto percentile = [&v, n](double p) {
+            const double at = p * (n - 1);
+            const int i = int(std::floor(at));
+            return i + 1 < n ? v.at(i) + (at - i) * (v.at(i + 1) - v.at(i)) : v.at(n - 1);
+        };
+        QJsonArray histogram;
+        const int bins = std::clamp(int(std::ceil(std::sqrt(double(n)))), 1, 20);
+        const double width = (v.last() - v.first()) / bins;
+        QVector<int> counts(bins, 0);
+        for (double y : v) counts[width > 0 ? std::min(bins - 1, int((y - v.first()) / width)) : 0]++;
+        for (int b = 0; b < bins; ++b)
+            histogram.append(QJsonArray{rounded(v.first() + b * width), rounded(v.first() + (b + 1) * width), counts.at(b)});
+        QJsonObject r{{QStringLiteral("value"), rounded(mean)},
+                      {QStringLiteral("count"), n},
+                      {QStringLiteral("mean"), rounded(mean)},
+                      {QStringLiteral("standard deviation"), rounded(sd)},
+                      {QStringLiteral("min"), rounded(v.first())},
+                      {QStringLiteral("max"), rounded(v.last())},
+                      {QStringLiteral("median"), rounded(percentile(0.5))},
+                      {QStringLiteral("5th percentile"), rounded(percentile(0.05))},
+                      {QStringLiteral("95th percentile"), rounded(percentile(0.95))},
+                      {QStringLiteral("histogram"), histogram},
+                      {QStringLiteral("histogram is"), QStringLiteral("[from, to, count] for each bin")}};
+        if (!std::isnan(o.level)) {
+            int above = 0;
+            for (double y : v) above += y >= o.level ? 1 : 0;
+            r.insert(QStringLiteral("at or above level"), rounded(100.0 * above / n));
+            r.insert(QStringLiteral("level"), rounded(o.level));
+        }
+        return r;
+    }
+    if (w == QLatin1String("fft")) {
+        // Resampled evenly over the range (a power of two of points), a
+        // Hann window, the magnitudes of its spectrum.
+        const double span = c.x.last() - c.x.first();
+        if (!(span > 0)) return cannot(tr("the curve's x does not rise"));
+        int n = 64;
+        while (n < s.count && n < 65536) n *= 2;
+        const double dt = span / n;
+        QVector<std::complex<double>> a(n);
+        for (int i = 0; i < n; ++i) {
+            const double window = 0.5 - 0.5 * std::cos(2 * kPi * i / (n - 1));
+            a[i] = valueAt(c, c.x.first() + i * dt) * window;
+        }
+        // Radix 2, in place.
+        for (int i = 1, j = 0; i < n; ++i) {
+            int bit = n >> 1;
+            for (; j & bit; bit >>= 1) j ^= bit;
+            j ^= bit;
+            if (i < j) std::swap(a[i], a[j]);
+        }
+        for (int len = 2; len <= n; len <<= 1) {
+            const std::complex<double> w1 = std::polar(1.0, -2 * kPi / len);
+            for (int i = 0; i < n; i += len) {
+                std::complex<double> wk(1, 0);
+                for (int k = 0; k < len / 2; ++k) {
+                    const std::complex<double> u = a[i + k], t = a[i + k + len / 2] * wk;
+                    a[i + k] = u + t;
+                    a[i + k + len / 2] = u - t;
+                    wk *= w1;
+                }
+            }
+        }
+        const double df = 1.0 / (n * dt);
+        QVector<double> amplitude(n / 2);
+        for (int k = 0; k < n / 2; ++k) amplitude[k] = std::abs(a[k]) / (n * 0.5) * (k == 0 ? 1 : 2);
+        QList<int> peaks;
+        for (int k = 2; k + 1 < n / 2; ++k)
+            if (amplitude[k] > amplitude[k - 1] && amplitude[k] >= amplitude[k + 1]) peaks << k;
+        std::sort(peaks.begin(), peaks.end(), [&amplitude](int x, int y) { return amplitude[x] > amplitude[y]; });
+        if (peaks.isEmpty()) return cannot(tr("the spectrum has no line"));
+        const double largest = amplitude[peaks.first()];
+        QJsonArray lines;
+        for (int i = 0; i < std::min<qsizetype>(10, peaks.size()); ++i) {
+            const int k = peaks.at(i);
+            lines.append(QJsonObject{{QStringLiteral("frequency"), rounded(k * df)},
+                                     {QStringLiteral("amplitude"), rounded(amplitude[k])},
+                                     {QStringLiteral("dBc"), rounded(20 * std::log10(amplitude[k] / largest))}});
+        }
+        QVector<double> sorted = amplitude.mid(1);
+        std::sort(sorted.begin(), sorted.end());
+        const double floor = sorted.isEmpty() ? 0 : sorted.at(sorted.size() / 2);
+        return {{QStringLiteral("value"), rounded(peaks.first() * df)},
+                {QStringLiteral("unit"), QStringLiteral("Hz")},
+                {QStringLiteral("strongest"), QJsonObject{{QStringLiteral("frequency"), rounded(peaks.first() * df)},
+                                                          {QStringLiteral("amplitude"), rounded(largest)}}},
+                {QStringLiteral("dc"), rounded(amplitude[0])},
+                {QStringLiteral("lines"), lines},
+                {QStringLiteral("noise floor, dBc"), rounded(floor > 0 ? 20 * std::log10(floor / largest) : -400)},
+                {QStringLiteral("resolution"), rounded(df)},
+                {QStringLiteral("points"), n},
+                {QStringLiteral("measured"), tr("the range resampled evenly at %1 points, a Hann window; amplitudes are "
+                                                "peak values, a line's accurate within its bin").arg(n)}};
+    }
+    if (w == QLatin1String("eye")) {
+        if (!(o.period > 0)) return cannot(tr("an eye needs the bit period ('bit_period', in the unit of x)"));
+        const double T = o.period;
+        const double start = c.x.first() + o.offset;
+        if (c.x.last() - start < 3 * T) return cannot(tr("fewer than 3 bits in the range"));
+        // The crossings of the middle, as phases of a bit (0 to 1).
+        const QList<Crossing> all = crossings(c, mid);
+        if (all.size() < 2) return cannot(tr("it does not cross %1 twice: no bits").arg(mid));
+        double sx = 0, sy = 0;
+        QVector<double> phases;
+        for (const Crossing& k : all) {
+            if (k.x < start) continue;
+            const double ph = std::fmod(k.x - start, T) / T;
+            phases << ph;
+            sx += std::cos(2 * kPi * ph);
+            sy += std::sin(2 * kPi * ph);
+        }
+        if (phases.isEmpty()) return cannot(tr("no crossings after the offset"));
+        double crossing = std::atan2(sy, sx) / (2 * kPi);
+        if (crossing < 0) crossing += 1;
+        double lo = 0, hi = 0, squares = 0;
+        for (double ph : phases) {
+            double d = ph - crossing;
+            d -= std::round(d);
+            lo = std::min(lo, d);
+            hi = std::max(hi, d);
+            squares += d * d;
+        }
+        const double jitter = hi - lo, jitterRms = std::sqrt(squares / phases.size());
+        // Each bit's value at the centre, half a bit from the crossings.
+        const double centre = std::fmod(crossing + 0.5, 1.0);
+        QVector<double> highs, lows;
+        for (double t = start + centre * T; t <= c.x.last(); t += T) {
+            const double y = valueAt(c, t);
+            if (std::isnan(y)) continue;
+            (y > mid ? highs : lows) << y;
+        }
+        if (highs.isEmpty() || lows.isEmpty()) return cannot(tr("the bits are all high or all low at their centres"));
+        const double minHigh = *std::min_element(highs.cbegin(), highs.cend());
+        const double maxLow = *std::max_element(lows.cbegin(), lows.cend());
+        double high = 0, low = 0;
+        for (double y : highs) high += y;
+        for (double y : lows) low += y;
+        high /= highs.size();
+        low /= lows.size();
+        QJsonObject r{{QStringLiteral("value"), rounded(minHigh - maxLow)},
+                      {QStringLiteral("height"), rounded(minHigh - maxLow)},
+                      {QStringLiteral("width"), rounded(std::max(0.0, 1 - jitter) * T)},
+                      {QStringLiteral("width, UI"), rounded(std::max(0.0, 1 - jitter))},
+                      {QStringLiteral("jitter, peak to peak"), rounded(jitter * T)},
+                      {QStringLiteral("jitter, rms"), rounded(jitterRms * T)},
+                      {QStringLiteral("crossing level"), rounded(mid)},
+                      {QStringLiteral("levels"), QJsonObject{{QStringLiteral("high"), rounded(high)}, {QStringLiteral("low"), rounded(low)}}},
+                      {QStringLiteral("bits"), int(highs.size() + lows.size())},
+                      {QStringLiteral("centre, UI"), rounded(centre)},
+                      {QStringLiteral("measured"), tr("folded at %1 from %2: the height is the lowest high less the highest low at the "
+                                                      "bits' centres, the width a bit less the crossings' spread").arg(T).arg(rounded(start))}};
+        if (minHigh <= maxLow) r.insert(QStringLiteral("note"), tr("the eye is closed at its centre"));
         return r;
     }
     return cannot(tr("there is no measurement %1 (%2)").arg(what, measurements().join(QStringLiteral(", "))));

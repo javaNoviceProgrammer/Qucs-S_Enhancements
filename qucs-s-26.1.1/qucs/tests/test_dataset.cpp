@@ -17,6 +17,7 @@
 #include "dataset.h"
 #include "qucscontrol_p.h"
 #include "simulatorlog.h"
+#include "spreadsheet.h"
 
 namespace ds = qucs_s::dataset;
 
@@ -600,6 +601,55 @@ private slots:
         QCOMPARE(renameNetIn(QStringLiteral("tran.i(vout)"), QStringLiteral("out"), QStringLiteral("o2")), QStringLiteral("tran.i(vout)"));
         QCOMPARE(renameNetIn(QStringLiteral("x.out.v"), QStringLiteral("out"), QStringLiteral("o2")), QStringLiteral("x.out.v"));
     }
+    // A table read as a dataset: over its first column when that rises,
+    // else over the row; a workbook's first sheet.
+    void tablesAreReadAsDatasets()
+    {
+        namespace ds = qucs_s::dataset;
+        const auto write = [this](const QString& name, const QByteArray& bytes) {
+            QFile f(dir.filePath(name));
+            if (!f.open(QIODevice::WriteOnly)) return QString();
+            f.write(bytes);
+            return f.fileName();
+        };
+        ds::Dataset data;
+        QString error;
+        QVERIFY2(data.read(write("wave.csv", "time,v(out),note\n0,0,a\n1e-3,0.5,b\n2e-3,1.0,c\n"), &error), qPrintable(error));
+        QCOMPARE(data.variables().size(), 2);   // (the column of text is none)
+        QCOMPARE(data.variables().at(0).name, QStringLiteral("time"));
+        QVERIFY(data.variables().at(0).independent);
+        QCOMPARE(data.find("v(out)")->dependencies, QStringList{"time"});
+        QCOMPARE(data.find("v(out)")->re.at(2), 1.0);
+        // Not rising: over the row; no header: A, B.
+        QVERIFY(data.read(write("mc.tsv", "3\t20.1\n1\t19.8\n2\t20.3\n"), &error));
+        QCOMPARE(data.variables().at(0).name, QStringLiteral("row"));
+        QVERIFY(data.find("A") != nullptr && data.find("B") != nullptr);
+        QCOMPARE(data.find("B")->re.at(1), 19.8);
+        // A workbook.
+        qucs_s::sheet::Workbook book;
+        book.format = qucs_s::sheet::Format::Xlsx;
+        book.sheets.append(qucs_s::sheet::Sheet{});
+        book.sheets[0].name = QStringLiteral("results");
+        qucs_s::sheet::Cell& h = book.sheets[0].cell(0, 0);
+        h.kind = qucs_s::sheet::Cell::Kind::Text;
+        h.text = h.value = QStringLiteral("gain");
+        for (int r = 1; r <= 3; ++r) {
+            qucs_s::sheet::Cell& c = book.sheets[0].cell(r, 0);
+            c.kind = qucs_s::sheet::Cell::Kind::Number;
+            c.text = c.value = QString::number(18 + r);
+        }
+        QVERIFY2(data.read(write("book.xlsx", qucs_s::sheet::writeXlsx(book)), &error), qPrintable(error));
+        QCOMPARE(data.find("gain")->re, (QVector<double>{19, 20, 21}));
+        QVERIFY(!data.read(write("empty.csv", "a,b\nx,y\n"), &error));
+        QVERIFY(error.contains("no columns of numbers"));
+        // The distribution of such values.
+        const ds::Curve curve{{1, 2, 3, 4}, {19, 20, 21, 20}};
+        const QJsonObject d = ds::measure(curve, QStringLiteral("distribution"), {});
+        QCOMPARE(d.value("mean").toDouble(), 20.0);
+        QCOMPARE(d.value("median").toDouble(), 20.0);
+        QCOMPARE(d.value("count").toInt(), 4);
+    }
+
 };
 
 QTEST_MAIN(TestDataset)

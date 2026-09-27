@@ -393,6 +393,32 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   reads expressions such as `v(out)/v(in)` and compares a run with a kept
   one. `set_schematic` refuses a component line with a value too many,
   which would have shifted every property after it.
+  **Design tools**: `tune` sets a part's value, simulates and measures,
+  over and over, until a number comes out right: sweep RE until the
+  emitter sits at 5 V, or C until the peaking is 1 dB. It takes a few runs
+  in one call, and the value found is one step to undo. `build_verilog_a`
+  compiles a `.va` now, with each error's line and column.
+  `describe_component_type` gives a Verilog-A module's parameters and a
+  `.model` card. `find_library_component` finds a part by its values (an
+  NPN with Bf near 200) in the libraries and the project's SPICE models,
+  and `read_pdf` reads a datasheet's text. `import_netlist` makes a
+  schematic of a SPICE netlist, and `make_symbol` draws a subcircuit's
+  symbol with its pins on four sides. `new_project`, `open_project`,
+  `copy_document` (a schematic with its datasets and data display) and
+  `clean_scratch` tend the files. `new_document` opens a schematic's data
+  display for a report's plots. Equation blocks, Monte Carlo records and
+  specs, and hidden text are set by name, so `set_schematic` is rarely
+  needed. Diagrams have a title that moves with them. A marker can sit
+  3 dB below 0 dB or the DC value, not only below the peak. `get_dataset`
+  measures a spectrum (`fft`), an eye (`eye`) and a Monte Carlo family's
+  `distribution`, gives a table across a sweep, and reads `.csv` and
+  `.xlsx` results. `simulate` runs Check Schematic first and takes a
+  simulator for one run; a Qucsator run is waited for too. What the user
+  changes between Claude's calls is told part by part (R2: R 47k → 67k),
+  and `undo_history` tells the steps to undo in words. `"selection": true`
+  takes what the user selected. A document is found by its file's name
+  alone, and relative paths are taken from the open project. A text
+  document changed on disk by another program is loaded again.
   Tools that only look are
   used without asking; the first change asks, and *Allow Qucs-S Control*
   lets the rest of the conversation go on without asking (as do the

@@ -659,6 +659,13 @@ QString Schematic::snapshot()
   return createUndoString('*');
 }
 
+QStringList Schematic::undoStates() const
+{
+  QStringList states;
+  for (const QString* s : a_undoAction) states << (s != nullptr ? *s : QString());
+  return states;
+}
+
 void Schematic::restore(const QString& state)
 {
   QString s = state;

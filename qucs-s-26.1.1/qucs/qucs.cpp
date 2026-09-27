@@ -41,6 +41,9 @@
 #include <QSortFilterProxyModel>
 #include <QUrl>
 #include <QSettings>
+#include <QTextCursor>
+#include <QScrollBar>
+#include <QFileSystemWatcher>
 #include <QVariant>
 #include <QDebug>
 
@@ -791,6 +794,19 @@ void QucsApp::initView()
   // was (unless ⋯ > Reopen Conversations at Start is off).
   claudeTabs->restoreConversations();
   connect(claudeTabs, &ClaudeCodeTabs::filesChanged, this, &QucsApp::reloadChangedFiles);
+  // The open documents' files, changed by another program: loaded again.
+  a_docWatcher = new QFileSystemWatcher(this);
+  a_changedTimer = new QTimer(this);
+  a_changedTimer->setSingleShot(true);
+  a_changedTimer->setInterval(400);   // (a file is often written in pieces)
+  connect(a_changedTimer, &QTimer::timeout, this, &QucsApp::documentsChangedOnDisk);
+  connect(a_docWatcher, &QFileSystemWatcher::fileChanged, this, [this](const QString &file) {
+    a_changedOnDisk.insert(file);
+    a_changedTimer->start();
+  });
+  auto *watchSync = new QTimer(this);   // documents opened, closed, saved under another name
+  connect(watchSync, &QTimer::timeout, this, &QucsApp::watchDocuments);
+  watchSync->start(1500);
   connect(claudeTabs, &ClaudeCodeTabs::openFileRequested, this, [this](const QString &file) { gotoPage(file); });
 
     // initial projects directory model
@@ -3200,31 +3216,98 @@ void QucsApp::reloadChangedFiles(const QStringList &files)
         claudeTabs->addNote(tr("%1 has unsaved changes in Qucs-S, so it was not loaded again.").arg(name));
         break;
       }
-      bool loaded = false;
-      if (auto *schematic = dynamic_cast<Schematic *>(doc)) {
-        // Loaded as a schematic; back to its symbol when that was being
-        // edited (a .sym file is nothing else).
-        const bool symbol = schematic->getSymbolMode();
-        const bool current = schematic == currentSchematic();
-        if (current) slotHideEdit();   // (the component edited goes)
-        loaded = schematic->load();
-        if (loaded && symbol) {
-          schematic->switchPaintMode();
-          if (current) changeSchematicSymbolMode(schematic);
-          schematic->becomeCurrent(current);
-        }
-        // Loading made it the menus' document; the one in front is again.
-        if (!current)
-          if (Schematic *front = currentSchematic()) front->becomeCurrent(false);
-        schematic->viewport()->update();
-      } else if (auto *text = dynamic_cast<TextDoc *>(doc)) {
-        loaded = text->reload();
-      }
+      const bool loaded = reloadDocument(doc);
       claudeTabs->addNote(loaded ? tr("%1 loaded again with Claude's changes.").arg(name)
                                  : tr("%1 could not be loaded again.").arg(name));
       break;
     }
   }
+  if (a_status != nullptr) a_status->scheduleRefresh();
+}
+
+bool QucsApp::reloadDocument(QucsDoc *doc)
+{
+  bool loaded = false;
+  if (auto *schematic = dynamic_cast<Schematic *>(doc)) {
+    // Loaded as a schematic; back to its symbol when that was being
+    // edited (a .sym file is nothing else).
+    const bool symbol = schematic->getSymbolMode();
+    const bool current = schematic == currentSchematic();
+    if (current) slotHideEdit();   // (the component edited goes)
+    loaded = schematic->load();
+    if (loaded && symbol) {
+      schematic->switchPaintMode();
+      if (current) changeSchematicSymbolMode(schematic);
+      schematic->becomeCurrent(current);
+    }
+    // Loading made it the menus' document; the one in front is again.
+    if (!current)
+      if (Schematic *front = currentSchematic()) front->becomeCurrent(false);
+    schematic->viewport()->update();
+  } else if (auto *text = dynamic_cast<TextDoc *>(doc)) {
+    // Where the user was: the cursor, and what was in sight.
+    const int position = text->textCursor().position();
+    const int scroll = text->verticalScrollBar()->value();
+    loaded = text->reload();
+    if (loaded) {
+      QTextCursor cursor = text->textCursor();
+      cursor.setPosition(std::min(position, text->document()->characterCount() - 1));
+      text->setTextCursor(cursor);
+      text->verticalScrollBar()->setValue(scroll);
+    }
+  }
+  return loaded;
+}
+
+void QucsApp::watchDocuments()
+{
+  if (a_docWatcher == nullptr) return;
+  QSet<QString> wanted;
+  for (QucsDoc *doc : allDocuments())
+    if (!doc->getDocName().isEmpty() && (dynamic_cast<Schematic *>(doc) != nullptr || dynamic_cast<TextDoc *>(doc) != nullptr)
+        && QFileInfo::exists(doc->getDocName()))
+      wanted.insert(doc->getDocName());
+  const QStringList watched = a_docWatcher->files();
+  QStringList gone;
+  for (const QString &file : watched)
+    if (!wanted.contains(file)) gone << file;
+  if (!gone.isEmpty()) a_docWatcher->removePaths(gone);
+  QStringList added;
+  for (const QString &file : std::as_const(wanted))
+    if (!watched.contains(file)) added << file;   // (and one written anew: its watch was lost)
+  if (!added.isEmpty()) a_docWatcher->addPaths(added);
+}
+
+void QucsApp::documentsChangedOnDisk()
+{
+  // Not under a dialog waiting for an answer: loading again frees what it
+  // holds. Once it is closed.
+  if (QApplication::activeModalWidget() != nullptr) {
+    a_changedTimer->start();
+    return;
+  }
+  const QSet<QString> files = std::exchange(a_changedOnDisk, {});
+  for (const QString &file : files) {
+    const QFileInfo info(file);
+    if (!info.exists()) continue;   // moved away, or written anew and not there yet (the watch is set again)
+    for (QucsDoc *doc : allDocuments()) {
+      if (doc->getDocName().isEmpty()
+          || QFileInfo(doc->getDocName()).canonicalFilePath() != info.canonicalFilePath()) continue;
+      // Written by Qucs-S itself (saved), or loaded since.
+      if (doc->getLastSaved().isValid() && info.lastModified() <= doc->getLastSaved()) break;
+      const QString name = info.fileName();
+      if (doc->getDocChanged()) {
+        statusBar()->showMessage(tr("%1 was changed by another program; it has unsaved changes here, so it was not loaded again.")
+                                     .arg(name), 8000);
+        break;
+      }
+      statusBar()->showMessage(reloadDocument(doc) ? tr("%1 was changed by another program and is loaded again.").arg(name)
+                                                   : tr("%1 was changed by another program and could not be loaded again.").arg(name),
+                               5000);
+      break;
+    }
+  }
+  watchDocuments();
   if (a_status != nullptr) a_status->scheduleRefresh();
 }
 

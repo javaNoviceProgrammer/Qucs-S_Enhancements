@@ -70,6 +70,9 @@ Marker* markerOf(const Diagram* d, const QJsonValue& which, QString* error);
 /// Why trace \a g of \a sch shows nothing (no dataset; no such variable,
 /// and those there are like it); empty when it shows data.
 QString whyNoData(Schematic* sch, Graph* g);
+/// The dataset file a trace's variable \a var reads (ngspice/tran.v(out):
+/// name.dat.ngspice), and the variable in it in \a variable.
+QString datasetOfTrace(Schematic* sch, const QString& var, QString* variable);
 
 /// The operating point a DC bias run (Simulation > Calculate DC bias) of
 /// \a sch left in its Scratch folder \a scratch: each node's value and
@@ -103,6 +106,16 @@ QString typeOf(Module* module);
 /// \a to wherever it names the net's voltage: v(out), vdb(out),
 /// v(out,in), out.v, out.Vt.
 QString renameNetIn(const QString& text, const QString& from, const QString& to);
+
+/// \a text with the component \a from called \a to wherever it names one
+/// of its quantities: i(v1), @q1[ic], v1#branch, V1.It, D1.Id.
+QString renameComponentIn(const QString& text, const QString& from, const QString& to);
+
+/// What changed from one state of a schematic to another (as snapshot()
+/// and its undo stack have them), in words: parts added, deleted, renamed,
+/// moved, turned, their properties changed (R2: R 47k → 67k), wires and
+/// labels, diagrams and their traces, paintings. At most \a most lines.
+QStringList describeChanges(const QString& before, const QString& after, int most = 20);
 
 } // namespace qucs_s::control
 
