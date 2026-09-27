@@ -42,6 +42,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <QStringList>
+#include <utility>
 
 class QTextStream;
 class QTextEdit;
@@ -413,6 +414,8 @@ private:
   int a_tmpViewY2;
   QRect a_tmpUsedArea;
 
+  QStringList a_loadNotes;        // takeLoadNotes()
+  QStringList a_loadShortNotes;   // lines with fewer values than their type's properties (replaceContent())
   int a_undoActionIdx;
   QVector<QString *> a_undoAction;
   bool a_keyboardMoveOpen = false;   // the top undo entry is an unfinished cursor-key move
@@ -786,13 +789,21 @@ public:
   /// left out stay as they are) - in place of this schematic's, as one
   /// step to undo. False, and why in \a error, when it does not read:
   /// the schematic is then as it was.
-  bool replaceContent(const QString& text, QString* error = nullptr);
+  /// A component line with more property values than its type takes is
+  /// refused (a value too many in the middle shifts all after it); one
+  /// with fewer is taken, its last properties at their defaults, and
+  /// \a notes says which.
+  bool replaceContent(const QString& text, QString* error = nullptr, QStringList* notes = nullptr);
   /// The elements as they are now, to come back to with restore().
   QString snapshot();
   /// Back to \a state (from snapshot()), as an undo goes back; nothing is
   /// recorded to undo. The elements are new ones: pointers to the old are
   /// left dangling.
   void restore(const QString& state);
+  /// What loading components found and let pass, and forgets it: each
+  /// component whose line had more property values than its type took (a
+  /// value too many in the middle shifts all after it).
+  QStringList takeLoadNotes() { return std::exchange(a_loadNotes, {}); }
   /// The whole document as it is now - its schematic's elements and its
   /// symbol's paintings - to come back to with restoreAll().
   QPair<QString, QString> snapshotAll();

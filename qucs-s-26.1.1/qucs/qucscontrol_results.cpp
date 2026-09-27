@@ -590,6 +590,28 @@ QString operatingUnit(const QString& name)
     return ds::unitOf(name);
 }
 
+// What a device's quantities make plain, each named with its formula: a
+// transistor's small-signal resistances and gains (re = 1/gm of a BJT,
+// rpi, beta, ro; a FET's intrinsic gain gm/gds).
+QJsonObject derivedQuantities(const QList<qucs_s::oppoint::Parameter>& parameters)
+{
+    QHash<QString, double> v;
+    for (const auto& p : parameters) v.insert(p.name.toLower(), p.value);
+    QJsonObject d;
+    const auto has = [&v](const char* k) { return v.contains(QLatin1String(k)) && v.value(QLatin1String(k)) > 0; };
+    if (has("gm")) d.insert(QStringLiteral("1/gm (re of a BJT)"), number(1 / v.value(QStringLiteral("gm"))));
+    if (has("gpi")) {
+        d.insert(QStringLiteral("rpi = 1/gpi"), number(1 / v.value(QStringLiteral("gpi"))));
+        if (has("gm")) d.insert(QStringLiteral("beta = gm/gpi"), number(v.value(QStringLiteral("gm")) / v.value(QStringLiteral("gpi"))));
+    }
+    if (has("go")) d.insert(QStringLiteral("ro = 1/go"), number(1 / v.value(QStringLiteral("go"))));
+    if (has("gds")) {
+        d.insert(QStringLiteral("ro = 1/gds"), number(1 / v.value(QStringLiteral("gds"))));
+        if (has("gm")) d.insert(QStringLiteral("gm/gds (intrinsic gain)"), number(v.value(QStringLiteral("gm")) / v.value(QStringLiteral("gds"))));
+    }
+    return d;
+}
+
 // The operating point in a dataset - an op analysis's node values and,
 // with ngspice, every device's quantities - each device under the
 // component of the schematic it is (T1 for ngspice's jt1). With
@@ -635,6 +657,8 @@ QJsonObject operatingPointJson(const ds::Dataset& data, Schematic* sch, bool dev
                 QJsonObject values;
                 for (const auto& p : d.parameters) values.insert(p.name, number(p.value));
                 e.insert(QStringLiteral("values"), values);
+                if (const QJsonObject derived = derivedQuantities(d.parameters); !derived.isEmpty())
+                    e.insert(QStringLiteral("derived"), derived);
             }
             list.append(e);
         }
@@ -731,6 +755,7 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
         c.insert(QStringLiteral("at min"), number(s.xMin));
         c.insert(QStringLiteral("max"), number(s.max));
         c.insert(QStringLiteral("at max"), number(s.xMax));
+        c.insert(QStringLiteral("peak to peak"), number(s.max - s.min));
         c.insert(QStringLiteral("mean"), number(s.mean));
         c.insert(QStringLiteral("rms"), number(s.rms));
         c.insert(QStringLiteral("initial"), number(s.first));
@@ -860,10 +885,14 @@ QStringList notesOn(const QString& type)
                     "Points samples; raise Points for finer results. MaxStep bounds the simulator's own step.");
     if (type == QLatin1String("GND"))
         notes << tr("Every circuit needs a ground (the SPICE node 0); its pin is GND.1 to connect.");
-    if (type == QLatin1String("Eqn"))
+    if (type == QLatin1String("Eqn") || type == QLatin1String("NutmegEq"))
         notes << tr("Under ngspice an equation that uses no simulated voltage or current becomes a .PARAM line; one "
                     "that does is computed after each analysis from its results, and is in the dataset (NutmegEq "
                     "does that for one analysis you name).");
+    if (type == QLatin1String("NutmegEq") || type == QLatin1String("Eqn"))
+        notes << tr("Name its variables unlike the circuit's nodes and net labels: under ngspice an equation's variable "
+                    "and a node of one name clash (a variable out beside the node out) - the node's voltage or the "
+                    "equation's result comes out wrong, without an error. Names such as gain_db or vout_pp are safe.");
     return notes;
 }
 
@@ -1123,6 +1152,63 @@ QString renameNetIn(const QString& text, const QString& from, const QString& to)
     return replaced(replaced(text, spice), qucsator);
 }
 
+
+QJsonObject operatingPointOfRun(Schematic* sch, const QString& scratch)
+{
+    // The node values: ngspice's "print all" ("out = 1.2"), or Xyce's
+    // .PRINT (the names on one line, the values on the next).
+    QJsonObject nodes, units;
+    const QString ngspice = QDir(scratch).filePath(QStringLiteral("spice4qucs.cir.dc_op"));
+    const QString xyce = QDir(scratch).filePath(QStringLiteral("spice4qucs.cir.dc_op_xyce"));
+    const auto name = [](QString n) {
+        n = n.trimmed();
+        if (n.endsWith(QLatin1String("#branch"))) return QStringLiteral("i(%1)").arg(n.chopped(7));
+        return n;
+    };
+    if (QFile f(ngspice); f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        for (const QString& line : QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'))) {
+            if (!line.contains(QLatin1Char('='))) continue;
+            bool ok = false;
+            const double v = line.section(QLatin1Char('='), 1, 1).trimmed().toDouble(&ok);
+            if (!ok) continue;
+            const QString n = name(line.section(QLatin1Char('='), 0, 0));
+            nodes.insert(n, number(v));
+            if (const QString u = ds::unitOf(n); !u.isEmpty()) units.insert(n, u);
+        }
+    } else if (QFile x(xyce); x.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QStringList lines = QString::fromUtf8(x.readAll()).split(QLatin1Char('\n'));
+        if (lines.size() >= 2) {
+            const QStringList names = lines.at(0).split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+            const QStringList values = lines.at(1).split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+            for (int i = 0; i < names.size() && i < values.size(); ++i) nodes.insert(names.at(i).toLower(), number(values.at(i).toDouble()));
+        }
+    }
+    QJsonArray devices;
+    if (sch != nullptr)
+        for (const qucs_s::oppoint::Device& d : sch->operatingPoint()) {
+            QJsonObject e{{QStringLiteral("device"), d.name}, {QStringLiteral("type"), d.type}};
+            if (!d.component.isEmpty()) e.insert(QStringLiteral("component"), d.component);
+            if (!d.inside.isEmpty()) e.insert(QStringLiteral("inside"), d.inside);
+            if (!d.model.isEmpty()) e.insert(QStringLiteral("model"), d.model);
+            QJsonObject values;
+            QList<qucs_s::oppoint::Parameter> operating;
+            for (const auto& p : d.parameters) {
+                if (!qucs_s::oppoint::isOperatingQuantity(d.type, p.name)) continue;
+                values.insert(p.name, number(p.value));
+                operating << p;
+                if (const QString u = qucs_s::oppoint::unitOf(d.type, p.name); !u.isEmpty()) units.insert(p.name, u);
+            }
+            e.insert(QStringLiteral("values"), values);
+            if (const QJsonObject derived = derivedQuantities(operating); !derived.isEmpty()) e.insert(QStringLiteral("derived"), derived);
+            devices.append(e);
+        }
+    QJsonObject op;
+    if (!nodes.isEmpty()) op.insert(QStringLiteral("nodes"), nodes);
+    if (!devices.isEmpty()) op.insert(QStringLiteral("devices"), devices);
+    if (!op.isEmpty()) op.insert(QStringLiteral("units"), units);
+    return op;
+}
+
 } // namespace qucs_s::control
 
 // ----------------------------------------------------------------------
@@ -1212,6 +1298,70 @@ QList<Schematic*> QucsControl::showingDataOf(Schematic* sch) const
     }
     return list;
 }
+
+namespace {
+
+// \a va of \a a beside \b vb of another run \a b: the other's statistics
+// over the same range, its measurements, and the difference on this run's
+// samples (the other's value straight between its samples): the largest
+// and where, its mean and RMS. The first curve of a swept one.
+QJsonObject comparedJson(const ds::Dataset& a, const ds::Variable& va, const ds::Dataset& b, const ds::Variable& vb, const ReadOptions& o)
+{
+    QJsonObject out;
+    const QList<ds::Curve> mine = ds::curvesOf(a, va), theirs = ds::curvesOf(b, vb);
+    if (mine.isEmpty() || theirs.isEmpty()) return {{QStringLiteral("note"), tr("nothing to compare")}};
+    const ds::Curve here = ds::within(mine.first(), o.from, o.to), there = ds::within(theirs.first(), o.from, o.to);
+    if (here.x.isEmpty() || there.x.isEmpty()) return {{QStringLiteral("note"), tr("no samples in the range to compare")}};
+    const ds::Stats s = ds::statsOf(there);
+    out.insert(QStringLiteral("min"), number(s.min));
+    out.insert(QStringLiteral("max"), number(s.max));
+    out.insert(QStringLiteral("peak to peak"), number(s.max - s.min));
+    out.insert(QStringLiteral("mean"), number(s.mean));
+    out.insert(QStringLiteral("rms"), number(s.rms));
+    out.insert(QStringLiteral("final"), number(s.last));
+    if (!o.measure.isEmpty()) {
+        QJsonObject m;
+        for (const QString& what : o.measure) m.insert(what, ds::measure(there, what, o.measureOptions));
+        out.insert(QStringLiteral("measurements"), m);
+    }
+    // The difference, this run's less the other's, where both have data.
+    const bool rising = there.x.size() < 2 || there.x.last() >= there.x.first();
+    double worst = 0, worstAt = NaN, sum = 0, sumSq = 0;
+    int n = 0;
+    int j = 0;
+    for (int i = 0; i < here.x.size(); ++i) {
+        const double x = here.x.at(i);
+        double y = NaN;
+        if (rising) {
+            while (j + 1 < there.x.size() && there.x.at(j + 1) < x) ++j;
+            if (j + 1 < there.x.size() && there.x.at(j) <= x && x <= there.x.at(j + 1)) {
+                const double x0 = there.x.at(j), x1 = there.x.at(j + 1);
+                y = x1 > x0 ? there.y.at(j) + (x - x0) / (x1 - x0) * (there.y.at(j + 1) - there.y.at(j)) : there.y.at(j);
+            } else if (there.x.size() == 1 && there.x.first() == x) y = there.y.first();
+        } else {
+            y = ds::valueAt(there, x);
+        }
+        if (!std::isfinite(y) || !std::isfinite(here.y.at(i))) continue;
+        const double d = here.y.at(i) - y;
+        if (std::abs(d) > std::abs(worst) || std::isnan(worstAt)) {
+            worst = d;
+            worstAt = x;
+        }
+        sum += d;
+        sumSq += d * d;
+        ++n;
+    }
+    if (n > 0)
+        out.insert(QStringLiteral("difference (this run less that)"),
+                   QJsonObject{{QStringLiteral("largest"), number(worst)}, {QStringLiteral("at"), number(worstAt)},
+                               {QStringLiteral("mean"), number(sum / n)}, {QStringLiteral("rms"), number(std::sqrt(sumSq / n))},
+                               {QStringLiteral("samples compared"), n}});
+    else out.insert(QStringLiteral("note"), tr("the two runs' x ranges do not meet"));
+    if (mine.size() > 1 || theirs.size() > 1) out.insert(QStringLiteral("of"), tr("the first curve of the sweep"));
+    return out;
+}
+
+} // namespace
 
 QJsonObject QucsControl::getDataset(const QJsonObject& args)
 {
@@ -1304,16 +1454,65 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
     o.points = args.contains(QLatin1String("points")) ? std::clamp(args.value(QLatin1String("points")).toInt(), 0, 5000)
                                                       : (o.at.isEmpty() && o.measure.isEmpty() ? 100 : 0);
 
+    // Another run to compare with: a dataset file, or a name simulate's
+    // keep_as gave (run1: run1.dat.ngspice beside this one).
+    ds::Dataset other;
+    QString otherFile;
+    if (const QString compare = args.value(QLatin1String("compare")).toString().trimmed(); !compare.isEmpty()) {
+        const qsizetype d = info.fileName().indexOf(QLatin1String(".dat"));
+        const QString kept = info.absoluteDir().filePath(compare + (d >= 0 ? info.fileName().mid(d) : QStringLiteral(".dat")));
+        otherFile = QFileInfo(absolute(compare)).isFile() ? absolute(compare) : QFileInfo(kept).isFile() ? kept : QString();
+        if (otherFile.isEmpty()) {
+            QStringList there;
+            const QString suffix = d >= 0 ? info.fileName().mid(d) : QStringLiteral(".dat");
+            for (const QFileInfo& fi : info.absoluteDir().entryInfoList({QStringLiteral("*") + suffix}, QDir::Files, QDir::Time))
+                if (fi.absoluteFilePath() != info.absoluteFilePath() && there.size() < 12) there << fi.fileName().left(fi.fileName().size() - suffix.size());
+            return errorResult(tr("There is no dataset %1 to compare with: 'compare' is a dataset file, or a name simulate's keep_as "
+                                  "gave (%2).")
+                                   .arg(compare, there.isEmpty() ? tr("none is kept beside this one") : tr("kept: %1").arg(there.join(QStringLiteral(", ")))));
+        }
+        if (!other.read(otherFile, &error)) return errorResult(error);
+        result.insert(QStringLiteral("compared with"), QDir::toNativeSeparators(otherFile));
+    }
+
     QJsonArray out;
     QStringList missing;
     QStringList done;
+    const auto withComparison = [&](QJsonObject json, const ds::Variable& v, const QString& wantedName) {
+        if (otherFile.isEmpty()) return json;
+        ds::Variable theirs;
+        const QStringList names = other.resolve(v.name).isEmpty() ? other.resolve(wantedName) : other.resolve(v.name);
+        QString why;
+        if (!names.isEmpty()) theirs = *other.find(names.first());
+        else if (!ds::isExpression(wantedName) || !ds::evaluate(other, wantedName, &theirs, &why)) {
+            json.insert(QStringLiteral("compared"), tr("the other run has no %1").arg(wantedName));
+            return json;
+        }
+        json.insert(QStringLiteral("other run"), comparedJson(data, v, other, theirs, o));
+        return json;
+    };
     for (const QJsonValue& w : wanted) {
-        const QStringList names = data.resolve(w.toString());
-        if (names.isEmpty()) missing << w.toString();
+        const QString asked = w.toString();
+        const QStringList names = data.resolve(asked);
+        if (names.isEmpty()) {
+            // An expression of variables: v(out)/v(in), db(ac.v(out)/ac.v(in)).
+            ds::Variable made;
+            QString why;
+            if (ds::isExpression(asked) && done.size() < 20) {
+                if (!ds::evaluate(data, asked, &made, &why)) return errorResult(tr("%1 does not evaluate: %2.").arg(asked, why));
+                done << asked;
+                QJsonObject json = variableJson(data, made, o);
+                json.insert(QStringLiteral("expression"), true);
+                out.append(withComparison(json, made, asked));
+                continue;
+            }
+            missing << asked;
+        }
         for (const QString& name : names) {
             if (done.contains(name) || done.size() >= 20) continue;
             done << name;
-            out.append(variableJson(data, *data.find(name), o));
+            const ds::Variable& v = *data.find(name);
+            out.append(withComparison(variableJson(data, v, o), v, asked));
         }
     }
     if (!missing.isEmpty()) {
@@ -1470,6 +1669,36 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
     return textResult(head + QStringLiteral("\n\n") + text);
 }
 
+namespace {
+
+// What diagram \a d lies over: other diagrams (by their numbers) and parts
+// of the circuit - said, as placing one by its lower left corner makes
+// it easy to put it on something.
+QString overlapOf(Schematic* sch, const Diagram* d)
+{
+    const QRect mine(d->cx, d->cy - d->y2, d->x2, d->y2);
+    QStringList diagrams, parts;
+    int n = 0;
+    for (const Diagram* other : sch->a_DocDiags) {
+        ++n;
+        if (other != d && mine.intersects(QRect(other->cx, other->cy - other->y2, other->x2, other->y2)))
+            diagrams << QString::number(n);
+    }
+    for (Component* c : sch->a_DocComps)
+        if (mine.intersects(c->boundingRect()) && parts.size() < 8) parts << (c->Name.isEmpty() ? c->Model : c->Name);
+    QStringList what;
+    if (!diagrams.isEmpty()) what << tr("diagram %1").arg(diagrams.join(QStringLiteral(", ")));
+    if (!parts.isEmpty()) what << parts.join(QStringLiteral(", "));
+    if (what.isEmpty()) return {};
+    const QRect used = sch->allBoundingRect();
+    return tr("It lies over %1: x, y is its lower left corner - below everything is y %2 and more (add_diagram without x, y "
+              "puts it there).")
+        .arg(what.join(QStringLiteral(" and ")))
+        .arg(used.bottom() + 80 + d->y2);
+}
+
+} // namespace
+
 QJsonObject QucsControl::addDiagram(const QJsonObject& args)
 {
     QString error;
@@ -1478,14 +1707,21 @@ QJsonObject QucsControl::addDiagram(const QJsonObject& args)
     const QString type = args.value(QLatin1String("type")).toString(QStringLiteral("rect")).trimmed();
     std::unique_ptr<Diagram> d(newDiagram(type.isEmpty() ? QStringLiteral("rect") : type));
     if (!d) return errorResult(tr("There is no diagram type %1: %2.").arg(type, kindNames()));
-    if (!args.contains(QLatin1String("x")) || !args.contains(QLatin1String("y")))
-        return errorResult(tr("Where? ('x', 'y': its lower left corner)"));
     if (!applyDiagram(d.get(), args, &error)) return errorResult(error);
+    QStringList notes;
+    // Not told where: below everything there is, room left for its axes'
+    // numbers and labels.
+    if (!args.contains(QLatin1String("x")) || !args.contains(QLatin1String("y"))) {
+        const QRect used = sch->allBoundingRect();
+        const bool empty = sch->a_DocComps.empty() && sch->a_DocWires.empty() && sch->a_DocDiags.empty() && sch->a_DocPaints.empty();
+        if (!args.contains(QLatin1String("x"))) d->cx = empty ? 60 : used.left() + 60;
+        if (!args.contains(QLatin1String("y"))) d->cy = (empty ? 0 : used.bottom()) + 80 + d->y2;
+        notes << tr("Placed below the circuit, its lower left corner at %1, %2.").arg(d->cx).arg(d->cy);
+    }
     int x = d->cx, y = d->cy;
     sch->setOnGrid(x, y);
     d->cx = x;
     d->cy = y;
-    QStringList notes;
     for (const QJsonValue& v : args.value(QLatin1String("traces")).toArray()) {
         const QJsonObject t = v.isString() ? QJsonObject{{QStringLiteral("variable"), v.toString()}} : v.toObject();
         QString note;
@@ -1511,6 +1747,7 @@ QJsonObject QucsControl::addDiagram(const QJsonObject& args)
     sch->enlargeView(placed);
     finish(sch, {QPoint(placed->cx, placed->cy)});
     QJsonObject result = diagramsJson(sch).last().toObject();
+    if (const QString over = overlapOf(sch, placed); !over.isEmpty()) notes << over;
     if (!notes.isEmpty()) result.insert(QStringLiteral("note"), notes.join(QLatin1Char(' ')));
     return jsonResult(result);
 }
@@ -1545,7 +1782,9 @@ QJsonObject QucsControl::editDiagram(const QJsonObject& args)
         if (each == d) break;
         ++n;
     }
-    return jsonResult(diagramsJson(sch).at(n).toObject());
+    QJsonObject result = diagramsJson(sch).at(n).toObject();
+    if (const QString over = overlapOf(sch, d); !over.isEmpty()) result.insert(QStringLiteral("note"), over);
+    return jsonResult(result);
 }
 
 QJsonObject QucsControl::addTrace(const QJsonObject& args)

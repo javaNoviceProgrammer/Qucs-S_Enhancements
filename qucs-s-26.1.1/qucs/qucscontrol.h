@@ -112,9 +112,13 @@ private:
     // A schematic.
     QJsonObject getSchematic(const QJsonObject& args);
     QJsonObject setSchematic(const QJsonObject& args);
+    QJsonObject checkSchematic(const QJsonObject& args);
     QJsonObject addComponent(const QJsonObject& args);
     QJsonObject editComponent(const QJsonObject& args);
     QJsonObject remove(const QJsonObject& args);
+    QJsonObject moveGroup(const QJsonObject& args);
+    QJsonObject addAnalysis(const QJsonObject& args);
+    QJsonObject createSubcircuit(const QJsonObject& args);
     QJsonObject connectPins(const QJsonObject& args);
     QJsonObject addWire(const QJsonObject& args);
     QJsonObject setLabel(const QJsonObject& args);

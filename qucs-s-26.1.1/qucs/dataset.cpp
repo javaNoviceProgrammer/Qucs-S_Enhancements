@@ -17,10 +17,13 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QRegularExpression>
+#include <QSet>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <complex>
 #include <functional>
 #include <limits>
 #include <vector>
@@ -84,6 +87,7 @@ bool Dataset::read(const QString& path, QString* error)
     if (!all.trimmed().startsWith("<Qucs Dataset")) return fail(tr("%1 is not a Qucs dataset.").arg(path));
 
     int current = -1;   // the variable whose values come
+    QSet<int> complexOnes;   // the variables a complex value was read for
     while (p < end) {
         const char* eol = static_cast<const char*>(std::memchr(p, '\n', size_t(end - p)));
         if (eol == nullptr) eol = end;
@@ -122,11 +126,16 @@ bool Dataset::read(const QString& path, QString* error)
             re = NaN;   // a digital value (0, 1, X, Z) or one that is not a number
             im = 0;
         }
-        if (complex && v.im.isEmpty()) {
+        // The first complex value makes it complex: the values before it
+        // real (their imaginary parts 0), this one's kept - an empty im
+        // cannot tell "real so far" from "complex from the first", and
+        // the first value's imaginary part was lost.
+        if (complex && !complexOnes.contains(current)) {
+            complexOnes.insert(current);
             v.im.fill(0, v.re.size());
         }
         v.re.append(re);
-        if (!v.im.isEmpty()) v.im.append(im);
+        if (complexOnes.contains(current)) v.im.append(im);
     }
     if (a_variables.isEmpty()) return fail(tr("%1 holds no variables.").arg(path));
     // Complex in the file, real in fact: read as real, with its sign.
@@ -435,6 +444,372 @@ double rounded(double v)
 {
     if (!std::isfinite(v) || v == 0) return v;
     return QString::number(v, 'g', 7).toDouble();
+}
+
+// ----------------------------------------------------------------------
+// Expressions
+
+namespace {
+
+using Complex = std::complex<double>;
+
+const QStringList& functionNames()
+{
+    static const QStringList names{QStringLiteral("db"),   QStringLiteral("abs"),  QStringLiteral("mag"),   QStringLiteral("phase"),
+                                   QStringLiteral("real"), QStringLiteral("imag"), QStringLiteral("sqrt"),  QStringLiteral("log10"),
+                                   QStringLiteral("ln"),   QStringLiteral("exp"),  QStringLiteral("conj")};
+    return names;
+}
+
+// A node of a parsed expression.
+struct Term {
+    enum Kind { Number, Name, Negate, Binary, Function } kind = Number;
+    double number = 0;
+    QString text;   // a name, a function
+    char op = 0;
+    std::vector<std::unique_ptr<Term>> args;
+    const Variable* variable = nullptr;   // a name's, once resolved
+};
+
+// Numbers, names (tran.v(out), v(out), @q1[ic], out.v), operators,
+// parentheses and functions.
+class Parser
+{
+public:
+    explicit Parser(const QString& text) : t(text) {}
+
+    std::unique_ptr<Term> parse(QString* error)
+    {
+        auto e = sum();
+        skip();
+        if (e && i < t.size()) fail(tr("%1 is not understood there").arg(t.mid(i, 12)));
+        if (!why.isEmpty()) {
+            *error = why;
+            return nullptr;
+        }
+        return e;
+    }
+
+private:
+    const QString t;
+    qsizetype i = 0;
+    QString why;
+
+    void fail(const QString& w)
+    {
+        if (why.isEmpty()) why = w;
+    }
+    void skip()
+    {
+        while (i < t.size() && t.at(i).isSpace()) ++i;
+    }
+    bool take(QChar c)
+    {
+        skip();
+        if (i < t.size() && t.at(i) == c) {
+            ++i;
+            return true;
+        }
+        return false;
+    }
+    static std::unique_ptr<Term> binary(char op, std::unique_ptr<Term> a, std::unique_ptr<Term> b)
+    {
+        auto e = std::make_unique<Term>();
+        e->kind = Term::Binary;
+        e->op = op;
+        e->args.push_back(std::move(a));
+        e->args.push_back(std::move(b));
+        return e;
+    }
+    std::unique_ptr<Term> sum()
+    {
+        auto e = product();
+        while (e) {
+            if (take(QLatin1Char('+'))) e = binary('+', std::move(e), product());
+            else if (take(QLatin1Char('-'))) e = binary('-', std::move(e), product());
+            else break;
+            if (!e->args.back()) return nullptr;
+        }
+        return e;
+    }
+    std::unique_ptr<Term> product()
+    {
+        auto e = unary();
+        while (e) {
+            if (take(QLatin1Char('*'))) e = binary('*', std::move(e), unary());
+            else if (take(QLatin1Char('/'))) e = binary('/', std::move(e), unary());
+            else break;
+            if (!e->args.back()) return nullptr;
+        }
+        return e;
+    }
+    std::unique_ptr<Term> unary()
+    {
+        if (take(QLatin1Char('-'))) {
+            auto inner = unary();
+            if (!inner) return nullptr;
+            auto e = std::make_unique<Term>();
+            e->kind = Term::Negate;
+            e->args.push_back(std::move(inner));
+            return e;
+        }
+        if (take(QLatin1Char('+'))) return unary();
+        auto e = primary();
+        if (e && take(QLatin1Char('^'))) {
+            auto exponent = unary();
+            if (!exponent) return nullptr;
+            e = binary('^', std::move(e), std::move(exponent));
+        }
+        return e;
+    }
+    std::unique_ptr<Term> primary()
+    {
+        skip();
+        if (i >= t.size()) {
+            fail(tr("it ends where a value is wanted"));
+            return nullptr;
+        }
+        if (take(QLatin1Char('('))) {
+            auto e = sum();
+            if (e && !take(QLatin1Char(')'))) fail(tr("a ) is missing"));
+            return why.isEmpty() ? std::move(e) : nullptr;
+        }
+        const QChar c = t.at(i);
+        if (c.isDigit() || (c == QLatin1Char('.') && i + 1 < t.size() && t.at(i + 1).isDigit())) {
+            static const QRegularExpression number(QStringLiteral("^[0-9]*\\.?[0-9]+([eE][-+]?[0-9]+)?|^[0-9]+\\.?([eE][-+]?[0-9]+)?"));
+            const QRegularExpressionMatch m = number.match(t.mid(i));
+            auto e = std::make_unique<Term>();
+            e->number = m.captured(0).toDouble();
+            i += m.capturedLength(0);
+            return e;
+        }
+        // A name, or a function: a word, then what is in parentheses.
+        static const QRegularExpression word(QStringLiteral("^[A-Za-z_@#][A-Za-z0-9_.#@:/\\[\\]]*"));
+        const QRegularExpressionMatch m = word.match(t.mid(i));
+        if (!m.hasMatch()) {
+            fail(tr("%1 is not a value").arg(t.mid(i, 12)));
+            return nullptr;
+        }
+        QString name = m.captured(0);
+        i += name.size();
+        if (i < t.size() && t.at(i) == QLatin1Char('(') && functionNames().contains(name.toLower())) {
+            ++i;
+            auto inner = sum();
+            if (!inner) return nullptr;
+            if (!take(QLatin1Char(')'))) {
+                fail(tr("a ) is missing after %1(").arg(name));
+                return nullptr;
+            }
+            auto e = std::make_unique<Term>();
+            e->kind = Term::Function;
+            e->text = name.toLower();
+            e->args.push_back(std::move(inner));
+            return e;
+        }
+        // v(out), i(v1), tran.v(out,in): the parentheses are the name's.
+        if (i < t.size() && t.at(i) == QLatin1Char('(')) {
+            int depth = 0;
+            const qsizetype start = i;
+            for (; i < t.size(); ++i) {
+                if (t.at(i) == QLatin1Char('(')) ++depth;
+                else if (t.at(i) == QLatin1Char(')') && --depth == 0) {
+                    ++i;
+                    break;
+                }
+            }
+            if (depth != 0) {
+                fail(tr("a ) is missing after %1").arg(name));
+                return nullptr;
+            }
+            name += t.mid(start, i - start);
+            static const QRegularExpression rest(QStringLiteral("^[A-Za-z0-9_.#@:\\[\\]]*"));
+            const QString more = rest.match(t.mid(i)).captured(0);
+            name += more;
+            i += more.size();
+        }
+        auto e = std::make_unique<Term>();
+        e->kind = Term::Name;
+        e->text = name;
+        return e;
+    }
+};
+
+void namesOf(Term* e, QList<Term*>& out)
+{
+    if (e->kind == Term::Name) out << e;
+    for (auto& a : e->args) namesOf(a.get(), out);
+}
+
+// A value: one number, or one a sample.
+struct Samples {
+    bool scalar = true;
+    Complex value;
+    QVector<Complex> values;
+    const Variable* on = nullptr;   // whose independent variables
+};
+
+Complex applyFunction(const QString& f, Complex x)
+{
+    if (f == QLatin1String("db")) return Complex(20 * std::log10(std::abs(x)), 0);
+    if (f == QLatin1String("abs") || f == QLatin1String("mag")) return Complex(std::abs(x), 0);
+    if (f == QLatin1String("phase")) return Complex(std::arg(x) * 180 / 3.14159265358979323846, 0);
+    if (f == QLatin1String("real")) return Complex(x.real(), 0);
+    if (f == QLatin1String("imag")) return Complex(x.imag(), 0);
+    if (f == QLatin1String("sqrt")) return x.imag() == 0 && x.real() >= 0 ? Complex(std::sqrt(x.real()), 0) : std::sqrt(x);
+    if (f == QLatin1String("log10")) return x.imag() == 0 && x.real() > 0 ? Complex(std::log10(x.real()), 0) : std::log10(x);
+    if (f == QLatin1String("ln")) return x.imag() == 0 && x.real() > 0 ? Complex(std::log(x.real()), 0) : std::log(x);
+    if (f == QLatin1String("exp")) return std::exp(x);
+    if (f == QLatin1String("conj")) return std::conj(x);
+    return x;
+}
+
+Complex applyOperator(char op, Complex a, Complex b)
+{
+    switch (op) {
+    case '+': return a + b;
+    case '-': return a - b;
+    case '*': return a * b;
+    case '/': return b == Complex(0, 0) ? Complex(qQNaN(), 0) : a / b;
+    case '^': return a.imag() == 0 && b.imag() == 0 && (a.real() >= 0 || b.real() == std::floor(b.real()))
+                         ? Complex(std::pow(a.real(), b.real()), 0) : std::pow(a, b);
+    }
+    return a;
+}
+
+bool evaluateTerm(const Term* e, Samples* out, QString* error)
+{
+    switch (e->kind) {
+    case Term::Number:
+        out->scalar = true;
+        out->value = Complex(e->number, 0);
+        return true;
+    case Term::Name: {
+        const Variable* v = e->variable;
+        out->scalar = false;
+        out->on = v;
+        out->values.resize(v->size());
+        for (int k = 0; k < v->size(); ++k) out->values[k] = Complex(v->re.at(k), v->isComplex() ? v->im.value(k) : 0.0);
+        return true;
+    }
+    case Term::Negate:
+    case Term::Function: {
+        if (!evaluateTerm(e->args.front().get(), out, error)) return false;
+        const auto f = [e](Complex x) { return e->kind == Term::Negate ? -x : applyFunction(e->text, x); };
+        if (out->scalar) out->value = f(out->value);
+        else for (Complex& x : out->values) x = f(x);
+        return true;
+    }
+    case Term::Binary: {
+        Samples a, b;
+        if (!evaluateTerm(e->args.at(0).get(), &a, error) || !evaluateTerm(e->args.at(1).get(), &b, error)) return false;
+        if (!a.scalar && !b.scalar && a.values.size() != b.values.size()) {
+            *error = tr("%1 and %2 are not on the same samples (%3 and %4 points): their analyses or sweeps differ")
+                         .arg(a.on->name, b.on->name).arg(a.values.size()).arg(b.values.size());
+            return false;
+        }
+        if (a.scalar && b.scalar) {
+            *out = a;
+            out->value = applyOperator(e->op, a.value, b.value);
+            return true;
+        }
+        *out = a.scalar ? b : a;
+        for (int k = 0; k < out->values.size(); ++k)
+            out->values[k] = applyOperator(e->op, a.scalar ? a.value : a.values.at(k), b.scalar ? b.value : b.values.at(k));
+        return true;
+    }
+    }
+    return false;
+}
+
+} // namespace
+
+bool isExpression(const QString& text)
+{
+    const QString t = text.trimmed();
+    if (t.isEmpty()) return false;
+    for (const QString& f : functionNames())
+        if (QRegularExpression(QStringLiteral("(^|[^A-Za-z0-9_.])%1\\s*\\(").arg(f), QRegularExpression::CaseInsensitiveOption).match(t).hasMatch())
+            return true;
+    // An operator outside a name: + - * / ^ not within v(...) and the like.
+    int depth = 0;
+    for (qsizetype k = 0; k < t.size(); ++k) {
+        const QChar c = t.at(k);
+        if (c == QLatin1Char('(')) ++depth;
+        else if (c == QLatin1Char(')')) --depth;
+        else if (depth == 0 && QStringLiteral("+-*/^").contains(c) && k > 0) {
+            // (a sign in a number's exponent is no operator: 1e-3)
+            if ((c == QLatin1Char('-') || c == QLatin1Char('+')) && k >= 2 && (t.at(k - 1) == QLatin1Char('e') || t.at(k - 1) == QLatin1Char('E'))
+                && t.at(k - 2).isDigit())
+                continue;
+            if (c == QLatin1Char('/') && k > 0 && t.left(k).count(QLatin1Char('.')) == 0 && !t.left(k).contains(QLatin1Char('('))
+                && t.left(k).contains(QRegularExpression(QStringLiteral("^(ngspice|xyce|spopus)$"))))
+                continue;   // (a simulator's prefix: ngspice/tran.v(out))
+            return true;
+        }
+    }
+    return false;
+}
+
+bool evaluate(const Dataset& data, const QString& expression, Variable* out, QString* error)
+{
+    Parser parser(expression);
+    std::unique_ptr<Term> root = parser.parse(error);
+    if (!root) return false;
+    QList<Term*> names;
+    namesOf(root.get(), names);
+    if (names.isEmpty()) {
+        *error = tr("it has no variable: only numbers");
+        return false;
+    }
+    // Each name's variables; one analysis for all - that of the names that
+    // say which, else the first name's first.
+    QList<QStringList> candidates;
+    for (Term* n : std::as_const(names)) {
+        QStringList found = data.resolve(n->text);
+        found.erase(std::remove_if(found.begin(), found.end(), [&data](const QString& name) {
+                        const Variable* v = data.find(name);
+                        return v == nullptr || v->independent || v->size() < 1;
+                    }),
+                    found.end());
+        if (found.isEmpty()) {
+            *error = tr("there is no variable %1").arg(n->text);
+            return false;
+        }
+        candidates << found;
+    }
+    QStringList dependencies;
+    for (const QStringList& c : std::as_const(candidates))
+        if (c.size() == 1) {
+            dependencies = data.find(c.first())->dependencies;
+            break;
+        }
+    if (dependencies.isEmpty()) dependencies = data.find(candidates.first().first())->dependencies;
+    for (int k = 0; k < names.size(); ++k) {
+        const Variable* chosen = nullptr;
+        for (const QString& name : candidates.at(k))
+            if (data.find(name)->dependencies == dependencies && chosen == nullptr) chosen = data.find(name);
+        if (chosen == nullptr) {
+            *error = tr("%1 is not of the analysis of the others (on %2): name it with its analysis, as get_dataset lists it")
+                         .arg(names.at(k)->text, dependencies.join(QStringLiteral(", ")));
+            return false;
+        }
+        names.at(k)->variable = chosen;
+    }
+    Samples result;
+    if (!evaluateTerm(root.get(), &result, error)) return false;
+    Variable v;
+    v.name = expression.trimmed();
+    v.dependencies = result.on->dependencies;
+    v.re.resize(result.values.size());
+    bool complex = false;
+    for (const Complex& x : std::as_const(result.values)) complex = complex || (x.imag() != 0 && std::isfinite(x.imag()));
+    if (complex) v.im.resize(result.values.size());
+    for (int k = 0; k < result.values.size(); ++k) {
+        v.re[k] = result.values.at(k).real();
+        if (complex) v.im[k] = result.values.at(k).imag();
+    }
+    *out = v;
+    return true;
 }
 
 // ----------------------------------------------------------------------

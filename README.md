@@ -365,6 +365,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   all or nothing, and one that stops half-way says how many changes stay
   (`undo` takes `steps`). `simulate` says when the schematic was changed
   while it ran.
+  **Wiring Claude can trust**: `check_schematic` checks the circuit, and
+  the summary counts the problems it finds. It reports pins or wire ends
+  on another net's wire that are not joined, parts on no ground, nets with
+  no DC path, and crossings without a junction; *Check Schematic* in the
+  menu gains the same checks. A wire drawn across another net's wire, or
+  a part placed on one, says so at once. `simulate` with `operating_point`
+  gives a transient-only schematic's operating point in one call: node
+  voltages, and each transistor's gm, ic and more, with re, rπ, β and ro
+  worked out. `edit_component` hides or shows a part's properties and
+  moves its text, with no need to rewrite its line. `move` moves a group
+  with its wiring. `create_subcircuit` turns parts into a subcircuit, and
+  a subcircuit's parameters are read and set on its symbol. `add_analysis`
+  adds an AC, transient, DC or sweep analysis with its plot. `get_dataset`
+  reads expressions such as `v(out)/v(in)` and compares a run with a kept
+  one. `set_schematic` refuses a component line with a value too many,
+  which would have shifted every property after it.
   Tools that only look are
   used without asking; the first change asks, and *Allow Qucs-S Control*
   lets the rest of the conversation go on without asking (as do the

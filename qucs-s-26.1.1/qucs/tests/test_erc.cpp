@@ -186,6 +186,65 @@ private slots:
             if (i.message.startsWith("R1: the name")) { QCOMPARE(i.where, QPoint(200, 100)); QCOMPARE(i.component, QString("R1")); }
     }
 
+    // What the wires show and do not do, and what hangs from nothing: a
+    // pin on another net's wire mid-way (not joined), parts reaching no
+    // ground (floating), a node that reaches ground only through
+    // capacitors (no DC path) - warnings; wires of two nets crossing
+    // without a junction and a label on one pin alone - notes, fine if
+    // meant, and not among the warnings (a drawing is full of crossings).
+    void theWiringAndWhatHangsFromNothingAreChecked()
+    {
+        const QString file = dir.filePath("wiring.sch");
+        const QByteArray R = "\"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        write(file,
+            QByteArray("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n")
+            + "  <Vdc V1 1 100 200 18 -26 0 1 \"1 V\" 1>\n"
+            + "  <GND * 1 100 230 0 0 0 0>\n"
+            + "  <R R1 1 200 100 15 -26 0 0 " + R
+            + "  <R R2 1 300 200 15 -26 0 1 " + R
+            + "  <GND * 1 300 230 0 0 0 0>\n"
+            + "  <R R3 1 500 200 15 -26 0 1 " + R      // with C1: floating
+            + "  <C C1 1 600 200 17 -26 0 1 \"1n\" 1 \"\" 0 \"neutral\" 0>\n"
+            + "  <R R4 1 400 100 15 -26 0 1 " + R      // its lower pin on R3's wire
+            + "  <C C2 1 200 400 -26 17 0 0 \"1n\" 1 \"\" 0 \"neutral\" 0>\n"   // C2-C3: no DC path
+            + "  <C C3 1 300 400 -26 17 0 0 \"1n\" 1 \"\" 0 \"neutral\" 0>\n"
+            + "  <GND * 1 170 400 0 0 0 0>\n"
+            + "  <GND * 1 330 400 0 0 0 0>\n"
+            + "  <.TR TR1 1 100 600 0 57 0 0 \"lin\" 1 \"0\" 1 \"1 ms\" 1 \"201\" 0>\n"
+            + "</Components>\n<Wires>\n"
+            + "  <100 170 100 100 \"\" 0 0 0 \"\">\n  <100 100 170 100 \"\" 0 0 0 \"\">\n"
+            + "  <230 100 300 100 \"\" 0 0 0 \"\">\n  <300 100 300 170 \"\" 0 0 0 \"\">\n"
+            + "  <500 170 500 130 \"\" 0 0 0 \"\">\n  <500 130 250 130 \"\" 0 0 0 \"\">\n"   // crosses R1-R2's wire
+            + "  <500 230 600 230 \"\" 0 0 0 \"\">\n"
+            + "  <230 400 270 400 \"\" 0 0 0 \"\">\n"
+            + "  <600 170 600 170 \"probe\" 620 150 0 \"\">\n"   // a label on C1's open pin
+            + "</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.gotoPage(file, false, false));
+        Schematic& doc = *app.currentSchematic();
+        const QStringList got = messages(check(&doc));
+        const QString all = got.join(" | ");
+        QVERIFY2(got.contains("W R4: pin 1 at 400, 130 is on the wire 250, 130 - 500, 130 of net R3.2 without being connected to it "
+                              "(a wire must end at a pin to join it)"), qPrintable(all));
+        QVERIFY2(got.contains("W R3, C1: not connected to ground or to the rest of the circuit (floating)"), qPrintable(all));
+        QVERIFY2(!got.filter("W net C2.2 reaches ground only through capacitors or current sources (C2, C3)").isEmpty(), qPrintable(all));
+        QVERIFY2(got.filter("cross without").isEmpty() && got.filter("one pin only").isEmpty(), qPrintable(all));   // notes, not warnings
+        // The circuit that works is not told of.
+        QVERIFY2(!all.contains("R1") && !all.contains("R2") && !all.contains("V1"), qPrintable(all));
+        const QStringList told = messages(notes(&doc));
+        QVERIFY2(told.contains("W the wires at 300, 130 cross without a junction: nets R1.2 and R3.2 are not connected there"),
+                 qPrintable(told.join(" | ")));
+        QVERIFY2(!told.filter("W the net probe has one pin only (C1.2)").isEmpty(), qPrintable(told.join(" | ")));
+        // What a tool tells after drawing: the pin on the wire and the crossing.
+        const QStringList wires = messages(wiring(&doc));
+        QVERIFY2(wires.size() == 2 && !wires.filter("cross without").isEmpty() && !wires.filter("R4: pin 1").isEmpty(),
+                 qPrintable(wires.join(" | ")));
+        // A subcircuit's ports hold it up as a ground does; a part on no port is floating there.
+        QCOMPARE(notes(nullptr).size(), 0);
+        QCOMPARE(wiring(nullptr).size(), 0);
+    }
+
     void aGoodCircuitHasNoProblems()
     {
         QucsApp app(false);

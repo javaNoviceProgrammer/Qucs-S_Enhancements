@@ -580,7 +580,7 @@ QString Schematic::documentText()
   return text;
 }
 
-bool Schematic::replaceContent(const QString& text, QString* error)
+bool Schematic::replaceContent(const QString& text, QString* error, QStringList* notes)
 {
   const auto fail = [error](const QString& why) {
     if (error != nullptr) *error = why;
@@ -623,6 +623,8 @@ bool Schematic::replaceContent(const QString& text, QString* error)
   }
 
   misc::ErrorCapture capture;
+  a_loadNotes.clear();
+  a_loadShortNotes.clear();
   if (!rebuild(&next)) {
     QString back = before;
     rebuild(&back);
@@ -631,6 +633,19 @@ bool Schematic::replaceContent(const QString& text, QString* error)
     const QStringList why = capture.errors();
     return fail(why.isEmpty() ? QObject::tr("It does not read as a schematic.") : why.join(QLatin1Char('\n')));
   }
+  // A component line with a value too many: refused, as its values are
+  // likely shifted - the text is the caller's, and can be put right.
+  if (const QStringList notes = takeLoadNotes(); !notes.isEmpty()) {
+    QString back = before;
+    rebuild(&back);
+    updateAllBoundingRect();
+    viewport()->update();
+    return fail(QObject::tr("%1. Each component line has its type's properties in order, each a value in quotes and 1 or 0 "
+                            "(shown); describe_component_type lists them. (A file of an older Qucs may carry values its "
+                            "type has since dropped: open it with open_document.)").arg(notes.join(QStringLiteral("; "))));
+  }
+  if (notes != nullptr) *notes = std::exchange(a_loadShortNotes, {});
+  a_loadShortNotes.clear();
   // The diagrams are new: their traces read the dataset (undo does so too).
   reloadGraphs();
   setChanged(true, true);
@@ -1002,9 +1017,25 @@ bool Schematic::loadComponents(QTextStream *stream, std::list<Component*> *List)
     Line = Line.trimmed();
     if(Line.isEmpty()) continue;
 
+    // (Each value of a component line is in quotes; a quote inside one
+    // is written '' - so its values are its quotes over two.)
+    const qsizetype values = Line.count(QLatin1Char('"')) / 2;
     /// \todo enable user to load partial schematic, skip unknown components
     c = getComponentFromName(Line, this);
     if(!c) return false;
+    // More values than its type took: the loader is positional, so one too
+    // many in the middle has put every value after it in the wrong
+    // property, and the last are dropped.
+    if (values > c->Props.size())
+      a_loadNotes << QObject::tr("%1 (%2) has %3 property values, its type %4 properties: the last %5 were left out - "
+                                 "a value too many in the middle puts all after it in the wrong properties")
+                         .arg(c->Name.isEmpty() ? c->Model : c->Name, c->Model).arg(values).arg(c->Props.size())
+                         .arg(values - c->Props.size());
+    else if (values > 0 && values < c->Props.size())
+      a_loadShortNotes << QObject::tr("%1 (%2) has %3 property values for its type's %4: the last %5 took their defaults "
+                                      "(one left out in the middle would put all after it in the wrong properties)")
+                              .arg(c->Name.isEmpty() ? c->Model : c->Name, c->Model).arg(values).arg(c->Props.size())
+                              .arg(c->Props.size() - values);
 
     if(List) {  // "paste" ?
       int z;
@@ -1208,6 +1239,7 @@ bool Schematic::loadDocument()
 
   // Keep reference to source file (the schematic file)
   setFileInfo(a_DocName);
+  a_loadNotes.clear();
 
   QString Line;
   QTextStream stream(&file);

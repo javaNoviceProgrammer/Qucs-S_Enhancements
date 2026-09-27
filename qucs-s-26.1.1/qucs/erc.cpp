@@ -33,6 +33,8 @@
 #include <QSet>
 #include <QStringList>
 #include <algorithm>
+#include <numeric>
+#include <vector>
 
 namespace qucs_s::erc {
 
@@ -58,7 +60,315 @@ bool named(const Node* n)
     return false;
 }
 
+
+// The nets as the netlist makes them: wires join their ends, one label
+// name is one net, the grounds are one net (and a net named 0 or gnd is
+// ground too). Each node's net, a name to tell each by - a label, gnd, or
+// its first pin - and the pins on each.
+struct Nets {
+    QHash<const Node*, int> of;
+    QHash<int, QString> name;
+    QHash<int, QStringList> pins;   // "R1.2", ...
+    QSet<int> labelled;
+    int ground = -1;
+};
+
+Nets netsOf(Schematic* doc)
+{
+    Nets nets;
+    std::vector<int> up;
+    QHash<const Node*, int> index;
+    for (const Node* n : doc->a_DocNodes) {
+        index.insert(n, int(up.size()));
+        up.push_back(int(up.size()));
+    }
+    const auto find = [&up](int i) {
+        while (up[i] != i) i = up[i] = up[up[i]];
+        return i;
+    };
+    const auto join = [&](const Node* a, const Node* b) {
+        if (a == nullptr || b == nullptr || !index.contains(a) || !index.contains(b)) return;
+        up[find(index.value(a))] = find(index.value(b));
+    };
+    for (const Wire* w : doc->a_DocWires) join(w->Port1, w->Port2);
+    QHash<QString, const Node*> byLabel;
+    const Node* ground = nullptr;
+    const auto label = [&](const QString& name, const Node* n) {
+        if (name.compare(QLatin1String("0")) == 0 || name.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0) {
+            if (ground != nullptr) join(n, ground);
+            else ground = n;
+        }
+        if (const Node* first = byLabel.value(name)) join(n, first);
+        else byLabel.insert(name, n);
+    };
+    for (const Node* n : doc->a_DocNodes)
+        if (n->hasLabel()) label(n->label()->Name, n);
+    for (const Wire* w : doc->a_DocWires)
+        if (w->hasLabel()) label(w->label()->Name, w->Port1);
+    for (const Component* c : doc->a_DocComps)
+        if (isGround(c) && inCircuit(c))
+            for (const Port* p : c->Ports) {
+                if (ground != nullptr) join(p->Connection, ground);
+                else ground = p->Connection;
+            }
+    for (auto it = index.cbegin(); it != index.cend(); ++it) nets.of.insert(it.key(), find(it.value()));
+    if (ground != nullptr) nets.ground = nets.of.value(ground, -1);
+    for (auto it = byLabel.cbegin(); it != byLabel.cend(); ++it) {
+        const int net = nets.of.value(it.value(), -1);
+        nets.labelled.insert(net);
+        if (!nets.name.contains(net)) nets.name.insert(net, it.key());
+    }
+    if (nets.ground >= 0) nets.name.insert(nets.ground, QStringLiteral("gnd"));
+    for (const Component* c : doc->a_DocComps) {
+        if (!inCircuit(c)) continue;
+        for (int i = 0; i < c->Ports.size(); ++i) {
+            const Node* n = c->Ports.at(i)->Connection;
+            if (n == nullptr || !nets.of.contains(n)) continue;
+            const int net = nets.of.value(n);
+            const QString pin = QStringLiteral("%1.%2").arg(c->Name.isEmpty() ? c->Model : c->Name).arg(i + 1);
+            nets.pins[net] << pin;
+            if (!nets.name.contains(net)) nets.name.insert(net, pin);
+        }
+    }
+    return nets;
+}
+
+QString netName(const Nets& nets, int net)
+{
+    return nets.name.value(net, tr("a net of wires only"));
+}
+
+// A straight wire: along x (fixed y) or along y (fixed x), lo < hi.
+struct Piece {
+    int fixed, lo, hi;
+    const Wire* wire;
+    int net;
+};
+
+QString wireText(const Wire* w)
+{
+    return QStringLiteral("%1, %2 - %3, %4").arg(w->x1).arg(w->y1).arg(w->x2).arg(w->y2);
+}
+
+// What wires and pins show and do not do: a wire's end or a pin on
+// another net's wire mid-way (not joined), two nets' wires on top of each
+// other; with \a crossings, wires of two nets crossing (no junction: no
+// connection - often meant, so a note of its own).
+void wiringIssues(Schematic* doc, const Nets& nets, QList<Issue>& out, bool crossings)
+{
+    std::vector<Piece> across, down;   // along x, along y
+    for (const Wire* w : doc->a_DocWires) {
+        const int net = nets.of.value(w->Port1, -1);
+        if (w->y1 == w->y2 && w->x1 != w->x2) across.push_back({w->y1, std::min(w->x1, w->x2), std::max(w->x1, w->x2), w, net});
+        else if (w->x1 == w->x2 && w->y1 != w->y2) down.push_back({w->x1, std::min(w->y1, w->y2), std::max(w->y1, w->y2), w, net});
+    }
+    const auto order = [](const Piece& a, const Piece& b) { return a.fixed != b.fixed ? a.fixed < b.fixed : a.lo < b.lo; };
+    std::sort(across.begin(), across.end(), order);
+    std::sort(down.begin(), down.end(), order);
+    const auto fromFixed = [](const std::vector<Piece>& list, int fixed) {
+        return std::lower_bound(list.begin(), list.end(), fixed, [](const Piece& p, int f) { return p.fixed < f; });
+    };
+    constexpr int kMost = 40;   // of each kind: a drawing full of them says so soon enough
+    // Crossings, inside both wires.
+    int crossed = 0;
+    for (const Piece& v : crossings ? down : std::vector<Piece>())
+        for (auto it = fromFixed(across, v.lo + 1); it != across.end() && it->fixed < v.hi; ++it) {
+            if (it->net == v.net || !(it->lo < v.fixed && v.fixed < it->hi)) continue;
+            if (++crossed > kMost) break;
+            out << Issue{Severity::Warning,
+                         tr("the wires at %1, %2 cross without a junction: nets %3 and %4 are not connected there")
+                             .arg(v.fixed).arg(it->fixed).arg(netName(nets, v.net), netName(nets, it->net)),
+                         QPoint(v.fixed, it->fixed), QString()};
+        }
+    // A node - a wire's end, a pin - on another net's wire, mid-way.
+    int touches = 0;
+    for (const Node* n : doc->a_DocNodes) {
+        const int net = nets.of.value(n, -1);
+        const auto onPiece = [&](const std::vector<Piece>& list, int fixed, int along) -> const Piece* {
+            for (auto it = fromFixed(list, fixed); it != list.end() && it->fixed == fixed && it->lo < along; ++it)
+                if (along < it->hi && it->net != net) return &*it;
+            return nullptr;
+        };
+        const Piece* under = onPiece(across, n->cy, n->cx);
+        if (under == nullptr) under = onPiece(down, n->cx, n->cy);
+        if (under == nullptr) continue;
+        if (++touches > kMost) break;
+        const Component* part = n->anyComp();
+        QString what;
+        if (part != nullptr) {
+            int pin = 0;
+            for (int i = 0; i < part->Ports.size(); ++i)
+                if (part->Ports.at(i)->Connection == n) pin = i + 1;
+            what = tr("%1: pin %2 at %3, %4 is on the wire %5 of net %6 without being connected to it (a wire must end at a pin to join it)")
+                       .arg(part->Name.isEmpty() ? part->Model : part->Name).arg(pin).arg(n->cx).arg(n->cy)
+                       .arg(wireText(under->wire), netName(nets, under->net));
+        } else {
+            what = tr("the wire end at %1, %2 touches the wire %3 mid-way without a junction: nets %4 and %5 are not connected there")
+                       .arg(n->cx).arg(n->cy).arg(wireText(under->wire), netName(nets, net), netName(nets, under->net));
+        }
+        out << Issue{Severity::Warning, what, n->center(), part != nullptr ? part->Name : QString()};
+    }
+    // Two nets' wires along one line, over each other.
+    int overlaps = 0;
+    for (const std::vector<Piece>* list : {&across, &down})
+        for (std::size_t i = 0; i < list->size() && overlaps <= kMost; ++i)
+            for (std::size_t j = i + 1; j < list->size(); ++j) {
+                const Piece& a = (*list)[i];
+                const Piece& b = (*list)[j];
+                if (b.fixed != a.fixed || b.lo >= a.hi) break;
+                if (a.net == b.net) continue;
+                if (++overlaps > kMost) break;
+                out << Issue{Severity::Warning,
+                             tr("the wires %1 and %2 lie over each other but are two nets (%3, %4): they are not connected")
+                                 .arg(wireText(a.wire), wireText(b.wire), netName(nets, a.net), netName(nets, b.net)),
+                             QPoint(list == &across ? b.lo : a.fixed, list == &across ? a.fixed : b.lo), QString()};
+            }
+}
+
+// What the circuit hangs from: parts on nets that reach no ground (nor a
+// port, in a subcircuit) through any part - floating; nets that reach
+// ground only through capacitors and current sources - no DC path, and
+// no operating point (ngspice: a singular matrix).
+void topologyIssues(Schematic* doc, const Nets& nets, bool subcircuit, QList<Issue>& out)
+{
+    QSet<int> ids;
+    for (int net : nets.of) ids.insert(net);
+    std::vector<int> any, dc;
+    QHash<int, int> slot;
+    for (int net : std::as_const(ids)) {
+        slot.insert(net, int(any.size()));
+        any.push_back(int(any.size()));
+        dc.push_back(int(dc.size()));
+    }
+    const auto find = [](std::vector<int>& up, int i) {
+        while (up[i] != i) i = up[i] = up[up[i]];
+        return i;
+    };
+    // References: ground, and in a subcircuit its ports.
+    QSet<int> reference;
+    if (nets.ground >= 0) reference.insert(nets.ground);
+    QList<const Component*> parts;
+    for (const Component* c : doc->a_DocComps) {
+        if (!inCircuit(c) || isSimulation(c) || c->isEquation || isGround(c)) continue;
+        QList<int> on;
+        for (const Port* p : c->Ports)
+            if (p->Connection != nullptr && nets.of.contains(p->Connection)) on << slot.value(nets.of.value(p->Connection));
+        if (on.isEmpty()) continue;
+        if (isPort(c)) {
+            reference.insert(nets.of.value(c->Ports.first()->Connection));
+            continue;
+        }
+        parts << c;
+        // A voltage probe is across the circuit and joins nothing; a
+        // current probe is in it, a 0 V source.
+        if (c->isProbe && c->Model != QLatin1String("IProbe")) continue;
+        const bool conducts = c->SpiceModel != QLatin1String("C") && c->SpiceModel != QLatin1String("I");
+        for (int k = 1; k < on.size(); ++k) {
+            any[find(any, on.at(k))] = find(any, on.at(0));
+            if (conducts) dc[find(dc, on.at(k))] = find(dc, on.at(0));
+        }
+    }
+    if (reference.isEmpty()) return;   // (no ground: said already)
+    QSet<int> anyReached, dcReached;
+    for (int net : std::as_const(reference)) {
+        anyReached.insert(find(any, slot.value(net)));
+        dcReached.insert(find(dc, slot.value(net)));
+    }
+    // Floating: a group of parts touching no reference. A part with all
+    // its pins open is told of pin by pin already.
+    QHash<int, QStringList> floating;
+    QHash<int, QPoint> floatingAt;
+    for (const Component* c : std::as_const(parts)) {
+        int connected = 0, group = -1;
+        for (const Port* p : c->Ports) {
+            if (p->Connection == nullptr || !nets.of.contains(p->Connection)) continue;
+            group = find(any, slot.value(nets.of.value(p->Connection)));
+            if (p->Connection->conn_count() > 1) ++connected;
+        }
+        if (group < 0 || anyReached.contains(group) || connected == 0) continue;
+        if (!floatingAt.contains(group)) floatingAt.insert(group, QPoint(c->cx, c->cy));
+        floating[group] << (c->Name.isEmpty() ? c->Model : c->Name);
+    }
+    for (auto it = floating.cbegin(); it != floating.cend(); ++it) {
+        QStringList names = it.value();
+        const int more = int(names.size()) - 6;
+        names = names.mid(0, 6);
+        out << Issue{Severity::Warning,
+                     tr("%1%2: not connected to %3 or to the rest of the circuit (floating)")
+                         .arg(names.join(QStringLiteral(", ")), more > 0 ? tr(" and %1 more").arg(more) : QString(),
+                              subcircuit ? tr("a port or ground") : tr("ground")),
+                     floatingAt.value(it.key()), names.first()};
+    }
+    // No DC path: reached, but only through capacitors or current sources.
+    if (!subcircuit) {
+        QHash<int, int> netOfDcGroup;   // a DC group -> a net of it with pins
+        for (int net : std::as_const(ids)) {
+            const int group = find(dc, slot.value(net));
+            if (dcReached.contains(group) || !anyReached.contains(find(any, slot.value(net)))) continue;
+            if (nets.pins.value(net).size() < 2) continue;   // (an open pin, a stub: told already)
+            if (!netOfDcGroup.contains(group)) netOfDcGroup.insert(group, net);
+        }
+        for (auto it = netOfDcGroup.cbegin(); it != netOfDcGroup.cend(); ++it) {
+            // What blocks it: the capacitors and current sources on its nets.
+            QStringList blocking;
+            QPoint at;
+            for (const Component* c : std::as_const(parts)) {
+                if (c->SpiceModel != QLatin1String("C") && c->SpiceModel != QLatin1String("I")) continue;
+                for (const Port* p : c->Ports)
+                    if (p->Connection != nullptr && find(dc, slot.value(nets.of.value(p->Connection, -1), 0)) == it.key()) {
+                        if (!blocking.contains(c->Name)) blocking << c->Name;
+                        if (at.isNull()) at = QPoint(c->cx, c->cy);
+                    }
+            }
+            out << Issue{Severity::Warning,
+                         tr("net %1 reaches ground only through capacitors or current sources (%2): no DC path, so no "
+                            "operating point (a large resistor to ground gives it one)")
+                             .arg(netName(nets, it.value()), blocking.mid(0, 6).join(QStringLiteral(", "))),
+                         at, blocking.value(0)};
+        }
+    }
+}
+
+// A net label on one pin alone: a node named to be plotted or read by an
+// expression, or a label meant to match another - a note.
+void labelNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
+{
+    for (int net : std::as_const(nets.labelled)) {
+        if (net == nets.ground || nets.pins.value(net).size() != 1) continue;
+        QPoint at;
+        for (const Node* n : doc->a_DocNodes)
+            if (nets.of.value(n, -1) == net && n->hasLabel()) at = n->center();
+        out << Issue{Severity::Warning,
+                     tr("the net %1 has one pin only (%2): nothing else is on it - a label of the same name elsewhere would join it")
+                         .arg(netName(nets, net), nets.pins.value(net).first()),
+                     at, QString()};
+    }
+}
+
 } // namespace
+
+QList<Issue> wiring(Schematic* doc)
+{
+    QList<Issue> out;
+    if (doc == nullptr) return out;
+    wiringIssues(doc, netsOf(doc), out, true);
+    for (Issue& i : out) i.file = doc->getDocName();
+    return out;
+}
+
+QList<Issue> notes(Schematic* doc)
+{
+    QList<Issue> out;
+    if (doc == nullptr) return out;
+    const Nets nets = netsOf(doc);
+    QList<Issue> all;
+    wiringIssues(doc, nets, all, true);
+    for (const Issue& i : std::as_const(all))
+        if (i.message.contains(QLatin1String(" cross without a junction"))) out << i;
+    labelNotes(doc, nets, out);
+    for (Issue& i : out) i.file = doc->getDocName();
+    return out;
+}
 
 QList<Issue> check(Schematic* doc)
 {
@@ -184,7 +494,8 @@ QList<Issue> check(Schematic* doc)
             ++pin;
             if (!p->avail) continue;
             const Node* n = p->Connection;
-            if (n == nullptr || n->conn_count() <= 1) {
+            // (A net label on it joins it by its name: it is not alone.)
+            if (n == nullptr || (n->conn_count() <= 1 && !named(n))) {
                 const QPoint where = n != nullptr ? QPoint(n->x(), n->y()) : QPoint(c->cx + p->x, c->cy + p->y);
                 const QString what = isGround(c) ? tr("the ground at %1, %2 is connected to nothing").arg(where.x()).arg(where.y())
                                                  : tr("%1: pin %2 is connected to nothing").arg(c->Name).arg(pin);
@@ -222,6 +533,13 @@ QList<Issue> check(Schematic* doc)
         warnings << Issue{Severity::Warning,
                           tr("the wire end at %1, %2 is connected to nothing").arg(n->x()).arg(n->y()),
                           QPoint(n->x(), n->y()), QString()};
+    }
+
+    // What the wires show and do not do; what hangs from nothing.
+    {
+        const Nets nets = netsOf(doc);
+        wiringIssues(doc, nets, warnings, false);
+        topologyIssues(doc, nets, port, warnings);
     }
 
     // A circuit (not a subcircuit: those have ports) needs a ground and

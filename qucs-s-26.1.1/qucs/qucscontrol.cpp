@@ -28,6 +28,7 @@
 #include "simulationconsole.h"
 #include "simulatorlog.h"
 #include "dataset.h"
+#include "erc.h"
 #include "textdoc.h"
 #include "wire.h"
 #include "wirelabel.h"
@@ -106,27 +107,34 @@ const char* const kTools = R"JSON([
    "properties": {"type": "string", "enum": ["non_default", "shown", "all"]},
    "components": {"type": "array", "items": {"type": "string"}},
    "region": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4}}}},
+{"name": "check_schematic",
+ "description": "Checks a schematic for what a simulation would fail on, or do otherwise than meant - as Simulation > Check Schematic does - each finding with its place and part. errors: no ground, two parts of one name, a part the simulator cannot take, ... warnings: pins and wire ends connected to nothing; a wire's end or a pin on another net's wire mid-way (not joined: a wire joins only where it ends); two nets' wires over each other; parts connected to no ground (floating); nets that reach ground only through capacitors or current sources (no DC path: no operating point); no simulation block. notes, fine if meant: wires of two nets crossing without a junction (no connection there), a net label on one pin alone (a plotted node - or a label meant to match another). Use it after building or rewiring a circuit, before simulate; get_schematic's summary counts them too.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
 {"name": "set_schematic",
- "description": "Replaces the elements of a schematic with those of 'text': a .sch file's text, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are not taken). One step to undo; the diagrams read their data again. Returns what it read of each section it replaced: the components by name and type, the wires' count, the diagrams as get_schematic lists them (each trace's points or why it has none, each marker and the sample it shows), the paintings' lines. When the text does not read, the schematic stays as it was and the error is told. describe_format gives the lines' fields. For diagrams, traces and markers add_diagram, edit_diagram, add_trace, edit_trace, add_marker and edit_marker are simpler and safer.",
+ "description": "Replaces the elements of a schematic with those of 'text': a .sch file's text, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are not taken). One step to undo; the diagrams read their data again. Returns what it read of each section it replaced: the components by name and type, the wires' count, the diagrams as get_schematic lists them (each trace's points or why it has none, each marker and the sample it shows), the paintings' lines. When the text does not read, the schematic stays as it was and the error is told - and so for a component line with more property values than its type has properties (the values are positional: one too many in the middle puts every value after it in the wrong property); one with fewer is taken, the rest at their defaults, and the result says so. To hide or show a property, or move a part's text, edit_component does it without rewriting the line. describe_format gives the lines' fields. For diagrams, traces and markers add_diagram, edit_diagram, add_trace, edit_trace, add_marker and edit_marker are simpler and safer.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "text": {"type": "string"}}, "required": ["text"]}},
 {"name": "describe_format",
  "description": "The lines of a .sch file, field by field - a component, a wire, a diagram (all its ~30 fields), a trace, a marker, a painting - as set_schematic takes them and get_schematic's 'text' gives them; for a painting also the fields add_painting and edit_painting take, type by type. Without 'element', all of them.",
  "inputSchema": {"type": "object", "properties": {"element": {"type": "string", "enum": ["component", "wire", "diagram", "trace", "marker", "painting"]}}}},
 {"name": "add_component",
- "description": "Places a component from the library at x, y (snapped to the grid): 'type' is its model - R, C, L, GND, Vdc, Vac, Idc, Iac, Diode, _BJT, _MOSFET, OpAmp, Sub, .DC, .AC, .TR, .SP, ... (list_component_types lists them all). Properties by name (as get_schematic shows them, e.g. {\"R\": \"4.7k\"}); rotation in quarter turns as Rotate makes them; mirror about the x axis. Returns the component with its pins' places.",
+ "description": "Places a component from the library at x, y (snapped to the grid): 'type' is its model - R, C, L, GND, Vdc, Vac, Idc, Iac, Diode, _BJT, _MOSFET, OpAmp, Sub, .DC, .AC, .TR, .SP, ... (list_component_types lists them all). Properties by name (as get_schematic shows them, e.g. {\"R\": \"4.7k\"}); rotation in quarter turns from the type's own orientation, as Rotate makes them; mirror about the x axis; 'shown' which properties are written on the schematic, 'name_shown', 'text_at' where its text goes. Returns the component with its pins' places - and a note when a pin came down on a wire or another pin (it is joined to it) or on another net's wire without joining it.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "type": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"},
    "name": {"type": "string", "description": "Its name; the next free one (R1, R2, ...) when not given"},
    "properties": {"type": "object", "additionalProperties": {"type": "string"}},
-   "rotation": {"type": "integer", "minimum": 0, "maximum": 3}, "mirror": {"type": "boolean"}},
+   "rotation": {"type": "integer", "minimum": 0, "maximum": 3}, "mirror": {"type": "boolean"},
+   "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"R\": true, \"Temp\": false}"},
+   "name_shown": {"type": "boolean"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}},
    "required": ["type", "x", "y"]}},
 {"name": "edit_component",
- "description": "Changes a component: its properties (by name), its name, its place (x, y: where its centre goes), its rotation (0-3 quarter turns) and mirroring, whether it is active (an inactive one is left out of the simulation). What is not given stays. Turned or moved, the circuit stays as it was: its pins are wired again to the nets they were on, and wires of other nets that its pins would come down on are moved out of the way. A change that cannot keep every net as it was is not made, and the error says why. A pin with nothing on it that comes down on another part's pin joins that pin's net, and the result's 'note' says so.",
+ "description": "Changes a component: its properties (by name), its name, its place (x, y: where its centre goes), its rotation (0-3 quarter turns from the type's own orientation, as get_schematic gives it) and mirroring, whether it is active (an inactive one is left out of the simulation), and its text: 'shown' which properties are written on the schematic ({\"Is\": false} hides one - no need to rewrite its line with set_schematic), 'name_shown', 'text_at' ([dx, dy] from its centre: where its text begins, to move it off another part). What is not given stays. Turned or moved, the circuit stays as it was: its pins are wired again to the nets they were on, and wires of other nets that its pins would come down on are moved out of the way. A change that cannot keep every net as it was is not made, and the error says why. A pin with nothing on it that comes down on another part's pin joins that pin's net, and the result's 'note' says so.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "name": {"type": "string"}, "rename": {"type": "string"},
    "properties": {"type": "object", "additionalProperties": {"type": "string"}},
    "x": {"type": "integer"}, "y": {"type": "integer"}, "rotation": {"type": "integer", "minimum": 0, "maximum": 3},
-   "mirror": {"type": "boolean"}, "active": {"type": "boolean"}}, "required": ["name"]}},
+   "mirror": {"type": "boolean"}, "active": {"type": "boolean"},
+   "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"Is\": false, \"Bf\": true}"},
+   "name_shown": {"type": "boolean"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}}, "required": ["name"]}},
 {"name": "delete",
  "description": "Deletes components (by name), net labels (by the net's name), wires (by their two ends, [x1, y1, x2, y2]), diagrams (by their numbers as get_schematic lists them), traces ({\"diagram\": n, \"trace\": its number or variable}) and paintings (by their numbers; the symbol's with 'symbol') from a schematic, as one step to undo.",
  "inputSchema": {"type": "object", "properties": {
@@ -135,13 +143,33 @@ const char* const kTools = R"JSON([
    "diagrams": {"type": "array", "items": {"type": "integer"}},
    "traces": {"type": "array", "items": {"type": "object", "properties": {"diagram": {"type": "integer"}, "trace": {}}}},
    "paintings": {"type": "array", "items": {"type": "integer"}}, "symbol": {"type": "boolean"}}}},
+{"name": "add_analysis",
+ "description": "Adds an analysis set up as it usually is - and, with 'plot', a diagram of what it gives, below the circuit - in one call instead of several coordinated edits. 'kind': ac ('from' and 'to' in Hz, 1 Hz to 100 MHz unless given; 'points', 101; 'scale' log unless lin; plotted in dB over a log frequency axis), tran ('stop' time, 1 ms unless given; 'points' 201: the print step is stop/(points-1); plotted over time), op (the DC operating point, a .DC block), sweep (a parameter sweep of 'analysis' - its name: TR1, AC1, DC1 - over 'parameter': a component's name, whose value is swept (R2), or a parameter an equation defines; 'from', 'to', 'points' 11, 'scale'; the analysis's curves become one for each value). 'plot': what to show - nodes (out), v(out), i(v1). x, y place the block (beside the other analyses unless given); 'name' names it. Values are numbers or text with units (\"10 kHz\"). Returns the block and the diagram; each a step to undo.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string"}, "kind": {"type": "string", "enum": ["ac", "tran", "op", "sweep"]},
+   "from": {}, "to": {}, "stop": {}, "points": {}, "scale": {"type": "string", "enum": ["lin", "log"]},
+   "analysis": {"type": "string"}, "parameter": {"type": "string"},
+   "plot": {"type": "array", "items": {"type": "string"}}, "x": {"type": "integer"}, "y": {"type": "integer"}, "name": {"type": "string"}},
+   "required": ["kind"]}},
+{"name": "create_subcircuit",
+ "description": "Makes a subcircuit of several components: they and the wiring among them go into a new schematic 'save_as' (a .sch beside this one; 'replace' writes over one there), with a port for each net that also reaches the rest of the circuit - and a ground for each pin on ground - and in their place comes one subcircuit component ('name', SUB1 unless given) whose pins are joined to those nets by net labels. Analyses stay outside. Returns the file, the instance and its ports (port number, net). One step to undo here (the file stays written).",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}}, "save_as": {"type": "string"},
+   "name": {"type": "string"}, "replace": {"type": "boolean"}}, "required": ["names", "save_as"]}},
+{"name": "move",
+ "description": "Moves several components together by dx, dy (steps of the grid), keeping every net as it was: the wiring among them moves with them, and the wires that go out to the rest of the circuit are drawn on to their pins' new places (as the cursor keys move a selection). 'diagrams' and 'paintings' (their numbers) may move along. A move that would join or split a net is not made. To make room for a stage, or tidy a circuit. One step to undo.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}},
+   "dx": {"type": "integer"}, "dy": {"type": "integer"},
+   "diagrams": {"type": "array", "items": {"type": "integer"}}, "paintings": {"type": "array", "items": {"type": "integer"}}},
+   "required": ["names"]}},
 {"name": "connect",
- "description": "Draws a wire between two pins or places, with right angles, by a way that goes over no other pin or wire (a wire joins whatever it runs over): around the parts when it can, else over them. It joins the two nets and nothing else - or, when no way would, draws nothing and says why. A pin is \"R1.1\" (the component's name and the pin's number, from 1, or the pin's name); a place is [x, y].",
+ "description": "Draws a wire between two pins or places, with right angles, by a way that goes over no other pin or wire (a wire joins whatever it runs over): around the parts when it can, else over them. It joins the two nets and nothing else - or, when no way would, draws nothing and says why; a crossing of another net's wire on the way (no connection) is said. A pin is \"R1.1\" (the component's name and the pin's number, from 1, or the pin's name); a place is [x, y].",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"},
-   "from": {"description": "\"R1.2\" or [x, y]; a ground is GND.1 when there is one"}, "to": {"description": "\"C1.1\" or [x, y]"}}, "required": ["from", "to"]}},
+   "from": {"description": "\"R1.2\" or [x, y]; a ground is GND.1 when there is one, GND#2.1 the second of several (get_schematic's 'ref')"}, "to": {"description": "\"C1.1\" or [x, y]"}}, "required": ["from", "to"]}},
 {"name": "add_wire",
- "description": "Draws a wire through places, [[x, y], [x, y], ...], a segment from each to the next (a step that is not straight gets a right angle). What is at its places is joined; a wire that would run over another pin or wire between them is not drawn, and the error names what is in the way.",
+ "description": "Draws a wire through places, [[x, y], [x, y], ...], a segment from each to the next (a step that is not straight gets a right angle). What is at its places is joined - a wire joins only where it ends or bends; one that would run along over another pin or wire between them is not drawn, and the error names what is in the way. One that crosses another net's wire is drawn, but a crossing is no junction - no connection - and the result says so (Look: ...): end the wire on the other to join it.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "points": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}, "minItems": 2}},
    "required": ["points"]}},
@@ -163,8 +191,9 @@ const char* const kTools = R"JSON([
  "description": "Redoes the last change undone, as Edit > Redo; 'steps' redoes so many.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000}}}},
 {"name": "screenshot",
- "description": "A picture (PNG). 'area': paper (or all, the default) - the whole schematic drawn as it is printed and exported: on white paper, whatever the theme, in its print colours; screen (or visible) - the canvas as the user sees it now: the theme's paper and colours (a dark canvas in the dark theme), its zoom, what is scrolled into view - take this one to see what the user sees, a problem of how something looks on screen above all; window - the whole Qucs-S window (its panes and tabs, docks, the status bar), and each dialog open over it, as pictures of their own. For a text document or a PDF, paper and screen are what its tab shows.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "area": {"type": "string", "enum": ["paper", "screen", "window", "all", "visible"]}}}},
+ "description": "A picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] of the schematic) takes that alone, on paper - a plot checked without the whole page. 'area': paper (or all, the default) - the whole schematic drawn as it is printed and exported: on white paper, whatever the theme, in its print colours; screen (or visible) - the canvas as the user sees it now: the theme's paper and colours (a dark canvas in the dark theme), its zoom, what is scrolled into view - take this one to see what the user sees, a problem of how something looks on screen above all; window - the whole Qucs-S window (its panes and tabs, docks, the status bar), and each dialog open over it, as pictures of their own. For a text document or a PDF, paper and screen are what its tab shows.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "area": {"type": "string", "enum": ["paper", "screen", "window", "all", "visible"]},
+   "diagram": {"type": "integer"}, "region": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4}}}},
 {"name": "list_component_types",
  "description": "The components of the library: the type to give add_component, what it is, its category. 'search' keeps those whose type, name or category has it. describe_component_type tells a type's properties.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string"}}}},
@@ -185,9 +214,10 @@ const char* const kTools = R"JSON([
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}},
    "press": {"type": "string"}}}},
 {"name": "simulate",
- "description": "Simulates a schematic (the one in front unless path names another; it must have been saved once) with the simulator in the settings, as Simulation > Simulate, and waits for the end. It says whether it succeeded (the simulator ran to its end and reported no error), its errors and warnings - each with its message and, where the simulator names them, the netlist line (its number and text), the part of the schematic and the node - the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables, the traces of the diagrams that show no data and why, whether the schematic was changed while it ran (by the user or another conversation: then the results are of the schematic as it was when the run began), and the last lines of the output. 'timeout' in seconds, 120 unless given. 'keep_as' keeps a copy of the dataset under that name, to compare runs: get_dataset reads it by its file, and a trace shows it beside the current run as ngspice/<name>:tran.v(out).",
+ "description": "Simulates a schematic (the one in front unless path names another; it must have been saved once) with the simulator in the settings, as Simulation > Simulate, and waits for the end. It says whether it succeeded (the simulator ran to its end and reported no error), its errors and warnings - each with its message and, where the simulator names them, the netlist line (its number and text), the part of the schematic and the node - the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables, the traces of the diagrams that show no data and why, whether the schematic was changed while it ran (by the user or another conversation: then the results are of the schematic as it was when the run began), and the last lines of the output. 'operating_point' runs the DC operating point alone instead (as Simulation > Calculate DC bias; a transient-only schematic's too) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi, ... under its component, with re = 1/gm, rpi, beta and ro worked out - the numbers that explain a gain; the datasets are left as they were. 'timeout' in seconds, 120 unless given. 'keep_as' keeps a copy of the dataset under that name, to compare runs: get_dataset reads it by its file, and a trace shows it beside the current run as ngspice/<name>:tran.v(out).",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "timeout": {"type": "integer"},
-   "keep_as": {"type": "string", "description": "A name of letters, digits, _ and -: the copy is <name>.dat.ngspice (or .xyce, ...) beside the schematic"}}}},
+   "keep_as": {"type": "string", "description": "A name of letters, digits, _ and -: the copy is <name>.dat.ngspice (or .xyce, ...) beside the schematic"},
+   "operating_point": {"type": "boolean", "description": "Run the DC operating point alone, whatever analyses the schematic has, and return it: each node's voltage and branch current, and (ngspice) each device's quantities - gm, ic, vbe, gpi, gds, ... - with re = 1/gm, beta, ro"}}}},
 {"name": "get_netlist",
  "description": "The netlist of a schematic as text: as a simulation with the simulator in the settings would write it now, or with 'last' the one the last simulation ran (Simulation > Show Last Netlist; the one the line numbers of simulate's errors are of). 'numbered' puts each line's number before it. 'format': spice (the default) or cdl (Simulation > Save CDL netlist, with the CDL settings). export_netlist writes it to a file.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "last": {"type": "boolean"}, "numbered": {"type": "boolean"},
@@ -197,11 +227,12 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "save_as": {"type": "string"}, "last": {"type": "boolean"},
    "format": {"type": "string", "enum": ["spice", "cdl"]}}, "required": ["save_as"]}},
 {"name": "get_dataset",
- "description": "Reads a simulation's results as numbers, from the dataset the simulator wrote (its 'written' time says which run). Without 'variables': the variables it holds - the independent ones (time, frequency, a swept parameter: their range and points) and the others (what they depend on, their points, whether complex, their range, their units when known - dB, V, A, degrees - and what an equation defines them as) with the name a trace takes - and the operating point of a DC simulation (op): each node's value and, with ngspice, each device's quantities (id, gm, vgs, ...) under its component. 'operating_point': only that, every device in full. With 'variables': for each, over the range from 'from' to 'to' of its x, its statistics (min and max and where, mean and RMS weighted over x, initial and final value) and, as asked, samples ('points': at most so many, spread evenly over the samples in the range), values at given x ('at': interpolated), and measurements on the full data ('measure'): rise_time and fall_time (10%-90% of the swing, the first edge), overshoot (percent of the step), settling_time (within 'tolerance' of the step, 0.02 unless given, from 'from'), period, frequency and duty_cycle (at 'level', the middle of the swing unless given), crossings (of 'level'), bandwidth (the -3 dB points: of a magnitude, 1/sqrt(2) of its peak; of a curve in dB - db(...), vdb(...), an equation making one; 'decibels' says so when that cannot be told - 3 dB below its peak; refused on a curve that goes below 0 and is not in dB), thd (of a transient: the total harmonic distortion in percent and dB, and each harmonic's amplitude, over the last 'periods' (1 unless given) whole periods of 'fundamental' (Hz; the curve's own frequency unless given) before 'to', harmonics 2 to 'harmonics' (9 unless given) - as ngspice's .four), gain (of an AC curve: at the lowest frequency and at its peak, as a ratio and in dB, and the unity-gain frequency where it falls through 1, 0 dB), phase_margin and gain_margin (of a loop gain, a complex AC variable: 180 degrees plus its phase where its magnitude falls through 1; minus its gain in dB where its phase falls through -180 degrees; each with the frequency). A variable swept over a parameter gives a curve for each of its values. Complex values (AC) come as magnitude and phase in degrees unless 'form' says otherwise; statistics and measurements are of the magnitude. A variable written as complex numbers with no imaginary part (a Nutmeg equation's db(...)) is read as real, its sign kept, and says so.",
+ "description": "Reads a simulation's results as numbers, from the dataset the simulator wrote (its 'written' time says which run). Without 'variables': the variables it holds - the independent ones (time, frequency, a swept parameter: their range and points) and the others (what they depend on, their points, whether complex, their range, their units when known - dB, V, A, degrees - and what an equation defines them as) with the name a trace takes - and the operating point of a DC simulation (op): each node's value and, with ngspice, each device's quantities (id, gm, vgs, ...) under its component. 'operating_point': only that, every device in full. With 'variables': for each, over the range from 'from' to 'to' of its x, its statistics (min and max and where, mean and RMS weighted over x, initial and final value) and, as asked, samples ('points': at most so many, spread evenly over the samples in the range), values at given x ('at': interpolated), and measurements on the full data ('measure'): rise_time and fall_time (10%-90% of the swing, the first edge), overshoot (percent of the step), settling_time (within 'tolerance' of the step, 0.02 unless given, from 'from'), period, frequency and duty_cycle (at 'level', the middle of the swing unless given), crossings (of 'level'), bandwidth (the -3 dB points: of a magnitude, 1/sqrt(2) of its peak; of a curve in dB - db(...), vdb(...), an equation making one; 'decibels' says so when that cannot be told - 3 dB below its peak; refused on a curve that goes below 0 and is not in dB), thd (of a transient: the total harmonic distortion in percent and dB, and each harmonic's amplitude, over the last 'periods' (1 unless given) whole periods of 'fundamental' (Hz; the curve's own frequency unless given) before 'to', harmonics 2 to 'harmonics' (9 unless given) - as ngspice's .four), gain (of an AC curve: at the lowest frequency and at its peak, as a ratio and in dB, and the unity-gain frequency where it falls through 1, 0 dB), phase_margin and gain_margin (of a loop gain, a complex AC variable: 180 degrees plus its phase where its magnitude falls through 1; minus its gain in dB where its phase falls through -180 degrees; each with the frequency). A variable swept over a parameter gives a curve for each of its values. Complex values (AC) come as magnitude and phase in degrees unless 'form' says otherwise; statistics and measurements are of the magnitude. A variable written as complex numbers with no imaginary part (a Nutmeg equation's db(...)) is read as real, its sign kept, and says so. A variable may be an expression of others - v(out)/v(in), db(ac.v(out)/ac.v(in)) - evaluated sample by sample, and is then measured like any. 'compare' (a name simulate's keep_as gave, or a dataset file) puts another run beside each: its statistics and measurements over the same range, and the difference - the largest and where, its mean and RMS.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "A schematic or data display, open or not (the document in front when not given), or a dataset file (.dat, .dat.ngspice, ...)"},
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "Whose dataset of a schematic: the simulator in the settings unless given (else the newest there is)"},
-   "variables": {"type": "array", "items": {"type": "string"}, "description": "As get_dataset lists them (tran.v(out)), as a trace names them (ngspice/tran.v(out)), without the analysis (v(out): each analysis's), or a node's name (out: its voltage)"},
+   "variables": {"type": "array", "items": {"type": "string"}, "description": "As get_dataset lists them (tran.v(out)), as a trace names them (ngspice/tran.v(out)), without the analysis (v(out): each analysis's), a node's name (out: its voltage) - or an expression of them: v(out)/v(in), v(out)-v(in), db(ac.v(out)/ac.v(in)), with + - * / ^ and db, abs, mag, phase, real, imag, sqrt, log10, ln, exp, conj, in complex numbers for AC"},
+   "compare": {"type": "string", "description": "Another run to compare with: a name simulate's keep_as gave (run1), or a dataset file - each variable gets that run's statistics and measurements, and the difference"},
    "from": {"type": "number"}, "to": {"type": "number"},
    "points": {"type": "integer", "minimum": 0, "maximum": 5000, "description": "Samples of each curve: 100 unless 'at' or 'measure' is given, then none"},
    "at": {"type": "array", "items": {"type": "number"}},
@@ -217,7 +248,7 @@ const char* const kTools = R"JSON([
  "description": "Reads the datasets again and redraws the diagrams of a document (the document named by path, or every open one), as Simulation > Reload Simulation Data: after a simulation outside Qucs-S, or when a plot is blank. Says which traces still show no data, and why.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
 {"name": "add_diagram",
- "description": "Places a diagram on a schematic or a data display, its traces showing the dataset's data at once. 'type': rect (x-y, the default), polar, smith, admittance_smith, polar_smith, smith_polar, tab (a table), timing, truth, 3d, locus, histogram. x, y: its lower left corner; width and height, 240 x 160 unless given. 'traces': each a variable (as get_dataset names it - tran.v(out), or v(out) or out when that says which) or an object as add_trace takes it. The axes, grid and legend as edit_diagram takes them. Returns the diagram as get_schematic lists it: its number, and each trace's points or why it has none.",
+ "description": "Places a diagram on a schematic or a data display, its traces showing the dataset's data at once. 'type': rect (x-y, the default), polar, smith, admittance_smith, polar_smith, smith_polar, tab (a table), timing, truth, 3d, locus, histogram. x, y: its lower left corner - left out, it goes below everything on the schematic (a free place; the result says where, and when a diagram lies over another or over parts); width and height, 240 x 160 unless given. 'traces': each a variable (as get_dataset names it - tran.v(out), or v(out) or out when that says which) or an object as add_trace takes it. The axes, grid and legend as edit_diagram takes them. Returns the diagram as get_schematic lists it: its number, and each trace's points or why it has none.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "type": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"},
    "width": {"type": "integer"}, "height": {"type": "integer"},
@@ -225,8 +256,7 @@ const char* const kTools = R"JSON([
    "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}},
    "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}},
    "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}},
-   "grid": {"type": "boolean"}, "legend": {"type": "string", "enum": ["off", "top_left", "top_right", "bottom_left", "bottom_right"]}},
-   "required": ["x", "y"]}},
+   "grid": {"type": "boolean"}, "legend": {"type": "string", "enum": ["off", "top_left", "top_right", "bottom_left", "bottom_right"]}}}},
 {"name": "edit_diagram",
  "description": "Changes a diagram: its place (x, y: the lower left corner) and size, its axes (x_axis, y_axis, and y2_axis on the right: label, log, auto, from, to, step, units), grid, legend. What is not given stays. 'diagram' is its number as get_schematic lists them (it may be left out when there is one). One step to undo; the traces are read again from the dataset.",
  "inputSchema": {"type": "object", "properties": {
@@ -298,7 +328,7 @@ const char* const kTools = R"JSON([
    "keep_going": {"type": "boolean", "description": "Go on after one that fails"},
    "atomic": {"type": "boolean", "description": "All or nothing: when one fails, the changes of those before it are undone"}}, "required": ["calls"]}},
 {"name": "add_painting",
- "description": "Draws a painting - a text, an arrow, a line, a box, a text box, a table, a dimension, a formula - on a schematic, or on its symbol with 'symbol' (the document is switched to show its symbol, as Edit Circuit Symbol does; a .sym file is all symbol): to mark up a result, label a part of the circuit, draw a subcircuit's symbol. 'type': text, line, arrow, rectangle, ellipse, arc, polyline, image (from 'file'), rounded_rectangle, polygon, brace, waveform, text_box (kind block, note or callout, with a 'tip' it points at), table, dimension, formula (TeX). Its fields by name: a text's x, y, text, size, color, angle; a line's or an arrow's from and to ([x, y]) and an arrow's head (open or filled); a box's x, y (its top left corner), width and height; color, thickness, style, fill_color, fill_style, filled; ... - describe_format with element painting lists every type's fields. Returns it as get_schematic lists it, with its number. One step to undo.",
+ "description": "Draws a painting - a text, an arrow, a line, a box, a text box, a table, a dimension, a formula - on a schematic, or on its symbol with 'symbol' (the document is switched to show its symbol, as Edit Circuit Symbol does; a .sym file is all symbol): to mark up a result, label a part of the circuit, draw a subcircuit's symbol. 'type': text, line, arrow, rectangle, ellipse, arc, polyline, image (from 'file'), rounded_rectangle, polygon, brace, waveform, text_box (kind block, note or callout, with a 'tip' it points at), table, dimension, formula (TeX). Its fields by name: a text's x, y, text (_x or _{xy} a subscript, ^ a superscript, as in TeX), size, color, angle; a line's or an arrow's from and to ([x, y]) and an arrow's head (open or filled); a box's x, y (its top left corner), width and height; color, thickness, style, fill_color, fill_style, filled; ... - describe_format with element painting lists every type's fields. Returns it as get_schematic lists it, with its number. One step to undo.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "symbol": {"type": "boolean", "description": "On the schematic's symbol"},
    "type": {"type": "string", "enum": ["text", "line", "arrow", "rectangle", "ellipse", "arc", "polyline", "image", "rounded_rectangle", "polygon", "brace", "waveform", "text_box", "table", "dimension", "formula"]},
@@ -310,7 +340,7 @@ const char* const kTools = R"JSON([
    "angle": {"type": "integer"}, "head": {"type": "string", "enum": ["open", "filled"]}, "file": {"type": "string"}},
    "required": ["type"]}},
 {"name": "edit_painting",
- "description": "Changes a painting - 'painting' is its number as get_schematic lists them (a painting of the symbol with 'symbol') - by the fields add_painting takes for its type: what is not given stays; it keeps its type. A symbol's ports and its name text can be moved (x, y). Returns it as get_schematic lists it. One step to undo.",
+ "description": "Changes a painting - 'painting' is its number as get_schematic lists them (a painting of the symbol with 'symbol') - by the fields add_painting takes for its type: what is not given stays; it keeps its type. A symbol's ports can be moved (x, y); its name text moved, and given its 'prefix' (SUB: the instances are SUB1, SUB2, ...) and its 'parameters' - a subcircuit's, [{\"name\": \"R\", \"default\": \"1k\", \"description\": ..., \"type\": ..., \"shown\": true}], each instance then takes them (save the file for them to see it). Returns it as get_schematic lists it. One step to undo.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "symbol": {"type": "boolean"}, "painting": {"type": "integer"},
    "x": {"type": "integer"}, "y": {"type": "integer"}, "width": {"type": "integer"}, "height": {"type": "integer"},
@@ -372,6 +402,9 @@ const struct {
     {"rename_net", QT_TRANSLATE_NOOP("QucsControl", "rename a net in Qucs-S")},
     {"batch", QT_TRANSLATE_NOOP("QucsControl", "use several Qucs-S tools at once")},
     {"add_painting", QT_TRANSLATE_NOOP("QucsControl", "draw on the schematic in Qucs-S")},
+    {"move", QT_TRANSLATE_NOOP("QucsControl", "move components in Qucs-S")},
+    {"create_subcircuit", QT_TRANSLATE_NOOP("QucsControl", "make a subcircuit in Qucs-S")},
+    {"add_analysis", QT_TRANSLATE_NOOP("QucsControl", "add an analysis in Qucs-S")},
     {"edit_painting", QT_TRANSLATE_NOOP("QucsControl", "change a painting in Qucs-S")},
     {"export_image", QT_TRANSLATE_NOOP("QucsControl", "write a picture of Qucs-S to a file")},
     {"set_simulator", QT_TRANSLATE_NOOP("QucsControl", "choose the simulator of Qucs-S")},
@@ -380,7 +413,7 @@ const struct {
 // Tools that only look (or move the view): used without asking.
 const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "list_component_types", "list_actions",
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
-                                 "reload_data", "describe_component_type", "describe_format", "list_documents"};
+                                 "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic"};
 
 } // namespace
 
@@ -458,6 +491,18 @@ QString propertyValue(const QJsonValue& v)
     return QString::fromUtf8(QJsonDocument(QJsonArray{v}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
 }
 
+// The quarter turns a type has as the library makes it (a DC source is
+// made turned once): the tools' rotation counts from there.
+int defaultRotation(const QString& model)
+{
+    static QHash<QString, int> cache;
+    if (const auto it = cache.constFind(model); it != cache.cend()) return *it;
+    int turns = 0;
+    if (std::unique_ptr<Component> fresh{newComponent(model)}) turns = fresh->rotated;
+    cache.insert(model, turns);
+    return turns;
+}
+
 QJsonObject componentJson(Component* c)
 {
     QJsonArray props;
@@ -475,16 +520,22 @@ QJsonObject componentJson(Component* c)
         }
         pins.append(pin);
     }
-    return {{QStringLiteral("name"), c->Name},
-            {QStringLiteral("type"), c->Model},
-            {QStringLiteral("description"), c->Description},
-            {QStringLiteral("x"), c->cx},
-            {QStringLiteral("y"), c->cy},
-            {QStringLiteral("rotation"), c->rotated},
-            {QStringLiteral("mirrored"), c->mirroredX},
-            {QStringLiteral("active"), c->isActive == COMP_IS_ACTIVE},
-            {QStringLiteral("properties"), props},
-            {QStringLiteral("pins"), pins}};
+    const int base = defaultRotation(c->Model);
+    QJsonObject json{{QStringLiteral("name"), c->Name},
+                     {QStringLiteral("type"), c->Model},
+                     {QStringLiteral("description"), c->Description},
+                     {QStringLiteral("x"), c->cx},
+                     {QStringLiteral("y"), c->cy},
+                     {QStringLiteral("rotation"), ((c->rotated - base) % 4 + 4) % 4},
+                     {QStringLiteral("mirrored"), c->mirroredX},
+                     {QStringLiteral("active"), c->isActive == COMP_IS_ACTIVE},
+                     {QStringLiteral("text at"), QJsonArray{c->tx, c->ty}},
+                     {QStringLiteral("properties"), props},
+                     {QStringLiteral("pins"), pins}};
+    // (The file's rotation is the symbol's own: a DC source is made turned.)
+    if (base != 0) json.insert(QStringLiteral("rotation in the file"), c->rotated);
+    if (!c->showName) json.insert(QStringLiteral("name shown"), false);
+    return json;
 }
 
 QString propertyNames(Component* c)
@@ -506,6 +557,52 @@ bool setProperties(Component* c, const QJsonObject& properties, QString* error)
         return false;
     }
     for (auto it = properties.begin(); it != properties.end(); ++it) c->getProperty(it.key())->Value = propertyValue(it.value());
+    return true;
+}
+
+// What of a part's text is shown, and where it is: 'shown' ({"R": true,
+// "Temp": false}), 'name_shown', 'text_at' ([dx, dy] from its centre -
+// the top left corner of its text). False and why in \a error, nothing
+// changed, when one does not do; only checked unless \a apply.
+bool setTextOf(Component* c, const QJsonObject& args, QString* error, bool apply = true)
+{
+    const QJsonObject shown = args.value(QLatin1String("shown")).toObject();
+    if (args.contains(QLatin1String("shown")) && !args.value(QLatin1String("shown")).isObject()) {
+        *error = tr("'shown' is {\"property\": true or false, ...}.");
+        return false;
+    }
+    QStringList unknown;
+    for (auto it = shown.begin(); it != shown.end(); ++it) {
+        if (c->getProperty(it.key()) == nullptr) unknown << it.key();
+        else if (!it.value().isBool()) {
+            *error = tr("'shown' takes true or false for each property (%1).").arg(it.key());
+            return false;
+        }
+    }
+    if (!unknown.isEmpty()) {
+        *error = tr("%1 has no property %2; its properties are: %3.")
+                     .arg(c->Name.isEmpty() ? c->Model : c->Name, unknown.join(QStringLiteral(", ")), propertyNames(c));
+        return false;
+    }
+    if (args.contains(QLatin1String("name_shown")) && !args.value(QLatin1String("name_shown")).isBool()) {
+        *error = tr("'name_shown' is true or false.");
+        return false;
+    }
+    QPoint at(c->tx, c->ty);
+    if (args.contains(QLatin1String("text_at"))) {
+        const QJsonArray a = args.value(QLatin1String("text_at")).toArray();
+        if (a.size() != 2 || !a.at(0).isDouble() || !a.at(1).isDouble() || std::abs(a.at(0).toDouble()) > 100000
+            || std::abs(a.at(1).toDouble()) > 100000) {
+            *error = tr("'text_at' is [dx, dy]: where its text begins (the top left corner) from its centre.");
+            return false;
+        }
+        at = QPoint(a.at(0).toInt(), a.at(1).toInt());
+    }
+    if (!apply) return true;
+    for (auto it = shown.begin(); it != shown.end(); ++it) c->getProperty(it.key())->display = it.value().toBool();
+    if (args.contains(QLatin1String("name_shown"))) c->showName = args.value(QLatin1String("name_shown")).toBool();
+    c->tx = at.x();
+    c->ty = at.y();
     return true;
 }
 
@@ -878,7 +975,8 @@ Component* turnAndMove(Schematic* sch, const QString& name, const QJsonObject& a
 
     if (args.contains(QLatin1String("mirror")) && args.value(QLatin1String("mirror")).toBool() != c->mirroredX) c->mirrorX();
     if (args.contains(QLatin1String("rotation"))) {
-        const int want = ((args.value(QLatin1String("rotation")).toInt() % 4) + 4) % 4;
+        // From the type's own orientation, as add_component turns it.
+        const int want = ((args.value(QLatin1String("rotation")).toInt() + defaultRotation(c->Model)) % 4 + 4) % 4;
         for (int i = 0; i < 4 && c->rotated != want; ++i) c->rotate();
     }
     if (args.contains(QLatin1String("x")) || args.contains(QLatin1String("y"))) {
@@ -996,6 +1094,29 @@ QStringList tracesNaming(const QList<Schematic*>& docs, const QString& name)
         }
     }
     return list;
+}
+
+} // namespace
+
+namespace {
+
+QJsonObject issueJson(const qucs_s::erc::Issue& i)
+{
+    QJsonObject o{{QStringLiteral("message"), i.message}, {QStringLiteral("at"), QJsonArray{i.where.x(), i.where.y()}}};
+    if (!i.component.isEmpty()) o.insert(QStringLiteral("component"), i.component);
+    return o;
+}
+
+// What the wiring shows and does not do now that it did not before (a
+// wire drawn across another net's, a pin put on one): the messages.
+QStringList newWiringIssues(Schematic* sch, const QList<qucs_s::erc::Issue>& before)
+{
+    QSet<QString> old;
+    for (const auto& i : before) old.insert(i.message);
+    QStringList added;
+    for (const auto& i : qucs_s::erc::wiring(sch))
+        if (!old.contains(i.message)) added << i.message;
+    return added;
 }
 
 } // namespace
@@ -1141,6 +1262,16 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
         subject = s("save_as") + (a.contains(QLatin1String("diagram")) ? tr(" (diagram %1)").arg(a.value(QLatin1String("diagram")).toInt()) : QString());
     else if (tool == QLatin1String("set_simulator")) subject = s("simulator");
     else if (tool == QLatin1String("list_documents")) subject = s("folder");
+    else if (tool == QLatin1String("check_schematic")) subject = s("path");
+    else if (tool == QLatin1String("create_subcircuit")) subject = s("save_as");
+    else if (tool == QLatin1String("add_analysis"))
+        subject = s("kind") + (s("parameter").isEmpty() ? QString() : QLatin1Char(' ') + s("parameter"))
+                  + (a.value(QLatin1String("plot")).toArray().isEmpty() ? QString() : tr(" with a diagram"));
+    else if (tool == QLatin1String("move")) {
+        QStringList names;
+        for (const QJsonValue& v : a.value(QLatin1String("names")).toArray()) names << v.toString();
+        subject = tr("%1 by %2, %3").arg(names.join(QStringLiteral(", "))).arg(a.value(QLatin1String("dx")).toInt()).arg(a.value(QLatin1String("dy")).toInt());
+    }
     else if ((tool == QLatin1String("undo") || tool == QLatin1String("redo")) && a.value(QLatin1String("steps")).toInt() > 1)
         subject = tr("%1 steps").arg(a.value(QLatin1String("steps")).toInt());
     if (subject.size() > 160) subject = subject.left(159) + QChar(0x2026);
@@ -1352,7 +1483,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("list_component_types"), QStringLiteral("list_actions"), QStringLiteral("get_dialog"),
         QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"),
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
-        QStringLiteral("list_documents")};
+        QStringLiteral("list_documents"), QStringLiteral("check_schematic")};
     if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool))
         return errorResult(tr("“%1” is open in Qucs-S and waits for an answer: %2 waits until it is closed (get_dialog "
                               "reads it, set_dialog answers it - or ask the user to).")
@@ -1370,6 +1501,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("add_component")) return addComponent(args);
     if (tool == QLatin1String("edit_component")) return editComponent(args);
     if (tool == QLatin1String("delete")) return remove(args);
+    if (tool == QLatin1String("move")) return moveGroup(args);
+    if (tool == QLatin1String("add_analysis")) return addAnalysis(args);
+    if (tool == QLatin1String("create_subcircuit")) return createSubcircuit(args);
     if (tool == QLatin1String("connect")) return connectPins(args);
     if (tool == QLatin1String("add_wire")) return addWire(args);
     if (tool == QLatin1String("set_label")) return setLabel(args);
@@ -1407,6 +1541,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("add_painting")) return addPainting(args);
     if (tool == QLatin1String("edit_painting")) return editPainting(args);
     if (tool == QLatin1String("list_documents")) return listDocuments(args);
+    if (tool == QLatin1String("check_schematic")) return checkSchematic(args);
     if (tool == QLatin1String("export_image")) return exportImage(args);
     if (tool == QLatin1String("set_simulator")) return setSimulator(args);
     async = true;
@@ -1800,6 +1935,17 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
     QList<int> order;
     QHash<QString, int> seen;
     QSet<int> netsListed;
+    // Parts without a name, of a type there are several of (grounds): each
+    // its 'ref', GND#1, GND#2, ... - what connect and add_wire take.
+    QHash<const Component*, QString> refs;
+    {
+        QHash<QString, QList<const Component*>> unnamed;
+        for (const Component* c : sch->a_DocComps)
+            if (c->Name.isEmpty() || c->Name == QLatin1String("*")) unnamed[c->Model] << c;
+        for (auto it = unnamed.cbegin(); it != unnamed.cend(); ++it)
+            if (it.value().size() > 1)
+                for (int k = 0; k < it.value().size(); ++k) refs.insert(it.value().at(k), QStringLiteral("%1#%2").arg(it.key()).arg(k + 1));
+    }
     for (Component* c : sch->a_DocComps) {
         const QString base = keyBase(c, seen);
         if (!wanted(c)) continue;
@@ -1834,6 +1980,7 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
             netsListed.insert(*it);
         }
         json.insert(QStringLiteral("pins"), pins);
+        if (refs.contains(c)) json.insert(QStringLiteral("ref"), refs.value(c));
         components.append(json);
     }
     // The pins on each net: of every component (a net's pins are all of
@@ -1847,7 +1994,7 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
                 if (it == nets.netOf.constEnd()) continue;
                 if (!netNames.contains(*it)) netNames.insert(*it, QStringLiteral("net%1").arg(order.size() + 1));
                 if (!order.contains(*it)) order << *it;
-                pinsOn[*it] << QStringLiteral("%1.%2").arg(c->Name.isEmpty() ? c->Model : c->Name).arg(i + 1);
+                pinsOn[*it] << QStringLiteral("%1.%2").arg(refs.value(c, c->Name.isEmpty() ? c->Model : c->Name)).arg(i + 1);
             }
         }
     }
@@ -1915,6 +2062,22 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
                        {QStringLiteral("labels"), labels},
                        {QStringLiteral("diagrams"), diagrams},
                        {QStringLiteral("paintings"), paintings}};
+    // What check_schematic would say, counted, the first few told.
+    {
+        const QList<qucs_s::erc::Issue> issues = qucs_s::erc::check(sch);
+        const int notes = int(qucs_s::erc::notes(sch).size());
+        if (!issues.isEmpty() || notes > 0) {
+            QJsonArray first;
+            for (const auto& i : issues)
+                if (first.size() < 10) first.append(i.message);
+            QJsonObject problems{{QStringLiteral("errors"), qucs_s::erc::errorCount(issues)},
+                                 {QStringLiteral("warnings"), int(issues.size()) - qucs_s::erc::errorCount(issues)},
+                                 {QStringLiteral("notes"), notes},
+                                 {QStringLiteral("check_schematic"), tr("tells each with its place")}};
+            if (!first.isEmpty()) problems.insert(QStringLiteral("first"), first);
+            result.insert(QStringLiteral("problems"), problems);
+        }
+    }
     // The symbol's (a subcircuit's): when asked, or when it is shown.
     if (args.value(QLatin1String("symbol")).toBool() || sch->getSymbolMode()) {
         result.insert(QStringLiteral("symbol paintings"), paintingsJson(sch->a_SymbolPaints));
@@ -1940,6 +2103,25 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
     return jsonResult(result);
 }
 
+QJsonObject QucsControl::checkSchematic(const QJsonObject& args)
+{
+    QString error;
+    Schematic* sch = schematic(args, &error, false);
+    if (sch == nullptr) return errorResult(error);
+    QJsonArray errors, warnings, notes;
+    for (const auto& i : qucs_s::erc::check(sch))
+        (i.severity == qucs_s::erc::Severity::Error ? errors : warnings).append(issueJson(i));
+    for (const auto& i : qucs_s::erc::notes(sch)) notes.append(issueJson(i));
+    QJsonObject result{{QStringLiteral("document"), titleOf(sch)},
+                       {QStringLiteral("errors"), errors},
+                       {QStringLiteral("warnings"), warnings},
+                       {QStringLiteral("notes"), notes},
+                       {QStringLiteral("found"), tr("%1 errors, %2 warnings, %3 notes").arg(errors.size()).arg(warnings.size()).arg(notes.size())}};
+    if (errors.isEmpty() && warnings.isEmpty())
+        result.insert(QStringLiteral("verdict"), notes.isEmpty() ? tr("Nothing found.") : tr("Nothing wrong found; the notes are fine if meant."));
+    return jsonResult(result);
+}
+
 QJsonObject QucsControl::setSchematic(const QJsonObject& args)
 {
     QString error;
@@ -1947,7 +2129,8 @@ QJsonObject QucsControl::setSchematic(const QJsonObject& args)
     if (sch == nullptr) return errorResult(error);
     prepare(sch);
     const QString text = args.value(QLatin1String("text")).toString();
-    if (!sch->replaceContent(text, &error))
+    QStringList short_;
+    if (!sch->replaceContent(text, &error, &short_))
         return errorResult(tr("Not changed: %1").arg(error));
     // What it read, section by section: of the diagrams all get_schematic
     // tells - each trace's points or why it has none, each marker and the
@@ -1980,6 +2163,7 @@ QJsonObject QucsControl::setSchematic(const QJsonObject& args)
         result.insert(QStringLiteral("paintings"), paintingsJson(sch->a_DocPaints, 200));
     }
     result.insert(QStringLiteral("replaced"), sections);
+    if (!short_.isEmpty()) result.insert(QStringLiteral("note"), short_.join(QStringLiteral("; ")) + QLatin1Char('.'));
     return jsonResult(result);
 }
 
@@ -2071,7 +2255,7 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     Component* c = newComponent(type);
     if (c == nullptr) return errorResult(tr("There is no component type %1 (list_component_types lists them).").arg(type));
     c->setSchematic(sch);
-    if (!setProperties(c, args.value(QLatin1String("properties")).toObject(), &error)) {
+    if (!setProperties(c, args.value(QLatin1String("properties")).toObject(), &error) || !setTextOf(c, args, &error, false)) {
         delete c;
         return errorResult(error);
     }
@@ -2090,6 +2274,17 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     y = at.y();
     sch->setOnGrid(x, y);
     c->moveCenter(x - c->cx, y - c->cy);
+    // What its pins come down on - a wire, another pin, a wire's end - is
+    // joined to them: said, as it joins nets without a wire drawn.
+    QList<int> landing;
+    for (int i = 0; i < c->Ports.size(); ++i) {
+        const QPoint p(c->cx + c->Ports.at(i)->x, c->cy + c->Ports.at(i)->y);
+        bool on = false;
+        for (const Node* n : sch->a_DocNodes) on = on || n->center() == p;
+        for (const Wire* w : sch->a_DocWires) on = on || onSegment(p, w->P1(), w->P2());
+        if (on) landing << i;
+    }
+    const QList<qucs_s::erc::Issue> wiringBefore = qucs_s::erc::wiring(sch);
     // As a click with the component does.
     int x1, y1, x2, y2;
     c->textSize(x1, y1);
@@ -2097,9 +2292,31 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     c->textSize(x2, y2);
     if (c->tx < c->x1) c->tx -= x2 - x1;
     if (!wanted.isEmpty()) c->Name = wanted;
+    setTextOf(c, args, &error);
     sch->enlargeView(c);
     finish(sch, {QPoint(c->cx, c->cy)});
-    return jsonResult(componentJson(c));
+    QJsonObject result = componentJson(c);
+    QStringList notes;
+    if (!landing.isEmpty()) {
+        const Nets nets = netsOf(sch, nullptr);
+        QHash<QString, int> seen;
+        QString base;
+        for (Component* pc : sch->a_DocComps) {
+            const QString k = keyBase(pc, seen);
+            if (pc == c) base = k;
+        }
+        for (int i : std::as_const(landing)) {
+            const int net = nets.netOf.value(QStringLiteral("%1.%2").arg(base).arg(i + 1), -1);
+            QStringList on;
+            for (auto it = nets.netOf.cbegin(); it != nets.netOf.cend(); ++it)
+                if (it.value() == net && !it.key().startsWith(base + QLatin1Char('.')) && on.size() < 4) on << said(it.key(), {});
+            notes << (on.isEmpty() ? tr("pin %1 came down on a wire and is joined to it").arg(i + 1)
+                                   : tr("pin %1 came down on what was there and is joined to %2").arg(i + 1).arg(on.join(QStringLiteral(", "))));
+        }
+    }
+    notes << newWiringIssues(sch, wiringBefore);
+    if (!notes.isEmpty()) result.insert(QStringLiteral("note"), notes.join(QStringLiteral("; ")) + QLatin1Char('.'));
+    return jsonResult(result);
 }
 
 QJsonObject QucsControl::editComponent(const QJsonObject& args)
@@ -2121,8 +2338,10 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
     for (auto it = props.begin(); it != props.end(); ++it)
         if (c->getProperty(it.key()) == nullptr)
             return errorResult(tr("%1 has no property %2; its properties are: %3.").arg(name, it.key(), propertyNames(c)));
+    if (!setTextOf(c, args, &error, false)) return errorResult(error);
     prepare(sch);
     const QString before = sch->snapshot();
+    const QList<qucs_s::erc::Issue> wiringBefore = qucs_s::erc::wiring(sch);
     if (!props.isEmpty()) {
         setProperties(c, props, &error);
         sch->recreateComponent(c);
@@ -2142,10 +2361,521 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
     if (args.contains(QLatin1String("active")))
         c->isActive = args.value(QLatin1String("active")).toBool() ? COMP_IS_ACTIVE : COMP_IS_OPEN;
     if (!rename.isEmpty()) c->Name = rename;
+    setTextOf(c, args, &error);
     sch->enlargeView(c);
     finish(sch, {QPoint(c->cx, c->cy)});
     QJsonObject result = componentJson(c);
+    landed << newWiringIssues(sch, wiringBefore);
     if (!landed.isEmpty()) result.insert(QStringLiteral("note"), landed.join(QStringLiteral("; ")) + QLatin1Char('.'));
+    return jsonResult(result);
+}
+
+QJsonObject QucsControl::moveGroup(const QJsonObject& args)
+{
+    QString error;
+    Schematic* sch = schematic(args, &error, true);
+    if (sch == nullptr) return errorResult(error);
+    QList<Component*> group;
+    QStringList missing;
+    for (const QJsonValue& v : args.value(QLatin1String("names")).toArray()) {
+        Component* c = sch->getComponentByName(v.toString().trimmed());
+        if (c == nullptr) missing << v.toString();
+        else if (!group.contains(c)) group << c;
+    }
+    if (!missing.isEmpty()) return errorResult(tr("There is no component %1.").arg(missing.join(QStringLiteral(", "))));
+    QList<Diagram*> diagrams;
+    for (const QJsonValue& v : args.value(QLatin1String("diagrams")).toArray()) {
+        Diagram* d = diagramOf(sch, v, &error);
+        if (d == nullptr) return errorResult(error);
+        if (!diagrams.contains(d)) diagrams << d;
+    }
+    QList<Painting*> paintings;
+    for (const QJsonValue& v : args.value(QLatin1String("paintings")).toArray()) {
+        Painting* p = paintingOf(sch->a_DocPaints, v, &error);
+        if (p == nullptr) return errorResult(error);
+        if (!paintings.contains(p)) paintings << p;
+    }
+    if (group.isEmpty() && diagrams.isEmpty() && paintings.isEmpty())
+        return errorResult(tr("'names' are the components to move (and 'diagrams', 'paintings' their numbers)."));
+    const QJsonValue dxv = args.value(QLatin1String("dx")), dyv = args.value(QLatin1String("dy"));
+    if ((!dxv.isUndefined() && !dxv.isDouble()) || (!dyv.isUndefined() && !dyv.isDouble()) || std::abs(dxv.toDouble()) > 1e6
+        || std::abs(dyv.toDouble()) > 1e6)
+        return errorResult(tr("'dx' and 'dy' are how far to move, in the schematic's units."));
+    // On the grid: a step of the grid, the nearest.
+    const int gx = std::max(1, sch->getGridX()), gy = std::max(1, sch->getGridY());
+    const int dx = int(std::lround(dxv.toDouble() / gx)) * gx, dy = int(std::lround(dyv.toDouble() / gy)) * gy;
+    if (dx == 0 && dy == 0) return errorResult(tr("Nothing to move: dx and dy are 0 (or less than a step of the grid, %1).").arg(gx));
+
+    // The wiring among the parts moves with them: each set of wires joined
+    // to one another that touches only parts of the group. Wires that go
+    // out to the rest stay, and are drawn on to the pins' new places.
+    QSet<const Component*> in(group.begin(), group.end());
+    QSet<Wire*> moving;
+    {
+        QSet<Wire*> seen;
+        for (Wire* start : sch->a_DocWires) {
+            if (seen.contains(start)) continue;
+            QList<Wire*> cluster{start};
+            seen.insert(start);
+            bool inside = true, touches = false;
+            for (int k = 0; k < cluster.size(); ++k)
+                for (Node* n : {cluster.at(k)->Port1, cluster.at(k)->Port2}) {
+                    for (const Component* c : n->components()) {
+                        if (in.contains(c)) touches = true;
+                        else inside = false;
+                    }
+                    for (Wire* w : n->wires())
+                        if (!seen.contains(w)) {
+                            seen.insert(w);
+                            cluster << w;
+                        }
+                }
+            if (inside && touches)
+                for (Wire* w : std::as_const(cluster)) moving.insert(w);
+        }
+    }
+    prepare(sch);
+    const QString state = sch->snapshot();
+    const Nets before = netsOf(sch, nullptr);
+    const QList<qucs_s::erc::Issue> wiringBefore = qucs_s::erc::wiring(sch);
+    // Moved as the cursor keys move a selection, and the wires healed.
+    sch->deselectElements(nullptr);
+    for (Component* c : std::as_const(group)) c->isSelected = true;
+    for (Wire* w : std::as_const(moving)) {
+        w->isSelected = true;
+        if (w->hasLabel()) w->label()->isSelected = true;
+    }
+    for (Diagram* d : std::as_const(diagrams)) d->isSelected = true;
+    for (Painting* p : std::as_const(paintings)) p->isSelected = true;
+    const Schematic::Selection selection = sch->currentSelection();
+    for (Node* n : selection.nodes)
+        if (n->hasLabel()) n->label()->isSelected = true;
+    const Schematic::Selection moved = sch->currentSelection();
+    const auto mover = [dx, dy](Element* e) { e->moveCenter(dx, dy); };
+    std::ranges::for_each(moved.paintings, mover);
+    std::ranges::for_each(moved.diagrams, mover);
+    std::ranges::for_each(moved.labels, mover);
+    std::ranges::for_each(moved.components, mover);
+    std::ranges::for_each(moved.wires, mover);
+    std::ranges::for_each(moved.nodes, mover);
+    sch->healAfterKeyboardMutation();
+    sch->deselectElements(nullptr);
+    // The circuit as it was: a move that would join or split a net is not
+    // made (a pin come down on a wire of another net, say).
+    if (const QStringList changes = netChangesBeyond(before, netsOf(sch, nullptr), {}); !changes.isEmpty()) {
+        sch->restore(state);
+        return errorResult(tr("Not moved: moved so, %1. Try another dx, dy.").arg(changes.join(QStringLiteral("; "))));
+    }
+    QList<QPoint> where;
+    for (Component* c : std::as_const(group)) where << QPoint(c->cx, c->cy);
+    finish(sch, where);
+    QStringList names;
+    for (Component* c : std::as_const(group)) names << c->Name;
+    QJsonObject result{{QStringLiteral("moved"), QJsonArray::fromStringList(names)},
+                       {QStringLiteral("by"), QJsonArray{dx, dy}},
+                       {QStringLiteral("wires moved with them"), int(moving.size())},
+                       {QStringLiteral("one step to undo"), true}};
+    if (!diagrams.isEmpty()) result.insert(QStringLiteral("diagrams moved"), int(diagrams.size()));
+    if (!paintings.isEmpty()) result.insert(QStringLiteral("paintings moved"), int(paintings.size()));
+    if (const QStringList look = newWiringIssues(sch, wiringBefore); !look.isEmpty())
+        result.insert(QStringLiteral("look"), look.join(QStringLiteral("; ")));
+    return jsonResult(result);
+}
+
+QJsonObject QucsControl::addAnalysis(const QJsonObject& args)
+{
+    QString error;
+    Schematic* sch = schematic(args, &error, true);
+    if (sch == nullptr) return errorResult(error);
+    const QString kind = args.value(QLatin1String("kind")).toString().trimmed().toLower();
+    const auto given = [&args](const char* key, const QString& otherwise) {
+        const QJsonValue v = args.value(QLatin1String(key));
+        return v.isUndefined() || v.isNull() ? otherwise : propertyValue(v);
+    };
+    const QString scale = args.value(QLatin1String("scale")).toString().trimmed().toLower();
+    if (!scale.isEmpty() && scale != QLatin1String("lin") && scale != QLatin1String("log"))
+        return errorResult(tr("'scale' is lin or log."));
+    QString type;
+    QJsonObject properties;
+    QString analysisPrefix;   // of the dataset's names: ac.v(out), tran.v(out)
+    if (kind == QLatin1String("ac")) {
+        type = QStringLiteral(".AC");
+        properties = {{QStringLiteral("Type"), scale.isEmpty() ? QStringLiteral("log") : scale},
+                      {QStringLiteral("Start"), given("from", QStringLiteral("1 Hz"))},
+                      {QStringLiteral("Stop"), given("to", QStringLiteral("100 MHz"))},
+                      {QStringLiteral("Points"), given("points", QStringLiteral("101"))}};
+        analysisPrefix = QStringLiteral("ac");
+    } else if (kind == QLatin1String("tran")) {
+        type = QStringLiteral(".TR");
+        properties = {{QStringLiteral("Type"), QStringLiteral("lin")},
+                      {QStringLiteral("Start"), given("from", QStringLiteral("0"))},
+                      {QStringLiteral("Stop"), given("stop", given("to", QStringLiteral("1 ms")))},
+                      {QStringLiteral("Points"), given("points", QStringLiteral("201"))}};
+        analysisPrefix = QStringLiteral("tran");
+    } else if (kind == QLatin1String("op")) {
+        type = QStringLiteral(".DC");
+    } else if (kind == QLatin1String("sweep")) {
+        type = QStringLiteral(".SW");
+        const QString of = args.value(QLatin1String("analysis")).toString().trimmed();
+        Component* sim = sch->getComponentByName(of);
+        if (sim == nullptr || !sim->isSimulation)
+            return errorResult(tr("'analysis' names the analysis swept (TR1, AC1, DC1, ...)%1.")
+                                   .arg([&] {
+                                       QStringList sims;
+                                       for (Component* c : sch->a_DocComps)
+                                           if (c->isSimulation && c->Model != QLatin1String(".SW")) sims << c->Name;
+                                       return sims.isEmpty() ? tr(": the schematic has none - add one first") : tr(": it has %1").arg(sims.join(QStringLiteral(", ")));
+                                   }()));
+        const QString parameter = args.value(QLatin1String("parameter")).toString().trimmed();
+        if (parameter.isEmpty())
+            return errorResult(tr("'parameter' is what is swept: a component's name (its value is swept: R2) or a parameter an equation defines."));
+        bool defined = sch->getComponentByName(parameter) != nullptr;
+        for (Component* c : sch->a_DocComps)
+            if (!defined && c->isEquation)
+                for (const Property* p : c->Props) defined = defined || p->Value.section(QLatin1Char('='), 0, 0).trimmed() == parameter;
+        if (!defined)
+            return errorResult(tr("There is no component or equation parameter %1 to sweep.").arg(parameter));
+        properties = {{QStringLiteral("Sim"), of},
+                      {QStringLiteral("Type"), scale.isEmpty() ? QStringLiteral("lin") : scale},
+                      {QStringLiteral("Param"), parameter},
+                      {QStringLiteral("Start"), given("from", QString())},
+                      {QStringLiteral("Stop"), given("to", QString())},
+                      {QStringLiteral("Points"), given("points", QStringLiteral("11"))}};
+        if (properties.value(QStringLiteral("Start")).toString().isEmpty() || properties.value(QStringLiteral("Stop")).toString().isEmpty())
+            return errorResult(tr("A sweep needs 'from' and 'to': the values it goes over (1k, 10k, or numbers)."));
+        analysisPrefix = sim->Model == QLatin1String(".AC") ? QStringLiteral("ac") : sim->Model == QLatin1String(".TR") ? QStringLiteral("tran") : QStringLiteral("dc");
+    } else {
+        return errorResult(tr("'kind' is ac, tran, op or sweep."));
+    }
+    const QJsonArray plot = args.value(QLatin1String("plot")).toArray();
+    if (!plot.isEmpty() && kind == QLatin1String("op"))
+        return errorResult(tr("An operating point has nothing to plot: simulate with operating_point, or get_dataset reads it."));
+    // Where: beside the analyses there are, else below the circuit.
+    int x = args.value(QLatin1String("x")).toInt(), y = args.value(QLatin1String("y")).toInt();
+    if (!args.contains(QLatin1String("x")) || !args.contains(QLatin1String("y"))) {
+        const Component* last = nullptr;
+        for (const Component* c : sch->a_DocComps)
+            if (c->isSimulation && (last == nullptr || c->boundingRect().right() > last->boundingRect().right())) last = c;
+        const QRect used = sch->allBoundingRect();
+        const bool empty = sch->a_DocComps.empty() && sch->a_DocWires.empty();
+        if (!args.contains(QLatin1String("x"))) x = last != nullptr ? last->boundingRect().right() + 60 : (empty ? 0 : used.left());
+        if (!args.contains(QLatin1String("y"))) y = last != nullptr ? last->cy : (empty ? 0 : used.bottom() + 80);
+    }
+    QJsonObject component{{QStringLiteral("type"), type}, {QStringLiteral("x"), x}, {QStringLiteral("y"), y},
+                          {QStringLiteral("properties"), properties}};
+    if (args.contains(QLatin1String("path"))) component.insert(QStringLiteral("path"), args.value(QLatin1String("path")));
+    if (args.contains(QLatin1String("name"))) component.insert(QStringLiteral("name"), args.value(QLatin1String("name")));
+    const QJsonObject added = addComponent(component);
+    if (added.value(QLatin1String("isError")).toBool()) return added;
+    QJsonObject result{{QStringLiteral("analysis"), QJsonDocument::fromJson(textOf(added).toUtf8()).object()}};
+    int steps = 1;
+    if (!plot.isEmpty()) {
+        // What the dataset will call them: ac.v(out) for out, v(out) or ac.v(out).
+        const bool qucsator = QucsSettings.DefaultSimulator == spicecompat::simQucsator;
+        QJsonArray traces;
+        for (const QJsonValue& v : plot) {
+            QString var = v.toString().trimmed();
+            if (var.isEmpty()) continue;
+            const bool bare = !var.contains(QLatin1Char('(')) && !var.contains(QLatin1Char('.'));
+            if (qucsator) {
+                if (bare) var += kind == QLatin1String("tran") || analysisPrefix == QLatin1String("tran") ? QStringLiteral(".Vt") : QStringLiteral(".v");
+            } else {
+                if (bare) var = QStringLiteral("v(%1)").arg(var);
+                if (!var.contains(QLatin1Char('.')) && !analysisPrefix.isEmpty()) var = analysisPrefix + QLatin1Char('.') + var;
+            }
+            traces.append(var);
+        }
+        QJsonObject diagram{{QStringLiteral("traces"), traces}};
+        if (args.contains(QLatin1String("path"))) diagram.insert(QStringLiteral("path"), args.value(QLatin1String("path")));
+        if (analysisPrefix == QLatin1String("ac")) {
+            diagram.insert(QStringLiteral("x_axis"), QJsonObject{{QStringLiteral("log"), true}, {QStringLiteral("label"), tr("frequency (Hz)")}});
+            diagram.insert(QStringLiteral("y_axis"), QJsonObject{{QStringLiteral("log"), true}, {QStringLiteral("units"), QStringLiteral("dB")},
+                                                                  {QStringLiteral("label"), tr("magnitude (dB)")}});
+        } else if (analysisPrefix == QLatin1String("tran")) {
+            diagram.insert(QStringLiteral("x_axis"), QJsonObject{{QStringLiteral("label"), tr("time (s)")}});
+        }
+        diagram.insert(QStringLiteral("grid"), true);
+        const QJsonObject d = addDiagram(diagram);
+        if (d.value(QLatin1String("isError")).toBool()) {
+            result.insert(QStringLiteral("diagram"), tr("not added: %1").arg(textOf(d)));
+        } else {
+            result.insert(QStringLiteral("diagram"), QJsonDocument::fromJson(textOf(d).toUtf8()).object());
+            ++steps;
+        }
+    }
+    result.insert(QStringLiteral("steps to undo"), steps);
+    if (kind == QLatin1String("sweep"))
+        result.insert(QStringLiteral("note"), tr("Each curve of %1 is now one for each value of %2: get_dataset gives them with the value.")
+                                                  .arg(properties.value(QStringLiteral("Sim")).toString(), properties.value(QStringLiteral("Param")).toString()));
+    return jsonResult(result);
+}
+
+QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
+{
+    QString error;
+    Schematic* sch = schematic(args, &error, true);
+    if (sch == nullptr) return errorResult(error);
+    if (sch->getDocName().isEmpty()) return errorResult(tr("%1 has no file yet: save it first (the subcircuit's file goes beside it).").arg(titleOf(sch)));
+    QList<Component*> group;
+    QStringList missing;
+    for (const QJsonValue& v : args.value(QLatin1String("names")).toArray()) {
+        Component* c = sch->getComponentByName(v.toString().trimmed());
+        if (c == nullptr) missing << v.toString();
+        else if (c->isSimulation) return errorResult(tr("%1 is an analysis: a subcircuit holds the circuit, its analyses stay outside.").arg(c->Name));
+        else if (!group.contains(c)) group << c;
+    }
+    if (!missing.isEmpty()) return errorResult(tr("There is no component %1.").arg(missing.join(QStringLiteral(", "))));
+    if (group.isEmpty()) return errorResult(tr("'names' are the components that go into the subcircuit."));
+    QString file = args.value(QLatin1String("save_as")).toString().trimmed();
+    if (file.isEmpty()) return errorResult(tr("'save_as' names the subcircuit's file (a .sch beside this schematic)."));
+    const QDir here = QFileInfo(sch->getDocName()).absoluteDir();
+    if (!file.endsWith(QLatin1String(".sch"), Qt::CaseInsensitive)) file += QStringLiteral(".sch");
+    file = QFileInfo(file).isAbsolute() ? QDir::cleanPath(file) : QDir::cleanPath(here.filePath(file));
+    if (sameFile(file, sch->getDocName())) return errorResult(tr("'save_as' is this schematic itself."));
+    for (QucsDoc* doc : a_app->allDocuments())
+        if (!doc->getDocName().isEmpty() && sameFile(doc->getDocName(), file))
+            return errorResult(tr("%1 is open: close it, or choose another name.").arg(QFileInfo(file).fileName()));
+    if (QFileInfo::exists(file) && !args.value(QLatin1String("replace")).toBool())
+        return errorResult(tr("%1 is there already ('replace': true writes over it).").arg(QFileInfo(file).fileName()));
+
+    // The nets of the group's pins: those also on anything outside it are
+    // its ports; ground stays ground (a ground inside); the rest go inside.
+    const Nets nets = netsOf(sch, nullptr);
+    QHash<const Component*, QString> keyOf;
+    {
+        QHash<QString, int> seen;
+        for (Component* c : sch->a_DocComps) keyOf.insert(c, keyBase(c, seen));
+    }
+    QSet<const Component*> in(group.begin(), group.end());
+    QSet<QString> groupPins;
+    for (Component* c : std::as_const(group))
+        for (int i = 0; i < c->Ports.size(); ++i) groupPins.insert(QStringLiteral("%1.%2").arg(keyOf.value(c)).arg(i + 1));
+    struct Boundary {
+        int net;
+        QString label;   // the name the port is joined by
+        QPoint at;       // a pin of the group on it
+        QString pin;
+    };
+    QList<Boundary> boundaries;
+    QList<QPoint> grounded;   // the group's pins on ground
+    QSet<int> handled;
+    QSet<QString> labelsInUse;
+    for (auto it = nets.netOf.cbegin(); it != nets.netOf.cend(); ++it)
+        if (it.key().startsWith(QLatin1String("label "))) labelsInUse.insert(it.key().mid(6));
+    for (Component* c : std::as_const(group))
+        for (int i = 0; i < c->Ports.size(); ++i) {
+            const QString key = QStringLiteral("%1.%2").arg(keyOf.value(c)).arg(i + 1);
+            const int net = nets.netOf.value(key, -1);
+            const QPoint at(c->cx + c->Ports.at(i)->x, c->cy + c->Ports.at(i)->y);
+            if (net < 0 || handled.contains(net)) continue;
+            bool outside = false, ground = false;
+            QString label;
+            for (auto k = nets.netOf.cbegin(); k != nets.netOf.cend(); ++k) {
+                if (k.value() != net) continue;
+                if (k.key() == QLatin1String("ground")) ground = true;
+                else if (k.key().startsWith(QLatin1String("label "))) label = k.key().mid(6);
+                else if (!k.key().startsWith(QLatin1String("at ")) && !groupPins.contains(k.key())) outside = true;
+            }
+            if (ground) {
+                grounded << at;   // (each pin on ground gets a ground inside)
+                continue;
+            }
+            handled.insert(net);
+            if (!outside) continue;
+            if (label.isEmpty()) {
+                int n = 1;
+                const QString base = QFileInfo(file).completeBaseName();
+                while (labelsInUse.contains(QStringLiteral("%1_n%2").arg(base).arg(n))) ++n;
+                label = QStringLiteral("%1_n%2").arg(base).arg(n);
+                labelsInUse.insert(label);
+            }
+            boundaries.append({net, label, at, said(key, {})});
+        }
+    // Grounds of pins on ground: one each (a pin may be on ground more
+    // than once only by its own wires).
+    for (Component* c : std::as_const(group))
+        for (int i = 0; i < c->Ports.size(); ++i) {
+            const QString key = QStringLiteral("%1.%2").arg(keyOf.value(c)).arg(i + 1);
+            const QPoint at(c->cx + c->Ports.at(i)->x, c->cy + c->Ports.at(i)->y);
+            if (nets.netOf.value(key, -1) == nets.netOf.value(QStringLiteral("ground"), -2) && !grounded.contains(at)) grounded << at;
+        }
+
+    // The wiring among the group: sets of joined wires touching only it.
+    QSet<Wire*> inside;
+    QSet<Node*> insideNodes;
+    {
+        QSet<Wire*> seen;
+        for (Wire* start : sch->a_DocWires) {
+            if (seen.contains(start)) continue;
+            QList<Wire*> cluster{start};
+            seen.insert(start);
+            bool only = true, touches = false;
+            for (int k = 0; k < cluster.size(); ++k)
+                for (Node* n : {cluster.at(k)->Port1, cluster.at(k)->Port2}) {
+                    for (const Component* c : n->components()) {
+                        if (in.contains(c)) touches = true;
+                        else only = false;
+                    }
+                    for (Wire* w : n->wires())
+                        if (!seen.contains(w)) {
+                            seen.insert(w);
+                            cluster << w;
+                        }
+                }
+            if (!(only && touches)) continue;
+            for (Wire* w : std::as_const(cluster)) {
+                inside.insert(w);
+                insideNodes.insert(w->Port1);
+                insideNodes.insert(w->Port2);
+            }
+        }
+    }
+    // The subcircuit's file: the group, its wiring, a port for each net
+    // that goes out (joined to it by a label of that net's name), a
+    // ground for each pin on ground.
+    QRect box;
+    for (Component* c : std::as_const(group)) box = box.isNull() ? c->boundingRect() : box.united(c->boundingRect());
+    QStringList components, wires;
+    for (Component* c : std::as_const(group)) components << QStringLiteral("  ") + c->save();
+    const auto labelLine = [](const QPoint& p, const QString& name) {
+        return QStringLiteral("  <%1 %2 %1 %2 \"%3\" %4 %5 0 \"\">").arg(p.x()).arg(p.y()).arg(name).arg(p.x() + 10).arg(p.y() - 20);
+    };
+    const int gx = std::max(1, sch->getGridX()), gy = std::max(1, sch->getGridY());
+    for (int k = 0; k < boundaries.size(); ++k) {
+        std::unique_ptr<Component> port{newComponent(QStringLiteral("Port"))};
+        if (!port) return errorResult(tr("The library has no Port component."));
+        port->Name = QStringLiteral("P%1").arg(k + 1);
+        if (Property* num = port->getProperty(QStringLiteral("Num"))) num->Value = QString::number(k + 1);
+        int x = box.left() - 100, y = box.top() + 60 * k;
+        x = x / gx * gx;
+        y = y / gy * gy;
+        port->moveCenter(x - port->cx, y - port->cy);
+        const QPoint pin(port->cx + port->Ports.first()->x, port->cy + port->Ports.first()->y);
+        components << QStringLiteral("  ") + port->save();
+        wires << labelLine(pin, boundaries.at(k).label) << labelLine(boundaries.at(k).at, boundaries.at(k).label);
+    }
+    for (const QPoint& at : std::as_const(grounded)) {
+        std::unique_ptr<Component> ground{newComponent(QStringLiteral("GND"))};
+        if (!ground) return errorResult(tr("The library has no ground component."));
+        ground->moveCenter(at.x() - ground->Ports.first()->x - ground->cx, at.y() - ground->Ports.first()->y - ground->cy);
+        components << QStringLiteral("  ") + ground->save();
+    }
+    for (Wire* w : std::as_const(inside)) wires << QStringLiteral("  ") + w->save();
+    for (Node* n : std::as_const(insideNodes))
+        if (n->hasLabel()) wires << QStringLiteral("  ") + n->label()->save();
+    const QString text = QStringLiteral("<Qucs Schematic %1>\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n<Components>\n%2\n</Components>\n"
+                                        "<Wires>\n%3</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n")
+                             .arg(QStringLiteral(PACKAGE_VERSION), components.join(QLatin1Char('\n')),
+                                  wires.isEmpty() ? QString() : wires.join(QLatin1Char('\n')) + QLatin1Char('\n'));
+    {
+        QFile out(file);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) return errorResult(tr("%1 could not be written.").arg(QDir::toNativeSeparators(file)));
+        out.write(text.toUtf8());
+    }
+
+    // In this schematic: the group gives way to one subcircuit, its pins
+    // joined to the nets by labels of the same names - one step to undo.
+    std::unique_ptr<Component> sub{newComponent(QStringLiteral("Sub"))};
+    if (!sub) return errorResult(tr("The library has no subcircuit component."));
+    sub->setSchematic(sch);
+    sub->Props.first()->Value = here.relativeFilePath(file);
+    QString subName = args.value(QLatin1String("name")).toString().trimmed();
+    if (subName.isEmpty()) {
+        int n = 1;
+        while (sch->getComponentByName(QStringLiteral("SUB%1").arg(n)) != nullptr) ++n;
+        subName = QStringLiteral("SUB%1").arg(n);
+    } else if (sch->getComponentByName(subName) != nullptr && !in.contains(sch->getComponentByName(subName))) {
+        return errorResult(tr("There is a component named %1 already.").arg(subName));
+    }
+    sub->Name = subName;
+    sub->recreate();
+    if (sub->Ports.size() != boundaries.size())
+        return errorResult(tr("The subcircuit written has %1 pins where %2 were meant: nothing changed here (%3 is written).")
+                               .arg(sub->Ports.size()).arg(boundaries.size()).arg(QFileInfo(file).fileName()));
+    int cx = box.center().x(), cy = box.center().y();
+    sch->setOnGrid(cx, cy);
+    sub->moveCenter(cx - sub->cx, cy - sub->cy);
+    // What the group leaves behind with nothing to do: a ground that was
+    // on its pins alone, a wire to where one of its pins was (and on from
+    // there, as far as it goes to nothing) - not the ends the labels keep.
+    QSet<QPoint> gone;
+    for (Component* c : std::as_const(group))
+        for (const Port* p : c->Ports) gone.insert(QPoint(c->cx + p->x, c->cy + p->y));
+    QSet<QPoint> labelled;
+    for (const Boundary& b : std::as_const(boundaries)) labelled.insert(b.at);
+    for (Node* n : sch->a_DocNodes)
+        if (n->hasLabel() && !insideNodes.contains(n)) labelled.insert(n->center());
+    QList<Component*> kept;
+    QSet<QPoint> pinsKept;
+    for (Component* c : sch->a_DocComps) {
+        if (in.contains(c)) continue;
+        bool orphan = c->Model == QLatin1String("GND") && !c->Ports.isEmpty();
+        for (const Port* p : c->Ports) {
+            const QPoint at(c->cx + p->x, c->cy + p->y);
+            const Node* n = p->Connection;
+            // (Its node had the group's pins and nothing else: no wire.)
+            bool onlyGroup = gone.contains(at) && n != nullptr && n->wires().empty();
+            if (n != nullptr)
+                for (const Component* o : n->components()) onlyGroup = onlyGroup && (o == c || in.contains(o));
+            orphan = orphan && onlyGroup;
+        }
+        if (orphan) continue;
+        kept << c;
+        for (const Port* p : c->Ports) pinsKept.insert(QPoint(c->cx + p->x, c->cy + p->y));
+    }
+    QList<Wire*> wiresKept;
+    for (Wire* w : sch->a_DocWires)
+        if (!inside.contains(w)) wiresKept << w;
+    for (bool more = true; more;) {
+        more = false;
+        QHash<QPoint, int> ends;
+        for (const Wire* w : std::as_const(wiresKept)) {
+            ends[w->P1()]++;
+            ends[w->P2()]++;
+        }
+        for (int k = 0; k < wiresKept.size(); ++k) {
+            const Wire* w = wiresKept.at(k);
+            if (w->hasLabel()) continue;
+            for (const QPoint& e : {w->P1(), w->P2()})
+                if (gone.contains(e) && ends.value(e) == 1 && !pinsKept.contains(e) && !labelled.contains(e)) {
+                    gone.insert(e == w->P1() ? w->P2() : w->P1());   // (its other end may be left to nothing now)
+                    wiresKept.removeAt(k--);
+                    more = true;
+                    break;
+                }
+        }
+    }
+    QStringList mine, theirWires;
+    for (Component* c : std::as_const(kept)) mine << QStringLiteral("  ") + c->save();
+    mine << QStringLiteral("  ") + sub->save();
+    for (Wire* w : std::as_const(wiresKept)) theirWires << QStringLiteral("  ") + w->save();
+    for (Node* n : sch->a_DocNodes)
+        if (n->hasLabel() && !insideNodes.contains(n)) theirWires << QStringLiteral("  ") + n->label()->save();
+    QJsonArray ports;
+    for (int k = 0; k < boundaries.size(); ++k) {
+        const QPoint pin(sub->cx + sub->Ports.at(k)->x, sub->cy + sub->Ports.at(k)->y);
+        theirWires << labelLine(boundaries.at(k).at, boundaries.at(k).label) << labelLine(pin, boundaries.at(k).label);
+        ports.append(QJsonObject{{QStringLiteral("port"), k + 1}, {QStringLiteral("net"), boundaries.at(k).label},
+                                 {QStringLiteral("was at"), boundaries.at(k).pin}});
+    }
+    // (Their names now: the schematic is made anew below, and they with it.)
+    QStringList names;
+    for (Component* c : std::as_const(group)) names << c->Name;
+    prepare(sch);
+    const QString sections = QStringLiteral("<Components>\n%1\n</Components>\n<Wires>\n%2</Wires>\n")
+                                 .arg(mine.join(QLatin1Char('\n')), theirWires.isEmpty() ? QString() : theirWires.join(QLatin1Char('\n')) + QLatin1Char('\n'));
+    QString why;
+    if (!sch->replaceContent(sections, &why))
+        return errorResult(tr("The schematic could not take the subcircuit (%1 is written): %2").arg(QFileInfo(file).fileName(), why));
+    QJsonObject result{{QStringLiteral("subcircuit"), QDir::toNativeSeparators(file)},
+                       {QStringLiteral("instance"), subName},
+                       {QStringLiteral("moved in"), QJsonArray::fromStringList(names)},
+                       {QStringLiteral("ports"), ports},
+                       {QStringLiteral("grounds inside"), int(grounded.size())},
+                       {QStringLiteral("one step to undo"), true},
+                       {QStringLiteral("note"), tr("Its pins are joined to their nets by net labels. The file stays written when this is "
+                                                   "undone. open_document opens it; its symbol is a box with a pin for each port until one "
+                                                   "is drawn (add_painting with symbol).")}};
     return jsonResult(result);
 }
 
@@ -2287,13 +3017,27 @@ bool QucsControl::pointOf(Schematic* sch, const QJsonValue& at, QPoint* point, Q
     Component* c = sch->getComponentByName(name);
     if (c == nullptr) {
         // A part without a name (a ground): by its type, when it is the
-        // only one of it.
+        // only one of it - else by its number among them, GND#2 (as
+        // get_schematic's 'ref' gives it).
+        QString model = name;
+        int nth = 0;
+        if (const qsizetype hash = name.indexOf(QLatin1Char('#')); hash > 0) {
+            model = name.left(hash);
+            nth = name.mid(hash + 1).toInt();
+        }
         QList<Component*> ofType;
         for (Component* pc : sch->a_DocComps)
-            if (pc->Model == name && (pc->Name.isEmpty() || pc->Name == QLatin1String("*"))) ofType << pc;
-        if (ofType.size() == 1) c = ofType.first();
+            if (pc->Model == model && (pc->Name.isEmpty() || pc->Name == QLatin1String("*"))) ofType << pc;
+        if (nth > 0) {
+            if (nth > ofType.size()) {
+                *error = tr("There are %1 of %2, not %3.").arg(ofType.size()).arg(model).arg(nth);
+                return false;
+            }
+            c = ofType.at(nth - 1);
+        } else if (ofType.size() == 1) c = ofType.first();
         else if (ofType.size() > 1) {
-            *error = tr("There are %1 of %2: give the pin's place, [x, y] (get_schematic has it).").arg(ofType.size()).arg(name);
+            *error = tr("There are %1 of %2: say which, %2#1.1 to %2#%1.1 (get_schematic gives each its 'ref'), or give the pin's place, [x, y].")
+                         .arg(ofType.size()).arg(model);
             return false;
         }
     }
@@ -2336,11 +3080,15 @@ QJsonObject QucsControl::connectPins(const QJsonObject& args)
     // A wire that joins these two nets and nothing else: one going over a
     // pin on its way would join that pin's net too.
     const auto check = [&] { return netChangesBeyond(before, netsOf(sch, nullptr, {a, b}), ends); };
+    const QList<qucs_s::erc::Issue> wiringBefore = qucs_s::erc::wiring(sch);
     if (!wireUp(sch, a, b, check, &error))
         return errorResult(tr("Not wired: %1. Give the way with add_wire, or move a part out of it.").arg(error));
     finish(sch, {a, b});
-    return textResult(tr("Wired %1 to %2 (%3, %4 to %5, %6), going over no other pin or wire.")
-                          .arg(from, to).arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y()));
+    QString text = tr("Wired %1 to %2 (%3, %4 to %5, %6), going over no other pin or wire.")
+                       .arg(from, to).arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y());
+    if (const QStringList look = newWiringIssues(sch, wiringBefore); !look.isEmpty())
+        text += QLatin1Char(' ') + tr("Look: %1.").arg(look.join(QStringLiteral("; ")));
+    return textResult(text);
 }
 
 QJsonObject QucsControl::addWire(const QJsonObject& args)
@@ -2362,6 +3110,7 @@ QJsonObject QucsControl::addWire(const QJsonObject& args)
     for (const QPoint& p : points) places << QStringLiteral("at %1,%2").arg(p.x()).arg(p.y());
     prepare(sch);
     const QString state = sch->snapshot();
+    const QList<qucs_s::erc::Issue> wiringBefore = qucs_s::erc::wiring(sch);
     for (int i = 1; i < points.size(); ++i)
         if (points.at(i) != points.at(i - 1)) sch->connectWithWire(points.at(i - 1), points.at(i));
     const QStringList faults = netChangesBeyond(before, netsOf(sch, nullptr, points), places);
@@ -2372,7 +3121,13 @@ QJsonObject QucsControl::addWire(const QJsonObject& args)
                                .arg(faults.join(QStringLiteral("; "))));
     }
     finish(sch, points);
-    return textResult(tr("Wire drawn through %1 places (%2 wires now).").arg(points.size()).arg(sch->a_DocWires.size()));
+    QString text = tr("Wire drawn through %1 places (%2 wires now).").arg(points.size()).arg(sch->a_DocWires.size());
+    // A wire that crosses another net's is drawn - a crossing is no
+    // junction - but said: it may be meant to join it.
+    if (const QStringList look = newWiringIssues(sch, wiringBefore); !look.isEmpty())
+        text += QLatin1Char(' ') + tr("Look: %1. To join a wire, end this one on it (or add_wire through that place).")
+                                       .arg(look.join(QStringLiteral("; ")));
+    return textResult(text);
 }
 
 QJsonObject QucsControl::setLabel(const QJsonObject& args)
@@ -2682,6 +3437,40 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
     if (doc == nullptr) return errorResult(error);
     QImage image;
     auto* sch = dynamic_cast<Schematic*>(doc);
+    // One diagram, or a region: that part of the paper picture.
+    if (args.contains(QLatin1String("diagram")) || args.contains(QLatin1String("region"))) {
+        if (sch == nullptr) return errorResult(tr("%1 is not a schematic: 'diagram' and 'region' are of a schematic.").arg(titleOf(doc)));
+        QRect wanted;
+        QString what;
+        if (args.contains(QLatin1String("diagram"))) {
+            Diagram* d = diagramOf(sch, args.value(QLatin1String("diagram")), &error);
+            if (d == nullptr) return errorResult(error);
+            wanted = d->boundingRect().adjusted(-20, -20, 20, 20);
+            what = tr("diagram %1").arg(args.value(QLatin1String("diagram")).toInt());
+        } else {
+            const QJsonArray r = args.value(QLatin1String("region")).toArray();
+            if (r.size() != 4) return errorResult(tr("'region' is [x1, y1, x2, y2]."));
+            wanted = QRect(QPoint(r.at(0).toInt(), r.at(1).toInt()), QPoint(r.at(2).toInt(), r.at(3).toInt())).normalized();
+            what = tr("the region %1, %2 - %3, %4").arg(wanted.left()).arg(wanted.top()).arg(wanted.right()).arg(wanted.bottom());
+        }
+        const QRect all = qucs_s::graphicsexport::area(sch, false);
+        const QRect part = wanted.intersected(all);
+        if (part.isEmpty()) return errorResult(tr("There is nothing of %1 at %2.").arg(titleOf(doc), what));
+        qucs_s::graphicsexport::Options options;
+        // Sharp enough to read, the part at most 1600 pixels a side.
+        options.scale = std::clamp(std::min(1600.0 / part.width(), 1600.0 / part.height()), 0.1, 4.0);
+        // (Not bigger than a picture should be: the whole page at that scale.)
+        while (options.scale > 0.1 && double(all.width()) * all.height() * options.scale * options.scale > 60e6) options.scale *= 0.8;
+        const QImage page = qucs_s::graphicsexport::image(sch, options);
+        if (page.isNull()) return errorResult(tr("No picture could be made of %1.").arg(titleOf(doc)));
+        const double k = double(page.width()) / all.width();
+        image = page.copy(QRect(int((part.left() - all.left()) * k), int((part.top() - all.top()) * k), int(part.width() * k), int(part.height() * k)));
+        return {{QStringLiteral("content"),
+                 QJsonArray{pngContent(fitted(image)),
+                            QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                        {QStringLiteral("text"), tr("%1, %2 on paper - %3 x %4 pixels.").arg(titleOf(doc), what).arg(image.width()).arg(image.height())}}}},
+                {QStringLiteral("isError"), false}};
+    }
     if (sch != nullptr && area == QLatin1String("paper")) {
         const QRect area = qucs_s::graphicsexport::area(sch, false);
         if (area.isEmpty()) return errorResult(tr("%1 is empty.").arg(titleOf(doc)));
@@ -3652,6 +4441,15 @@ void QucsControl::simulate(const QJsonObject& args, const Done& done)
         return;
     }
     a_app->showDocument(sch);
+    // The operating point alone: a DC bias run (Simulation > Calculate DC
+    // bias), whatever analyses the schematic has - a transient-only one's
+    // too; its datasets are left as they are.
+    const bool operatingPoint = args.value(QLatin1String("operating_point")).toBool();
+    if (operatingPoint && (QucsSettings.DefaultSimulator == spicecompat::simQucsator || sch->isDigitalCircuit())) {
+        done(errorResult(sch->isDigitalCircuit() ? tr("A digital schematic has no operating point to run.")
+                                                 : tr("The operating point alone is run with a SPICE simulator (set_simulator ngspice).")));
+        return;
+    }
     if (QucsSettings.DefaultSimulator == spicecompat::simQucsator) {
         QTimer::singleShot(0, a_app, [app = a_app] { app->slotSimulate(); });
         QTimer::singleShot(200, this, [done] {
@@ -3673,19 +4471,24 @@ void QucsControl::simulate(const QJsonObject& args, const Done& done)
     // runs is not in its results).
     const quint64 revision = sch->revision();
     const quint64 caller = a_callers.isEmpty() ? 0 : a_callers.last();
+    // (A DC bias run is one whose schematic's bias is 0 when it starts;
+    // any other value, a run of its analyses.)
+    if (operatingPoint) sch->setShowBias(0);
+    else if (sch->getShowBias() == 0) sch->setShowBias(-1);
     // Started from the event loop (the legacy window runs one of its
     // own); the run it made is watched after.
     QTimer::singleShot(0, a_app, [app = a_app] { app->slotSimulateWithSpice(); });
-    QTimer::singleShot(0, this, [this, done, timeout, doc, console, started, simulator, keepAs, revision, caller] {
+    QTimer::singleShot(0, this, [this, done, timeout, doc, console, started, simulator, keepAs, revision, caller, operatingPoint] {
         SimulationRun* run = console->currentRun();
         if (run == nullptr) {
             QStringList log;
             for (int i = 0; i < console->statusLog()->count(); ++i) log << console->statusLog()->item(i)->text();
+            if (doc && doc->getShowBias() == 0) doc->setShowBias(-1);   // (the next run is its analyses)
             done(errorResult(tr("The simulation did not start. %1").arg(log.join(QLatin1Char('\n')))));
             return;
         }
         auto answered = std::make_shared<bool>(false);
-        auto report = [this, done, answered, doc, console, started, simulator, keepAs, revision, caller](SimulationRun* r, bool timedOut) {
+        auto report = [this, done, answered, doc, console, started, simulator, keepAs, revision, caller, operatingPoint](SimulationRun* r, bool timedOut) {
             if (*answered) return;
             *answered = true;
             const QString output = console->console()->toPlainText();
@@ -3718,7 +4521,16 @@ void QucsControl::simulate(const QJsonObject& args, const Done& done)
             result.insert(QStringLiteral("errors"), errors);
             result.insert(QStringLiteral("warnings"), warnings);
             bool written = false;
-            if (doc) {
+            if (doc && operatingPoint) {
+                // A DC bias run: its node values and each device's quantities.
+                const QJsonObject op = operatingPointOfRun(doc, misc::scratchDirFor(doc->getDocName()));
+                if (!op.isEmpty()) result.insert(QStringLiteral("operating point"), op);
+                result.insert(QStringLiteral("analysis"), tr("the DC operating point alone (as Simulation > Calculate DC bias): the "
+                                                             "schematic shows its bias now; its datasets are as they were - simulate "
+                                                             "without operating_point runs its analyses"));
+                if (doc->getShowBias() == 0) doc->setShowBias(-1);   // (not shown: the next run is its analyses)
+            }
+            if (doc && !operatingPoint) {
                 // Where this simulator writes it: name.dat.ngspice, ...
                 const QFileInfo info(doc->getDocName());
                 const QFileInfo dataset(datasetFile(info.absoluteFilePath(), info.completeBaseName() + QStringLiteral(".dat"), simulator));
@@ -3777,9 +4589,11 @@ void QucsControl::simulate(const QJsonObject& args, const Done& done)
                                                r->exitCode() < 0 ? tr("The simulator crashed or did not start.")
                                                                  : tr("The simulator ended with exit code %1.").arg(r->exitCode())}});
                 result.insert(QStringLiteral("errors"), errors);
-                if (succeeded && !written)
+                if (succeeded && !written && !operatingPoint)
                     result.insert(QStringLiteral("note"), tr("The simulator reported no error but wrote no new dataset: its analyses may "
                                                              "save nothing (an operating point alone), or a post-processing step failed."));
+                if (succeeded && operatingPoint && !result.contains(QStringLiteral("operating point")))
+                    result.insert(QStringLiteral("note"), tr("The simulator reported no error but its operating point was not found."));
                 if (!succeeded && errors.isEmpty() && !r->wasStopped())
                     result.insert(QStringLiteral("note"), tr("The simulator failed without an error message of its own: see the last lines."));
             }
