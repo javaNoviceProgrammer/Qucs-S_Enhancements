@@ -11,6 +11,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QProcess>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -167,6 +168,99 @@ private slots:
         QVERIFY(all.contains("+changed") && all.contains("+++ b/new.txt") && all.contains("Binary file blob.bin"));
 
         QCOMPARE(statText(2096, 3), QStringLiteral("+2,096 −3"));
+    }
+
+    // A repository's own configuration names programs git would run for
+    // what the bar asks - a file system monitor, filters (one of them
+    // required, in a file the configuration includes), a text conversion -
+    // and gh's git: none runs, and the changes are counted as ever. The
+    // user's own filter (the global configuration's, as git-lfs's is)
+    // still runs. Opening a downloaded project ran its programs (bug hunt
+    // 2026-09-26, B1).
+    void theRepositorysProgramsAreNotRun()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("the programs here are shell scripts");
+#endif
+        const QString evil = dir.filePath("evil repo");
+        const QString marks = dir.filePath("marks");
+        QVERIFY(QDir().mkpath(marks));
+        const auto makeProgram = [&](const QString& name, const QByteArray& then) {
+            const QString path = dir.filePath("programs/" + name + ".sh");
+            write(path, "#!/bin/sh\necho ran >> '" + QFile::encodeName(marks) + "/" + name.toUtf8() + "'\n" + then);
+            QFile::setPermissions(path, QFile::permissions(path) | QFileDevice::ExeOwner);
+            return path;
+        };
+        const auto ran = [&] { return QDir(marks).entryList(QDir::Files); };
+        const auto forget = [&] {
+            for (const QString& m : ran()) QFile::remove(marks + "/" + m);
+        };
+        const QString global = dir.filePath("gitconfig");
+        QFile original(global);
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        const QByteArray globalBefore = original.readAll();
+        original.close();
+        QVERIFY(write(global, globalBefore + "[filter \"mine\"]\n\tclean = " + QFile::encodeName(makeProgram("user", "cat\n")) + "\n"));
+
+        QVERIFY(makeRepo(evil));
+        QVERIFY(write(evil + "/.gitattributes", "a.txt diff=tc filter=fl\nb.txt filter=pr\nu.txt filter=mine\n"));
+        QVERIFY(write(evil + "/b.txt", "b\n"));
+        QVERIFY(write(evil + "/u.txt", "u\n"));
+        QVERIFY(!gitIn(evil, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(evil, {"commit", "-q", "-m", "attributes"}).isNull());
+        QVERIFY(write(evil + "/.git/config",
+                      "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tfsmonitor = " + QFile::encodeName(makeProgram("fsmonitor", "exit 1\n"))
+                          + "\n[diff \"tc\"]\n\ttextconv = " + QFile::encodeName(makeProgram("textconv", "cat \"$1\"\n"))
+                          + "\n[filter \"fl\"]\n\tclean = " + QFile::encodeName(makeProgram("clean", "cat\n"))
+                          + "\n\tsmudge = " + QFile::encodeName(makeProgram("smudge", "cat\n")) + "\n[include]\n\tpath = more.config\n"));
+        QVERIFY(write(evil + "/.git/more.config",
+                      "[filter \"pr\"]\n\tprocess = " + QFile::encodeName(makeProgram("process", "exit 1\n")) + "\n\trequired = true\n"));
+        QVERIFY(write(evil + "/a.txt", "line 1\nchanged\nline 3\n"));   // +1 -1
+        QVERIFY(write(evil + "/b.txt", "b\nb\n"));
+        QVERIFY(write(evil + "/u.txt", "u\nu\n"));
+
+        // As the repository has it, git runs them.
+        QProcess plainGit;
+        plainGit.setWorkingDirectory(evil);
+        plainGit.start(program(), {"diff", "--numstat", "HEAD", "--"});
+        QVERIFY(plainGit.waitForFinished(20000));
+        QVERIFY2(ran().contains("fsmonitor") && ran().contains("clean"), qPrintable(ran().join(' ')));
+        forget();
+
+        const Status s = status(evil);
+        QVERIFY(s.repository);
+        QCOMPARE(ran(), QStringList{"user"});   // the user's filter alone
+        forget();
+        const auto change = [&](const QString& path) {
+            for (const FileChange& f : s.changes)
+                if (f.path == path) return f;
+            return FileChange();
+        };
+        QCOMPARE(change("a.txt").added, 1);
+        QCOMPARE(change("a.txt").removed, 1);
+        QCOMPARE(change("b.txt").added, 1);
+        QCOMPARE(change("u.txt").added, 1);
+        QVERIFY(s.dirty);
+        const QString text = diff(s, "a.txt");
+        QVERIFY2(text.contains("+changed"), qPrintable(text));
+        diff(s);
+        QVERIFY2(!ran().contains("fsmonitor") && !ran().contains("textconv") && !ran().contains("clean")
+                     && !ran().contains("smudge") && !ran().contains("process"),
+                 qPrintable(ran().join(' ')));
+        forget();
+
+        // gh asks git too: its git is guarded as well.
+        const QString gh = dir.filePath("programs/gh");
+        QVERIFY(write(gh, "#!/bin/sh\n\"" + QFile::encodeName(program()) + "\" diff --numstat HEAD -- >/dev/null 2>&1\n"
+                          "echo '{\"number\": 7, \"url\": \"https://example.org/7\", \"title\": \"t\", \"state\": \"OPEN\", \"isDraft\": false}'\n"));
+        QFile::setPermissions(gh, QFile::permissions(gh) | QFileDevice::ExeOwner);
+        qputenv("QUCS_GH", QFile::encodeName(gh));
+        const PullRequest pr = pullRequest(s.root, "main");
+        qputenv("QUCS_GH", "/nonexistent/gh");
+        QCOMPARE(pr.number, 7);
+        QVERIFY2(!ran().contains("fsmonitor") && !ran().contains("clean") && !ran().contains("process"), qPrintable(ran().join(' ')));
+
+        QVERIFY(write(global, globalBefore));
     }
 
     void noRepository()

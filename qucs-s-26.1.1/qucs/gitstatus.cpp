@@ -20,6 +20,7 @@
 #include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <QUrl>
 
 #include <algorithm>
 
@@ -54,8 +55,11 @@ struct Output {
 };
 
 // Runs \a program in \a dir. Git takes no lock it can do without (Claude
-// may be committing meanwhile) and asks nothing.
-Output run(const QString& program, const QString& dir, const QStringList& args, int timeoutMs = 10000)
+// may be committing meanwhile) and asks nothing. \a config: settings for
+// every git it runs, itself or in a program it starts (gh's), as
+// "key=value" pairs.
+Output run(const QString& program, const QString& dir, const QStringList& args, int timeoutMs = 10000,
+           const QStringList& config = {})
 {
     Output o;
     if (program.isEmpty()) return o;
@@ -66,6 +70,13 @@ Output run(const QString& program, const QString& dir, const QStringList& args, 
     env.insert(QStringLiteral("GH_PROMPT_DISABLED"), QStringLiteral("1"));
     env.insert(QStringLiteral("GH_NO_UPDATE_NOTIFIER"), QStringLiteral("1"));
     env.insert(QStringLiteral("NO_COLOR"), QStringLiteral("1"));
+    if (!config.isEmpty()) {   // (git 2.31 and later)
+        env.insert(QStringLiteral("GIT_CONFIG_COUNT"), QString::number(config.size()));
+        for (qsizetype i = 0; i < config.size(); ++i) {
+            env.insert(QStringLiteral("GIT_CONFIG_KEY_%1").arg(i), config.at(i).section(QLatin1Char('='), 0, 0));
+            env.insert(QStringLiteral("GIT_CONFIG_VALUE_%1").arg(i), config.at(i).section(QLatin1Char('='), 1));
+        }
+    }
     p.setProcessEnvironment(env);
     p.setWorkingDirectory(dir);
     p.setProcessChannelMode(QProcess::SeparateChannels);
@@ -82,9 +93,61 @@ Output run(const QString& program, const QString& dir, const QStringList& args, 
     return o;
 }
 
-Output git(const QString& dir, const QStringList& args)
+// What a repository's own configuration could make git run while Qucs-S
+// only asks it how things stand - a file system monitor (core.fsmonitor),
+// filters (filter.<driver>.clean, .process, run on a changed file), hooks:
+// never. A project downloaded or unpacked with its .git is the user's own,
+// so git's safe.directory does not stop that. As "key=value" settings,
+// for -c (text conversions and external diffs: --no-textconv and
+// --no-ext-diff where they apply; submodules not entered). Filters are
+// named by the configuration: the drivers the repository's own sets are
+// unset - the user's own (git-lfs's, in the global configuration) kept.
+QStringList guards(const QString& root)
 {
-    return run(program(), dir, args);
+    QStringList config{QStringLiteral("core.fsmonitor=false"), QStringLiteral("core.hooksPath=/dev/null")};
+    const QString pattern = QStringLiteral("^filter\\..*\\.(clean|smudge|process|required)$");
+    QStringList keys;
+    // "scope<tab>key" lines, the key whole (a driver's name may hold spaces).
+    Output o = run(program(), root,
+                   {QStringLiteral("-c"), config.at(0), QStringLiteral("config"), QStringLiteral("--show-scope"),
+                    QStringLiteral("--includes"), QStringLiteral("--name-only"), QStringLiteral("--get-regexp"), pattern});
+    if (o.exitCode == 0) {
+        for (const QByteArray& l : o.out.split('\n')) {
+            const QString entry = QString::fromUtf8(l);
+            const QString scope = entry.section(QLatin1Char('\t'), 0, 0);
+            if (scope != QLatin1String("global") && scope != QLatin1String("system"))
+                keys << entry.section(QLatin1Char('\t'), 1);
+        }
+    } else if (o.exitCode != 1) {   // (1: none) - a git before --show-scope (2.26): the repository's file
+        o = run(program(), root,
+                {QStringLiteral("config"), QStringLiteral("--local"), QStringLiteral("--includes"), QStringLiteral("--name-only"),
+                 QStringLiteral("--get-regexp"), pattern});
+        for (const QByteArray& l : o.out.split('\n')) keys << QString::fromUtf8(l);
+    }
+    QStringList drivers;
+    for (const QString& key : std::as_const(keys)) {
+        const qsizetype first = key.indexOf(QLatin1Char('.')), last = key.lastIndexOf(QLatin1Char('.'));
+        if (first < 0 || last <= first) continue;
+        const QString driver = key.mid(first + 1, last - first - 1);
+        if (!drivers.contains(driver)) drivers << driver;
+    }
+    for (const QString& driver : std::as_const(drivers))
+        for (const char* setting : {"clean=", "smudge=", "process=", "required=false"})
+            config << QStringLiteral("filter.%1.%2").arg(driver, QLatin1String(setting));
+    return config;
+}
+
+// \a config as git's -c options.
+QStringList options(const QStringList& config)
+{
+    QStringList args;
+    for (const QString& c : config) args << QStringLiteral("-c") << c;
+    return args;
+}
+
+Output git(const QString& dir, const QStringList& args, const QStringList& guard)
+{
+    return run(program(), dir, options(guard) + args);
 }
 
 QString line(const Output& o)
@@ -92,9 +155,9 @@ QString line(const Output& o)
     return o.exitCode == 0 ? QString::fromUtf8(o.out).trimmed() : QString();
 }
 
-bool refExists(const QString& root, const QString& ref)
+bool refExists(const QString& root, const QString& ref, const QStringList& guard)
 {
-    return git(root, {QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("-q"), ref}).exitCode == 0;
+    return git(root, {QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("-q"), ref}, guard).exitCode == 0;
 }
 
 // An untracked file's lines, or binary.
@@ -169,22 +232,25 @@ Status status(const QString& dir)
 {
     Status s;
     if (dir.isEmpty() || !QFileInfo(dir).isDir() || program().isEmpty()) return s;
-    const QString top = line(git(dir, {QStringLiteral("rev-parse"), QStringLiteral("--show-toplevel")}));
+    const QString top = line(git(dir, {QStringLiteral("rev-parse"), QStringLiteral("--show-toplevel")},
+                                 {QStringLiteral("core.fsmonitor=false"), QStringLiteral("core.hooksPath=/dev/null")}));
     if (top.isEmpty()) return s;
     s.repository = true;
     s.root = QDir::cleanPath(QDir::fromNativeSeparators(top));
     const QString& root = s.root;
+    const QStringList guard = guards(root);
+    const auto ask = [&](const QStringList& args) { return git(root, args, guard); };
 
-    s.branch = line(git(root, {QStringLiteral("symbolic-ref"), QStringLiteral("--short"), QStringLiteral("-q"), QStringLiteral("HEAD")}));
-    s.head = line(git(root, {QStringLiteral("rev-parse"), QStringLiteral("--short"), QStringLiteral("-q"), QStringLiteral("--verify"), QStringLiteral("HEAD")}));
-    s.hasRemote = !line(git(root, {QStringLiteral("remote")})).isEmpty();
+    s.branch = line(ask({QStringLiteral("symbolic-ref"), QStringLiteral("--short"), QStringLiteral("-q"), QStringLiteral("HEAD")}));
+    s.head = line(ask({QStringLiteral("rev-parse"), QStringLiteral("--short"), QStringLiteral("-q"), QStringLiteral("--verify"), QStringLiteral("HEAD")}));
+    s.hasRemote = !line(ask({QStringLiteral("remote")})).isEmpty();
 
     // The default branch: the remote's (origin/HEAD), else a main or master.
-    QString remoteDefault = line(git(root, {QStringLiteral("symbolic-ref"), QStringLiteral("--short"), QStringLiteral("-q"),
+    QString remoteDefault = line(ask({QStringLiteral("symbolic-ref"), QStringLiteral("--short"), QStringLiteral("-q"),
                                             QStringLiteral("refs/remotes/origin/HEAD")}));
     if (remoteDefault.isEmpty()) {
         for (const QString& name : {QStringLiteral("main"), QStringLiteral("master")})
-            if (refExists(root, QStringLiteral("refs/remotes/origin/") + name)) {
+            if (refExists(root, QStringLiteral("refs/remotes/origin/") + name, guard)) {
                 remoteDefault = QStringLiteral("origin/") + name;
                 break;
             }
@@ -193,17 +259,17 @@ Status status(const QString& dir)
         s.defaultBranch = remoteDefault.section(QLatin1Char('/'), 1);
     } else {
         for (const QString& name : {QStringLiteral("main"), QStringLiteral("master")})
-            if (refExists(root, QStringLiteral("refs/heads/") + name)) {
+            if (refExists(root, QStringLiteral("refs/heads/") + name, guard)) {
                 s.defaultBranch = name;
                 break;
             }
     }
 
     if (!s.branch.isEmpty()) {
-        s.upstream = line(git(root, {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"), QStringLiteral("-q"),
+        s.upstream = line(ask({QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"), QStringLiteral("-q"),
                                      QStringLiteral("--symbolic-full-name"), QStringLiteral("@{upstream}")}));
         if (!s.upstream.isEmpty()) {
-            const QStringList counts = line(git(root, {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
+            const QStringList counts = line(ask({QStringLiteral("rev-list"), QStringLiteral("--left-right"),
                                                        QStringLiteral("--count"), QStringLiteral("HEAD...@{upstream}")}))
                                            .split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
             if (counts.size() == 2) {
@@ -224,7 +290,7 @@ Status status(const QString& dir)
         else if (!s.defaultBranch.isEmpty() && s.branch != s.defaultBranch) against = s.defaultBranch;
         else against = s.upstream;
         if (!against.isEmpty()) {
-            const QString fork = line(git(root, {QStringLiteral("merge-base"), QStringLiteral("HEAD"), against}));
+            const QString fork = line(ask({QStringLiteral("merge-base"), QStringLiteral("HEAD"), against}));
             if (!fork.isEmpty()) {
                 s.base = against;
                 s.baseCommit = fork;
@@ -232,14 +298,15 @@ Status status(const QString& dir)
         }
         if (s.baseCommit.isEmpty()) {
             s.base = QStringLiteral("HEAD");
-            s.baseCommit = line(git(root, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")}));
+            s.baseCommit = line(ask({QStringLiteral("rev-parse"), QStringLiteral("HEAD")}));
         }
     }
 
     // What changed, tracked: from the base to the files as they are.
-    const Output numstat = git(root, {QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
+    const Output numstat = ask({QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
                                       QStringLiteral("--numstat"), QStringLiteral("--no-renames"), QStringLiteral("-z"),
-                                      QStringLiteral("--no-ext-diff"), s.baseCommit, QStringLiteral("--")});
+                                      QStringLiteral("--no-ext-diff"), QStringLiteral("--no-textconv"),
+                                      QStringLiteral("--ignore-submodules=dirty"), s.baseCommit, QStringLiteral("--")});
     if (numstat.exitCode == 0) {
         for (const QByteArray& record : numstat.out.split('\0')) {
             const QList<QByteArray> fields = record.split('\t');
@@ -253,7 +320,7 @@ Status status(const QString& dir)
         }
     }
     // And the new files git does not know yet.
-    const Output others = git(root, {QStringLiteral("ls-files"), QStringLiteral("--others"), QStringLiteral("--exclude-standard"),
+    const Output others = ask({QStringLiteral("ls-files"), QStringLiteral("--others"), QStringLiteral("--exclude-standard"),
                                      QStringLiteral("-z")});
     if (others.exitCode == 0) {
         int counted = 0;
@@ -273,7 +340,8 @@ Status status(const QString& dir)
     }
     std::sort(s.changes.begin(), s.changes.end(), [](const FileChange& a, const FileChange& b) { return a.path < b.path; });
     // Anything not committed?
-    const Output porcelain = git(root, {QStringLiteral("status"), QStringLiteral("--porcelain"), QStringLiteral("-z")});
+    const Output porcelain = ask({QStringLiteral("status"), QStringLiteral("--porcelain"), QStringLiteral("-z"),
+                                  QStringLiteral("--ignore-submodules=dirty")});
     s.dirty = porcelain.exitCode == 0 && !porcelain.out.isEmpty();
     return s;
 }
@@ -287,10 +355,11 @@ QString diff(const Status& s, const QString& path)
         if (!path.isEmpty() && f.path == path) untrackedOnly = f.untracked;
     if (!untrackedOnly) {
         QStringList args{QStringLiteral("-c"), QStringLiteral("core.quotepath=off"), QStringLiteral("diff"),
-                         QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("--no-renames"),
+                         QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("--no-textconv"),
+                         QStringLiteral("--ignore-submodules=dirty"), QStringLiteral("--no-renames"),
                          s.baseCommit, QStringLiteral("--")};
         if (!path.isEmpty()) args << path;
-        const Output o = git(s.root, args);
+        const Output o = git(s.root, args, guards(s.root));
         if (o.exitCode == 0) text = QString::fromUtf8(o.out);
     }
     // Untracked files: all their lines added.
@@ -332,14 +401,17 @@ PullRequest pullRequest(const QString& root, const QString& branch)
     PullRequest pr;
     const QString gh = ghProgram();
     if (gh.isEmpty() || root.isEmpty() || branch.isEmpty()) return pr;
+    // (gh asks git about the repository: guarded too.)
     const Output o = run(gh, root,
                          {QStringLiteral("pr"), QStringLiteral("view"), branch, QStringLiteral("--json"),
                           QStringLiteral("number,url,title,state,isDraft")},
-                         20000);
+                         20000, guards(root));
     if (o.exitCode != 0) return pr;
     const QJsonObject json = QJsonDocument::fromJson(o.out).object();
     pr.number = json.value(QStringLiteral("number")).toInt();
     pr.url = json.value(QStringLiteral("url")).toString();
+    const QString scheme = QUrl(pr.url).scheme().toLower();
+    if (scheme != QLatin1String("https") && scheme != QLatin1String("http")) pr.url.clear();   // (opened with the system: a web page alone)
     pr.title = json.value(QStringLiteral("title")).toString();
     pr.state = json.value(QStringLiteral("state")).toString();
     pr.draft = json.value(QStringLiteral("isDraft")).toBool();

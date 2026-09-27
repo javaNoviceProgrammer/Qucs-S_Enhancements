@@ -11,6 +11,7 @@
  */
 #include "pdfdoc.h"
 
+#include "links.h"
 #include "misc.h"
 #include "qucs.h"
 #include "settings.h"
@@ -1069,7 +1070,14 @@ void PdfDoc::buildUi()
         }
     });
     connect(a_view, &PageView::zoomChanged, this, &PdfDoc::updateZoomBox);
-    connect(a_view, &PageView::urlActivated, this, [](const QUrl& url) { QDesktopServices::openUrl(url); });
+    // A link of the PDF: a web page or mail to the system's; a document
+    // Qucs-S opens, here; anything else - a program would run - only shown
+    // in the file manager, or asked about (links.h).
+    connect(a_view, &PageView::urlActivated, this, [this](const QUrl& url) {
+        qucs_s::links::follow(this, url, QFileInfo(a_DocName).absolutePath(), [this](const QString& path) {
+            if (a_App != nullptr) a_App->gotoPage(path);
+        });
+    });
     connect(a_view, &PageView::menuRequested, this, [this](QPoint at) {
         QMenu menu(this);
         QAction* copy = menu.addAction(tr("Copy"), this, &PdfDoc::copySelection);
@@ -1444,15 +1452,7 @@ void PdfDoc::openExternally()
 
 void PdfDoc::revealInFileManager()
 {
-    const QString path = QDir::toNativeSeparators(a_DocName);
-#if defined(Q_OS_MACOS)
-    QProcess::startDetached(QStringLiteral("open"), {QStringLiteral("-R"), a_DocName});
-#elif defined(Q_OS_WIN)
-    QProcess::startDetached(QStringLiteral("explorer.exe"), {QStringLiteral("/select,"), path});
-#else
-    Q_UNUSED(path);
-    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(a_DocName).absolutePath()));
-#endif
+    qucs_s::links::reveal(a_DocName);
 }
 
 void PdfDoc::becomeCurrent(bool)
