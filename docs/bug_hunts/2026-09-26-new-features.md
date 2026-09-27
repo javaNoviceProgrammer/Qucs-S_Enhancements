@@ -19,9 +19,8 @@ PDF documents), macOS arm64, Qt 6.11.2, with:
 4. **Reading the code** of the new features; entries found that way say so.
 
 *Status:* F1 (the CI timeout) fixed in `7c8dd74`; A1-A10 (data lost or corrupted) fixed in `119974d`;
-everything else below is open. Most urgent now: B1 and B2 (programs run from an untrusted
-project), C1 and C2 (tiny files that exhaust memory), C3 (a big folder as project freezes the
-app), B3 (a one-conversation permission that becomes the default).
+B1-B3 (security) fixed in `01ccb44`; everything else below is open. Most urgent now: C1 and C2 (tiny
+files that exhaust memory), C3 (a big folder as project freezes the app).
 
 | | severity | area | finding |
 |---|---|---|---|
@@ -403,6 +402,17 @@ path, used in Recent Documents and for entries not in the view shown)
 
 ### B1. The Claude dock's git bar runs programs named by the project's own .git/config
 
+**Fixed in `01ccb44`.** Every git call of the bar runs with `-c core.fsmonitor=false`,
+`-c core.hooksPath=/dev/null` and, for each filter driver the repository's own configuration sets
+(its `.git/config`, the files it includes, the worktree's - `git config --show-scope`), its
+`clean`, `smudge` and `process` unset and `required=false`; the user's own drivers (global or
+system: git-lfs's) are kept. `diff` has `--no-textconv` (and `--no-ext-diff`, as before); `diff`
+and `status` do not enter submodules (`--ignore-submodules=dirty`). `gh pr view`'s own git calls get
+the same settings through `GIT_CONFIG_COUNT`, and a pull request's URL is opened only when it is
+http(s). Test: `test_claude_git` `theRepositorysProgramsAreNotRun` (the repository's programs run
+under plain git first, then none under the bar's, the counts unchanged; the user's filter still
+runs).
+
 **Severity:** medium-high (code execution from opening an untrusted project folder)
 **Area:** Git status bar (new) - `gitstatus.cpp` `run()` / `status()` / `diff()`
 
@@ -434,6 +444,13 @@ already passed), or only look at repositories the user has trusted.
 Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `gitStatusRunsRepoConfiguredPrograms`.
 
 ### B2. A link in a Markdown preview or a PDF launches programs without asking
+
+**Fixed in `01ccb44`.** One rule for both (`links.h`), the dock's: http, https and mailto go to the
+system; a document Qucs-S opens (schematics, texts and netlists, spreadsheets, Markdown, PDF) opens
+in a tab; any other file is never opened from a link - it is shown in the Finder or the Explorer
+once the user agrees, the question naming it; a URL of another scheme is opened only once the user
+agrees, the URL in the question. Tests: `test_markdown_doc` `linksNeverRunPrograms`,
+`test_pdf_viewer` `aLinkToAProgramIsNotRun` (a PDF whose link leads to an executable).
 
 **Severity:** medium (one click on a disguised link runs a program shipped with a project)
 **Area:** Markdown documents (new) - `markdowndoc.cpp` `MarkdownDoc::followLink` (lines 388-403);
@@ -467,6 +484,11 @@ executables, other schemes - only after a confirmation that names the target (or
 Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `markdownLinkToProgram`.
 
 ### B3. "Allow All Edits" in one conversation silently becomes the default for every conversation, after restarts too
+
+**Fixed in `01ccb44`.** Allow All Edits changes that conversation's session alone (the menu shows
+it checked there); the saved default changes only from the Permissions menu, and a new conversation
+in the same tab (`/clear`, `/new`) starts from the saved default again. Test: `test_claude_code`
+`allowAllEditsIsOneConversationsAlone`.
 
 **Severity:** medium (a permission meant for one conversation persists everywhere; the dock says the opposite)
 **Area:** Claude Code dock - `claudecodepanel.cpp:503-506` (permissionModeChanged handler) and `:536`
