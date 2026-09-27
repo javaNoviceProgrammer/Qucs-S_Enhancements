@@ -362,20 +362,15 @@ jobs:
 
       - name: Deploy Qt and runtime DLLs
         if: ${{ matrix.enabled }}
-        run: |
-          bin="$SRC_DIR/build/qucs-suite/bin"
-          for exe in qucs-s qucs-sactivefilter qucs-sattenuator qucs-sfilter \
-                     qucs-spowercombining qucs-strans qucs-sspar-viewer rxcalc; do
-            if [ -f "$bin/$exe.exe" ]; then
-              windeployqt.exe "$bin/$exe.exe" --svg --no-translations --no-system-d3d-compiler --no-network
-            else
-              echo "::warning::$exe.exe not found in $bin"
-            fi
-          done
-          # Non-Qt DLLs from the MSYS2 environment (libstdc++, libgcc, winpthread, ...)
-          for f in $(ldd "$bin/qucs-s.exe" | awk '($3 ~ /\/${{ matrix.msystem }}\/bin\//) {print $3}'); do
-            case "$(basename "$f")" in Qt6*) ;; *) cp -f "$f" "$bin/";; esac
-          done
+        # windeployqt for each program, then every DLL a program or plugin
+        # needs from MSYS2 (libstdc++, ICU, Qt Network for Qt PDF, ...).
+        run: bash scripts/ci/windows-bundle.sh deploy "$SRC_DIR/build/qucs-suite/bin" "${{ matrix.msystem }}"
+
+      - name: Check the bundle as a PC without MSYS2 runs it
+        if: ${{ matrix.enabled }}
+        # Fails on a DLL the bundle lacks, and starts qucs-s.exe with only the
+        # bundle and Windows on PATH (26.1.3 shipped without Qt6Network.dll).
+        run: bash scripts/ci/windows-bundle.sh check "$SRC_DIR/build/qucs-suite/bin" "${{ matrix.msystem }}" "$SRC_DIR/examples/ngspice/General Electronics/RC_filter_FFT.sch"
 
       - name: Create zip
         if: ${{ matrix.enabled }}

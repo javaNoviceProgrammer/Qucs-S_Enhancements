@@ -182,3 +182,11 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGIT="${GITHUB_SHA::7}"
           cmake --build "$SRC_DIR/build" --parallel
+
+      - name: Bundle as the release does, and check it as a PC without MSYS2 runs it
+        # A DLL the bundle lacks shows here, on the push that made it - not
+        # on a user's first start (26.1.3 shipped without Qt6Network.dll).
+        run: |
+          cmake --install "$SRC_DIR/build" --prefix "$SRC_DIR/build/qucs-suite"
+          bash scripts/ci/windows-bundle.sh deploy "$SRC_DIR/build/qucs-suite/bin" ucrt64
+          bash scripts/ci/windows-bundle.sh check "$SRC_DIR/build/qucs-suite/bin" ucrt64 "$SRC_DIR/examples/ngspice/General Electronics/RC_filter_FFT.sch"
