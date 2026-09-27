@@ -106,7 +106,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   has `*`, whatever no other category took, and without it such files are
   not listed; *Scratch* lists the files of the Scratch folder that match
   its own. *Restore Default Patterns* puts the defaults back, and only
-  the categories changed are saved.
+  the categories changed are saved. **Categories of your own**: the tab's
+  *Your categories* table adds them (*Add Category*), names them, gives
+  them patterns (`*.s2p, *.s4p` for Touchstone files, say), puts them in
+  order and removes them; they are listed after *Text*, before *Others*,
+  and are kept with the settings (exported and imported with them too).
 - **ngspice loads only the Verilog-A models a circuit uses**: the netlist
   loaded (`pre_osdi`) every `.osdi` of the project, whatever the circuit
   used — with a few libraries of compiled models in the project, every
@@ -621,6 +625,19 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   to Excel's limits (1,048,576 rows, 16,384 columns) and 2,000,000 cells,
   its files at most 256 MB unpacked — a small file that unpacks to
   gigabytes is refused; styles set on far rows and columns take no room.
+- **ZIP archives, viewed and edited** (as Eclipse's zip editor): a `.zip`
+  opens in a tab of its own — its files and folders in a tree (or a list
+  of paths), each with its size, packed size, ratio, time, packing and
+  CRC-32, filtered by name (*Edit → Find*). *Open* (a double-click) opens
+  a file in Qucs-S as a copy: saved there, it is in the archive again.
+  *Add Files…*, *Add Folder…*, files dropped on a row or pasted from a
+  file manager go into the folder selected (a name there already asked
+  about); *New Folder*, *Rename…* (F2), *Delete*; *Extract…* and *Extract
+  All…* write entries into a folder you choose, and entries dragged out
+  land as files. Every change is a step to undo; *Save* writes the
+  archive, the files not changed copied as they were packed. Nothing in
+  an archive is run (what Qucs-S does not open is only extracted), and
+  nothing is extracted outside the folder chosen.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

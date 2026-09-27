@@ -37,6 +37,14 @@ class VersionTriplet;
 
 static const double pi = 3.1415926535897932384626433832795029;  /* pi   */
 
+/// A category of the Content panel the user added: its name and the file
+/// name patterns it lists ("*.s2p, *.s4p").
+struct ContentCategory {
+  QString name;
+  QString patterns;
+  bool operator==(const ContentCategory&) const = default;
+};
+
 struct tQucsSettings {
   int DefaultSimulator;
 
@@ -122,6 +130,9 @@ struct tQucsSettings {
   // Content panel: the file name patterns of the categories the user
   // changed, by category key (ProjectView::patterns() has the defaults).
   QMap<QString, QString> ContentPatterns;
+  // Content panel: the categories the user added, in their order - after
+  // the built-in ones, before Others (ProjectView::categories()).
+  QList<ContentCategory> ContentUserCategories;
   // The text editor's syntax highlighting: the formats the user changed
   // ("python/Keyword" -> "#00007f bold"), and the language chosen for a
   // suffix ("inc" -> "spice"); qucs_s::syntax (syntax.h) has the defaults.

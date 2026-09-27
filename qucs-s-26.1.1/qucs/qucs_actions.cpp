@@ -71,6 +71,7 @@
 #include "spicecomponents/sp_nutmeg.h"
 #include "textdoc.h"
 #include "sheetdoc.h"
+#include "zipdoc.h"
 #include "wire.h"
 #include "wirelabel.h"
 
@@ -370,7 +371,7 @@ void QucsApp::slotMoveText(bool on) {
 // Is called, when "Zoom in" action is triggered.
 void QucsApp::slotZoomIn(bool on) {
   QWidget *w = DocumentTab->currentWidget();
-  if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w)) {
+  if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w) || isArchiveDocument(w)) {
     docIn(w)->zoomBy(1.5f);
     magPlus->blockSignals(true);
     magPlus->setChecked(false);
@@ -396,7 +397,7 @@ void QucsApp::slotEscape() {
 // Is called when the select toolbar button is pressed.
 void QucsApp::slotSelect(bool on) {
   QWidget *w = DocumentTab->currentWidget();
-  if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w)) {
+  if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w) || isArchiveDocument(w)) {
     if (auto *text = qobject_cast<TextDoc *>(w)) text->viewport()->setFocus();
     else w->setFocus();
     select->blockSignals(true);
@@ -471,6 +472,14 @@ void QucsApp::slotEditPaste(bool on) {
 
   // Nothing is pasted into a PDF document.
   if (Doc == nullptr || isPdfDocument(Doc)) {
+    editPaste->blockSignals(true);
+    editPaste->setChecked(false);
+    editPaste->blockSignals(false);
+    return;
+  }
+  // An archive: the files on the clipboard added.
+  if (auto *zip = qobject_cast<ZipDoc *>(Doc)) {
+    zip->paste();
     editPaste->blockSignals(true);
     editPaste->setChecked(false);
     editPaste->blockSignals(false);
@@ -652,6 +661,10 @@ void QucsApp::slotEditUndo() {
     sheet->undo();
     return;
   }
+  if (auto *zip = qobject_cast<ZipDoc *>(DocumentTab->currentWidget())) {
+    zip->undo();
+    return;
+  }
   if (TextDoc *Text = qobject_cast<TextDoc *>(DocumentTab->currentWidget())) {
     Text->viewport()->setFocus();
     Text->undo();
@@ -672,6 +685,10 @@ void QucsApp::slotEditUndo() {
 void QucsApp::slotEditRedo() {
   if (auto *sheet = qobject_cast<SheetDoc *>(DocumentTab->currentWidget())) {
     sheet->redo();
+    return;
+  }
+  if (auto *zip = qobject_cast<ZipDoc *>(DocumentTab->currentWidget())) {
+    zip->redo();
     return;
   }
   if (TextDoc *Text = qobject_cast<TextDoc *>(DocumentTab->currentWidget())) {
@@ -811,6 +828,8 @@ void QucsApp::slotSelectAll() {
     QMetaObject::invokeMethod(Doc, "selectAll");   // the page's text
   } else if (auto *sheet = qobject_cast<SheetDoc *>(Doc)) {
     sheet->selectAll();
+  } else if (auto *zip = qobject_cast<ZipDoc *>(Doc)) {
+    zip->selectAll();
   } else if (Schematic *sch = schematicIn(Doc)) {
     auto selectionRect = sch->allBoundingRect().marginsAdded(QMargins{1, 1, 1, 1});
     sch->selectElements(selectionRect, true, false);
@@ -1274,6 +1293,10 @@ void QucsApp::slotEditFind() {
     return;
   }
   if (isSheetDocument(Doc)) return;   // not searched yet
+  if (auto *zip = qobject_cast<ZipDoc *>(Doc)) {   // its names filtered
+    zip->focusFilter();
+    return;
+  }
   if (isTextDocument(Doc)) {
     SearchDia->initSearch(Doc, ((TextDoc *)Doc)->textCursor().selectedText(),
                           false);
@@ -1292,7 +1315,7 @@ void QucsApp::slotChangeProps() {
     QMetaObject::invokeMethod(Doc, "showSearch");   // nothing to replace in it
     return;
   }
-  if (isSheetDocument(Doc)) return;
+  if (isSheetDocument(Doc) || isArchiveDocument(Doc)) return;
   if (isTextDocument(Doc)) {
     ((TextDoc *)Doc)->viewport()->setFocus();
 
@@ -1932,7 +1955,7 @@ void QucsApp::slotBuildModule() {
   qDebug() << "slotBuildModule";
   // A Verilog-A (or Verilog) source is built: not a PDF document.
   if (getDoc() == nullptr || isPdfDocument(DocumentTab->currentWidget())
-      || isSheetDocument(DocumentTab->currentWidget())) return;
+      || isSheetDocument(DocumentTab->currentWidget()) || isArchiveDocument(DocumentTab->currentWidget())) return;
 
   // reset message dock on entry
   messageDock->reset();

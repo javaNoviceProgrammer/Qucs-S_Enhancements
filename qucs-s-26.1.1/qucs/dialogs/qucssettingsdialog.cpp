@@ -56,6 +56,8 @@
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QTableWidget>
+#include <QGroupBox>
+#include <QHeaderView>
 #include <QTableWidgetItem>
 #include <QHeaderView>
 #include <QFileDialog>
@@ -454,7 +456,8 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
            "extensions (*.txt, .txt or txt) or names with wildcards (notes*.md), separated by commas. "
            "A file is listed under the first category from the top that matches it; * in Others takes "
            "whatever no other category took. Scratch lists the files of the project's Scratch folder "
-           "that match."), contentsTab);
+           "that match. Categories of your own - Touchstone files, measurements, reports - come after "
+           "Text: add them below, name them and give their patterns."), contentsTab);
     contentsNote->setWordWrap(true);
     contentsLayout->addWidget(contentsNote);
 
@@ -463,21 +466,65 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     contentsScroll->setWidgetResizable(true);
     contentsScroll->setFrameShape(QFrame::NoFrame);
     QWidget *contentsRows = new QWidget(contentsScroll);
-    QGridLayout *contentsGrid = new QGridLayout(contentsRows);
-    for (int category = 0; category < ProjectView::CategoryCount; ++category) {
-        QLabel *name = new QLabel(ProjectView::categoryName(category) + ":", contentsRows);
-        QLineEdit *patterns = new QLineEdit(ProjectView::patterns(category), contentsRows);
-        patterns->setObjectName("contentPatterns" + ProjectView::categoryKey(category));
-        patterns->setCursorPosition(0);   // a long list shows its start
-        patterns->setPlaceholderText(tr("none: the category lists no files"));
-        patterns->setToolTip(tr("Default: %1").arg(ProjectView::defaultPatterns(category)));
-        name->setBuddy(patterns);
-        contentsGrid->addWidget(name, category, 0);
-        contentsGrid->addWidget(patterns, category, 1);
-        contentPatternEdits.append(patterns);
-    }
-    contentsGrid->setColumnStretch(1, 1);
-    contentsGrid->setRowStretch(ProjectView::CategoryCount, 1);
+    QVBoxLayout *contentsColumn = new QVBoxLayout(contentsRows);
+    contentsColumn->setContentsMargins(0, 0, 0, 0);
+    // The built-in categories, in the panel's order: those up to Text, the
+    // user's own (their table), then Others and Scratch.
+    const auto builtIn = [this, contentsRows](int from, int to) {
+        auto *grid = new QGridLayout();
+        for (int category = from; category <= to; ++category) {
+            QLabel *name = new QLabel(ProjectView::categoryName(category) + ":", contentsRows);
+            QLineEdit *patterns = new QLineEdit(ProjectView::patterns(category), contentsRows);
+            patterns->setObjectName("contentPatterns" + ProjectView::categoryKey(category));
+            patterns->setCursorPosition(0);   // a long list shows its start
+            patterns->setPlaceholderText(tr("none: the category lists no files"));
+            patterns->setToolTip(tr("Default: %1").arg(ProjectView::defaultPatterns(category)));
+            name->setBuddy(patterns);
+            name->setMinimumWidth(110);
+            grid->addWidget(name, category - from, 0);
+            grid->addWidget(patterns, category - from, 1);
+            contentPatternEdits.append(patterns);
+        }
+        grid->setColumnStretch(1, 1);
+        return grid;
+    };
+    contentsColumn->addLayout(builtIn(0, ProjectView::Text));
+
+    // The categories of the user's own: a name, its patterns; added,
+    // removed and put in order here.
+    QGroupBox *userBox = new QGroupBox(tr("Your categories (after Text, before Others)"), contentsRows);
+    QVBoxLayout *userLayout = new QVBoxLayout(userBox);
+    contentUserCategories = new QTableWidget(0, 2, userBox);
+    contentUserCategories->setObjectName("contentUserCategories");
+    contentUserCategories->setHorizontalHeaderLabels({tr("Name"), tr("Patterns")});
+    contentUserCategories->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    contentUserCategories->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    contentUserCategories->setColumnWidth(0, 150);
+    contentUserCategories->verticalHeader()->hide();
+    contentUserCategories->setSelectionBehavior(QAbstractItemView::SelectRows);
+    contentUserCategories->setSelectionMode(QAbstractItemView::SingleSelection);
+    contentUserCategories->setMinimumHeight(110);
+    contentUserCategories->setToolTip(tr("A name, and the patterns of the files it lists: *.s2p, *.s4p, touchstone*"));
+    fillUserCategories(QucsSettings.ContentUserCategories);
+    userLayout->addWidget(contentUserCategories);
+    QHBoxLayout *userButtons = new QHBoxLayout();
+    const auto userButton = [&](const QString& text, const char* name, auto slot) {
+        auto *b = new QPushButton(text, userBox);
+        b->setObjectName(name);
+        connect(b, &QPushButton::clicked, this, slot);
+        userButtons->addWidget(b);
+        return b;
+    };
+    userButton(tr("Add Category"), "contentAddCategory", &QucsSettingsDialog::slotAddContentCategory);
+    userButton(tr("Remove"), "contentRemoveCategory", &QucsSettingsDialog::slotRemoveContentCategory);
+    userButton(tr("Move Up"), "contentCategoryUp", [this] { moveContentCategory(-1); });
+    userButton(tr("Move Down"), "contentCategoryDown", [this] { moveContentCategory(1); });
+    userButtons->addStretch();
+    userLayout->addLayout(userButtons);
+    contentsColumn->addWidget(userBox);
+
+    contentsColumn->addLayout(builtIn(ProjectView::Others, ProjectView::Scratch));
+    contentsColumn->addStretch(1);
     contentsScroll->setWidget(contentsRows);
     contentsScroll->viewport()->setAutoFillBackground(false);   // on the tab's own background
     contentsRows->setAutoFillBackground(false);
@@ -896,6 +943,17 @@ void QucsSettingsDialog::slotApply()
         contentPatternEdits[category]->setText(ProjectView::patterns(category));   // as read
         contentPatternEdits[category]->setCursorPosition(0);
     }
+    // The user's categories: those with a name, their patterns as read.
+    QList<ContentCategory> userCategories;
+    for (int row = 0; row < contentUserCategories->rowCount(); ++row) {
+        const QTableWidgetItem *name = contentUserCategories->item(row, 0);
+        const QTableWidgetItem *patterns = contentUserCategories->item(row, 1);
+        const QString named = name != nullptr ? name->text().trimmed() : QString();
+        if (named.isEmpty()) continue;
+        userCategories.append({named, ProjectView::normalizedPatterns(patterns != nullptr ? patterns->text() : QString())});
+    }
+    QucsSettings.ContentUserCategories = userCategories;
+    fillUserCategories(userCategories);
     QucsSettings.ShowPinNames = showPinNames->isChecked();
     QucsSettings.ShowPinDirections = showPinDirections->isChecked();
     QucsSettings.EmbedVerilogAInLibraries = embedVerilogA->isChecked();
@@ -1056,6 +1114,55 @@ void QucsSettingsDialog::slotGridColorDialog()
 }
 
 // -----------------------------------------------------------
+void QucsSettingsDialog::fillUserCategories(const QList<ContentCategory>& categories)
+{
+    contentUserCategories->setRowCount(0);
+    for (const ContentCategory& c : categories) {
+        const int row = contentUserCategories->rowCount();
+        contentUserCategories->insertRow(row);
+        contentUserCategories->setItem(row, 0, new QTableWidgetItem(c.name));
+        contentUserCategories->setItem(row, 1, new QTableWidgetItem(c.patterns));
+    }
+}
+
+void QucsSettingsDialog::slotAddContentCategory()
+{
+    // "New Category", "New Category 2", ...: a name no other has.
+    QStringList taken;
+    for (const int category : ProjectView::categories()) taken << ProjectView::categoryName(category);
+    for (int row = 0; row < contentUserCategories->rowCount(); ++row)
+        if (const QTableWidgetItem *name = contentUserCategories->item(row, 0)) taken << name->text().trimmed();
+    QString name = tr("New Category");
+    for (int n = 2; taken.contains(name, Qt::CaseInsensitive); ++n) name = tr("New Category %1").arg(n);
+    const int row = contentUserCategories->rowCount();
+    contentUserCategories->insertRow(row);
+    contentUserCategories->setItem(row, 0, new QTableWidgetItem(name));
+    contentUserCategories->setItem(row, 1, new QTableWidgetItem(QString()));
+    contentUserCategories->setCurrentCell(row, 0);
+    contentUserCategories->editItem(contentUserCategories->item(row, 0));
+}
+
+void QucsSettingsDialog::slotRemoveContentCategory()
+{
+    const int row = contentUserCategories->currentRow();
+    if (row >= 0) contentUserCategories->removeRow(row);
+}
+
+void QucsSettingsDialog::moveContentCategory(int by)
+{
+    const int row = contentUserCategories->currentRow();
+    const int to = row + by;
+    if (row < 0 || to < 0 || to >= contentUserCategories->rowCount()) return;
+    for (int column = 0; column < 2; ++column) {
+        QTableWidgetItem *a = contentUserCategories->takeItem(row, column);
+        QTableWidgetItem *b = contentUserCategories->takeItem(to, column);
+        contentUserCategories->setItem(row, column, b);
+        contentUserCategories->setItem(to, column, a);
+    }
+    contentUserCategories->setCurrentCell(to, contentUserCategories->currentColumn());
+}
+
+// -----------------------------------------------------------
 void QucsSettingsDialog::slotRestoreContentPatterns()
 {
     for (int category = 0; category < contentPatternEdits.size(); ++category) {
@@ -1092,6 +1199,7 @@ void QucsSettingsDialog::slotDefaultValues()
     contentRefreshSeconds->setValue(3);
     contentFolderIcons->setChecked(false);
     slotRestoreContentPatterns();
+    fillUserCategories({});   // (none of the user's: the defaults have none)
     anyFolderIsProject->setChecked(false);
     showPinNames->setChecked(true);
     showPinDirections->setChecked(false);

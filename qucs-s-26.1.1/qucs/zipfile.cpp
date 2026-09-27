@@ -12,6 +12,7 @@
 #include "zipfile.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QtEndian>
 
 #include <algorithm>
@@ -291,11 +292,34 @@ QByteArray deflate(const QByteArray& data)
     return z.mid(6, z.size() - 10);
 }
 
-QList<Entry> read(const QByteArray& archive, QString* error)
+
+
+namespace {
+// DOS's date and time (to two seconds, local time) and back.
+QDateTime fromDos(quint16 date, quint16 time)
+{
+    const QDate d(1980 + (date >> 9), (date >> 5) & 0x0F, date & 0x1F);
+    const QTime t((time >> 11) & 0x1F, (time >> 5) & 0x3F, (time & 0x1F) * 2);
+    return d.isValid() && t.isValid() ? QDateTime(d, t) : QDateTime();
+}
+
+void toDos(const QDateTime& when, quint16* date, quint16* time)
+{
+    // Without a time: 1 January 2000, 00:00 - a fixed one, so the same files
+    // make the same archive.
+    const QDateTime w = when.isValid() && when.date().year() >= 1980 && when.date().year() <= 2107
+                            ? when.toLocalTime()
+                            : QDateTime(QDate(2000, 1, 1), QTime(0, 0));
+    *date = quint16(((w.date().year() - 1980) << 9) | (w.date().month() << 5) | w.date().day());
+    *time = quint16((w.time().hour() << 11) | (w.time().minute() << 5) | (w.time().second() / 2));
+}
+} // namespace
+
+QList<Item> list(const QByteArray& archive, QString* error)
 {
     const auto fail = [error](const QString& why) {
         if (error != nullptr) *error = why;
-        return QList<Entry>();
+        return QList<Item>();
     };
     // The end of the central directory: at the end, before a comment of at
     // most 64 KB.
@@ -312,119 +336,209 @@ QList<Entry> read(const QByteArray& archive, QString* error)
     if (dirStart == 0xFFFFFFFFu || entries == 0xFFFF) return fail(tr("A ZIP64 archive (not read)."));
     if (qsizetype(dirStart) + dirSize > end) return fail(tr("The archive's directory is damaged."));
 
-    QList<Entry> files;
+    QList<Item> items;
     qsizetype at = dirStart;
-    qint64 total = 0;
     for (int k = 0; k < entries; ++k) {
         if (at + 46 > end || le32(archive, at) != kCentral) return fail(tr("The archive's directory is damaged."));
-        const quint16 flags = le16(archive, at + 8);
-        const quint16 method = le16(archive, at + 10);
-        const quint32 crc = le32(archive, at + 16);
-        const quint32 packed = le32(archive, at + 20);
-        const quint32 size = le32(archive, at + 24);
+        Item item;
+        item.madeBy = le16(archive, at + 4);
+        item.flags = le16(archive, at + 8);
+        item.method = le16(archive, at + 10);
+        item.modified = fromDos(le16(archive, at + 14), le16(archive, at + 12));
+        item.crc = le32(archive, at + 16);
+        item.packed = le32(archive, at + 20);
+        item.size = le32(archive, at + 24);
         const quint16 nameLength = le16(archive, at + 28);
         const quint16 extraLength = le16(archive, at + 30);
         const quint16 commentLength = le16(archive, at + 32);
+        item.externalAttributes = le32(archive, at + 38);
         const quint32 local = le32(archive, at + 42);
+        if (at + 46 + nameLength + extraLength + commentLength > end) return fail(tr("The archive's directory is damaged."));
         const QByteArray rawName = archive.mid(at + 46, nameLength);
+        const QByteArray rawComment = archive.mid(at + 46 + nameLength + extraLength, commentLength);
         at += 46 + nameLength + extraLength + commentLength;
-
-        Entry entry;
-        entry.name = (flags & 0x800) ? QString::fromUtf8(rawName) : QString::fromLatin1(rawName);
-        if (entry.name.endsWith(QLatin1Char('/'))) continue;   // a folder
-        if (flags & 0x1) return fail(tr("%1 is encrypted.").arg(entry.name));
-        if (packed == 0xFFFFFFFFu || size == 0xFFFFFFFFu || local == 0xFFFFFFFFu)
+        const bool utf8 = item.flags & 0x800;
+        item.name = utf8 ? QString::fromUtf8(rawName) : QString::fromLatin1(rawName);
+        item.name.replace(QLatin1Char('\\'), QLatin1Char('/'));   // (some Windows tools)
+        item.comment = utf8 ? QString::fromUtf8(rawComment) : QString::fromLatin1(rawComment);
+        if (item.packed == 0xFFFFFFFFu || item.size == 0xFFFFFFFFu || local == 0xFFFFFFFFu)
             return fail(tr("A ZIP64 archive (not read)."));
         if (qsizetype(local) + 30 > archive.size() || le32(archive, local) != kLocal)
-            return fail(tr("%1: its header is damaged.").arg(entry.name));
-        const qsizetype data = local + 30 + le16(archive, local + 26) + le16(archive, local + 28);
-        if (data + packed > archive.size()) return fail(tr("%1 is cut short.").arg(entry.name));
+            return fail(tr("%1: its header is damaged.").arg(item.name));
+        item.dataOffset = local + 30 + le16(archive, local + 26) + le16(archive, local + 28);
+        if (item.dataOffset + item.packed > archive.size()) return fail(tr("%1 is cut short.").arg(item.name));
+        items.append(item);
+    }
+    return items;
+}
+
+QByteArray packedData(const QByteArray& archive, const Item& item)
+{
+    if (item.dataOffset < 0 || item.dataOffset + item.packed > archive.size()) return QByteArray();
+    return archive.mid(item.dataOffset, item.packed);
+}
+
+QByteArray extract(const QByteArray& archive, const Item& item, QString* error, bool* ok)
+{
+    const auto fail = [error, ok](const QString& why) {
+        if (error != nullptr) *error = why;
+        if (ok != nullptr) *ok = false;
+        return QByteArray();
+    };
+    if (item.encrypted()) return fail(tr("%1 is encrypted.").arg(item.name));
+    if (item.size > MaxEntrySize)
+        return fail(tr("%1 holds more than is opened here (%2 MB inflated; at most %3 MB a file).")
+                        .arg(item.name)
+                        .arg(item.size / (1024 * 1024))
+                        .arg(MaxEntrySize / (1024 * 1024)));
+    if (item.dataOffset < 0 || item.dataOffset + item.packed > archive.size())
+        return fail(tr("%1 is cut short.").arg(item.name));
+    const QByteArray raw = archive.mid(item.dataOffset, item.packed);
+    QByteArray data;
+    if (item.method == 0) {
+        data = raw;
+    } else if (item.method == 8) {
+        bool inflated = false;
+        data = inflate(raw, &inflated, item.size);
+        if (!inflated) return fail(tr("%1 cannot be inflated, or is bigger than the archive says.").arg(item.name));
+    } else {
+        return fail(tr("%1 is compressed in a way not read (method %2).").arg(item.name).arg(item.method));
+    }
+    if (quint32(data.size()) != item.size || crc32(data) != item.crc)
+        return fail(tr("%1 is damaged (its checksum).").arg(item.name));
+    if (ok != nullptr) *ok = true;
+    return data;
+}
+
+QList<Entry> read(const QByteArray& archive, QString* error)
+{
+    const auto fail = [error](const QString& why) {
+        if (error != nullptr) *error = why;
+        return QList<Entry>();
+    };
+    const QList<Item> items = list(archive, error);
+    if (items.isEmpty()) return {};
+    QList<Entry> files;
+    qint64 total = 0;
+    for (const Item& item : items) {
+        if (item.folder()) continue;
         // What it says it holds, checked before anything is inflated; and
         // it is inflated no further than that.
-        total += size;
-        if (size > MaxEntrySize || total > MaxArchiveSize)
+        total += item.size;
+        if (item.size > MaxEntrySize || total > MaxArchiveSize)
             return fail(tr("%1 holds more than is opened here (%2 MB inflated; at most %3 MB a file, %4 MB in all).")
-                            .arg(entry.name)
-                            .arg(size / (1024 * 1024))
+                            .arg(item.name)
+                            .arg(item.size / (1024 * 1024))
                             .arg(MaxEntrySize / (1024 * 1024))
                             .arg(MaxArchiveSize / (1024 * 1024)));
-        const QByteArray raw = archive.mid(data, packed);
-        if (method == 0) {
-            entry.data = raw;
-        } else if (method == 8) {
-            bool ok = false;
-            entry.data = inflate(raw, &ok, size);
-            if (!ok) return fail(tr("%1 cannot be inflated, or is bigger than the archive says.").arg(entry.name));
-        } else {
-            return fail(tr("%1 is compressed in a way not read (method %2).").arg(entry.name).arg(method));
-        }
-        if (quint32(entry.data.size()) != size || crc32(entry.data) != crc)
-            return fail(tr("%1 is damaged (its checksum).").arg(entry.name));
-        files.append(entry);
+        bool ok = false;
+        const QByteArray data = extract(archive, item, error, &ok);
+        if (!ok) return {};
+        files.append(Entry{item.name, data});
     }
     return files;
 }
 
-QByteArray write(const QList<Entry>& entries)
+QByteArray write(const QList<Part>& parts, const QString& comment)
 {
     QByteArray out, directory;
-    // 1 January 2000, 00:00, in DOS's format: a fixed time, so the same
-    // files make the same archive.
-    const quint16 time = 0, date = quint16(((2000 - 1980) << 9) | (1 << 5) | 1);
-    for (const Entry& e : entries) {
-        const QByteArray name = e.name.toUtf8();
-        const quint32 crc = crc32(e.data);
-        QByteArray packed = deflate(e.data);
-        quint16 method = 8;
-        if (packed.isEmpty() || packed.size() >= e.data.size()) {
-            packed = e.data;
-            method = 0;
+    for (const Part& part : parts) {
+        const Item& item = part.item;
+        const QByteArray name = item.name.toUtf8();
+        const QByteArray itemComment = item.comment.toUtf8();
+        quint16 method = 0, flags = 0x800;   // names in UTF-8
+        quint32 crc = 0, size = 0;
+        QByteArray packed;
+        if (part.copied) {
+            // As the archive had it - packed, encrypted or in a way not
+            // read -, its sizes in the header here (no descriptor after).
+            method = item.method;
+            flags = quint16((item.flags & ~0x0808) | 0x800);
+            crc = item.crc;
+            size = item.size;
+            packed = part.raw;
+        } else if (!item.folder()) {
+            crc = crc32(part.data);
+            size = quint32(part.data.size());
+            packed = deflate(part.data);
+            method = 8;
+            if (packed.isEmpty() || packed.size() >= part.data.size()) {
+                packed = part.data;
+                method = 0;
+            }
         }
+        quint16 date = 0, time = 0;
+        toDos(item.modified, &date, &time);
         const quint32 offset = quint32(out.size());
         put32(out, kLocal);
         put16(out, 20);        // version needed
-        put16(out, 0x800);     // names in UTF-8
+        put16(out, flags);
         put16(out, method);
         put16(out, time);
         put16(out, date);
         put32(out, crc);
         put32(out, quint32(packed.size()));
-        put32(out, quint32(e.data.size()));
+        put32(out, size);
         put16(out, quint16(name.size()));
         put16(out, 0);
         out.append(name);
         out.append(packed);
 
         put32(directory, kCentral);
-        put16(directory, 20);   // made by
+        put16(directory, item.madeBy != 0 ? item.madeBy : 20);   // made by (its system: a Unix mode kept)
         put16(directory, 20);   // needed
-        put16(directory, 0x800);
+        put16(directory, flags);
         put16(directory, method);
         put16(directory, time);
         put16(directory, date);
         put32(directory, crc);
         put32(directory, quint32(packed.size()));
-        put32(directory, quint32(e.data.size()));
+        put32(directory, size);
         put16(directory, quint16(name.size()));
         put16(directory, 0);   // extra
-        put16(directory, 0);   // comment
+        put16(directory, quint16(itemComment.size()));
         put16(directory, 0);   // disk
         put16(directory, 0);   // internal attributes
-        put32(directory, 0);   // external attributes
+        put32(directory, item.externalAttributes);
         put32(directory, offset);
         directory.append(name);
+        directory.append(itemComment);
     }
+    const QByteArray archiveComment = comment.toUtf8().left(0xFFFF);
     const quint32 start = quint32(out.size());
     out.append(directory);
     put32(out, kEnd);
     put16(out, 0);
     put16(out, 0);
-    put16(out, quint16(entries.size()));
-    put16(out, quint16(entries.size()));
+    put16(out, quint16(parts.size()));
+    put16(out, quint16(parts.size()));
     put32(out, quint32(directory.size()));
     put32(out, start);
-    put16(out, 0);
+    put16(out, quint16(archiveComment.size()));
+    out.append(archiveComment);
     return out;
+}
+
+QByteArray write(const QList<Entry>& entries)
+{
+    QList<Part> parts;
+    for (const Entry& e : entries) {
+        Part part;
+        part.item.name = e.name;
+        part.data = e.data;
+        parts.append(part);
+    }
+    return write(parts);
+}
+
+QString comment(const QByteArray& archive)
+{
+    for (qsizetype at = archive.size() - 22; at >= 0 && at >= archive.size() - 22 - 0xFFFF; --at)
+        if (le32(archive, at) == kEnd) {
+            const quint16 length = le16(archive, at + 20);
+            return QString::fromUtf8(archive.mid(at + 22, length));
+        }
+    return QString();
 }
 
 } // namespace qucs_s::zip

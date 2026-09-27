@@ -330,6 +330,10 @@ public:
   /// Whether a file is a spreadsheet (.csv, .tsv, .xlsx, .xlsm, .xls):
   /// opened in a SheetDoc.
   static bool isSheetFile(const QString &name);
+  /// Whether \a w is a ZIP archive in a tab (zipdoc.h).
+  static bool isArchiveDocument(QWidget *);
+  /// Whether a file of that name is an archive opened in a ZipDoc (.zip).
+  static bool isArchiveFile(const QString &name);
   /// The schematic (or data display, or symbol) a tab holds; nullptr for
   /// a text or a PDF document.
   static Schematic *schematicIn(QWidget *);

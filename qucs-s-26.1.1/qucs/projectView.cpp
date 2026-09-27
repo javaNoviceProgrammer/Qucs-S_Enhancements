@@ -34,6 +34,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QStandardItemModel>
+#include <QHash>
 #include <QTimer>
 #include <QFutureWatcher>
 #include <QLocale>
@@ -116,6 +117,23 @@ static_assert(std::size(kCategories) == ProjectView::CategoryCount);
 
 bool isCategory(int category) { return category >= 0 && category < ProjectView::CategoryCount; }
 
+// The user's category's place in QucsSettings.ContentUserCategories, -1.
+int userIndex(int category)
+{
+  const int i = category - ProjectView::UserCategory;
+  return i >= 0 && i < QucsSettings.ContentUserCategories.size() ? i : -1;
+}
+
+// Every category with its name and patterns, in the panel's order: what
+// the listing is built with (a change of any rebuilds it).
+QStringList categoryLines()
+{
+  QStringList lines;
+  for (const int category : ProjectView::categories())
+    lines << ProjectView::categoryName(category) + QLatin1Char('\t') + ProjectView::patterns(category);
+  return lines;
+}
+
 // A category's patterns, ready to match a file's name.
 QList<QRegularExpression> matchers(int category)
 {
@@ -136,13 +154,34 @@ bool matches(const QList<QRegularExpression>& patterns, const QString& name)
 }
 } // namespace
 
+bool ProjectView::isUserCategory(int category)
+{
+  return userIndex(category) >= 0;
+}
+
+QList<int> ProjectView::categories()
+{
+  QList<int> order;
+  for (int category = 0; category <= Text; ++category) order << category;
+  for (int i = 0; i < QucsSettings.ContentUserCategories.size(); ++i) order << UserCategory + i;
+  order << Others << Scratch;
+  return order;
+}
+
+int ProjectView::rowOf(int category)
+{
+  return int(categories().indexOf(category));
+}
+
 QString ProjectView::categoryKey(int category)
 {
+  if (isUserCategory(category)) return QStringLiteral("User%1").arg(userIndex(category) + 1);
   return isCategory(category) ? QString::fromLatin1(kCategories[category].key) : QString();
 }
 
 QString ProjectView::categoryName(int category)
 {
+  if (isUserCategory(category)) return QucsSettings.ContentUserCategories.at(userIndex(category)).name;
   return isCategory(category) ? QCoreApplication::translate("ProjectView", kCategories[category].name) : QString();
 }
 
@@ -159,6 +198,7 @@ QString ProjectView::defaultPatterns(int category)
 
 QString ProjectView::patterns(int category)
 {
+  if (isUserCategory(category)) return QucsSettings.ContentUserCategories.at(userIndex(category)).patterns;
   if (!isCategory(category)) return QString();
   const auto chosen = QucsSettings.ContentPatterns.constFind(categoryKey(category));
   return chosen != QucsSettings.ContentPatterns.constEnd() ? *chosen : defaultPatterns(category);
@@ -166,6 +206,10 @@ QString ProjectView::patterns(int category)
 
 void ProjectView::setPatterns(int category, const QString& text)
 {
+  if (isUserCategory(category)) {
+    QucsSettings.ContentUserCategories[userIndex(category)].patterns = normalizedPatterns(text);
+    return;
+  }
   if (!isCategory(category)) return;
   const QString patterns = normalizedPatterns(text);
   if (patterns == defaultPatterns(category))
@@ -199,7 +243,8 @@ int ProjectView::categoryOf(const QModelIndex& idx) const
   if (!idx.isValid()) return -1;
   QModelIndex top = idx;
   while (top.parent().isValid()) top = top.parent();
-  return top.row();
+  const QVariant category = top.sibling(top.row(), 0).data(CategoryRole);   // (set by refresh())
+  return category.isValid() ? category.toInt() : top.row();
 }
 
 QString ProjectView::filePath(const QModelIndex& idx) const
@@ -279,7 +324,7 @@ ProjectView::setProjPath(const QString &path)
   refresh();
   // A freshly opened project shows its schematics.
   if (m_valid)
-    setExpanded(m_model->index(Schematics, 0), true);
+    setExpanded(m_model->index(rowOf(Schematics), 0), true);
 }
 
 QString ProjectView::rowKey(const QModelIndex& idx) const
@@ -335,7 +380,7 @@ QStandardItem* ProjectView::folderItem(QStandardItem* category, const QString& d
 
 void ProjectView::appendFile(int category, const QString& path, const QString& note)
 {
-  QStandardItem* cat = m_model->item(category, 0);
+  QStandardItem* cat = m_model->item(rowOf(category), 0);
   if (cat == nullptr) return;
   QStandardItem* parent = cat;
   // Named relative to the project, or to the Scratch folder under Scratch.
@@ -380,17 +425,19 @@ ProjectView::refresh()
          << tr("Note");
   m_model->setHorizontalHeaderLabels(header);
 
-  for (int category = 0; category < CategoryCount; ++category)
+  const QList<int> order = categories();
+  for (const int category : order) {
     appendRow(m_model->invisibleRootItem(), categoryName(category), QString(""));
+    m_model->item(m_model->rowCount() - 1, 0)->setData(category, CategoryRole);
+  }
 
   if (m_valid) {
     // put all files into "Content"-ListView: those of the project directory
     // and of any subdirectory, named relative to the project (the files of
     // one directory arrive together, so a folder row's files come first,
     // then its sub-folders), each under the first category that takes it
-    QList<QList<QRegularExpression>> taken;   // by category
-    for (int category = 0; category < CategoryCount; ++category)
-      taken.append(matchers(category));
+    QHash<int, QList<QRegularExpression>> taken;   // by category
+    for (const int category : order) taken.insert(category, matchers(category));
     const QDir workPath(m_projPath);
     const QString scratchPrefix = QString::fromLatin1(misc::ScratchFolder) + QLatin1Char('/');
     for (const QString& fileName : files) {
@@ -399,7 +446,8 @@ ProjectView::refresh()
         if (matches(taken[Scratch], info.fileName())) appendFile(Scratch, fileName);
         continue;
       }
-      for (int category = 0; category < Scratch; ++category) {
+      for (const int category : order) {   // (in the panel's order: the first that takes it)
+        if (category == Scratch) continue;
         if (!matches(taken[category], info.fileName())) continue;
         if (category == Schematics) {
           // Only a schematic; a subcircuit gets its port count as the note.
@@ -418,9 +466,7 @@ ProjectView::refresh()
   resizeColumnToContents(0);
   m_signature = m_valid ? signatureOf(m_projPath, files) : QString();
   m_folderIcons = QucsSettings.ContentFolderIcons;
-  m_patterns.clear();
-  for (int category = 0; category < CategoryCount; ++category)
-    m_patterns.append(patterns(category));
+  m_patterns = categoryLines();
 }
 
 QString ProjectView::signatureOf(const QString& projPath, const QStringList& files)
@@ -450,10 +496,7 @@ void ProjectView::applyRefreshSettings()
   else
     m_pollTimer->stop();
   // The rows are built with these.
-  QStringList patternsNow;
-  for (int category = 0; category < CategoryCount; ++category)
-    patternsNow.append(patterns(category));
-  if (m_folderIcons != QucsSettings.ContentFolderIcons || m_patterns != patternsNow) refresh();
+  if (m_folderIcons != QucsSettings.ContentFolderIcons || m_patterns != categoryLines()) refresh();
 }
 
 bool ProjectView::autoRefreshEnabled() const
@@ -509,6 +552,6 @@ QStringList ProjectView::exportSchematic()
         list.append(path);                   // a subcircuit (it has a note)
     }
   };
-  collect(m_model->item(Schematics, 0));
+  collect(m_model->item(rowOf(Schematics), 0));
   return list;
 }

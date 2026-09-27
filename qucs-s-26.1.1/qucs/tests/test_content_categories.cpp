@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTemporaryDir>
 
 #include "config.h"
@@ -199,6 +200,100 @@ private slots:
         QVERIFY2(clock.elapsed() < 150, qPrintable(QString::number(clock.elapsed())));
         QTest::qWait(1500);          // (its look ends)
         view->setProjPath(project);
+    }
+
+    // Categories of the user's own: added, named, given patterns and put in
+    // order in the Contents tab; listed after Text, before Others, taking
+    // the files no category above took; saved, and read back.
+    void categoriesOfYourOwn()
+    {
+        PatternsGuard guard;
+        struct UserGuard {
+            QList<ContentCategory> saved = QucsSettings.ContentUserCategories;
+            ~UserGuard() { QucsSettings.ContentUserCategories = saved; }
+        } userGuard;
+        QucsSettings.ContentPatterns.clear();
+        QucsSettings.ContentUserCategories.clear();
+        write("measured/amp.s2p");
+        write("filter.S4P");
+        write("report_final.pdf");
+        write("report.txt");
+
+        QucsApp app(false);
+        MainGuard mainGuard(&app);
+        ProjectView* view = app.projectView();
+        view->setProjPath(project);
+        QCOMPARE(ProjectView::categories().size(), int(ProjectView::CategoryCount));
+
+        QucsSettingsDialog dlg(&app);
+        auto* table = dlg.findChild<QTableWidget*>("contentUserCategories");
+        QVERIFY(table != nullptr);
+        QCOMPARE(table->rowCount(), 0);
+        auto* add = dlg.findChild<QPushButton*>("contentAddCategory");
+        QVERIFY(add != nullptr);
+        add->click();
+        add->click();
+        QCOMPARE(table->rowCount(), 2);
+        QCOMPARE(table->item(0, 0)->text(), QString("New Category"));
+        QCOMPARE(table->item(1, 0)->text(), QString("New Category 2"));
+        table->item(0, 0)->setText("Reports");
+        table->item(0, 1)->setText("report*");
+        table->item(1, 0)->setText(" Touchstone ");
+        table->item(1, 1)->setText("s2p .s4p");
+        table->setCurrentCell(1, 0);
+        dlg.findChild<QPushButton*>("contentCategoryUp")->click();   // Touchstone first
+        add->click();                                                // one left without a name: not kept
+        table->item(2, 0)->setText("  ");
+        QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));
+
+        QCOMPARE(QucsSettings.ContentUserCategories,
+                 QList<ContentCategory>({{"Touchstone", "*.s2p, *.s4p"}, {"Reports", "report*"}}));
+        QCOMPARE(table->rowCount(), 2);   // as read
+        QCOMPARE(table->item(1, 1)->text(), QString("report*"));
+        {
+            QucsSettingsFile file;
+            QCOMPARE(file.value("ContentUserCategories/size").toInt(), 2);
+            QCOMPARE(file.value("ContentUserCategories/1/name").toString(), QString("Touchstone"));
+        }
+        // In the panel, at once: after Text, before Others; the first that
+        // matches takes a file (report.txt stays under Text).
+        const QList<int> order = ProjectView::categories();
+        QCOMPARE(order.indexOf(ProjectView::UserCategory), int(ProjectView::Text) + 1);
+        QCOMPARE(order.indexOf(ProjectView::UserCategory + 1), int(ProjectView::Text) + 2);
+        QCOMPARE(order.last(), int(ProjectView::Scratch));
+        QStandardItemModel* m = view->model();
+        QStandardItem* touchstone = m->item(ProjectView::rowOf(ProjectView::UserCategory), 0);
+        QCOMPARE(touchstone->text(), QString("Touchstone"));
+        QCOMPARE(childrenOf(touchstone), QStringList({"filter.S4P", "measured/amp.s2p"}));
+        QCOMPARE(childrenOf(m->item(ProjectView::rowOf(ProjectView::UserCategory + 1), 0)), QStringList({"report_final.pdf"}));
+        QVERIFY(childrenOf(m->item(ProjectView::rowOf(ProjectView::Text), 0)).contains("report.txt"));
+        const QStringList others = childrenOf(m->item(ProjectView::rowOf(ProjectView::Others), 0));
+        QVERIFY(!others.contains("filter.S4P") && !others.contains("report_final.pdf"));
+        QCOMPARE(m->item(ProjectView::rowOf(ProjectView::Others), 0)->text(), QString("Others"));
+        QCOMPARE(view->categoryOf(touchstone->child(0)->index()), int(ProjectView::UserCategory));
+        QCOMPARE(view->categoryOf(m->index(ProjectView::rowOf(ProjectView::Others), 0)), int(ProjectView::Others));
+
+        // Read again (a restart): the same.
+        QucsSettings.ContentUserCategories.clear();
+        QVERIFY(loadSettings());
+        QCOMPARE(QucsSettings.ContentUserCategories.size(), 2);
+        QCOMPARE(QucsSettings.ContentUserCategories.at(1).name, QString("Reports"));
+
+        // Removed: gone from the panel, their files back where they were.
+        table->setCurrentCell(0, 0);
+        dlg.findChild<QPushButton*>("contentRemoveCategory")->click();
+        table->setCurrentCell(0, 0);
+        dlg.findChild<QPushButton*>("contentRemoveCategory")->click();
+        QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));
+        QVERIFY(QucsSettings.ContentUserCategories.isEmpty());
+        QCOMPARE(m->rowCount(), int(ProjectView::CategoryCount));
+        QVERIFY(childrenOf(m->item(ProjectView::Others, 0)).contains("filter.S4P"));
+        {
+            QucsSettingsFile file;
+            QVERIFY(!file.contains("ContentUserCategories/size"));
+        }
+        for (const char* f : {"measured/amp.s2p", "filter.S4P", "report_final.pdf", "report.txt"}) QFile::remove(project + "/" + f);
+        QDir(project + "/measured").removeRecursively();
     }
 
     // Patterns set: a category lists what they match, the first from the
