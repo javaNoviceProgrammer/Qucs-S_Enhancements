@@ -41,11 +41,28 @@ bundle_files() {
 }
 
 # The DLLs of the environment that $1 needs, as "name path" lines; and
-# those nothing supplies, as "name not-found".
+# those nothing supplies, as "name not-found". ldd starts the file under a
+# debugger to see what it loads, which can hang on Windows on Arm (the
+# 26.1.3 release waited 2 hours on one): each try has a time limit, and a
+# file ldd could not finish in two is one line "? timed-out".
 needs() {
-  ldd "$1" 2>/dev/null | awk -v env="/$msys/" '
+  local out status try
+  for try in 1 2; do
+    out="$(timeout -k 10 60 ldd "$1" 2>/dev/null)"
+    status=$?
+    [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && break
+  done
+  if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+    echo "? timed-out"
+    return 0
+  fi
+  awk -v env="/$msys/" '
     index($3, env) == 1 { print $1, $3; next }
-    /not found/         { print $1, "not-found" }'
+    /not found/         { print $1, "not-found" }' <<< "$out"
+}
+
+timed_out() {
+  echo "::warning::ldd did not finish for $(basename "$1") in two tries of a minute; the start of qucs-s.exe below still tells what the bundle lacks"
 }
 
 has() {
@@ -71,6 +88,7 @@ deploy() {
     copied=0
     while IFS= read -r f; do
       while read -r dll path; do
+        [ "$path" = timed-out ] && { timed_out "$f"; continue; }
         [ "$path" = not-found ] && continue
         if ! has "$dll"; then
           cp -f "$path" "$bin/" && copied=$((copied + 1)) && echo "copied $dll (for $(basename "$f"))"
@@ -91,6 +109,7 @@ check() {
   while IFS= read -r f; do
     files=$((files + 1))
     while read -r dll path; do
+      [ "$path" = timed-out ] && { timed_out "$f"; continue; }
       has "$dll" || echo "$dll $(basename "$f")" >> "$report"
     done < <(needs "$f")
   done < <(bundle_files)
@@ -109,7 +128,7 @@ check() {
   timeout_cmd="$(command -v timeout)"
   env_cmd="$(command -v env)"
   local windows="/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem"
-  "$timeout_cmd" 300 "$env_cmd" PATH="$bin:$windows" \
+  "$timeout_cmd" -k 10 300 "$env_cmd" PATH="$bin:$windows" \
     "$bin/qucs-s.exe" -n -i "$schematic" -o "$out/check.net" --ngspice > "$out/log" 2>&1
   status=$?
   if [ "$status" -ne 0 ] || ! head -1 "$out/check.net" 2>/dev/null | grep -q '^\* Qucs'; then

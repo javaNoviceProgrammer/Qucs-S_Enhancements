@@ -184,6 +184,7 @@ jobs:
           cmake --build "$SRC_DIR/build" --parallel
 
       - name: Bundle as the release does, and check it as a PC without MSYS2 runs it
+        timeout-minutes: 30
         # A DLL the bundle lacks shows here, on the push that made it - not
         # on a user's first start (26.1.3 shipped without Qt6Network.dll).
         run: |

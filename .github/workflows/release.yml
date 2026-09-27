@@ -362,12 +362,14 @@ jobs:
 
       - name: Deploy Qt and runtime DLLs
         if: ${{ matrix.enabled }}
+        timeout-minutes: 30
         # windeployqt for each program, then every DLL a program or plugin
         # needs from MSYS2 (libstdc++, ICU, Qt Network for Qt PDF, ...).
         run: bash scripts/ci/windows-bundle.sh deploy "$SRC_DIR/build/qucs-suite/bin" "${{ matrix.msystem }}"
 
       - name: Check the bundle as a PC without MSYS2 runs it
         if: ${{ matrix.enabled }}
+        timeout-minutes: 30
         # Fails on a DLL the bundle lacks, and starts qucs-s.exe with only the
         # bundle and Windows on PATH (26.1.3 shipped without Qt6Network.dll).
         run: bash scripts/ci/windows-bundle.sh check "$SRC_DIR/build/qucs-suite/bin" "${{ matrix.msystem }}" "$SRC_DIR/examples/ngspice/General Electronics/RC_filter_FFT.sch"
@@ -407,13 +409,15 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: [setup, linux, macos, windows]
-    # Run when nothing failed; skipped platform jobs are fine.
+    # Run when every platform job succeeded or was not selected. A job that
+    # timed out is "cancelled", not "failure": the 26.1.3 release went out
+    # without its Windows arm files that way.
     if: >-
       always() && !cancelled()
       && needs.setup.outputs.publish == 'true'
-      && needs.linux.result   != 'failure'
-      && needs.macos.result   != 'failure'
-      && needs.windows.result != 'failure'
+      && contains(fromJSON('["success", "skipped"]'), needs.linux.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.macos.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.windows.result)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
