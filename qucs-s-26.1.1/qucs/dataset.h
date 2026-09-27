@@ -42,8 +42,16 @@ struct Variable {
 class Dataset
 {
 public:
-    /// Reads \a path; false (and why in \a error) when it cannot.
+    /// Reads \a path; false (and why in \a error) when it cannot. A table -
+    /// a .csv, .tsv or .xlsx file (a script's results, a Monte Carlo's
+    /// workbook) - is read as one (readTable()).
     bool read(const QString& path, QString* error = nullptr);
+    /// A table's columns as variables: the first row with text names them
+    /// (else A, B, ...), each column with numbers under it is one; they
+    /// depend on the first column when it rises steadily (time, frequency),
+    /// else on the row ("row", from 1). The first sheet of a workbook.
+    bool readTable(const QString& path, QString* error = nullptr);
+    static bool isTable(const QString& path);
     QString path() const { return a_path; }
     const QList<Variable>& variables() const { return a_variables; }
     const Variable* find(const QString& name) const;
@@ -145,6 +153,8 @@ struct MeasureOptions {
     int harmonics = 9;            // thd: the highest harmonic counted
     int periods = 1;              // thd: whole periods of the fundamental, ending where the curve ends
     QVector<double> phase;        // phase_margin, gain_margin: the phase in degrees at each sample (a complex curve's)
+    double period = qQNaN();      // eye: the bit period, in the unit of x (seconds)
+    double offset = 0;            // eye: where the first bit begins, after the curve's start
 };
 /// \a what measured on \a c - "rise_time", "fall_time", "overshoot",
 /// "settling_time", "period", "frequency", "duty_cycle", "crossings",
@@ -159,7 +169,12 @@ struct MeasureOptions {
 /// at the peak, as a ratio and in dB, and where it falls through 1 (0 dB).
 /// The margins need options.phase: 180 degrees plus the phase where the
 /// magnitude falls through 1; the gain below 1, in dB, where the phase
-/// falls through -180 degrees.
+/// falls through -180 degrees. distribution: the values as samples (a
+/// Monte Carlo's, one per run) - mean, standard deviation, median,
+/// percentiles, a histogram. fft: the spectrum of a transient, resampled
+/// evenly with a Hann window - its strongest lines. eye: an eye diagram of
+/// a transient folded at options.period - its height at the centre, its
+/// width, the crossings' jitter.
 QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& options);
 
 /// \a v written with 7 significant digits (as the dataset has more than

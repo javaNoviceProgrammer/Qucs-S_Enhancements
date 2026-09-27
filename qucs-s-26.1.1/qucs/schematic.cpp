@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <QRegularExpression>
 #include <QString>
 #include <unordered_set>
 
@@ -235,6 +236,115 @@ bool Schematic::recreateSubcircuitSymbol()
     if (port_count == 0) return false;
 
     buildDefaultSymbol(port_count);
+    return true;
+}
+
+bool Schematic::buildSymbol(const QHash<QString, QString>& sides, QString* error, QStringList* placed)
+{
+    for (auto painting = a_SymbolPaints.begin(); painting != a_SymbolPaints.end();) {
+        if ((*painting)->Name == ".PortSym ") {
+            ++painting;
+            continue;
+        }
+        delete *painting;
+        painting = a_SymbolPaints.erase(painting);
+    }
+    if (adjustPortNumbers() == 0) {
+        *error = QObject::tr("The schematic has no ports (Port components): nothing to make a symbol of.");
+        return false;
+    }
+    std::vector<PortSymbol*> ports;
+    for (auto* painting : a_SymbolPaints)
+        if (painting->Name == ".PortSym ") ports.push_back(static_cast<PortSymbol*>(painting));
+    // Each port's side.
+    static const QRegularExpression supply(QStringLiteral("^(v?dd|v?cc|avdd|dvdd|v\\+|vp|vpos|vsup|supply|pwr)$"),
+                                           QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression ground(QStringLiteral("^(gnd|agnd|dgnd|v?ss|avss|v-|vn|vneg|vee|0)$"),
+                                           QRegularExpression::CaseInsensitiveOption);
+    std::vector<PortSymbol*> left, right, top, bottom;
+    bool onTheLeft = true;
+    for (PortSymbol* port : ports) {
+        QString side = sides.value(port->nameStr.toLower(), sides.value(port->numberStr));
+        const QString name = port->nameStr;
+        const QString dir = port->dirStr.toLower();
+        if (side.isEmpty()) {
+            if (supply.match(name).hasMatch()) side = QStringLiteral("top");
+            else if (ground.match(name).hasMatch()) side = QStringLiteral("bottom");
+            else if (dir == QLatin1String("in")) side = QStringLiteral("left");
+            else if (dir == QLatin1String("out")) side = QStringLiteral("right");
+            else {
+                side = onTheLeft ? QStringLiteral("left") : QStringLiteral("right");
+                onTheLeft = !onTheLeft;
+            }
+        }
+        if (side == QLatin1String("left")) left.push_back(port);
+        else if (side == QLatin1String("right")) right.push_back(port);
+        else if (side == QLatin1String("top")) top.push_back(port);
+        else if (side == QLatin1String("bottom")) bottom.push_back(port);
+        else {
+            *error = QObject::tr("A side is left, right, top or bottom, not %1 (port %2).").arg(side, name.isEmpty() ? port->numberStr : name);
+            return false;
+        }
+    }
+    // A box on the grid: pins 20 apart, room for the names inside.
+    const int rows = int(std::max(left.size(), right.size())), columns = int(std::max(top.size(), bottom.size()));
+    int halfHeight = std::max(20, ((rows - 1) * 20) / 2 + 20);
+    int halfWidth = std::max(20, ((columns - 1) * 20) / 2 + 20);
+    if (QucsSettings.ShowPinNames) {
+        const QFontMetrics metrics(misc::pinFont(), nullptr);
+        const auto widest = [&metrics](const std::vector<PortSymbol*>& side) {
+            int width = 0;
+            for (const PortSymbol* port : side)
+                width = std::max(width, metrics.horizontalAdvance(port->nameStr.isEmpty() ? port->numberStr : port->nameStr));
+            return width;
+        };
+        halfWidth = std::max(halfWidth, (widest(left) + widest(right) + 24) / 2);
+        halfHeight = std::max(halfHeight, (int(top.empty() ? 0 : metrics.height() + 6) + int(bottom.empty() ? 0 : metrics.height() + 6)) / 2 + halfHeight / 2);
+    }
+    halfWidth = ((halfWidth + 9) / 10) * 10;
+    halfHeight = ((halfHeight + 9) / 10) * 10;
+    const QPen pen(Qt::darkBlue, 2);
+    const auto place = [&](const std::vector<PortSymbol*>& side, const QString& which) {
+        const int n = int(side.size());
+        for (int i = 0; i < n; ++i) {
+            PortSymbol* port = side.at(i);
+            const int along = -(n - 1) * 10 + i * 20;
+            QPoint edge, end;
+            if (which == QLatin1String("left")) {
+                edge = QPoint(-halfWidth, along);
+                end = QPoint(-halfWidth - 20, along);
+            } else if (which == QLatin1String("right")) {
+                edge = QPoint(halfWidth, along);
+                end = QPoint(halfWidth + 20, along);
+            } else if (which == QLatin1String("top")) {
+                edge = QPoint(along, -halfHeight);
+                end = QPoint(along, -halfHeight - 20);
+            } else {
+                edge = QPoint(along, halfHeight);
+                end = QPoint(along, halfHeight + 20);
+            }
+            port->moveCenterTo(end.x(), end.y());
+            if (which == QLatin1String("right")) port->mirrorY();
+            else if (which == QLatin1String("top")) port->rotate();
+            else if (which == QLatin1String("bottom")) {
+                port->rotate();
+                port->rotate();
+                port->rotate();
+            }
+            a_SymbolPaints.push_back(new GraphicLine(edge.x(), edge.y(), end.x(), end.y(), pen));
+            *placed << QObject::tr("%1: %2, its pin at %3, %4").arg(port->nameStr.isEmpty() ? port->numberStr : port->nameStr, which)
+                           .arg(end.x()).arg(end.y());
+        }
+    };
+    place(left, QStringLiteral("left"));
+    place(right, QStringLiteral("right"));
+    place(top, QStringLiteral("top"));
+    place(bottom, QStringLiteral("bottom"));
+    a_SymbolPaints.push_front(new ID_Text(-halfWidth, halfHeight + (bottom.empty() ? 4 : 24)));
+    a_SymbolPaints.push_back(new GraphicLine(-halfWidth, -halfHeight, halfWidth, -halfHeight, pen));
+    a_SymbolPaints.push_back(new GraphicLine(halfWidth, -halfHeight, halfWidth, halfHeight, pen));
+    a_SymbolPaints.push_back(new GraphicLine(-halfWidth, halfHeight, halfWidth, halfHeight, pen));
+    a_SymbolPaints.push_back(new GraphicLine(-halfWidth, -halfHeight, -halfWidth, halfHeight, pen));
     return true;
 }
 

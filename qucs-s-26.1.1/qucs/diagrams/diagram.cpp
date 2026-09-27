@@ -152,6 +152,17 @@ void Diagram::paintDiagram(QPainter *painter) {
     paintInFront(painter);
     paintLegend(painter);
 
+    // The title, centred above the frame.
+    if (!title.isEmpty()) {
+        painter->save();
+        painter->setFont(titleFont());
+        painter->setPen(Qt::black);
+        const QFontMetricsF fm(painter->font());
+        const qreal w = fm.horizontalAdvance(title);
+        painter->drawText(QPointF(x2 / 2.0 - w / 2, -y2 - 6 - fm.descent()), title);
+        painter->restore();
+    }
+
     if (isSelected) {
         QRectF bounds(0, -y2, x2, y2);
         painter->setPen(QPen(Qt::darkGray, 3));
@@ -748,16 +759,29 @@ for(int zz=0; zz<60; zz+=2)
 // -------------------------------------------------------
 void Diagram::Bounding(int &_x1, int &_y1, int &_x2, int &_y2) {
     _x1 = cx - Bounding_x1;
-    _y1 = cy - y2 - Bounding_y2;
+    _y1 = cy - y2 - std::max(Bounding_y2, titleHeight());
     _x2 = cx + x2 + Bounding_x2;
     _y2 = cy - Bounding_y1;
+}
+
+QFont Diagram::titleFont() const {
+    QFont font = QucsSettings.font;
+    font.setBold(true);
+    if (font.pointSizeF() > 0) font.setPointSizeF(font.pointSizeF() * 1.2);
+    else if (font.pixelSize() > 0) font.setPixelSize(font.pixelSize() * 6 / 5);
+    return font;
+}
+
+int Diagram::titleHeight() const {
+    if (title.isEmpty()) return 0;
+    return QFontMetrics(titleFont(), nullptr).lineSpacing() + 6;
 }
 
 // -------------------------------------------------------
 bool Diagram::getSelected(int x_, int y_) {
     if (x_ >= cx - x1)
         if (x_ <= cx + x3)
-            if (y_ >= cy - y2)
+            if (y_ >= cy - y2 - titleHeight())
                 if (y_ <= cy + y1)
                     return true;
 
@@ -1492,7 +1516,9 @@ QString Diagram::save() {
          + extraSaveFields();
 
     // labels can contain spaces -> must be last items in the line
-    s += " \"" + xAxis.Label + "\" \"" + yAxis.Label + "\" \"" + zAxis.Label + "\">\n";
+    s += " \"" + xAxis.Label + "\" \"" + yAxis.Label + "\" \"" + zAxis.Label + "\"";
+    if (!title.isEmpty()) s += " \"" + title + "\"";
+    s += ">\n";
 
     for (Graph *pg: Graphs)
         s += pg->save() + "\n";
@@ -1647,6 +1673,7 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
     xAxis.Label = s.section('"', 1, 1);   // xLabel
     yAxis.Label = s.section('"', 3, 3);   // yLabel left
     zAxis.Label = s.section('"', 5, 5);   // yLabel right
+    title = s.section('"', 7, 7);         // its title (none in older files)
 
     Graph *pg;
     // .......................................................
@@ -2254,6 +2281,11 @@ QRectF Diagram::paintedRect(const QFontMetricsF& metrics) const
         drawn |= QRectF(arc->x, -arc->y, arc->w, arc->h).normalized();
     for (const Text* text : Texts)
         drawn |= textRect(*text, metrics);
+    if (!title.isEmpty()) {
+        const QFontMetricsF titleMetrics(titleFont());
+        const qreal w = titleMetrics.horizontalAdvance(title);
+        drawn |= QRectF(x2 / 2.0 - w / 2, -y2 - titleHeight(), w, titleHeight());
+    }
     return drawn.translated(cx, cy);
 }
 

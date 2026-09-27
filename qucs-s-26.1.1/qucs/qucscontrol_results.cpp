@@ -16,6 +16,9 @@
 
 #include "components/component.h"
 #include "dataset.h"
+#include "ngstatistics.h"
+#include "vamodule.h"
+#include "textdoc.h"
 #include "diagrams/diagrams.h"
 #include "diagrams/marker.h"
 #include "extsimkernels/CdlNetlistWriter.h"
@@ -179,7 +182,15 @@ QJsonObject axisJson(const Axis& a, bool units)
 // "units"}; what is not given stays.
 bool applyAxis(Axis* a, const QJsonObject& o, const QString& which, QString* error)
 {
-    if (o.contains(QLatin1String("label"))) a->Label = o.value(QLatin1String("label")).toString();
+    if (o.contains(QLatin1String("label"))) {
+        const QString label = o.value(QLatin1String("label")).toString();
+        // (The file keeps a label between double quotes, on one line.)
+        if (label.contains(QLatin1Char('"')) || label.contains(QLatin1Char('\n'))) {
+            *error = tr("%1: a label has no double quotes or line breaks.").arg(which);
+            return false;
+        }
+        a->Label = label;
+    }
     if (o.contains(QLatin1String("log"))) a->log = o.value(QLatin1String("log")).toBool();
     if (o.contains(QLatin1String("units"))) {
         const int u = indexIn(kUnits, o.value(QLatin1String("units")).toString());
@@ -230,6 +241,14 @@ bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
     if (args.contains(QLatin1String("width"))) d->x2 = std::clamp(args.value(QLatin1String("width")).toInt(), 10, 100000);
     if (args.contains(QLatin1String("height"))) d->y2 = std::clamp(args.value(QLatin1String("height")).toInt(), 10, 100000);
     if (args.contains(QLatin1String("grid"))) d->xAxis.GridOn = d->yAxis.GridOn = args.value(QLatin1String("grid")).toBool();
+    if (args.contains(QLatin1String("title"))) {
+        const QString title = args.value(QLatin1String("title")).toString().trimmed();
+        if (title.contains(QLatin1Char('"')) || title.contains(QLatin1Char('\n'))) {
+            *error = tr("A title has no double quotes or line breaks (the file keeps it between quotes).");
+            return false;
+        }
+        d->title = title;
+    }
     if (args.contains(QLatin1String("legend"))) {
         const QJsonValue v = args.value(QLatin1String("legend"));
         const int pos = v.isBool() ? (v.toBool() ? int(Diagram::LegendTopRight) : int(Diagram::LegendOff)) : indexIn(kLegends, v.toString());
@@ -489,7 +508,7 @@ QString dataSetInFile(const QString& path)
 bool isDatasetFile(const QString& path)
 {
     const QString name = QFileInfo(path).fileName();
-    return name.endsWith(QLatin1String(".dat")) || name.contains(QLatin1String(".dat."));
+    return name.endsWith(QLatin1String(".dat")) || name.contains(QLatin1String(".dat.")) || ds::Dataset::isTable(path);
 }
 
 // Samples of \a count, spread evenly over \a indices.
@@ -802,6 +821,39 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
         curveList.append(c);
         offset += length;
     }
+    // A family measured: a row for each curve - bandwidth against R, the
+    // overshoot of each sample - its parameters, then each value asked for.
+    if (curves.size() > 1 && (!o.measure.isEmpty() || !o.at.isEmpty())) {
+        QStringList head;
+        for (const auto& p : outer.value(0)) head << p.first;
+        if (head.isEmpty()) head << QStringLiteral("curve");
+        for (double x : o.at) head << QStringLiteral("at %1").arg(x);
+        for (const QString& m : o.measure) head << m;
+        QJsonArray rows;
+        const int most = 1000;
+        for (int k = 0; k < curves.size() && k < most; ++k) {
+            QJsonArray row;
+            for (const auto& p : outer.value(k)) row << number(p.second);
+            if (outer.value(k).isEmpty()) row << k + 1;
+            for (double x : o.at) {
+                const double y = ds::valueAt(curves.at(k), x);
+                row << (std::isnan(y) ? QJsonValue(QJsonValue::Null) : QJsonValue(number(y)));
+            }
+            const ds::Curve part = ds::within(curves.at(k), o.from, o.to);
+            ds::MeasureOptions options = measureOptions;
+            if (k < phases.size() && phases.at(k).size() == curves.at(k).x.size())
+                options.phase = ds::within(ds::Curve{curves.at(k).x, phases.at(k)}, o.from, o.to).y;
+            for (const QString& what : o.measure) {
+                const QJsonValue value = part.x.size() < 2 ? QJsonValue() : ds::measure(part, what, options).value(QStringLiteral("value"));
+                row << (value.isDouble() ? value : QJsonValue(QJsonValue::Null));
+            }
+            rows.append(row);
+        }
+        QJsonObject table{{QStringLiteral("columns"), QJsonArray::fromStringList(head)}, {QStringLiteral("rows"), rows}};
+        if (curves.size() > most) table.insert(QStringLiteral("note"), tr("the first %1 curves of %2").arg(most).arg(curves.size()));
+        if (!o.measure.isEmpty()) table.insert(QStringLiteral("values"), tr("each measurement's value (null: none on that curve; 'curves' tells why)"));
+        out.insert(QStringLiteral("table"), table);
+    }
     if (o.points > 0 || !o.at.isEmpty()) out.insert(QStringLiteral("columns"), columns);
     if (curveList.size() == 1 && outer.value(0).isEmpty()) {
         const QJsonObject c = curveList.first().toObject();
@@ -893,6 +945,21 @@ QStringList notesOn(const QString& type)
         notes << tr("Name its variables unlike the circuit's nodes and net labels: under ngspice an equation's variable "
                     "and a node of one name clash (a variable out beside the node out) - the node's voltage or the "
                     "equation's result comes out wrong, without an error. Names such as gain_db or vout_pp are safe.");
+    if (type == QLatin1String("NutmegEq"))
+        notes << tr("Simulation: the analysis its equations are computed after - its name (TR1, AC1), its kind by "
+                    "ngspice's name (tran, ac, dc or op, noise, sp, ...: every analysis of that kind), or ALL.");
+    static const QSet<QString> equationBlocks{QStringLiteral("Eqn"), QStringLiteral("NutmegEq"), QStringLiteral("SpiceIC"),
+                                              QStringLiteral("SpicePar"), QStringLiteral("SpiceOptions"), QStringLiteral("SpiceFunc"),
+                                              QStringLiteral("SpiceCSPar"), QStringLiteral("SpGlobPar"), QStringLiteral("SpiceNodeset")};
+    if (equationBlocks.contains(type))
+        notes << tr("Its properties are its equations - name = value, as many as wanted: add_component and "
+                    "edit_component set them with 'equations' ({\"gain_db\": \"db(v(out))\"}, or a list of "
+                    "\"name=value\" in their order).");
+    if (type == QLatin1String(qucs_s::ngstats::kMonteCarloModel) || type == QLatin1String(qucs_s::ngstats::kCornersModel))
+        notes << tr("What it records for each sample and the limits a sample passes within: 'records' ([{\"name\": "
+                    "\"gain\", \"expression\": \"db(v(out))\"}]) and 'specs' ([{\"expression\": \"gain\", \"min\": "
+                    "\"19\"}]) on add_component and edit_component. get_dataset reads the results "
+                    "(ngmontecarlo1.gain: a value per sample) and measures their distribution.");
     return notes;
 }
 
@@ -1022,6 +1089,7 @@ QJsonArray diagramsJson(Schematic* sch)
                       {QStringLiteral("y"), d->cy},
                       {QStringLiteral("width"), d->x2},
                       {QStringLiteral("height"), d->y2}};
+        if (!d->title.isEmpty()) o.insert(QStringLiteral("title"), d->title);
         if (d->Name != QLatin1String("Tab") && d->Name != QLatin1String("Truth")) {
             o.insert(QStringLiteral("x_axis"), axisJson(d->xAxis, false));
             o.insert(QStringLiteral("y_axis"), axisJson(d->yAxis, true));
@@ -1100,6 +1168,11 @@ Graph* traceOf(Diagram* d, const QJsonValue& which, QString* error)
     return nullptr;
 }
 
+QString datasetOfTrace(Schematic* sch, const QString& var, QString* variable)
+{
+    return traceFile(sch, var, variable);
+}
+
 QString whyNoData(Schematic* sch, Graph* g)
 {
     if (!g->isEmpty()) return QString();
@@ -1128,7 +1201,8 @@ QString renameNetIn(const QString& text, const QString& from, const QString& to)
     if (from.isEmpty() || from == to || text.isEmpty()) return text;
     const QString f = QRegularExpression::escape(from);
     // The case the simulator gave it: ngspice writes names in lower case.
-    const auto cased = [&to](const QString& found) {
+    const auto cased = [&to, &from](const QString& found) {
+        if (found == from && found != found.toLower()) return to;   // as written (V1): as given
         if (found == found.toLower() && found != found.toUpper()) return to.toLower();
         if (found == found.toUpper() && found != found.toLower()) return to.toUpper();
         return to;
@@ -1150,6 +1224,39 @@ QString renameNetIn(const QString& text, const QString& from, const QString& to)
     // Qucsator: out.v, out.Vt, out.vn.
     const QRegularExpression qucsator(QStringLiteral("((?<![\\w.])|^)(%1)(?=\\.(?i:v|vt|vn|vb)\\b)").arg(f));
     return replaced(replaced(text, spice), qucsator);
+}
+
+QString renameComponentIn(const QString& text, const QString& from, const QString& to)
+{
+    if (from.isEmpty() || from == to || text.isEmpty()) return text;
+    const QString f = QRegularExpression::escape(from);
+    const auto cased = [&to, &from](const QString& found) {
+        if (found == from && found != found.toLower()) return to;   // as written (V1): as given
+        if (found == found.toLower() && found != found.toUpper()) return to.toLower();
+        if (found == found.toUpper() && found != found.toLower()) return to.toUpper();
+        return to;
+    };
+    const auto replaced = [&](const QString& in, const QRegularExpression& re) {
+        QString out;
+        qsizetype last = 0;
+        for (auto it = re.globalMatch(in); it.hasNext();) {
+            const QRegularExpressionMatch m = it.next();
+            out += in.mid(last, m.capturedStart(2) - last);
+            out += cased(m.captured(2));
+            last = m.capturedEnd(2);
+        }
+        return out + in.mid(last);
+    };
+    const auto ci = QRegularExpression::CaseInsensitiveOption;
+    QString out = text;
+    // SPICE: a source's or an inductor's current i(v1), a device's
+    // quantity @q1[ic] (@m.x1.m1[gm] too), a branch v1#branch.
+    out = replaced(out, QRegularExpression(QStringLiteral("(\\b[iI]\\(\\s*)(%1)(?=\\s*\\))").arg(f), ci));
+    out = replaced(out, QRegularExpression(QStringLiteral("(@(?:[a-zA-Z]\\.)?)(%1)(?=\\[)").arg(f), ci));
+    out = replaced(out, QRegularExpression(QStringLiteral("((?<!\\w)|^)(%1)(?=#branch\\b)").arg(f), ci));
+    // Qucsator: V1.It, R1.I, the operating point D1.Id.
+    out = replaced(out, QRegularExpression(QStringLiteral("((?<![\\w.@(])|^)(%1)(?=\\.[A-Za-z]\\w*)").arg(f)));
+    return out;
 }
 
 
@@ -1448,6 +1555,13 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
         if (!(n >= 1 && n <= 10000) || n != std::floor(n)) return errorResult(tr("'periods' is how many whole periods, 1 to 10000."));
         o.measureOptions.periods = int(n);
     }
+    // eye: the bit period, and where the first bit begins.
+    if (args.contains(QLatin1String("bit_period"))) {
+        const double t = args.value(QLatin1String("bit_period")).toDouble(NaN);
+        if (!(t > 0) || !std::isfinite(t)) return errorResult(tr("'bit_period' is a bit's length in the unit of x (seconds), above 0."));
+        o.measureOptions.period = t;
+    }
+    if (args.contains(QLatin1String("offset"))) o.measureOptions.offset = args.value(QLatin1String("offset")).toDouble(0);
     const QString form = args.value(QLatin1String("form")).toString();
     if (form == QLatin1String("db_phase")) o.form = ds::Form::DbPhase;
     else if (form == QLatin1String("real_imaginary")) o.form = ds::Form::RealImaginary;
@@ -1872,8 +1986,11 @@ ds::Curve shownCurve(const Graph* g)
 // Where a marker goes on \a g: at x, or where 'at' says - "peak" (or
 // "max"), "min", "-3dB" (3 dB below the peak on a curve in dB, 1/sqrt(2)
 // of it on a magnitude; on the far side of the peak first), "crossing:<y>".
-// What it found, in \a found.
-bool markerPlace(Schematic* sch, const Graph* g, const QJsonValue& at, double* x, QJsonObject* found, QString* error)
+// -3dB is below \a reference: "peak" (the default), "dc" (the value at the
+// curve's first point, the lowest frequency) or a level (0: a filter's
+// spec in dB). What it found, in \a found.
+bool markerPlace(Schematic* sch, const Graph* g, const QJsonValue& at, double* x, QJsonObject* found, QString* error,
+                 const QJsonValue& reference = QJsonValue())
 {
     if (at.isDouble()) {
         *x = at.toDouble();
@@ -1908,11 +2025,31 @@ bool markerPlace(Schematic* sch, const Graph* g, const QJsonValue& at, double* x
             *error = tr("%1 goes below 0 and is not known to be in dB: where 3 dB below its peak is cannot be told.").arg(g->Var);
             return false;
         }
-        level = decibels ? s.max - 3 : s.max / std::sqrt(2.0);
+        // Below what: the peak, the value at the start, or a level given.
+        double ref = s.max;
+        QString refName = QStringLiteral("the peak");
+        const QString r = reference.toString().trimmed().toLower();
+        if (reference.isDouble()) {
+            ref = reference.toDouble();
+            if (!decibels && ref <= 0) {
+                *error = tr("%1 is a magnitude: its reference is above 0 (1 for a gain of one), or peak or dc.").arg(g->Var);
+                return false;
+            }
+            refName = decibels ? tr("%1 dB").arg(ref) : QString::number(ref);
+        } else if (r == QLatin1String("dc") || r == QLatin1String("start") || r == QLatin1String("first")) {
+            ref = c.y.first();
+            refName = tr("the value at the start (%1 at %2)").arg(ref).arg(c.x.first());
+        } else if (!r.isEmpty() && r != QLatin1String("peak") && r != QLatin1String("max")) {
+            *error = tr("'reference' is peak (the default), dc (the value at the start) or a level (0 for 0 dB).");
+            return false;
+        }
+        level = decibels ? ref - 3 : ref / std::sqrt(2.0);
         found->insert(QStringLiteral("peak"), number(s.max));
         found->insert(QStringLiteral("at peak"), number(s.xMax));
+        found->insert(QStringLiteral("reference"), refName);
         found->insert(QStringLiteral("level"), number(level));
-        found->insert(QStringLiteral("measured on"), decibels ? QStringLiteral("dB: 3 below the peak") : QStringLiteral("a magnitude: the peak over sqrt(2)"));
+        found->insert(QStringLiteral("measured on"), decibels ? tr("dB: 3 below %1").arg(refName)
+                                                              : tr("a magnitude: %1 over sqrt(2)").arg(refName));
     } else if (w.startsWith(QLatin1String("crossing:"))) {
         bool ok = false;
         level = w.mid(9).toDouble(&ok);
@@ -2024,7 +2161,8 @@ QJsonObject QucsControl::addMarker(const QJsonObject& args)
     if (g->isEmpty()) return errorResult(tr("%1 shows no data (%2): a marker needs it.").arg(g->Var, whyNoData(sch, g)));
     double x = NaN;
     QJsonObject found;
-    if (!markerPlace(sch, g, args.value(QLatin1String("at")), &x, &found, &error)) return errorResult(error);
+    if (!markerPlace(sch, g, args.value(QLatin1String("at")), &x, &found, &error, args.value(QLatin1String("reference"))))
+        return errorResult(error);
 
     auto m = std::make_unique<Marker>(g);
     m->setPos(x);
@@ -2057,7 +2195,8 @@ QJsonObject QucsControl::editMarker(const QJsonObject& args)
     const Graph* g = m->graph();
     double x = NaN;
     QJsonObject found;
-    if (args.contains(QLatin1String("at")) && !markerPlace(sch, g, args.value(QLatin1String("at")), &x, &found, &error))
+    if (args.contains(QLatin1String("at"))
+        && !markerPlace(sch, g, args.value(QLatin1String("at")), &x, &found, &error, args.value(QLatin1String("reference"))))
         return errorResult(error);
     // Tried on a copy first.
     Marker trial(const_cast<Graph*>(g));
@@ -2101,13 +2240,148 @@ QJsonObject QucsControl::deleteMarker(const QJsonObject& args)
     return textResult(tr("The marker (%1) is deleted (one step to undo).").arg(text));
 }
 
+// A Verilog-A module described - by a .va or .osdi file, or by its name,
+// looked for in the open documents, the project and the workspace: its
+// parameters (default, units, description, instance or model), the
+// files, and a .model card with the defaults. Empty when there is none.
+static QJsonObject describeVerilogAModule(const QString& type, const QList<QucsDoc*>& open, QString* error)
+{
+    namespace va = qucs_s::vamodule;
+    QString source, osdi;   // the files found
+    QString wanted = type;
+    const auto moduleIn = [](const QStringList& names, const QString& name) {
+        for (const QString& n : names)
+            if (n.compare(name, Qt::CaseInsensitive) == 0) return n;
+        return QString();
+    };
+    const QString lower = type.toLower();
+    if (lower.endsWith(QLatin1String(".va")) || lower.endsWith(QLatin1String(".osdi"))) {
+        QString file = type;
+        if (QDir::isRelativePath(file)) {
+            for (const QString& root : {QucsSettings.QucsWorkDir.absolutePath(), QucsSettings.qucsWorkspaceDir.absolutePath()})
+                if (QFileInfo::exists(QDir(root).filePath(type))) {
+                    file = QDir(root).filePath(type);
+                    break;
+                }
+        }
+        if (!QFileInfo::exists(file)) {
+            *error = tr("There is no file %1.").arg(type);
+            return {};
+        }
+        (lower.endsWith(QLatin1String(".va")) ? source : osdi) = QFileInfo(file).absoluteFilePath();
+        wanted.clear();   // (its first module)
+    } else {
+        // By its name: an open .va document, then the project's and the
+        // workspace's .va and .osdi files.
+        QStringList sources, libraries;
+        for (QucsDoc* doc : open)
+            if (doc->getDocName().endsWith(QLatin1String(".va"), Qt::CaseInsensitive)) sources << doc->getDocName();
+        QStringList roots{QucsSettings.QucsWorkDir.absolutePath()};
+        if (!sameFile(roots.first(), QucsSettings.qucsWorkspaceDir.absolutePath())) roots << QucsSettings.qucsWorkspaceDir.absolutePath();
+        for (const QString& root : std::as_const(roots))
+            for (const QString& f : misc::projectFiles(QDir(root), {QStringLiteral("*.va"), QStringLiteral("*.osdi")})) {
+                const QString path = QDir(root).filePath(f);
+                (f.endsWith(QLatin1String(".osdi"), Qt::CaseInsensitive) ? libraries : sources) << path;
+                if (sources.size() + libraries.size() > 400) break;
+            }
+        for (const QString& f : std::as_const(libraries)) {
+            QStringList names;
+            if (osdi.isEmpty() && va::osdiModules(f, &names) && !moduleIn(names, type).isEmpty()) osdi = f;
+        }
+        for (const QString& f : std::as_const(sources)) {
+            QFile file(f);
+            if (source.isEmpty() && file.open(QIODevice::ReadOnly)
+                && !moduleIn(va::sourceModules(QString::fromUtf8(file.readAll())), type).isEmpty())
+                source = f;
+        }
+        if (source.isEmpty() && osdi.isEmpty()) return {};
+    }
+    // The source beside a library, and the library beside a source.
+    if (source.isEmpty() && !osdi.isEmpty()) {
+        const QString beside = osdi.left(osdi.size() - 5) + QStringLiteral(".va");
+        if (QFileInfo::exists(beside)) source = beside;
+    }
+    if (osdi.isEmpty() && !source.isEmpty()) {
+        const QString beside = source.left(source.size() - 3) + QStringLiteral(".osdi");
+        if (QFileInfo::exists(beside)) osdi = beside;
+    }
+    va::VerilogModule fromSource, fromLibrary;
+    bool haveSource = false, haveLibrary = false;
+    if (!source.isEmpty()) {
+        QString text;
+        // An open document's text, unsaved changes too.
+        for (QucsDoc* doc : open)
+            if (sameFile(doc->getDocName(), source))
+                if (auto* t = dynamic_cast<TextDoc*>(doc)) text = t->toPlainText();
+        if (text.isEmpty()) {
+            QFile file(source);
+            if (file.open(QIODevice::ReadOnly)) text = QString::fromUtf8(file.readAll());
+        }
+        fromSource = va::readSource(text, wanted);
+        haveSource = !fromSource.name.isEmpty();
+    }
+    QString libraryError;
+    if (!osdi.isEmpty()) haveLibrary = va::readOsdi(osdi, wanted.isEmpty() ? fromSource.name : wanted, &fromLibrary, &libraryError);
+    if (!haveSource && !haveLibrary) {
+        *error = libraryError.isEmpty() ? tr("No Verilog-A module %1 could be read.").arg(type) : libraryError;
+        return {};
+    }
+    // The library's parameters (what the simulator takes), the defaults
+    // and descriptions from the source where the library has none.
+    const va::VerilogModule& module = haveLibrary ? fromLibrary : fromSource;
+    QJsonArray parameters;
+    QStringList card;
+    for (const va::Parameter& p : module.parameters) {
+        va::Parameter q = p;
+        for (const va::Parameter& s : fromSource.parameters)
+            if (s.name.compare(p.name, Qt::CaseInsensitive) == 0) {
+                if (q.value.isEmpty()) q.value = s.value;
+                if (q.description.isEmpty()) q.description = s.description;
+                if (q.units.isEmpty()) q.units = s.units;
+            }
+        QJsonObject o{{QStringLiteral("name"), q.name}, {QStringLiteral("default"), q.value},
+                      {QStringLiteral("kind"), q.instance ? QStringLiteral("instance") : QStringLiteral("model")}};
+        if (!q.units.isEmpty()) o.insert(QStringLiteral("units"), q.units);
+        if (!q.description.isEmpty()) o.insert(QStringLiteral("description"), q.description);
+        parameters.append(o);
+        if (!q.instance && !q.value.isEmpty()) card << QStringLiteral("%1=%2").arg(q.name, q.value);
+    }
+    const QString root = QucsSettings.QucsWorkDir.absolutePath();
+    const auto shownPath = [&root](const QString& f) {
+        const QString rel = QDir(root).relativeFilePath(f);
+        return QDir::toNativeSeparators(rel.startsWith(QLatin1String("..")) ? f : rel);
+    };
+    QJsonObject result{{QStringLiteral("module"), module.name},
+                       {QStringLiteral("kind"), tr("Verilog-A module")},
+                       {QStringLiteral("parameters"), parameters},
+                       {QStringLiteral("model card"), QStringLiteral(".model %1_model %1 (%2)").arg(module.name, card.join(QLatin1Char(' ')))}};
+    if (!source.isEmpty()) result.insert(QStringLiteral("source"), shownPath(source));
+    if (!osdi.isEmpty() && haveLibrary) result.insert(QStringLiteral("compiled"), shownPath(osdi));
+    else if (!source.isEmpty())
+        result.insert(QStringLiteral("compiled"), osdi.isEmpty() ? tr("not yet: build_verilog_a compiles it (its parameters here are the source's)")
+                                                                 : tr("%1 could not be read: %2").arg(shownPath(osdi), libraryError));
+    result.insert(QStringLiteral("use"), tr("ngspice loads the compiled library (.osdi) and takes a .model line of the module with "
+                                            "the model parameters (the card above has their defaults: change those that matter); an "
+                                            "instance line names the model and sets the instance parameters. In a schematic, the "
+                                            "project's Verilog-A components carry both."));
+    return result;
+}
+
 QJsonObject QucsControl::describeComponentType(const QJsonObject& args)
 {
     const QString type = args.value(QLatin1String("type")).toString().trimmed();
     if (type.isEmpty()) return errorResult(tr("Which type? ('type', as list_component_types gives it)"));
     Module* m = nullptr;
     std::unique_ptr<Component> c(newComponent(type, &m));
-    if (!c) return errorResult(tr("There is no component type %1 (list_component_types lists them).").arg(type));
+    if (!c) {
+        // A Verilog-A module: a .va or .osdi file, or its name.
+        QString error;
+        const QJsonObject module = describeVerilogAModule(type, a_app->allDocuments(), &error);
+        if (!module.isEmpty()) return jsonResult(module);
+        if (!error.isEmpty()) return errorResult(error);
+        return errorResult(tr("There is no component type %1 (list_component_types lists them), nor a Verilog-A module of that "
+                              "name in the project or the workspace.").arg(type));
+    }
     QString name;
     if (m != nullptr && m->info != nullptr) {
         char* file = nullptr;

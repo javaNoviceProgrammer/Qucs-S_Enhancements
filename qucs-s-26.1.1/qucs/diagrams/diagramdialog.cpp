@@ -473,6 +473,14 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     // QGridLayout *gp = new QGridLayout(Tab2,13,3,5,5);
     QGridLayout *gp = new QGridLayout(Tab2);
 
+    gp->addWidget(new QLabel(tr("Title:"), Tab2), Row, 0);
+    titleEdit = new QLineEdit(Tab2);
+    titleEdit->setObjectName(QStringLiteral("diagramTitle"));
+    titleEdit->setValidator(Validator);
+    titleEdit->setToolTip(tr("Drawn above the diagram, and moved and exported with it"));
+    gp->addWidget(titleEdit, Row, 1);
+    Row++;
+
     gp->addWidget(new QLabel(tr("x-Axis Label:"), Tab2), Row, 0);
     xLabel = new QLineEdit(Tab2);
     xLabel->setValidator(Validator);
@@ -618,6 +626,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     // ...........................................................
     xLabel->setText(Diag->xAxis.Label);
     ylLabel->setText(Diag->yAxis.Label);
+    if (titleEdit) titleEdit->setText(Diag->title);
     if (yrLabel)
       yrLabel->setText(Diag->zAxis.Label);
 
@@ -1555,6 +1564,10 @@ void DiagramDialog::slotOK() {
  */
 void DiagramDialog::slotApply() {
   if (Diag->Name.at(0) != 'T') { // not tabular or timing
+    if (titleEdit && Diag->title != titleEdit->text().trimmed()) {
+      Diag->title = titleEdit->text().trimmed();
+      changed = true;
+    }
     if (Diag->xAxis.Label.isEmpty())
       Diag->xAxis.Label = ""; // can be not 0 and empty!
     if (xLabel->text().isEmpty())

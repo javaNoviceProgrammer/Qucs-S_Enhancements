@@ -165,6 +165,7 @@ private:
 
   QVBoxLayout *all;   // the mother of all widgets
   QLineEdit   *GraphInput, *xLabel, *ylLabel, *yrLabel;
+  QLineEdit   *titleEdit = nullptr;   // the diagram's title, above its frame
   QSpinBox    *thicknessSpin, *precisionSpin;
   QCheckBox   *GridOn, *GridLogX, *GridLogY, *GridLogZ;
   QCheckBox   *manualX, *manualY, *manualZ, *hideInvisible;

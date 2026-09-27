@@ -233,6 +233,13 @@ public:
   /// Throws the symbol's drawing away and lays the ports out around a
   /// fresh box; the port numbers stay as the schematic has them.
   bool  recreateSubcircuitSymbol();
+  /// The symbol drawn anew as a box with each port on the side \a sides
+  /// gives it by its name or number ("in": "left", "3": "top"): else a
+  /// supply on the top (vdd, vcc, v+), a ground or negative supply on the
+  /// bottom (gnd, vss, v-), an input on the left and an output on the
+  /// right, the rest left and right in turn. Each pin's side and place in
+  /// \a placed ("in: left at -40, 0"). False (and why) with no ports.
+  bool  buildSymbol(const QHash<QString, QString>& sides, QString* error, QStringList* placed);
   void  buildDefaultSymbol(std::size_t port_count);
 
   /**
@@ -796,6 +803,11 @@ public:
   bool replaceContent(const QString& text, QString* error = nullptr, QStringList* notes = nullptr);
   /// The elements as they are now, to come back to with restore().
   QString snapshot();
+  /// The schematic's undo stack (not its symbol's): the state each step
+  /// left, as snapshot() gives them, the oldest first; undoIndex() is the
+  /// one it is at (undo goes to the one before).
+  QStringList undoStates() const;
+  int undoIndex() const { return a_undoActionIdx; }
   /// Back to \a state (from snapshot()), as an undo goes back; nothing is
   /// recorded to undo. The elements are new ones: pointers to the old are
   /// left dangling.

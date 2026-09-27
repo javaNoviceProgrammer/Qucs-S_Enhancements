@@ -16,6 +16,7 @@
  ***************************************************************************/
 #include "sp_nutmeg.h"
 #include "main.h"
+#include "schematic.h"
 
 #include <QFontInfo>
 #include <QFontMetrics>
@@ -72,18 +73,40 @@ Element* NutmegEquation::info(QString& Name, char* &BitmapFile, bool getNewOne)
   return 0;
 }
 
+// Whether \a kind - an analysis' kind by its ngspice name: tran, ac, dc
+// or op, noise, ... - is the kind of the simulation named \a sim (its
+// component's name in lower case: tr1 is a tran).
+bool NutmegEquation::isKindOf(const QString& kind, const QString& sim)
+{
+    static const QHash<QString, QStringList> kinds{
+        {QStringLiteral(".TR"), {QStringLiteral("tran"), QStringLiteral("transient"), QStringLiteral("tr")}},
+        {QStringLiteral(".AC"), {QStringLiteral("ac")}},
+        {QStringLiteral(".DC"), {QStringLiteral("dc"), QStringLiteral("op")}},
+        {QStringLiteral(".SP"), {QStringLiteral("sp")}},
+        {QStringLiteral(".NOISE"), {QStringLiteral("noise")}},
+        {QStringLiteral(".DISTO"), {QStringLiteral("disto")}},
+        {QStringLiteral(".PZ"), {QStringLiteral("pz")}},
+        {QStringLiteral(".FFT"), {QStringLiteral("fft")}},
+        {QStringLiteral(".CUSTOMSIM"), {QStringLiteral("custom")}}};
+    Schematic* sch = getSchematic();
+    if (sch == nullptr) return false;
+    for (Component* c : sch->a_DocComps)
+        if (c->Name.toLower() == sim) return kinds.value(c->Model).contains(kind);
+    return false;
+}
+
 QString NutmegEquation::getEquations(QString sim, QStringList &dep_vars)
 {
     if (isActive != COMP_IS_ACTIVE) return QString();
 
     QString s;
     QRegularExpression sim_rx("^\\w+\\d+");
-    QString used_sim =  Props.at(0)->Value.toLower();
+    QString used_sim =  Props.at(0)->Value.trimmed().toLower();
     bool match = false;
     if ( sim_rx.match(used_sim).hasMatch() )
         match = sim == used_sim;
     else
-        match = sim.startsWith(used_sim);
+        match = sim.startsWith(used_sim) || isKindOf(used_sim, sim);
     if ( match || used_sim == "all" ) {
         auto pp = Props.begin();
         pp++;

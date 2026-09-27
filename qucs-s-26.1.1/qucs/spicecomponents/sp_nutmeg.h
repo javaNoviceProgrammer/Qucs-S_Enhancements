@@ -30,6 +30,9 @@ public:
   static Element* info(QString&, char* &, bool getNewOne=false);
   QString getEquations(QString sim, QStringList &dep_vars);
 
+private:
+  bool isKindOf(const QString& kind, const QString& sim);
+
 protected:
   QString vhdlCode(int) { return QString(); }
   QString verilogCode(int) { return QString(); }
