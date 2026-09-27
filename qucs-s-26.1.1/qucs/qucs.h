@@ -235,6 +235,15 @@ public:
   /// Points the docks at the programs the settings name now (they take
   /// effect at the next Restart).
   void updateConsolePrograms();
+  /// File > Export Settings: every preference into \a path (settingsio.h),
+  /// the application's in the store first.
+  bool exportSettingsTo(const QString &path, QString *error = nullptr);
+  /// File > Import Settings: the settings in \a path replace the current
+  /// ones, which are saved first as a backup, and the application is
+  /// brought in line - asking first, with what it changes, and telling
+  /// what came of it when \a ask; \a report says it too. False when
+  /// nothing was imported.
+  bool importSettingsFrom(const QString &path, bool ask = true, QString *report = nullptr);
   /// The program name that, registered for a suffix under Application
   /// Settings, File Types, opens the file in Qucs' own text editor.
   static constexpr const char *QucsEditorProgram = "qucs-editor";
@@ -380,6 +389,8 @@ public slots:
   void slotFilePrintFit();      // Print and fit to page
   void slotFileQuit();          // exits the application
   void slotApplSettings();      // open dialog to change application settings
+  void slotExportSettings();    // File > Export Settings: the settings into a file
+  void slotImportSettings();    // File > Import Settings: the settings of a file taken in
   void slotRefreshSchPath();    // refresh the schematic path hash
 
   void slotIntoHierarchy();
@@ -550,7 +561,7 @@ public:
       *fileSaveAs, *fileSaveAll, *fileClose, *fileCloseOthers,
       *fileCloseAllLeft, *fileCloseAllRight, *fileCloseAll, *fileExamples,
       *fileSettings, *filePrint, *fileQuit, *projNew, *projOpen, *projDel,
-      *projClose, *projImport, *projLink, *projSwitchWorkspace, *applSettings, *refreshSchPath, *editCut, *editCopy, *magAll,
+      *projClose, *projImport, *projLink, *projSwitchWorkspace, *applSettings, *exportSettings, *importSettings, *refreshSchPath, *editCut, *editCopy, *magAll,
       *magSel, *magOne, *magMinus, *filePrintFit, *tune, *symEdit, *intoH,
       *popH, *simulate, *save_netlist, *generateNetlist, *dpl_sch, *undo, *redo, *dcbias,
       *saveCdlNetlist, *cdlSettings,
@@ -649,6 +660,11 @@ private:
                               bool relpath = false);
   void saveSettings();
   QWidget *getSchematicWidget(QucsDoc *Doc);
+  /// After an import wrote the store: the settings read again and put on
+  /// the running application - the look, the editors, the simulators, the
+  /// shortcuts, Claude Code, the workspace (\a workspace when it moves,
+  /// from \a workspaceBefore). What did not come about, as notes.
+  QStringList applyImportedSettings(const QString &workspaceBefore, const QString &workspace);
 
 public:
   void readProjects();

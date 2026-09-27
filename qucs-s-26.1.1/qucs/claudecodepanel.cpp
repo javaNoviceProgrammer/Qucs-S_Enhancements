@@ -980,6 +980,18 @@ bool ClaudeCodePanel::eventFilter(QObject* watched, QEvent* event)
     return QWidget::eventFilter(watched, event);
 }
 
+void ClaudeCodePanel::reloadSettings()
+{
+    const QucsSettingsFile settings;
+    a_attach->setChecked(settings.value(kAttach, true).toBool());
+    if (!hasConversation() && !a_session->isRunning()) {
+        a_session->setPermissionMode(settings.value(kMode).toString());
+        a_session->setModel(settings.value(kModel).toString());
+    }
+    rebuildModelMenu();
+    findProgram();
+}
+
 // ----------------------------------------------------------------------
 QString ClaudeCodePanel::programSetting() const
 {

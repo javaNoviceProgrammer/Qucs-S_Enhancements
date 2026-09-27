@@ -166,10 +166,12 @@ bool loadSettings()
     QucsSettings.RecentProjects = _settings::Get().item<QString>("RecentProjects").split("*", Qt::SkipEmptyParts);
     QucsSettings.RecentDocs = _settings::Get().item<QString>("RecentDocs").split("*", Qt::SkipEmptyParts);
     QucsSettings.numRecentDocs = QucsSettings.RecentDocs.count();
-    QucsSettings.spiceExtensions << "*.sp" << "*.cir" << "*.spc" << "*.spi";
+    QucsSettings.spiceExtensions = {"*.sp", "*.cir", "*.spc", "*.spi"};
 
     // If present read in the list of directory paths in which Qucs should
-    // search for subcircuit schematics
+    // search for subcircuit schematics (read again after an import: the
+    // list as the store says)
+    qucsPathList.clear();
     int npaths = settings.beginReadArray("Paths");
     for (int i = 0; i < npaths; ++i)
     {

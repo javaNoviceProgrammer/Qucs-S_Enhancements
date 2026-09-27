@@ -586,6 +586,35 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   between sessions (off by default), *View → Toolbars* also shows or
   hides each toolbar, and the lock can be given a shortcut
   (*View.LockToolbars*).
+- **Settings exported and imported** (*File → Export Settings…*, *File →
+  Import Settings…*): every setting goes into one JSON file, to share or
+  keep. That covers the application's and the simulators' settings, the
+  theme, the editor's highlighting, the Content panel's categories, the
+  shortcuts and Claude Code's model and permissions. The session's state
+  stays out: where the windows were, the recent files, the last folders
+  and the models the Claude program on this computer offers. The file
+  is readable (`"Qucs-S settings": 1`, who made it, on what, when, then
+  the settings key by key) and the same on every platform, where the
+  store itself is a plist, the registry or an INI file. An import asks
+  first. It says where it came from, whether the workspace moves and
+  which programs Qucs-S would run with it. It saves the current settings
+  into a backup (the last ten are kept, in the application's data folder
+  under `settings-backups`; importing one takes them back). Then it
+  replaces them and applies them at once: the theme and style, the
+  paper, the grid, the toolbars, the editors, the simulators, the
+  shortcuts, the Claude Code panels and the workspace. The language, the
+  fonts and flexible wires take effect at the next start, and it says so.
+  What it leaves as this computer has it, and says so:
+  - programs and folders of the other computer that are not on this one
+    (a Windows path on a Mac, someone else's home folder);
+  - folders searched for subcircuits that are not here;
+  - Claude's *Bypass Permissions*, which is chosen in the panel after a
+    warning, not brought in by a file.
+
+  Found on the way: the shortcuts set in the Shortcut Manager were saved
+  but never loaded again, so they were lost at the next start, and one
+  set back to its default stayed saved. The PDF viewer's sidebar was
+  kept outside the application's settings.
 - **Theme** (*Application Settings → Appearance → Theme*, or *View →
   Theme* to switch at once): *System*, *Dark* or *Light* — the
   platform's own look — or one of ten designed themes that look the same

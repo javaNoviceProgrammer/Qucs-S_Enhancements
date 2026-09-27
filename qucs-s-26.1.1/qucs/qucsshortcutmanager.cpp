@@ -57,6 +57,12 @@ void QucsCommand::setCurrentKeySequence(const QKeySequence &key) {
 
 void QucsCommand::resetToDefault() { setCurrentKeySequence(m_defaultKey); }
 
+void QucsCommand::rebind(QAction *action, const QKeySequence &defaultKey) {
+  m_action = action;
+  m_defaultKey = defaultKey;
+  setCurrentKeySequence(defaultKey);
+}
+
 // ----------------------------------------------------------------------------
 // QucsShortcutManager Implementation
 // ----------------------------------------------------------------------------
@@ -84,9 +90,13 @@ void QucsShortcutManager::registerCommand(const QString &id,
                                           const QString &description,
                                           QAction *action,
                                           const QKeySequence &defaultKey) {
-  // Check if command already exists
+  // Registered again: the action of another main window (the one before
+  // is gone), at the default - the kept shortcuts are loaded after.
   if (m_commands.contains(id)) {
-    qWarning() << "Command already registered:" << id;
+    const std::shared_ptr<QucsCommand> &command = m_commands[id];
+    const QKeySequence oldKey = command->currentKeySequence();
+    command->rebind(action, defaultKey);
+    updateShortcutIndex(id, oldKey, command->currentKeySequence());
     return;
   }
 
@@ -390,6 +400,8 @@ bool QucsShortcutManager::loadFromFile(const QString &filename) {
 
 void QucsShortcutManager::saveToSettings() const {
   QucsSettingsFile settings;
+  // A shortcut set back to its default is not kept.
+  settings.remove("Shortcuts");
   settings.beginGroup("Shortcuts");
 
   for (const auto &cmd : m_commands) {

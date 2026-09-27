@@ -183,6 +183,9 @@ public:
     /// Asks where to, then exports (⋯ › Export Conversation).
     void exportConversationAs(ExportFormat format);
     bool hasConversation() const { return !a_entries.isEmpty(); }
+    /// The settings were imported: the program, attaching the document,
+    /// and - for a conversation not begun - the model and the permissions.
+    void reloadSettings();
 
     /// Sends \a text to Claude as a prompt, as if typed - but leaves the
     /// composer as it is, and names no document. False when it was not

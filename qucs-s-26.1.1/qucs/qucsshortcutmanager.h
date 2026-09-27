@@ -31,6 +31,7 @@
 #include <QList>
 #include <QMultiHash>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <memory>
 
@@ -113,6 +114,11 @@ public:
    */
   void resetToDefault();
 
+  /// The command is \a action's now, with \a defaultKey, at that default
+  /// (registered again for another main window: the tests make one after
+  /// another in a process).
+  void rebind(QAction *action, const QKeySequence &defaultKey);
+
   /**
    * @brief Checks if the current shortcut differs from the default
    * @return true if the shortcut has been modified, false otherwise
@@ -123,7 +129,7 @@ private:
   QString m_id;              /// Unique identifier (e.g., "File.Open")
   QString m_category;        /// Category for grouping (e.g., "File")
   QString m_description;     /// User-visible description
-  QAction *m_action;         /// Associated QAction
+  QPointer<QAction> m_action; /// Associated QAction (null once it is gone)
   QKeySequence m_defaultKey; /// Factory default
   QKeySequence m_currentKey; /// User-defined (or default)
 };

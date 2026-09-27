@@ -53,6 +53,7 @@
 #include "misc.h"
 #include "autosave.h"
 #include "crashhandler.h"
+#include "settingsio.h"
 #include "shellenvironment.h"
 #include "apptheme.h"
 #include "systemopen.h"
@@ -737,6 +738,7 @@ int main(int argc, char *argv[])
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir);
         qucs_s::crash::setReportDirectory(settingsDir + QStringLiteral("/crash-reports"));
         qucs_s::autosave::setDirectory(settingsDir + QStringLiteral("/autosave"));
+        qucs_s::settingsio::setBackupDirectory(settingsDir + QStringLiteral("/settings-backups"));
     }
 
     // load existing settings (if any)

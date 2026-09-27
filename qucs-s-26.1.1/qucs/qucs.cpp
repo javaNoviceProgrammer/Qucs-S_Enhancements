@@ -98,6 +98,9 @@
 #include "processconsole.h"
 #include "claudecodepanel.h"
 #include "claudecodetabs.h"
+#include "claudegitbar.h"
+#include "qucsshortcutmanager.h"
+#include "settingsio.h"
 #include "filebrowser.h"
 #include "qucscontrol.h"
 #include "dialogs/tuner.h"
@@ -2973,6 +2976,190 @@ void QucsApp::slotApplSettings()
   // in a folder of the user's choosing.
   claudeTabs->setDefaultDirectory(QucsSettings.qucsWorkspaceDir.absolutePath());
   fileBrowser->setHomePath(QucsSettings.qucsWorkspaceDir.absolutePath());
+}
+
+// --------------------------------------------------------------
+void QucsApp::slotExportSettings()
+{
+  slotHideEdit();
+  const QString title = tr("Export Settings");
+  const QString folder = lastDir.isEmpty() ? QDir::homePath() : lastDir;
+  QString path = QFileDialog::getSaveFileName(this, title, QDir(folder).filePath(QStringLiteral("qucs-s-settings.json")),
+                                              tr("Qucs-S settings (*.json);;All files (*)"));
+  if (path.isEmpty()) return;
+  if (QFileInfo(path).suffix().isEmpty()) path += QStringLiteral(".json");
+  lastDir = QFileInfo(path).absolutePath();
+  QString error;
+  if (!exportSettingsTo(path, &error)) {
+    QMessageBox::critical(this, title, tr("The settings cannot be written to %1.\n%2")
+                                           .arg(QDir::toNativeSeparators(path), error));
+    return;
+  }
+  QMessageBox::information(this, title,
+                           tr("The settings are in %1.\n\nFile > Import Settings takes them in, here or on "
+                              "another computer. Where the windows were, the recent files and the last folders "
+                              "are not in it.")
+                               .arg(QDir::toNativeSeparators(path)));
+}
+
+bool QucsApp::exportSettingsTo(const QString &path, QString *error)
+{
+  saveApplSettings();   // what the application holds, in the store
+  return qucs_s::settingsio::exportTo(path, error);
+}
+
+void QucsApp::slotImportSettings()
+{
+  slotHideEdit();
+  const QString path = QFileDialog::getOpenFileName(this, tr("Import Settings"),
+                                                    lastDir.isEmpty() ? QDir::homePath() : lastDir,
+                                                    tr("Qucs-S settings (*.json);;All files (*)"));
+  if (path.isEmpty()) return;
+  lastDir = QFileInfo(path).absolutePath();
+  importSettingsFrom(path);
+}
+
+bool QucsApp::importSettingsFrom(const QString &path, bool ask, QString *report)
+{
+  namespace settingsio = qucs_s::settingsio;
+  const QString title = tr("Import Settings");
+  const auto native = [](const QString &p) { return QDir::toNativeSeparators(p); };
+  const auto fail = [&](const QString &text) {
+    if (report != nullptr) *report = text;
+    if (ask) QMessageBox::critical(this, title, text);
+    return false;
+  };
+
+  settingsio::Import import;
+  QString error;
+  if (!settingsio::read(path, import, &error))
+    return fail(tr("%1 cannot be imported.\n%2").arg(native(path), error));
+  // The store as the application has it: what the file replaces is
+  // worked out against it again, and the backup holds it all.
+  saveApplSettings();
+  if (!settingsio::read(path, import, &error))
+    return fail(tr("%1 cannot be imported.\n%2").arg(native(path), error));
+  const QString workspaceBefore = QucsSettings.qucsWorkspaceDir.absolutePath();
+  const QString workspace = import.set.value(QStringLiteral("QucsHomeDir")).toString();
+  const bool moves = !workspace.isEmpty()
+                     && QDir(workspace).canonicalPath() != QDir(workspaceBefore).canonicalPath();
+
+  if (ask) {
+    QStringList info;
+    if (!import.source.isEmpty())
+      info << (import.count == 1 ? tr("Exported from %1; one setting.").arg(import.source)
+                                 : tr("Exported from %1; %2 settings.").arg(import.source).arg(import.count));
+    info << tr("They replace yours, which are saved first in %1: import that file to have them back.")
+                .arg(native(settingsio::backupDirectory()));
+    if (moves)
+      info << tr("The workspace becomes %1: the open documents are closed, asking about unsaved changes first.")
+                  .arg(native(workspace));
+    if (!import.programs.isEmpty())
+      info << tr("The programs Qucs-S runs become:") + QStringLiteral("\n    ")
+                  + import.programs.join(QStringLiteral("\n    "));
+    if (!import.kept.isEmpty())
+      info << (import.kept.size() == 1 ? tr("One of them is not taken, yours stays (Show Details).")
+                                       : tr("%1 of them are not taken, yours stay (Show Details).")
+                                             .arg(import.kept.size()));
+    QMessageBox box(QMessageBox::Question, title,
+                    tr("Take in the settings in %1?").arg(QFileInfo(path).fileName()), QMessageBox::Cancel, this);
+    box.setInformativeText(info.join(QStringLiteral("\n\n")));
+    if (!import.kept.isEmpty()) box.setDetailedText(import.kept.join(QLatin1Char('\n')));
+    QPushButton *go = box.addButton(tr("Import"), QMessageBox::AcceptRole);
+    box.setDefaultButton(go);
+    box.exec();
+    if (box.clickedButton() != go) return false;
+  }
+
+  const QString saved = settingsio::backup(&error);
+  if (saved.isEmpty())
+    return fail(tr("Nothing was imported: your settings could not be saved first.\n%1").arg(error));
+
+  // What takes effect at the next start, as it was.
+  const QList<std::pair<QString, QString>> atStart = {
+      {QStringLiteral("Language"), tr("the language")},
+      {QStringLiteral("font"), tr("the schematic font")},
+      {QStringLiteral("appFont"), tr("the application font")},
+      {QStringLiteral("textFont"), tr("the text document font")},
+      {QStringLiteral("AllowFlexibleWires"), tr("flexible wires")}};
+  QVariantList before;
+  for (const auto &[key, name] : atStart) before << QucsSettingsFile().value(key);
+
+  settingsio::apply(import);
+  QStringList notes = applyImportedSettings(workspaceBefore, moves ? workspace : QString());
+
+  QStringList restart;
+  for (int i = 0; i < atStart.size(); ++i)
+    if (QucsSettingsFile().value(atStart.at(i).first) != before.at(i)) restart << atStart.at(i).second;
+  if (!restart.isEmpty())
+    notes << tr("At the next start: %1.").arg(restart.join(QStringLiteral(", ")));
+  if (!import.kept.isEmpty())
+    notes << tr("Not taken, yours stay:") + QStringLiteral("\n    ")
+                 + import.kept.join(QStringLiteral("\n    "));
+  notes << tr("Your previous settings: %1").arg(native(saved));
+
+  const QString done = tr("The settings of %1 are in use.").arg(QFileInfo(path).fileName());
+  if (report != nullptr) *report = done + QStringLiteral("\n\n") + notes.join(QStringLiteral("\n\n"));
+  if (ask) {
+    QMessageBox box(QMessageBox::Information, title, done, QMessageBox::Ok, this);
+    box.setInformativeText(notes.join(QStringLiteral("\n\n")));
+    box.exec();
+  }
+  return true;
+}
+
+QStringList QucsApp::applyImportedSettings(const QString &workspaceBefore, const QString &workspace)
+{
+  QStringList notes;
+  // Read again; the workspace and the open project stay until switched.
+  const QDir workDir = QucsSettings.QucsWorkDir;
+  loadSettings();
+  QucsSettings.qucsWorkspaceDir.setPath(workspaceBefore);
+  QucsSettings.QucsWorkDir = workDir;
+  if (!workspace.isEmpty() && !switchWorkspace(workspace)) {
+    notes << tr("The workspace stays %1: the documents were not closed.")
+                 .arg(QDir::toNativeSeparators(workspaceBefore));
+    _settings::Get().setItem<QString>("QucsHomeDir", QucsSettings.qucsWorkspaceDir.canonicalPath());
+  }
+
+  // The look: the style, the theme and all that follows it, the paper,
+  // the grid, the toolbars.
+  qucs_s::apptheme::setNativeStyle(_settings::Get().item<QString>("AppStyle"));
+  applyTheme(QucsSettings.Theme);
+  applyGridSetting();
+  setToolbarsLocked(QucsSettings.LockToolbars);
+  const QColor grid = _settings::Get().item<QColor>("GridColor");
+  for (QucsDoc *doc : allDocuments())
+    if (Schematic *sch = schematicIn(documentWidget(doc))) sch->setGridColor(grid);
+
+  // The editors, the projects, the Content panel, the docks' programs.
+  applySyntaxSettings();
+  applyProjectSettings();
+  Content->applyRefreshSettings();
+  updateConsolePrograms();
+  const QString home = QucsSettings.qucsWorkspaceDir.absolutePath();
+  claudeTabs->setDefaultDirectory(home);
+  fileBrowser->setHomePath(home);
+
+  // The simulators, the folders searched for subcircuits.
+  fillSimulatorsComboBox();
+  simConsole->applyHostSetting();
+  updatePathList(QStringList(qucsPathList));
+
+  // The shortcuts: the defaults, and those the settings change.
+  QucsShortcutManager &shortcuts = QucsShortcutManager::instance();
+  shortcuts.resetToDefaults();
+  shortcuts.loadFromSettings();
+
+  // Claude Code.
+  const bool gitStatus = QucsSettingsFile().value(QStringLiteral("ClaudeCode/gitStatus"), true).toBool();
+  if (gitStatus != ClaudeGitBar::isOn()) ClaudeGitBar::setOn(gitStatus);
+  for (ClaudeCodePanel *panel : claudeTabs->panels()) panel->reloadSettings();
+
+  readProjects();
+  slotUpdateTreeview();
+  repaint();
+  return notes;
 }
 
 // --------------------------------------------------------------
