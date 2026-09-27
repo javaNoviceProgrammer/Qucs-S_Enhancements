@@ -90,6 +90,9 @@ private:
     };
     QHash<quint64, QHash<QString, Seen>> a_seen;   // by conversation, by document (seenKey())
     QList<quint64> a_callers;   // the conversations whose calls run now: the last edits
+    // What a tool did beside what was asked (a document switched from its
+    // symbol to its schematic): told after its result.
+    mutable QStringList a_callNotes;
     static QString seenKey(QucsDoc* doc);
     /// When the dataset a simulation of \a doc writes was written, if it is.
     static QDateTime datasetWritten(QucsDoc* doc);
@@ -116,6 +119,7 @@ private:
     QJsonObject checkSchematic(const QJsonObject& args);
     QJsonObject addComponent(const QJsonObject& args);
     QJsonObject editComponent(const QJsonObject& args);
+    QJsonObject replaceComponent(const QJsonObject& args);
     QJsonObject remove(const QJsonObject& args);
     QJsonObject moveGroup(const QJsonObject& args);
     QJsonObject addAnalysis(const QJsonObject& args);

@@ -437,6 +437,20 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   takes what the user selected. A document is found by its file's name
   alone, and relative paths are taken from the open project. A text
   document changed on disk by another program is loaded again.
+  `replace_component` puts a part of another type in one's place - a
+  built-in OpAmp for a subcircuit - its pins mapped by number or name to
+  the old pins' nets, turned, mirrored and placed so no wire runs across
+  it, in one step to undo. An `.OPTIONS` block takes flags (`noinit`). A
+  symbol's port can show its instances a label beside the pin instead of
+  the net's name (`+`, `-`, or nothing; also by a double-click in the
+  symbol editor). The schematic's tools switch a document back from its
+  symbol themselves. `describe_component_type "Verilog-A"` gives a module
+  that OpenVAF compiles as it is, with the rules it wants, and for any
+  type the hidden properties that still go into the netlist (an OpAmp's
+  `Umax`). `save_document` of a subcircuit says which open schematics'
+  instances took its new symbol and which pins moved off their wires.
+  `get_schematic` gives the box of each shown text of a part, and
+  `open_document` says when a line has more values than its type.
   Tools that only look are
   used without asking; the first change asks, and *Allow Qucs-S Control*
   lets the rest of the conversation go on without asking (as do the

@@ -57,7 +57,7 @@ const PaintingType kTypes[] = {
     {"table", "Table", "a table of texts"},
     {"dimension", "Dimension", "a dimension: the distance between two points, written along a line"},
     {"formula", "Formula", "a formula in TeX, typeset"},
-    {"port", ".PortSym", "a pin of a symbol (only moved: the schematic's Port components make them)"},
+    {"port", ".PortSym", "a pin of a symbol (moved, and given a label - what the instances show beside the pin instead of its name, \"\" for nothing: the schematic's Port components make them)"},
     {"id", ".ID", "the symbol's name text (only moved)"},
 };
 
@@ -416,7 +416,13 @@ QJsonObject propsOf(Painting* p)
              {QStringLiteral("closed"), tokenInt(t, k + 6) != 0}};
     } else if (type == QLatin1String("port")) {
         o = {{QStringLiteral("x"), tokenInt(t, 1)}, {QStringLiteral("y"), tokenInt(t, 2)}, {QStringLiteral("number"), t.value(3)}};
-        if (t.size() > 5) o.insert(QStringLiteral("name"), line.section(QLatin1Char(' '), 5));
+        if (t.size() > 5) {
+            // Its name (the net's), and what its instances show beside the
+            // pin instead, when it says: a label, or "" for nothing.
+            const qucs_s::portsym::Name named = qucs_s::portsym::read(line.section(QLatin1Char(' '), 5));
+            o.insert(QStringLiteral("name"), named.name);
+            o.insert(QStringLiteral("label"), named.labelSet ? QJsonValue(named.label) : QJsonValue(QJsonValue::Null));
+        }
     } else if (type == QLatin1String("id")) {
         // A subcircuit's name text: its prefix (SUB1, SUB2, ...) and the
         // parameters its instances take, each with its default.
@@ -461,7 +467,7 @@ QStringList propsOfType(const QString& type)
         keys << QStringLiteral("file");
     }
     if (type == QLatin1String("text_box")) keys << QStringLiteral("tip");
-    if (type == QLatin1String("port")) keys = QStringList{QStringLiteral("x"), QStringLiteral("y")};
+    if (type == QLatin1String("port")) keys = QStringList{QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("label")};
     if (type == QLatin1String("id"))
         keys = QStringList{QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("prefix"), QStringLiteral("parameters")};
     keys.removeDuplicates();
@@ -658,8 +664,31 @@ QString changedLine(const QString& type, const QString& line, const QJsonObject&
         const int k = 2 + int(points.size());
         ok = setColour(k, "color") && setInt(k + 1, "thickness", 0, 100) && setPen(k + 2, "style") && setColour(k + 3, "fill_color")
           && setBrush(k + 4, "fill_style") && setBool(k + 5, "filled") && setBool(k + 6, "closed");
-    } else if (type == QLatin1String("image") || type == QLatin1String("port")) {
+    } else if (type == QLatin1String("image")) {
         ok = setInt(1, "x") && setInt(2, "y");
+    } else if (type == QLatin1String("port")) {
+        ok = setInt(1, "x") && setInt(2, "y");
+        if (!ok) return {};
+        // What its instances show beside the pin instead of its name: a
+        // label, "" for nothing, null for the name again.
+        if (has("label")) {
+            qucs_s::portsym::Name named = qucs_s::portsym::read(line.section(QLatin1Char(' '), 5));
+            if (get("label").isNull()) {
+                named.labelSet = false;
+                named.label.clear();
+            } else if (get("label").isString() && !get("label").toString().contains(QLatin1Char('"'))
+                       && !get("label").toString().contains(QLatin1Char('\n'))) {
+                named.labelSet = true;
+                named.label = get("label").toString().trimmed();
+            } else {
+                *error = tr("'label' is what the instances show beside the pin instead of its name: a short text (no quotes), "
+                            "\"\" for nothing, null for its name again.");
+                return {};
+            }
+            t = t.mid(0, 5);
+            while (t.size() < 5) t << QStringLiteral("0");
+            t << qucs_s::portsym::write(named);
+        }
     } else if (type == QLatin1String("id")) {
         // Its place, prefix and parameters - the line written again from
         // them ("1=R=1k=resistance=" each: shown, name=default, what, type).
@@ -1018,7 +1047,8 @@ Schematic* QucsControl::paintingsOf(const QJsonObject& args, std::list<Painting*
             *error = tr("%1 could not be switched to its %2.").arg(titleOf(sch), symbol ? tr("symbol") : tr("schematic"));
             return nullptr;
         }
-        *note = symbol ? tr("%1 now shows its symbol (as Edit Circuit Symbol does; symbol: false switches back).").arg(titleOf(sch))
+        *note = symbol ? tr("%1 now shows its symbol (as File > Edit Circuit Symbol, F9, does; the schematic's tools switch back "
+                            "by themselves, and so does symbol: false here).").arg(titleOf(sch))
                        : tr("%1 now shows its schematic again.").arg(titleOf(sch));
     }
     *list = symbol ? &sch->a_SymbolPaints : &sch->a_DocPaints;
