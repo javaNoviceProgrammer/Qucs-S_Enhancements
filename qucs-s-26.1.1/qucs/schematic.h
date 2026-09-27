@@ -793,6 +793,13 @@ public:
   /// recorded to undo. The elements are new ones: pointers to the old are
   /// left dangling.
   void restore(const QString& state);
+  /// The whole document as it is now - its schematic's elements and its
+  /// symbol's paintings - to come back to with restoreAll().
+  QPair<QString, QString> snapshotAll();
+  /// Back to \a state (from snapshotAll()), recorded as one step to undo
+  /// in the undo stack of each part that changed (the schematic's, the
+  /// symbol's); true when anything changed.
+  bool restoreAll(const QPair<QString, QString>& state);
   void highlightWireLabels (void);
   void clearSignalsAndFileList();
   void clearSignals();

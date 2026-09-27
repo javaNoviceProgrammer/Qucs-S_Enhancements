@@ -25,8 +25,11 @@
 #include <QStandardPaths>
 #include <QRandomGenerator>
 #include <QTemporaryDir>
+#include <QTextStream>
+#include <QTimer>
 
 #include <cmath>
+#include <complex>
 #include <functional>
 #include <random>
 
@@ -902,12 +905,14 @@ private slots:
         }
         const QStringList tools = {"get_dataset", "add_diagram", "edit_diagram", "add_trace", "edit_trace", "reload_data",
                                    "rename_net", "describe_component_type", "get_netlist", "delete", "get_schematic",
-                                   "add_marker", "edit_marker", "delete_marker", "describe_format", "export_netlist", "set_schematic"};
+                                   "add_marker", "edit_marker", "delete_marker", "describe_format", "export_netlist", "set_schematic",
+                                   "add_painting", "edit_painting", "list_documents", "export_image", "set_simulator"};
         const QStringList words = {"", "out", "in", "v(out)", "tran.v(out)", "ngspice/tran.v(out)", "ac.v(out)", "x:y@z", "../up",
                                    "auto", "red", "#zzz", "rect", "smith", "tab", "timing", "3d", "histogram", "left", "right",
                                    "dash", "arrows", "top_left", "dB", "bandwidth", "rise_time", "crossings", "net1", "gnd",
                                    "R1", "Vpulse", "db_phase", "real_imaginary", "peak", "-3dB", "min", "crossing:0.5", "crossing:x",
                                    "non_default", "all", "cdl", "spice", "square", "#80ff0000", "fuzz.cir", "<Diagrams>\n</Diagrams>",
+                                   "text", "arrow", "text_box", "table", "callout", "formula", "thd", "phase_margin", "gain", "png", "svg",
                                    QString(3000, QLatin1Char('x'))};
         QRandomGenerator rng(11);
         std::function<QJsonValue(int)> odd = [&](int depth) -> QJsonValue {
@@ -1156,7 +1161,11 @@ private slots:
         QStringList t1 = names(componentIn(summary, "T1"));
         QVERIFY2(t1.contains("Beta") && !t1.contains("Kf"), qPrintable(t1.join(',')));
         QVERIFY(summary.value("left out").toString().contains("defaults"));
-        QVERIFY(summary.value("paintings").toArray().first().toObject().value("line").toString().startsWith("<Text"));
+        const QJsonObject note = summary.value("paintings").toArray().first().toObject();
+        QCOMPARE(note.value("painting").toInt(), 1);
+        QCOMPARE(note.value("type").toString(), QStringLiteral("text"));
+        QCOMPARE(note.value("text").toString(), QStringLiteral("a note"));
+        QCOMPARE(note.value("x").toInt(), 100);
         QVERIFY(summary.value("settings").toObject().contains("dataset"));
         t1 = names(componentIn(json(call("get_schematic", {{"properties", "all"}})).toObject(), "T1"));
         QVERIFY(t1.contains("Kf") && t1.size() > 20);
@@ -1176,6 +1185,15 @@ private slots:
         summary = json(call("get_schematic")).toObject();
         QCOMPARE(summary.value("components").toArray().size(), 200);
         QVERIFY2(summary.value("left out").toString().contains("50 more components"), qPrintable(summary.value("left out").toString()));
+        // At a glance: the parts counted by type, most first.
+        const QJsonObject overview = json(call("get_schematic", {{"format", "overview"}})).toObject();
+        QCOMPARE(overview.value("components").toInt(), 250);   // (the section replaced them all)
+        const QJsonObject most = overview.value("by type").toArray().first().toObject();
+        QCOMPARE(most.value("type").toString(), QStringLiteral("R"));
+        QCOMPARE(most.value("count").toInt(), 250);
+        QCOMPARE(overview.value("extent").toArray().size(), 4);
+        QVERIFY(overview.contains("next") && !overview.contains("pins"));
+        QVERIFY(QJsonDocument(overview).toJson(QJsonDocument::Compact).size() < 1500);
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
@@ -1528,6 +1546,461 @@ private slots:
         QVERIFY2(landed > 20, qPrintable(QString::number(landed)));
         for (const QString& f : files)
             if (Schematic* sch = open(f)) sch->setChanged(false);
+    }
+
+    // Paintings drawn and changed by their named fields - a text, an
+    // arrow, a callout, a table, a dimension, a formula, a star, a filled
+    // rectangle, a polygon, a picture - each one step to undo, listed by
+    // their fields and written as the file has them; what a type does not
+    // take, a wrong colour or style, a missing place refused, nothing
+    // changed; selected and deleted by their numbers.
+    void paintingsAreDrawnAndChangedByTheirFields()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        const auto add = [this](const QJsonObject& args) {
+            const QJsonObject r = call("add_painting", args);
+            if (failed(r)) qWarning("%s", qPrintable(text(r)));
+            return json(r).toObject().value("added").toObject();
+        };
+        QJsonObject p = add({{"type", "text"}, {"x", 253}, {"y", 762}, {"size", 10}, {"text", "BW = 1.596 kHz"}});
+        QCOMPARE(p.value("painting").toInt(), 1);
+        QCOMPARE(p.value("type").toString(), QStringLiteral("text"));
+        QCOMPARE(p.value("text").toString(), QStringLiteral("BW = 1.596 kHz"));
+        p = add({{"type", "arrow"}, {"from", QJsonArray{302, 758}}, {"to", QJsonArray{207, 758}}, {"head", "filled"}, {"color", "#0000ff"}});
+        QCOMPARE(p.value("painting").toInt(), 2);
+        QCOMPARE(p.value("to").toArray(), (QJsonArray{207, 758}));
+        QCOMPARE(p.value("head").toString(), QStringLiteral("filled"));
+        const QString file = sch->documentText();
+        QVERIFY2(file.contains("<Text 253 762 10 #000000 0 \"BW = 1.596 kHz\">"), qPrintable(file));
+        QVERIFY2(file.contains("<Arrow 302 758 -95 0 20 8 #0000ff 1 1 1>"), qPrintable(file));
+        p = add({{"type", "text_box"}, {"kind", "callout"}, {"x", 400}, {"y", 100}, {"width", 120}, {"height", 40},
+                 {"text", "crossover\ndistortion"}});
+        QCOMPARE(p.value("kind").toString(), QStringLiteral("callout"));
+        QVERIFY(p.value("pointer").toBool());
+        QCOMPARE(p.value("tip").toArray(), (QJsonArray{360, 180}));   // below left of it, as a click puts it
+        QCOMPARE(p.value("text").toString(), QStringLiteral("crossover\ndistortion"));
+        p = add({{"type", "table"}, {"x", 600}, {"y", 100}, {"rows", 2}, {"columns", 2},
+                 {"cells", QJsonArray{QJsonArray{"f", "gain"}, QJsonArray{"1 kHz", "0 dB"}}}});
+        QCOMPARE(p.value("cells").toArray().at(1).toArray().at(0).toString(), QStringLiteral("1 kHz"));
+        QVERIFY(p.value("width").toInt() > 1);   // its own size, none given
+        p = add({{"type", "dimension"}, {"from", QJsonArray{0, 300}}, {"to", QJsonArray{200, 300}}, {"unit", "mm"}, {"scale", 0.1}});
+        QCOMPARE(p.value("unit").toString(), QStringLiteral("mm"));
+        QCOMPARE(p.value("to").toArray(), (QJsonArray{200, 300}));
+        p = add({{"type", "formula"}, {"x", 100}, {"y", 400}, {"tex", "f_c = \\frac{1}{2\\pi RC}"}});
+        QCOMPARE(p.value("tex").toString(), QStringLiteral("f_c = \\frac{1}{2\\pi RC}"));
+        p = add({{"type", "polygon"}, {"x", 0}, {"y", 0}, {"star", true}, {"sides", 5}, {"angle", 90}});
+        QVERIFY(p.value("star").toBool());
+        QCOMPARE(p.value("angle").toInt(), 90);
+        p = add({{"type", "rectangle"}, {"x", 10}, {"y", 20}, {"width", 30}, {"height", 40}, {"filled", true},
+                 {"fill_color", "#ffcc00"}, {"style", "dash"}});
+        QCOMPARE(p.value("fill_color").toString(), QStringLiteral("#ffcc00"));
+        QCOMPARE(p.value("style").toString(), QStringLiteral("dash"));
+        QVERIFY(p.value("filled").toBool());
+        p = add({{"type", "polyline"}, {"points", QJsonArray{QJsonArray{0, 0}, QJsonArray{10, 10}, QJsonArray{20, 0}}}, {"closed", true}});
+        QCOMPARE(p.value("points").toArray().size(), 3);
+        QVERIFY(p.value("closed").toBool());
+        QCOMPARE(p.value("painting").toInt(), 9);
+        QCOMPARE(int(sch->a_DocPaints.size()), 9);
+
+        // Listed by their fields, numbered.
+        const QJsonArray listed = json(call("get_schematic")).toObject().value("paintings").toArray();
+        QCOMPARE(listed.size(), 9);
+        QCOMPARE(listed.at(1).toObject().value("type").toString(), QStringLiteral("arrow"));
+        QCOMPARE(listed.at(3).toObject().value("rows").toInt(), 2);
+        QCOMPARE(listed.at(8).toObject().value("painting").toInt(), 9);
+
+        // Changed: what is given, the rest kept; one step to undo each.
+        QJsonObject r = call("edit_painting", {{"painting", 2}, {"to", QJsonArray{400, 758}}, {"thickness", 3}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        p = json(r).toObject().value("changed").toObject();
+        QCOMPARE(p.value("from").toArray(), (QJsonArray{302, 758}));
+        QCOMPARE(p.value("to").toArray(), (QJsonArray{400, 758}));
+        QCOMPARE(p.value("thickness").toInt(), 3);
+        QCOMPARE(p.value("color").toString(), QStringLiteral("#0000ff"));
+        QVERIFY(!failed(call("edit_painting", {{"painting", 1}, {"text", "BW = 2 kHz"}, {"color", "red"}})));
+        QVERIFY2(sch->documentText().contains("<Text 253 762 10 #ff0000 0 \"BW = 2 kHz\">"), qPrintable(sch->documentText()));
+        r = call("edit_painting", {{"painting", 4}, {"cells", QJsonArray{QJsonArray{"x"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonArray cells = json(r).toObject().value("changed").toObject().value("cells").toArray();
+        QCOMPARE(cells.at(0).toArray().at(0).toString(), QStringLiteral("x"));
+        QCOMPARE(cells.at(1).toArray().at(0).toString(), QStringLiteral("1 kHz"));
+        QVERIFY(!failed(call("edit_painting", {{"painting", 7}, {"angle", 180}, {"mirrored", true}})));
+        QVERIFY(!failed(call("undo")));
+        QVERIFY(!failed(call("undo")));
+        cells = json(call("get_schematic")).toObject().value("paintings").toArray().at(3).toObject().value("cells").toArray();
+        QCOMPARE(cells.at(0).toArray().at(0).toString(), QStringLiteral("f"));
+        QVERIFY(!failed(call("undo")));
+        QVERIFY(sch->documentText().contains("\"BW = 1.596 kHz\""));
+
+        // Refused, and nothing changed.
+        const QString before = sch->documentText();
+        const QList<QJsonObject> refused{
+            QJsonObject{{"type", "text"}, {"x", 0}, {"y", 0}},
+            QJsonObject{{"type", "arrow"}, {"from", QJsonArray{0, 0}}},
+            QJsonObject{{"type", "text"}, {"x", 0}, {"y", 0}, {"text", "a"}, {"colour", "red"}},
+            QJsonObject{{"type", "rectangle"}, {"x", 0}, {"y", 0}, {"width", 5}, {"height", 5}, {"color", "#zzz"}},
+            QJsonObject{{"type", "rectangle"}, {"x", 0}, {"y", 0}, {"width", 5}, {"height", 5}, {"style", "wavy"}},
+            QJsonObject{{"type", "rectangle"}, {"x", 0}, {"y", 0}, {"width", -5}, {"height", 5}},
+            QJsonObject{{"type", "waveform"}, {"x", 0}, {"y", 0}, {"shape", "zigzag"}},
+            QJsonObject{{"type", "polygon"}, {"x", 0}, {"y", 0}, {"angle", 45}},
+            QJsonObject{{"type", "polygon"}, {"x", 0}, {"y", 0}, {"sides", 500}},
+            QJsonObject{{"type", "formula"}, {"x", 0}, {"y", 0}},
+            QJsonObject{{"type", "port"}, {"x", 0}, {"y", 0}},
+            QJsonObject{{"type", "hexagon"}, {"x", 0}, {"y", 0}},
+            QJsonObject{{"type", "image"}, {"x", 0}, {"y", 0}, {"file", "no-such.png"}},
+            QJsonObject{{"type", "polyline"}, {"points", QJsonArray{QJsonArray{0, 0}}}},
+            QJsonObject{}};
+        for (const QJsonObject& bad : refused) {
+            const QJsonObject rr = call("add_painting", bad);
+            QVERIFY2(failed(rr), qPrintable(QJsonDocument(bad).toJson(QJsonDocument::Compact)));
+        }
+        const QJsonObject unknown = call("add_painting", {{"type", "text"}, {"x", 0}, {"y", 0}, {"text", "a"}, {"colour", "red"}});
+        QVERIFY2(text(unknown).contains("colour") && text(unknown).contains("color, "), qPrintable(text(unknown)));   // what it takes
+        QVERIFY(failed(call("edit_painting", {{"painting", 99}, {"x", 1}})));
+        QVERIFY(failed(call("edit_painting", {{"painting", 1}})));
+        QVERIFY(failed(call("edit_painting", {{"painting", 1}, {"type", "arrow"}, {"x", 1}})));
+        QVERIFY(failed(call("edit_painting", {{"painting", 2}, {"text", "an arrow has none"}})));
+        QCOMPARE(sch->documentText(), before);
+
+        // Selected and deleted by their numbers, one step to undo.
+        QVERIFY2(text(call("select", {{"paintings", QJsonArray{1, 2}}})).contains("2 selected"), "");
+        QVERIFY(!failed(call("delete", {{"paintings", QJsonArray{1, 2}}})));
+        QCOMPARE(int(sch->a_DocPaints.size()), 7);
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(int(sch->a_DocPaints.size()), 9);
+        QVERIFY(failed(call("delete", {{"paintings", QJsonArray{42}}})));
+
+        // A picture, from a file; its size its own, then changed.
+        QImage image(40, 20, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        QVERIFY(image.save(dir.filePath("workspace/red.png")));
+        p = add({{"type", "image"}, {"file", "red.png"}, {"x", 0}, {"y", 500}});
+        QCOMPARE(p.value("width").toInt(), 40);
+        QVERIFY2(p.value("picture").toString().contains("40 x 20"), qPrintable(p.value("picture").toString()));
+        r = call("edit_painting", {{"painting", 10}, {"width", 80}, {"height", 40}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("changed").toObject().value("width").toInt(), 80);
+        QVERIFY(!sch->documentText().contains("picture"));
+
+        // The fields told, type by type.
+        const QString format = text(call("describe_format", {{"element", "painting"}}));
+        QVERIFY(format.contains("text_box") && format.contains("tip") && format.contains("curly_brace"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A subcircuit's symbol drawn with the same tools: the document shown
+    // as its symbol when asked (and back), its paintings - ports and name
+    // text among them - listed, a rectangle added and undone in the
+    // symbol's own undo; a port moved but not deleted or made.
+    void aSymbolIsDrawnToo()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_component", {{"type", "Port"}, {"name", "P1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Port"}, {"name", "P2"}, {"x", 300}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document", {{"as", "sub"}})));
+        QJsonObject r = call("add_painting", {{"symbol", true}, {"type", "rectangle"}, {"x", -40}, {"y", -40}, {"width", 80}, {"height", 80}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(sch->getSymbolMode());
+        QVERIFY(json(r).toObject().value("note").toString().contains("symbol"));
+        const int count = int(sch->a_SymbolPaints.size());
+        const QJsonArray symbol = json(call("get_schematic")).toObject().value("symbol paintings").toArray();
+        QCOMPARE(symbol.size(), count);
+        int port = 0;
+        bool id = false;
+        for (const QJsonValue& v : symbol) {
+            if (v.toObject().value("type").toString() == "port" && port == 0) port = v.toObject().value("painting").toInt();
+            id = id || v.toObject().value("type").toString() == "id";
+        }
+        QVERIFY(port > 0 && id);
+        QCOMPARE(symbol.last().toObject().value("type").toString(), QStringLiteral("rectangle"));
+        // Undone in the symbol's own undo: the rectangle goes, the symbol stays.
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(int(sch->a_SymbolPaints.size()), count - 1);
+        QVERIFY(sch->getSymbolMode());
+        // Its ports: moved, not deleted or made.
+        r = call("edit_painting", {{"painting", port}, {"x", -60}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("changed").toObject().value("x").toInt(), -60);
+        QVERIFY(failed(call("delete", {{"paintings", QJsonArray{port}}})));
+        QVERIFY(failed(call("add_painting", {{"type", "port"}, {"x", 0}, {"y", 0}})));
+        QVERIFY(failed(call("edit_painting", {{"painting", port}, {"number", "7"}})));
+        // The schematic's tools wait for the schematic; a painting of it
+        // switches back.
+        QVERIFY(failed(call("add_component", {{"type", "R"}, {"x", 0}, {"y", 0}})));
+        r = call("add_painting", {{"symbol", false}, {"type", "text"}, {"x", 0}, {"y", 0}, {"text", "the schematic"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!sch->getSymbolMode());
+        QCOMPARE(int(sch->a_DocPaints.size()), 1);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // The files of the workspace, a project or a folder: kinds, sizes,
+    // times, newest first or by name, a dataset with its simulator and
+    // schematic, the open ones, the projects; narrowed by kind and name;
+    // hidden files and unknown kinds left out; what is not there refused.
+    void theWorkspaceIsListed()
+    {
+        const QString ws = dir.filePath("workspace");
+        QVERIFY(QDir().mkpath(ws + "/amp_prj/sub"));
+        const QByteArray empty = "<Qucs Schematic 26.1.3>\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n<Components>\n</Components>\n"
+                                 "<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        const auto write = [](const QString& path, const QByteArray& data, int secondsAgo) {
+            QFile f(path);
+            if (!f.open(QIODevice::WriteOnly)) return false;
+            f.write(data);
+            f.flush();   // (else closing it writes it again, and now)
+            return f.setFileTime(QDateTime::currentDateTime().addSecs(-secondsAgo), QFileDevice::FileModificationTime);
+        };
+        QVERIFY(write(ws + "/amp_prj/amp.sch", empty, 100));
+        QVERIFY(write(ws + "/amp_prj/amp.dat.ngspice", "<Qucs Dataset 26.1.3>\n", 50));
+        QVERIFY(write(ws + "/amp_prj/amp.dat.xyce", "<Qucs Dataset 26.1.3>\n", 500));
+        QVERIFY(write(ws + "/amp_prj/sub/notes.md", "# notes\n", 10));
+        QVERIFY(write(ws + "/amp_prj/data.csv", "a,b\n", 1000));
+        QVERIFY(write(ws + "/amp_prj/.hidden.sch", empty, 5));
+        QVERIFY(write(ws + "/amp_prj/thing.xyz", "?", 5));
+        const auto paths = [](const QJsonObject& listed) {
+            QStringList list;
+            for (const QJsonValue& v : listed.value("files").toArray()) list << v.toObject().value("path").toString();
+            return list;
+        };
+        QJsonObject listed = json(call("list_documents", {{"folder", "amp"}})).toObject();
+        QCOMPARE(paths(listed), (QStringList{"sub/notes.md", "amp.dat.ngspice", "amp.sch", "amp.dat.xyce", "data.csv"}));
+        const QJsonObject dataset = listed.value("files").toArray().at(1).toObject();
+        QCOMPARE(dataset.value("kind").toString(), QStringLiteral("dataset"));
+        QCOMPARE(dataset.value("simulator").toString(), QStringLiteral("ngspice"));
+        QCOMPARE(dataset.value("of").toString(), QStringLiteral("amp.sch"));
+        QVERIFY(dataset.value("changed").toString().contains('T'));
+        QCOMPARE(listed.value("files").toArray().at(2).toObject().value("kind").toString(), QStringLiteral("schematic"));
+        QCOMPARE(paths(json(call("list_documents", {{"folder", "amp_prj"}, {"kind", "dataset"}})).toObject()),
+                 (QStringList{"amp.dat.ngspice", "amp.dat.xyce"}));
+        QCOMPARE(paths(json(call("list_documents", {{"folder", ws + "/amp_prj"}, {"search", "AMP.s"}})).toObject()), (QStringList{"amp.sch"}));
+        QCOMPARE(paths(json(call("list_documents", {{"folder", "amp"}, {"sort", "name"}})).toObject()),
+                 (QStringList{"amp.dat.ngspice", "amp.dat.xyce", "amp.sch", "data.csv", "sub/notes.md"}));
+        // The workspace: its projects, and the files in them.
+        QVERIFY(!failed(call("open_document", {{"path", "amp_prj/amp.sch"}})));
+        listed = json(call("list_documents")).toObject();
+        bool project = false, open = false;
+        for (const QJsonValue& v : listed.value("projects").toArray())
+            project = project || (v.toObject().value("project").toString() == "amp" && v.toObject().value("folder").toString() == "amp_prj");
+        for (const QJsonValue& v : listed.value("files").toArray())
+            open = open || (v.toObject().value("path").toString() == "amp_prj/amp.sch" && v.toObject().value("open").toBool());
+        QVERIFY2(project && open, qPrintable(QJsonDocument(listed).toJson()));
+        QVERIFY(!failed(call("close_document")));
+        QVERIFY(failed(call("list_documents", {{"folder", "nope"}})));
+        QVERIFY(failed(call("list_documents", {{"kind", "movie"}})));
+        QVERIFY(failed(call("list_documents", {{"sort", "size"}})));
+        QVERIFY(json(call("list_documents", {{"folder", "amp"}, {"search", "zzz"}})).toObject().contains("note"));
+    }
+
+    // A picture written to a file as File > Export as image writes one,
+    // without its dialog: the whole schematic, or one diagram alone (the
+    // selection kept as it was), in the format of its suffix or the one
+    // given, PDF+LaTeX with its PDF; a JPEG's paper said so when asked for
+    // none; odd arguments refused.
+    void aPictureIsWrittenToAFile()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("add_diagram", {{"x", 400}, {"y", 400}, {"width", 200}, {"height", 120}})));
+        QVERIFY(!failed(call("select", {{"names", QJsonArray{"R1"}}})));
+        QJsonObject r = call("export_image", {{"save_as", "whole.png"}, {"scale", 1}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QImage whole(dir.filePath("workspace/whole.png"));
+        QVERIFY(!whole.isNull());
+        QCOMPARE(json(r).toObject().value("pixels").toArray().at(0).toInt(), whole.width());
+        r = call("export_image", {{"save_as", "diagram.png"}, {"scale", 1}, {"diagram", 1}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QImage alone(dir.filePath("workspace/diagram.png"));
+        QVERIFY2(alone.width() < whole.width() && alone.width() >= 200, qPrintable(QStringLiteral("%1 %2").arg(alone.width()).arg(whole.width())));
+        // What was selected is selected again.
+        QVERIFY(sch->getComponentByName("R1")->isSelected);
+        QVERIFY(!sch->a_DocDiags.front()->isSelected);
+        // The format of the suffix, or the one given.
+        r = call("export_image", {{"save_as", "whole.svg"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).toObject().contains("size in units"));
+        QVERIFY(QFileInfo(dir.filePath("workspace/whole.svg")).size() > 100);
+        r = call("export_image", {{"save_as", "report"}, {"format", "pdf_tex"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).toObject().value("written").toString().endsWith("report.pdf_tex"));
+        QVERIFY(QFileInfo::exists(dir.filePath("workspace/report.pdf")));
+        r = call("export_image", {{"save_as", "paper.jpg"}, {"transparent", true}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("note").toString().contains("transparent"), qPrintable(text(r)));
+        r = call("export_image", {{"save_as", "grey.png"}, {"colours", "grayscale"}, {"transparent", true}});
+        QVERIFY2(!failed(r) && !json(r).toObject().contains("note"), qPrintable(text(r)));
+        // Refused.
+        for (const QJsonObject& bad : {QJsonObject{{"save_as", "noformat"}}, QJsonObject{{"save_as", "a.png"}, {"format", "gif"}},
+                                       QJsonObject{{"save_as", "a.png"}, {"diagram", 5}}, QJsonObject{{"save_as", "a.png"}, {"colours", "sepia"}},
+                                       QJsonObject{{"save_as", "a.png"}, {"scale", 100}}, QJsonObject{{"save_as", "no/such/folder/a.png"}},
+                                       QJsonObject{}})
+            QVERIFY2(failed(call("export_image", bad)), qPrintable(QJsonDocument(bad).toJson(QJsonDocument::Compact)));
+        QVERIFY(!failed(call("select")));
+        QVERIFY(text(call("export_image", {{"save_as", "a.png"}, {"selection", true}})).contains("Nothing is selected"));
+        QVERIFY(!QFileInfo::exists(dir.filePath("workspace/a.png")));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // The simulator chosen as the toolbar's list chooses it: one that is
+    // installed, and back; one that is not refused, the setting kept.
+    void theSimulatorIsChosen()
+    {
+        QJsonObject r = call("set_simulator", {{"simulator", "ngspice"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("simulator").toString(), QStringLiteral("ngspice"));
+        const QJsonArray installed = json(r).toObject().value("installed").toArray();
+        QVERIFY(installed.contains(QJsonValue("ngspice")));
+        QCOMPARE(QucsSettings.DefaultSimulator, int(spicecompat::simNgspice));
+        for (const char* other : {"xyce", "spiceopus", "qucsator"}) {
+            r = call("set_simulator", {{"simulator", other}});
+            if (installed.contains(QJsonValue(other))) {
+                QVERIFY2(!failed(r), qPrintable(text(r)));
+                QCOMPARE(json(r).toObject().value("simulator").toString(), QString::fromLatin1(other));
+                QCOMPARE(json(r).toObject().value("was").toString(), QStringLiteral("ngspice"));
+                QVERIFY(!failed(call("set_simulator", {{"simulator", "ngspice"}})));
+            } else {
+                QVERIFY2(failed(r) && text(r).contains("not installed"), qPrintable(text(r)));
+            }
+            QCOMPARE(QucsSettings.DefaultSimulator, int(spicecompat::simNgspice));
+        }
+        QVERIFY(failed(call("set_simulator", {{"simulator", "spectre"}})));
+        QVERIFY(failed(call("set_simulator")));
+    }
+
+    // All or nothing: an atomic batch that fails leaves the schematic as
+    // it was (one step to undo brings its changes back); one that is not
+    // says how many changes stay, and undo takes them back in one call.
+    void aBatchIsAllOrNothing()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R0"}, {"x", 0}, {"y", 0}})));
+        const QJsonArray calls{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_painting"}, {"arguments", QJsonObject{{"type", "text"}, {"x", 0}, {"y", 200}, {"text", "note"}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "C"}, {"name", "C1"}, {"x", 300}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "NoSuchPart"}, {"x", 500}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "L"}, {"name", "L1"}, {"x", 700}, {"y", 100}}}}};
+        QJsonObject r = call("batch", {{"calls", calls}, {"atomic", true}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("Atomic: the changes"), qPrintable(text(r).left(600)));
+        QVERIFY(!text(r).contains("[5]"));   // the rest not run
+        QCOMPARE(int(sch->a_DocComps.size()), 1);
+        QCOMPARE(int(sch->a_DocPaints.size()), 0);
+        // One step to undo brings the changes back, and redo takes them away.
+        QVERIFY(!failed(call("undo")));
+        QVERIFY(sch->getComponentByName("R1") && sch->getComponentByName("C1"));
+        QCOMPARE(int(sch->a_DocPaints.size()), 1);
+        QVERIFY(!failed(call("redo")));
+        QCOMPARE(int(sch->a_DocComps.size()), 1);
+        // Not atomic: how many changes stay, taken back in one call.
+        r = call("batch", {{"calls", calls}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("3 on the document in front"), qPrintable(text(r).left(600)));
+        QCOMPARE(int(sch->a_DocComps.size()), 3);
+        r = call("undo", {{"steps", 3}});
+        QVERIFY2(text(r).contains("Undone 3 steps"), qPrintable(text(r)));
+        QCOMPARE(int(sch->a_DocComps.size()), 1);
+        QCOMPARE(int(sch->a_DocPaints.size()), 0);
+        QVERIFY(failed(call("undo", {{"steps", 0}})));
+        QVERIFY(failed(call("undo", {{"steps", "two"}})));
+        r = call("redo", {{"steps", 50}});
+        QVERIFY2(text(r).contains("Redone 3 steps") && text(r).contains("no more"), qPrintable(text(r)));
+        // An atomic batch that goes through keeps all it made.
+        r = call("batch", {{"calls", QJsonArray{QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R9"}, {"x", 900}, {"y", 100}}}}}},
+                           {"atomic", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(sch->getComponentByName("R9") != nullptr);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Distortion and a loop's stability read from a dataset: the THD of a
+    // transient at a stated fundamental over two periods, and a loop
+    // gain's gain, phase margin and gain margin - its phase taken along.
+    void distortionAndLoopGainAreReadFromADataset()
+    {
+        const QString file = dir.filePath("workspace/loop.dat.ngspice");
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+            QTextStream s(&f);
+            s << "<Qucs Dataset 26.1.3>\n<indep time 2001>\n";
+            for (int i = 0; i <= 2000; ++i) s << "  " << QString::number(i * 1e-6, 'e', 12) << "\n";
+            s << "</indep>\n<dep tran.v(out) time>\n";
+            for (int i = 0; i <= 2000; ++i) {
+                const double t = i * 1e-6;
+                s << "  " << QString::number(std::sin(2 * M_PI * 1e3 * t) + 0.1 * std::sin(2 * M_PI * 2e3 * t), 'e', 12) << "\n";
+            }
+            s << "</dep>\n<indep frequency 601>\n";
+            for (int i = 0; i <= 600; ++i) s << "  " << QString::number(std::pow(10.0, 1 + i / 100.0), 'e', 12) << "\n";
+            s << "</indep>\n<dep ac.v(loop) frequency>\n";
+            for (int i = 0; i <= 600; ++i) {
+                const double x = std::pow(10.0, 1 + i / 100.0);
+                std::complex<double> t(100.0, 0.0);
+                for (double p : {1e3, 1e5, 1e6}) t /= std::complex<double>(1.0, x / p);
+                s << "  " << QString::number(t.real(), 'e', 12) << (t.imag() < 0 ? "-j" : "+j") << QString::number(std::abs(t.imag()), 'e', 12) << "\n";
+            }
+            s << "</dep>\n";
+        }
+        QJsonObject r = call("get_dataset", {{"path", file}, {"variables", QJsonArray{"tran.v(out)"}}, {"measure", QJsonArray{"thd"}},
+                                             {"fundamental", 1000}, {"periods", 2}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject thd = json(r).toObject().value("variables").toArray().first().toObject().value("measurements").toObject().value("thd").toObject();
+        QVERIFY2(std::abs(thd.value("value").toDouble() - 10) < 0.01, qPrintable(QJsonDocument(thd).toJson()));
+        QCOMPARE(thd.value("periods").toInt(), 2);
+        r = call("get_dataset", {{"path", file}, {"variables", QJsonArray{"ac.v(loop)"}}, {"measure", QJsonArray{"gain", "phase_margin", "gain_margin"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject m = json(r).toObject().value("variables").toArray().first().toObject().value("measurements").toObject();
+        QVERIFY2(std::abs(m.value("gain").toObject().value("value").toDouble() - 40) < 0.01, qPrintable(QJsonDocument(m).toJson()));
+        QVERIFY2(m.value("phase_margin").toObject().contains("gain crossover"), qPrintable(QJsonDocument(m).toJson()));
+        QVERIFY2(m.value("gain_margin").toObject().contains("phase crossover"), qPrintable(QJsonDocument(m).toJson()));
+        // Odd arguments refused.
+        QVERIFY(failed(call("get_dataset", {{"path", file}, {"variables", QJsonArray{"tran.v(out)"}}, {"measure", QJsonArray{"thd"}}, {"fundamental", -1}})));
+        QVERIFY(failed(call("get_dataset", {{"path", file}, {"variables", QJsonArray{"tran.v(out)"}}, {"measure", QJsonArray{"thd"}}, {"harmonics", 1}})));
+        QVERIFY(failed(call("get_dataset", {{"path", file}, {"variables", QJsonArray{"tran.v(out)"}}, {"measure", QJsonArray{"thd"}}, {"periods", 0.5}})));
+    }
+
+    // A simulation during which the user changes the schematic says its
+    // results are of the schematic as it was when it began.
+    void anEditWhileASimulationRunsIsTold()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("A shell script stands in for the simulator.");
+#else
+        const QString script = dir.filePath("slow-simulator.sh");
+        {
+            QFile f(script);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("#!/bin/sh\nsleep 1\nexit 0\n");
+        }
+        QVERIFY(QFile::setPermissions(script, QFile::permissions(script) | QFileDevice::ExeOwner | QFileDevice::ExeUser));
+        const QString was = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = script;
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("add_component", {{"type", "GND"}, {"x", 100}, {"y", 200}})));
+        QVERIFY(!failed(call("connect", {{"from", "R1.2"}, {"to", "GND.1"}})));
+        QVERIFY(!failed(call("add_component", {{"type", ".TR"}, {"x", 100}, {"y", -100}})));
+        QVERIFY(!failed(call("save_document", {{"as", "slow"}})));
+        // The user changes R1 while it runs.
+        QTimer::singleShot(300, this, [this] {
+            const quint64 editor = QucsDoc::editor();
+            QucsDoc::setEditor(0);
+            call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "5k"}}}});
+            QucsDoc::setEditor(editor);
+        });
+        QJsonObject r = control->callNow("simulate", {{"timeout", 30}}, 60000, 404);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("changed while it ran").toString().contains("by the user"), qPrintable(text(r)));
+        // Left alone while it runs: nothing said.
+        r = control->callNow("simulate", {{"timeout", 30}}, 60000, 404);
+        QucsSettings.NgspiceExecutable = was;
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(!json(r).toObject().contains("changed while it ran"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+#endif
     }
 };
 

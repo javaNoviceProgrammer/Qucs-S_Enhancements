@@ -1074,10 +1074,8 @@ void QucsApp::slotChangeSimulator(int index) {
 
     // Call update() to update subcircuit symbols in current Schematic document.
     // TextDoc has no viewport, it needs no update.
-    QString tabType = DocumentTab->currentWidget()->metaObject()->className();
-
-    if (tabType == "Schematic") {
-        ((Q3ScrollView*)DocumentTab->currentWidget())->viewport()->update();
+    if (Schematic *front = schematicIn(DocumentTab->currentWidget())) {
+        front->viewport()->update();
     }
     a_status->scheduleRefresh();
 }

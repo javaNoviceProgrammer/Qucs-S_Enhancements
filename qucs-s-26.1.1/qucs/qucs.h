@@ -184,6 +184,9 @@ public:
   FindBar *findBarOf(ContextMenuTabWidget *pane) const;
   /// All open documents, pane by pane, in tab order.
   QList<QucsDoc *> allDocuments() const;
+  /// The Simulate toolbar's list of the simulators installed (its items'
+  /// data: spicecompat::Simulator).
+  QComboBox *simulatorList() const { return simulatorsCombobox; }
   /// Every text document highlighted again, as the settings now say (the
   /// formats, the language chosen for each suffix); the status bar too.
   void applySyntaxSettings();

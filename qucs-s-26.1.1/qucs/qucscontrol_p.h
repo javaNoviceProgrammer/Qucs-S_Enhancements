@@ -18,11 +18,14 @@
 #include <QList>
 #include <QString>
 
+#include <list>
+
 class Component;
 class Diagram;
 class Graph;
 class Marker;
 class Module;
+class Painting;
 class Schematic;
 
 namespace qucs_s::control {
@@ -67,6 +70,19 @@ Marker* markerOf(const Diagram* d, const QJsonValue& which, QString* error);
 /// Why trace \a g of \a sch shows nothing (no dataset; no such variable,
 /// and those there are like it); empty when it shows data.
 QString whyNoData(Schematic* sch, Graph* g);
+
+/// A painting as get_schematic lists it: its number (\a index, from 1),
+/// its type (text, arrow, rectangle, text_box, ...) and its fields by name.
+QJsonObject paintingJson(Painting* p, int index);
+/// The paintings of a list, numbered from 1 as the tools take them; at
+/// most \a most (all when negative).
+QJsonArray paintingsJson(const std::list<Painting*>& paintings, int most = -1);
+/// The painting \a which (its number) of \a paintings; nullptr and why.
+Painting* paintingOf(const std::list<Painting*>& paintings, const QJsonValue& which, QString* error);
+/// A symbol's port or its name text: moved, not made or deleted by hand.
+bool isFixedPainting(const Painting* p);
+/// The fields add_painting and edit_painting take, type by type.
+QString paintingFieldsText();
 
 /// A new component of \a type (its model: R, Vpulse, Eqn, ...) - those of
 /// the library's hash, and the equation blocks that are only in its
