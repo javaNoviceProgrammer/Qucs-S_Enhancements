@@ -906,7 +906,8 @@ private slots:
         const QStringList tools = {"get_dataset", "add_diagram", "edit_diagram", "add_trace", "edit_trace", "reload_data",
                                    "rename_net", "describe_component_type", "get_netlist", "delete", "get_schematic",
                                    "add_marker", "edit_marker", "delete_marker", "describe_format", "export_netlist", "set_schematic",
-                                   "add_painting", "edit_painting", "list_documents", "export_image", "set_simulator"};
+                                   "add_painting", "edit_painting", "list_documents", "export_image", "set_simulator",
+                                   "check_schematic", "move", "add_analysis"};
         const QStringList words = {"", "out", "in", "v(out)", "tran.v(out)", "ngspice/tran.v(out)", "ac.v(out)", "x:y@z", "../up",
                                    "auto", "red", "#zzz", "rect", "smith", "tab", "timing", "3d", "histogram", "left", "right",
                                    "dash", "arrows", "top_left", "dB", "bandwidth", "rise_time", "crossings", "net1", "gnd",
@@ -2010,6 +2011,386 @@ private slots:
         QVERIFY2(!json(r).toObject().contains("changed while it ran"), qPrintable(text(r)));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
 #endif
+    }
+
+    // The connectivity check and what a change tells of it: a wire drawn
+    // across another net's (no junction: said), a part put with a pin on a
+    // wire, what floats; check_schematic, the summary's count; grounds by
+    // their 'ref' when there are several.
+    void connectivityIsCheckedAndCrossingsAreTold()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        const QString R = "\"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        QJsonObject r = call("set_schematic", {{"text", "<Components>\n"
+                                                        "  <Vdc V1 1 100 200 18 -26 0 1 \"1 V\" 1>\n"
+                                                        "  <GND * 1 100 230 0 0 0 0>\n"
+                                                        "  <R R1 1 200 100 15 -26 0 0 " + R +
+                                                        "  <R R2 1 300 200 15 -26 0 1 " + R +
+                                                        "  <GND * 1 300 230 0 0 0 0>\n"
+                                                        "</Components>\n<Wires>\n"
+                                                        "  <100 170 100 100 \"\" 0 0 0 \"\">\n  <100 100 170 100 \"\" 0 0 0 \"\">\n"
+                                                        "  <230 100 300 100 \"\" 0 0 0 \"\">\n  <300 100 300 170 \"\" 0 0 0 \"\">\n"
+                                                        "</Wires>\n"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject checked = json(call("check_schematic")).toObject();
+        QVERIFY2(checked.value("errors").toArray().isEmpty(), qPrintable(text(call("check_schematic"))));
+        // Grounds by their refs.
+        QJsonObject summary = json(call("get_schematic")).toObject();
+        QStringList refs;
+        for (const QJsonValue& c : summary.value("components").toArray()) refs << c.toObject().value("ref").toString();
+        QVERIFY2(refs.contains("GND#1") && refs.contains("GND#2"), qPrintable(refs.join(',')));
+        r = call("connect", {{"from", "GND.1"}, {"to", "R1.1"}});
+        QVERIFY2(failed(r) && text(r).contains("GND#1.1"), qPrintable(text(r)));
+        QVERIFY(failed(call("connect", {{"from", "GND#3.1"}, {"to", "R1.1"}})));
+        QVERIFY(text(call("connect", {{"from", "GND#1.1"}, {"to", "GND#2.1"}})).contains("one net already"));   // (ground is one net)
+
+        // A wire across R1-R2's: drawn, and said.
+        r = call("add_component", {{"type", "R"}, {"name", "R3"}, {"x", 500}, {"y", 200}, {"rotation", 1}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("add_wire", {{"points", QJsonArray{QJsonArray{500, 170}, QJsonArray{500, 130}, QJsonArray{250, 130}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Look:") && text(r).contains("cross without a junction"), qPrintable(text(r)));
+        // A part with a pin on that wire: said too.
+        r = call("add_component", {{"type", "R"}, {"name", "R4"}, {"x", 400}, {"y", 100}, {"rotation", 1}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("note").toString().contains("pin 1"), qPrintable(text(r)));
+        // The check: the crossing a note, R3's pin and the wire's open end, what floats.
+        checked = json(call("check_schematic")).toObject();
+        const QString all = QJsonDocument(checked).toJson(QJsonDocument::Compact);
+        QVERIFY2(all.contains("cross without a junction"), qPrintable(all));
+        QVERIFY2(all.contains("the wire end at 250, 130 is connected to nothing"), qPrintable(all));
+        QVERIFY2(all.contains("floating"), qPrintable(all));
+        bool noted = false;
+        for (const QJsonValue& n : checked.value("notes").toArray()) noted = noted || n.toObject().value("message").toString().contains("cross");
+        QVERIFY(noted);
+        QCOMPARE(checked.value("warnings").toArray().first().toObject().value("at").toArray().size(), 2);
+        summary = json(call("get_schematic")).toObject();
+        QVERIFY2(summary.value("problems").toObject().value("warnings").toInt() > 0, qPrintable(QJsonDocument(summary.value("problems").toObject()).toJson()));
+        QVERIFY(summary.value("problems").toObject().value("notes").toInt() > 0);
+        QVERIFY(failed(call("check_schematic", {{"path", "nowhere.sch"}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // The operating point in one call, of a schematic with a transient
+    // analysis only: nodes, branch currents and each device's quantities
+    // under its component, with what they make plain; the datasets left
+    // as they were, and the next run its analyses.
+    void theOperatingPointComesInOneCall()
+    {
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (ngspice.isEmpty()) QSKIP("no ngspice here");
+        const QString before = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = ngspice;
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const QString R = "\"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        QJsonObject r = call("set_schematic", {{"text", "<Components>\n"
+                                                        "  <Vdc V1 1 100 200 18 -26 0 1 \"5 V\" 1>\n"
+                                                        "  <GND * 1 100 230 0 0 0 0>\n"
+                                                        "  <R R1 1 200 100 15 -26 0 0 " + R +
+                                                        "  <Diode D1 1 300 200 15 -26 0 1 \"1e-15 A\" 1 \"1\" 1 \"10 fF\" 1 \"0.5\" 0 \"0.7 V\" 0 \"0.5\" 0 "
+                                                        "\"0.0 fF\" 0 \"0.0\" 0 \"2.0\" 0 \"0.0 Ohm\" 0 \"0.0 ps\" 0 \"0\" 0 \"0.0\" 0 \"1.0\" 0 \"1.0\" 0 "
+                                                        "\"0\" 0 \"1 mA\" 0 \"26.85\" 0 \"3.0\" 0 \"1.11\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 "
+                                                        "\"0.0\" 0 \"26.85\" 0 \"1.0\" 0 \"normal\" 0>\n"
+                                                        "  <GND * 1 300 230 0 0 0 0>\n"
+                                                        "  <.TR TR1 1 100 400 0 57 0 0 \"lin\" 1 \"0\" 1 \"1 ms\" 1 \"11\" 0>\n"
+                                                        "</Components>\n<Wires>\n"
+                                                        "  <100 170 100 100 \"\" 0 0 0 \"\">\n  <100 100 170 100 \"\" 0 0 0 \"\">\n"
+                                                        "  <230 100 300 100 \"out\" 250 70 30 \"\">\n  <300 100 300 170 \"\" 0 0 0 \"\">\n"
+                                                        "</Wires>\n"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"as", "diode_op"}})));
+        const QString dataset = dir.filePath("workspace/diode_op.dat.ngspice");
+        QFile::remove(dataset);
+        r = call("simulate", {{"operating_point", true}, {"timeout", 60}}, 90000);
+        QucsSettings.NgspiceExecutable = ngspice;
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject outcome = json(r).toObject();
+        QVERIFY2(outcome.value("succeeded").toBool(), qPrintable(text(r)));
+        const QJsonObject op = outcome.value("operating point").toObject();
+        const double vout = op.value("nodes").toObject().value("out").toDouble(-1);
+        QVERIFY2(vout > 0.5 && vout < 0.9, qPrintable(text(r)));   // a forward diode
+        bool diode = false;
+        for (const QJsonValue& d : op.value("devices").toArray())
+            if (d.toObject().value("component").toString() == "D1") {
+                diode = true;
+                const double id = d.toObject().value("values").toObject().value("id").toDouble();
+                QVERIFY2(id > 3e-3 && id < 5e-3, qPrintable(text(r)));   // (5 V - 0.7 V) / 1k
+            }
+        QVERIFY2(diode, qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(dataset));   // its datasets as they were
+        QVERIFY2(outcome.value("analysis").toString().contains("operating point"), qPrintable(text(r)));
+        // The next run is its analyses.
+        r = call("simulate", {{"timeout", 60}}, 90000);
+        QucsSettings.NgspiceExecutable = before;
+        QVERIFY2(json(r).toObject().value("dataset written").toBool(), qPrintable(text(r)));
+        QVERIFY(!json(r).toObject().contains("operating point"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A part's text: which properties are shown, whether its name is,
+    // where the text is - without rewriting its line; rotation counted
+    // from the type's own orientation (a DC source is made turned).
+    void aPartsTextIsShownHiddenAndMoved()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QJsonObject r = call("add_component", {{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 100}});
+        QCOMPARE(json(r).toObject().value("rotation").toInt(), 0);
+        QCOMPARE(json(r).toObject().value("rotation in the file").toInt(), 1);
+        r = call("edit_component", {{"name", "V1"}, {"rotation", 1}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("rotation").toInt(), 1);
+        QCOMPARE(json(r).toObject().value("rotation in the file").toInt(), 2);
+        r = call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 300}, {"y", 100}, {"shown", QJsonObject{{"Temp", true}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("edit_component", {{"name", "R1"}, {"shown", QJsonObject{{"R", false}}}, {"name_shown", false}, {"text_at", QJsonArray{20, -40}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject c = json(r).toObject();
+        QCOMPARE(c.value("text at").toArray(), (QJsonArray{20, -40}));
+        QCOMPARE(c.value("name shown").toBool(true), false);
+        Component* r1 = sch->getComponentByName("R1");
+        QVERIFY(!r1->getProperty("R")->display && r1->getProperty("Temp")->display && !r1->showName);
+        QCOMPARE(QPoint(r1->tx, r1->ty), QPoint(20, -40));
+        QVERIFY(!failed(call("undo")));
+        r1 = sch->getComponentByName("R1");
+        QVERIFY(r1->getProperty("R")->display && r1->showName);
+        // Refused, and nothing changed.
+        QVERIFY(text(call("edit_component", {{"name", "R1"}, {"shown", QJsonObject{{"Nope", false}}}})).contains("its properties are"));
+        QVERIFY(failed(call("edit_component", {{"name", "R1"}, {"shown", QJsonObject{{"R", "no"}}}})));
+        QVERIFY(failed(call("edit_component", {{"name", "R1"}, {"text_at", QJsonArray{1}}})));
+        QVERIFY(failed(call("edit_component", {{"name", "R1"}, {"name_shown", "no"}})));
+        QVERIFY(sch->getComponentByName("R1")->getProperty("R")->display);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A component line with a value too many - every value after it would
+    // be shifted - is refused, naming the part and both counts; one with
+    // fewer is taken, the rest at their defaults, and said.
+    void aShiftedComponentLineIsRefused()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QJsonObject r = call("set_schematic", {{"text", "<Components>\n  <R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"0\" 0 \"26.85\" 0 \"0.0\" 0 "
+                                                        "\"0.0\" 0 \"26.85\" 0 \"european\" 0>\n</Components>\n"}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("R1 (R) has 7 property values, its type 6 properties"), qPrintable(text(r)));
+        QCOMPARE(int(sch->a_DocComps.size()), 0);
+        r = call("set_schematic", {{"text", "<Components>\n  <R R1 1 100 100 15 -26 0 1 \"2k\" 1 \"26.85\" 0>\n</Components>\n"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("note").toString().contains("took their defaults"), qPrintable(text(r)));
+        QCOMPARE(sch->getComponentByName("R1")->getProperty("R")->Value, QStringLiteral("2k"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Diagrams placed where there is room when not told where, and a note
+    // when one lies over another or over parts.
+    void diagramsArePlacedWhereThereIsRoom()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QJsonObject r = call("add_diagram", {});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("note").toString().contains("Placed below the circuit"), qPrintable(text(r)));
+        const Diagram* d = sch->a_DocDiags.front();
+        QVERIFY(d->cy - d->y2 > sch->getComponentByName("R1")->boundingRect().bottom());
+        r = call("add_diagram", {{"x", d->cx + 20}, {"y", d->cy}});
+        QVERIFY2(json(r).toObject().value("note").toString().contains("lies over diagram 1"), qPrintable(text(r)));
+        r = call("edit_diagram", {{"diagram", 2}, {"x", 60}, {"y", 150}});
+        QVERIFY2(json(r).toObject().value("note").toString().contains("R1"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A group moved with the wiring among its parts, the wires to the rest
+    // drawn on: every net as it was, one step to undo.
+    void aGroupMovesWithItsWires()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("batch", {{"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R2"}, {"x", 200}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R3"}, {"x", 200}, {"y", 300}, {"rotation", 1}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.2"}, {"to", "R2.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R2.2"}, {"to", "R3.1"}}}}}}})));
+        const auto netsNow = [this] {
+            QStringList nets;
+            for (const QJsonValue& n : json(call("get_schematic")).toObject().value("nets").toArray()) {
+                QStringList pins;
+                for (const QJsonValue& p : n.toObject().value("pins").toArray()) pins << p.toString();
+                pins.sort();
+                nets << pins.join(',');
+            }
+            nets.sort();
+            return nets;
+        };
+        const QStringList before = netsNow();
+        QJsonObject r = call("move", {{"names", QJsonArray{"R1", "R2"}}, {"dx", 100}, {"dy", -52}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("by").toArray(), (QJsonArray{100, -50}));   // a step of the grid
+        QVERIFY(json(r).toObject().value("wires moved with them").toInt() >= 1);
+        QCOMPARE(sch->getComponentByName("R1")->cx, 200);
+        QCOMPARE(sch->getComponentByName("R3")->cx, 200);   // not in the group
+        QCOMPARE(netsNow(), before);
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(sch->getComponentByName("R1")->cx, 100);
+        QCOMPARE(netsNow(), before);
+        QVERIFY(failed(call("move", {{"names", QJsonArray{"R9"}}, {"dx", 10}})));
+        QVERIFY(failed(call("move", {{"names", QJsonArray{"R1"}}, {"dx", 1}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // An analysis added with its plot in one call: AC in dB over a log
+    // axis, a transient beside it, a sweep of a part's value; what does
+    // not make sense refused.
+    void analysesAreAddedWithTheirPlot()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QJsonObject r = call("add_analysis", {{"kind", "ac"}, {"plot", QJsonArray{"out"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject result = json(r).toObject();
+        QCOMPARE(result.value("analysis").toObject().value("type").toString(), QStringLiteral(".AC"));
+        Component* ac = sch->getComponentByName(result.value("analysis").toObject().value("name").toString());
+        QVERIFY(ac != nullptr);
+        QCOMPARE(ac->getProperty("Type")->Value, QStringLiteral("log"));
+        QCOMPARE(ac->getProperty("Stop")->Value, QStringLiteral("100 MHz"));
+        QCOMPARE(result.value("diagram").toObject().value("traces").toArray().first().toObject().value("variable").toString(),
+                 QStringLiteral("ngspice/ac.v(out)"));
+        QCOMPARE(result.value("steps to undo").toInt(), 2);
+        r = call("add_analysis", {{"kind", "tran"}, {"stop", "2 ms"}, {"plot", QJsonArray{"v(out)"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Component* tr = sch->getComponentByName(json(r).toObject().value("analysis").toObject().value("name").toString());
+        QCOMPARE(tr->getProperty("Stop")->Value, QStringLiteral("2 ms"));
+        QVERIFY(tr->cx > ac->cx);   // beside the first
+        r = call("add_analysis", {{"kind", "sweep"}, {"analysis", tr->Name}, {"parameter", "R1"}, {"from", "1k"}, {"to", "10k"}, {"points", 3}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Component* sw = sch->getComponentByName(json(r).toObject().value("analysis").toObject().value("name").toString());
+        QCOMPARE(sw->getProperty("Sim")->Value, tr->Name);
+        QCOMPARE(sw->getProperty("Param")->Value, QStringLiteral("R1"));
+        QCOMPARE(sw->getProperty("Points")->Value, QStringLiteral("3"));
+        QVERIFY(failed(call("add_analysis", {{"kind", "sweep"}, {"analysis", "TR9"}, {"parameter", "R1"}, {"from", 1}, {"to", 2}})));
+        QVERIFY(failed(call("add_analysis", {{"kind", "sweep"}, {"analysis", tr->Name}, {"parameter", "Rnone"}, {"from", 1}, {"to", 2}})));
+        QVERIFY(failed(call("add_analysis", {{"kind", "op"}, {"plot", QJsonArray{"out"}}})));
+        QVERIFY(failed(call("add_analysis", {{"kind", "noise"}})));
+        QVERIFY(!failed(call("add_analysis", {{"kind", "op"}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A subcircuit made of parts: they go into a new schematic with a port
+    // for each net that goes out and a ground inside; one instance in
+    // their place, joined by labels - one step to undo. Its parameters on
+    // its symbol's name text, read and changed.
+    void aSubcircuitIsMadeOfParts()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        const QString R = "\"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        QJsonObject r = call("set_schematic", {{"text", "<Components>\n"
+                                                        "  <Vdc V1 1 100 200 18 -26 0 1 \"1 V\" 1>\n"
+                                                        "  <GND * 1 100 230 0 0 0 0>\n"
+                                                        "  <R R1 1 200 100 15 -26 0 0 " + R +
+                                                        "  <R R2 1 300 200 15 -26 0 1 " + R +
+                                                        "  <GND * 1 300 230 0 0 0 0>\n"
+                                                        "  <R R3 1 400 200 15 -26 0 1 " + R +
+                                                        "  <GND * 1 400 230 0 0 0 0>\n"
+                                                        "</Components>\n<Wires>\n"
+                                                        "  <100 170 100 100 \"\" 0 0 0 \"\">\n  <100 100 170 100 \"\" 0 0 0 \"\">\n"
+                                                        "  <230 100 300 100 \"\" 0 0 0 \"\">\n  <300 100 300 170 \"\" 0 0 0 \"\">\n"
+                                                        "  <300 100 400 100 \"\" 0 0 0 \"\">\n  <400 100 400 170 \"\" 0 0 0 \"\">\n"
+                                                        "</Wires>\n"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(failed(call("create_subcircuit", {{"names", QJsonArray{"R1", "R2"}}, {"save_as", "divider"}})));   // not saved yet
+        QVERIFY(!failed(call("save_document", {{"as", "divided"}})));
+        r = call("create_subcircuit", {{"names", QJsonArray{"R1", "R2"}}, {"save_as", "divider"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject made = json(r).toObject();
+        const QString file = dir.filePath("workspace/divider.sch");
+        QVERIFY(QFileInfo::exists(file));
+        QCOMPARE(made.value("ports").toArray().size(), 2);   // the source's net and R3's; R2's ground inside
+        QCOMPARE(made.value("grounds inside").toInt(), 1);
+        QVERIFY(sch->getComponentByName("R1") == nullptr && sch->getComponentByName("R2") == nullptr);
+        Component* sub = sch->getComponentByName(made.value("instance").toString());
+        QVERIFY(sub != nullptr && sub->Model == "Sub" && sub->Ports.size() == 2);
+        // Joined, not floating: no open pin of it.
+        const QString checked = text(call("check_schematic"));
+        QVERIFY2(!checked.contains(sub->Name + ": pin"), qPrintable(checked));
+        // Nothing left behind: no ground that held R2 alone, no wire to where its pin was.
+        QVERIFY2(!checked.contains("connected to nothing"), qPrintable(checked));
+        QVERIFY2(text(call("get_netlist")).contains(".SUBCKT", Qt::CaseInsensitive), qPrintable(text(call("get_netlist"))));
+        QVERIFY(failed(call("create_subcircuit", {{"names", QJsonArray{"R3"}}, {"save_as", "divider"}})));   // there already
+        QVERIFY(!failed(call("undo")));
+        QVERIFY(sch->getComponentByName("R1") != nullptr && sch->getComponentByName(made.value("instance").toString()) == nullptr);
+        // Its parameters: on its symbol's name text.
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        r = call("add_painting", {{"symbol", true}, {"type", "text"}, {"x", 0}, {"y", -60}, {"text", "divider"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        int id = 0;
+        for (const QJsonValue& p : json(call("get_schematic")).toObject().value("symbol paintings").toArray())
+            if (p.toObject().value("type").toString() == "id") id = p.toObject().value("painting").toInt();
+        QVERIFY(id > 0);
+        r = call("edit_painting", {{"painting", id}, {"prefix", "DIV"},
+                                   {"parameters", QJsonArray{QJsonObject{{"name", "Rtop"}, {"default", "1k"}, {"description", "top resistor"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject changed = json(r).toObject().value("changed").toObject();
+        QCOMPARE(changed.value("prefix").toString(), QStringLiteral("DIV"));
+        QCOMPARE(changed.value("parameters").toArray().first().toObject().value("default").toString(), QStringLiteral("1k"));
+        QVERIFY(failed(call("edit_painting", {{"painting", id}, {"parameters", QJsonArray{QJsonObject{{"name", "a=b"}}}}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Expressions of variables and another run beside this one, read from
+    // datasets as ngspice writes them; a peak to peak; a picture of one
+    // diagram alone; the traps told.
+    void expressionsComparisonsAndSmallThings()
+    {
+        const auto write = [this](const QString& name, double gain) {
+            QFile f(dir.filePath("workspace/" + name));
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+            QTextStream s(&f);
+            s << "<Qucs Dataset 26.1.3>\n<indep time 101>\n";
+            for (int i = 0; i <= 100; ++i) s << "  " << QString::number(i * 1e-5, 'e', 12) << "\n";
+            s << "</indep>\n<dep tran.v(in) time>\n";
+            for (int i = 0; i <= 100; ++i) s << "  " << QString::number(std::sin(2 * M_PI * 1e3 * i * 1e-5), 'e', 12) << "\n";
+            s << "</dep>\n<dep tran.v(out) time>\n";
+            for (int i = 0; i <= 100; ++i) s << "  " << QString::number(gain * std::sin(2 * M_PI * 1e3 * i * 1e-5), 'e', 12) << "\n";
+            s << "</dep>\n";
+            return true;
+        };
+        QVERIFY(write("amp.dat.ngspice", 0.5));
+        QVERIFY(write("run1.dat.ngspice", 0.25));
+        const QString file = dir.filePath("workspace/amp.dat.ngspice");
+        QJsonObject r = call("get_dataset", {{"path", file}, {"variables", QJsonArray{"v(out)-v(in)", "tran.v(out)"}}, {"compare", "run1"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray vars = json(r).toObject().value("variables").toArray();
+        QCOMPARE(vars.size(), 2);
+        const QJsonObject diff = vars.at(0).toObject();
+        QVERIFY(diff.value("expression").toBool());
+        QVERIFY2(std::abs(diff.value("min").toDouble() + 0.5) < 1e-3, qPrintable(QJsonDocument(diff).toJson()));   // 0.5 sin - sin
+        const QJsonObject out = vars.at(1).toObject();
+        QVERIFY2(std::abs(out.value("peak to peak").toDouble() - 1.0) < 1e-3, qPrintable(QJsonDocument(out).toJson()));
+        const QJsonObject other = out.value("other run").toObject();
+        QVERIFY2(std::abs(other.value("peak to peak").toDouble() - 0.5) < 1e-3, qPrintable(QJsonDocument(other).toJson()));
+        const double largest = other.value("difference (this run less that)").toObject().value("largest").toDouble();
+        QVERIFY2(std::abs(std::abs(largest) - 0.25) < 1e-3, qPrintable(QJsonDocument(other).toJson()));
+        QVERIFY(failed(call("get_dataset", {{"path", file}, {"variables", QJsonArray{"v(out)/"}}})));
+        QVERIFY(text(call("get_dataset", {{"path", file}, {"variables", QJsonArray{"tran.v(out)"}}, {"compare", "run9"}})).contains("run1"));
+        // The traps told: equation names beside node names; a text's subscripts.
+        QVERIFY(text(call("describe_component_type", {{"type", "NutmegEq"}})).contains("clash"));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("add_painting", {{"type", "text"}, {"x", 0}, {"y", 0}, {"text", "V_out"}});
+        QVERIFY2(json(r).toObject().value("note").toString().contains("subscript"), qPrintable(text(r)));
+        // A picture of one diagram, and of a region.
+        QVERIFY(!failed(call("add_diagram", {{"x", 100}, {"y", 300}})));
+        r = call("screenshot", {{"diagram", 1}});
+        QVERIFY2(!failed(r) && text(r).contains("diagram 1"), qPrintable(text(r)));
+        QCOMPARE(r.value("content").toArray().first().toObject().value("type").toString(), QStringLiteral("image"));
+        QVERIFY(!failed(call("screenshot", {{"region", QJsonArray{0, -20, 50, 20}}})));
+        QVERIFY(failed(call("screenshot", {{"region", QJsonArray{9000, 9000, 9100, 9100}}})));
+        QVERIFY(failed(call("screenshot", {{"diagram", 7}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 };
 

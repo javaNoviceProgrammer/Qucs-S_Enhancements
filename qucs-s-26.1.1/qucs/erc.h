@@ -23,7 +23,12 @@ class Schematic;
  * else than intended, made before it runs and shown with a place to
  * click: no ground, component pins connected to nothing, wire ends
  * connected to nothing, two components of one name, no simulation
- * block. Same-named labels and ground symbols count as connections.
+ * block; a wire's end or a pin on another net's wire without a
+ * junction, two nets' wires over each other; parts that reach no ground
+ * (floating), nets that reach it only through capacitors or current
+ * sources (no DC path). Same-named labels and ground symbols count as
+ * connections. notes() tells what is fine if meant: crossings, a label
+ * on one pin alone.
  */
 namespace qucs_s::erc {
 
@@ -42,6 +47,19 @@ struct Issue {
 /// The issues of \a doc, errors first, in the order they were found;
 /// each carries the document's name as its file.
 QList<Issue> check(Schematic* doc);
+
+/// What the wires of \a doc show and do not do - a wire's end or a pin on
+/// another net's wire mid-way, two nets' wires over each other (part of
+/// check()), and wires of two nets crossing without a junction (a note):
+/// for a tool that tells what a wire it drew did.
+QList<Issue> wiring(Schematic* doc);
+
+/// What is fine if meant, and worth a look when not (not part of check(),
+/// where a drawing would be full of them): wires of two nets crossing
+/// without a junction - no connection there; a net label on one pin alone
+/// - a node named to be plotted or read by an expression, or a label that
+/// was to match another. Warnings, each with its place.
+QList<Issue> notes(Schematic* doc);
 
 /// The subcircuit files \a doc uses directly (Subcircuit components, as
 /// absolute paths, each once).

@@ -71,6 +71,13 @@ Marker* markerOf(const Diagram* d, const QJsonValue& which, QString* error);
 /// and those there are like it); empty when it shows data.
 QString whyNoData(Schematic* sch, Graph* g);
 
+/// The operating point a DC bias run (Simulation > Calculate DC bias) of
+/// \a sch left in its Scratch folder \a scratch: each node's value and
+/// branch current, and - with ngspice - each device's operating quantities
+/// under its component, with what they make plain (re = 1/gm, beta, ro,
+/// ...); empty when there is none.
+QJsonObject operatingPointOfRun(Schematic* sch, const QString& scratch);
+
 /// A painting as get_schematic lists it: its number (\a index, from 1),
 /// its type (text, arrow, rectangle, text_box, ...) and its fields by name.
 QJsonObject paintingJson(Painting* p, int index);

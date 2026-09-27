@@ -61,6 +61,19 @@ private:
     QHash<QString, int> a_index;
 };
 
+/// Whether \a text is an expression of variables rather than a variable's
+/// name: it has an operator (+ - * / ^) or a function of evaluate() -
+/// v(out)/v(in), db(ac.v(out)/ac.v(in)), v(out)-v(in).
+bool isExpression(const QString& text);
+/// \a expression evaluated over \a data, sample by sample: numbers, the
+/// variables as resolve() finds them (one analysis for all: v(out) is
+/// the analysis's of the other variables), + - * / ^, parentheses and
+/// db(), abs(), mag(), phase() (degrees), real(), imag(), sqrt(), log10(),
+/// ln(), exp(), conj() - in complex numbers where the values are. A new
+/// variable named \a expression, on the variables' independent ones;
+/// false and why in \a error when it does not evaluate.
+bool evaluate(const Dataset& data, const QString& expression, Variable* out, QString* error);
+
 /// A value of an operating point: an independent variable of one value
 /// that nothing depends on - a node voltage or branch current an op
 /// analysis printed (v(out), i(v1)), a device's quantity (@jt1[id]).

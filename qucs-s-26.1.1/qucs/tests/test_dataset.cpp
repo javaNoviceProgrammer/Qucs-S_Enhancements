@@ -384,6 +384,56 @@ private slots:
         QVERIFY(ds::measure(inDb, QStringLiteral("gain"), ds::MeasureOptions()).contains("error"));
     }
 
+    // Expressions of variables: v(out)/v(in) sample by sample, each name
+    // of the others' analysis (tran or ac), complex for AC - db() of a
+    // ratio in dB; what is not an expression, what does not evaluate.
+    void expressionsAreEvaluated()
+    {
+        const QString path = write("expr.dat.ngspice", datasetText({   // (ngspice names: tran.v(in))
+            {"indep time 3", "", {"0", "1", "2"}},
+            {"dep tran.v(in) time", "", {"1", "2", "4"}},
+            {"dep tran.v(out) time", "", {"0.5", "1", "3"}},
+            {"indep frequency 2", "", {"1", "10"}},
+            {"dep ac.v(in) frequency", "", {"1+j0", "1+j0"}},
+            {"dep ac.v(out) frequency", "", {"0+j0.5", "0.1-j0"}},
+        }));
+        ds::Dataset data;
+        QVERIFY(data.read(path));
+        QVERIFY(ds::isExpression("v(out)/v(in)"));
+        QVERIFY(ds::isExpression("db(ac.v(out))"));
+        QVERIFY(ds::isExpression("tran.v(out) - 1"));
+        QVERIFY(!ds::isExpression("tran.v(out)"));
+        QVERIFY(!ds::isExpression("ngspice/tran.v(out)"));
+        QVERIFY(!ds::isExpression("v(n-1)"));
+        QVERIFY(!ds::isExpression("@q1[ic]"));
+        ds::Variable v;
+        QString error;
+        QVERIFY2(ds::evaluate(data, "tran.v(out)/v(in)", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, QStringList{"time"});
+        QCOMPARE(v.re, (QVector<double>{0.5, 0.5, 0.75}));
+        QVERIFY(!v.isComplex());
+        QVERIFY2(ds::evaluate(data, "2 * (tran.v(out) - tran.v(in)) ^ 2", &v, &error), qPrintable(error));
+        QCOMPARE(v.re, (QVector<double>{0.5, 2, 2}));
+        // AC: complex, and its dB.
+        QVERIFY2(ds::evaluate(data, "ac.v(out)/v(in)", &v, &error), qPrintable(error));
+        // (The first value's imaginary part is read: it was once lost.)
+        QCOMPARE(data.find("ac.v(out)")->im, (QVector<double>{0.5, 0}));
+        QVERIFY(v.isComplex());
+        QCOMPARE(v.dependencies, QStringList{"frequency"});
+        QVERIFY(std::abs(v.im.at(0) - 0.5) < 1e-12);
+        QVERIFY2(ds::evaluate(data, "db(ac.v(out)/ac.v(in))", &v, &error), qPrintable(error));
+        QVERIFY(!v.isComplex());
+        QVERIFY(std::abs(v.re.at(1) + 20) < 1e-9);
+        QVERIFY2(ds::evaluate(data, "phase(ac.v(out))", &v, &error), qPrintable(error));
+        QVERIFY(std::abs(v.re.at(0) - 90) < 1e-9);
+        // Refused, with why.
+        QVERIFY(!ds::evaluate(data, "v(out)/", &v, &error));
+        QVERIFY(!ds::evaluate(data, "nosuch * 2", &v, &error) && error.contains("nosuch"));
+        QVERIFY(!ds::evaluate(data, "3 * 4", &v, &error) && error.contains("numbers"));
+        QVERIFY(!ds::evaluate(data, "tran.v(out) / ac.v(in)", &v, &error) && error.contains("analysis"));
+        QVERIFY(!ds::evaluate(data, "abs(tran.v(out)", &v, &error));
+    }
+
     // What a variable's numbers are: dB, degrees, V, A, s, Hz - from its
     // name, or the equation that makes it.
     void unitsAreToldFromNamesAndEquations()

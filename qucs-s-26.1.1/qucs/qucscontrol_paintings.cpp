@@ -23,6 +23,7 @@
 
 #include <QColor>
 #include <QFileInfo>
+#include <QRegularExpression>
 
 #include <algorithm>
 #include <cmath>
@@ -417,7 +418,18 @@ QJsonObject propsOf(Painting* p)
         o = {{QStringLiteral("x"), tokenInt(t, 1)}, {QStringLiteral("y"), tokenInt(t, 2)}, {QStringLiteral("number"), t.value(3)}};
         if (t.size() > 5) o.insert(QStringLiteral("name"), line.section(QLatin1Char(' '), 5));
     } else if (type == QLatin1String("id")) {
-        o = {{QStringLiteral("x"), tokenInt(t, 1)}, {QStringLiteral("y"), tokenInt(t, 2)}, {QStringLiteral("prefix"), t.value(3)}};
+        // A subcircuit's name text: its prefix (SUB1, SUB2, ...) and the
+        // parameters its instances take, each with its default.
+        auto* id = static_cast<ID_Text*>(p);
+        QJsonArray parameters;
+        for (const auto& sp : id->subParameters)
+            parameters.append(QJsonObject{{QStringLiteral("name"), sp->name.section(QLatin1Char('='), 0, 0)},
+                                          {QStringLiteral("default"), sp->name.section(QLatin1Char('='), 1)},
+                                          {QStringLiteral("description"), sp->description},
+                                          {QStringLiteral("type"), sp->type},
+                                          {QStringLiteral("shown"), sp->display}});
+        o = {{QStringLiteral("x"), tokenInt(t, 1)}, {QStringLiteral("y"), tokenInt(t, 2)}, {QStringLiteral("prefix"), id->prefix},
+             {QStringLiteral("parameters"), parameters}};
     } else if (isShape(type)) {
         o = {{QStringLiteral("x"), tokenInt(t, 1)},     {QStringLiteral("y"), tokenInt(t, 2)},
              {QStringLiteral("width"), tokenInt(t, 3)}, {QStringLiteral("height"), tokenInt(t, 4)},
@@ -449,7 +461,9 @@ QStringList propsOfType(const QString& type)
         keys << QStringLiteral("file");
     }
     if (type == QLatin1String("text_box")) keys << QStringLiteral("tip");
-    if (type == QLatin1String("port") || type == QLatin1String("id")) keys = QStringList{QStringLiteral("x"), QStringLiteral("y")};
+    if (type == QLatin1String("port")) keys = QStringList{QStringLiteral("x"), QStringLiteral("y")};
+    if (type == QLatin1String("id"))
+        keys = QStringList{QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("prefix"), QStringLiteral("parameters")};
     keys.removeDuplicates();
     keys.sort();
     return keys;
@@ -644,8 +658,53 @@ QString changedLine(const QString& type, const QString& line, const QJsonObject&
         const int k = 2 + int(points.size());
         ok = setColour(k, "color") && setInt(k + 1, "thickness", 0, 100) && setPen(k + 2, "style") && setColour(k + 3, "fill_color")
           && setBrush(k + 4, "fill_style") && setBool(k + 5, "filled") && setBool(k + 6, "closed");
-    } else if (type == QLatin1String("image") || type == QLatin1String("port") || type == QLatin1String("id")) {
+    } else if (type == QLatin1String("image") || type == QLatin1String("port")) {
         ok = setInt(1, "x") && setInt(2, "y");
+    } else if (type == QLatin1String("id")) {
+        // Its place, prefix and parameters - the line written again from
+        // them ("1=R=1k=resistance=" each: shown, name=default, what, type).
+        ok = setInt(1, "x") && setInt(2, "y");
+        if (!ok) return {};
+        QString prefix = t.value(3);
+        if (has("prefix")) {
+            prefix = get("prefix").toString().trimmed();
+            if (prefix.isEmpty() || prefix.contains(QRegularExpression(QStringLiteral("[\\s\"=]")))) {
+                *error = tr("'prefix' is a word: what the instances' names begin with (SUB gives SUB1, SUB2, ...).");
+                return {};
+            }
+        }
+        QStringList parameters;
+        if (has("parameters")) {
+            if (!get("parameters").isArray()) {
+                *error = tr("'parameters' is [{\"name\": \"R\", \"default\": \"1k\", \"description\": ..., \"type\": ..., \"shown\": true}, ...].");
+                return {};
+            }
+            for (const QJsonValue& v : get("parameters").toArray()) {
+                const QJsonObject o = v.toObject();
+                const QString name = o.value(QLatin1String("name")).toString().trimmed();
+                const QString value = o.value(QLatin1String("default")).isString() ? o.value(QLatin1String("default")).toString()
+                                    : o.value(QLatin1String("default")).isDouble() ? QString::number(o.value(QLatin1String("default")).toDouble(), 'g', 12)
+                                                                                   : QString();
+                const QString what = o.value(QLatin1String("description")).toString();
+                const QString kind = o.value(QLatin1String("type")).toString();
+                static const QRegularExpression bad(QStringLiteral("[\"=]"));
+                if (name.isEmpty() || name.contains(QRegularExpression(QStringLiteral("\\s"))) || name.contains(bad)
+                    || value.contains(bad) || what.contains(bad) || kind.contains(bad)) {
+                    *error = tr("A parameter has a 'name' (a word) and may have a 'default', 'description' and 'type' - none with = or \" in it.");
+                    return {};
+                }
+                const bool shown = !o.contains(QLatin1String("shown")) || o.value(QLatin1String("shown")).toBool();
+                parameters << QStringLiteral("\"%1=%2=%3=%4=%5\"").arg(shown ? QStringLiteral("1") : QStringLiteral("0"), name, value, what, kind);
+            }
+        } else {
+            for (int i = 1;; i += 2) {
+                const QString sub = line.section(QLatin1Char('"'), i, i);
+                if (sub.isEmpty()) break;
+                parameters << QLatin1Char('"') + sub + QLatin1Char('"');
+            }
+        }
+        QStringList head{t.value(0), t.value(1), t.value(2), prefix};
+        return (head + parameters).join(QLatin1Char(' '));
     }
     return ok ? t.join(QLatin1Char(' ')) : QString();
 }
@@ -998,6 +1057,12 @@ QJsonObject QucsControl::addPainting(const QJsonObject& args)
     list->push_back(p);
     finish(sch, cornersOf(p));
     QJsonObject result{{QStringLiteral("added"), paintingJson(p, int(list->size()))}, {QStringLiteral("one step to undo"), true}};
+    // (A text painting takes _ and ^ as TeX does: a subscript, a superscript.)
+    if (type == QLatin1String("text") && (changesIn(args).value(QLatin1String("text")).toString().contains(QLatin1Char('_'))
+                                          || changesIn(args).value(QLatin1String("text")).toString().contains(QLatin1Char('^'))))
+        note = (note.isEmpty() ? QString() : note + QLatin1Char(' '))
+             + tr("In a text, _x writes x as a subscript and _{xy} several characters; ^ likewise a superscript: V_{out} "
+                  "for a subscripted out. There is no escape - for a plain underscore use a text_box.");
     if (!note.isEmpty()) result.insert(QStringLiteral("note"), note);
     return jsonResult(result);
 }
