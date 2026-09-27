@@ -11,6 +11,8 @@
 #include <QTemporaryDir>
 
 #include <cmath>
+#include <complex>
+#include <functional>
 
 #include "dataset.h"
 #include "qucscontrol_p.h"
@@ -259,6 +261,127 @@ private slots:
         const QJsonObject band = ds::measure(curve, QStringLiteral("bandwidth"), o);
         QVERIFY2(near(band.value("value").toDouble(), 6.1e6, 2e-2), QJsonDocument(band).toJson().constData());
         QCOMPARE(band.value("level").toDouble(), -3.0);
+    }
+
+    // Distortion and a loop's stability. The THD of a sine with known
+    // harmonics, as ngspice's .four finds it - on the last whole period or
+    // several, the fundamental given or found from the curve, a start-up
+    // before them left out - and refused on a range too short; a coarse
+    // simulation is warned of. A loop gain of three poles: its gain, the
+    // phase and gain margins against the crossings solved here; two poles
+    // never reach -180 degrees; a curve without its phase has no margin.
+    void distortionAndMarginsAreMeasured()
+    {
+        constexpr double pi = 3.14159265358979323846;
+        const double f = 1e3;
+        const auto signal = [&](double t) {
+            return 0.2 + (t < 1e-3 ? 0.5 : 0.0) + std::sin(2 * pi * f * t) + 0.1 * std::sin(2 * pi * 2 * f * t + 0.3)
+                 + 0.05 * std::cos(2 * pi * 3 * f * t);
+        };
+        ds::Curve sine;
+        for (int i = 0; i <= 5000; ++i) {
+            sine.x << i * 1e-6;   // 5 ms in steps of 1 us
+            sine.y << signal(i * 1e-6);
+        }
+        const double expected = 100 * std::sqrt(0.1 * 0.1 + 0.05 * 0.05);
+        ds::MeasureOptions o;
+        o.fundamental = f;
+        QJsonObject thd = ds::measure(sine, QStringLiteral("thd"), o);
+        QVERIFY2(near(thd.value("value").toDouble(), expected, 1e-3), QJsonDocument(thd).toJson().constData());
+        QCOMPARE(thd.value("unit").toString(), QStringLiteral("%"));
+        QVERIFY(near(thd.value("fundamental").toObject().value("amplitude").toDouble(), 1, 1e-3));
+        const QJsonArray harmonics = thd.value("harmonics").toArray();
+        QCOMPARE(harmonics.size(), 8);   // 2 to 9
+        QVERIFY(near(harmonics.at(0).toObject().value("amplitude").toDouble(), 0.1, 1e-3));
+        QVERIFY(near(harmonics.at(0).toObject().value("dBc").toDouble(), -20, 1e-3));
+        QVERIFY(near(harmonics.at(1).toObject().value("amplitude").toDouble(), 0.05, 1e-3));
+        QVERIFY(harmonics.at(2).toObject().value("amplitude").toDouble() < 1e-4);
+        QVERIFY(near(thd.value("dc").toDouble(), 0.2, 1e-3));
+        QVERIFY(!thd.contains("note"));
+        // The fundamental found from the curve: the same.
+        o.fundamental = qQNaN();
+        thd = ds::measure(sine, QStringLiteral("thd"), o);
+        QVERIFY2(near(thd.value("value").toDouble(), expected, 2e-3), QJsonDocument(thd).toJson().constData());
+        QVERIFY(thd.value("fundamental").toObject().value("frequency from").toString().contains("own"));
+        // Three periods, twenty harmonics: the same; ten periods reach into
+        // the start-up and past the curve's start.
+        o.fundamental = f;
+        o.periods = 3;
+        o.harmonics = 20;
+        thd = ds::measure(sine, QStringLiteral("thd"), o);
+        QVERIFY2(near(thd.value("value").toDouble(), expected, 1e-3), QJsonDocument(thd).toJson().constData());
+        QCOMPARE(thd.value("harmonics").toArray().size(), 19);
+        o.periods = 10;
+        QVERIFY(ds::measure(sine, QStringLiteral("thd"), o).value("error").toString().contains("shorter"));
+        // Ten samples a period: the higher harmonics are not to be trusted.
+        ds::Curve coarse;
+        for (int i = 0; i <= 50; ++i) {
+            coarse.x << i * 1e-4;
+            coarse.y << signal(i * 1e-4);
+        }
+        o.periods = 1;
+        o.harmonics = 9;
+        QVERIFY(ds::measure(coarse, QStringLiteral("thd"), o).value("note").toString().contains("not to be trusted"));
+        QVERIFY(ds::measure(ds::Curve{{0, 1, 2}, {0, 0, 0}}, QStringLiteral("thd"), ds::MeasureOptions()).contains("error"));
+
+        // T = 100 / ((1 + jf/1k)(1 + jf/100k)(1 + jf/1M)), 10 Hz to 100 MHz.
+        const auto loop = [](double x, double poles) {
+            std::complex<double> t(100.0, 0.0);
+            for (double p : {1e3, 1e5, 1e6}) {
+                if (poles-- <= 0) break;
+                t /= std::complex<double>(1.0, x / p);
+            }
+            return t;
+        };
+        const auto sweep = [&](double poles, ds::MeasureOptions* m, double shift = 0) {
+            ds::Curve c;
+            for (int i = 0; i <= 700; ++i) {
+                const double x = std::pow(10.0, 1 + i / 100.0);
+                c.x << x;
+                c.y << std::abs(loop(x, poles));
+                m->phase << std::arg(loop(x, poles)) * 180 / pi + shift;
+            }
+            return c;
+        };
+        // The crossings, solved: |T| = 1, and the phase at -180 degrees.
+        const auto solve = [](const std::function<double(double)>& g, double lo, double hi) {
+            for (int i = 0; i < 200; ++i) {
+                const double mid = std::sqrt(lo * hi);
+                (g(lo) * g(mid) <= 0 ? hi : lo) = mid;
+            }
+            return std::sqrt(lo * hi);
+        };
+        const auto phaseOf = [](double x) { return -(std::atan(x / 1e3) + std::atan(x / 1e5) + std::atan(x / 1e6)) * 180 / pi; };
+        const double fc = solve([&](double x) { return std::abs(loop(x, 3)) - 1; }, 1e3, 1e8);
+        const double f180 = solve([&](double x) { return phaseOf(x) + 180; }, 1e3, 1e8);
+        ds::MeasureOptions m;
+        const ds::Curve t3 = sweep(3, &m);
+        const QJsonObject pm = ds::measure(t3, QStringLiteral("phase_margin"), m);
+        QVERIFY2(near(pm.value("gain crossover").toDouble(), fc, 1e-2), QJsonDocument(pm).toJson().constData());
+        QVERIFY2(std::abs(pm.value("value").toDouble() - (180 + phaseOf(fc))) < 0.5, QJsonDocument(pm).toJson().constData());
+        QVERIFY(!pm.contains("note"));
+        const QJsonObject gm = ds::measure(t3, QStringLiteral("gain_margin"), m);
+        QVERIFY2(near(gm.value("phase crossover").toDouble(), f180, 1e-2), QJsonDocument(gm).toJson().constData());
+        QVERIFY2(std::abs(gm.value("value").toDouble() + 20 * std::log10(std::abs(loop(f180, 3)))) < 0.1, QJsonDocument(gm).toJson().constData());
+        const QJsonObject gain = ds::measure(t3, QStringLiteral("gain"), m);
+        QVERIFY2(std::abs(gain.value("value").toDouble() - 40) < 0.01, QJsonDocument(gain).toJson().constData());
+        QVERIFY(near(gain.value("unity-gain frequency").toDouble(), fc, 1e-2));
+        // Measured through an inverting point (-T): said so, with its margin.
+        ds::MeasureOptions inverted;
+        const ds::Curve minusT = sweep(3, &inverted, 180);
+        QVERIFY(ds::measure(minusT, QStringLiteral("phase_margin"), inverted).value("note").toString().contains("-T"));
+        // Two poles: never -180 degrees. No phase: no margin.
+        ds::MeasureOptions two;
+        const ds::Curve t2 = sweep(2, &two);
+        QVERIFY(ds::measure(t2, QStringLiteral("gain_margin"), two).value("error").toString().contains("-180"));
+        QVERIFY(ds::measure(t3, QStringLiteral("phase_margin"), ds::MeasureOptions()).value("error").toString().contains("phase"));
+        // In dB: the gain read as dB.
+        ds::Curve inDb = t3;
+        for (double& y : inDb.y) y = 20 * std::log10(y);
+        ds::MeasureOptions decibels;
+        decibels.decibels = true;
+        QVERIFY(std::abs(ds::measure(inDb, QStringLiteral("gain"), decibels).value("value").toDouble() - 40) < 0.01);
+        QVERIFY(ds::measure(inDb, QStringLiteral("gain"), ds::MeasureOptions()).contains("error"));
     }
 
     // What a variable's numbers are: dB, degrees, V, A, s, Hz - from its

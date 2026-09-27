@@ -127,15 +127,26 @@ struct MeasureOptions {
     double level = qQNaN();       // crossings, period: the level (else the middle of min and max)
     double tolerance = 0.02;      // settling: the band, a fraction of the step
     double low = 0.1, high = 0.9; // rise and fall: the fractions of the swing
-    bool decibels = false;        // bandwidth: the curve is in dB (3 dB below its peak, not 1/sqrt(2) of it)
+    bool decibels = false;        // bandwidth, gain: the curve is in dB (3 dB below its peak, not 1/sqrt(2) of it)
+    double fundamental = qQNaN(); // thd: the fundamental in Hz (else the curve's own frequency)
+    int harmonics = 9;            // thd: the highest harmonic counted
+    int periods = 1;              // thd: whole periods of the fundamental, ending where the curve ends
+    QVector<double> phase;        // phase_margin, gain_margin: the phase in degrees at each sample (a complex curve's)
 };
 /// \a what measured on \a c - "rise_time", "fall_time", "overshoot",
 /// "settling_time", "period", "frequency", "duty_cycle", "crossings",
-/// "bandwidth" - as an object of numbers and what they mean; an object
-/// with "error" when it cannot be measured on this curve. The bandwidth
-/// of a magnitude is where it falls to 1/sqrt(2) of its peak; of a curve
-/// in dB (options.decibels), 3 dB below it; of a real curve that goes
-/// below 0 and is not in dB, it cannot be told.
+/// "bandwidth", "thd", "gain", "phase_margin", "gain_margin" - as an
+/// object of numbers and what they mean; an object with "error" when it
+/// cannot be measured on this curve. The bandwidth of a magnitude is where
+/// it falls to 1/sqrt(2) of its peak; of a curve in dB (options.decibels),
+/// 3 dB below it; of a real curve that goes below 0 and is not in dB, it
+/// cannot be told. thd: the harmonics' amplitudes over the last whole
+/// periods of the fundamental, as ngspice's .four finds them, and the
+/// total of harmonics 2 up over the fundamental. gain: at the first x and
+/// at the peak, as a ratio and in dB, and where it falls through 1 (0 dB).
+/// The margins need options.phase: 180 degrees plus the phase where the
+/// magnitude falls through 1; the gain below 1, in dB, where the phase
+/// falls through -180 degrees.
 QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& options);
 
 /// \a v written with 7 significant digits (as the dataset has more than

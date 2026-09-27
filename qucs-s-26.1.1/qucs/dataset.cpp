@@ -23,6 +23,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <vector>
 
 namespace qucs_s::dataset {
 
@@ -443,7 +444,8 @@ QStringList measurements()
 {
     return {QStringLiteral("rise_time"), QStringLiteral("fall_time"), QStringLiteral("overshoot"),
             QStringLiteral("settling_time"), QStringLiteral("period"), QStringLiteral("frequency"),
-            QStringLiteral("duty_cycle"), QStringLiteral("crossings"), QStringLiteral("bandwidth")};
+            QStringLiteral("duty_cycle"), QStringLiteral("crossings"), QStringLiteral("bandwidth"),
+            QStringLiteral("thd"), QStringLiteral("gain"), QStringLiteral("phase_margin"), QStringLiteral("gain_margin")};
 }
 
 namespace {
@@ -472,6 +474,55 @@ bool edge(const Curve& c, double lowLevel, double highLevel, bool rising, double
         return true;
     }
     return false;
+}
+
+// \a c at \a count points evenly from \a start (included) to \a end (not),
+// straight between its samples (x rising); false when a point has no
+// finite value.
+bool resampled(const Curve& c, double start, double end, int count, std::vector<double>* y)
+{
+    y->resize(count);
+    const int n = int(c.x.size());
+    int i = 0;
+    for (int j = 0; j < count; ++j) {
+        const double t = start + (end - start) * j / count;
+        while (i + 1 < n && c.x.at(i + 1) < t) ++i;
+        if (i + 1 >= n) {
+            if (n == 0 || !(std::abs(c.x.at(n - 1) - t) <= 1e-9 * std::max(1.0, std::abs(t)))) return false;
+            (*y)[j] = c.y.at(n - 1);
+        } else {
+            const double x0 = c.x.at(i), x1 = c.x.at(i + 1);
+            const double k = x1 > x0 ? std::clamp((t - x0) / (x1 - x0), 0.0, 1.0) : 0.0;
+            (*y)[j] = c.y.at(i) + k * (c.y.at(i + 1) - c.y.at(i));
+        }
+        if (!std::isfinite((*y)[j])) return false;
+    }
+    return true;
+}
+
+// The phase without its jumps of 360 degrees, starting within -180 to 180.
+QVector<double> unwrapped(const QVector<double>& phase)
+{
+    QVector<double> p = phase;
+    for (int i = 1; i < p.size(); ++i) {
+        double d = phase.at(i) - phase.at(i - 1);
+        while (d > 180) d -= 360;
+        while (d < -180) d += 360;
+        p[i] = p.at(i - 1) + d;
+    }
+    if (!p.isEmpty()) {
+        const double shift = std::round(p.first() / 360.0) * 360.0;
+        for (double& v : p) v -= shift;
+    }
+    return p;
+}
+
+double wrapped(double degrees)
+{
+    double d = std::fmod(degrees, 360.0);
+    if (d > 180) d -= 360;
+    if (d <= -180) d += 360;
+    return d;
 }
 
 } // namespace
@@ -595,6 +646,170 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
         else if (!std::isnan(above)) r.insert(QStringLiteral("value"), rounded(above));
         else if (!std::isnan(below)) r.insert(QStringLiteral("value"), rounded(below));
         else r.insert(QStringLiteral("note"), tr("it does not fall 3 dB below its peak in the range"));
+        return r;
+    }
+    if (w == QLatin1String("thd")) {
+        // As ngspice's .four: the last whole periods of the fundamental,
+        // resampled evenly, and the amplitude of each harmonic in them.
+        double f0 = o.fundamental;
+        QString from = tr("given");
+        if (!(f0 > 0) || !std::isfinite(f0)) {
+            // Its steady state's: the middle of its later half, and the
+            // median time between rising crossings of it (a start-up, a
+            // step, adds a short one or a long one, not many).
+            const Stats late = statsOf(within(c, (c.x.first() + c.x.last()) / 2, NaN));
+            QList<double> rises;
+            for (const Crossing& x : crossings(c, (late.max + late.min) / 2))
+                if (x.direction > 0) rises << x.x;
+            if (rises.size() < 3)
+                return cannot(tr("no 'fundamental' given, and fewer than two periods in the range to tell the curve's frequency from"));
+            std::vector<double> periods;
+            for (int i = 1; i < rises.size(); ++i) periods.push_back(rises.at(i) - rises.at(i - 1));
+            std::nth_element(periods.begin(), periods.begin() + periods.size() / 2, periods.end());
+            f0 = 1.0 / periods[periods.size() / 2];
+            from = tr("the curve's own frequency (the median period between rising crossings of the middle of its later half)");
+            if (!std::isfinite(f0) || f0 <= 0) return cannot(tr("its own frequency cannot be told: give 'fundamental'"));
+        }
+        const int periods = std::clamp(o.periods, 1, 10000);
+        const int harmonics = std::clamp(o.harmonics, 2, 100);
+        const double end = c.x.last(), span = periods / f0, start = end - span;
+        if (start < c.x.first() - 1e-9 * span)
+            return cannot(tr("the range is %1 s long, shorter than %2 period(s) of %3 Hz (%4 s)")
+                              .arg(rounded(c.x.last() - c.x.first())).arg(periods).arg(rounded(f0)).arg(rounded(span)));
+        const qint64 count64 = std::max<qint64>(1024, qint64(32) * harmonics * periods);
+        if (count64 > (1 << 21)) return cannot(tr("too many periods for so many harmonics: fewer 'periods' or 'harmonics'"));
+        const int count = int(count64);
+        std::vector<double> y;
+        if (!resampled(c, start, end, count, &y)) return cannot(tr("the curve has no value somewhere in its last %1 period(s)").arg(periods));
+        double dc = 0;
+        for (double v : y) dc += v;
+        dc /= count;
+        QVector<double> amplitude(harmonics + 1, 0.0);
+        constexpr double TwoPi = 6.283185307179586;
+        for (int k = 1; k <= harmonics; ++k) {
+            double re = 0, im = 0;
+            const double step = TwoPi * k * periods / count;
+            for (int j = 0; j < count; ++j) {
+                re += y[j] * std::cos(step * j);
+                im += y[j] * std::sin(step * j);
+            }
+            amplitude[k] = 2.0 / count * std::hypot(re, im);
+        }
+        if (!(amplitude[1] > 0)) return cannot(tr("there is nothing at the fundamental, %1 Hz").arg(rounded(f0)));
+        double sum = 0;
+        QJsonArray list;
+        for (int k = 2; k <= harmonics; ++k) {
+            sum += amplitude[k] * amplitude[k];
+            list.append(QJsonObject{{QStringLiteral("harmonic"), k},
+                                    {QStringLiteral("frequency"), rounded(k * f0)},
+                                    {QStringLiteral("amplitude"), rounded(amplitude[k])},
+                                    {QStringLiteral("dBc"), rounded(20 * std::log10(std::max(amplitude[k] / amplitude[1], 1e-300)))}});
+        }
+        const double thd = std::sqrt(sum) / amplitude[1];
+        QJsonObject r{{QStringLiteral("value"), rounded(thd * 100)},
+                      {QStringLiteral("unit"), QStringLiteral("%")},
+                      {QStringLiteral("dB"), rounded(20 * std::log10(std::max(thd, 1e-300)))},
+                      {QStringLiteral("fundamental"), QJsonObject{{QStringLiteral("frequency"), rounded(f0)},
+                                                                  {QStringLiteral("amplitude"), rounded(amplitude[1])},
+                                                                  {QStringLiteral("frequency from"), from}}},
+                      {QStringLiteral("dc"), rounded(dc)},
+                      {QStringLiteral("harmonics"), list},
+                      {QStringLiteral("window"), QJsonArray{rounded(start), rounded(end)}},
+                      {QStringLiteral("periods"), periods},
+                      {QStringLiteral("measured"), tr("harmonics 2 to %1 over the fundamental, on the last %2 period(s) before the end of the range")
+                                                       .arg(harmonics).arg(periods)}};
+        // As simulated: enough samples a period of the highest harmonic?
+        int inWindow = 0;
+        for (double x : c.x)
+            if (x >= start && x <= end) ++inWindow;
+        const double perHarmonic = double(inWindow) / (double(periods) * harmonics);
+        if (perHarmonic < 10)
+            r.insert(QStringLiteral("note"), tr("the simulation has %1 samples a period of harmonic %2: the higher harmonics are not to be trusted "
+                                                "(a smaller maximum time step in the transient analysis helps)")
+                                                 .arg(rounded(perHarmonic)).arg(harmonics));
+        return r;
+    }
+    if (w == QLatin1String("gain")) {
+        if (!o.decibels && s.min < 0)
+            return cannot(tr("the curve goes below 0: it is not a magnitude, and not known to be in dB (say decibels: true if it is)"));
+        const auto ratio = [&o](double y) { return o.decibels ? std::pow(10.0, y / 20.0) : y; };
+        const auto db = [&o](double y) { return o.decibels ? y : 20 * std::log10(y); };
+        const auto point = [&](double x, double y) {
+            return QJsonObject{{QStringLiteral("x"), rounded(x)}, {QStringLiteral("ratio"), rounded(ratio(y))}, {QStringLiteral("dB"), rounded(db(y))}};
+        };
+        QJsonObject r{{QStringLiteral("value"), rounded(db(s.first))},
+                      {QStringLiteral("unit"), QStringLiteral("dB")},
+                      {QStringLiteral("at the first x"), point(c.x.first(), s.first)},
+                      {QStringLiteral("peak"), point(s.xMax, s.max)}};
+        double unity = NaN;
+        for (const Crossing& x : crossings(c, o.decibels ? 0.0 : 1.0))
+            if (x.direction < 0) {
+                unity = x.x;
+                break;
+            }
+        if (!std::isnan(unity)) r.insert(QStringLiteral("unity-gain frequency"), rounded(unity));
+        else r.insert(QStringLiteral("note"), s.min >= (o.decibels ? 0.0 : 1.0) ? tr("it stays at 1 (0 dB) or above in the range")
+                                                                                : tr("it does not fall through 1 (0 dB) in the range"));
+        return r;
+    }
+    if (w == QLatin1String("phase_margin") || w == QLatin1String("gain_margin")) {
+        if (o.phase.size() != c.x.size())
+            return cannot(tr("it needs the phase: measure the complex loop gain (an AC variable such as v(out), or an equation making "
+                             "the ratio), not its dB or magnitude"));
+        const QVector<double> phase = unwrapped(o.phase);
+        Curve dB{c.x, {}};
+        for (double y : c.y) dB.y << (o.decibels ? y : 20 * std::log10(y));
+        const Curve ph{c.x, phase};
+        const double start = phase.first();
+        QJsonObject r;
+        if (w == QLatin1String("phase_margin")) {
+            double crossover = NaN;
+            for (const Crossing& x : crossings(dB, 0.0))
+                if (x.direction < 0) {
+                    crossover = x.x;
+                    break;
+                }
+            if (std::isnan(crossover)) {
+                double top = -std::numeric_limits<double>::infinity();
+                for (double v : dB.y)
+                    if (std::isfinite(v)) top = std::max(top, v);
+                return cannot(top < 0 ? tr("the loop gain is below 1 (0 dB) everywhere in the range: no gain crossover")
+                                      : tr("the loop gain does not fall through 1 (0 dB) in the range: no gain crossover"));
+            }
+            const double at = valueAt(ph, crossover);
+            const double margin = wrapped(180 + at);
+            r = {{QStringLiteral("value"), rounded(margin)},
+                 {QStringLiteral("unit"), QStringLiteral("degrees")},
+                 {QStringLiteral("gain crossover"), rounded(crossover)},
+                 {QStringLiteral("phase there"), rounded(at)},
+                 {QStringLiteral("phase at the first x"), rounded(start)}};
+            if (std::abs(start) > 90)
+                r.insert(QStringLiteral("note"), tr("the phase starts at %1 degrees, not near 0: if the loop was broken at an inverting point "
+                                                    "(this is -T), the margin is %2 degrees instead")
+                                                     .arg(rounded(start)).arg(rounded(wrapped(at))));
+        } else {
+            double crossover = NaN;
+            for (const Crossing& x : crossings(ph, -180.0))
+                if (x.direction < 0) {
+                    crossover = x.x;
+                    break;
+                }
+            if (std::isnan(crossover))
+                return cannot(tr("the phase does not fall through -180 degrees in the range: no phase crossover, the gain margin is "
+                                 "unbounded there (from %1 to %2 degrees)")
+                                  .arg(rounded(*std::min_element(phase.begin(), phase.end())))
+                                  .arg(rounded(*std::max_element(phase.begin(), phase.end()))));
+            const double gainThere = valueAt(dB, crossover);
+            r = {{QStringLiteral("value"), rounded(-gainThere)},
+                 {QStringLiteral("unit"), QStringLiteral("dB")},
+                 {QStringLiteral("phase crossover"), rounded(crossover)},
+                 {QStringLiteral("gain there, dB"), rounded(gainThere)},
+                 {QStringLiteral("phase at the first x"), rounded(start)}};
+            if (std::abs(start) > 90)
+                r.insert(QStringLiteral("note"), tr("the phase starts at %1 degrees, not near 0: if the loop was broken at an inverting point "
+                                                    "(this is -T), its phase crossover is where it falls through 0 degrees")
+                                                     .arg(rounded(start)));
+        }
         return r;
     }
     return cannot(tr("there is no measurement %1 (%2)").arg(what, measurements().join(QStringLiteral(", "))));

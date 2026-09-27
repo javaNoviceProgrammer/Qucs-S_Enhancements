@@ -691,6 +691,9 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
 
     QList<QList<QPair<QString, double>>> outer;
     const QList<ds::Curve> curves = ds::curvesOf(data, v, &outer);
+    // (The loop gain's margins need its phase too.)
+    const bool wantsPhase = v.isComplex() && (o.measure.contains(QStringLiteral("phase_margin")) || o.measure.contains(QStringLiteral("gain_margin")));
+    const QList<QVector<double>> phases = wantsPhase ? ds::phasesOf(data, v) : QList<QVector<double>>();
     QJsonArray curveList;
     int offset = 0;
     const int most = 50;
@@ -754,7 +757,10 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
         }
         if (!o.measure.isEmpty()) {
             QJsonObject m;
-            for (const QString& what : o.measure) m.insert(what, ds::measure(part, what, measureOptions));
+            ds::MeasureOptions options = measureOptions;
+            if (k < phases.size() && phases.at(k).size() == full.x.size())
+                options.phase = ds::within(ds::Curve{full.x, phases.at(k)}, o.from, o.to).y;
+            for (const QString& what : o.measure) m.insert(what, ds::measure(part, what, options));
             c.insert(QStringLiteral("measurements"), m);
         }
         if (o.points > 0) {
@@ -1276,6 +1282,22 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
     if (args.contains(QLatin1String("level"))) o.measureOptions.level = args.value(QLatin1String("level")).toDouble(NaN);
     if (args.contains(QLatin1String("tolerance")))
         o.measureOptions.tolerance = std::clamp(args.value(QLatin1String("tolerance")).toDouble(0.02), 1e-6, 0.5);
+    // thd: the fundamental, the harmonics counted, the periods it is measured on.
+    if (args.contains(QLatin1String("fundamental"))) {
+        const double f = args.value(QLatin1String("fundamental")).toDouble(NaN);
+        if (!(f > 0) || !std::isfinite(f)) return errorResult(tr("'fundamental' is a frequency in Hz, above 0."));
+        o.measureOptions.fundamental = f;
+    }
+    if (args.contains(QLatin1String("harmonics"))) {
+        const double h = args.value(QLatin1String("harmonics")).toDouble(NaN);
+        if (!(h >= 2 && h <= 100) || h != std::floor(h)) return errorResult(tr("'harmonics' is the highest harmonic counted, 2 to 100."));
+        o.measureOptions.harmonics = int(h);
+    }
+    if (args.contains(QLatin1String("periods"))) {
+        const double n = args.value(QLatin1String("periods")).toDouble(NaN);
+        if (!(n >= 1 && n <= 10000) || n != std::floor(n)) return errorResult(tr("'periods' is how many whole periods, 1 to 10000."));
+        o.measureOptions.periods = int(n);
+    }
     const QString form = args.value(QLatin1String("form")).toString();
     if (form == QLatin1String("db_phase")) o.form = ds::Form::DbPhase;
     else if (form == QLatin1String("real_imaginary")) o.form = ds::Form::RealImaginary;

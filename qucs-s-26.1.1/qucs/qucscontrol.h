@@ -18,7 +18,10 @@
 #include <QObject>
 #include <QPointer>
 
+#include <list>
+
 class Component;
+class Painting;
 class QAction;
 class QucsApp;
 class QucsDoc;
@@ -144,6 +147,17 @@ private:
     QJsonObject editMarker(const QJsonObject& args);
     QJsonObject deleteMarker(const QJsonObject& args);
     QJsonObject renameNet(const QJsonObject& args);
+    // Paintings, of the schematic or its symbol.
+    QJsonObject addPainting(const QJsonObject& args);
+    QJsonObject editPainting(const QJsonObject& args);
+    // The workspace, pictures, the simulator.
+    QJsonObject listDocuments(const QJsonObject& args);
+    QJsonObject exportImage(const QJsonObject& args);
+    QJsonObject setSimulator(const QJsonObject& args);
+    /// The document \a args name and the paintings they are about: its
+    /// symbol's when 'symbol' says so or it shows its symbol (switched to
+    /// what is asked for, which \a note then says), else its schematic's.
+    Schematic* paintingsOf(const QJsonObject& args, std::list<Painting*>** list, QString* note, QString* error);
     QJsonObject describeComponentType(const QJsonObject& args);
 
     /// The dataset get_dataset reads for \a args: a dataset file, or the

@@ -345,6 +345,26 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `move_to_pane` puts a document beside another; `screenshot` takes the
   document on white paper (`paper`), the canvas as the user sees it in
   the theme (`screen`), or the whole window with each dialog over it.
+  **Drawing on it**: `add_painting` and `edit_painting` draw and change
+  texts, arrows, lines, boxes, text boxes (a callout pointing at what it
+  is about), tables, dimensions and TeX formulas by their named fields,
+  and a subcircuit's symbol with the same tools (the document is switched
+  to show its symbol, as *Edit Circuit Symbol* does). Each change is one
+  step to undo. `get_schematic` lists every painting by its fields, and
+  `delete` and `select` take paintings by number. **The measurements an
+  amplifier session is after**: `thd` on a transient, which gives each
+  harmonic's amplitude over the last whole periods of a stated
+  fundamental, as ngspice's `.four` does; and on a loop gain, `gain`,
+  `phase_margin` and `gain_margin`. `list_documents` lists the files of
+  the workspace or a project without a shell: kinds, sizes, times, newest
+  first, and which dataset is which schematic's. `get_schematic`'s
+  `overview` tells a 24,000-part schematic in 721 bytes. `export_image`
+  writes a picture of a schematic, or of one diagram alone, as PNG, SVG,
+  PDF and more, without the export dialog. `set_simulator` chooses the
+  simulator, so two engines compare in four calls. An `atomic` batch is
+  all or nothing, and one that stops half-way says how many changes stay
+  (`undo` takes `steps`). `simulate` says when the schematic was changed
+  while it ran.
   Tools that only look are
   used without asking; the first change asks, and *Allow Qucs-S Control*
   lets the rest of the conversation go on without asking (as do the

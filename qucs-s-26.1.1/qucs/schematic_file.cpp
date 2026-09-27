@@ -653,6 +653,42 @@ void Schematic::restore(const QString& state)
   viewport()->update();
 }
 
+QPair<QString, QString> Schematic::snapshotAll()
+{
+  return {createUndoString('*'), createSymbolUndoString('*')};
+}
+
+bool Schematic::restoreAll(const QPair<QString, QString>& state)
+{
+  // (The first character of an undo string says what made it.)
+  const bool schematicChanged = createUndoString('*').mid(1) != state.first.mid(1);
+  const bool symbolChanged = createSymbolUndoString('*').mid(1) != state.second.mid(1);
+  if (schematicChanged) {
+    QString s = state.first;
+    rebuild(&s);
+    reloadGraphs();
+  }
+  if (symbolChanged) {
+    QString s = state.second;
+    rebuildSymbol(&s);
+  }
+  // One step to undo in each stack whose part changed: setChanged()
+  // records in the one of the mode it is in.
+  const bool mode = a_symbolMode;
+  if (schematicChanged) {
+    a_symbolMode = false;
+    setChanged(true, true);
+  }
+  if (symbolChanged) {
+    a_symbolMode = true;
+    setChanged(true, true);
+  }
+  a_symbolMode = mode;
+  updateAllBoundingRect();
+  viewport()->update();
+  return schematicChanged || symbolChanged;
+}
+
 void Schematic::writeDocumentTo(QTextStream& stream)
 {
   stream << "<Qucs Schematic " << PACKAGE_VERSION << ">\n";
