@@ -93,6 +93,7 @@ public:
   int devtype;       // device type
 
   bool SetChanged;
+  QString a_defaultSettings;   // settingsText() of a new document, as made
 
   int a_textRevision = -1;   // the document's revision() last counted as an edit
   bool a_countsEdits = false;   // set up (and loaded): its changes are edits
@@ -101,6 +102,11 @@ public:
 
   bool loadSettings (void);
   bool saveSettings (void);
+  QString settingsText () const;   // the settings file's lines below its header
+  /// Whether saving writes the settings file (name.cfg): always when the
+  /// user wants it (QucsSettings.WriteTextDocSettings), else when the
+  /// settings are not a new document's or were changed since the last save.
+  bool writesSettings () const;
   void refreshLanguage(void);
   void applyDocumentColors();
 

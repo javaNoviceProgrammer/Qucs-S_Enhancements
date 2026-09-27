@@ -218,6 +218,19 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                  "Off: the library holds the subcircuits and their symbols only."));
     appSettingsGrid->addWidget(embedVerilogA, 15, 1);
 
+    appSettingsGrid->addWidget(new QLabel(tr("Write a settings file (.cfg) beside each text document:"),
+                                          appSettingsTab), 16, 0);
+    writeDocSettings = new QCheckBox(appSettingsTab);
+    writeDocSettings->setObjectName(QStringLiteral("writeDocSettings"));
+    writeDocSettings->setToolTip(tr("Saving a text document also writes name.cfg beside it (notes.txt.cfg for "
+                                    "notes.txt) with its File > Document Settings: for VHDL and Verilog the "
+                                    "simulation duration, module and libraries, for Verilog-A the symbol's "
+                                    "icon, descriptions and device type. Other text files have no use for it.\n"
+                                    "Off: a settings file is written only for a document whose Document "
+                                    "Settings were set or changed, so none is lost. The files already there "
+                                    "are left alone."));
+    appSettingsGrid->addWidget(writeDocSettings, 16, 1);
+
     // ...........................................................
     // The appearance settings tab
     QWidget *appAppearanceTab = new QWidget(t);
@@ -672,6 +685,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     showPinNames->setChecked(QucsSettings.ShowPinNames);
     showPinDirections->setChecked(QucsSettings.ShowPinDirections);
     embedVerilogA->setChecked(QucsSettings.EmbedVerilogAInLibraries);
+    writeDocSettings->setChecked(QucsSettings.WriteTextDocSettings);
 
     ShortcutButton->setText("Custom Shortcut");
 
@@ -885,6 +899,7 @@ void QucsSettingsDialog::slotApply()
     QucsSettings.ShowPinNames = showPinNames->isChecked();
     QucsSettings.ShowPinDirections = showPinDirections->isChecked();
     QucsSettings.EmbedVerilogAInLibraries = embedVerilogA->isChecked();
+    QucsSettings.WriteTextDocSettings = writeDocSettings->isChecked();
 
     QucsSettings.FileTypes.clear();
     for (int row=0; row < fileTypesTableWidget->rowCount(); row++)
@@ -1080,6 +1095,8 @@ void QucsSettingsDialog::slotDefaultValues()
     anyFolderIsProject->setChecked(false);
     showPinNames->setChecked(true);
     showPinDirections->setChecked(false);
+    embedVerilogA->setChecked(_settings::Get().itemDefault<bool>("EmbedVerilogAInLibraries"));
+    writeDocSettings->setChecked(_settings::Get().itemDefault<bool>("WriteTextDocSettings"));
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));
     paperFollowsTheme->setChecked(false);
     gridModeCombo->setCurrentIndex(gridModeCombo->findData(0));

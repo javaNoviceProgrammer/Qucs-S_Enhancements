@@ -178,6 +178,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   built-in editor; a suffix registered with any program takes precedence
   over the defaults, and a program path may contain slashes (upstream cut
   it at the first one).
+- **Text documents' settings files, optional**: saving a text document in
+  the built-in editor also writes `name.cfg` beside it (`notes.txt.cfg`)
+  with its *File → Document Settings*: the simulation duration, module
+  and libraries of a VHDL or Verilog file, the symbol icon, descriptions
+  and device type of a Verilog-A file. Other files have no use for it.
+  *Application Settings → Settings → Write a settings file (.cfg) beside
+  each text document* (on by default, as upstream) turns that off. A
+  file is then written only for a document whose Document Settings were
+  set or changed, so none is lost, and the files already there are left
+  alone. *Default Values* in that dialog now restores the defaults of
+  *Flexible wires* and *Embed Verilog-A files* too: it put back their
+  stored values.
 - **Syntax highlighting in the text editor**: a file is highlighted as the
   language of its suffix — C/C++, JSON, Markdown, Octave/MATLAB, Python,
   Qucs netlists, shell scripts, SPICE (`.cir`, `.sp`, `.lib`, `.inc`,

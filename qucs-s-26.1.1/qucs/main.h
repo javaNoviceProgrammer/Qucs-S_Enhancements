@@ -134,6 +134,10 @@ struct tQucsSettings {
   // Create Library: the Verilog-A sources (.va) the subcircuits use go
   // into the library, beside its other files; compiled where it is used.
   bool EmbedVerilogAInLibraries = true;
+  // Saving a text document also writes its Document Settings into a file
+  // beside it (name.cfg). Off: only when they hold something (a document
+  // whose settings were set) or changed; a file of defaults says nothing.
+  bool WriteTextDocSettings = true;
   bool PaperFollowsTheme = false;   // the schematic paper (and grid) is the theme's
   int GridMode = 0;   // the grid of the schematics: 0 as each says, 1 always hidden, 2 always shown
   // Where the simulator's output goes: the Simulation dock, a window of
