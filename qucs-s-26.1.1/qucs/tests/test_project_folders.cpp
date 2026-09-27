@@ -11,6 +11,7 @@
 #include <QLineEdit>
 #include <QListView>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -22,6 +23,7 @@
 #include "misc.h"
 #include "module.h"
 #include "qucs.h"
+#include "qucsdoc.h"
 #include "settings.h"
 #include "workspace.h"
 #include "dialogs/newprojdialog.h"
@@ -43,6 +45,12 @@ struct AnyFolder {
     explicit AnyFolder(bool on) { QucsSettings.AnyFolderIsProject = on; }
     ~AnyFolder() { QucsSettings.AnyFolderIsProject = false; }
 };
+
+QByteArray read(const QString& path)
+{
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
 
 bool write(const QString& path, const QByteArray& bytes)
 {
@@ -118,6 +126,12 @@ private slots:
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
         QucsSettings.firstRun = false;
+#ifdef Q_OS_LINUX
+        // The trash in here, not the user's (Qt makes $XDG_DATA_HOME/Trash,
+        // not $XDG_DATA_HOME).
+        qputenv("XDG_DATA_HOME", QFile::encodeName(dir.filePath("xdg")));
+        QVERIFY(QDir().mkpath(dir.filePath("xdg")));
+#endif
         QucsSettings.maxUndo = 20;
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
         Module::registerModules();
@@ -272,6 +286,80 @@ private slots:
                   });
         QVERIFY(!QFileInfo::exists(linked) && !isLink(linked));
         QVERIFY(QFileInfo::exists(plain + "/amp.sch"));
+    }
+
+    // Delete Project moves the folder to the trash - it was deleted for
+    // good, and with the setting any folder of the workspace could be.
+    // The question names the folder and what is in it, and says so of a
+    // folder that is a project by the setting alone; a document open from
+    // it with unsaved changes stops it (bug hunt 2026-09-26, A3).
+    void deletingAProjectAsksAndTrashes()
+    {
+        fresh("delete");
+        AnyFolder any(true);
+        QVERIFY(write(workspace + "/Documents/letter.txt", "precious"));
+        QVERIFY(write(workspace + "/Documents/sub/more.txt", "more"));
+        QVERIFY(write(workspace + "/amp_prj/amp.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n"));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.switchWorkspace(workspace));
+        QString text, details;
+        const auto cancel = [&](QWidget* w) {
+            auto* box = qobject_cast<QMessageBox*>(w);
+            if (box == nullptr || box->objectName() != "deleteProject") return false;
+            text = box->text();
+            details = box->informativeText();
+            box->button(QMessageBox::Cancel)->click();
+            return true;
+        };
+        answering([&] { QVERIFY(!app.deleteProject(workspace + "/Documents")); }, cancel);
+        QVERIFY2(text.contains("Documents") && text.contains("trash"), qPrintable(text));
+        QVERIFY2(details.contains("2 files") && details.contains("not a folder Qucs-S made"), qPrintable(details));
+        QVERIFY2(details.contains(QDir::toNativeSeparators(workspace + "/Documents")), qPrintable(details));
+        QCOMPARE(read(workspace + "/Documents/letter.txt"), QByteArray("precious"));
+        answering([&] { QVERIFY(!app.deleteProject(workspace + "/amp_prj")); }, cancel);
+        QVERIFY2(details.contains("1 file,") && !details.contains("not a folder Qucs-S made"), qPrintable(details));
+        QVERIFY(QFileInfo::exists(workspace + "/amp_prj/amp.sch"));
+
+        // A document open from it with unsaved changes: refused.
+        QVERIFY(app.gotoPage(workspace + "/Documents/letter.txt"));
+        const auto letter = [&]() -> QucsDoc* {
+            for (QucsDoc* d : app.allDocuments())
+                if (d->getDocName().endsWith("/Documents/letter.txt")) return d;
+            return nullptr;
+        };
+        QVERIFY(letter() != nullptr);
+        letter()->setDocChanged(true);
+        QString said;
+        answering([&] { QVERIFY(!app.deleteProject(workspace + "/Documents")); },
+                  [&](QWidget* w) {
+                      auto* box = qobject_cast<QMessageBox*>(w);
+                      if (box == nullptr) return false;
+                      said = box->text();
+                      if (QAbstractButton* ok = box->button(QMessageBox::Ok)) ok->click();
+                      else box->button(QMessageBox::Cancel)->click();   // (the question: the test fails below)
+                      return true;
+                  });
+        QVERIFY2(said.contains("letter.txt") && said.contains("unsaved"), qPrintable(said));
+        QCOMPARE(read(workspace + "/Documents/letter.txt"), QByteArray("precious"));
+        letter()->setDocChanged(false);
+#ifdef Q_OS_LINUX
+        // To the trash (here, not the user's): gone from the workspace,
+        // kept in the trash; the document open from it closed.
+        answering([&] { QVERIFY(app.deleteProject(workspace + "/Documents")); },
+                  [&](QWidget* w) {
+                      auto* box = qobject_cast<QMessageBox*>(w);
+                      if (box == nullptr || box->objectName() != "deleteProject") return false;
+                      details = box->informativeText();
+                      box->findChild<QPushButton*>("deleteProjectTrash")->click();
+                      return true;
+                  });
+        QVERIFY2(details.contains("letter.txt"), qPrintable(details));   // it closes
+        QVERIFY(!QFileInfo::exists(workspace + "/Documents"));
+        QCOMPARE(read(dir.filePath("xdg/Trash/files/Documents/letter.txt")), QByteArray("precious"));
+        QVERIFY(letter() == nullptr);
+#endif
+        app.closeAllFiles();
     }
 
     // A folder from the system (the command line, a drop, the Finder)

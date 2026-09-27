@@ -12,6 +12,7 @@
 #include "sheetdoc.h"
 
 #include "main.h"
+#include "misc.h"
 #include "qucs.h"
 
 #include <QAction>
@@ -24,6 +25,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSaveFile>
 #include <QStatusBar>
 #include <QTabBar>
@@ -365,6 +367,32 @@ int SheetDoc::save()
     if (!toWorkbook && a_book.sheets.size() > 1 && a_App != nullptr)
         a_App->statusBar()->showMessage(
             tr("Only the sheet in front, %1, is written to %2.").arg(sheet().name, QFileInfo(a_DocName).fileName()), 6000);
+    // A CSV file's encoding without bytes for what was typed (Ω in a
+    // Windows program's ANSI file): UTF-8 once the user agrees - never "?"
+    // in its place.
+    if (!toWorkbook && a_book.format == qucs_s::sheet::Format::Csv) {
+        const QString missing = qucs_s::sheet::unencodable(sheet(), a_book);
+        if (!missing.isEmpty()) {
+            if (!misc::ErrorCapture::active()) {   // (Claude's tools: no one to ask)
+                QMessageBox box(QMessageBox::Question, tr("Save Spreadsheet"),
+                                tr("%1 was read as %2, which has no “%3”.")
+                                    .arg(QFileInfo(a_DocName).fileName(), a_book.encoding.name(), missing),
+                                QMessageBox::NoButton, this);
+                box.setObjectName(QStringLiteral("saveAsUtf8"));
+                box.setInformativeText(tr("Save it as UTF-8, with the mark Excel reads UTF-8 by? Its other characters beyond "
+                                          "ASCII (°, µ, ...) are then written in UTF-8 too, which a program reading the file "
+                                          "as %1 shows wrongly.")
+                                           .arg(a_book.encoding.name()));
+                QPushButton* yes = box.addButton(tr("Save as UTF-8"), QMessageBox::AcceptRole);
+                QPushButton* cancel = box.addButton(QMessageBox::Cancel);
+                box.setDefaultButton(yes);
+                box.setEscapeButton(cancel);
+                box.exec();
+                if (box.clickedButton() != yes) return -1;
+            }
+            a_book.encoding = {qucs_s::textcodec::Encoding::Kind::Utf8, true};
+        }
+    }
     QString why;
     if (!qucs_s::sheet::writeFile(a_DocName, a_book, a_sheet, &why)) {
         QMessageBox::critical(this, tr("Save Spreadsheet"), tr("Cannot write %1:\n%2").arg(a_DocName, why));

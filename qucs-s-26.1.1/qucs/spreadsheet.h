@@ -12,6 +12,7 @@
 #ifndef QUCS_SPREADSHEET_H
 #define QUCS_SPREADSHEET_H
 
+#include "textcodec.h"
 #include "zipfile.h"
 
 #include <QDateTime>
@@ -44,6 +45,15 @@ struct Cell {
     QString text;      ///< what it shows: "1.5", "2024-05-01", "TRUE", "#DIV/0!"
     QString value;     ///< the value as the file writes it (a number's digits, a date's serial)
     QString formula;   ///< (.xlsx) without its '='; empty when none
+    /// (.xlsx) A formula over several cells, as the file has it: "shared"
+    /// (a formula filled down or across - the first cell holds it, the
+    /// others, given their own formula when read, name it by \c shared),
+    /// "array", "dataTable" (the first cell gives the range, \c span).
+    /// Empty for a formula of its own. Kept when the cell is edited: the
+    /// cells it spans are then written again, each on its own.
+    QString spanKind;
+    QString span;      ///< (.xlsx) the range its first cell gives it ("B1:B3")
+    int shared = -1;   ///< (.xlsx) the shared formula it belongs to (si), -1 for none
     int style = -1;    ///< (.xlsx) its style, kept
     QString xml;       ///< (.xlsx) the cell as read: written back while it is not changed
     bool changed = false;
@@ -87,8 +97,10 @@ struct Workbook {
     QList<Sheet> sheets;
     // A CSV file, written back as it was read.
     QChar delimiter = QLatin1Char(',');
-    bool bom = false;
-    bool latin1 = false;   ///< not UTF-8: read (and written) as Latin-1
+    /// How its bytes are characters (textcodec.h): UTF-8, UTF-16 (Excel's
+    /// "Unicode Text"), Windows-1252 (a Windows program's ANSI), a byte
+    /// order mark or not.
+    textcodec::Encoding encoding;
     QString newline = QStringLiteral("\n");
     bool finalNewline = true;
     // An .xlsx workbook.
@@ -102,17 +114,27 @@ QString columnName(int column);
 /// The column (from 0) and row (from 0) of a reference such as "B12";
 /// -1 for what is not one.
 int columnOf(const QString& reference, int* row = nullptr);
+/// \a formula as it is for a cell \a rows below and \a columns right of
+/// the one it is written for, as Excel fills it: its relative references
+/// moved (A1, A$1, A:A, 1:1), the absolute ones ($A$1) and what is in
+/// quotes kept; a reference moved off the sheet is #REF!.
+QString shiftedFormula(const QString& formula, int rows, int columns);
 
 /// The delimiter of CSV text: the one of , ; tab | found as often on most
 /// of its first lines.
 QChar detectDelimiter(const QString& text);
 /// A CSV file (RFC 4180: fields in quotes may hold the delimiter, quotes
 /// written twice and lines), its delimiter detected when \a delimiter is
-/// null; UTF-8 (a byte order mark kept) or else Latin-1.
+/// null; its encoding as textcodec::decode() finds it.
 Workbook readCsv(const QByteArray& bytes, QChar delimiter = QChar());
 /// \a sheet as CSV text in the manner of \a book (delimiter, encoding,
-/// lines), fields quoted when they must be.
+/// lines), fields quoted when they must be. Text the book's encoding has
+/// no bytes for (Ω in a Windows-1252 file) makes it UTF-8 with a byte
+/// order mark - as Excel reads UTF-8 - never "?".
 QByteArray writeCsv(const Sheet& sheet, const Workbook& book);
+/// The first character of \a sheet that \a book's encoding has no bytes
+/// for (writeCsv() then writes UTF-8), or empty.
+QString unencodable(const Sheet& sheet, const Workbook& book);
 
 /// An .xlsx workbook: its sheets, their cells (shared and inline strings,
 /// numbers, booleans, errors, formulas with their values, dates by their

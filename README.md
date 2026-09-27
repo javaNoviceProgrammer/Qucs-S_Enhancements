@@ -198,7 +198,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Keywords, types, built-ins, numbers, directives (SPICE's dot commands,
   the preprocessor, decorators), strings and comments, those over several
   lines too (`/* */`, `"""`, `<!-- -->`, fenced code), and a `#` in a
-  string is not a comment. *Comment/Uncomment* uses each language's mark.
+  string is not a comment. *Comment/Uncomment* uses each language's mark:
+  it comments the lines selected — or, when every one is a comment
+  already, uncomments them — and is one step to undo. A text file is read
+  as its bytes are (UTF-8, UTF-16 or UTF-32 by its byte order mark, else
+  Windows-1252, as vendor model libraries often are) and saved the same
+  way, its line ends too; a character its encoding has no bytes for is
+  asked about (the file is then saved as UTF-8). Undo right after opening
+  leaves the file as it was.
   A button in the status bar names the language of the text document in
   front; its menu chooses another, kept for every file of that suffix
   (open, opened later, after a restart) until *Back to the Default*. A
@@ -515,7 +522,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Only Qucs-S Files*. A double-click opens a file as the Content panel
   does; its menu opens it with the system, shows it in the file manager,
   copies its path, renames it in place, makes a folder or moves it to the
-  trash. The folder, the view and the options are kept for the next start.
+  trash (documents open from it close; not while one has unsaved
+  changes). The folder, the view and the options are kept for the next
+  start.
   **Drag and drop**: select one or several entries (⌘/Ctrl-click,
   Shift-click) and drag them.
   - **Where they go:** onto a folder's row, into that folder. Beside the
@@ -533,11 +542,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   - **Same name:** if the folder already has an item with that name, you
     choose *Replace* (the old one goes to the trash), *Keep Both*
     (`name 2`), *Skip* or *Stop*, and you can apply the choice to the
-    rest. A copy into its own folder is named `name copy`.
+    rest. An item that holds the one being moved is never replaced. A
+    copy into its own folder is named `name copy`.
   - **Not allowed:** moving a folder into itself, or moving the workspace
     or the open project.
-  - **Open documents:** documents open from moved files or folders follow
-    them; their tabs and names update.
+  - **Open documents:** documents open from moved or renamed files or
+    folders follow them; their tabs and names update.
 - **PDF viewer**: a PDF document — a datasheet, an application note, a
   report written by a script — opens in a tab of its own, from the File
   Browser, the Content panel, *File → Open*, a drop, or Claude's
@@ -582,11 +592,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Undo*); cells are cut, copied and pasted as tab-separated text (to and
   from other spreadsheets), a value pasted into a range fills it, Delete
   clears them. A CSV file keeps its delimiter (detected: `,` `;` tab
-  `|`), quotes, encoding (UTF-8 with or without a byte order mark, else
-  Latin-1) and line ends; its rows and columns are inserted and deleted.
+  `|`), quotes, encoding (UTF-8 with or without a byte order mark,
+  UTF-16 — Excel's *Unicode Text* — or else Windows-1252; a character it
+  has no bytes for makes it UTF-8, once asked) and line ends; its rows and
+  columns are inserted and deleted.
   A workbook shows its sheets in tabs, its column widths and merged
   cells, numbers, dates (by their styles), booleans, errors, and formulas
-  by their values (their text above the table). Saved, it keeps all but
+  by their values (their text above the table; a formula filled down
+  shows in every cell it fills). Saved, it keeps all but
   the cells changed as they were — formatting, charts, names, the other
   sheets — and Excel calculates its formulas again when it opens it
   (Qucs-S does not calculate them: a changed one shows its formula until
@@ -1163,6 +1176,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     open any folder as the project;
   - *New Project* names the folder exactly as typed.
   The project's name is its folder's name, with a `_prj` ending dropped.
+  *Delete Project* moves the folder to the trash; its question names the
+  folder and what is in it, and says so of a folder that is a project
+  only by this option.
   Folders named `NAME_prj` are always projects. Other Qucs-S
   installations still recognise only those, so a workspace of plain
   folders shows no projects there. The option is off by default, and

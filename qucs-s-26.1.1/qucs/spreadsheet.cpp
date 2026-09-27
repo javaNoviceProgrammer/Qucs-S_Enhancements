@@ -16,7 +16,6 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QSaveFile>
-#include <QStringDecoder>
 #include <QXmlStreamReader>
 
 #include <algorithm>
@@ -251,7 +250,8 @@ QRect rangeOf(const QString& ref)
     return QRect(QPoint(std::min(c1, c2), std::min(r1, r2)), QPoint(std::max(c1, c2), std::max(r1, r2)));
 }
 
-// A sheet's part read: its cells, each with the XML it had.
+// A sheet's part read: its cells, each with the XML it had; the cells of a
+// shared formula each given its own.
 Sheet readSheet(const QByteArray& data, const QStringList& strings, const Workbook& book)
 {
     Sheet sheet;
@@ -300,6 +300,12 @@ Sheet readSheet(const QByteArray& data, const QStringList& strings, const Workbo
                 if (xml.isEndElement() && xml.name() == QLatin1String("c")) break;
                 if (!xml.isStartElement()) continue;
                 if (xml.name() == QLatin1String("f")) {
+                    const QXmlStreamAttributes f = xml.attributes();
+                    cell.spanKind = f.value(QLatin1String("t")).toString();
+                    if (cell.spanKind == QLatin1String("normal")) cell.spanKind.clear();
+                    cell.span = f.value(QLatin1String("ref")).toString();
+                    if (cell.spanKind == QLatin1String("shared") && f.hasAttribute(QLatin1String("si")))
+                        cell.shared = f.value(QLatin1String("si")).toInt();
                     cell.formula = xml.readElementText();
                 } else if (xml.name() == QLatin1String("v")) {
                     value = xml.readElementText();
@@ -343,6 +349,28 @@ Sheet readSheet(const QByteArray& data, const QStringList& strings, const Workbo
             row.cells[column] = cell;
         }
     }
+    // A shared formula's other cells name it only: each is given its own,
+    // the first cell's moved as far as it is from it (B2 of "A1*2" filled
+    // down from B1 is A2*2) - shown so, and written so should the first
+    // cell change.
+    struct First {
+        int row, column;
+        QString formula;
+    };
+    QHash<int, First> firsts;
+    for (int r = 0; r < sheet.rows.size(); ++r)
+        for (int c = 0; c < sheet.rows.at(r).cells.size(); ++c) {
+            const Cell& cell = sheet.rows.at(r).cells.at(c);
+            if (cell.shared >= 0 && !cell.formula.isEmpty() && !firsts.contains(cell.shared))
+                firsts.insert(cell.shared, First{r, c, cell.formula});
+        }
+    for (int r = 0; r < sheet.rows.size(); ++r)
+        for (Cell& cell : sheet.rows[r].cells) {
+            if (cell.shared < 0 || !cell.formula.isEmpty() || !firsts.contains(cell.shared)) continue;
+            const First& first = firsts.value(cell.shared);
+            const int column = int(&cell - sheet.rows[r].cells.data());
+            cell.formula = shiftedFormula(first.formula, r - first.row, column - first.column);
+        }
     return sheet;
 }
 
@@ -353,8 +381,21 @@ QString cellXml(const Cell& cell, int row, int column, const QString& p)
 {
     const QString ref = columnName(column) + QString::number(row + 1);
     const QString style = cell.style >= 0 ? QStringLiteral(" s=\"%1\"").arg(cell.style) : QString();
-    if (!cell.formula.isEmpty())
-        return QStringLiteral("<%1c r=\"%2\"%3><%1f>%4</%1f></%1c>").arg(p, ref, style, escaped(cell.formula));
+    if (!cell.formula.isEmpty()) {
+        // Its own formula (a shared one's cells written each on its own).
+        // Not edited, it keeps the value it had until Excel calculates.
+        QString type, value;
+        if (!cell.changed && !cell.value.isEmpty()) {
+            switch (cell.kind) {
+            case Cell::Kind::Text: type = QStringLiteral(" t=\"str\""); break;
+            case Cell::Kind::Boolean: type = QStringLiteral(" t=\"b\""); break;
+            case Cell::Kind::Error: type = QStringLiteral(" t=\"e\""); break;
+            default: break;
+            }
+            value = QStringLiteral("<%1v>%2</%1v>").arg(p, escaped(cell.value));
+        }
+        return QStringLiteral("<%1c r=\"%2\"%3%4><%1f>%5</%1f>%6</%1c>").arg(p, ref, style, type, escaped(cell.formula), value);
+    }
     switch (cell.kind) {
     case Cell::Kind::Empty:
         return style.isEmpty() ? QString() : QStringLiteral("<%1c r=\"%2\"%3/>").arg(p, ref, style);
@@ -377,13 +418,40 @@ QString cellXml(const Cell& cell, int row, int column, const QString& p)
 
 QString sheetDataXml(const Sheet& sheet, const QString& p)
 {
+    // Formulas over several cells with a cell changed - a shared formula's
+    // first cell (which the others name), any cell of an array or a data
+    // table: every cell of theirs is written again on its own. As read,
+    // the others would name a shared formula that is no more, or a range
+    // would hold a cell not of it: a workbook Excel calls damaged.
+    QSet<int> brokenShared;
+    for (const Row& row : sheet.rows)
+        for (const Cell& cell : row.cells)
+            if (cell.changed && cell.shared >= 0) brokenShared.insert(cell.shared);
+    QList<QRect> brokenSpans;   // the arrays' and data tables' ranges
+    for (const Row& row : sheet.rows)
+        for (const Cell& cell : row.cells) {
+            if (cell.spanKind != QLatin1String("array") && cell.spanKind != QLatin1String("dataTable")) continue;
+            const QRect range = rangeOf(cell.span);
+            bool broken = false;
+            for (int r = range.top(); range.isValid() && r <= range.bottom() && r < sheet.rows.size() && !broken; ++r)
+                for (int c = range.left(); c <= range.right() && c < sheet.rows.at(r).cells.size() && !broken; ++c)
+                    broken = sheet.rows.at(r).cells.at(c).changed;
+            if (broken) brokenSpans << range;
+        }
+    const auto rewritten = [&](const Cell& cell, int r, int c) {
+        if (cell.shared >= 0 && brokenShared.contains(cell.shared)) return true;
+        if (cell.spanKind == QLatin1String("array") || cell.spanKind == QLatin1String("dataTable"))
+            for (const QRect& range : brokenSpans)
+                if (range.contains(c, r)) return true;
+        return false;
+    };
     QString out = QStringLiteral("<%1sheetData>").arg(p);
     for (int r = 0; r < sheet.rows.size(); ++r) {
         const Row& row = sheet.rows.at(r);
         QString cells;
         for (int c = 0; c < row.cells.size(); ++c) {
             const Cell& cell = row.cells.at(c);
-            if (!cell.changed && !cell.xml.isEmpty())
+            if (!cell.changed && !cell.xml.isEmpty() && !rewritten(cell, r, c))
                 cells += cell.xml;
             else
                 cells += cellXml(cell, r, c, p);
@@ -632,6 +700,133 @@ int columnOf(const QString& reference, int* row)
     return column - 1;
 }
 
+QString shiftedFormula(const QString& formula, int rows, int columns)
+{
+    if (rows == 0 && columns == 0) return formula;
+    constexpr int MaxRow = 1048576, MaxColumn = 16384;
+    const qsizetype n = formula.size();
+    const auto at = [&](qsizetype k) { return k < n ? formula.at(k) : QChar(); };
+    const auto isLetter = [](QChar c) { return c >= QLatin1Char('A') && c <= QLatin1Char('Z'); };
+    const auto isDigit = [](QChar c) { return c >= QLatin1Char('0') && c <= QLatin1Char('9'); };
+    const auto isWord = [](QChar c) { return c.isLetterOrNumber() || c == QLatin1Char('_') || c == QLatin1Char('.'); };
+    // A column's letters (one to three) at k: its number from 0, -1 if none.
+    const auto letters = [&](qsizetype& k) {
+        int column = 0;
+        const qsizetype from = k;
+        while (isLetter(at(k)) && k - from < 3) column = column * 26 + (at(k++).unicode() - u'A' + 1);
+        return k == from || isLetter(at(k)) ? -1 : column - 1;
+    };
+    // A row's digits at k: its number from 0, -1 if none.
+    const auto digits = [&](qsizetype& k) {
+        qint64 row = 0;
+        const qsizetype from = k;
+        while (isDigit(at(k)) && k - from < 8) row = row * 10 + at(k++).digitValue();
+        return k == from || isDigit(at(k)) || row == 0 ? -1 : int(row - 1);
+    };
+    const auto columnText = [&](bool fixed, int column) {
+        if (!fixed) column += columns;
+        return column < 0 || column >= MaxColumn ? QString() : (fixed ? QStringLiteral("$") : QString()) + columnName(column);
+    };
+    const auto rowText = [&](bool fixed, int row) {
+        if (!fixed) row += rows;
+        return row < 0 || row >= MaxRow ? QString() : (fixed ? QStringLiteral("$") : QString()) + QString::number(row + 1);
+    };
+    const QString lost = QStringLiteral("#REF!");
+    // A reference at k - a cell (A1, $A$1), columns (A:C) or rows (1:3) -
+    // written moved, k past it; false (k as it was) for anything else.
+    const auto reference = [&](qsizetype& k, QString& written) {
+        qsizetype j = k;
+        const bool fixedColumn = at(j) == QLatin1Char('$');
+        if (fixedColumn) ++j;
+        if (isLetter(at(j))) {
+            const int column = letters(j);
+            if (column < 0) return false;
+            const bool fixedRow = at(j) == QLatin1Char('$');
+            qsizetype d = fixedRow ? j + 1 : j;
+            if (isDigit(at(d))) {   // a cell: not a function's name (LOG10(), not a name's start (A1B)
+                const int row = digits(d);
+                if (row < 0 || isWord(at(d)) || at(d) == QLatin1Char('(')) return false;
+                const QString c = columnText(fixedColumn, column), r = rowText(fixedRow, row);
+                written = c.isEmpty() || r.isEmpty() ? lost : c + r;
+                k = d;
+                return true;
+            }
+            if (at(j) != QLatin1Char(':')) return false;   // columns: A:C
+            qsizetype e = j + 1;
+            const bool fixedEnd = at(e) == QLatin1Char('$');
+            if (fixedEnd) ++e;
+            const int end = isLetter(at(e)) ? letters(e) : -1;
+            if (end < 0 || isWord(at(e))) return false;
+            const QString a = columnText(fixedColumn, column), b = columnText(fixedEnd, end);
+            written = a.isEmpty() || b.isEmpty() ? lost : a + QLatin1Char(':') + b;
+            k = e;
+            return true;
+        }
+        if (!isDigit(at(j))) return false;   // rows: 1:3
+        const int row = digits(j);
+        if (row < 0 || at(j) != QLatin1Char(':')) return false;
+        qsizetype e = j + 1;
+        const bool fixedEnd = at(e) == QLatin1Char('$');
+        if (fixedEnd) ++e;
+        const int end = isDigit(at(e)) ? digits(e) : -1;
+        if (end < 0 || isWord(at(e))) return false;
+        const QString a = rowText(fixedColumn, row), b = rowText(fixedEnd, end);
+        written = a.isEmpty() || b.isEmpty() ? lost : a + QLatin1Char(':') + b;
+        k = e;
+        return true;
+    };
+    QString out;
+    qsizetype i = 0;
+    while (i < n) {
+        const QChar c = formula.at(i);
+        if (c == QLatin1Char('"') || c == QLatin1Char('\'')) {
+            // A text ("a ""b""") or a sheet's name in quotes ('My sheet'!A1): as it is.
+            qsizetype j = i + 1;
+            while (j < n) {
+                if (formula.at(j) == c) {
+                    if (at(j + 1) == c) {
+                        j += 2;
+                        continue;
+                    }
+                    break;
+                }
+                ++j;
+            }
+            out += formula.mid(i, j + 1 - i);
+            i = j + 1;
+            continue;
+        }
+        if (c == QLatin1Char('[')) {   // a table's column, another workbook: as it is
+            qsizetype j = i;
+            for (int depth = 0; j < n; ++j) {
+                if (formula.at(j) == QLatin1Char('[')) ++depth;
+                else if (formula.at(j) == QLatin1Char(']') && --depth == 0) break;
+            }
+            out += formula.mid(i, j + 1 - i);
+            i = j + 1;
+            continue;
+        }
+        const QChar before = i > 0 ? formula.at(i - 1) : QChar();
+        if (!isWord(before) && before != QLatin1Char('$')) {
+            QString written;
+            if (reference(i, written)) {
+                out += written;
+                continue;
+            }
+        }
+        if (isWord(c)) {   // a word - a function's or a name's - or a number: whole
+            qsizetype j = i;
+            while (j < n && isWord(formula.at(j))) ++j;
+            out += formula.mid(i, j - i);
+            i = j;
+            continue;
+        }
+        out += c;
+        ++i;
+    }
+    return out;
+}
+
 QChar detectDelimiter(const QString& text)
 {
     const QList<QChar> candidates = {QLatin1Char(','), QLatin1Char(';'), QLatin1Char('\t'), QLatin1Char('|')};
@@ -675,16 +870,9 @@ Workbook readCsv(const QByteArray& bytes, QChar delimiter)
 {
     Workbook book;
     book.format = Format::Csv;
-    book.bom = bytes.startsWith("\xEF\xBB\xBF");
-    const QByteArray data = book.bom ? bytes.mid(3) : bytes;
-    QStringDecoder utf8(QStringDecoder::Utf8);
-    QString text = utf8(data);
-    if (utf8.hasError()) {
-        text = QString::fromLatin1(data);
-        book.latin1 = true;
-    }
-    book.newline = data.contains("\r\n") ? QStringLiteral("\r\n") : QStringLiteral("\n");
-    book.finalNewline = data.isEmpty() || data.endsWith('\n');
+    const QString text = textcodec::decode(bytes, &book.encoding);
+    book.newline = text.contains(QLatin1String("\r\n")) ? QStringLiteral("\r\n") : QStringLiteral("\n");
+    book.finalNewline = text.isEmpty() || text.endsWith(QLatin1Char('\n'));
     const QChar d = delimiter.isNull() ? detectDelimiter(text) : delimiter;
     book.delimiter = d;
 
@@ -738,7 +926,8 @@ Workbook readCsv(const QByteArray& bytes, QChar delimiter)
     return book;
 }
 
-QByteArray writeCsv(const Sheet& sheet, const Workbook& book)
+namespace {
+QString csvText(const Sheet& sheet, const Workbook& book)
 {
     Sheet trimmed = sheet;
     trimmed.trim();
@@ -759,9 +948,25 @@ QByteArray writeCsv(const Sheet& sheet, const Workbook& book)
     }
     QString text = lines.join(book.newline);
     if (book.finalNewline && !lines.isEmpty()) text += book.newline;
-    QByteArray out = book.latin1 ? text.toLatin1() : text.toUtf8();
-    if (book.bom && !book.latin1) out.prepend("\xEF\xBB\xBF");
+    return text;
+}
+} // namespace
+
+QByteArray writeCsv(const Sheet& sheet, const Workbook& book)
+{
+    const QString text = csvText(sheet, book);
+    QByteArray out;
+    if (!textcodec::encode(text, book.encoding, &out))
+        textcodec::encode(text, textcodec::Encoding{textcodec::Encoding::Kind::Utf8, true}, &out);
     return out;
+}
+
+QString unencodable(const Sheet& sheet, const Workbook& book)
+{
+    QByteArray bytes;
+    QString missing;
+    textcodec::encode(csvText(sheet, book), book.encoding, &bytes, &missing);
+    return missing;
 }
 
 bool readXlsx(const QByteArray& bytes, Workbook& book, QString* error)
@@ -875,7 +1080,7 @@ QByteArray encode(const Workbook& book, const QString& fileSuffix, int sheet)
         Workbook csv = book;
         if (book.format != Format::Csv) {   // a workbook's sheet as a new CSV file
             csv.delimiter = QLatin1Char(',');
-            csv.bom = csv.latin1 = false;
+            csv.encoding = {};
             csv.newline = QStringLiteral("\n");
             csv.finalNewline = true;
         }

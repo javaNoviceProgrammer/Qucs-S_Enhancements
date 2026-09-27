@@ -8,6 +8,8 @@
  * follow it.
  */
 #include <QtTest>
+#include <QFileSystemModel>
+#include <QSignalSpy>
 #include <QCheckBox>
 #include <QListView>
 #include <QMessageBox>
@@ -160,6 +162,40 @@ private slots:
 #endif
     }
 
+    // Files compared as files, not names: another case where the file
+    // system has none, a path through a link. A copy over a file writes
+    // beside it first: one that fails leaves the file there (the helpers
+    // under PDF Save As, Claude's simulate keep_as and the library
+    // dialog; bug hunt 2026-09-26, A1).
+    void filesComparedAndCopiedSafely()
+    {
+        const QString here = top + "/same";
+        write(here + "/report.pdf", "the report");
+        write(here + "/other.pdf", "another");
+        QVERIFY(misc::isSameFile(here + "/report.pdf", here + "/./report.pdf"));
+        QVERIFY(!misc::isSameFile(here + "/report.pdf", here + "/other.pdf"));
+        QVERIFY(!misc::isSameFile(here + "/report.pdf", here + "/missing.pdf"));
+        QVERIFY(!misc::isSameFile(QString(), QString()));
+        if (QFileInfo::exists(here + "/Report.pdf"))   // (macOS, Windows)
+            QVERIFY(misc::isSameFile(here + "/report.pdf", here + "/Report.pdf"));
+#ifndef Q_OS_WIN
+        QVERIFY(QFile::link(here, top + "/samelink"));
+        QVERIFY(misc::isSameFile(here + "/report.pdf", top + "/samelink/report.pdf"));
+        QVERIFY(misc::copyFileOver(here + "/report.pdf", top + "/samelink/report.pdf"));   // itself: nothing done
+        QCOMPARE(read(here + "/report.pdf"), QByteArray("the report"));
+#endif
+        QString why;
+        QVERIFY(misc::copyFileOver(here + "/report.pdf", here + "/other.pdf", &why));
+        QCOMPARE(read(here + "/other.pdf"), QByteArray("the report"));
+        QVERIFY(misc::copyFileOver(here + "/report.pdf", here + "/new.pdf"));
+        QCOMPARE(read(here + "/new.pdf"), QByteArray("the report"));
+        write(here + "/other.pdf", "another");
+        QVERIFY(!misc::copyFileOver(here + "/missing.pdf", here + "/other.pdf", &why));
+        QVERIFY(why.contains("missing.pdf"));
+        QCOMPARE(read(here + "/other.pdf"), QByteArray("another"));   // left as it was
+        QCOMPARE(QDir(here).entryList(QDir::Files).size(), 3);         // nothing left beside it
+    }
+
     void whatADropDoes()
     {
         const QString here = fresh("rules");
@@ -263,6 +299,125 @@ private slots:
         QCOMPARE(done, QStringList({here + "/c/two.txt"}));
         QCOMPARE(read(here + "/c/two.txt"), QByteArray("two again"));
 #endif
+    }
+
+    // Replace is not offered for the one there when it holds the one moved
+    // or copied: W/x/x onto W, where W/x is, sent W/x - the one moved and
+    // all beside it - to the trash, and the move then failed (bug hunt
+    // 2026-09-26, A2). Kept both, or skipped.
+    void aFolderHoldingTheOneMovedIsNotReplaced()
+    {
+        const QString here = top + "/holds";
+        write(here + "/x/other.txt", "also precious");
+        write(here + "/x/x/data.txt", "precious");
+        FileBrowser fb;
+        bool offered = true;
+        QString informative;
+        const auto skipIt = [&](QWidget* w) {
+            auto* box = qobject_cast<QMessageBox*>(w);
+            if (box == nullptr || box->objectName() != "fbClash") return false;
+            offered = box->findChild<QPushButton*>("fbClashReplace") != nullptr;
+            informative = box->informativeText();
+            box->findChild<QPushButton*>("fbClashSkip")->click();
+            return true;
+        };
+        QStringList done;
+        for (const Qt::DropAction action : {Qt::MoveAction, Qt::CopyAction}) {
+            offered = true;
+            answering([&] { done = fb.transfer({here + "/x/x"}, here, action); }, skipIt);
+            QVERIFY(!offered);
+            QVERIFY2(informative.contains("holds"), qPrintable(informative));
+            QVERIFY(done.isEmpty());
+            QCOMPARE(read(here + "/x/x/data.txt"), QByteArray("precious"));
+            QCOMPARE(read(here + "/x/other.txt"), QByteArray("also precious"));
+        }
+#ifdef Q_OS_LINUX
+        // Replace chosen for the rest (the trash here, not the user's):
+        // asked again for the one that holds the source, without Replace.
+        write(here + "/z/z/deep.txt", "deep");
+        write(here + "/one.txt", "one there");
+        write(here + "/z/one.txt", "one moved");
+        int boxes = 0;
+        offered = true;
+        QTimer timer;
+        connect(&timer, &QTimer::timeout, this, [&] {
+            auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (box == nullptr || box->objectName() != "fbClash" || !box->isVisible()) return;
+            if (++boxes == 1) {
+                box->findChild<QCheckBox*>("fbClashRest")->setChecked(true);
+                box->findChild<QPushButton*>("fbClashReplace")->click();
+            } else {
+                offered = box->findChild<QPushButton*>("fbClashReplace") != nullptr;
+                box->findChild<QPushButton*>("fbClashSkip")->click();
+            }
+        });
+        timer.start(20);
+        done = fb.transfer({here + "/z/one.txt", here + "/z/z"}, here, Qt::MoveAction);
+        timer.stop();
+        QCOMPARE(boxes, 2);
+        QVERIFY(!offered);
+        QCOMPARE(done, QStringList({here + "/one.txt"}));
+        QCOMPARE(read(here + "/one.txt"), QByteArray("one moved"));
+        QCOMPARE(read(here + "/z/z/deep.txt"), QByteArray("deep"));
+#endif
+        // Keep Both: beside it, all kept.
+        answering([&] { done = fb.transfer({here + "/x/x"}, here, Qt::MoveAction); }, clash("fbClashKeepBoth"));
+        QCOMPARE(done, QStringList({here + "/x 2"}));
+        QCOMPARE(read(here + "/x 2/data.txt"), QByteArray("precious"));
+        QCOMPARE(read(here + "/x/other.txt"), QByteArray("also precious"));
+#ifndef Q_OS_WIN
+        // Through a link: the same folder, found so.
+        write(here + "/y/y/deep.txt", "deep");
+        QVERIFY(QFile::link(here + "/y", top + "/ylink"));
+        offered = true;
+        answering([&] { done = fb.transfer({top + "/ylink/y"}, here, Qt::MoveAction); }, skipIt);
+        QVERIFY(!offered);
+        QCOMPARE(read(here + "/y/y/deep.txt"), QByteArray("deep"));
+#endif
+    }
+
+    // Renamed as a name: another case of its own is a rename (it was
+    // refused on macOS and Windows), a path ("../x", "sub/x") is refused
+    // (it moved the file); renamed by name or in place, moved() says so,
+    // for open documents to follow (bug hunt 2026-09-26, A9, A10).
+    void renamedAsAName()
+    {
+        const QString here = top + "/renames";
+        write(here + "/proj/amp.sch", "amp");
+        write(here + "/proj/filter.sch", "filter");
+        FileBrowser fb;
+        QSignalSpy moved(&fb, &FileBrowser::moved);
+        QVERIFY(fb.renameEntry(here + "/proj/amp.sch", "amp2.sch").isEmpty());
+        QCOMPARE(moved.count(), 1);
+        QCOMPARE(moved.last().at(0).toStringList(), QStringList{here + "/proj/amp.sch"});
+        QCOMPARE(moved.last().at(1).toStringList(), QStringList{here + "/proj/amp2.sch"});
+        QCOMPARE(read(here + "/proj/amp2.sch"), QByteArray("amp"));
+
+        QVERIFY(fb.renameEntry(here + "/proj/amp2.sch", "Amp2.sch").isEmpty());
+        QVERIFY(QDir(here + "/proj").entryList(QDir::Files).contains("Amp2.sch"));
+        QVERIFY(!QDir(here + "/proj").entryList(QDir::Files).contains("amp2.sch"));
+        QCOMPARE(moved.count(), 2);
+
+        for (const QString bad : {"../escaped.sch", "sub/x.sch", "..", ".", "/abs.sch"})
+            QVERIFY2(!fb.renameEntry(here + "/proj/filter.sch", bad).isEmpty(), qPrintable(bad));
+        QVERIFY(QFileInfo::exists(here + "/proj/filter.sch"));
+        QVERIFY(!QFileInfo::exists(here + "/escaped.sch"));
+        QVERIFY(!fb.renameEntry(here + "/proj/filter.sch", "Amp2.sch").isEmpty());   // taken
+        QCOMPARE(read(here + "/proj/Amp2.sch"), QByteArray("amp"));
+        QCOMPARE(moved.count(), 2);
+
+        QVERIFY(fb.renameEntry(here + "/proj", "proj2").isEmpty());   // a folder
+        QCOMPARE(moved.last().at(1).toStringList(), QStringList{here + "/proj2"});
+
+        // In place, as the view's editor does it.
+        fb.setView(FileBrowser::View::List);
+        fb.setLocation(here + "/proj2");
+        QVERIFY(shows(fb, "filter.sch"));
+        QFileSystemModel* model = fb.fileModel();
+        QVERIFY(model->setData(model->index(here + "/proj2/filter.sch"), QStringLiteral("filter2.sch")));
+        QCOMPARE(moved.count(), 4);
+        QCOMPARE(moved.last().at(0).toStringList(), QStringList{here + "/proj2/filter.sch"});
+        QCOMPARE(moved.last().at(1).toStringList(), QStringList{here + "/proj2/filter2.sch"});
     }
 
     // Dropped on the views: on a folder's row, into it; beside the rows,
@@ -438,6 +593,86 @@ private slots:
         QCOMPARE(notes->getDocName(), here + "/b/a/notes.txt");
         QWidget* w = QucsApp::documentWidget(notes);
         QCOMPARE(app.paneOf(w)->tabText(app.paneOf(w)->indexOf(w)), QStringLiteral("notes.txt"));
+        app.closeAllFiles();
+    }
+
+    // Renamed in the File Browser, the documents open from it follow (they
+    // stayed on the old name, and the next save wrote it again); moved to
+    // the trash, they close - not while one has unsaved changes (it would
+    // have been saved where it was, in place of what was trashed).
+    void openDocumentsFollowARenameAndATrash()
+    {
+        const QString here = top + "/renamedocs";
+        write(here + "/proj/amp.txt", "amp");
+        write(here + "/proj/notes.txt", "notes");
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
+        QucsSettings.firstRun = false;
+        QucsSettings.maxUndo = 20;
+        QucsVersion = VersionTriplet(PACKAGE_VERSION);
+        Module::registerModules();
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.gotoPage(here + "/proj/amp.txt"));
+        QVERIFY(app.gotoPage(here + "/proj/notes.txt"));
+        const auto named = [&](const QString& path) {
+            for (QucsDoc* d : app.allDocuments())
+                if (d->getDocName() == path) return d;
+            return static_cast<QucsDoc*>(nullptr);
+        };
+        QucsDoc* amp = named(here + "/proj/amp.txt");
+        QucsDoc* notes = named(here + "/proj/notes.txt");
+        QVERIFY(amp != nullptr && notes != nullptr);
+
+        FileBrowser* fb = app.fileBrowserPanel();
+        QVERIFY(fb->renameEntry(here + "/proj/amp.txt", "amp2.txt").isEmpty());
+        QCOMPARE(amp->getDocName(), here + "/proj/amp2.txt");
+        QWidget* w = QucsApp::documentWidget(amp);
+        QCOMPARE(app.paneOf(w)->tabText(app.paneOf(w)->indexOf(w)), QStringLiteral("amp2.txt"));
+        QVERIFY(fb->renameEntry(here + "/proj", "proj2").isEmpty());
+        QCOMPARE(notes->getDocName(), here + "/proj2/notes.txt");
+        QCOMPARE(amp->getDocName(), here + "/proj2/amp2.txt");
+
+        // One with unsaved changes: the trash refused, nothing asked.
+        notes->setDocChanged(true);
+        QString said;
+        answering([&] { fb->moveToTrash(here + "/proj2"); },
+                  [&](QWidget* w) {
+                      auto* box = qobject_cast<QMessageBox*>(w);
+                      if (box == nullptr || box->button(QMessageBox::Ok) == nullptr) return false;   // (a question: fails the test)
+                      said = box->text();
+                      box->button(QMessageBox::Ok)->click();
+                      return true;
+                  });
+        QVERIFY2(said.contains("notes.txt") && said.contains("unsaved"), qPrintable(said));
+        QVERIFY(QFileInfo::exists(here + "/proj2/notes.txt"));
+        notes->setDocChanged(false);
+
+        // Asked, naming the documents that close; No: nothing happens.
+        answering([&] { fb->moveToTrash(here + "/proj2"); },
+                  [&](QWidget* w) {
+                      auto* box = qobject_cast<QMessageBox*>(w);
+                      if (box == nullptr || box->button(QMessageBox::No) == nullptr) return false;
+                      said = box->text();
+                      box->button(QMessageBox::No)->click();
+                      return true;
+                  });
+        QVERIFY2(said.contains("amp2.txt") && said.contains("notes.txt") && said.contains("close"), qPrintable(said));
+        QVERIFY(QFileInfo::exists(here + "/proj2/notes.txt"));
+        QVERIFY(named(here + "/proj2/notes.txt") != nullptr);
+#ifdef Q_OS_LINUX
+        // Yes (the trash here, not the user's): gone, their tabs closed.
+        answering([&] { fb->moveToTrash(here + "/proj2"); },
+                  [&](QWidget* w) {
+                      auto* box = qobject_cast<QMessageBox*>(w);
+                      if (box == nullptr || box->button(QMessageBox::Yes) == nullptr) return false;
+                      box->button(QMessageBox::Yes)->click();
+                      return true;
+                  });
+        QVERIFY(!QFileInfo::exists(here + "/proj2"));
+        QVERIFY(named(here + "/proj2/notes.txt") == nullptr);
+        QVERIFY(named(here + "/proj2/amp2.txt") == nullptr);
+#endif
         app.closeAllFiles();
     }
 };

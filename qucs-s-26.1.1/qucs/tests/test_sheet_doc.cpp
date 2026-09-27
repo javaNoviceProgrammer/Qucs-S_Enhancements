@@ -12,6 +12,9 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QTimer>
 #include <QStandardPaths>
 #include <QTabBar>
 #include <QTableView>
@@ -154,6 +157,46 @@ private slots:
         QCOMPARE(doc->save(), 0);
         QCOMPARE(contents(file), QByteArray("part;value\nR1;2200\n\"C1; big\"\n"));
         QVERIFY(!doc->getDocChanged());
+        app.closeAllFiles();
+    }
+
+    // A CSV file of a Windows program (ANSI): "Ω" typed into it is asked
+    // about - no, nothing written; yes, UTF-8 with the mark Excel reads
+    // UTF-8 by. It was written as "?" (bug hunt 2026-09-26, A7).
+    void aCharacterTheCsvFileLacksIsAskedAbout()
+    {
+        const QByteArray ansi = "part;value\nR1;10 k\xB5\n";
+        const QString file = write("ansi.csv", ansi);
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.gotoPage(file));
+        SheetDoc* doc = current(app);
+        QVERIFY(doc != nullptr);
+        QCOMPARE(shown(doc, 1, 1), QString::fromUtf8("10 kµ"));
+        QAbstractItemModel* m = doc->view()->model();
+        QVERIFY(m->setData(m->index(1, 1), QString::fromUtf8("4.7 kΩ"), Qt::EditRole));
+        const auto answering = [&](bool yes, QString* asked) {
+            QTimer timer;
+            QObject::connect(&timer, &QTimer::timeout, [&] {
+                auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                if (box == nullptr || box->objectName() != "saveAsUtf8" || !box->isVisible()) return;
+                *asked = box->text();
+                for (QAbstractButton* b : box->buttons())
+                    if ((yes && b->text() == "Save as UTF-8") || (!yes && box->buttonRole(b) == QMessageBox::RejectRole)) b->click();
+            });
+            timer.start(20);
+            return doc->save();
+        };
+        QString asked;
+        QCOMPARE(answering(false, &asked), -1);
+        QVERIFY2(asked.contains("Windows-1252") && asked.contains(QString::fromUtf8("Ω")), qPrintable(asked));
+        QCOMPARE(contents(file), ansi);
+        QVERIFY(doc->getDocChanged());
+        asked.clear();
+        QCOMPARE(answering(true, &asked), 0);
+        QVERIFY(!asked.isEmpty());
+        QCOMPARE(contents(file), QByteArray("\xEF\xBB\xBF") + QString::fromUtf8("part;value\nR1;4.7 kΩ\n").toUtf8());
+        QCOMPARE(shown(doc, 1, 1), QString::fromUtf8("4.7 kΩ"));
         app.closeAllFiles();
     }
 

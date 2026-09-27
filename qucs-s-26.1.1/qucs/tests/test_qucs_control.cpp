@@ -1310,6 +1310,16 @@ private slots:
         const QJsonObject kept = json(call("add_trace", {{"diagram", 1}, {"variable", "run1:tran.v(out)"}, {"style", "dot"}})).toObject();
         QCOMPARE(kept.value("variable").toString(), QStringLiteral("ngspice/run1:tran.v(out)"));
         QVERIFY2(kept.value("points").toInt() > 100, QJsonDocument(kept).toJson().constData());
+        // keep_as the schematic's own name: that is the run's dataset itself,
+        // not kept over itself - it was deleted (bug hunt 2026-09-26, A1).
+        for (const char* own : {"rc", "RC"}) {
+            if (QString(own) == "RC" && !QFileInfo::exists(dir.filePath("workspace/RC.sch"))) continue;   // (case matters here)
+            const QJsonObject self = json(call("simulate", {{"timeout", 60}, {"keep_as", own}}, 90000)).toObject();
+            QVERIFY2(self.value("dataset written").toBool(), QJsonDocument(self).toJson().constData());
+            QVERIFY2(self.value("kept as").toString().startsWith("not kept"), QJsonDocument(self).toJson().constData());
+            QVERIFY(QFileInfo(dir.filePath("workspace/rc.dat.ngspice")).size() > 0);
+            QVERIFY(!failed(call("get_dataset", {{"variables", QJsonArray{"out"}}})));
+        }
 
         // A value ngspice cannot read: the error names the part.
         QVERIFY(!failed(call("edit_component", {{"name", "C1"}, {"properties", QJsonObject{{"C", "{nosuchparam}"}}}})));

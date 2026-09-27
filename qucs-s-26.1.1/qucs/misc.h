@@ -85,6 +85,17 @@ namespace misc {
   /// The local files a drag carries (file:// URLs), empty for any other
   /// kind of drag.
   QStringList localFiles(const QMimeData* data);
+  /// Whether two paths name the same file or folder - also when they are
+  /// spelt differently: another case on a case-insensitive file system
+  /// (macOS, Windows), a symbolic link, /tmp and /private/tmp. Compares
+  /// the files themselves (device and inode, or volume and file index);
+  /// a path that does not exist is the same only as its own spelling.
+  bool    isSameFile(const QString& a, const QString& b);
+  /// Copies \a source over \a target so that a copy that fails leaves
+  /// target as it was: the copy is written beside target under another
+  /// name, then renamed over it. Nothing is done (true) when they are
+  /// the same file. \a error, when given, is set to why it failed.
+  bool    copyFileOver(const QString& source, const QString& target, QString* error = nullptr);
   bool    VHDL_Time(QString&, const QString&);
   bool    VHDL_Delay(QString&, const QString&);
   bool    Verilog_Time(QString&, const QString&);

@@ -44,6 +44,9 @@
 #include <QTextCursor>
 #include <QScrollBar>
 #include <QFileSystemWatcher>
+#include <QDirIterator>
+#include <QElapsedTimer>
+#include <QLocale>
 #include <QVariant>
 #include <QDebug>
 
@@ -708,6 +711,14 @@ void QucsApp::initView()
     openFileFromProjectView(QFileInfo(path), QString());
   });
   connect(fileBrowser, &FileBrowser::moved, this, &QucsApp::documentsMoved);
+  fileBrowser->setOpenDocumentsProvider([this] {
+    QList<FileBrowser::OpenDocument> open;
+    for (QucsDoc *doc : allDocuments())
+      if (!doc->getDocName().isEmpty()) open.append({doc->getDocName(), doc->getDocChanged()});
+    return open;
+  });
+  connect(fileBrowser, &FileBrowser::trashed, this,
+          [this](const QString &, const QStringList &documents) { documentsTrashed(documents); });
 
   // ----------------------------------------------------------
   // put the tab widget in the dock
@@ -2016,16 +2027,94 @@ bool QucsApp::deleteProject(const QString& PathGiven)
     return true;
   }
 
-  // first ask, if really delete project ?
-  if(QMessageBox::warning(this, tr("Warning"),
-      tr("This will destroy all the project files permanently ! Continue ?"),
-      QMessageBox::Yes|QMessageBox::No) == QMessageBox::No)  return false;
-
-  if (!recurRemove(Path)) {
-    QMessageBox::information(this, tr("Info"),
-        tr("Cannot remove project directory!"));
+  // The documents open from it: closed with it - unless one has unsaved
+  // changes, which would be lost.
+  const auto inFolder = [&Path](const QString &file) {
+    const QString f = QDir::cleanPath(file);
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return f.startsWith(Path + QLatin1Char('/'), Qt::CaseInsensitive);
+#else
+    return f.startsWith(Path + QLatin1Char('/'));
+#endif
+  };
+  QStringList open, unsaved;
+  for (QucsDoc *doc : allDocuments())
+    if (!doc->getDocName().isEmpty() && inFolder(doc->getDocName()))
+      (doc->getDocChanged() ? unsaved : open) << doc->getDocName();
+  const auto names = [](const QStringList &paths) {
+    QStringList list;
+    for (const QString &p : paths) list << QFileInfo(p).fileName();
+    return list.join(QStringLiteral(", "));
+  };
+  if (!unsaved.isEmpty()) {
+    QMessageBox::information(this, tr("Delete Project"),
+        tr("%1 is open here with unsaved changes: save or close it before the project is deleted.").arg(names(unsaved)));
     return false;
   }
+
+  // What is in it, for the question - counted up to a limit: a folder that
+  // is a project by the setting alone may be a whole tree.
+  qint64 files = 0, bytes = 0;
+  bool more = false;
+  {
+    QElapsedTimer clock;
+    clock.start();
+    QDirIterator it(Path, QDir::Files | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+      it.next();
+      ++files;
+      bytes += it.fileInfo().size();
+      if (files >= 20000 || clock.elapsed() > 1500) {
+        more = it.hasNext();
+        break;
+      }
+    }
+  }
+  const QLocale locale;
+  const QString size = locale.formattedDataSize(bytes);
+  const QString contents = files == 0 ? tr("no files")
+                           : more     ? tr("more than %1 files, %2 and more").arg(locale.toString(files), size)
+                           : files == 1 ? tr("1 file, %1").arg(size)
+                                        : tr("%1 files, %2").arg(locale.toString(files), size);
+  const QString folderName = QDir(Path).dirName();
+  const QString native = QDir::toNativeSeparators(Path);
+
+  QMessageBox box(QMessageBox::Warning, tr("Delete Project"), tr("Move the project “%1” to the trash?").arg(delProjName),
+                  QMessageBox::NoButton, this);
+  box.setObjectName(QStringLiteral("deleteProject"));
+  QString details = tr("The folder %1 goes to the trash with everything in it: %2.").arg(native, contents);
+  // A folder that is a project only because "Any folder is a project" is
+  // on: not one Qucs-S made, and all of it goes, not Qucs-S's files alone.
+  if (qucs_s::workspace::projectName(folderName) == folderName)
+    details += QStringLiteral("\n\n")
+               + tr("“%1” is not a folder Qucs-S made for a project (its name does not end in _prj): it shows as one because "
+                    "“Any folder is a project” is on (Settings > Locations). Everything in it goes, not only Qucs-S's files.")
+                     .arg(folderName);
+  if (!open.isEmpty()) details += QStringLiteral("\n\n") + tr("Documents open from it close: %1.").arg(names(open));
+  box.setInformativeText(details);
+  QPushButton *trash = box.addButton(tr("Move to Trash"), QMessageBox::DestructiveRole);
+  trash->setObjectName(QStringLiteral("deleteProjectTrash"));
+  QPushButton *cancel = box.addButton(QMessageBox::Cancel);
+  box.setDefaultButton(cancel);
+  box.setEscapeButton(cancel);
+  box.exec();
+  if (box.clickedButton() != trash) return false;
+
+  if (!QFile::moveToTrash(Path)) {
+    // No trash for it (a network drive, a desktop without one): only a
+    // deletion for good, asked for on its own.
+    if (QMessageBox::warning(this, tr("Delete Project"),
+            tr("%1 cannot be moved to the trash.\n\nDelete it and everything in it (%2) permanently? This cannot be undone.")
+                .arg(native, contents),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+      return false;
+    if (!recurRemove(Path)) {
+      QMessageBox::information(this, tr("Info"),
+          tr("Cannot remove project directory!"));
+      return false;
+    }
+  }
+  documentsTrashed(open);
   return true;
 }
 
@@ -2578,6 +2667,21 @@ void QucsApp::documentsMoved(const QStringList &from, const QStringList &to)
       break;
     }
   }
+}
+
+void QucsApp::documentsTrashed(const QStringList &documents)
+{
+  // Each closed from its own pane; unchanged, so without a question.
+  ContextMenuTabWidget *active = DocumentTab;
+  for (QucsDoc *doc : allDocuments()) {
+    if (doc->getDocChanged() || !documents.contains(doc->getDocName())) continue;
+    QWidget *w = documentWidget(doc);
+    ContextMenuTabWidget *pane = paneOf(w);
+    if (pane == nullptr) continue;
+    setActivePane(pane);
+    closeFile(pane->indexOf(w));
+  }
+  if (panes().contains(active)) setActivePane(active);
 }
 
 // --------------------------------------------------------------

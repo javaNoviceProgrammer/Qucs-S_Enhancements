@@ -122,6 +122,14 @@ public:
     void setRecentFiles(const QStringList& files);
     /// What names the document in front (for "Show the Document in Front").
     void setDocumentProvider(std::function<QString()> provider);
+    /// An open document: its file, and whether it has unsaved changes.
+    struct OpenDocument {
+        QString path;
+        bool modified = false;
+    };
+    /// What documents are open: Move to Trash closes the ones in what it
+    /// trashes (trashed()), and refuses while one has unsaved changes.
+    void setOpenDocumentsProvider(std::function<QList<OpenDocument>()> provider);
 
     bool showHidden() const { return a_showHidden; }
     void setShowHidden(bool on);
@@ -154,6 +162,15 @@ public:
     /// both, skip); an entry copied into its own folder becomes "name
     /// copy". Returns where they went. Open documents moved follow (moved()).
     QStringList transfer(const QStringList& sources, const QString& target, Qt::DropAction action);
+    /// Renames \a path to \a name in its folder, as File > Rename does. A
+    /// name, not a path: "/" (and "\\" on Windows), "." and ".." are
+    /// refused; another case of the name it has is a rename (the same file
+    /// on macOS and Windows). Open documents follow (moved()). Returns why
+    /// it could not, or empty.
+    QString renameEntry(const QString& path, const QString& name);
+    /// Moves \a path to the trash, once asked; the open documents in it
+    /// close (trashed()). Refused while one of them has unsaved changes.
+    void moveToTrash(const QString& path);
     /// Why \a sources cannot go into \a target (a folder into itself, the
     /// workspace or the open project moved, all there already), or empty.
     QString refusal(const QStringList& sources, const QString& target, Qt::DropAction action) const;
@@ -194,8 +211,12 @@ public slots:
 signals:
     /// A file was double-clicked (or opened from its menu).
     void openRequested(const QString& path);
-    /// Entries moved: \a from[i] is \a to[i] now (a folder with all in it).
+    /// Entries moved or renamed: \a from[i] is \a to[i] now (a folder with
+    /// all in it).
     void moved(const QStringList& from, const QStringList& to);
+    /// \a path went to the trash with the open \a documents in it (their
+    /// names as the provider gave them; none has unsaved changes).
+    void trashed(const QString& path, const QStringList& documents);
     void locationChanged(const QString& path);
 
 protected:
@@ -223,7 +244,6 @@ private:
     void fitDetails();
     void showContextMenu(QAbstractItemView* view, const QPoint& pos);
     void rename(const QString& path);
-    void moveToTrash(const QString& path);
     QAbstractItemView* viewFor(View view) const;
     /// A drag over \a watched (a view's viewport, a button of the path):
     /// lit up and accepted where it can drop; dropped.
@@ -240,6 +260,7 @@ private:
     QString a_project;
     QStringList a_recentFiles;
     std::function<QString()> a_document;
+    std::function<QList<OpenDocument>()> a_openDocuments;
     QStringList a_back;
     QStringList a_forward;
     View a_view = View::List;

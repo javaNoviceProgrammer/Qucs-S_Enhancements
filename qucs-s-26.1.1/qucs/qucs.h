@@ -270,8 +270,11 @@ public:
   /// documents, points the work directory, the Content panel and the
   /// Scratch folder at it.
   void openProject(const QString &);
-  /// Deletes the project folder \a path after asking - or, for a project
-  /// linked into the workspace, removes the link only.
+  /// Moves the project folder \a path to the trash after asking (the
+  /// question names the folder and what is in it; a deletion for good only
+  /// where there is no trash, asked for again) - or, for a project linked
+  /// into the workspace, removes the link only. Refused while a document
+  /// open from it has unsaved changes; the others close.
   bool deleteProject(const QString &path);
   /// The workspace becomes \a dir (made if missing): the Projects panel
   /// lists it, the open project and documents are closed (asking about
@@ -291,6 +294,9 @@ public:
   /// Files and folders moved (the File Browser): \a from[i] is \a to[i]
   /// now - the documents open from them follow, their tabs renamed.
   void documentsMoved(const QStringList &from, const QStringList &to);
+  /// The File Browser trashed files or a folder holding these open
+  /// documents (none with unsaved changes): their tabs close.
+  void documentsTrashed(const QStringList &documents);
   /// Opens a file the way a double-click in the Content panel does: by its
   /// suffix, in the schematic view, the text editor, a registered program
   /// or the system's application. \a note is the panel's note column

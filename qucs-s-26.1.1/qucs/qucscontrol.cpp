@@ -5029,14 +5029,19 @@ QJsonObject QucsControl::datasetOfRun(Schematic* doc, int simulator, const QDate
         if (!keepAs.isEmpty()) {
             const QString suffix = dataset.fileName().mid(dataset.fileName().indexOf(QLatin1String(".dat")));
             const QString kept = info.absoluteDir().filePath(keepAs + suffix);
-            QFile::remove(kept);
-            if (QFile::copy(dataset.absoluteFilePath(), kept)) {
+            QString why;
+            if (misc::isSameFile(kept, dataset.absoluteFilePath())) {
+                // keep_as the schematic's own name (amp, or Amp on macOS):
+                // that is the dataset itself, which a copy would destroy.
+                result.insert(QStringLiteral("kept as"), tr("not kept: %1 is the dataset of this run itself - give keep_as another name")
+                                                             .arg(QDir::toNativeSeparators(kept)));
+            } else if (misc::copyFileOver(dataset.absoluteFilePath(), kept, &why)) {
                 const QString prefix = simulatorPrefix();
                 result.insert(QStringLiteral("kept as"), QDir::toNativeSeparators(kept));
                 result.insert(QStringLiteral("its traces"), (prefix.isEmpty() ? QString() : prefix + QLatin1Char('/'))
                                                                 + keepAs + QStringLiteral(":<variable>"));
             } else {
-                result.insert(QStringLiteral("kept as"), tr("not kept: %1 could not be written").arg(QDir::toNativeSeparators(kept)));
+                result.insert(QStringLiteral("kept as"), tr("not kept: %1").arg(why));
             }
         }
     }

@@ -23,6 +23,9 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 #include <QDropEvent>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QFileInfo>
+#include <QPushButton>
+#include <QTextBlock>
 #include <QTextStream>
 #include <QPainter>
 #include <qpalette.h>
@@ -421,9 +424,13 @@ bool TextDoc::load ()
     return false;
   setLanguage (a_DocName);
 
-  QTextStream stream (&file);
   a_countsEdits = false;
-  insertPlainText(stream.readAll());
+  // Read as its bytes are (textcodec.h), to be written back so. Set, not
+  // inserted: the undo history starts at the file as it was read - an
+  // Undo does not take the document to empty.
+  const QByteArray bytes = file.readAll();
+  a_crlf = bytes.contains("\r\n");
+  setPlainText(qucs_s::textcodec::decode(bytes, &a_encoding));
   // Store timestamp
   QFileInfo fileInfo(a_DocName);
   lastLoadModTime = fileInfo.lastModified();
@@ -456,28 +463,58 @@ bool TextDoc::reload()
  * \brief TextDoc::save saves the current document and it settings
  * \return true/false if the document was opened with success
  */
+bool TextDoc::encodedText(QByteArray* bytes, bool ask)
+{
+  QString text = toPlainText();
+  if (a_crlf) text.replace(QLatin1Char('\n'), QLatin1String("\r\n"));
+  QString missing;
+  if (qucs_s::textcodec::encode(text, a_encoding, bytes, &missing)) return true;
+  // Never "?" in its place: UTF-8, which has every character.
+  const qucs_s::textcodec::Encoding utf8;
+  if (!ask) return qucs_s::textcodec::encode(text, utf8, bytes);
+  if (!misc::ErrorCapture::active()) {   // (Claude's tools: no one to ask)
+    QMessageBox box(QMessageBox::Question, tr("Save"),
+                    tr("%1 was read as %2, which has no “%3”.")
+                        .arg(QFileInfo(a_DocName).fileName(), a_encoding.name(), missing),
+                    QMessageBox::NoButton, this);
+    box.setObjectName(QStringLiteral("saveAsUtf8"));
+    box.setInformativeText(tr("Save it as UTF-8? Its other characters beyond ASCII (°, µ, ...) are then written in "
+                              "UTF-8 too, which a program reading the file as %1 shows wrongly.")
+                               .arg(a_encoding.name()));
+    QPushButton* yes = box.addButton(tr("Save as UTF-8"), QMessageBox::AcceptRole);
+    QPushButton* cancel = box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(yes);
+    box.setEscapeButton(cancel);
+    box.exec();
+    if (box.clickedButton() != yes) return false;
+  }
+  a_encoding = utf8;
+  return qucs_s::textcodec::encode(text, a_encoding, bytes);
+}
+
 bool TextDoc::writeTo(const QString& path)
 {
+  QByteArray bytes;
+  encodedText(&bytes, false);
   QFile file(path);
-  if (!file.open(QIODevice::WriteOnly))
-    return false;
-  QTextStream stream(&file);
-  stream << toPlainText();
-  return true;
+  return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
 }
 
 int TextDoc::save ()
 {
+  // First the text as bytes: a save the user calls off writes nothing.
+  QByteArray bytes;
+  if (!encodedText(&bytes, true))
+    return -1;
+
   if (writesSettings ())
     saveSettings ();
 
   QFile file (a_DocName);
-  if (!file.open (QIODevice::WriteOnly))
+  if (!file.open (QIODevice::WriteOnly) || file.write(bytes) != bytes.size())
     return -1;
   setLanguage (a_DocName);
 
-  QTextStream stream (&file);
-  stream << toPlainText();
   document()->setModified (false);
   slotSetChanged ();
   file.close ();
@@ -548,13 +585,8 @@ void TextDoc::commentSelected ()
       return; // No selection available
 
   // get range of selection
-  int start = cursor.selectionStart();
-  int end = cursor.selectionEnd();
-
-  cursor.setPosition(start);
-  int firstLine = cursor.blockNumber();
-  cursor.setPosition(end, QTextCursor::KeepAnchor);
-  int lastLine = cursor.blockNumber();
+  const int start = cursor.selectionStart();
+  const int end = cursor.selectionEnd();
 
   // use comment string indicator depending on language
   QString co;
@@ -584,21 +616,63 @@ void TextDoc::commentSelected ()
     break;
   }
 
-  QStringList newlines;
-  for (int i=firstLine; i<=lastLine; i++) {
-      QString line = document()->findBlockByLineNumber(i).text();
-      if (line.startsWith(co)){
-          // uncomment
-          line.remove(0,co.length());
-          newlines << line;
-      }
-      else {
-          // comment
-          line = line.insert(0, co);
-          newlines << line;
-      }
+  // A language without line comments (JSON, Markdown, XML, ...): nothing.
+  if (co.isEmpty())
+    return;
+
+  // The lines, as blocks of the document (not lines as laid out, which a
+  // long line wrapped makes more of). A selection down to the start of a
+  // line - lines selected the usual way - does not take that line.
+  QTextBlock first = document()->findBlock(start);
+  QTextBlock last = document()->findBlock(end);
+  if (last != first && end == last.position())
+    last = last.previous();
+
+  // Where a line's comment mark is (after its indentation), or -1.
+  const auto markAt = [&co](const QString& line) {
+    qsizetype i = 0;
+    while (i < line.size() && (line.at(i) == QLatin1Char(' ') || line.at(i) == QLatin1Char('\t'))) ++i;
+    return QStringView(line).mid(i).startsWith(co) ? int(i) : -1;
+  };
+  // Uncommented when every line (but blank ones) is a comment; otherwise
+  // all commented - a comment among them kept one, not made a line of
+  // the netlist.
+  bool allComments = true, anyText = false;
+  for (QTextBlock b = first; b.isValid(); b = b.next()) {
+    if (!b.text().trimmed().isEmpty()) {
+      anyText = true;
+      if (markAt(b.text()) < 0) allComments = false;
+    }
+    if (b == last) break;
   }
-  insertPlainText(newlines.join("\n"));
+  if (!anyText)
+    return;
+
+  // Each line edited where it is, the rest of the text untouched; one
+  // step to undo.
+  QTextCursor edit(document());
+  edit.beginEditBlock();
+  for (QTextBlock b = first; b.isValid(); b = b.next()) {
+    const QString line = b.text();
+    if (!line.trimmed().isEmpty()) {
+      if (allComments) {
+        edit.setPosition(b.position() + markAt(line));
+        edit.setPosition(edit.position() + int(co.size()), QTextCursor::KeepAnchor);
+        edit.removeSelectedText();
+      } else {
+        edit.setPosition(b.position());
+        edit.insertText(co);
+      }
+    }
+    if (b == last) break;
+  }
+  edit.endEditBlock();
+
+  // The lines stay selected, for another go.
+  QTextCursor selection(document());
+  selection.setPosition(first.position());
+  selection.setPosition(last.position() + last.length() - 1, QTextCursor::KeepAnchor);
+  setTextCursor(selection);
 }
 
 /*!
