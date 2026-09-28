@@ -338,11 +338,17 @@ gives more bits than samples (or more than, say, 1e6).
 
 ### B3. arrange is quadratic: a minute of frozen window at 3,000 parts
 
-**Fixed in `1be88f0`.** `joinPieces` now wires all the nets in pieces at once: each net's two
-closest pieces, by the first clear way. It checks the nets once for the lot, and goes back to one
-wire at a time only when that check finds a fault. arrange of 3,000 parts took 59.5 s before and
-about 1 s now; 1,000 parts went from 5.7 s to 0.2 s. Test: `aLargeSchematicIsArrangedInTime` (2,500
-parts: under 2 s; 37 s without the fix).
+**Fixed in `1be88f0` and `1e90dd8`.** `joinPieces` now wires all the nets in pieces at once: each
+net's two closest pieces, by the first clear way. It checks the nets once for the lot, and goes back
+to one wire at a time only when that check finds a fault. What each wire looked through is now found
+by place: `clearWay()` looks in an index of the nodes, parts and wires (`WayIndex`); the wiring and
+the parts put back run inside the schematic's `IndexedInsertion`, which now also finds the nodes a
+new wire crosses and forgets a wire `installWire()` deletes; and the parts are lifted off in one
+pass (`Schematic::detachComps()`). arrange now takes time in proportion to the parts: 2,500 in 0.2 s
+and 20,000 in 2 s (3,000 took 59.5 s before). Test: `aLargeSchematicIsArrangedInTime` - four times
+the parts in under eight times the time (800 and 3,200 parts; sixteen times without the batching),
+whatever the machine's speed. The indexes are measured rather than tested: at 20,000 parts they took
+the time from 11.7 s to 2 s.
 
 `arrange` (preview) of a grid of resistors in chains took 0.54 s at 300 parts, 5.7 s at 1,000
 and 59.5 s at 3,000. It succeeds, but the window is frozen for a minute and says nothing
