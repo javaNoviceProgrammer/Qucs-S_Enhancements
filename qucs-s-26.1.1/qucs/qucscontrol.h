@@ -19,6 +19,7 @@
 #include <QPointer>
 
 #include <list>
+#include <optional>
 
 class Component;
 class Painting;
@@ -127,8 +128,22 @@ private:
     /// \a tool run with \a args (their 'preview' taken out) and every open
     /// schematic put back after: what it would change, and its answer.
     QJsonObject preview(const QString& tool, const QJsonObject& args, const Done& done, bool& async);
+    // A preview under way, and the files its tool wrote (create_subcircuit's):
+    // each with what it held, or none when it was not there - put back after.
+    int a_previewing = 0;
+    QList<QPair<QString, std::optional<QByteArray>>> a_previewFiles;
+    /// \a file, which held \a before (or was not there), is written: a
+    /// preview puts it back.
+    void written(const QString& file, const std::optional<QByteArray>& before);
     /// diff: a schematic against steps back, another file, or its file.
     QJsonObject diffTool(const QJsonObject& args);
+    /// An untitled schematic, to be simulated: saved in the scratch folder
+    /// of the project (or of the workspace). What was done in \a note;
+    /// false, and why in \a error, when it could not be.
+    bool saveInScratch(Schematic* sch, QString* note, QString* error);
+    /// Closes the untitled schematics nothing was ever done in (the one
+    /// Qucs-S opens at start) but \a keep, which is then in front.
+    void closeUntouched(QucsDoc* keep);
     /// connect with "ground" at one end: a ground symbol of the pin's own.
     QJsonObject groundPin(Schematic* sch, const QJsonValue& pin);
     static QString stateOfText(const QString& text);

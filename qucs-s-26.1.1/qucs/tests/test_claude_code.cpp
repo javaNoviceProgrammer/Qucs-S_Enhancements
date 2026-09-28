@@ -2754,6 +2754,17 @@ private slots:
         QCOMPARE(resistance(), QStringLiteral("47"));
         panel->renderNow();
         QVERIFY(panel->transcriptText().contains("rc.sch loaded again"));
+        // Whose edit, to the tools: the file's, when nothing says whose - a
+        // conversation's, when its turn reports it changed the file.
+        QCOMPARE(doc->recentEdits().last().by, QucsDoc::kOnDisk);
+        rewrite("\"47\"", "\"39\"");
+        emit panel->filesChanged({file});
+        doc = dynamic_cast<Schematic*>(app.getDoc());
+        QCOMPARE(resistance(), QStringLiteral("39"));
+        QCOMPARE(doc->recentEdits().last().by, panel->session()->caller());
+        rewrite("\"39\"", "\"47\"");
+        app.reloadChangedFiles({file});
+        QCOMPARE(resistance(), QStringLiteral("47"));
 
         // Unsaved changes of its own: left as it is.
         doc->setChanged(true, true);

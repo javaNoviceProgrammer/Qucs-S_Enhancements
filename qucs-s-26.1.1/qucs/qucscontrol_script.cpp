@@ -142,7 +142,12 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
     });
     QElapsedTimer clock;
     clock.start();
-    const QJSValue value = engine.evaluate(script, QStringLiteral("script"));
+    QJSValue value = engine.evaluate(script, QStringLiteral("script"));
+    // A 'return' outside a function - the result, as a function's body
+    // gives it: the script run as one (a syntax error ran nothing yet).
+    if (value.isError() && value.property(QStringLiteral("name")).toString() == QLatin1String("SyntaxError")
+        && value.property(QStringLiteral("message")).toString().contains(QLatin1String("Return statement")))
+        value = engine.evaluate(QStringLiteral("(function () {\n%1\n})()").arg(script), QStringLiteral("script"), 0);
     {
         std::lock_guard<std::mutex> lock(mutex);
         finished = true;

@@ -448,8 +448,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   takes what the user selected. A document is found by its file's name
   alone, and relative paths are taken from the open project. A
   schematic, text, spreadsheet or archive changed on disk by another
-  program is loaded again, and a PDF follows its file even through a
-  delete and a new version later.
+  program is loaded again - also when it changed just after it was saved
+  or opened - and a PDF follows its file even through a delete and a new
+  version later. Claude is told such a change as its file's, not as the
+  user's, and one its own Write or Edit made as its own.
   `replace_component` puts a part of another type in one's place - a
   built-in OpAmp for a subcircuit - its pins mapped by number or name to
   the old pins' nets, turned, mirrored and placed so no wire runs across
@@ -470,7 +472,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   A value that does not fit its property - a word where a number
   belongs that no equation block defines, a word that is not one of the
   property's choices (`european`, `US`) - is told, for `.sch` text too,
-  where a value left out or two swapped once went unnoticed; so are a
+  where a value left out or two swapped once went unnoticed. A number
+  mistyped - digits with letters that are no scale and unit, `1kk`,
+  `10uu` - is refused, where SPICE would have read `1k`; so are a
   type's traps (a `Vpulse` is one pulse, an `OpAmp` clips at `Umax`) as
   the part is placed or edited. An equation block's answer lists its
   equations as they are after the change. `arrange` lays a whole
@@ -479,15 +483,24 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   down, to ground standing up), a ground symbol back on each piece that
   had one, every wire drawn again by the router - every net compared
   before and after, one step to undo. `connect` takes `"ground"` at one
-  end: a ground symbol of the pin's own. The tools that change a
-  schematic take `"preview": true`: what the change would do, and
-  nothing done (a `batch` too). `diff` compares a schematic with its
+  end: a ground symbol of the pin's own. A ground has no name: every
+  tool that takes a part's name takes its ref from `get_schematic`
+  (`GND#2`) - `move`, `delete`, `select`, `edit_component` - and a read of
+  some parts names the nets as a read of all does. The tools that change
+  a schematic take `"preview": true`: what the change would do, and
+  nothing done (a `batch` too) - no file either: `create_subcircuit`'s is
+  put back. `add_analysis` plots an expression (`db(v(out))`) through a
+  NutmegEq it places beside the analysis. `simulate` and `tune` save an
+  untitled schematic in the scratch folder first, and a new document
+  replaces the untitled one nothing was done in. Every field of every
+  tool says what it is in the schema. `diff` compares a schematic with its
   file as saved, with a step of its history or with another file.
   `get_netlist` with `"map": true` ties each netlist line to its part and
   each node to its pins. `run_script` runs a short JavaScript program
   that calls the tools (`qucs.call("add_component", {...})`) with loops
-  and conditions between the calls, in one turn - with `"atomic": true`
-  every schematic is put back when it fails. The schematic's text, its
+  and conditions between the calls, in one turn (its result the last
+  expression, or a `return`) - with `"atomic": true` every schematic is
+  put back when it fails. The schematic's text, its
   netlist, the netlist map, the dataset and the window's state are also
   MCP resources, read and subscribed to (told when they change, also by
   another program writing the file). Before a file is written over or
@@ -1165,7 +1178,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   symbol drawn anew puts the inputs on the left and the outputs on the
   right. Fixed on the way: a schematic exported to PNG from the command
   line (`-p`) was painted over uninitialised memory, so its background
-  was whatever had been in it.
+  was whatever had been in it; and a new schematic saved with *Save As*
+  did not know its folder until it was opened again, so a subcircuit or
+  a SPICE library beside it was not found (the subcircuit had no pins).
 - **A subcircuit's pin, its net and its symbol carry one name**: the
   netlist calls a pin of a `.SUBCKT` after the net the port sits on, so
   that is what the symbol now writes beside the pin — the label of the

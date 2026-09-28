@@ -92,6 +92,9 @@ public:
   /// Who edits now: the conversation whose tool call runs (a number of its
   /// own), or 0 - the user. Set by whoever runs the tool calls.
   static quint64 editor();
+  /// The editor while a document is loaded again from its file, changed on
+  /// disk by something outside Qucs-S (a command, another program).
+  static constexpr quint64 kOnDisk = ~quint64(0);
   static void setEditor(quint64 who);
 
 protected:

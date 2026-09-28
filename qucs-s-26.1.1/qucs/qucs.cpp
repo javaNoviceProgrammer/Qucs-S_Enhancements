@@ -3368,7 +3368,12 @@ void QucsApp::reloadChangedFiles(const QStringList &files)
         tellClaudeNotLoaded(name);
         break;
       }
+      // The edit is that conversation's (its Write or Edit), to the tools.
+      const quint64 editor = QucsDoc::editor();
+      const quint64 by = claudeTabs->reportingCaller();
+      QucsDoc::setEditor(by != 0 ? by : QucsDoc::kOnDisk);
       const bool loaded = reloadDocument(doc);
+      QucsDoc::setEditor(editor);
       claudeTabs->addNote(loaded ? tr("%1 loaded again with Claude's changes.").arg(name)
                                  : tr("%1 could not be loaded again.").arg(name));
       break;
@@ -3451,7 +3456,14 @@ void QucsApp::watchDocuments()
   QStringList added;
   for (const QString &file : std::as_const(wanted))
     if (!watched.contains(file)) added << file;   // (and one written anew: its watch was lost)
-  if (!added.isEmpty()) a_docWatcher->addPaths(added);
+  if (!added.isEmpty()) {
+    a_docWatcher->addPaths(added);
+    // Changed before its watch was set - a command's edit just after the
+    // document was saved or opened: looked at as if seen (loaded again
+    // only when newer than its last load or save).
+    for (const QString &file : std::as_const(added)) a_changedOnDisk.insert(file);
+    a_changedTimer->start();
+  }
 }
 
 void QucsApp::documentsChangedOnDisk()
@@ -3478,8 +3490,14 @@ void QucsApp::documentsChangedOnDisk()
         tellClaudeNotLoaded(name);   // (a Bash edit of Claude's comes this way)
         break;
       }
-      statusBar()->showMessage(reloadDocument(doc) ? tr("%1 was changed by another program and is loaded again.").arg(name)
-                                                   : tr("%1 was changed by another program and could not be loaded again.").arg(name),
+      // The edit is the file's, to the tools: whoever wrote it (a command
+      // of Claude's, another program) is not known.
+      const quint64 editor = QucsDoc::editor();
+      QucsDoc::setEditor(QucsDoc::kOnDisk);
+      const bool loaded = reloadDocument(doc);
+      QucsDoc::setEditor(editor);
+      statusBar()->showMessage(loaded ? tr("%1 was changed by another program and is loaded again.").arg(name)
+                                      : tr("%1 was changed by another program and could not be loaded again.").arg(name),
                                5000);
       break;
     }

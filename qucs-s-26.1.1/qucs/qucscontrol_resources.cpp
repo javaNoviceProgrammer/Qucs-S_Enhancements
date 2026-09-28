@@ -277,8 +277,33 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
         if (auto* sch = dynamic_cast<Schematic*>(doc))
             kept->append(Kept{sch, sch->snapshotAll(), sch->undoMarks(), sch->getDocChanged(), sch->getSymbolMode()});
     QPointer<QWidget> front = a_app->DocumentTab->currentWidget();
+    // A batch: of calls that change schematics or look alone - not one that
+    // writes a file, runs a simulation or opens a document.
+    if (tool == QLatin1String("batch"))
+        for (const QJsonValue& v : args.value(QLatin1String("calls")).toArray()) {
+            const QString inner = v.toObject().value(QLatin1String("tool")).toString();
+            if (!previewTools().contains(inner) && !readOnlyTools().contains(inner))
+                return errorResult(tr("A batch previewed holds only calls that change schematics or only look: %1 does more (files, "
+                                      "simulations, documents). Nothing was run.")
+                                       .arg(inner));
+        }
     // What it did, told; all put back.
+    ++a_previewing;
     const auto conclude = [this, kept, front](const QJsonObject& answer) {
+        // Files written: as they were.
+        QJsonArray files;
+        if (--a_previewing == 0) {
+            for (const auto& [file, before] : std::as_const(a_previewFiles)) {
+                files.append(QDir::toNativeSeparators(file));
+                if (!before) {
+                    QFile::remove(file);
+                    continue;
+                }
+                QFile out(file);
+                if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) out.write(*before);
+            }
+            a_previewFiles.clear();
+        }
         QJsonArray changes;
         for (const Kept& k : std::as_const(*kept)) {
             if (!k.sch) continue;
@@ -307,6 +332,7 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
         const QJsonDocument parsed = QJsonDocument::fromJson(said.toUtf8());
         result.insert(QStringLiteral("its answer"), parsed.isObject() ? QJsonValue(parsed.object()) : QJsonValue(said));
         if (answer.value(QLatin1String("isError")).toBool()) result.insert(QStringLiteral("it would fail"), true);
+        if (!files.isEmpty()) result.insert(QStringLiteral("files it would write"), files);
         return jsonResult(result);
     };
     QJsonObject stripped = args;
@@ -318,6 +344,14 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
         return {};
     }
     return conclude(answer);
+}
+
+void QucsControl::written(const QString& file, const std::optional<QByteArray>& before)
+{
+    if (a_previewing == 0) return;
+    for (const auto& kept : std::as_const(a_previewFiles))
+        if (kept.first == file) return;   // (as it was first)
+    a_previewFiles.append({file, before});
 }
 
 QJsonObject QucsControl::diffTool(const QJsonObject& args)

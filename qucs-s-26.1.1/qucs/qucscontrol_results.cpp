@@ -435,7 +435,18 @@ QString traceVariable(Schematic* sch, const Diagram* d, const QString& wanted, Q
     // schematic has one analysis, that one.
     QString name = bare;
     if (!prefix.isEmpty()) {
-        if (!name.contains(QLatin1Char('('))) name = QStringLiteral("v(%1)").arg(name);
+        // A node's voltage (out: v(out), ac.out: ac.v(out)) - not a name a
+        // NutmegEq computes (ac.gain_db, gain_db), which is the dataset's
+        // as it is.
+        QSet<QString> computed;
+        for (const Component* c : sch->a_DocComps)
+            if (c->Model == QLatin1String("NutmegEq"))
+                for (const Property* p : c->Props)
+                    if (p->Name != QLatin1String("Simulation")) computed << p->Name.toLower();
+        const QString analysis = ds::analysisOf(name);
+        const QString rest = analysis.isEmpty() ? name : name.mid(analysis.size() + 1);
+        if (!rest.contains(QLatin1Char('(')) && !computed.contains(rest.toLower()))
+            name = (analysis.isEmpty() ? QString() : analysis + QLatin1Char('.')) + QStringLiteral("v(%1)").arg(rest);
         if (prefix != QLatin1String("xyce")) name = name.toLower();   // ngspice writes its names so
         if (ds::analysisOf(name).isEmpty()) {
             const QStringList analyses = analysesOf(sch);
@@ -1922,7 +1933,7 @@ QJsonObject QucsControl::addDiagram(const QJsonObject& args)
             return errorResult(error);
         }
         d->Graphs.append(g);
-        if (!note.isEmpty()) notes << note;
+        if (!note.isEmpty() && !notes.contains(note)) notes << note;   // (no dataset: said once)
     }
     prepare(sch);
     Diagram* placed = d.release();

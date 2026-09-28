@@ -126,6 +126,9 @@ public:
     /// A note in the conversation whose files are being loaded again
     /// (while filesChanged is handled), else in the one in front.
     void addNote(const QString& text);
+    /// The conversation whose files are being loaded again (while
+    /// filesChanged is handled): its number as a tools' caller, else 0.
+    quint64 reportingCaller() const;
 
 public slots:
     void focusComposer();

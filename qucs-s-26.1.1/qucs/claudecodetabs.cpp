@@ -669,6 +669,11 @@ void ClaudeCodeTabs::refreshDocument()
     for (ClaudeCodePanel* panel : panels()) panel->refreshDocument();
 }
 
+quint64 ClaudeCodeTabs::reportingCaller() const
+{
+    return a_reporting != nullptr ? a_reporting->session()->caller() : 0;
+}
+
 void ClaudeCodeTabs::addNote(const QString& text)
 {
     ClaudeCodePanel* panel = a_reporting != nullptr ? a_reporting : current();

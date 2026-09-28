@@ -439,6 +439,11 @@ private:
     // Who this conversation is to the tools' host: a number no other
     // conversation of this run has (ToolHost::callToolFor()).
     const quint64 a_caller = nextCaller();
+
+public:
+    quint64 caller() const { return a_caller; }
+
+private:
     static quint64 nextCaller()
     {
         static quint64 last = 0;
