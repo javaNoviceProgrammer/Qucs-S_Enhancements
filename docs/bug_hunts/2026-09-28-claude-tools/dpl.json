@@ -1,0 +1,5 @@
+[["open_document", {"path": "HUNT/p/rodir/r.sch"}],
+ ["new_document", {"kind": "data_display"}],
+ ["add_diagram", {"traces": ["v(out)"]}],
+ ["save_document", {}],
+ ["get_state", {}]]

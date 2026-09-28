@@ -1,0 +1,3 @@
+[["new_document", {"kind": "schematic"}],
+ ["add_component", {"type": "Vdc", "name": "V5", "x": 100, "y": 130}],
+ ["replace_component", {"name": "V5", "type": "Vac", "rotation": 0, "mirror": true}]]

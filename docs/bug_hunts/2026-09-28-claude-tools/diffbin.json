@@ -1,0 +1,4 @@
+[["open_document", {"path": "HUNT/p/ws/tn.sch"}],
+ ["diff", {"against": "/bin/ls"}],
+ ["diff", {"against": "HUNT/p/ws/future_ver.sch"}],
+ ["get_state", {}]]

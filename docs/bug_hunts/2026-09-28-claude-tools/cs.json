@@ -1,0 +1,6 @@
+[["open_document", {"path": "HUNT/p/ws/cs.sch"}],
+ ["create_subcircuit", {"names": ["R1", "R2"], "save_as": "/System/sub_nope.sch"}],
+ ["get_schematic", {"format": "overview"}],
+ ["make_symbol", {}],
+ ["create_subcircuit", {"names": ["GND#1", "GND#2"], "save_as": "grounds_only.sch"}],
+ ["get_schematic", {"format": "overview"}]]

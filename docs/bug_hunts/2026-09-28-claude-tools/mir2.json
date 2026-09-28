@@ -1,0 +1,4 @@
+[["new_document", {"kind": "schematic"}],
+ ["add_component", {"type": "Vac", "name": "V3", "x": 100, "y": 130}],
+ ["edit_component", {"name": "V3", "rotation": 0, "mirror": true}],
+ ["add_component", {"type": "Vac", "name": "V4", "x": 300, "y": 130, "rotation": 0, "mirror": true}]]

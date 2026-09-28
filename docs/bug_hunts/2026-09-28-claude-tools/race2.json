@@ -1,0 +1,3 @@
+[[["new_document", {"kind": "schematic"}], ["add_component", {"type": "R", "name": "KEEP", "x": 400, "y": 100}]],
+ [["batch", {"atomic": true, "calls": [{"tool": "add_component", "arguments": {"type": "R", "name": "RB1", "x": 100, "y": 300}}, {"tool": "add_component", "arguments": {"type": "R", "name": "RB2", "x": 200, "y": 300}}, {"tool": "add_component", "arguments": {"type": "NoSuchType", "x": 300, "y": 300}}]}], ["add_component", {"type": "C", "name": "C_OTHER", "x": 100, "y": 100}]],
+ [["get_schematic", {"format": "overview"}], ["undo_history", {}]]]

@@ -1,0 +1,6 @@
+[[["open_document", {"path": "HUNT/p/ws/plain.sch"}], ["open_document", {"path": "HUNT/p/ws/rc.sch"}]],
+ [["simulate", {"timeout": 30}], ["close_document", {"unsaved": "discard"}]],
+ [["get_state", {}]],
+ [["new_document", {"kind": "schematic"}], ["add_component", {"type": "R", "x": 0, "y": 0}]],
+ [["batch", {"calls": [{"tool": "add_component", "arguments": {"type": "C", "name": "CB1", "x": 100, "y": 300}}, {"tool": "add_component", "arguments": {"type": "C", "name": "CB2", "x": 200, "y": 300}}, {"tool": "add_component", "arguments": {"type": "C", "name": "CB3", "x": 300, "y": 300}}]}], ["close_document", {"unsaved": "discard"}]],
+ [["get_state", {}], ["get_schematic", {"format": "overview"}]]]

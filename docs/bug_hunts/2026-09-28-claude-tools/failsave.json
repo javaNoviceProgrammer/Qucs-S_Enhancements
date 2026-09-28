@@ -1,0 +1,7 @@
+[["open_document", {"path": "HUNT/p/ws/tn.sch"}],
+ ["edit_component", {"name": "R1", "properties": {"R": "33k"}}],
+ ["get_state", {}],
+ ["save_document", {"as": "/System/nope.sch", "replace": true}],
+ ["get_state", {}],
+ ["save_document", {}],
+ ["close_document", {}]]

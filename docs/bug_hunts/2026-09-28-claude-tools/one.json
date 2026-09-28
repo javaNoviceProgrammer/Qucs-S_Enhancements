@@ -1,0 +1,6 @@
+[["new_document", {"kind": "schematic"}],
+ ["add_component", {"type": "R", "name": "R1", "x": 100, "y": 100, "rotation": 1}],
+ ["connect", {"from": "R1.2", "to": "ground"}],
+ ["get_schematic", {"components": ["GND#1"]}],
+ ["move", {"names": ["GND#1"], "dx": 0, "dy": 10}],
+ ["select", {"names": ["GND#1"]}]]

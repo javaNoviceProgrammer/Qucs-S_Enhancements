@@ -1,0 +1,4 @@
+[["open_document", {"path": "HUNT/p/ws/rc.sch"}],
+ ["add_diagram", {"traces": ["ac.db(v(out))", "ac.v(out)/2"]}],
+ ["add_trace", {"variable": "ac.mag(v(out))"}],
+ ["simulate", {"timeout": 20}]]

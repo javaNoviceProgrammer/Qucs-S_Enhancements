@@ -1,0 +1,5 @@
+[["open_document", {"path": "HUNT/p/ws/victim.sch"}],
+ ["export_netlist", {"save_as": "HUNT/p/ws/victim.sch"}],
+ ["_sleep", 4],
+ ["get_state", {}],
+ ["get_schematic", {"format": "overview"}]]

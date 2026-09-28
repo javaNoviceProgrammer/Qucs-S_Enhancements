@@ -1,0 +1,8 @@
+[["open_document", {"path": "HUNT/p/ws/rc.sch"}],
+ ["get_dataset", {"variables": ["tran.v(out)"], "measure": ["eye"], "bit_period": 1e-300}],
+ ["get_dataset", {"variables": ["tran.v(out)"], "measure": ["thd"], "fundamental": 1e-300}],
+ ["get_dataset", {"variables": ["tran.v(out)"], "measure": ["thd"], "fundamental": 1e300, "periods": 10000, "harmonics": 100}],
+ ["get_dataset", {"variables": ["tran.v(out)"], "measure": ["fft", "distribution", "settling_time"], "from": 1e-3, "to": 1e-3}],
+ ["get_dataset", {"variables": ["tran.v(out)"], "points": 5000, "from": 5e-4, "to": 1e-4}],
+ ["get_dataset", {"variables": ["ac.v(out)"], "measure": ["phase_margin", "gain_margin", "bandwidth"], "at": [1e308, -1e308, 0]}],
+ ["get_state", {}]]

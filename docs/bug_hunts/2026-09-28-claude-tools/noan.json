@@ -1,0 +1,5 @@
+[["new_document", {"kind": "schematic"}],
+ ["add_component", {"type": "Vdc", "name": "V1", "x": 100, "y": 200}],
+ ["connect", {"from": "V1.2", "to": "ground"}],
+ ["save_document", {"as": "HUNT/p/ws/noan.sch"}],
+ ["simulate", {"timeout": 10}]]

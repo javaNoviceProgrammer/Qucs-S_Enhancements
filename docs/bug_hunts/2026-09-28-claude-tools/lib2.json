@@ -1,0 +1,4 @@
+[["import_netlist", {"text": "t\n.subckt blk a b\nR1 a b 1k\n.ends\nX1 in 0 blk\nV1 in 0 1\n.op\n.end\n"}],
+ ["import_netlist", {"text": "t\n.subckt blk a b\nC1 a b 1u\n.ends\nX1 in 0 blk\nV1 in 0 1\n.op\n.end\n"}],
+ ["_sh", "cat HUNT/p/ws/t_subcircuits.lib"],
+ ["get_state", {}]]

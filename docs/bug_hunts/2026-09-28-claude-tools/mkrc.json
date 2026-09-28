@@ -1,0 +1,11 @@
+[["new_document", {"kind": "schematic"}],
+ ["add_component", {"type": "Vac", "name": "V1", "x": 100, "y": 200, "properties": {"f": "10 kHz"}}],
+ ["add_component", {"type": "R", "name": "R1", "x": 250, "y": 150}],
+ ["add_component", {"type": "C", "name": "C1", "x": 350, "y": 220, "rotation": 1, "properties": {"C": "10n"}}],
+ ["connect", {"from": "V1.2", "to": "ground"}], ["connect", {"from": "C1.2", "to": "ground"}],
+ ["connect", {"from": "R1.2", "to": "C1.1"}], ["connect", {"from": "V1.1", "to": "R1.1"}],
+ ["set_label", {"at": "C1.1", "name": "out"}],
+ ["add_analysis", {"kind": "tran", "stop": "1m", "points": 2001}],
+ ["add_analysis", {"kind": "ac", "from": "10", "to": "10M"}],
+ ["save_document", {"as": "HUNT/p/ws/rc.sch"}],
+ ["simulate", {"timeout": 30}]]
