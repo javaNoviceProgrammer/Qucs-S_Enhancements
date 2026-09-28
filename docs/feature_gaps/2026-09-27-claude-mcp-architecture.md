@@ -40,6 +40,12 @@ suggestion was checked against the source; the tables say what was done.
 - **`diff` against the document's own file** compared the document with
   itself, since the path found the open document: it now reads the file
   as saved. The new test found this.
+- **Headless requests out of turn**: each tool call was started a turn
+  of the event loop after its line was read. A `resources/list` sent right
+  after a `save_document`, without waiting, was answered before the save
+  was made. A call now starts as its line is taken, so a request finds the
+  changes of those before it, unless one of them goes on in the
+  background (a simulation). The disk image's program showed this.
 - A test that wrote over `divider.sch` from an earlier case now gives
   `replace`. Without it, the save is refused with the reason, since no one
   can be asked.
@@ -76,8 +82,9 @@ suggestion was checked against the source; the tables say what was done.
   script.
 - `theProgramServesOverStdio`: `qucs-s --mcp-server` answers initialize
   and lists the tools. It builds a schematic from JSON, saves it, gives its
-  netlist map, answers an unknown method with −32601, and exits with 0
-  when its input ends.
+  netlist map and answers an unknown method with −32601. A save and a
+  resource list sent together are taken in turn. It exits with 0 when its
+  input ends.
 
 `test_claude_code` (36 functions), new:
 `theServerAsksAndWhatCannotBeUndoneIsAskedAbout`. A fake `claude` sends

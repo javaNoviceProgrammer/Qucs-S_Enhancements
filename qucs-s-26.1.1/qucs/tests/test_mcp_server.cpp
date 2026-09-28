@@ -479,6 +479,24 @@ private slots:
             }
             QVERIFY2(answers.contains(id), qPrintable(QStringLiteral("no answer to %1; stderr: %2").arg(id).arg(QString::fromUtf8(p.readAllStandardError()).right(800))));
         }
+        // Sent together, without waiting: taken in turn - the list after
+        // a save finds the file saved.
+        const QString moved = home.filePath("moved.sch");
+        p.write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", 8}, {"method", "tools/call"},
+                                          {"params", QJsonObject{{"name", "save_document"}, {"arguments", QJsonObject{{"as", moved}}}}}})
+                    .toJson(QJsonDocument::Compact) + '\n'
+                + QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", 9}, {"method", "resources/list"}}).toJson(QJsonDocument::Compact) + '\n');
+        QElapsedTimer t;
+        t.start();
+        while (!(answers.contains(8) && answers.contains(9)) && t.elapsed() < 60000) {
+            p.waitForReadyRead(200);
+            while (p.canReadLine()) {
+                const QJsonObject a = QJsonDocument::fromJson(p.readLine()).object();
+                if (a.contains("id")) answers.insert(a.value("id").toInt(), a);
+            }
+        }
+        QVERIFY(answers.contains(9));
+        QVERIFY2(QJsonDocument(answers.value(9)).toJson().contains(QUrl::toPercentEncoding(moved)), qPrintable(QJsonDocument(answers.value(9)).toJson()));
         p.closeWriteChannel();   // (the server ends with its input)
         QVERIFY(p.waitForFinished(30000));
         QCOMPARE(p.exitCode(), 0);

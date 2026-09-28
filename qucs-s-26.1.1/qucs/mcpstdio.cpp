@@ -98,8 +98,11 @@ int runStdio(QApplication& app, QucsApp* window, QTimer* startupCloser)
     // dock's are told.)
     constexpr quint64 caller = 1;
     server->setCaller(caller);
+    // Called as its line is taken (each on the main thread, in turn): a
+    // request after it - a resource read, another call - finds its change
+    // made, unless the tool goes on in the background (a simulation).
     server->setCall([control](const QString& tool, const QJsonObject& arguments, std::function<void(const QJsonObject&)> done) {
-        QTimer::singleShot(0, control, [control, tool, arguments, done] { control->callToolFor(caller, tool, arguments, done); });
+        control->callToolFor(caller, tool, arguments, done);
     });
     const auto write = [out](const QJsonObject& message) {
         out->write(QJsonDocument(message).toJson(QJsonDocument::Compact) + '\n');
