@@ -1739,6 +1739,98 @@ bool clearWay(Schematic* sch, const std::vector<QPoint>& way, bool strict, const
     return true;
 }
 
+// clearWay() over an index of the schematic by place: what a way passes is
+// looked for in the cells it crosses, not among every node, part and wire
+// (each wire of a large arrange scanned them all). What joinPieces() draws
+// meanwhile goes in too, as of no net - which a way may not touch.
+class WayIndex
+{
+public:
+    WayIndex(Schematic* sch, const Nets& now)
+    {
+        for (const Node* n : sch->a_DocNodes) addNode(n->center(), now.nodeNet.value(n, -1));
+        for (const Component* c : sch->a_DocComps)
+            if (!c->Ports.isEmpty()) addTo(m_parts, m_wideParts, c->boundingRect().adjusted(1, 1, -1, -1), c->boundingRect().adjusted(1, 1, -1, -1));
+        for (const Wire* w : sch->a_DocWires) addWire(w->P1(), w->P2(), now.nodeNet.value(w->Port1, -1));
+    }
+    void addNode(const QPoint& p, int net) { m_nodes[cellOf(p)].append({p, net}); }
+    void addWire(const QPoint& a, const QPoint& b, int net)
+    {
+        // (A little around it: a slanting wire's points are near it, not on it.)
+        addTo(m_wires, m_wideWires, QRect(a, b).normalized().adjusted(-2, -2, 2, 2), Segment{a, b, net});
+    }
+    bool clear(const std::vector<QPoint>& way, bool strict, const QSet<int>& ours) const
+    {
+        const QPoint a = way.front(), b = way.back();
+        for (std::size_t k = 1; k < way.size(); ++k) {
+            const QPoint p = way[k - 1], q = way[k];
+            if (p == q) continue;
+            if (strict && p.x() != q.x() && p.y() != q.y()) return false;
+            const QRect piece = QRect(p, q).normalized();
+            const bool slanting = p.x() != q.x() && p.y() != q.y();
+            const auto nodeInTheWay = [&](const std::pair<QPoint, int>& n) {
+                return n.first != a && n.first != b && !ours.contains(n.second) && onSegment(n.first, p, q);
+            };
+            if (slanting) {   // (a slanting way: its tolerance - every node)
+                for (auto it = m_nodes.cbegin(); it != m_nodes.cend(); ++it)
+                    if (std::any_of(it.value().cbegin(), it.value().cend(), nodeInTheWay)) return false;
+            } else {
+                for (const QPoint& cell : cellsOf(piece))
+                    if (const auto it = m_nodes.constFind(cell); it != m_nodes.cend())
+                        if (std::any_of(it.value().cbegin(), it.value().cend(), nodeInTheWay)) return false;
+            }
+            if (strict) {
+                const auto crosses = [&piece](const QRect& r) { return piece.intersects(r); };
+                if (std::any_of(m_wideParts.cbegin(), m_wideParts.cend(), crosses)) return false;
+                for (const QPoint& cell : cellsOf(piece))
+                    if (const auto it = m_parts.constFind(cell); it != m_parts.cend())
+                        if (std::any_of(it.value().cbegin(), it.value().cend(), crosses)) return false;
+            }
+        }
+        for (std::size_t k = 1; k + 1 < way.size(); ++k) {
+            const QPoint bend = way[k];
+            const auto under = [&](const Segment& s) { return !ours.contains(s.net) && onSegment(bend, s.a, s.b); };
+            if (std::any_of(m_wideWires.cbegin(), m_wideWires.cend(), under)) return false;
+            if (const auto it = m_wires.constFind(cellOf(bend)); it != m_wires.cend())
+                if (std::any_of(it.value().cbegin(), it.value().cend(), under)) return false;
+        }
+        return true;
+    }
+
+private:
+    struct Segment {
+        QPoint a, b;
+        int net;
+    };
+    static constexpr int kShift = 6;        // cells of 64 x 64
+    static constexpr qint64 kMostCells = 64;   // wider: checked every time
+    static QPoint cellOf(const QPoint& p) { return {p.x() >> kShift, p.y() >> kShift}; }
+    static QList<QPoint> cellsOf(const QRect& r)
+    {
+        QList<QPoint> cells;
+        const QPoint from = cellOf(r.topLeft()), to = cellOf(r.bottomRight());
+        for (int x = from.x(); x <= to.x(); ++x)
+            for (int y = from.y(); y <= to.y(); ++y) cells << QPoint(x, y);
+        return cells;
+    }
+    template <typename T>
+    static void addTo(QHash<QPoint, QList<T>>& cells, QList<T>& wide, const QRect& r, const T& item)
+    {
+        const QPoint from = cellOf(r.topLeft()), to = cellOf(r.bottomRight());
+        if ((qint64(to.x()) - from.x() + 1) * (qint64(to.y()) - from.y() + 1) > kMostCells) {
+            wide << item;
+            return;
+        }
+        for (int x = from.x(); x <= to.x(); ++x)
+            for (int y = from.y(); y <= to.y(); ++y) cells[QPoint(x, y)] << item;
+    }
+    QHash<QPoint, QList<std::pair<QPoint, int>>> m_nodes;
+    QHash<QPoint, QList<QRect>> m_parts;
+    QList<QRect> m_wideParts;
+    QHash<QPoint, QList<Segment>> m_wires;
+    QList<Segment> m_wideWires;
+};
+
 // The ways a wire from \a a to \a b may go, in the order they are tried:
 // the wire planner's, then out to a line beside both ends - further and
 // further out, on each side - along it and in; last straight.
@@ -1830,6 +1922,10 @@ bool joinPieces(Schematic* sch, const Nets& before, const QString& edited, const
             QHash<int, QList<QPoint>> placesOf;   // a piece -> its nodes' places
             for (auto it = netAt.cbegin(); it != netAt.cend(); ++it) placesOf[it.value()] << QPoint(it.key().first, it.key().second);
             bool all = true;
+            WayIndex index(sch, now);
+            // (Nodes and wires found by place as each wire goes in: every one
+            // made the schematic look through all of them.)
+            std::optional<Schematic::IndexedInsertion> indexed(std::in_place, sch);
             for (int net : std::as_const(split)) {
                 const QList<int> ids = QList<int>(pieces.value(net).cbegin(), pieces.value(net).cend());
                 QPoint from, to;
@@ -1853,10 +1949,14 @@ bool joinPieces(Schematic* sch, const Nets& before, const QString& edited, const
                 bool wired = false;
                 for (bool strict : {true, false}) {
                     for (const std::vector<QPoint>& way : waysBetween(sch, from, to)) {
-                        if (!clearWay(sch, way, strict, now, ours) || (!strict && clearWay(sch, way, true, now, ours))) continue;
+                        if (!index.clear(way, strict, ours) || (!strict && index.clear(way, true, ours))) continue;
+                        // (Merged once, after the lot: optimizeWires() scans every wire.)
                         for (std::size_t k = 1; k < way.size(); ++k)
-                            if (way[k] != way[k - 1])
-                                sch->connectWithWire(way[k - 1], way[k], true, qucs_s::wire::Planner::PlanType::Straight);
+                            if (way[k] != way[k - 1]) {
+                                sch->connectWithWire(way[k - 1], way[k], false, qucs_s::wire::Planner::PlanType::Straight);
+                                index.addWire(way[k - 1], way[k], -1);
+                            }
+                        for (std::size_t k = 1; k + 1 < way.size(); ++k) index.addNode(way[k], -1);   // (its bends)
                         wired = true;
                         break;
                     }
@@ -1867,6 +1967,8 @@ bool joinPieces(Schematic* sch, const Nets& before, const QString& edited, const
                     break;
                 }
             }
+            indexed.reset();   // (before merging: that deletes nodes and wires)
+            sch->optimizeWires();
             if (all && check().isEmpty()) continue;
             sch->restore(state);
         }
@@ -5925,11 +6027,12 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
         sch->deleteComps(grounds);
         for (Node* n : sch->a_DocNodes)
             if (n->hasLabel()) n->dropLabel();
-        for (Component* c : parts) {
-            sch->detachComp(c);
+        // (All at once: one at a time, each looked through every node.)
+        std::vector<Component*> lifted(parts.begin(), parts.end());
+        lifted.insert(lifted.end(), blocks.begin(), blocks.end());
+        sch->detachComps(lifted);
+        for (Component* c : parts)
             for (Port* p : c->Ports) p->Connection = nullptr;
-        }
-        for (Component* c : blocks) sch->detachComp(c);
 
         // Two-pin parts turned as a schematic has them: in series lying
         // down, the pin toward what drives it on the left; to ground or a
@@ -6055,8 +6158,12 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
             c->moveCenter(cx - c->cx, cy - c->cy);
             bx += r.width() + spacing;
         }
-        for (Component* c : parts) sch->insertRawComponent(c, false);
-        for (Component* c : blocks) sch->insertRawComponent(c, false);
+        {
+            // (Their nodes found by place, as the loader finds them.)
+            const Schematic::IndexedInsertion indexed(sch);
+            for (Component* c : parts) sch->insertRawComponent(c, false);
+            for (Component* c : blocks) sch->insertRawComponent(c, false);
+        }
 
         // Where each piece's labels and ground go: its first pin from the
         // left, its lowest pin. (Places from here on: a way tried and taken
