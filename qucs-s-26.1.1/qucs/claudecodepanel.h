@@ -211,6 +211,8 @@ public:
     QListWidget* commandList() const { return a_commandList; }
     QMenu* pinMenu() const { return a_pinMenu; }
     QFrame* permissionCard() const { return a_card; }
+    /// Where an MCP server's question for the user is shown (elicitation).
+    QFrame* askCard() const { return a_askCard; }
     QToolButton* allowButton() const { return a_allow; }
     QToolButton* allowEditsButton() const { return a_allowEdits; }
     QToolButton* allowToolsButton() const { return a_allowTools; }
@@ -353,6 +355,17 @@ private:
     void onToolStarted(const QString& id, const QString& tool, const QString& subject, const QString& detail);
     void onToolFinished(const QString& id, bool failed, const QString& output);
     void onPermissionRequested(const qucs_s::claude::PermissionRequest& request);
+    // A question from an MCP server (elicitation), one at a time.
+    struct Ask {
+        QString id;
+        QString message;
+        QJsonObject schema;
+    };
+    QList<Ask> a_asks;
+    QFrame* a_askCard = nullptr;
+    void buildAskCard();
+    void showNextAsk();
+    void answerAsk(const QString& action, const QJsonObject& content = {});
     void onPermissionWithdrawn(const QString& id);
     void onTurnFinished(const qucs_s::claude::TurnResult& result);
 

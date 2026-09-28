@@ -680,7 +680,27 @@ QPair<QString, QString> Schematic::snapshotAll()
   return {createUndoString('*'), createSymbolUndoString('*')};
 }
 
+void Schematic::forgetUndoAfter(const QPair<int, int>& marks)
+{
+  // The steps after the marks, taken back already: forgotten, as if never
+  // made (a preview's).
+  while (a_undoAction.size() > marks.first + 1 && marks.first >= 0) delete a_undoAction.takeLast();
+  while (a_undoSymbol.size() > marks.second + 1 && marks.second >= 0) delete a_undoSymbol.takeLast();
+  a_undoActionIdx = std::min<int>(marks.first, int(a_undoAction.size()) - 1);
+  a_undoSymbolIdx = std::min<int>(marks.second, int(a_undoSymbol.size()) - 1);
+  const bool symbol = a_symbolMode;
+  const int idx = symbol ? a_undoSymbolIdx : a_undoActionIdx;
+  const auto& stack = symbol ? a_undoSymbol : a_undoAction;
+  emit signalUndoState(idx > 0);
+  emit signalRedoState(idx < stack.size() - 1);
+}
+
 bool Schematic::restoreAll(const QPair<QString, QString>& state)
+{
+  return restoreAll(state, true);
+}
+
+bool Schematic::restoreAll(const QPair<QString, QString>& state, bool record)
 {
   // (The first character of an undo string says what made it.)
   const bool schematicChanged = createUndoString('*').mid(1) != state.first.mid(1);
@@ -697,6 +717,11 @@ bool Schematic::restoreAll(const QPair<QString, QString>& state)
   // One step to undo in each stack whose part changed: setChanged()
   // records in the one of the mode it is in.
   const bool mode = a_symbolMode;
+  if (!record) {
+    updateAllBoundingRect();
+    viewport()->update();
+    return schematicChanged || symbolChanged;
+  }
   if (schematicChanged) {
     a_symbolMode = false;
     setChanged(true, true);

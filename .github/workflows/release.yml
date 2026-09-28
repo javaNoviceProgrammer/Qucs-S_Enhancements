@@ -344,7 +344,7 @@ jobs:
           update: true
           cache: true
           install: bison flex dos2unix curl zip p7zip
-          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p make:p ninja:p gperf:p
+          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p
 
       - name: Configure and build
         if: ${{ matrix.enabled }}

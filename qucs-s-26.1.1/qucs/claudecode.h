@@ -27,6 +27,10 @@
 class QProcess;
 class QTimer;
 
+namespace qucs_s::mcp {
+class Server;
+}
+
 namespace qucs_s::claude {
 
 /// Where a session stands: for the dock and the status bar.
@@ -162,6 +166,45 @@ public:
         Q_UNUSED(tool);
         Q_UNUSED(document);
         return arguments;
+    }
+
+    /// MCP's resources: what can be read without a tool call (resources/
+    /// list), and the forms of their URIs (resources/templates/list).
+    virtual QJsonArray resources() const { return {}; }
+    virtual QJsonArray resourceTemplates() const { return {}; }
+    /// A resource's contents (MCP ResourceContents: uri, mimeType, text);
+    /// empty, and why in \a error, when there is no such resource.
+    virtual QJsonArray readResource(const QString& uri, QString* error)
+    {
+        if (error != nullptr) *error = QStringLiteral("There is no resource %1.").arg(uri);
+        return {};
+    }
+    /// What changes whenever \a uri's contents would (a revision): those
+    /// subscribed to it are told when it does. Empty: it is not there.
+    virtual QString resourceVersion(const QString& uri) const
+    {
+        Q_UNUSED(uri);
+        return {};
+    }
+    /// Whether this use of \a tool cannot be undone - files deleted or
+    /// written over, unsaved changes discarded: asked about even when the
+    /// host's tools are allowed.
+    virtual bool irreversible(const QString& tool, const QJsonObject& arguments) const
+    {
+        Q_UNUSED(tool);
+        Q_UNUSED(arguments);
+        return false;
+    }
+    /// How the conversation \a caller asks its user a question (MCP
+    /// elicitation: a message and a JSON schema of the answer; \a done gets
+    /// {action: accept|decline|cancel, content}) while a call of its runs;
+    /// null when it cannot.
+    using Asker = std::function<void(const QString& message, const QJsonObject& schema,
+                                     std::function<void(const QJsonObject& result)> done)>;
+    virtual void setAsker(quint64 caller, Asker asker)
+    {
+        Q_UNUSED(caller);
+        Q_UNUSED(asker);
     }
 };
 
@@ -302,6 +345,9 @@ public:
     /// with \a allowTools, the host's tools (the other requests for them
     /// are answered too).
     void answer(const QString& id, bool allow, bool allowEdits = false, bool allowTools = false);
+    /// Answers a question an MCP server asked the user (elicitation):
+    /// \a action accept (with \a content, the answer), decline or cancel.
+    void answerElicitation(const QString& id, const QString& action, const QJsonObject& content = {});
     /// Stops the turn under way (the program ends if it does not stop).
     void interrupt();
     /// Ends the program; the next prompt continues the conversation.
@@ -330,6 +376,11 @@ signals:
     void toolStarted(const QString& id, const QString& tool, const QString& subject, const QString& detail);
     void toolFinished(const QString& id, bool failed, const QString& output);
     void permissionRequested(const qucs_s::claude::PermissionRequest& request);
+    /// An MCP server - Qucs-S's own, when a file would be written over or
+    /// unsaved changes lost - asks the user: \a message, and \a schema of
+    /// the answer (a JSON schema object: its properties). answerElicitation()
+    /// answers it.
+    void elicitationRequested(const QString& id, const QString& server, const QString& message, const QJsonObject& schema);
     /// A permission request is no longer asked (the turn was stopped).
     void permissionWithdrawn(const QString& id);
     /// Something to tell the user: a permission denied, a limit reached.
@@ -411,6 +462,7 @@ private:
     QStringList a_changedFiles;             // this turn's
     QHash<QString, PermissionRequest> a_pending;   // permission requests not yet answered
     ToolHost* a_host = nullptr;
+    mcp::Server* a_mcp = nullptr;   // the host's tools as an MCP server, over this stream
     QString a_document;        // pinned: the host's tools act on it
     bool a_toolsAllowed = false;
     /// \a input of the host's \a tool, for the document pinned.

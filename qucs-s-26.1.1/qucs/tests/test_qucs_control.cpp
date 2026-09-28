@@ -2850,7 +2850,11 @@ private slots:
                                                         "  <230 100 300 100 \"out\" 250 70 30 \"\">\n  <300 100 300 170 \"\" 0 0 0 \"\">\n"
                                                         "</Wires>\n"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
-        QVERIFY(!failed(call("save_document", {{"as", "divider"}})));
+        // (divider.sch is there from aSubcircuitIsMadeOfParts: written over when
+        // 'replace' says so - no one here to ask.)
+        r = call("save_document", {{"as", "divider"}});
+        QVERIFY(failed(r) && text(r).contains("'replace'"));
+        QVERIFY(!failed(call("save_document", {{"as", "divider"}, {"replace", true}})));
         // out = 10 V * 1k / (R1 + 1k) = 2.5 V: R1 = 3k.
         r = call("tune", {{"component", "R1"}, {"target", 2.5}, {"range", QJsonArray{"100", "100k"}},
                           {"measure", QJsonObject{{"operating_point", "out"}}}}, 300000);

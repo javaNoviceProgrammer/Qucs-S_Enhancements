@@ -1327,8 +1327,11 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
         to = to.contains(QLatin1Char('/')) || to.contains(QLatin1Char('\\')) ? absolute(to) : QFileInfo(from).absoluteDir().filePath(to);
     }
     if (sameFile(from, to)) return errorResult(tr("The copy would be the schematic itself."));
-    if (QFileInfo::exists(to) && !args.value(QLatin1String("replace")).toBool())
-        return errorResult(tr("%1 exists: 'replace' writes over it.").arg(QDir::toNativeSeparators(to)));
+    // A file there already: written over when 'replace' says so, or when
+    // the user says yes, asked.
+    if (QFileInfo::exists(to) && !args.value(QLatin1String("replace")).toBool()
+        && !confirmed(tr("%1 exists. Write over it?").arg(QDir::toNativeSeparators(to))))
+        return errorResult(tr("%1 exists: 'replace' writes over it (the user was not asked, or said no).").arg(QDir::toNativeSeparators(to)));
     if (!QFileInfo(QFileInfo(to).absolutePath()).isDir()) return errorResult(tr("There is no folder %1.").arg(QDir::toNativeSeparators(QFileInfo(to).absolutePath())));
     for (QucsDoc* doc : a_app->allDocuments())
         if (sameFile(doc->getDocName(), to)) return errorResult(tr("%1 is open: close it first.").arg(QFileInfo(to).fileName()));

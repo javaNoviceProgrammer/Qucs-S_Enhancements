@@ -72,6 +72,19 @@ if(QUCS_PDF_VIEWER AND Qt6Pdf_FOUND)
 else()
   message(STATUS "PDF viewer: off - no Qt PDF module; PDF documents open in the system's viewer")
 endif()
+# Qt's JavaScript engine (the Qml module), when there is one: Claude's
+# run_script tool (qucscontrol_script.cpp); without it the tool is not
+# offered.
+option(QUCS_SCRIPTING "Claude's run_script tool, with Qt's JavaScript engine (Qt Qml)" ON)
+if(QUCS_SCRIPTING)
+  find_package(Qt6 QUIET COMPONENTS Qml)
+endif()
+if(QUCS_SCRIPTING AND Qt6Qml_FOUND)
+  message(STATUS "Scripting (run_script): on (Qt Qml ${Qt6Qml_VERSION})")
+  add_compile_definitions(QUCS_HAVE_QML)
+else()
+  message(STATUS "Scripting (run_script): off - no Qt Qml module")
+endif()
 include_directories(
       ${Qt6Core_INCLUDE_DIRS}
       ${Qt6Widgets_INCLUDE_DIRS}
@@ -160,7 +173,7 @@ ADD_SUBDIRECTORY( spicecomponents )
 SET(QUCS_SRCS
   element.cpp	octave_window.cpp	qucsdoc.cpp
   textdoc.cpp  markdowndoc.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp  zipdoc.cpp  main.cpp	schematic.cpp
-  mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp dataset.cpp simulatorlog.cpp filebrowser.cpp
+  mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_script.cpp dataset.cpp simulatorlog.cpp filebrowser.cpp
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
   mouseactions.cpp qucs_actions.cpp	qucs_panes.cpp schematic_file.cpp
   wirelabel.cpp node.cpp qucs_init.cpp
@@ -343,6 +356,9 @@ set(QUCS_LINK_LIBRARIES
     Qt6::Core  Qt6::Gui  Qt6::Widgets Qt6::Svg  Qt6::SvgWidgets Qt6::Xml  Qt6::PrintSupport )
 if(QUCS_PDF_VIEWER AND Qt6Pdf_FOUND)
   list(APPEND QUCS_LINK_LIBRARIES Qt6::Pdf)
+endif()
+if(QUCS_SCRIPTING AND Qt6Qml_FOUND)
+  list(APPEND QUCS_LINK_LIBRARIES Qt6::Qml)
 endif()
 if(UNIX AND NOT APPLE)
   # forkpty() for the Terminal and Python Shell docks (processconsole.cpp)

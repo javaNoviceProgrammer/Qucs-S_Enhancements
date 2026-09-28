@@ -71,12 +71,25 @@ public:
     /// it; open_document and show_document name theirs, reload_data
     /// without one reads every document's data.
     QJsonObject forDocument(const QString& tool, const QJsonObject& arguments, const QString& document) const override;
+    /// MCP resources (qucscontrol_resources.cpp): qucs://state, and of
+    /// each open schematic qucs://schematic/<path>, netlist, netlist-map
+    /// and dataset (<path> its file's, percent-encoded); a document's
+    /// resources change with its revision, a dataset when it is written.
+    QJsonArray resources() const override;
+    QJsonArray resourceTemplates() const override;
+    QJsonArray readResource(const QString& uri, QString* error) override;
+    QString resourceVersion(const QString& uri) const override;
+    /// Files deleted or written over, unsaved changes discarded.
+    bool irreversible(const QString& tool, const QJsonObject& arguments) const override;
+    void setAsker(quint64 caller, Asker asker) override;
 
     /// The result of a call, the event loop run until it comes (for the
     /// tests); an error result after \a timeoutMs.
     QJsonObject callNow(const QString& tool, const QJsonObject& arguments, int timeoutMs = 30000, quint64 caller = 0);
     /// The text of a result (its text parts, joined).
     static QString textOf(const QJsonObject& result);
+    /// Whether run_script is in this build (Qt's Qml module found).
+    static bool scriptingBuilt();
 
 private:
     using Done = std::function<void(const QJsonObject&)>;
@@ -93,6 +106,30 @@ private:
     // What a tool did beside what was asked (a document switched from its
     // symbol to its schematic): told after its result.
     mutable QStringList a_callNotes;
+    // How each conversation asks its user (its MCP server's elicitation).
+    QHash<quint64, Asker> a_askers;
+    // Each tool as it was written, its description in full (describe_tool).
+    QHash<QString, QJsonObject> a_details;
+    /// Asks the user of the conversation whose call runs (MCP elicitation):
+    /// its answer, {action: accept|decline|cancel, content}; cancel when
+    /// it cannot be asked.
+    QJsonObject askUser(const QString& message, const QJsonObject& schema);
+    /// The user asked yes or no (true only for a yes).
+    bool confirmed(const QString& question);
+    /// The user asked to choose one of \a options (empty: declined, or
+    /// cannot be asked).
+    QString choice(const QString& question, const QStringList& options);
+    bool resourceOf(const QString& uri, QString* kind, QucsDoc** doc, QString* error) const;
+    /// \a tool run with \a args (their 'preview' taken out) and every open
+    /// schematic put back after: what it would change, and its answer.
+    QJsonObject preview(const QString& tool, const QJsonObject& args, const Done& done, bool& async);
+    /// diff: a schematic against steps back, another file, or its file.
+    QJsonObject diffTool(const QJsonObject& args);
+    static QString stateOfText(const QString& text);
+    static const QSet<QString>& previewTools();
+    /// run_script (qucscontrol_script.cpp): with Qt's JavaScript engine,
+    /// when the build has it.
+    QJsonObject runScript(const QJsonObject& args);
     static QString seenKey(QucsDoc* doc);
     /// When the dataset a simulation of \a doc writes was written, if it is.
     static QDateTime datasetWritten(QucsDoc* doc);

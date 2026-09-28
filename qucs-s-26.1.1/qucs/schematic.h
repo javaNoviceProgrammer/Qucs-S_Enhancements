@@ -823,6 +823,14 @@ public:
   /// in the undo stack of each part that changed (the schematic's, the
   /// symbol's); true when anything changed.
   bool restoreAll(const QPair<QString, QString>& state);
+  /// As restoreAll(), recording a step to undo only when \a record.
+  bool restoreAll(const QPair<QString, QString>& state, bool record);
+  /// Where the undo stacks (the schematic's, the symbol's) are.
+  QPair<int, int> undoMarks() const { return {a_undoActionIdx, a_undoSymbolIdx}; }
+  /// The steps recorded after \a marks (from undoMarks()) forgotten - the
+  /// elements put back as they were already (a preview): undo goes on
+  /// from where it was.
+  void forgetUndoAfter(const QPair<int, int>& marks);
   void highlightWireLabels (void);
   void clearSignalsAndFileList();
   void clearSignals();

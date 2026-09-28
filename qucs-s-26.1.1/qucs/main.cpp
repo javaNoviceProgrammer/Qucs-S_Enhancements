@@ -39,11 +39,14 @@
 #include <QRegularExpression>
 #include <QtSvg>
 #include <QCommandLineParser>
+#include <QTemporaryDir>
+#include <QTimer>
 #include <QTextStream>
 #include <QScopedPointer>
 
 #include "qucs.h"
 #include "main.h"
+#include "mcpstdio.h"
 #include "node.h"
 #include "printerwriter.h"
 #include "graphicsexport.h"
@@ -709,6 +712,11 @@ int main(int argc, char *argv[])
     QucsSettings.maxUndo = 20;
     QucsSettings.NodeWiring = 0;
 
+    // qucs-s --mcp-server: Claude's tools on stdin and stdout, no window on
+    // screen (mcpstdio.h).
+    const bool mcpServer = qucs_s::mcp::askedFor(argc, argv);
+    if (mcpServer) qucs_s::mcp::prepareHeadless();
+
     // initially center the application
     QApplication app(argc, argv);
     // From here on, what the system asks to open is kept for the main
@@ -927,6 +935,7 @@ int main(int argc, char *argv[])
         {"list-entries", QCoreApplication::translate("main", "list component entry formats for schematic and netlist")},
         {{"c", "netlist2Console"}, QCoreApplication::translate("main", "write netlist to console")},
         {{"x", "spiceprefix"}, QCoreApplication::translate("main", "resolve spice prefix during netlist CDL")},
+        {"mcp-server", QCoreApplication::translate("main", "serve Claude's Qucs-S tools as an MCP server on stdin and stdout, with no window on screen (claude mcp add qucs -- qucs-s --mcp-server)")},
     });
 
     parser.process(cmdArgs);
@@ -1091,6 +1100,19 @@ int main(int argc, char *argv[])
     const QStringList imported = qucs_s::shellenv::importLoginShellEnvironment();
     if (!imported.isEmpty())
         qInfo().noquote() << "environment from the login shell:" << imported.join(QLatin1String(", "));
+
+    // The server: its own autosave folder (the window's recovery is not
+    // touched), no crash marker, no documents brought back.
+    if (mcpServer) {
+        static QTemporaryDir autosaveDir;
+        qucs_s::autosave::setDirectory(autosaveDir.path());
+        QTimer* closer = qucs_s::mcp::closeDialogsWhileStarting();
+        QucsMain = new QucsApp(false);
+        QucsMain->show();
+        const QStringList named = parser.positionalArguments();
+        if (!named.isEmpty()) QucsMain->openFromSystem(named);
+        return qucs_s::mcp::runStdio(app, QucsMain, closer);
+    }
 
     // From here on a crash writes a report and rescues modified documents.
     const bool crashedLastTime = qucs_s::crash::markSessionStart();
