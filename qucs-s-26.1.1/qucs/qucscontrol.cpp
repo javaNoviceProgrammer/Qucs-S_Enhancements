@@ -6289,6 +6289,10 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
             return;
         }
     }
+    if (simulator == spicecompat::simNotSpecified) {
+        doneGiven(errorResult(noSimulatorText()));
+        return;
+    }
     a_app->showDocument(sch);
     // The operating point alone: a DC bias run (Simulation > Calculate DC
     // bias), whatever analyses the schematic has - a transient-only one's

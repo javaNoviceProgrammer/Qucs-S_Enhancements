@@ -177,6 +177,25 @@ private slots:
         QVERIFY(callTool("describe_tool", {{"name", "nothing"}}).value("isError").toBool());
     }
 
+    // With no simulator chosen (none found at the start), a netlist and a
+    // simulation are refused with the reason, not with nothing.
+    void noSimulatorIsSaidSo()
+    {
+        callTool("new_document", {{"kind", "schematic"}});
+        callTool("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}});
+        callTool("save_document", {{"as", dir.filePath("workspace/nosim.sch")}, {"replace", true}});
+        const int before = QucsSettings.DefaultSimulator;
+        QucsSettings.DefaultSimulator = spicecompat::simNotSpecified;
+        const QJsonObject netlist = callTool("get_netlist", {{"map", true}});
+        const QJsonObject simulated = callTool("simulate");
+        QucsSettings.DefaultSimulator = before;
+        QVERIFY2(netlist.value("isError").toBool() && structured(netlist).value("error").toString().contains("No simulator is chosen"),
+                 qPrintable(QJsonDocument(netlist).toJson()));
+        QVERIFY2(simulated.value("isError").toBool() && structured(simulated).value("error").toString().contains("set_simulator"),
+                 qPrintable(QJsonDocument(simulated).toJson()));
+        callTool("close_document", {{"unsaved", "discard"}});
+    }
+
     // Results are structured: a tool's JSON as it is, a text as a summary,
     // an error as the error - and a note of what the tool did beside it.
     void resultsAreStructured()
@@ -447,6 +466,19 @@ private slots:
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.insert("QUCS_CLAUDE", "/nonexistent/claude");
         env.insert("QUCS_NO_SHELL_ENV", "1");
+        // Settings of its own - a first start, not the user's preferences
+        // (nor their recent files) - and an ngspice to find: a machine
+        // without one (a CI runner) has no simulator to write a netlist for.
+        env.insert("QUCS_SETTINGS_DIR", home.filePath("settings"));
+#ifndef Q_OS_WIN
+        QDir().mkpath(home.filePath("bin"));
+        QFile ngspice(home.filePath("bin/ngspice"));
+        QVERIFY(ngspice.open(QIODevice::WriteOnly));
+        ngspice.write("#!/bin/sh\nexit 0\n");
+        ngspice.close();
+        ngspice.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        env.insert("PATH", home.filePath("bin") + ':' + env.value("PATH"));
+#endif
         p.setProcessEnvironment(env);
         p.start(program, {"--mcp-server"});
         QVERIFY(p.waitForStarted(10000));

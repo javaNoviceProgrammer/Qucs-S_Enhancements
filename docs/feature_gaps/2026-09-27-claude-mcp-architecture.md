@@ -46,19 +46,33 @@ suggestion was checked against the source; the tables say what was done.
   was made. A call now starts as its line is taken, so a request finds the
   changes of those before it, unless one of them goes on in the
   background (a simulation). The disk image's program showed this.
+- **No simulator, no reason** (after 26.1.4 was tagged, on the CI Mac,
+  which has no ngspice): a first start that finds no simulator leaves none
+  chosen. The window says so in a box, and headless that box was closed
+  unread. `get_netlist` then answered "The netlist could not be written."
+  and nothing more, and `simulate` went on to fail too. Both now say "No
+  simulator is chosen: Qucs-S found none installed. Install ngspice …,
+  then set_simulator chooses it." A message box closed at a headless
+  start is named on stderr by its first line when it has no title ("No
+  simulation backend found!"). The end-to-end test now runs the program
+  with settings of its own (`QUCS_SETTINGS_DIR`, a first start, not the
+  user's preferences or recent files) and a stand-in `ngspice` on its
+  PATH.
 - A test that wrote over `divider.sch` from an earlier case now gives
   `replace`. Without it, the save is refused with the reason, since no one
   can be asked.
 
 ## Tests
 
-`test_mcp_server` (new, 10 functions):
+`test_mcp_server` (new, 11 functions):
 
 - `theToolsAreAnnotatedAndTiered`: every tool has a short description, an
   object schema, annotations and a tier; annotations of the looking, adding
   and taking-away tools; `preview` only on the tools that change a
   schematic; `run_script` listed only where it is built; `describe_tool`
   whole and listing all.
+- `noSimulatorIsSaidSo`: with no simulator chosen, `get_netlist` and
+  `simulate` are refused with the reason.
 - `resultsAreStructured`: JSON, a sentence and an error as structured
   content.
 - `resourcesAreReadAndWatched`: the list (and `list_changed` when a

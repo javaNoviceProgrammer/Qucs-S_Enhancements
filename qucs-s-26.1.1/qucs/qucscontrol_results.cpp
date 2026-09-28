@@ -1011,6 +1011,12 @@ QString simulatorPrefix()
     }
 }
 
+QString noSimulatorText()
+{
+    return tr("No simulator is chosen: Qucs-S found none installed. Install ngspice (or say where it is: Simulation > "
+              "Simulators Settings...), then set_simulator chooses it.");
+}
+
 QString datasetFile(const QString& schematic, const QString& dataSet, int simulator)
 {
     const QFileInfo info(schematic);
@@ -1723,6 +1729,7 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
     }
     const bool last = args.value(QLatin1String("last")).toBool();
     const int simulator = QucsSettings.DefaultSimulator;
+    if (simulator == spicecompat::simNotSpecified) return errorResult(noSimulatorText());
     const QString simName = spicecompat::getDefaultSimulatorName(simulator);
     const bool map = args.value(QLatin1String("map")).toBool();
     if (map && (last || simulator == spicecompat::simQucsator || !saveAs.isEmpty()))
