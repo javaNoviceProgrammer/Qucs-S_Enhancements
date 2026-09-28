@@ -325,10 +325,6 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         done(errorResult(error));
         return;
     }
-    if (sch->getDocName().isEmpty()) {
-        done(errorResult(tr("%1 has no file yet: save_document with 'as' first.").arg(titleOf(sch))));
-        return;
-    }
     const QString name = args.value(QLatin1String("component")).toString().trimmed();
     Component* c = sch->getComponentByName(name);
     if (c == nullptr) {
@@ -397,6 +393,13 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         int side = 0;                            // (Illinois: the end kept twice)
         int next = 0;                            // the index of 'values' to try next
     };
+    // Untitled: saved in the scratch folder first (each run simulates the
+    // file's schematic), and said.
+    QString savedNote;
+    if (sch->getDocName().isEmpty() && !saveInScratch(sch, &savedNote, &error)) {
+        done(errorResult(error));
+        return;
+    }
     auto state = std::make_shared<State>();
     QPointer<Schematic> doc(sch);
     const QString path = sch->getDocName();
@@ -554,6 +557,7 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
                            {QStringLiteral("measured"), state->used.isEmpty() ? spec.value(QLatin1String("variable")).toString() : state->used},
                            {QStringLiteral("runs"), runs}};
         if (hasTarget) result.insert(QStringLiteral("target"), target);
+        if (!savedNote.isEmpty()) result.insert(QStringLiteral("saved"), savedNote);
         // Back to where it was; the value found is one step to undo.
         setValue(was);
         const bool applying = apply && best >= 0;
@@ -1074,6 +1078,24 @@ QStringList describeChanges(const QString& before, const QString& after, int mos
         if (old->rotation != p.rotation) what << tr("turned");
         if (old->mirror != p.mirror) what << tr("mirrored");
         if (old->active != p.active) what << ((p.active & 1) ? tr("made active") : tr("made inactive (left out of the simulation)"));
+        // Of another type now (replace_component): its properties are
+        // another list - compared by their names, not their places.
+        if (old->model != p.model) {
+            what << tr("now type %1 (was %2)").arg(p.model, old->model);
+            QHash<QString, QString> before;
+            for (int i = 0; i < old->values.size(); ++i)
+                if (const QString name = propertyName(old->model, i, old->values.at(i)); !name.isEmpty()) before.insert(name, old->values.at(i));
+            for (int i = 0; i < p.values.size(); ++i) {
+                const QString name = propertyName(p.model, i, p.values.at(i));
+                if (name.isEmpty() || name.startsWith(QLatin1String("property "))) continue;
+                if (before.contains(name) && before.value(name) != p.values.at(i))
+                    what << tr("%1 %2 → %3").arg(name, before.value(name), p.values.at(i));
+                else if (!before.contains(name) && i == 0)
+                    what << QStringLiteral("%1=%2").arg(name, p.values.at(i));   // (its value, as a new one's is told)
+            }
+            changes << QStringLiteral("%1: %2").arg(who, what.join(QStringLiteral(", ")));
+            continue;
+        }
         const int n = int(std::max(old->values.size(), p.values.size()));
         int shownChanges = 0;
         for (int i = 0; i < n; ++i) {
@@ -1865,6 +1887,7 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
                                 .arg(componentLines.join(QLatin1Char('\n')), wireLines.join(QLatin1Char('\n')));
     QStringList notes;
     if (!sch->replaceContent(content, &error, &notes)) return errorResult(tr("The schematic made of it does not read: %1").arg(error));
+    closeUntouched(sch);
     sch->showAll();
     QJsonObject result{{QStringLiteral("document"), titleOf(sch)},
                        {QStringLiteral("parts"), QJsonArray::fromStringList(placed)},

@@ -480,6 +480,10 @@ void Schematic::becomeCurrent(bool update)
 void Schematic::setName(const QString &Name_)
 {
     a_DocName = Name_;
+    // Where files named beside it are looked for (subcircuits, SPICE
+    // libraries): here too after Save As, not only after a load - else a
+    // subcircuit saved beside a new schematic was not found, and had no pins.
+    setFileInfo(a_DocName);
     QFileInfo Info(a_DocName);
     QString base = Info.completeBaseName();
     QString ext = Info.suffix();
