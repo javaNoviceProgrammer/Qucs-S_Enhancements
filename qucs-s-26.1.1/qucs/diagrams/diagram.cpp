@@ -1068,23 +1068,36 @@ int Graph::loadDatFile(const QString &fileName) {
     // *****************************************************************
     // look for variable name in data file  ****************************
     bool isIndep = false;
-    Variable = "dep " + Variable + " ";
-    const QByteArray VariableLatin1 = Variable.toLatin1();
+    const auto findVariable = [&](const QString &name) -> char * {
+        const QByteArray latin1 = ("dep " + name + " ").toLatin1();
+        char *at = strstr(FileString, latin1.constData());
+        while (at) {
+            // A match can sit at the very start of the buffer: never look
+            // behind its beginning.
+            const ptrdiff_t offset = at - FileString;
+            if (offset >= 1 && *(at - 1) == '<')     // is dependent variable ?
+                break;
+            else if (offset >= 3 && strncmp(at - 3, "<in", 3) == 0) {  // is independent variable ?
+                isIndep = true;
+                break;
+            }
+            at = strstr(at + 4, latin1.constData());
+        }
+        return at;
+    };
     // "pFile" is used through-out the whole function and must NOT used
     // for other purposes!
-    char *pFile = strstr(FileString, VariableLatin1.constData());
-    while (pFile) {
-        // A match can sit at the very start of the buffer: never look
-        // behind its beginning.
-        const ptrdiff_t offset = pFile - FileString;
-        if (offset >= 1 && *(pFile - 1) == '<')     // is dependent variable ?
-            break;
-        else if (offset >= 3 && strncmp(pFile - 3, "<in", 3) == 0) {  // is independent variable ?
-            isIndep = true;
-            break;
+    char *pFile = findVariable(Variable);
+    // A name alone (ac.gain) that the dataset has as a voltage, v(gain):
+    // ngspice writes a computed vector of a voltage's type so (a NutmegEq's
+    // mag(v(out))), and a trace named before the first run cannot know.
+    static const QRegularExpression plain(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)([A-Za-z_][A-Za-z0-9_]*)$"));
+    if (!pFile)
+        if (const QRegularExpressionMatch m = plain.match(Variable); m.hasMatch()) {
+            const QString voltage = m.captured(1) + QStringLiteral("v(") + m.captured(2) + QLatin1Char(')');
+            if ((pFile = findVariable(voltage))) Variable = voltage;
         }
-        pFile = strstr(pFile + 4, VariableLatin1.constData());
-    }
+    Variable = "dep " + Variable + " ";
 
     if (!pFile) return 0;   // data not found
 

@@ -235,6 +235,10 @@ QString baseUnit(const QString& value)
 QString valueText(double value, const QString& unit)
 {
     QString text = misc::num2str(value, 6);
+    // Without the zeros after the point: 1k, not 1.000000k.
+    static const QRegularExpression zeros(QStringLiteral("^([-+]?\\d+)(?:\\.(\\d*?))?0*(\\D*)$"));
+    if (const QRegularExpressionMatch m = zeros.match(text); m.hasMatch() && text.contains(QLatin1Char('.')))
+        text = m.captured(1) + (m.captured(2).isEmpty() ? QString() : QLatin1Char('.') + m.captured(2)) + m.captured(3);
     if (!unit.isEmpty()) text += QLatin1Char(' ') + unit;
     return text;
 }
@@ -392,6 +396,7 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         double a = 0, fa = NAN, b = 0, fb = NAN; // the bracket, as values measured less the target
         int side = 0;                            // (Illinois: the end kept twice)
         int next = 0;                            // the index of 'values' to try next
+        QString lastSet;                         // the value it set last (a run that failed too)
     };
     // Untitled: saved in the scratch folder first (each run simulates the
     // file's schematic), and said.
@@ -421,6 +426,7 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
             return;
         }
         setValue(valueText(x, unit));
+        state->lastSet = valueText(x, unit);
         QJsonObject run{{QStringLiteral("path"), path}, {QStringLiteral("timeout"), timeout}};
         if (atOperatingPoint) run.insert(QStringLiteral("operating_point"), true);
         if (args.contains(QLatin1String("simulator"))) run.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
@@ -558,10 +564,25 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
                            {QStringLiteral("runs"), runs}};
         if (hasTarget) result.insert(QStringLiteral("target"), target);
         if (!savedNote.isEmpty()) result.insert(QStringLiteral("saved"), savedNote);
+        // Changed while it was tuned (the user, in the window): left as they
+        // made it - not put back to what it was, and nothing applied over it.
+        const QString lastSet = state->lastSet.isEmpty() ? was : state->lastSet;
+        QString now = lastSet;
+        if (Component* comp = doc->getComponentByName(name); comp != nullptr && comp->getProperty(property) != nullptr)
+            now = comp->getProperty(property)->Value;
+        const bool changedMeanwhile = now != lastSet;
         // Back to where it was; the value found is one step to undo.
-        setValue(was);
-        const bool applying = apply && best >= 0;
-        if (applying) {
+        if (!changedMeanwhile) setValue(was);
+        const bool applying = apply && best >= 0 && !changedMeanwhile;
+        if (changedMeanwhile) {
+            if (best >= 0) {
+                const auto& [x, m] = state->runs.at(best);
+                result.insert(QStringLiteral("value"), valueText(x, unit));
+                result.insert(QStringLiteral("gives"), rounded(m));
+            }
+            result.insert(QStringLiteral("set"), tr("%1 of %2 was changed to %3 while it was tuned: left so, not put back to %4, and "
+                                                    "nothing applied over it.").arg(property, name, now, was));
+        } else if (applying) {
             const auto& [x, m] = state->runs.at(best);
             setValue(valueText(x, unit));
             doc->setChanged(true, true);
@@ -1106,7 +1127,12 @@ QStringList describeChanges(const QString& before, const QString& after, int mos
             else if (old->shown.value(i) != p.shown.value(i)) ++shownChanges;
         }
         if (shownChanges > 0) what << tr("the properties shown changed");
-        if (what.isEmpty() && (old->tx != p.tx || old->ty != p.ty)) what << tr("its text moved");
+        if (what.isEmpty() && (old->tx != p.tx || old->ty != p.ty)) {
+            // (A simulation block's text is placed as it is drawn - Simulation-
+            // Component::drawSymbol(): every load of a file "moved" it.)
+            if (p.model.startsWith(QLatin1Char('.'))) continue;
+            what << tr("its text moved");
+        }
         if (what.isEmpty()) what << tr("changed");
         changes << QStringLiteral("%1: %2").arg(who, what.join(QStringLiteral(", ")));
     }
@@ -1228,7 +1254,8 @@ namespace {
 bool anyUnsaved(QucsApp* app, QStringList* names)
 {
     for (QucsDoc* doc : app->allDocuments())
-        if (doc->getDocChanged()) *names << QFileInfo(doc->getDocName()).fileName();
+        if (doc->getDocChanged())   // (an untitled one by its title: it was "and  have ...")
+            *names << (doc->getDocName().isEmpty() ? tr("an untitled document") : QFileInfo(doc->getDocName()).fileName());
     return !names->isEmpty();
 }
 
@@ -1544,7 +1571,6 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
         source = QFileInfo(file).fileName();
     }
     if (text.trimmed().isEmpty()) return errorResult(tr("Give the netlist: 'text', or 'file' (.cir, .sp, .net)."));
-    QStringList lines = netlistLines(text);
     // A SPICE netlist's first line is its title - unless it plainly is an
     // element of a kind placed here (a fragment of a netlist), with a
     // value where one belongs.
@@ -1558,16 +1584,22 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
         }
         return true;
     };
-    QString first;
-    for (const QString& raw : text.split(QLatin1Char('\n')))
-        if (!raw.trimmed().isEmpty()) {
-            first = raw.trimmed();
-            break;
-        }
+    // (The file's first line itself - "; a comment" too: taken from the lines
+    // read, with the comment gone, it was the first element that was lost.)
+    QStringList raw = text.split(QLatin1Char('\n'));
+    int firstAt = -1;
+    for (int i = 0; i < raw.size() && firstAt < 0; ++i)
+        if (!raw.at(i).trimmed().isEmpty()) firstAt = i;
+    const QString first = firstAt >= 0 ? raw.at(firstAt).trimmed() : QString();
     const QJsonValue titleLine = args.value(QLatin1String("title_line"));
     const bool isTitle = titleLine.isBool() ? titleLine.toBool()
                                             : !first.startsWith(QLatin1Char('*')) && !first.startsWith(QLatin1Char('.')) && !looksLikeElement(first);
-    if (isTitle && !lines.isEmpty() && !first.startsWith(QLatin1Char('*'))) title = lines.takeFirst();
+    if (isTitle && firstAt >= 0 && !first.startsWith(QLatin1Char('*'))) {
+        title = first;
+        if (title.startsWith(QLatin1Char(';'))) title = title.mid(1).trimmed();
+        raw.removeAt(firstAt);
+    }
+    QStringList lines = netlistLines(raw.join(QLatin1Char('\n')));
 
     // What is in it.
     QList<NetlistElement> elements;
@@ -1686,6 +1718,51 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
         elements << e;
     }
     if (elements.isEmpty()) return errorResult(tr("No elements were found in %1.").arg(source));
+    // Two elements of one name (SPICE's names know no case): the second
+    // renamed - ngspice refuses a netlist with both - and said.
+    {
+        QSet<QString> seen;
+        for (NetlistElement& e : elements) {
+            QString name = e.name;
+            for (int k = 2; seen.contains(name.toLower()); ++k) name = QStringLiteral("%1_%2").arg(e.name).arg(k);
+            if (name != e.name) {
+                skipped << tr("%1: a second element of that name, placed as %2").arg(e.name, name);
+                e.name = name;
+            }
+            seen.insert(name.toLower());
+        }
+    }
+    // Each node's net: SPICE's names know no case (In and in are one node),
+    // and a name made safe for a label (n+1 as n_1) is not another node's
+    // name - two nodes merged so, and V1 and V2 were in parallel.
+    QHash<QString, QString> netOf;   // a node (lower case) -> its net's name
+    {
+        QSet<QString> used;   // (lower case)
+        QStringList order;
+        for (const NetlistElement& e : std::as_const(elements))
+            for (const QString& node : e.nodes)
+                if (!order.contains(node.toLower())) order << node.toLower();
+        QHash<QString, QString> spelled;   // lower -> as first written
+        for (const NetlistElement& e : std::as_const(elements))
+            for (const QString& node : e.nodes)
+                if (!spelled.contains(node.toLower())) spelled.insert(node.toLower(), node);
+        static const QRegularExpression unsafe(QStringLiteral("[^A-Za-z0-9_]"));
+        // Safe names first, as they are; then the others, made safe.
+        for (const QString& key : std::as_const(order))
+            if (!spelled.value(key).contains(unsafe)) {
+                netOf.insert(key, spelled.value(key));
+                used.insert(key);
+            }
+        for (const QString& key : std::as_const(order)) {
+            if (netOf.contains(key)) continue;
+            QString base = spelled.value(key);
+            base.replace(unsafe, QStringLiteral("_"));
+            QString name = base;
+            for (int k = 2; used.contains(name.toLower()); ++k) name = QStringLiteral("%1_%2").arg(base).arg(k);
+            netOf.insert(key, name);
+            used.insert(name.toLower());
+        }
+    }
 
     // The parts, as .sch lines, in rows.
     QStringList componentLines, wireLines, placed;
@@ -1694,11 +1771,7 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
     const int spacing = std::clamp(args.value(QLatin1String("spacing")).toInt(200), 120, 600);
     const int perRow = std::clamp(int(std::ceil(std::sqrt(double(elements.size())))), 2, 8);
     int index = 0;
-    const auto netName = [](const QString& node) {
-        QString n = node;
-        n.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_]")), QStringLiteral("_"));
-        return n;
-    };
+    const auto netName = [&netOf](const QString& node) { return netOf.value(node.toLower(), node); };
     for (const NetlistElement& e : std::as_const(elements)) {
         const char letter = e.letter.toLatin1();
         QString model;
@@ -1826,10 +1899,18 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
         QString stem = base;
         stem.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_-]")), QStringLiteral("_"));
         const QString dir = saveAs.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : QFileInfo(absolute(saveAs.endsWith(QLatin1String(".sch")) ? saveAs : saveAs + QStringLiteral(".sch"))).absolutePath();
-        subcircuitFile = QDir(dir).filePath(stem + QStringLiteral("_subcircuits.lib"));
+        // A name of its own: another import of the same title wrote over
+        // the file the first one's schematic includes, and changed its parts.
+        const QByteArray content = (QStringLiteral("* The subcircuits of %1, taken out by import_netlist\n").arg(source)
+                                    + subcircuitText.join(QLatin1Char('\n')) + QLatin1Char('\n')).toUtf8();
+        for (int k = 1;; ++k) {
+            subcircuitFile = QDir(dir).filePath(stem + (k == 1 ? QStringLiteral("_subcircuits.lib") : QStringLiteral("_subcircuits-%1.lib").arg(k)));
+            QFile there(subcircuitFile);
+            if (!there.exists() || (there.open(QIODevice::ReadOnly) && there.readAll() == content)) break;
+        }
         QFile f(subcircuitFile);
         if (f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-            f.write((QStringLiteral("* The subcircuits of %1, taken out by import_netlist\n").arg(source) + subcircuitText.join(QLatin1Char('\n')) + QLatin1Char('\n')).toUtf8());
+            f.write(content);
             includes << QStringLiteral(".include \"%1\"").arg(subcircuitFile);
         } else {
             skipped << tr("the subcircuits: %1 could not be written").arg(QDir::toNativeSeparators(subcircuitFile));

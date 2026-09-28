@@ -130,7 +130,9 @@ public:
     void parseXYCENoiseLog(QString logfile, QList< QList<double> > &sim_points,
                            QStringList &var_list);
     void parseResFile(QString resfile, QString &var, QStringList &values);
-    void convertToQucsData(const QString &qucs_dataset);
+    /// The simulator's output as the dataset \a qucs_dataset; why it could
+    /// not be written (an empty text when it was, or nothing was to be).
+    QString convertToQucsData(const QString &qucs_dataset);
     QString getOutput();
     /// The Scratch folder the netlist and the simulator's output files are in.
     QString workdir() const { return a_workdir; }

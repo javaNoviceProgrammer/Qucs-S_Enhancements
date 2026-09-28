@@ -203,8 +203,8 @@ void Optimizer::evaluated(int w)
             error = tr("the simulation failed:\n%1").arg(output.trimmed());
         } else {
             const QString dataset = worker.dir + QDir::separator() + QStringLiteral("opt.dat");
-            kernel->convertToQucsData(dataset);
-            measured = measureDataset(dataset, &error);
+            error = kernel->convertToQucsData(dataset);
+            if (error.isEmpty()) measured = measureDataset(dataset, &error);
         }
     }
     kernel->deleteLater();

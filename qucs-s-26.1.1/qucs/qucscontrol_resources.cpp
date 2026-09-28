@@ -213,7 +213,11 @@ QJsonObject QucsControl::askUser(const QString& message, const QJsonObject& sche
         answered = true;
         loop.quit();
     });
-    if (!answered) loop.exec();
+    if (!answered) {
+        ++a_spinning;
+        loop.exec();
+        --a_spinning;
+    }
     return answer;
 }
 
@@ -268,14 +272,14 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
     struct Kept {
         QPointer<Schematic> sch;
         QPair<QString, QString> state;
-        QPair<int, int> marks;
+        Schematic::UndoStacks marks;
         bool changed;
         bool symbolMode;
     };
     auto kept = std::make_shared<QList<Kept>>();
     for (QucsDoc* doc : a_app->allDocuments())
         if (auto* sch = dynamic_cast<Schematic*>(doc))
-            kept->append(Kept{sch, sch->snapshotAll(), sch->undoMarks(), sch->getDocChanged(), sch->getSymbolMode()});
+            kept->append(Kept{sch, sch->snapshotAll(), sch->undoStacks(), sch->getDocChanged(), sch->getSymbolMode()});
     QPointer<QWidget> front = a_app->DocumentTab->currentWidget();
     // A batch: of calls that change schematics or look alone - not one that
     // writes a file, runs a simulation or opens a document.
@@ -313,7 +317,7 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
                 if (after.second.mid(1) != k.state.second.mid(1)) lines.append(tr("its symbol's paintings change"));
                 if (!lines.isEmpty()) changes.append(QJsonObject{{QStringLiteral("document"), titleOf(k.sch)}, {QStringLiteral("changes"), lines}});
                 k.sch->restoreAll(k.state, false);
-                k.sch->forgetUndoAfter(k.marks);
+                k.sch->setUndoStacks(k.marks);
             }
             if (k.sch->getSymbolMode() != k.symbolMode) {
                 a_app->showDocument(k.sch);
@@ -364,10 +368,10 @@ QJsonObject QucsControl::diffTool(const QJsonObject& args)
     if (args.contains(QLatin1String("steps"))) {
         const int steps = args.value(QLatin1String("steps")).toInt();
         const QStringList states = sch->undoStates();
-        const int at = sch->undoIndex() - steps;
-        if (steps < 1 || at < 0 || at >= states.size())
+        // (steps checked first: undoIndex() - INT_MIN overflows)
+        if (steps < 1 || steps > sch->undoIndex() || sch->undoIndex() - steps >= states.size())
             return errorResult(tr("'steps' is how many steps back in its undo history: 1 to %1.").arg(std::max(0, sch->undoIndex())));
-        before = states.at(at);
+        before = states.at(sch->undoIndex() - steps);
         against = tr("%1 step(s) back").arg(steps);
     } else {
         // Another file (or document), or its own file as saved.
@@ -382,7 +386,12 @@ QJsonObject QucsControl::diffTool(const QJsonObject& args)
             } else {
                 QFile f(absolute(other));
                 if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return errorResult(tr("There is no file %1.").arg(QDir::toNativeSeparators(absolute(other))));
-                before = stateOfText(QString::fromUtf8(f.readAll()));
+                const QString text = QString::fromUtf8(f.readAll());
+                // A schematic's file (a symbol's too), not any file read as
+                // an empty schematic with every part "added".
+                if (!text.startsWith(QLatin1String("<Qucs Schematic")) && !text.startsWith(QLatin1String("<Qucs Symbol")))
+                    return errorResult(tr("%1 is not a schematic of Qucs-S.").arg(QDir::toNativeSeparators(absolute(other))));
+                before = stateOfText(text);
                 against = QDir::toNativeSeparators(absolute(other));
             }
         } else {

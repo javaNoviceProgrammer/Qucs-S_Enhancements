@@ -437,7 +437,9 @@ bool TextDoc::load ()
   document()->setModified(false);
   slotSetChanged ();
   file.close ();
-  a_lastSaved = QDateTime::currentDateTime ();
+  // (The file's date, not the load's: one dated in the future was newer
+  // than the load for good, and loaded again as changed on disk.)
+  a_lastSaved = lastLoadModTime.isValid() ? lastLoadModTime : QDateTime::currentDateTime ();
   loadSettings ();
   a_SimOpenDpl = simulation ? true : false;
   refreshLanguage();

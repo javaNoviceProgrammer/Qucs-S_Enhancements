@@ -31,6 +31,7 @@
 #include "erc.h"
 #include "dialogs/simmessage.h"
 #include "ngstatistics.h"
+#include "ngsweep.h"
 #include "textdoc.h"
 #include "wire.h"
 #include "wirelabel.h"
@@ -41,6 +42,7 @@
 #include <QApplication>
 #include <QBuffer>
 #include <QCheckBox>
+#include <QCollator>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -69,6 +71,8 @@
 #include <QStackedWidget>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTextDocument>
+#include <QTextDocumentFragment>
 #include <QTextEdit>
 #include <QSet>
 #include <QTimer>
@@ -108,7 +112,7 @@ const char* const kTools = R"JSON([
  "description": "Closes a document's tab (the one in front unless 'path' names another). For a document with unsaved changes, 'unsaved' says whether to save or discard them; without it the user is asked to save, discard or keep the document open.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "unsaved": {"type": "string", "enum": ["save", "discard"], "description": "For a document with unsaved changes: save them, or discard them; not given, the user is asked"}}}},
 {"name": "get_schematic",
- "description": "Reads a schematic as it is in Qucs-S now, including unsaved changes. Format 'summary' (the default) lists: the components (name, type, position, rotation, mirroring, whether active, properties, each pin's position with whether anything is connected and its net - a label's name, gnd, or net1, net2, ... - and the boxes of its texts); the nets with the pins on each (those with two or more pins, or a name); the wires, net labels and paintings (numbered as the painting tools expect, each with its type and fields by name); the settings (dataset, data display, frame); and the diagrams, numbered as the diagram tools expect, with their axes, traces (each trace's variable, style, and points or the reason it shows no data) and markers. 'properties' chooses which properties are listed: non_default (those shown or not at the type's default; the default), shown, or all. 'texts' gives each part's name and shown properties with their box [x1, y1, x2, y2], to move one clear of a wire or label with edit_component's text_at. 'components' (names; a ground by its ref, GND#2) or 'region' ([x1, y1, x2, y2]) limits the list to those components with their nets and wires - the nets named as in a full read, net1 being the same net in both; a list longer than 200 is cut short and says what was left out. 'symbol' also lists the paintings of its symbol (its ports and name text among them), as does a document that is showing its symbol. Format 'overview' summarizes it at a glance - parts counted by type, analyses, named nets, extent and diagrams - in a few hundred bytes even for thousands of parts: start there with a large schematic. Format 'text' returns the text its .sch file would have, and 'json' the parts and wires in the form set_schematic accepts. Coordinates are in schematic units; the grid is usually 10.",
+ "description": "Reads a schematic as it is in Qucs-S now, including unsaved changes. Format 'summary' (the default) lists: the components (name, type, position, rotation, mirroring, whether active, properties, each pin's position with whether anything is connected and its net - a label's name, gnd, or net1, net2, ... (numbered in order, so a label or a new part may renumber them: read again before using one) - and the boxes of its texts); the nets with the pins on each (those with two or more pins, or a name); the wires, net labels and paintings (numbered as the painting tools expect, each with its type and fields by name); the settings (dataset, data display, frame); and the diagrams, numbered as the diagram tools expect, with their axes, traces (each trace's variable, style, and points or the reason it shows no data) and markers. 'properties' chooses which properties are listed: non_default (those shown or not at the type's default; the default), shown, or all. 'texts' gives each part's name and shown properties with their box [x1, y1, x2, y2], to move one clear of a wire or label with edit_component's text_at. 'components' (names; a ground by its ref, GND#2) or 'region' ([x1, y1, x2, y2]) limits the list to those components with their nets and wires - the nets named as in a full read, net1 being the same net in both; a list longer than 200 is cut short and says what was left out. 'symbol' also lists the paintings of its symbol (its ports and name text among them), as does a document that is showing its symbol. Format 'overview' summarizes it at a glance - parts counted by type, analyses, named nets, extent and diagrams - in a few hundred bytes even for thousands of parts: start there with a large schematic. Format 'text' returns the text its .sch file would have, and 'json' the parts and wires in the form set_schematic accepts. Coordinates are in schematic units; the grid is usually 10.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "format": {"type": "string", "enum": ["summary", "overview", "text", "json"], "description": "json: its parts and wires as set_schematic's 'components' and 'wires' take them back"}, "symbol": {"type": "boolean", "description": "Also list its symbol's paintings (its ports and name text among them)"},
    "properties": {"type": "string", "enum": ["non_default", "shown", "all"], "description": "Which properties each part lists: non_default (shown, or not at the type's default; the default), shown, or all"},
    "components": {"type": "array", "items": {"type": "string"}, "description": "Only these parts, by name - a ground by its ref (GND when there is one, GND#2 the second of several, as get_schematic gives it) - with their nets and wires; the nets keep the names a full read gives them, and names that match nothing come back under 'not found'"},
@@ -121,7 +125,7 @@ const char* const kTools = R"JSON([
  "description": "Replaces the elements of a schematic in one undo step. Give either the JSON form - 'components' and 'wires', as get_schematic's format json returns them, with properties by name and checked against each type - or 'text': the text of a .sch file, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are ignored). Diagrams re-read their data. Returns what it read in each section it replaced: the components by name and type, the number of wires, the diagrams as get_schematic lists them (each trace's points or why it has none, each marker and the sample it shows) and the paintings. If the text cannot be read, the schematic stays unchanged and the error is reported. The same happens for a component line with more values than its type has properties, because values are positional and one extra value in the middle puts every later value in the wrong property. A line with fewer values is accepted, the rest at their defaults, and the result says so. A number with letters after it that are no scale and unit (1kk, 10uu) is refused, and the schematic stays unchanged. Other values that do not fit their property - a word where a number belongs, a word that is not one of the property's choices - are listed under 'values'. To hide or show a property or move a part's text, use edit_component instead of rewriting the line. describe_format explains each line's fields. For diagrams, traces and markers, add_diagram, edit_diagram, add_trace, edit_trace, add_marker and edit_marker are simpler and safer.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "text": {"type": "string", "description": "The .sch lines (or 'components' and 'wires' instead)"},
    "components": {"type": "array", "items": {"type": "object"}, "description": "The JSON form, in place of <Components>: each part {\"type\": \"R\", \"name\": \"R1\", \"x\": 100, \"y\": 100, \"rotation\": 0-3, \"mirror\": false, \"properties\": {\"R\": \"1k\"}, \"shown\": {...}, \"equations\": [...], \"active\": true, \"text_at\": [dx, dy]} - properties by name, checked against the type, so no value can shift into another's place; get_schematic's format json gives them so"},
-   "wires": {"type": "array", "items": {"type": "object"}, "description": "The JSON form, in place of <Wires>: {\"from\": [x, y], \"to\": [x, y], \"label\": \"out\"}, a label on a pin alone {\"at\": [x, y], \"label\": \"in\"}"}}}},
+   "wires": {"type": "array", "items": {"type": "object"}, "description": "The JSON form, in place of <Wires>: {\"from\": [x, y], \"to\": [x, y], \"label\": \"out\"}, a label on a pin alone {\"at\": [x, y], \"label\": \"in\"}; a label's 'initial' is its net's initial value (.IC)"}}}},
 {"name": "describe_format",
  "description": "Explains the lines of a .sch file field by field - a component, a wire, a diagram (all of its roughly 30 fields), a trace, a marker, a painting - as set_schematic accepts them and get_schematic's format 'text' returns them. For paintings it also lists the fields add_painting and edit_painting accept, type by type. Without 'element', it explains all of them.",
  "inputSchema": {"type": "object", "properties": {"element": {"type": "string", "enum": ["component", "wire", "diagram", "trace", "marker", "painting"], "description": "The kind of line explained (all of them when not given)"}}}},
@@ -219,7 +223,7 @@ const char* const kTools = R"JSON([
 {"name": "set_label",
  "description": "Names the net at a pin or at a point on a wire (a net label: nets with the same name are connected). An empty name removes the label.",
  "inputSchema": {"type": "object", "properties": {
-   "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "at": {"description": "\"R1.1\" or [x, y]"}, "name": {"type": "string", "description": "The net's name (\"\" takes the label away); nets of one name are one"}}, "required": ["at", "name"]}},
+   "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "at": {"description": "\"R1.1\" or [x, y]"}, "name": {"type": "string", "description": "The net's name (\"\" takes the label away); nets of one name are one. As the label dialog takes one: a letter, then letters, digits and single _ - not gnd, 0 or net1, net2 ..."}}, "required": ["at", "name"]}},
 {"name": "select",
  "description": "Selects components by name (a ground by its ref, GND#2), and diagrams and paintings by their numbers from get_schematic, in a schematic; everything else is deselected. Nothing given deselects everything.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "names": {"type": "array", "items": {"type": "string"}, "description": "Components by name (a ground by its ref (GND when there is one, GND#2 the second of several, as get_schematic gives it))"},
@@ -273,8 +277,9 @@ const char* const kTools = R"JSON([
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "last": {"type": "boolean", "description": "The netlist the last simulation ran (simulate's error line numbers are of it), not one written now"}, "numbered": {"type": "boolean", "description": "Each line's number in front of it"},
    "format": {"type": "string", "enum": ["spice", "cdl"], "description": "spice (the default) or cdl"}}}},
 {"name": "export_netlist",
- "description": "Writes a schematic's netlist to a file, like Simulation > Save netlist and Save CDL netlist, whose file dialogs cannot be answered. 'save_as' is a path, or a name in the project's folder (otherwise the workspace's); an existing file is overwritten. 'format' is spice (the default) or cdl, and 'last' writes the one the last simulation ran. Returns the file and its lines.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "save_as": {"type": "string", "description": "The file: a path, or a name in the project's folder (else the workspace's); written over when it is there"}, "last": {"type": "boolean", "description": "The netlist the last simulation ran"},
+ "description": "Writes a schematic's netlist to a file, like Simulation > Save netlist and Save CDL netlist, whose file dialogs cannot be answered. 'save_as' is a path, or a name in the project's folder (otherwise the workspace's); an existing file is overwritten, but not a document open in Qucs-S, and a schematic, symbol, data display or code only with 'replace'. 'format' is spice (the default) or cdl, and 'last' writes the one the last simulation ran. Returns the file and its lines.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "save_as": {"type": "string", "description": "The file: a path, or a name in the project's folder (else the workspace's); written over when it is there, unless it is a document of Qucs-S"}, "last": {"type": "boolean", "description": "The netlist the last simulation ran"},
+   "replace": {"type": "boolean", "description": "Write over a schematic, symbol, data display or code file that is not open (else refused)"},
    "format": {"type": "string", "enum": ["spice", "cdl"], "description": "spice (the default) or cdl"}}, "required": ["save_as"]}},
 {"name": "get_dataset",
  "description": "Reads a simulation's results as numbers, from the dataset the simulator wrote (its 'written' time tells which run). Without 'variables' it lists the variables: the independent ones (time, frequency, a swept parameter, with their range and number of points) and the others (what they depend on, number of points, whether complex, range, units when known - dB, V, A, degrees - and the definition an equation gives them), each with the name a trace uses; plus the operating point of a DC simulation (op): each node's value and, with ngspice, each device's quantities (id, gm, vgs, ...) under its component. 'operating_point' returns only that, with every device in full. With 'variables', for each one over the x range from 'from' to 'to': its statistics (min and max and where they occur, mean and RMS weighted over x, initial and final value) and, as requested, 'points' (at most that many samples, spread evenly over the range), 'at' (values at given x, interpolated) and 'measure' (measurements on the full data). Measurements: rise_time and fall_time (10%-90% of the swing, first edge); overshoot (percent of the step); settling_time (to within 'tolerance' of the step, 0.02 by default, counted from 'from'); period, frequency and duty_cycle (at 'level', the middle of the swing by default); crossings (of 'level'); bandwidth (the -3 dB points: 1/sqrt(2) of the peak of a magnitude, or 3 dB below the peak of a curve in dB - db(...), vdb(...) or an equation that makes one, with 'decibels' saying so when it cannot be told; refused on a curve that goes below 0 and is not in dB); thd (of a transient: total harmonic distortion in percent and dB and each harmonic's amplitude, over the last 'periods' whole periods (1 by default) of 'fundamental' (Hz; the curve's own frequency by default) before 'to', harmonics 2 to 'harmonics' (9 by default), like ngspice's .four); gain (of an AC curve: at the lowest frequency and at its peak, as a ratio and in dB, and the unity-gain frequency where it falls through 1, 0 dB); phase_margin and gain_margin (of a loop gain given as a complex AC variable: 180 degrees plus its phase where its magnitude falls through 1, and minus its gain in dB where its phase falls through -180 degrees, each with its frequency); distribution (the values as samples, such as one per Monte Carlo run: mean, standard deviation, median, 5th and 95th percentiles and a histogram; with 'level', the share at or above it); fft (of a transient: its spectrum, resampled evenly with a Hann window - the strongest lines with amplitude and dBc, DC, the noise floor and the resolution); eye (of a transient folded at 'bit_period' from 'offset': eye height at the bit centers, eye width, crossing jitter peak-to-peak and RMS, and the high and low levels). A variable swept over a parameter gives one curve per value and, when measured, a table with one row per value (bandwidth against R, overshoot per sample). A table - a .csv, .tsv or .xlsx file, a script's results or a Monte Carlo workbook - is read as a dataset: each column of numbers is a variable, over the first column when it rises (time), otherwise over the row number. Complex values (AC) come as magnitude and phase in degrees unless 'form' says otherwise; statistics and measurements use the magnitude. A variable written as complex numbers with no imaginary part (a Nutmeg equation's db(...)) is read as real, keeping its sign, and the result says so. A variable can be an expression of others - v(out)/v(in), db(ac.v(out)/ac.v(in)) - evaluated sample by sample and measured like any other. 'compare' (a name from simulate's keep_as, or a dataset file) puts another run next to each variable: its statistics and measurements over the same range, and the difference (the largest difference and where, its mean and RMS).",
@@ -368,7 +373,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "diagram": {"type": "integer", "description": "The diagram's number from get_schematic; may be left out when there is one"}, "marker": {"type": "integer", "description": "The marker's number from get_schematic"}}}},
 {"name": "rename_net",
  "description": "Renames a net - its labels change, and a net get_schematic calls net1, net2, ... gets a label - together with everything that names its voltage: the traces of the schematic's diagrams and of its data displays (open ones as an undoable change; the .dpl file of a closed one is rewritten) and its equations, so v(out) becomes v(out1) and out.v becomes out1.v. It is refused when another net already has the new name, since that would join the two. The dataset keeps the old name until the next simulation.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "from": {"type": "string", "description": "The net's name now: a label's, or net1, net2, ... as get_schematic calls it"}, "to": {"type": "string", "description": "Its new name; refused when another net has it"}}, "required": ["from", "to"]}},
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "from": {"type": "string", "description": "The net's name now: a label's, or net1, net2, ... as get_schematic calls it"}, "to": {"type": "string", "description": "Its new name, as the label dialog takes one (a letter, then letters, digits and single _): refused when another net has it, and for gnd, 0 and net1, net2 ..."}}, "required": ["from", "to"]}},
 {"name": "describe_component_type",
  "description": "Describes a library component type: what it is, its category, how its parts are named, its pins (their positions relative to its center, unrotated), and its properties in order - name, default value, unit, meaning, whether shown on the schematic and which simulators it applies to. It also gives the simulators the type works with, the netlist line it produces with its defaults for the simulator from the settings, and notes on common mistakes (a Vpulse is a single pulse; Vrect repeats), including properties hidden on the schematic that still go into the netlist and where (an OpAmp's Umax clips its output). With type \"Verilog-A\" it instead returns a new Verilog-A module to start from - a template OpenVAF compiles as it is - and how to write one (attributes before the declaration, desc, units, type=\"instance\", contributions, a DC path for every node).",
  "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "description": "As list_component_types gives it: R, Vpulse, .TR, ...; a Verilog-A module's name or file; \"Verilog-A\" for a template of a new one"}}, "required": ["type"]}},
@@ -388,7 +393,7 @@ const char* const kTools = R"JSON([
    "x": {"type": "integer", "description": "A text's or formula's place, a box's top left corner, in schematic units, on the grid (usually 10)"}, "y": {"type": "integer", "description": "A text's or formula's place, a box's top left corner, in schematic units, on the grid (usually 10)"}, "width": {"type": "integer", "description": "A box's, ellipse's, image's, table's or text box's width"}, "height": {"type": "integer", "description": "Its height"},
    "from": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "A line's, arrow's or dimension's first end, [x, y]"}, "to": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Its other end, [x, y]"},
    "points": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}, "description": "A polyline's or polygon's points, [[x, y], ...]"},
-   "text": {"type": "string", "description": "A text's, text box's or formula's text (TeX for a formula; _x, ^x in a text)"}, "size": {"type": "integer", "description": "A text's font size, 1-400"}, "color": {"type": "string", "description": "The line's or text's colour: #rrggbb or a colour's name"}, "thickness": {"type": "integer", "description": "The line's width, 0-100"},
+   "text": {"type": "string", "description": "A text's or text box's text (_x, ^x in a text)"}, "tex": {"type": "string", "description": "A formula's TeX math, without dollars: \\frac{V_{out}}{V_{in}}"}, "display": {"type": "boolean", "description": "A formula in display style (larger fractions, limits above and below)"}, "size": {"type": "integer", "description": "A text's font size, 1-400"}, "color": {"type": "string", "description": "The line's or text's colour: #rrggbb or a colour's name"}, "thickness": {"type": "integer", "description": "The line's width, 0-100"},
    "style": {"type": "string", "description": "The line: none, solid, dash, dot, dash_dot or dash_dot_dot"}, "fill_color": {"type": "string", "description": "The fill's colour: #rrggbb or a colour's name"}, "fill_style": {"type": "string", "description": "The fill: none, solid, dense1-dense7, horizontal, vertical, cross, backward_diagonal, forward_diagonal or diagonal_cross"}, "filled": {"type": "boolean", "description": "Whether a box, ellipse or polygon is filled"},
    "angle": {"type": "integer", "description": "A text's angle in degrees, -360 to 360"}, "head": {"type": "string", "enum": ["open", "filled"], "description": "An arrow's head: open or filled"}, "file": {"type": "string", "description": "An image's file (PNG, JPEG, SVG ...)"},
    "around": {"type": "string", "enum": ["selection"], "description": "Placed by what the user selected: a box about it, a text above it, an arrow to it, a brace beside it, a dimension under it (the fields given stay)"}},
@@ -400,7 +405,7 @@ const char* const kTools = R"JSON([
    "x": {"type": "integer", "description": "A text's or formula's place, a box's top left corner, a symbol port's place"}, "y": {"type": "integer", "description": "A text's or formula's place, a box's top left corner, a symbol port's place"}, "width": {"type": "integer", "description": "A box's, ellipse's, image's, table's or text box's width"}, "height": {"type": "integer", "description": "Its height"},
    "from": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "A line's, arrow's or dimension's first end, [x, y]"}, "to": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Its other end, [x, y]"},
    "points": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}, "description": "A polyline's or polygon's points, [[x, y], ...]"},
-   "text": {"type": "string", "description": "A text's, text box's or formula's text"}, "size": {"type": "integer", "description": "A text's font size, 1-400"}, "color": {"type": "string", "description": "The line's or text's colour: #rrggbb or a colour's name"}, "thickness": {"type": "integer", "description": "The line's width, 0-100"},
+   "text": {"type": "string", "description": "A text's or text box's text"}, "tex": {"type": "string", "description": "A formula's TeX math, without dollars"}, "display": {"type": "boolean", "description": "A formula in display style (larger fractions, limits above and below)"}, "size": {"type": "integer", "description": "A text's font size, 1-400"}, "color": {"type": "string", "description": "The line's or text's colour: #rrggbb or a colour's name"}, "thickness": {"type": "integer", "description": "The line's width, 0-100"},
    "style": {"type": "string", "description": "The line: none, solid, dash, dot, dash_dot or dash_dot_dot"}, "fill_color": {"type": "string", "description": "The fill's colour: #rrggbb or a colour's name"}, "fill_style": {"type": "string", "description": "The fill: none, solid, dense1-dense7, horizontal, vertical, cross, backward_diagonal, forward_diagonal or diagonal_cross"}, "filled": {"type": "boolean", "description": "Whether a box, ellipse or polygon is filled"},
    "angle": {"type": "integer", "description": "A text's angle in degrees, -360 to 360"}, "head": {"type": "string", "enum": ["open", "filled"], "description": "An arrow's head: open or filled"}, "file": {"type": "string", "description": "An image's file"}},
    "required": ["painting"]}},
@@ -702,7 +707,17 @@ bool sameFile(const QString& a, const QString& b)
     const QFileInfo fa(a), fb(b);
     const QString ca = fa.exists() ? fa.canonicalFilePath() : QDir::cleanPath(fa.absoluteFilePath());
     const QString cb = fb.exists() ? fb.canonicalFilePath() : QDir::cleanPath(fb.absoluteFilePath());
-    return ca == cb;
+    // (And the file itself: TN.sch is tn.sch on a case-insensitive disk.)
+    return ca == cb || (fa.exists() && fb.exists() && misc::isSameFile(ca, cb));
+}
+
+bool isQucsDocument(const QString& file)
+{
+    static const QStringList kinds{QStringLiteral("sch"), QStringLiteral("dpl"), QStringLiteral("sym"), QStringLiteral("va"),
+                                   QStringLiteral("vhd"), QStringLiteral("vhdl"), QStringLiteral("v"), QStringLiteral("dat")};
+    if (kinds.contains(QFileInfo(file).suffix().toLower())) return true;
+    QFile f(file);
+    return f.open(QIODevice::ReadOnly) && f.read(6) == "<Qucs ";
 }
 
 QString absolute(const QString& path)
@@ -742,6 +757,45 @@ QString cleanText(QString text)
     return text.trimmed();
 }
 
+// A region [x1, y1, x2, y2] as a rectangle, its corners kept on the canvas:
+// [-2^31, -2^31, 2^31-1, 2^31-1] overflowed its width, and found nothing.
+QRect regionOf(const QJsonArray& r)
+{
+    const auto at = [&r](int i) { return misc::clampCoordinate(int(std::clamp(std::isfinite(r.at(i).toDouble()) ? r.at(i).toDouble() : 0.0, -1e9, 1e9))); };
+    return QRect(QPoint(at(0), at(1)), QPoint(at(2), at(3))).normalized();
+}
+
+// Why \a name cannot name a part (empty when it can): as the component
+// dialog takes one - a letter, then letters, digits and _. "R 9" gave an
+// extra node, "R;9" and "R$9" began a SPICE comment, "R9.2" made pins
+// R9.2.1 that connect could not tell, "9R" was netlisted as R9R.
+QString badPartName(const QString& name)
+{
+    static const QRegularExpression ok(QStringLiteral("^[A-Za-z][A-Za-z0-9_]*$"));
+    if (ok.match(name).hasMatch()) return {};
+    return tr("%1 cannot name a part: a letter first, then letters, digits and _ (as the component dialog takes a name)").arg(name);
+}
+
+// Why \a name cannot name a net (empty when it can): as the label dialog
+// takes one - a letter, then letters, digits and single _ - and not
+// ground's names (0, gnd: a net so called was shorted to ground, silently)
+// or those get_schematic gives nets without a label (net2: two nets of one
+// name then).
+QString badNetName(const QString& name)
+{
+    if (name == QLatin1String("0") || name.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0)
+        return tr("%1 is ground's name: a net so called is ground in the netlist, shorted to it (connect with 'ground' grounds a "
+                  "pin, if that is meant)").arg(name);
+    static const QRegularExpression automatic(QStringLiteral("^net\\d+$"), QRegularExpression::CaseInsensitiveOption);
+    if (automatic.match(name).hasMatch())
+        return tr("%1 is a name get_schematic gives a net without a label: another net may be called so now or later - choose "
+                  "another").arg(name);
+    static const QRegularExpression ok(QStringLiteral("^[A-Za-z](?:[A-Za-z0-9]|_(?!_))*!?$"));
+    if (!ok.match(name).hasMatch())
+        return tr("%1 cannot name a net: a letter first, then letters, digits and single _ (as the label dialog takes a name)").arg(name);
+    return {};
+}
+
 QString propertyValue(const QJsonValue& v)
 {
     if (v.isString()) return v.toString();
@@ -760,6 +814,18 @@ int defaultRotation(const QString& model)
     if (std::unique_ptr<Component> fresh{newComponent(model)}) turns = fresh->rotated;
     cache.insert(model, turns);
     return turns;
+}
+
+// \a c, new and as its type draws it, turned and mirrored as get_schematic
+// tells them: \a turns quarter turns from its type's own orientation, and
+// mirrored - in the order a file is read (Component::load: mirrored, then
+// turned to its count). Turned first, then mirrored, a part both mirrored
+// and turned read back turned 180 degrees: a source's polarity reversed.
+void orient(Component* c, int turns, bool mirror)
+{
+    const int want = ((turns + defaultRotation(c->Model)) % 4 + 4) % 4;
+    if (mirror != c->mirroredX) c->mirrorX();
+    for (int i = 0; i < 4 && c->rotated != want; ++i) c->rotate();
 }
 
 // Where each of its texts is on the schematic, [x1, y1, x2, y2]: its name,
@@ -851,17 +917,105 @@ QString noSuchProperty(const Component* c, const QString& names)
     return text;
 }
 
-// Sets properties by name; false and which are unknown in \a error.
-bool setProperties(Component* c, const QJsonObject& properties, QString* error)
+// Whether \a name is a property \a c may have any number of: NgSweep's
+// Record and Vs, a Monte Carlo's or corners' Record and Spec, NgOpt's Knob
+// and Target, an optimization's Var and Goal.
+bool isRepeated(const Component* c, const QString& name)
 {
-    QStringList unknown;
-    for (auto it = properties.begin(); it != properties.end(); ++it)
-        if (c->getProperty(it.key()) == nullptr) unknown << it.key();
+    if (qucs_s::ngsweep::isSweep(c)) return name == QLatin1String("Record") || name == QLatin1String("Vs");
+    if (qucs_s::ngstats::isStatistics(c)) return name == QLatin1String("Record") || name == QLatin1String("Spec");
+    if (c->Model == QLatin1String(".NGOPT")) return name == QLatin1String("Knob") || name == QLatin1String("Target");
+    if (c->Model == QLatin1String(".Opt")) return name == QLatin1String("Var") || name == QLatin1String("Goal");
+    // (Not any name that comes twice: a parameter sweep of a list calls two
+    // properties in their places Symbol.)
+    return false;
+}
+
+// A property that comes more than once - NgSweep's Record and Vs, a Monte
+// Carlo's Record and Spec - is given as a list of its values: they replace
+// every one of that name, after the others. (As one value, the JSON form
+// kept only the last.)
+void setRepeated(Component* c, const QString& name, const QJsonArray& values)
+{
+    bool display = true, seen = false;
+    for (qsizetype i = c->Props.size() - 1; i >= 0; --i)
+        if (c->Props.at(i)->Name == name) {
+            display = c->Props.at(i)->display;
+            seen = true;
+            delete c->Props.takeAt(i);
+        }
+    if (!seen && !values.isEmpty()) display = true;
+    for (const QJsonValue& v : values) c->Props.append(new Property(name, propertyValue(v), display, QString()));
+}
+
+// Sets \a properties by name; false and which are unknown in \a error.
+// A new part (\a fresh) also takes those its type
+// makes only once made again - an equation-defined device's branches (I2,
+// Q2 with Branches 2), a subcircuit's parameters (with its File) - and, when
+// a subcircuit's file is not found, its parameters as they are given.
+bool setProperties(Component* c, const QJsonObject& properties, QString* error, bool fresh = false)
+{
+    const auto unknownOf = [&] {
+        QStringList unknown;
+        for (auto it = properties.begin(); it != properties.end(); ++it)
+            if (c->getProperty(it.key()) == nullptr && !isRepeated(c, it.key())) unknown << it.key();
+        return unknown;
+    };
+    const auto set = [&] {
+        for (auto it = properties.begin(); it != properties.end(); ++it) {
+            if (isRepeated(c, it.key()))
+                setRepeated(c, it.key(), it.value().isArray() ? it.value().toArray() : QJsonArray{it.value()});
+            else if (it.value().isArray()) setRepeated(c, it.key(), it.value().toArray());
+            else if (Property* p = c->getProperty(it.key())) p->Value = propertyValue(it.value());
+        }
+    };
+    QStringList unknown = unknownOf();
+    if (!unknown.isEmpty() && fresh) {
+        // Those it has, then made again: those it lacked, if it has them now
+        // (what was set, renamed by recreate() - a list sweep's Start and
+        // Stop are Symbol then - is set already).
+        set();
+        c->recreate();
+        QStringList still;
+        for (const QString& n : std::as_const(unknown))
+            if (c->getProperty(n) == nullptr && !isRepeated(c, n)) still << n;
+        const bool sub = c->Model == QLatin1String("Sub") || c->Model == QLatin1String("Lib");
+        const int own = c->Model == QLatin1String("Lib") ? 2 : 1;   // (File; Lib and Comp)
+        if (!still.isEmpty() && sub && c->Props.size() <= own) {
+            for (const QString& n : std::as_const(still))
+                c->Props.append(new Property(n, propertyValue(properties.value(n)), true, QStringLiteral(" ")));
+            still.clear();
+        }
+        // A type whose last property has no description takes more, each
+        // by its name (a .MODEL's Line_6), as the file loader does - in
+        // their names' order, Line_10 after Line_9.
+        const bool extendable = !c->Props.isEmpty() && c->Model != QLatin1String("EDD") && c->Model != QLatin1String("RFEDD")
+                                && c->Model != QLatin1String("RFEDD2P")
+                                && (c->Props.last()->Description.isEmpty() || c->Props.last()->Description == QLatin1String("Expression"));
+        if (!still.isEmpty() && extendable) {
+            QCollator natural;
+            natural.setNumericMode(true);
+            std::sort(still.begin(), still.end(), natural);
+            for (const QString& n : std::as_const(still))
+                c->Props.append(new Property(n, propertyValue(properties.value(n)), false, QString()));
+            still.clear();
+        }
+        if (!still.isEmpty()) {
+            *error = noSuchProperty(c, still.join(QStringLiteral(", ")));
+            return false;
+        }
+        for (const QString& n : std::as_const(unknown)) {
+            const QJsonValue v = properties.value(n);
+            if (isRepeated(c, n)) setRepeated(c, n, v.isArray() ? v.toArray() : QJsonArray{v});
+            else if (Property* p = c->getProperty(n)) p->Value = propertyValue(v);
+        }
+        return true;
+    }
     if (!unknown.isEmpty()) {
         *error = noSuchProperty(c, unknown.join(QStringLiteral(", ")));
         return false;
     }
-    for (auto it = properties.begin(); it != properties.end(); ++it) c->getProperty(it.key())->Value = propertyValue(it.value());
+    set();
     return true;
 }
 
@@ -884,22 +1038,28 @@ QSet<QString> definedNames(const Schematic* sch)
 // Digits, with letters after them that are no scale letter and unit - 1kk,
 // 10uu: a typo, refused (SPICE would read 1k, the letters after ignored).
 // A number reads as digits; a scale letter (f p n u m k M G T, meg, mil); a
-// unit (Ohm, Hz, s, V, A, F, H, S, W, dB, dBm, m, deg ...) - what every
-// value of the examples and every type's default has. Empty when \a value
-// is none, or \a byDefault (its type's) is no number.
+// unit (Ohm, Hz, s, V, A, F, H, S, W, dB, dBm, m, deg ...), spelt out or
+// plural too (Ohms, Volts, Amps, Hertz), a dB of any reference (dBV, dBc),
+// degC, and a rate (V/us) - what every value of the examples and every
+// type's default has. Empty when \a value is none, or \a byDefault (its
+// type's) is no number.
 QString numberTypo(const QString& who, const QString& property, const QString& value, const QString& byDefault)
 {
     static const QRegularExpression loose(QStringLiteral(
         "^\\s*[-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][-+]?\\d+)?\\s*([A-Za-z\u00b5\u03a9\u00b0%/]*)\\s*$"));
+    static const QString scale = QStringLiteral("(?:meg|mil|[fpnu\u00b5mkgtea])");
+    static const QString unit = QStringLiteral(
+        "(?:ohms?|\u03a9|hz|hertz|s|secs?|seconds?|v|volts?|a|amps?|amperes?|f|farads?|h|henr(?:y|ys|ies)|w|watts?|j|joules?"
+        "|db(?:m|uv|w|v|c|i|mv|fs)?|m|met(?:er|re)s?|deg(?:c|f|rees?)?|\u00b0[cf]?|c|rad|%|ppm|mhos?|siemens|bits?|baud|dec|oct)");
     static const QRegularExpression strict(
-        QStringLiteral("^\\s*[-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][-+]?\\d+)?\\s*(?:meg|mil|[fpnu\u00b5mkgtea])?\\s*"
-                       "(?:ohm|\u03a9|hz|s|sec|v|a|f|h|w|db|dbm|dbuv|dbw|m|deg|\u00b0|\u00b0c|c|j|rad|%)?\\s*$"),
+        QStringLiteral("^\\s*[-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][-+]?\\d+)?\\s*%1?\\s*(?:%2(?:\\s*/\\s*%1?%2)?)?\\s*$")
+            .arg(scale, unit),
         QRegularExpression::CaseInsensitiveOption);
     if (!loose.match(byDefault).hasMatch() || strict.match(value).hasMatch()) return {};
     const QRegularExpressionMatch m = loose.match(value);
     if (!m.hasMatch()) return {};
     return tr("%1: %2 = \"%3\" is no number: after the digits, \"%4\" is no scale letter (f p n u m k M G T, meg, mil) "
-              "and unit (Ohm, Hz, s, V, A, F, H, S, W, dB, m)")
+              "and unit (Ohm, Hz, s, V, A, F, H, S, W, dB, dBV, m, degC; Ohms, Volts ...; V/us)")
         .arg(who, property, value.trimmed(), m.captured(1));
 }
 
@@ -1427,8 +1587,11 @@ Nets netsOf(Schematic* sch, const Component* edited, const QList<QPoint>& probes
             if (n == nullptr) continue;
             const QString key = base + QLatin1Char('.') + QString::number(i + 1);
             const int id = nodeId(n);
-            if (c->Model == QLatin1String("GND")) join(id, nameId(QStringLiteral("ground")));
-            else if (c == edited) (n->conn_count() == 1 && !n->hasLabel() ? nets.open : nets.touching) << key;
+            // (A ground left out of the simulation grounds nothing: its net
+            // was "gnd" here while the netlist had _net1.)
+            if (c->Model == QLatin1String("GND")) {
+                if (c->isActive == COMP_IS_ACTIVE) join(id, nameId(QStringLiteral("ground")));
+            } else if (c == edited) (n->conn_count() == 1 && !n->hasLabel() ? nets.open : nets.touching) << key;
             pins.insert(key, id);
         }
     }
@@ -1654,6 +1817,59 @@ bool joinPieces(Schematic* sch, const Nets& before, const QString& edited, const
             if (it.value().size() > 1) split << it.key();
         if (split.isEmpty()) return true;
         std::sort(split.begin(), split.end());
+        // Many nets in pieces (arrange: all of them): each one's two closest
+        // pieces wired at once, and the nets checked once - a netsOf() and
+        // a check for every wire made arrange quadratic, a minute at 3,000
+        // parts. Should the check find fault, one at a time after all.
+        if (split.size() > 1) {
+            const QString state = sch->snapshot();
+            QHash<std::pair<int, int>, int> netAt;   // a node's place -> its net now
+            for (const Node* n : sch->a_DocNodes) netAt.insert({n->cx, n->cy}, now.nodeNet.value(n, -1));
+            for (const QPoint& p : probes)
+                if (const int net = now.netOf.value(QStringLiteral("at %1,%2").arg(p.x()).arg(p.y()), -1); net >= 0) netAt.insert({p.x(), p.y()}, net);
+            QHash<int, QList<QPoint>> placesOf;   // a piece -> its nodes' places
+            for (auto it = netAt.cbegin(); it != netAt.cend(); ++it) placesOf[it.value()] << QPoint(it.key().first, it.key().second);
+            bool all = true;
+            for (int net : std::as_const(split)) {
+                const QList<int> ids = QList<int>(pieces.value(net).cbegin(), pieces.value(net).cend());
+                QPoint from, to;
+                qint64 best = -1;
+                for (int i = 0; i < ids.size(); ++i)
+                    for (int j = i + 1; j < ids.size(); ++j)
+                        for (const QPoint& p : placesOf.value(ids.at(i)))
+                            for (const QPoint& q : placesOf.value(ids.at(j))) {
+                                const qint64 d = qAbs(qint64(p.x()) - q.x()) + qAbs(qint64(p.y()) - q.y());
+                                if (best < 0 || d < best) {
+                                    best = d;
+                                    from = p;
+                                    to = q;
+                                }
+                            }
+                if (best < 0) {
+                    all = false;
+                    break;
+                }
+                const QSet<int> ours{netAt.value({from.x(), from.y()}, -1), netAt.value({to.x(), to.y()}, -1)};
+                bool wired = false;
+                for (bool strict : {true, false}) {
+                    for (const std::vector<QPoint>& way : waysBetween(sch, from, to)) {
+                        if (!clearWay(sch, way, strict, now, ours) || (!strict && clearWay(sch, way, true, now, ours))) continue;
+                        for (std::size_t k = 1; k < way.size(); ++k)
+                            if (way[k] != way[k - 1])
+                                sch->connectWithWire(way[k - 1], way[k], true, qucs_s::wire::Planner::PlanType::Straight);
+                        wired = true;
+                        break;
+                    }
+                    if (wired) break;
+                }
+                if (!wired) {
+                    all = false;
+                    break;
+                }
+            }
+            if (all && check().isEmpty()) continue;
+            sch->restore(state);
+        }
         const QSet<int> parts = pieces.value(split.first());
         QHash<int, QList<QPoint>> places;   // a piece -> its nodes' places
         for (const Node* n : sch->a_DocNodes) {
@@ -2017,6 +2233,7 @@ QStringList newWiringIssues(Schematic* sch, const QList<qucs_s::erc::Issue>& bef
 
 QucsControl::QucsControl(QucsApp* app) : QObject(app), a_app(app)
 {
+    qApp->installEventFilter(this);
     a_tools = QJsonDocument::fromJson(QByteArray(kTools)).array();
     a_tools.append(QJsonDocument::fromJson(R"JSON({"name": "describe_tool",
  "description": "Returns a tool's full description: what it does and returns, its fields and common mistakes. The tools loaded in every turn have short descriptions; without 'name', it lists every tool's summary.",
@@ -2324,6 +2541,30 @@ QJsonObject QucsControl::forDocument(const QString& tool, const QJsonObject& arg
     return a;
 }
 
+bool QucsControl::eventFilter(QObject* watched, QEvent* event)
+{
+    // (Shown while a call runs: a box exec()'d within it. One the user's
+    // own action opens between calls - or while a call waits in an event
+    // loop of its own - is theirs; with no window, there is no user.)
+    if (event->type() == QEvent::Show && misc::ErrorCapture::active() && (a_headless || a_spinning == 0))
+        if (auto* box = qobject_cast<QMessageBox*>(watched); box != nullptr && box->windowModality() != Qt::NonModal) {
+            QPointer<QMessageBox> held(box);
+            QTimer::singleShot(0, box, [held] {
+                if (!held || !held->isVisible()) return;
+                QString said = held->text();
+                if (!held->informativeText().isEmpty()) said += QLatin1Char(' ') + held->informativeText();
+                if (Qt::mightBeRichText(said)) said = QTextDocumentFragment::fromHtml(said).toPlainText();
+                said = said.simplified();
+                held->close();   // (its escape button: No, Cancel, OK)
+                if (held && held->isVisible()) held->reject();
+                const QString answer = held && held->clickedButton() != nullptr ? cleanText(held->clickedButton()->text()) : QString();
+                misc::reportError(answer.isEmpty() ? tr("%1 (a message box, closed)").arg(said)
+                                                   : tr("%1 (a message box, answered %2)").arg(said, answer));
+            });
+        }
+    return QObject::eventFilter(watched, event);
+}
+
 // ----------------------------------------------------------------------
 void QucsControl::callTool(const QString& tool, const QJsonObject& arguments, std::function<void(const QJsonObject&)> done)
 {
@@ -2352,13 +2593,44 @@ void QucsControl::callTool(const QString& tool, const QJsonObject& arguments, st
     done(result);
 }
 
+bool QucsControl::runsAlone(const QString& tool, const QJsonObject& arguments)
+{
+    return tool == QLatin1String("batch") || tool == QLatin1String("run_script") || tool == QLatin1String("tune")
+           || arguments.value(QLatin1String("preview")).toBool();
+}
+
+void QucsControl::runWaiting()
+{
+    while (a_alone == 0 && !a_waiting.isEmpty()) {
+        Waiting w = a_waiting.takeFirst();
+        callToolFor(w.caller, w.tool, w.arguments, w.done, true);
+    }
+}
+
 void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
                               std::function<void(const QJsonObject&)> done)
 {
+    callToolFor(caller, tool, arguments, std::move(done), false);
+}
+
+void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
+                              std::function<void(const QJsonObject&)> done, bool waited)
+{
+    // Behind one that runs alone (and those waiting already, in order) -
+    // but a dialog's own tools, which may be what it waits for.
+    const bool dialogs = tool == QLatin1String("get_dialog") || tool == QLatin1String("set_dialog");
+    if (!dialogs && (a_alone > 0 || (!waited && !a_waiting.isEmpty()))) {
+        a_waiting.append(Waiting{caller, tool, arguments, std::move(done)});
+        return;
+    }
+    const bool alone = runsAlone(tool, arguments);
+    if (alone) ++a_alone;
     const QStringList changes = changesSince(caller) + notesFor(caller);
     a_callers.append(caller);
     QucsDoc::setEditor(caller);
-    callTool(tool, arguments, [this, caller, changes, done](const QJsonObject& r) {
+    callTool(tool, arguments, [this, caller, changes, done, alone](const QJsonObject& r) {
+        if (alone && --a_alone == 0 && !a_waiting.isEmpty())
+            QTimer::singleShot(0, this, [this] { runWaiting(); });
         a_callers.removeOne(caller);
         QucsDoc::setEditor(a_callers.isEmpty() ? 0 : a_callers.last());
         noteSeen(caller);
@@ -2504,7 +2776,9 @@ QJsonObject QucsControl::callNow(const QString& tool, const QJsonObject& argumen
     else callTool(tool, arguments, take);
     if (!finished) {
         timer.start(timeoutMs);
+        ++a_spinning;
         loop.exec();
+        --a_spinning;
     }
     return finished ? result : errorResult(QStringLiteral("no answer in time"));
 }
@@ -2662,7 +2936,19 @@ QString QucsControl::titleOf(QucsDoc* doc) const
 {
     QWidget* w = QucsApp::documentWidget(doc);
     const QTabWidget* pane = a_app->paneOf(w);
-    return pane != nullptr ? cleanText(pane->tabText(pane->indexOf(w))) : QString();
+    if (pane == nullptr) return QString();
+    const QString title = cleanText(pane->tabText(pane->indexOf(w)));
+    // Two without a file of one title (an untitled schematic and an
+    // untitled text): the second "untitled (2)", each named apart.
+    if (!doc->getDocName().isEmpty()) return title;
+    int before = 0;
+    for (QucsDoc* other : a_app->allDocuments()) {
+        if (other == doc) break;
+        QWidget* ow = QucsApp::documentWidget(other);
+        const QTabWidget* op = a_app->paneOf(ow);
+        if (other->getDocName().isEmpty() && op != nullptr && cleanText(op->tabText(op->indexOf(ow))) == title) ++before;
+    }
+    return before == 0 ? title : QStringLiteral("%1 (%2)").arg(title).arg(before + 1);
 }
 
 QJsonObject QucsControl::withSelection(const QString& tool, const QJsonObject& args, QString* error) const
@@ -2839,7 +3125,10 @@ QJsonObject QucsControl::moveToPane(const QJsonObject& args)
     ContextMenuTabWidget* to = nullptr;
     if (where.isDouble()) {
         const QList<ContextMenuTabWidget*> all = a_app->panes();
-        const int n = where.toInt();
+        // (1.5 was read as 0: "There is no pane 0".)
+        if (where.toDouble() != std::floor(where.toDouble()) || std::abs(where.toDouble()) > 1e6)
+            return errorResult(tr("There is no pane %1: they are numbered 1 to %2 (get_state lists them).").arg(where.toDouble()).arg(all.size()));
+        const int n = int(where.toDouble());
         if (n < 1 || n > all.size()) return errorResult(tr("There is no pane %1: they are numbered 1 to %2 (get_state lists them).").arg(n).arg(all.size()));
         to = all.at(n - 1);
         if (to == from) return textResult(tr("%1 is in pane %2 already.").arg(titleOf(doc)).arg(n));
@@ -2957,6 +3246,13 @@ QJsonObject QucsControl::openDocument(const QJsonObject& args)
     QucsDoc* doc = a_app->getDoc();
     closeUntouched(doc);
     QString text = tr("%1 is open, in front (%2).").arg(QDir::toNativeSeparators(path), doc != nullptr ? kindOf(doc) : QString());
+    // (What the window says in a box - which would wait for no one here.)
+    if (!QFileInfo(path).isWritable() && dynamic_cast<Schematic*>(doc) != nullptr)
+        text += QLatin1Char(' ') + tr("It is read-only: it cannot be saved there, and its simulations cannot write their data "
+                                      "beside it - copy_document makes a copy that can be.");
+    else if (!QFileInfo(QFileInfo(path).absolutePath()).isWritable() && dynamic_cast<Schematic*>(doc) != nullptr)
+        text += QLatin1Char(' ') + tr("Its folder is read-only: its simulations cannot write their data beside it, nor a data "
+                                      "display be made there - copy_document makes a copy elsewhere.");
     // A component line with more values than its type has properties: read
     // positionally, so one too many in the middle shifted the rest - said
     // (a file of an older Qucs may simply carry values its type dropped).
@@ -3128,6 +3424,15 @@ QJsonObject QucsControl::saveDocument(const QJsonObject& args)
     if (!as.isEmpty()) {
         QString target = absolute(as);
         if (QFileInfo(target).suffix().isEmpty() && kindOf(doc) == QLatin1String("schematic")) target += QStringLiteral(".sch");
+        // A schematic as x.txt was written as one, then opened as text: the
+        // suffix says what a file is to Qucs-S.
+        static const QHash<QString, QString> suffixOf{{QStringLiteral("schematic"), QStringLiteral("sch")},
+                                                      {QStringLiteral("data display"), QStringLiteral("dpl")},
+                                                      {QStringLiteral("symbol"), QStringLiteral("sym")}};
+        if (const QString wanted = suffixOf.value(kindOf(doc)); !wanted.isEmpty()
+            && QFileInfo(target).suffix().compare(wanted, Qt::CaseInsensitive) != 0)
+            return errorResult(tr("%1 is a %2: its file ends in .%3 (%4 would open as another kind).")
+                                   .arg(titleOf(doc), kindOf(doc), wanted, QFileInfo(target).fileName()));
         for (QucsDoc* other : a_app->allDocuments())
             if (other != doc && !other->getDocName().isEmpty() && sameFile(other->getDocName(), target))
                 return errorResult(tr("%1 is open in another tab.").arg(QDir::toNativeSeparators(target)));
@@ -3210,13 +3515,18 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
             if (w->hasLabel()) {
                 o.insert(QStringLiteral("label"), w->label()->Name);
                 o.insert(QStringLiteral("label_at"), QJsonArray{w->label()->x1, w->label()->y1});
+                // (Its net's initial value, a .IC: lost on the way back.)
+                if (!w->label()->initValue.isEmpty()) o.insert(QStringLiteral("initial"), w->label()->initValue);
             }
             wires.append(o);
         }
         for (Node* n : sch->a_DocNodes)
-            if (n->hasLabel())
-                wires.append(QJsonObject{{QStringLiteral("at"), QJsonArray{n->cx, n->cy}}, {QStringLiteral("label"), n->label()->Name},
-                                         {QStringLiteral("label_at"), QJsonArray{n->label()->x1, n->label()->y1}}});
+            if (n->hasLabel()) {
+                QJsonObject o{{QStringLiteral("at"), QJsonArray{n->cx, n->cy}}, {QStringLiteral("label"), n->label()->Name},
+                              {QStringLiteral("label_at"), QJsonArray{n->label()->x1, n->label()->y1}}};
+                if (!n->label()->initValue.isEmpty()) o.insert(QStringLiteral("initial"), n->label()->initValue);
+                wires.append(o);
+            }
         return jsonResult(QJsonObject{{QStringLiteral("document"), titleOf(sch)},
                                       {QStringLiteral("components"), components},
                                       {QStringLiteral("wires"), wires},
@@ -3301,7 +3611,7 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
     if (args.contains(QLatin1String("region"))) {
         const QJsonArray r = args.value(QLatin1String("region")).toArray();
         if (r.size() != 4) return errorResult(tr("'region' is [x1, y1, x2, y2]."));
-        region = QRect(QPoint(r.at(0).toInt(), r.at(1).toInt()), QPoint(r.at(2).toInt(), r.at(3).toInt())).normalized();
+        region = regionOf(r);
     }
     const bool filtered = !wantedNames.isEmpty() || region.isValid();
     QSet<QString> namesFound;
@@ -3353,7 +3663,10 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
             const QString ref = refFor(c);
             bool named = false;
             for (const QString& n : std::as_const(wantedNames))
-                if (n.compare(ref, Qt::CaseInsensitive) == 0 || (!c->Name.isEmpty() && n.compare(c->Name, Qt::CaseInsensitive) == 0)) {
+                if (n.compare(ref, Qt::CaseInsensitive) == 0 || (!c->Name.isEmpty() && n.compare(c->Name, Qt::CaseInsensitive) == 0)
+                    // (The one ground there is: GND#1 too, as move and select take it.)
+                    || ((c->Name.isEmpty() || c->Name == QLatin1String("*")) && !refs.contains(c)
+                        && n.compare(c->Model + QStringLiteral("#1"), Qt::CaseInsensitive) == 0)) {
                     namesFound.insert(n);
                     named = true;
                 }
@@ -3571,6 +3884,11 @@ QJsonObject componentModel(Component* c)
     for (const Property* p : c->Props) {
         if (eq && !isFixedField(p)) {
             equations.append(p->Value.isEmpty() && takesFlags(c) ? p->Name : p->Name + QLatin1Char('=') + p->Value);
+        } else if (isRepeated(c, p->Name)) {
+            // (All of them, as a list: as one value, the last alone was kept.)
+            QJsonArray all = properties.value(p->Name).toArray();
+            all.append(p->Value);
+            properties.insert(p->Name, all);
         } else {
             properties.insert(p->Name, p->Value);
         }
@@ -3594,7 +3912,7 @@ QString componentLineOf(Schematic* sch, const QJsonObject& o, QStringList* taken
         return {};
     }
     c->setSchematic(sch);
-    if (!setListsOf(c.get(), o, error, false, true) || !setProperties(c.get(), o.value(QLatin1String("properties")).toObject(), error))
+    if (!setListsOf(c.get(), o, error, false, true) || !setProperties(c.get(), o.value(QLatin1String("properties")).toObject(), error, true))
         return {};
     c->recreate();
     const QJsonValue turn = o.value(QLatin1String("rotation"));
@@ -3602,8 +3920,7 @@ QString componentLineOf(Schematic* sch, const QJsonObject& o, QStringList* taken
         *error = tr("'rotation' is 0 to 3 quarter turns");
         return {};
     }
-    for (int i = 0; i < turn.toInt(); ++i) c->rotate();
-    if (o.value(QLatin1String("mirror")).toBool()) c->mirrorX();
+    orient(c.get(), turn.toInt(), o.value(QLatin1String("mirror")).toBool());
     if (!o.value(QLatin1String("x")).isDouble() || !o.value(QLatin1String("y")).isDouble()) {
         *error = tr("a part needs its place: 'x' and 'y'");
         return {};
@@ -3611,16 +3928,34 @@ QString componentLineOf(Schematic* sch, const QJsonObject& o, QStringList* taken
     const QPoint at = Schematic::withinModelLimit(QPoint(o.value(QLatin1String("x")).toInt(), o.value(QLatin1String("y")).toInt()));
     c->moveCenter(at.x() - c->cx, at.y() - c->cy);
     // Its name: given, or its type's prefix and the first number free.
+    // (\a taken: a device's name as it is; a simulation block's after a
+    // "." - Tr1, a transformer, and TR1, a transient analysis, are two
+    // names to a file and to the netlist, one to SPICE's devices alone.)
+    const bool block = c->Model.startsWith(QLatin1Char('.'));
+    const auto clash = [&](const QString& n) {
+        for (const QString& t : std::as_const(*taken)) {
+            const bool tBlock = t.startsWith(QLatin1Char('.'));
+            const QString tName = tBlock ? t.mid(1) : t;
+            if (tName == n || (!block && !tBlock && tName.compare(n, Qt::CaseInsensitive) == 0)) return true;
+        }
+        return false;
+    };
     QString name = o.value(QLatin1String("name")).toString().trimmed();
+    // (What a file can hold, as a file holds it: 2N2222 too - but not what
+    // breaks its line.)
+    if (name.contains(QRegularExpression(QStringLiteral("[\\s\"<>]")))) {
+        *error = tr("%1 cannot name a part: no spaces, quotes, < or >").arg(name);
+        return {};
+    }
     if (name.isEmpty() && !c->Name.isEmpty() && c->Name != QLatin1String("*")) {
         const QString prefix = c->Name;
-        for (int k = 1; name.isEmpty() || taken->contains(name, Qt::CaseInsensitive); ++k) name = prefix + QString::number(k);
+        for (int k = 1; name.isEmpty() || clash(name); ++k) name = prefix + QString::number(k);
     }
-    if (!name.isEmpty() && taken->contains(name, Qt::CaseInsensitive)) {
+    if (!name.isEmpty() && clash(name)) {
         *error = tr("two parts are named %1").arg(name);
         return {};
     }
-    if (!name.isEmpty()) *taken << name;
+    if (!name.isEmpty()) *taken << (block ? QLatin1Char('.') + name : name);
     c->Name = name;
     if (o.contains(QLatin1String("active"))) c->isActive = o.value(QLatin1String("active")).toBool() ? COMP_IS_ACTIVE : COMP_IS_OPEN;
     if (!setTextOf(c.get(), o, error)) return {};
@@ -3674,7 +4009,14 @@ QString wireLineOf(Schematic* sch, const QJsonObject& o, QString* error)
         ty = textAt.at(1).toInt();
     }
     const int along = std::abs(root.x() - a.x()) + std::abs(root.y() - a.y());
-    return QStringLiteral("  <%1 %2 %3 %4 \"%5\" %6 %7 %8 \"\">").arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y()).arg(label).arg(tx).arg(ty).arg(along);
+    // Its net's initial value (a .IC), as a label's dialog gives it.
+    const QString initial = o.value(QLatin1String("initial")).toString().trimmed();
+    if (initial.contains(QLatin1Char('"')) || initial.contains(QLatin1Char('>'))) {
+        *error = tr("a label's 'initial' value has no quotes or > (%1)").arg(initial);
+        return {};
+    }
+    return QStringLiteral("  <%1 %2 %3 %4 \"%5\" %6 %7 %8 \"%9\">").arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y()).arg(label).arg(tx).arg(ty).arg(along)
+        .arg(initial);
 }
 
 } // namespace
@@ -3727,23 +4069,36 @@ QJsonObject QucsControl::setSchematic(const QJsonObject& args)
     // (The .sch lines' values are checked once read: a number mistyped
     // puts all back - the schematic, its undo steps, whether changed.)
     const QPair<QString, QString> stateBefore = structured ? QPair<QString, QString>() : sch->snapshotAll();
-    const QPair<int, int> marksBefore = sch->undoMarks();
+    const Schematic::UndoStacks marksBefore = sch->undoStacks();
     const bool changedBefore = sch->getDocChanged();
+    // The values each part had (a value it keeps is not the text's to
+    // answer for: a file of old wrote "1 kOhms").
+    QHash<QString, QHash<QString, QString>> had;
+    for (Component* c : sch->a_DocComps)
+        if (!c->Name.isEmpty())
+            for (const Property* p : c->Props) had[c->Name].insert(p->Name, p->Value);
     if (!sch->replaceContent(text, &error, &short_))
         return errorResult(tr("Not changed: %1").arg(error));
-    if (!structured) {
+    // Only the parts of the text: one of <Paintings> alone checked nothing
+    // it did not change.
+    const bool partsGiven = (!text.contains(QLatin1String("<Wires>")) && !text.contains(QLatin1String("<Diagrams>"))
+                             && !text.contains(QLatin1String("<Paintings>")) && !text.contains(QLatin1String("<Properties>"))
+                             && !text.contains(QLatin1String("<Symbol>")))
+                            || text.contains(QLatin1String("<Components>"));
+    if (!structured && partsGiven) {
         QStringList typos;
         for (Component* c : sch->a_DocComps) {
             std::unique_ptr<Component> fresh(newComponent(c->Model));
             if (!fresh) continue;
             for (const Property* p : c->Props)
                 if (const Property* d = fresh->getProperty(p->Name))
-                    if (const QString t = numberTypo(c->Name.isEmpty() ? c->Model : c->Name, p->Name, p->Value, d->Value); !t.isEmpty())
-                        typos << t;
+                    if (!(had.contains(c->Name) && had.value(c->Name).value(p->Name) == p->Value && had.value(c->Name).contains(p->Name)))
+                        if (const QString t = numberTypo(c->Name.isEmpty() ? c->Model : c->Name, p->Name, p->Value, d->Value); !t.isEmpty())
+                            typos << t;
         }
         if (!typos.isEmpty()) {
             sch->restoreAll(stateBefore, false);
-            sch->forgetUndoAfter(marksBefore);
+            sch->setUndoStacks(marksBefore);
             sch->setChanged(changedBefore, false);
             if (typos.size() > 20) typos = typos.mid(0, 20) << tr("and %1 more").arg(typos.size() - 20);
             return errorResult(tr("Not changed: %1. A component line's values are its properties in order (describe_component_type "
@@ -3889,7 +4244,7 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     if (c == nullptr) return errorResult(tr("There is no component type %1 (list_component_types lists them).").arg(type));
     c->setSchematic(sch);
     // Equations first: a property given may be one of them.
-    if (!setListsOf(c, args, &error, false, true) || !setProperties(c, args.value(QLatin1String("properties")).toObject(), &error)
+    if (!setListsOf(c, args, &error, false, true) || !setProperties(c, args.value(QLatin1String("properties")).toObject(), &error, true)
         || !setTextOf(c, args, &error, false)) {
         delete c;
         return errorResult(error);
@@ -3899,15 +4254,27 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
         delete c;
         return errorResult(tr("There is a component named %1 already.").arg(wanted));
     }
+    if (const QString bad = wanted.isEmpty() ? QString() : badPartName(wanted); !bad.isEmpty()) {
+        delete c;
+        return errorResult(bad + QLatin1Char('.'));
+    }
     if (const QStringList typos = numberTypos(wanted.isEmpty() ? type : wanted, type, args.value(QLatin1String("properties")).toObject());
         !typos.isEmpty()) {
         delete c;
         return errorResult(tr("Not added: %1.").arg(typos.join(QStringLiteral("; "))));
     }
-    prepare(sch);
     c->recreate();   // the symbol, with the properties
-    for (int i = 0; i < ((args.value(QLatin1String("rotation")).toInt() % 4) + 4) % 4; ++i) c->rotate();
-    if (args.value(QLatin1String("mirror")).toBool()) c->mirrorX();
+    // A library part not found (its library, or the part in it): no symbol,
+    // no pins - placed so, nothing was said.
+    if (c->Model == QLatin1String("Lib") && c->Ports.isEmpty()) {
+        const QString lib = c->Props.value(0) != nullptr ? c->Props.at(0)->Value : QString();
+        const QString comp = c->Props.value(1) != nullptr ? c->Props.at(1)->Value : QString();
+        delete c;
+        return errorResult(tr("There is no part %1 in a library %2 here (Lib and Comp name them): find_library_component finds "
+                              "the parts there are.").arg(comp, lib));
+    }
+    prepare(sch);
+    orient(c, args.value(QLatin1String("rotation")).toInt(), args.value(QLatin1String("mirror")).toBool());
     int x = args.value(QLatin1String("x")).toInt(), y = args.value(QLatin1String("y")).toInt();
     const QPoint at = Schematic::withinModelLimit(QPoint(x, y));
     x = at.x();
@@ -3984,6 +4351,8 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
     if (unnamed && !rename.isEmpty()) return errorResult(tr("A %1 has no name to change.").arg(c->Model));
     if (!rename.isEmpty() && rename != name && sch->getComponentByName(rename) != nullptr)
         return errorResult(tr("There is a component named %1 already.").arg(rename));
+    if (const QString bad = rename.isEmpty() || rename == name ? QString() : badPartName(rename); !bad.isEmpty())
+        return errorResult(bad + QLatin1Char('.'));
     // Check the properties before anything changes.
     const QJsonObject props = args.value(QLatin1String("properties")).toObject();
     for (auto it = props.begin(); it != props.end(); ++it)
@@ -4068,6 +4437,7 @@ QJsonObject QucsControl::replaceComponent(const QJsonObject& args)
                                 ? name : args.value(QLatin1String("rename")).toString().trimmed();
     if (newName != name && sch->getComponentByName(newName) != nullptr)
         return errorResult(tr("There is a component named %1 already.").arg(newName));
+    if (const QString bad = newName == name ? QString() : badPartName(newName); !bad.isEmpty()) return errorResult(bad + QLatin1Char('.'));
     const QJsonObject props = args.value(QLatin1String("properties")).toObject();
     // A new part as asked, turned \a turns and mirrored or not.
     const auto make = [&](int turns, bool mirror, QString* why) -> Component* {
@@ -4077,13 +4447,12 @@ QJsonObject QucsControl::replaceComponent(const QJsonObject& args)
             return nullptr;
         }
         c->setSchematic(sch);
-        if (!setListsOf(c, args, why, false, true) || !setProperties(c, props, why)) {
+        if (!setListsOf(c, args, why, false, true) || !setProperties(c, props, why, true)) {
             delete c;
             return nullptr;
         }
         c->recreate();
-        for (int i = 0; i < turns; ++i) c->rotate();
-        if (mirror) c->mirrorX();
+        orient(c, turns, mirror);
         return c;
     };
     std::unique_ptr<Component> sample(make(0, false, &error));
@@ -4528,6 +4897,11 @@ QJsonObject QucsControl::addAnalysis(const QJsonObject& args)
         return errorResult(tr("'plot' takes nodes (out), v(out) and i(V1) under %1: %2 is an expression, which only an equation "
                               "block computes - add an Eqn with it (add_component) and plot its name. Nothing was added.")
                                .arg(spicecompat::getDefaultSimulatorName(QucsSettings.DefaultSimulator), expressions.first()));
+    // Read before anything is added: x=1 or v(out) + in the NutmegEq failed
+    // only at the next simulation.
+    for (const QString& e : std::as_const(expressions))
+        if (QString why; !qucs_s::dataset::checkExpression(e, &why))
+            return errorResult(tr("'plot': %1 does not read as an expression - %2. Nothing was added.").arg(e, why));
     // Where: beside the analyses there are, else below the circuit.
     int x = args.value(QLatin1String("x")).toInt(), y = args.value(QLatin1String("y")).toInt();
     if (!args.contains(QLatin1String("x")) || !args.contains(QLatin1String("y"))) {
@@ -4553,40 +4927,12 @@ QJsonObject QucsControl::addAnalysis(const QJsonObject& args)
     if (!expressions.isEmpty()) {
         const QString analysisName = result.value(QStringLiteral("analysis")).toObject().value(QStringLiteral("name")).toString();
         const QString simulated = kind == QLatin1String("sweep") ? properties.value(QStringLiteral("Sim")).toString() : analysisName;
-        QSet<QString> taken = definedNames(sch);
-        for (Component* c : sch->a_DocComps) taken << c->Name.toLower();
-        for (const Wire* w : sch->a_DocWires)
-            if (w->hasLabel()) taken << w->label()->Name.toLower();
-        for (const Node* n : sch->a_DocNodes)
-            if (n->hasLabel()) taken << n->label()->Name.toLower();
-        QJsonArray equations;
-        for (const QString& e : std::as_const(expressions)) {
-            if (variableOf.contains(e)) continue;
-            QString base = e.toLower().replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("_"));
-            base = base.mid(0, 32);
-            while (base.startsWith(QLatin1Char('_'))) base.remove(0, 1);
-            while (base.endsWith(QLatin1Char('_'))) base.chop(1);
-            if (base.isEmpty() || base.at(0).isDigit()) base.prepend(QStringLiteral("expr_"));
-            QString name = base;
-            for (int n = 2; taken.contains(name) || taken.contains(name.toLower()); ++n) name = QStringLiteral("%1_%2").arg(base).arg(n);
-            taken << name;
-            variableOf.insert(e, name);
-            equations.append(QStringLiteral("%1=%2").arg(name, e));
-        }
-        Component* analysis = sch->getComponentByName(analysisName);
-        const QRect beside = analysis != nullptr ? analysis->boundingRectIncludingProperties() : QRect(x, y, 1, 1);
-        QJsonObject block{{QStringLiteral("type"), QStringLiteral("NutmegEq")},
-                          {QStringLiteral("x"), beside.right() + 80},
-                          {QStringLiteral("y"), analysis != nullptr ? analysis->cy : y},
-                          {QStringLiteral("properties"), QJsonObject{{QStringLiteral("Simulation"), simulated}}},
-                          {QStringLiteral("equations"), equations}};
-        if (args.contains(QLatin1String("path"))) block.insert(QStringLiteral("path"), args.value(QLatin1String("path")));
-        const QJsonObject made = addComponent(block);
-        if (made.value(QLatin1String("isError")).toBool()) {
-            result.insert(QStringLiteral("equations"), tr("not added: %1 - the expressions' traces have no data").arg(textOf(made)));
-        } else {
+        QJsonObject json;
+        QString why;
+        if (!nutmegVariables(sch, analysisName, simulated, expressions, args.value(QLatin1String("path")), &variableOf, &json, &why)) {
+            result.insert(QStringLiteral("equations"), tr("not added: %1 - the expressions' traces have no data").arg(why));
+        } else if (!json.isEmpty()) {
             ++steps;
-            const QJsonObject json = QJsonDocument::fromJson(textOf(made).toUtf8()).object();
             result.insert(QStringLiteral("equations"),
                           QJsonObject{{QStringLiteral("block"), json.value(QStringLiteral("name"))},
                                       {QStringLiteral("equations"), json.value(QStringLiteral("equations"))},
@@ -4649,6 +4995,132 @@ QJsonObject QucsControl::addAnalysis(const QJsonObject& args)
     return jsonResult(result);
 }
 
+bool QucsControl::nutmegVariables(Schematic* sch, const QString& beside, const QString& simulated, const QStringList& expressions,
+                                  const QJsonValue& path, QHash<QString, QString>* variableOf, QJsonObject* made, QString* error)
+{
+    // One there is already: an equation of the expression, in a NutmegEq
+    // run after that analysis - the first such block takes new ones too.
+    Component* there = nullptr;
+    for (Component* c : sch->a_DocComps) {
+        if (c->Model != QLatin1String("NutmegEq") || c->isActive != COMP_IS_ACTIVE) continue;
+        const Property* after = c->getProperty(QStringLiteral("Simulation"));
+        if (after == nullptr || after->Value.trimmed().compare(simulated, Qt::CaseInsensitive) != 0) continue;
+        if (there == nullptr) there = c;
+        for (const Property* p : c->Props)
+            if (!isFixedField(p) && expressions.contains(p->Value.trimmed()) && !variableOf->contains(p->Value.trimmed()))
+                variableOf->insert(p->Value.trimmed(), p->Name);
+    }
+    // The others: each a variable of a new NutmegEq beside the analysis,
+    // named after it (db(v(out)): db_v_out), unlike any net or name defined.
+    QSet<QString> taken = definedNames(sch);
+    for (Component* c : sch->a_DocComps) taken << c->Name.toLower();
+    for (const Wire* w : sch->a_DocWires)
+        if (w->hasLabel()) taken << w->label()->Name.toLower();
+    for (const Node* n : sch->a_DocNodes)
+        if (n->hasLabel()) taken << n->label()->Name.toLower();
+    QJsonArray equations;
+    for (const QString& e : expressions) {
+        if (variableOf->contains(e)) continue;
+        QString base = e.toLower().replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("_"));
+        base = base.mid(0, 32);
+        while (base.startsWith(QLatin1Char('_'))) base.remove(0, 1);
+        while (base.endsWith(QLatin1Char('_'))) base.chop(1);
+        if (base.isEmpty() || base.at(0).isDigit()) base.prepend(QStringLiteral("expr_"));
+        QString name = base;
+        for (int n = 2; taken.contains(name) || taken.contains(name.toLower()); ++n) name = QStringLiteral("%1_%2").arg(base).arg(n);
+        taken << name.toLower();
+        variableOf->insert(e, name);
+        equations.append(QStringLiteral("%1=%2").arg(name, e));
+    }
+    if (equations.isEmpty()) return true;
+    // (Added to the block there is: one NutmegEq an analysis, not one an
+    // expression.)
+    if (there != nullptr && !there->Name.isEmpty()) {
+        const QString thereName = there->Name;
+        QJsonObject change{{QStringLiteral("name"), thereName}, {QStringLiteral("equations"), equations}};
+        if (!path.isUndefined() && !path.isNull()) change.insert(QStringLiteral("path"), path);
+        const QJsonObject edited = editComponent(change);
+        if (!edited.value(QLatin1String("isError")).toBool()) {
+            *made = QJsonDocument::fromJson(textOf(edited).toUtf8()).object();
+            made->insert(QStringLiteral("added to"), thereName);
+            return true;
+        }
+    }
+    Component* analysis = sch->getComponentByName(beside);
+    const QRect at = analysis != nullptr ? analysis->boundingRectIncludingProperties() : sch->allBoundingRect();
+    QJsonObject block{{QStringLiteral("type"), QStringLiteral("NutmegEq")},
+                      {QStringLiteral("x"), at.right() + 80},
+                      {QStringLiteral("y"), analysis != nullptr ? analysis->cy : at.bottom() + 80},
+                      {QStringLiteral("properties"), QJsonObject{{QStringLiteral("Simulation"), simulated}}},
+                      {QStringLiteral("equations"), equations}};
+    if (!path.isUndefined() && !path.isNull()) block.insert(QStringLiteral("path"), path);
+    const QJsonObject added = addComponent(block);
+    if (added.value(QLatin1String("isError")).toBool()) {
+        for (const QJsonValue& v : std::as_const(equations)) variableOf->remove(v.toString().section(QLatin1Char('='), 1));
+        *error = textOf(added);
+        return false;
+    }
+    *made = QJsonDocument::fromJson(textOf(added).toUtf8()).object();
+    return true;
+}
+
+QString QucsControl::expressionTrace(Schematic* sch, const QString& wanted, const QJsonValue& path, bool dryRun, QString* note,
+                                     QString* error)
+{
+    QString sim;
+    QString bare = qucs_s::dataset::withoutSimulator(wanted.trimmed(), &sim);
+    QString analysis;
+    static const QRegularExpression prefixed(QStringLiteral("^(ac|tran|dc)\\.(.+)$"), QRegularExpression::CaseInsensitiveOption);
+    if (const QRegularExpressionMatch m = prefixed.match(bare); m.hasMatch()) {
+        analysis = m.captured(1).toLower();
+        bare = m.captured(2);
+    }
+    if (bare.contains(QLatin1Char(':')) || !qucs_s::dataset::isExpression(bare)) return {};
+    if (QString why; !qucs_s::dataset::checkExpression(bare, &why)) {
+        *error = tr("%1 does not read as an expression - %2.").arg(wanted.trimmed(), why);
+        return {};
+    }
+    const bool nutmeg = QucsSettings.DefaultSimulator == spicecompat::simNgspice || QucsSettings.DefaultSimulator == spicecompat::simSpiceOpus;
+    if (!nutmeg) {
+        *error = tr("%1 is an expression: a trace shows a variable of the dataset, and under %2 only an equation block computes one - "
+                    "add an Eqn with it (add_component with 'equations') and trace its name.")
+                     .arg(wanted.trimmed(), spicecompat::getDefaultSimulatorName(QucsSettings.DefaultSimulator));
+        return {};
+    }
+    // After which analysis: the one named (ac.db(v(out))), else the only one.
+    QList<Component*> analyses;
+    for (Component* c : sch->a_DocComps) {
+        if (!c->isSimulation || c->isActive != COMP_IS_ACTIVE) continue;
+        const bool ac = c->Model == QLatin1String(".AC"), tran = c->Model == QLatin1String(".TR");
+        if ((analysis.isEmpty() && (ac || tran)) || (analysis == QLatin1String("ac") && ac) || (analysis == QLatin1String("tran") && tran))
+            analyses << c;
+    }
+    if (analyses.isEmpty()) {
+        *error = tr("%1 is an expression, which a NutmegEq computes after an analysis: %2 has no %3 analysis.")
+                     .arg(wanted.trimmed(), titleOf(sch), analysis.isEmpty() ? tr("AC or transient") : analysis);
+        return {};
+    }
+    if (analysis.isEmpty() && analyses.size() > 1) {
+        *error = tr("%1 is an expression: after which analysis - ac.%2 or tran.%2?").arg(wanted.trimmed(), bare);
+        return {};
+    }
+    Component* a = analyses.first();
+    const QString of = a->Model == QLatin1String(".AC") ? QStringLiteral("ac") : QStringLiteral("tran");
+    const QString prefix = simulatorPrefix();
+    if (dryRun) return prefix + QLatin1Char('/') + of + QLatin1Char('.') + bare;
+    QHash<QString, QString> variableOf;
+    QJsonObject made;
+    if (!nutmegVariables(sch, a->Name, a->Name, {bare}, path, &variableOf, &made, error)) return {};
+    const QString var = variableOf.value(bare);
+    *note = made.isEmpty() ? tr("%1 is %2, which a NutmegEq there computes after %3.").arg(bare, var, a->Name)
+            : made.contains(QStringLiteral("added to"))
+                ? tr("%1 is computed as %2, an equation added to %3 after %4 (one step to undo): the trace shows it after the next "
+                     "simulation.").arg(bare, var, made.value(QStringLiteral("added to")).toString(), a->Name)
+                : tr("%1 is computed as %2 by %3, a NutmegEq added after %4 (one step to undo): the trace shows it after the "
+                     "next simulation.").arg(bare, var, made.value(QStringLiteral("name")).toString(), a->Name);
+    return prefix + QLatin1Char('/') + of + QLatin1Char('.') + var;
+}
+
 QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
 {
     QString error;
@@ -4665,6 +5137,21 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
     }
     if (!missing.isEmpty()) return errorResult(missing.join(QLatin1Char(' ')));
     if (group.isEmpty()) return errorResult(tr("'names' are the components that go into the subcircuit."));
+    // Grounds stay where they are: ground is one node everywhere, and the
+    // parts inside on it get grounds of their own. Taken in, the circuit
+    // outside lost its ground, silently.
+    int groundsLeft = 0;
+    for (qsizetype i = group.size() - 1; i >= 0; --i)
+        if (group.at(i)->Model == QLatin1String("GND")) {
+            group.removeAt(i);
+            ++groundsLeft;
+        }
+    if (group.isEmpty())
+        return errorResult(tr("A subcircuit of grounds alone holds nothing: grounds stay where they are (the parts in a subcircuit "
+                              "that are on ground get grounds of their own)."));
+    if (groundsLeft > 0)
+        a_callNotes << tr("%1 ground(s) named stay where they are: ground is one node everywhere, and the parts inside on it get "
+                          "grounds of their own.").arg(groundsLeft);
     QString file = args.value(QLatin1String("save_as")).toString().trimmed();
     if (file.isEmpty()) return errorResult(tr("'save_as' names the subcircuit's file (a .sch beside this schematic)."));
     const QDir here = QFileInfo(sch->getDocName()).absoluteDir();
@@ -4809,7 +5296,14 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
     // What the file held (a file replaced), to put back when this fails
     // after all, or is a preview.
     std::optional<QByteArray> held;
-    if (QFile old(file); old.exists() && old.open(QIODevice::ReadOnly)) held = old.readAll();
+    if (QFile old(file); old.exists()) {
+        // (One that cannot be read was taken for none: put back as none,
+        // it was deleted - "as it was", the answer said.)
+        if (!old.open(QIODevice::ReadOnly))
+            return errorResult(tr("%1 is there and cannot be read (%2): it would be written over with no way back. Choose another name.")
+                                   .arg(QDir::toNativeSeparators(file), old.errorString()));
+        held = old.readAll();
+    }
     const auto putBack = [&file, &held] {
         if (!held) {
             QFile::remove(file);
@@ -4841,6 +5335,9 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
     } else if (sch->getComponentByName(subName) != nullptr && !in.contains(sch->getComponentByName(subName))) {
         putBack();
         return errorResult(tr("There is a component named %1 already.").arg(subName));
+    } else if (const QString bad = badPartName(subName); !bad.isEmpty()) {
+        putBack();
+        return errorResult(bad + QLatin1Char('.'));
     }
     sub->Name = subName;
     sub->recreate();
@@ -5077,6 +5574,10 @@ bool QucsControl::pointOf(Schematic* sch, const QJsonValue& at, QPoint* point, Q
     }
     const QString pin = at.toString().trimmed();
     const qsizetype dot = pin.lastIndexOf(QLatin1Char('.'));
+    if (pin.isEmpty()) {   // (null, or nothing: " is not a pin ...")
+        *error = tr("Which place? A pin (\"R1.2\") or a place ([x, y]).");
+        return false;
+    }
     if (dot <= 0) {
         *error = tr("%1 is not a pin (\"R1.2\") or a place ([x, y]).").arg(pin);
         return false;
@@ -5728,6 +6229,9 @@ QJsonObject QucsControl::addWire(const QJsonObject& args)
         points << p;
     }
     if (points.size() < 2) return errorResult(tr("A wire needs two places at least."));
+    // (Places all one: "drawn", and nothing was.)
+    if (std::all_of(points.cbegin(), points.cend(), [&points](const QPoint& p) { return p == points.first(); }))
+        return errorResult(tr("A wire needs two different places: %1, %2 is all of them.").arg(points.first().x()).arg(points.first().y()));
     // What is at its places is joined; what it goes over between them must
     // not be.
     const Nets before = netsOf(sch, nullptr, points);
@@ -5763,6 +6267,7 @@ QJsonObject QucsControl::setLabel(const QJsonObject& args)
     QPoint p;
     if (!pointOf(sch, args.value(QLatin1String("at")), &p, &error)) return errorResult(error);
     const QString name = args.value(QLatin1String("name")).toString().trimmed();
+    if (const QString bad = name.isEmpty() ? QString() : badNetName(name); !bad.isEmpty()) return errorResult(bad + QLatin1Char('.'));
     Node* node = sch->findNode(p);
     Wire* wire = node == nullptr ? sch->selectedWire(p.x(), p.y()) : nullptr;
     if (node == nullptr && wire == nullptr) return errorResult(tr("There is no pin or wire at %1, %2.").arg(p.x()).arg(p.y()));
@@ -5859,9 +6364,11 @@ QJsonObject QucsControl::renameNet(const QJsonObject& args)
     const QString from = args.value(QLatin1String("from")).toString().trimmed();
     const QString to = args.value(QLatin1String("to")).toString().trimmed();
     if (from.isEmpty() || to.isEmpty()) return errorResult(tr("Which net, and its new name? ('from', 'to')"));
-    if (to.contains(QRegularExpression(QStringLiteral("[\\s,;()\\[\\]{}\"'=]"))))
-        return errorResult(tr("%1 cannot name a net: no spaces, commas, brackets, quotes or '='.").arg(to));
     if (from == to) return textResult(tr("The net is called %1 already.").arg(to));
+    // (get_schematic calls ground's net gnd: it is not renamed.)
+    if (from == QLatin1String("0") || from.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0)
+        return errorResult(tr("%1 is ground: it keeps its name (a part is taken off ground by deleting or moving its ground).").arg(from));
+    if (const QString bad = badNetName(to); !bad.isEmpty()) return errorResult(bad + QLatin1Char('.'));
     if (netNamed(sch, to))
         return errorResult(tr("A net is called %1 already: renaming %2 so would join the two nets (set_label joins nets on purpose).").arg(to, from));
 
@@ -6097,7 +6604,7 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
         } else {
             const QJsonArray r = args.value(QLatin1String("region")).toArray();
             if (r.size() != 4) return errorResult(tr("'region' is [x1, y1, x2, y2]."));
-            wanted = QRect(QPoint(r.at(0).toInt(), r.at(1).toInt()), QPoint(r.at(2).toInt(), r.at(3).toInt())).normalized();
+            wanted = regionOf(r);
             what = tr("the region %1, %2 - %3, %4").arg(wanted.left()).arg(wanted.top()).arg(wanted.right()).arg(wanted.bottom());
         }
         const QRect all = qucs_s::graphicsexport::area(sch, false);
@@ -6628,13 +7135,14 @@ namespace {
 class BatchRun : public QObject
 {
 public:
-    BatchRun(QucsControl* control, const QJsonArray& calls, bool keepGoing, bool atomic, const QList<Schematic*>& schematics,
-             std::function<void(const QJsonObject&)> done)
-        : QObject(control), a_control(control), a_calls(calls), a_keepGoing(keepGoing && !atomic), a_atomic(atomic),
+    BatchRun(QucsControl* control, QucsApp* app, const QJsonArray& calls, bool keepGoing, bool atomic,
+             const QList<Schematic*>& schematics, std::function<void(const QJsonObject&)> done)
+        : QObject(control), a_control(control), a_app(app), a_calls(calls), a_keepGoing(keepGoing && !atomic), a_atomic(atomic),
           a_done(std::move(done))
     {
         if (atomic)
             for (Schematic* sch : schematics) a_before.append(Before{QPointer<Schematic>(sch), sch->snapshotAll(), sch->revision()});
+        noteFront();
     }
 
     void next()
@@ -6655,8 +7163,24 @@ public:
                 if (self) self->next();
             });
         };
+        // A call with no 'path' acts on the document in front - the one
+        // the batch's calls left in front, not whichever the user (or a
+        // tab closed meanwhile) brought there: the rest of a batch landed
+        // in another document.
+        if (tool != QLatin1String("batch") && arguments.value(QLatin1String("path")).toString().trimmed().isEmpty() && a_hadFront) {
+            if (!a_front) {
+                answered(errorResult(tr("%1, the document this batch works on, was closed: this call, which names no 'path', "
+                                        "is not run on another.").arg(a_frontTitle)));
+                return;
+            }
+            if (QucsApp::documentWidget(a_app->getDoc()) != a_front) a_app->showDocument(a_front);
+        }
+        const auto after = [self, answered](const QJsonObject& result) {
+            if (self) self->noteFront();
+            answered(result);
+        };
         if (tool == QLatin1String("batch")) answered(errorResult(tr("A batch cannot hold another batch.")));
-        else a_control->callTool(tool, arguments, answered);
+        else a_control->callTool(tool, arguments, after);
     }
 
 private:
@@ -6665,6 +7189,21 @@ private:
         QPair<QString, QString> state;
         quint64 revision;
     };
+
+    // The document in front now: the one the next call without 'path' is for.
+    void noteFront()
+    {
+        QucsDoc* doc = a_app->DocumentTab->count() > 0 ? a_app->getDoc() : nullptr;
+        a_hadFront = doc != nullptr;
+        a_front = QucsApp::documentWidget(doc);
+        if (doc != nullptr) a_frontTitle = titled(QucsApp::documentWidget(doc));
+    }
+    // A document's tab title (an untitled one's too).
+    QString titled(QWidget* w) const
+    {
+        const QTabWidget* pane = a_app->paneOf(w);
+        return pane != nullptr ? pane->tabText(pane->indexOf(w)).remove(QLatin1Char('&')).trimmed() : QString();
+    }
 
     void record(int index, const QString& tool, const QJsonObject& arguments, const QJsonObject& result)
     {
@@ -6704,7 +7243,7 @@ private:
             QStringList back;
             for (const Before& b : std::as_const(a_before))
                 if (b.schematic && b.schematic->revision() != b.revision && b.schematic->restoreAll(b.state))
-                    back << QFileInfo(b.schematic->getDocName()).fileName();
+                    back << titled(b.schematic);   // (an untitled one was named "")
             head += QLatin1Char(' ')
                   + (back.isEmpty() ? tr("Atomic: nothing had changed.")
                                     : tr("Atomic: the changes of the calls before it were undone - %1 as it was (one step to undo "
@@ -6737,6 +7276,10 @@ private:
     }
 
     QucsControl* a_control;
+    QucsApp* a_app;
+    QPointer<QWidget> a_front;   // the document the calls without 'path' are for
+    QString a_frontTitle;
+    bool a_hadFront = false;
     QJsonArray a_calls;
     bool a_keepGoing;
     bool a_atomic;
@@ -6764,7 +7307,7 @@ void QucsControl::runBatch(const QJsonObject& args, const Done& done)
     if (atomic)
         for (QucsDoc* doc : a_app->allDocuments())
             if (auto* sch = dynamic_cast<Schematic*>(doc)) schematics << sch;
-    (new BatchRun(this, calls, args.value(QLatin1String("keep_going")).toBool(), atomic, schematics, done))->next();
+    (new BatchRun(this, a_app, calls, args.value(QLatin1String("keep_going")).toBool(), atomic, schematics, done))->next();
 }
 
 QWidget* QucsControl::openDialog() const
@@ -7128,16 +7671,30 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
 // ----------------------------------------------------------------------
 // Simulation
 
-// The dataset a run of \a simulator wrote for \a doc since \a started:
+namespace {
+
+// The schematic in \a dir whose dataset a run kept as \a keepAs would
+// write over (keepAs.sch there); empty when none is.
+QString keptOwner(const QDir& dir, const QString& keepAs)
+{
+    const QString sch = dir.absoluteFilePath(keepAs + QStringLiteral(".sch"));
+    return QFileInfo::exists(sch) ? sch : QString();
+}
+
+} // namespace
+
+// The dataset a run of \a simulator wrote for \a doc since \a before:
 // its file, whether it was written, its variables, a copy kept as
 // \a keepAs, the data display, and the traces that show nothing.
-QJsonObject QucsControl::datasetOfRun(Schematic* doc, int simulator, const QDateTime& started, const QString& keepAs,
+QJsonObject QucsControl::datasetOfRun(Schematic* doc, int simulator, const QDateTime& before, const QString& keepAs,
                                       bool* written)
 {
     QJsonObject result;
     const QFileInfo info(doc->getDocName());
     const QFileInfo dataset(datasetFile(info.absoluteFilePath(), info.completeBaseName() + QStringLiteral(".dat"), simulator));
-    *written = dataset.isFile() && dataset.lastModified() >= started;
+    // (Newer than it was: a file made in the second the run began, and not
+    // written by it, read as written when the time was all compared.)
+    *written = dataset.isFile() && (!before.isValid() || dataset.lastModified() > before);
     result.insert(QStringLiteral("dataset"), QDir::toNativeSeparators(dataset.absoluteFilePath()));
     result.insert(QStringLiteral("dataset written"), *written);
     if (*written) {
@@ -7158,6 +7715,9 @@ QJsonObject QucsControl::datasetOfRun(Schematic* doc, int simulator, const QDate
                 // that is the dataset itself, which a copy would destroy.
                 result.insert(QStringLiteral("kept as"), tr("not kept: %1 is the dataset of this run itself - give keep_as another name")
                                                              .arg(QDir::toNativeSeparators(kept)));
+            } else if (const QString owner = keptOwner(info.absoluteDir(), keepAs); !owner.isEmpty()) {
+                result.insert(QStringLiteral("kept as"), tr("not kept: %1 is the dataset of %2 - give keep_as another name")
+                                                             .arg(QDir::toNativeSeparators(kept), owner));
             } else if (misc::copyFileOver(dataset.absoluteFilePath(), kept, &why)) {
                 const QString prefix = simulatorPrefix();
                 result.insert(QStringLiteral("kept as"), QDir::toNativeSeparators(kept));
@@ -7208,6 +7768,8 @@ bool QucsControl::saveInScratch(Schematic* sch, QString* note, QString* error)
         *error = tr("%1 has no file yet, and it could not be saved in the scratch folder: save_document with 'as' first.").arg(title);
         return false;
     }
+    // (Not one of the user's Recent Documents: they filled up with these.)
+    a_app->forgetRecentFile(sch->getDocName());
     *note = tr("%1 had no file: it is saved as %2, in the scratch folder, to be simulated (its netlist and dataset go beside it). "
                "save_document with 'as' puts it where it belongs.")
                 .arg(title, QDir::toNativeSeparators(file));
@@ -7272,6 +7834,16 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
                                                       : tr("The operating point alone is run with a SPICE simulator (simulator: ngspice).")));
         return;
     }
+    // No analysis, nothing to run: said so, not "Failed to start simulator:
+    // Unknown error" (the reason came only among the check's warnings).
+    if (!operatingPoint
+        && std::none_of(sch->a_DocComps.cbegin(), sch->a_DocComps.cend(), [](const Component* c) {
+               return c->isActive == COMP_IS_ACTIVE && c->Model.startsWith(QLatin1Char('.'));
+           })) {
+        doneGiven(errorResult(tr("%1 has no analysis to run (no .AC, .TR, .DC, .SP ... block): add_analysis adds one - or simulate "
+                                 "with operating_point for the DC operating point alone.").arg(titleOf(sch))));
+        return;
+    }
     const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(120), 5, 3600) * 1000;
     const QString keepAs = args.value(QLatin1String("keep_as")).toString().trimmed();
     if (!keepAs.isEmpty() && !QRegularExpression(QStringLiteral("^[A-Za-z0-9_-]{1,64}$")).match(keepAs).hasMatch()) {
@@ -7297,6 +7869,15 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
         doneGiven(errorResult(error));
         return;
     }
+    // Not over another schematic's dataset: keep_as rc beside rc.sch
+    // replaced its results with this run's, and its diagrams showed them.
+    if (!keepAs.isEmpty())
+        if (const QString owner = keptOwner(QFileInfo(sch->getDocName()).absoluteDir(), keepAs); !owner.isEmpty()
+            && !sameFile(owner, sch->getDocName())) {
+            doneGiven(errorResult(tr("'keep_as' %1 would write over the dataset of %2: give it another name (run1, %1-run).")
+                                      .arg(keepAs, QDir::toNativeSeparators(owner))));
+            return;
+        }
     const int previous = QucsSettings.DefaultSimulator;
     QucsSettings.DefaultSimulator = simulator;
     auto restored = std::make_shared<bool>(simulator == previous);
@@ -7338,8 +7919,15 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
     };
 
     QPointer<Schematic> doc(sch);
-    // A dataset written since now: the simulator did produce something.
-    const QDateTime started = QDateTime::currentDateTime().addSecs(-1);
+    const QString title = titleOf(sch);
+    // The dataset as it is now: newer after the run, the simulator did
+    // produce something.
+    QDateTime started;
+    {
+        const QFileInfo info(sch->getDocName());
+        const QFileInfo dataset(datasetFile(info.absoluteFilePath(), info.completeBaseName() + QStringLiteral(".dat"), simulator));
+        if (dataset.isFile()) started = dataset.lastModified();
+    }
     // What it simulates: the schematic at this revision (an edit while it
     // runs is not in its results).
     const quint64 revision = sch->revision();
@@ -7370,7 +7958,13 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
         // Qucsator runs in a window of its own (SimMessage): its end waited
         // for as a SPICE run's is.
         const QList<SimMessage*> before = a_app->findChildren<SimMessage*>();
-        QTimer::singleShot(0, a_app, [app = a_app] { app->slotSimulate(); });
+        // (Its own schematic, in front: closed meanwhile, none - not the
+        // document then in front.)
+        QTimer::singleShot(0, a_app, [app = a_app, doc] {
+            if (!doc) return;
+            app->showDocument(doc);
+            app->slotSimulate();
+        });
         QTimer::singleShot(0, this, [=] {
             SimMessage* sim = nullptr;
             for (SimMessage* m : a_app->findChildren<SimMessage*>())
@@ -7386,6 +7980,10 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
                 if (*answered) return;
                 *answered = true;
                 if (!timedOut) restore();
+                if (!doc) {
+                    done(errorResult(tr("%1 was closed while it was simulated: its results were discarded.").arg(title)));
+                    return;
+                }
                 QJsonObject result{{QStringLiteral("finished"), !timedOut}, {QStringLiteral("simulator"), QStringLiteral("Qucsator")}};
                 if (message) {
                     QStringList out = message->ProgText->toPlainText().split(QLatin1Char('\n'));
@@ -7429,9 +8027,22 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
     // Started from the event loop (the legacy window runs one of its
     // own); the run it made is watched after.
     const int logBefore = console->statusLog()->count();
-    QTimer::singleShot(0, a_app, [app = a_app] { app->slotSimulateWithSpice(); });
-    QTimer::singleShot(0, this, [this, done, timeout, doc, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning, logBefore] {
+    // (Its own schematic, in front: one closed meanwhile is not run, nor the
+    // document then in front in its place - its log came back as this one's.)
+    QTimer::singleShot(0, a_app, [app = a_app, doc] {
+        if (!doc) return;
+        app->showDocument(doc);
+        app->slotSimulateWithSpice();
+    });
+    QTimer::singleShot(0, this, [this, done, timeout, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning, logBefore] {
         SimulationRun* run = console->currentRun();
+        // Closed before it began (a call right behind this one): said -
+        // not "did not start" with no reason, nor another run's log.
+        if (!doc) {
+            restore();
+            done(errorResult(tr("%1 was closed before its simulation began: nothing was simulated.").arg(title)));
+            return;
+        }
         if (run == nullptr) {
             restore();
             // What this attempt wrote (not the runs' before it).
@@ -7442,11 +8053,16 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
             done(errorResult(tr("The simulation did not start. %1").arg(log.join(QLatin1Char('\n')))));
             return;
         }
+        run->setQuiet(true);   // (its errors in the answer, not in a box)
         auto answered = std::make_shared<bool>(false);
-        auto report = [this, done, answered, doc, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning](SimulationRun* r, bool timedOut) {
+        auto report = [this, done, answered, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning](SimulationRun* r, bool timedOut) {
             if (*answered) return;
             *answered = true;
             if (!timedOut) restore();
+            if (!doc) {
+                done(errorResult(tr("%1 was closed while it was simulated: its results were discarded.").arg(title)));
+                return;
+            }
             const QString output = console->console()->toPlainText();
             QStringList lines = output.split(QLatin1Char('\n'));
             while (!lines.isEmpty() && lines.last().trimmed().isEmpty()) lines.removeLast();
@@ -7487,6 +8103,15 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
                 if (doc->getShowBias() == 0) doc->setShowBias(-1);   // (not shown: the next run is its analyses)
             }
             if (doc && !operatingPoint) result = mergedJson(result, datasetOfRun(doc, simulator, started, keepAs, &written));
+            // Not written (a read-only file or folder): why, in the answer
+            // - no box waits for a click.
+            if (r != nullptr && !r->datasetError().isEmpty()) {
+                written = false;
+                result.insert(QStringLiteral("dataset written"), false);
+                result.remove(QStringLiteral("variables"));
+                errors.append(QJsonObject{{QStringLiteral("message"), r->datasetError()}});
+                result.insert(QStringLiteral("errors"), errors);
+            }
             if (r != nullptr && !timedOut) {
                 // The simulator's own word: it ran to its end, reported no
                 // error and exited so (the dataset's name is its affair).
