@@ -59,7 +59,13 @@ QJsonArray QucsControl::resources() const
                                 {QStringLiteral("name"), QStringLiteral("state")},
                                 {QStringLiteral("title"), tr("The Qucs-S window")},
                                 {QStringLiteral("description"), tr("What get_state tells: the documents open, their revisions, the panes, the simulator")},
-                                {QStringLiteral("mimeType"), QStringLiteral("application/json")}}};
+                                {QStringLiteral("mimeType"), QStringLiteral("application/json")}},
+                    QJsonObject{{QStringLiteral("uri"), kPrefix + QStringLiteral("ngspice-commands")},
+                                {QStringLiteral("name"), QStringLiteral("ngspice-commands")},
+                                {QStringLiteral("title"), tr("ngspice's commands")},
+                                {QStringLiteral("description"), tr("What ngspice_commands tells: every ngspice command in a line, by category, "
+                                                                   "which the installed ngspice has, and how Qucs-S uses them")},
+                                {QStringLiteral("mimeType"), QStringLiteral("text/plain")}}};
     for (QucsDoc* doc : a_app->allDocuments()) {
         auto* sch = dynamic_cast<Schematic*>(doc);
         if (sch == nullptr || doc->getDocName().isEmpty()) continue;
@@ -91,11 +97,12 @@ QJsonArray QucsControl::resourceTemplates() const
 // A resource's URI read: its kind and the document it is of.
 bool QucsControl::resourceOf(const QString& uri, QString* kind, QucsDoc** doc, QString* error) const
 {
-    if (uri == kPrefix + QStringLiteral("state")) {
-        *kind = QStringLiteral("state");
-        *doc = nullptr;
-        return true;
-    }
+    for (const QString& whole : {QStringLiteral("state"), QStringLiteral("ngspice-commands")})
+        if (uri == kPrefix + whole) {
+            *kind = whole;
+            *doc = nullptr;
+            return true;
+        }
     if (!uri.startsWith(kPrefix)) {
         *error = tr("%1 is not a Qucs-S resource (qucs://...).").arg(uri);
         return false;
@@ -138,6 +145,7 @@ QJsonArray QucsControl::readResource(const QString& uri, QString* error)
         return contents(text, mime);
     };
     if (kind == QLatin1String("state")) return fromTool(QStringLiteral("get_state"), {}, QStringLiteral("application/json"));
+    if (kind == QLatin1String("ngspice-commands")) return fromTool(QStringLiteral("ngspice_commands"), {}, QStringLiteral("text/plain"));
     const QJsonObject path{{QStringLiteral("path"), doc->getDocName()}};
     if (kind == QLatin1String("schematic")) return contents(static_cast<Schematic*>(doc)->documentText(), QStringLiteral("text/x-qucs-schematic"));
     if (kind == QLatin1String("dataset")) return fromTool(QStringLiteral("get_dataset"), path, QStringLiteral("application/json"));
@@ -163,6 +171,7 @@ QString QucsControl::resourceVersion(const QString& uri) const
             v += QStringLiteral("%1:%2:%3;").arg(seenKey(d)).arg(d->revision()).arg(d->getDocChanged() ? 1 : 0);
         return v;
     }
+    if (kind == QLatin1String("ngspice-commands")) return QStringLiteral("1");
     if (kind == QLatin1String("dataset")) return datasetWritten(doc).toString(Qt::ISODateWithMs);
     return QString::number(doc->revision());
 }

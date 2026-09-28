@@ -466,7 +466,12 @@ const char* const kTools = R"JSON([
    "title_line": {"type": "boolean", "description": "Whether the first line is a title (skipped): told from the line when not given"}, "spacing": {"type": "integer", "minimum": 120, "maximum": 600, "description": "Room between the parts placed, 200 by default"}}}},
 {"name": "set_simulator",
  "description": "Chooses the simulator that simulate runs and get_netlist writes for, like the toolbar's simulator list (a setting kept for next time): ngspice, xyce, spiceopus or qucsator - one that is installed. To run another one once, simulate takes 'simulator'. To compare two engines, simulate, then simulate again with 'simulator'; get_dataset with 'simulator' reads each result. Returns the simulator in use and those installed.",
- "inputSchema": {"type": "object", "properties": {"simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "One that is installed (the answer lists them)"}}, "required": ["simulator"]}}
+ "inputSchema": {"type": "object", "properties": {"simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "One that is installed (the answer lists them)"}}, "required": ["simulator"]}},
+{"name": "ngspice_commands",
+ "description": "Tells which commands ngspice has and how to write them: the analyses (op, dc, ac, tran, noise, pz, sens, tf, disto; sp, pss, hb, stb, loadpull and the rest of the RF set), measurements (meas, fft, fourier, eye, track), vectors and expressions (let, print, set, option), plots and data files (wrdata, write, pyplot, wrsnp), the circuit (alter, altermod, show, save), compiled models (pre_osdi, snp), statistics and optimization (montecarlo, corners, sweep, optimize), breakpoints and the .control language (if, foreach, dowhile) - each summed up in a line, by category. It asks the ngspice of the settings for its own list (help all), so the answer says which of them it has, which it lacks and any others it has; * marks those stock ngspice lacks (the enhanced build's). Without arguments: every command in a line, by category, and how Qucs-S uses them - a Nutmeg script block (.CUSTOMSIM) holds any commands, a NutmegEq computes let expressions, the simulation blocks write theirs. 'command' names one or several (tran, .tran, pre_osdi, meas) for the syntax, what it does, this ngspice's own help line, how Qucs-S writes it and an example; 'search' finds commands by what they do (stability, touchstone, monte carlo, eye); 'category' lists a category's commands with their syntax. Use it before writing a Nutmeg script or NutmegEq, or to answer whether ngspice can do something.",
+ "inputSchema": {"type": "object", "properties": {"command": {"description": "A command's name, or a list of names: tran, .tran (a dot-card's command), pre_osdi, [\"meas\", \"fft\"]"},
+   "search": {"type": "string", "description": "Words for what a command does: stability, touchstone, noise figure, monte carlo"},
+   "category": {"type": "string", "enum": ["analysis", "rf", "measure", "vectors", "output", "circuit", "models", "statistics", "reliability", "debug", "script", "digital", "utility"], "description": "One category's commands, each with its syntax"}}}}
 ])JSON";
 
 const struct {
@@ -525,7 +530,7 @@ const struct {
 const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "list_component_types", "list_actions",
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
-                                 "read_pdf", "find_library_component", "undo_history", "describe_tool", "diff"};
+                                 "read_pdf", "find_library_component", "undo_history", "describe_tool", "diff", "ngspice_commands"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
 // changed or taken away - a simulation writes its dataset anew, which it
@@ -604,6 +609,7 @@ const struct {
     {"make_symbol", QT_TRANSLATE_NOOP("QucsControl", "Draws a subcircuit symbol with ports on four sides.")},
     {"import_netlist", QT_TRANSLATE_NOOP("QucsControl", "Creates a schematic from a SPICE netlist.")},
     {"set_simulator", QT_TRANSLATE_NOOP("QucsControl", "Chooses the simulator that simulate runs and get_netlist writes for.")},
+    {"ngspice_commands", QT_TRANSLATE_NOOP("QucsControl", "Lists ngspice's commands by category, each in a line, and which the installed ngspice has; a command's syntax, example and how Qucs-S writes it; a search by what they do.")},
     {"run_script", QT_TRANSLATE_NOOP("QucsControl", "Runs a short JavaScript program that calls these tools (qucs.call) with loops and conditions, in one turn; 'atomic' restores every schematic if it throws.")},
     {"describe_tool", QT_TRANSLATE_NOOP("QucsControl", "Returns a tool's full description: what it does and returns, its fields and common mistakes. Without 'name', lists every tool's summary.")},
 };
@@ -669,6 +675,7 @@ const struct {
     {"read_pdf", "datasheet pdf text read"},
     {"diff", "compare revisions files changes"},
     {"run_script", "script loop javascript many calls"},
+    {"ngspice_commands", "ngspice commands supported control nutmeg script syntax analysis meas let help spice"},
 };
 
 } // namespace
@@ -2594,7 +2601,9 @@ QString QucsControl::instructions() const
         "iteration. build_verilog_a compiles a .va file now and reports errors with their lines; describe_component_type "
         "lists a Verilog-A module's parameters. find_library_component finds a part by its values (an NPN with Bf near "
         "200); read_pdf reads a datasheet's text; import_netlist builds a schematic from a SPICE netlist; make_symbol "
-        "draws a subcircuit's symbol. new_project, open_project, copy_document and clean_scratch manage files. "
+        "draws a subcircuit's symbol. ngspice_commands tells which commands ngspice has (analyses, measurements, output, "
+        "statistics, the .control language), their syntax and which the installed ngspice has - for a Nutmeg script or a "
+        "NutmegEq. new_project, open_project, copy_document and clean_scratch manage files. "
         "undo_history lists the undo steps in words. \"selection\": true acts on what the user selected (move, delete, "
         "create_subcircuit, get_schematic).\n\n"
         "Each tool result reports, part by part, what the user changed since your last call. Changes appear in the "
@@ -2906,7 +2915,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"),
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
         QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"),
-        QStringLiteral("find_library_component"), QStringLiteral("undo_history")};
+        QStringLiteral("find_library_component"), QStringLiteral("undo_history"), QStringLiteral("ngspice_commands")};
     if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool))
         return errorResult(tr("“%1” is open in Qucs-S and waits for an answer: %2 waits until it is closed (get_dialog "
                               "reads it, set_dialog answers it - or ask the user to).")
@@ -2997,6 +3006,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("edit_trace")) return editTrace(args);
     if (tool == QLatin1String("add_marker")) return addMarker(args);
     if (tool == QLatin1String("describe_format")) return describeFormat(args);
+    if (tool == QLatin1String("ngspice_commands")) return ngspiceCommands(args);
     if (tool == QLatin1String("move_to_pane")) return moveToPane(args);
     if (tool == QLatin1String("edit_marker")) return editMarker(args);
     if (tool == QLatin1String("delete_marker")) return deleteMarker(args);
