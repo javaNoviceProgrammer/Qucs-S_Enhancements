@@ -29,23 +29,32 @@ class Server:
         env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QUCS_SETTINGS_DIR=H + '/settings', QUCS_NO_SHELL_ENV='1',
                    ASAN_OPTIONS='detect_leaks=0', UBSAN_OPTIONS='print_stacktrace=1')
         self.p = subprocess.Popen([APP, '--mcp-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err,
-                                  env=env, text=True, bufsize=1)
-        self.n = 0
+                                  env=env, bufsize=0)
+        self.n = 0; self.buf = b''
         self.rpc('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}})
         self.send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
     def send(self, o):
-        self.p.stdin.write(json.dumps(o) + '\n'); self.p.stdin.flush()
+        self.p.stdin.write((json.dumps(o) + '\n').encode()); self.p.stdin.flush()
+    def line(self, end):
+        # (Its own buffer: select() on a buffered pipe waits for lines
+        # already read into the buffer - two answers come back together.)
+        while b'\n' not in self.buf:
+            left = end - time.time()
+            if left <= 0: return 'HANG'
+            r, _, _ = select.select([self.p.stdout], [], [], left)
+            if not r: return 'HANG'
+            chunk = os.read(self.p.stdout.fileno(), 1 << 20)
+            if not chunk: return 'EOF'
+            self.buf += chunk
+        l, _, self.buf = self.buf.partition(b'\n')
+        return l.decode('utf-8', 'replace')
     def rpc(self, method, params, timeout=90):
         self.n += 1
         self.send({'jsonrpc': '2.0', 'id': self.n, 'method': method, 'params': params})
         end = time.time() + timeout
         while True:
-            left = end - time.time()
-            if left <= 0: return 'HANG'
-            r, _, _ = select.select([self.p.stdout], [], [], left)
-            if not r: return 'HANG'
-            line = self.p.stdout.readline()
-            if not line: return 'EOF'
+            line = self.line(end)
+            if line in ('HANG', 'EOF'): return line
             try: m = json.loads(line)
             except Exception: continue
             if m.get('id') == self.n: return m
