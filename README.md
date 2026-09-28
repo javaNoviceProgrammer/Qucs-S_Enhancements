@@ -451,14 +451,39 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   instances took its new symbol and which pins moved off their wires.
   `get_schematic` gives the box of each shown text of a part, and
   `open_document` says when a line has more values than its type.
-  Tools that only look are
+  `set_schematic` also takes parts and wires as JSON - each property by
+  its name, checked against the type, so a value too many cannot shift
+  the rest - and `get_schematic` gives that form (`"format": "json"`).
+  A value that does not read as a number where the type wants one, and
+  a type's traps (a `Vpulse` is one pulse, an `OpAmp` clips at `Umax`),
+  are told as the part is placed or edited. The tools that change a
+  schematic take `"preview": true`: what the change would do, and
+  nothing done (a `batch` too). `diff` compares a schematic with its
+  file as saved, with a step of its history or with another file.
+  `get_netlist` with `"map": true` ties each netlist line to its part and
+  each node to its pins. `run_script` runs a short JavaScript program
+  that calls the tools (`qucs.call("add_component", {...})`) with loops
+  and conditions between the calls, in one turn - with `"atomic": true`
+  every schematic is put back when it fails. The schematic's text, its
+  netlist, the netlist map, the dataset and the window's state are also
+  MCP resources, read and subscribed to (told when they change, also by
+  another program writing the file). Before a file is written over or
+  unsaved changes are discarded, Qucs-S asks you in the dock, with a
+  button for each answer. Tools that only look are
   used without asking; the first change asks, and *Allow Qucs-S Control*
   lets the rest of the conversation go on without asking (as do the
-  *Accept Edits*, *Auto* and *Bypass* modes). The system's own file and
+  *Accept Edits*, *Auto* and *Bypass* modes). What cannot be undone -
+  a file deleted or written over, unsaved changes discarded - is asked
+  about every time, but in *Auto* and *Bypass*. Each tool carries MCP's
+  annotations (read-only, destructive, idempotent). The system's own file and
   print dialogs are not driven: Claude opens and saves by file name.
-  - **Quick**: the tools are always loaded (never behind Claude Code's
-    tool search, which cost a turn before the first use); their answers
-    are compact JSON (a third of the tokens and less); `batch` runs many
+  - **Quick**: the 22 tools most sessions use are loaded in every turn;
+    the others are found by Claude Code's tool search when a task needs
+    them. Each tool's description is two or three sentences (a sixth of
+    what they were: all 65 tools are about 9.6k tokens, the 22 about
+    4.2k), and `describe_tool` gives a tool's full description when it
+    is needed. Answers are compact JSON, and structured
+    (`structuredContent`); `batch` runs many
     calls in one - place and wire a circuit, set properties, add a
     diagram and its traces - each change still one step to undo; a menu
     action answers as soon as it is over (not half a second later).
@@ -466,6 +491,23 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     opened), the tools that change a document wait too - the dialog
     holds on to what it edits - and so does loading a file Claude
     changed.
+  - **Without the window**: `qucs-s --mcp-server` serves the same tools
+    over stdio, with no window on screen, for any MCP client - Claude
+    Code in a terminal, a batch job, a CI check of schematics, or
+    subagents each working on a copy:
+
+    ```bash
+    claude mcp add qucs -- qucs-s --mcp-server
+    ```
+
+    (From the macOS disk image, the program is
+    `/Applications/qucs-s.app/Contents/MacOS/qucs-s`.) Schematics named
+    after the option are opened. It ends when its
+    input does; unsaved changes are left unsaved (it says so on stderr).
+    A dialog that opens is read with `get_dialog` and answered with
+    `set_dialog`. Questions go to the client's user when the client can
+    ask them (MCP elicitation); otherwise writing over a file needs
+    `"replace": true`.
 - **Conversations kept, and gone on with**: every conversation is kept
   as it goes; those open when Qucs-S closes come back when it opens
   again - what was said, their names, folders and pinned schematics -

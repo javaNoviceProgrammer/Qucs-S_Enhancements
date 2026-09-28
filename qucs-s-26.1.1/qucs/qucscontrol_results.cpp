@@ -1724,6 +1724,9 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
     const bool last = args.value(QLatin1String("last")).toBool();
     const int simulator = QucsSettings.DefaultSimulator;
     const QString simName = spicecompat::getDefaultSimulatorName(simulator);
+    const bool map = args.value(QLatin1String("map")).toBool();
+    if (map && (last || simulator == spicecompat::simQucsator || !saveAs.isEmpty()))
+        return errorResult(tr("'map' is of the netlist a SPICE simulator would be given now: not with 'last', 'save_as' or Qucsator."));
     QStringList files;
     std::unique_ptr<QTemporaryDir> temporary;
     if (last || simulator == spicecompat::simQucsator) {
@@ -1758,6 +1761,57 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
         if (!run.writeNetlist(file))
             return errorResult(tr("The netlist could not be written. %1").arg(capture.errors().join(QLatin1Char('\n'))));
         files << file;
+        // Which part of the schematic wrote each line, and which pins each
+        // node of the netlist joins: an error or a warning that names a
+        // line, a device or a node is found on the schematic by it.
+        if (map) {
+            QFile f(file);
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return errorResult(tr("The netlist could not be read back."));
+            QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+            if (!lines.isEmpty() && lines.last().isEmpty()) lines.removeLast();
+            QHash<QString, QString> parts;   // a device's name in the netlist (lower case): its part
+            QJsonObject nodes;
+            QHash<QString, int> seen;
+            for (Component* c : sch->a_DocComps) {
+                const QString base = c->Name.isEmpty() ? c->Model : c->Name;
+                const int k = seen[base]++;
+                const QString ref = k == 0 ? base : QStringLiteral("%1#%2").arg(base).arg(k);
+                if (!c->Name.isEmpty()) {
+                    parts.insert(c->Name.toLower(), c->Name);
+                    if (!c->SpiceModel.isEmpty() && !c->SpiceModel.startsWith(QLatin1Char('.')))
+                        parts.insert(spicecompat::check_refdes(c->Name, c->SpiceModel).toLower(), c->Name);
+                }
+                for (int i = 0; i < c->Ports.size(); ++i) {
+                    const Node* n = c->Ports.at(i)->Connection;
+                    if (n == nullptr || n->Name.isEmpty()) continue;
+                    QJsonArray on = nodes.value(n->Name).toArray();
+                    on.append(QStringLiteral("%1.%2").arg(ref).arg(i + 1));
+                    nodes.insert(n->Name, on);
+                }
+            }
+            QJsonArray owned;
+            QString owner;
+            for (int i = 0; i < lines.size(); ++i) {
+                const QString line = lines.at(i).trimmed();
+                if (line.startsWith(QLatin1Char('+'))) {   // (the line before, continued)
+                    if (!owner.isEmpty()) owned.append(QJsonObject{{QStringLiteral("line"), i + 1}, {QStringLiteral("part"), owner}});
+                    continue;
+                }
+                owner.clear();
+                if (line.isEmpty() || line.startsWith(QLatin1Char('*')) || line.startsWith(QLatin1Char('.'))) continue;
+                owner = parts.value(line.section(QLatin1Char(' '), 0, 0).toLower());
+                if (!owner.isEmpty())
+                    owned.append(QJsonObject{{QStringLiteral("line"), i + 1}, {QStringLiteral("part"), owner}, {QStringLiteral("text"), line}});
+            }
+            return jsonResult(QJsonObject{{QStringLiteral("document"), titleOf(sch)},
+                                          {QStringLiteral("simulator"), simName},
+                                          {QStringLiteral("netlist"), QJsonArray::fromStringList(lines)},
+                                          {QStringLiteral("lines"), owned},
+                                          {QStringLiteral("nodes"), nodes},
+                                          {QStringLiteral("how"), tr("'lines': each line a part wrote (its number in 'netlist', from 1); "
+                                                                     "'nodes': each node of the netlist with the pins it joins "
+                                                                     "(0 is ground)")}});
+        }
     }
     if (!saveAs.isEmpty()) {
         QString whole;

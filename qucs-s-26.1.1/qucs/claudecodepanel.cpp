@@ -59,6 +59,9 @@
 #include <QTextFrame>
 #include <QTextList>
 #include <QTextTable>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QFormLayout>
 #include <QTimer>
 #include <QToolButton>
 #include <QUrl>
@@ -507,10 +510,12 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     layout->addWidget(a_view, 1);
 
     buildPermissionCard();
+    buildAskCard();
     auto* cardHolder = new QWidget(this);
     auto* cardLayout = new QVBoxLayout(cardHolder);
     cardLayout->setContentsMargins(10, 4, 10, 0);
     cardLayout->addWidget(a_card);
+    cardLayout->addWidget(a_askCard);
     layout->addWidget(cardHolder);
 
     buildComposer();
@@ -549,6 +554,11 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     connect(a_session, &qucs_s::claude::Session::toolStarted, this, &ClaudeCodePanel::onToolStarted);
     connect(a_session, &qucs_s::claude::Session::toolFinished, this, &ClaudeCodePanel::onToolFinished);
     connect(a_session, &qucs_s::claude::Session::permissionRequested, this, &ClaudeCodePanel::onPermissionRequested);
+    connect(a_session, &qucs_s::claude::Session::elicitationRequested, this,
+            [this](const QString& id, const QString&, const QString& message, const QJsonObject& schema) {
+                a_asks.append(Ask{id, message, schema});
+                if (a_asks.size() == 1) showNextAsk();
+            });
     connect(a_session, &qucs_s::claude::Session::permissionWithdrawn, this, &ClaudeCodePanel::onPermissionWithdrawn);
     // Allow All Edits on a card: this conversation's alone, as the note
     // says. The saved default - what every new conversation starts with,
@@ -710,6 +720,123 @@ void ClaudeCodePanel::buildPermissionCard()
     connect(a_allowTools, &QToolButton::clicked, this, [this] { answer(true, false, true); });
     connect(a_deny, &QToolButton::clicked, this, [this] { answer(false, false); });
     a_card->hide();
+}
+
+// ----------------------------------------------------------------------
+// A question an MCP server asks the user (elicitation) - Qucs-S's own
+// before a file is written over or unsaved changes lost: its message, and
+// a button for each answer (yes and no, each choice) or a small form.
+
+void ClaudeCodePanel::buildAskCard()
+{
+    a_askCard = new QFrame(this);
+    a_askCard->setObjectName(QStringLiteral("claudePermission"));   // (the permission card's look)
+    auto* layout = new QVBoxLayout(a_askCard);
+    layout->setContentsMargins(12, 10, 12, 10);
+    layout->setSpacing(6);
+    a_askCard->hide();
+}
+
+void ClaudeCodePanel::showNextAsk()
+{
+    auto* layout = static_cast<QVBoxLayout*>(a_askCard->layout());
+    while (QLayoutItem* item = layout->takeAt(0)) {
+        if (QWidget* w = item->widget()) w->deleteLater();
+        if (QLayout* l = item->layout()) {
+            while (QLayoutItem* inner = l->takeAt(0)) {
+                if (inner->widget() != nullptr) inner->widget()->deleteLater();
+                delete inner;
+            }
+        }
+        delete item;
+    }
+    if (a_asks.isEmpty()) {
+        a_askCard->hide();
+        return;
+    }
+    const Ask ask = a_asks.first();
+    auto* title = new QLabel(ask.message, a_askCard);
+    title->setObjectName(QStringLiteral("claudeCardTitle"));
+    title->setWordWrap(true);
+    layout->addWidget(title);
+    auto* buttons = new QHBoxLayout;
+    buttons->setSpacing(6);
+    buttons->addStretch(1);
+    const auto button = [&](const QString& text, const QString& name, std::function<void()> act) {
+        auto* b = new QToolButton(a_askCard);
+        b->setText(text);
+        b->setObjectName(name);
+        connect(b, &QToolButton::clicked, this, act);
+        buttons->addWidget(b);
+        return b;
+    };
+    button(tr("Cancel"), QStringLiteral("claudeAskCancel"), [this] { answerAsk(QStringLiteral("cancel")); });
+    const QJsonObject properties = ask.schema.value(QLatin1String("properties")).toObject();
+    const QString only = properties.size() == 1 ? properties.begin().key() : QString();
+    const QJsonObject field = properties.value(only).toObject();
+    if (!only.isEmpty() && field.value(QLatin1String("type")).toString() == QLatin1String("boolean")) {
+        // Yes or no.
+        button(tr("No"), QStringLiteral("claudeAskNo"), [this, only] { answerAsk(QStringLiteral("accept"), {{only, false}}); });
+        button(tr("Yes"), QStringLiteral("claudeAskYes"), [this, only] { answerAsk(QStringLiteral("accept"), {{only, true}}); });
+    } else if (!only.isEmpty() && field.contains(QLatin1String("enum"))) {
+        // One of these.
+        for (const QJsonValue& v : field.value(QLatin1String("enum")).toArray()) {
+            const QString option = v.toString();
+            QToolButton* b = button(option, QStringLiteral("claudeAskOption"),
+                                    [this, only, option] { answerAsk(QStringLiteral("accept"), {{only, option}}); });
+            b->setProperty("option", option);
+        }
+    } else {
+        // A form: a field for each property.
+        auto* form = new QFormLayout;
+        QHash<QString, QWidget*> editors;
+        for (auto it = properties.begin(); it != properties.end(); ++it) {
+            const QJsonObject p = it.value().toObject();
+            const QString label = p.value(QLatin1String("title")).toString(it.key());
+            QWidget* editor = nullptr;
+            if (p.value(QLatin1String("type")).toString() == QLatin1String("boolean")) {
+                auto* box = new QCheckBox(a_askCard);
+                box->setChecked(p.value(QLatin1String("default")).toBool());
+                editor = box;
+            } else if (p.contains(QLatin1String("enum"))) {
+                auto* combo = new QComboBox(a_askCard);
+                for (const QJsonValue& v : p.value(QLatin1String("enum")).toArray()) combo->addItem(v.toString());
+                editor = combo;
+            } else {
+                auto* edit = new QLineEdit(a_askCard);
+                edit->setText(p.value(QLatin1String("default")).toVariant().toString());
+                editor = edit;
+            }
+            editor->setObjectName(QStringLiteral("claudeAskField_") + it.key());
+            editor->setToolTip(p.value(QLatin1String("description")).toString());
+            form->addRow(label, editor);
+            editors.insert(it.key(), editor);
+        }
+        layout->addLayout(form);
+        button(tr("Submit"), QStringLiteral("claudeAskSubmit"), [this, editors, properties] {
+            QJsonObject content;
+            for (auto it = editors.cbegin(); it != editors.cend(); ++it) {
+                const QString type = properties.value(it.key()).toObject().value(QLatin1String("type")).toString();
+                if (auto* box = qobject_cast<QCheckBox*>(it.value())) content.insert(it.key(), box->isChecked());
+                else if (auto* combo = qobject_cast<QComboBox*>(it.value())) content.insert(it.key(), combo->currentText());
+                else if (auto* edit = qobject_cast<QLineEdit*>(it.value())) {
+                    if (type == QLatin1String("number") || type == QLatin1String("integer")) content.insert(it.key(), edit->text().toDouble());
+                    else content.insert(it.key(), edit->text());
+                }
+            }
+            answerAsk(QStringLiteral("accept"), content);
+        });
+    }
+    layout->addLayout(buttons);
+    a_askCard->show();
+}
+
+void ClaudeCodePanel::answerAsk(const QString& action, const QJsonObject& content)
+{
+    if (a_asks.isEmpty()) return;
+    const Ask ask = a_asks.takeFirst();
+    a_session->answerElicitation(ask.id, action, content);
+    QTimer::singleShot(0, this, &ClaudeCodePanel::showNextAsk);   // (not under the button pressed)
 }
 
 void ClaudeCodePanel::buildComposer()

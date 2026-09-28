@@ -76,7 +76,9 @@ has() {
 deploy() {
   for exe in "${programs[@]}"; do
     if [ -f "$bin/$exe.exe" ]; then
-      windeployqt.exe "$bin/$exe.exe" --svg --no-translations --no-system-d3d-compiler \
+      # (--no-quick-import: Qt Qml is there for run_script's JavaScript
+      # engine alone - no QML files, no imports of theirs.)
+      windeployqt.exe "$bin/$exe.exe" --svg --no-translations --no-system-d3d-compiler --no-quick-import \
         || echo "::warning::windeployqt failed for $exe.exe (the check below tells what that left out)"
     else
       echo "::warning::$exe.exe not found in $bin"

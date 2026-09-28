@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "claudecode.h"
+#include "mcpserver.h"
 #include "main.h"
 
 #include <QCoreApplication>
@@ -520,6 +521,38 @@ void Session::setConversationTotals(const TokenUsage& tokens, double costUsd)
 void Session::setToolHost(ToolHost* host)
 {
     a_host = host;
+    delete a_mcp;
+    a_mcp = nullptr;
+    if (host == nullptr) return;
+    a_mcp = new mcp::Server(host, this);
+    a_mcp->setCaller(a_caller);
+    // A call: not from within the reading of the output (a tool may open a
+    // dialog - an event loop of its own - or take its time), for this
+    // conversation (what changed since its last call, the document it is
+    // pinned to when it runs), answered to the program that asked, not
+    // one started since.
+    QPointer<Session> self(this);
+    a_mcp->setCall([self](const QString& tool, const QJsonObject& arguments, std::function<void(const QJsonObject&)> done) {
+        if (!self) return;
+        const QProcess* process = self->a_process;
+        QTimer::singleShot(0, self, [self, process, tool, arguments, done] {
+            if (!self || self->a_host == nullptr) return;
+            self->a_host->callToolFor(self->a_caller, tool, self->forDocument(tool, arguments), [self, process, done](const QJsonObject& result) {
+                if (self && self->a_process == process) done(result);
+            });
+        });
+    });
+    // The server's own messages (a resource changed, a question for the
+    // user) go to the program as it sends its own: control requests.
+    a_mcp->setSend([self](const QJsonObject& message) {
+        if (!self || self->a_process == nullptr || self->a_host == nullptr) return;
+        static int count = 0;
+        self->write({{QStringLiteral("type"), QStringLiteral("control_request")},
+                     {QStringLiteral("request_id"), QStringLiteral("qucs-mcp-%1").arg(++count)},
+                     {QStringLiteral("request"), QJsonObject{{QStringLiteral("subtype"), QStringLiteral("mcp_message")},
+                                                             {QStringLiteral("server_name"), self->a_host->serverName()},
+                                                             {QStringLiteral("message"), message}}}});
+    });
 }
 
 QJsonObject Session::forDocument(const QString& tool, const QJsonObject& input) const
@@ -641,13 +674,13 @@ void Session::start()
         // The host's tools, as an "sdk" MCP server: their messages come over
         // this stream. Those that only look need no asking.
         const QString name = a_host->serverName();
-        // Always loaded: with its tools deferred behind the program's tool
-        // search, Claude spent a turn finding them before the first use.
+        // Its tools say which are in every turn ("anthropic/alwaysLoad":
+        // those most sessions use) and which the program's tool search
+        // finds when a task needs them - the server as a whole is not
+        // loaded in full (that made every turn carry all of them).
         options.mcpConfig = QString::fromUtf8(QJsonDocument(QJsonObject{
             {QStringLiteral("mcpServers"),
-             QJsonObject{{name, QJsonObject{{QStringLiteral("type"), QStringLiteral("sdk")},
-                                            {QStringLiteral("name"), name},
-                                            {QStringLiteral("alwaysLoad"), true}}}}}})
+             QJsonObject{{name, QJsonObject{{QStringLiteral("type"), QStringLiteral("sdk")}, {QStringLiteral("name"), name}}}}}})
                                                   .toJson(QJsonDocument::Compact));
         for (const QString& tool : a_host->readOnlyTools())
             options.allowedTools << QStringLiteral("mcp__") + name + QStringLiteral("__") + tool;
@@ -697,6 +730,16 @@ void Session::write(const QJsonObject& message)
 {
     if (!isRunning()) return;
     a_process->write(QJsonDocument(message).toJson(QJsonDocument::Compact) + '\n');
+}
+
+void Session::answerElicitation(const QString& id, const QString& action, const QJsonObject& content)
+{
+    QJsonObject answer{{QStringLiteral("action"), action}};
+    if (action == QLatin1String("accept")) answer.insert(QStringLiteral("content"), content);
+    write({{QStringLiteral("type"), QStringLiteral("control_response")},
+           {QStringLiteral("response"), QJsonObject{{QStringLiteral("subtype"), QStringLiteral("success")},
+                                                    {QStringLiteral("request_id"), id},
+                                                    {QStringLiteral("response"), answer}}}});
 }
 
 bool Session::send(const QString& prompt)
@@ -1066,6 +1109,14 @@ void Session::handleControlRequest(const QJsonObject& m)
         handleMcpMessage(id, request);
         return;
     }
+    if (subtype == QLatin1String("elicitation")) {
+        // A question for the user from an MCP server (Qucs-S's own asks
+        // before a file is written over): the dock shows it.
+        emit elicitationRequested(id, request.value(QLatin1String("mcp_server_name")).toString(),
+                                  request.value(QLatin1String("message")).toString(),
+                                  request.value(QLatin1String("requested_schema")).toObject());
+        return;
+    }
     if (subtype != QLatin1String("can_use_tool")) {
         // Nothing else is asked of this host.
         write({{QStringLiteral("type"), QStringLiteral("control_response")},
@@ -1085,15 +1136,20 @@ void Session::handleControlRequest(const QJsonObject& m)
         // The host's own tools: those that look, and all of them once
         // allowed (or where edits need no asking), without a question;
         // the others may be allowed all at once.
-        const bool editsFree = a_mode == QLatin1String("acceptEdits") || a_mode == QLatin1String("auto")
-                               || a_mode == QLatin1String("bypassPermissions");
-        if (a_toolsAllowed || editsFree || a_host->readOnlyTools().contains(tool)) {
+        const bool autonomous = a_mode == QLatin1String("auto") || a_mode == QLatin1String("bypassPermissions");
+        const bool editsFree = autonomous || a_mode == QLatin1String("acceptEdits");
+        // A use that cannot be undone (files deleted or written over,
+        // unsaved changes discarded) is asked about all the same, but where
+        // Claude acts on its own.
+        const bool lasting = a_host->irreversible(tool, forDocument(tool, p.input));
+        if (a_host->readOnlyTools().contains(tool) || (lasting ? autonomous : (a_toolsAllowed || editsFree))) {
             allowRequest(id, p.input);
             return;
         }
         p.action = a_host->actionOf(tool);
         p.subject = a_host->subjectOf(tool, forDocument(tool, p.input));
-        p.canAllowTools = true;
+        p.canAllowTools = !lasting;
+        if (lasting) p.detail = tr("This cannot be undone: files are deleted or written over, or unsaved changes discarded.");
     }
     for (const QJsonValue& s : request.value(QLatin1String("permission_suggestions")).toArray()) {
         const QJsonObject suggestion = s.toObject();
@@ -1106,64 +1162,29 @@ void Session::handleControlRequest(const QJsonObject& m)
     emit permissionRequested(p);
 }
 
-// The host's MCP server, answered here: the program's messages to it come
-// as control requests, its answers go back as control responses.
+// The host's MCP server (mcpserver.h), answered here: the program's
+// messages to it come as control requests, its answers go back as control
+// responses.
 void Session::handleMcpMessage(const QString& requestId, const QJsonObject& request)
 {
     const QJsonObject message = request.value(QLatin1String("message")).toObject();
-    const QJsonValue messageId = message.value(QLatin1String("id"));
-    const QString method = message.value(QLatin1String("method")).toString();
     const QString server = request.value(QLatin1String("server_name")).toString();
-    const auto reply = [this, requestId, messageId](const QJsonObject& body, bool error) {
-        QJsonObject rpc{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
-                        {QStringLiteral("id"), messageId.isUndefined() || messageId.isNull() ? QJsonValue(0) : messageId}};
-        rpc.insert(error ? QStringLiteral("error") : QStringLiteral("result"), body);
+    const auto reply = [this, requestId](const QJsonObject& rpc) {
         write({{QStringLiteral("type"), QStringLiteral("control_response")},
                {QStringLiteral("response"),
                 QJsonObject{{QStringLiteral("subtype"), QStringLiteral("success")},
                             {QStringLiteral("request_id"), requestId},
                             {QStringLiteral("response"), QJsonObject{{QStringLiteral("mcp_response"), rpc}}}}}});
     };
-    const auto failure = [](int code, const QString& text) {
-        return QJsonObject{{QStringLiteral("code"), code}, {QStringLiteral("message"), text}};
-    };
-    if (a_host == nullptr || server != a_host->serverName()) {
-        reply(failure(-32601, QStringLiteral("No server %1 here").arg(server)), true);
+    if (a_host == nullptr || a_mcp == nullptr || server != a_host->serverName()) {
+        const QJsonValue id = message.value(QLatin1String("id"));
+        reply({{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+               {QStringLiteral("id"), id.isUndefined() || id.isNull() ? QJsonValue(0) : id},
+               {QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), -32601},
+                                                     {QStringLiteral("message"), QStringLiteral("No server %1 here").arg(server)}}}});
         return;
     }
-    if (method == QLatin1String("initialize")) {
-        const QJsonObject params = message.value(QLatin1String("params")).toObject();
-        QJsonObject result{{QStringLiteral("protocolVersion"),
-                            params.value(QLatin1String("protocolVersion")).toString(QStringLiteral("2025-06-18"))},
-                           {QStringLiteral("capabilities"), QJsonObject{{QStringLiteral("tools"), QJsonObject()}}},
-                           {QStringLiteral("serverInfo"), QJsonObject{{QStringLiteral("name"), a_host->serverName()},
-                                                                      {QStringLiteral("version"), QStringLiteral("1")}}}};
-        const QString instructions = a_host->instructions();
-        if (!instructions.isEmpty()) result.insert(QStringLiteral("instructions"), instructions);
-        reply(result, false);
-    } else if (method.startsWith(QLatin1String("notifications/")) || method == QLatin1String("ping")) {
-        reply(QJsonObject(), false);
-    } else if (method == QLatin1String("tools/list")) {
-        reply({{QStringLiteral("tools"), a_host->tools()}}, false);
-    } else if (method == QLatin1String("tools/call")) {
-        const QJsonObject params = message.value(QLatin1String("params")).toObject();
-        const QString tool = params.value(QLatin1String("name")).toString();
-        const QJsonObject arguments = params.value(QLatin1String("arguments")).toObject();
-        // Not from within the reading of the output: a tool may open a
-        // dialog (an event loop of its own) or take its time.
-        QPointer<Session> self(this);
-        const QProcess* process = a_process;
-        QTimer::singleShot(0, this, [self, process, tool, arguments, reply] {
-            if (!self || self->a_host == nullptr) return;
-            // (The document pinned now: the conversation's when it runs.)
-            self->a_host->callToolFor(self->a_caller, tool, self->forDocument(tool, arguments), [self, process, reply](const QJsonObject& result) {
-                // (For the program that asked: not one started since.)
-                if (self && self->a_process == process) reply(result, false);
-            });
-        });
-    } else {
-        reply(failure(-32601, QStringLiteral("Method not found: %1").arg(method)), true);
-    }
+    a_mcp->handle(message, reply);
 }
 
 void Session::handleResult(const QJsonObject& m)

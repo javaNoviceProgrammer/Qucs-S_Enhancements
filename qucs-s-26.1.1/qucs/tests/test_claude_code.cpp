@@ -8,6 +8,8 @@
  * program is a shell script here that answers as claude does.
  */
 #include <QtTest>
+#include <QFrame>
+#include <QCheckBox>
 #include <QDialog>
 #include <QListWidget>
 #include <QPushButton>
@@ -224,6 +226,37 @@ while IFS= read -r line; do
 done
 )SH";
 
+// A program whose server asks the user three questions (elicitation): yes
+// or no, one of two, a small form; then asks to use the host's tool on
+// something that cannot be undone, and on something that can. What the
+// session writes back goes to ask-in.
+const char* const kAsker = R"SH(#!/bin/sh
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/ask-in"
+  case "$line" in
+    *'"type":"user"'*)
+      echo '{"type":"system","subtype":"init","session_id":"ask-1","model":"claude-test-1"}'
+      echo '{"type":"control_request","request_id":"e1","request":{"subtype":"elicitation","mcp_server_name":"fake","message":"Write over taken.sch?","requested_schema":{"type":"object","properties":{"confirm":{"type":"boolean"}},"required":["confirm"]}}}'
+      echo '{"type":"control_request","request_id":"e2","request":{"subtype":"elicitation","mcp_server_name":"fake","message":"amp.sch has unsaved changes.","requested_schema":{"type":"object","properties":{"choice":{"type":"string","enum":["Save","Discard","Keep it open"]}}}}}'
+      echo '{"type":"control_request","request_id":"e3","request":{"subtype":"elicitation","mcp_server_name":"fake","message":"Name the copy","requested_schema":{"type":"object","properties":{"name":{"type":"string","title":"Name"},"count":{"type":"integer"},"open":{"type":"boolean","default":true}}}}}'
+      echo '{"type":"control_request","request_id":"e4","request":{"subtype":"elicitation","mcp_server_name":"fake","message":"Never mind","requested_schema":{"type":"object","properties":{"confirm":{"type":"boolean"}}}}}'
+      ;;
+    *'"request_id":"e4"'*)
+      echo '{"type":"control_request","request_id":"p1","request":{"subtype":"can_use_tool","tool_name":"mcp__fake__change","display_name":"Change","input":{"what":"x"},"permission_suggestions":[]}}'
+      ;;
+    *'"request_id":"p1"'*'"allow"'*)
+      echo '{"type":"control_request","request_id":"p2","request":{"subtype":"can_use_tool","tool_name":"mcp__fake__change","display_name":"Change","input":{"what":"wipe"},"permission_suggestions":[]}}'
+      ;;
+    *'"request_id":"p2"'*)
+      echo '{"type":"control_request","request_id":"p3","request":{"subtype":"can_use_tool","tool_name":"mcp__fake__change","display_name":"Change","input":{"what":"y"},"permission_suggestions":[]}}'
+      ;;
+    *'"request_id":"p3"'*)
+      echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"ask-1"}'
+      ;;
+  esac
+done
+)SH";
+
 // The host of tools the fake program is told of.
 class FakeHost : public qucs_s::claude::ToolHost
 {
@@ -259,6 +292,16 @@ public:
     }
     QStringList calls;
     QList<QJsonObject> arguments;
+};
+
+// ... whose "change" cannot be undone when it wipes.
+class LastingHost : public FakeHost
+{
+public:
+    bool irreversible(const QString& tool, const QJsonObject& a) const override
+    {
+        return tool == QLatin1String("change") && a.value("what").toString() == QLatin1String("wipe");
+    }
 };
 
 // A program that has no conversation to continue (--resume): it says so as
@@ -818,7 +861,9 @@ private slots:
         const QString config = args.value(args.indexOf("--mcp-config") + 1);
         QVERIFY(config.contains("\"type\":\"sdk\""));
         QVERIFY(config.contains("\"fake\""));
-        QVERIFY(config.contains("\"alwaysLoad\":true"));   // (not behind the tool search: no turn to find them)
+        // (Not the server as a whole in every turn: its tools say which are,
+        // "anthropic/alwaysLoad" - test_mcp_server.)
+        QVERIFY(!config.contains("\"alwaysLoad\""));
         QCOMPARE(args.value(args.indexOf("--allowedTools") + 1), QStringLiteral("mcp__fake__look"));
         // What the session wrote: the host's initialize, then the answers.
         QMap<QString, QJsonObject> answers;
@@ -854,6 +899,103 @@ private slots:
         // A new conversation asks again.
         s.reset();
         QVERIFY(!s.toolsAllowed());
+    }
+
+    // A question the server asks (elicitation) is a card in the dock: yes
+    // or no, a button for each choice, a small form - one at a time, each
+    // answer written back as Claude Code wants it, Cancel too. A tool on
+    // what cannot be undone (ToolHost::irreversible()) is asked about even
+    // when the conversation may use the tools, and its question offers no
+    // "allow all".
+    void theServerAsksAndWhatCannotBeUndoneIsAskedAbout()
+    {
+        skipWithoutShell();
+        QFile::remove(dir.filePath("ask-in"));
+        QucsSettingsFile().remove("ClaudeCode/permissionMode");   // asking
+        LastingHost host;
+        ClaudeCodePanel panel;
+        panel.resize(500, 700);
+        panel.show();
+        panel.setDefaultDirectory(fresh("askwork"));
+        Session* s = panel.session();
+        s->setProgram(script("asker", kAsker));
+        s->setToolHost(&host);
+        QSignalSpy asks(s, &Session::elicitationRequested);
+        QSignalSpy permissions(s, &Session::permissionRequested);
+        QSignalSpy turns(s, &Session::turnFinished);
+        QVERIFY(s->send("Copy it"));
+        QTRY_COMPARE_WITH_TIMEOUT(asks.count(), 4, 10000);
+        QCOMPARE(asks.first().at(1).toString(), QStringLiteral("fake"));
+        QFrame* card = panel.askCard();
+        const auto visible = [&](const QString& name) -> QToolButton* {
+            for (QToolButton* b : card->findChildren<QToolButton*>(name))
+                if (b->isVisibleTo(&panel)) return b;
+            return nullptr;
+        };
+        // Yes or no - the first, the others waiting.
+        QTRY_VERIFY(card->isVisibleTo(&panel) && visible("claudeAskYes") != nullptr);
+        QVERIFY(card->findChild<QLabel*>("claudeCardTitle")->text().contains("taken.sch"));
+        QVERIFY(visible("claudeAskNo") != nullptr && visible("claudeAskCancel") != nullptr);
+        visible("claudeAskYes")->click();
+        // One of three.
+        QTRY_VERIFY(visible("claudeAskOption") != nullptr);
+        QStringList options;
+        QToolButton* discard = nullptr;
+        for (QToolButton* b : card->findChildren<QToolButton*>("claudeAskOption"))
+            if (b->isVisibleTo(&panel)) {
+                options << b->property("option").toString();
+                if (b->text() == "Discard") discard = b;
+            }
+        QCOMPARE(options, (QStringList{"Save", "Discard", "Keep it open"}));
+        discard->click();
+        // A form.
+        QTRY_VERIFY(visible("claudeAskSubmit") != nullptr);
+        auto* name = card->findChild<QLineEdit*>("claudeAskField_name");
+        auto* count = card->findChild<QLineEdit*>("claudeAskField_count");
+        QVERIFY(name != nullptr && count != nullptr && card->findChild<QCheckBox*>("claudeAskField_open")->isChecked());
+        name->setText("amp copy");
+        count->setText("3");
+        visible("claudeAskSubmit")->click();
+        // Cancelled.
+        QTRY_VERIFY(visible("claudeAskYes") != nullptr && card->findChild<QLabel*>("claudeCardTitle") != nullptr);
+        visible("claudeAskCancel")->click();
+        QTRY_VERIFY(!card->isVisibleTo(&panel));
+
+        // The tool on what can be undone: asked, and all the host's tools allowed.
+        QTRY_COMPARE_WITH_TIMEOUT(permissions.count(), 1, 10000);
+        auto request = permissions.last().at(0).value<PermissionRequest>();
+        QVERIFY(request.canAllowTools);
+        s->answer(request.id, true, false, true);
+        QVERIFY(s->toolsAllowed());
+        // On what cannot: asked all the same, without "allow all".
+        QTRY_COMPARE_WITH_TIMEOUT(permissions.count(), 2, 10000);
+        request = permissions.last().at(0).value<PermissionRequest>();
+        QCOMPARE(request.subject, QStringLiteral("what: wipe"));
+        QVERIFY(!request.canAllowTools);
+        QVERIFY(request.detail.contains("cannot be undone"));
+        s->answer(request.id, false);
+        // And again what can: not asked (the tools are allowed).
+        QVERIFY(turns.count() == 1 || turns.wait(10000));
+        QCOMPARE(permissions.count(), 2);
+
+        QMap<QString, QJsonObject> answers;
+        for (const QString& line : read(dir.filePath("ask-in")).split('\n', Qt::SkipEmptyParts)) {
+            const QJsonObject m = QJsonDocument::fromJson(line.toUtf8()).object();
+            if (m.value("type").toString() != "control_response") continue;
+            const QJsonObject r = m.value("response").toObject();
+            answers.insert(r.value("request_id").toString(), r.value("response").toObject());
+        }
+        QCOMPARE(answers.value("e1"), (QJsonObject{{"action", "accept"}, {"content", QJsonObject{{"confirm", true}}}}));
+        QCOMPARE(answers.value("e2"), (QJsonObject{{"action", "accept"}, {"content", QJsonObject{{"choice", "Discard"}}}}));
+        const QJsonObject form = answers.value("e3").value("content").toObject();
+        QCOMPARE(form.value("name").toString(), QStringLiteral("amp copy"));
+        QCOMPARE(form.value("count").toInt(), 3);
+        QVERIFY(form.value("open").toBool());
+        QCOMPARE(answers.value("e4"), (QJsonObject{{"action", "cancel"}}));
+        QCOMPARE(answers.value("p1").value("behavior").toString(), QStringLiteral("allow"));
+        QCOMPARE(answers.value("p2").value("behavior").toString(), QStringLiteral("deny"));
+        QCOMPARE(answers.value("p3").value("behavior").toString(), QStringLiteral("allow"));
+        s->stop();
     }
 
     // A conversation pinned to a document: the host is asked what its
