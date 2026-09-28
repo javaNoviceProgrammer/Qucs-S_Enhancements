@@ -122,6 +122,25 @@ Node* InsertionIndex::nodeAt(const QPoint& p) const
 void InsertionIndex::add(Node* node)
 {
     m_nodes.try_emplace(node->center(), node);
+    m_nodeCells[cellOf(node->center())].push_back(node);
+}
+
+std::optional<std::vector<Node*>> InsertionIndex::nodesNear(const QPoint& a, const QPoint& b) const
+{
+    // (A slanting wire's nodes may lie a little beside it: a margin.)
+    const QPoint c1 = cellOf({std::min(a.x(), b.x()) - 2, std::min(a.y(), b.y()) - 2});
+    const QPoint c2 = cellOf({std::max(a.x(), b.x()) + 2, std::max(a.y(), b.y()) + 2});
+    const long long cells = (static_cast<long long>(c2.x()) - c1.x() + 1) * (static_cast<long long>(c2.y()) - c1.y() + 1);
+    if (cells > 16 * MaxCells) return std::nullopt;
+    std::vector<Node*> near;
+    for (int cx = c1.x(); cx <= c2.x(); ++cx) {
+        for (int cy = c1.y(); cy <= c2.y(); ++cy) {
+            if (const auto it = m_nodeCells.find(QPoint{cx, cy}); it != m_nodeCells.end()) {
+                near.insert(near.end(), it->second.begin(), it->second.end());
+            }
+        }
+    }
+    return near;
 }
 
 void InsertionIndex::add(Wire* wire)
@@ -142,6 +161,14 @@ void InsertionIndex::add(Wire* wire)
             m_cells[QPoint{cx, cy}].push_back(wire);
         }
     }
+}
+
+void InsertionIndex::remove(const Wire* wire)
+{
+    for (auto& [cell, wires] : m_cells) {
+        std::erase(wires, wire);
+    }
+    std::erase(m_wide, wire);
 }
 
 std::vector<Wire*> InsertionIndex::wiresNear(const QPoint& p) const

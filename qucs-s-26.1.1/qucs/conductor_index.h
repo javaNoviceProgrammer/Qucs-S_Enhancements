@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <list>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -69,6 +70,14 @@ public:
     Node* nodeAt(const QPoint& p) const;
     void add(Node* node);   // keeps the node already at its place, if any
     void add(Wire* wire);
+    // A wire deleted meanwhile (one a new wire takes the place of): out of
+    // every cell - rare, so it looks in all of them.
+    void remove(const Wire* wire);
+
+    // The nodes in the cells around the box from a to b - every one that
+    // lies on the line between them among them - or none when the box spans
+    // too many cells to be worth it (the caller looks at every node).
+    std::optional<std::vector<Node*>> nodesNear(const QPoint& a, const QPoint& b) const;
 
     // The wires a node at p may lie on: every one that does, and others.
     // Wires that got shorter since they were added are still among them.
@@ -81,6 +90,7 @@ private:
     static QPoint cellOf(const QPoint& p) { return {p.x() >> CellShift, p.y() >> CellShift}; }
 
     std::unordered_map<QPoint, Node*, PointHash> m_nodes;
+    std::unordered_map<QPoint, std::vector<Node*>, PointHash> m_nodeCells;
     std::unordered_map<QPoint, std::vector<Wire*>, PointHash> m_cells;
     std::vector<Wire*> m_wide;   // wires covering more than MaxCells cells
 };

@@ -4569,24 +4569,33 @@ private slots:
 #endif
     }
 
-    // B3: arrange is not quadratic - 2,500 parts in chains, laid out in
-    // seconds (a minute at 3,000 before).
+    // B3: arrange takes time in proportion to the parts, not their square:
+    // four times the parts, about four times the time (a minute at 3,000
+    // parts before, sixteen times the time for four times the parts) -
+    // however fast the machine, and each net as it was.
     void aLargeSchematicIsArrangedInTime()
     {
-        QByteArray parts, wires;
-        for (int i = 0; i < 2500; ++i) {
-            const int x = 100 * (i % 50), y = 100 * (i / 50);
-            parts += QStringLiteral("  <R R%1 1 %2 %3 15 -26 0 0 \"1k\" 1>\n").arg(i + 1).arg(x).arg(y).toUtf8();
-            if (i % 50 != 49 && i % 10 != 9) wires += QStringLiteral("  <%1 %2 %3 %2 \"\" 0 0 0 \"\">\n").arg(x + 30).arg(y).arg(x + 70).toUtf8();
-        }
-        QVERIFY(!failed(call("open_document", {{"path", writeFile("workspace/big.sch", schematicOf(parts, wires))}})));
-        QElapsedTimer clock;
-        clock.start();
-        const QJsonObject r = call("arrange", {}, 120000);
-        QVERIFY2(!failed(r), qPrintable(text(r)));
-        QVERIFY2(text(r).contains("every net as it was"), qPrintable(text(r)));
-        QVERIFY2(clock.elapsed() < 20000, qPrintable(QString::number(clock.elapsed())));
-        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        const auto arranged = [this](int count) -> qint64 {
+            QByteArray parts, wires;
+            for (int i = 0; i < count; ++i) {
+                const int x = 100 * (i % 50), y = 100 * (i / 50);
+                parts += QStringLiteral("  <R R%1 1 %2 %3 15 -26 0 0 \"1k\" 1>\n").arg(i + 1).arg(x).arg(y).toUtf8();
+                if (i % 50 != 49 && i % 10 != 9) wires += QStringLiteral("  <%1 %2 %3 %2 \"\" 0 0 0 \"\">\n").arg(x + 30).arg(y).arg(x + 70).toUtf8();
+            }
+            if (failed(call("open_document", {{"path", writeFile(QStringLiteral("workspace/big%1.sch").arg(count), schematicOf(parts, wires))}})))
+                return -1;
+            QElapsedTimer clock;
+            clock.start();
+            const QJsonObject r = call("arrange", {}, 300000);
+            const qint64 took = clock.elapsed();
+            const bool kept = !failed(r) && text(r).contains("every net as it was");
+            if (!kept) qWarning().noquote() << text(r).left(400);
+            call("close_document", {{"unsaved", "discard"}});
+            return kept ? took : -1;
+        };
+        const qint64 small = arranged(800), large = arranged(3200);
+        QVERIFY(small >= 0 && large >= 0);
+        QVERIFY2(large < 8 * std::max<qint64>(small, 20), qPrintable(QStringLiteral("800 parts: %1 ms, 3200: %2 ms").arg(small).arg(large)));
     }
 
     // B4, E7: no message box waits on a call (under --mcp-server no one
