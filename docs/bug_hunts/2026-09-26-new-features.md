@@ -19,8 +19,8 @@ PDF documents), macOS arm64, Qt 6.11.2, with:
 4. **Reading the code** of the new features; entries found that way say so.
 
 *Status:* F1 (the CI timeout) fixed in `7c8dd74`; A1-A10 (data lost or corrupted) fixed in `119974d`;
-B1-B3 (security) fixed in `01ccb44`; C1-C5 (memory and time) fixed in `c9e7afc`; D, E and the rest
-open.
+B1-B3 (security) fixed in `01ccb44`; C1-C5 (memory and time) fixed in `c9e7afc`; D1-D4 (undefined
+behaviour) and E1-E6 (wrong behaviour) fixed in `ef4694f`. None open.
 
 | | severity | area | finding |
 |---|---|---|---|
@@ -697,6 +697,8 @@ Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `markerHugePrecision`.
 
 ### D1. Callout/TextBox pointer tip is not clamped on load - signed overflow when turned
 
+**Fixed in `ef4694f`.** The tip read from a file is clamped with `misc::clampCoordinate`, as the box and the other paintings' points are (and so is a tip moved by its handle): turned and mirrored, it stays in range, and its bounds with it. Test: `test_new_paintings` `oddValuesFromAFileAreKeptInRange`.
+
 **Severity:** medium (undefined behaviour from a file; an oversized bounding box)
 **Area:** Paintings (new) - `paintings/shapes.cpp`, `TextBoxPainting::loadExtra`
 
@@ -724,6 +726,8 @@ Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `textBoxHugeTip`.
 
 ### D2. Signed integer overflow (UB) parsing column letters and <col min> in .xlsx
 
+**Fixed in `ef4694f`.** `columnOf` stops (-1) as soon as the column passes 16384 (XFD), inside the loop; a `<col>`'s `min` is clamped to 1..16384 before `min + 1024`, and `max` to 16384. Test: `test_spreadsheet` `oddNumbersInAWorkbookAreRead`.
+
 **Severity:** low-medium (undefined behaviour from a file; UBSan reports)
 **Area:** Spreadsheets (new) - `spreadsheet.cpp` `columnOf` (line 623) and `readSheet` (line 271)
 
@@ -745,6 +749,8 @@ Stop (return -1) as soon as the column exceeds 16384 inside the loop; clamp `min
 
 ### D3. A date-formatted cell holding 1e300 or nan is converted to qint64 unchecked (UB)
 
+**Fixed in `ef4694f`.** `dateOf` gives no date (an invalid `QDateTime`) for a serial that is not finite or outside Excel's dates (0 to 9999-12-31), before any conversion to an integer; `dateText` then shows the number (`1e+300`, `nan`). A date typed into a date cell before Excel's first (a negative serial) is text, as Excel takes it. Test: `test_spreadsheet` `oddNumbersInAWorkbookAreRead`.
+
 **Severity:** low-medium (undefined behaviour from a file; a garbage date at best)
 **Area:** Spreadsheets (new) - `spreadsheet.cpp` `dateOf` (line 967), reached from `readSheet` -> `dateText`
 
@@ -764,6 +770,8 @@ shown as the number, not converted to a date. The same guard belongs in the edit
 (`serialOf` / setting a date typed into a date-styled cell).
 
 ### D4. Waveform cycles and Dimension scale accept NaN / inf from a file, and save them back
+
+**Fixed in `ef4694f`.** A waveform's cycles that are not finite take the default (2) before the clamp, from a file and from `setField`; a dimension's scale that is not finite or not above 0 is 1, and any other is clamped to the dialog's 1e-6..1e6. A failed painting fails the whole schematic's load, so a default rather than a refusal: the file opens, and is saved back clean. Test: `test_new_paintings` `oddValuesFromAFileAreKeptInRange`.
 
 **Severity:** low
 **Area:** Paintings (new) - `WaveformPainting::loadExtra` (shapes.cpp), `DimensionPainting::load` (dimensionpainting.cpp)
@@ -789,6 +797,8 @@ Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `waveformNaNCycles`, `dimensi
 ## E. Wrong behaviour
 
 ### E1. A spreadsheet (or PDF) open in Qucs-S that Claude changes is not reloaded - "could not be loaded again"
+
+**Fixed in `ef4694f`.** `QucsApp::reloadDocument` loads a spreadsheet again (`SheetDoc::reload()`: the sheet in front by its name, the cell and the scroll kept, nothing shown when a half-written file cannot be read), a PDF (`PdfDoc::reload()`) and a ZIP archive. The open documents' file watcher follows spreadsheets and archives too (a PDF follows its file itself). Save asks before writing over a file changed by another program since it was loaded or saved here ("Write Over It" or Cancel; Claude's own `save_document`, under `misc::ErrorCapture`, asks no one) - so a document with unsaved changes, left as it is when Claude changes its file, no longer replaces Claude's version silently. Test: `test_claude_code` `theApplicationWorksWithTheDock`.
 
 **Severity:** medium (stale data shown; the next Save overwrites Claude's changes silently)
 **Area:** Claude Code dock -> `qucs.cpp` `QucsApp::reloadChangedFiles` (lines 3000-3044)
@@ -816,6 +826,8 @@ skipped), and on Save of a document whose file changed since it was loaded, ask 
 overwriting.
 
 ### E2. With "Any folder is a project", opening a folder silently creates a `Scratch` folder in it
+
+**Fixed in `ef4694f`.** A project's Scratch (`misc::projectScratch()`) is in its folder only for a `NAME_prj` project or one that has a Scratch folder already (made by New Project); any other folder opened as a project gets one in the cache directory (`<cache>/projects/<name>-<hash of its path>`), and nothing is written into it. Open Project refuses the workspace folder itself and the home folder; Claude's `open_project` says so, and refuses a folder that is not a project by name, instead of the message boxes that would wait. Tests: `test_project_folders` `theApplication`, `test_qucs_control` `projectsAndCopiesAreTended`.
 
 **Severity:** low-medium (unexpected writes into user folders; the workspace can list itself)
 **Area:** Projects setting (new) - `qucs.cpp` `QucsApp::openProject` -> `useProjectScratch(true)`
@@ -853,6 +865,8 @@ created in the workspace and listed as a project.
 
 ### E3. The PDF viewer stops following its file for good once the file is deleted and written again later
 
+**Fixed in `ef4694f`.** When its file is deleted, the viewer watches the file's folder, and when the file is there again it watches the file again and reads it (and every later version); meanwhile the document is shown as it was and the status bar says the file was deleted. Test: `test_pdf_viewer` `itFollowsItsFileThroughADelete`.
+
 **Severity:** low-medium (a stale report on screen, with no sign that it is stale)
 **Area:** PDF viewer (new) - `pdfdoc.cpp` lines 846-856 (watcher and reload timer)
 
@@ -881,6 +895,8 @@ Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `pdfRewrittenAfterDelete`.
 
 ### E4. /resume lists none of Claude Code's sessions when the folder's path goes through a symlink
 
+**Fixed in `ef4694f`.** `claudeSessions` looks under the folder's real path (`canonicalFilePath()`, links resolved, as Claude Code files it) and under the path as spelled, the sessions of both the newest first. Test: `test_claude_code` `claudeCodesOwnSessionsAreResumed`.
+
 **Severity:** low-medium
 **Area:** Claude Code dock - `claudehistory.cpp` `claudeSessions` (lines ~240-255)
 
@@ -906,6 +922,8 @@ Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `claudeSessionsThroughSymlink
 
 ### E5. Saving a CSV whose name contains "%1" as .xlsx writes a broken workbook
 
+**Fixed in `ef4694f`.** One multi-argument `arg()` for the sheet's name and number, and for the row element (`<%1row r="%2"%3>`). The grep over the code found 611 chained `arg()` calls: in a `tr()` message a doubled substitution only garbles what is shown; of those that build data, the others take numbers, words of their own or names that cannot hold `%`, or have the user's text last, where nothing is substituted after it. Test: `test_spreadsheet` `oddNumbersInAWorkbookAreRead`.
+
 **Severity:** low-medium (an unreadable file; rare names)
 **Area:** Spreadsheets (new) - `spreadsheet.cpp` `freshXlsx` (line ~516): chained `QString::arg`
 
@@ -928,6 +946,8 @@ pass; worth a grep for other chained `.arg()` calls whose earlier arguments are 
 Probe: `2026-09-26-new-features/probe_hunt.cpp` -> `csvWithPercentNameToXlsx`.
 
 ### E6. `$...$` inside an indented code block (or `<code>`) is typeset as math
+
+**Fixed in `ef4694f`.** `findMath` skips an indented code block - lines indented four spaces (a tab to the next stop) after a blank line or another such line, outside a list, whose items go on indented - and `<code>`/`<pre>` elements to their end tag, as GitHub does. Test: `test_claude_code` `codeIsNotMath`.
 
 **Severity:** low (a garbled code sample in a Markdown document or a Claude reply)
 **Area:** Markdown/Claude dock math - `mathtypeset.cpp` `qucs_s::math::findMath` (line 2348)

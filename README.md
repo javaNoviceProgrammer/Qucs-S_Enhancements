@@ -171,8 +171,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the schematic check first, and opens the file. The
   folder is created with the project (or when an older project is opened)
   and the Content panel lists its contents under a *Scratch* category
-  below *Others*. Headless runs (`-n`, `--run`) keep using the simulator
-  work directory from the settings, flat.
+  below *Others*. A folder not made for Qucs-S that is opened as a
+  project (*Any folder is a project*: a git checkout, a folder of one's
+  own) gets nothing written into it: its Scratch folder is in the cache
+  directory instead. Headless runs (`-n`, `--run`) keep using the
+  simulator work directory from the settings, flat.
 - **Text editor defaults and file types**: `.cir`, `.ckt` and `.sp` files
   open in the built-in text editor like `.va` and the other Qucs text
   documents; plain-text formats (`.txt`, `.py`, `.md`, `.json`, `.csv`,
@@ -297,8 +300,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   installed `claude` offers, by what they are (*Fable 5.1*, *Opus 5 with
   1M context*), the newest of each family it does not offer yet (*Opus
   5.5* — which needs a recent Claude Code), or any other by its name. The
-  header shows the model and the mode. A schematic
-  Claude changed that is open without unsaved changes is loaded again. The
+  header shows the model and the mode. A schematic, text, spreadsheet,
+  PDF or ZIP archive Claude changed that is open without unsaved changes
+  is loaded again (a spreadsheet keeps its sheet and cell); Save asks
+  before writing over a file that another program changed since it was
+  loaded. The
   status bar chip says what Claude is doing — thinking, the tool it runs,
   *needs you* when it waits for an answer, and how many other
   conversations are at work — shows or hides the dock, and leads to a
@@ -435,8 +441,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   changes between Claude's calls is told part by part (R2: R 47k → 67k),
   and `undo_history` tells the steps to undo in words. `"selection": true`
   takes what the user selected. A document is found by its file's name
-  alone, and relative paths are taken from the open project. A text
-  document changed on disk by another program is loaded again.
+  alone, and relative paths are taken from the open project. A
+  schematic, text, spreadsheet or archive changed on disk by another
+  program is loaded again, and a PDF follows its file even through a
+  delete and a new version later.
   `replace_component` puts a part of another type in one's place - a
   built-in OpAmp for a subcircuit - its pins mapped by number or name to
   the old pins' nets, turned, mirrored and placed so no wire runs across
@@ -1265,7 +1273,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     name (a folder with a name already in the workspace is offered
     `name_2`, not `name_2_prj`);
   - *Open Project*, a folder dropped on the window and `qucs-s FOLDER`
-    open any folder as the project;
+    open any folder as the project - not the workspace folder itself,
+    nor the home folder - and write nothing into it (its Scratch folder
+    is in the cache directory);
   - *New Project* names the folder exactly as typed.
   The project's name is its folder's name, with a `_prj` ending dropped.
   *Delete Project* moves the folder to the trash; its question names the
