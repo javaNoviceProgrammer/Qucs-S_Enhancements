@@ -489,11 +489,23 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   some parts names the nets as a read of all does. The tools that change
   a schematic take `"preview": true`: what the change would do, and
   nothing done (a `batch` too) - no file either: `create_subcircuit`'s is
-  put back. `add_analysis` plots an expression (`db(v(out))`) through a
-  NutmegEq it places beside the analysis. `simulate` and `tune` save an
+  put back. `add_analysis`, `add_diagram` and `add_trace` plot an
+  expression (`db(v(out))`) through a NutmegEq beside the analysis, and
+  an expression that does not read is refused before anything is added.
+  `simulate` and `tune` save an
   untitled schematic in the scratch folder first, and a new document
   replaces the untitled one nothing was done in. Every field of every
-  tool says what it is in the schema. `diff` compares a schematic with its
+  tool says what it is in the schema. A `batch`, a script, `tune` and a
+  preview run alone: a call that comes meanwhile - sent before the last
+  was answered, or another conversation's - waits its turn, so no
+  rollback takes it away, and a batch's calls stay with its document. No
+  message box holds a tool call up (under `--mcp-server` no one could
+  answer it): it is closed with its safe button, and what it said goes
+  into the answer. The JSON form sets back every shipped example as it
+  was, netlist line for netlist line - parts mirrored and turned, sweeps'
+  records, subcircuit parameters, library parts, a label's `.IC`. Net
+  and part names are checked as the dialogs check them (no net called
+  `gnd` or `net2`), and `export_netlist` does not write over a document. `diff` compares a schematic with its
   file as saved, with a step of its history or with another file.
   `get_netlist` with `"map": true` ties each netlist line to its part and
   each node to its pins. `run_script` runs a short JavaScript program
