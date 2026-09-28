@@ -259,8 +259,16 @@ private slots:
         QCOMPARE(QucsSettings.QucsWorkDir.absolutePath(), copied);
         const QString title = app.QWidget::windowTitle();   // (QucsApp has a windowTitle of its own)
         QVERIFY2(title.startsWith("Project: plain ("), qPrintable(title));
-        QVERIFY(QFileInfo(copied + "/Scratch").isDir());
+        // Nothing written into a folder not made for Qucs: its Scratch is in
+        // the cache directory, named by it.
+        QVERIFY(!QFileInfo::exists(copied + "/Scratch"));
+        const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        QVERIFY2(misc::scratchDir().startsWith(QDir::toNativeSeparators(cache + "/projects/plain-")), qPrintable(misc::scratchDir()));
+        QVERIFY(QFileInfo(misc::scratchDir()).isDir());
+        QCOMPARE(QDir::toNativeSeparators(QucsSettings.tempFilesDir.absolutePath()), misc::scratchDir());
+        const QString scratch = misc::scratchDir();
         app.slotMenuProjClose();
+        QDir(scratch).removeRecursively();
 
         // New Project: the folder as typed, no "_prj" added.
         answering([&] { QVERIFY(QMetaObject::invokeMethod(&app, "slotButtonProjNew")); },
@@ -286,6 +294,31 @@ private slots:
                   });
         QVERIFY(!QFileInfo::exists(linked) && !isLink(linked));
         QVERIFY(QFileInfo::exists(plain + "/amp.sch"));
+
+        // A project made by Qucs-S keeps its Scratch in it.
+        app.openProject(workspace + "/fresh");
+        QCOMPARE(app.ProjName, QStringLiteral("fresh"));
+        QCOMPARE(misc::scratchDir(), QDir::toNativeSeparators(workspace + "/fresh/Scratch"));
+        app.slotMenuProjClose();
+
+        // The workspace is not a project, nor the home folder (Open Project
+        // starts in the workspace, and Open there without a folder chosen
+        // picked it: a Scratch in it, listed as a project) (bug hunt
+        // 2026-09-26, E2).
+        for (const QString& folder : {workspace, QDir::homePath()}) {
+            QString said;
+            answering([&] { app.openProject(folder); },
+                      [&](QWidget* w) {
+                          auto* box = qobject_cast<QMessageBox*>(w);
+                          if (box == nullptr) return false;
+                          said = box->text();
+                          box->accept();
+                          return true;
+                      });
+            QVERIFY2(said.contains(folder == workspace ? "workspace" : "home"), qPrintable(said));
+            QVERIFY(app.ProjName.isEmpty());
+        }
+        QVERIFY(!QFileInfo::exists(workspace + "/Scratch"));
     }
 
     // Delete Project moves the folder to the trash - it was deleted for

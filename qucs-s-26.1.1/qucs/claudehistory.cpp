@@ -239,12 +239,25 @@ Summary claudeSessionSummary(const QString& file)
 QList<Summary> claudeSessions(const QString& folder, int limit)
 {
     // Claude Code names a folder's sessions' folder by its path, every
-    // character not a letter or a digit a dash.
-    QString name = QDir::cleanPath(QFileInfo(folder).absoluteFilePath());
-    for (QChar& c : name)
-        if (!(c.isLetterOrNumber() && c.unicode() < 128)) c = QLatin1Char('-');
-    const QDir dir(QDir(claudeDirectory()).filePath(QStringLiteral("projects/") + name));
-    QFileInfoList files = dir.entryInfoList({QStringLiteral("*.jsonl")}, QDir::Files, QDir::Time);
+    // character not a letter or a digit a dash - the path as the system
+    // gives its working directory, links resolved (/tmp is /private/tmp on
+    // macOS; a workspace may be a link to another disk). Looked for under
+    // that and under the path as spelled, the newest first.
+    const QFileInfo info(folder);
+    QStringList names;
+    for (const QString& path : {info.canonicalFilePath(), info.absoluteFilePath()}) {
+        if (path.isEmpty()) continue;
+        QString name = QDir::cleanPath(path);
+        for (QChar& c : name)
+            if (!(c.isLetterOrNumber() && c.unicode() < 128)) c = QLatin1Char('-');
+        if (!names.contains(name)) names << name;
+    }
+    QFileInfoList files;
+    for (const QString& name : std::as_const(names)) {
+        const QDir dir(QDir(claudeDirectory()).filePath(QStringLiteral("projects/") + name));
+        files += dir.entryInfoList({QStringLiteral("*.jsonl")}, QDir::Files, QDir::Time);
+    }
+    std::stable_sort(files.begin(), files.end(), [](const QFileInfo& a, const QFileInfo& b) { return a.lastModified() > b.lastModified(); });
     QList<Summary> list;
     for (const QFileInfo& info : std::as_const(files)) {
         if (list.size() >= limit) break;

@@ -37,6 +37,8 @@
 #include <QRegularExpression>
 #include <QFileInfo>
 #include <QDir>
+#include <QCryptographicHash>
+#include <QStandardPaths>
 #include <QMimeData>
 #include <QSaveFile>
 #include <QUrl>
@@ -386,6 +388,20 @@ QString misc::properAbsFileName(const QString& filename, Schematic* sch)
   fileInfo.setFile(QucsSettings.QucsWorkDir.filePath(fName));
   if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
 
+  // A library of the author's own, named by where it was on their machine
+  // (/users/russo/.qucs/user_lib/LT1057.lib), shipped in a user_lib folder
+  // beside the schematic: looked for there, and in the project's and the
+  // workspace's user_lib. (Not found, an SpLib part had no pins, and the
+  // labels on them nothing to hold them.)
+  QStringList userLibs;
+  if (sch != nullptr) userLibs << sch->getFileInfo().dir().filePath(QStringLiteral("user_lib"));
+  userLibs << QucsSettings.QucsWorkDir.filePath(QStringLiteral("user_lib"))
+           << QucsSettings.qucsWorkspaceDir.filePath(QStringLiteral("user_lib"));
+  for (const QString& path : std::as_const(userLibs)) {
+    fileInfo.setFile(QDir(path).filePath(fName));
+    if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
+  }
+
   for (const QString& path : qucsPathList) {
     fileInfo.setFile(QDir(path).filePath(fName));
     if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
@@ -462,8 +478,21 @@ QString misc::canonicalDir(const QDir& dir)
 QString misc::scratchDir()
 {
   if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty())
-    return QDir::toNativeSeparators(QucsSettings.QucsWorkDir.absoluteFilePath(QLatin1String(ScratchFolder)));
+    return projectScratch(QucsSettings.QucsWorkDir.absolutePath());
   return QucsSettings.S4Qworkdir;
+}
+
+QString misc::projectScratch(const QString& projectDir)
+{
+  const QDir project(projectDir);
+  const QString inside = project.absoluteFilePath(QLatin1String(ScratchFolder));
+  const QString name = project.dirName();
+  if ((name.size() > 4 && name.endsWith(QLatin1String("_prj"))) || QFileInfo(inside).isDir())
+    return QDir::toNativeSeparators(inside);
+  // (Named by the folder, and told apart from another of its name.)
+  const QByteArray key = QCryptographicHash::hash(QDir::cleanPath(project.absolutePath()).toUtf8(), QCryptographicHash::Sha1).toHex().left(10);
+  return QDir::toNativeSeparators(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/projects/")
+                                  + name + QLatin1Char('-') + QString::fromLatin1(key));
 }
 
 // #########################################################################

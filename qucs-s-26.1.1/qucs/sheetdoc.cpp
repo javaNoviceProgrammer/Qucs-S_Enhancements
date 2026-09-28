@@ -27,6 +27,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QScrollBar>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTableView>
@@ -359,6 +360,32 @@ bool SheetDoc::load()
     a_undo->clear();
     rebuild();
     a_view->setCurrentIndex(a_model->index(0, 0));
+    a_lastSaved = QFileInfo(a_DocName).lastModified();
+    return true;
+}
+
+bool SheetDoc::reload()
+{
+    qucs_s::sheet::Workbook book;
+    if (!qucs_s::sheet::readFile(a_DocName, book)) return false;
+    // Where the user was: the sheet by its name (else at its place), the
+    // cell, the scroll.
+    const QString sheetName = a_sheet < a_book.sheets.size() ? a_book.sheets.at(a_sheet).name : QString();
+    const QModelIndex at = a_view->currentIndex();
+    const int across = a_view->horizontalScrollBar()->value(), down = a_view->verticalScrollBar()->value();
+    int sheet = -1;
+    for (int k = 0; k < book.sheets.size() && sheet < 0; ++k)
+        if (book.sheets.at(k).name == sheetName) sheet = k;
+    a_book = book;
+    a_sheet = sheet >= 0 ? sheet : std::clamp(a_sheet, 0, int(a_book.sheets.size()) - 1);
+    a_undo->clear();   // (its steps were of the cells as they were)
+    rebuild();
+    if (at.isValid())
+        a_view->setCurrentIndex(a_model->index(std::min(at.row(), a_model->rowCount() - 1), std::min(at.column(), a_model->columnCount() - 1)));
+    a_view->horizontalScrollBar()->setValue(across);
+    a_view->verticalScrollBar()->setValue(down);
+    setDocChanged(false);
+    emit signalFileChanged(false);
     a_lastSaved = QFileInfo(a_DocName).lastModified();
     return true;
 }

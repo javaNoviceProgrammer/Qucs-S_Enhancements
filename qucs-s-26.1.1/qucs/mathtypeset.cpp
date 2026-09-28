@@ -2370,8 +2370,34 @@ QList<Span> findMath(const QString& md)
         for (qsizetype k = at - 1; k >= 0 && md.at(k) == QLatin1Char('\\'); --k) ++backslashes;
         return backslashes % 2 == 1;
     };
+    // An indented code block (CommonMark): lines indented four spaces or
+    // more after a blank line or another such line - not in a list, whose
+    // items go on indented. What is in it is code, as in a fence.
+    bool afterBlank = true, inIndentedCode = false, inList = false;
     while (i < n) {
         const QChar c = md.at(i);
+        if (lineStart) {
+            qsizetype eol = md.indexOf(QLatin1Char('\n'), i);
+            if (eol < 0) eol = n;
+            int indent = 0;
+            qsizetype k = i;
+            for (; k < eol && (md.at(k) == QLatin1Char(' ') || md.at(k) == QLatin1Char('\t')); ++k)
+                indent += md.at(k) == QLatin1Char('\t') ? 4 - indent % 4 : 1;
+            const bool blank = k == eol || (k + 1 == eol && md.at(k) == QLatin1Char('\r'));
+            if (!blank && indent >= 4 && (afterBlank || inIndentedCode) && !inList) {
+                inIndentedCode = true;
+                afterBlank = false;
+                i = eol < n ? eol + 1 : n;
+                continue;
+            }
+            if (!blank) {
+                inIndentedCode = false;
+                static const QRegularExpression item(QStringLiteral("^(?:[-*+]|\\d{1,9}[.)])(?:[ \\t]|$)"));
+                if (item.match(QStringView(md).mid(k, eol - k)).hasMatch()) inList = true;
+                else if (indent == 0 && afterBlank) inList = false;   // a paragraph after the list
+            }
+            afterBlank = blank;
+        }
         // A fenced code block: to its fence.
         if (lineStart) {
             qsizetype k = i;
@@ -2390,10 +2416,23 @@ QList<Span> findMath(const QString& md)
                 }
                 i = close < 0 ? n : close + 1;
                 lineStart = true;
+                afterBlank = false;
                 continue;
             }
         }
         lineStart = c == QLatin1Char('\n');
+        // HTML code: <code>...</code> and <pre>...</pre>, as GitHub leaves them.
+        if (c == QLatin1Char('<') && i + 4 < n) {
+            static const QRegularExpression open(QStringLiteral("\\G<(code|pre)(?=[\\s>])[^>]*>"), QRegularExpression::CaseInsensitiveOption);
+            const QRegularExpressionMatch m = open.match(md, i);
+            if (m.hasMatch()) {
+                const qsizetype close = md.indexOf(QStringLiteral("</%1>").arg(m.captured(1)), m.capturedEnd(), Qt::CaseInsensitive);
+                if (close >= 0) {
+                    i = close + m.captured(1).size() + 3;
+                    continue;
+                }
+            }
+        }
         // Inline code: to the run of backticks as long.
         if (c == QLatin1Char('`')) {
             qsizetype run = 0;

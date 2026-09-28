@@ -1289,6 +1289,15 @@ QJsonObject QucsControl::openProject(const QJsonObject& args)
                                      workspace.filePath(name + QStringLiteral("_prj")), name})
         if (QFileInfo(candidate).isDir() && path.isEmpty()) path = QFileInfo(candidate).absoluteFilePath();
     if (path.isEmpty()) return errorResult(tr("There is no project %1 (list_documents lists the workspace's).").arg(name));
+    // (What openProject() would refuse in a message box: told here.)
+    const QString real = QFileInfo(path).canonicalFilePath();
+    if (real == QDir(workspace).canonicalPath() || real == QDir::home().canonicalPath())
+        return errorResult(tr("%1 is the %2 folder, not a project: name a folder in it.")
+                               .arg(QDir::toNativeSeparators(path), real == QDir::home().canonicalPath() ? tr("home") : tr("workspace")));
+    if (!qucs_s::workspace::isProjectName(QFileInfo(path).fileName()))
+        return errorResult(tr("%1 is not a project: its name does not end in _prj (any folder is one when Settings > Locations "
+                              "says so), or it is hidden or the folder of user libraries.")
+                               .arg(QDir::toNativeSeparators(path)));
     QStringList unsaved;
     if (anyUnsaved(a_app, &unsaved))
         return errorResult(tr("Opening a project closes the documents, and %1 have unsaved changes: save or close them first.")

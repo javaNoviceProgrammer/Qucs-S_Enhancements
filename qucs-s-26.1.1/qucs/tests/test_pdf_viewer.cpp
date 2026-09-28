@@ -29,6 +29,7 @@
 #include <QTimer>
 #include <QPrinter>
 #include <QScrollBar>
+#include <QStatusBar>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTextDocument>
@@ -422,6 +423,29 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(reloaded.count() >= 1, 10000);
         QCOMPARE(doc->pageCount(), 5);
         QCOMPARE(doc->view()->currentPage(), 1);
+    }
+
+    // Deleted, then written again a moment later ("rm report.pdf && make
+    // report"): still followed - read again then, and at every later
+    // version (bug hunt 2026-09-26, E3: nothing watched the path any more).
+    // Meanwhile it is shown as it was, and the status bar says why.
+    void itFollowsItsFileThroughADelete()
+    {
+        PdfDoc* doc = pdf();
+        QSignalSpy reloaded(doc, &PdfDoc::reloaded);
+        QVERIFY(QFile::remove(file));
+        QTRY_VERIFY_WITH_TIMEOUT(app->statusBar()->currentMessage().contains("was deleted"), 5000);
+        QCOMPARE(doc->pageCount(), 5);   // as it was
+        QTest::qWait(1500);
+        QVERIFY(writePdf(file, 3));
+        QTRY_VERIFY_WITH_TIMEOUT(reloaded.count() >= 1 && doc->pageCount() == 3, 10000);
+        QTest::qWait(1100);
+        const int before = reloaded.count();
+        QVERIFY(writePdf(file, 4));
+        QTRY_VERIFY_WITH_TIMEOUT(reloaded.count() > before && doc->pageCount() == 4, 10000);
+        QTest::qWait(1100);   // (as the next tests have it: 5 pages)
+        QVERIFY(writePdf(file, 5));
+        QTRY_VERIFY_WITH_TIMEOUT(doc->pageCount() == 5, 10000);
     }
 
     // The pages at the side, drawn small; one clicked is gone to. No

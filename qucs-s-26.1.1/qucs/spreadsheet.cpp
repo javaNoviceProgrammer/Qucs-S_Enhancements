@@ -282,8 +282,10 @@ Sheet readSheet(const QByteArray& data, const QStringList& strings, const Workbo
         const auto name = xml.name();
         if (name == QLatin1String("col")) {
             const QXmlStreamAttributes a = xml.attributes();
-            const int from = a.value(QLatin1String("min")).toInt();
-            const int to = std::min(a.value(QLatin1String("max")).toInt(), from + 1024);
+            // (Within a worksheet's 16384 columns before the sum: a min of
+            // 2147483647 overflowed int.)
+            const int from = std::clamp(a.value(QLatin1String("min")).toInt(), 1, 16384);
+            const int to = std::min({a.value(QLatin1String("max")).toInt(), from + 1024, 16384});
             const double width = a.value(QLatin1String("width")).toDouble();
             for (int c = from; c <= to && width > 0; ++c) sheet.widths.insert(c - 1, width);
         } else if (name == QLatin1String("mergeCell")) {
@@ -507,7 +509,7 @@ QString sheetDataXml(const Sheet& sheet, const QString& p)
         for (int c = 0; c < row.cells.size(); ++c) cells += one(row.cells.at(c), r, c);
         for (auto t = row.tail.cbegin(); t != row.tail.cend(); ++t) cells += one(t.value(), r, t.key());   // (aside: as read)
         if (cells.isEmpty() && row.attributes.isEmpty()) return QString();
-        return QStringLiteral("<%1row r=\"%2\"%3>").arg(p).arg(r + 1).arg(row.attributes) + cells
+        return QStringLiteral("<%1row r=\"%2\"%3>").arg(p, QString::number(r + 1), row.attributes) + cells
                + QStringLiteral("</%1row>").arg(p);
     };
     QString out = QStringLiteral("<%1sheetData>").arg(p);
@@ -634,7 +636,9 @@ QByteArray freshXlsx(const Workbook& book)
         types += QStringLiteral("<Override PartName=\"/xl/worksheets/sheet%1.xml\" "
                                 "ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>")
                      .arg(k + 1);
-        sheets += QStringLiteral("<sheet name=\"%1\" sheetId=\"%2\" r:id=\"rId%2\"/>").arg(escaped(name)).arg(k + 1);
+        // (In one pass: a name with "%1" in it - a CSV's file name - had
+        // the number put in it, and the workbook was broken.)
+        sheets += QStringLiteral("<sheet name=\"%1\" sheetId=\"%2\" r:id=\"rId%2\"/>").arg(escaped(name), QString::number(k + 1));
         rels += QStringLiteral("<Relationship Id=\"rId%1\" Type=\"%2/worksheet\" Target=\"worksheets/sheet%1.xml\"/>")
                     .arg(k + 1)
                     .arg(rel);
@@ -765,9 +769,11 @@ int columnOf(const QString& reference, int* row)
     const QString ref = reference.trimmed().toUpper().remove(QLatin1Char('$'));
     while (i < ref.size() && ref.at(i) >= QLatin1Char('A') && ref.at(i) <= QLatin1Char('Z')) {
         column = column * 26 + (ref.at(i).unicode() - u'A' + 1);
+        // Past XFD (16384) at once: another letter overflowed int.
+        if (column > 16384) return -1;
         ++i;
     }
-    if (i == 0 || column > 16384) return -1;
+    if (i == 0) return -1;
     if (row != nullptr) {
         bool ok = false;
         const int r = ref.mid(i).toInt(&ok);
@@ -1221,7 +1227,8 @@ void enter(Cell& cell, const QString& typed, const Workbook& book)
                 const QTime t = QTime::fromString(typed.trimmed(), QLatin1String(f));
                 if (t.isValid()) when = QDateTime(book.date1904 ? QDate(1904, 1, 1) : QDate(1899, 12, 30), t);
             }
-            if (when.isValid()) {
+            // (A date before Excel's first is text, as Excel takes it.)
+            if (when.isValid() && serialOf(when, book.date1904) >= 0) {
                 const double serial = serialOf(when, book.date1904);
                 cell.kind = Cell::Kind::Date;
                 cell.value = QString::number(serial, 'g', 17);
@@ -1248,6 +1255,10 @@ double serialOf(const QDateTime& when, bool date1904)
 QDateTime dateOf(double serial, bool date1904)
 {
     const QDate base = date1904 ? QDate(1904, 1, 1) : QDate(1899, 12, 30);
+    // Excel's dates: day 0 to 9999-12-31. Outside them - or not a number,
+    // which a file may hold (1e300, nan) - no date: the conversion to an
+    // integer below was undefined.
+    if (!std::isfinite(serial) || serial < 0 || serial >= double(base.daysTo(QDate(10000, 1, 1)))) return {};
     const double days = std::floor(serial);
     qint64 msecs = qRound64((serial - days) * 86400000.0);
     QDate date = base.addDays(qint64(days));
@@ -1261,6 +1272,7 @@ QDateTime dateOf(double serial, bool date1904)
 QString dateText(double serial, bool date1904)
 {
     const QDateTime when = dateOf(serial, date1904);
+    if (!when.isValid()) return QString::number(serial, 'g', 15);   // (as Excel's "####", only readable)
     const QTime t = when.time();
     const bool whole = t.hour() == 0 && t.minute() == 0 && t.second() == 0;
     if (serial < 1 && !whole) return t.toString(t.second() != 0 ? QStringLiteral("HH:mm:ss") : QStringLiteral("HH:mm"));

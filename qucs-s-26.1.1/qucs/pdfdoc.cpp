@@ -41,6 +41,7 @@
 #include <QPdfDocument>
 #include <QPdfDocumentRenderOptions>
 #include <QPdfLinkModel>
+#include <QStatusBar>
 #include <QPdfSearchModel>
 #include <QPdfSelection>
 #include <QPrinter>
@@ -854,7 +855,24 @@ PdfDoc::PdfDoc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
     });
     connect(a_watcher, &QFileSystemWatcher::fileChanged, this, [this] {
         // Written anew (maybe replaced): watched again, read when it is done.
-        if (!a_watcher->files().contains(a_DocName) && QFileInfo::exists(a_DocName)) a_watcher->addPath(a_DocName);
+        if (QFileInfo::exists(a_DocName)) {
+            if (!a_watcher->files().contains(a_DocName)) a_watcher->addPath(a_DocName);
+            a_reloadTimer->start();
+            return;
+        }
+        // Deleted - to be written again later, a report made anew: its
+        // folder watched until it is there again (a watch of the file
+        // itself ends with it). Shown as it was meanwhile, and said so.
+        const QString folder = QFileInfo(a_DocName).absolutePath();
+        if (!a_watcher->directories().contains(folder)) a_watcher->addPath(folder);
+        if (a_App != nullptr)
+            a_App->statusBar()->showMessage(tr("%1 was deleted: it is shown as it was, and loaded again when it is written again.")
+                                                .arg(QFileInfo(a_DocName).fileName()), 8000);
+    });
+    connect(a_watcher, &QFileSystemWatcher::directoryChanged, this, [this](const QString& folder) {
+        if (!QFileInfo::exists(a_DocName)) return;
+        a_watcher->removePath(folder);
+        if (!a_watcher->files().contains(a_DocName)) a_watcher->addPath(a_DocName);
         a_reloadTimer->start();
     });
     a_thumbTimer = new QTimer(this);
@@ -1153,6 +1171,7 @@ void PdfDoc::setName(const QString& name)
 {
     // Saved under another name (Save As): the file is copied by save().
     if (!a_DocName.isEmpty()) a_watcher->removePath(a_DocName);
+    if (!a_watcher->directories().isEmpty()) a_watcher->removePaths(a_watcher->directories());   // (the old one's, deleted)
     a_DocName = QFileInfo(name).absoluteFilePath();
 }
 

@@ -3289,6 +3289,13 @@ private slots:
         QVERIFY2(json(r).toObject().value("opened").toString().startsWith("not opened"), qPrintable(text(r)));
         QVERIFY(failed(call("new_project", {{"name", "round5"}})));
         QVERIFY(failed(call("open_project", {{"name", "round5"}})));   // unsaved changes
+        // The workspace itself, or the home folder, is no project - told,
+        // not a message box that waits (bug hunt 2026-09-26, E2).
+        r = call("open_project", {{"name", "."}});
+        QVERIFY2(failed(r) && text(r).contains("workspace folder"), qPrintable(text(r)));
+        r = call("open_project", {{"name", QDir::homePath()}});
+        QVERIFY2(failed(r) && text(r).contains("home folder"), qPrintable(text(r)));
+        QVERIFY(QApplication::activeModalWidget() == nullptr);
         // Copied into it by its name.
         r = call("copy_document", {{"to", "round5"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
