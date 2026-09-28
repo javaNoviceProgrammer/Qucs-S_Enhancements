@@ -45,6 +45,9 @@ QString absolute(const QString& path);
 /// The name of the simulator in the settings as a trace's prefix gives it
 /// ("ngspice", "xyce", "spopus"); empty for Qucsator.
 QString simulatorPrefix();
+/// Why nothing can be simulated or netlisted: no simulator chosen, as
+/// when Qucs-S found none installed at its start.
+QString noSimulatorText();
 /// The dataset a simulation of \a schematic (a .sch file) writes with
 /// \a simulator (spicecompat::Simulator): name.dat.ngspice, .dat.xyce,
 /// .dat.spopus, or \a dataSet (the document's "DataSet") for Qucsator.

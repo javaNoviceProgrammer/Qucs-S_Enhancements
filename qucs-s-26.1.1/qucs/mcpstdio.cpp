@@ -22,6 +22,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QMessageBox>
 #include <QPointer>
 #include <QTimer>
 
@@ -68,7 +69,12 @@ QTimer* closeDialogsWhileStarting()
     timer->setInterval(100);
     QObject::connect(timer, &QTimer::timeout, [] {
         if (QWidget* dialog = QApplication::activeModalWidget()) {
-            fprintf(stderr, "qucs-s --mcp-server: closed \"%s\" at the start\n", qPrintable(dialog->windowTitle()));
+            // (A message box's title may be empty - on macOS it has none:
+            // its first line then, "No simulation backend found!".)
+            QString what = dialog->windowTitle();
+            if (auto* box = qobject_cast<QMessageBox*>(dialog); box != nullptr && (what.isEmpty() || what == QLatin1String("Error")))
+                what = box->text().section(QLatin1Char('\n'), 0, 0).trimmed();
+            fprintf(stderr, "qucs-s --mcp-server: closed \"%s\" at the start\n", qPrintable(what));
             dialog->close();
         }
     });
