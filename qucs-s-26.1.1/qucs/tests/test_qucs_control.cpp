@@ -4881,6 +4881,74 @@ private slots:
         discardAll();
     }
 
+    // ngspice's commands summed up: every one in a line by category, one
+    // in full (syntax, Qucs-S's way, an example), a search, a category -
+    // and what the ngspice of the settings has, asked of it: what it lacks
+    // marked, what it has besides told. One that cannot be asked is said.
+    void ngspiceCommandsAreSummedUp()
+    {
+        QJsonObject r = call("ngspice_commands");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        for (const QString& part : {QStringLiteral("analysis - Analyses"), QStringLiteral("  tran: "), QStringLiteral("  hb*: "),
+                                    QStringLiteral("  montecarlo*: "), QStringLiteral("  foreach: "), QStringLiteral("Nutmeg script"),
+                                    QStringLiteral("could not be asked")})
+            QVERIFY2(text(r).contains(part), qPrintable(part + "\n" + text(r)));
+        r = call("ngspice_commands", {{"command", ".TRAN"}});
+        QVERIFY2(text(r).contains("Syntax: tran <tstep> <tstop>") && text(r).contains(".TR") && text(r).contains("Example:"), qPrintable(text(r)));
+        r = call("ngspice_commands", {{"command", QJsonArray{"meas", "pre_set", "tarn", "sprocket"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("Syntax: meas ") && text(r).contains("pre_ runs set before"), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("no command tarn") && text(r).contains("Near it: tran") && text(r).contains("no command sprocket"), qPrintable(text(r)));
+        r = call("ngspice_commands", {{"search", "stability"}});
+        QVERIFY2(text(r).contains("  stb*") && text(r).contains("  rfstab*") && !text(r).contains("  ac:"), qPrintable(text(r)));
+        r = call("ngspice_commands", {{"search", "touchstone"}});
+        QVERIFY2(text(r).contains("wrsnp") && !text(r).contains("codemodel"), qPrintable(text(r)));
+        r = call("ngspice_commands", {{"category", "rf"}});
+        QVERIFY2(text(r).contains("  sp dec|oct|lin") && !text(r).contains("  tran"), qPrintable(text(r)));
+        QVERIFY(failed(call("ngspice_commands", {{"category", "sprockets"}})));
+        QVERIFY(failed(call("ngspice_commands", {{"command", 5}})));
+        QVERIFY(failed(call("ngspice_commands", {{"command", QJsonArray{"tran", 5}}})));
+        // The same as a resource.
+        QString error;
+        const QJsonArray contents = control->readResource("qucs://ngspice-commands", &error);
+        QVERIFY2(!contents.isEmpty() && contents.first().toObject().value("text").toString().contains("analysis - Analyses"), qPrintable(error));
+        bool listed = false;
+        for (const QJsonValue& v : control->resources()) listed = listed || v.toObject().value("uri").toString() == "qucs://ngspice-commands";
+        QVERIFY(listed);
+#ifdef Q_OS_WIN
+        QSKIP("A shell script stands in for ngspice.");
+#else
+        // An ngspice with two of the commands, and one of its own.
+        const QString script = dir.filePath("few-commands-ngspice.sh");
+        {
+            QFile f(script);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("#!/bin/sh\ncat > /dev/null\n"
+                    "echo '** ngspice-99 : Circuit level simulation program'\n"
+                    "echo 'ac [.ac line args] : Do an ac analysis.'\n"
+                    "echo 'tran [.tran line args] : Do a transient analysis.'\n"
+                    "echo 'frob x y : Frobnicate a circuit.'\n");
+        }
+        QVERIFY(QFile::setPermissions(script, QFile::permissions(script) | QFileDevice::ExeOwner | QFileDevice::ExeUser));
+        const QString was = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = script;
+        r = call("ngspice_commands");
+        const QString all = text(r);
+        r = call("ngspice_commands", {{"command", QJsonArray{"tran", "hb", "frob"}}});
+        const QString some = text(r);
+        r = call("ngspice_commands", {{"search", "frobnicate"}});
+        const QString found = text(r);
+        QucsSettings.NgspiceExecutable = was;
+        QVERIFY2(all.contains("ngspice-99") && all.contains("has 2 of the 165") && all.contains("it lacks") && all.contains("It also has frob"),
+                 qPrintable(all));
+        QVERIFY2(all.contains("  hb* [not in this ngspice]: ") && all.contains("  tran: "), qPrintable(all));
+        QVERIFY2(some.contains("This ngspice's help: tran [.tran line args] : Do a transient analysis."), qPrintable(some));
+        QVERIFY2(some.contains("hb (RF and periodic steady state; the enhanced build's, not stock ngspice's; not in this ngspice)"), qPrintable(some));
+        QVERIFY2(some.contains("frob (this ngspice's; not described here)"), qPrintable(some));
+        QVERIFY2(found.contains("frob (this ngspice's): frob x y : Frobnicate a circuit."), qPrintable(found));
+#endif
+    }
+
 };
 
 QTEST_MAIN(TestQucsControl)

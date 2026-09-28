@@ -432,7 +432,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   NPN with Bf near 200) in the libraries and the project's SPICE models,
   and `read_pdf` reads a datasheet's text. `import_netlist` makes a
   schematic of a SPICE netlist, and `make_symbol` draws a subcircuit's
-  symbol with its pins on four sides. `new_project`, `open_project`,
+  symbol with its pins on four sides. `ngspice_commands` tells Claude
+  which commands ngspice has: all 165, each in a line by category (the
+  analyses, the RF set, measurements, output, statistics and optimization,
+  breakpoints, the `.control` language), with how Qucs-S writes them (a
+  Nutmeg script, a NutmegEq, the simulation blocks). One command in full
+  gives its syntax, an example that runs and ngspice's own help line; a
+  search finds commands by what they do (stability, Touchstone). It asks
+  the ngspice of the settings for its own list, so the answer marks what
+  that ngspice lacks - a stock one has none of the enhanced build's
+  commands - and names any it has besides. `new_project`, `open_project`,
   `copy_document` (a schematic with its datasets and data display) and
   `clean_scratch` tend the files. `new_document` opens a schematic's data
   display for a report's plots. Equation blocks, Monte Carlo records and
@@ -513,8 +522,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   and conditions between the calls, in one turn (its result the last
   expression, or a `return`) - with `"atomic": true` every schematic is
   put back when it fails. The schematic's text, its
-  netlist, the netlist map, the dataset and the window's state are also
-  MCP resources, read and subscribed to (told when they change, also by
+  netlist, the netlist map, the dataset, the window's state and the
+  summary of ngspice's commands are also MCP resources, read and subscribed to (told when they change, also by
   another program writing the file). Before a file is written over or
   unsaved changes are discarded, Qucs-S asks you in the dock, with a
   button for each answer. Tools that only look are
