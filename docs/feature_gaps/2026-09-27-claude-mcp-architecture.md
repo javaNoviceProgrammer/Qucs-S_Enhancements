@@ -1,6 +1,6 @@
 # Feature gaps: Qucs-S's MCP server, architecture
 
-*27 September 2026 — Qucs-S 26.1.3.*
+*27 September 2026 — Qucs-S 26.1.4.*
 
 A Claude Code session in the Qucs-S dock wrote down how the Qucs-S tools
 look from the model's side, and fifteen suggestions for them
