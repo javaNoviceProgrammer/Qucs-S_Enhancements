@@ -696,6 +696,16 @@ bool SimulationRun::writeNetlist(const QString& filename)
     return QFile::exists(filename);
 }
 
+QString SimulationRun::netlistOutput() const
+{
+    switch (QucsSettings.DefaultSimulator) {
+    case spicecompat::simNgspice:
+    case spicecompat::simSpiceOpus: return a_ngspice != nullptr ? a_ngspice->getOutput().trimmed() : QString();
+    case spicecompat::simXyce: return a_xyce != nullptr ? a_xyce->getOutput().trimmed() : QString();
+    default: return {};
+    }
+}
+
 void SimulationRun::saveNetlist()
 {
     if (a_schematic.isNull()) return;

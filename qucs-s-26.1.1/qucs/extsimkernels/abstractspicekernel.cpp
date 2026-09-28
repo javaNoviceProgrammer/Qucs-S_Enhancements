@@ -120,6 +120,10 @@ bool AbstractSpiceKernel::prepareSpiceNetlist(QTextStream &stream, bool isSubckt
     if (a_schematic->prepareNetlist(stream,collect,err)==-10) { // Broken netlist
         a_output.append(err->toPlainText());
         delete err;
+        // The subcircuits and libraries taken in before it gave up: forgotten.
+        // Kept, the next netlist took them for written and left them out - a
+        // library part that could not be loaded went missing without a word.
+        if (!isSubckt) a_schematic->clearSignalsAndFileList();
         return false;
     }
     delete err;

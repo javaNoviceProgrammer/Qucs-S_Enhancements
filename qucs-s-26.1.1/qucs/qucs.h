@@ -622,6 +622,7 @@ private:
   QSet<QString> a_changedOnDisk;                // changed, waiting for the files to settle
   QTimer *a_changedTimer = nullptr;
   void watchDocuments();                        // the watched files: the open documents
+  void tellClaudeNotLoaded(const QString &name); // a file changed on disk, not loaded: Claude told
   FileBrowser *fileBrowser = nullptr;   // the left dock's File Browser tab
 
   QListView *Projects;

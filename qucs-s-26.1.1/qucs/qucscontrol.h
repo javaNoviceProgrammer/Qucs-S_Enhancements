@@ -90,6 +90,10 @@ public:
     static QString textOf(const QJsonObject& result);
     /// Whether run_script is in this build (Qt's Qml module found).
     static bool scriptingBuilt();
+    /// Something every conversation is told with its next call's result
+    /// ("Since your last call: ..."), for half an hour: a file Claude
+    /// changed on disk that was not loaded again, say.
+    void noteForConversations(const QString& text);
 
 private:
     using Done = std::function<void(const QJsonObject&)>;
@@ -125,6 +129,8 @@ private:
     QJsonObject preview(const QString& tool, const QJsonObject& args, const Done& done, bool& async);
     /// diff: a schematic against steps back, another file, or its file.
     QJsonObject diffTool(const QJsonObject& args);
+    /// connect with "ground" at one end: a ground symbol of the pin's own.
+    QJsonObject groundPin(Schematic* sch, const QJsonValue& pin);
     static QString stateOfText(const QString& text);
     static const QSet<QString>& previewTools();
     /// run_script (qucscontrol_script.cpp): with Qt's JavaScript engine,
@@ -137,6 +143,17 @@ private:
     /// a line for each document.
     QStringList changesSince(quint64 caller) const;
     void noteSeen(quint64 caller);
+    /// The notes for everyone (noteForConversations()) \a caller has not
+    /// been told yet.
+    QStringList notesFor(quint64 caller);
+    struct Broadcast {
+        qint64 serial;
+        QDateTime at;
+        QString text;
+    };
+    QList<Broadcast> a_broadcasts;
+    qint64 a_broadcastSerial = 0;
+    QHash<quint64, qint64> a_broadcastSeen;   // each conversation: the last it was told
     /// Who made an edit, as \a caller is told: "you", "the user",
     /// "another conversation".
     QString whoMade(quint64 by, quint64 caller) const;
@@ -159,6 +176,8 @@ private:
     QJsonObject replaceComponent(const QJsonObject& args);
     QJsonObject remove(const QJsonObject& args);
     QJsonObject moveGroup(const QJsonObject& args);
+    /// arrange: the schematic laid out again by signal flow, every net kept.
+    QJsonObject arrange(const QJsonObject& args);
     QJsonObject addAnalysis(const QJsonObject& args);
     QJsonObject createSubcircuit(const QJsonObject& args);
     QJsonObject connectPins(const QJsonObject& args);

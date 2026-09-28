@@ -150,6 +150,9 @@ public:
     /// false when the simulator is not one of those or the file was not
     /// written.
     bool writeNetlist(const QString& filename);
+    /// What the simulator's netlister said while writing it (why it could
+    /// not: a part with no model, a subcircuit it could not read).
+    QString netlistOutput() const;
 
 public slots:
     void saveNetlist();

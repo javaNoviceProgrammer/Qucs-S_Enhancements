@@ -302,7 +302,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   5.5* — which needs a recent Claude Code), or any other by its name. The
   header shows the model and the mode. A schematic, text, spreadsheet,
   PDF or ZIP archive Claude changed that is open without unsaved changes
-  is loaded again (a spreadsheet keeps its sheet and cell); Save asks
+  is loaded again (a spreadsheet keeps its sheet and cell); when it is
+  not, as it has unsaved changes, Claude's next Qucs-S tool result says
+  so, whatever changed the file (Write, Edit, Bash); Save asks
   before writing over a file that another program changed since it was
   loaded. The
   status bar chip says what Claude is doing — thinking, the tool it runs,
@@ -336,7 +338,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   diagrams show no data and why; with `keep_as` it keeps a copy of the
   run's dataset under a name, to read later or to plot beside the next
   run (`ngspice/run1:tran.v(out)`). `get_netlist` gives the netlist a
-  simulation would run, or the last one run. **Diagrams by name**:
+  simulation would run, or the last one run; when the netlister gives up
+  (a part with no model, a subcircuit or library it cannot read) it says
+  why - it gave a title line alone, and the next netlist then left the
+  part out without a word. **Diagrams by name**:
   `add_diagram`, `edit_diagram`, `add_trace`, `edit_trace` (and `delete`
   for diagrams and traces) take named fields — type, place and size,
   each axis's label, log scale, limits and step, grid, legend; each
@@ -462,9 +467,19 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `set_schematic` also takes parts and wires as JSON - each property by
   its name, checked against the type, so a value too many cannot shift
   the rest - and `get_schematic` gives that form (`"format": "json"`).
-  A value that does not read as a number where the type wants one, and
-  a type's traps (a `Vpulse` is one pulse, an `OpAmp` clips at `Umax`),
-  are told as the part is placed or edited. The tools that change a
+  A value that does not fit its property - a word where a number
+  belongs that no equation block defines, a word that is not one of the
+  property's choices (`european`, `US`) - is told, for `.sch` text too,
+  where a value left out or two swapped once went unnoticed; so are a
+  type's traps (a `Vpulse` is one pulse, an `OpAmp` clips at `Umax`) as
+  the part is placed or edited. An equation block's answer lists its
+  equations as they are after the change. `arrange` lays a whole
+  schematic out again for a person to read: parts in columns by signal
+  flow, two-pin parts turned as schematics show them (in series lying
+  down, to ground standing up), a ground symbol back on each piece that
+  had one, every wire drawn again by the router - every net compared
+  before and after, one step to undo. `connect` takes `"ground"` at one
+  end: a ground symbol of the pin's own. The tools that change a
   schematic take `"preview": true`: what the change would do, and
   nothing done (a `batch` too). `diff` compares a schematic with its
   file as saved, with a step of its history or with another file.
@@ -485,12 +500,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   about every time, but in *Auto* and *Bypass*. Each tool carries MCP's
   annotations (read-only, destructive, idempotent). The system's own file and
   print dialogs are not driven: Claude opens and saves by file name.
-  - **Quick**: the 22 tools most sessions use are loaded in every turn;
-    the others are found by Claude Code's tool search when a task needs
-    them. Each tool's description is two or three sentences (a sixth of
-    what they were: all 65 tools are about 9.6k tokens, the 22 about
-    4.2k), and `describe_tool` gives a tool's full description when it
-    is needed. Answers are compact JSON, and structured
+  - **Quick**: the 22 tools most sessions use are loaded in every turn,
+    with a summary each (about 5.6k tokens with their schemas);
+    `describe_tool` gives a tool's full description. The others are
+    found by Claude Code's tool search when a task needs them and load
+    with their full description. The descriptions are written in plain
+    English. Answers are compact JSON, and structured
     (`structuredContent`); `batch` runs many
     calls in one - place and wire a circuit, set properties, add a
     diagram and its traces - each change still one step to undo; a menu

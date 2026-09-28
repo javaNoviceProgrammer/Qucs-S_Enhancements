@@ -1767,6 +1767,11 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
         SimulationRun run(sch, false);
         if (!run.writeNetlist(file))
             return errorResult(tr("The netlist could not be written. %1").arg(capture.errors().join(QLatin1Char('\n'))));
+        // Written only in part: the netlister gave up (a part with no model,
+        // a subcircuit it could not read) - what it said, not a netlist of
+        // its title line.
+        if (const QString said = run.netlistOutput(); !said.isEmpty() && said.contains(QLatin1String("ERROR")))
+            return errorResult(tr("The netlist could not be written: %1").arg(said));
         files << file;
         // Which part of the schematic wrote each line, and which pins each
         // node of the netlist joins: an error or a warning that names a
