@@ -217,13 +217,19 @@ void SimulationRun::slotProcessOutput()
         switch (QucsSettings.DefaultSimulator) {
             case spicecompat::simNgspice:
             case spicecompat::simSpiceOpus:
-                a_ngspice->convertToQucsData(qucs_dataset);
+                a_datasetError = a_ngspice->convertToQucsData(qucs_dataset);
                 break;
             case spicecompat::simXyce:
-                a_xyce->convertToQucsData(qucs_dataset);
+                a_datasetError = a_xyce->convertToQucsData(qucs_dataset);
                 break;
             default:
                 break;
+        }
+        if (!a_datasetError.isEmpty()) {
+            addLogEntry(a_datasetError, QApplication::style()->standardIcon(QStyle::SP_MessageBoxCritical));
+            a_hasError = true;
+            if (!a_quiet && !misc::ErrorCapture::active())
+                QMessageBox::warning(nullptr, tr("Simulate"), a_datasetError);
         }
     }
     emit simulated(this);

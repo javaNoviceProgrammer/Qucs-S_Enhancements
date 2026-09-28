@@ -680,14 +680,31 @@ QPair<QString, QString> Schematic::snapshotAll()
   return {createUndoString('*'), createSymbolUndoString('*')};
 }
 
-void Schematic::forgetUndoAfter(const QPair<int, int>& marks)
+Schematic::UndoStacks Schematic::undoStacks() const
 {
-  // The steps after the marks, taken back already: forgotten, as if never
-  // made (a preview's).
-  while (a_undoAction.size() > marks.first + 1 && marks.first >= 0) delete a_undoAction.takeLast();
-  while (a_undoSymbol.size() > marks.second + 1 && marks.second >= 0) delete a_undoSymbol.takeLast();
-  a_undoActionIdx = std::min<int>(marks.first, int(a_undoAction.size()) - 1);
-  a_undoSymbolIdx = std::min<int>(marks.second, int(a_undoSymbol.size()) - 1);
+  UndoStacks stacks;
+  for (const QString* s : a_undoAction) stacks.action << *s;
+  for (const QString* s : a_undoSymbol) stacks.symbol << *s;
+  stacks.actionIdx = a_undoActionIdx;
+  stacks.symbolIdx = a_undoSymbolIdx;
+  return stacks;
+}
+
+void Schematic::setUndoStacks(const UndoStacks& stacks)
+{
+  // Whole, as they were: the steps made since forgotten, as if never made
+  // (a preview's) - and the redo steps its first step cut off, and the
+  // oldest ones a full stack dropped, back. (Cut back to where they stood,
+  // the redo steps were lost.)
+  qDeleteAll(a_undoAction);
+  a_undoAction.clear();
+  for (const QString& s : stacks.action) a_undoAction.append(new QString(s));
+  qDeleteAll(a_undoSymbol);
+  a_undoSymbol.clear();
+  for (const QString& s : stacks.symbol) a_undoSymbol.append(new QString(s));
+  a_undoActionIdx = std::min<int>(stacks.actionIdx, int(a_undoAction.size()) - 1);
+  a_undoSymbolIdx = std::min<int>(stacks.symbolIdx, int(a_undoSymbol.size()) - 1);
+  a_keyboardMoveOpen = false;
   const bool symbol = a_symbolMode;
   const int idx = symbol ? a_undoSymbolIdx : a_undoActionIdx;
   const auto& stack = symbol ? a_undoSymbol : a_undoAction;
@@ -1295,12 +1312,16 @@ bool Schematic::loadDocument()
 
   Line = Line.mid(16, Line.length()-17);
   if(!misc::checkVersion(Line)) { // wrong version number ?
-    if (QucsMain == nullptr) {
-      // Command line and tests: nobody can answer a dialog, and a modal
-      // box would block forever. Warn and try to open the file anyway.
+    if (QucsMain == nullptr || misc::ErrorCapture::active()) {
+      // Command line, tests and Claude's tools: nobody can answer a dialog,
+      // and a modal box would block forever. Warn and try to open the file
+      // anyway (a tool's answer says so).
       qWarning() << "Schematic::loadDocument:"
                  << QObject::tr("Wrong document version") << Line
                  << "in" << a_DocName << "- trying to open it anyway";
+      if (misc::ErrorCapture::active())
+        misc::reportError(QObject::tr("%1 was saved by Qucs-S %2, which this version may not read in full: opened anyway.")
+                              .arg(QFileInfo(a_DocName).fileName(), Line));
     } else {
       QMessageBox::StandardButton result;
       result = QMessageBox::warning(nullptr,

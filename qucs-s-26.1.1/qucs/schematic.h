@@ -825,12 +825,18 @@ public:
   bool restoreAll(const QPair<QString, QString>& state);
   /// As restoreAll(), recording a step to undo only when \a record.
   bool restoreAll(const QPair<QString, QString>& state, bool record);
-  /// Where the undo stacks (the schematic's, the symbol's) are.
-  QPair<int, int> undoMarks() const { return {a_undoActionIdx, a_undoSymbolIdx}; }
-  /// The steps recorded after \a marks (from undoMarks()) forgotten - the
-  /// elements put back as they were already (a preview): undo goes on
-  /// from where it was.
-  void forgetUndoAfter(const QPair<int, int>& marks);
+  /// The undo stacks (the schematic's, the symbol's) as they are, with
+  /// where each stands - their steps shared, not copied.
+  struct UndoStacks {
+    QStringList action, symbol;
+    int actionIdx = -1, symbolIdx = -1;
+  };
+  UndoStacks undoStacks() const;
+  /// The undo stacks as \a stacks (from undoStacks()) has them - the
+  /// elements put back as they were already (a preview): the steps
+  /// recorded since are forgotten, and the redo steps a new step cut off
+  /// are there again.
+  void setUndoStacks(const UndoStacks& stacks);
   void highlightWireLabels (void);
   void clearSignalsAndFileList();
   void clearSignals();

@@ -15,6 +15,7 @@
 #include "qucscontrol_p.h"
 
 #include "components/component.h"
+#include "components/libcomp.h"
 #include "dataset.h"
 #include "ngstatistics.h"
 #include "vamodule.h"
@@ -284,7 +285,8 @@ bool applyTrace(Graph* g, const Diagram* d, const QJsonObject& o, QString* error
     } else if (o.contains(QLatin1String("color"))) {
         const QColor c = QColor::fromString(color);
         if (!c.isValid()) {
-            *error = tr("%1 is no color: give #rrggbb, a name (red, darkgreen, ...) or auto.").arg(color);
+            *error = color.isEmpty() ? tr("'color' is #rrggbb, a name (red, darkgreen, ...) or auto.")
+                                     : tr("%1 is no color: give #rrggbb, a name (red, darkgreen, ...) or auto.").arg(color);
             return false;
         }
         g->Color = c;
@@ -984,6 +986,10 @@ namespace qucs_s::control {
 
 Component* newComponent(const QString& type, Module** module)
 {
+    // A library part (its library and component its properties Lib and
+    // Comp): made by hand as the file loader makes it, in no module - "no
+    // component type Lib", though find_library_component said to use it.
+    if (type == QLatin1String("Lib")) return new LibComp();
     if (Module::Modules.contains(type)) {
         if (module != nullptr) *module = Module::Modules.value(type);
         return Module::getComponent(type);
@@ -1136,7 +1142,8 @@ Diagram* diagramOf(Schematic* sch, const QJsonValue& which, QString* error)
 {
     const int count = int(sch->a_DocDiags.size());
     if (count == 0) {
-        *error = tr("%1 has no diagram (add_diagram places one).").arg(QFileInfo(sch->getDocName()).fileName());
+        *error = tr("%1 has no diagram (add_diagram places one).")
+                     .arg(sch->getDocName().isEmpty() ? tr("The untitled schematic") : QFileInfo(sch->getDocName()).fileName());
         return nullptr;
     }
     if (which.isUndefined() || which.isNull()) {
@@ -1634,7 +1641,10 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
             ds::Variable made;
             QString why;
             if (ds::isExpression(asked) && done.size() < 20) {
-                if (!ds::evaluate(data, asked, &made, &why)) return errorResult(tr("%1 does not evaluate: %2.").arg(asked, why));
+                // (A long one shown by its ends: 20,000 signs came back whole.)
+                if (!ds::evaluate(data, asked, &made, &why))
+                    return errorResult(tr("%1 does not evaluate: %2.")
+                                           .arg(asked.size() > 120 ? asked.left(60) + QStringLiteral(" ... ") + asked.right(40) : asked, why));
                 done << asked;
                 QJsonObject json = variableJson(data, made, o);
                 json.insert(QStringLiteral("expression"), true);
@@ -1716,6 +1726,15 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
         const QString target = absolute(saveAs);
         if (!QFileInfo(target).absoluteDir().exists())
             return errorResult(tr("There is no folder %1.").arg(QDir::toNativeSeparators(QFileInfo(target).absolutePath())));
+        // Not over a document: an open one's file would be loaded again as
+        // the netlist, and a schematic, symbol or data display lost.
+        for (QucsDoc* doc : a_app->allDocuments())
+            if (!doc->getDocName().isEmpty() && sameFile(doc->getDocName(), target))
+                return errorResult(tr("%1 is open in Qucs-S (%2): the netlist would be written over it. Name another file.")
+                                       .arg(QDir::toNativeSeparators(target), titleOf(doc)));
+        if (QFileInfo(target).isFile() && !args.value(QLatin1String("replace")).toBool() && isQucsDocument(target))
+            return errorResult(tr("%1 is a document of Qucs-S, not a netlist: 'replace': true writes the netlist over it.")
+                                   .arg(QDir::toNativeSeparators(target)));
         QFile out(target);
         if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
             return errorResult(tr("%1 cannot be written: %2").arg(QDir::toNativeSeparators(target), out.errorString()));
@@ -1917,12 +1936,20 @@ QJsonObject QucsControl::addDiagram(const QJsonObject& args)
     sch->setOnGrid(x, y);
     d->cx = x;
     d->cy = y;
+    // Expressions (ac.db(v(out))): a NutmegEq's variables, made once every
+    // trace is known to do - each trace's graph named after it then.
+    QList<QPair<Graph*, QString>> computed;
     for (const QJsonValue& v : args.value(QLatin1String("traces")).toArray()) {
         const QJsonObject t = v.isString() ? QJsonObject{{QStringLiteral("variable"), v.toString()}} : v.toObject();
         QString note;
-        const QString var = traceVariable(sch, d.get(), t.value(QLatin1String("variable")).toString(), &note, &error);
+        const QString wanted = t.value(QLatin1String("variable")).toString();
+        QString var = expressionTrace(sch, wanted, args.value(QLatin1String("path")), true, &note, &error);
+        const bool expression = !var.isEmpty();
+        if (!expression && !error.isEmpty()) return errorResult(error);
+        if (!expression) var = traceVariable(sch, d.get(), wanted, &note, &error);
         if (var.isEmpty()) return errorResult(error);
         auto* g = new Graph(d.get(), var);
+        if (expression) computed.append({g, wanted});
         g->Color = QColor(QRgb(0x0000ff));
         static const QRgb palette[] = {0x0000ff, 0xff0000, 0xff00ff, 0x00ff00, 0x00ffff, 0xffff00, 0x777777, 0x000000};
         g->Color = QColor(palette[d->Graphs.size() % 8]);
@@ -1934,6 +1961,16 @@ QJsonObject QucsControl::addDiagram(const QJsonObject& args)
         }
         d->Graphs.append(g);
         if (!note.isEmpty() && !notes.contains(note)) notes << note;   // (no dataset: said once)
+    }
+    for (const auto& [g, wanted] : std::as_const(computed)) {
+        QString note;
+        const QString var = expressionTrace(sch, wanted, args.value(QLatin1String("path")), false, &note, &error);
+        if (var.isEmpty()) {
+            notes << tr("%1: not computed - %2").arg(wanted, error);
+            continue;
+        }
+        g->Var = var;
+        if (!note.isEmpty()) notes << note;
     }
     prepare(sch);
     Diagram* placed = d.release();
@@ -1990,8 +2027,16 @@ QJsonObject QucsControl::addTrace(const QJsonObject& args)
     Diagram* d = diagramOf(sch, args.value(QLatin1String("diagram")), &error);
     if (d == nullptr) return errorResult(error);
     QString note;
-    const QString var = traceVariable(sch, d, args.value(QLatin1String("variable")).toString(), &note, &error);
-    if (var.isEmpty()) return errorResult(error);
+    const QString wanted = args.value(QLatin1String("variable")).toString();
+    // An expression: a NutmegEq's variable (checked first, made last).
+    const bool expression = !expressionTrace(sch, wanted, args.value(QLatin1String("path")), true, &note, &error).isEmpty();
+    if (!expression && !error.isEmpty()) return errorResult(error);
+    QString var = expression ? QString() : traceVariable(sch, d, wanted, &note, &error);
+    if (!expression && var.isEmpty()) return errorResult(error);
+    if (expression) {
+        var = expressionTrace(sch, wanted, args.value(QLatin1String("path")), false, &note, &error);
+        if (var.isEmpty()) return errorResult(error);
+    }
     for (Graph* g : d->Graphs)
         if (g->Var == var) return errorResult(tr("The diagram shows %1 already.").arg(var));
     auto g = std::make_unique<Graph>(d, var);
@@ -2020,14 +2065,24 @@ QJsonObject QucsControl::editTrace(const QJsonObject& args)
     if (g == nullptr) return errorResult(error);
     QString note;
     QString var = g->Var;
+    bool expression = false;
+    const QString wanted = args.value(QLatin1String("variable")).toString();
     if (args.contains(QLatin1String("variable"))) {
-        var = traceVariable(sch, d, args.value(QLatin1String("variable")).toString(), &note, &error);
+        // (An expression's NutmegEq made once the rest is known to do.)
+        var = expressionTrace(sch, wanted, args.value(QLatin1String("path")), true, &note, &error);
+        expression = !var.isEmpty();
+        if (!expression && !error.isEmpty()) return errorResult(error);
+        if (!expression) var = traceVariable(sch, d, wanted, &note, &error);
         if (var.isEmpty()) return errorResult(error);
     }
     // Tried on a copy first.
     Graph trial(d, var);
     trial.Color = g->Color;
     if (!applyTrace(&trial, d, args, &error)) return errorResult(error);
+    if (expression) {
+        var = expressionTrace(sch, wanted, args.value(QLatin1String("path")), false, &note, &error);
+        if (var.isEmpty()) return errorResult(error);
+    }
     prepare(sch);
     applyTrace(g, d, args, &error);
     if (var != g->Var) {
@@ -2074,6 +2129,17 @@ bool markerPlace(Schematic* sch, const Graph* g, const QJsonValue& at, double* x
                  const QJsonValue& reference = QJsonValue())
 {
     if (at.isDouble()) {
+        // On the curve: past its ends, the marker sat on its last sample and
+        // nothing was said.
+        const ds::Curve c = shownCurve(g);
+        if (!c.x.isEmpty()) {
+            const auto [lo, hi] = std::minmax_element(c.x.cbegin(), c.x.cend());
+            const double span = *hi - *lo, tolerance = span > 0 ? span * 1e-9 : 0;
+            if (!std::isfinite(at.toDouble()) || at.toDouble() < *lo - tolerance || at.toDouble() > *hi + tolerance) {
+                *error = tr("'at' %1 is off the trace: its x goes from %2 to %3.").arg(at.toDouble()).arg(*lo).arg(*hi);
+                return false;
+            }
+        }
         *x = at.toDouble();
         return true;
     }
@@ -2188,12 +2254,16 @@ bool applyMarker(Marker* m, const Diagram* d, const QJsonObject& args, QString* 
             *error = tr("'label' is [x, y]: where its box's top left corner goes.");
             return false;
         }
-        m->x1 = misc::clampCoordinate(p.at(0).toInt() - d->cx);
-        m->y1 = misc::clampCoordinate(p.at(1).toInt() - d->cy);
+        // (In 64 bits, then kept on the canvas: 2^31 - 1 overflowed.)
+        const auto within = [](double v) { return qint64(std::clamp(std::isfinite(v) ? v : 0.0, -1e9, 1e9)); };
+        m->x1 = misc::clampCoordinate(int(std::clamp<qint64>(within(p.at(0).toDouble()) - d->cx, -misc::MaxCoordinate, misc::MaxCoordinate)));
+        m->y1 = misc::clampCoordinate(int(std::clamp<qint64>(within(p.at(1).toDouble()) - d->cy, -misc::MaxCoordinate, misc::MaxCoordinate)));
     } else if (args.contains(QLatin1String("label_offset"))) {
         const QJsonArray p = args.value(QLatin1String("label_offset")).toArray();
-        if (p.size() != 2) {
-            *error = tr("'label_offset' is [dx, dy]: from the point it marks to its box's top left corner (y down).");
+        if (p.size() != 2 || !p.at(0).isDouble() || !p.at(1).isDouble() || std::abs(p.at(0).toDouble()) > 10000
+            || std::abs(p.at(1).toDouble()) > 10000) {
+            *error = tr("'label_offset' is [dx, dy]: from the point it marks to its box's top left corner (y down), each within "
+                        "10000.");
             return false;
         }
         m->x1 = misc::clampCoordinate(m->cx + p.at(0).toInt());

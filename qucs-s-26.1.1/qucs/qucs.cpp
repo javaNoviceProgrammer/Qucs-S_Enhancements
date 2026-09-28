@@ -978,14 +978,20 @@ QucsDoc* QucsApp::getDoc(int No)
 QucsDoc * QucsApp::findDoc (QString File, int * Pos)
 {
   File = QDir::toNativeSeparators (File);
-  for (ContextMenuTabWidget *pane : panes())
-    for (int i = 0; i < pane->count(); ++i) {
-      QucsDoc *d = docIn(pane->widget(i));
-      if (d != nullptr && QDir::toNativeSeparators (d->getDocName()) == File) {
-        if (Pos) *Pos = i;
-        return d;
+  // Its name as given first; then the file itself, spelt otherwise - through
+  // a symbolic link, in another case on a case-insensitive disk: one file
+  // was opened as two documents, and the last saved wrote over the other.
+  for (int pass = 0; pass < 2; ++pass)
+    for (ContextMenuTabWidget *pane : panes())
+      for (int i = 0; i < pane->count(); ++i) {
+        QucsDoc *d = docIn(pane->widget(i));
+        if (d == nullptr || (pass == 1 && (d->getDocName().isEmpty() || File.isEmpty()))) continue;
+        if (pass == 0 ? QDir::toNativeSeparators (d->getDocName()) == File
+                      : misc::isSameFile(d->getDocName(), File)) {
+          if (Pos) *Pos = i;
+          return d;
+        }
       }
-    }
   return 0;
 }
 
@@ -2410,7 +2416,8 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
   }
   DocumentTab->setCurrentIndex(i);
 
-  if (!Info.isWritable() && !is_pdf) {
+  // (Claude's tools say it in their answer: no box that no one answers.)
+  if (!Info.isWritable() && !is_pdf && !misc::ErrorCapture::active()) {
       QMessageBox::warning(this,tr("Open file"),
                            tr("Document opened in read-only mode! "
                            "Simulation will not work. Please copy the document "
@@ -2669,13 +2676,28 @@ bool QucsApp::saveDocumentAs(QucsDoc *Doc, const QString &fileName)
   if (w == nullptr || pane == nullptr) return false;
   const QString s = QFileInfo(fileName).absoluteFilePath();
   const QString wasNamed = Doc->getDocName();
+  // As it was, for a save that fails: named after a file it could not
+  // write, every save after failed too.
+  const QString wasTitled = pane->tabText(pane->indexOf(w));
+  const QString wasDataSet = Doc->getDataSet(), wasDataDisplay = Doc->getDataDisplay(), wasScript = Doc->getScript();
+  const QString wasDir = lastDirOpenSave;
   Doc->setName(s);
   pane->setTabText(pane->indexOf(w), misc::properFileName(s));
   lastDirOpenSave = QFileInfo(s).absolutePath();  // remember last directory and file
 
   const int docIndex = allDocuments().indexOf(Doc);   // as autosaveAll() numbers it
   const int n = Doc->save();   // SAVE
-  if(n < 0)  return false;
+  if(n < 0) {
+    if (!wasNamed.isEmpty()) Doc->setName(wasNamed);
+    else if (Schematic *sch = schematicIn(w)) sch->setFileInfo(QString());
+    Doc->setDocName(wasNamed);
+    Doc->setDataSet(wasDataSet);
+    Doc->setDataDisplay(wasDataDisplay);
+    Doc->setScript(wasScript);
+    pane->setTabText(pane->indexOf(w), wasTitled);
+    lastDirOpenSave = wasDir;
+    return false;
+  }
   if (wasNamed.isEmpty())
     qucs_s::autosave::removeUntitled(docIndex, schematicIn(w) != nullptr);   // it was untitled before
   qucs_s::autosave::remove(s);
@@ -4231,7 +4253,11 @@ void QucsApp::slotChangePage(const QString& DocName, const QString& DataDisplay)
         slotUpdateTreeview();
       }
       else {
-        QMessageBox::critical(this, tr("Error"), tr("Cannot create ")+Name);
+        // (Its tab closed with it: it was left behind, a document of no
+        // file. Claude's tools say why in their answer.)
+        const QString why = file.errorString();
+        delete d;
+        misc::reportError(tr("Cannot create ") + QDir::toNativeSeparators(Name) + QStringLiteral(": ") + why);
         return;
       }
       file.close();
@@ -5305,6 +5331,15 @@ void QucsApp::updateRecentFilesList(QString s)
   if (QucsSettings.RecentDocs.size() > MaxRecentFiles) {
     QucsSettings.RecentDocs.removeLast();
   }
+  settings->setValue("RecentDocs",QucsSettings.RecentDocs.join("*"));
+  delete settings;
+  slotUpdateRecentFiles();
+}
+
+void QucsApp::forgetRecentFile(const QString &s)
+{
+  if (QucsSettings.RecentDocs.removeAll(s) == 0) return;
+  QSettings* settings = new QucsSettingsFile;
   settings->setValue("RecentDocs",QucsSettings.RecentDocs.join("*"));
   delete settings;
   slotUpdateRecentFiles();

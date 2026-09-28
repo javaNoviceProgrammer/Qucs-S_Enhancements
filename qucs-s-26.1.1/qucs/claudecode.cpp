@@ -138,6 +138,14 @@ QString failureOf(const QString& subtype, const QString& text)
 {
     if (subtype == QLatin1String("error_max_turns")) return tr("Claude stopped: the turn took too many steps");
     if (subtype == QLatin1String("error_during_execution")) return tr("The turn was stopped");
+    // A sign-in that failed or ran out: Claude Code's own words say /login,
+    // which the dock (a session in print mode) cannot run - how, added.
+    static const QRegularExpression signIn(QStringLiteral("authenticat|/login|\\blog ?in\\b|api[ -]?key|oauth|\\b401\\b|unauthori[sz]ed|credential"),
+                                           QRegularExpression::CaseInsensitiveOption);
+    if (signIn.match(text).hasMatch())
+        return oneLine(text, 200) + QLatin1Char(' ')
+               + tr("To sign in again, run claude in a terminal and type /login there (the dock cannot run /login), then send "
+                    "the message again.");
     if (!text.trimmed().isEmpty()) return oneLine(text, 200);
     return tr("The turn failed (%1)").arg(subtype);
 }

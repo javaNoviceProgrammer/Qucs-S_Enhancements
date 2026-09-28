@@ -565,6 +565,11 @@ private slots:
         s.handleLine(R"({"type":"result","subtype":"error_max_turns","is_error":true,"duration_ms":1,"num_turns":9,"result":""})");
         QCOMPARE(s.state(), State::Failed);
         QVERIFY(s.detail().contains("too many steps"));
+        // A sign-in that failed: how to sign in again, which /login in the
+        // dock cannot do.
+        s.handleLine(R"({"type":"result","subtype":"success","is_error":true,"duration_ms":1,"num_turns":1,"result":"Failed to authenticate. API Error: 401"})");
+        QCOMPARE(s.state(), State::Failed);
+        QVERIFY2(s.detail().contains("run claude in a terminal"), qPrintable(s.detail()));
         // (A result with no tokens takes none away.)
         QVERIFY(turns.last().at(0).value<TurnResult>().tokens.isEmpty());
         QCOMPARE(s.conversationTokens().total(), qint64(3630 + 4170));

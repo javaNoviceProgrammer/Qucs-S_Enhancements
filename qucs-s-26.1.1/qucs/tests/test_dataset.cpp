@@ -7,6 +7,7 @@
  * net's new name put into the traces that show its voltage.
  */
 #include <QtTest>
+#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 
@@ -433,6 +434,58 @@ private slots:
         QVERIFY(!ds::evaluate(data, "3 * 4", &v, &error) && error.contains("numbers"));
         QVERIFY(!ds::evaluate(data, "tran.v(out) / ac.v(in)", &v, &error) && error.contains("analysis"));
         QVERIFY(!ds::evaluate(data, "abs(tran.v(out)", &v, &error));
+    }
+
+    // An expression nested beyond reason is refused, not a crash (100,000
+    // parentheses overflowed the stack); its syntax is checked alone.
+    void aDeepExpressionIsRefused()
+    {
+        const QString path = write("deep.dat.ngspice", datasetText({
+            {"indep time 2", "", {"0", "1"}},
+            {"dep tran.v(out) time", "", {"1", "2"}},
+        }));
+        ds::Dataset data;
+        QVERIFY(data.read(path));
+        ds::Variable v;
+        QString error;
+        for (const QString& deep : {QString(100000, QLatin1Char('(')) + "v(out)" + QString(100000, QLatin1Char(')')),
+                                    QString(20000, QLatin1Char('-')) + "v(out)", QStringLiteral("v(out)") + QString("+v(out)").repeated(20000),
+                                    QStringLiteral("db(").repeated(5000) + "v(out)" + QString(5000, QLatin1Char(')'))}) {
+            QVERIFY(!ds::evaluate(data, deep, &v, &error));
+            QVERIFY2(error.contains("nested too deeply"), qPrintable(error));
+        }
+        // Deep, not too deep: taken.
+        QVERIFY2(ds::evaluate(data, QString(40, QLatin1Char('(')) + "v(out)" + QString(40, QLatin1Char(')')), &v, &error), qPrintable(error));
+        QVERIFY(ds::checkExpression("db(v(out)/v(in))", &error));
+        QVERIFY(ds::checkExpression("ph(v(out))", &error));   // (a Nutmeg function: a name to the check)
+        for (const char* bad : {"x=1", "v(out) +", "2e", "v(out", "(v(out)"}) {
+            QVERIFY2(!ds::checkExpression(QString::fromLatin1(bad), &error), bad);
+            QVERIFY(!error.isEmpty());
+        }
+    }
+
+    // An eye folded at a bit shorter than a sample is refused: 1e-300 s
+    // never ended (t + T == t) and filled memory.
+    void anEyeOfNoSamplesIsRefused()
+    {
+        ds::Curve c;
+        for (int i = 0; i <= 1000; ++i) {
+            c.x << i * 1e-9;
+            c.y << ((i / 50) % 2 ? 1.0 : 0.0);
+        }
+        ds::MeasureOptions o;
+        QElapsedTimer clock;
+        clock.start();
+        for (double T : {1e-300, 1e-20, 1e-12}) {
+            o.period = T;
+            const QJsonObject r = ds::measure(c, QStringLiteral("eye"), o);
+            QVERIFY2(r.contains("error"), qPrintable(QJsonDocument(r).toJson()));
+            QVERIFY2(r.value("error").toString().contains("bit period is too short"), qPrintable(r.value("error").toString()));
+        }
+        QVERIFY(clock.elapsed() < 2000);
+        o.period = 50e-9;   // (50 samples a bit: an eye of 20 bits)
+        const QJsonObject eye = ds::measure(c, QStringLiteral("eye"), o);
+        QVERIFY2(!eye.contains("error"), qPrintable(QJsonDocument(eye).toJson()));
     }
 
     // What a variable's numbers are: dB, degrees, V, A, s, Hz - from its
