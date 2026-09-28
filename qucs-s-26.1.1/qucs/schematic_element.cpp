@@ -2496,6 +2496,30 @@ void Schematic::deleteComps(const std::vector<Component*>& comps)
     for (auto* c : doomed_comps) delete c;
 }
 
+void Schematic::detachComps(const std::vector<Component*>& comps)
+{
+    std::unordered_set<Component*> detached;
+    std::vector<Node*> orphans;
+    std::unordered_set<Node*> orphaned;
+    for (auto* c : comps) {
+        if (!detached.insert(c).second) continue;
+        for (auto* port : c->Ports) {
+            Node* n = port->Connection;
+            if (n == nullptr) continue;
+            n->disconnect(c);
+            if (n->conn_count() == 0 && orphaned.insert(n).second) {
+                orphans.push_back(n);
+            }
+        }
+        emit signalComponentDeleted(c);
+    }
+    if (!orphans.empty()) {
+        a_Nodes->remove_if([&orphaned](Node* n) { return orphaned.contains(n); });
+    }
+    for (auto* n : orphans) delete n;
+    a_Components->remove_if([&detached](Component* c) { return detached.contains(c); });
+}
+
 /** Disconnects a component from the schematic by disconnecting all of its ports.
  *
  * @param component The component to disconnect.
@@ -2713,6 +2737,10 @@ std::pair<bool,Node*> Schematic::connectWithWire(const QPoint& a, const QPoint& 
     if (optimize) optimizeWires();
 
     const auto lastPoint = points.back();
+    if (a_insertionIndex != nullptr) {   // (by place, not through every node)
+        if (Node* node = a_insertionIndex->nodeAt(lastPoint)) return {hasChanges, node};
+        return {hasChanges, nullptr};
+    }
     for (auto* node : *a_Nodes) {
         if (node->cx == lastPoint.x() && node->cy == lastPoint.y()) {
             return {hasChanges, node};
@@ -2789,8 +2817,12 @@ std::pair<bool,Node*> Schematic::installWire(Wire* wire)
     auto* port1 = provideNode(wire->P1());
     auto* port2 = provideNode(wire->P2());
 
-    auto crossed_nodes =
-        qucs_s::geom::on_line(port1, port2, a_Nodes->begin(), a_Nodes->end());
+    // (Among the nodes near it, when they are found by place: looking at
+    // every node for each wire made wiring many of them quadratic.)
+    std::optional<std::vector<Node*>> near;
+    if (a_insertionIndex != nullptr) near = a_insertionIndex->nodesNear(port1->center(), port2->center());
+    auto crossed_nodes = near ? qucs_s::geom::on_line(port1, port2, near->begin(), near->end())
+                              : qucs_s::geom::on_line(port1, port2, a_Nodes->begin(), a_Nodes->end());
 
     // Save for later
     auto wire_label = wire->releaseLabel();
@@ -2861,8 +2893,11 @@ std::pair<bool,Node*> Schematic::installWire(Wire* wire)
         existing_wire->Port2->disconnect(existing_wire);
         existing_wire->Port2 = nullptr;
 
-        // And delete it
+        // And delete it (and forget it, when wires are found by place)
         a_Wires->remove(existing_wire);
+        if (a_insertionIndex != nullptr) {
+            a_insertionIndex->remove(existing_wire);
+        }
         delete existing_wire;
 
         // Put the given wire in place of deleted one

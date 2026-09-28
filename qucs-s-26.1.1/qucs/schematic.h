@@ -679,9 +679,10 @@ public:
   // While one is alive, findNode() and provideNode() look nodes and wires up
   // by place instead of going through all of them: for the loader, which
   // inserts every element of a document and moves or deletes none, and the
-  // healer's run of node replacements. (Without it, loading took time
-  // quadratic in the size of the document.) Nothing may move or delete a
-  // node or a wire meanwhile.
+  // healer's run of node replacements, and arrange's wiring. (Without it,
+  // loading took time quadratic in the size of the document.) Nothing may
+  // move or delete a node or a wire meanwhile - but installWire(), which
+  // tells the index of a wire it deletes.
   class IndexedInsertion {
   public:
     explicit IndexedInsertion(Schematic* doc);
@@ -757,6 +758,9 @@ public:
   Component* searchSelSubcircuit();
   void       deleteComp(Component*, bool remove_orphans=true);
   void       deleteComps(const std::vector<Component*>&);
+  // Detaches the components, as detachComp() does for each (not deleted:
+  // the caller's), with one pass over the document's lists for all of them.
+  void       detachComps(const std::vector<Component*>&);
   void       detachComp(Component*, bool remove_orphans=true, bool keepNodeLabel=false);
   void       decoupleComp(Component*, bool keepNodeLabel=false, bool remove_orphans=true);
   Component* getComponentByName(const QString& compname) const;
