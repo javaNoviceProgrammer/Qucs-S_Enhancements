@@ -16,6 +16,7 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QObject>
+#include <QPoint>
 #include <QPointer>
 
 #include <list>
@@ -286,6 +287,9 @@ private:
     QJsonObject addMarker(const QJsonObject& args);
     QJsonObject moveToPane(const QJsonObject& args);
     QJsonObject describeFormat(const QJsonObject& args);
+    /// ngspice's commands, summed up by category - and which the ngspice
+    /// of the settings has (qucscontrol_ngspice.cpp).
+    QJsonObject ngspiceCommands(const QJsonObject& args);
     QJsonObject editMarker(const QJsonObject& args);
     QJsonObject deleteMarker(const QJsonObject& args);
     QJsonObject renameNet(const QJsonObject& args);
