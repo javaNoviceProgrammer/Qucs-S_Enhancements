@@ -1,0 +1,9 @@
+[["open_document", {"path": "HUNT/p/ws/plain.sch"}],
+ ["new_document", {"kind": "schematic"}],
+ ["move_to_pane", {"pane": "right"}],
+ ["get_state", {}],
+ ["open_document", {"path": "HUNT/p/ws/tn.sch"}],
+ ["get_state", {}],
+ ["new_document", {"kind": "text"}],
+ ["new_document", {"kind": "schematic"}],
+ ["get_state", {}]]

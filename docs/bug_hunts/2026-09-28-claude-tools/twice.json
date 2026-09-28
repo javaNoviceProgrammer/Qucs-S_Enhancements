@@ -1,0 +1,5 @@
+[["open_document", {"path": "HUNT/p/ws/tn.sch"}],
+ ["open_document", {"path": "HUNT/p/ws/../ws/tn.sch"}],
+ ["open_document", {"path": "HUNT/p/wslink/tn.sch"}],
+ ["open_document", {"path": "HUNT/p/ws/TN.sch"}],
+ ["get_state", {}]]

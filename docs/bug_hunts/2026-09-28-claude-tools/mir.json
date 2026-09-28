@@ -1,0 +1,5 @@
+[["new_document", {"kind": "schematic"}],
+ ["set_schematic", {"text": "<Components>\n  <Vac V1 1 30 130 -78 -26 1 1 \"0.6 V\" 1 \"7.5 MHz\" 0 \"0\" 0 \"0\" 0>\n</Components>\n"}],
+ ["get_schematic", {"components": ["V1"]}],
+ ["add_component", {"type": "Vac", "name": "V2", "x": 230, "y": 130, "rotation": 0, "mirror": true}],
+ ["get_schematic", {"components": ["V2"]}]]

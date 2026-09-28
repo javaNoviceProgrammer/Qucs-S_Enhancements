@@ -1,0 +1,7 @@
+[["open_document", {"path": "HUNT/p/ws/future.sch"}],
+ ["get_state", {}],
+ ["_sleep", 4],
+ ["get_state", {}],
+ ["new_document", {"kind": "schematic"}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["simulate", {"timeout": 10}]]

@@ -1,0 +1,11 @@
+[["new_document", {"kind": "schematic"}],
+ ["add_component", {"type": "R", "name": "R1", "x": 100, "y": 100}],
+ ["add_component", {"type": "R", "name": "R2", "x": 300, "y": 100}],
+ ["add_component", {"type": "R", "name": "R3", "x": 500, "y": 100}],
+ ["connect", {"from": "R1.2", "to": "R2.1"}],
+ ["connect", {"from": "R2.2", "to": "R3.1"}],
+ ["get_schematic", {}],
+ ["rename_net", {"from": "net1", "to": "net2"}],
+ ["get_schematic", {}],
+ ["rename_net", {"from": "net2", "to": "mid"}],
+ ["get_schematic", {}]]

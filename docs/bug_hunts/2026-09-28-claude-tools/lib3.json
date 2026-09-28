@@ -1,0 +1,4 @@
+[["new_document", {"kind": "schematic"}],
+ ["add_component", {"type": "Lib", "x": 100, "y": 100, "properties": {"Lib": "Z-Diodes", "Comp": "1N4728A"}}],
+ ["describe_component_type", {"type": "Lib"}],
+ ["list_component_types", {"search": "Lib"}]]

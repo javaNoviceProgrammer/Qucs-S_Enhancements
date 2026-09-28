@@ -1,0 +1,4 @@
+[["open_document", {"path": "HUNT/p/ws/legacy.sch"}],
+ ["set_schematic", {"text": "<Paintings>\n  <Text 100 400 12 #000000 0 \"note\">\n</Paintings>\n"}],
+ ["edit_component", {"name": "R2", "properties": {"R": "2k"}}],
+ ["get_schematic", {"format": "overview"}]]

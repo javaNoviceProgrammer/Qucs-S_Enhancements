@@ -1,0 +1,11 @@
+[[["new_document", {"kind": "schematic"}],
+  ["add_component", {"type": "Vdc", "name": "V1", "x": 100, "y": 200}],
+  ["add_component", {"type": "R", "name": "R1", "x": 250, "y": 150}],
+  ["add_component", {"type": "R", "name": "R2", "x": 350, "y": 220, "rotation": 1}],
+  ["connect", {"from": "V1.2", "to": "ground"}], ["connect", {"from": "R2.2", "to": "ground"}],
+  ["connect", {"from": "R1.2", "to": "R2.1"}], ["connect", {"from": "V1.1", "to": "R1.1"}],
+  ["set_label", {"at": "R2.1", "name": "out"}], ["add_analysis", {"kind": "op"}],
+  ["save_document", {"as": "HUNT/p/ws/tn.sch"}]],
+ [["tune", {"component": "R1", "values": ["1k", "2k", "3k"], "measure": {"operating_point": "out"}, "timeout": 20}],
+  ["edit_component", {"name": "R1", "properties": {"R": "47k"}}]],
+ [["get_schematic", {"components": ["R1"]}], ["undo_history", {}]]]

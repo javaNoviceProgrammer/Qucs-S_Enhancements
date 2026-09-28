@@ -1,0 +1,8 @@
+[["new_document", {"kind": "schematic"}],
+ ["add_component", {"type": "Vdc", "name": "V1", "x": 100, "y": 200}],
+ ["add_component", {"type": "R", "name": "R1", "x": 250, "y": 200, "rotation": 1}],
+ ["connect", {"from": "V1.2", "to": "ground"}], ["connect", {"from": "V1.1", "to": "R1.1"}], ["connect", {"from": "R1.2", "to": "V1.2"}],
+ ["edit_component", {"name": "GND", "active": false}],
+ ["get_schematic", {"components": ["V1"]}],
+ ["check_schematic", {}],
+ ["get_netlist", {}]]
