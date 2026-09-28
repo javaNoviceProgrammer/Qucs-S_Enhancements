@@ -76,6 +76,10 @@ public:
     // QucsDoc
     void setName(const QString& name) override;
     bool load() override;
+    /// The file read again, as another program wrote it: the sheet and the
+    /// cell in front kept, and what was in sight. False (and nothing
+    /// changed, nothing shown) when it cannot be read - half written.
+    bool reload();
     int save() override;
     bool writeTo(const QString& path) override;
     void becomeCurrent(bool) override;

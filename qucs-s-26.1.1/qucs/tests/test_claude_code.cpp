@@ -23,6 +23,8 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QMap>
+#include <QMessageBox>
+#include <QTableView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -58,6 +60,7 @@
 #include "qucs.h"
 #include "schematic.h"
 #include "settings.h"
+#include "sheetdoc.h"
 #include "components/component.h"
 #include "extsimkernels/spicecompat.h"
 
@@ -1568,6 +1571,32 @@ private slots:
         QVERIFY(centredBlock);
     }
 
+    // Dollars in code are code: an indented code block (after a blank line,
+    // not in a list, whose items go on indented) and HTML <code> and <pre>,
+    // as GitHub reads them (bug hunt 2026-09-26, E6: "$HOME/bin:$" was set
+    // as a formula in a shell command).
+    void codeIsNotMath()
+    {
+        using qucs_s::math::findMath;
+        const auto texts = [](const QString& md) {
+            QStringList t;
+            for (const auto& s : findMath(md)) t << s.tex;
+            return t;
+        };
+        QCOMPARE(texts("Run it:\n\n    export PATH=$HOME/bin:$PATH\n    cp $SRC/a.sch $DST/\n\nand <code>$A-$B</code>\n"), QStringList());
+        QCOMPARE(texts("\tx = $a$ + $b$\n"), QStringList());                                 // a tab, at the start
+        QCOMPARE(texts("<pre>\n$HOME/x$\n</pre> then $y$"), QStringList{"y"});
+        QCOMPARE(texts("<CODE class=\"sh\">$A$</CODE> $z$"), QStringList{"z"});
+        QCOMPARE(texts("<codex>$w$</codex>"), QStringList{"w"});                              // not <code>
+        // Indented, not code: in a paragraph (no blank line before), in a list.
+        QCOMPARE(texts("The gain\n    is $A_v$ here."), QStringList{"A_v"});
+        QCOMPARE(texts("- first\n\n    with $x^2$ in it\n- 1. nested\n\n        $y$\n"), (QStringList{"x^2", "y"}));
+        QCOMPARE(texts("1. step\n\n    $\\omega$\n\nAfter.\n\n    $code$\n"), QStringList{"\\omega"});   // the list ended
+        // After a code block, math again.
+        QCOMPARE(texts("\n    $a$\n\nThen $b$."), QStringList{"b"});
+        QCOMPARE(texts("```\n    $a$\n```\n$c$"), QStringList{"c"});
+    }
+
     // Whatever Claude writes between dollars - TeX cut short, braces out of
     // balance, environments not closed, commands nested deep - is set as
     // far as it goes, and nothing breaks.
@@ -2258,6 +2287,38 @@ private slots:
         QCOMPARE(history::claudeSessionFile(id), file.fileName());
         QVERIFY(history::claudeSessionFile("no-such-session").isEmpty());
 
+#ifndef Q_OS_WIN
+        // The folder through a link (a workspace on another disk; /tmp and
+        // /var on macOS): Claude Code files its sessions under the real
+        // path, and they are found (bug hunt 2026-09-26, E4). One filed
+        // under the path as spelled is found too - the newest first.
+        const QString link = dir.filePath("claudesessions-link");
+        QFile::remove(link);
+        QVERIFY(QFile::link(work, link));
+        QList<history::Summary> viaLink = history::claudeSessions(link);
+        QCOMPARE(viaLink.size(), 1);
+        QCOMPARE(viaLink.first().sessionId, id);
+        QString spelled = QDir::cleanPath(QFileInfo(link).absoluteFilePath());
+        for (QChar& c : spelled)
+            if (!(c.isLetterOrNumber() && c.unicode() < 128)) c = '-';
+        QVERIFY(spelled != folderName);
+        QDir().mkpath(history::claudeDirectory() + "/projects/" + spelled);
+        QFile later(history::claudeDirectory() + "/projects/" + spelled + "/1a7e5e55-2222.jsonl");
+        QVERIFY(later.open(QIODevice::WriteOnly));
+        later.write(QJsonDocument(QJsonObject{{"type", "user"}, {"cwd", link}, {"sessionId", "1a7e5e55-2222"}, {"message", msg("Later talk")}})
+                        .toJson(QJsonDocument::Compact) + "\n");
+        later.close();
+        QVERIFY(later.open(QIODevice::ReadWrite));
+        QVERIFY(later.setFileTime(QDateTime::currentDateTime().addSecs(60), QFileDevice::FileModificationTime));
+        later.close();
+        viaLink = history::claudeSessions(link);
+        QCOMPARE(viaLink.size(), 2);
+        QCOMPARE(viaLink.first().sessionId, QStringLiteral("1a7e5e55-2222"));
+        QCOMPARE(viaLink.last().sessionId, id);
+        QVERIFY(QFile::remove(later.fileName()));
+        QFile::remove(link);
+#endif
+
         ClaudeCodeTabs tabs;
         tabs.setDefaultDirectory(work);
         QVERIFY(history::save("kept1", {{"title", "Kept one"}, {"folder", work}, {"sessionId", "s-k"},
@@ -2718,6 +2779,68 @@ private slots:
         QVERIFY(!doc->getSymbolMode());
         QVERIFY(!doc->a_DocNodes.empty());
         doc->setChanged(false);   // (made again, the file has none)
+
+        // A spreadsheet Claude changed (bug hunt 2026-09-26, E1: "could not
+        // be loaded again", the old table kept - and saved over Claude's):
+        // loaded again, the cell in front kept.
+        const QString csv = workspace + "/results.csv";
+        const auto writeCsv = [&](const QByteArray& text) {
+            QFile f(csv);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(text);
+        };
+        writeCsv("t,v\n0,1\n1,2\n2,3\n");
+        QVERIFY(app.gotoPage(csv, false, false));
+        auto* sheet = dynamic_cast<SheetDoc*>(app.getDoc());
+        QVERIFY(sheet != nullptr);
+        sheet->view()->setCurrentIndex(sheet->view()->model()->index(2, 1));
+        writeCsv("t,v,w\n0,1,9\n1,2,8\n2,3,7\n");
+        app.reloadChangedFiles({csv});
+        QCOMPARE(sheet->sheet().columnCount(), 3);
+        QCOMPARE(sheet->sheet().at(2, 2).text, QStringLiteral("8"));
+        QCOMPARE(sheet->view()->currentIndex().row(), 2);
+        QCOMPARE(sheet->view()->currentIndex().column(), 1);
+        QVERIFY(!sheet->getDocChanged());
+        panel->renderNow();
+        QVERIFY(panel->transcriptText().contains("results.csv loaded again"));
+
+        // Unsaved changes of its own: not loaded, and its Save asks before
+        // writing over what Claude wrote - Cancel keeps Claude's.
+        sheet->setCell(0, 0, "time");
+        QVERIFY(sheet->getDocChanged());
+        QTest::qWait(1100);   // (a newer time on the file than its load)
+        writeCsv("t,v\n5,5\n");
+        app.reloadChangedFiles({csv});
+        QCOMPARE(sheet->sheet().at(0, 0).text, QStringLiteral("time"));
+        const auto saveAnswering = [&](const QString& button) {
+            QString asked;
+            QTimer answer;
+            connect(&answer, &QTimer::timeout, [&] {
+                auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                if (box == nullptr || box->objectName() != "writeOverChanged") return;
+                asked = box->text();
+                for (QAbstractButton* b : box->buttons())
+                    if (b->text() == button) b->click();
+                answer.stop();
+            });
+            answer.start(20);
+            const bool saved = app.saveFile(sheet);
+            return std::make_pair(saved, asked);
+        };
+        auto [saved, asked] = saveAnswering("Cancel");
+        QVERIFY(!saved);
+        QVERIFY2(asked.contains("results.csv was changed by another program"), qPrintable(asked));
+        QCOMPARE(read(csv), QStringLiteral("t,v\n5,5\n"));
+        std::tie(saved, asked) = saveAnswering("Write Over It");
+        QVERIFY(saved);
+        QVERIFY(read(csv).startsWith("time,"));
+        std::tie(saved, asked) = saveAnswering("Write Over It");   // (saved here since: not asked)
+        QVERIFY(saved && asked.isEmpty());
+
+        // Written by another program: followed too, as schematics are.
+        QTest::qWait(1100);
+        writeCsv("t,v\n7,7\n");
+        QTRY_COMPARE_WITH_TIMEOUT(sheet->sheet().at(1, 0).text, QStringLiteral("7"), 10000);
         QVERIFY(app.closeAllFiles());
     }
 };

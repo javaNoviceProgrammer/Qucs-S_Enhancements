@@ -396,6 +396,53 @@ private slots:
     QCOMPARE(static_cast<DimensionPainting*>(again.get())->label(), QStringLiteral("L1"));
   }
 
+  // What a damaged file may hold, kept in range as it is read (bug hunt
+  // 2026-09-26, D1 and D4): a callout's tip far out - turned or mirrored,
+  // it overflowed int and was saved wrapped around; a waveform's cycles and
+  // a dimension's scale that are not numbers - nothing drawn, "nan mm",
+  // saved back so.
+  void oddValuesFromAFileAreKeptInRange()
+  {
+    const auto inRange = [](const QString& line) {
+      for (const QString& field : line.split(' ')) {
+        bool number = false;
+        const qlonglong v = field.toLongLong(&number);
+        if (number && qAbs(v) > 2 * qlonglong(misc::MaxCoordinate)) return false;
+      }
+      return true;
+    };
+    TextBoxPainting tip;
+    QVERIFY(tip.load("TextBox 0 0 100 60 #000000 1 1 #ffffc0 1 1 0 0 2 6 6 #000000 10 0 1 1 1 2147483647 -2147483647 ~hi"));
+    QCOMPARE(tip.pointerTip(), QPoint(misc::MaxCoordinate, -misc::MaxCoordinate));
+    QVERIFY(tip.boundingRect().width() <= 2 * misc::MaxCoordinate);
+    tip.rotate();
+    tip.mirrorX();
+    tip.mirrorY();
+    QVERIFY2(inRange(tip.save()), qPrintable(tip.save()));
+
+    for (const char* cycles : {"nan", "inf", "-inf"}) {
+      WaveformPainting w;
+      QVERIFY(w.load(QStringLiteral("Waveform 0 0 100 60 #000080 2 1 #c0c0c0 1 0 0 0 0 %1 25 0").arg(cycles)));
+      QVERIFY2(!w.save().contains("nan") && !w.save().contains("inf"), qPrintable(w.save()));
+      QVERIFY(!firstPolygon(w).isEmpty());   // drawn
+    }
+    WaveformPainting set;
+    set.setField("cycles", std::numeric_limits<double>::quiet_NaN());
+    QVERIFY(!set.save().contains("nan"));
+
+    for (const char* scale : {"nan", "inf", "-inf", "1e308", "0", "-3"}) {
+      DimensionPainting d;
+      QVERIFY(d.load(QStringLiteral("Dimension 0 0 100 0 20 #000000 1 1 0 10 %1 2 ~mm ~").arg(scale)));
+      QVERIFY2(!d.label().contains("nan") && !d.label().contains("inf") && !d.label().startsWith("0.00"),
+               qPrintable(QString("%1 -> %2").arg(scale, d.label())));
+      QVERIFY2(!d.save().contains("nan") && !d.save().contains("inf"), qPrintable(d.save()));
+    }
+    DimensionPainting d;
+    d.setPoints(QPoint(0, 0), QPoint(100, 0), -20);
+    d.setField("scale", std::numeric_limits<double>::infinity());
+    QCOMPARE(d.label(), QStringLiteral("100"));
+  }
+
   void aFormulaIsTypeset()
   {
     FormulaPainting f;

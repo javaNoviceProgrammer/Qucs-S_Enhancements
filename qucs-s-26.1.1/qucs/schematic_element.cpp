@@ -110,10 +110,13 @@ static bool shouldBeSelected(const QRect& elementBoundingRect, const QRect& sele
 // large schematic.
 namespace invariants {
 
+// A node that carries a label is not an orphan with nothing on it: the
+// label was saved on a pin that is not there now (a library part whose file
+// was not found has none) - kept, not lost at the next save.
 bool noOrphanNodes(const std::list<Node*>* nodes)
 {
     for (auto* n : *nodes) {
-        QUCS_ASSERT(n->conn_count() > 0);
+        QUCS_ASSERT(n->conn_count() > 0 || n->hasLabel());
     }
     return true;
 }
@@ -3036,96 +3039,107 @@ bool Schematic::heal(const HealingParams* params) {
     // Merge nodes having the same location
     thereWereChanges = internal::mergeOverlappingNodes(*a_Nodes) || thereWereChanges;
 
-    // Fix "node above wire" anomalies: split each wire at every node on it.
-    // Splitting makes and moves no node, so the nodes are looked up by place
-    // (comparing each node with each wire took most of an edit's time in a
-    // large schematic).
-    {
-        const qucs_s::NodesByPlace nodes_by_place{*a_Nodes};
-        std::vector<Wire*> pending(a_Wires->begin(), a_Wires->end());
-        while (!pending.empty()) {
-            Wire* w = pending.back();
-            pending.pop_back();
-            const QPoint p1 = w->Port1->center();
-            const QPoint p2 = w->Port2->center();
-            auto on_wire = nodes_by_place.between(p1, p2);
-            if (on_wire.empty()) continue;
-            thereWereChanges = true;
+    // From here on again while merging made a wire longer: a diagonal
+    // wire's tolerance widens with its length, and the whole may lie over a
+    // node its pieces did not (bug hunt 2026-09-24, B1: noNodesOnWires
+    // failed after a rotate). A node split into a wire has three connections
+    // at least and is never merged away, and each merge takes a node of two:
+    // this ends. The bound is a backstop.
+    for (int round = 0; round < 100; ++round) {
+        // Fix "node above wire" anomalies: split each wire at every node on it.
+        // Splitting makes and moves no node, so the nodes are looked up by place
+        // (comparing each node with each wire took most of an edit's time in a
+        // large schematic).
+        {
+            const qucs_s::NodesByPlace nodes_by_place{*a_Nodes};
+            std::vector<Wire*> pending(a_Wires->begin(), a_Wires->end());
+            while (!pending.empty()) {
+                Wire* w = pending.back();
+                pending.pop_back();
+                const QPoint p1 = w->Port1->center();
+                const QPoint p2 = w->Port2->center();
+                auto on_wire = nodes_by_place.between(p1, p2);
+                if (on_wire.empty()) continue;
+                thereWereChanges = true;
 
-            if (p1.x() == p2.x() || p1.y() == p2.y()) {
-                // Exactly on the line: split at each, the farthest from Port1
-                // first, which leaves the others on the piece that keeps Port1
-                std::ranges::sort(on_wire, std::ranges::greater{},
-                                  [p1](const Node* n) { return (n->center() - p1).manhattanLength(); });
-                for (auto* n : on_wire) {
-                    splitWire(w, n);
-                }
-            } else {
-                // Both pieces again: with the tolerance of a diagonal wire a
-                // node on the whole need not be on the piece it falls in
-                pending.push_back(splitWire(w, on_wire[on_wire.size() / 2]));
-                pending.push_back(w);
-            }
-        }
-    }
-
-
-    // Fix "duplicate wires" anomalies
-    {
-        std::unordered_map<qucs_s::UnorderedPair<Node*,Node*>,Wire*> unique_wires;
-        std::vector<Wire*> wire_duplicates;
-        for (auto* wire : *a_Wires) {
-            qucs_s::UnorderedPair<Node*,Node*> p{wire->Port1, wire->Port2};
-
-            if (unique_wires.contains(p)) {
-                if (!unique_wires.at(p)->hasLabel()) {
-                    unique_wires.at(p)->acquireLabel(wire->releaseLabel());
-                }
-                wire_duplicates.push_back(wire);
-            } else {
-                unique_wires.emplace(p, wire);
-            }
-        }
-
-        deleteWires(wire_duplicates);
-        thereWereChanges = !wire_duplicates.empty() || thereWereChanges;
-    }
-
-
-    // Remove orphan nodes
-    a_Nodes->remove_if([](const Node* n) { return n->conn_count() == 0;});
-
-
-    // Remove wires between ports of the same component
-    {
-        std::set<Wire*> shorts;
-        for (auto* wire : *a_Wires) {
-            std::set<Component*> port_1_comps;
-            for (auto* comp : wire->Port1->components()) {
-                port_1_comps.insert(comp);
-            }
-
-            if (port_1_comps.empty()) continue;
-
-            std::set<Component*> shorted;
-            for (auto* comp : wire->Port2->components()) {
-                if (port_1_comps.contains(comp)) {
-                    shorted.insert(comp);
-                }
-            }
-
-            for (auto* comp : shorted) {
-                if (comp->boundingRect().contains(wire->center())) {
-                    shorts.insert(wire);
+                if (p1.x() == p2.x() || p1.y() == p2.y()) {
+                    // Exactly on the line: split at each, the farthest from Port1
+                    // first, which leaves the others on the piece that keeps Port1
+                    std::ranges::sort(on_wire, std::ranges::greater{},
+                                      [p1](const Node* n) { return (n->center() - p1).manhattanLength(); });
+                    for (auto* n : on_wire) {
+                        splitWire(w, n);
+                    }
+                } else {
+                    // Both pieces again: with the tolerance of a diagonal wire a
+                    // node on the whole need not be on the piece it falls in
+                    pending.push_back(splitWire(w, on_wire[on_wire.size() / 2]));
+                    pending.push_back(w);
                 }
             }
         }
 
-        deleteWires({shorts.begin(), shorts.end()});
-        thereWereChanges = !shorts.empty() || thereWereChanges;
-    }
 
-    thereWereChanges = optimizeWires() || thereWereChanges;
+        // Fix "duplicate wires" anomalies
+        {
+            std::unordered_map<qucs_s::UnorderedPair<Node*,Node*>,Wire*> unique_wires;
+            std::vector<Wire*> wire_duplicates;
+            for (auto* wire : *a_Wires) {
+                qucs_s::UnorderedPair<Node*,Node*> p{wire->Port1, wire->Port2};
+
+                if (unique_wires.contains(p)) {
+                    if (!unique_wires.at(p)->hasLabel()) {
+                        unique_wires.at(p)->acquireLabel(wire->releaseLabel());
+                    }
+                    wire_duplicates.push_back(wire);
+                } else {
+                    unique_wires.emplace(p, wire);
+                }
+            }
+
+            deleteWires(wire_duplicates);
+            thereWereChanges = !wire_duplicates.empty() || thereWereChanges;
+        }
+
+
+        // Remove orphan nodes - not one that holds a label (noOrphanNodes()):
+        // its label went with it, and out of the file at the next save.
+        a_Nodes->remove_if([](const Node* n) { return n->conn_count() == 0 && !n->hasLabel(); });
+
+
+        // Remove wires between ports of the same component
+        {
+            std::set<Wire*> shorts;
+            for (auto* wire : *a_Wires) {
+                std::set<Component*> port_1_comps;
+                for (auto* comp : wire->Port1->components()) {
+                    port_1_comps.insert(comp);
+                }
+
+                if (port_1_comps.empty()) continue;
+
+                std::set<Component*> shorted;
+                for (auto* comp : wire->Port2->components()) {
+                    if (port_1_comps.contains(comp)) {
+                        shorted.insert(comp);
+                    }
+                }
+
+                for (auto* comp : shorted) {
+                    if (comp->boundingRect().contains(wire->center())) {
+                        shorts.insert(wire);
+                    }
+                }
+            }
+
+            deleteWires({shorts.begin(), shorts.end()});
+            thereWereChanges = !shorts.empty() || thereWereChanges;
+        }
+
+        const bool merged = optimizeWires();
+        thereWereChanges = merged || thereWereChanges;
+        if (!merged) break;
+    }
 
     //
     // Baked

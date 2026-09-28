@@ -613,6 +613,62 @@ private slots:
         QCOMPARE(f.readAll(), QByteArray("part,value\nR1,1000\nC1,1e-09\n"));
         QVERIFY(!sheet::readFile(dir.filePath("old.xls"), x, &why));
     }
+
+    // What a damaged or odd workbook holds, read without undefined
+    // behaviour (bug hunt 2026-09-26, D2, D3): a column of twelve letters
+    // (its number overflowed int, letter by letter), a <col> at 2147483647
+    // (min + 1024 overflowed), a date cell holding 1e300 or nan (converted
+    // to an integer unchecked). A sheet whose name has "%1" in it is
+    // written whole (E5: its id became "%2", and the workbook was broken).
+    void oddNumbersInAWorkbookAreRead()
+    {
+        QCOMPARE(sheet::columnOf("XFD1"), 16383);
+        QCOMPARE(sheet::columnOf("XFE1"), -1);
+        QCOMPARE(sheet::columnOf("AAAAAAAAAAAA1"), -1);
+        sheet::Workbook book;
+        QString why;
+        sheet::readXlsx(withSheet("<sheetData><row r=\"1\"><c r=\"AAAAAAAAAAAA1\"><v>1</v></c></row></sheetData>"), book, &why);
+        for (const char* min : {"2147483647", "-2147483647", "16000"}) {
+            QVERIFY2(sheet::readXlsx(withSheet(QByteArray("<cols><col min=\"") + min + "\" max=\"2147483647\" width=\"10\"/></cols>"
+                                               "<sheetData><row r=\"1\"><c r=\"A1\"><v>1</v></c></row></sheetData>"),
+                                     book, &why),
+                     qPrintable(why));
+            for (auto it = book.sheets.first().widths.cbegin(); it != book.sheets.first().widths.cend(); ++it)
+                QVERIFY2(it.key() >= 0 && it.key() < 16384, qPrintable(QString::number(it.key())));
+        }
+
+        QCOMPARE(sheet::dateText(2958465), QString("9999-12-31"));   // Excel's last day
+        QCOMPARE(sheet::dateText(2958466), QString("2958466"));      // after it: the number
+        QCOMPARE(sheet::dateText(1e300), QString("1e+300"));
+        QCOMPARE(sheet::dateText(-1), QString("-1"));
+        QVERIFY(!sheet::dateOf(std::numeric_limits<double>::quiet_NaN()).isValid());
+        QVERIFY(!sheet::dateOf(std::numeric_limits<double>::infinity()).isValid());
+        QVERIFY2(sheet::readXlsx(withSheet("<sheetData><row r=\"1\"><c r=\"A1\" s=\"1\"><v>1e300</v></c><c r=\"B1\" s=\"1\"><v>nan</v></c>"
+                                           "<c r=\"C1\" s=\"1\"><v>-1e300</v></c><c r=\"D1\" s=\"1\"><v>45413</v></c></row></sheetData>"),
+                                 book, &why),
+                 qPrintable(why));
+        const sheet::Sheet& dates = book.sheets.first();
+        QCOMPARE(dates.at(0, 0).text, QString("1e+300"));
+        QCOMPARE(dates.at(0, 1).text, QString("nan"));
+        QCOMPARE(dates.at(0, 2).text, QString("-1e+300"));
+        QCOMPARE(dates.at(0, 3).text, QString("2024-05-01"));
+        // Typed into a date cell, a date before Excel's first is text.
+        sheet::Cell typed;
+        typed.style = 1;
+        sheet::enter(typed, "1850-01-01", book);
+        QCOMPARE(typed.kind, Cell::Kind::Text);
+        sheet::enter(typed, "1900-03-01", book);
+        QCOMPARE(typed.kind, Cell::Kind::Date);
+
+        for (const QString& name : {QString("duty50%1k"), QString("gain%2"), QString("%1%2%3")}) {
+            sheet::Workbook csv = sheet::readCsv("t,v\n0,1\n");
+            csv.sheets.first().name = name;
+            sheet::Workbook back;
+            QVERIFY2(sheet::readXlsx(sheet::writeXlsx(csv), back, &why), qPrintable(name + ": " + why));
+            QCOMPARE(back.sheets.first().name, name);
+            QCOMPARE(back.sheets.first().at(1, 1).text, QString("1"));
+        }
+    }
 };
 
 QTEST_MAIN(TestSpreadsheet)

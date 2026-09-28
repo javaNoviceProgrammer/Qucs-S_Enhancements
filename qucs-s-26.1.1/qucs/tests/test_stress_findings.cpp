@@ -673,6 +673,107 @@ private slots:
             }
         }
     }
+
+    // The wires of a schematic, drawn: the schematic's invariants as the
+    // healer checks them (a Release build logs "Invariant violated"; a
+    // Debug build aborts).
+    static int& violations()
+    {
+        static int count = 0;
+        return count;
+    }
+    static void countViolations(QtMsgType type, const QMessageLogContext& context, const QString& message)
+    {
+        if (message.contains(QStringLiteral("Invariant violated"))) ++violations();
+        if (type == QtFatalMsg) qt_message_output(type, context, message);
+    }
+    static QString wiresOnly(const QString& wires)
+    {
+        return QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n"
+                              "<Components>\n</Components>\n<Wires>\n")
+               + wires + QStringLiteral("</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+    }
+
+    // Two halves of a diagonal wire, merged by the healer at their bend,
+    // lie over a node neither half's tolerance took - 1.5 units off a
+    // 520-unit wire, inside the whole's (bug hunt 2026-09-24, B1: after a
+    // rotate the node lay "on" the wire, not joined to it). It is joined.
+    void aNodeByALengthenedDiagonalWireIsJoined()
+    {
+        write("diagonal.sch", wiresOnly("  <960 200 720 300 \"\" 0 0 0 \"\">\n"
+                                        "  <720 300 480 400 \"\" 0 0 0 \"\">\n"
+                                        "  <740 290 740 180 \"\" 0 0 0 \"\">\n"));
+        Schematic sch(nullptr, dir.filePath("diagonal.sch"));
+        QVERIFY(sch.load());
+        violations() = 0;
+        const QtMessageHandler previous = qInstallMessageHandler(countViolations);
+        for (auto* w : sch.a_DocWires) w->isSelected = true;
+        sch.rotateElements();
+        qInstallMessageHandler(previous);
+        QCOMPARE(violations(), 0);
+        for (Wire* w : sch.a_DocWires)
+            for (Node* n : sch.a_DocNodes)
+                if (n != w->Port1 && n != w->Port2)
+                    QVERIFY2(!qucs_s::geom::is_between(n->center(), w->P1(), w->P2()),
+                             qPrintable(QString("node %1,%2 on the wire %3,%4 - %5,%6").arg(n->x()).arg(n->y())
+                                            .arg(w->x1).arg(w->y1).arg(w->x2).arg(w->y2)));
+        // The short wire's end joins the diagonal: three wires meet there.
+        int meeting = 0;
+        for (Node* n : sch.a_DocNodes) meeting += n->conn_count() == 3;
+        QCOMPARE(meeting, 1);
+    }
+
+    // Labels saved on the supply pins of library parts (bug hunt
+    // 2026-09-24, B2): Lorenz's SpLib parts name their files where they
+    // were on the author's machine - found now in user_lib beside it, so
+    // the parts have pins and the labels something on them. And a label
+    // on a pin of a part whose library is not found at all is kept through
+    // an edit and a save (its node was taken for an orphan: a Debug build
+    // aborted, and the label went at the next save).
+    void labelsOnPinsOfLibraryPartsAreKept()
+    {
+        Schematic lorenz(nullptr, example("xyce/Xyce_Examples/09-Lorenz/lorenz.sch"));
+        QVERIFY(lorenz.load());
+        int libraries = 0;
+        for (auto* c : lorenz.a_DocComps)
+            if (c->Model == QLatin1String("SpLib")) {
+                ++libraries;
+                QVERIFY2(!c->Ports.isEmpty(), qPrintable(c->Name));
+            }
+        QCOMPARE(libraries, 5);
+        const auto labels = [](Schematic& sch) {
+            int n = 0;
+            for (auto* node : sch.a_DocNodes) n += node->hasLabel();
+            for (auto* w : sch.a_DocWires) n += w->hasLabel();
+            return n;
+        };
+        const int before = labels(lorenz);
+        violations() = 0;
+        QtMessageHandler previous = qInstallMessageHandler(countViolations);
+        for (auto* c : lorenz.a_DocComps) c->isSelected = true;
+        for (auto* w : lorenz.a_DocWires) w->isSelected = true;
+        lorenz.rotateElements();
+        qInstallMessageHandler(previous);
+        QCOMPARE(violations(), 0);
+        QCOMPARE(labels(lorenz), before);
+
+        write("nolib.sch", QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n"
+                                          "<Components>\n"
+                                          "  <SpLib U1 1 200 200 -36 46 0 0 \"/nowhere/user_lib/gone.lib\" 0 \"GONE\" 1 \"opamp5t\" 0 \"\" 0>\n"
+                                          "  <R R1 1 500 200 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                                          "</Components>\n<Wires>\n"
+                                          "  <230 170 230 170 \"V_P15\" 250 140 0 \"\">\n"
+                                          "</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n"));
+        Schematic nolib(nullptr, dir.filePath("nolib.sch"));
+        QVERIFY(nolib.load());
+        violations() = 0;
+        previous = qInstallMessageHandler(countViolations);
+        for (auto* c : nolib.a_DocComps) c->isSelected = c->Name == QLatin1String("R1");
+        nolib.rotateElements();
+        qInstallMessageHandler(previous);
+        QCOMPARE(violations(), 0);
+        QVERIFY2(nolib.documentText().contains("\"V_P15\""), qPrintable(nolib.documentText()));
+    }
 };
 
 QTEST_MAIN(TestStressFindings)

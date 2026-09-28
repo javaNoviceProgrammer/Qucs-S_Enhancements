@@ -1839,7 +1839,9 @@ void QucsApp::slotButtonProjNew()
 void QucsApp::useProjectScratch(bool on)
 {
   if (on) {
-    const QString scratch = QucsSettings.QucsWorkDir.absoluteFilePath(QLatin1String(misc::ScratchFolder));
+    // (Any folder opened as a project: its Scratch is in the cache
+    // directory, not written into the folder - misc::projectScratch().)
+    const QString scratch = misc::projectScratch(QucsSettings.QucsWorkDir.absolutePath());
     QDir().mkpath(scratch);
     QucsSettings.tempFilesDir.setPath(scratch);
   } else {
@@ -1865,6 +1867,18 @@ void QucsApp::openProject(const QString& PathGiven)
   if(!ProjDir.exists() || !ProjDir.isReadable()) { // check project directory
     QMessageBox::critical(this, tr("Error"),
                           tr("Cannot access project directory: %1").arg(Path));
+    return;
+  }
+
+  // The workspace itself holds the projects, and the home folder
+  // everything: neither is one (Open Project starts in the workspace, and
+  // Open there without a folder chosen picks it).
+  const QString real = ProjDir.canonicalPath();
+  if (real == QDir(QucsSettings.qucsWorkspaceDir).canonicalPath() || real == QDir::home().canonicalPath()) {
+    QMessageBox::critical(this, tr("Error"),
+                          tr("%1 cannot be a project: it is the %2 folder. Choose a folder in it.")
+                              .arg(QDir::toNativeSeparators(Path),
+                                   real == QDir::home().canonicalPath() ? tr("home") : tr("workspace")));
     return;
   }
 
@@ -2464,6 +2478,24 @@ bool QucsApp::saveFile(QucsDoc *Doc)
 
   if(Doc->getDocName().isEmpty())
     return saveAs();
+
+  // Written by another program since it was loaded or saved here (Claude,
+  // an editor) - its changes would be lost without a word: the user says.
+  // (Claude's own save_document asks no one.)
+  const QFileInfo onDisk(Doc->getDocName());
+  if (!misc::ErrorCapture::active() && onDisk.exists() && Doc->getLastSaved().isValid()
+      && onDisk.lastModified() > Doc->getLastSaved()) {
+    QMessageBox box(QMessageBox::Warning, tr("Save"),
+                    tr("%1 was changed by another program since it was loaded here.").arg(onDisk.fileName()),
+                    QMessageBox::NoButton, this);
+    box.setObjectName(QStringLiteral("writeOverChanged"));
+    box.setInformativeText(tr("Saving writes over those changes."));
+    QPushButton *over = box.addButton(tr("Write Over It"), QMessageBox::DestructiveRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.exec();
+    if (box.clickedButton() != over) return false;
+  }
 
   int Result = Doc->save();
   if(Result < 0)  return false;
@@ -3373,6 +3405,15 @@ bool QucsApp::reloadDocument(QucsDoc *doc)
       text->setTextCursor(cursor);
       text->verticalScrollBar()->setValue(scroll);
     }
+  } else if (auto *sheet = dynamic_cast<SheetDoc *>(doc)) {
+    loaded = sheet->reload();   // (the sheet and the cell in front kept)
+#ifdef QUCS_HAVE_QTPDF
+  } else if (auto *pdf = dynamic_cast<PdfDoc *>(doc)) {
+    loaded = pdf->reload();
+#endif
+  } else if (auto *zip = dynamic_cast<ZipDoc *>(doc)) {
+    misc::ErrorCapture quiet;   // (half written: no box - it is read when it is whole)
+    loaded = zip->load();
   }
   return loaded;
 }
@@ -3382,7 +3423,10 @@ void QucsApp::watchDocuments()
   if (a_docWatcher == nullptr) return;
   QSet<QString> wanted;
   for (QucsDoc *doc : allDocuments())
-    if (!doc->getDocName().isEmpty() && (dynamic_cast<Schematic *>(doc) != nullptr || dynamic_cast<TextDoc *>(doc) != nullptr)
+    // (A PDF follows its file itself.)
+    if (!doc->getDocName().isEmpty()
+        && (dynamic_cast<Schematic *>(doc) != nullptr || dynamic_cast<TextDoc *>(doc) != nullptr
+            || dynamic_cast<SheetDoc *>(doc) != nullptr || dynamic_cast<ZipDoc *>(doc) != nullptr)
         && QFileInfo::exists(doc->getDocName()))
       wanted.insert(doc->getDocName());
   const QStringList watched = a_docWatcher->files();

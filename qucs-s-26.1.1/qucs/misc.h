@@ -75,6 +75,12 @@ namespace misc {
   /// Scratch folder, otherwise (no project, headless) the simulator work
   /// directory from the settings.
   QString scratchDir();
+  /// The Scratch folder of the project in \a projectDir: in it for a
+  /// NAME_prj project (made for Qucs) or one that has a Scratch folder
+  /// already; for any other folder opened as a project (a git checkout, a
+  /// folder of one's own) a folder in the cache directory - nothing is
+  /// written into the user's folder.
+  QString projectScratch(const QString& projectDir);
   /// Where the simulations of one schematic write their temporary files:
   /// a folder of the schematic's name (its path relative to the project,
   /// without the extension - "amp" for amp.sch, "sub/amp" for sub/amp.sch)

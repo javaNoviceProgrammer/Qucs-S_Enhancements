@@ -12,6 +12,7 @@
 
 #include "ink.h"
 #include "main.h"
+#include "misc.h"
 
 #include <QCoreApplication>
 #include <QFontMetricsF>
@@ -409,7 +410,9 @@ bool WaveformPainting::loadExtra(const QStringList& f)
   bool good = f.size() > 1;
   const double cycles = good ? f.at(1).toDouble(&good) : 2.0;
   if (!good) ok = false;
-  m_cycles = std::clamp(good ? cycles : 2.0, 0.05, 100.0);
+  // (toDouble() takes "nan" and "inf": clamped, NaN stays NaN - nothing
+  // drawn, and saved back so. Not a number of cycles: the default.)
+  m_cycles = std::clamp(good && std::isfinite(cycles) ? cycles : 2.0, 0.05, 100.0);
   m_duty = std::clamp(toInt(f, 2, 25, &ok), 1, 99);
   m_baseline = toInt(f, 3, 0, &ok) != 0;
   return ok;
@@ -436,7 +439,10 @@ QList<PaintingField> WaveformPainting::fields() const
 void WaveformPainting::setField(const QString& key, const QVariant& value)
 {
   if (key == QLatin1String("shape")) m_shape = Shape(std::clamp(value.toInt(), 0, 5));
-  else if (key == QLatin1String("cycles")) m_cycles = std::clamp(value.toDouble(), 0.05, 100.0);
+  else if (key == QLatin1String("cycles")) {
+    const double cycles = value.toDouble();
+    m_cycles = std::clamp(std::isfinite(cycles) ? cycles : 2.0, 0.05, 100.0);
+  }
   else if (key == QLatin1String("duty")) m_duty = std::clamp(value.toInt(), 1, 99);
   else if (key == QLatin1String("baseline")) m_baseline = value.toBool();
   else ShapePainting::setField(key, value);
@@ -532,7 +538,7 @@ QList<QPoint> TextBoxPainting::extraHandles() const
 
 void TextBoxPainting::moveExtraHandle(int, const QPoint& to)
 {
-  m_tip = to;
+  m_tip = QPoint(misc::clampCoordinate(to.x()), misc::clampCoordinate(to.y()));
   m_tipPlaced = true;
 }
 
@@ -607,7 +613,9 @@ bool TextBoxPainting::loadExtra(const QStringList& f)
   m_align = std::clamp(toInt(f, 6, 1, &ok), 0, 2);
   m_valign = std::clamp(toInt(f, 7, 1, &ok), 0, 2);
   m_pointer = toInt(f, 8, 0, &ok) != 0;
-  m_tip = QPoint(toInt(f, 9, 0, &ok), toInt(f, 10, 0, &ok));
+  // (Clamped as every other coordinate: turned or mirrored, a tip far out
+  // overflowed int.)
+  m_tip = QPoint(misc::clampCoordinate(toInt(f, 9, 0, &ok)), misc::clampCoordinate(toInt(f, 10, 0, &ok)));
   m_tipPlaced = true;
   if (f.size() > 11 && f.at(11).startsWith(QLatin1Char('~'))) m_text = decodeText(f.at(11).mid(1));
   else ok = false;

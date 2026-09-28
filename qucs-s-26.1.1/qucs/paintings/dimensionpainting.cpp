@@ -41,6 +41,13 @@ QPointF unit(const QPointF& v)
   return length > 0 ? v / length : QPointF(1, 0);
 }
 
+// A scale as the dialog allows it (1e-6 to 1e6); "nan", "inf", 0 or less
+// (from a file, or given to a tool) is 1 - its label read "nan mm".
+double scaleOf(double scale)
+{
+  return std::isfinite(scale) && scale > 0 ? std::clamp(scale, 0.000001, 1e6) : 1.0;
+}
+
 } // namespace
 
 DimensionPainting::DimensionPainting() : m_pen(QColor(0, 0, 0)), m_fontSize(QucsSettings.font.pointSize())
@@ -204,7 +211,7 @@ bool DimensionPainting::load(const QString& s)
   m_ends = Ends(std::clamp(number(9), 0, 2));
   m_fontSize = std::clamp(number(10), 1, 400);
   bool good = false;
-  m_scale = f.at(11).toDouble(&good);
+  m_scale = scaleOf(f.at(11).toDouble(&good));
   ok = ok && good;
   m_decimals = std::clamp(number(12), 0, 6);
   if (!f.at(13).startsWith(QLatin1Char('~')) || !f.at(14).startsWith(QLatin1Char('~'))) return false;
@@ -449,7 +456,7 @@ QList<PaintingField> DimensionPainting::fields() const
 void DimensionPainting::setField(const QString& key, const QVariant& value)
 {
   if (key == QLatin1String("text")) m_text = value.toString();
-  else if (key == QLatin1String("scale")) m_scale = value.toDouble() > 0 ? value.toDouble() : 1.0;
+  else if (key == QLatin1String("scale")) m_scale = scaleOf(value.toDouble());
   else if (key == QLatin1String("unit")) m_unit = value.toString();
   else if (key == QLatin1String("decimals")) m_decimals = std::clamp(value.toInt(), 0, 6);
   else if (key == QLatin1String("fontSize")) m_fontSize = std::clamp(value.toInt(), 1, 400);
