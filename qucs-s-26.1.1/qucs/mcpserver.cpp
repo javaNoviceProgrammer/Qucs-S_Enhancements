@@ -19,17 +19,18 @@ namespace qucs_s::mcp {
 
 namespace {
 
+// (The request's id as it came - null too, which was answered as 0.)
 QJsonObject response(const QJsonValue& id, const QJsonObject& result)
 {
     return {{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
-            {QStringLiteral("id"), id.isUndefined() || id.isNull() ? QJsonValue(0) : id},
+            {QStringLiteral("id"), id.isUndefined() ? QJsonValue(QJsonValue::Null) : id},
             {QStringLiteral("result"), result}};
 }
 
 QJsonObject failure(const QJsonValue& id, int code, const QString& text)
 {
     return {{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
-            {QStringLiteral("id"), id.isUndefined() || id.isNull() ? QJsonValue(0) : id},
+            {QStringLiteral("id"), id.isUndefined() ? QJsonValue(QJsonValue::Null) : id},
             {QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), code}, {QStringLiteral("message"), text}}}};
 }
 
@@ -149,14 +150,29 @@ void Server::handle(const QJsonObject& message, const Reply& reply)
         reply(response(id, result));
         return;
     }
+    // (A request's id is a string or a number; its params, when given, an
+    // object: [1, 2] was read as no tool at all.)
+    if (message.contains(QLatin1String("id")) && !id.isString() && !id.isDouble() && !id.isNull()) {
+        reply(failure(QJsonValue(QJsonValue::Null), -32600, QStringLiteral("Invalid Request: 'id' is a string or a number")));
+        return;
+    }
     if (isNotification(message) || method == QLatin1String("ping")) {
         reply(response(id, QJsonObject()));
+        return;
+    }
+    if (message.contains(QLatin1String("params")) && !message.value(QLatin1String("params")).isObject()) {
+        reply(failure(id, -32602, QStringLiteral("Invalid params: 'params' is an object")));
         return;
     }
     const QJsonObject params = message.value(QLatin1String("params")).toObject();
     if (method == QLatin1String("tools/list")) {
         reply(response(id, {{QStringLiteral("tools"), a_host->tools()}}));
     } else if (method == QLatin1String("tools/call")) {
+        if (!params.value(QLatin1String("name")).isString()
+            || (params.contains(QLatin1String("arguments")) && !params.value(QLatin1String("arguments")).isObject())) {
+            reply(failure(id, -32602, QStringLiteral("Invalid params: 'name' is the tool's name, 'arguments' an object")));
+            return;
+        }
         const QString tool = params.value(QLatin1String("name")).toString();
         const QJsonObject arguments = params.value(QLatin1String("arguments")).toObject();
         QPointer<Server> self(this);

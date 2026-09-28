@@ -563,7 +563,12 @@ struct Term {
     char op = 0;
     std::vector<std::unique_ptr<Term>> args;
     const Variable* variable = nullptr;   // a name's, once resolved
+    int depth = 1;   // of the tree under it: parsing, evaluating and freeing recurse so deep
 };
+
+// Deeper than this, an expression is refused: its parsing, evaluation and
+// freeing recurse, and 100,000 parentheses overflowed the stack.
+constexpr int kDeepest = 200;
 
 // Numbers, names (tran.v(out), v(out), @q1[ic], out.v), operators,
 // parentheses and functions.
@@ -588,6 +593,28 @@ private:
     const QString t;
     qsizetype i = 0;
     QString why;
+    int nest = 0;   // unary() and primary() within each other now
+
+    // One level deeper while it lives; false when too deep.
+    struct Level {
+        Parser& p;
+        bool ok;
+        explicit Level(Parser& parser) : p(parser), ok(++parser.nest <= kDeepest)
+        {
+            if (!ok) p.fail(tooDeep());
+        }
+        ~Level() { --p.nest; }
+    };
+    static QString tooDeep() { return tr("it is nested too deeply (more than %1 levels)").arg(kDeepest); }
+    // \a e, or nullptr (and why) when its tree is too deep.
+    std::unique_ptr<Term> checked(std::unique_ptr<Term> e)
+    {
+        if (e && e->depth > kDeepest) {
+            fail(tooDeep());
+            return nullptr;
+        }
+        return e;
+    }
 
     void fail(const QString& w)
     {
@@ -611,6 +638,7 @@ private:
         auto e = std::make_unique<Term>();
         e->kind = Term::Binary;
         e->op = op;
+        e->depth = 1 + std::max(a ? a->depth : 0, b ? b->depth : 0);
         e->args.push_back(std::move(a));
         e->args.push_back(std::move(b));
         return e;
@@ -623,6 +651,7 @@ private:
             else if (take(QLatin1Char('-'))) e = binary('-', std::move(e), product());
             else break;
             if (!e->args.back()) return nullptr;
+            e = checked(std::move(e));   // (a+a+a+...: as deep as it is long)
         }
         return e;
     }
@@ -634,30 +663,36 @@ private:
             else if (take(QLatin1Char('/'))) e = binary('/', std::move(e), unary());
             else break;
             if (!e->args.back()) return nullptr;
+            e = checked(std::move(e));
         }
         return e;
     }
     std::unique_ptr<Term> unary()
     {
+        const Level level(*this);
+        if (!level.ok) return nullptr;
         if (take(QLatin1Char('-'))) {
             auto inner = unary();
             if (!inner) return nullptr;
             auto e = std::make_unique<Term>();
             e->kind = Term::Negate;
+            e->depth = inner->depth + 1;
             e->args.push_back(std::move(inner));
-            return e;
+            return checked(std::move(e));
         }
         if (take(QLatin1Char('+'))) return unary();
         auto e = primary();
         if (e && take(QLatin1Char('^'))) {
             auto exponent = unary();
             if (!exponent) return nullptr;
-            e = binary('^', std::move(e), std::move(exponent));
+            e = checked(binary('^', std::move(e), std::move(exponent)));
         }
         return e;
     }
     std::unique_ptr<Term> primary()
     {
+        const Level level(*this);
+        if (!level.ok) return nullptr;
         skip();
         if (i >= t.size()) {
             fail(tr("it ends where a value is wanted"));
@@ -697,8 +732,9 @@ private:
             auto e = std::make_unique<Term>();
             e->kind = Term::Function;
             e->text = name.toLower();
+            e->depth = inner->depth + 1;
             e->args.push_back(std::move(inner));
-            return e;
+            return checked(std::move(e));
         }
         // v(out), i(v1), tran.v(out,in): the parentheses are the name's.
         if (i < t.size() && t.at(i) == QLatin1Char('(')) {
@@ -842,6 +878,12 @@ bool isExpression(const QString& text)
         }
     }
     return false;
+}
+
+bool checkExpression(const QString& expression, QString* error)
+{
+    Parser parser(expression);
+    return parser.parse(error) != nullptr;
 }
 
 bool evaluate(const Dataset& data, const QString& expression, Variable* out, QString* error)
@@ -1396,6 +1438,11 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
         const double T = o.period;
         const double start = c.x.first() + o.offset;
         if (c.x.last() - start < 3 * T) return cannot(tr("fewer than 3 bits in the range"));
+        // A bit shorter than a sample is no eye - and 1e-300 s bits never
+        // ended (t + T == t) while the bits filled memory.
+        const double bits = (c.x.last() - start) / T;
+        if (!(bits <= double(c.x.size())))
+            return cannot(tr("%1 bits in the range, more than its %2 samples: the bit period is too short").arg(bits, 0, 'g', 3).arg(c.x.size()));
         // The crossings of the middle, as phases of a bit (0 to 1).
         const QList<Crossing> all = crossings(c, mid);
         if (all.size() < 2) return cannot(tr("it does not cross %1 twice: no bits").arg(mid));
@@ -1423,7 +1470,9 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
         // Each bit's value at the centre, half a bit from the crossings.
         const double centre = std::fmod(crossing + 0.5, 1.0);
         QVector<double> highs, lows;
-        for (double t = start + centre * T; t <= c.x.last(); t += T) {
+        for (qint64 k = 0;; ++k) {
+            const double t = start + (centre + double(k)) * T;
+            if (t > c.x.last()) break;
             const double y = valueAt(c, t);
             if (std::isnan(y)) continue;
             (y > mid ? highs : lows) << y;

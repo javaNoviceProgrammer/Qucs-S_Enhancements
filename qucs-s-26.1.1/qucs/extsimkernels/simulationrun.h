@@ -74,6 +74,8 @@ private:
     bool a_compiled = false;         // what start() needed is compiled: simulate
     bool a_compileStopped = false;
     bool a_keepConsole = false;      // the console shows the compilation
+    bool a_quiet = false;            // no message box: a tool waits for the run (setQuiet())
+    QString a_datasetError;          // why the dataset could not be written
 
 public:
     explicit SimulationRun(Schematic* sch, bool netlist2Console, QObject* parent = nullptr);
@@ -95,6 +97,12 @@ public:
     /// The simulator's exit code when it finished (-1: it crashed, did not
     /// start, or has not finished).
     int exitCode() const { return a_exitCode; }
+    /// Why the simulator's output could not be written as the dataset;
+    /// empty when it was (or there was nothing to write).
+    QString datasetError() const { return a_datasetError; }
+    /// What goes wrong is not shown in a message box but kept (for Claude's
+    /// tools, whose answer tells it, and which no box may wait on).
+    void setQuiet(bool quiet) { a_quiet = quiet; }
 
 private:
     void saveLog();

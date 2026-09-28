@@ -39,6 +39,10 @@ QJsonObject textResult(const QString& text, bool error = false);
 QJsonObject jsonResult(const QJsonValue& value, bool indented = false);
 QJsonObject errorResult(const QString& text);
 bool sameFile(const QString& a, const QString& b);
+/// Whether \a file is a document of Qucs-S (a schematic, symbol, data
+/// display or dataset - its first line <Qucs ...>, or its suffix says so),
+/// or Verilog-A or VHDL code: what a netlist or a picture must not replace.
+bool isQucsDocument(const QString& file);
 /// A path as given, or taken from the workspace folder.
 QString absolute(const QString& path);
 

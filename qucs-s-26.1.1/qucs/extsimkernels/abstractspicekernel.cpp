@@ -1313,7 +1313,7 @@ int AbstractSpiceKernel::checkRawOutupt(QString ngspice_file, QStringList &value
  * \param qucs_dataset A file name of Qucs Dataset to create
  * \param xyce True if Xyce simulator was used.
  */
-void AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
+QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
 {
     if (a_DC_OP_only) { // Don't touch existing datasets when only DC was simulated
         // It's need to show DC bias on schematic only
@@ -1324,7 +1324,7 @@ void AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
             } else if (outputfile.endsWith(".dc_op_xyce")) {
                 parseDC_OPoutputXY(full_outfile); }
         }
-        return;
+        return {};
     }
 
     // Merge all outputs in a single Qucs dataset otherwise
@@ -1617,20 +1617,22 @@ void AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
         }
     }
 
+    // (Told by the caller: in a box, or in a tool's answer.)
     QFile dataset(qucs_dataset);
-    if (dataset.open(QFile::WriteOnly)) {
+    if (!dataset.open(QFile::WriteOnly))
+        return tr("Failed to create dataset file ") + QDir::toNativeSeparators(qucs_dataset) + ": " + dataset.errorString() + "\n"
+               + tr("Check write permission of the directory ") + QDir::toNativeSeparators(QFileInfo(qucs_dataset).path());
+    {
         QTextStream ts(&dataset);
         ts<<ds_str;
-        dataset.close();
-    } else {
-        QFileInfo inf(qucs_dataset);
-        QMessageBox::warning(nullptr, tr("Simulate"),
-                             tr("Failed to create dataset file ") + qucs_dataset + "\n"
-                             + tr("Check write permission of the directory ") + inf.path());
     }
+    dataset.close();
+    if (dataset.error() != QFileDevice::NoError)
+        return tr("Failed to write dataset file ") + QDir::toNativeSeparators(qucs_dataset) + ": " + dataset.errorString();
     // The raw simulator output stays in the Scratch folder (it is removed
     // before the next run of the same netlist), so it can be looked at from
     // the Content panel.
+    return {};
 }
 
 /*!

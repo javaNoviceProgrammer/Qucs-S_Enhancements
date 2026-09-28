@@ -114,14 +114,14 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
     struct Kept {
         QPointer<Schematic> sch;
         QPair<QString, QString> state;
-        QPair<int, int> marks;
+        Schematic::UndoStacks marks;
         bool changed;
     };
     QList<Kept> kept;
     const bool atomic = args.value(QLatin1String("atomic")).toBool();
     if (atomic)
         for (QucsDoc* doc : a_app->allDocuments())
-            if (auto* sch = dynamic_cast<Schematic*>(doc)) kept.append(Kept{sch, sch->snapshotAll(), sch->undoMarks(), sch->getDocChanged()});
+            if (auto* sch = dynamic_cast<Schematic*>(doc)) kept.append(Kept{sch, sch->snapshotAll(), sch->undoStacks(), sch->getDocChanged()});
 
     QJSEngine engine;
     engine.installExtensions(QJSEngine::ConsoleExtension);   // console.log too (to stderr)
@@ -166,7 +166,7 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
             for (const Kept& k : std::as_const(kept)) {
                 if (!k.sch) continue;
                 k.sch->restoreAll(k.state, false);
-                k.sch->forgetUndoAfter(k.marks);
+                k.sch->setUndoStacks(k.marks);
                 k.sch->setChanged(k.changed, false);
             }
             result.insert(QStringLiteral("put back"), tr("every schematic is as it was before the script ('atomic')"));

@@ -99,6 +99,7 @@ int runStdio(QApplication& app, QucsApp* window, QTimer* startupCloser)
         fprintf(stderr, "qucs-s --mcp-server: stdout cannot be written\n");
         return 1;
     }
+    control->setHeadless(true);   // (a message box in a call: answered for no one)
     auto* server = new Server(control, &app);
     // (One conversation: what changed since its last call is told, as the
     // dock's are told.)
@@ -143,10 +144,17 @@ int runStdio(QApplication& app, QucsApp* window, QTimer* startupCloser)
         QJsonParseError error;
         const QJsonDocument doc = QJsonDocument::fromJson(line, &error);
         if (!doc.isObject()) {
+            // (A list of requests is JSON: a batch, which MCP has no more -
+            // not a "Parse error: no error occurred".)
+            const bool parsed = error.error == QJsonParseError::NoError;
             write({{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                    {QStringLiteral("id"), QJsonValue()},
-                   {QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), -32700},
-                                                         {QStringLiteral("message"), QStringLiteral("Parse error: %1").arg(error.errorString())}}}});
+                   {QStringLiteral("error"),
+                    QJsonObject{{QStringLiteral("code"), parsed ? -32600 : -32700},
+                                {QStringLiteral("message"), parsed ? (doc.isArray() ? QStringLiteral("Invalid Request: a batch of requests is not taken - "
+                                                                                                    "one request a line")
+                                                                                  : QStringLiteral("Invalid Request: a request is an object"))
+                                                                   : QStringLiteral("Parse error: %1").arg(error.errorString())}}}});
             return;
         }
         const QJsonObject message = doc.object();

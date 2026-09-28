@@ -2050,13 +2050,17 @@ bool Schematic::load()
     deleteAllElements();
     deleteSymbolPaintings();
 
+    // The file's own date, taken before it is read: a file dated in the
+    // future (clock skew, unpacked from an archive) was newer than the
+    // moment of its load for good, and loaded again as changed on disk.
+    const QDateTime stamp = QFileInfo(a_DocName).lastModified();
     const bool loaded = loadDocument();
     ++a_sceneGeneration;
     edited();
     emit signalDocumentRebuilt(this);
     if (!loaded)
         return false;
-    a_lastSaved = QDateTime::currentDateTime();
+    a_lastSaved = stamp.isValid() ? stamp : QDateTime::currentDateTime();
 
     while (!a_undoAction.isEmpty()) {
         delete a_undoAction.last();

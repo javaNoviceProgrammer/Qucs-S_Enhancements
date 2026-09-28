@@ -67,6 +67,9 @@ public:
     /// the conversation's (QucsDoc::editor()).
     void callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
                      std::function<void(const QJsonObject&)> done) override;
+    /// As callToolFor(); \a waited: one that waited its turn, run now.
+    void callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
+                     std::function<void(const QJsonObject&)> done, bool waited);
     /// The tools that take the document they act on as 'path' (the one in
     /// front when not given) are given \a document, and get_state names
     /// it; open_document and show_document name theirs, reload_data
@@ -95,6 +98,16 @@ public:
     /// ("Since your last call: ..."), for half an hour: a file Claude
     /// changed on disk that was not loaded again, say.
     void noteForConversations(const QString& text);
+    /// Served with no window (qucs-s --mcp-server): no one answers a
+    /// message box at all.
+    void setHeadless(bool headless) { a_headless = headless; }
+
+protected:
+    /// A message box that opens while a tool call runs (one no one would
+    /// answer until the call ends - and under --mcp-server no one at all)
+    /// is closed with its safe button (No, Cancel, OK), and what it said
+    /// goes into the call's answer.
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     using Done = std::function<void(const QJsonObject&)>;
@@ -175,6 +188,28 @@ private:
 
     QJsonObject call(const QString& tool, const QJsonObject& args, const Done& done, bool& async);
 
+    // A call that runs over more than one turn of the event loop and puts
+    // schematics back, or must not have others' changes land in its midst -
+    // a batch, a script, tune, a preview - runs alone: calls that come
+    // meanwhile (pipelined by the client, another conversation's) wait, and
+    // run in turn after it. Else a preview's rollback took their changes
+    // with it, and a batch's calls followed a document another call closed.
+    static bool runsAlone(const QString& tool, const QJsonObject& arguments);
+    struct Waiting {
+        quint64 caller;
+        QString tool;
+        QJsonObject arguments;
+        Done done;
+    };
+    QList<Waiting> a_waiting;
+    int a_alone = 0;   // calls that run alone, under way
+    void runWaiting();
+    bool a_headless = false;
+    // Event loops a call runs while it waits (a script's call of a
+    // simulation, a question to the user): a box the user opens meanwhile
+    // is theirs, not the call's.
+    int a_spinning = 0;
+
     // Documents.
     QJsonObject getState(const QJsonObject& args);
     QJsonObject openDocument(const QJsonObject& args);
@@ -194,6 +229,18 @@ private:
     /// arrange: the schematic laid out again by signal flow, every net kept.
     QJsonObject arrange(const QJsonObject& args);
     QJsonObject addAnalysis(const QJsonObject& args);
+    /// \a expressions (db(v(out))) as variables of a NutmegEq run after the
+    /// analysis \a simulated: an equation of one there is, else of a new
+    /// NutmegEq beside the part \a beside (one step to undo; \a made its
+    /// answer). \a variableOf: each expression's variable. False, and why.
+    bool nutmegVariables(Schematic* sch, const QString& beside, const QString& simulated, const QStringList& expressions,
+                         const QJsonValue& path, QHash<QString, QString>* variableOf, QJsonObject* made, QString* error);
+    /// A trace's variable that is an expression (ac.db(v(out)), v(out)/2):
+    /// the name, with its simulator and analysis, of a NutmegEq's variable
+    /// that computes it (made unless \a dryRun, and said in \a note). Empty,
+    /// \a error empty too, when \a wanted is no expression; refused (why in
+    /// \a error) under a simulator with no Nutmeg, or when it does not read.
+    QString expressionTrace(Schematic* sch, const QString& wanted, const QJsonValue& path, bool dryRun, QString* note, QString* error);
     QJsonObject createSubcircuit(const QJsonObject& args);
     QJsonObject connectPins(const QJsonObject& args);
     QJsonObject addWire(const QJsonObject& args);
@@ -224,7 +271,10 @@ private:
     QJsonObject makeSymbol(const QJsonObject& args);
     QJsonObject importNetlist(const QJsonObject& args);
     QJsonObject findLibraryComponent(const QJsonObject& args);
-    QJsonObject datasetOfRun(Schematic* doc, int simulator, const QDateTime& started, const QString& keepAs, bool* written);
+    /// What a run of \a doc wrote: its dataset - written when it is newer than
+    /// \a before (its time before the run; invalid when there was none) -
+    /// its variables, the copy \a keepAs, and the traces left blank.
+    QJsonObject datasetOfRun(Schematic* doc, int simulator, const QDateTime& before, const QString& keepAs, bool* written);
     QJsonObject getNetlist(const QJsonObject& args);
     QJsonObject getDataset(const QJsonObject& args);
     QJsonObject reloadData(const QJsonObject& args);

@@ -492,6 +492,34 @@ private slots:
     // Over stdio, against the program itself: qucs-s --mcp-server answers
     // initialize, lists the tools, builds a schematic and reads its netlist
     // map, with no window on screen.
+    // A request's id comes back as it was - null too, once answered as 0 -
+    // and params that are no object (or a tool's name that is no string)
+    // are invalid params, not "no tool".
+    void badRequestsAreSaidSo()
+    {
+        const auto handled = [this](const QJsonObject& message) {
+            QJsonObject answer;
+            server->handle(message, [&answer](const QJsonObject& r) { answer = r; });
+            QElapsedTimer t;
+            t.start();
+            while (answer.isEmpty() && t.elapsed() < 10000) QTest::qWait(5);
+            return answer;
+        };
+        QJsonObject a = handled({{"jsonrpc", "2.0"}, {"id", QJsonValue()}, {"method", "ping"}});
+        QVERIFY(a.contains("id") && a.value("id").isNull());
+        a = handled({{"jsonrpc", "2.0"}, {"id", "s"}, {"method", "tools/call"}, {"params", QJsonArray{1, 2}}});
+        QCOMPARE(a.value("error").toObject().value("code").toInt(), -32602);
+        QCOMPARE(a.value("id").toString(), QStringLiteral("s"));
+        a = handled({{"jsonrpc", "2.0"}, {"id", 5}, {"method", "resources/read"}, {"params", QJsonArray{"qucs://state"}}});
+        QCOMPARE(a.value("error").toObject().value("code").toInt(), -32602);
+        a = handled({{"jsonrpc", "2.0"}, {"id", 3}, {"method", "tools/call"}, {"params", QJsonObject{{"name", 42}}}});
+        QCOMPARE(a.value("error").toObject().value("code").toInt(), -32602);
+        a = handled({{"jsonrpc", "2.0"}, {"id", 4}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "get_state"}, {"arguments", "x"}}}});
+        QCOMPARE(a.value("error").toObject().value("code").toInt(), -32602);
+        a = handled({{"jsonrpc", "2.0"}, {"id", QJsonObject{{"a", 1}}}, {"method", "ping"}});
+        QCOMPARE(a.value("error").toObject().value("code").toInt(), -32600);
+    }
+
     void theProgramServesOverStdio()
     {
         const QString program = QStringLiteral(QUCS_BINARY);
@@ -564,6 +592,20 @@ private slots:
         }
         QVERIFY(answers.contains(9));
         QVERIFY2(QJsonDocument(answers.value(9)).toJson().contains(QUrl::toPercentEncoding(moved)), qPrintable(QJsonDocument(answers.value(9)).toJson()));
+        // A batch (a list of requests): refused as such, not "Parse error:
+        // no error occurred".
+        p.write("[{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"ping\"}]\n");
+        QJsonObject batch;
+        t.restart();
+        while (batch.isEmpty() && t.elapsed() < 30000) {
+            p.waitForReadyRead(200);
+            while (p.canReadLine()) {
+                const QJsonObject a = QJsonDocument::fromJson(p.readLine()).object();
+                if (a.contains("error")) batch = a;
+            }
+        }
+        QCOMPARE(batch.value("error").toObject().value("code").toInt(), -32600);
+        QVERIFY2(!batch.value("error").toObject().value("message").toString().contains("no error"), qPrintable(QJsonDocument(batch).toJson()));
         p.closeWriteChannel();   // (the server ends with its input)
         QVERIFY(p.waitForFinished(30000));
         QCOMPARE(p.exitCode(), 0);

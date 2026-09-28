@@ -128,6 +128,9 @@ public:
   /// Saves \a Doc under \a fileName from now on (Save As without its
   /// dialogs: the caller checked the name).
   bool saveDocumentAs(QucsDoc *Doc, const QString &fileName);
+  /// \a s taken out of Recent Documents (a file saved for a tool's own
+  /// use - an untitled schematic in the scratch folder, to be simulated).
+  void forgetRecentFile(const QString &s);
   /// The document in tab \a No of the active pane; the current one for
   /// No < 0.
   QucsDoc *getDoc(int No = -1);
@@ -676,6 +679,7 @@ private:
   void closeFile(int);
 
   void updateRecentFilesList(QString s);
+
   void updateRecentProjectsList(QString pathToProj);
   void updateRecentProjectsList();
   void successExportMessages(bool ok);

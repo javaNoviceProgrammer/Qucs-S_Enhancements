@@ -73,6 +73,9 @@ private:
 /// name: it has an operator (+ - * / ^) or a function of evaluate() -
 /// v(out)/v(in), db(ac.v(out)/ac.v(in)), v(out)-v(in).
 bool isExpression(const QString& text);
+/// Whether \a expression reads as one evaluate() takes - its syntax alone,
+/// no variable looked up; why not in \a error (x=1, v(out) +, 2e).
+bool checkExpression(const QString& expression, QString* error);
 /// \a expression evaluated over \a data, sample by sample: numbers, the
 /// variables as resolve() finds them (one analysis for all: v(out) is
 /// the analysis's of the other variables), + - * / ^, parentheses and
