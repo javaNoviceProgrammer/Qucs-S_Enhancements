@@ -143,8 +143,14 @@ private slots:
         for (const QJsonValue& v : tools) {
             const QJsonObject t = v.toObject();
             byName.insert(t.value("name").toString(), t);
-            QVERIFY2(!t.value("description").toString().isEmpty() && t.value("description").toString().size() < 320,
+            // In every turn, a summary; found by the tool search when needed,
+            // its whole description - no describe_tool before its first use.
+            const bool core = t.value("_meta").toObject().value("anthropic/alwaysLoad").toBool();
+            QVERIFY2(!t.value("description").toString().isEmpty() && (!core || t.value("description").toString().size() < 320),
                      qPrintable(t.value("name").toString()));
+            if (!core)
+                QCOMPARE(t.value("description").toString(),
+                         structured(callTool("describe_tool", {{"name", t.value("name").toString()}})).value("description").toString());
             QCOMPARE(t.value("inputSchema").toObject().value("type").toString(), QStringLiteral("object"));
             QVERIFY(t.value("annotations").toObject().contains("readOnlyHint"));
             QVERIFY(!t.value("annotations").toObject().value("openWorldHint").toBool());
@@ -169,12 +175,37 @@ private slots:
         QVERIFY(!byName.value("simulate").value("inputSchema").toObject().value("properties").toObject().contains("preview"));
         QCOMPARE(byName.contains("run_script"), QucsControl::scriptingBuilt());
         QVERIFY(byName.contains("diff") && byName.contains("describe_tool"));
+        QVERIFY(byName.contains("arrange") && byName.value("arrange").value("inputSchema").toObject().value("properties").toObject().contains("preview"));
+        QVERIFY(request("initialize", {{"protocolVersion", "2025-06-18"}, {"capabilities", QJsonObject{{"elicitation", QJsonObject()}}}})
+                    .value("result").toObject().value("instructions").toString().contains("come with their full description"));
         // The whole of one.
         const QJsonObject whole = structured(callTool("describe_tool", {{"name", "get_dataset"}}));
         QVERIFY(whole.value("description").toString().size() > byName.value("get_dataset").value("description").toString().size() * 3);
         QVERIFY(whole.value("inputSchema").toObject().value("properties").toObject().contains("variables"));
         QVERIFY(structured(callTool("describe_tool")).value("tools").toArray().size() == tools.size());
         QVERIFY(callTool("describe_tool", {{"name", "nothing"}}).value("isError").toBool());
+    }
+
+    // A file changed on disk while its document has unsaved changes is not
+    // loaded again - the window shows those - and the next tool result of
+    // each conversation says so (an edit of Claude's with Write or Bash was
+    // otherwise not shown, without a word). Told once.
+    void anEditNotLoadedIsTold()
+    {
+        const QString file = write("notloaded.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n"
+                                                    "<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        callTool("open_document", {{"path", file}});
+        callTool("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}});   // unsaved
+        QTest::qWait(1100);
+        write("notloaded.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n</Components>\n");
+        app->reloadChangedFiles({file});
+        QVERIFY(front()->getComponentByName("R1") != nullptr);   // not loaded
+        QJsonObject r = callTool("get_state");
+        QVERIFY2(structured(r).value("since_last_call").toString().contains("notloaded.sch was changed on disk but not loaded again"),
+                 qPrintable(QJsonDocument(structured(r)).toJson()));
+        r = callTool("get_state");
+        QVERIFY(!structured(r).value("since_last_call").toString().contains("notloaded.sch"));
+        callTool("close_document", {{"unsaved", "discard"}});
     }
 
     // With no simulator chosen (none found at the start), a netlist and a
@@ -419,7 +450,11 @@ private slots:
         QVERIFY(structured(r).value("watch").toString().contains("Vrect"));
         r = callTool("edit_component", {{"name", "V9"}, {"properties", QJsonObject{{"U2", "1.2.3"}}}});
         QVERIFY(QJsonDocument(structured(r).value("values").toArray()).toJson().contains("1.2.3"));
-        r = callTool("edit_component", {{"name", "V9"}, {"properties", QJsonObject{{"U2", "vhigh"}}}});   // (a parameter's name)
+        // A word: a parameter's name when an equation block defines it; else told.
+        r = callTool("edit_component", {{"name", "V9"}, {"properties", QJsonObject{{"U2", "vhigh"}}}});
+        QVERIFY(QJsonDocument(structured(r).value("values").toArray()).toJson().contains("no equation block here defines vhigh"));
+        callTool("add_component", {{"type", "Eqn"}, {"name", "Eqn9"}, {"x", 600}, {"y", 400}, {"equations", QJsonArray{"vhigh=5"}}});
+        r = callTool("edit_component", {{"name", "V9"}, {"properties", QJsonObject{{"U2", "vhigh"}}}});
         QVERIFY(!structured(r).contains("values"));
         callTool("close_document", {{"unsaved", "discard"}});
     }

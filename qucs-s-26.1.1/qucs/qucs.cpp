@@ -3363,7 +3363,9 @@ void QucsApp::reloadChangedFiles(const QStringList &files)
       if (doc->getDocName().isEmpty() || QFileInfo(doc->getDocName()).canonicalFilePath() != canonical) continue;
       const QString name = QFileInfo(file).fileName();
       if (doc->getDocChanged()) {
-        claudeTabs->addNote(tr("%1 has unsaved changes in Qucs-S, so it was not loaded again.").arg(name));
+        claudeTabs->addNote(tr("%1 has unsaved changes in Qucs-S, so it was not loaded again: the window shows those, "
+                               "not Claude's; saving it asks before writing over Claude's.").arg(name));
+        tellClaudeNotLoaded(name);
         break;
       }
       const bool loaded = reloadDocument(doc);
@@ -3373,6 +3375,18 @@ void QucsApp::reloadChangedFiles(const QStringList &files)
     }
   }
   if (a_status != nullptr) a_status->scheduleRefresh();
+}
+
+// A file changed on disk and not loaded again, as the document has unsaved
+// changes: Claude is told with its next Qucs-S tool's result - an edit of
+// its with Write, Edit or Bash was otherwise not shown, without a word.
+void QucsApp::tellClaudeNotLoaded(const QString &name)
+{
+  if (auto *control = findChild<QucsControl *>())
+    control->noteForConversations(
+        tr("%1 was changed on disk but not loaded again: it has unsaved changes in Qucs-S, so the window shows those, "
+           "not the file (a save there asks before writing over the file). Change it with the Qucs-S tools, or ask the "
+           "user to save or discard those changes first.").arg(name));
 }
 
 bool QucsApp::reloadDocument(QucsDoc *doc)
@@ -3461,6 +3475,7 @@ void QucsApp::documentsChangedOnDisk()
       if (doc->getDocChanged()) {
         statusBar()->showMessage(tr("%1 was changed by another program; it has unsaved changes here, so it was not loaded again.")
                                      .arg(name), 8000);
+        tellClaudeNotLoaded(name);   // (a Bash edit of Claude's comes this way)
         break;
       }
       statusBar()->showMessage(reloadDocument(doc) ? tr("%1 was changed by another program and is loaded again.").arg(name)

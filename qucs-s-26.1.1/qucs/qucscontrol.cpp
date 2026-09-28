@@ -86,79 +86,79 @@ namespace {
 // The tools, as MCP's tools/list gives them.
 const char* const kTools = R"JSON([
 {"name": "get_state",
- "description": "The state of the Qucs-S window: its panes (each one's number, row and column, rectangle, documents and the one in front, which is active; move_to_pane arranges them), the documents open (path, title, kind, unsaved changes, which is in front, its pane; each one's revision - it counts every edit, undo and reload, whoever made it - and who made the last edit: you, the user or another conversation; when its dataset was last written), the simulator in the settings, the workspace folder, a simulation under way, a dialog waiting for an answer. Start here. Every tool's result also says what changed since your last call that you did not change: the user's edits, a simulation the user ran.",
+ "description": "Returns the state of the Qucs-S window. Panes: each pane's number, row, column, rectangle and documents, with the active one marked (move_to_pane rearranges them). Documents: path, title, kind, whether it has unsaved changes, whether it is in front, its pane, its revision (a counter of every edit, undo and reload, by anyone), who made the last edit (you, the user or another conversation) and when its dataset was last written. Also the simulator chosen in the settings, the workspace folder, any simulation in progress and any dialog waiting for an answer. Start here. Every tool result also reports what changed since your last call that you did not do yourself, such as the user's edits or a simulation the user ran.",
  "inputSchema": {"type": "object", "properties": {}}},
 {"name": "move_to_pane",
- "description": "Puts a document (the one in front unless path names another) in another pane, to see documents side by side: 'pane' is a pane's number as get_state lists them, or right or below - a new pane beside the document's (at most two a row, two rows). Returns the state with the panes.",
+ "description": "Moves a document (the one in front unless 'path' names another) to another pane, to show documents side by side. 'pane' is a pane number from get_state, or \"right\" or \"below\" for a new pane next to the document's current one (at most two panes per row, and two rows). Returns the state with the panes.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "pane": {"description": "A pane's number, or \"right\" or \"below\""}}, "required": ["pane"]}},
 {"name": "open_document",
- "description": "Opens a file in a tab of Qucs-S - a schematic (.sch), a symbol (.sym), a data display (.dpl), a netlist or any text file, a PDF document (read in Qucs-S's viewer: a datasheet, a report) - or brings it to the front if it is open. A relative path is taken from the open project's folder, else the workspace folder; a file's name alone finds the open document of that name. A schematic's component line with more values than its type has properties (read in order: one too many shifts the rest) is said.",
+ "description": "Opens a file in a Qucs-S tab, or brings it to the front if it is already open: a schematic (.sch), a symbol (.sym), a data display (.dpl), a netlist or any text file, or a PDF (shown in Qucs-S's own viewer, for example a datasheet or a report). A relative path is resolved against the open project's folder, otherwise the workspace folder; a bare file name finds an open document with that name. If a component line in a schematic has more values than its type has properties, the result says so: values are read in order, so one extra value shifts every value after it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file"}}, "required": ["path"]}},
 {"name": "new_document",
- "description": "Opens a new, untitled document in front: a schematic, or a text document - or a schematic's data display (data_display: its .dpl, made when it has none; 'path' the schematic, the one in front unless given), where diagrams and paintings for a report go, the schematic kept clean; export_image writes a picture of it.",
+ "description": "Creates a new, untitled document and brings it to the front: a schematic or a text document. With kind data_display it opens a schematic's data display instead (its .dpl file, created if it has none; 'path' is the schematic, the one in front if not given). A data display holds diagrams and paintings for a report and keeps the schematic itself clean; export_image can write a picture of it.",
  "inputSchema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["schematic", "text", "data_display"]}, "path": {"type": "string"}}}},
 {"name": "show_document",
  "description": "Brings an open document to the front.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "Its file, or its tab's title"}}, "required": ["path"]}},
 {"name": "save_document",
- "description": "Saves a document (the one in front unless path names another); with 'as', under that file name from now on. An untitled document needs 'as'. A subcircuit's instances in the open schematics take its new symbol as it is saved: the result says which were refreshed, and each pin that moved - and whether it no longer meets its wiring.",
+ "description": "Saves a document (the one in front unless 'path' names another). With 'as' it saves under that file name, which the document keeps from then on; an untitled document needs 'as'. Saving over an existing file with 'as' needs 'replace', otherwise the user is asked. When a subcircuit is saved, its instances in open schematics take the new symbol: the result lists which were refreshed, each pin that moved, and whether it still meets its wiring.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "as": {"type": "string", "description": "A new file name"},
    "replace": {"type": "boolean", "description": "With 'as': write over a file that is there (else the user is asked, or it is refused)"}}}},
 {"name": "close_document",
- "description": "Closes a document's tab (the one in front unless path names another). A document with unsaved changes is closed only when 'unsaved' says what to do with them.",
+ "description": "Closes a document's tab (the one in front unless 'path' names another). For a document with unsaved changes, 'unsaved' says whether to save or discard them; without it the user is asked to save, discard or keep the document open.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "unsaved": {"type": "string", "enum": ["save", "discard"]}}}},
 {"name": "get_schematic",
- "description": "Reads a schematic as it is in Qucs-S now, unsaved changes included. 'summary' (the default) lists its components - name, type, place, rotation, mirroring, whether active, properties ('properties': non_default - those shown or not at the type's default, the default; shown; all), and each pin's place, whether anything is on it and its net (a label's name, gnd, or net1, net2, ...), and where its texts are ('texts': its name and each property shown, each with its box [x1, y1, x2, y2] - to move one clear of a wire or a label with edit_component's text_at) - its nets with the pins on each (those with two pins or more, or a name), its wires, net labels, paintings (numbered as the painting tools take them: each one's type and fields by name - a text's place, text, size and colour, an arrow's ends, a box's corner and size, ...), its settings (dataset, data display, frame), and its diagrams, numbered as the diagram tools take them, with their axes, traces - each trace's variable, look, and points or why it shows no data - and markers. 'components' (names) or 'region' ([x1, y1, x2, y2]) lists only those components, with their nets and wires; a list of more than 200 is cut short and says what is left out. 'symbol' lists the paintings of its symbol as well (its ports and name text among them; so does a document that shows its symbol). 'overview' tells it at a glance - its parts counted by type, its analyses, its named nets, its extent, its diagrams - a few hundred bytes for thousands of parts: start there with a large schematic. 'text' is the text its .sch file would have. Coordinates are the schematic's units; the grid is usually 10.",
+ "description": "Reads a schematic as it is in Qucs-S now, including unsaved changes. Format 'summary' (the default) lists: the components (name, type, position, rotation, mirroring, whether active, properties, each pin's position with whether anything is connected and its net - a label's name, gnd, or net1, net2, ... - and the boxes of its texts); the nets with the pins on each (those with two or more pins, or a name); the wires, net labels and paintings (numbered as the painting tools expect, each with its type and fields by name); the settings (dataset, data display, frame); and the diagrams, numbered as the diagram tools expect, with their axes, traces (each trace's variable, style, and points or the reason it shows no data) and markers. 'properties' chooses which properties are listed: non_default (those shown or not at the type's default; the default), shown, or all. 'texts' gives each part's name and shown properties with their box [x1, y1, x2, y2], to move one clear of a wire or label with edit_component's text_at. 'components' (names) or 'region' ([x1, y1, x2, y2]) limits the list to those components with their nets and wires; a list longer than 200 is cut short and says what was left out. 'symbol' also lists the paintings of its symbol (its ports and name text among them), as does a document that is showing its symbol. Format 'overview' summarizes it at a glance - parts counted by type, analyses, named nets, extent and diagrams - in a few hundred bytes even for thousands of parts: start there with a large schematic. Format 'text' returns the text its .sch file would have, and 'json' the parts and wires in the form set_schematic accepts. Coordinates are in schematic units; the grid is usually 10.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "format": {"type": "string", "enum": ["summary", "overview", "text", "json"], "description": "json: its parts and wires as set_schematic's 'components' and 'wires' take them back"}, "symbol": {"type": "boolean"},
    "properties": {"type": "string", "enum": ["non_default", "shown", "all"]},
    "components": {"type": "array", "items": {"type": "string"}},
    "region": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4},
    "selection": {"type": "boolean", "description": "What the user selected: those components (or that region)"}}}},
 {"name": "check_schematic",
- "description": "Checks a schematic for what a simulation would fail on, or do otherwise than meant - as Simulation > Check Schematic does - each finding with its place and part. errors: no ground, two parts of one name, a part the simulator cannot take, ... warnings: pins and wire ends connected to nothing; a wire's end or a pin on another net's wire mid-way (not joined: a wire joins only where it ends); two nets' wires over each other; parts connected to no ground (floating); nets that reach ground only through capacitors or current sources (no DC path: no operating point); no simulation block. notes, fine if meant: wires of two nets crossing without a junction (no connection there), a net label on one pin alone (a plotted node - or a label meant to match another). Use it after building or rewiring a circuit, before simulate; get_schematic's summary counts them too.",
+ "description": "Checks a schematic for anything a simulation would fail on or do differently than intended, like Simulation > Check Schematic, and reports each finding with its location and part. Errors: no ground, two parts with the same name, a part the simulator cannot handle, and so on. Warnings: pins and wire ends connected to nothing; a wire end or a pin lying on another net's wire mid-segment (not connected: a wire connects only at its ends); wires of two nets on top of each other; parts not connected to any ground (floating); nets that reach ground only through capacitors or current sources (no DC path, so no operating point); no simulation block. Notes, fine if intended: wires of two nets crossing without a junction (no connection there), and a net label on a single pin (a plotted node, or a label meant to match another one). Use it after building or rewiring a circuit and before simulate; get_schematic's summary also counts these findings.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
 {"name": "set_schematic",
- "description": "Replaces the elements of a schematic - with the JSON form ('components' and 'wires': parts by their properties' names, checked against their types, as get_schematic's format json gives them), or with 'text': a .sch file's text, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are not taken). One step to undo; the diagrams read their data again. Returns what it read of each section it replaced: the components by name and type, the wires' count, the diagrams as get_schematic lists them (each trace's points or why it has none, each marker and the sample it shows), the paintings' lines. When the text does not read, the schematic stays as it was and the error is told - and so for a component line with more property values than its type has properties (the values are positional: one too many in the middle puts every value after it in the wrong property); one with fewer is taken, the rest at their defaults, and the result says so. To hide or show a property, or move a part's text, edit_component does it without rewriting the line. describe_format gives the lines' fields. For diagrams, traces and markers add_diagram, edit_diagram, add_trace, edit_trace, add_marker and edit_marker are simpler and safer.",
+ "description": "Replaces the elements of a schematic in one undo step. Give either the JSON form - 'components' and 'wires', as get_schematic's format json returns them, with properties by name and checked against each type - or 'text': the text of a .sch file, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are ignored). Diagrams re-read their data. Returns what it read in each section it replaced: the components by name and type, the number of wires, the diagrams as get_schematic lists them (each trace's points or why it has none, each marker and the sample it shows) and the paintings. If the text cannot be read, the schematic stays unchanged and the error is reported. The same happens for a component line with more values than its type has properties, because values are positional and one extra value in the middle puts every later value in the wrong property. A line with fewer values is accepted, the rest at their defaults, and the result says so. Values that do not fit their property - a word where a number belongs, a word that is not one of the property's choices - are listed under 'values'. To hide or show a property or move a part's text, use edit_component instead of rewriting the line. describe_format explains each line's fields. For diagrams, traces and markers, add_diagram, edit_diagram, add_trace, edit_trace, add_marker and edit_marker are simpler and safer.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "text": {"type": "string", "description": "The .sch lines (or 'components' and 'wires' instead)"},
    "components": {"type": "array", "items": {"type": "object"}, "description": "The JSON form, in place of <Components>: each part {\"type\": \"R\", \"name\": \"R1\", \"x\": 100, \"y\": 100, \"rotation\": 0-3, \"mirror\": false, \"properties\": {\"R\": \"1k\"}, \"shown\": {...}, \"equations\": [...], \"active\": true, \"text_at\": [dx, dy]} - properties by name, checked against the type, so no value can shift into another's place; get_schematic's format json gives them so"},
    "wires": {"type": "array", "items": {"type": "object"}, "description": "The JSON form, in place of <Wires>: {\"from\": [x, y], \"to\": [x, y], \"label\": \"out\"}, a label on a pin alone {\"at\": [x, y], \"label\": \"in\"}"}}}},
 {"name": "describe_format",
- "description": "The lines of a .sch file, field by field - a component, a wire, a diagram (all its ~30 fields), a trace, a marker, a painting - as set_schematic takes them and get_schematic's 'text' gives them; for a painting also the fields add_painting and edit_painting take, type by type. Without 'element', all of them.",
+ "description": "Explains the lines of a .sch file field by field - a component, a wire, a diagram (all of its roughly 30 fields), a trace, a marker, a painting - as set_schematic accepts them and get_schematic's format 'text' returns them. For paintings it also lists the fields add_painting and edit_painting accept, type by type. Without 'element', it explains all of them.",
  "inputSchema": {"type": "object", "properties": {"element": {"type": "string", "enum": ["component", "wire", "diagram", "trace", "marker", "painting"]}}}},
 {"name": "add_component",
- "description": "Places a component from the library at x, y (snapped to the grid): 'type' is its model - R, C, L, GND, Vdc, Vac, Idc, Iac, Diode, _BJT, _MOSFET, OpAmp, Sub, .DC, .AC, .TR, .SP, ... (list_component_types lists them all). Properties by name (as get_schematic shows them, e.g. {\"R\": \"4.7k\"}); rotation in quarter turns from the type's own orientation, as Rotate makes them; mirror about the x axis; 'shown' which properties are written on the schematic, 'name_shown', 'text_at' where its text goes. An equation block (Eqn, NutmegEq, .PARAM, .OPTIONS, ...) takes its equations as 'equations' ({\"gain_db\": \"db(v(out))\"}, or a list of \"name=value\" in their order) - they replace its placeholder y=1 - and an .OPTIONS block its flags, options with no value (noinit), as 'flags' or {\"noinit\": true}; an ngspice Monte Carlo (.NGMONTECARLO) or corners block its 'records' and 'specs'. Returns the component with its pins' places - and a note when a pin came down on a wire or another pin (it is joined to it) or on another net's wire without joining it.",
+ "description": "Places a library component at x, y (snapped to the grid). 'type' is its model - R, C, L, GND, Vdc, Vac, Idc, Iac, Diode, _BJT, _MOSFET, OpAmp, Sub, .DC, .AC, .TR, .SP and many more (list_component_types lists them all). Properties go by name, as get_schematic shows them, for example {\"R\": \"4.7k\"}. 'rotation' is in quarter turns from the type's own orientation, as Rotate turns it; 'mirror' mirrors it about the x axis; 'shown' chooses which properties are written on the schematic; 'name_shown' and 'text_at' control its name and where its text goes. An equation block (Eqn, NutmegEq, .PARAM, .OPTIONS, ...) takes 'equations' - they replace its placeholder y=1; an .OPTIONS block takes options without a value (noinit) as 'flags'; an ngspice Monte Carlo (.NGMONTECARLO) or corners block takes 'records' and 'specs'. Returns the component with its pin positions, its equations if it is an equation block, a note on a common mistake with its type, and a note when a pin landed on a wire or another pin (it is then connected to it) or on another net's wire without connecting.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "type": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"},
    "name": {"type": "string", "description": "Its name; the next free one (R1, R2, ...) when not given"},
    "properties": {"type": "object", "additionalProperties": {"type": "string"}},
    "rotation": {"type": "integer", "minimum": 0, "maximum": 3}, "mirror": {"type": "boolean"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"R\": true, \"Temp\": false}"},
-   "name_shown": {"type": "boolean"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...): {\"gain_db\": \"db(v(out))\"} or, in their order, a list of \"name=value\" (or [name, value]); a value true is a flag - there, with no value (.OPTIONS noinit; in a list, the name alone); \"\", null or false takes one away"},
+   "name_shown": {"type": "boolean"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. (Also taken: an object {name: expression}, pairs [name, expression].) The answer lists the block's equations as they are then."},
    "flags": {"type": "array", "items": {"type": "string"}, "description": "An ngspice .OPTIONS block's (SpiceOptions) options with no value, each written alone: [\"noinit\", \"keepopinfo\"] - as {\"noinit\": true} in 'equations'"},
    "replace_equations": {"type": "boolean", "description": "The equations become those given alone (else each given is set or added)"},
    "records": {"type": "array", "items": {}, "description": "An ngspice Monte Carlo's or corners' values recorded for each sample: [{\"name\": \"gain\", \"expression\": \"db(v(out))\"}] or \"gain|db(v(out))\" - the list it records"},
    "specs": {"type": "array", "items": {}, "description": "Their limits: [{\"expression\": \"gain\", \"min\": \"19\", \"max\": \"21\"}] (one limit may be left out) or \"gain|19|21\" - a sample passes within all"}},
    "required": ["type", "x", "y"]}},
 {"name": "edit_component",
- "description": "Changes a component: its properties (by name), its name, its place (x, y: where its centre goes), its rotation (0-3 quarter turns from the type's own orientation, as get_schematic gives it) and mirroring, whether it is active (an inactive one is left out of the simulation), and its text: 'shown' which properties are written on the schematic ({\"Is\": false} hides one - no need to rewrite its line with set_schematic), 'name_shown', 'text_at' ([dx, dy] from its centre: where its text begins, to move it off another part). An equation block's equations by name ('equations': each given set, a new one added, one given \"\" taken away, one given true a flag - an .OPTIONS option with no value, as 'flags' has them; 'replace_equations' for exactly those given), a Monte Carlo's or corners' 'records' and 'specs' (the lists replaced) - no need for set_schematic. 'rename' renames it, and the traces, equations and markers that name it follow (i(V1), V1.It, @R1[i], R1's parameters in an equation), as rename_net does for a net. What is not given stays. Turned or moved, the circuit stays as it was: its pins are wired again to the nets they were on, and wires of other nets that its pins would come down on are moved out of the way. A change that cannot keep every net as it was is not made, and the error says why. A pin with nothing on it that comes down on another part's pin joins that pin's net, and the result's 'note' says so.",
+ "description": "Changes a component; whatever is not given stays as it is. You can change its properties (by name), its name, its position (x, y: where its center goes), its rotation (0-3 quarter turns from the type's own orientation, as get_schematic reports it), mirroring, whether it is active (an inactive part is left out of the simulation), and its text: 'shown' chooses which properties are written on the schematic ({\"Is\": false} hides one, with no need to rewrite its line with set_schematic), 'name_shown', and 'text_at' ([dx, dy] from its center, where its text begins, to move it off another part). An equation block's 'equations' are changed by name: each one given is set or added, {\"k\": null} removes k, and 'replace_equations' makes the list exactly those given; an .OPTIONS option without a value is a flag ('flags'). A Monte Carlo or corners block's 'records' and 'specs' replace its lists. 'rename' renames the part, and the traces, equations and markers that refer to it follow (i(V1), V1.It, @R1[i], R1's parameters in an equation), as rename_net does for a net. When the part is turned or moved, the circuit stays the same: its pins are wired again to the nets they were on, and other nets' wires under its new pin positions are moved out of the way. A change that cannot keep every net as it was is not made, and the error says why. A pin with nothing connected that lands on another part's pin joins that pin's net, and the result's 'note' says so. The answer lists an equation block's equations as they are afterwards.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "name": {"type": "string"}, "rename": {"type": "string"},
    "properties": {"type": "object", "additionalProperties": {"type": "string"}},
    "x": {"type": "integer"}, "y": {"type": "integer"}, "rotation": {"type": "integer", "minimum": 0, "maximum": 3},
    "mirror": {"type": "boolean"}, "active": {"type": "boolean"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"Is\": false, \"Bf\": true}"},
-   "name_shown": {"type": "boolean"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...): {\"gain_db\": \"db(v(out))\"} or, in their order, a list of \"name=value\" (or [name, value]); a value true is a flag - there, with no value (.OPTIONS noinit; in a list, the name alone); \"\", null or false takes one away"},
+   "name_shown": {"type": "boolean"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. (Also taken: an object {name: expression}, pairs [name, expression].) The answer lists the block's equations as they are then."},
    "flags": {"type": "array", "items": {"type": "string"}, "description": "An ngspice .OPTIONS block's (SpiceOptions) options with no value, each written alone: [\"noinit\", \"keepopinfo\"] - as {\"noinit\": true} in 'equations'"},
    "replace_equations": {"type": "boolean", "description": "The equations become those given alone (else each given is set or added)"},
    "records": {"type": "array", "items": {}, "description": "An ngspice Monte Carlo's or corners' values recorded for each sample: [{\"name\": \"gain\", \"expression\": \"db(v(out))\"}] or \"gain|db(v(out))\" - the list it records"},
    "specs": {"type": "array", "items": {}, "description": "Their limits: [{\"expression\": \"gain\", \"min\": \"19\", \"max\": \"21\"}] (one limit may be left out) or \"gain|19|21\" - a sample passes within all"}}, "required": ["name"]}},
 {"name": "diff",
- "description": "What changed in a schematic, part by part (a component's properties, place, turn; wires; labels; diagrams; paintings): against its file as saved (its unsaved changes), against 'steps' back in its undo history, or 'against' another schematic (an open one or a file). Nothing is changed.",
+ "description": "Lists what changed in a schematic, part by part (a component's properties, position and rotation; wires; labels; diagrams; paintings): against its saved file (its unsaved changes), a number of 'steps' back in its undo history, or 'against' another schematic (an open one or a file). Nothing is changed.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"},
    "steps": {"type": "integer", "minimum": 1, "description": "How many steps back in its undo history"},
    "against": {"type": "string", "description": "Another schematic: an open document's name or a .sch file"}}}},
 {"name": "replace_component",
- "description": "Puts a component of another type in one's place - a built-in OpAmp for a subcircuit (Sub, its File given), a diode model for a Verilog-A one - its pins taking the old pins' nets. 'pins' maps them, old to new, by number or name ({\"2\": \"inp\", \"1\": \"inn\", \"3\": \"out\"}); without it, by name when the old pins' names are all the new part's, else by number. The new part is turned, mirrored and placed so that its pins land on the old ones' places - where one cannot, it is wired to its net by a way that joins nothing else - of the ways that keep every net, the one with the fewest pins off their places and the least wire ('rotation', 'mirror', 'x', 'y' choose instead). It keeps the old name unless 'rename' gives another, so traces and equations that name it stay right. Properties, equations and flags as add_component takes them. Refused when an old pin with something on it has no new pin, or when no way keeps the nets. One step to undo. Returns the new part, which old pin went to which new one, and how it was placed.",
+ "description": "Replaces a component with one of another type - for example a built-in OpAmp with a subcircuit (Sub, with its File given) or a diode model with a Verilog-A one - and connects the new pins to the old pins' nets. 'pins' maps old pins to new ones by number or name ({\"2\": \"inp\", \"1\": \"inn\", \"3\": \"out\"}); without it, pins are matched by name when all the old pins' names exist on the new part, otherwise by number. The new part is turned, mirrored and placed so that its pins land where the old ones were; a pin that cannot is wired to its net along a path that touches nothing else. Of the placements that keep every net, the one with the fewest pins off their old positions and the least wire is chosen; 'rotation', 'mirror', 'x' and 'y' choose it yourself. The part keeps the old name unless 'rename' gives another, so traces and equations that refer to it stay correct. Properties, equations and flags are given as for add_component. It is refused if an old pin that has something connected has no new pin, or if no placement keeps the nets. One undo step. Returns the new part, which old pin became which new one, and how it was placed.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "name": {"type": "string", "description": "The component to replace"},
    "type": {"type": "string", "description": "The new part's type (list_component_types)"},
@@ -172,7 +172,7 @@ const char* const kTools = R"JSON([
    "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}},
    "required": ["name", "type"]}},
 {"name": "delete",
- "description": "Deletes components (by name), net labels (by the net's name), wires (by their two ends, [x1, y1, x2, y2]), diagrams (by their numbers as get_schematic lists them), traces ({\"diagram\": n, \"trace\": its number or variable}) and paintings (by their numbers; the symbol's with 'symbol') from a schematic, as one step to undo.",
+ "description": "Deletes elements from a schematic as one undo step: components (by name), net labels (by the net's name), wires (by their two ends, [x1, y1, x2, y2]), diagrams (by their numbers from get_schematic), traces ({\"diagram\": n, \"trace\": its number or variable}) and paintings (by their numbers; the symbol's paintings with 'symbol').",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}},
    "wires": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4}},
@@ -181,7 +181,7 @@ const char* const kTools = R"JSON([
    "paintings": {"type": "array", "items": {"type": "integer"}}, "symbol": {"type": "boolean"},
    "selection": {"type": "boolean", "description": "What the user selected: its parts, wires, diagrams, paintings"}}}},
 {"name": "add_analysis",
- "description": "Adds an analysis set up as it usually is - and, with 'plot', a diagram of what it gives, below the circuit - in one call instead of several coordinated edits. 'kind': ac ('from' and 'to' in Hz, 1 Hz to 100 MHz unless given; 'points', 101; 'scale' log unless lin; plotted in dB over a log frequency axis), tran ('stop' time, 1 ms unless given; 'points' 201: the print step is stop/(points-1); plotted over time), op (the DC operating point, a .DC block), sweep (a parameter sweep of 'analysis' - its name: TR1, AC1, DC1 - over 'parameter': a component's name, whose value is swept (R2), or a parameter an equation defines; 'from', 'to', 'points' 11, 'scale'; the analysis's curves become one for each value). 'plot': what to show - nodes (out), v(out), i(v1). x, y place the block (beside the other analyses unless given); 'name' names it. Values are numbers or text with units (\"10 kHz\"). Returns the block and the diagram; each a step to undo.",
+ "description": "Adds an analysis with the usual settings and, with 'plot', a diagram of its results below the circuit - one call instead of several coordinated edits. 'kind' is one of: ac ('from' and 'to' in Hz, 1 Hz to 100 MHz by default; 'points', 101; 'scale' log unless lin; plotted in dB over a logarithmic frequency axis); tran ('stop' time, 1 ms by default; 'points', 201, so the print step is stop/(points-1); plotted over time); op (the DC operating point, a .DC block); sweep (a parameter sweep of 'analysis' - its name, such as TR1, AC1 or DC1 - over 'parameter', either a component name whose value is swept (R2) or a parameter defined by an equation; 'from', 'to', 'points' (11) and 'scale'; the analysis's curves become one per value). 'plot' lists what to show: nodes (out), v(out), i(v1). 'x' and 'y' place the block (next to the other analyses by default) and 'name' names it. Values are numbers or text with units (\"10 kHz\"). Returns the block and the diagram, each one undo step.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "kind": {"type": "string", "enum": ["ac", "tran", "op", "sweep"]},
    "from": {}, "to": {}, "stop": {}, "points": {}, "scale": {"type": "string", "enum": ["lin", "log"]},
@@ -189,90 +189,95 @@ const char* const kTools = R"JSON([
    "plot": {"type": "array", "items": {"type": "string"}}, "x": {"type": "integer"}, "y": {"type": "integer"}, "name": {"type": "string"}},
    "required": ["kind"]}},
 {"name": "create_subcircuit",
- "description": "Makes a subcircuit of several components: they and the wiring among them go into a new schematic 'save_as' (a .sch beside this one; 'replace' writes over one there), with a port for each net that also reaches the rest of the circuit - and a ground for each pin on ground - and in their place comes one subcircuit component ('name', SUB1 unless given) whose pins are joined to those nets by net labels. Analyses stay outside. Returns the file, the instance and its ports (port number, net). One step to undo here (the file stays written); make_symbol then lays out its symbol.",
+ "description": "Turns several components into a subcircuit. They and the wiring between them move into a new schematic 'save_as' (a .sch next to this one; 'replace' overwrites an existing file), with a port for each net that also reaches the rest of the circuit and a ground for each pin on ground. In their place comes one subcircuit component ('name', SUB1 by default) whose pins are connected to those nets by net labels. Analyses stay outside. Returns the file, the instance and its ports (port number and net). One undo step here (the file stays written); make_symbol then draws its symbol.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}}, "save_as": {"type": "string"},
    "name": {"type": "string"}, "replace": {"type": "boolean"},
    "selection": {"type": "boolean", "description": "The parts the user selected, instead of names"}}, "required": ["save_as"]}},
 {"name": "move",
- "description": "Moves several components together by dx, dy (in the schematic's units, on its grid: 100 is ten steps of a grid of 10), keeping every net as it was: the wiring among them moves with them, and the wires that go out to the rest of the circuit are drawn on to their pins' new places (as the cursor keys move a selection). 'diagrams' and 'paintings' (their numbers) may move along; a diagram's title (add_diagram's 'title') is part of it. A move that would join or split a net is not made. To make room for a stage, or tidy a circuit. One step to undo.",
+ "description": "Moves several components together by dx, dy (in schematic units, on its grid: 100 is ten steps of a grid of 10), keeping every net as it was. The wiring between them moves with them, and the wires to the rest of the circuit are extended to their pins' new positions, as the cursor keys move a selection. 'diagrams' and 'paintings' (their numbers) can move along; a diagram's title (add_diagram's 'title') is part of the diagram. A move that would join or split a net is not made. Use it to make room for a stage or to tidy a circuit. One undo step.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}},
    "dx": {"type": "integer"}, "dy": {"type": "integer"},
    "diagrams": {"type": "array", "items": {"type": "integer"}}, "paintings": {"type": "array", "items": {"type": "integer"}},
    "selection": {"type": "boolean", "description": "What the user selected - its parts, diagrams and paintings - instead of names"}}}},
-{"name": "connect",
- "description": "Draws a wire between two pins or places, with right angles, by a way that goes over no other pin or wire (a wire joins whatever it runs over): around the parts when it can, else over them. It joins the two nets and nothing else - or, when no way would, draws nothing and says why; a crossing of another net's wire on the way (no connection) is said. A pin is \"R1.1\" (the component's name and the pin's number, from 1, or the pin's name); a place is [x, y].",
+{"name": "arrange",
+ "description": "Lays out a whole schematic again so a person can read it. The parts go in columns by signal flow: sources on the left, then each part one column to the right of the part that drives it, with room between them; a DC supply gets a column of its own on the left. Two-pin parts are turned the way schematics usually show them: in series lying down with the driving side on the left, to ground or a supply standing up with ground below. Every wire is redrawn by the same router connect uses (around the parts, never over another pin). Each piece of circuit that had a ground symbol gets one back, and net labels go back on the nets that had them. Blocks without pins (analyses, equations) go in a row below; diagrams and paintings the circuit would cover move to its right. The circuit is kept: every net is compared before and after, and if any would differ nothing changes and the answer says why. It suits a schematic built from scratch or imported; a carefully drawn one may read better as it was, and one undo step brings it back. 'preview' reports the result without keeping it.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"},
-   "from": {"description": "\"R1.2\" or [x, y]; a ground is GND.1 when there is one, GND#2.1 the second of several (get_schematic's 'ref')"}, "to": {"description": "\"C1.1\" or [x, y]"}}, "required": ["from", "to"]}},
+   "spacing": {"type": "integer", "minimum": 30, "maximum": 400, "description": "The room between parts, in the schematic's units: 60 unless given (more room is tried when the wires do not fit)"}}}},
+{"name": "connect",
+ "description": "Draws a wire with right angles between two pins or points, along a path that runs over no other pin or wire (a wire connects to whatever it runs over): around the parts when possible, otherwise across them. It joins the two nets and nothing else; if no path would, it draws nothing and explains why. A crossing of another net's wire along the way (no connection) is reported. A pin is \"R1.1\" (the component's name and the pin number, from 1, or the pin's name); a point is [x, y]. With \"ground\" (or \"gnd\") at either end, the pin gets a ground symbol of its own, placed on the pin when it fits there and otherwise a little away and wired to it.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string"},
+   "from": {"description": "\"R1.2\" or [x, y]; a ground is GND.1 when there is one, GND#2.1 the second of several (get_schematic's 'ref')"}, "to": {"description": "\"C1.1\", [x, y] - or \"ground\": a ground symbol of the pin's own, on it or beside it, wired"}}, "required": ["from", "to"]}},
 {"name": "add_wire",
- "description": "Draws a wire through places, [[x, y], [x, y], ...], a segment from each to the next (a step that is not straight gets a right angle). What is at its places is joined - a wire joins only where it ends or bends; one that would run along over another pin or wire between them is not drawn, and the error names what is in the way. One that crosses another net's wire is drawn, but a crossing is no junction - no connection - and the result says so (Look: ...): end the wire on the other to join it.",
+ "description": "Draws a wire through points, [[x, y], [x, y], ...], one segment from each point to the next (a step that is not straight gets a right angle). Whatever is at its points is connected - a wire connects only where it ends or bends. A wire that would run along another pin or wire between its points is not drawn, and the error names what is in the way. A wire that crosses another net's wire is drawn, but a crossing is not a junction and makes no connection; the result says so (\"Look: ...\"). To join the other wire, end this one on it.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "points": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}, "minItems": 2}},
    "required": ["points"]}},
 {"name": "set_label",
- "description": "Names the net at a pin or at a place on a wire (a net label: nets with the same name are connected). An empty name takes the label away.",
+ "description": "Names the net at a pin or at a point on a wire (a net label: nets with the same name are connected). An empty name removes the label.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "at": {"description": "\"R1.1\" or [x, y]"}, "name": {"type": "string"}}, "required": ["at", "name"]}},
 {"name": "select",
- "description": "Selects components by name, diagrams and paintings by their numbers as get_schematic lists them, in a schematic (the rest are deselected); nothing given deselects everything.",
+ "description": "Selects components by name, and diagrams and paintings by their numbers from get_schematic, in a schematic; everything else is deselected. Nothing given deselects everything.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "names": {"type": "array", "items": {"type": "string"}},
    "diagrams": {"type": "array", "items": {"type": "integer"}}, "paintings": {"type": "array", "items": {"type": "integer"}}}}},
 {"name": "zoom",
- "description": "Zooms a schematic: 'all' shows all of it, 'selection' the selection, 'in' and 'out' a step, 'none' the scale of 1.",
+ "description": "Zooms a schematic: 'all' shows all of it, 'selection' the selection, 'in' and 'out' one step, 'none' a scale of 1.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "to": {"type": "string", "enum": ["all", "selection", "in", "out", "none"]}}, "required": ["to"]}},
 {"name": "undo",
- "description": "Undoes the last change of a document (the one in front unless path names another), as Edit > Undo; 'steps' undoes so many (a batch that stopped half-way says how many changes it made); 'to' goes to a step of a schematic as undo_history numbers them - back, or forward again. Says what it changed back, part by part.",
+ "description": "Undoes the last change of a document (the one in front unless 'path' names another), like Edit > Undo. 'steps' undoes that many changes (a batch that stopped halfway reports how many changes it made); 'to' goes to a step of a schematic as undo_history numbers them, backward or forward again. Reports what it changed back, part by part.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000},
    "to": {"type": "integer", "minimum": 0, "description": "A step as undo_history lists them: the schematic as it was after it (0: as it was loaded)"}}}},
 {"name": "undo_history",
- "description": "A schematic's steps to undo, in words - \"step 7: R2 R 47k → 67k; step 8: diagram 2: trace 2's look changed\" - the last 'steps' (10 unless given) up to where it is, and those that can be redone after it: so that undo can go to a known point ('to') rather than counting.",
+ "description": "Lists a schematic's undo steps in words - \"step 7: R2 R 47k → 67k; step 8: diagram 2: trace 2's look changed\" - the last 'steps' (10 by default) up to the current position, plus those that can be redone after it, so undo can go to a known step ('to') instead of counting.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "steps": {"type": "integer", "minimum": 1, "maximum": 200}}}},
 {"name": "redo",
- "description": "Redoes the last change undone, as Edit > Redo; 'steps' redoes so many.",
+ "description": "Redoes the last undone change, like Edit > Redo; 'steps' redoes that many.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000}}}},
 {"name": "screenshot",
- "description": "A picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] of the schematic) takes that alone, on paper - a plot checked without the whole page. 'area': paper (or all, the default) - the whole schematic drawn as it is printed and exported: on white paper, whatever the theme, in its print colours; screen (or visible) - the canvas as the user sees it now: the theme's paper and colours (a dark canvas in the dark theme), its zoom, what is scrolled into view - take this one to see what the user sees, a problem of how something looks on screen above all; window - the whole Qucs-S window (its panes and tabs, docks, the status bar), and each dialog open over it, as pictures of their own. For a text document or a PDF, paper and screen are what its tab shows.",
+ "description": "Takes a picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] in schematic units) captures only that, as printed, to check a plot without the whole page. 'area' chooses what is captured: paper (or all, the default) is the whole schematic as it is printed and exported, on white paper in its print colors whatever the theme; screen (or visible) is the canvas exactly as the user sees it now, with the theme's colors (a dark canvas in the dark theme), its zoom and what is scrolled into view - use it to see what the user sees, especially for a problem with how something looks on screen; window is the whole Qucs-S window (panes, tabs, docks, status bar), plus each dialog open over it as a separate picture. For a text document or a PDF, paper and screen show what its tab shows.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "area": {"type": "string", "enum": ["paper", "screen", "window", "all", "visible"]},
    "diagram": {"type": "integer"}, "region": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4}}}},
 {"name": "list_component_types",
- "description": "The components of the library: the type to give add_component, what it is, its category. 'search' keeps those whose type, name or category has it. describe_component_type tells a type's properties.",
+ "description": "Lists the library's components: the type to give add_component, what it is, and its category. 'search' keeps only those whose type, name or category contains it. describe_component_type describes a type's properties.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string"}}}},
 {"name": "list_actions",
- "description": "The actions of Qucs-S's menus: the menu path to give trigger_action (\"Simulation > Simulate\"), whether it can be used now, whether it is checked, its shortcut. 'search' keeps those whose path has it.",
+ "description": "Lists the actions of Qucs-S's menus: the menu path to give trigger_action (\"Simulation > Simulate\"), whether it can be used now, whether it is checked, and its shortcut. 'search' keeps only those whose path contains it.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string"}}}},
 {"name": "trigger_action",
- "description": "Uses a menu action as a click on it would: 'action' is its menu path (\"Edit > Rotate\") or its object name. When it opens a dialog, the dialog stays open: get_dialog reads it, set_dialog fills it in and closes it. Actions that open the system's file or print dialogs are refused: use open_document and save_document.",
+ "description": "Runs a menu action as a click would: 'action' is its menu path (\"Edit > Rotate\") or its object name. If it opens a dialog, the dialog stays open: get_dialog reads it, and set_dialog fills it in and closes it. Actions that open the system's file or print dialogs are refused; use open_document and save_document instead.",
  "inputSchema": {"type": "object", "properties": {"action": {"type": "string"},
    "path": {"type": "string", "description": "The document to use it on, brought to the front first; the one in front when not given"}},
   "required": ["action"]}},
 {"name": "get_dialog",
- "description": "The dialog of Qucs-S that waits for an answer (or another window of it that is open): its title, its texts and its controls - fields, lists, check boxes, tabs, tables, buttons - each with its label, value and an id for set_dialog.",
+ "description": "Reads the Qucs-S dialog waiting for an answer (or another open window of Qucs-S): its title, texts and controls - fields, lists, check boxes, tabs, tables, buttons - each with its label, value and an id for set_dialog.",
  "inputSchema": {"type": "object", "properties": {}}},
 {"name": "set_dialog",
- "description": "Fills in the open dialog and presses a button. 'set' changes controls, each by its id or label from get_dialog: a field takes text, a list an item, a check box true or false, a spin box a number, tabs a tab's title, a table [row, column, text]. 'press' names the button pressed after (OK, Cancel, Apply, ... or its id).",
+ "description": "Fills in the open dialog and presses a button. 'set' changes controls, each by its id or label from get_dialog: a field takes text, a list an item, a check box true or false, a spin box a number, tabs a tab's title, and a table [row, column, text]. 'press' names the button to press afterwards (OK, Cancel, Apply, ... or its id).",
  "inputSchema": {"type": "object", "properties": {
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}},
    "press": {"type": "string"}}}},
 {"name": "simulate",
- "description": "Simulates a schematic (the one in front unless path names another; it must have been saved once) with the simulator in the settings - or 'simulator' for this run alone, the setting left as it is - as Simulation > Simulate, and waits for the end (Qucsator's too). Check Schematic's errors and warnings come first, found before the run ('schematic check'). It says whether it succeeded (the simulator ran to its end and reported no error), its errors and warnings - each with its message and, where the simulator names them, the netlist line (its number and text), the part of the schematic and the node - the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables, the traces of the diagrams that show no data and why, whether the schematic was changed while it ran (by the user or another conversation: then the results are of the schematic as it was when the run began), and the last lines of the output. 'operating_point' runs the DC operating point alone instead (as Simulation > Calculate DC bias; a transient-only schematic's too) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi, ... under its component, with re = 1/gm, rpi, beta and ro worked out - the numbers that explain a gain; the datasets are left as they were. 'timeout' in seconds, 120 unless given. 'keep_as' keeps a copy of the dataset under that name, to compare runs: get_dataset reads it by its file, and a trace shows it beside the current run as ngspice/<name>:tran.v(out).",
+ "description": "Simulates a schematic (the one in front unless 'path' names another; it must have been saved once) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('schematic check'). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out).",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "timeout": {"type": "integer"},
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For this run alone (an installed one); set_simulator changes the setting"},
    "keep_as": {"type": "string", "description": "A name of letters, digits, _ and -: the copy is <name>.dat.ngspice (or .xyce, ...) beside the schematic"},
    "operating_point": {"type": "boolean", "description": "Run the DC operating point alone, whatever analyses the schematic has, and return it: each node's voltage and branch current, and (ngspice) each device's quantities - gm, ic, vbe, gpi, gds, ... - with re = 1/gm, beta, ro"}}}},
 {"name": "get_netlist",
- "description": "The netlist of a schematic as text: as a simulation with the simulator in the settings would write it now, or with 'last' the one the last simulation ran (Simulation > Show Last Netlist; the one the line numbers of simulate's errors are of). 'numbered' puts each line's number before it. 'format': spice (the default) or cdl (Simulation > Save CDL netlist, with the CDL settings). export_netlist writes it to a file.",
+ "description": "Returns a schematic's netlist as text: as a simulation with the simulator from the settings would write it now, or with 'last' the one the last simulation ran (Simulation > Show Last Netlist; the one simulate's error line numbers refer to). 'numbered' puts each line's number in front of it. 'format' is spice (the default) or cdl (Simulation > Save CDL netlist, with the CDL settings). 'map' ties each netlist line to the part that wrote it and each node to the pins on it. If the netlister gives up (a part with no model, a subcircuit or library it cannot read), the error says why. export_netlist writes the netlist to a file.",
  "inputSchema": {"type": "object", "properties": {
    "map": {"type": "boolean", "description": "The netlist as lines, which part wrote each line, and which pins each node joins - to find an error's line, device or node on the schematic"},
    "path": {"type": "string"}, "last": {"type": "boolean"}, "numbered": {"type": "boolean"},
    "format": {"type": "string", "enum": ["spice", "cdl"]}}}},
 {"name": "export_netlist",
- "description": "Writes the netlist of a schematic to a file, as Simulation > Save netlist and Save CDL netlist do - their file dialogs cannot be answered: 'save_as' (a path, or a name in the project's folder, else the workspace's; one there is written over), 'format' spice (the default) or cdl, 'last' the one the last simulation ran. Returns the file and its lines.",
+ "description": "Writes a schematic's netlist to a file, like Simulation > Save netlist and Save CDL netlist, whose file dialogs cannot be answered. 'save_as' is a path, or a name in the project's folder (otherwise the workspace's); an existing file is overwritten. 'format' is spice (the default) or cdl, and 'last' writes the one the last simulation ran. Returns the file and its lines.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "save_as": {"type": "string"}, "last": {"type": "boolean"},
    "format": {"type": "string", "enum": ["spice", "cdl"]}}, "required": ["save_as"]}},
 {"name": "get_dataset",
- "description": "Reads a simulation's results as numbers, from the dataset the simulator wrote (its 'written' time says which run). Without 'variables': the variables it holds - the independent ones (time, frequency, a swept parameter: their range and points) and the others (what they depend on, their points, whether complex, their range, their units when known - dB, V, A, degrees - and what an equation defines them as) with the name a trace takes - and the operating point of a DC simulation (op): each node's value and, with ngspice, each device's quantities (id, gm, vgs, ...) under its component. 'operating_point': only that, every device in full. With 'variables': for each, over the range from 'from' to 'to' of its x, its statistics (min and max and where, mean and RMS weighted over x, initial and final value) and, as asked, samples ('points': at most so many, spread evenly over the samples in the range), values at given x ('at': interpolated), and measurements on the full data ('measure'): rise_time and fall_time (10%-90% of the swing, the first edge), overshoot (percent of the step), settling_time (within 'tolerance' of the step, 0.02 unless given, from 'from'), period, frequency and duty_cycle (at 'level', the middle of the swing unless given), crossings (of 'level'), bandwidth (the -3 dB points: of a magnitude, 1/sqrt(2) of its peak; of a curve in dB - db(...), vdb(...), an equation making one; 'decibels' says so when that cannot be told - 3 dB below its peak; refused on a curve that goes below 0 and is not in dB), thd (of a transient: the total harmonic distortion in percent and dB, and each harmonic's amplitude, over the last 'periods' (1 unless given) whole periods of 'fundamental' (Hz; the curve's own frequency unless given) before 'to', harmonics 2 to 'harmonics' (9 unless given) - as ngspice's .four), gain (of an AC curve: at the lowest frequency and at its peak, as a ratio and in dB, and the unity-gain frequency where it falls through 1, 0 dB), phase_margin and gain_margin (of a loop gain, a complex AC variable: 180 degrees plus its phase where its magnitude falls through 1; minus its gain in dB where its phase falls through -180 degrees; each with the frequency), distribution (the values as samples - a Monte Carlo's, one per run: mean, standard deviation, median, 5th and 95th percentiles, a histogram; with 'level', the share at or above it), fft (of a transient: its spectrum, resampled evenly with a Hann window - the strongest lines with their amplitudes and dBc, dc, the noise floor, the resolution), eye (of a transient folded at 'bit_period' from 'offset': the eye's height at the bits' centres, its width, the crossings' jitter peak to peak and rms, the high and low levels). A variable swept over a parameter gives a curve for each of its values - and, measured, a table: a row for each value (bandwidth against R, overshoot for each sample). A table - a .csv, .tsv or .xlsx file, a script's results or a Monte Carlo's workbook - is read as a dataset: each column of numbers a variable, over the first column when it rises (time), else over the row. Complex values (AC) come as magnitude and phase in degrees unless 'form' says otherwise; statistics and measurements are of the magnitude. A variable written as complex numbers with no imaginary part (a Nutmeg equation's db(...)) is read as real, its sign kept, and says so. A variable may be an expression of others - v(out)/v(in), db(ac.v(out)/ac.v(in)) - evaluated sample by sample, and is then measured like any. 'compare' (a name simulate's keep_as gave, or a dataset file) puts another run beside each: its statistics and measurements over the same range, and the difference - the largest and where, its mean and RMS.",
+ "description": "Reads a simulation's results as numbers, from the dataset the simulator wrote (its 'written' time tells which run). Without 'variables' it lists the variables: the independent ones (time, frequency, a swept parameter, with their range and number of points) and the others (what they depend on, number of points, whether complex, range, units when known - dB, V, A, degrees - and the definition an equation gives them), each with the name a trace uses; plus the operating point of a DC simulation (op): each node's value and, with ngspice, each device's quantities (id, gm, vgs, ...) under its component. 'operating_point' returns only that, with every device in full. With 'variables', for each one over the x range from 'from' to 'to': its statistics (min and max and where they occur, mean and RMS weighted over x, initial and final value) and, as requested, 'points' (at most that many samples, spread evenly over the range), 'at' (values at given x, interpolated) and 'measure' (measurements on the full data). Measurements: rise_time and fall_time (10%-90% of the swing, first edge); overshoot (percent of the step); settling_time (to within 'tolerance' of the step, 0.02 by default, counted from 'from'); period, frequency and duty_cycle (at 'level', the middle of the swing by default); crossings (of 'level'); bandwidth (the -3 dB points: 1/sqrt(2) of the peak of a magnitude, or 3 dB below the peak of a curve in dB - db(...), vdb(...) or an equation that makes one, with 'decibels' saying so when it cannot be told; refused on a curve that goes below 0 and is not in dB); thd (of a transient: total harmonic distortion in percent and dB and each harmonic's amplitude, over the last 'periods' whole periods (1 by default) of 'fundamental' (Hz; the curve's own frequency by default) before 'to', harmonics 2 to 'harmonics' (9 by default), like ngspice's .four); gain (of an AC curve: at the lowest frequency and at its peak, as a ratio and in dB, and the unity-gain frequency where it falls through 1, 0 dB); phase_margin and gain_margin (of a loop gain given as a complex AC variable: 180 degrees plus its phase where its magnitude falls through 1, and minus its gain in dB where its phase falls through -180 degrees, each with its frequency); distribution (the values as samples, such as one per Monte Carlo run: mean, standard deviation, median, 5th and 95th percentiles and a histogram; with 'level', the share at or above it); fft (of a transient: its spectrum, resampled evenly with a Hann window - the strongest lines with amplitude and dBc, DC, the noise floor and the resolution); eye (of a transient folded at 'bit_period' from 'offset': eye height at the bit centers, eye width, crossing jitter peak-to-peak and RMS, and the high and low levels). A variable swept over a parameter gives one curve per value and, when measured, a table with one row per value (bandwidth against R, overshoot per sample). A table - a .csv, .tsv or .xlsx file, a script's results or a Monte Carlo workbook - is read as a dataset: each column of numbers is a variable, over the first column when it rises (time), otherwise over the row number. Complex values (AC) come as magnitude and phase in degrees unless 'form' says otherwise; statistics and measurements use the magnitude. A variable written as complex numbers with no imaginary part (a Nutmeg equation's db(...)) is read as real, keeping its sign, and the result says so. A variable can be an expression of others - v(out)/v(in), db(ac.v(out)/ac.v(in)) - evaluated sample by sample and measured like any other. 'compare' (a name from simulate's keep_as, or a dataset file) puts another run next to each variable: its statistics and measurements over the same range, and the difference (the largest difference and where, its mean and RMS).",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "A schematic or data display, open or not (the document in front when not given), or a dataset file (.dat, .dat.ngspice, ...)"},
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "Whose dataset of a schematic: the simulator in the settings unless given (else the newest there is)"},
@@ -291,10 +296,10 @@ const char* const kTools = R"JSON([
    "operating_point": {"type": "boolean", "description": "Only the operating point: every node's value and every device's quantities"},
    "form": {"type": "string", "enum": ["magnitude_phase", "db_phase", "real_imaginary"]}}}},
 {"name": "reload_data",
- "description": "Reads the datasets again and redraws the diagrams of a document (the document named by path, or every open one), as Simulation > Reload Simulation Data: after a simulation outside Qucs-S, or when a plot is blank. Says which traces still show no data, and why.",
+ "description": "Re-reads the datasets and redraws the diagrams of a document (the one 'path' names, or every open one), like Simulation > Reload Simulation Data - after a simulation run outside Qucs-S, or when a plot is blank. Reports which traces still show no data, and why.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
 {"name": "add_diagram",
- "description": "Places a diagram on a schematic or a data display, its traces showing the dataset's data at once. 'type': rect (x-y, the default), polar, smith, admittance_smith, polar_smith, smith_polar, tab (a table), timing, truth, 3d, locus, histogram. x, y: its lower left corner - left out, it goes below everything on the schematic (a free place; the result says where, and when a diagram lies over another or over parts); width and height, 240 x 160 unless given; 'title', drawn above it - part of the diagram, it moves with it. 'traces': each a variable (as get_dataset names it - tran.v(out), or v(out) or out when that says which) or an object as add_trace takes it. The axes, grid and legend as edit_diagram takes them. Returns the diagram as get_schematic lists it: its number, and each trace's points or why it has none.",
+ "description": "Places a diagram on a schematic or a data display; its traces show the dataset's data right away. 'type' is rect (x-y, the default), polar, smith, admittance_smith, polar_smith, smith_polar, tab (a table), timing, truth, 3d, locus or histogram. 'x' and 'y' are its lower left corner; if left out, it goes below everything on the schematic, in a free spot (the result says where, and warns when a diagram lies over another one or over parts). 'width' and 'height' default to 240 x 160. 'title' is drawn above it and moves with it as part of the diagram. 'traces' lists variables (as get_dataset names them - tran.v(out), or v(out) or out when that is unambiguous) or objects as add_trace accepts them. The axes, grid and legend are set as edit_diagram accepts them. Returns the diagram as get_schematic lists it: its number, and each trace's points or why it has none.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "type": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"},
    "width": {"type": "integer"}, "height": {"type": "integer"}, "title": {"type": "string", "description": "Drawn above it, and moved, selected and exported with it"},
@@ -304,7 +309,7 @@ const char* const kTools = R"JSON([
    "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}},
    "grid": {"type": "boolean"}, "legend": {"type": "string", "enum": ["off", "top_left", "top_right", "bottom_left", "bottom_right"]}}}},
 {"name": "edit_diagram",
- "description": "Changes a diagram: its place (x, y: the lower left corner) and size, its title (above it, moving with it), its axes (x_axis, y_axis, and y2_axis on the right: label, log, auto, from, to, step, units), grid, legend. What is not given stays. 'diagram' is its number as get_schematic lists them (it may be left out when there is one). One step to undo; the traces are read again from the dataset.",
+ "description": "Changes a diagram; whatever is not given stays. You can change its position (x, y: the lower left corner) and size, its title (drawn above it, moving with it), its axes (x_axis, y_axis, and y2_axis on the right, each with label, log, auto, from, to, step and units), grid and legend. 'diagram' is its number from get_schematic (it can be left out when there is only one). One undo step; the traces are re-read from the dataset.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "diagram": {"type": "integer"},
    "x": {"type": "integer"}, "y": {"type": "integer"}, "width": {"type": "integer"}, "height": {"type": "integer"}, "title": {"type": "string", "description": "\"\" takes it away"},
@@ -313,7 +318,7 @@ const char* const kTools = R"JSON([
    "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}},
    "grid": {"type": "boolean"}, "legend": {"type": "string", "enum": ["off", "top_left", "top_right", "bottom_left", "bottom_right"]}}}},
 {"name": "add_trace",
- "description": "Adds a trace to a diagram: 'variable' as get_dataset names it (tran.v(out); v(out) or out when that says which; the simulator's prefix is added), its color (#rrggbb, a name, or auto: each swept curve a color of its own), thickness, style (solid, dash, dot, long_dash, stars, circles, arrows), the y axis it is drawn on (left or right), point markers (none, auto, circle, square, triangle, diamond, triangle_down, cross, plus), auto_color (each swept curve a color of its own); in a table, precision and numbers (real_imaginary, magnitude_degrees, magnitude_radians). Returns its points, or why it shows nothing.",
+ "description": "Adds a trace to a diagram. 'variable' is named as get_dataset names it (tran.v(out); v(out) or out when unambiguous; the simulator's prefix is added). You can set its color (#rrggbb, a name, or auto), thickness, style (solid, dash, dot, long_dash, stars, circles, arrows), the y axis it is drawn on (left or right), point markers (none, auto, circle, square, triangle, diamond, triangle_down, cross, plus) and auto_color (each swept curve its own color); in a table, precision and numbers (real_imaginary, magnitude_degrees, magnitude_radians). Returns its points, or why it shows nothing.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "diagram": {"type": "integer"}, "variable": {"type": "string"},
    "color": {"type": "string"}, "thickness": {"type": "integer", "minimum": 0, "maximum": 99},
@@ -324,7 +329,7 @@ const char* const kTools = R"JSON([
    "numbers": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"]}},
    "required": ["variable"]}},
 {"name": "edit_trace",
- "description": "Changes a trace of a diagram - 'trace' is its number in the diagram or its variable - as add_trace takes it: another variable, its color, thickness, style, axis, marker, ... What is not given stays. One step to undo.",
+ "description": "Changes a trace of a diagram - 'trace' is its number in the diagram or its variable - with the same fields add_trace accepts: another variable, color, thickness, style, axis, markers and so on. Whatever is not given stays. One undo step.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "diagram": {"type": "integer"}, "trace": {"description": "Its number (from 1) or its variable"},
    "variable": {"type": "string"}, "color": {"type": "string"}, "thickness": {"type": "integer", "minimum": 0, "maximum": 99},
@@ -334,7 +339,7 @@ const char* const kTools = R"JSON([
    "auto_color": {"type": "boolean"}, "precision": {"type": "integer"},
    "numbers": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"]}}}},
 {"name": "add_marker",
- "description": "Places a marker on a trace of a diagram (it shows the sample nearest where it is put, and the value there). 'at': an x value, or where on the trace: peak (or max), min, -3dB (3 dB below the peak - of a curve in dB, its peak less 3; of a magnitude, the peak over sqrt(2) - past the peak first, else before it; 'reference' dc or a level, 0 dB for a filter's spec, puts it below that instead), crossing:<y> (the first crossing of y). Returns the marker as get_schematic lists it and what 'at' found (the exact crossing; the sample the marker is on). 'label' is where its box's top left corner goes, [x, y] on the schematic; 'label_offset' [dx, dy] puts it that far from the point it marks (y down). 'precision': digits; 'format' of complex values; 'transparent' background; 'indicator' at the point; text and background colours (#rrggbb, #aarrggbb, a name, or auto). One step to undo.",
+ "description": "Places a marker on a trace of a diagram; it shows the sample nearest to where it is placed, and the value there. 'at' is an x value, or a point on the trace: peak (or max), min, -3dB (3 dB below the peak - for a curve in dB, the peak minus 3; for a magnitude, the peak divided by sqrt(2) - after the peak first, otherwise before it; 'reference' dc or a level, such as 0 dB for a filter specification, measures from that instead), or crossing:<y> (the first crossing of y). Returns the marker as get_schematic lists it and what 'at' found (the exact crossing, and the sample the marker is on). 'label' places its box's top left corner at [x, y] on the schematic; 'label_offset' [dx, dy] places it that far from the marked point (y pointing down). Also 'precision' (digits), 'format' for complex values, a 'transparent' background, an 'indicator' at the point, and text and background colors (#rrggbb, #aarrggbb, a name, or auto). One undo step.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "diagram": {"type": "integer"}, "trace": {"description": "Its number (from 1) or its variable"},
    "at": {"description": "An x value (a number), or \"peak\", \"max\", \"min\", \"-3dB\", \"crossing:<y>\""},
@@ -347,7 +352,7 @@ const char* const kTools = R"JSON([
    "text_color": {"type": "string"}, "fill_color": {"type": "string"}},
   "required": ["at"]}},
 {"name": "edit_marker",
- "description": "Changes a marker of a diagram - 'marker' is its number as get_schematic lists them - as add_marker takes it: 'at' moves it (its label moves with it), and its label, precision, format, transparency, indicator, colours. What is not given stays. One step to undo.",
+ "description": "Changes a marker of a diagram - 'marker' is its number from get_schematic - with the same fields add_marker accepts: 'at' moves it (its label moves along), and its label, precision, format, transparency, indicator and colors. Whatever is not given stays. One undo step.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "diagram": {"type": "integer"}, "marker": {"type": "integer"},
    "at": {"description": "An x value (a number), or \"peak\", \"max\", \"min\", \"-3dB\", \"crossing:<y>\""},
@@ -359,16 +364,16 @@ const char* const kTools = R"JSON([
    "transparent": {"type": "boolean"}, "indicator": {"type": "string", "enum": ["off", "square", "triangle"]},
    "text_color": {"type": "string"}, "fill_color": {"type": "string"}}}},
 {"name": "delete_marker",
- "description": "Deletes a marker of a diagram ('marker': its number as get_schematic lists them). One step to undo.",
+ "description": "Deletes a marker from a diagram ('marker' is its number from get_schematic). One undo step.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "diagram": {"type": "integer"}, "marker": {"type": "integer"}}}},
 {"name": "rename_net",
- "description": "Renames a net - its labels, or a net get_schematic calls net1, net2, ... gets a label - and whatever names its voltage: the traces of the schematic's diagrams and of its data displays (open ones as a change to undo; the .dpl file of a closed one is rewritten) and its equations: v(out) becomes v(out1), out.v out1.v. Refused when a net has the new name already (that would join the two). The dataset keeps the old name until the next simulation.",
+ "description": "Renames a net - its labels change, and a net get_schematic calls net1, net2, ... gets a label - together with everything that names its voltage: the traces of the schematic's diagrams and of its data displays (open ones as an undoable change; the .dpl file of a closed one is rewritten) and its equations, so v(out) becomes v(out1) and out.v becomes out1.v. It is refused when another net already has the new name, since that would join the two. The dataset keeps the old name until the next simulation.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["from", "to"]}},
 {"name": "describe_component_type",
- "description": "With type \"Verilog-A\": a new Verilog-A module to start from - a template OpenVAF compiles as it is - and how to write one (attributes before the declaration, desc, units, type=\"instance\", contributions, a DC path for every node). Else a component type of the library described: what it is, its category, how its parts are named, its pins (their places relative to its centre, unturned), its properties in their order - name, default value, unit, what it means, whether shown on the schematic, and the simulators it counts for - the simulators it works with, the netlist line it makes with its defaults under the simulator in the settings, and notes on what is easy to get wrong with it (a Vpulse is one pulse: Vrect repeats) - among them the properties not shown on the schematic that still go into the netlist, and where (an OpAmp's Umax clips its output).",
+ "description": "Describes a library component type: what it is, its category, how its parts are named, its pins (their positions relative to its center, unrotated), and its properties in order - name, default value, unit, meaning, whether shown on the schematic and which simulators it applies to. It also gives the simulators the type works with, the netlist line it produces with its defaults for the simulator from the settings, and notes on common mistakes (a Vpulse is a single pulse; Vrect repeats), including properties hidden on the schematic that still go into the netlist and where (an OpAmp's Umax clips its output). With type \"Verilog-A\" it instead returns a new Verilog-A module to start from - a template OpenVAF compiles as it is - and how to write one (attributes before the declaration, desc, units, type=\"instance\", contributions, a DC path for every node).",
  "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "description": "As list_component_types gives it: R, Vpulse, .TR, ...; a Verilog-A module's name or file; \"Verilog-A\" for a template of a new one"}}, "required": ["type"]}},
 {"name": "batch",
- "description": "Runs several of these tools in one call, in order - far quicker than one call each: place and wire a circuit, set many properties, add a diagram and its traces at once. Each change is one step of Edit > Undo, as when called alone. It stops at the first that fails unless 'keep_going', and then says how many changes the calls before it made (undo with 'steps' takes them back); with 'atomic' those changes are undone at once - all or nothing (files written, simulations run and documents opened stay). It gives each one's result in order.",
+ "description": "Runs several of these tools in one call, in order - much faster than one call each: place and wire a circuit, set many properties, add a diagram and its traces at once. Each change is one step of Edit > Undo, as when called alone. It stops at the first call that fails unless 'keep_going' is set, and then reports how many changes the earlier calls made (undo with 'steps' takes them back); with 'atomic' those changes are undone at once, so it is all or nothing (files written, simulations run and documents opened stay). Returns each call's result in order.",
  "inputSchema": {"type": "object", "properties": {
    "calls": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
      "tool": {"type": "string", "description": "A tool's name: add_component, connect, ..."},
@@ -376,7 +381,7 @@ const char* const kTools = R"JSON([
    "keep_going": {"type": "boolean", "description": "Go on after one that fails"},
    "atomic": {"type": "boolean", "description": "All or nothing: when one fails, the changes of those before it are undone"}}, "required": ["calls"]}},
 {"name": "add_painting",
- "description": "Draws a painting - a text, an arrow, a line, a box, a text box, a table, a dimension, a formula - on a schematic, or on its symbol with 'symbol' (the document is switched to show its symbol, as Edit Circuit Symbol does; a .sym file is all symbol): to mark up a result, label a part of the circuit, draw a subcircuit's symbol. 'type': text, line, arrow, rectangle, ellipse, arc, polyline, image (from 'file'), rounded_rectangle, polygon, brace, waveform, text_box (kind block, note or callout, with a 'tip' it points at), table, dimension, formula (TeX). Its fields by name: a text's x, y, text (_x or _{xy} a subscript, ^ a superscript, as in TeX), size, color, angle; a line's or an arrow's from and to ([x, y]) and an arrow's head (open or filled); a box's x, y (its top left corner), width and height; color, thickness, style, fill_color, fill_style, filled; ... - describe_format with element painting lists every type's fields. Returns it as get_schematic lists it, with its number. One step to undo.",
+ "description": "Draws a painting - a text, arrow, line, box, text box, table, dimension or formula - on a schematic, or on its symbol with 'symbol' (the document switches to show its symbol, like Edit Circuit Symbol; a .sym file is all symbol). Use it to annotate a result, label part of the circuit or draw a subcircuit's symbol. 'type' is text, line, arrow, rectangle, ellipse, arc, polyline, image (from 'file'), rounded_rectangle, polygon, brace, waveform, text_box (kind block, note or callout, with a 'tip' it points at), table, dimension or formula (TeX). Its fields go by name: a text's x, y, text (_x or _{xy} for a subscript, ^ for a superscript, as in TeX), size, color and angle; a line's or arrow's from and to ([x, y]) and an arrow's head (open or filled); a box's x, y (top left corner), width and height; color, thickness, style, fill_color, fill_style, filled and so on. describe_format with element painting lists every type's fields. Returns it as get_schematic lists it, with its number. One undo step.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "symbol": {"type": "boolean", "description": "On the schematic's symbol"},
    "type": {"type": "string", "enum": ["text", "line", "arrow", "rectangle", "ellipse", "arc", "polyline", "image", "rounded_rectangle", "polygon", "brace", "waveform", "text_box", "table", "dimension", "formula"]},
@@ -389,7 +394,7 @@ const char* const kTools = R"JSON([
    "around": {"type": "string", "enum": ["selection"], "description": "Placed by what the user selected: a box about it, a text above it, an arrow to it, a brace beside it, a dimension under it (the fields given stay)"}},
    "required": ["type"]}},
 {"name": "edit_painting",
- "description": "Changes a painting - 'painting' is its number as get_schematic lists them (a painting of the symbol with 'symbol') - by the fields add_painting takes for its type: what is not given stays; it keeps its type. A symbol's ports can be moved (x, y) and given a 'label': what its instances show beside the pin instead of the port's name - the net's, which the netlist keeps - (\"+\" for inp; \"\" for nothing; null for the name again); its name text moved, and given its 'prefix' (SUB: the instances are SUB1, SUB2, ...) and its 'parameters' - a subcircuit's, [{\"name\": \"R\", \"default\": \"1k\", \"description\": ..., \"type\": ..., \"shown\": true}], each instance then takes them (save the file for them to see it). Returns it as get_schematic lists it. One step to undo.",
+ "description": "Changes a painting by the fields add_painting accepts for its type - 'painting' is its number from get_schematic ('symbol' for a painting of the symbol). Whatever is not given stays, and it keeps its type. A symbol port can be moved (x, y) and given a 'label': what its instances show next to the pin instead of the port's name (the net's name, which the netlist keeps) - \"+\" for inp, \"\" for nothing, null for the name again. The symbol's name text can be moved and given its 'prefix' (SUB makes the instances SUB1, SUB2, ...) and 'parameters' - a subcircuit's parameters, [{\"name\": \"R\", \"default\": \"1k\", \"description\": ..., \"type\": ..., \"shown\": true}], which each instance then takes (save the file so they see it). Returns it as get_schematic lists it. One undo step.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "symbol": {"type": "boolean"}, "painting": {"type": "integer"},
    "x": {"type": "integer"}, "y": {"type": "integer"}, "width": {"type": "integer"}, "height": {"type": "integer"},
@@ -400,13 +405,13 @@ const char* const kTools = R"JSON([
    "angle": {"type": "integer"}, "head": {"type": "string", "enum": ["open", "filled"]}, "file": {"type": "string"}},
    "required": ["painting"]}},
 {"name": "list_documents",
- "description": "The files of the workspace, of a project or of a folder - schematics, symbols, data displays, datasets, netlists, texts, PDFs, spreadsheets, pictures - newest first: each one's path (from the folder listed), kind, size, when it was changed and whether it is open; a dataset says which simulator wrote it, the schematic it is of, and the traces of the open diagrams that read it but that it has not; an open schematic, the traces whose dataset is not there at all (ngspice/... reads name.dat.ngspice: the Qucsator-versus-ngspice mix-up). Without 'folder', the workspace's, with its projects listed. 'folder': a project's name (amp, or amp_prj) or a folder (from the workspace, or absolute). 'kind' keeps one kind, 'search' the files whose name has it, 'sort' newest (the default) or name. Folders inside are looked into, 4 deep; 300 files at most, with what is left out.",
+ "description": "Lists the files of the workspace, a project or a folder - schematics, symbols, data displays, datasets, netlists, texts, PDFs, spreadsheets, pictures - newest first, each with its path (relative to the folder listed), kind, size, modification time and whether it is open. A dataset also says which simulator wrote it, which schematic it belongs to, and which traces of open diagrams read it but find nothing there; an open schematic lists the traces whose dataset does not exist at all (ngspice/... reads name.dat.ngspice - the usual Qucsator-versus-ngspice mix-up). Without 'folder' it lists the workspace, including its projects. 'folder' is a project's name (amp or amp_prj) or a folder (relative to the workspace, or absolute). 'kind' keeps one kind, 'search' the files whose name contains it, and 'sort' is newest (the default) or name. Subfolders are included up to 4 levels deep; at most 300 files, with what was left out.",
  "inputSchema": {"type": "object", "properties": {
    "folder": {"type": "string"},
    "kind": {"type": "string", "enum": ["schematic", "symbol", "data display", "dataset", "netlist", "text", "pdf", "spreadsheet", "markdown", "picture", "verilog-a"]},
    "search": {"type": "string"}, "sort": {"type": "string", "enum": ["newest", "name"]}}}},
 {"name": "export_image",
- "description": "Writes a picture of a schematic, a symbol or a data display (the one in front unless path names another) to a file, as File > Export as image does, without its dialog: 'save_as' (a path, or a name in the project's folder, else the workspace's; a file there is written over; its suffix gives the format when 'format' is not given), 'format' png, jpeg, bmp, tiff, webp, svg, pdf, eps or pdf_tex (a PDF with its text in a LaTeX file beside it), 'scale' (a raster image's pixels per unit of the schematic, 1 being 96 dpi; 2 unless given), 'colours' colour (the default), grayscale or monochrome, 'transparent' (no paper, where the format can have none), 'diagram' (its number as get_schematic lists them: that diagram alone - a frequency response for a report) or 'selection' (what is selected alone). Returns the file, its format, its size in pixels or units.",
+ "description": "Writes a picture of a schematic, symbol or data display (the one in front unless 'path' names another) to a file, like File > Export as image without its dialog. 'save_as' is a path, or a name in the project's folder (otherwise the workspace's); an existing file is overwritten, and its suffix gives the format when 'format' is not given. 'format' is png, jpeg, bmp, tiff, webp, svg, pdf, eps or pdf_tex (a PDF with its text in a LaTeX file next to it). 'scale' is a raster image's pixels per schematic unit (1 is 96 dpi; 2 by default). 'colours' is colour (the default), grayscale or monochrome. 'transparent' leaves out the paper where the format allows it. 'diagram' (its number from get_schematic) exports that diagram alone, for example a frequency response for a report, and 'selection' only what is selected. Returns the file, its format and its size in pixels or units.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "save_as": {"type": "string"},
    "format": {"type": "string", "enum": ["png", "jpeg", "bmp", "tiff", "webp", "svg", "pdf", "eps", "pdf_tex"]},
@@ -414,11 +419,11 @@ const char* const kTools = R"JSON([
    "transparent": {"type": "boolean"}, "diagram": {"type": "integer"}, "selection": {"type": "boolean"}},
    "required": ["save_as"]}},
 {"name": "build_verilog_a",
- "description": "Compiles a Verilog-A source with OpenVAF (the one under Application Settings > Locations), as Build Verilog-A does, and waits for it: a syntax error found now, not at the next simulation's cost. 'file' is the .va (relative to the project, else the workspace; the .va document in front when not given); an open one with unsaved changes needs 'unsaved': save or as_saved. Returns whether it compiled, the errors and warnings - each with its message, line and column, the source line and OpenVAF's marks - the .osdi written and its modules; describe_component_type with a module's name then lists its parameters.",
+ "description": "Compiles a Verilog-A source with OpenVAF (the one set under Application Settings > Locations), like Build Verilog-A, and waits for it, so a syntax error shows up now rather than at the next simulation. 'file' is the .va file (relative to the project, otherwise the workspace; the .va document in front if not given); an open file with unsaved changes needs 'unsaved': save or as_saved. Returns whether it compiled, its errors and warnings - each with message, line, column, the source line and OpenVAF's marks - the .osdi file written and its modules. describe_component_type with a module's name then lists its parameters.",
  "inputSchema": {"type": "object", "properties": {"file": {"type": "string"}, "unsaved": {"type": "string", "enum": ["save", "as_saved"]},
    "timeout": {"type": "integer", "description": "Seconds, 120 unless given"}}}},
 {"name": "tune",
- "description": "Makes a number come out right: sets a component's property, simulates, measures, and again - searching 'range' for the value that makes the measurement 'target' (false position, on a log scale over decades: a few runs), within 'tolerance' (0.5% of the target unless given), at most 'max_runs' (12) simulations. Or 'values': each simulated and measured, a table (with a target, the closest is taken). 'measure': {\"variable\": \"tran.v(out)\", \"what\": \"final\"} - what: min, max, mean, rms, initial, final, peak_to_peak, or a measurement of get_dataset's (bandwidth, overshoot, rise_time, settling_time, frequency, gain, thd, phase_margin, ...: its value, or 'field'), 'at' an x instead, 'from' and 'to' the range, the measurement's options as get_dataset takes them; or {\"operating_point\": \"e\"} - a node's DC voltage (or a device's quantity, Q1.ic), each run the operating point alone. The value found is set as one step to undo ('apply' false leaves it as it was) and simulated, so the diagrams show it. Returns each run's value and measurement, the value found and what it gives. Sweep RE until the emitter sits at 5 V; C until the peaking is 1 dB.",
+ "description": "Finds the value that makes a measurement come out right: it sets a component's property, simulates, measures, and repeats - searching 'range' for the value that brings the measurement to 'target' (false position, on a logarithmic scale across decades, so a few runs), within 'tolerance' (0.5% of the target by default) and at most 'max_runs' (12) simulations. With 'values' it simulates and measures each value and returns a table (with a target, the closest is chosen). 'measure' is {\"variable\": \"tran.v(out)\", \"what\": \"final\"}, where 'what' is min, max, mean, rms, initial, final, peak_to_peak or one of get_dataset's measurements (bandwidth, overshoot, rise_time, settling_time, frequency, gain, thd, phase_margin, ...: its value, or 'field'); 'at' takes an x value instead, 'from' and 'to' the range, plus the measurement's options as get_dataset accepts them. Or {\"operating_point\": \"e\"} measures a node's DC voltage (or a device quantity, Q1.ic), running only the operating point each time. The value found is set as one undo step ('apply' false leaves the part as it was) and simulated, so the diagrams show it. Returns each run's value and measurement, the value found and what it gives. Examples: sweep RE until the emitter sits at 5 V; sweep C until the peaking is 1 dB.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string"}, "component": {"type": "string"}, "property": {"type": "string", "description": "Its first property unless given (R of a resistor); of an equation block, a variable it defines"},
    "target": {"type": "number"}, "range": {"type": "array", "items": {}, "minItems": 2, "maxItems": 2, "description": "[low, high]: numbers, or text with units (1k)"},
@@ -428,34 +433,34 @@ const char* const kTools = R"JSON([
    "timeout": {"type": "integer", "description": "Seconds for each run, 120 unless given"}},
    "required": ["component", "measure"]}},
 {"name": "read_pdf",
- "description": "The text of a PDF - a datasheet, an application note, a report - page by page, to take a model's parameters or a table's values from it in the same window. 'path' (relative to the project, else the workspace; the PDF in front when not given); 'pages' [3, 4], \"2-5\" or 7 (the first 3 unless given); 'search' finds a word or value on every page (or those given) and returns the lines around each find. A scanned page has no text: screenshot of its tab shows it.",
+ "description": "Reads the text of a PDF - a datasheet, an application note, a report - page by page, for example to take a model's parameters or a table's values from it. 'path' is relative to the project, otherwise the workspace (the PDF in front if not given); 'pages' is [3, 4], \"2-5\" or 7 (the first 3 by default); 'search' finds a word or value on every page (or those given) and returns the lines around each hit. A scanned page has no text: a screenshot of its tab shows it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "pages": {}, "search": {"type": "string"}}}},
 {"name": "find_library_component",
- "description": "Searches the component libraries - Qucs-S's own and the user's (user_lib), and the SPICE model files (.model cards in .lib, .mod, .inc, .cir) of the project and the workspace - for a part by what it is and by its values: 'search' words in its name or description (2N3904, NPN 40V), 'type' npn, pnp, nmos, pmos, njf, pjf, diode (or a Qucs model: _BJT, _MOSFET, Diode, ...), 'near' values of its parameters ({\"Bf\": 200}: the nearest first, on a log scale), 'library' one library. Returns each part with its library, description, the values asked about, and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp; a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value.",
+ "description": "Searches the component libraries - Qucs-S's own and the user's (user_lib) - and the SPICE model files (.model cards in .lib, .mod, .inc and .cir files) of the project and the workspace for a part by what it is and by its values. 'search' matches words in its name or description (2N3904, NPN 40V); 'type' is npn, pnp, nmos, pmos, njf, pjf, diode or a Qucs model (_BJT, _MOSFET, Diode, ...); 'near' gives parameter values ({\"Bf\": 200}, nearest first on a logarithmic scale); 'library' limits it to one library. Returns each part with its library, description, the values asked about and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp; a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string"}, "type": {"type": "string"}, "near": {"type": "object"},
    "library": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}}},
 {"name": "new_project",
- "description": "Makes a project in the workspace (NAME_prj with its Scratch folder, as Project > New Project does) and opens it unless 'open' is false - opening closes the documents, so it is not opened while one has unsaved changes. Relative paths are taken from the open project.",
+ "description": "Creates a project in the workspace (a NAME_prj folder with its Scratch folder, like Project > New Project; a plain folder when any folder is a project) and opens it unless 'open' is false. Opening closes the documents, so it is not opened while one has unsaved changes. Relative paths are then resolved against the open project.",
  "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "open": {"type": "boolean"}}, "required": ["name"]}},
 {"name": "open_project",
- "description": "Opens a project of the workspace ('name': amp or amp_prj, or a project's folder), as Project > Open Project does: the documents are closed first (refused while one has unsaved changes). Relative paths are taken from it after.",
+ "description": "Opens a project of the workspace ('name': amp or amp_prj, or a project's folder), like Project > Open Project. The documents are closed first, so it is refused while one has unsaved changes. Relative paths are resolved against it afterwards. The workspace folder itself and the home folder are not projects.",
  "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
 {"name": "copy_document",
- "description": "Copies a schematic ('path', open or not - an open one as it is, unsaved changes too) to 'to': a name beside it (amp2), a path, or a folder or project to copy it into - with its results unless 'results' is false: its datasets (each simulator's) and its data display, renamed with it and pointing at each other. 'replace' writes over a copy there. Returns the files written.",
+ "description": "Copies a schematic ('path', open or not; an open one is copied as it is, including unsaved changes) to 'to': a name next to it (amp2), a path, or a folder or project to copy it into. Unless 'results' is false, its datasets (for each simulator) and its data display are copied too, renamed along with it and pointing at each other. 'replace' overwrites an existing copy. Returns the files written.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "to": {"type": "string"}, "results": {"type": "boolean"},
    "replace": {"type": "boolean"}}, "required": ["to"]}},
 {"name": "clean_scratch",
- "description": "Clears a schematic's scratch files - its subfolder of the project's Scratch folder: the netlists, the simulator's output and logs its runs left - to the system's trash; with 'datasets', its datasets too (name.dat, .dat.ngspice, ...). Made again by the next run.",
+ "description": "Moves a schematic's scratch files - its subfolder of the project's Scratch folder, with the netlists, simulator output and logs its runs left - to the system's trash; with 'datasets', its datasets too (name.dat, .dat.ngspice, ...). The next run creates them again.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "datasets": {"type": "boolean"}}}},
 {"name": "make_symbol",
- "description": "Draws a subcircuit's symbol anew: a box with each of its ports on a side - 'sides' by port name or number ({\"in\": \"left\", \"out\": \"right\", \"vdd\": \"top\", \"gnd\": \"bottom\"}); a port not given goes by its name (a supply - vdd, vcc, v+ - on the top, a ground or negative supply - gnd, vss, v- - on the bottom) or its type (in left, out right), the rest left and right in turn - its name text below. The document shows its symbol after (as Edit Circuit Symbol does). One step to undo. To finish what create_subcircuit began.",
+ "description": "Draws a subcircuit's symbol from scratch: a box with each port on one side. 'sides' assigns ports by name or number ({\"in\": \"left\", \"out\": \"right\", \"vdd\": \"top\", \"gnd\": \"bottom\"}); a port not listed goes by its name (a supply - vdd, vcc, v+ - on top, a ground or negative supply - gnd, vss, v- - at the bottom) or its type (in on the left, out on the right), and the rest alternate left and right. Its name text goes below. Afterwards the document shows its symbol, like Edit Circuit Symbol. One undo step. Use it to finish what create_subcircuit started.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "sides": {"type": "object", "additionalProperties": {"type": "string", "enum": ["left", "right", "top", "bottom"]}}}}},
 {"name": "import_netlist",
- "description": "Makes a schematic of a SPICE netlist ('text', or 'file': .cir, .sp, .net), in a new document: each element a SPICE part of its kind carrying its netlist text as written (R_SPICE, C_SPICE, S4Q_V for a source - SIN, PULSE and all - NPN_SPICE with its model, NMOS_SPICE, DIODE_SPICE, VCVS for a linear E, SPICE_dev for an X instance, K_SPICE, ...), placed in rows, each pin's net a net label on it and node 0 a ground; its .model cards in SpiceModel blocks, .param, .options, .include and .lib as blocks, .tran, .ac and .op as analyses, its .subckt definitions into a library file beside it, included. Rough but simulated as the netlist was: move and connect tidy it. The first line is the title unless it reads as an element ('title_line'). 'save_as' saves it. Returns the parts, nets and what was not taken.",
+ "description": "Creates a schematic from a SPICE netlist ('text', or 'file': .cir, .sp, .net) in a new document. Each element becomes a SPICE part of its kind carrying its netlist text as written (R_SPICE, C_SPICE, S4Q_V for a source with SIN, PULSE and the rest, NPN_SPICE with its model, NMOS_SPICE, DIODE_SPICE, VCVS for a linear E, SPICE_dev for an X instance, K_SPICE, ...), placed in rows, with each pin's net as a net label on it and node 0 as a ground. Its .model cards become SpiceModel blocks; .param, .options, .include and .lib become blocks; .tran, .ac and .op become analyses; its .subckt definitions go into a library file next to it, which is included. The layout is rough but simulates as the netlist did; arrange (or move and connect) tidies it. The first line is the title unless it reads as an element ('title_line'). 'save_as' saves it. Returns the parts, the nets and anything that was not taken.",
  "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "file": {"type": "string"}, "save_as": {"type": "string"},
    "title_line": {"type": "boolean"}, "spacing": {"type": "integer", "minimum": 120, "maximum": 600}}}},
 {"name": "set_simulator",
- "description": "Chooses the simulator that simulate runs and get_netlist writes for, as the toolbar's list of simulators does (a setting kept for next time): ngspice, xyce, spiceopus or qucsator - one that is installed. For one run of another, simulate takes 'simulator'. To compare two engines: simulate, then simulate with 'simulator' - get_dataset with 'simulator' reads each. Returns the simulator in use and those installed.",
+ "description": "Chooses the simulator that simulate runs and get_netlist writes for, like the toolbar's simulator list (a setting kept for next time): ngspice, xyce, spiceopus or qucsator - one that is installed. To run another one once, simulate takes 'simulator'. To compare two engines, simulate, then simulate again with 'simulator'; get_dataset with 'simulator' reads each result. Returns the simulator in use and those installed.",
  "inputSchema": {"type": "object", "properties": {"simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"]}}, "required": ["simulator"]}}
 ])JSON";
 
@@ -495,6 +500,7 @@ const struct {
     {"batch", QT_TRANSLATE_NOOP("QucsControl", "use several Qucs-S tools at once")},
     {"add_painting", QT_TRANSLATE_NOOP("QucsControl", "draw on the schematic in Qucs-S")},
     {"move", QT_TRANSLATE_NOOP("QucsControl", "move components in Qucs-S")},
+    {"arrange", QT_TRANSLATE_NOOP("QucsControl", "lay out a schematic again in Qucs-S")},
     {"create_subcircuit", QT_TRANSLATE_NOOP("QucsControl", "make a subcircuit in Qucs-S")},
     {"add_analysis", QT_TRANSLATE_NOOP("QucsControl", "add an analysis in Qucs-S")},
     {"edit_painting", QT_TRANSLATE_NOOP("QucsControl", "change a painting in Qucs-S")},
@@ -529,75 +535,76 @@ const struct {
     const char* tool;
     const char* summary;
 } kSummaries[] = {
-    {"get_state", QT_TRANSLATE_NOOP("QucsControl", "The state of the Qucs-S window: the panes, the documents open (each one's revision and who last edited it), the simulator, a simulation under way, a dialog waiting. Start here.")},
-    {"move_to_pane", QT_TRANSLATE_NOOP("QucsControl", "Puts a document in another pane (a number from get_state, or right or below) to see documents side by side.")},
-    {"open_document", QT_TRANSLATE_NOOP("QucsControl", "Opens a file in a tab (a schematic, symbol, data display, text or netlist, PDF), or brings it to the front; says when a line has more values than its type.")},
-    {"new_document", QT_TRANSLATE_NOOP("QucsControl", "Opens a new untitled schematic or text document, or a schematic's data display (.dpl) for a report's plots.")},
+    {"get_state", QT_TRANSLATE_NOOP("QucsControl", "Returns the state of the Qucs-S window: panes, open documents (each with its revision and who edited it last), the simulator, a running simulation and any open dialog. Start here.")},
+    {"move_to_pane", QT_TRANSLATE_NOOP("QucsControl", "Moves a document to another pane (a number from get_state, or \"right\" or \"below\") to show documents side by side.")},
+    {"open_document", QT_TRANSLATE_NOOP("QucsControl", "Opens a file in a tab (schematic, symbol, data display, text, netlist or PDF), or brings it to the front if it is already open. Warns when a component line has more values than its type.")},
+    {"new_document", QT_TRANSLATE_NOOP("QucsControl", "Creates an untitled schematic or text document, or opens a schematic's data display (.dpl) for plots.")},
     {"show_document", QT_TRANSLATE_NOOP("QucsControl", "Brings an open document to the front.")},
-    {"save_document", QT_TRANSLATE_NOOP("QucsControl", "Saves a document, or with 'as' under another name; says which open schematics' instances took a subcircuit's new symbol.")},
-    {"close_document", QT_TRANSLATE_NOOP("QucsControl", "Closes a document's tab; 'unsaved' says whether to save or discard changes (else the user is asked).")},
-    {"get_schematic", QT_TRANSLATE_NOOP("QucsControl", "Reads a schematic as it is now: a summary of its parts, pins, nets, wires, texts, paintings and diagrams; 'overview' for a large one, 'text' its .sch, 'json' the form set_schematic takes back.")},
-    {"check_schematic", QT_TRANSLATE_NOOP("QucsControl", "Checks a schematic for what a simulation would fail on or do otherwise than meant (no ground, floating parts, no DC path, pins not joined), each finding with its place.")},
-    {"set_schematic", QT_TRANSLATE_NOOP("QucsControl", "Replaces a schematic's sections at once: 'components' and 'wires' in JSON (properties by name, checked) or 'text' (.sch lines). One step to undo.")},
-    {"describe_format", QT_TRANSLATE_NOOP("QucsControl", "The fields of each kind of .sch line (component, wire, diagram, trace, marker, painting).")},
-    {"add_component", QT_TRANSLATE_NOOP("QucsControl", "Places a library component at x, y ('type', properties by name, rotation, mirror; equations and flags of an equation block). Returns it with its pins and a note on traps.")},
-    {"edit_component", QT_TRANSLATE_NOOP("QucsControl", "Changes a component: properties, name ('rename' carries its traces and equations), place, turn, mirror, active, texts - keeping every net as it was.")},
-    {"diff", QT_TRANSLATE_NOOP("QucsControl", "What changed in a schematic, part by part: against its file as saved, 'steps' back in its undo history, or 'against' another schematic.")},
-    {"replace_component", QT_TRANSLATE_NOOP("QucsControl", "Puts a part of another type in one's place, its pins mapped to the old nets ('pins' by number or name) and placed so no wire runs across it. One step to undo.")},
-    {"delete", QT_TRANSLATE_NOOP("QucsControl", "Deletes components, net labels, wires, diagrams, traces and paintings.")},
-    {"add_analysis", QT_TRANSLATE_NOOP("QucsControl", "Adds an AC, transient, DC, sweep or other analysis set up as usual, with a diagram of its results when 'plot' says so.")},
-    {"create_subcircuit", QT_TRANSLATE_NOOP("QucsControl", "Makes a subcircuit of components: they go into a new schematic with a port for each net that reaches the rest, and an instance takes their place.")},
-    {"move", QT_TRANSLATE_NOOP("QucsControl", "Moves components together by dx, dy, keeping every net as it was.")},
-    {"connect", QT_TRANSLATE_NOOP("QucsControl", "Draws a wire between two pins or places (\"R1.2\" to \"C1.1\") by a way that joins nothing else; draws nothing and says why when there is none.")},
-    {"add_wire", QT_TRANSLATE_NOOP("QucsControl", "Draws a wire through the given places.")},
-    {"set_label", QT_TRANSLATE_NOOP("QucsControl", "Names the net at a pin or a wire (nets of one name are connected); \"\" takes the label away.")},
+    {"save_document", QT_TRANSLATE_NOOP("QucsControl", "Saves a document, or saves it under a new name with 'as'. Reports which open schematics picked up a changed subcircuit symbol.")},
+    {"close_document", QT_TRANSLATE_NOOP("QucsControl", "Closes a document. 'unsaved' says whether to save or discard its changes; otherwise the user is asked.")},
+    {"get_schematic", QT_TRANSLATE_NOOP("QucsControl", "Reads a schematic: its components with pin positions, nets, wires, texts, paintings and diagrams. Use format 'overview' for a large schematic, 'text' for the .sch source, or 'json' for the form set_schematic accepts.")},
+    {"check_schematic", QT_TRANSLATE_NOOP("QucsControl", "Checks a schematic for problems a simulation would fail on or misread (no ground, floating parts, no DC path, unconnected pins), each with its location.")},
+    {"set_schematic", QT_TRANSLATE_NOOP("QucsControl", "Replaces whole sections of a schematic in one undo step: 'components' and 'wires' as JSON (properties by name, checked against each type) or 'text' as .sch lines (values checked too).")},
+    {"describe_format", QT_TRANSLATE_NOOP("QucsControl", "Explains the fields of each kind of .sch line (component, wire, diagram, trace, marker, painting).")},
+    {"add_component", QT_TRANSLATE_NOOP("QucsControl", "Places a component of a library type at x, y, with properties by name, rotation and mirroring (plus equations or flags for an equation block). Returns the part with its pins and notes on common mistakes.")},
+    {"edit_component", QT_TRANSLATE_NOOP("QucsControl", "Changes a component's properties, name, position, rotation, mirroring, active state or texts, keeping all its connections.")},
+    {"diff", QT_TRANSLATE_NOOP("QucsControl", "Lists what changed in a schematic, part by part: against its saved file, a number of undo steps back, or another schematic.")},
+    {"replace_component", QT_TRANSLATE_NOOP("QucsControl", "Replaces a component with one of another type, mapping its pins onto the old nets, in one undo step.")},
+    {"delete", QT_TRANSLATE_NOOP("QucsControl", "Deletes components, net labels, wires, diagrams, traces or paintings.")},
+    {"add_analysis", QT_TRANSLATE_NOOP("QucsControl", "Adds a simulation (AC, transient, DC, parameter sweep and others), optionally with a diagram of its results.")},
+    {"create_subcircuit", QT_TRANSLATE_NOOP("QucsControl", "Turns a group of components into a subcircuit: they move to a new schematic with a port for each outside net, and an instance takes their place.")},
+    {"move", QT_TRANSLATE_NOOP("QucsControl", "Moves components together by dx, dy, keeping all connections.")},
+    {"arrange", QT_TRANSLATE_NOOP("QucsControl", "Lays out the whole schematic again: parts in columns by signal flow, every wire redrawn, every net kept. One undo step.")},
+    {"connect", QT_TRANSLATE_NOOP("QucsControl", "Draws a wire between two pins or points (\"R1.2\" to \"C1.1\") along a path that touches nothing else, or to \"ground\" (a new ground symbol). Draws nothing and explains why if there is no such path.")},
+    {"add_wire", QT_TRANSLATE_NOOP("QucsControl", "Draws a wire through the given points.")},
+    {"set_label", QT_TRANSLATE_NOOP("QucsControl", "Names the net at a pin or wire; nets with the same name are connected. \"\" removes the label.")},
     {"select", QT_TRANSLATE_NOOP("QucsControl", "Selects components, diagrams and paintings.")},
     {"zoom", QT_TRANSLATE_NOOP("QucsControl", "Zooms a schematic: all, selection, in, out or 1:1.")},
-    {"undo", QT_TRANSLATE_NOOP("QucsControl", "Undoes the last change ('steps' so many, 'to' a step of undo_history).")},
-    {"undo_history", QT_TRANSLATE_NOOP("QucsControl", "A schematic's steps to undo, in words.")},
+    {"undo", QT_TRANSLATE_NOOP("QucsControl", "Undoes the last change, a number of steps, or back to a step from undo_history.")},
+    {"undo_history", QT_TRANSLATE_NOOP("QucsControl", "Lists a schematic's undo steps in words.")},
     {"redo", QT_TRANSLATE_NOOP("QucsControl", "Redoes what was undone.")},
-    {"screenshot", QT_TRANSLATE_NOOP("QucsControl", "A picture of a document, the canvas as seen, or the window.")},
-    {"list_component_types", QT_TRANSLATE_NOOP("QucsControl", "The library's component types: the type add_component takes, what it is, its category.")},
-    {"list_actions", QT_TRANSLATE_NOOP("QucsControl", "The menus' actions: the path trigger_action takes, whether usable now.")},
-    {"trigger_action", QT_TRANSLATE_NOOP("QucsControl", "Uses a menu action (\"Edit > Rotate\") as a click would; a dialog it opens is read with get_dialog.")},
-    {"get_dialog", QT_TRANSLATE_NOOP("QucsControl", "The dialog waiting for an answer: its texts and controls, each with an id for set_dialog.")},
+    {"screenshot", QT_TRANSLATE_NOOP("QucsControl", "Takes a picture of a document, the visible canvas or the whole window.")},
+    {"list_component_types", QT_TRANSLATE_NOOP("QucsControl", "Lists the component types add_component accepts, with a description and category.")},
+    {"list_actions", QT_TRANSLATE_NOOP("QucsControl", "Lists the menu actions trigger_action accepts and whether each is available now.")},
+    {"trigger_action", QT_TRANSLATE_NOOP("QucsControl", "Runs a menu action (\"Edit > Rotate\") as a click would; read any dialog it opens with get_dialog.")},
+    {"get_dialog", QT_TRANSLATE_NOOP("QucsControl", "Reads the open dialog: its texts and controls, each with an id for set_dialog.")},
     {"set_dialog", QT_TRANSLATE_NOOP("QucsControl", "Fills in the open dialog and presses a button.")},
-    {"simulate", QT_TRANSLATE_NOOP("QucsControl", "Simulates a schematic and waits: whether it succeeded, errors with their netlist line and part, the dataset and its variables. 'operating_point' for the DC bias alone.")},
-    {"get_netlist", QT_TRANSLATE_NOOP("QucsControl", "The netlist a simulation would be given now ('last': the one it ran); 'map' ties each line to its part and each node to its pins.")},
-    {"export_netlist", QT_TRANSLATE_NOOP("QucsControl", "Writes a schematic's netlist (SPICE or CDL) to a file.")},
-    {"get_dataset", QT_TRANSLATE_NOOP("QucsControl", "Reads simulation results as numbers: variables, statistics, samples, measurements (bandwidth, rise time, overshoot, THD, phase margin, ...), spectra, eyes, Monte Carlo distributions.")},
-    {"reload_data", QT_TRANSLATE_NOOP("QucsControl", "Reads the datasets again and redraws the diagrams.")},
-    {"add_diagram", QT_TRANSLATE_NOOP("QucsControl", "Places a diagram (rectangular, polar, Smith, table, ...) with its traces showing the dataset at once.")},
-    {"edit_diagram", QT_TRANSLATE_NOOP("QucsControl", "Changes a diagram's place, size, title, axes, grid and legend.")},
-    {"add_trace", QT_TRANSLATE_NOOP("QucsControl", "Adds a trace to a diagram: its variable, colour, thickness, style, axis.")},
+    {"simulate", QT_TRANSLATE_NOOP("QucsControl", "Runs a simulation and waits for it: whether it succeeded, errors with their netlist line and part, and the dataset's variables. 'operating_point' runs the DC bias only.")},
+    {"get_netlist", QT_TRANSLATE_NOOP("QucsControl", "Returns the netlist a simulation would use now ('last' for the one it ran); 'map' ties each line to its part and each node to its pins.")},
+    {"export_netlist", QT_TRANSLATE_NOOP("QucsControl", "Writes a schematic's SPICE or CDL netlist to a file.")},
+    {"get_dataset", QT_TRANSLATE_NOOP("QucsControl", "Reads simulation results as numbers: variables, statistics, samples and measurements (bandwidth, rise time, overshoot, THD, phase margin and more), spectra, eye diagrams and Monte Carlo distributions.")},
+    {"reload_data", QT_TRANSLATE_NOOP("QucsControl", "Re-reads the datasets and redraws the diagrams.")},
+    {"add_diagram", QT_TRANSLATE_NOOP("QucsControl", "Places a diagram (rectangular, polar, Smith, table and others) with traces from the dataset.")},
+    {"edit_diagram", QT_TRANSLATE_NOOP("QucsControl", "Changes a diagram's position, size, title, axes, grid or legend.")},
+    {"add_trace", QT_TRANSLATE_NOOP("QucsControl", "Adds a trace to a diagram: variable, color, thickness, style and axis.")},
     {"edit_trace", QT_TRANSLATE_NOOP("QucsControl", "Changes a trace of a diagram.")},
-    {"add_marker", QT_TRANSLATE_NOOP("QucsControl", "Places a marker on a trace (at an x, the peak, 3 dB below it, a crossing) showing the value there.")},
-    {"edit_marker", QT_TRANSLATE_NOOP("QucsControl", "Changes a marker's place, label, precision and look.")},
-    {"delete_marker", QT_TRANSLATE_NOOP("QucsControl", "Deletes a marker of a diagram.")},
-    {"rename_net", QT_TRANSLATE_NOOP("QucsControl", "Renames a net and whatever names its voltage: traces, equations, data displays.")},
-    {"describe_component_type", QT_TRANSLATE_NOOP("QucsControl", "A component type: its pins, properties in order with defaults and units, netlist line, traps and hidden properties that reach the netlist; \"Verilog-A\" gives a module template.")},
+    {"add_marker", QT_TRANSLATE_NOOP("QucsControl", "Places a marker on a trace (at an x value, the peak, the -3 dB point or a crossing) that shows the value there.")},
+    {"edit_marker", QT_TRANSLATE_NOOP("QucsControl", "Changes a marker's position, label, precision or look.")},
+    {"delete_marker", QT_TRANSLATE_NOOP("QucsControl", "Deletes a marker from a diagram.")},
+    {"rename_net", QT_TRANSLATE_NOOP("QucsControl", "Renames a net together with everything that refers to it: traces, equations and data displays.")},
+    {"describe_component_type", QT_TRANSLATE_NOOP("QucsControl", "Describes a component type: pins, properties in order with defaults and units, netlist line, common mistakes and hidden properties that still reach the netlist. \"Verilog-A\" returns a module template.")},
     {"batch", QT_TRANSLATE_NOOP("QucsControl", "Runs several of these tools in one call, in order ('atomic': all or nothing).")},
     {"add_painting", QT_TRANSLATE_NOOP("QucsControl", "Draws a text, arrow, line, box, text box, table, dimension or formula on a schematic, or on its symbol with 'symbol'.")},
-    {"edit_painting", QT_TRANSLATE_NOOP("QucsControl", "Changes a painting by its fields; a symbol's port can be moved and given a label.")},
-    {"list_documents", QT_TRANSLATE_NOOP("QucsControl", "The files of the workspace, a project or a folder: kinds, sizes, times, which dataset is whose.")},
-    {"export_image", QT_TRANSLATE_NOOP("QucsControl", "Writes a picture of a schematic, symbol, data display or one diagram to a file (PNG, SVG, PDF, ...).")},
-    {"build_verilog_a", QT_TRANSLATE_NOOP("QucsControl", "Compiles a Verilog-A source with OpenVAF now: each error with its line and column.")},
-    {"tune", QT_TRANSLATE_NOOP("QucsControl", "Sets a part's value, simulates and measures until a measurement hits its target (or measures a table of values).")},
-    {"read_pdf", QT_TRANSLATE_NOOP("QucsControl", "The text of a PDF (a datasheet), page by page.")},
-    {"find_library_component", QT_TRANSLATE_NOOP("QucsControl", "Searches the libraries and the project's SPICE models for a part by its name and values.")},
-    {"new_project", QT_TRANSLATE_NOOP("QucsControl", "Makes a project in the workspace.")},
+    {"edit_painting", QT_TRANSLATE_NOOP("QucsControl", "Changes a painting's fields; can also move a symbol port and set its label.")},
+    {"list_documents", QT_TRANSLATE_NOOP("QucsControl", "Lists the files of the workspace, a project or a folder: kinds, sizes, dates, and which dataset belongs to which schematic.")},
+    {"export_image", QT_TRANSLATE_NOOP("QucsControl", "Writes a picture of a schematic, symbol, data display or single diagram to a file (PNG, SVG, PDF and others).")},
+    {"build_verilog_a", QT_TRANSLATE_NOOP("QucsControl", "Compiles a Verilog-A file with OpenVAF, reporting each error with its line and column.")},
+    {"tune", QT_TRANSLATE_NOOP("QucsControl", "Adjusts a component value, simulating and measuring until a measurement reaches its target (or measures a table of values).")},
+    {"read_pdf", QT_TRANSLATE_NOOP("QucsControl", "Reads the text of a PDF, such as a datasheet, page by page.")},
+    {"find_library_component", QT_TRANSLATE_NOOP("QucsControl", "Searches the libraries and the project's SPICE models for a part by name and values.")},
+    {"new_project", QT_TRANSLATE_NOOP("QucsControl", "Creates a project in the workspace.")},
     {"open_project", QT_TRANSLATE_NOOP("QucsControl", "Opens a project of the workspace.")},
-    {"copy_document", QT_TRANSLATE_NOOP("QucsControl", "Copies a schematic with its datasets and data display.")},
-    {"clean_scratch", QT_TRANSLATE_NOOP("QucsControl", "Moves a schematic's scratch files (netlists, logs; datasets when asked) to the trash.")},
-    {"make_symbol", QT_TRANSLATE_NOOP("QucsControl", "Draws a subcircuit's symbol with its ports on four sides.")},
-    {"import_netlist", QT_TRANSLATE_NOOP("QucsControl", "Makes a schematic of a SPICE netlist.")},
-    {"set_simulator", QT_TRANSLATE_NOOP("QucsControl", "Chooses the simulator simulate runs and get_netlist writes for.")},
-    {"run_script", QT_TRANSLATE_NOOP("QucsControl", "Runs a short JavaScript program of these tools (qucs.call, loops, conditions) in one turn; 'atomic' puts every schematic back if it throws.")},
-    {"describe_tool", QT_TRANSLATE_NOOP("QucsControl", "A tool in full: what it does and returns, its fields and its traps - each tool's description here is a summary. Without 'name', every tool's summary.")},
+    {"copy_document", QT_TRANSLATE_NOOP("QucsControl", "Copies a schematic together with its datasets and data display.")},
+    {"clean_scratch", QT_TRANSLATE_NOOP("QucsControl", "Moves a schematic's temporary files (netlists, logs, and datasets if asked) to the trash.")},
+    {"make_symbol", QT_TRANSLATE_NOOP("QucsControl", "Draws a subcircuit symbol with ports on four sides.")},
+    {"import_netlist", QT_TRANSLATE_NOOP("QucsControl", "Creates a schematic from a SPICE netlist.")},
+    {"set_simulator", QT_TRANSLATE_NOOP("QucsControl", "Chooses the simulator that simulate runs and get_netlist writes for.")},
+    {"run_script", QT_TRANSLATE_NOOP("QucsControl", "Runs a short JavaScript program that calls these tools (qucs.call) with loops and conditions, in one turn; 'atomic' restores every schematic if it throws.")},
+    {"describe_tool", QT_TRANSLATE_NOOP("QucsControl", "Returns a tool's full description: what it does and returns, its fields and common mistakes. Without 'name', lists every tool's summary.")},
 };
 
 // The tools that change schematics alone: they take 'preview'.
-const char* const kPreviewable[] = {"set_schematic", "add_component", "edit_component", "replace_component", "delete", "move",
+const char* const kPreviewable[] = {"set_schematic", "add_component", "edit_component", "replace_component", "delete", "move", "arrange",
                                     "connect", "add_wire", "set_label", "add_analysis", "create_subcircuit", "rename_net",
                                     "add_painting", "edit_painting", "add_diagram", "edit_diagram", "add_trace", "edit_trace",
                                     "add_marker", "edit_marker", "delete_marker", "make_symbol", "batch"};
@@ -637,6 +644,7 @@ const struct {
     {"edit_marker", "marker label precision format"},
     {"delete_marker", "remove marker"},
     {"rename_net", "rename net label node"},
+    {"arrange", "layout tidy arrange autoplace auto route reroute neat schematic"},
     {"add_painting", "drawing text arrow line box callout table formula dimension symbol"},
     {"edit_painting", "change drawing text arrow symbol port label"},
     {"export_netlist", "write netlist file spice cdl"},
@@ -861,23 +869,61 @@ bool setProperties(Component* c, const QJsonObject& properties, QString* error)
 // the type's default is one ("1,5k", "1.2.3", nothing): told, not refused.
 // A name (a parameter's), an expression or a value in braces is taken as
 // meant.
-QStringList valueNotes(Component* c, const QStringList& names)
+// The names \a sch's equation blocks (Eqn, .PARAM, ...) define: what a
+// property's value may name instead of a number.
+QSet<QString> definedNames(const Schematic* sch)
 {
+    QSet<QString> names;
+    if (sch == nullptr) return names;
+    for (const Component* c : sch->a_DocComps)
+        if (isEquationKind(c))
+            for (const Property* p : c->Props) names << p->Name;
+    return names;
+}
+
+QStringList valueNotes(Component* c, const QStringList& names, const Schematic* sch)
+{
+    const QSet<QString> defined = definedNames(sch);
     static const QRegularExpression number(QStringLiteral(
         "^\\s*[-+]?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?\\s*[A-Za-z\u00b5\u03a9\u00b0%/]*\\s*$"));
     static const QRegularExpression name(QStringLiteral("^[A-Za-z_][A-Za-z0-9_.]*$"));
     static const QRegularExpression expression(QStringLiteral("[{}()*/^+]|[A-Za-z_]\\w*\\s*[-+*/]"));
+    // A property of a few words to choose from says them in its description,
+    // "schematic symbol [european, US]".
+    static const QRegularExpression options(QStringLiteral("\\[([^\\[\\]]+)\\]\\s*$"));
     std::unique_ptr<Component> fresh(newComponent(c->Model));
     QStringList notes;
     for (const QString& n : names) {
         const Property* p = c->getProperty(n);
         const Property* d = fresh ? fresh->getProperty(n) : nullptr;
-        if (p == nullptr || d == nullptr || !number.match(d->Value).hasMatch()) continue;
+        if (p == nullptr || d == nullptr) continue;
         const QString v = p->Value.trimmed();
-        if (number.match(v).hasMatch() || name.match(v).hasMatch() || expression.match(v).hasMatch()) continue;
+        const QString who = c->Name.isEmpty() ? c->Model : c->Name;
+        if (const QRegularExpressionMatch m = options.match(d->Description); m.hasMatch() && !v.isEmpty()) {
+            QStringList words;
+            for (const QString& w : m.captured(1).split(QLatin1Char(','))) words << w.trimmed();
+            // (Words only: "[0, 1]" or "[1 ... 4]" is a range of numbers.)
+            bool allWords = words.size() >= 2;   // (one word in brackets may be a unit)
+            for (const QString& w : std::as_const(words)) allWords = allWords && !w.isEmpty() && !w.at(0).isDigit() && !w.contains(QLatin1String("..."));
+            if (allWords && std::none_of(words.cbegin(), words.cend(), [&v](const QString& w) { return w.compare(v, Qt::CaseInsensitive) == 0; })) {
+                notes << tr("%1: %2 = \"%3\" is not one of its choices (%4)").arg(who, n, v, words.join(QStringLiteral(", ")));
+                continue;
+            }
+        }
+        if (!number.match(d->Value).hasMatch()) continue;
+        if (number.match(v).hasMatch() || expression.match(v).hasMatch()) continue;
+        // A word: a parameter's name - one an equation block here defines;
+        // else said, as it may be a value in the wrong place ("european").
+        if (name.match(v).hasMatch()) {
+            if (sch == nullptr || defined.contains(v)) continue;
+            notes << tr("%1: %2 = \"%3\" is no number, and no equation block here defines %3 (its default is %4; fine if "
+                        "it is a subcircuit's parameter or from an included file)")
+                         .arg(who, n, v, d->Value);
+            continue;
+        }
         notes << tr("%1: %2 = \"%3\" does not read as a number (its default is %4; a scale letter - f p n u m k M G T - "
                     "and a unit may follow, a decimal point, not a comma)")
-                     .arg(c->Name.isEmpty() ? c->Model : c->Name, n, v, d->Value);
+                     .arg(who, n, v, d->Value);
     }
     return notes;
 }
@@ -993,6 +1039,8 @@ bool equationsOf(const QJsonValue& v, Equations* out, QString* error)
             if (!take(e.toArray().at(0).toString(), e.toArray().at(1))) return false;
         } else if (e.isObject() && e.toObject().value(QLatin1String("name")).isString()) {
             if (!take(e.toObject().value(QLatin1String("name")).toString(), e.toObject().value(QLatin1String("value")))) return false;
+        } else if (e.isObject() && e.toObject().size() == 1) {   // {"k": null} in the list: k taken away
+            if (!take(e.toObject().begin().key(), e.toObject().begin().value())) return false;
         } else {
             *error = tr("Each of 'equations' is \"name=expression\", [name, expression] or {\"name\": ..., \"value\": ...}.");
             return false;
@@ -1510,10 +1558,11 @@ bool wireUp(Schematic* sch, const QPoint& a, const QPoint& b, const std::functio
 // when a piece cannot be reached. \a edited is the part "@" is, \a probes
 // the places before has.
 bool joinPieces(Schematic* sch, const Nets& before, const QString& edited, const QList<QPoint>& probes,
-                const std::function<QStringList()>& check, QString* why)
+                const std::function<QStringList()>& check, QString* why, int rounds = 64)
 {
-    for (int round = 0; round < 64; ++round) {
-        const Nets now = netsOf(sch, sch->getComponentByName(edited), probes);
+    for (int round = 0; round < rounds; ++round) {
+        // (No part edited: none - an empty name would find a ground.)
+        const Nets now = netsOf(sch, edited.isEmpty() ? nullptr : sch->getComponentByName(edited), probes);
         // A net of before in pieces: the pieces' nodes.
         QHash<int, QSet<int>> pieces;   // net before -> nets now
         for (auto it = before.netOf.constBegin(); it != before.netOf.constEnd(); ++it)
@@ -1888,12 +1937,12 @@ QucsControl::QucsControl(QucsApp* app) : QObject(app), a_app(app)
 {
     a_tools = QJsonDocument::fromJson(QByteArray(kTools)).array();
     a_tools.append(QJsonDocument::fromJson(R"JSON({"name": "describe_tool",
- "description": "A tool in full: what it does and returns, its fields and its traps.",
+ "description": "Returns a tool's full description: what it does and returns, its fields and common mistakes. The tools loaded in every turn have short descriptions; without 'name', it lists every tool's summary.",
  "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "The tool (add_component, get_dataset, ...); without it, every tool's summary"}}}})JSON").object());
     // run_script, where the build has Qt's JavaScript engine.
     if (scriptingBuilt())
         a_tools.append(QJsonDocument::fromJson(R"JSON({"name": "run_script",
- "description": "Runs a short JavaScript program against these tools, in one turn: qucs.call(tool, args) calls any tool and returns its answer as an object (its JSON; {text} when it is text) and throws when the tool fails, so loops, conditions and arithmetic go between calls - place and wire a ladder, set a value, simulate and measure again and again, check and simulate. qucs.log(value) adds a line to the answer. It returns the value of the script's last expression. There are no files or network: only the tools. 'atomic': when it throws, every schematic is put back as it was. 'timeout' in seconds, 60 unless given (600 at most).",
+ "description": "Runs a short JavaScript program against these tools in one turn. qucs.call(tool, args) calls any tool and returns its answer as an object (its JSON, or {text} when the answer is text), and throws when the tool fails - so loops, conditions and arithmetic can go between calls: place and wire a ladder, set a value then simulate and measure repeatedly, check and then simulate. qucs.log(value) adds a line to the answer. The result is the value of the script's last expression. There is no file or network access, only the tools. With 'atomic', every schematic is restored if the script throws. 'timeout' is in seconds, 60 by default (600 at most).",
  "inputSchema": {"type": "object", "properties": {
    "script": {"type": "string", "description": "JavaScript: for (let i = 1; i <= 5; i++) qucs.call('add_component', {type: 'R', name: 'R' + i, x: 100 * i, y: 100}); qucs.call('get_schematic', {format: 'overview'})"},
    "atomic": {"type": "boolean"}, "timeout": {"type": "integer", "minimum": 1, "maximum": 600}}, "required": ["script"]}})JSON").object());
@@ -1929,9 +1978,12 @@ QucsControl::QucsControl(QucsApp* app) : QObject(app), a_app(app)
                                                                {QStringLiteral("destructiveHint"), !looks && !additive.contains(name)},
                                                                {QStringLiteral("idempotentHint"), looks},
                                                                {QStringLiteral("openWorldHint"), false}});
-        // The description a summary; the whole kept for describe_tool.
+        // In every turn, a summary (the whole kept for describe_tool); a tool
+        // found by the tool search when a task needs it is loaded then, and
+        // only then - with its whole description, not to need describe_tool
+        // before its first use.
         a_details.insert(name, tool);
-        if (summaries.contains(name)) tool.insert(QStringLiteral("description"), summaries.value(name));
+        if (summaries.contains(name) && core.contains(name)) tool.insert(QStringLiteral("description"), summaries.value(name));
         QJsonObject meta;
         if (core.contains(name)) meta.insert(QStringLiteral("anthropic/alwaysLoad"), true);
         else meta.insert(QStringLiteral("anthropic/searchHint"), hints.value(name, QStringLiteral("qucs-s schematic %1").arg(name)));
@@ -2114,38 +2166,43 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
 QString QucsControl::instructions() const
 {
     return QStringLiteral(
-        "These tools drive the Qucs-S window the user is looking at (or, run as qucs-s --mcp-server, a Qucs-S with no window). "
-        "Each tool's description is a summary: describe_tool gives the whole of one - what it returns, its fields, its traps. "
-        "get_state says what is open. Documents: "
-        "open_document, show_document, new_document, save_document, close_document. A schematic: get_schematic "
-        "(its components with their pins' places, or its .sch text), then change it with add_component, "
-        "edit_component, connect (pin to pin, e.g. \"R1.2\" to \"C1.1\"), add_wire, set_label, delete, or "
-        "set_schematic (new .sch sections at once); select, zoom, undo, redo; screenshot to see it. "
-        "list_component_types gives add_component's types, describe_component_type a type's properties. "
-        "rename_net renames a net with the traces that show it. batch runs several of these in one call: use it for "
-        "several changes at once (place and wire parts, set properties, add a diagram and its traces) rather than a "
-        "call each. Menus: list_actions, trigger_action; a dialog it opens "
-        "is read with get_dialog and answered with set_dialog. simulate runs the simulator and reports its errors; "
-        "get_netlist gives the netlist. get_dataset reads the results as numbers and measures them (rise time, "
-        "overshoot, values at a time, ...): use it rather than a screenshot to tell what a simulation gave. "
-        "Diagrams: add_diagram, edit_diagram, add_trace, edit_trace, delete; markers: add_marker (at x, the peak, "
-        "-3 dB, a crossing), edit_marker, delete_marker; reload_data reads the data again. Paintings - texts, arrows, "
-        "boxes, text boxes, tables, dimensions, formulas - to mark up a result or draw a symbol: add_painting, "
-        "edit_painting, delete. list_documents lists the files of the workspace or a project; export_image writes a "
-        "picture of a schematic or one diagram; set_simulator chooses the simulator. tune sets a part's value, "
-        "simulates and measures until a number comes out right - one call for what took three an iteration. "
-        "build_verilog_a compiles a .va now, with its errors' lines; describe_component_type tells a Verilog-A "
-        "module's parameters. find_library_component finds a part by its values (an NPN with Bf near 200); read_pdf "
-        "reads a datasheet's text; import_netlist makes a schematic of a SPICE netlist; make_symbol draws a "
-        "subcircuit's symbol. new_project, open_project, copy_document, clean_scratch tend the files. undo_history "
-        "tells the steps to undo in words. \"selection\": true takes what the user selected (move, delete, "
-        "create_subcircuit, get_schematic). What the user changes between your calls is told part by part. Changes "
-        "appear in the window at once, each one step to undo: prefer these tools to editing the file of a schematic "
-        "that is open. Coordinates are the schematic's (grid 10 as a rule; place pins on it). The system's file and "
-        "print dialogs cannot be filled: use open_document and save_document instead. A document is its path "
-        "(relative to the open project's folder, else the workspace) or, when it is open, its file's name alone (amp.sch). "
-        "A conversation the user has pinned to a schematic says so in its prompts: then the tools act on that schematic when given no path, "
-        "whichever document is in front, and trigger_action brings it to the front first.");
+        "These tools drive the Qucs-S window the user is looking at (or, when run as qucs-s --mcp-server, a Qucs-S "
+        "without a window). The tools loaded in every turn have short descriptions; describe_tool returns the full "
+        "description of any tool (what it returns, its fields, common mistakes). The other tools are found by the tool "
+        "search when a task needs them and come with their full description.\n\n"
+        "Start with get_state to see what is open. Documents: open_document, show_document, new_document, save_document, "
+        "close_document. Read a schematic with get_schematic (components with pin positions, nets, or the .sch text), "
+        "then change it with add_component, edit_component, connect (pin to pin, such as \"R1.2\" to \"C1.1\", or a pin "
+        "to \"ground\"), add_wire, set_label, delete, or set_schematic (whole sections at once, preferably as JSON). "
+        "arrange lays a schematic out again by signal flow, keeping every net. Also select, zoom, undo, redo, and "
+        "screenshot to see the result. list_component_types lists add_component's types and describe_component_type a "
+        "type's properties. rename_net renames a net together with the traces that show it. batch runs several tools in "
+        "one call: use it for several changes at once (placing and wiring parts, setting properties, adding a diagram and "
+        "its traces) instead of one call each.\n\n"
+        "Menus: list_actions and trigger_action; read a dialog it opens with get_dialog and answer it with set_dialog. "
+        "simulate runs the simulator and reports errors; get_netlist returns the netlist. get_dataset reads results as "
+        "numbers and measures them (rise time, overshoot, value at a time, ...): use it rather than a screenshot to judge "
+        "a simulation. Diagrams: add_diagram, edit_diagram, add_trace, edit_trace, delete; markers: add_marker (at an x "
+        "value, the peak, -3 dB or a crossing), edit_marker, delete_marker; reload_data re-reads the data. Paintings "
+        "(texts, arrows, boxes, text boxes, tables, dimensions, formulas) annotate a result or draw a symbol: "
+        "add_painting, edit_painting, delete. list_documents lists the files of the workspace or a project; export_image "
+        "writes a picture of a schematic or a single diagram; set_simulator chooses the simulator. tune adjusts a part's "
+        "value, simulating and measuring until a measurement reaches its target - one call instead of three per "
+        "iteration. build_verilog_a compiles a .va file now and reports errors with their lines; describe_component_type "
+        "lists a Verilog-A module's parameters. find_library_component finds a part by its values (an NPN with Bf near "
+        "200); read_pdf reads a datasheet's text; import_netlist builds a schematic from a SPICE netlist; make_symbol "
+        "draws a subcircuit's symbol. new_project, open_project, copy_document and clean_scratch manage files. "
+        "undo_history lists the undo steps in words. \"selection\": true acts on what the user selected (move, delete, "
+        "create_subcircuit, get_schematic).\n\n"
+        "Each tool result reports, part by part, what the user changed since your last call. Changes appear in the "
+        "window immediately, each as one undo step. Prefer these tools to editing the file of an open schematic: a file "
+        "you change on disk is reloaded only if its document has no unsaved changes in Qucs-S, and the next tool result "
+        "tells you when it was not. Coordinates are schematic units (the grid is usually 10; keep pins on it). The "
+        "system's file and print dialogs cannot be filled in: use open_document and save_document. A document is named "
+        "by its path (relative to the open project's folder, otherwise the workspace) or, when it is open, by its file "
+        "name alone (amp.sch). A conversation the user has pinned to a schematic says so in its prompts: the tools then "
+        "act on that schematic when no path is given, whichever document is in front, and trigger_action brings it to "
+        "the front first.");
 }
 
 QJsonObject QucsControl::forDocument(const QString& tool, const QJsonObject& arguments, const QString& document) const
@@ -2213,7 +2270,7 @@ void QucsControl::callTool(const QString& tool, const QJsonObject& arguments, st
 void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
                               std::function<void(const QJsonObject&)> done)
 {
-    const QStringList changes = changesSince(caller);
+    const QStringList changes = changesSince(caller) + notesFor(caller);
     a_callers.append(caller);
     QucsDoc::setEditor(caller);
     callTool(tool, arguments, [this, caller, changes, done](const QJsonObject& r) {
@@ -2229,6 +2286,29 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
         }
         done(result);
     });
+}
+
+void QucsControl::noteForConversations(const QString& text)
+{
+    // (Once: the dock and the file watcher may both tell of one edit.)
+    const QDateTime now = QDateTime::currentDateTime();
+    for (const Broadcast& b : std::as_const(a_broadcasts))
+        if (b.text == text && b.at.secsTo(now) < 60) return;
+    a_broadcasts.append({++a_broadcastSerial, now, text});
+    while (a_broadcasts.size() > 50) a_broadcasts.removeFirst();
+}
+
+QStringList QucsControl::notesFor(quint64 caller)
+{
+    // (Half an hour at most: a conversation that comes later is told what
+    // may still concern it, not the whole day.)
+    const QDateTime since = QDateTime::currentDateTime().addSecs(-30 * 60);
+    const qint64 seen = a_broadcastSeen.value(caller, 0);
+    QStringList notes;
+    for (const Broadcast& b : std::as_const(a_broadcasts))
+        if (b.serial > seen && b.at >= since) notes << b.text;
+    a_broadcastSeen.insert(caller, a_broadcastSerial);
+    return notes;
 }
 
 QString QucsControl::seenKey(QucsDoc* doc)
@@ -2416,6 +2496,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("replace_component")) return replaceComponent(args);
     if (tool == QLatin1String("delete")) return remove(args);
     if (tool == QLatin1String("move")) return moveGroup(args);
+    if (tool == QLatin1String("arrange")) return arrange(args);
     if (tool == QLatin1String("add_analysis")) return addAnalysis(args);
     if (tool == QLatin1String("create_subcircuit")) return createSubcircuit(args);
     if (tool == QLatin1String("connect")) return connectPins(args);
@@ -3407,7 +3488,7 @@ QString componentLineOf(Schematic* sch, const QJsonObject& o, QStringList* taken
     c->Name = name;
     if (o.contains(QLatin1String("active"))) c->isActive = o.value(QLatin1String("active")).toBool() ? COMP_IS_ACTIVE : COMP_IS_OPEN;
     if (!setTextOf(c.get(), o, error)) return {};
-    *notes << valueNotes(c.get(), o.value(QLatin1String("properties")).toObject().keys());
+    *notes << valueNotes(c.get(), o.value(QLatin1String("properties")).toObject().keys(), sch);
     return QStringLiteral("  ") + c->save();
 }
 
@@ -3536,6 +3617,20 @@ QJsonObject QucsControl::setSchematic(const QJsonObject& args)
     }
     result.insert(QStringLiteral("replaced"), sections);
     if (!short_.isEmpty()) result.insert(QStringLiteral("note"), short_.join(QStringLiteral("; ")) + QLatin1Char('.'));
+    // The .sch lines' values are read in order: a value in the wrong place -
+    // one left out, two swapped - reads as another property's. What does
+    // not fit its property is told, as the JSON form's is.
+    if (!structured && replaced("<Components>")) {
+        for (Component* c : sch->a_DocComps) {
+            if (valueNotesOf.size() >= 40) break;
+            QStringList names;
+            for (const Property* p : c->Props) names << p->Name;
+            valueNotesOf << valueNotes(c, names, sch);
+        }
+        if (!valueNotesOf.isEmpty())
+            valueNotesOf << tr("A component line's values are its properties in order (describe_component_type gives it): check "
+                               "those lines, or give the parts as 'components', by name");
+    }
     if (!valueNotesOf.isEmpty()) result.insert(QStringLiteral("values"), QJsonArray::fromStringList(valueNotesOf));
     return jsonResult(result);
 }
@@ -3671,8 +3766,11 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     sch->enlargeView(c);
     finish(sch, {QPoint(c->cx, c->cy)});
     QJsonObject result = componentJson(c);
+    // An equation block's equations as they are now, as get_schematic gives
+    // and 'equations' takes them: what came of what was given, at a look.
+    if (isEquationKind(c)) result.insert(QStringLiteral("equations"), componentModel(c).value(QLatin1String("equations")));
     if (const QString trap = trapOf(c->Model); !trap.isEmpty()) result.insert(QStringLiteral("watch"), trap);
-    if (const QStringList values = valueNotes(c, args.value(QLatin1String("properties")).toObject().keys()); !values.isEmpty())
+    if (const QStringList values = valueNotes(c, args.value(QLatin1String("properties")).toObject().keys(), sch); !values.isEmpty())
         result.insert(QStringLiteral("values"), QJsonArray::fromStringList(values));
     QStringList notes;
     if (!landing.isEmpty()) {
@@ -3752,7 +3850,8 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
     sch->enlargeView(c);
     finish(sch, {QPoint(c->cx, c->cy)});
     QJsonObject result = componentJson(c);
-    if (const QStringList values = valueNotes(c, props.keys()); !values.isEmpty())
+    if (isEquationKind(c)) result.insert(QStringLiteral("equations"), componentModel(c).value(QLatin1String("equations")));
+    if (const QStringList values = valueNotes(c, props.keys(), sch); !values.isEmpty())
         result.insert(QStringLiteral("values"), QJsonArray::fromStringList(values));
     if (!renamedToo.isEmpty()) result.insert(QStringLiteral("renamed too"), QJsonArray::fromStringList(renamedToo));
     if (!rewritten.isEmpty()) result.insert(QStringLiteral("rewritten"), rewritten);
@@ -4740,11 +4839,590 @@ bool QucsControl::pointOf(Schematic* sch, const QJsonValue& at, QPoint* point, Q
     return true;
 }
 
+namespace {
+
+// A ground symbol for the pin at \a p: on the pin when it fits there
+// (under a part's lower pin), else a little away, wired to it by a way
+// that joins nothing else. Where its pin is in \a where. False, and \a sch
+// as it was, when there is no room. (Elements may be new ones after:
+// a way that would not do is taken back.)
+bool placeGround(Schematic* sch, const QPoint& p, QPoint* where)
+{
+    const QString at = QStringLiteral("at %1,%2").arg(p.x()).arg(p.y());
+    const Nets before = netsOf(sch, nullptr, {p});
+    const int gx = std::max(sch->getGridX(), 1), gy = std::max(sch->getGridY(), 1);
+    // On the pin; below it; beside and below; further.
+    const QList<QPoint> places{p, p + QPoint(0, 2 * gy), p + QPoint(0, 3 * gy), p + QPoint(-3 * gx, 2 * gy),
+                               p + QPoint(3 * gx, 2 * gy), p + QPoint(0, 5 * gy), p + QPoint(-5 * gx, 3 * gy),
+                               p + QPoint(5 * gx, 3 * gy)};
+    const QString state = sch->snapshot();
+    // Clear of the parts' texts too, when it can be; else of their symbols.
+    for (const bool clearOfTexts : {true, false})
+    for (const QPoint& q : places) {
+        std::unique_ptr<Component> g(newComponent(QStringLiteral("GND")));
+        if (!g) return false;
+        g->setSchematic(sch);
+        g->recreate();
+        int x = q.x(), y = q.y();
+        sch->setOnGrid(x, y);
+        g->moveCenter(x - g->cx, y - g->cy);
+        const QPoint gp(g->cx + g->Ports.first()->x, g->cy + g->Ports.first()->y);
+        // Its symbol clear of every part and its texts, and of every pin and
+        // wire but the one grounded.
+        const QRect box = g->boundingRect().adjusted(1, 1, -1, -1);
+        bool clear = true;
+        for (const Component* c : sch->a_DocComps)
+            clear = clear && !box.intersects(c->boundingRect().adjusted(1, 1, -1, -1))
+                    && !(clearOfTexts && box.intersects(c->boundingRectIncludingProperties().adjusted(1, 1, -1, -1)));
+        for (const Node* n : sch->a_DocNodes) clear = clear && (n->center() == p || !box.contains(n->center()));
+        for (const Wire* w : sch->a_DocWires) {
+            if (w->P1() == p || w->P2() == p) {   // on the pin: in the way only going down, where the symbol hangs
+                const QPoint o = w->P1() == p ? w->P2() : w->P1();
+                clear = clear && !(gp == p && o.x() == p.x() && o.y() > p.y());
+                if (gp == p) continue;
+            }
+            clear = clear && !QRect(w->P1(), w->P2()).normalized().adjusted(-1, -1, 1, 1).intersects(box);
+        }
+        if (!clear) continue;
+        sch->insertComponent(g.release());
+        const auto check = [&] { return netChangesBeyond(before, netsOf(sch, nullptr, {p}), {at, QStringLiteral("ground")}); };
+        bool done = gp == p ? check().isEmpty() : false;
+        if (gp != p) {
+            QString why;
+            done = wireUp(sch, p, gp, check, &why);
+        }
+        const Nets now = netsOf(sch, nullptr, {p});
+        if (done && now.netOf.value(at) == now.netOf.value(QStringLiteral("ground"), -2)) {
+            *where = gp;
+            return true;
+        }
+        sch->restore(state);
+    }
+    return false;
+}
+
+} // namespace
+
+// A pin to ground: a ground symbol of its own (placeGround()) - not a
+// ground elsewhere found by its number among them (GND#2.1).
+QJsonObject QucsControl::groundPin(Schematic* sch, const QJsonValue& pin)
+{
+    QString error;
+    QPoint p;
+    if (!pointOf(sch, pin, &p, &error)) return errorResult(error);
+    const QString named = pin.isString() ? pin.toString() : QStringLiteral("%1, %2").arg(p.x()).arg(p.y());
+    const QString at = QStringLiteral("at %1,%2").arg(p.x()).arg(p.y());
+    const Nets before = netsOf(sch, nullptr, {p});
+    if (before.netOf.contains(QStringLiteral("ground")) && before.netOf.value(at) == before.netOf.value(QStringLiteral("ground")))
+        return textResult(tr("%1 is on ground already: nothing drawn.").arg(named));
+    prepare(sch);
+    QPoint gp;
+    if (!placeGround(sch, p, &gp))
+        return errorResult(tr("%1 is not grounded: there is no room for a ground symbol near it that a wire reaches without "
+                              "touching anything else. Place one with add_component (type GND) and connect to it.").arg(named));
+    finish(sch, {p, gp});
+    return textResult(gp == p ? tr("%1 is grounded: a ground symbol on it.").arg(named)
+                              : tr("%1 is grounded: a ground symbol at %2, %3, wired to it.").arg(named).arg(gp.x()).arg(gp.y()));
+}
+
+// ----------------------------------------------------------------------
+// The schematic laid out again for a person to read: its parts in columns
+// by signal flow, every wire drawn again, every net kept.
+
+namespace {
+
+// Whether a part is a source a signal starts from: in a sources category
+// of the library, with two pins (a controlled source has four).
+bool isSignalSource(const Component* c)
+{
+    static const QSet<QString> sources = [] {
+        QSet<QString> s;
+        for (Category* category : Category::Categories)
+            if (category->Name.contains(QLatin1String("source"), Qt::CaseInsensitive))
+                for (Module* m : category->Content)
+                    if (const QString t = typeOf(m); !t.isEmpty()) s << t;
+        return s;
+    }();
+    static const QRegularExpression named(QStringLiteral("^[VI](dc|ac|pulse|rect|noise|exp|file|am|pm)$"));
+    return c->Ports.size() == 2 && (sources.contains(c->Model) || named.match(c->Model).hasMatch() || c->Model == QLatin1String("Pac"));
+}
+
+// netsOf's keys of \a sch's ground symbols' pins, by the symbols themselves
+// (a port may be named GND; an old file names its grounds *1, *2).
+QSet<QString> groundSymbolKeys(const Schematic* sch)
+{
+    QSet<QString> keys;
+    QHash<QString, int> seen;
+    for (const Component* c : sch->a_DocComps) {
+        const QString base = keyBase(c, seen);
+        if (c->Model == QLatin1String("GND"))
+            for (int k = 0; k < c->Ports.size(); ++k) keys << base + QLatin1Char('.') + QString::number(k + 1);
+    }
+    return keys;
+}
+
+// netsOf's keys of \a sch without those of its ground symbols' pins (they
+// are put back anew, numbered otherwise) and without \a dropped labels.
+Nets withoutGroundSymbols(const Schematic* sch, Nets nets, const QStringList& dropped)
+{
+    for (const QString& key : groundSymbolKeys(sch)) nets.netOf.remove(key);
+    for (const QString& name : dropped) nets.netOf.remove(QStringLiteral("label ") + name);
+    return nets;
+}
+
+} // namespace
+
+QJsonObject QucsControl::arrange(const QJsonObject& args)
+{
+    QString error;
+    Schematic* sch = schematic(args, &error, true);
+    if (sch == nullptr) return errorResult(error);
+    const int asked = std::clamp(args.value(QLatin1String("spacing")).toInt(60), 30, 400);
+    prepare(sch);
+    const QString state = sch->snapshot();
+    QStringList faults;
+    // Tried with more room when the wires cannot all be drawn - and then
+    // with the parts turned as they are (turned, they may leave no way).
+    const std::pair<int, bool> tries[] = {{asked, true}, {asked * 3 / 2, true}, {asked, false}, {asked * 3 / 2, false}, {asked * 2, false}};
+    for (const auto& [spacing, turn] : tries) {
+        const int gy = std::max(sch->getGridY(), 1);
+        // The parts with pins are laid out; the ground symbols put back anew;
+        // blocks without pins (analyses, equations) go in a row below.
+        std::vector<Component*> parts, grounds, blocks;
+        for (Component* c : sch->a_DocComps) {
+            if (c->Model == QLatin1String("GND")) grounds.push_back(c);
+            else if (c->Ports.isEmpty()) blocks.push_back(c);
+            else parts.push_back(c);
+        }
+        if (parts.empty()) return errorResult(tr("%1 has no parts with pins to arrange.").arg(titleOf(sch)));
+        QHash<const Component*, QString> keyOf;   // netsOf's name of each
+        {
+            QHash<QString, int> seen;
+            for (Component* c : sch->a_DocComps) keyOf.insert(c, keyBase(c, seen));
+        }
+        const Nets before = netsOf(sch, nullptr);
+
+        // Pieces of circuit drawn together (wires, pins on one node), each
+        // with its ground symbol and net labels - put back so.
+        QHash<const Node*, const Node*> up;
+        const auto root = [&up](const Node* n) {
+            const Node* r = n;
+            while (up.value(r, r) != r) r = up.value(r);
+            while (up.value(n, n) != n) {
+                const Node* next = up.value(n);
+                up.insert(n, r);
+                n = next;
+            }
+            return r;
+        };
+        for (const Wire* w : sch->a_DocWires)
+            if (w->Port1 != nullptr && w->Port2 != nullptr) {
+                const Node *a = root(w->Port1), *b = root(w->Port2);
+                if (a != b) up.insert(a, b);
+            }
+        struct Piece {
+            QList<QPair<int, int>> pins;   // part, pin
+            QStringList labels;
+            bool grounded = false;
+        };
+        QHash<const Node*, Piece> pieces;
+        for (int i = 0; i < int(parts.size()); ++i)
+            for (int k = 0; k < parts[i]->Ports.size(); ++k)
+                if (const Node* n = parts[i]->Ports.at(k)->Connection) pieces[root(n)].pins.append({i, k});
+        for (const Component* g : grounds)
+            for (const Port* p : g->Ports)
+                if (p->Connection != nullptr) pieces[root(p->Connection)].grounded = true;
+        const auto labelOn = [&](const Conductor* c, const Node* n) {
+            if (!c->hasLabel()) return;
+            Piece& piece = pieces[root(n)];
+            if (!piece.labels.contains(c->label()->Name)) piece.labels << c->label()->Name;
+        };
+        for (const Wire* w : sch->a_DocWires)
+            if (w->Port1 != nullptr) labelOn(w, w->Port1);
+        for (const Node* n : sch->a_DocNodes) labelOn(n, n);
+        // A label on wires to no pin, of a name no pin's net has: it joins
+        // nothing - dropped, and said.
+        QSet<QString> onPins;
+        for (const Piece& piece : std::as_const(pieces))
+            if (!piece.pins.isEmpty())
+                for (const QString& l : piece.labels) onPins << l;
+        QStringList dropped;
+        for (const Piece& piece : std::as_const(pieces))
+            if (piece.pins.isEmpty())
+                for (const QString& l : piece.labels)
+                    if (!onPins.contains(l) && !dropped.contains(l)) dropped << l;
+        const Nets was = withoutGroundSymbols(sch, before, dropped);
+
+        // Columns by signal flow: the sources first, each part a column to
+        // the right of what drives it - through the nets that are not ground
+        // nor a rail (a supply: a DC source's net with three parts or more,
+        // or any net of more than five), which join too much.
+        const int groundNet = before.netOf.value(QStringLiteral("ground"), -1);
+        std::vector<QList<int>> pinNet(parts.size());   // each pin's net
+        QHash<int, QSet<int>> partsOfNet;
+        for (int i = 0; i < int(parts.size()); ++i)
+            for (int k = 0; k < parts[i]->Ports.size(); ++k) {
+                const int net = before.netOf.value(keyOf.value(parts[i]) + QLatin1Char('.') + QString::number(k + 1), -1);
+                pinNet[i] << net;
+                if (net >= 0) partsOfNet[net].insert(i);
+            }
+        QSet<int> rails;
+        for (auto it = partsOfNet.cbegin(); it != partsOfNet.cend(); ++it)
+            if (it.key() != groundNet && it.value().size() > 5) rails << it.key();
+        for (int i = 0; i < int(parts.size()); ++i)
+            if (parts[i]->Model == QLatin1String("Vdc") || parts[i]->Model == QLatin1String("Idc"))
+                for (int net : std::as_const(pinNet[i]))
+                    if (net >= 0 && net != groundNet && partsOfNet.value(net).size() >= 3) rails << net;
+        const auto railish = [&](int net) { return net < 0 || net == groundNet || rails.contains(net); };
+        std::vector<QSet<int>> next(parts.size());
+        for (auto it = partsOfNet.cbegin(); it != partsOfNet.cend(); ++it) {
+            if (railish(it.key())) continue;
+            for (int a : it.value())
+                for (int b : it.value())
+                    if (a != b) next[a].insert(b);
+        }
+        // A source on rails and ground alone is a supply: a column of its own
+        // at the left.
+        std::vector<bool> supply(parts.size(), false);
+        for (int i = 0; i < int(parts.size()); ++i)
+            if (isSignalSource(parts[i]))
+                supply[i] = std::all_of(pinNet[i].cbegin(), pinNet[i].cend(), railish);
+        const auto byPlace = [&parts](int a, int b) {
+            return std::pair(parts[a]->cx, parts[a]->cy) < std::pair(parts[b]->cx, parts[b]->cy);
+        };
+        // Groups of parts joined so, each laid out on its own, one below the other.
+        std::vector<int> groupOf(parts.size(), -1);
+        std::vector<std::vector<int>> groups;
+        for (int i = 0; i < int(parts.size()); ++i) {
+            if (groupOf[i] >= 0 || supply[i]) continue;
+            std::vector<int> members{i};
+            groupOf[i] = int(groups.size());
+            for (std::size_t m = 0; m < members.size(); ++m)
+                for (int j : next[members[m]])
+                    if (groupOf[j] < 0 && !supply[j]) {
+                        groupOf[j] = groupOf[i];
+                        members.push_back(j);
+                    }
+            groups.push_back(members);
+        }
+        // Where a group's flow starts: its sources; else what a supply feeds;
+        // else its ports; else its part furthest left.
+        const auto sourcesIn = [&](const std::vector<int>& g) {
+            std::vector<int> s;
+            for (int i : g)
+                if (isSignalSource(parts[i])) s.push_back(i);
+            if (s.empty())
+                for (int i : g)
+                    if (std::any_of(pinNet[i].cbegin(), pinNet[i].cend(), [&](int net) { return rails.contains(net); })) s.push_back(i);
+            if (s.empty())
+                for (int i : g)
+                    if (parts[i]->Model == QLatin1String("Port")) s.push_back(i);
+            if (s.empty()) s.push_back(*std::min_element(g.begin(), g.end(), byPlace));
+            std::sort(s.begin(), s.end(), [&parts](int a, int b) { return parts[a]->cy < parts[b]->cy; });
+            return s;
+        };
+        // (Those with a source first, the larger first.)
+        std::stable_sort(groups.begin(), groups.end(), [&](const std::vector<int>& a, const std::vector<int>& b) {
+            const bool sa = std::any_of(a.begin(), a.end(), [&](int i) { return isSignalSource(parts[i]); });
+            const bool sb = std::any_of(b.begin(), b.end(), [&](int i) { return isSignalSource(parts[i]); });
+            return sa != sb ? sa : a.size() > b.size();
+        });
+        std::vector<int> layer(parts.size(), -1);
+        std::vector<std::vector<std::vector<int>>> columnsOf;   // each group's columns
+        for (const std::vector<int>& g : groups) {
+            std::vector<int> queue = sourcesIn(g);
+            for (int s : queue) layer[s] = 0;
+            for (std::size_t q = 0; q < queue.size(); ++q) {
+                std::vector<int> onward(next[queue[q]].begin(), next[queue[q]].end());
+                std::sort(onward.begin(), onward.end(), byPlace);
+                for (int j : onward)
+                    if (layer[j] < 0) {
+                        layer[j] = layer[queue[q]] + 1;
+                        queue.push_back(j);
+                    }
+            }
+            int layers = 0;
+            for (int i : g) layers = std::max(layers, layer[i] + 1);
+            std::vector<std::vector<int>> columns(layers);
+            for (int i : queue) columns[layer[i]].push_back(i);
+            columnsOf.push_back(columns);
+        }
+        QRect was0;
+        for (Component* c : parts)
+            was0 = was0.isNull() ? c->boundingRectIncludingProperties() : was0.united(c->boundingRectIncludingProperties());
+
+        // Taken up: the wires and ground symbols, the labels on pins (all
+        // put back below); the parts lifted off.
+        std::vector<Wire*> wires(sch->a_DocWires.begin(), sch->a_DocWires.end());
+        sch->deleteWires(wires);
+        sch->deleteComps(grounds);
+        for (Node* n : sch->a_DocNodes)
+            if (n->hasLabel()) n->dropLabel();
+        for (Component* c : parts) {
+            sch->detachComp(c);
+            for (Port* p : c->Ports) p->Connection = nullptr;
+        }
+        for (Component* c : blocks) sch->detachComp(c);
+
+        // Two-pin parts turned as a schematic has them: in series lying
+        // down, the pin toward what drives it on the left; to ground or a
+        // supply standing, ground below and a supply above. (The circuit is
+        // the same: only where the pins are.)
+        for (int i = 0; i < int(parts.size()) && turn; ++i) {
+            Component* c = parts[i];
+            if (c->Ports.size() != 2) continue;
+            const int a = pinNet[i][0], b = pinNet[i][1];
+            std::function<bool()> placed;
+            if (railish(a) || railish(b)) {
+                const int below = a == groundNet ? 0 : b == groundNet ? 1 : railish(a) && !railish(b) ? 1 : railish(b) && !railish(a) ? 0 : 1;
+                placed = [c, below] {
+                    const Port *p = c->Ports.at(below), *q = c->Ports.at(1 - below);
+                    return p->x == q->x && p->y > q->y;
+                };
+            } else {
+                int left = 0;
+                for (int k = 1; k >= 0; --k)
+                    for (int j : partsOfNet.value(pinNet[i][k]))
+                        if (j != i && layer[j] >= 0 && layer[j] < layer[i]) left = k;
+                placed = [c, left] {
+                    const Port *p = c->Ports.at(left), *q = c->Ports.at(1 - left);
+                    return p->y == q->y && p->x < q->x;
+                };
+            }
+            for (int r = 0; r < 4 && !placed(); ++r) c->rotate();   // (pins not in a line: four turns bring it back)
+        }
+
+        // Each one's symbol and texts from its centre, as it is turned now.
+        std::vector<QRect> rel(parts.size());
+        for (int i = 0; i < int(parts.size()); ++i) rel[i] = parts[i]->boundingRectIncludingProperties().translated(-parts[i]->center());
+        const int gapX = 2 * spacing, gapY = spacing;
+        std::vector<QPoint> target(parts.size());
+        QJsonArray columnsSaid;
+        int top = was0.top();
+        int bottom = top;
+        // The supplies, stacked at the left; the groups to their right.
+        int x0 = was0.left();
+        {
+            int half = 0, y = top;
+            for (int i = 0; i < int(parts.size()); ++i)
+                if (supply[i]) half = std::max({half, -rel[i].left(), rel[i].right()});
+            for (int i = 0; i < int(parts.size()); ++i) {
+                if (!supply[i]) continue;
+                int cx = x0 + half, cy = y - rel[i].top();
+                sch->setOnGrid(cx, cy);
+                target[i] = QPoint(cx, cy);
+                y = cy + rel[i].bottom() + gapY;
+                bottom = std::max(bottom, cy + rel[i].bottom());
+            }
+            if (half > 0) x0 += 2 * half + gapX;
+        }
+        for (std::size_t gi = 0; gi < groups.size(); ++gi) {
+            const std::vector<int>& g = groups[gi];
+            const std::vector<std::vector<int>>& columns = columnsOf[gi];
+            const int layers = int(columns.size());
+            // Each column as wide as its widest part, both sides of its centre.
+            std::vector<int> centreX(layers);
+            int x = x0;
+            for (int l = 0; l < layers; ++l) {
+                int half = 0;
+                for (int i : columns[l]) half = std::max({half, -rel[i].left(), rel[i].right()});
+                centreX[l] = x + half;
+                x += 2 * half + gapX;
+            }
+            // Down each column, each part at the height that puts its pin
+            // level with the pin it joins on each part to its left (a chain
+            // runs straight) when there is room, else below the last.
+            int groupBottom = top;
+            for (int l = 0; l < layers; ++l) {
+                std::vector<std::pair<int, int>> wanted;   // part, preferred centre y
+                for (int i : columns[l]) {
+                    long sum = 0;
+                    int n = 0;
+                    for (int j : next[i]) {
+                        if (layer[j] < 0 || layer[j] >= l || groupOf[j] != groupOf[i]) continue;
+                        for (int k = 0; k < pinNet[i].size(); ++k)
+                            for (int m = 0; m < pinNet[j].size(); ++m)
+                                if (pinNet[i][k] >= 0 && pinNet[i][k] == pinNet[j][m] && !railish(pinNet[i][k])) {
+                                    sum += target[j].y() + parts[j]->Ports.at(m)->y - parts[i]->Ports.at(k)->y;
+                                    ++n;
+                                }
+                    }
+                    wanted.push_back({i, n > 0 ? int(sum / n) : (l == 0 ? parts[i]->cy : top)});
+                }
+                if (l == 0) std::stable_sort(wanted.begin(), wanted.end(), [&parts](auto a, auto b) { return parts[a.first]->cy < parts[b.first]->cy; });
+                else std::stable_sort(wanted.begin(), wanted.end(), [](auto a, auto b) { return a.second < b.second; });
+                // (A column right of the first may start above the group's
+                // top, to line a pin up: the group is moved down after.)
+                int lastBottom = l == 0 ? top - gapY : std::numeric_limits<int>::min() / 4;
+                QJsonArray said;
+                for (const auto& [i, preferred] : wanted) {
+                    int cy = l == 0 ? lastBottom + gapY - rel[i].top() : std::max(preferred, lastBottom + gapY - rel[i].top());
+                    int cx = centreX[l];
+                    sch->setOnGrid(cx, cy);
+                    if (cy + rel[i].top() < lastBottom + gapY) cy += gy * ((lastBottom + gapY - cy - rel[i].top() + gy - 1) / gy);
+                    target[i] = QPoint(cx, cy);
+                    lastBottom = cy + rel[i].bottom();
+                    groupBottom = std::max(groupBottom, lastBottom);
+                    said.append(parts[i]->Name);
+                }
+                if (groups.size() == 1) columnsSaid.append(said);
+            }
+            int highest = top;
+            for (int i : g) highest = std::min(highest, target[i].y() + rel[i].top());
+            if (highest < top) {
+                const int down = gy * ((top - highest + gy - 1) / gy);
+                for (int i : g) target[i] += QPoint(0, down);
+                groupBottom += down;
+            }
+            top = groupBottom + 2 * gapY;
+            bottom = std::max(bottom, groupBottom);
+        }
+
+        // Put down where they go, the blocks in a row below.
+        for (int i = 0; i < int(parts.size()); ++i) parts[i]->moveCenter(target[i].x() - parts[i]->cx, target[i].y() - parts[i]->cy);
+        int bx = was0.left();
+        for (Component* c : blocks) {
+            const QRect r = c->boundingRectIncludingProperties().translated(-c->center());
+            int cx = bx - r.left(), cy = bottom + 2 * gapY - r.top();
+            sch->setOnGrid(cx, cy);
+            c->moveCenter(cx - c->cx, cy - c->cy);
+            bx += r.width() + spacing;
+        }
+        for (Component* c : parts) sch->insertRawComponent(c, false);
+        for (Component* c : blocks) sch->insertRawComponent(c, false);
+
+        // Where each piece's labels and ground go: its first pin from the
+        // left, its lowest pin. (Places from here on: a way tried and taken
+        // back makes the elements anew.)
+        struct Put {
+            QPoint label, ground;
+            QStringList labels;
+            bool grounded;
+        };
+        QList<Put> puts;
+        for (const Piece& piece : std::as_const(pieces)) {
+            if (piece.pins.isEmpty() || (piece.labels.isEmpty() && !piece.grounded)) continue;
+            QList<QPoint> at;
+            for (const auto& [i, k] : piece.pins) at << parts[i]->center() + QPoint(parts[i]->Ports.at(k)->x, parts[i]->Ports.at(k)->y);
+            const QPoint left = *std::min_element(at.begin(), at.end(), [](QPoint a, QPoint b) { return std::pair(a.x(), a.y()) < std::pair(b.x(), b.y()); });
+            const QPoint low = *std::max_element(at.begin(), at.end(), [](QPoint a, QPoint b) { return std::pair(a.y(), -a.x()) < std::pair(b.y(), -b.x()); });
+            puts.append({left, low, piece.labels, piece.grounded});
+        }
+        const int arrangedCount = int(parts.size());
+        parts.clear();
+        blocks.clear();
+        int labelsPut = 0, groundsPut = 0;
+        QList<QRect> taken;   // what a label's text must keep clear of: the parts and their texts, other labels
+        for (const Component* c : sch->a_DocComps) taken << c->boundingRectIncludingProperties().adjusted(-2, -2, 2, 2);
+        for (const Put& put : std::as_const(puts))
+            for (const QString& name : put.labels) {
+                Node* n = sch->findNode(put.label);
+                if (n == nullptr || n->hasLabel()) continue;
+                // Its text above right of the pin, else below right, above or below left.
+                const int w = 8 * int(name.size()) + 10, h = 16;
+                QPoint text = put.label + QPoint(30, -30);
+                for (const QPoint& d : {QPoint(30, -30), QPoint(30, 30), QPoint(-30 - w, -30), QPoint(-30 - w, 30), QPoint(10, -50)}) {
+                    const QRect box(put.label + d - QPoint(0, h), QSize(w, h));
+                    if (std::none_of(taken.cbegin(), taken.cend(), [&box](const QRect& r) { return r.intersects(box); })) {
+                        text = put.label + d;
+                        break;
+                    }
+                }
+                int xl = text.x(), yl = text.y();
+                sch->setOnGrid(xl, yl);
+                taken << QRect(QPoint(xl, yl - h), QSize(w, h));
+                n->setName(name, QString(), xl, yl);
+                ++labelsPut;
+            }
+        for (const Put& put : std::as_const(puts)) {
+            if (!put.grounded) continue;
+            QPoint gp;
+            if (!placeGround(sch, put.ground, &gp)) {
+                // (No room: on the pin all the same - it joins.)
+                if (Component* g = newComponent(QStringLiteral("GND"))) {
+                    g->setSchematic(sch);
+                    g->recreate();
+                    g->moveCenter(put.ground.x() - g->cx - g->Ports.first()->x, put.ground.y() - g->cy - g->Ports.first()->y);
+                    sch->insertComponent(g);
+                }
+            }
+            ++groundsPut;
+        }
+
+        // Every net joined again by wires that join nothing else, and
+        // checked against what it was.
+        int pinCount = 0;
+        for (const Component* c : sch->a_DocComps) pinCount += int(c->Ports.size());
+        const auto check = [&] { return netChanges(was, withoutGroundSymbols(sch, netsOf(sch, nullptr), dropped), QString(), true, nullptr); };
+        QString why;
+        const QStringList early = check();   // (a label or ground put back that joins what it should not)
+        bool done = early.isEmpty();
+        if (!done) why = early.join(QStringLiteral("; "));
+        else done = joinPieces(sch, was, QString(), {}, check, &why, 4 * pinCount + 64);
+        const QStringList changed = done ? netChanges(was, withoutGroundSymbols(sch, netsOf(sch, nullptr), dropped), QString(), false, nullptr)
+                                         : QStringList();
+        if (!done || !changed.isEmpty()) {
+            faults << tr("with %1 of room%2: %3").arg(spacing).arg(turn ? QString() : tr(", the parts turned as they were"))
+                          .arg(!changed.isEmpty() ? changed.join(QStringLiteral("; ")) : why);
+            sch->restore(state);
+            continue;
+        }
+
+        // What it now covers, and the diagrams and paintings that were
+        // there moved aside to its right.
+        QRect covers;
+        for (const Component* c : sch->a_DocComps) covers = covers.isNull() ? c->boundingRectIncludingProperties() : covers.united(c->boundingRectIncludingProperties());
+        for (const Wire* w : sch->a_DocWires) covers = covers.united(QRect(w->P1(), w->P2()).normalized());
+        QStringList aside;
+        int dn = 0;
+        for (Diagram* d : sch->a_DocDiags) {
+            ++dn;
+            if (!d->boundingRect().intersects(covers)) continue;
+            d->moveCenter(covers.right() + 2 * spacing - d->boundingRect().left(), 0);
+            aside << tr("diagram %1").arg(dn);
+        }
+        int pn = 0;
+        for (Painting* p : sch->a_DocPaints) {
+            ++pn;
+            if (!p->boundingRect().intersects(covers)) continue;
+            p->moveCenter(covers.right() + 2 * spacing - p->boundingRect().left(), 0);
+            aside << tr("painting %1").arg(pn);
+        }
+        finish(sch, {covers.center()});
+        QJsonObject result{{QStringLiteral("document"), titleOf(sch)},
+                           {QStringLiteral("arranged"), tr("%1 parts with pins in columns by signal flow, %2 wires drawn again, "
+                                                           "every net as it was").arg(arrangedCount).arg(sch->a_DocWires.size())},
+                           {QStringLiteral("grounds"), groundsPut},
+                           {QStringLiteral("labels"), labelsPut},
+                           {QStringLiteral("spacing"), spacing},
+                           {QStringLiteral("one step to undo"), true}};
+        if (!columnsSaid.isEmpty()) result.insert(QStringLiteral("columns"), columnsSaid);
+        if (!aside.isEmpty()) result.insert(QStringLiteral("moved aside"), QJsonArray::fromStringList(aside));
+        if (!dropped.isEmpty())
+            result.insert(QStringLiteral("dropped"), tr("net labels on wires that reached no pin: %1").arg(dropped.join(QStringLiteral(", "))));
+        if (spacing != asked || !turn)
+            result.insert(QStringLiteral("note"), tr("Every wire could not be drawn with %1 of room and the parts turned as a schematic has them: %2 was "
+                                                     "used%3.").arg(asked).arg(spacing).arg(turn ? QString() : tr(", the parts turned as they were")));
+        return jsonResult(result);
+    }
+    return errorResult(tr("Not arranged - %1 is as it was: not every net could be wired again (%2). Tidy it by hand with move "
+                          "and connect, or arrange the parts in fewer at a time.")
+                           .arg(titleOf(sch), faults.join(QStringLiteral("; "))));
+}
+
 QJsonObject QucsControl::connectPins(const QJsonObject& args)
 {
     QString error;
     Schematic* sch = schematic(args, &error, true);
     if (sch == nullptr) return errorResult(error);
+    // "ground" at one end: a ground symbol of the pin's own.
+    const auto isGround = [](const QJsonValue& v) {
+        const QString s = v.toString().trimmed().toLower();
+        return v.isString() && (s == QLatin1String("ground") || s == QLatin1String("gnd"));
+    };
+    const QJsonValue fromArg = args.value(QLatin1String("from")), toArg = args.value(QLatin1String("to"));
+    if (isGround(fromArg) && isGround(toArg)) return errorResult(tr("Both ends are ground: one of them is a pin."));
+    if (isGround(fromArg) || isGround(toArg)) return groundPin(sch, isGround(fromArg) ? toArg : fromArg);
     QPoint a, b;
     if (!pointOf(sch, args.value(QLatin1String("from")), &a, &error) || !pointOf(sch, args.value(QLatin1String("to")), &b, &error))
         return errorResult(error);

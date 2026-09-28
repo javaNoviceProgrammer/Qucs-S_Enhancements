@@ -3749,6 +3749,212 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // The .sch text of set_schematic is read in order: a value left out or
+    // two swapped read as other properties' - told, as the JSON form's are:
+    // a value that is no number where one is wanted, a word that is not one
+    // of its property's choices.
+    void textValuesAreCheckedToo()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const auto set = [&](const QString& rLine) {
+            return call("set_schematic", {{"text", "<Components>\n" + rLine + "\n</Components>\n"}});
+        };
+        // Temp left out: Tnom reads "european", the symbol its default.
+        QJsonObject r = set("  <R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QString values = QJsonDocument(json(r).toObject().value("values").toArray()).toJson();
+        QVERIFY2(values.contains("Tnom = \\\"european\\\" is no number, and no equation block here defines european"), qPrintable(values));
+        QVERIFY2(values.contains("by name"), qPrintable(values));
+        // Tnom and the symbol swapped: each told.
+        r = set("  <R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"european\" 0 \"26.85\" 0>");
+        values = QJsonDocument(json(r).toObject().value("values").toArray()).toJson();
+        QVERIFY2(values.contains("Tnom = \\\"european\\\"") && values.contains("Symbol = \\\"26.85\\\" is not one of its choices (european, US)"),
+                 qPrintable(values));
+        // Right: nothing to tell - a parameter's name or an expression neither.
+        r = set("  <R R1 1 100 100 15 -26 0 1 \"{Rload}\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"US\" 0>");
+        QVERIFY2(!json(r).toObject().contains("values"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // An equation block's answer lists its equations as they are then, in
+    // the form get_schematic gives and 'equations' takes: what came of what
+    // was given, at a look. {"k": null} in the list takes k away.
+    void equationsAreEchoed()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("add_component", {{"type", "Eqn"}, {"name", "Eqn1"}, {"x", 100}, {"y", 100},
+                                               {"equations", QJsonArray{"gain=2", "k=gain*3"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonArray eq = json(r).toObject().value("equations").toArray();
+        QVERIFY2(eq.contains(QJsonValue("gain=2")) && eq.contains(QJsonValue("k=gain*3")), qPrintable(text(r)));
+        const QStringList order = QVariant(eq.toVariantList()).toStringList();
+        QVERIFY(order.indexOf("gain=2") < order.indexOf("k=gain*3"));
+        r = call("edit_component", {{"name", "Eqn1"}, {"equations", QJsonArray{QJsonObject{{"gain", QJsonValue::Null}}, "k=5"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        eq = json(r).toObject().value("equations").toArray();
+        QVERIFY2(!eq.contains(QJsonValue("gain=2")) && eq.contains(QJsonValue("k=5")), qPrintable(text(r)));
+        r = call("add_component", {{"type", "SpiceOptions"}, {"name", "OPT1"}, {"x", 300}, {"y", 100}, {"flags", QJsonArray{"noinit"}}});
+        QVERIFY2(json(r).toObject().value("equations").toArray().contains(QJsonValue("noinit")), qPrintable(text(r)));
+        // Not an equation block: no list.
+        r = call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 300}});
+        QVERIFY(!json(r).toObject().contains("equations"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // connect to "ground": a ground symbol of the pin's own - on it under a
+    // standing part, a little away and wired beside a lying one - rather
+    // than a ground found by its number among them (GND#2.1).
+    void aPinIsConnectedToGround()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}, {"rotation", 1}});
+        QJsonArray pins = json(r).toObject().value("pins").toArray();
+        const QString lower = pins.at(0).toObject().value("y").toInt() > pins.at(1).toObject().value("y").toInt() ? "R1.1" : "R1.2";
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R2"}, {"x", 300}, {"y", 100}})));
+        r = call("connect", {{"from", lower}, {"to", "ground"}});
+        QVERIFY2(!failed(r) && text(r).contains("a ground symbol on it"), qPrintable(text(r)));
+        r = call("connect", {{"from", "GND"}, {"to", "R2.2"}});   // (either end; any case)
+        QVERIFY2(!failed(r) && text(r).contains("wired to it"), qPrintable(text(r)));
+        r = call("connect", {{"from", "R2.2"}, {"to", "ground"}});
+        QVERIFY2(!failed(r) && text(r).contains("on ground already"), qPrintable(text(r)));
+        QVERIFY(failed(call("connect", {{"from", "ground"}, {"to", "gnd"}})));
+        int grounds = 0;
+        for (const Component* c : front()->a_DocComps) grounds += c->Model == QLatin1String("GND");
+        QCOMPARE(grounds, 2);
+        const QJsonObject map = json(call("get_netlist", {{"map", true}})).toObject();
+        const QJsonArray onGround = map.value("nodes").toObject().value("gnd").toArray();
+        QVERIFY2(onGround.contains(QJsonValue(lower)) && onGround.contains(QJsonValue("R2.2")), qPrintable(QJsonDocument(map).toJson()));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Each net as a set of pins, from get_schematic - the ground symbols'
+    // own pins left out (arrange puts them back anew, numbered otherwise).
+    QList<QStringList> netsOfFront()
+    {
+        const QJsonObject s = json(call("get_schematic")).toObject();
+        QSet<QString> grounds;
+        for (const QJsonValue& c : s.value("components").toArray())
+            if (c.toObject().value("type").toString() == "GND")
+                grounds << (c.toObject().value("ref").toString().isEmpty() ? QStringLiteral("GND") : c.toObject().value("ref").toString());
+        QList<QStringList> nets;
+        for (const QJsonValue& n : s.value("nets").toArray()) {
+            QStringList pins;
+            for (const QJsonValue& p : n.toObject().value("pins").toArray())
+                if (!grounds.contains(p.toString().section('.', 0, 0))) pins << p.toString();
+            pins.sort();
+            if (!pins.isEmpty()) nets << pins;
+        }
+        std::sort(nets.begin(), nets.end());
+        return nets;
+    }
+
+    // arrange: the parts in columns by signal flow, two-pin parts turned
+    // as a schematic has them, one ground back for each piece that had one,
+    // labels back, every wire drawn again - and every net as it was. One
+    // step to undo; a preview changes nothing.
+    void aSchematicIsArranged()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("set_schematic", {{"components", QJsonArray{
+            QJsonObject{{"type", "Vac"}, {"name", "V1"}, {"x", 430}, {"y", 380}},
+            QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 90}, {"y", 120}},
+            QJsonObject{{"type", "C"}, {"name", "C1"}, {"x", 600}, {"y", 90}, {"rotation", 1}},
+            QJsonObject{{"type", "R"}, {"name", "R2"}, {"x", 250}, {"y", 480}, {"rotation", 1}},
+            QJsonObject{{"type", "C"}, {"name", "C2"}, {"x", 700}, {"y", 300}},
+            QJsonObject{{"type", "R"}, {"name", "R3"}, {"x", 150}, {"y", 300}},
+            QJsonObject{{"type", ".AC"}, {"name", "AC1"}, {"x", 50}, {"y", 600}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const std::pair<const char*, const char*> links[] = {{"V1.1", "R1.1"}, {"R1.2", "C1.1"}, {"R1.2", "R2.1"}, {"C1.2", "C2.1"},
+                                                             {"C2.2", "R3.1"}, {"V1.2", "ground"}, {"R2.2", "ground"}, {"R3.2", "ground"}};
+        for (const auto& [a, b] : links) {
+            r = call("connect", {{"from", a}, {"to", b}});
+            QVERIFY2(!failed(r), qPrintable(QString("%1-%2: %3").arg(a, b, text(r))));
+        }
+        QVERIFY(!failed(call("set_label", {{"at", "C1.2"}, {"name", "mid"}})));
+        // A label on a wire to nothing, of a name no pin's net has: it joins nothing.
+        QVERIFY(!failed(call("add_wire", {{"points", QJsonArray{QJsonArray{900, 600}, QJsonArray{960, 600}}}})));
+        QVERIFY(!failed(call("set_label", {{"at", QJsonArray{930, 600}}, {"name", "stub"}})));
+        const QList<QStringList> nets = netsOfFront();
+        Schematic* sch = front();
+        const QString before = sch->documentText();
+        const int undo = sch->undoIndex();
+
+        // (Where the view is aside: it may have scrolled.)
+        const auto drawn = [](QString t) { return t.remove(QRegularExpression(QStringLiteral("  <View=[^>]*>\n"))); };
+        r = call("arrange", {{"preview", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(drawn(sameText(sch->documentText())), drawn(sameText(before)));   // (a put back writes each wire from its lesser end)
+        QCOMPARE(sch->undoIndex(), undo);
+
+        r = call("arrange");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject o = json(r).toObject();
+        QCOMPARE(o.value("columns").toArray().first().toArray(), (QJsonArray{"V1"}));
+        QCOMPARE(o.value("columns").toArray().at(1).toArray(), (QJsonArray{"R1"}));
+        QCOMPARE(o.value("grounds").toInt(), 3);
+        QCOMPARE(o.value("labels").toInt(), 1);
+        QVERIFY2(o.value("dropped").toString().contains("stub"), qPrintable(text(r)));
+        QCOMPARE(netsOfFront(), nets);
+        QVERIFY(sch->documentText().contains("\"mid\""));
+        QCOMPARE(sch->undoIndex(), undo + 1);   // one step
+        // The signal chain lies in one row, each part apart, every pin on the grid.
+        QList<QRect> boxes;
+        for (const Component* c : sch->a_DocComps) {
+            if (c->Ports.isEmpty()) continue;
+            for (const Port* p : c->Ports) {
+                QCOMPARE((c->cx + p->x) % 10, 0);
+                QCOMPARE((c->cy + p->y) % 10, 0);
+            }
+            if (c->Model != QLatin1String("GND")) boxes << c->boundingRect();
+        }
+        for (int i = 0; i < boxes.size(); ++i)
+            for (int j = i + 1; j < boxes.size(); ++j) QVERIFY(!boxes.at(i).intersects(boxes.at(j)));
+        const auto partNamed = [&](const char* name) { return sch->getComponentByName(name); };
+        QCOMPARE(partNamed("R1")->Ports.at(0)->y, partNamed("R1")->Ports.at(1)->y);   // in series: lying
+        QVERIFY(partNamed("R1")->cx + partNamed("R1")->Ports.at(0)->x < partNamed("R1")->cx + partNamed("R1")->Ports.at(1)->x);   // driven from the left
+        QCOMPARE(partNamed("R2")->Ports.at(0)->x, partNamed("R2")->Ports.at(1)->x);   // to ground: standing
+        QVERIFY(partNamed("R2")->Ports.at(1)->y > partNamed("R2")->Ports.at(0)->y);   // ground below
+        QCOMPARE(partNamed("C2")->cy + partNamed("C2")->Ports.at(0)->y, partNamed("R3")->cy + partNamed("R3")->Ports.at(0)->y);   // a straight chain
+        // Undone in one step.
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(drawn(sameText(sch->documentText())), drawn(sameText(before)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // A subcircuit's port named GND is no ground symbol: kept on its net
+        // (it was taken for one, and its net changed).
+        const QString block = dir.filePath("workspace/RCBlock.sch");
+        QFile::remove(block);
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/xyce/Xyce_Examples/11-SParameters/RCBlock.sch"), block));
+        QFile::setPermissions(block, QFile::ReadOwner | QFile::WriteOwner);
+        QVERIFY(!failed(call("open_document", {{"path", block}})));
+        const QList<QStringList> blockNets = netsOfFront();
+        r = call("arrange");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(netsOfFront(), blockNets);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A netlist the simulator's netlister gives up on says why (a
+    // subcircuit it cannot read) - it gave a title line alone - and says so
+    // again the next time: the subcircuit taken in before it gave up was
+    // remembered, and the next netlist left it out without a word.
+    void aNetlistThatCannotBeWrittenSaysWhy()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("set_schematic", {{"text", "<Components>\n"
+                                                        "  <Sub SUB1 1 200 200 20 -30 0 0 \"no_such_sub.sch\" 1>\n"
+                                                        "  <R R1 1 400 200 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                                                        "  <GND * 1 400 230 0 0 0 0>\n"
+                                                        "  <.DC DC1 1 100 400 0 40 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>\n"
+                                                        "</Components>\n"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        for (int time = 0; time < 2; ++time) {
+            r = call("get_netlist");
+            QVERIFY2(failed(r) && text(r).contains("no_such_sub"), qPrintable(QString("time %1: %2").arg(time).arg(text(r))));
+        }
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
 };
 
 QTEST_MAIN(TestQucsControl)
