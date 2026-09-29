@@ -74,7 +74,17 @@ struct Nets {
     QHash<int, QStringList> pins;   // "R1.2", ...
     QSet<int> labelled;
     int ground = -1;
+    // Labels that are one net only because the simulator reads names
+    // without regard to case (Out, out): their names, and where one is.
+    QList<QPair<QStringList, QPoint>> caseJoins;
 };
+
+// Whether the simulator in use reads names without regard to case: the
+// SPICE ones (ngspice, Xyce, SPICE OPUS), for an analog circuit.
+bool namesWithoutCase(Schematic* doc)
+{
+    return spiceSimulator(QucsSettings.DefaultSimulator) && !doc->isDigitalCircuit();
+}
 
 Nets netsOf(Schematic* doc)
 {
@@ -114,6 +124,29 @@ Nets netsOf(Schematic* doc)
                 if (ground != nullptr) join(p->Connection, ground);
                 else ground = p->Connection;
             }
+    // Labels whose names differ only in case, for a simulator that reads
+    // them without: one net. Where the wires and the labels as written
+    // keep them apart, that is told.
+    if (namesWithoutCase(doc)) {
+        QHash<QString, QStringList> spellings;
+        for (auto it = byLabel.cbegin(); it != byLabel.cend(); ++it) spellings[it.key().toLower()] << it.key();
+        for (auto it = spellings.begin(); it != spellings.end(); ++it) {
+            QStringList& names = it.value();
+            if (names.size() < 2) continue;
+            names.sort();
+            const Node* first = byLabel.value(names.first());
+            bool apart = false;
+            for (const QString& other : std::as_const(names)) {
+                const Node* n = byLabel.value(other);
+                if (index.contains(n) && index.contains(first) && find(index.value(n)) != find(index.value(first))) apart = true;
+                join(n, first);
+            }
+            if (apart) {
+                const Node* at = byLabel.value(names.at(1));
+                nets.caseJoins << qMakePair(names, QPoint(at->x(), at->y()));
+            }
+        }
+    }
     for (auto it = index.cbegin(); it != index.cend(); ++it) nets.of.insert(it.key(), find(it.value()));
     if (ground != nullptr) nets.ground = nets.of.value(ground, -1);
     for (auto it = byLabel.cbegin(); it != byLabel.cend(); ++it) {
@@ -252,11 +285,22 @@ void topologyIssues(Schematic* doc, const Nets& nets, bool subcircuit, QList<Iss
     if (nets.ground >= 0) reference.insert(nets.ground);
     QList<const Component*> parts;
     for (const Component* c : doc->a_DocComps) {
-        if (!inCircuit(c) || isSimulation(c) || c->isEquation || isGround(c)) continue;
+        // A part switched to shorted is in the netlist as next to no
+        // resistance from its first pin to each other one: it joins its
+        // nets, and is no part of its own. (A ground so is no ground.)
+        const bool shorted = c->isActive == COMP_IS_SHORTEN && !isSimulation(c) && !c->isEquation && !isGround(c);
+        if (!shorted && (!inCircuit(c) || isSimulation(c) || c->isEquation || isGround(c))) continue;
         QList<int> on;
         for (const Port* p : c->Ports)
             if (p->Connection != nullptr && nets.of.contains(p->Connection)) on << slot.value(nets.of.value(p->Connection));
         if (on.isEmpty()) continue;
+        if (shorted) {
+            for (int k = 1; k < on.size(); ++k) {
+                any[find(any, on.at(k))] = find(any, on.at(0));
+                dc[find(dc, on.at(k))] = find(dc, on.at(0));
+            }
+            continue;
+        }
         if (isPort(c)) {
             reference.insert(nets.of.value(c->Ports.first()->Connection));
             continue;
@@ -443,6 +487,8 @@ QList<Issue> check(Schematic* doc)
     // (VHDL/Verilog) flow whatever the simulator setting says.
     const int simulator = doc->isDigitalCircuit() ? int(spicecompat::simNotSpecified) : QucsSettings.DefaultSimulator;
     QHash<QString, const Component*> byName;
+    QHash<QString, const Component*> byNameWithoutCase;   // "r r1": SpiceModel and name, lower case
+    const bool caseless = spiceSimulator(simulator) && simulator != spicecompat::simNotSpecified;
     // The Verilog-A libraries and sources of the open project, read when a
     // Verilog-A component asks: ngspice gets its modules from them.
     QStringList vaLibraries, vaSources;
@@ -476,6 +522,22 @@ QList<Issue> check(Schematic* doc)
                                 QPoint(c->cx, c->cy), c->Name};
             } else {
                 byName.insert(c->Name, c);
+                // A SPICE simulator reads names without regard to case:
+                // r1 and R1 of one kind are one device there, and it stops.
+                if (caseless && !c->SpiceModel.isEmpty()) {
+                    const QString key = c->SpiceModel.toLower() + QLatin1Char(' ') + c->Name.toLower();
+                    if (const Component* same = byNameWithoutCase.value(key))
+                        errors << Issue{Severity::Error,
+                                        tr("%1: the same name as %2 (at %3, %4) for %5, which reads names without regard "
+                                           "to case")
+                                            .arg(c->Name, same->Name)
+                                            .arg(same->cx)
+                                            .arg(same->cy)
+                                            .arg(spicecompat::getDefaultSimulatorName(simulator)),
+                                        QPoint(c->cx, c->cy), c->Name};
+                    else
+                        byNameWithoutCase.insert(key, c);
+                }
             }
         }
 
@@ -527,6 +589,29 @@ QList<Issue> check(Schematic* doc)
                             tr("%1: its subcircuit %2 is not found (beside the schematic, in the project or its user_lib): "
                                "it has no pins, and what was wired to them is on nothing").arg(c->Name, c->Props.at(0)->Value),
                             QPoint(c->cx, c->cy), c->Name};
+        // A SPICE library part whose library is nowhere (the netlist
+        // includes a file the simulator cannot read; with the automatic
+        // symbol, a box without pins), or whose library does not define
+        // the subcircuit it names (a box without pins).
+        if (c->Model == QLatin1String("SpLib") && c->Props.size() >= 2) {
+            const QString library = c->Props.at(0)->Value.trimmed();
+            const QString noPins = c->Ports.isEmpty() ? tr(": it has no pins, and what was wired to them is on nothing")
+                                                      : QString();
+            if (library.isEmpty())
+                errors << Issue{Severity::Error, tr("%1: no SPICE library file is given%2").arg(c->Name, noPins),
+                                QPoint(c->cx, c->cy), c->Name};
+            else if (!QFileInfo::exists(misc::properAbsFileName(library, doc)))
+                errors << Issue{Severity::Error,
+                                tr("%1: its SPICE library %2 is not found (beside the schematic, in the project or its "
+                                   "user_lib, nor in the library of Qucs-S)%3")
+                                    .arg(c->Name, library, noPins),
+                                QPoint(c->cx, c->cy), c->Name};
+            else if (c->Ports.isEmpty())
+                errors << Issue{Severity::Error,
+                                tr("%1: its SPICE library %2 defines no subcircuit %3%4")
+                                    .arg(c->Name, library, c->Props.at(1)->Value, noPins),
+                                QPoint(c->cx, c->cy), c->Name};
+        }
         // NgOpt: an optimize line the netlist cannot write.
         if (c->Model == QLatin1String(".NGOPT") && simulator == spicecompat::simNgspice) {
             QString line, why;
@@ -617,6 +702,12 @@ QList<Issue> check(Schematic* doc)
     {
         const Nets nets = netsOf(doc);
         groundByName = !ground && nets.ground >= 0;
+        for (const auto& join : nets.caseJoins)
+            warnings << Issue{Severity::Warning,
+                              tr("the labels %1 are one net for %2, which reads names without regard to case")
+                                  .arg(join.first.join(QStringLiteral(", ")),
+                                       spicecompat::getDefaultSimulatorName(QucsSettings.DefaultSimulator)),
+                              join.second, QString()};
         wiringIssues(doc, nets, warnings, false);
         topologyIssues(doc, nets, port, warnings);
         supplyIssues(doc, nets, warnings);
