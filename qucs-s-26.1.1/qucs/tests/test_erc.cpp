@@ -126,6 +126,11 @@ private slots:
     // Simulators Settings > Before a simulation: without "A schematic must
     // have a ground symbol" a circuit without one is simulated and the
     // check says nothing of it; the choice is kept and the dialog sets it.
+    // Each test with the components registered: a QucsApp unregisters
+    // them when it goes, and a schematic loaded after without one would
+    // know no Vdc.
+    void init() { Module::registerModules(); }
+
     void theGroundIsRequiredOnlyWhenTheSettingsSaySo()
     {
         // The settings as they were for the other tests, whatever happens.
@@ -366,6 +371,154 @@ private slots:
         QCOMPARE(wiring(nullptr).size(), 0);
     }
 
+    // A part switched to shorted is in the netlist as resistors of next
+    // to nothing from its first pin to each other one: it joins its nets,
+    // for what hangs from ground as for the rest. V1 drives R1, shorted;
+    // beyond it R4 and R5 in parallel, and (in the first) C1 to ground.
+    void aShortedPartJoinsItsNets()
+    {
+        const QByteArray head =
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <Vdc V1 1 0 60 18 -26 0 1 \"5 V\" 1>\n"
+            "  <GND * 1 0 90 0 0 0 0>\n"
+            "  <R R1 2 100 30 -26 15 0 0 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+            "  <R R4 1 220 30 -26 15 0 0 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+            "  <R R5 1 220 90 -26 15 0 0 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+            "  <.DC DC1 1 0 200 0 36 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>\n";
+        const QByteArray wires =
+            "<Wires>\n"
+            "  <0 30 70 30 \"\" 0 0 0 \"\">\n"
+            "  <130 30 160 30 \"\" 0 0 0 \"\">\n"
+            "  <160 30 190 30 \"\" 0 0 0 \"\">\n"
+            "  <190 30 190 90 \"\" 0 0 0 \"\">\n"
+            "  <250 30 250 90 \"\" 0 0 0 \"\">\n";
+        const QByteArray end = "</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        const QString withC = dir.filePath("shorted_c.sch"), without = dir.filePath("shorted.sch");
+        write(withC, head + "  <C C1 1 160 60 17 -26 0 1 \"1u\" 1 \"\" 0 \"neutral\" 0>\n  <GND * 1 160 90 0 0 0 0>\n"
+                     "</Components>\n" + wires + end);
+        write(without, head + "</Components>\n" + wires + end);
+        for (const QString& f : {withC, without}) {
+            Schematic doc(nullptr, f);
+            QVERIFY(doc.load());
+            const QStringList got = messages(check(&doc));
+            QVERIFY2(got.isEmpty(), qPrintable(QFileInfo(f).fileName() + ": " + got.join(" | ")));
+        }
+    }
+
+    // ngspice and Xyce read names without regard to case: labels Out and
+    // out are one net there, and a resistor r1 beside R1 stops the run
+    // ("device already exists"). Qucsator tells them apart.
+    void namesAreReadWithoutCaseBySpice()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        // V1 and R1 on a wire labelled Out; R2 and r1 on one labelled
+        // out, a wire of its own; C1 on a third labelled Out as well.
+        const QString f = dir.filePath("case.sch");
+        write(f,
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <Vdc V1 1 0 60 18 -26 0 1 \"5 V\" 1>\n"
+            "  <GND * 1 0 90 0 0 0 0>\n"
+            "  <R R1 1 60 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+            "  <GND * 1 60 90 0 0 0 0>\n"
+            "  <R R2 1 200 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+            "  <GND * 1 200 90 0 0 0 0>\n"
+            "  <R r1 1 300 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+            "  <GND * 1 300 90 0 0 0 0>\n"
+            "  <C C1 1 400 60 17 -26 0 1 \"1n\" 1 \"\" 0 \"neutral\" 0>\n"
+            "  <GND * 1 400 90 0 0 0 0>\n"
+            "  <.DC DC1 1 0 200 0 36 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>\n"
+            "</Components>\n<Wires>\n"
+            "  <0 30 60 30 \"Out\" 20 0 0 \"\">\n"
+            "  <200 30 300 30 \"out\" 220 0 0 \"\">\n"
+            "  <400 30 460 30 \"Out\" 420 0 0 \"\">\n"
+            "</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        Schematic doc(nullptr, f);
+        QVERIFY(doc.load());
+        const QString labels = "W the labels Out, out are one net for %1, which reads names without regard to case";
+        const QString names = "E r1: the same name as R1 (at 60, 60) for %1, which reads names without regard to case";
+
+        for (const int simulator : {int(spicecompat::simNgspice), int(spicecompat::simXyce)}) {
+            QucsSettings.DefaultSimulator = simulator;
+            const QString name = spicecompat::getDefaultSimulatorName(simulator);
+            const QStringList got = messages(check(&doc));
+            QVERIFY2(got.contains(labels.arg(name)) && got.contains(names.arg(name)), qPrintable(got.join(" | ")));
+            QCOMPARE(got.filter("without regard to case").size(), 2);
+        }
+        // Qucsator: two nets, two names, nothing said. (The wire end at
+        // 460, 30 is named Out, so not loose; the two Out wires are one net.)
+        QucsSettings.DefaultSimulator = spicecompat::simQucsator;
+        QStringList got = messages(check(&doc));
+        QVERIFY2(got.filter("case").isEmpty(), qPrintable(got.join(" | ")));
+
+        // Out and out wired together: one net whatever the case, so the
+        // labels are not told of (the names still are).
+        QFile file(f);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QByteArray text = file.readAll();
+        file.close();
+        text.replace("</Wires>", "  <60 30 200 30 \"\" 0 0 0 \"\">\n</Wires>");
+        const QString joined = dir.filePath("case_joined.sch");
+        write(joined, text);
+        Schematic wired(nullptr, joined);
+        QVERIFY(wired.load());
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        got = messages(check(&wired));
+        QVERIFY2(got.filter("without regard to case") == QStringList{names.arg("Ngspice")}, qPrintable(got.join(" | ")));
+    }
+
+    // Files named as they were elsewhere: a subcircuit without its .sch
+    // (Qucs wrote them so), a SPICE library by its path in another
+    // installation's library. Each is found, and its part has its pins.
+    // A SPICE library part that cannot be loaded is told, and why.
+    void filesNamedAsElsewhereAreFound()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        QucsSettings.LibDir = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR)).dir().filePath("library") + "/";
+        write(dir.filePath("two_pin.sch"),
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <Port P1 1 100 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+            "  <Port P2 1 100 200 -23 12 0 0 \"2\" 1 \"analog\" 0>\n"
+            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        const QString lib = QStringLiteral("share/qucs-s/library/XyceDigital.lib");
+        const QString top = dir.filePath("elsewhere.sch");
+        write(top, QStringLiteral(
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <Sub SUB1 1 100 300 -26 17 0 0 \"two_pin\" 1>\n"
+            "  <SpLib X1 1 300 300 -26 -60 0 0 \"C:/QUCS-S 24.3.0/%1\" 0 \"NAND2\" 1 \"auto\" 1 \"\" 0 \"\" 0>\n"
+            "  <SpLib X2 1 500 300 -26 -60 0 0 \"C:\\QUCS-S 24.3.0\\%2\" 0 \"NAND2\" 1 \"auto\" 1 \"\" 0 \"\" 0>\n"
+            "  <SpLib X3 1 700 300 -26 -60 0 0 \"/usr/%1\" 0 \"NAND2\" 1 \"auto\" 1 \"\" 0 \"\" 0>\n"
+            "  <SpLib X4 1 300 500 -26 -60 0 0 \"\" 0 \"NAND2\" 1 \"auto\" 1 \"\" 0 \"\" 0>\n"
+            "  <SpLib X5 1 500 500 -26 -60 0 0 \"/nowhere/Missing.lib\" 0 \"NAND2\" 1 \"auto\" 1 \"\" 0 \"\" 0>\n"
+            "  <SpLib X6 1 700 500 -26 -60 0 0 \"/usr/%1\" 0 \"NOSUCH\" 1 \"auto\" 1 \"\" 0 \"\" 0>\n"
+            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n")
+            .arg(lib, QString(lib).replace('/', '\\')).toUtf8());
+        Schematic doc(nullptr, top);
+        QVERIFY(doc.load());
+        QHash<QString, Component*> part;
+        for (Component* c : doc.a_DocComps) part.insert(c->Name, c);
+        QCOMPARE(part.value("SUB1")->Ports.size(), 2);
+        QCOMPARE(QFileInfo(part.value("SUB1")->getSubcircuitFile()).fileName(), QString("two_pin.sch"));
+        for (const char* name : {"X1", "X2", "X3"})
+            QVERIFY2(part.value(name)->Ports.size() == 3, name);   // NAND2: nin1 nin2 nout
+        QCOMPARE(part.value("X4")->Ports.size(), 0);
+
+        const QStringList got = messages(check(&doc));
+        const QString noPins = ": it has no pins, and what was wired to them is on nothing";
+        QVERIFY2(got.filter(QRegularExpression("^E (SUB1|X1|X2|X3):")).isEmpty(), qPrintable(got.join(" | ")));
+        QVERIFY2(got.contains("E X4: no SPICE library file is given" + noPins), qPrintable(got.join(" | ")));
+        QVERIFY2(got.contains("E X5: its SPICE library /nowhere/Missing.lib is not found (beside the schematic, in the "
+                              "project or its user_lib, nor in the library of Qucs-S)" + noPins),
+                 qPrintable(got.join(" | ")));
+        QVERIFY2(got.contains("E X6: its SPICE library /usr/" + lib + " defines no subcircuit NOSUCH" + noPins),
+                 qPrintable(got.join(" | ")));
+    }
+
     void aGoodCircuitHasNoProblems()
     {
         QucsApp app(false);
@@ -499,12 +652,31 @@ private slots:
     }
 
     // QUCS_ERC_SURVEY=1: run the check over every shipped example and
-    // print what it says (to see that it does not cry wolf).
+    // print what it says (to see that it does not cry wolf). Each is
+    // checked for the simulator of its folder (qucsator/ and
+    // external_interface/, xyce/, ngspice for the others), with a ground
+    // symbol required and not, and the shipped symbols where an
+    // installation has them (share/qucs-s/symbols beside bin/).
+    // QUCS_ERC_SURVEY_OUT=file lists every finding there, a line each:
+    // file, simulator, ground (required/free), E or W, message - by tabs.
     void surveyOfTheExamples()
     {
         if (qEnvironmentVariableIsEmpty("QUCS_ERC_SURVEY")) QSKIP("set QUCS_ERC_SURVEY=1 for the survey");
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
         // The library components of the examples need the shipped library.
-        QucsSettings.LibDir = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR)).dir().filePath("library") + "/";
+        const QDir source = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR)).dir();
+        QucsSettings.LibDir = source.filePath("library") + "/";
+        QTemporaryDir installed;
+        QVERIFY(installed.isValid());
+        QVERIFY(QDir(installed.path()).mkpath("bin"));
+        QVERIFY(QDir(installed.path()).mkpath("share/" QUCS_NAME));
+        QVERIFY(QFile::link(source.filePath("library/symbols"), installed.filePath("share/" QUCS_NAME "/symbols")));
+        QucsSettings.BinDir = installed.filePath("bin") + "/";
+        QFile out(qEnvironmentVariable("QUCS_ERC_SURVEY_OUT"));
+        if (!out.fileName().isEmpty()) QVERIFY(out.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text));
         QucsApp app(false);
         MainGuard guard(&app);
         QDirIterator it(QStringLiteral(QUCS_EXAMPLES_DIR), {"*.sch"}, QDir::Files, QDirIterator::Subdirectories);
@@ -512,6 +684,12 @@ private slots:
         QHash<QString, int> kinds;
         while (it.hasNext()) {
             const QString f = it.next();
+            const QString name = f.mid(QString(QUCS_EXAMPLES_DIR).size());
+            const int simulator = name.startsWith("/qucsator/") || name.startsWith("/external_interface/")
+                                      ? spicecompat::simQucsator
+                                : name.startsWith("/xyce/")     ? spicecompat::simXyce
+                                                                : spicecompat::simNgspice;
+            QucsSettings.DefaultSimulator = simulator;
             if (qEnvironmentVariableIsSet("QUCS_ERC_SURVEY_TRACE")) qWarning() << "loading" << f;
             QTimer::singleShot(3000, &app, [] {
                 for (QWidget* w : QApplication::topLevelWidgets())
@@ -521,18 +699,34 @@ private slots:
                         w->close();
                     }
             });
-            if (!app.gotoPage(f, false, false)) continue;
-            ++files;
-            const QList<Issue> issues = check(app.currentSchematic());
-            if (errorCount(issues) > 0) ++withErrors;
-            if (issues.size() > errorCount(issues)) ++withWarnings;
-            for (const Issue& i : issues) {
-                QString kind = i.message;
-                kind.replace(QRegularExpression("[0-9]+"), "N");
-                kind.replace(QRegularExpression("^[A-Za-z_]+N?:"), "X:");
-                ++kinds[(i.severity == Severity::Error ? "E " : "W ") + kind];
+            if (!app.gotoPage(f, false, false)) {
+                if (out.isOpen()) out.write(QStringLiteral("%1\t-\t-\tE\t(does not open)\n").arg(name).toUtf8());
+                continue;
             }
-            if (!issues.isEmpty()) qWarning() << f.mid(QString(QUCS_EXAMPLES_DIR).size()) << issues.size() << messages(issues).mid(0, 4);
+            ++files;
+            for (const bool required : {true, false}) {
+                QucsSettings.RequireGround = required;
+                const QList<Issue> issues = check(app.currentSchematic());
+                for (const Issue& i : issues)
+                    if (out.isOpen())
+                        out.write(QStringLiteral("%1\t%2\t%3\t%4\t%5\n")
+                                      .arg(name, simulator == spicecompat::simQucsator ? "qucsator"
+                                                 : simulator == spicecompat::simXyce   ? "xyce"
+                                                                                        : "ngspice",
+                                           required ? "required" : "free",
+                                           i.severity == Severity::Error ? "E" : "W", i.message)
+                                      .toUtf8());
+                if (!required) continue;
+                if (errorCount(issues) > 0) ++withErrors;
+                if (issues.size() > errorCount(issues)) ++withWarnings;
+                for (const Issue& i : issues) {
+                    QString kind = i.message;
+                    kind.replace(QRegularExpression("[0-9]+"), "N");
+                    kind.replace(QRegularExpression("^[A-Za-z_]+N?:"), "X:");
+                    ++kinds[(i.severity == Severity::Error ? "E " : "W ") + kind];
+                }
+                if (!issues.isEmpty()) qWarning() << name << issues.size() << messages(issues).mid(0, 4);
+            }
             app.closeAllFiles();
         }
         qWarning() << "files" << files << "with errors" << withErrors << "with warnings" << withWarnings;

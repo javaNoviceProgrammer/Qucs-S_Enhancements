@@ -332,5 +332,14 @@ QString Subcircuit::verilogCode(int) {
 
 // -------------------------------------------------------
 QString Subcircuit::getSubcircuitFile() {
-  return misc::properAbsFileName(Props.at(0)->Value, containingSchematic);
+  const QString name = Props.at(0)->Value;
+  const QString file = misc::properAbsFileName(name, containingSchematic);
+  // A name without a suffix (Qucs wrote them so, and took them for a
+  // schematic): name.sch, when the name alone is nowhere. (Not found,
+  // the subcircuit had no pins.)
+  if (!name.isEmpty() && QFileInfo(name).suffix().isEmpty() && !QFileInfo::exists(file)) {
+    const QString schematic = misc::properAbsFileName(name + QStringLiteral(".sch"), containingSchematic);
+    if (QFileInfo::exists(schematic)) return schematic;
+  }
+  return file;
 }
