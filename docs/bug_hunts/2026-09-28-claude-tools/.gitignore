@@ -1,0 +1,13 @@
+# What a run of these scripts leaves beside them: the server's workspace
+# and settings, and the fuzzers' logs.
+ws/
+runs/
+settings/
+p/
+fuzz-*.log
+fuzz-*.stderr
+fuzz-*.texts
+fuzzp-*.log
+fuzzp-*.texts
+fuzzp-*.stderr
+*.err

@@ -234,10 +234,11 @@ QString baseUnit(const QString& value)
 
 QString valueText(double value, const QString& unit)
 {
-    // Six figures at most: 1k, not 999.999719.
+    // Six figures at most: 1k, not 999.999719. (Not of a number so small
+    // its scale is past a double's: 1e-310 became nan.)
     if (std::isfinite(value) && value != 0) {
         const double scale = std::pow(10.0, 5 - int(std::floor(std::log10(std::abs(value)))));
-        value = std::round(value * scale) / scale;
+        if (std::isfinite(scale) && std::isfinite(value * scale)) value = std::round(value * scale) / scale;
     }
     QString text = misc::num2str(value, 6);
     // Without the zeros after the point: 1k, not 1.000000k.
@@ -360,8 +361,11 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
                             "range - or {\"operating_point\": \"e\"} (a node's DC voltage, or Q1.ic).")));
         return;
     }
-    // The values tried: a list, or a range searched for the target.
+    // The values tried: a list, or a range searched for the target. (A
+    // value of the list is set as it is written there - 10 Ohm, .5k - not
+    // as a number found is: 10, 500.)
     QList<double> values;
+    QStringList spelt;
     for (const QJsonValue& v : args.value(QLatin1String("values")).toArray()) {
         double x = 0;
         if (!valueOf(v, &x)) {
@@ -369,6 +373,7 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
             return;
         }
         values << x;
+        spelt << (v.isString() ? v.toString().trimmed() : QString());
     }
     const bool hasTarget = args.value(QLatin1String("target")).isDouble();
     const double target = args.value(QLatin1String("target")).toDouble();
@@ -388,7 +393,6 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
     const int most = std::clamp(args.value(QLatin1String("max_runs")).toInt(12), 2, 40);
     const double tolerance = args.value(QLatin1String("tolerance")).isDouble() ? std::abs(args.value(QLatin1String("tolerance")).toDouble())
                                                                                : std::max(1e-12, std::abs(target) * 0.005);
-    const bool logScale = lo > 0 && hi / lo >= 10;
     const bool apply = args.value(QLatin1String("apply")).toBool(true);
     const QString was = p->Value;
     const QString unit = baseUnit(was);
@@ -396,10 +400,16 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
 
     struct State {
         QList<std::pair<double, double>> runs;   // value, measured
+        QStringList texts;                       // each run's value as it was set
         QString used;                            // the variable measured
         QStringList notes;
         double a = 0, fa = NAN, b = 0, fb = NAN; // the bracket, as values measured less the target
+        double ta = NAN, tb = NAN;               // (those, as measured: fa and fb are halved)
         int side = 0;                            // (Illinois: the end kept twice)
+        // Whether the measurement goes as the logarithm of the value rather
+        // than as the value: at first when the range is two decades or
+        // more, then whichever of the two foretold the last run better.
+        bool logarithmic = false;
         int next = 0;                            // the index of 'values' to try next
         QString lastSet;                         // the value it set last (a run that failed too)
     };
@@ -411,6 +421,7 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         return;
     }
     auto state = std::make_shared<State>();
+    state->logarithmic = lo > 0 && hi / lo >= 100;
     QPointer<Schematic> doc(sch);
     const QString path = sch->getDocName();
 
@@ -424,14 +435,15 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         doc->viewport()->update();
     };
     auto finishUp = std::make_shared<std::function<void(const QString&)>>();
-    auto evaluate = std::make_shared<std::function<void(double, std::function<void(double)>)>>();
-    *evaluate = [=, this](double x, std::function<void(double)> then) {
+    auto evaluate = std::make_shared<std::function<void(double, std::function<void(double)>, QString)>>();
+    *evaluate = [=, this](double x, std::function<void(double)> then, QString text) {
         if (!doc) {
             (*finishUp)(tr("The schematic was closed."));
             return;
         }
-        setValue(valueText(x, unit));
-        state->lastSet = valueText(x, unit);
+        if (text.isEmpty()) text = valueText(x, unit);
+        setValue(text);
+        state->lastSet = text;
         QJsonObject run{{QStringLiteral("path"), path}, {QStringLiteral("timeout"), timeout}};
         if (atOperatingPoint) run.insert(QStringLiteral("operating_point"), true);
         if (args.contains(QLatin1String("simulator"))) run.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
@@ -441,7 +453,7 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
             if (r.value(QStringLiteral("isError")).toBool() || !result.value(QStringLiteral("succeeded")).toBool(true)
                 || result.isEmpty()) {
                 const QJsonArray errors = result.value(QStringLiteral("errors")).toArray();
-                (*finishUp)(tr("The simulation with %1 = %2 failed: %3").arg(property, valueText(x, unit),
+                (*finishUp)(tr("The simulation with %1 = %2 failed: %3").arg(property, text,
                                                                                errors.isEmpty() ? textOf(r).left(600)
                                                                                                 : errors.first().toObject().value(QStringLiteral("message")).toString()));
                 return;
@@ -470,11 +482,12 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
             QString why, used;
             const double m = measured(spec, answer, &used, &why);
             if (std::isnan(m)) {
-                (*finishUp)(tr("With %1 = %2 nothing could be measured: %3.").arg(property, valueText(x, unit), why));
+                (*finishUp)(tr("With %1 = %2 nothing could be measured: %3.").arg(property, text, why));
                 return;
             }
             if (state->used.isEmpty()) state->used = used;
             state->runs.append({x, m});
+            state->texts.append(text);
             then(m);
         });
     };
@@ -487,8 +500,9 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
                 (*finishUp)(QString());
                 return;
             }
+            const QString text = spelt.at(state->next);
             const double x = values.at(state->next++);
-            (*evaluate)(x, [step](double) { (*step)(); });
+            (*evaluate)(x, [step](double) { (*step)(); }, text);
             return;
         }
         if (int(state->runs.size()) >= most) {
@@ -503,15 +517,15 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         if (std::isnan(state->fa)) {
             (*evaluate)(lo, [=](double m) {
                 state->a = lo;
-                state->fa = m - target;
+                state->fa = state->ta = m - target;
                 (*step)();
-            });
+            }, QString());
             return;
         }
         if (std::isnan(state->fb)) {
             (*evaluate)(hi, [=](double m) {
                 state->b = hi;
-                state->fb = m - target;
+                state->fb = state->tb = m - target;
                 if ((state->fa > 0) == (state->fb > 0) && std::abs(state->fa) > tolerance && std::abs(state->fb) > tolerance) {
                     (*finishUp)(tr("The target is not between what the range's ends give (%1 at %2, %3 at %4): widen the range, or "
                                    "look at 'runs' for the way it goes.")
@@ -519,34 +533,46 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
                     return;
                 }
                 (*step)();
-            });
+            }, QString());
             return;
         }
-        // False position with the Illinois rule, on a log scale over decades.
-        const auto u = [logScale](double x) { return logScale ? std::log(x) : x; };
-        const auto back = [logScale](double t) { return logScale ? std::exp(t) : t; };
+        // False position with the Illinois rule: on the value, or on its
+        // logarithm (a gain over decades of a resistance) - whichever
+        // foretells the measurements better. (On the logarithm alone, a
+        // linear answer - a divider's voltage - took six runs, not three.)
+        const bool logarithmic = state->logarithmic && state->a > 0 && state->b > 0;
+        const auto u = [logarithmic](double x) { return logarithmic ? std::log(x) : x; };
+        const auto back = [logarithmic](double t) { return logarithmic ? std::exp(t) : t; };
         const double fa = state->fa, fb = state->fb;
         double t = (u(state->a) * fb - u(state->b) * fa) / (fb - fa);
         if (!std::isfinite(t) || t <= std::min(u(state->a), u(state->b)) || t >= std::max(u(state->a), u(state->b)))
             t = (u(state->a) + u(state->b)) / 2;
         const double x = back(t);
+        const double a0 = state->a, b0 = state->b, fa0 = state->ta, fb0 = state->tb;
         (*evaluate)(x, [=](double m) {
             const double fx = m - target;
+            // What each way foretold here, between the two ends as they were
+            // measured: the nearer one is taken from now on.
+            if (a0 > 0 && b0 > 0 && x > 0 && a0 != b0) {
+                const double linear = fa0 + (fb0 - fa0) * (x - a0) / (b0 - a0);
+                const double logarithmic = fa0 + (fb0 - fa0) * (std::log(x) - std::log(a0)) / (std::log(b0) - std::log(a0));
+                if (std::isfinite(linear) && std::isfinite(logarithmic)) state->logarithmic = std::abs(fx - logarithmic) < std::abs(fx - linear);
+            }
             // The end on its side is replaced; the other, kept twice in a
             // row, counts half (so it does not hold the search back).
             if ((fx > 0) == (state->fb > 0)) {
                 state->b = x;
-                state->fb = fx;
+                state->fb = state->tb = fx;
                 if (state->side == -1) state->fa /= 2;
                 state->side = -1;
             } else {
                 state->a = x;
-                state->fa = fx;
+                state->fa = state->ta = fx;
                 if (state->side == 1) state->fb /= 2;
                 state->side = 1;
             }
             (*step)();
-        });
+        }, QString());
     };
 
     *finishUp = [=, this](const QString& stopped) {
@@ -560,8 +586,10 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         for (int i = 0; i < state->runs.size(); ++i)
             if (hasTarget && (best < 0 || std::abs(state->runs.at(i).second - target) < std::abs(state->runs.at(best).second - target))) best = i;
         QJsonArray runs;
-        for (const auto& [x, m] : state->runs)
-            runs.append(QJsonObject{{QStringLiteral("value"), valueText(x, unit)}, {QStringLiteral("measured"), rounded(m)}});
+        for (int i = 0; i < state->runs.size(); ++i)
+            runs.append(QJsonObject{{QStringLiteral("value"), state->texts.at(i)}, {QStringLiteral("measured"), rounded(state->runs.at(i).second)}});
+        // (The best value as it was set: a value of 'values' as written.)
+        const QString bestText = best >= 0 ? state->texts.at(best) : QString();
         QJsonObject result{{QStringLiteral("component"), name},
                            {QStringLiteral("property"), property},
                            {QStringLiteral("was"), was},
@@ -584,33 +612,33 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         const bool applying = apply && reached && !changedMeanwhile;
         if (changedMeanwhile) {
             if (best >= 0) {
-                const auto& [x, m] = state->runs.at(best);
-                result.insert(QStringLiteral("value"), valueText(x, unit));
+                const double m = state->runs.at(best).second;
+                result.insert(QStringLiteral("value"), bestText);
                 result.insert(QStringLiteral("gives"), rounded(m));
             }
             result.insert(QStringLiteral("set"), tr("%1 of %2 was changed to %3 while it was tuned: left so, not put back to %4, and "
                                                     "nothing applied over it.").arg(property, name, now, was));
         } else if (applying) {
-            const auto& [x, m] = state->runs.at(best);
-            setValue(valueText(x, unit));
+            const double m = state->runs.at(best).second;
+            setValue(bestText);
             doc->setChanged(true, true);
-            result.insert(QStringLiteral("value"), valueText(x, unit));
+            result.insert(QStringLiteral("value"), bestText);
             result.insert(QStringLiteral("gives"), rounded(m));
             result.insert(QStringLiteral("off by"), rounded(m - target));
             result.insert(QStringLiteral("within tolerance"), std::abs(m - target) <= tolerance);
-            result.insert(QStringLiteral("set"), tr("%1 of %2 is %3 now: one step to undo (it was %4).").arg(property, name, valueText(x, unit), was));
+            result.insert(QStringLiteral("set"), tr("%1 of %2 is %3 now: one step to undo (it was %4).").arg(property, name, bestText, was));
         } else if (best >= 0 && apply) {
-            const auto& [x, m] = state->runs.at(best);
-            result.insert(QStringLiteral("value"), valueText(x, unit));
+            const double m = state->runs.at(best).second;
+            result.insert(QStringLiteral("value"), bestText);
             result.insert(QStringLiteral("gives"), rounded(m));
             result.insert(QStringLiteral("off by"), rounded(m - target));
             result.insert(QStringLiteral("within tolerance"), false);
             result.insert(QStringLiteral("set"), tr("not set: no value tried gave the target, within %1; %2 is %3 as it was. The closest, "
                                                     "%4, gives %5 (edit_component sets it).")
-                                                     .arg(rounded(tolerance)).arg(property, was, valueText(x, unit)).arg(rounded(m)));
+                                                     .arg(rounded(tolerance)).arg(property, was, bestText).arg(rounded(m)));
         } else if (best >= 0) {
-            const auto& [x, m] = state->runs.at(best);
-            result.insert(QStringLiteral("value"), valueText(x, unit));
+            const double m = state->runs.at(best).second;
+            result.insert(QStringLiteral("value"), bestText);
             result.insert(QStringLiteral("gives"), rounded(m));
             result.insert(QStringLiteral("set"), tr("not set ('apply' false): %1 is %2 as it was.").arg(property, was));
         } else {
@@ -622,7 +650,7 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         const bool rerun = applying && !state->runs.isEmpty() && state->runs.last().first != state->runs.at(best).first;
         if (!rerun || !doc) {
             if (!state->runs.isEmpty() && !applying && !values.isEmpty())
-                result.insert(QStringLiteral("note"), tr("The dataset is the last run's (%1 = %2).").arg(property, valueText(state->runs.last().first, unit)));
+                result.insert(QStringLiteral("note"), tr("The dataset is the last run's (%1 = %2).").arg(property, state->texts.last()));
             done(jsonResult(result));
             return;
         }
@@ -1323,6 +1351,7 @@ QJsonObject QucsControl::newProject(const QJsonObject& args)
     const QString name = args.value(QLatin1String("name")).toString().trimmed();
     if (name.isEmpty() || name.contains(QLatin1Char('/')) || name.contains(QLatin1Char('\\')) || name.startsWith(QLatin1Char('.')))
         return errorResult(tr("'name' is the project's name (a folder name: no slashes)."));
+    if (const QString bad = badFileName(name); !bad.isEmpty()) return errorResult(tr("'name': %1.").arg(bad));
     const QString folder = qucs_s::workspace::folderFor(name);
     const QDir workspace(QucsSettings.qucsWorkspaceDir.absolutePath());
     const QString path = workspace.filePath(folder);
@@ -1401,6 +1430,7 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
         if (!to.endsWith(QLatin1String(".sch"), Qt::CaseInsensitive)) to += QStringLiteral(".sch");
         to = to.contains(QLatin1Char('/')) || to.contains(QLatin1Char('\\')) ? absolute(to) : QFileInfo(from).absoluteDir().filePath(to);
     }
+    if (const QString bad = badFileName(QFileInfo(to).fileName()); !bad.isEmpty()) return errorResult(tr("'to': %1.").arg(bad));
     if (sameFile(from, to)) return errorResult(tr("The copy would be the schematic itself."));
     // A file there already: written over when 'replace' says so, or when
     // the user says yes, asked.

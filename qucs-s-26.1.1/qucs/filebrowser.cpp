@@ -2396,7 +2396,9 @@ void FileBrowser::save() const
 {
     if (!a_loaded) return;
     QucsSettingsFile settings;
-    settings.setValue(kLocation, a_location);
+    // (Not a folder of a workspace one run was given - qucs-s --workspace:
+    // the next start opens where the user was.)
+    if (QucsSettings.workspaceOfRun.isEmpty()) settings.setValue(kLocation, a_location);
     settings.setValue(kView, int(a_view));
     settings.setValue(kHidden, a_showHidden);
     settings.setValue(kQucsOnly, a_qucsOnly);

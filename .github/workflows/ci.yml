@@ -38,6 +38,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Before the build, in a second: every argument a Claude tool reads is
+      # in its schema - a call with one it lacks is refused - and the other
+      # way round (see scripts/ci/check-tool-arguments.py).
+      - name: Claude's tools take what they read
+        run: python3 scripts/ci/check-tool-arguments.py
+
       - name: Install build dependencies
         run: |
           sudo apt-get update

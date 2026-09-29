@@ -79,6 +79,9 @@ struct tQucsSettings {
 
   // A dir for user projects and libraries. See also https://github.com/ra3xdh/qucs_s/issues/145
   QDir qucsWorkspaceDir;
+  // The workspace --workspace gave this run: its own, not the settings' -
+  // nor saved as theirs. Empty when none was given.
+  QString workspaceOfRun;
 
   // This is the dir where all temporary or intermediate data should be stored.
   // Consider a data "temporary" if its used only once or it makes sense only

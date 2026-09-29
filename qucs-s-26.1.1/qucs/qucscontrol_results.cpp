@@ -1533,6 +1533,8 @@ QString QucsControl::staleness(Schematic* sch, const QString& file)
     if (file.endsWith(QLatin1String(".ngspice"))) simulator = spicecompat::simNgspice;
     else if (file.endsWith(QLatin1String(".spopus"))) simulator = spicecompat::simSpiceOpus;
     else if (file.endsWith(QLatin1String(".xyce"))) simulator = spicecompat::simXyce;
+    const auto& edits = sch->recentEdits();
+    const QDateTime edited = edits.isEmpty() ? QDateTime() : edits.last().at;
     if (simulator == QucsSettings.DefaultSimulator && (simulator == spicecompat::simNgspice || simulator == spicecompat::simSpiceOpus)) {
         const QString last = QDir(misc::scratchDirFor(sch->getDocName())).filePath(QStringLiteral("spice4qucs.cir"));
         const QFileInfo info(last);
@@ -1541,6 +1543,12 @@ QString QucsControl::staleness(Schematic* sch, const QString& file)
         static const QRegularExpression named(QStringLiteral("^\\*\\s*Qucs\\S*\\s+\\S+\\s+(.+)$"));
         const QRegularExpressionMatch m = named.match(head);
         if (m.hasMatch() && sameFile(m.captured(1).trimmed(), sch->getDocName()) && info.lastModified() <= written.addSecs(2)) {
+            // Nothing done to it since that run began - no edit, its file
+            // not written since (by another program, before it was opened):
+            // as it was, and not netlisted again (tune and scripts read a
+            // dataset after every run).
+            const QDateTime saved = QFileInfo(sch->getDocName()).lastModified();
+            if (!(edited.isValid() && edited > info.lastModified()) && !(saved.isValid() && saved > info.lastModified())) return {};
             QTemporaryDir temporary;
             const QString now = temporary.filePath(QStringLiteral("now.cir"));
             misc::ErrorCapture capture;
@@ -1555,11 +1563,13 @@ QString QucsControl::staleness(Schematic* sch, const QString& file)
         }
     }
     // Else what can be told: an edit after it (which may not matter - a
-    // diagram, a move).
-    if (const auto& edits = sch->recentEdits(); !edits.isEmpty() && edits.last().at > written)
+    // diagram, a move), and that no more can.
+    if (edited.isValid() && edited > written)
         return tr("%1 was edited at %2, after this dataset was written (%3): if a value or a connection changed, the dataset is not "
-                  "of the circuit as it is (simulate again).")
-            .arg(titleOf(sch), edits.last().at.toString(QStringLiteral("HH:mm:ss")), when);
+                  "of the circuit as it is (simulate again). The netlist of the run that wrote it is not at hand to compare with "
+                  "- %1 was not simulated here since it was opened, copied or renamed, or by another simulator - so only the time "
+                  "tells.")
+            .arg(titleOf(sch), edited.toString(QStringLiteral("HH:mm:ss")), when);
     return {};
 }
 
@@ -1791,6 +1801,8 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
     const QString saveAs = args.value(QLatin1String("save_as")).toString().trimmed();
     const auto write = [&](const QString& text) -> QJsonObject {
         const QString target = absolute(saveAs);
+        if (const QString bad = badFileName(QFileInfo(saveAs).fileName()); !bad.isEmpty()) return errorResult(tr("'save_as': %1.").arg(bad));
+        if (const QString bad = badFileName(QFileInfo(target).fileName()); !bad.isEmpty()) return errorResult(tr("'save_as': %1.").arg(bad));
         if (!QFileInfo(target).absoluteDir().exists())
             return errorResult(tr("There is no folder %1.").arg(QDir::toNativeSeparators(QFileInfo(target).absolutePath())));
         // Not over a document: an open one's file would be loaded again as
@@ -1892,9 +1904,11 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
                 for (int i = 0; i < c->Ports.size(); ++i) {
                     const Node* n = c->Ports.at(i)->Connection;
                     if (n == nullptr || n->Name.isEmpty()) continue;
-                    QJsonArray on = nodes.value(n->Name).toArray();
+                    // (Ground as the netlist writes it: 0, not Qucs-S's gnd.)
+                    const QString node = n->Name == QLatin1String("gnd") ? QStringLiteral("0") : n->Name;
+                    QJsonArray on = nodes.value(node).toArray();
                     on.append(QStringLiteral("%1.%2").arg(ref).arg(i + 1));
-                    nodes.insert(n->Name, on);
+                    nodes.insert(node, on);
                 }
             }
             QJsonArray owned;

@@ -16,6 +16,7 @@
 #define QUCS_MCPSTDIO_H
 
 class QApplication;
+class QString;
 class QTimer;
 class QucsApp;
 
@@ -23,6 +24,9 @@ namespace qucs_s::mcp {
 
 /// Whether the command line asks for the server (--mcp-server).
 bool askedFor(int argc, char* argv[]);
+/// The folder --workspace DIR (or --workspace=DIR) gives this run as its
+/// workspace, or empty: read before the settings make theirs.
+QString workspaceAsked(int argc, char* argv[]);
 /// Before the application is made: no window on screen (the offscreen
 /// platform), and this instance's dock runs no claude and no gh.
 void prepareHeadless();

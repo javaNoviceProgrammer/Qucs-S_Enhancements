@@ -112,7 +112,7 @@ const char* const kTools = R"JSON([
  "description": "Closes a document's tab (the one in front unless 'path' names another). For a document with unsaved changes, 'unsaved' says whether to save or discard them; without it the user is asked to save, discard or keep the document open.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "unsaved": {"type": "string", "enum": ["save", "discard"], "description": "For a document with unsaved changes: save them, or discard them; not given, the user is asked"}}}},
 {"name": "get_schematic",
- "description": "Reads a schematic as it is in Qucs-S now, including unsaved changes. Format 'summary' (the default) lists: the components (name, type, position, rotation, mirroring, whether active, properties, each pin's position with whether anything is connected and its net - a label's name, gnd, or net1, net2, ... (numbered in order, so a label or a new part may renumber them: read again before using one) - and the boxes of its texts); the nets with the pins on each (those with two or more pins, or a name); the wires, net labels and paintings (numbered as the painting tools expect, each with its type and fields by name); the settings (dataset, data display, frame); and the diagrams, numbered as the diagram tools expect, with their axes, traces (each trace's variable, style, and points or the reason it shows no data) and markers. 'properties' chooses which properties are listed: non_default (those shown or not at the type's default; the default), shown, or all. 'texts' gives each part's name and shown properties with their box [x1, y1, x2, y2], to move one clear of a wire or label with edit_component's text_at. 'components' (names; a ground by its ref, GND#2) or 'region' ([x1, y1, x2, y2]) limits the list to those components with their nets and wires - the nets named as in a full read, net1 being the same net in both; a list longer than 200 is cut short and says what was left out. Read whole, a schematic of more than 200 parts lists the first 50 of each kind (parts, nets, wires, labels): read it in parts with 'region' or 'components', or at a glance with format 'overview'. 'symbol' also lists the paintings of its symbol (its ports and name text among them), as does a document that is showing its symbol. Format 'overview' summarizes it at a glance - parts counted by type, analyses, named nets, extent and diagrams - in a few hundred bytes even for thousands of parts: start there with a large schematic. Format 'text' returns the text its .sch file would have, and 'json' the parts and wires in the form set_schematic accepts. Coordinates are in schematic units; the grid is usually 10.",
+ "description": "Reads a schematic as it is in Qucs-S now, including unsaved changes. Format 'summary' (the default) lists: the components (name, type, position, rotation, mirroring, whether active, properties, each pin's position with whether anything is connected and its net - a label's name, gnd, or net1, net2, ... (numbered in order, so a label or a new part may renumber them: read again before using one) - and the boxes of its texts); the nets with the pins on each (those with two or more pins, or a name); the wires, net labels and paintings (numbered as the painting tools expect, each with its type and fields by name); the settings (dataset, data display, frame); and the diagrams, numbered as the diagram tools expect, with their axes, traces (each trace's variable, style, and points or the reason it shows no data) and markers. 'properties' chooses which properties are listed: non_default (those shown or not at the type's default; the default), shown, or all. 'texts' gives each part's name and shown properties with their box [x1, y1, x2, y2], to move one clear of a wire or label with edit_component's text_at. 'components' (names; a ground by its ref, GND#2) or 'region' ([x1, y1, x2, y2]) limits the list to those components with their nets and wires - the nets named as in a full read, net1 being the same net in both; its net labels are those on their pins and wires (or in the region) - a label elsewhere on one of their nets is left out, its name given in 'nets'; a list longer than 200 is cut short and says what was left out. Read whole, a schematic of more than 200 parts lists the first 50 of each kind (parts, nets, wires, labels): read it in parts with 'region' or 'components', or at a glance with format 'overview'. 'symbol' also lists the paintings of its symbol (its ports and name text among them), as does a document that is showing its symbol. Format 'overview' summarizes it at a glance - parts counted by type, analyses, named nets, extent and diagrams - in a few hundred bytes even for thousands of parts: start there with a large schematic. Format 'text' returns the text its .sch file would have, and 'json' the parts and wires in the form set_schematic accepts. Coordinates are in schematic units; the grid is usually 10.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "format": {"type": "string", "enum": ["summary", "overview", "text", "json"], "description": "json: its parts and wires as set_schematic's 'components' and 'wires' take them back"}, "symbol": {"type": "boolean", "description": "Also list its symbol's paintings (its ports and name text among them)"},
    "properties": {"type": "string", "enum": ["non_default", "shown", "all"], "description": "Which properties each part lists: non_default (shown, or not at the type's default; the default), shown, or all"},
    "components": {"type": "array", "items": {"type": "string"}, "description": "Only these parts, by name - a ground by its ref (GND when there is one, GND#2 the second of several, as get_schematic gives it) - with their nets and wires; the nets keep the names a full read gives them, and names that match nothing come back under 'not found'"},
@@ -124,8 +124,8 @@ const char* const kTools = R"JSON([
 {"name": "set_schematic",
  "description": "Replaces the elements of a schematic in one undo step. Give either the JSON form - 'components' and 'wires', as get_schematic's format json returns them, with properties by name and checked against each type - or 'text': the text of a .sch file, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are ignored). Diagrams re-read their data. Returns what it read in each section it replaced: the components by name and type, the number of wires, the diagrams as get_schematic lists them (each trace's points or why it has none, each marker and the sample it shows) and the paintings. If the text cannot be read, the schematic stays unchanged and the error is reported. The same happens for a component line with more values than its type has properties, because values are positional and one extra value in the middle puts every later value in the wrong property. A line with fewer values is accepted, the rest at their defaults, and the result says so. A number with letters after it that are no scale and unit (1kk, 10uu) is refused, and the schematic stays unchanged. Other values that do not fit their property - a word where a number belongs, a word that is not one of the property's choices - are listed under 'values'. To hide or show a property or move a part's text, use edit_component instead of rewriting the line. describe_format explains each line's fields. For diagrams, traces and markers, add_diagram, edit_diagram, add_trace, edit_trace, add_marker and edit_marker are simpler and safer.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "text": {"type": "string", "description": "The .sch lines (or 'components' and 'wires' instead)"},
-   "components": {"type": "array", "items": {"type": "object"}, "description": "The JSON form, in place of <Components>: each part {\"type\": \"R\", \"name\": \"R1\", \"x\": 100, \"y\": 100, \"rotation\": 0-3, \"mirror\": false, \"properties\": {\"R\": \"1k\"}, \"shown\": {...}, \"equations\": [...], \"active\": true, \"text_at\": [dx, dy]} - properties by name, checked against the type, so no value can shift into another's place; get_schematic's format json gives them so"},
-   "wires": {"type": "array", "items": {"type": "object"}, "description": "The JSON form, in place of <Wires>: {\"from\": [x, y], \"to\": [x, y], \"label\": \"out\"}, a label on a pin alone {\"at\": [x, y], \"label\": \"in\"}; a label's 'initial' is its net's initial value (.IC)"}}}},
+   "components": {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string"}, "name": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}, "rotation": {"type": "integer"}, "mirror": {"type": "boolean"}, "properties": {"type": "object"}, "shown": {"type": "object"}, "name_shown": {"type": "boolean"}, "text_at": {"type": "array"}, "active": {"type": "boolean"}, "equations": {"type": "array"}, "replace_equations": {"type": "boolean"}, "flags": {"type": "array"}, "records": {"type": "array"}, "specs": {"type": "array"}}}, "description": "The JSON form, in place of <Components>: each part {\"type\": \"R\", \"name\": \"R1\", \"x\": 100, \"y\": 100, \"rotation\": 0-3, \"mirror\": false, \"properties\": {\"R\": \"1k\"}, \"shown\": {...}, \"equations\": [...], \"active\": true, \"text_at\": [dx, dy]} - properties by name, checked against the type, so no value can shift into another's place; get_schematic's format json gives them so"},
+   "wires": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "array"}, "to": {"type": "array"}, "at": {"type": "array"}, "label": {"type": "string"}, "label_at": {"type": "array"}, "initial": {"type": "string"}}}, "description": "The JSON form, in place of <Wires>: {\"from\": [x, y], \"to\": [x, y], \"label\": \"out\"}, a label on a pin alone {\"at\": [x, y], \"label\": \"in\"}; a label's 'initial' is its net's initial value (.IC)"}}}},
 {"name": "describe_format",
  "description": "Explains the lines of a .sch file field by field - a component, a wire, a diagram (all of its roughly 30 fields), a trace, a marker, a painting - as set_schematic accepts them and get_schematic's format 'text' returns them. For paintings it also lists the fields add_painting and edit_painting accept, type by type. Without 'element', it explains all of them.",
  "inputSchema": {"type": "object", "properties": {"element": {"type": "string", "enum": ["component", "wire", "diagram", "trace", "marker", "painting"], "description": "The kind of line explained (all of them when not given)"}}}},
@@ -173,7 +173,10 @@ const char* const kTools = R"JSON([
    "x": {"type": "integer", "description": "Where its centre goes (with 'y'), instead of where its pins land on the old ones"}, "y": {"type": "integer", "description": "Where its centre goes (with 'x'), instead of where its pins land on the old ones"},
    "rename": {"type": "string", "description": "The new part's name (the old one's unless given)"},
    "shown": {"type": "object", "description": "Which properties are shown on the schematic: {\"C\": true}"}, "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"},
-   "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}},
+   "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"},
+   "replace_equations": {"type": "boolean", "description": "Taken as add_component takes it: the new part's equations are those given in any case"},
+   "records": {"type": "array", "items": {}, "description": "A Monte Carlo's or corners' values recorded for each sample, as add_component takes them"},
+   "specs": {"type": "array", "items": {}, "description": "Their limits, as add_component takes them"}},
    "required": ["name", "type"]}},
 {"name": "delete",
  "description": "Deletes elements from a schematic as one undo step: components (by name; a ground by its ref from get_schematic, GND#2), net labels (by the net's name), wires (by their two ends, [x1, y1, x2, y2]), diagrams (by their numbers from get_schematic), traces ({\"diagram\": n, \"trace\": its number or variable}) and paintings (by their numbers; the symbol's paintings with 'symbol').",
@@ -240,8 +243,9 @@ const char* const kTools = R"JSON([
  "description": "Lists a schematic's undo steps in words - \"step 7: R2 R 47k → 67k; step 8: diagram 2: trace 2's look changed\" - the last 'steps' (10 by default) up to the current position, plus those that can be redone after it, so undo can go to a known step ('to') instead of counting.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 200, "description": "How many steps before the current one are listed, 10 by default"}}}},
 {"name": "redo",
- "description": "Redoes the last undone change, like Edit > Redo; 'steps' redoes that many.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many changes to redo, 1 by default"}}}},
+ "description": "Redoes the last undone change, like Edit > Redo; 'steps' redoes that many, 'to' goes to a step of a schematic as undo_history numbers them (as undo's 'to').",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many changes to redo, 1 by default"},
+   "to": {"type": "integer", "minimum": 0, "description": "A step as undo_history lists them: the schematic as it was after it"}}}},
 {"name": "screenshot",
  "description": "Takes a picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] in schematic units) captures only that, as printed, to check a plot without the whole page. 'area' chooses what is captured: paper (or all, the default) is the whole schematic as it is printed and exported, on white paper in its print colors whatever the theme; screen (or visible) is the canvas exactly as the user sees it now, with the theme's colors (a dark canvas in the dark theme), its zoom and what is scrolled into view - use it to see what the user sees, especially for a problem with how something looks on screen; window is the whole Qucs-S window (panes, tabs, docks, status bar), plus each dialog open over it as a separate picture. For a text document or a PDF, paper and screen show what its tab shows.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "area": {"type": "string", "enum": ["paper", "screen", "window", "all", "visible"], "description": "paper (or all): the whole schematic as printed, the default; screen (or visible): the canvas as the user sees it; window: the whole Qucs-S window and its dialogs"},
@@ -266,7 +270,7 @@ const char* const kTools = R"JSON([
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, or [row, column, text] for a table}]"},
    "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id"}}}},
 {"name": "simulate",
- "description": "Simulates a schematic (the one in front unless 'path' names another; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('schematic check'). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out).",
+ "description": "Simulates a schematic (the one in front unless 'path' names another; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out).",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); it is stopped after"},
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For this run alone (an installed one); set_simulator changes the setting"},
    "keep_as": {"type": "string", "description": "A name of letters, digits, _ and -: the copy is <name>.dat.ngspice (or .xyce, ...) beside the schematic"},
@@ -309,7 +313,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given (a schematic or a data display)"}, "type": {"type": "string", "description": "rect (x-y, the default), polar, smith, admittance_smith, polar_smith, smith_polar, tab (a table), timing, truth, 3d, locus or histogram"}, "x": {"type": "integer", "description": "Its lower left corner (with 'y'); below everything, in a free spot, when not given"}, "y": {"type": "integer", "description": "Its lower left corner (with 'x')"},
    "width": {"type": "integer", "description": "240 by default"}, "height": {"type": "integer", "description": "160 by default"}, "title": {"type": "string", "description": "Drawn above it, and moved, selected and exported with it"},
-   "traces": {"type": "array", "items": {}, "description": "Variables as get_dataset names them (tran.v(out); v(out) or out when that is one), or objects as add_trace takes them: {\"variable\": \"ac.v(out)\", \"axis\": \"right\", \"color\": \"#ff0000\"}"},
+   "traces": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"variable": {"type": "string"}, "axis": {"type": "string"}, "color": {"type": "string"}, "auto_color": {"type": "boolean"}, "thickness": {"type": "integer"}, "style": {"type": "string"}, "marker": {"type": "string"}, "numbers": {"type": "string"}, "precision": {"type": "integer"}}}]}, "description": "Variables as get_dataset names them (tran.v(out); v(out) or out when that is one), or objects as add_trace takes them: {\"variable\": \"ac.v(out)\", \"axis\": \"right\", \"color\": \"#ff0000\"}"},
    "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm: the values shown so)"},
    "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm: the values shown so)"},
    "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The right y axis (for traces with axis right): Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm: the values shown so)"},
@@ -726,6 +730,25 @@ bool isQucsDocument(const QString& file)
     if (kinds.contains(QFileInfo(file).suffix().toLower())) return true;
     QFile f(file);
     return f.open(QIODevice::ReadOnly) && f.read(6) == "<Qucs ";
+}
+
+QString badFileName(const QString& name)
+{
+    if (name.isEmpty()) return tr("a file needs a name");
+    if (name == QLatin1String(".") || name == QLatin1String(".."))
+        return tr("%1 is a folder, not a file's name (\".\" as a file's name wrote a file named after the folder, beside it)").arg(name);
+    static const QRegularExpression refused(QStringLiteral("[<>:\"/\\\\|?*\\x00-\\x1f]"));
+    if (const QRegularExpressionMatch m = refused.match(name); m.hasMatch())
+        return tr("%1 is no file's name: a file's name has no %2 (no <>:\"/\\|?* or control characters, which Windows refuses)")
+            .arg(name, m.captured(0).at(0).isPrint() ? m.captured(0) : tr("control character"));
+    if (name.endsWith(QLatin1Char(' ')) || name.endsWith(QLatin1Char('.')) || name.startsWith(QLatin1Char(' ')))
+        return tr("\"%1\" is no file's name: it begins with a space or ends with a space or a dot").arg(name);
+    static const QRegularExpression device(QStringLiteral("^(con|prn|aux|nul|com\\d|lpt\\d)(\\..*)?$"), QRegularExpression::CaseInsensitiveOption);
+    if (device.match(name).hasMatch()) return tr("%1 is no file's name: Windows keeps it for a device").arg(name);
+    // (Before its suffix: "'.sch" is "'" and a suffix.)
+    const QString stem = QFileInfo(name).completeBaseName().isEmpty() ? name : QFileInfo(name).completeBaseName();
+    if (!stem.contains(QRegularExpression(QStringLiteral("[\\p{L}\\p{N}]")))) return tr("%1 is no file's name: it has no letter or digit").arg(name);
+    return {};
 }
 
 QString absolute(const QString& path)
@@ -2930,6 +2953,81 @@ QString QucsControl::textOf(const QJsonObject& result)
     return parts.join(QLatin1Char('\n'));
 }
 
+namespace {
+
+// How many letters \a a and \a b are apart: one left out, put in, changed
+// or two swapped each count one (lable is one from label).
+int lettersApart(const QString& a, const QString& b)
+{
+    std::vector<std::vector<int>> d(a.size() + 1, std::vector<int>(b.size() + 1));
+    for (qsizetype i = 0; i <= a.size(); ++i) d[i][0] = int(i);
+    for (qsizetype j = 0; j <= b.size(); ++j) d[0][j] = int(j);
+    for (qsizetype i = 1; i <= a.size(); ++i)
+        for (qsizetype j = 1; j <= b.size(); ++j) {
+            d[i][j] = std::min({d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a.at(i - 1) == b.at(j - 1) ? 0 : 1)});
+            if (i > 1 && j > 1 && a.at(i - 1) == b.at(j - 2) && a.at(i - 2) == b.at(j - 1)) d[i][j] = std::min(d[i][j], d[i - 2][j - 2] + 1);
+        }
+    return d[a.size()][b.size()];
+}
+
+// The names in \a takes near \a unknown: a letter or two off, the same
+// beginning, or one in the other.
+QStringList nearNamesOf(const QStringList& unknown, const QStringList& takes)
+{
+    QStringList near;
+    for (const QString& u : unknown)
+        for (const QString& t : takes) {
+            const QString a = u.toLower(), b = t.toLower();
+            int same = 0;
+            while (same < std::min(a.size(), b.size()) && a.at(same) == b.at(same)) ++same;
+            const bool typo = std::min(a.size(), b.size()) >= 3 && lettersApart(a, b) <= (std::max(a.size(), b.size()) > 5 ? 2 : 1);
+            if ((typo || a.contains(b) || b.contains(a) || same >= std::min<qsizetype>(4, std::min(a.size(), b.size()))) && !near.contains(t)) near << t;
+        }
+    return near;
+}
+
+// The fields of \a schema an object \a value has not, inside it too - a
+// set_schematic part's "rotaton" - as "where: its keys, and what it
+// takes"; empty when all are known. \a schema's 'properties' name them,
+// an 'items' schema each of an array's, an object alternative of 'anyOf'
+// an object's; 'additionalProperties' (true, or a schema: a map by name)
+// takes any.
+QString unknownIn(const QJsonValue& value, const QJsonObject& schema, const QString& where)
+{
+    if (value.isArray()) {
+        const QJsonObject items = schema.value(QLatin1String("items")).toObject();
+        if (items.isEmpty()) return {};
+        const QJsonArray a = value.toArray();
+        for (int i = 0; i < a.size(); ++i) {
+            // (A part by its name, else by its place in the list.)
+            const QString name = a.at(i).toObject().value(QLatin1String("name")).toString();
+            if (QString u = unknownIn(a.at(i), items, QStringLiteral("%1[%2]%3").arg(where).arg(i).arg(name.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(name)));
+                !u.isEmpty())
+                return u;
+        }
+        return {};
+    }
+    if (!value.isObject()) return {};
+    QJsonObject object = schema;
+    if (!schema.contains(QLatin1String("properties")))
+        for (const QJsonValue& alt : schema.value(QLatin1String("anyOf")).toArray())
+            if (alt.toObject().contains(QLatin1String("properties"))) object = alt.toObject();
+    if (!object.contains(QLatin1String("properties")) || object.contains(QLatin1String("additionalProperties"))) return {};
+    const QJsonObject fields = object.value(QLatin1String("properties")).toObject();
+    const QJsonObject o = value.toObject();
+    QStringList unknown;
+    for (auto it = o.begin(); it != o.end(); ++it)
+        if (!fields.contains(it.key())) unknown << it.key();
+        else if (QString u = unknownIn(it.value(), fields.value(it.key()).toObject(), where + QLatin1Char('.') + it.key()); !u.isEmpty())
+            return u;
+    if (unknown.isEmpty()) return {};
+    const QStringList near = nearNamesOf(unknown, fields.keys());
+    return tr("%1 has no %2; it takes %3.%4").arg(where, unknown.join(QStringLiteral(", ")), fields.keys().join(QStringLiteral(", ")),
+                                                            near.isEmpty() ? QString() : tr(" Meant %1?").arg(near.join(tr(" or "))));
+}
+
+} // namespace
+
 QString QucsControl::unknownArguments(const QString& tool, const QJsonObject& args) const
 {
     const auto known = a_details.constFind(tool);
@@ -2942,17 +3040,17 @@ QString QucsControl::unknownArguments(const QString& tool, const QJsonObject& ar
     for (auto it = args.begin(); it != args.end(); ++it)
         // (A conversation pinned to a schematic names it to get_state too.)
         if (!fields.contains(it.key()) && !(it.key() == QLatin1String("path") && tool == QLatin1String("get_state"))) unknown << it.key();
-    if (unknown.isEmpty()) return {};
+    if (unknown.isEmpty()) {
+        // Inside an argument: a part of set_schematic's JSON form, a wire,
+        // a trace of add_diagram, an axis - left out as silently.
+        for (auto it = args.begin(); it != args.end(); ++it)
+            if (const QString inside = unknownIn(it.value(), fields.value(it.key()).toObject(), it.key()); !inside.isEmpty())
+                return tr("%1: %2 Nothing was done (it would be left out, not refused).").arg(tool, inside);
+        return {};
+    }
     QStringList takes = fields.keys();
     // (The one meant, when a letter or two is off, or one names the other.)
-    QStringList near;
-    for (const QString& u : std::as_const(unknown))
-        for (const QString& t : std::as_const(takes)) {
-            const QString a = u.toLower(), b = t.toLower();
-            int same = 0;
-            while (same < std::min(a.size(), b.size()) && a.at(same) == b.at(same)) ++same;
-            if ((a.contains(b) || b.contains(a) || same >= std::min<qsizetype>(4, std::min(a.size(), b.size()))) && !near.contains(t)) near << t;
-        }
+    const QStringList near = nearNamesOf(unknown, takes);
     return tr("%1 takes no %2: nothing was done (an argument it does not know would be left out, not refused). It takes %3.%4")
         .arg(tool, unknown.join(QStringLiteral(", ")), takes.isEmpty() ? tr("no arguments") : takes.join(QStringLiteral(", ")),
              near.isEmpty() ? QString() : tr(" Meant %1?").arg(near.join(tr(" or "))));
@@ -3443,7 +3541,13 @@ QJsonObject QucsControl::openDocument(const QJsonObject& args)
         const QString base = QFileInfo(path).completeBaseName();
         const QString ownSet = base + QStringLiteral(".dat"), ownDisplay = base + QStringLiteral(".dpl");
         const QString dataSet = sch->getDataSet(), dataDisplay = sch->getDataDisplay();
-        if (dataSet != ownSet || dataDisplay != ownDisplay) {
+        // (Foo.sch's foo.dat is its own where the file system does not tell
+        // case - macOS's, Windows's: found so when Foo.sch is also fOO.SCH.)
+        QString swapped = QFileInfo(path).fileName();
+        for (QChar& ch : swapped) ch = ch.isUpper() ? ch.toLower() : ch.toUpper();
+        const Qt::CaseSensitivity cs = swapped != QFileInfo(path).fileName() && QFileInfo::exists(QFileInfo(path).absoluteDir().filePath(swapped))
+                                           ? Qt::CaseInsensitive : Qt::CaseSensitive;
+        if (dataSet.compare(ownSet, cs) != 0 || dataDisplay.compare(ownDisplay, cs) != 0) {
             if (args.value(QLatin1String("own_data_names")).toBool()) {
                 sch->setDataSet(ownSet);
                 sch->setDataDisplay(ownDisplay);
@@ -3542,6 +3646,7 @@ struct Instance {
         QString initial;   // (and the label's initial value)
     };
     QList<Pin> pins;
+    std::shared_ptr<const Nets> nets;   // its schematic's, as they were
 };
 
 QList<Instance::Pin> pinsOf(const Component* c)
@@ -3571,22 +3676,53 @@ QList<Instance> instancesOf(QucsApp* app, const QucsDoc* doc, const QString& fil
     for (QucsDoc* other : app->allDocuments()) {
         auto* sch = dynamic_cast<Schematic*>(other);
         if (sch == nullptr || other == doc) continue;
+        std::shared_ptr<const Nets> nets;
         for (Component* c : sch->a_DocComps) {
             if (c->Model != QLatin1String("Sub") || c->Props.isEmpty()) continue;
             const QString used = c->Props.front()->Value;
             if (used != file && used != fileName) continue;
-            found << Instance{sch, titleOf(sch), c, c->Name, pinsOf(c)};
+            if (!nets) nets = std::make_shared<const Nets>(netsOf(sch, nullptr));
+            found << Instance{sch, titleOf(sch), c, c->Name, pinsOf(c), nets};
         }
     }
     return found;
 }
 
-// A pin that moved away from a net label on it alone - as create_subcircuit
-// joins each pin to its net - takes the label along, to where it is now
-// when nothing is there; one step to undo in that schematic. What moved,
-// in words. (The label went with the node the pin left - nothing else was
-// on it - and the pin was on no net: a netlist of _net0.)
-QStringList followPins(const QList<Instance>& before)
+// Which of \a now each of \a was is: by name when the pins had names
+// and each is there once, before and now (a port added or numbered anew
+// shifts the numbers, not the names) - else by number. -1: gone.
+QList<int> matchedPins(const QList<Instance::Pin>& was, const QList<Instance::Pin>& now)
+{
+    QHash<QString, int> named;
+    bool byName = !was.isEmpty();
+    for (int j = 0; j < now.size() && byName; ++j) {
+        if (now.at(j).name.isEmpty() || named.contains(now.at(j).name)) byName = false;
+        named.insert(now.at(j).name, j);
+    }
+    QSet<QString> seen;
+    for (const Instance::Pin& p : was) {
+        if (p.name.isEmpty() || seen.contains(p.name) || !named.contains(p.name)) byName = false;
+        seen.insert(p.name);
+    }
+    QList<int> to;
+    for (int i = 0; i < was.size(); ++i) to << (byName ? named.value(was.at(i).name) : i < now.size() ? i : -1);
+    return to;
+}
+
+// A pin's key in netsOf.
+QString pinKey(const Instance& in, int index)
+{
+    return QStringLiteral("%1.%2").arg(in.name).arg(index + 1);
+}
+
+// Each pin that moved off its wiring is joined to it again, one step to
+// undo in its schematic: a net label on it alone - as create_subcircuit
+// joins each pin to its net - goes along to where it is now (the label
+// went with the node the pin left: a netlist of _net0), and a wire that
+// ended on it is drawn on to it (as connect draws one: over no other pin
+// or wire, joining those two nets alone). What was done, in words; \a
+// stranded: the pins that could not be.
+QStringList followPins(const QList<Instance>& before, QStringList* stranded)
 {
     QStringList moved;
     QSet<Schematic*> changed;
@@ -3594,24 +3730,51 @@ QStringList followPins(const QList<Instance>& before)
         const auto& parts = was.sch->a_DocComps;
         if (std::find(parts.begin(), parts.end(), was.part) == parts.end()) continue;
         const QList<Instance::Pin> now = pinsOf(was.part);
-        for (int i = 0; i < std::min(now.size(), was.pins.size()); ++i) {
+        const QList<int> to = matchedPins(was.pins, now);
+        for (int i = 0; i < was.pins.size(); ++i) {
+            if (to.at(i) < 0) continue;
             const Instance::Pin& a = was.pins.at(i);
-            const Instance::Pin& b = now.at(i);
-            if (a.at == b.at || !a.wired || b.wired || a.net.isEmpty()) continue;
-            // (Where it was: nothing - the node went - or the label alone.
-            // A wire there goes on to the net: the pin is to be joined to it.)
+            const Instance::Pin& b = now.at(to.at(i));
+            if (a.at == b.at || !a.wired || b.wired) continue;
             Node* left = was.sch->findNode(a.at);
-            Node* pin = was.part->Ports.at(i)->Connection;
-            if ((left != nullptr && left != pin && left->conn_count() != 0) || pin == nullptr || pin->conn_count() != 1 || pin->hasLabel())
+            Node* pin = was.part->Ports.at(to.at(i))->Connection;
+            if (pin == nullptr || pin->conn_count() != 1 || pin->hasLabel()) continue;
+            const QString which = QStringLiteral("%1.%2%3").arg(was.name).arg(to.at(i) + 1)
+                                      .arg(b.name.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(b.name));
+            // What is where it was: wires, other parts - or itself, another
+            // of its pins there now (a port numbered anew: its label is the
+            // moved pin's, and goes with it). A wire drawn on would join
+            // what else is there: left, for the check of the nets to tell.
+            const bool wires = left != nullptr && left != pin && !left->wires().empty();
+            bool itself = false, others = false;
+            if (left != nullptr && left != pin)
+                for (const Component* c : left->components()) (c == was.part ? itself : others) = true;
+            if (others || (wires && itself)) continue;
+            if (wires) {
+                // A wire ends where it was: on to where it is.
+                const QStringList ends{QStringLiteral("at %1,%2").arg(a.at.x()).arg(a.at.y()),
+                                       QStringLiteral("at %1,%2").arg(b.at.x()).arg(b.at.y())};
+                const Nets nets = netsOf(was.sch, nullptr, {a.at, b.at});
+                const auto check = [&] { return netChangesBeyond(nets, netsOf(was.sch, nullptr, {a.at, b.at}), ends); };
+                QString why;
+                if (!wireUp(was.sch, a.at, b.at, check, &why)) {
+                    *stranded << QObject::tr("%1 in %2 could not be wired from %3, %4, where it was, to %5, %6: %7")
+                                     .arg(which, was.document).arg(a.at.x()).arg(a.at.y()).arg(b.at.x()).arg(b.at.y()).arg(why);
+                    continue;
+                }
+                changed.insert(was.sch);
+                moved << QObject::tr("%1 wired on from %2, %3, where it was, to %4, %5 in %6").arg(which).arg(a.at.x()).arg(a.at.y())
+                             .arg(b.at.x()).arg(b.at.y()).arg(was.document);
                 continue;
+            }
+            // A label alone where it was (or nothing: the node went).
+            if (a.net.isEmpty()) continue;
             if (left != nullptr && left != pin && left->hasLabel()) left->dropLabel();
-            const QString name = a.net;
             int xl = b.at.x() + 10, yl = b.at.y() - 20;
             was.sch->setOnGrid(xl, yl);
-            pin->setName(name, a.initial, xl, yl);
+            pin->setName(a.net, a.initial, xl, yl);
             changed.insert(was.sch);
-            moved << QObject::tr("%1.%2's label %3 went with it to %4, %5 in %6").arg(was.name).arg(i + 1).arg(name)
-                         .arg(b.at.x()).arg(b.at.y()).arg(was.document);
+            moved << QObject::tr("%1's label %2 went with it to %3, %4 in %5").arg(which, a.net).arg(b.at.x()).arg(b.at.y()).arg(was.document);
         }
     }
     for (Schematic* sch : std::as_const(changed)) {
@@ -3622,43 +3785,71 @@ QStringList followPins(const QList<Instance>& before)
     return moved;
 }
 
-// What became of them after the save: refreshed where, and the pins that
-// moved - and that no longer meet their wiring.
+// What became of them after the save: refreshed where, the pins that
+// moved, what joined them to their nets again - and whether every net is
+// as it was (a pin now on another net's wire, one no longer on its own).
 QString refreshedInstances(const QList<Instance>& before)
 {
     if (before.isEmpty()) return {};
-    const QStringList followed = followPins(before);
-    QMap<QString, QStringList> where;   // a document: its instances
     QStringList look;
-    for (const Instance& was : before) {
-        const auto& parts = was.sch->a_DocComps;
-        if (std::find(parts.begin(), parts.end(), was.part) == parts.end()) continue;   // (gone meanwhile)
-        const QList<Instance::Pin> now = pinsOf(was.part);
-        where[was.document] << was.name;
-        if (now.size() != was.pins.size())
-            look << QObject::tr("%1 in %2 has %3 pins now, %4 before").arg(was.name, was.document).arg(now.size()).arg(was.pins.size());
-        for (int i = 0; i < std::min(now.size(), was.pins.size()); ++i) {
-            const Instance::Pin& a = was.pins.at(i);
-            const Instance::Pin& b = now.at(i);
+    const QStringList followed = followPins(before, &look);
+    QMap<QString, QStringList> where;   // a document: its instances
+    QStringList moves;
+    // Each schematic's nets as they were, its instances' pins by what they
+    // are now (a pin numbered anew is the same pin).
+    QHash<Schematic*, Nets> was;
+    QHash<Schematic*, QStringList> changed;   // what became of its nets
+    for (const Instance& in : before) {
+        const auto& parts = in.sch->a_DocComps;
+        if (std::find(parts.begin(), parts.end(), in.part) == parts.end()) continue;   // (gone meanwhile)
+        const QList<Instance::Pin> now = pinsOf(in.part);
+        const QList<int> to = matchedPins(in.pins, now);
+        where[in.document] << in.name;
+        if (!was.contains(in.sch)) was.insert(in.sch, *in.nets);
+        Nets& nets = was[in.sch];
+        QHash<QString, int> renamed;
+        for (int i = 0; i < in.pins.size(); ++i) {
+            const QString key = pinKey(in, i);
+            if (!in.nets->netOf.contains(key)) continue;
+            nets.netOf.remove(key);
+            if (to.at(i) >= 0) renamed.insert(pinKey(in, to.at(i)), in.nets->netOf.value(key));
+        }
+        nets.netOf.insert(renamed);
+        if (now.size() != in.pins.size())
+            look << QObject::tr("%1 in %2 has %3 pins now, %4 before").arg(in.name, in.document).arg(now.size()).arg(in.pins.size());
+        for (int i = 0; i < in.pins.size(); ++i) {
+            if (to.at(i) < 0) continue;
+            const Instance::Pin& a = in.pins.at(i);
+            const Instance::Pin& b = now.at(to.at(i));
+            const QString pin = QStringLiteral("%1.%2%3").arg(in.name).arg(to.at(i) + 1).arg(b.name.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(b.name));
+            if (to.at(i) != i) moves << QObject::tr("%1 in %2 was pin %3").arg(pin, in.document).arg(i + 1);
             if (a.at == b.at) continue;
-            const QString pin = QStringLiteral("%1.%2%3").arg(was.name).arg(i + 1).arg(b.name.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(b.name));
-            QString said = QObject::tr("%1 in %2 moved from %3, %4 to %5, %6").arg(pin, was.document)
-                               .arg(a.at.x()).arg(a.at.y()).arg(b.at.x()).arg(b.at.y());
-            if (a.wired && !b.wired)
-                said += QObject::tr(" and no longer meets its wiring%1: connect it again, or move %2")
-                            .arg(a.net.isEmpty() ? QString() : QObject::tr(" (net %1)").arg(a.net), was.name);
-            look << said;
+            moves << QObject::tr("%1 in %2 from %3, %4 to %5, %6").arg(pin, in.document).arg(a.at.x()).arg(a.at.y()).arg(b.at.x()).arg(b.at.y());
         }
     }
     if (where.isEmpty()) return {};
+    for (auto it = was.cbegin(); it != was.cend(); ++it) {
+        Schematic* sch = it.key();
+        QString title;
+        for (const Instance& in : before)
+            if (in.sch == sch) title = in.document;
+        QStringList differ = netChangesBeyond(it.value(), netsOf(sch, nullptr), {});
+        for (QString& d : differ)
+            d.replace(QObject::tr(" would no longer be "), QObject::tr(" is no longer ")).replace(QObject::tr(" would be "), QObject::tr(" is "));
+        if (!differ.isEmpty())
+            look << QObject::tr("the nets of %1 are not as they were - %2: connect them again (undo there puts back what was "
+                                "wired for them)").arg(title, differ.join(QStringLiteral(", ")));
+    }
     QStringList refreshed;
     for (auto it = where.cbegin(); it != where.cend(); ++it)
         refreshed << QStringLiteral("%1 (%2)").arg(it.key(), it.value().join(QStringLiteral(", ")));
     QString text = QObject::tr("Its instances took the new symbol: %1.").arg(refreshed.join(QStringLiteral("; ")));
+    text += moves.isEmpty() ? QObject::tr(" Their pins are where they were.")
+                            : QLatin1Char(' ') + QObject::tr("Their pins moved: %1.").arg(moves.join(QStringLiteral("; ")));
     if (!followed.isEmpty())
-        text += QLatin1Char(' ') + QObject::tr("Their labels followed their pins (one step to undo there): %1.").arg(followed.join(QStringLiteral("; ")));
-    text += look.isEmpty() ? QObject::tr(" Their pins are where they were.")
-                           : QLatin1Char(' ') + QObject::tr("Look: %1.").arg(look.join(QStringLiteral("; ")));
+        text += QLatin1Char(' ') + QObject::tr("Joined to their nets again (one step to undo there): %1.").arg(followed.join(QStringLiteral("; ")));
+    if (!look.isEmpty()) text += QLatin1Char(' ') + QObject::tr("Look: %1.").arg(look.join(QStringLiteral("; ")));
+    else if (!moves.isEmpty()) text += QLatin1Char(' ') + QObject::tr("Every net is as it was.");
     return text;
 }
 
@@ -3671,8 +3862,11 @@ QJsonObject QucsControl::saveDocument(const QJsonObject& args)
     if (doc == nullptr) return errorResult(error);
     const QString as = args.value(QLatin1String("as")).toString().trimmed();
     if (!as.isEmpty()) {
+        // (The name as given, and as it is to be written.)
+        if (const QString bad = badFileName(QFileInfo(as).fileName()); !bad.isEmpty()) return errorResult(tr("'as': %1.").arg(bad));
         QString target = absolute(as);
         if (QFileInfo(target).suffix().isEmpty() && kindOf(doc) == QLatin1String("schematic")) target += QStringLiteral(".sch");
+        if (const QString bad = badFileName(QFileInfo(target).fileName()); !bad.isEmpty()) return errorResult(tr("'as': %1.").arg(bad));
         // A schematic as x.txt was written as one, then opened as text: the
         // suffix says what a file is to Qucs-S.
         static const QHash<QString, QString> suffixOf{{QStringLiteral("schematic"), QStringLiteral("sch")},
@@ -4720,6 +4914,23 @@ QJsonObject QucsControl::replaceComponent(const QJsonObject& args)
     if (!sample) return errorResult(error);
     if (const QStringList typos = numberTypos(newName, type, props); !typos.isEmpty())
         return errorResult(tr("Not replaced: %1.").arg(typos.join(QStringLiteral("; "))));
+    // A block for a block - an analysis, an equation or a statistics block
+    // for another (a Monte Carlo's records to corners): neither has a pin,
+    // nor a net to keep. In its place, or at x, y.
+    if (sample->Ports.isEmpty() && old->Ports.isEmpty()) {
+        const QPoint centre = args.value(QLatin1String("x")).isDouble() && args.value(QLatin1String("y")).isDouble()
+                                  ? Schematic::withinModelLimit(QPoint(args.value(QLatin1String("x")).toInt(), args.value(QLatin1String("y")).toInt()))
+                                  : QPoint(old->cx, old->cy);
+        prepare(sch);
+        QStringList landed;
+        Component* c = replaceWith(sch, name, sample.release(), centre, newName, {}, &error, &landed);
+        if (c == nullptr) return errorResult(tr("%1 is not replaced: %2").arg(name, error));
+        setTextOf(c, args, &error);
+        finish(sch, {centre});
+        QJsonObject result = componentJson(c);
+        result.insert(QStringLiteral("placed"), tr("where %1 was: neither has pins").arg(name));
+        return jsonResult(result);
+    }
     if (sample->Ports.isEmpty()) return errorResult(tr("%1 has no pins: nothing would take %2's nets.").arg(type, name));
 
     // Which old pin goes to which new one.
@@ -5446,6 +5657,7 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
     const QDir here = QFileInfo(sch->getDocName()).absoluteDir();
     if (!file.endsWith(QLatin1String(".sch"), Qt::CaseInsensitive)) file += QStringLiteral(".sch");
     file = QFileInfo(file).isAbsolute() ? QDir::cleanPath(file) : QDir::cleanPath(here.filePath(file));
+    if (const QString bad = badFileName(QFileInfo(file).fileName()); !bad.isEmpty()) return errorResult(tr("'save_as': %1.").arg(bad));
     if (sameFile(file, sch->getDocName())) return errorResult(tr("'save_as' is this schematic itself."));
     for (QucsDoc* doc : a_app->allDocuments())
         if (!doc->getDocName().isEmpty() && sameFile(doc->getDocName(), file))
@@ -6383,8 +6595,10 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
         for (int i = 0; i < int(parts.size()); ++i)
             if (isSignalSource(parts[i]))
                 supply[i] = std::all_of(pinNet[i].cbegin(), pinNet[i].cend(), railish);
+        // (Two on one centre - a broken or imported schematic - by their
+        // order: onward, below, comes from a set.)
         const auto byPlace = [&parts](int a, int b) {
-            return std::pair(parts[a]->cx, parts[a]->cy) < std::pair(parts[b]->cx, parts[b]->cy);
+            return std::tuple(parts[a]->cx, parts[a]->cy, a) < std::tuple(parts[b]->cx, parts[b]->cy, b);
         };
         // Groups of parts joined so, each laid out on its own, one below the other.
         std::vector<int> groupOf(parts.size(), -1);
@@ -7422,7 +7636,9 @@ QJsonObject QucsControl::exportImage(const QJsonObject& args)
     if (sch == nullptr) return errorResult(error);
     QString file = args.value(QLatin1String("save_as")).toString().trimmed();
     if (file.isEmpty()) return errorResult(tr("'save_as' names the file to write."));
+    if (const QString bad = badFileName(QFileInfo(file).fileName()); !bad.isEmpty()) return errorResult(tr("'save_as': %1.").arg(bad));
     file = absolute(file);
+    if (const QString bad = badFileName(QFileInfo(file).fileName()); !bad.isEmpty()) return errorResult(tr("'save_as': %1.").arg(bad));
     // The format: as given, else the file's suffix.
     static const QList<QPair<QString, gx::Format>> names{
         {QStringLiteral("png"), gx::Format::Png},   {QStringLiteral("jpeg"), gx::Format::Jpeg}, {QStringLiteral("jpg"), gx::Format::Jpeg},
@@ -8462,8 +8678,27 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
                 if (!savedSaid) report.insert(QStringLiteral("saved"), savedNote);   // (where the file now is)
                 savedSaid = true;
                 if (!checkErrors.isEmpty() || !checkWarnings.isEmpty()) {
-                    report.insert(QStringLiteral("schematic check"), QJsonObject{{QStringLiteral("errors"), checkErrors},
-                                                                                  {QStringLiteral("warnings"), checkWarnings}});
+                    // (Named to come first in the answer, which lists its
+                    // fields in order of their names.)
+                    report.insert(QStringLiteral("before the run"), QJsonObject{{QStringLiteral("errors"), checkErrors},
+                                                                                 {QStringLiteral("warnings"), checkWarnings}});
+                    // A run that failed: the cause may be among them - a
+                    // part's pin connected to nothing, not ngspice's
+                    // "argument out of range for db" it led to. First in its
+                    // errors: the check's errors, and its warnings of a part
+                    // (not a loose wire end's).
+                    if (report.contains(QStringLiteral("succeeded")) && !report.value(QStringLiteral("succeeded")).toBool()) {
+                        QJsonArray errors;
+                        const auto take = [&errors](QJsonObject o) {
+                            o.insert(QStringLiteral("found"), tr("before the run, by Check Schematic"));
+                            errors.append(o);
+                        };
+                        for (const QJsonValue& v : checkErrors) take(v.toObject());
+                        for (const QJsonValue& v : checkWarnings)
+                            if (v.toObject().contains(QStringLiteral("component"))) take(v.toObject());
+                        for (const QJsonValue& v : report.value(QStringLiteral("errors")).toArray()) errors.append(v);
+                        report.insert(QStringLiteral("errors"), errors);
+                    }
                     // The run's log begins with them: where they are read.
                     report.insert(QStringLiteral("last lines"),
                                   checkText + QStringLiteral("\n\n") + report.value(QStringLiteral("last lines")).toString());

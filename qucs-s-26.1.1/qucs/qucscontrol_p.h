@@ -45,6 +45,12 @@ bool sameFile(const QString& a, const QString& b);
 bool isQucsDocument(const QString& file);
 /// A path as given, or taken from the workspace folder.
 QString absolute(const QString& path);
+/// Why \a name (a file's or a folder's, without its folder) is no name of
+/// a file, in words: a character a file system refuses (<>:"/\|?* and
+/// control characters - Windows refuses them all), a space or a dot at
+/// its end, a device name of Windows (CON, NUL, COM1 ...), or no letter or
+/// digit at all ("'", "{}"); empty when it is one.
+QString badFileName(const QString& name);
 /// The parts of type \a model (any case: gnd is GND) that have no name
 /// (grounds), in order.
 QList<Component*> unnamedOf(const Schematic* sch, const QString& model);
