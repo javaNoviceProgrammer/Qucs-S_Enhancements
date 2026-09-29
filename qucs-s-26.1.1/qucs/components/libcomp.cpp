@@ -27,6 +27,9 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QHash>
+
+#include <functional>
 #include <QDebug>
 
 LibComp::LibComp()
@@ -66,6 +69,7 @@ void LibComp::createSymbol()
   if(loadSymbol() > 0) {
     if(tx == INT_MIN)  tx = x1+4;
     if(ty == INT_MIN)  ty = y2+4;
+    namePinsFromModel();
   }
   else {
     // only paint a rectangle
@@ -190,6 +194,66 @@ int LibComp::loadSection(const QString& Name, QString& Section,
   // snip actual model
   Section = Section.mid(Start, End-Start);
   return 0;
+}
+
+// ---------------------------------------------------------------------
+void LibComp::namePinsFromModel()
+{
+  QString model;
+  if (Ports.isEmpty() || loadSection("Model", model) < 0) return;
+  // Its subcircuits (they nest): each one's ports and lines.
+  struct Def {
+    QStringList ports, lines;
+  };
+  QHash<QString, Def> defs;
+  QString top;
+  QStringList open;
+  static const QRegularExpression space(QStringLiteral("\\s+"));
+  for (const QString& raw : model.split(QLatin1Char('\n'))) {
+    const QString line = raw.trimmed();
+    if (line.startsWith(QLatin1String(".Def:End"))) {
+      if (!open.isEmpty()) open.removeLast();
+      continue;
+    }
+    if (line.startsWith(QLatin1String(".Def:"))) {
+      const QStringList fields = line.mid(5).split(space, Qt::SkipEmptyParts);
+      if (fields.isEmpty()) return;
+      if (top.isEmpty()) top = fields.first();
+      defs.insert(fields.first(), Def{fields.mid(1), {}});
+      open << fields.first();
+      continue;
+    }
+    if (!open.isEmpty() && !line.isEmpty()) defs[open.last()].lines << line;
+  }
+  if (top.isEmpty() || defs.value(top).ports.size() != Ports.size()) return;
+  // A node's name: its own (_netC, _netP_INN, the Boyle models' _netN_INP),
+  // else the name of the port of the subcircuit it goes into.
+  static const QRegularExpression named(QStringLiteral("^_net(?:[PN]_)?([A-Za-z][A-Za-z0-9_]*)$"));
+  std::function<QString(const QString&, const QString&, int)> nameOf = [&](const QString& def, const QString& node, int depth) {
+    if (const QRegularExpressionMatch m = named.match(node); m.hasMatch()) return m.captured(1);
+    if (depth > 4) return QString();
+    for (const QString& line : defs.value(def).lines) {
+      if (!line.startsWith(QLatin1String("Sub:"))) continue;
+      QStringList nodes;
+      QString inner;
+      for (const QString& f : line.split(space, Qt::SkipEmptyParts).mid(1)) {
+        if (f.startsWith(QLatin1String("Type=\""))) inner = f.mid(6).chopped(1);
+        else if (!f.contains(QLatin1Char('='))) nodes << f;
+      }
+      const qsizetype at = nodes.indexOf(node);
+      if (at < 0 || !defs.contains(inner) || at >= defs.value(inner).ports.size()) continue;
+      if (const QString name = nameOf(inner, defs.value(inner).ports.at(at), depth + 1); !name.isEmpty()) return name;
+    }
+    return QString();
+  };
+  QStringList names;
+  for (const QString& node : defs.value(top).ports) {
+    const QString name = nameOf(top, node, 0);
+    if (name.isEmpty() || names.contains(name, Qt::CaseInsensitive)) return;
+    names << name;
+  }
+  for (int i = 0; i < Ports.size(); ++i)
+    if (Ports.at(i)->Name.isEmpty()) Ports.at(i)->Name = names.at(i);
 }
 
 // ---------------------------------------------------------------------

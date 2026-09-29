@@ -81,6 +81,11 @@ namespace misc {
   /// folder of one's own) a folder in the cache directory - nothing is
   /// written into the user's folder.
   QString projectScratch(const QString& projectDir);
+  /// Where temporary files go that belong to no project folder: the cache
+  /// directory - or, in a run given --workspace, spice4qucs in that
+  /// workspace, so that two runs (or a run and the user's window) do not
+  /// write over each other's.
+  QString cacheDir();
   /// Where the simulations of one schematic write their temporary files:
   /// a folder of the schematic's name (its path relative to the project,
   /// without the extension - "amp" for amp.sch, "sub/amp" for sub/amp.sch)

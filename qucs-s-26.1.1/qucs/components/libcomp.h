@@ -49,6 +49,13 @@ protected:
 
 private:
   int  loadSymbol();
+  /// Its pins named as its model names them - _netC and _netA of an LED
+  /// (C and A), _netP_INN of an op-amp's (INN, and INP of _netN_INP),
+  /// through the subcircuit
+  /// the model wraps - when every pin gets a name of its own; a name the
+  /// symbol gives a pin stays. connect takes U1.inn then, and a part put in
+  /// another's place takes the pins by name.
+  void namePinsFromModel();
   int  loadSection(const QString&, QString&, QStringList* i=0, QStringList *Attach=0);
   QString createType();
 };

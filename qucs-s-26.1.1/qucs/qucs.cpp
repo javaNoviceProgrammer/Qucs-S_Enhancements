@@ -1858,7 +1858,7 @@ void QucsApp::useProjectScratch(bool on)
     QDir().mkpath(scratch);
     QucsSettings.tempFilesDir.setPath(scratch);
   } else {
-    QucsSettings.tempFilesDir.setPath(QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
+    QucsSettings.tempFilesDir.setPath(misc::cacheDir());
   }
 }
 

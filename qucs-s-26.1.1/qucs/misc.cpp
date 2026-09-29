@@ -483,6 +483,13 @@ QString misc::scratchDir()
   return QucsSettings.S4Qworkdir;
 }
 
+QString misc::cacheDir()
+{
+  if (!QucsSettings.workspaceOfRun.isEmpty())
+    return QDir::toNativeSeparators(QucsSettings.workspaceOfRun + QStringLiteral("/spice4qucs"));
+  return QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+}
+
 QString misc::projectScratch(const QString& projectDir)
 {
   const QDir project(projectDir);
@@ -492,7 +499,7 @@ QString misc::projectScratch(const QString& projectDir)
     return QDir::toNativeSeparators(inside);
   // (Named by the folder, and told apart from another of its name.)
   const QByteArray key = QCryptographicHash::hash(QDir::cleanPath(project.absolutePath()).toUtf8(), QCryptographicHash::Sha1).toHex().left(10);
-  return QDir::toNativeSeparators(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/projects/")
+  return QDir::toNativeSeparators(cacheDir() + QStringLiteral("/projects/")
                                   + name + QLatin1Char('-') + QString::fromLatin1(key));
 }
 
