@@ -214,12 +214,13 @@ const char* const kTools = R"JSON([
    "diagrams": {"type": "array", "items": {"type": "integer"}, "description": "Diagrams to move along, by their numbers"}, "paintings": {"type": "array", "items": {"type": "integer"}, "description": "Paintings to move along, by their numbers"},
    "selection": {"type": "boolean", "description": "What the user selected - its parts, diagrams and paintings - instead of names"}}}},
 {"name": "arrange",
- "description": "Lays out a whole schematic again so a person can read it. The parts go in columns by signal flow: sources on the left, then each part one column to the right of the part that drives it, with room between them; a DC supply gets a column of its own on the left. Two-pin parts are turned the way schematics usually show them: in series lying down with the driving side on the left, to ground or a supply standing up with ground below. Every wire is redrawn by the same router connect uses (around the parts, never over another pin). Each piece of circuit that had a ground symbol gets one back, and net labels go back on the nets that had them. Blocks without pins (analyses, equations) go in a row below; diagrams and paintings the circuit would cover move to its right. The circuit is kept: every net is compared before and after, and if any would differ nothing changes and the answer says why. It suits a schematic built from scratch or imported; a carefully drawn one may read better as it was, and one undo step brings it back. 'wire_labels' draws wires where only labels join a net's pieces - an imported netlist's nets are labels on every pin - keeping one label for its name. 'keep_places' leaves every part where it is and draws only the wiring again; 'feedback' puts an op-amp's feedback parts below (or above) it; 'supplies': labels joins the supplies by labels and each ground pin by a ground symbol instead of wires. 'preview' reports the result without keeping it.",
+ "description": "Lays out a whole schematic again so a person can read it. The parts go in columns by signal flow: sources on the left, then each part one column to the right of the part that drives it, with room between them; a DC supply gets a column of its own on the left. Two-pin parts are turned the way schematics usually show them: in series lying down with the driving side on the left, to ground or a supply standing up with ground below. Every wire is redrawn by the same router connect uses (around the parts, never over another pin). Each piece of circuit that had a ground symbol gets one back, and net labels go back on the nets that had them. Blocks without pins (analyses, equations) go in a row below; diagrams and paintings the circuit would cover move to its right. The circuit is kept: every net is compared before and after, and if any would differ nothing changes and the answer says why. It suits a schematic built from scratch or imported; a carefully drawn one may read better as it was, and one undo step brings it back. 'wire_labels' draws wires where only labels join a net's pieces - an imported netlist's nets are labels on every pin - keeping one label for its name. 'keep_places' leaves every part where it is and draws only the wiring again; 'straighten' nudges parts a few grid steps so the wires between them run straight; 'feedback' puts an op-amp's feedback parts below (or above) it; 'supplies': labels joins the supplies by labels and each ground pin by a ground symbol instead of wires. 'preview' reports the result without keeping it.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"},
    "spacing": {"type": "integer", "minimum": 30, "maximum": 400, "description": "The room between parts, in the schematic's units: 60 unless given (more room is tried when the wires do not fit)"},
    "wire_labels": {"type": "boolean", "description": "Wires where only net labels join the pieces of a net (an imported netlist's labels on every pin), one label kept for its name; ground symbols stay"},
    "keep_places": {"type": "boolean", "description": "Every part stays where it is: only the wires, ground symbols and labels are drawn again (a tidy)"},
+   "straighten": {"type": "boolean", "description": "Nudge parts up to 4 grid steps, clear of the others, so the two pins of each wire between two parts line up and it runs straight; with keep_places, a tidy that finishes a drawing"},
    "feedback": {"type": "string", "enum": ["inline", "below", "above"], "description": "Where a feedback part goes - a two-pin part between two nets of one part of three pins or more (Rf from an op-amp's output to its inverting input): in the columns (inline, the default), or below or above that part, lying as its pins run"},
    "supplies": {"type": "string", "enum": ["column", "labels"], "description": "column (the default): the supplies in a column at the left, wired; labels: a label of the supply's net on each of its pins (VCC above ground, VEE below, unless it has a name) and a ground symbol on each pin on ground - no wires for them"}}}},
 {"name": "connect",
@@ -7301,6 +7302,7 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
     // supplies as labels on every pin of theirs and a ground symbol on each
     // pin on ground (up and down), not wires from a column of them.
     const bool keepPlaces = args.value(QLatin1String("keep_places")).toBool();
+    const bool straighten = args.value(QLatin1String("straighten")).toBool();
     const QString feedback = args.value(QLatin1String("feedback")).toString(QStringLiteral("inline")).trimmed().toLower();
     const QString supplies = args.value(QLatin1String("supplies")).toString(QStringLiteral("column")).trimmed().toLower();
     if (feedback != QLatin1String("inline") && feedback != QLatin1String("below") && feedback != QLatin1String("above"))
@@ -7830,6 +7832,84 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
         // Put down where they go, the blocks in a row below. (Where they
         // were, with keep_places: only the wiring is drawn again.)
         if (keepPlaces) target = home;
+        // 'straighten': a part nudged by up to four grid steps so the two
+        // pins of a piece of wiring between two parts line up, and its wire
+        // runs straight - a jog of 10 across the page is a hand pass saved.
+        // Greedy: the move that lines up the most such pairs, the part's
+        // symbol and texts clear of every other's, until none lines up more.
+        QStringList nudged;
+        if (straighten && parts.size() <= 2000) {
+            const int gx = std::max(sch->getGridX(), 1);
+            struct Pair {
+                int a, ka, b, kb;
+            };
+            std::vector<Pair> pairs;
+            for (const Piece& piece : std::as_const(pieces))
+                if (piece.pins.size() == 2 && piece.pins.at(0).first != piece.pins.at(1).first)
+                    pairs.push_back({piece.pins.at(0).first, piece.pins.at(0).second, piece.pins.at(1).first, piece.pins.at(1).second});
+            // (The pieces come from a hash: in order, the same moves every run.)
+            std::sort(pairs.begin(), pairs.end(), [](const Pair& x, const Pair& y) {
+                return std::tie(x.a, x.ka, x.b, x.kb) < std::tie(y.a, y.ka, y.b, y.kb);
+            });
+            std::vector<std::vector<int>> pairsOf(parts.size());
+            for (int p = 0; p < int(pairs.size()); ++p) {
+                pairsOf[pairs[p].a].push_back(p);
+                pairsOf[pairs[p].b].push_back(p);
+            }
+            const auto pinAt = [&](int i, int k) { return target[i] + QPoint(parts[i]->Ports.at(k)->x, parts[i]->Ports.at(k)->y); };
+            const auto aligned = [&](const Pair& p) {
+                const QPoint a = pinAt(p.a, p.ka), b = pinAt(p.b, p.kb);
+                return a.x() == b.x() || a.y() == b.y();
+            };
+            const auto alignedOf = [&](int i) {
+                int n = 0;
+                for (int p : pairsOf[i]) n += aligned(pairs[p]) ? 1 : 0;
+                return n;
+            };
+            const auto clear = [&](int i, QPoint at) {
+                const QRect r = rel[i].translated(at);
+                for (int j = 0; j < int(parts.size()); ++j)
+                    if (j != i && r.intersects(rel[j].translated(target[j]))) return false;
+                return true;
+            };
+            const int most = 4 * std::max(gx, gy);
+            const std::vector<QPoint> from = target;
+            for (int round = 0; round < int(pairs.size()); ++round) {
+                int gain = 0, best = -1;
+                QPoint bestTo;
+                for (const Pair& p : pairs) {
+                    if (aligned(p)) continue;
+                    const QPoint d = pinAt(p.b, p.kb) - pinAt(p.a, p.ka);
+                    // More across than down: the rows lined up; else the columns.
+                    const QPoint shift = std::abs(d.x()) >= std::abs(d.y()) ? QPoint(0, d.y()) : QPoint(d.x(), 0);
+                    if (std::abs(shift.x()) > most || std::abs(shift.y()) > most) continue;
+                    for (const auto& [part, sign] : {std::pair{p.a, 1}, std::pair{p.b, -1}}) {
+                        const QPoint to = target[part] + shift * sign;
+                        if (!clear(part, to)) continue;
+                        const int before = alignedOf(part);
+                        const QPoint was = target[part];
+                        target[part] = to;
+                        const int after = alignedOf(part);
+                        target[part] = was;
+                        if (after - before > gain) {
+                            gain = after - before;
+                            best = part;
+                            bestTo = to;
+                        }
+                    }
+                }
+                if (best < 0) break;
+                target[best] = bestTo;
+            }
+            for (int i = 0; i < int(parts.size()); ++i) {
+                const QPoint d = target[i] - from[i];
+                if (d.isNull()) continue;
+                QStringList way;
+                if (d.x() != 0) way << tr("%1 %2").arg(std::abs(d.x())).arg(d.x() > 0 ? tr("right") : tr("left"));
+                if (d.y() != 0) way << tr("%1 %2").arg(std::abs(d.y())).arg(d.y() > 0 ? tr("down") : tr("up"));
+                nudged << QStringLiteral("%1 %2").arg(parts[i]->Name, way.join(QLatin1Char(' ')));
+            }
+        }
         for (int i = 0; i < int(parts.size()); ++i) parts[i]->moveCenter(target[i].x() - parts[i]->cx, target[i].y() - parts[i]->cy);
         int bx = was0.left();
         for (Component* c : blocks) {
@@ -7993,6 +8073,11 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                            {QStringLiteral("spacing"), spacing},
                            {QStringLiteral("one step to undo"), true}};
         if (!columnsSaid.isEmpty()) result.insert(QStringLiteral("columns"), columnsSaid);
+        if (straighten)
+            result.insert(QStringLiteral("straightened"),
+                          nudged.isEmpty() ? tr("nothing to nudge: no part could line up a wire's pins by moving 4 grid steps or less, "
+                                                "clear of the others")
+                                           : tr("%1 parts nudged so their wires run straight: %2").arg(nudged.size()).arg(nudged.join(QStringLiteral(", "))));
         if (!aside.isEmpty()) result.insert(QStringLiteral("moved aside"), QJsonArray::fromStringList(aside));
         if (!dropped.isEmpty())
             result.insert(QStringLiteral("dropped"), tr("net labels on wires that reached no pin: %1").arg(dropped.join(QStringLiteral(", "))));

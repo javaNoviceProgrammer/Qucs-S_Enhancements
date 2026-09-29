@@ -1,10 +1,14 @@
 # Every part of the component libraries under ngspice, each night: placed
 # alone, each pin to ground through 1 MOhm, its operating point run through
-# `qucs-s --mcp-server` (scripts/ci/test-library-parts.py). The job fails
-# when a part that passes in the committed results
+# `qucs-s --mcp-server` (scripts/ci/test-library-parts.py); then, for an
+# op-amp, a transistor, a FET or a diode, a bench of its kind with its
+# numbers checked against a range (a follower and a gain of 11 on +-15 V,
+# a bias point, a forward drop). The job fails when a part, or its bench,
+# that passes in the committed results
 # (qucs-s-26.1.1/library/ngspice-tested.json, what find_library_component
-# reports) fails now; the night's results are kept as an artifact, to be
-# committed when a library or the netlister changes what passes.
+# and describe_part report) fails now; the night's results are kept as an
+# artifact, to be committed when a library or the netlister changes what
+# passes.
 name: Library under ngspice
 
 on:
