@@ -1173,7 +1173,11 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
                 for (int j = 0; j < holds.size(); ++j)
                     if (!holds.at(j).keeps(state->held.at(closest).at(j)))
                         broken << holds.at(j).broken(state->holdNames.value(j), state->held.at(closest).at(j));
-                result.insert(QStringLiteral("held back"), tr("%1 = %2 gives the target, but %3 - not taken").arg(property, state->texts.at(closest),
+                // (The part by its name; the property too when it is not its first.)
+                const Component* part = doc->getComponentByName(name);
+                const QString what = part != nullptr && !part->Props.isEmpty() && part->Props.first()->Name == property
+                                         ? name : QStringLiteral("%1.%2").arg(name, property);
+                result.insert(QStringLiteral("held back"), tr("%1 = %2 gives the target, but %3 - not taken").arg(what, state->texts.at(closest),
                                                                                                                   broken.join(QStringLiteral("; "))));
             }
         }

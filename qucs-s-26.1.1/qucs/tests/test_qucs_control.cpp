@@ -5795,7 +5795,7 @@ private slots:
         args.insert("hold", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "b"}}}, {"min", 2.6}}});
         r = call("tune", args, 300000);
         o = json(r).toObject();
-        QVERIFY2(!failed(r) && o.value("held back").toString().contains("gives the target, but")
+        QVERIFY2(!failed(r) && o.value("held back").toString().startsWith("R1 = ") && o.value("held back").toString().contains("gives the target, but")
                      && o.value("held back").toString().contains("below 2.6 - not taken")
                      && o.value("set").toString().startsWith("not set") && o.value("set").toString().contains("keeping every hold"),
                  qPrintable(text(r)));
