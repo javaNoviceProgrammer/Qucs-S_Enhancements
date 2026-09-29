@@ -40,6 +40,7 @@
 #include "textdoc.h"
 
 #include "misc.h"
+#include "erc.h"
 #include "qucs_assert.h"
 
 /**
@@ -261,6 +262,7 @@ bool Schematic::buildSymbol(const QHash<QString, QString>& sides, QString* error
                                            QRegularExpression::CaseInsensitiveOption);
     static const QRegularExpression ground(QStringLiteral("^(gnd|agnd|dgnd|v?ss|avss|v-|vn|vneg|vee|0)$"),
                                            QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression input(QStringLiteral("^(v?in\\d*|input)$"), QRegularExpression::CaseInsensitiveOption);
     std::vector<PortSymbol*> left, right, top, bottom;
     bool onTheLeft = true;
     for (PortSymbol* port : ports) {
@@ -272,6 +274,10 @@ bool Schematic::buildSymbol(const QHash<QString, QString>& sides, QString* error
             else if (ground.match(name).hasMatch()) side = QStringLiteral("bottom");
             else if (dir == QLatin1String("in")) side = QStringLiteral("left");
             else if (dir == QLatin1String("out")) side = QStringLiteral("right");
+            // (Or by its name: an op-amp's out was on the left, among
+            // its inputs, and arrange took the box for the wrong way round.)
+            else if (input.match(name).hasMatch() || qucs_s::erc::pinRole(name) == QLatin1String("input")) side = QStringLiteral("left");
+            else if (qucs_s::erc::pinRole(name) == QLatin1String("output")) side = QStringLiteral("right");
             else {
                 side = onTheLeft ? QStringLiteral("left") : QStringLiteral("right");
                 onTheLeft = !onTheLeft;

@@ -1414,6 +1414,50 @@ const Tested& testedParts()
     return tested;
 }
 
+// A bench's numbers as a reader wants them: each with its unit and what
+// it is to be ("follower of 1 V: 0.999 V (expected 1 V)"; "at 9 uA: Vbe
+// 0.609 V (0.1 to 1.6 V), beta 20.4 (3 to 5000), Vce 9.808 V"). The ranges
+// are those of scripts/ci/test-library-parts.py. (A transistor's are one
+// object per bias point: they read as 0.)
+QString benchNumbers(const QString& kind, const QJsonObject& measured)
+{
+    static const QRegularExpression follower(QStringLiteral("^follower of ([0-9.]+) V$"));
+    static const QRegularExpression gain(QStringLiteral("^gain of ([0-9.]+) of ([0-9.]+) V$"));
+    const auto n = [](double v) { return QString::number(v, 'g', 4); };
+    const bool fet = kind == QLatin1String("nfet") || kind == QLatin1String("pfet");
+    const auto one = [&](const QString& key, const QJsonValue& value) -> QString {
+        if (value.isBool()) return key;
+        const double v = value.toDouble();
+        if (const QRegularExpressionMatch m = follower.match(key); m.hasMatch())
+            return tr("%1: %2 V (expected %3 V)").arg(key, QString::number(v, 'f', 3), n(m.captured(1).toDouble()));
+        if (const QRegularExpressionMatch m = gain.match(key); m.hasMatch())
+            return tr("%1: %2 V (expected %3 V)").arg(key, QString::number(v, 'f', 3), n(m.captured(1).toDouble() * m.captured(2).toDouble()));
+        if (key == QLatin1String("Vbe")) return tr("Vbe %1 V (0.1 to 1.6 V)").arg(n(v));
+        if (key == QLatin1String("beta")) return tr("beta %1 (3 to 5000)").arg(n(v));
+        if (key == QLatin1String("Vce")) return tr("Vce %1 V").arg(n(v));
+        if (key == QLatin1String("Id mA")) return tr("Id %1 mA (%2 to 10 mA)").arg(n(v), fet ? QStringLiteral("1") : QStringLiteral("0.001"));
+        if (key == QLatin1String("Vf")) return tr("Vf %1 V (0.1 to 4.5 V)").arg(n(v));
+        return QStringLiteral("%1 %2").arg(key, n(v));
+    };
+    QStringList said;
+    for (auto it = measured.begin(); it != measured.end(); ++it) {
+        if (!it.value().isObject()) {
+            said << one(it.key(), it.value());
+            continue;
+        }
+        // A bias point's: Vbe and beta first (the numbers judged), Vce after.
+        const QJsonObject point = it.value().toObject();
+        QStringList here;
+        for (const char* key : {"Vbe", "beta", "saturated", "Vce"})
+            if (point.contains(QLatin1String(key))) here << one(QLatin1String(key), point.value(QLatin1String(key)));
+        for (auto p = point.begin(); p != point.end(); ++p)
+            if (!QStringList{QStringLiteral("Vbe"), QStringLiteral("beta"), QStringLiteral("saturated"), QStringLiteral("Vce")}.contains(p.key()))
+                here << one(p.key(), p.value());
+        said << QStringLiteral("%1: %2").arg(it.key(), here.join(QStringLiteral(", ")));
+    }
+    return said.join(QStringLiteral("; "));
+}
+
 // How the run of every library part under ngspice found \a library's
 // \a part, and whether it passed.
 QString testedText(const QString& library, const QString& part, bool* passes)
@@ -1431,12 +1475,9 @@ QString testedText(const QString& library, const QString& part, bool* passes)
     // whose bench fails is not taken as working ('tested').
     const QJsonObject bench = outcome.value(QLatin1String("bench")).toObject();
     if (bench.isEmpty() || bench.value(QLatin1String("untested")).toBool()) return smoke + tr(" - not a test of what it does");
-    QStringList numbers;
-    const QJsonObject measured = bench.value(QLatin1String("measured")).toObject();
-    for (auto it = measured.begin(); it != measured.end(); ++it)
-        numbers << (it.value().isBool() ? it.key() : QStringLiteral("%1 %2").arg(it.key()).arg(it.value().toDouble(), 0, 'g', 4));
-    if (bench.value(QLatin1String("passes")).toBool())
-        return smoke + tr("; its bench passes (%1: %2)").arg(bench.value(QLatin1String("bench")).toString(), numbers.join(QStringLiteral(", ")));
+    const QString what = bench.value(QLatin1String("bench")).toString();
+    const QString numbers = benchNumbers(what.section(QLatin1Char(':'), 0, 0), bench.value(QLatin1String("measured")).toObject());
+    if (bench.value(QLatin1String("passes")).toBool()) return smoke + tr("; its bench passes (%1 - %2)").arg(what, numbers);
     *passes = false;
     return smoke + tr("; but its bench FAILS (%1): %2 - the model runs and does the wrong thing")
                        .arg(bench.value(QLatin1String("bench")).toString(), bench.value(QLatin1String("why")).toString());
