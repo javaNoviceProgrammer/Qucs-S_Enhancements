@@ -5280,7 +5280,7 @@ private slots:
 
     // Check Schematic on supplies (sixth round, wishlist 8): an op-amp whose
     // supply pins nothing powers - a warning; a DC source with its + on
-    // ground - a note, the net at its other pin below ground.
+    // ground on its VEE pin - as meant (supplySignsAreRead has the rest).
     void suppliesAreChecked()
     {
         const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
@@ -5295,14 +5295,16 @@ private slots:
         QVERIFY(!failed(call("add_component", {{"type", ".DC"}, {"name", "DC1"}, {"x", 100}, {"y", 500}})));
         QString checked = text(call("check_schematic"));
         QVERIFY2(checked.contains("U1: its supply pins VCC, VEE are on nothing that powers it"), qPrintable(checked));
-        // VEE from a source drawn + to ground: -15 V there, a note; VCC still open.
+        // VEE from a source drawn + to ground: -15 V there - on U1's VEE
+        // pin, as meant, nothing said (the eighth round: it was a note
+        // every time); VCC still open.
         QVERIFY(!failed(call("add_component", {{"type", "Vdc"}, {"name", "V3"}, {"x", 100}, {"y", 300}, {"properties", QJsonObject{{"U", "15 V"}}}})));
         QVERIFY(!failed(call("connect", {{"from", "V3.1"}, {"to", "ground"}})));
         QVERIFY(!failed(call("set_label", {{"at", "V3.2"}, {"name", "vee"}})));
         QVERIFY(!failed(call("set_label", {{"at", "U1.VEE"}, {"name", "vee"}})));
         checked = text(call("check_schematic"));
         QVERIFY2(checked.contains("U1: its supply pin VCC is on nothing that powers it") && !checked.contains("VCC, VEE"), qPrintable(checked));
-        QVERIFY2(checked.contains("V3: its + is on ground, so vee is at -15 V"), qPrintable(checked));
+        QVERIFY2(!checked.contains("V3: its + is on ground"), qPrintable(checked));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
@@ -6034,6 +6036,222 @@ private slots:
         notes = QJsonDocument(json(call("check_schematic")).toObject().value("notes").toArray()).toJson(QJsonDocument::Compact);
         QVERIFY2(!notes.contains("loads U1"), qPrintable(notes));
         QucsSettings.LibDir = was;
+    }
+
+    // The eighth round, 2.1: arrange's feedback network round a part whose
+    // pins stand out as far as each other - a subcircuit's box - took the
+    // first of Rf's two pins for the output: the load was put under Rf as
+    // if it were Rg, and Rg went to a column of its own. The output is now
+    // the pin named so, else the one on a net named so. And make_symbol
+    // sides ports by their names; create_subcircuit names a port after the
+    // pin of the part it came from.
+    void theOutputIsFoundByNameWhenThePinsTie()
+    {
+        // An op-amp between ports inn, inp and out, with no symbol drawn:
+        // its instance is a box with inn and out both at x -30.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        for (const auto& [name, num, y] : {std::tuple("inn", "1", 100), std::tuple("inp", "2", 200), std::tuple("out", "3", 300)})
+            QVERIFY(!failed(call("add_component", {{"type", "Port"}, {"name", name}, {"x", 100}, {"y", y}, {"properties", QJsonObject{{"Num", num}}}})));
+        QVERIFY(!failed(call("add_component", {{"type", "OpAmp"}, {"name", "OP1"}, {"x", 300}, {"y", 200}})));
+        for (const auto& [from, to] : {std::pair("inn.1", "OP1.2"), std::pair("inp.1", "OP1.1"), std::pair("out.1", "OP1.3")})
+            QVERIFY(!failed(call("connect", {{"from", from}, {"to", to}})));
+        QVERIFY(!failed(call("save_document", {{"as", "fbamp"}})));
+        const auto bench = [this](bool outLabel) {
+            QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+            QJsonArray calls{QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Sub"}, {"name", "X1"}, {"x", 400}, {"y", 300},
+                                                                                            {"properties", QJsonObject{{"File", "fbamp.sch"}}}}}}};
+            for (const auto& [name, x, y, rotation] : {std::tuple("Vin", 150, 350, 0), std::tuple("Rf", 450, 150, 0), std::tuple("Rg", 300, 450, 1),
+                                                       std::tuple("RL", 600, 400, 1)})
+                calls << QJsonObject{{"tool", "add_component"},
+                                     {"arguments", QJsonObject{{"type", QString(name) == "Vin" ? "Vdc" : "R"}, {"name", name}, {"x", x}, {"y", y}, {"rotation", rotation}}}};
+            for (const auto& [from, to] : {std::pair("Vin.1", "X1.2"), std::pair("Vin.2", "ground"), std::pair("Rf.1", "X1.1"), std::pair("Rf.2", "X1.3"),
+                                           std::pair("Rg.1", "X1.1"), std::pair("Rg.2", "ground"), std::pair("RL.1", "X1.3"), std::pair("RL.2", "ground")})
+                calls << QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", from}, {"to", to}}}};
+            if (outLabel) calls << QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "X1.3"}, {"name", "out"}}}};
+            calls << QJsonObject{{"tool", "add_analysis"}, {"arguments", QJsonObject{{"kind", "op"}}}};
+            const QJsonObject r = call("batch", {{"calls", calls}, {"atomic", true}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+        };
+        const auto rgWithTheFeedback = [this](const QJsonObject& r) {
+            const QJsonArray columns = json(r).toObject().value("columns").toArray();
+            for (const QJsonValue& c : columns)
+                if (c.toArray().contains("X1")) return c.toArray().contains("Rf") && c.toArray().contains("Rg") && !c.toArray().contains("RL");
+            return false;
+        };
+        // No names on the box's pins: the label out says which is the output.
+        bench(true);
+        const Component* x1 = front()->getComponentByName("X1");
+        QVERIFY(x1 && x1->Ports.size() == 3 && x1->Ports.at(0)->x == x1->Ports.at(2)->x && x1->Ports.at(0)->Name.isEmpty());
+        QJsonObject r = call("arrange", {{"feedback", "below"}});
+        QVERIFY2(!failed(r) && text(r).contains("every net as it was") && rgWithTheFeedback(r), qPrintable(text(r)));
+        // make_symbol sides them by their names: inn and inp left, out right.
+        QVERIFY(!failed(call("open_document", {{"path", dir.filePath("workspace/fbamp.sch")}})));
+        r = call("make_symbol", {{"path", "fbamp.sch"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QStringList sides;
+        for (const QJsonValue& p : json(r).toObject().value("pins").toArray()) sides << p.toString().section(',', 0, 0);
+        QVERIFY2(sides == QStringList({"inn: left", "inp: left", "out: right"}), qPrintable(sides.join(" | ")));
+        // All three on the left, and no label: the pins' names say it.
+        r = call("make_symbol", {{"path", "fbamp.sch"}, {"sides", QJsonObject{{"out", "left"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"path", "fbamp.sch"}})));
+        bench(false);
+        x1 = front()->getComponentByName("X1");
+        QVERIFY(x1 && x1->Ports.at(0)->x == x1->Ports.at(2)->x && x1->Ports.at(2)->Name == "out");
+        r = call("arrange", {{"feedback", "below"}});
+        QVERIFY2(!failed(r) && text(r).contains("every net as it was") && rgWithTheFeedback(r), qPrintable(text(r)));
+        // Rf's end on the output's net under the output pin; Rg standing under its other.
+        const Component *rf = front()->getComponentByName("Rf"), *rg = front()->getComponentByName("Rg");
+        x1 = front()->getComponentByName("X1");
+        const auto pinAt = [](const Component* c, int k) { return QPoint(c->cx + c->Ports.at(k)->x, c->cy + c->Ports.at(k)->y); };
+        QVERIFY2(pinAt(rf, 1).x() == pinAt(x1, 2).x() && pinAt(rg, 0).x() == pinAt(rf, 0).x() && pinAt(rg, 0).y() > pinAt(rf, 0).y(),
+                 qPrintable(QStringLiteral("X1.3 %1; Rf.1 %2, Rf.2 %3; Rg.1 %4,%5")
+                                .arg(pinAt(x1, 2).x()).arg(pinAt(rf, 0).x()).arg(pinAt(rf, 1).x()).arg(pinAt(rg, 0).x()).arg(pinAt(rg, 0).y())));
+
+        // create_subcircuit: a net without a label is named after the pin
+        // of the part it came from - unless a net has that name already
+        // (INP, whatever its case): then as before.
+        QVERIFY(!failed(call("set_label", {{"at", "RL.1"}, {"name", "INP"}})));
+        QVERIFY(!failed(call("save_document", {{"as", "fbparent"}})));
+        r = call("create_subcircuit", {{"names", QJsonArray{"X1"}}, {"save_as", "fbwrap.sch"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QStringList ports;
+        for (const QJsonValue& p : json(r).toObject().value("ports").toArray()) ports << p.toObject().value("net").toString();
+        QVERIFY2(ports == QStringList({"inn", "fbwrap_n1", "INP"}), qPrintable(ports.join(" | ")));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // The eighth round, 2.2: a DC source below ground on a net a negative
+    // supply's name is on (an op-amp's VEE pin, a label vee, the source
+    // VEE) is as meant - no note. A supply the wrong way round is a
+    // warning: a positive supply's pin (VCC) below ground, a negative
+    // one's above it. A net nothing names keeps the note. The fix said is
+    // the value that turns it (a turn is refused while wires would join).
+    void supplySignsAreRead()
+    {
+        // A part with supply pins by name: a subcircuit, VCC on top, VEE below.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        for (const auto& [name, num, y] : {std::tuple("VCC", "1", 100), std::tuple("VEE", "2", 300)})
+            QVERIFY(!failed(call("add_component", {{"type", "Port"}, {"name", name}, {"x", 100}, {"y", y}, {"properties", QJsonObject{{"Num", num}}}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 250}, {"y", 200}, {"rotation", 1}})));
+        QVERIFY(!failed(call("connect", {{"from", "VCC.1"}, {"to", "R1.2"}})));
+        QVERIFY(!failed(call("connect", {{"from", "VEE.1"}, {"to", "R1.1"}})));
+        QVERIFY(!failed(call("save_document", {{"as", "rails"}})));
+        QVERIFY(!failed(call("make_symbol")));
+        QVERIFY(!failed(call("save_document")));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"atomic", true}, {"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Sub"}, {"name", "X1"}, {"x", 400}, {"y", 300},
+                                                                            {"properties", QJsonObject{{"File", "rails.sch"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 150}, {"properties", QJsonObject{{"U", "15 V"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V2"}, {"x", 100}, {"y", 450}, {"properties", QJsonObject{{"U", "15 V"}}}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "X1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V2.1"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V2.2"}, {"to", "X1.2"}}}},
+            QJsonObject{{"tool", "add_analysis"}, {"arguments", QJsonObject{{"kind", "op"}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(front()->getComponentByName("X1")->Ports.at(1)->Name == "VEE");
+        const auto found = [this](const char* list) {
+            return QJsonDocument(json(call("check_schematic")).toObject().value(list).toArray()).toJson(QJsonDocument::Compact);
+        };
+        // As drawn: VEE's pin at -15 V - as meant, nothing said.
+        QString warnings = found("warnings"), notes = found("notes");
+        QVERIFY2(warnings == "[]" && !notes.contains("negative supply"), qPrintable(warnings + notes));
+        // VCC's source at -15 V: the wrong way round.
+        QVERIFY(!failed(call("edit_component", {{"name", "V1"}, {"properties", QJsonObject{{"U", "-15 V"}}}})));
+        warnings = found("warnings");
+        QVERIFY2(warnings.contains("V1 puts X1.1 (VCC) at -15 V, though it is a positive supply's pin: the source is the wrong way round - "
+                                   "set U to 15 V (edit_component)"),
+                 qPrintable(warnings));
+        QVERIFY(!failed(call("undo")));
+        // VEE's at +15 V (its value negative, its + on ground).
+        QVERIFY(!failed(call("edit_component", {{"name", "V2"}, {"properties", QJsonObject{{"U", "-15 V"}}}})));
+        warnings = found("warnings");
+        QVERIFY2(warnings.contains("V2 puts X1.2 (VEE) at 15 V, though it is a negative supply's pin: the source is the wrong way round - "
+                                   "set U to 15 V (edit_component)"),
+                 qPrintable(warnings));
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(found("warnings"), QString("[]"));
+        // A net nothing names, below ground: the note, with the value that turns it.
+        QVERIFY(!failed(call("add_component", {{"type", "Vdc"}, {"name", "V3"}, {"x", 700}, {"y", 300}, {"properties", QJsonObject{{"U", "5 V"}}}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R9"}, {"x", 850}, {"y", 300}, {"rotation", 1}})));
+        QVERIFY(!failed(call("connect", {{"from", "V3.1"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("connect", {{"from", "V3.2"}, {"to", "R9.2"}})));
+        QVERIFY(!failed(call("connect", {{"from", "R9.1"}, {"to", "ground"}})));
+        notes = found("notes");
+        QVERIFY2(notes.contains("V3: its + is on ground, so V3.2 is at -5 V - a negative supply is so; if it was to be positive, set U to -5 V"),
+                 qPrintable(notes));
+        // Named vee: as meant. Named vcc: the wrong way round.
+        QVERIFY(!failed(call("set_label", {{"at", "V3.2"}, {"name", "vee"}})));
+        notes = found("notes");
+        QVERIFY2(!notes.contains("V3:") && found("warnings") == "[]", qPrintable(notes));
+        QVERIFY(!failed(call("undo")));
+        QVERIFY(!failed(call("set_label", {{"at", "V3.2"}, {"name", "vcc"}})));
+        warnings = found("warnings");
+        QVERIFY2(warnings.contains("V3 puts vcc at -5 V, though that is a positive supply's name: the source is the wrong way round"), qPrintable(warnings));
+        QVERIFY(!failed(call("undo")));
+        // The source named as a negative supply (VNEG): as meant.
+        QVERIFY(!failed(call("edit_component", {{"name", "V3"}, {"rename", "VNEG"}})));
+        notes = found("notes");
+        QVERIFY2(!notes.contains("negative supply is so"), qPrintable(notes));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // The eighth round's small things: describe_part's bench numbers with
+    // their units and what they are to be (a transistor's, one object per
+    // bias point, read as 0); the instructions name only tools and
+    // arguments there are.
+    void theEighthRoundsSmallThings()
+    {
+        const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
+        if (QFileInfo::exists(library + "/OpAmps.lib")) {
+            const QString was = QucsSettings.LibDir;
+            QucsSettings.LibDir = library + "/";
+            const auto tested = [this](const char* lib, const char* part) {
+                return json(call("describe_part", {{"library", lib}, {"part", part}})).toObject().value("ngspice").toString();
+            };
+            const struct {
+                const char *lib, *part, *pattern;
+            } benches[] = {
+                {"OpAmps", "uA741", "follower of 1 V: [0-9]\\.[0-9]{3} V \\(expected 1 V\\); gain of 11 of 0\\.5 V: [0-9]\\.[0-9]{3} V \\(expected 5\\.5 V\\)"},
+                {"BJT_Extended", "2N2222", "at 9 uA: Vbe 0\\.[0-9]+ V \\(0\\.1 to 1\\.6 V\\), beta [0-9.]+ \\(3 to 5000\\), Vce [0-9.]+ V"},
+                {"MOSFETs", "BSS123", "Id [0-9.]+ mA \\(1 to 10 mA\\)"},
+                {"JFETs", "2N2608", "Id [0-9.]+ mA \\(0\\.001 to 10 mA\\)"},
+                {"Diodes", "1N4148", "Vf 0\\.[0-9]+ V \\(0\\.1 to 4\\.5 V\\)"},
+            };
+            for (const auto& b : benches) {
+                const QString said = tested(b.lib, b.part);
+                QVERIFY2(said.contains("its bench passes") && said.contains(QRegularExpression(b.pattern)), qPrintable(said));
+            }
+            QucsSettings.LibDir = was;
+        }
+        // The instructions' guide: each 'argument' one some tool takes, each
+        // name_with_underscores a tool or an argument.
+        const QString instructions = control->instructions();
+        const int guide = int(instructions.indexOf("How to work"));
+        QVERIFY(guide > 0);
+        QSet<QString> tools, arguments{QStringLiteral("max_chars")};
+        const std::function<void(const QJsonObject&)> collect = [&](const QJsonObject& schema) {
+            const QJsonObject properties = schema.value("properties").toObject();
+            for (auto it = properties.begin(); it != properties.end(); ++it) {
+                arguments << it.key();
+                collect(it.value().toObject());
+                collect(it.value().toObject().value("items").toObject());
+            }
+        };
+        for (const QJsonValue& t : control->tools()) {
+            tools << t.toObject().value("name").toString();
+            collect(t.toObject().value("inputSchema").toObject());
+        }
+        QStringList unknown;
+        QRegularExpressionMatchIterator quoted = QRegularExpression("'([a-z_]+)'").globalMatch(instructions.mid(guide));
+        while (quoted.hasNext())
+            if (const QString a = quoted.next().captured(1); !arguments.contains(a)) unknown << "'" + a + "'";
+        QRegularExpressionMatchIterator words = QRegularExpression("\\b([a-z]+_[a-z_]+)\\b").globalMatch(instructions.mid(guide));
+        while (words.hasNext())
+            if (const QString w = words.next().captured(1); !tools.contains(w) && !arguments.contains(w)) unknown << w;
+        QVERIFY2(unknown.isEmpty(), qPrintable(unknown.join(", ")));
     }
 
     // The seventh round's small things: replace_component from named pins

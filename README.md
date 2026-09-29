@@ -566,8 +566,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   (`compare`), and `undo`
   takes back the files the last calls wrote (`files`: a subcircuit
   made, a file written over), not only the edits. Check Schematic warns
-  of a part whose supply pins nothing powers and notes a DC source with
-  its + on ground. `find_library_component` says how each part fared
+  of a part whose supply pins nothing powers, and of a supply the wrong
+  way round (a VCC pin below ground, a VEE pin above it, with the value
+  that turns it); a DC source below ground on a net nothing names as a
+  negative supply is a note. `find_library_component` says how each part fared
   when every part of the libraries was run under ngspice - placed alone,
   each pin to ground through 1 MΩ, its operating point - and `tested`
   lists only the parts that passed; `scripts/ci/test-library-parts.py`
@@ -579,7 +581,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   wrong thing (a diode's Is written 1.3 A) fails, and is not `tested`.
   `describe_part` gives a library part in one call: its pins with their
   names, sides and roles (input, output, supply), what its model is
-  (one component, a macromodel, transistor level) and how it fared. Library models keep a value's unit when it is
+  (one component, a macromodel, transistor level) and how it fared, each
+  bench number with its unit and what it is to be (5.504 V, expected
+  5.5 V). `create_subcircuit` names a port after the pin it came from (a
+  741's INN, VCC), and `make_symbol` sides ports by their names (inputs
+  left, outputs right), so `arrange` finds the output of a subcircuit's
+  box by name. The server's instructions end with the way of working
+  that eight rounds of review arrived at (describe the part, wire it by
+  name, arrange, check with its subcircuits, judge by numbers, `tune`
+  with `hold`); `scripts/mcp-e2e-scenarios.py` runs eight end-to-end
+  scenarios through `--mcp-server`, the 741 bench among them. Library models keep a value's unit when it is
   written with a space (`C="30 pF"`, once 30 farads), and a library
   `Idc` flows as a schematic's does (a 741 macromodel's output sat at
   the negative rail). `connect` takes `"ground"` at one
