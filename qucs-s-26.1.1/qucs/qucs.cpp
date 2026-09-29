@@ -5434,6 +5434,7 @@ void QucsApp::slotSimSettings()
     delete SetDlg;
     fillSimulatorsComboBox();
     simConsole->applyHostSetting();   // dock or window, as chosen
+    recheckProblems();   // a ground symbol required or not
 }
 
 void QucsApp::slotSimulateWithSpice()

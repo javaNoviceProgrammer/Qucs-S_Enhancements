@@ -954,6 +954,10 @@ void QucsApp::slotCheckHierarchy() {
     QMessageBox::information(this, tr("Check Schematic"), tr("Not a schematic tab!"));
     return;
   }
+  checkHierarchy(doc, true);
+}
+
+void QucsApp::checkHierarchy(Schematic *doc, bool raise) {
   QList<qucs_s::erc::Issue> all = qucs_s::erc::check(doc);
   QSet<QString> visited{doc->getDocName()};
   QStringList todo = qucs_s::erc::subcircuitFiles(doc);
@@ -983,7 +987,18 @@ void QucsApp::slotCheckHierarchy() {
   std::stable_sort(all.begin(), all.end(), [](const qucs_s::erc::Issue &a, const qucs_s::erc::Issue &b) {
     return a.severity == qucs_s::erc::Severity::Error && b.severity != qucs_s::erc::Severity::Error;
   });
-  messageDock->showProblems(doc, all, true);
+  messageDock->showProblems(doc, all, raise, true);
+}
+
+void QucsApp::recheckProblems() {
+  if (Schematic *doc = messageDock->problemsDocument()) {
+    if (messageDock->problemsOfHierarchy())
+      checkHierarchy(doc, false);
+    else
+      messageDock->showProblems(doc, qucs_s::erc::check(doc), false);
+  }
+  if (a_status != nullptr)
+    a_status->refresh();
 }
 
 void QucsApp::slotLocateProblem(int index) {

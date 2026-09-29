@@ -22,6 +22,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <utility>
+
 class QucsApp;
 class Schematic;
 class TextDoc;
@@ -159,7 +161,9 @@ private:
     QTimer* a_clock;          // a running simulation's seconds, the ages
 
     QPointer<QWidget> a_watched;   // the document in front, followed
-    int a_checkedSimulator = -1;   // the simulator the last check was for
+    // The settings the last check was for: the simulator, and whether a
+    // ground symbol is required (Simulators Settings).
+    std::pair<int, bool> a_checkedSettings{-1, false};
 
     // The last simulation.
     enum class RunState { None, Running, Ended };

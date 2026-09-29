@@ -890,6 +890,13 @@ private:
   /// Runs the check on \a doc and shows the result; the dock comes up
   /// when there are errors (always when \a always). Returns the error count.
   int checkSchematic(Schematic* doc, bool always);
+  /// The check of \a doc and of every subcircuit it uses, shown on the
+  /// Problems tab; the dock comes up when \a raise.
+  void checkHierarchy(Schematic* doc, bool raise);
+  /// The Problems tab's check run again, as the settings now say (after
+  /// Simulators Settings: a ground symbol required or not); the status
+  /// bar's too.
+  void recheckProblems();
 public slots:
   void slotCallEditor();
   void slotCallFilter();

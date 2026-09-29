@@ -603,7 +603,9 @@ void Ngspice::slotSimulate()
     if (!checkGround()) {
         a_output.append("No Ground found. Please add at least one ground!\n"
                       "Press Insert->Ground in the main menu and connect ground to one "
-                      "of the schematic nodes.\n");
+                      "of the schematic nodes.\n"
+                      "(If node 0 comes from a net named 0 or from a component, turn off "
+                      "\"A schematic must have a ground symbol\" in Simulation > Simulators Settings.)\n");
         checker_error = true;
     }
 

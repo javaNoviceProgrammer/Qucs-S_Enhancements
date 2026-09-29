@@ -56,9 +56,11 @@ public:
    */
   QListWidget *problems;
   /// Shows \a issues of \a doc on the Problems tab (an empty list says
-  /// so), and brings the dock up when asked to.
-  void showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& issues, bool raise);
+  /// so), and brings the dock up when asked to. \a hierarchy: they are
+  /// those of \a doc and of every subcircuit it uses (Check Hierarchy).
+  void showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& issues, bool raise, bool hierarchy = false);
   Schematic* problemsDocument() const;
+  bool problemsOfHierarchy() const { return a_problemsHierarchy; }
   const QList<qucs_s::erc::Issue>& issues() const { return a_issues; }
 
   /*!
@@ -110,6 +112,7 @@ private slots:
 
 private:
   QPointer<Schematic> a_problemsDoc;
+  bool a_problemsHierarchy = false;
   // Kept as a QObject: ~QWidget emits destroyed() before QPointers let go,
   // and QPointer<Schematic>::data() would then cast the half-destroyed
   // widget back to a Schematic (UBSan: downcast of a QWidget).

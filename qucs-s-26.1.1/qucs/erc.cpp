@@ -613,26 +613,28 @@ QList<Issue> check(Schematic* doc)
     }
 
     // What the wires show and do not do; what hangs from nothing.
+    bool groundByName = false;   // a net named 0 or gnd, and no ground symbol
     {
         const Nets nets = netsOf(doc);
+        groundByName = !ground && nets.ground >= 0;
         wiringIssues(doc, nets, warnings, false);
         topologyIssues(doc, nets, port, warnings);
         supplyIssues(doc, nets, warnings);
     }
 
-    // A circuit (not a subcircuit: those have ports) needs a ground and
-    // a simulation to be simulated.
+    // A circuit (not a subcircuit: those have ports) needs a simulation,
+    // and a ground symbol unless the settings leave node 0 to the user (a
+    // net named 0, a SPICE part that brings it): then nothing is said of
+    // it, and the simulator decides.
     if (!port && !doc->a_DocComps.empty()) {
         const Component* first = *doc->a_DocComps.begin();
         const QPoint where(first->cx, first->cy);
-        // An error unless the settings leave the ground to the user; then
-        // a warning (a net named 0 or a SPICE part may bring node 0).
         if (!ground && QucsSettings.RequireGround)
-            errors << Issue{Severity::Error, tr("no ground: the circuit has no reference node"), where, QString()};
-        else if (!ground)
-            warnings << Issue{Severity::Warning,
-                              tr("no ground symbol: node 0 comes only from a net named 0 or a component that brings it"),
-                              where, QString()};
+            errors << Issue{Severity::Error,
+                            groundByName ? tr("no ground symbol: the Simulators Settings require one (a net named 0 or gnd "
+                                              "does not count)")
+                                         : tr("no ground: the circuit has no reference node"),
+                            where, QString()};
         if (!simulation)
             warnings << Issue{Severity::Warning, tr("no simulation: no .AC, .TR, .DC, .SP, ... block"), where, QString()};
     }
