@@ -16,6 +16,8 @@
 #include <QPoint>
 #include <QString>
 
+#include <functional>
+
 class Schematic;
 
 /*!
@@ -64,6 +66,18 @@ QList<Issue> notes(Schematic* doc);
 /// The subcircuit files \a doc uses directly (Subcircuit components, as
 /// absolute paths, each once).
 QStringList subcircuitFiles(Schematic* doc);
+
+/// A subcircuit's own findings (check()).
+struct SubcircuitFindings {
+    QString file;
+    QList<Issue> issues;
+};
+
+/// The findings of each subcircuit \a doc uses, at any depth, each file
+/// once, in the order they are met: an open document as it is, unsaved
+/// changes included (\a open finds it by its file, or gives nullptr), the
+/// others read from disk. A file that does not load is one error.
+QList<SubcircuitFindings> checkSubcircuits(Schematic* doc, const std::function<Schematic*(const QString&)>& open);
 
 /// How many of \a issues are errors.
 int errorCount(const QList<Issue>& issues);
