@@ -544,7 +544,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   grid step at a time; a label goes on the longest stretch of its net
   where its text has room; `straighten` nudges a part up to four grid
   steps, clear of the others, so the two pins of a wire between two
-  parts line up and it runs straight. A library part's pins have
+  parts line up and it runs straight - only pins that face each other,
+  each leaving its symbol toward the other as its stub goes. A library part's pins have
   the names its model gives them (an op-amp's INN, INP, OUT, VCC, VEE;
   an LED's C and A; the transistor-level uA741's, AD825's and LM3886's
   too): `connect` takes `U1.inp`, `replace_component` maps them by name
