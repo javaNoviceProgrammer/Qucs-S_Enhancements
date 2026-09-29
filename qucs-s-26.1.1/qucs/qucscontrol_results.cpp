@@ -136,6 +136,8 @@ const char* const kLegends[] = {"off", "top_left", "top_right", "bottom_left", "
 const char* const kUnits[] = {"none", "dB", "dBuV", "dBm"};
 const char* const kNumbers[] = {"real_imaginary", "magnitude_degrees", "magnitude_radians"};
 const char* const kIndicators[] = {"off", "square", "triangle"};
+// The notations by numberformat::Notation's value (what a file keeps).
+const char* const kNotations[] = {"automatic", "engineering", "scientific", "engineering_exponent", "decimal", "power_of_ten"};
 // The ready-made themes, in diagramtheme::Preset's order, then the user's
 // default for new diagrams.
 const char* const kThemePresets[] = {"automatic", "light", "dark", "no_background", "default"};
@@ -320,6 +322,22 @@ bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
             return false;
         }
         d->legendPos = pos;
+    }
+    if (args.contains(QLatin1String("notation"))) {
+        const int n = indexIn(kNotations, args.value(QLatin1String("notation")).toString());
+        if (n < 0) {
+            *error = tr("'notation' is %1.").arg(namesOf(kNotations));
+            return false;
+        }
+        d->notation = qucs_s::numberformat::fromInt(n);
+    }
+    if (args.contains(QLatin1String("decimals"))) {
+        const QJsonValue v = args.value(QLatin1String("decimals"));
+        if (!v.isDouble() || v.toDouble() != std::floor(v.toDouble()) || v.toDouble() < -1 || v.toDouble() > 15) {
+            *error = tr("'decimals' is a whole number from 0 to 15, or -1: as many as each number needs.");
+            return false;
+        }
+        d->notationDecimals = v.toInt();
     }
     if (args.contains(QLatin1String("theme")) && !applyTheme(d, args.value(QLatin1String("theme")), error)) return false;
     const struct {
@@ -1136,6 +1154,8 @@ QJsonObject markerJson(const Diagram* d, Marker* m, int index)
     o.insert(QStringLiteral("label"), QJsonArray{d->cx + m->x1, d->cy + m->y1});
     o.insert(QStringLiteral("precision"), m->Precision);
     if (m->numMode >= 0 && m->numMode < int(std::size(kNumbers))) o.insert(QStringLiteral("format"), QString::fromLatin1(kNumbers[m->numMode]));
+    o.insert(QStringLiteral("notation"), m->notation >= 0 && m->notation < int(std::size(kNotations)) ? QString::fromLatin1(kNotations[m->notation])
+                                                                                                        : QStringLiteral("diagram"));
     o.insert(QStringLiteral("transparent"), m->transparent);
     if (int(m->indicatorMode) >= 0 && int(m->indicatorMode) < int(std::size(kIndicators)))
         o.insert(QStringLiteral("indicator"), QString::fromLatin1(kIndicators[int(m->indicatorMode)]));
@@ -1188,6 +1208,8 @@ QJsonArray diagramsJson(Schematic* sch)
             o.insert(QStringLiteral("grid"), d->xAxis.GridOn);
             if (d->legendPos >= 0 && d->legendPos < int(std::size(kLegends)))
                 o.insert(QStringLiteral("legend"), QString::fromLatin1(kLegends[d->legendPos]));
+            o.insert(QStringLiteral("notation"), QString::fromLatin1(kNotations[int(d->notation)]));
+            if (d->notationDecimals >= 0) o.insert(QStringLiteral("decimals"), d->notationDecimals);
         }
         QJsonArray traces;
         int t = 0;
@@ -2438,6 +2460,15 @@ bool applyMarker(Marker* m, const Diagram* d, const QJsonObject& args, QString* 
             return false;
         }
         m->numMode = n;
+    }
+    if (args.contains(QLatin1String("notation"))) {
+        const QString wanted = args.value(QLatin1String("notation")).toString();
+        const int n = wanted == QLatin1String("diagram") ? -1 : indexIn(kNotations, wanted);
+        if (n < 0 && wanted != QLatin1String("diagram")) {
+            *error = tr("'notation' is diagram (as the diagram's axes), %1.").arg(namesOf(kNotations));
+            return false;
+        }
+        m->notation = n;
     }
     if (args.contains(QLatin1String("transparent"))) m->transparent = args.value(QLatin1String("transparent")).toBool();
     if (args.contains(QLatin1String("indicator"))) {

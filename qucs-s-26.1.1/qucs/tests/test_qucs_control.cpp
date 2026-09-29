@@ -1075,6 +1075,25 @@ private slots:
         QCOMPARE(styled.value("text_color").toString(), QStringLiteral("#000080"));
         QCOMPARE(styled.value("indicator").toString(), QStringLiteral("square"));
         QVERIFY(std::abs(json(call("add_marker", {{"at", "crossing:-10"}})).toObject().value("found").toObject().value("crossing").toDouble() - 3e5) < 1e4);
+        // Its numbers' notation: the diagram's by default, its own when
+        // given - every number of its text - and the diagram's set by
+        // edit_diagram, with its decimals.
+        QCOMPARE(styled.value("notation").toString(), QStringLiteral("diagram"));
+        const QJsonObject own = json(call("edit_marker", {{"marker", 2}, {"notation", "scientific"}})).toObject();
+        QVERIFY2(own.value("notation").toString() == "scientific" && own.value("text").toString().startsWith("frequency: 3.020e4\n"),
+                 QJsonDocument(own).toJson().constData());
+        QVERIFY(failed(call("edit_marker", {{"marker", 2}, {"notation", "hex"}})));
+        QVERIFY(!failed(call("edit_diagram", {{"notation", "power_of_ten"}, {"decimals", 2}})));
+        QJsonObject shown = json(call("get_schematic")).toObject().value("diagrams").toArray().first().toObject();
+        QVERIFY2(shown.value("notation").toString() == "power_of_ten" && shown.value("decimals").toInt() == 2,
+                 QJsonDocument(shown).toJson().constData());
+        QVERIFY2(markers().at(2).toObject().value("text").toString().contains(QString::fromUtf8("×10⁵")), QJsonDocument(markers()).toJson().constData());
+        QVERIFY(markers().at(1).toObject().value("text").toString().startsWith("frequency: 3.020e4\n"));   // its own stays
+        for (const QJsonObject& bad : {QJsonObject{{"decimals", 16}}, QJsonObject{{"decimals", 1.5}}, QJsonObject{{"notation", "diagram"}}})
+            QVERIFY2(failed(call("edit_diagram", bad)), QJsonDocument(bad).toJson().constData());
+        QVERIFY(!failed(call("edit_marker", {{"marker", 2}, {"notation", "diagram"}})));
+        QVERIFY(markers().at(1).toObject().value("text").toString().contains(QString::fromUtf8("×10⁴")));
+        QVERIFY(!failed(call("edit_diagram", {{"notation", "engineering"}, {"decimals", -1}})));
         for (const QJsonObject& bad : {QJsonObject{{"at", "nonsense"}}, QJsonObject{{"at", "crossing:x"}}, QJsonObject{{"at", "crossing:12"}},
                                        QJsonObject{{"at", 1}, {"format", "bad"}}, QJsonObject{{"at", 1}, {"fill_color", "#zz"}}, QJsonObject{},
                                        // (off the trace: it sat on the last sample; an offset of 2^31 - 1 overflowed)
