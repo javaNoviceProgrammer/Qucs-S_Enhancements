@@ -1168,6 +1168,38 @@ bool numberIn(const QString& text, double* x)
 
 } // namespace
 
+namespace {
+
+// What the run of every library part under ngspice found
+// (scripts/ci/test-library-parts.py writes it beside the libraries): by
+// "library/part", its outcome - read again when the file changes.
+struct Tested {
+    QString date, ngspice;
+    QHash<QString, QJsonObject> parts;
+};
+const Tested& testedParts()
+{
+    static Tested tested;
+    static QDateTime read;
+    static QString from;
+    const QString file = QDir(QucsSettings.LibDir).filePath(QStringLiteral("ngspice-tested.json"));
+    const QDateTime changed = QFileInfo(file).lastModified();
+    if (file == from && changed == read) return tested;
+    from = file;
+    read = changed;
+    tested = Tested{};
+    QFile f(file);
+    if (!f.open(QIODevice::ReadOnly)) return tested;
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    tested.date = o.value(QLatin1String("tested")).toString();
+    tested.ngspice = o.value(QLatin1String("ngspice")).toString();
+    const QJsonObject parts = o.value(QLatin1String("parts")).toObject();
+    for (auto it = parts.begin(); it != parts.end(); ++it) tested.parts.insert(it.key(), it.value().toObject());
+    return tested;
+}
+
+} // namespace
+
 QJsonObject QucsControl::findLibraryComponent(const QJsonObject& args)
 {
     const QString search = args.value(QLatin1String("search")).toString().trimmed();
@@ -1176,6 +1208,8 @@ QJsonObject QucsControl::findLibraryComponent(const QJsonObject& args)
     const QJsonObject near = args.value(QLatin1String("near")).toObject();
     const QString onlyLibrary = args.value(QLatin1String("library")).toString().trimmed();
     const int limit = std::clamp(args.value(QLatin1String("limit")).toInt(15), 1, 100);
+    // Only the parts the run of the libraries under ngspice found working.
+    const bool onlyTested = args.value(QLatin1String("tested")).toBool();
     if (words.isEmpty() && kind.isEmpty() && near.isEmpty())
         return errorResult(tr("Say what to look for: 'search' (words in the name or description: 2N3904, NPN 40V), 'type' "
                               "(npn, pnp, nmos, pmos, njf, pjf, diode, or a model: _BJT, _MOSFET, Diode, ...), 'near' values of "
@@ -1265,6 +1299,11 @@ QJsonObject QucsControl::findLibraryComponent(const QJsonObject& args)
                     }
                 }
                 if (!all) continue;
+                // As the run of every part under ngspice found it.
+                const Tested& tested = testedParts();
+                const QJsonObject outcome = tested.parts.value(library + QLatin1Char('/') + name);
+                const bool passes = outcome.value(QLatin1String("passes")).toBool();
+                if (onlyTested && !passes) continue;
                 if (const int t = int(names.indexOf(QStringLiteral("Type"))); t >= 0) shown.insert(QStringLiteral("Type"), values.value(t));
                 QJsonObject o{{QStringLiteral("library"), library},
                               {QStringLiteral("component"), name},
@@ -1274,6 +1313,12 @@ QJsonObject QucsControl::findLibraryComponent(const QJsonObject& args)
                                                                     {QStringLiteral("properties"), QJsonObject{{QStringLiteral("Lib"), library},
                                                                                                                {QStringLiteral("Comp"), name}}}}}};
                 if (!shown.isEmpty()) o.insert(QStringLiteral("values"), shown);
+                o.insert(QStringLiteral("ngspice"),
+                         outcome.isEmpty() ? (tested.parts.isEmpty() ? tr("not tested (no test of the libraries here)") : tr("not tested"))
+                         : outcome.value(QLatin1String("untested")).toBool() ? tr("not tested - %1").arg(outcome.value(QLatin1String("why")).toString())
+                         : passes ? tr("tested: it netlists and its operating point converges, each pin to ground through 1 MOhm "
+                                       "(%1, ngspice %2) - not a test of what it does").arg(tested.date, tested.ngspice)
+                                  : tr("tested: fails - %1 (%2, ngspice %3)").arg(outcome.value(QLatin1String("why")).toString(), tested.date, tested.ngspice));
                 found.append(Found{o, score});
             }
         }
@@ -1676,6 +1721,17 @@ QJsonObject QucsControl::undoHistory(const QJsonObject& args)
     if (at > count) result.insert(QStringLiteral("earlier"), tr("%1 steps before these (steps gives more)").arg(at - count));
     if (states.size() - 1 >= QucsSettings.maxUndo)
         result.insert(QStringLiteral("note"), tr("Only the last %1 steps are kept (Application Settings > Maximum undo operations).").arg(QucsSettings.maxUndo));
+    // The files the tools wrote, the last first: undo with 'files' puts
+    // them back.
+    QJsonArray files;
+    for (qsizetype k = a_fileSteps.size() - 1; k >= 0 && files.size() < 10; --k) {
+        QJsonArray names;
+        for (const auto& kept : a_fileSteps.at(k).before)
+            names.append(QStringLiteral("%1%2").arg(QDir::toNativeSeparators(kept.first), kept.second ? QString() : tr(" (made by it)")));
+        files.append(QJsonObject{{QStringLiteral("tool"), a_fileSteps.at(k).tool},
+                                 {QStringLiteral("at"), a_fileSteps.at(k).when.toString(Qt::ISODate)}, {QStringLiteral("files"), names}});
+    }
+    if (!files.isEmpty()) result.insert(QStringLiteral("files written"), files);
     return jsonResult(result);
 }
 
@@ -1843,6 +1899,7 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
     const auto rename = [&](const QString& text) {
         return withResultsNamed(text, newBase + QStringLiteral(".dat"), newBase + QStringLiteral(".dpl"));
     };
+    aboutToWrite(to);
     if (open != nullptr) {
         const QString temp = to + QStringLiteral(".part");
         if (!open->writeTo(temp) || !copyText(temp, to, rename, &error)) {
@@ -1859,11 +1916,13 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
         for (const QString& suffix : {QStringLiteral(".dat"), QStringLiteral(".dat.ngspice"), QStringLiteral(".dat.xyce"), QStringLiteral(".dat.spopus")}) {
             const QString a = src.absoluteDir().filePath(base + suffix), b = dst.absoluteDir().filePath(newBase + suffix);
             if (!QFileInfo::exists(a)) continue;
+            aboutToWrite(b);
             if (misc::copyFileOver(a, b)) written << QFileInfo(b).fileName();
         }
         const QString dpl = src.absoluteDir().filePath(base + QStringLiteral(".dpl"));
         if (QFileInfo::exists(dpl)) {
             const QString b = dst.absoluteDir().filePath(newBase + QStringLiteral(".dpl"));
+            aboutToWrite(b);
             if (copyText(dpl, b, [&](const QString& text) { return withResultsNamed(text, newBase + QStringLiteral(".dat"), newBase + QStringLiteral(".sch")); }, &error))
                 written << QFileInfo(b).fileName();
         }
@@ -2368,6 +2427,7 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
             QFile there(subcircuitFile);
             if (!there.exists() || (there.open(QIODevice::ReadOnly) && there.readAll() == content)) break;
         }
+        aboutToWrite(subcircuitFile);
         QFile f(subcircuitFile);
         if (f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
             f.write(content);

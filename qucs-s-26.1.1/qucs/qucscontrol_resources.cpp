@@ -12,6 +12,7 @@
  * (at your option) any later version.
  */
 #include "qucscontrol.h"
+#include <QCryptographicHash>
 #include "qucscontrol_p.h"
 
 #include "qucs.h"
@@ -370,6 +371,89 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
         return {};
     }
     return conclude(answer);
+}
+
+void QucsControl::aboutToWrite(const QString& file)
+{
+    if (a_previewing > 0 || a_callDepth == 0 || file.isEmpty()) return;
+    const QString path = QFileInfo(file).absoluteFilePath();
+    for (const auto& kept : std::as_const(a_openStep.before))
+        if (kept.first == path) return;   // (as it was when the call began)
+    std::optional<QByteArray> held;
+    if (QFile f(path); f.exists() && f.open(QIODevice::ReadOnly)) held = f.readAll();
+    a_openStep.before.append({path, held});
+}
+
+void QucsControl::openFileStep(const QString& tool)
+{
+    a_openStep = FileStep{tool, QDateTime::currentDateTime(), {}, {}};
+}
+
+void QucsControl::closeFileStep()
+{
+    FileStep step = std::exchange(a_openStep, FileStep{});
+    // Each file as the call left it; one it left as it was is no step.
+    QList<QPair<QString, std::optional<QByteArray>>> changed;
+    for (const auto& [file, before] : std::as_const(step.before)) {
+        QFile f(file);
+        const bool there = f.exists() && f.open(QIODevice::ReadOnly);
+        const QByteArray now = there ? f.readAll() : QByteArray();
+        if ((!there && !before) || (there && before && *before == now)) continue;
+        changed.append({file, before});
+        step.after.insert(file, there ? QCryptographicHash::hash(now, QCryptographicHash::Sha1) : QByteArray());
+    }
+    if (changed.isEmpty()) return;
+    step.before = changed;
+    a_fileSteps.append(step);
+    while (a_fileSteps.size() > 50) a_fileSteps.removeFirst();
+}
+
+QJsonObject QucsControl::undoFiles(int steps)
+{
+    if (a_fileSteps.isEmpty())
+        return errorResult(tr("No file written by a tool is kept to put back (save_document, create_subcircuit, copy_document, "
+                              "import_netlist, export_netlist, export_image and rename_net's data display are)."));
+    QStringList restored, removed, skipped, reload;
+    QJsonArray undone;
+    for (int n = 0; n < steps && !a_fileSteps.isEmpty(); ++n) {
+        const FileStep step = a_fileSteps.takeLast();
+        QJsonArray files;
+        for (const auto& [file, before] : step.before) {
+            // Not over what was done to it since (by hand, or another call).
+            QFile f(file);
+            const bool there = f.exists() && f.open(QIODevice::ReadOnly);
+            const QByteArray now = there ? QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha1) : QByteArray();
+            f.close();
+            if (now != step.after.value(file)) {
+                skipped << tr("%1 (changed since %2)").arg(QDir::toNativeSeparators(file), step.tool);
+                continue;
+            }
+            if (!before) {
+                if (QFile::remove(file)) removed << QDir::toNativeSeparators(file);
+                else skipped << tr("%1 (could not be removed)").arg(QDir::toNativeSeparators(file));
+            } else {
+                QFile out(file);
+                if (out.open(QIODevice::WriteOnly | QIODevice::Truncate) && out.write(*before) == before->size()) {
+                    restored << QDir::toNativeSeparators(file);
+                    reload << file;
+                } else {
+                    skipped << tr("%1 (could not be written)").arg(QDir::toNativeSeparators(file));
+                }
+            }
+            files.append(QDir::toNativeSeparators(file));
+        }
+        undone.append(QJsonObject{{QStringLiteral("tool"), step.tool}, {QStringLiteral("at"), step.when.toString(Qt::ISODate)},
+                                  {QStringLiteral("files"), files}});
+    }
+    // The documents open on them, without unsaved changes: loaded again.
+    if (!reload.isEmpty()) a_app->reloadChangedFiles(reload);
+    QJsonObject result{{QStringLiteral("undone"), undone}};
+    if (!restored.isEmpty()) result.insert(QStringLiteral("put back"), QJsonArray::fromStringList(restored));
+    if (!removed.isEmpty()) result.insert(QStringLiteral("removed (the call made them)"), QJsonArray::fromStringList(removed));
+    if (!skipped.isEmpty()) result.insert(QStringLiteral("not put back"), QJsonArray::fromStringList(skipped));
+    result.insert(QStringLiteral("note"), tr("Files are not redone. A document open on a file put back is loaded again, unless it has "
+                                            "unsaved changes. A schematic's own changes are undone with undo without 'files'."));
+    return jsonResult(result);
 }
 
 void QucsControl::written(const QString& file, const std::optional<QByteArray>& before)

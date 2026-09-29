@@ -70,7 +70,13 @@ ngspice.blacklist
 xyce.blacklist
 )
 
-INSTALL( FILES ${COMPLIBS} ${BLACKLIST} DESTINATION share/${QUCS_NAME}/library )
+# Each part's outcome under ngspice (scripts/ci/test-library-parts.py):
+# find_library_component reports it.
+SET(TESTED
+ngspice-tested.json
+)
+
+INSTALL( FILES ${COMPLIBS} ${BLACKLIST} ${TESTED} DESTINATION share/${QUCS_NAME}/library )
 INSTALL( DIRECTORY "symbols" DESTINATION share/${QUCS_NAME}/ )
 INSTALL( DIRECTORY "TubesExtended" DESTINATION share/${QUCS_NAME}/library)
 INSTALL( DIRECTORY "BJT_Darlington" DESTINATION share/${QUCS_NAME}/library)

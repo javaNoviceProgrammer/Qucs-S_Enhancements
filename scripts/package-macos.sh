@@ -73,11 +73,12 @@ done
 cp -p "$build/qucsator_rf/src/qucsator_rf" "$build/qucsator_rf/src/converter/qucsconv_rf" "$bin/"
 cp -pR "$src/examples/." "$res/examples/"
 # The library as library/CMakeLists.txt installs it: the .lib files, the
-# blacklist, the model directories some of them include, the symbols, and
+# blacklist, each part's outcome under ngspice (ngspice-tested.json), the
+# model directories some of them include, the symbols, and
 # the SPICE subcircuits of the transformer, relay, switch, coax and
 # magnetic core (spicelibrary - without it those components' netlists
 # point at a file that is not there).
-cp -p  "$src"/library/*.lib "$src"/library/*.blacklist "$res/library/"
+cp -p  "$src"/library/*.lib "$src"/library/*.blacklist "$src"/library/ngspice-tested.json "$res/library/"
 for models in TubesExtended BJT_Darlington Optocoupler DualGateMOSFET; do
   cp -pR "$src/library/$models" "$res/library/"
 done

@@ -13,6 +13,7 @@
 #include "qucscontrol_p.h"
 
 #include "components/component.h"
+#include "components/libcomp.h"
 #include "diagrams/diagram.h"
 #include "diagrams/graph.h"
 #include "extsimkernels/spicecompat.h"
@@ -243,9 +244,10 @@ const char* const kTools = R"JSON([
  "description": "Zooms a schematic: 'all' shows all of it, 'selection' the selection, 'in' and 'out' one step, 'none' a scale of 1.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "to": {"type": "string", "enum": ["all", "selection", "in", "out", "none"], "description": "all (the whole schematic), selection, in or out (one step), none (a scale of 1)"}}, "required": ["to"]}},
 {"name": "undo",
- "description": "Undoes the last change of a document (the one in front unless 'path' names another), like Edit > Undo. 'steps' undoes that many changes (a batch that stopped halfway reports how many changes it made); 'to' goes to a step of a schematic as undo_history numbers them, backward or forward again. Reports what it changed back, part by part.",
+ "description": "Undoes the last change of a document (the one in front unless 'path' names another), like Edit > Undo; with 'files', the files the last calls wrote instead. 'steps' undoes that many changes (a batch that stopped halfway reports how many changes it made); 'to' goes to a step of a schematic as undo_history numbers them, backward or forward again. Reports what it changed back, part by part.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many changes to undo, 1 by default"},
-   "to": {"type": "integer", "minimum": 0, "description": "A step as undo_history lists them: the schematic as it was after it (0: as it was loaded)"}}}},
+   "to": {"type": "integer", "minimum": 0, "description": "A step as undo_history lists them: the schematic as it was after it (0: as it was loaded)"},
+   "files": {"description": "Instead of a document's changes: the files the last calls wrote put back as they were (true or 1: the last call's; a number: that many calls') - save_document's, create_subcircuit's, copy_document's, import_netlist's, the exports', rename_net's data display. A file made by the call is removed; one changed since is left, and said. undo_history lists them"}}}},
 {"name": "undo_history",
  "description": "Lists a schematic's undo steps in words - \"step 7: R2 R 47k → 67k; step 8: diagram 2: trace 2's look changed\" - the last 'steps' (10 by default) up to the current position, plus those that can be redone after it, so undo can go to a known step ('to') instead of counting.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 200, "description": "How many steps before the current one are listed, 10 by default"}}}},
@@ -459,9 +461,10 @@ const char* const kTools = R"JSON([
  "description": "Reads the text of a PDF - a datasheet, an application note, a report - page by page, for example to take a model's parameters or a table's values from it. 'path' is relative to the project, otherwise the workspace (the PDF in front if not given); 'pages' is [3, 4], \"2-5\" or 7 (the first 3 by default); 'search' finds a word or value on every page (or those given) and returns the lines around each hit. A scanned page has no text: a screenshot of its tab shows it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\" or 7; the first 3 by default (with 'search', all)"}, "search": {"type": "string", "description": "A word or value to find: the lines around each hit"}}}},
 {"name": "find_library_component",
- "description": "Searches the component libraries - Qucs-S's own and the user's (user_lib) - and the SPICE model files (.model cards in .lib, .mod, .inc and .cir files) of the project and the workspace for a part by what it is and by its values. 'search' matches words in its name or description (2N3904, NPN 40V); 'type' is npn, pnp, nmos, pmos, njf, pjf, diode or a Qucs model (_BJT, _MOSFET, Diode, ...); 'near' gives parameter values ({\"Bf\": 200}, nearest first on a logarithmic scale); 'library' limits it to one library. Returns each part with its library, description, the values asked about and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp; a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value.",
+ "description": "Searches the component libraries - Qucs-S's own and the user's (user_lib) - and the SPICE model files (.model cards in .lib, .mod, .inc and .cir files) of the project and the workspace for a part by what it is and by its values. 'search' matches words in its name or description (2N3904, NPN 40V); 'type' is npn, pnp, nmos, pmos, njf, pjf, diode or a Qucs model (_BJT, _MOSFET, Diode, ...); 'near' gives parameter values ({\"Bf\": 200}, nearest first on a logarithmic scale); 'library' limits it to one library. Returns each part with its library, description, the values asked about and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp; a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value. Each library part says how it fared under ngspice ('ngspice'): tested - it netlists and its operating point converges, each pin to ground through 1 MOhm (a smoke test, not of what it does) - or failing, and why; 'tested' lists only those that pass.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string", "description": "Words in its name or description: 2N3904, NPN 40V"}, "type": {"type": "string", "description": "npn, pnp, nmos, pmos, njf, pjf, diode, or a Qucs model (_BJT, _MOSFET, Diode, ...)"}, "near": {"type": "object", "description": "Parameter values, nearest first on a logarithmic scale: {\"Bf\": 200}"},
-   "library": {"type": "string", "description": "Only this library, by name"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Parts at most, 15 by default"}}}},
+   "library": {"type": "string", "description": "Only this library, by name"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Parts at most, 15 by default"},
+   "tested": {"type": "boolean", "description": "Only the library parts the test of every part under ngspice found working (each result's 'ngspice' says how it fared)"}}}},
 {"name": "new_project",
  "description": "Creates a project in the workspace (a NAME_prj folder with its Scratch folder, like Project > New Project; a plain folder when any folder is a project) and opens it unless 'open' is false. Opening closes the documents, so it is not opened while one has unsaved changes. Relative paths are then resolved against the open project.",
  "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "The project's name: a folder NAME_prj in the workspace"}, "open": {"type": "boolean", "description": "Open it after (the default); refused while a document has unsaved changes"}}, "required": ["name"]}},
@@ -3162,6 +3165,19 @@ QString QucsControl::unknownArguments(const QString& tool, const QJsonObject& ar
 
 QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, const Done& done, bool& async)
 {
+    // The files this call writes, one step for undo's 'files' (a call
+    // inside it is part of it).
+    struct Depth {
+        QucsControl* control;
+        Depth(QucsControl* c, const QString& tool) : control(c)
+        {
+            if (control->a_callDepth++ == 0) control->openFileStep(tool);
+        }
+        ~Depth()
+        {
+            if (--control->a_callDepth == 0) control->closeFileStep();
+        }
+    } depth(this, tool);
     // An argument the tool does not take: refused, with those it does - it
     // was left out, and the call done without it (a text box's tip, a
     // misspelt width: the box came out as if neither was given).
@@ -3997,12 +4013,14 @@ QJsonObject QucsControl::saveDocument(const QJsonObject& args)
             && !confirmed(tr("%1 exists. Write %2 over it?").arg(QDir::toNativeSeparators(target), titleOf(doc))))
             return errorResult(tr("%1 exists: 'replace' writes over it (the user was not asked, or said no).").arg(QDir::toNativeSeparators(target)));
         const QList<Instance> instances = instancesOf(a_app, doc, target, [this](QucsDoc* d) { return titleOf(d); });
+        aboutToWrite(target);
         if (!a_app->saveDocumentAs(doc, target)) return errorResult(tr("%1 could not be saved.").arg(QDir::toNativeSeparators(target)));
         const QString refreshed = refreshedInstances(instances);
         return textResult(tr("Saved as %1.").arg(QDir::toNativeSeparators(target)) + (refreshed.isEmpty() ? QString() : QLatin1Char(' ') + refreshed));
     }
     if (doc->getDocName().isEmpty()) return errorResult(tr("%1 has no file yet: give 'as'.").arg(titleOf(doc)));
     const QList<Instance> instances = instancesOf(a_app, doc, doc->getDocName(), [this](QucsDoc* d) { return titleOf(d); });
+    aboutToWrite(doc->getDocName());
     if (!a_app->saveFile(doc)) return errorResult(tr("%1 could not be saved.").arg(QDir::toNativeSeparators(doc->getDocName())));
     const QString refreshed = refreshedInstances(instances);
     return textResult(tr("Saved %1.").arg(QDir::toNativeSeparators(doc->getDocName())) + (refreshed.isEmpty() ? QString() : QLatin1Char(' ') + refreshed));
@@ -4465,6 +4483,25 @@ QJsonObject componentModel(Component* c)
     return o;
 }
 
+// A library part (a Lib) whose model is one component line - a varactor's
+// Diode with the library's values - made that component, \a c deleted: the
+// library panel places it so, and a Lib's netlist would read the diode's
+// values as its library and part. "Library/part" then; empty for any other.
+QString asItsModel(Component*& c, Schematic* sch)
+{
+    auto* lib = dynamic_cast<LibComp*>(c);
+    if (lib == nullptr || lib->Props.size() < 2) return {};
+    QString line = lib->componentModel();
+    if (line.isEmpty()) return {};
+    const QString named = QStringLiteral("%1/%2").arg(lib->Props.at(0)->Value, lib->Props.at(1)->Value);
+    const misc::ErrorCapture quiet;
+    Component* model = getComponentFromName(line, sch);
+    if (model == nullptr) return {};
+    delete c;
+    c = model;
+    return named;
+}
+
 // A part of the JSON form as its .sch line; empty, and why, when it does
 // not do (a type there is not, a property it has not).
 QString componentLineOf(Schematic* sch, const QJsonObject& o, QStringList* taken, QStringList* notes, QString* error)
@@ -4478,6 +4515,10 @@ QString componentLineOf(Schematic* sch, const QJsonObject& o, QStringList* taken
     c->setSchematic(sch);
     if (!setListsOf(c.get(), o, error, false, true) || !setProperties(c.get(), o.value(QLatin1String("properties")).toObject(), error, true))
         return {};
+    // (A library part that is one component: that component.)
+    Component* part = c.release();
+    asItsModel(part, sch);
+    c.reset(part);
     c->recreate();
     const QJsonValue turn = o.value(QLatin1String("rotation"));
     if (!turn.isUndefined() && (!turn.isDouble() || turn.toInt() < 0 || turn.toInt() > 3 || turn.toDouble() != turn.toInt())) {
@@ -4831,6 +4872,9 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
         delete c;
         return errorResult(tr("Not added: %1.").arg(typos.join(QStringLiteral("; "))));
     }
+    // A library part that is one component (a varactor: a Diode with the
+    // library's values) is that component, as the library panel places it.
+    const QString modelOf = asItsModel(c, sch);
     c->recreate();   // the symbol, with the properties
     // A library part not found (its library, or the part in it): no symbol,
     // no pins - placed so, nothing was said.
@@ -4906,6 +4950,9 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
         }
     }
     notes << newWiringIssues(sch, wiringBefore);
+    if (!modelOf.isEmpty())
+        notes.prepend(tr("%1 is a %2 with the library's values: placed as one, as the library panel places it (its "
+                         "values are its properties)").arg(modelOf, c->Model));
     if (!notes.isEmpty()) result.insert(QStringLiteral("note"), notes.join(QStringLiteral("; ")) + QLatin1Char('.'));
     return jsonResult(result);
 }
@@ -4946,6 +4993,18 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
         if (c->getProperty(it.key()) == nullptr) return errorResult(noSuchProperty(c, it.key()));
     if (const QStringList typos = numberTypos(name, c->Model, props); !typos.isEmpty())
         return errorResult(tr("Not changed: %1.").arg(typos.join(QStringLiteral("; "))));
+    // A library part made one that is one component (a varactor's Diode):
+    // a Lib cannot be that - replace_component places the component.
+    if (c->Model == QLatin1String("Lib") && c->Props.size() >= 2 && (props.contains(QLatin1String("Lib")) || props.contains(QLatin1String("Comp")))) {
+        LibComp probe;
+        probe.setSchematic(sch);
+        probe.Props.at(0)->Value = props.value(QLatin1String("Lib")).toString(c->Props.at(0)->Value);
+        probe.Props.at(1)->Value = props.value(QLatin1String("Comp")).toString(c->Props.at(1)->Value);
+        if (!probe.componentModel().isEmpty())
+            return errorResult(tr("%1/%2 is one component with the library's values, not a part a Lib can be: replace_component "
+                                  "%3 with type Lib and those properties places it as that component.")
+                                   .arg(probe.Props.at(0)->Value, probe.Props.at(1)->Value, name));
+    }
     if (!setTextOf(c, args, &error, false) || !setListsOf(c, args, &error, true)) return errorResult(error);
     prepare(sch);
     const QString before = sch->snapshot();
@@ -5038,6 +5097,7 @@ QJsonObject QucsControl::replaceComponent(const QJsonObject& args)
             delete c;
             return nullptr;
         }
+        asItsModel(c, sch);   // (a library part that is one component: that component)
         c->recreate();
         orient(c, turns, mirror);
         return c;
@@ -5968,6 +6028,7 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
         if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) out.write(*held);
     };
     {
+        aboutToWrite(file);
         QFile out(file);
         if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) return errorResult(tr("%1 could not be written.").arg(QDir::toNativeSeparators(file)));
         out.write(text.toUtf8());
@@ -7638,6 +7699,7 @@ void QucsControl::renameEverywhere(Schematic* sch, const std::function<QString(c
         line.replace(QLatin1Char('"') + var + QLatin1Char('"'), QLatin1Char('"') + renamed + QLatin1Char('"'));
         ++count;
     }
+    if (count > 0) aboutToWrite(dpl);
     if (count > 0 && file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         file.write(lines.join(QLatin1Char('\n')).toUtf8());
         *rewritten = tr("%1 (not open) was rewritten: %2 traces renamed.").arg(QFileInfo(dpl).fileName()).arg(count);
@@ -7780,6 +7842,15 @@ QJsonObject QucsControl::zoom(const QJsonObject& args)
 
 QJsonObject QucsControl::undoRedo(const QJsonObject& args, bool redo)
 {
+    // The files the tools wrote, put back (not a document's own changes).
+    if (!redo && args.contains(QLatin1String("files"))) {
+        const QJsonValue v = args.value(QLatin1String("files"));
+        const int steps = v.isBool() ? (v.toBool() ? 1 : 0) : v.toInt(0);
+        if (steps < 1 || steps > 50 || args.contains(QLatin1String("steps")) || args.contains(QLatin1String("to")))
+            return errorResult(tr("'files' is how many calls' files to put back, 1 to 50 (or true: the last one's), alone - "
+                                  "not with 'steps' or 'to', which undo a document's changes."));
+        return undoFiles(steps);
+    }
     QString error;
     QucsDoc* doc = document(args, &error);
     if (doc == nullptr) return errorResult(error);
@@ -8219,6 +8290,8 @@ QJsonObject QucsControl::exportImage(const QJsonObject& args)
         diagram->isSelected = true;
     }
     const QRect area = gx::area(sch, options.selectionOnly);
+    aboutToWrite(file);
+    if (*format == gx::Format::PdfTex) aboutToWrite(gx::pdfOf(file));
     const bool written = !area.isEmpty() && gx::write(sch, file, *format, options, &error);
     if (diagram != nullptr) {
         sch->deselectElements(nullptr);

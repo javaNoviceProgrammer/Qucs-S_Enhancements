@@ -13,6 +13,7 @@
 
 #include "claudecode.h"
 
+#include <QDateTime>
 #include <QHash>
 #include <QJsonArray>
 #include <QObject>
@@ -153,6 +154,24 @@ private:
     /// \a file, which held \a before (or was not there), is written: a
     /// preview puts it back.
     void written(const QString& file, const std::optional<QByteArray>& before);
+    /// The files the tools wrote, call by call - each as it was before,
+    /// and (a hash of) what the call left - for undo's 'files' to put back.
+    struct FileStep {
+        QString tool;
+        QDateTime when;
+        QList<QPair<QString, std::optional<QByteArray>>> before;
+        QHash<QString, QByteArray> after;   // (empty: not there after)
+    };
+    QList<FileStep> a_fileSteps;
+    FileStep a_openStep;   // the call under way's
+    int a_callDepth = 0;   // (a call inside another - import_netlist's save - is part of it)
+    /// \a file is about to be written by the call under way: as it is, kept
+    /// (once a call).
+    void aboutToWrite(const QString& file);
+    void openFileStep(const QString& tool);
+    void closeFileStep();
+    /// undo's 'files': the last \a steps calls' files put back.
+    QJsonObject undoFiles(int steps);
     /// diff: a schematic against steps back, another file, or its file.
     QJsonObject diffTool(const QJsonObject& args);
     /// An untitled schematic, to be simulated: saved in the scratch folder
