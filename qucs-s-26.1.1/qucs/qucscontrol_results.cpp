@@ -1878,6 +1878,7 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
         if (QFileInfo(target).isFile() && !args.value(QLatin1String("replace")).toBool() && isQucsDocument(target))
             return errorResult(tr("%1 is a document of Qucs-S, not a netlist: 'replace': true writes the netlist over it.")
                                    .arg(QDir::toNativeSeparators(target)));
+        aboutToWrite(target);
         QFile out(target);
         if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
             return errorResult(tr("%1 cannot be written: %2").arg(QDir::toNativeSeparators(target), out.errorString()));

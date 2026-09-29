@@ -8348,7 +8348,7 @@
    added by Gunther Kraut <gn.kraut@online.de>
   </Description>
   <Model>
-  .Def:NMOSFETs_IRFS4229PBF _net2 _net1 _net3
+  .Def:NMOSFETs_IRFB4229PBF _net2 _net1 _net3
     MOSFET:M1 _net7 _net9 _net8 _net8 Type="nfet" L="100u" W="100u" Is="1e-32" Vt0="5.34354" Lambda="0.171916" Kp="177.722" Cgso="4.31703e-05" Cgdo="2.13612e-07" N="1" Gamma="0" Phi="0.6"
     # .MODEL:MM  NMOS (LEVEL=1 IS=1E-32 VTO=5.34354 LAMBDA=0.171916 KP=177.722 CGSO=4.31703E-05 CGDO=2.13612E-07) 
     R:RS _net8 _net3 R="0.00978397"
@@ -10324,7 +10324,7 @@
    added by Gunther Kraut <gn.kraut@online.de>
   </Description>
   <Model>
-  .Def:NMOSFETs_IRFRU024N _net2 _net1 _net3
+  .Def:NMOSFETs_IRFR024N _net2 _net1 _net3
     MOSFET:M1 _net7 _net9 _net8 _net8 Type="nfet" L="100u" W="100u" Is="1e-32" Vt0="3.6319" Lambda="0" Kp="8.99346" Cgso="3.09714e-06" Cgdo="1.6185e-07" N="1" Gamma="0" Phi="0.6"
     # .MODEL:MM  NMOS (LEVEL=1 IS=1E-32 VTO=3.6319 LAMBDA=0 KP=8.99346 CGSO=3.09714E-06 CGDO=1.6185E-07) 
     R:RS _net8 _net3 R="0.0409355"
@@ -10359,7 +10359,7 @@
    added by Gunther Kraut <gn.kraut@online.de>
   </Description>
   <Model>
-  .Def:NMOSFETs_IRFRU110 _net2 _net1 _net3
+  .Def:NMOSFETs_IRFR110 _net2 _net1 _net3
     MOSFET:M1 _net7 _net9 _net8 _net8 Type="nfet" L="100u" W="100u" Is="1e-32" Vt0="3.7131" Lambda="0.00619193" Kp="4.20182" Cgso="1.70114e-06" Cgdo="1e-11" N="1" Gamma="0" Phi="0.6"
     # .MODEL:MM  NMOS (LEVEL=1 IS=1E-32 VTO=3.7131 LAMBDA=0.00619193 KP=4.20182 CGSO=1.70114E-06 CGDO=1E-11) 
     R:RS _net8 _net3 R="0.242987"
@@ -10394,7 +10394,7 @@
    added by Gunther Kraut <gn.kraut@online.de>
   </Description>
   <Model>
-  .Def:NMOSFETs_IRFRU1205 _net2 _net1 _net3
+  .Def:NMOSFETs_IRFR1205 _net2 _net1 _net3
     MOSFET:M1 _net7 _net9 _net8 _net8 Type="nfet" L="100u" W="100u" Is="1e-32" Vt0="3.73139" Lambda="0" Kp="36.7046" Cgso="1.18612e-05" Cgdo="1.00005e-11" N="1" Gamma="0" Phi="0.6"
     # .MODEL:MM  NMOS (LEVEL=1 IS=1E-32 VTO=3.73139 LAMBDA=0 KP=36.7046 CGSO=1.18612E-05 CGDO=1.00005E-11) 
     R:RS _net8 _net3 R="0.0184182"
@@ -10429,7 +10429,7 @@
    added by Gunther Kraut <gn.kraut@online.de>
   </Description>
   <Model>
-  .Def:NMOSFETs_IRFRU120N _net2 _net1 _net3
+  .Def:NMOSFETs_IRFR120N _net2 _net1 _net3
     MOSFET:M1 _net7 _net9 _net8 _net8 Type="nfet" L="100u" W="100u" Is="1e-32" Vt0="3.69404" Lambda="0.0155415" Kp="12.7625" Cgso="2.79242e-06" Cgdo="2.00936e-07" N="1" Gamma="0" Phi="0.6"
     # .MODEL:MM  NMOS (LEVEL=1 IS=1E-32 VTO=3.69404 LAMBDA=0.0155415 KP=12.7625 CGSO=2.79242E-06 CGDO=2.00936E-07) 
     R:RS _net8 _net3 R="0.139622"
@@ -10569,7 +10569,7 @@
    added by Gunther Kraut <gn.kraut@online.de>
   </Description>
   <Model>
-  .Def:NMOSFETs_IRFRU220 _net2 _net1 _net3
+  .Def:NMOSFETs_IRFR220 _net2 _net1 _net3
     MOSFET:M1 _net7 _net9 _net8 _net8 Type="nfet" L="100u" W="100u" Is="1e-32" Vt0="3.826" Lambda="0.00513436" Kp="1.18365" Cgso="2.19697e-06" Cgdo="1e-11" N="1" Gamma="0" Phi="0.6"
     # .MODEL:MM  NMOS (LEVEL=1 IS=1E-32 VTO=3.826 LAMBDA=0.00513436 KP=1.18365 CGSO=2.19697E-06 CGDO=1E-11) 
     R:RS _net8 _net3 R="0.151373"
@@ -10674,7 +10674,7 @@
    added by Gunther Kraut <gn.kraut@online.de>
   </Description>
   <Model>
-  .Def:NMOSFETs_IRFRU320 _net2 _net1 _net3
+  .Def:NMOSFETs_IRFR320 _net2 _net1 _net3
     MOSFET:M1 _net7 _net9 _net8 _net8 Type="nfet" L="100u" W="100u" Is="1e-32" Vt0="4.15933" Lambda="0.000873656" Kp="1.20958" Cgso="3.69055e-06" Cgdo="1e-11" N="1" Gamma="0" Phi="0.6"
     # .MODEL:MM  NMOS (LEVEL=1 IS=1E-32 VTO=4.15933 LAMBDA=0.000873656 KP=1.20958 CGSO=3.69055E-06 CGDO=1E-11) 
     R:RS _net8 _net3 R="0.0001"
@@ -10778,7 +10778,7 @@
    added by Gunther Kraut <gn.kraut@online.de>
   </Description>
   <Model>
-  .Def:NMOSFETs_IRFRU3910 _net2 _net1 _net3
+  .Def:NMOSFETs_IRFR3910 _net2 _net1 _net3
     MOSFET:M1 _net7 _net9 _net8 _net8 Type="nfet" L="100u" W="100u" Is="1e-32" Vt0="3.64652" Lambda="0.00294905" Kp="18.7905" Cgso="5.59783e-06" Cgdo="3.74853e-07" N="1" Gamma="0" Phi="0.6"
     # .MODEL:MM  NMOS (LEVEL=1 IS=1E-32 VTO=3.64652 LAMBDA=0.00294905 KP=18.7905 CGSO=5.59783E-06 CGDO=3.74853E-07) 
     R:RS _net8 _net3 R="0.0602588"
@@ -10847,7 +10847,7 @@
    added by Gunther Kraut <gn.kraut@online.de>
   </Description>
   <Model>
-  .Def:NMOSFETs_IRFRU4105 _net2 _net1 _net3
+  .Def:NMOSFETs_IRFR4105 _net2 _net1 _net3
     MOSFET:M1 _net7 _net9 _net8 _net8 Type="nfet" L="100u" W="100u" Is="1e-32" Vt0="3.63895" Lambda="0" Kp="15.6814" Cgso="6.12732e-06" Cgdo="1.00004e-11" N="1" Gamma="0" Phi="0.6"
     # .MODEL:MM  NMOS (LEVEL=1 IS=1E-32 VTO=3.63895 LAMBDA=0 KP=15.6814 CGSO=6.12732E-06 CGDO=1.00004E-11) 
     R:RS _net8 _net3 R="0.0312085"

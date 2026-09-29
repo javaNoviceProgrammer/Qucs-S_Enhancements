@@ -1,0 +1,65 @@
+# Every part of the component libraries under ngspice, each night: placed
+# alone, each pin to ground through 1 MOhm, its operating point run through
+# `qucs-s --mcp-server` (scripts/ci/test-library-parts.py). The job fails
+# when a part that passes in the committed results
+# (qucs-s-26.1.1/library/ngspice-tested.json, what find_library_component
+# reports) fails now; the night's results are kept as an artifact, to be
+# committed when a library or the netlister changes what passes.
+name: Library under ngspice
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+env:
+  SRC_DIR: qucs-s-26.1.1
+  QT_VERSION: 6.10.3
+
+jobs:
+  library:
+    name: Linux · every library part under ngspice
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build flex bison gperf dos2unix \
+            libglx-dev libgl1-mesa-dev libcups2-dev \
+            ngspice fonts-dejavu-core
+          ngspice --version | sed -n '2p'
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: qtcharts qtpdf
+          cache: true
+          install-deps: true
+
+      - name: Build
+        run: |
+          cmake -S "$SRC_DIR" -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGIT="${GITHUB_SHA::7}"
+          cmake --build build --parallel --target qucs-s
+
+      - name: Every part, and what passed before
+        run: |
+          python3 scripts/ci/test-library-parts.py --qucs build/qucs/qucs-s \
+            --library "$SRC_DIR/library" --jobs 4 --out ngspice-tested.json \
+            --baseline "$SRC_DIR/library/ngspice-tested.json"
+
+      - name: Upload the night's results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ngspice-tested
+          path: ngspice-tested.json
+          retention-days: 30
+          if-no-files-found: ignore

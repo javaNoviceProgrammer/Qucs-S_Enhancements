@@ -41,7 +41,9 @@ NOT_READ = {
 # them (export_netlist writes the netlist, and whether over a file).
 OTHERS = {("get_netlist", "save_as"), ("get_netlist", "replace"),
           # (and the map and numbering, which only get_netlist shows)
-          ("export_netlist", "map"), ("export_netlist", "numbered")}
+          ("export_netlist", "map"), ("export_netlist", "numbered"),
+          # (undo's alone: redo refuses it, as its schema has it not)
+          ("redo", "files")}
 # Nested objects: the argument whose items are read by a function, and that
 # function's parameter.
 NESTED = {

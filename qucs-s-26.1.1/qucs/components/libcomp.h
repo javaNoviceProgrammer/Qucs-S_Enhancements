@@ -38,6 +38,13 @@ public:
   /// compiled from each where there is one (OpenVAF puts it beside the
   /// source).
   QStringList getVerilogAFiles() override;
+  /// The part's model when it is one component line (a varactor's
+  /// <Diode ...> with the library's values, a MOSFET's <_MOSFET ...>): the
+  /// library panel places that component, not a Lib - whose netlist would
+  /// read the diode's values as its library and part, or name a subcircuit
+  /// there is none of under the library's default symbol. Empty for any
+  /// other part.
+  QString componentModel();
 
 protected:
   QString netlist();
