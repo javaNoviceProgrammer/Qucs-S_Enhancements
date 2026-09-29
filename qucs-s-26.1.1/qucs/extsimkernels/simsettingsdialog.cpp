@@ -138,7 +138,7 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
     a_cbRequireGround->setToolTip(
         tr("On: a circuit without a ground symbol is not simulated, and Check Schematic calls it an error. "
            "Off: it is simulated as it is - node 0 then comes from a net named 0 or from a component "
-           "(a SPICE netlist, a library part) that brings it - and Check Schematic only warns."));
+           "(a SPICE netlist, a library part) that brings it - and Check Schematic says nothing of it."));
     checksLayout->addWidget(a_cbRequireGround);
     gbChecks->setLayout(checksLayout);
     simulatorsLayout->addWidget(gbChecks);

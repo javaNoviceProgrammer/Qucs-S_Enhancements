@@ -72,6 +72,13 @@ QString tr(const char* text)
     return QCoreApplication::translate("StatusPanel", text);
 }
 
+// What the rule check depends on besides the schematic: the simulator,
+// and whether a ground symbol is required.
+std::pair<int, bool> checkSettings()
+{
+    return {QucsSettings.DefaultSimulator, QucsSettings.RequireGround};
+}
+
 // A minus that lines up with the digits.
 QString minus(QString s)
 {
@@ -767,8 +774,8 @@ void StatusPanel::refresh()
     updateZoom(doc);
     updateLanguage(qobject_cast<TextDoc*>(front));
     if (!isCircuit(doc)) a_row->setWanted(a_problems, false);
-    else if (QucsSettings.DefaultSimulator != a_checkedSimulator && !a_checkTimer->isActive())
-        a_checkTimer->start(0);   // the checks depend on the simulator
+    else if (checkSettings() != a_checkedSettings && !a_checkTimer->isActive())
+        a_checkTimer->start(0);   // the checks depend on the simulator and the ground setting
     if (front == nullptr) {
         a_row->setWanted(a_position, false);
         a_row->setWanted(a_readout, false);
@@ -1148,7 +1155,7 @@ QMenu* StatusPanel::zoomMenu()
 void StatusPanel::check()
 {
     a_checkTimer->stop();
-    a_checkedSimulator = QucsSettings.DefaultSimulator;
+    a_checkedSettings = checkSettings();
     Schematic* doc = a_app->currentSchematic();
     if (!isCircuit(doc)) {
         a_row->setWanted(a_problems, false);
