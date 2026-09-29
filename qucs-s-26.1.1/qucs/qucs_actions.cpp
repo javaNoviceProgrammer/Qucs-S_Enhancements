@@ -959,30 +959,11 @@ void QucsApp::slotCheckHierarchy() {
 
 void QucsApp::checkHierarchy(Schematic *doc, bool raise) {
   QList<qucs_s::erc::Issue> all = qucs_s::erc::check(doc);
-  QSet<QString> visited{doc->getDocName()};
-  QStringList todo = qucs_s::erc::subcircuitFiles(doc);
-  while (!todo.isEmpty()) {
-    const QString file = todo.takeFirst();
-    if (visited.contains(file)) continue;
-    visited.insert(file);
-    // An open document as it is (unsaved changes included), the others
-    // read from disk and dropped again.
-    Schematic *sub = nullptr;
-    std::unique_ptr<Schematic> loaded;
-    if (QucsDoc *open = findDoc(file))
-      sub = dynamic_cast<Schematic *>(open);
-    if (sub == nullptr) {
-      loaded.reset(new Schematic(nullptr, file));
-      if (!loaded->load()) {
-        all << qucs_s::erc::Issue{qucs_s::erc::Severity::Error,
-                                  tr("the subcircuit file could not be loaded"), QPoint(), QString(), file};
-        continue;
-      }
-      sub = loaded.get();
-    }
-    all += qucs_s::erc::check(sub);
-    todo += qucs_s::erc::subcircuitFiles(sub);
-  }
+  // An open document as it is (unsaved changes included), the others
+  // read from disk and dropped again.
+  const auto open = [this](const QString &file) { return dynamic_cast<Schematic *>(findDoc(file)); };
+  for (const qucs_s::erc::SubcircuitFindings &sub : qucs_s::erc::checkSubcircuits(doc, open))
+    all += sub.issues;
   // Errors first, whichever file they are in.
   std::stable_sort(all.begin(), all.end(), [](const qucs_s::erc::Issue &a, const qucs_s::erc::Issue &b) {
     return a.severity == qucs_s::erc::Severity::Error && b.severity != qucs_s::erc::Severity::Error;

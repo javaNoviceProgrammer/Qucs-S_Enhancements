@@ -32,6 +32,7 @@
 #include "extsimkernels/simsettingsdialog.h"
 #include <QCheckBox>
 #include <QToolButton>
+#include <QHashSeed>
 #include "isolated_settings.h"
 
 using namespace qucs_s::erc;
@@ -519,6 +520,208 @@ private slots:
                  qPrintable(got.join(" | ")));
     }
 
+    // What the parts do, beyond the wiring (the reviewer's twelve faulty
+    // circuits, 29 September): sources in a loop or shorted, an inductor
+    // across a source, a capacitor across a pulse, values of nothing or
+    // less, an AC analysis with no AC source, an equation of a node that is
+    // not there, two names on one net, an input or a base with no bias.
+    // Each is found in its circuit and not in the same circuit put right.
+    // Pins are joined by labels (a wire of no length on the pin).
+    void theDesignRulesFindWhatTheSimulatorWouldTrip()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        // A two-pin part standing at x: pin 1 at (x, 30), pin 2 at (x, 90).
+        const auto part = [](const QString& type, const QString& name, int x, const QString& props) {
+            return QStringLiteral("  <%1 %2 1 %3 60 18 -26 0 1 %4>\n").arg(type, name).arg(x).arg(props);
+        };
+        const auto R = [&](const QString& name, int x, const QString& value) {
+            return part("R", name, x, QStringLiteral("\"%1\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0").arg(value));
+        };
+        const auto C = [&](const QString& name, int x, const QString& value) {
+            return part("C", name, x, QStringLiteral("\"%1\" 1 \"\" 0 \"neutral\" 0").arg(value));
+        };
+        const auto L = [&](const QString& name, int x, const QString& value) {
+            return part("L", name, x, QStringLiteral("\"%1\" 1 \"\" 0").arg(value));
+        };
+        const auto Vdc = [&](const QString& name, int x, const QString& value) {
+            return part("Vdc", name, x, QStringLiteral("\"%1\" 1").arg(value));
+        };
+        const auto label = [](int x, int y, const QString& name) {
+            return QStringLiteral("  <%1 %2 %1 %2 \"%3\" %4 %5 0 \"\">\n").arg(x).arg(y).arg(name).arg(x + 10).arg(y - 20);
+        };
+        const auto top = [&](int x, const QString& name) { return label(x, 30, name); };
+        const auto bottom = [&](int x, const QString& name) { return label(x, 90, name); };
+        const auto gnd = [](int x) { return QStringLiteral("  <GND * 1 %1 90 0 0 0 0>\n").arg(x); };
+        const QString dc = "  <.DC DC1 1 0 300 0 36 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>\n";
+        const QString tran = "  <.TR TR1 1 0 300 0 64 0 0 \"lin\" 1 \"0\" 1 \"20 us\" 1 \"2001\" 0 \"Trapezoidal\" 0 \"2\" 0 \"1 ns\" 0 \"1e-16\" 0 \"150\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"26.85\" 0 \"1e-3\" 0 \"1e-6\" 0 \"1\" 0 \"CroutLU\" 0 \"no\" 0 \"yes\" 0 \"0\" 0>\n";
+        const QString ac = "  <.AC AC1 1 0 300 0 33 0 0 \"log\" 1 \"1 kHz\" 1 \"1 MHz\" 1 \"20\" 1>\n";
+        int n = 0;
+        // Its findings, errors and warnings as E and W, notes as N.
+        const auto findings = [&](const QString& components, const QString& wires) {
+            const QString f = dir.filePath(QStringLiteral("design%1.sch").arg(++n));
+            write(f, ("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n" + components + "</Components>\n<Wires>\n" + wires
+                      + "</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n").toUtf8());
+            Schematic doc(nullptr, f);
+            QStringList got;
+            if (!doc.load()) return QStringList{"(did not load)"};
+            got = messages(check(&doc));
+            for (const Issue& i : notes(&doc)) got << "N " + i.message;
+            // The fixture's own joins: every pin on something.
+            for (const QString& m : std::as_const(got))
+                if (m.contains("connected to nothing")) got << "(fixture: " + m + ")";
+            return got;
+        };
+        const auto has = [](const QStringList& got, const QString& start) {
+            return std::any_of(got.cbegin(), got.cend(), [&](const QString& m) { return m.startsWith(start); });
+        };
+        QStringList got;
+
+        // Two DC sources in parallel; one alone is right.
+        const QString load = R("R1", 200, "1k") + gnd(200);
+        got = findings(Vdc("V1", 0, "5 V") + gnd(0) + Vdc("V2", 100, "3 V") + gnd(100) + load + dc, top(0, "a") + top(100, "a") + top(200, "a"));
+        QVERIFY2(has(got, "E V1 and V2 are in parallel: voltage sources in a loop fix one voltage twice"), qPrintable(got.join(" | ")));
+        got = findings(Vdc("V1", 0, "5 V") + gnd(0) + load + dc, top(0, "a") + top(200, "a"));
+        QVERIFY2(got.filter("loop").isEmpty() && got.filter("fixture").isEmpty(), qPrintable(got.join(" | ")));
+
+        // A source shorted by a wire from pin to pin.
+        got = findings(Vdc("V1", 0, "5 V") + load + dc, "  <0 30 0 90 \"\" 0 0 0 \"\">\n" + top(0, "a") + top(200, "a") + bottom(0, "gnd"));
+        QVERIFY2(has(got, "E V1 is shorted: both its pins are on"), qPrintable(got.join(" | ")));
+
+        // An inductor straight across a source; in series with a resistor it is right.
+        got = findings(Vdc("V1", 0, "5 V") + gnd(0) + L("L1", 100, "1 mH") + gnd(100) + load + dc, top(0, "a") + top(100, "a") + top(200, "a"));
+        QVERIFY2(has(got, "W V1 and L1 are in parallel: at DC an inductor is a short"), qPrintable(got.join(" | ")));
+        got = findings(Vdc("V1", 0, "5 V") + gnd(0) + R("R2", 100, "10") + L("L1", 200, "1 mH") + gnd(200) + dc,
+                       top(0, "a") + top(100, "a") + bottom(100, "b") + top(200, "b"));
+        QVERIFY2(got.filter("loop").isEmpty() && got.filter("parallel").isEmpty(), qPrintable(got.join(" | ")));
+
+        // A capacitor straight across a pulse source: a note (across a DC supply it is decoupling).
+        const QString pulse = part("Vpulse", "V1", 0, "\"0 V\" 1 \"5 V\" 1 \"1 us\" 1 \"6 us\" 1 \"1 ns\" 0 \"1 ns\" 0");
+        got = findings(pulse + gnd(0) + C("C1", 100, "1 nF") + gnd(100) + tran, top(0, "a") + top(100, "a"));
+        QVERIFY2(has(got, "N C1 is straight across V1: nothing limits its current"), qPrintable(got.join(" | ")));
+        got = findings(Vdc("V1", 0, "5 V") + gnd(0) + C("C1", 100, "1 nF") + gnd(100) + load + tran, top(0, "a") + top(100, "a") + top(200, "a"));
+        QVERIFY2(got.filter("straight across").isEmpty(), qPrintable(got.join(" | ")));
+
+        // R = 0 and L = 0 (notes: a jumper is meant at times), C = -1 nF (a warning).
+        got = findings(Vdc("V1", 0, "5 V") + gnd(0) + R("R1", 100, "0") + C("C1", 200, "-1 nF") + gnd(200) + L("L1", 300, "0") + gnd(300) + dc,
+                       top(0, "a") + top(100, "a") + bottom(100, "b") + top(200, "b") + top(300, "b"));
+        QVERIFY2(has(got, "W C1 is -1 nF: a negative capacitance") && has(got, "N R1 is 0 Ohm, a short")
+                     && has(got, "N L1 is 0 H, a short"),
+                 qPrintable(got.join(" | ")));
+
+        // An AC analysis with no AC source; with a Vac it has one.
+        const QString rc = R("R1", 100, "1k") + C("C1", 200, "1 nF") + gnd(200) + ac;
+        const QString rcWires = top(0, "a") + top(100, "a") + bottom(100, "b") + top(200, "b");
+        got = findings(Vdc("V1", 0, "5 V") + gnd(0) + rc, rcWires);
+        QVERIFY2(has(got, "W AC1 has nothing to drive it"), qPrintable(got.join(" | ")));
+        got = findings(part("Vac", "V1", 0, "\"1 V\" 1 \"1 kHz\" 0 \"0\" 0") + gnd(0) + rc, rcWires);
+        QVERIFY2(!has(got, "W AC1 has nothing"), qPrintable(got.join(" | ")));
+
+        // An equation of a node that is not there; a node, a vector of its own and a probe's are.
+        const QString nutmeg = "  <NutmegEq NutmegEq1 1 400 300 -28 15 0 0 \"DC1\" 1 \"x=v(nothere)\" 1 \"y=v(out)+v(x)\" 1>\n";
+        got = findings(Vdc("V1", 0, "5 V") + gnd(0) + load + dc + nutmeg, top(0, "out") + top(200, "out"));
+        QVERIFY2(got.contains("W NutmegEq1 reads v(nothere), but no net is labelled nothere: the equation reads nothing")
+                     && got.filter("NutmegEq1").size() == 1,
+                 qPrintable(got.join(" | ")));
+        QucsSettings.DefaultSimulator = spicecompat::simQucsator;   // (Qucsator has no NutmegEq to read)
+        got = findings(Vdc("V1", 0, "5 V") + gnd(0) + load + dc + nutmeg, top(0, "out") + top(200, "out"));
+        QVERIFY2(got.filter("reads v(").isEmpty(), qPrintable(got.join(" | ")));
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+
+        // Two labels on one net.
+        got = findings(Vdc("V1", 0, "5 V") + gnd(0) + load + dc, "  <0 30 200 30 \"in\" 20 0 0 \"\">\n" + top(200, "vin"));
+        QVERIFY2(has(got, "N one net has 2 names, in and vin: the netlist keeps one of them"), qPrintable(got.join(" | ")));
+
+        // An op-amp's + input fed through a capacitor alone; its - input
+        // biased through the feedback from its own output, the output's only
+        // DC path (its load is a capacitor). With a resistor from + to
+        // ground, nothing to say.
+        const QString amp = "  <OpAmp OP1 1 400 130 -26 42 0 0 \"1e6\" 1 \"15 V\" 0>\n";   // - (370,150), + (370,110), out (440,130)
+        const QString stage = part("Vac", "V1", 0, "\"1 V\" 1 \"1 kHz\" 0 \"0\" 0") + gnd(0) + C("C1", 100, "1 uF") + amp
+                              + R("R2", 200, "10k") + C("CL", 300, "100 pF") + gnd(300) + ac;
+        const QString stageWires = top(0, "src") + top(100, "src") + bottom(100, "inp") + label(370, 110, "inp")
+                                   + label(370, 150, "inn") + top(200, "inn") + bottom(200, "out") + label(440, 130, "out")
+                                   + top(300, "out");
+        got = findings(stage, stageWires);
+        QVERIFY2(has(got, "N OP1: its input + has no DC path but through OP1 itself") && got.filter("input -").isEmpty(),
+                 qPrintable(got.join(" | ")));
+        got = findings(stage + R("R3", 500, "100k") + gnd(500), stageWires + top(500, "inp"));
+        QVERIFY2(got.filter("no DC path").isEmpty() && got.filter("fixture").isEmpty(), qPrintable(got.join(" | ")));
+
+        // A transistor's base fed through a capacitor alone; with a resistor from the supply it is biased.
+        const QString bjt =
+            "  <_BJT Q1 1 700 60 8 -26 0 0 \"npn\" 0 \"1e-16\" 0 \"1\" 0 \"1\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"1.5\" 0 "
+            "\"0\" 0 \"2\" 0 \"100\" 0 \"1\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0.75\" 0 \"0.33\" 0 \"0\" 0 \"0.75\" 0 "
+            "\"0.33\" 0 \"1.0\" 0 \"0\" 0 \"0.75\" 0 \"0\" 0 \"0.5\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 "
+            "\"0.0\" 0 \"1.0\" 0 \"1.0\" 0 \"0.0\" 0 \"1.0\" 0 \"1.0\" 0 \"0.0\" 0 \"0.0\" 0 \"3.0\" 0 \"1.11\" 0 \"26.85\" 0 \"1.0\" 0>\n";
+        // Q1: base (670,60), collector (700,30), emitter (700,90).
+        const QString amplifier = Vdc("VCC", 0, "10 V") + gnd(0) + R("RC", 100, "2k") + bjt + "  <GND * 1 700 90 0 0 0 0>\n"
+                                  + part("Vac", "V2", 200, "\"10 mV\" 1 \"1 kHz\" 0 \"0\" 0") + gnd(200) + C("C1", 300, "1 uF") + ac;
+        const QString amplifierWires = top(0, "vcc") + top(100, "vcc") + bottom(100, "c") + label(700, 30, "c") + top(200, "sig")
+                                       + top(300, "sig") + bottom(300, "b") + label(670, 60, "b");
+        got = findings(amplifier, amplifierWires);
+        QVERIFY2(has(got, "N Q1: its base has no DC path but through Q1 itself"), qPrintable(got.join(" | ")));
+        got = findings(amplifier + R("RB", 400, "470k"), amplifierWires + top(400, "vcc") + bottom(400, "b"));
+        QVERIFY2(got.filter("no DC path").isEmpty() && got.filter("fixture").isEmpty(), qPrintable(got.join(" | ")));
+    }
+
+    // The same findings in the same order every run: a hash's order (Qt
+    // seeds it anew in each process) chose which label named a net of two,
+    // and the order of the floating groups and the nets without a DC path.
+    void theFindingsDoNotDependOnAHashsOrder()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        QString components = "  <Vdc V1 1 0 60 18 -26 0 1 \"5 V\" 1>\n  <GND * 1 0 90 0 0 0 0>\n";
+        QString wires = "  <0 30 0 30 \"a\" 10 10 0 \"\">\n";
+        const auto resistor = [](const QString& name, int x, int y) {
+            return QStringLiteral("  <R %1 1 %2 %3 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n")
+                .arg(name).arg(x).arg(y);
+        };
+        const auto label = [](int x, int y, const QString& name) {
+            return QStringLiteral("  <%1 %2 %1 %2 \"%3\" %4 %5 0 \"\">\n").arg(x).arg(y).arg(name).arg(x + 10).arg(y - 20);
+        };
+        for (int k = 1; k <= 6; ++k) {
+            const int x = 100 * k;
+            // R<k> from a to a net of two names; RF<k> and RG<k> side by side
+            // between f<k> and g<k>: floating, or (k even) on ground through C<k>.
+            components += resistor(QStringLiteral("R%1").arg(k), x, 60);
+            wires += label(x, 30, "a") + label(x, 90, QStringLiteral("n%1").arg(k)) + QStringLiteral("  <%1 90 %2 90 \"m%3\" %1 110 0 \"\">\n").arg(x).arg(x + 20).arg(k);
+            components += resistor(QStringLiteral("RF%1").arg(k), x, 260) + resistor(QStringLiteral("RG%1").arg(k), x + 50, 260);
+            wires += label(x, 230, QStringLiteral("f%1").arg(k)) + label(x + 50, 230, QStringLiteral("f%1").arg(k))
+                     + label(x, 290, QStringLiteral("g%1").arg(k)) + label(x + 50, 290, QStringLiteral("g%1").arg(k));
+            if (k % 2 == 0) {
+                components += QStringLiteral("  <C C%1 1 %2 460 17 -26 0 1 \"1n\" 1 \"\" 0 \"neutral\" 0>\n  <GND * 1 %2 490 0 0 0 0>\n").arg(k).arg(x);
+                wires += label(x, 430, QStringLiteral("g%1").arg(k));
+            }
+        }
+        const QString f = dir.filePath("hashes.sch");
+        write(f, ("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n" + components + "  <.DC DC1 1 0 700 0 36 0 0 \"26.85\" 0 \"0.001\" 0 "
+                  "\"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>\n</Components>\n<Wires>\n" + wires
+                  + "</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n").toUtf8());
+        QStringList first;
+        for (int run = 0; run < 8; ++run) {
+            QHashSeed::resetRandomGlobalSeed();
+            Schematic doc(nullptr, f);
+            QVERIFY(doc.load());
+            QStringList got = messages(check(&doc));
+            for (const Issue& i : notes(&doc)) got << "N " + i.message;
+            if (run == 0) {
+                first = got;
+                QVERIFY2(got.filter("floating").size() >= 2 && got.filter("no DC path").size() >= 2 && got.filter("names").size() >= 2,
+                         qPrintable(got.join(" | ")));
+            } else {
+                QVERIFY2(got == first, qPrintable(got.join(" | ") + "\nfirst: " + first.join(" | ")));
+            }
+        }
+    }
+
     void aGoodCircuitHasNoProblems()
     {
         QucsApp app(false);
@@ -658,7 +861,8 @@ private slots:
     // symbol required and not, and the shipped symbols where an
     // installation has them (share/qucs-s/symbols beside bin/).
     // QUCS_ERC_SURVEY_OUT=file lists every finding there, a line each:
-    // file, simulator, ground (required/free), E or W, message - by tabs.
+    // file, simulator, ground (required/free), E or W, message - by tabs;
+    // the notes as "notes", N.
     void surveyOfTheExamples()
     {
         if (qEnvironmentVariableIsEmpty("QUCS_ERC_SURVEY")) QSKIP("set QUCS_ERC_SURVEY=1 for the survey");
@@ -717,6 +921,15 @@ private slots:
                                            i.severity == Severity::Error ? "E" : "W", i.message)
                                       .toUtf8());
                 if (!required) continue;
+                // The notes (fine if meant), as N: the same either way.
+                for (const Issue& i : notes(app.currentSchematic()))
+                    if (out.isOpen())
+                        out.write(QStringLiteral("%1\t%2\tnotes\tN\t%3\n")
+                                      .arg(name, simulator == spicecompat::simQucsator ? "qucsator"
+                                                 : simulator == spicecompat::simXyce   ? "xyce"
+                                                                                        : "ngspice",
+                                           i.message)
+                                      .toUtf8());
                 if (errorCount(issues) > 0) ++withErrors;
                 if (issues.size() > errorCount(issues)) ++withWarnings;
                 for (const Issue& i : issues) {

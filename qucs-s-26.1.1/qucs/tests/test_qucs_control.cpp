@@ -5729,6 +5729,76 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // check_schematic, the assessment of 29 September: it goes into the
+    // subcircuits (a line of counts each, all of it with 'subcircuits'), and
+    // reviews the design as well as the wiring - here an op-amp's load under
+    // 1 kOhm, a note (the rest is test_erc's theDesignRulesFindWhatTheSimulatorWouldTrip).
+    void theCheckGoesIntoSubcircuitsAndReviewsTheDesign()
+    {
+        // A subcircuit with a loose resistor inside, used by a schematic.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        for (const auto& [name, y] : {std::pair{"a", 100}, std::pair{"b", 200}})
+            QVERIFY(!failed(call("add_component", {{"type", "Port"}, {"name", name}, {"x", 100}, {"y", y}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 250}, {"y", 150}, {"rotation", 1}})));
+        QVERIFY(!failed(call("connect", {{"from", "a.1"}, {"to", "R1.1"}})));
+        QVERIFY(!failed(call("connect", {{"from", "b.1"}, {"to", "R1.2"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R9"}, {"x", 400}, {"y", 300}})));
+        QVERIFY(!failed(call("save_document", {{"as", "loose"}})));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Sub"}, {"name", "X1"}, {"x", 300}, {"y", 200},
+                                               {"properties", QJsonObject{{"File", "loose.sch"}}}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 200}})));
+        QVERIFY(!failed(call("connect", {{"from", "V1.1"}, {"to", "X1.1"}})));
+        QVERIFY(!failed(call("connect", {{"from", "V1.2"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("connect", {{"from", "X1.2"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("add_analysis", {{"kind", "op"}})));
+        QJsonObject checked = json(call("check_schematic")).toObject();
+        QVERIFY2(checked.value("errors").toArray().isEmpty() && checked.value("warnings").toArray().isEmpty(),
+                 qPrintable(QJsonDocument(checked).toJson()));
+        const QJsonArray subs = checked.value("subcircuits").toArray();
+        QVERIFY2(subs.size() == 1 && subs.first().toObject().value("file").toString().endsWith("loose.sch")
+                     && subs.first().toObject().value("warnings").toInt() == 2 && !subs.first().toObject().contains("warning list"),
+                 qPrintable(QJsonDocument(checked).toJson()));
+        QVERIFY2(checked.value("found").toString().endsWith("; in its subcircuits 0 errors, 2 warnings")
+                     && checked.value("verdict").toString().contains("'subcircuits': true lists them"),
+                 qPrintable(QJsonDocument(checked).toJson()));
+        checked = json(call("check_schematic", {{"subcircuits", true}})).toObject();
+        const QString listed = QJsonDocument(checked.value("subcircuits").toArray()).toJson(QJsonDocument::Compact);
+        QVERIFY2(listed.contains("R9: pin 1 is connected to nothing") && listed.contains("R9: pin 2 is connected to nothing"),
+                 qPrintable(listed));
+
+        // An op-amp's output loaded with 100 Ohm: a note; with 10 kOhm, none.
+        const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
+        if (!QFileInfo::exists(library + "/OpAmps.lib")) QSKIP("no library here");
+        const QString was = QucsSettings.LibDir;
+        QucsSettings.LibDir = library + "/";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Lib"}, {"name", "U1"}, {"x", 300}, {"y", 300},
+                                               {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", "uA741"}}}})));
+        for (const auto& [pin, net] : {std::pair("U1.inp", "in"), std::pair("U1.inn", "out"), std::pair("U1.out", "out"),
+                                       std::pair("U1.vcc", "vcc"), std::pair("U1.vee", "vee")})
+            QVERIFY(!failed(call("set_label", {{"at", pin}, {"name", net}})));
+        for (const auto& [name, x, value, net] : {std::tuple("VP", 100, "15 V", "vcc"), std::tuple("VN", 200, "-15 V", "vee"),
+                                                  std::tuple("VIN", 500, "1 V", "in")}) {
+            QVERIFY(!failed(call("add_component", {{"type", "Vdc"}, {"name", name}, {"x", x}, {"y", 600},
+                                                   {"properties", QJsonObject{{"U", value}}}})));
+            QVERIFY(!failed(call("set_label", {{"at", QString(name) + ".1"}, {"name", net}})));
+            QVERIFY(!failed(call("connect", {{"from", QString(name) + ".2"}, {"to", "ground"}})));
+        }
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "RL"}, {"x", 600}, {"y", 400}, {"rotation", 1},
+                                               {"properties", QJsonObject{{"R", "100 Ohm"}}}})));
+        QVERIFY(!failed(call("set_label", {{"at", "RL.1"}, {"name", "out"}})));
+        QVERIFY(!failed(call("connect", {{"from", "RL.2"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("add_analysis", {{"kind", "op"}})));
+        QString notes = QJsonDocument(json(call("check_schematic")).toObject().value("notes").toArray()).toJson(QJsonDocument::Compact);
+        QVERIFY2(notes.contains("RL (100 Ohm) loads U1's output to ground"), qPrintable(notes));
+        QVERIFY2(!notes.contains("no DC path"), qPrintable(notes));   // the follower's - input is on its output
+        QVERIFY(!failed(call("edit_component", {{"name", "RL"}, {"properties", QJsonObject{{"R", "10 kOhm"}}}})));
+        notes = QJsonDocument(json(call("check_schematic")).toObject().value("notes").toArray()).toJson(QJsonDocument::Compact);
+        QVERIFY2(!notes.contains("loads U1"), qPrintable(notes));
+        QucsSettings.LibDir = was;
+    }
+
     // The seventh round's small things: replace_component from named pins
     // to unnamed ones is refused, showing both (by number, INP went to the
     // uA741's output); the uA741's and AD825's pins have names now, LM3886's

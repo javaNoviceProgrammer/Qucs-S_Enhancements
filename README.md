@@ -974,7 +974,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   to case, and so does the check for them: labels `Out` and `out` are one
   net (told, when the wires keep them apart), and `r1` beside `R1` is a
   name used twice. A part switched to shorted joins its pins, as its
-  netlist does. Every simulation runs the check first and
+  netlist does. It also reads what the parts do, as far as the drawing
+  tells it: voltage sources in parallel or shorted by a wire (errors: the
+  operating point fails), an inductor across a source, a negative
+  capacitance, an AC analysis with no AC source, a NutmegEq's `v(node)` of
+  no net (warnings). Every simulation runs the check first and
   brings the tab up when there are errors (the run goes ahead anyway; the
   simulator has the last word). Subcircuits (schematics with ports) are
   not asked for a ground or a simulation. A ground symbol is required by
