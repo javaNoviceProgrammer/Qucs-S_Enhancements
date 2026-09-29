@@ -288,6 +288,11 @@ private:
     void tune(const QJsonObject& args, const Done& done);
     /// tune with several knobs, for as many targets.
     void tuneKnobs(const QJsonObject& args, const Done& done);
+    /// What \a spec (tune's 'measure') measures after a run: of the
+    /// operating point in \a simulated (simulate's answer), or read from the
+    /// dataset of \a path. NaN, with \a why, when it cannot be.
+    double measureRun(const QJsonObject& spec, const QJsonObject& simulated, const QString& path, const QJsonObject& args,
+                      QString* used, QString* why);
     QJsonObject readPdf(const QJsonObject& args);
     QJsonObject undoHistory(const QJsonObject& args);
     QJsonObject newProject(const QJsonObject& args);
@@ -297,6 +302,7 @@ private:
     QJsonObject makeSymbol(const QJsonObject& args);
     QJsonObject importNetlist(const QJsonObject& args);
     QJsonObject findLibraryComponent(const QJsonObject& args);
+    QJsonObject describePart(const QJsonObject& args);
     /// What a run of \a doc wrote: its dataset - written when it is newer than
     /// \a before (its time before the run; invalid when there was none) -
     /// its variables, the copy \a keepAs, and the traces left blank.
