@@ -1,0 +1,9 @@
+dup test
+V1 in 0 1
+RR1 in out 1k
+Rr1 out 0 1k
+.control
+op
+print v(out)
+.endc
+.end

@@ -1,0 +1,37 @@
+/qucsator/General Electronics/Waveform generation/Puls3b.sch	qucsator	required	W	the wire end at 520, 80 is connected to nothing
+/qucsator/General Electronics/Waveform generation/Puls3b.sch	qucsator	free	W	the wire end at 520, 80 is connected to nothing
+/qucsator/RF/Oscillators/VCO_100.sch	qucsator	required	W	net L7.1 reaches ground only through capacitors or current sources (C5, C6): no DC path, so no operating point (a large resistor to ground gives it one)
+/qucsator/RF/Oscillators/VCO_100.sch	qucsator	free	W	net L7.1 reaches ground only through capacitors or current sources (C5, C6): no DC path, so no operating point (a large resistor to ground gives it one)
+/ngspice/XSPICE_CM/testRFind.sch	ngspice	required	E	SUB1: its subcircuit lspice2g6.sch is not found (beside the schematic, in the project or its user_lib): it has no pins, and what was wired to them is on nothing
+/ngspice/XSPICE_CM/testRFind.sch	ngspice	required	W	the ground at 560, 330 is connected to nothing
+/ngspice/XSPICE_CM/testRFind.sch	ngspice	free	E	SUB1: its subcircuit lspice2g6.sch is not found (beside the schematic, in the project or its user_lib): it has no pins, and what was wired to them is on nothing
+/ngspice/XSPICE_CM/testRFind.sch	ngspice	free	W	the ground at 560, 330 is connected to nothing
+/ngspice/RF/Amplifiers/Tube Amplifiers/Tube_amp6V6.sch	ngspice	required	W	TRAN1: pin 5 is connected to nothing
+/ngspice/RF/Amplifiers/Tube Amplifiers/Tube_amp6V6.sch	ngspice	required	W	TRAN1: pin 6 is connected to nothing
+/ngspice/RF/Amplifiers/Tube Amplifiers/Tube_amp6V6.sch	ngspice	free	W	TRAN1: pin 5 is connected to nothing
+/ngspice/RF/Amplifiers/Tube Amplifiers/Tube_amp6V6.sch	ngspice	free	W	TRAN1: pin 6 is connected to nothing
+/ngspice/OpenVAF/Tunnel_Ngspice_prj/tunn.sch	-	-	E	(does not open)
+/ngspice/Devices/MESFETs/testACMESFETCL1.sch	ngspice	required	E	MESFETCL1: the library part MESFETCL1 of MESFETs could not be loaded (not in the libraries of <source>/library/, nor the project's user_lib): it has no pins, and what was wired to them is on nothing
+/ngspice/Devices/MESFETs/testACMESFETCL1.sch	ngspice	required	W	the ground at 640, 380 is connected to nothing
+/ngspice/Devices/MESFETs/testACMESFETCL1.sch	ngspice	required	W	the wire end at 640, 300 is connected to nothing
+/ngspice/Devices/MESFETs/testACMESFETCL1.sch	ngspice	required	W	the wire end at 600, 340 is connected to nothing
+/ngspice/Devices/MESFETs/testACMESFETCL1.sch	ngspice	free	E	MESFETCL1: the library part MESFETCL1 of MESFETs could not be loaded (not in the libraries of <source>/library/, nor the project's user_lib): it has no pins, and what was wired to them is on nothing
+/ngspice/Devices/MESFETs/testACMESFETCL1.sch	ngspice	free	W	the ground at 640, 380 is connected to nothing
+/ngspice/Devices/MESFETs/testACMESFETCL1.sch	ngspice	free	W	the wire end at 640, 300 is connected to nothing
+/ngspice/Devices/MESFETs/testACMESFETCL1.sch	ngspice	free	W	the wire end at 600, 340 is connected to nothing
+/ngspice/Devices/MESFETs/testDCIdsVgs.sch	ngspice	required	E	MESFETCL1: the library part MESFETCL1 of MESFETs could not be loaded (not in the libraries of <source>/library/, nor the project's user_lib): it has no pins, and what was wired to them is on nothing
+/ngspice/Devices/MESFETs/testDCIdsVgs.sch	ngspice	required	W	the ground at 580, 280 is connected to nothing
+/ngspice/Devices/MESFETs/testDCIdsVgs.sch	ngspice	required	W	the wire end at 540, 240 is connected to nothing
+/ngspice/Devices/MESFETs/testDCIdsVgs.sch	ngspice	required	W	the wire end at 580, 200 is connected to nothing
+/ngspice/Devices/MESFETs/testDCIdsVgs.sch	ngspice	free	E	MESFETCL1: the library part MESFETCL1 of MESFETs could not be loaded (not in the libraries of <source>/library/, nor the project's user_lib): it has no pins, and what was wired to them is on nothing
+/ngspice/Devices/MESFETs/testDCIdsVgs.sch	ngspice	free	W	the ground at 580, 280 is connected to nothing
+/ngspice/Devices/MESFETs/testDCIdsVgs.sch	ngspice	free	W	the wire end at 540, 240 is connected to nothing
+/ngspice/Devices/MESFETs/testDCIdsVgs.sch	ngspice	free	W	the wire end at 580, 200 is connected to nothing
+/ngspice/Devices/MESFETs/testDCMESFETCL1.sch	ngspice	required	E	MESFETCL1: the library part MESFETCL1 of MESFETs could not be loaded (not in the libraries of <source>/library/, nor the project's user_lib): it has no pins, and what was wired to them is on nothing
+/ngspice/Devices/MESFETs/testDCMESFETCL1.sch	ngspice	required	W	the ground at 580, 280 is connected to nothing
+/ngspice/Devices/MESFETs/testDCMESFETCL1.sch	ngspice	required	W	the wire end at 580, 200 is connected to nothing
+/ngspice/Devices/MESFETs/testDCMESFETCL1.sch	ngspice	required	W	the wire end at 540, 240 is connected to nothing
+/ngspice/Devices/MESFETs/testDCMESFETCL1.sch	ngspice	free	E	MESFETCL1: the library part MESFETCL1 of MESFETs could not be loaded (not in the libraries of <source>/library/, nor the project's user_lib): it has no pins, and what was wired to them is on nothing
+/ngspice/Devices/MESFETs/testDCMESFETCL1.sch	ngspice	free	W	the ground at 580, 280 is connected to nothing
+/ngspice/Devices/MESFETs/testDCMESFETCL1.sch	ngspice	free	W	the wire end at 580, 200 is connected to nothing
+/ngspice/Devices/MESFETs/testDCMESFETCL1.sch	ngspice	free	W	the wire end at 540, 240 is connected to nothing

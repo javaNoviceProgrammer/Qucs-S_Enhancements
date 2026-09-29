@@ -1,0 +1,11 @@
+case test
+V1 in 0 1
+R1 in OUT 1k
+R2 out 0 1k
+R3 in X 1k
+R4 x GND 1k
+.control
+op
+print v(out) v(OUT) v(x)
+.endc
+.end
