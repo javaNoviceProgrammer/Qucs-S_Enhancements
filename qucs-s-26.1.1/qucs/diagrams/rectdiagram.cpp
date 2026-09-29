@@ -228,15 +228,15 @@ if(xAxis.log) {
   if(back) z = x2;
   for (int gridLines = 0; (z <= x2) && (z >= 0) && gridLines < MaxGridLines; ++gridLines) {    // create all grid lines
     if(xAxis.GridOn)  if(z < x2)  if(z > 0)
-      Lines.prepend(new qucs::Line(z, y2, z, 0, GridPen));  // x grid
+      Lines.prepend(as(Part::Grid, new qucs::Line(z, y2, z, 0, GridPen)));  // x grid
 
     if((zD < 1.5*zDstep) || (z == 0) || (z == x2)) {
       tmp = numberText(zD);
       if(xAxis.up < 0.0)  tmp = '-'+tmp;
       w = metrics.boundingRect(tmp).width();  // width of text
       // center text horizontally under the x tick mark
-      Texts.append(new Text(z-(w>>1), -y1, tmp));
-      Lines.append(new qucs::Line(z, 5, z, -5, QPen(Qt::black,0)));  // x tick marks
+      Texts.append(as(Part::XAxis, new Text(z-(w>>1), -y1, tmp)));
+      Lines.append(as(Part::XAxis, new qucs::Line(z, 5, z, -5, QPen(Qt::black,0))));  // x tick marks
     }
 
     zD += zDstep;
@@ -263,12 +263,12 @@ else {  // not logarithmical
     tmp = numberText(GridNum, GridStep);
     w = metrics.boundingRect(tmp).width();  // width of text
     // center text horizontally under the x tick mark
-    Texts.append(new Text(z-(w>>1), -y1, tmp)); // Text(x, y, str, ...)
+    Texts.append(as(Part::XAxis, new Text(z-(w>>1), -y1, tmp))); // Text(x, y, str, ...)
     GridNum += GridStep;
 
     if(xAxis.GridOn)  if(z < x2)  if(z > 0)
-      Lines.prepend(new qucs::Line(z, y2, z, 0, GridPen)); // x grid
-    Lines.append(new qucs::Line(z, 5, z, -5, QPen(Qt::black,0)));   // x tick marks
+      Lines.prepend(as(Part::Grid, new qucs::Line(z, y2, z, 0, GridPen))); // x grid
+    Lines.append(as(Part::XAxis, new qucs::Line(z, 5, z, -5, QPen(Qt::black,0))));   // x tick marks
     zD += zDstep;
     z = gridPixel(zD);
   }
@@ -282,10 +282,10 @@ else {  // not logarithmical
 
 Frame:
   // outer frame
-  Lines.append(new qucs::Line(0,  y2, x2, y2, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(x2, y2, x2,  0, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(0,   0, x2,  0, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(0,  y2,  0,  0, QPen(Qt::black,0)));
+  Lines.append(as(Part::Frame, new qucs::Line(0,  y2, x2, y2, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(x2, y2, x2,  0, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(0,   0, x2,  0, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(0,  y2,  0,  0, QPen(Qt::black,0))));
   return valid;
 }
 

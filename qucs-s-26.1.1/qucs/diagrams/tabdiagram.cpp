@@ -25,6 +25,7 @@
 #include <QPainter>
 
 #include "tabdiagram.h"
+#include "ink.h"
 #include "main.h"
 #include <cmath>
 #include "misc.h"
@@ -51,12 +52,18 @@ void TabDiagram::paint(QPainter* painter) {
 }
 
 void TabDiagram::paintDiagram(QPainter *painter) {
+  // In its theme's colours: its rules, its texts.
+  const Colors colors = this->colors();
+  paintBackground(painter, colors);
   painter->save();
   painter->translate(cx, cy);
 
-  for (qucs::Line *pl : Lines) {
-    painter->setPen(pl->style);
-    painter->drawLine(pl->x1, -pl->y1, pl->x2, -pl->y2);
+  {
+    const qucs_s::ink::Paper inside(colors.inside);   // (a warning's colour fitted to it)
+    for (qucs::Line *pl : Lines) {
+      painter->setPen(pl->part ? colors.pen(pl->style, pl->part) : qucs_s::ink::on(pl->style));
+      painter->drawLine(pl->x1, -pl->y1, pl->x2, -pl->y2);
+    }
   }
 
   if(x1 > 0) {  // paint scroll bar ?
@@ -108,7 +115,7 @@ void TabDiagram::paintDiagram(QPainter *painter) {
   }
 
 
-  painter->setPen(Qt::black);
+  painter->setPen(colors.of(Part::Text));
   for (Text *pt : Texts) {
     painter->drawText(pt->x, -pt->y, 1, 1, Qt::TextDontClip, pt->s);
   }
@@ -154,11 +161,11 @@ int TabDiagram::calcDiagram()
   y = y2 - tHeight - 6;
 
   // outer frame
-  Lines.append(new qucs::Line(0, y2, x2, y2, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(0, y2, 0, 0, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(x2, y2, x2, 0, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(0, 0, x2, 0, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(0, y+2, x2, y+2, QPen(Qt::black,2)));
+  Lines.append(as(Part::Frame, new qucs::Line(0, y2, x2, y2, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(0, y2, 0, 0, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(x2, y2, x2, 0, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(0, 0, x2, 0, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(0, y+2, x2, y+2, QPen(Qt::black,2))));
 
   if(xAxis.limit_min < 0.0)
     xAxis.limit_min = 0.0;
@@ -235,12 +242,12 @@ int TabDiagram::calcDiagram()
 	  }
 	  if(pD == g->axis(0))   // only paint one time
 	    if(y >= tHeight) if(y < y2-tHeight-5)
-	      Lines.append(new qucs::Line(0, y+1, x2, y+1, QPen(Qt::black,0)));
+	      Lines.append(as(Part::Frame, new qucs::Line(0, y+1, x2, y+1, QPen(Qt::black,0))));
 	}
 	lastCount *= pD->count;
       }
       x += colWidth+15;
-      Lines.append(new qucs::Line(x-8, y2, x-8, 0, QPen(Qt::black,0)));
+      Lines.append(as(Part::Frame, new qucs::Line(x-8, y2, x-8, 0, QPen(Qt::black,0))));
     }
     Lines.last()->style = QPen(Qt::black,2);
   }  // of "if no data in graphs"
@@ -331,7 +338,7 @@ int TabDiagram::calcDiagram()
     }
     x += colWidth+15;
     if(g != Graphs.last())   // do not paint last line
-      Lines.append(new qucs::Line(x-8, y2, x-8, 0, QPen(Qt::black,0)));
+      Lines.append(as(Part::Frame, new qucs::Line(x-8, y2, x-8, 0, QPen(Qt::black,0))));
   }
 
 funcEnd:
@@ -411,6 +418,12 @@ bool TabDiagram::scrollTo(int initial, int, int dy)
     return false;   // did anything change ?
 
   return true;
+}
+
+// ------------------------------------------------------------
+QList<Diagram::Part> TabDiagram::themeParts() const
+{
+  return {Part::Background, Part::Frame, Part::Text};
 }
 
 // ------------------------------------------------------------

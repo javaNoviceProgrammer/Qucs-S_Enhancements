@@ -51,6 +51,9 @@ namespace qucs { // otherwise conflict with <windows.h>
 class DrawingPrimitive {
 public:
   virtual ~DrawingPrimitive() {}
+  // What of a diagram it draws (diagramtheme::Part: its frame, an axis,
+  // ...), whose colour it is drawn in; 0 when none - in its own.
+  unsigned char part = 0;
   virtual void draw([[maybe_unused]] QPainter* painter) const {};
   virtual QBrush brushHint() const { return Qt::NoBrush; }
   virtual QPen penHint() const { return Qt::NoPen; }

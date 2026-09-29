@@ -52,6 +52,7 @@
 
 #include "rect3ddiagram.h"
 #include "misc.h"
+#include "ink.h"
 
 #include <QTextStream>
 #include <QMessageBox>
@@ -117,47 +118,59 @@ void Diagram::paint(QPainter *p) {
 }
 
 void Diagram::paintDiagram(QPainter *painter) {
+    // Each part in its theme's colour, on the paper in use (the canvas's).
+    const Colors colors = this->colors();
+    paintBackground(painter, colors);
     painter->save();
 
     painter->translate(cx, cy);
     painter->save();
+    {
+        // Inside the frame: what is in a colour of its own (the traces, a
+        // warning) fitted to the plot area, as the markers' are.
+        const qucs_s::ink::Paper inside(colors.inside);
+        for (qucs::Line* line : Lines) {
+            painter->setPen(line->part ? colors.pen(line->penHint(), line->part) : qucs_s::ink::on(line->penHint()));
+            painter->drawLine(QLineF{line->x1, - line->y1, line->x2, - line->y2});
+        }
 
-    for (qucs::Line* line : Lines) {
-        painter->setPen(line->penHint());
-        painter->drawLine(QLineF{line->x1, - line->y1, line->x2, - line->y2});
-    }
+        for (qucs::Arc* arc : Arcs) {
+            painter->setPen(arc->part ? colors.pen(arc->penHint(), arc->part) : qucs_s::ink::on(arc->penHint()));
+            painter->drawArc(QRectF{arc->x, - arc->y, arc->w, arc->h}, arc->angle, arc->arclen);
+        }
 
-    for (qucs::Arc* arc : Arcs) {
-        painter->setPen(arc->penHint());
-        painter->drawArc(QRectF{arc->x, - arc->y, arc->w, arc->h}, arc->angle, arc->arclen);
-    }
-
-    painter->scale(1.0, -1.0); // make Y-axis grow upwards
-    paintBehindGraphs(painter);
-    for (Graph *pg: Graphs) {
-        pg->paint(painter);
+        painter->scale(1.0, -1.0); // make Y-axis grow upwards
+        paintBehindGraphs(painter);
+        for (Graph *pg: Graphs) {
+            pg->paint(painter);
+        }
     }
     painter->restore();  // to translated(cx, cy) with no negative y-scale
 
-    for (Text *pt: Texts) {
-        painter->save();
+    {
+        // (A graph's name on an axis, in its colour: fitted to the paper
+        // around the frame.)
+        const qucs_s::ink::Paper outside(colors.outside);
+        for (Text *pt: Texts) {
+            painter->save();
 
-        painter->setPen(pt->Color);
-        painter->translate(pt->x, -pt->y);
-        painter->rotate(pt->angle());
-        painter->drawText(0, 0, pt->s);
+            painter->setPen(pt->part ? colors.part[pt->part] : qucs_s::ink::on(pt->Color));
+            painter->translate(pt->x, -pt->y);
+            painter->rotate(pt->angle());
+            painter->drawText(0, 0, pt->s);
 
-        painter->restore();
+            painter->restore();
+        }
     }
 
-    paintInFront(painter);
-    paintLegend(painter);
+    paintInFront(painter, colors);
+    paintLegend(painter, colors);
 
     // The title, centred above the frame.
     if (!title.isEmpty()) {
         painter->save();
         painter->setFont(titleFont());
-        painter->setPen(Qt::black);
+        painter->setPen(colors.of(Part::Title));
         const QFontMetricsF fm(painter->font());
         const qreal w = fm.horizontalAdvance(title);
         painter->drawText(QPointF(x2 / 2.0 - w / 2, -y2 - 6 - fm.descent()), title);
@@ -177,6 +190,61 @@ void Diagram::paintDiagram(QPainter *painter) {
     painter->restore();
 }
 
+void Diagram::paintBackground(QPainter *painter, const Colors &colors) const {
+    if (colors.card.isValid() && colors.card.alpha() > 0) {
+        // All it draws, with a margin: the numbers centred on the edges of
+        // its frame too, a table's scroll bar left of it.
+        constexpr qreal margin = 6;
+        const QRectF drawn = paintedRect(QFontMetricsF(painter->font()));
+        painter->fillRect(drawn.adjusted(-margin, -margin, margin, margin) | QRectF(boundingRect()), colors.card);
+    }
+    if (colors.plotArea.isValid() && colors.plotArea.alpha() > 0) {
+        painter->save();
+        painter->translate(cx, cy);
+        painter->fillPath(plotAreaShape(), colors.plotArea);
+        painter->restore();
+    }
+}
+
+QPainterPath Diagram::plotAreaShape() const {
+    QPainterPath path;
+    path.addRect(QRectF(0, -y2, x2, y2));
+    return path;
+}
+
+Diagram::Theme Diagram::theme() const {
+    Theme t = a_theme;
+    const QColor grid = GridPen.color();
+    if (grid != qucs_s::diagramtheme::defaultGridColor() && themeParts().contains(Part::Grid)) t.choose(Part::Grid, grid);
+    return t;
+}
+
+void Diagram::setTheme(const Theme &theme) {
+    // Only the parts it has (a table has no legend); the grid's colour in
+    // GridPen, where the grid lines are drawn from and it is saved.
+    const QList<Part> parts = themeParts();
+    a_theme = Theme();
+    for (Part p : parts)
+        if (p != Part::Grid) a_theme.choose(p, theme.chosen(p));
+    const QColor grid = theme.chosen(Part::Grid);
+    if (parts.contains(Part::Grid))
+        GridPen.setColor(grid.isValid() ? grid : qucs_s::diagramtheme::defaultGridColor());
+}
+
+Diagram::Colors Diagram::colors() const {
+    return qucs_s::diagramtheme::colorsOn(theme(), qucs_s::ink::paper(), numbersInside());
+}
+
+QList<Diagram::Part> Diagram::themeParts() const {
+    return {Part::Background, Part::PlotArea, Part::Frame, Part::Grid, Part::XAxis, Part::YAxis, Part::RightAxis,
+            Part::Title, Part::LegendBackground, Part::LegendBorder, Part::LegendText};
+}
+
+Diagram::Part Diagram::partOf(const Axis *axis) const {
+    if (axis == &xAxis) return Part::XAxis;
+    return axis == &zAxis ? Part::RightAxis : Part::YAxis;
+}
+
 /*!
    The legend: one row per graph with a sample of its line (colour,
    thickness, style or symbol) and its variable, in a box in the corner
@@ -184,8 +252,10 @@ void Diagram::paintDiagram(QPainter *painter) {
    the lower left corner, y downwards), after the graphs and the axis
    texts, so it lies on top of them.
 */
-void Diagram::paintLegend(QPainter *painter) {
+void Diagram::paintLegend(QPainter *painter, const Colors &colors) {
     if (legendPos == LegendOff || Graphs.isEmpty()) return;
+    // (The samples' colours, fitted to the legend's paper.)
+    const qucs_s::ink::Paper paper(colors.legend);
 
     // A row per graph; a graph in auto colors or markers has a row per
     // curve, with the values of the parameters swept (at most a few
@@ -230,15 +300,15 @@ void Diagram::paintLegend(QPainter *painter) {
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setPen(QPen(Qt::darkGray, 1));
-    painter->setBrush(QColor(255, 255, 255, 230));
+    painter->setPen(QPen(colors.of(Part::LegendBorder), 1));
+    painter->setBrush(colors.of(Part::LegendBackground));
     painter->drawRect(QRectF(x, y, width, height));
 
     qreal rowTop = y + pad;
     for (const Row &row: rows) {
         const qreal mid = rowTop + rowHeight / 2.0;
         const qreal x0 = x + pad, x1 = x0 + sample;
-        QPen pen(row.color, row.thick);
+        QPen pen(qucs_s::ink::on(row.color), row.thick);
         pen.setCapStyle(Qt::RoundCap);
         switch (row.style) {   // the same patterns Graph::drawLines() uses
         case GRAPHSTYLE_DASH:     pen.setDashPattern({10.0, 6.0}); break;
@@ -267,11 +337,12 @@ void Diagram::paintLegend(QPainter *painter) {
                 painter->drawLine(QPointF(x0, mid), QPointF(x1, mid));
             }
             if (row.marker != Graph::PointMarker::None) {
-                painter->setPen(QPen(row.color, 1));
-                Graph::drawPointMarker(painter, row.marker, QPointF(x0 + sample / 2, mid), Graph::markerSize(row.thick));
+                painter->setPen(QPen(qucs_s::ink::on(row.color), 1));
+                Graph::drawPointMarker(painter, row.marker, QPointF(x0 + sample / 2, mid), Graph::markerSize(row.thick),
+                                       colors.legend);
             }
         }
-        painter->setPen(Qt::black);
+        painter->setPen(colors.of(Part::LegendText));
         painter->drawText(QPointF(x1 + gap, rowTop + fm.ascent()), row.text);
         rowTop += rowHeight;
     }
@@ -279,6 +350,8 @@ void Diagram::paintLegend(QPainter *painter) {
 }
 
 void Diagram::paintMarkers(QPainter *p, bool paintAll) {
+    // On the plot area: their automatic colours are its paper's.
+    const qucs_s::ink::Paper inside(colors().inside);
     // draw markers last, so they are at the top of painting layers
     for (Graph *pg: Graphs)
         for (Marker *pm: pg->Markers)
@@ -293,9 +366,13 @@ void Diagram::paintScheme(Schematic *p) {
 }
 
 // The ink of a graph's name on an axis: its color, or plain when its
-// curves each have one.
+// curves each have one - then the axis' (labelPart()).
 static QColor labelColor(const Graph *pg) {
     return pg->colorsEachCurve() ? QColor(Qt::black) : pg->Color;
+}
+
+static Diagram::Part labelPart(const Graph *pg, Diagram::Part axis) {
+    return pg->colorsEachCurve() ? axis : Diagram::Part::None;
 }
 
 /*!
@@ -320,12 +397,12 @@ void Diagram::createAxisLabels() {
             if (Name[0] != 'C') {   // locus curve ?
                 w = metrics.boundingRect(pD->Var).width() >> 1;
                 if (w > wmax) wmax = w;
-                Texts.append(new Text(x - w, y, pD->Var, labelColor(pg), 12.0));
+                Texts.append(as(labelPart(pg, Part::XAxis), new Text(x - w, y, pD->Var, labelColor(pg), 12.0)));
             } else {
                 w = metrics.boundingRect("real(" + pg->Var + ")").width() >> 1;
                 if (w > wmax) wmax = w;
-                Texts.append(new Text(x - w, y, "real(" + pg->Var + ")",
-                                      labelColor(pg), 12.0));
+                Texts.append(as(labelPart(pg, Part::XAxis), new Text(x - w, y, "real(" + pg->Var + ")",
+                                                                  labelColor(pg), 12.0)));
             }
         }
     } else {
@@ -333,7 +410,7 @@ void Diagram::createAxisLabels() {
         encode_String(xAxis.Label, Str);
         w = metrics.boundingRect(Str).width() >> 1;
         if (w > wmax) wmax = w;
-        Texts.append(new Text(x - w, y, Str, Qt::black, 12.0));
+        Texts.append(as(Part::XAxis, new Text(x - w, y, Str, Qt::black, 12.0)));
     }
     Bounding_y2 = 0;
     Bounding_y1 = y - LineSpacing;
@@ -383,12 +460,12 @@ void Diagram::createAxisLabels() {
                 if (Name[0] != 'C') {   // location curve ?
                     w = metrics.boundingRect(var_name).width() >> 1;
                     if (w > wmax) wmax = w;
-                    Texts.append(new Text(x, y - w, var_name, labelColor(pg), 12.0, 0.0, 1.0));
+                    Texts.append(as(labelPart(pg, Part::YAxis), new Text(x, y - w, var_name, labelColor(pg), 12.0, 0.0, 1.0)));
                 } else {
                     w = metrics.boundingRect("imag(" + var_name + ")").width() >> 1;
                     if (w > wmax) wmax = w;
-                    Texts.append(new Text(x, y - w, "imag(" + var_name + ")",
-                                          labelColor(pg), 12.0, 0.0, 1.0));
+                    Texts.append(as(labelPart(pg, Part::YAxis), new Text(x, y - w, "imag(" + var_name + ")",
+                                                                      labelColor(pg), 12.0, 0.0, 1.0)));
                 }
             } else {     // if no data => <invalid>
                 w = metrics.boundingRect(pg->Var + INVALID_STR).width() >> 1;
@@ -402,7 +479,7 @@ void Diagram::createAxisLabels() {
         encode_String(yAxis.Label, Str);
         w = metrics.boundingRect(Str).width() >> 1;
         if (w > wmax) wmax = w;
-        Texts.append(new Text(x, y - w, Str, Qt::black, 12.0, 0.0, 1.0));
+        Texts.append(as(Part::YAxis, new Text(x, y - w, Str, Qt::black, 12.0, 0.0, 1.0)));
         x -= LineSpacing;
     }
     if (Bounding_x1 < -x) Bounding_x1 = -x;
@@ -429,13 +506,13 @@ void Diagram::createAxisLabels() {
                 if (Name[0] != 'C') {   // location curve ?
                     w = metrics.boundingRect(var_name).width() >> 1;
                     if (w > wmax) wmax = w;
-                    Texts.append(new Text(x, y + w, var_name,
-                                          labelColor(pg), 12.0, 0.0, -1.0));
+                    Texts.append(as(labelPart(pg, Part::RightAxis), new Text(x, y + w, var_name,
+                                                                          labelColor(pg), 12.0, 0.0, -1.0)));
                 } else {
                     w = metrics.boundingRect("imag(" + var_name + ")").width() >> 1;
                     if (w > wmax) wmax = w;
-                    Texts.append(new Text(x, y + w, "imag(" + var_name + ")",
-                                          labelColor(pg), 12.0, 0.0, -1.0));
+                    Texts.append(as(labelPart(pg, Part::RightAxis), new Text(x, y + w, "imag(" + var_name + ")",
+                                                                          labelColor(pg), 12.0, 0.0, -1.0)));
                 }
             } else {     // if no data => <invalid>
                 w = metrics.boundingRect(pg->Var + INVALID_STR).width() >> 1;
@@ -449,7 +526,7 @@ void Diagram::createAxisLabels() {
         encode_String(zAxis.Label, Str);
         w = metrics.boundingRect(Str).width() >> 1;
         if (w > wmax) wmax = w;
-        Texts.append(new Text(x, y + w, Str, Qt::black, 12.0, 0.0, -1.0));
+        Texts.append(as(Part::RightAxis, new Text(x, y + w, Str, Qt::black, 12.0, 0.0, -1.0)));
     }
     x -= x2;
     if (Bounding_x2 < x) Bounding_x2 = x;
@@ -1531,7 +1608,11 @@ QString Diagram::save() {
 
     // labels can contain spaces -> must be last items in the line
     s += " \"" + xAxis.Label + "\" \"" + yAxis.Label + "\" \"" + zAxis.Label + "\"";
-    if (!title.isEmpty()) s += " \"" + title + "\"";
+    // Then its title, and the colours chosen for its parts (older versions
+    // read the title, and no more).
+    const QString colors = a_theme.toString();
+    if (!title.isEmpty() || !colors.isEmpty()) s += " \"" + title + "\"";
+    if (!colors.isEmpty()) s += " \"" + colors + "\"";
     s += ">\n";
 
     for (Graph *pg: Graphs)
@@ -1688,6 +1769,11 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
     yAxis.Label = s.section('"', 3, 3);   // yLabel left
     zAxis.Label = s.section('"', 5, 5);   // yLabel right
     title = s.section('"', 7, 7);         // its title (none in older files)
+    // The colours of its parts (automatic in older files); the grid's is
+    // GridPen's, read above.
+    Theme read = Theme::fromString(s.section('"', 9, 9));
+    read.choose(Part::Grid, GridPen.color() == qucs_s::diagramtheme::defaultGridColor() ? QColor() : GridPen.color());
+    setTheme(read);
 
     Graph *pg;
     // .......................................................
@@ -1813,9 +1899,9 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
         }
 
         if (Above)
-            Arcs.append(new struct qucs::Arc(x, dx2 + y, y, y, beta, theta, GridPen));
+            Arcs.append(as(Part::Grid, new struct qucs::Arc(x, dx2 + y, y, y, beta, theta, GridPen)));
         if (Below)
-            Arcs.append(new struct qucs::Arc(x, dx2, y, y, 16 * 360 - beta - theta, theta, GridPen));
+            Arcs.append(as(Part::Grid, new struct qucs::Arc(x, dx2, y, y, 16 * 360 - beta - theta, theta, GridPen)));
     }
 
     // ....................................................
@@ -1837,7 +1923,7 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
         else
             x = (x2 - R1) >> 1;
         if (fabs(fabs(im) - 1.0) > 0.2)   // if too near to |r|=1, it looks ugly
-            Arcs.append(new struct qucs::Arc(x, (x2 + y) >> 1, y, y, beta, theta, GridPen));
+            Arcs.append(as(Part::Grid, new struct qucs::Arc(x, (x2 + y) >> 1, y, y, beta, theta, GridPen)));
 
         if (Axis->up > 1.0) {  // draw arcs on the rigth-handed side ?
             im = 1.0 - im;
@@ -1845,14 +1931,14 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
             if (Zplane) x += y;
             else x -= y;
             if (im >= 1.0)
-                Arcs.append(new struct qucs::Arc(x, (x2 + y) >> 1, y, y, beta, theta, GridPen));
+                Arcs.append(as(Part::Grid, new struct qucs::Arc(x, (x2 + y) >> 1, y, y, beta, theta, GridPen)));
             else {
                 phi = int(16.0 * 180.0 / pi * acos(im));
                 len = 16 * 180 - phi;
                 if (Above && Below) len += len;
                 else if (Below) phi = 16 * 180;
                 if (!Zplane) phi += 16 * 180;
-                Arcs.append(new struct qucs::Arc(x, (x2 + y) >> 1, y, y, phi, len, GridPen));
+                Arcs.append(as(Part::Grid, new struct qucs::Arc(x, (x2 + y) >> 1, y, y, phi, len, GridPen)));
             }
         }
     }
@@ -1862,7 +1948,7 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
     if (Axis->up > 1.0) {  // draw circle with |r|=1 ?
         x = (x2 - R1) >> 1;
         y = (x2 + R1) >> 1;
-        Arcs.append(new struct qucs::Arc(x, y, R1, R1, beta, theta, QPen(Qt::black, 0)));
+        Arcs.append(as(Part::Frame, new struct qucs::Arc(x, y, R1, R1, beta, theta, QPen(Qt::black, 0))));
 
         // vertical line Re(r)=1 (visible only if |r|>1)
         if (Zplane) x = y;
@@ -1870,11 +1956,11 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
         if (Above) m = y;
         else m = 0;
         if (!Below) y = 0;
-        Lines.append(new qucs::Line(x, dx2 + m, x, dx2 - y, GridPen));
+        Lines.append(as(Part::Grid, new qucs::Line(x, dx2 + m, x, dx2 - y, GridPen)));
 
         if (Below) y = 4;
         else y = y2 - 4 - QucsSettings.font.pointSize();
-        Texts.append(new Text(0, y, misc::StringNum(Axis->up)));
+        Texts.append(as(partOf(Axis), new Text(0, y, misc::StringNum(Axis->up))));
     }
 
 }
@@ -1932,7 +2018,7 @@ void Diagram::createPolarDiagram(Axis *Axis, int Mode) {
     if (Above) i = y2; else i = y2 >> 1;
     if (Below) z = 0; else z = y2 >> 1;
     // y line
-    Lines.append(new qucs::Line(x2 >> 1, i, x2 >> 1, z, GridPen));
+    Lines.append(as(Part::Grid, new qucs::Line(x2 >> 1, i, x2 >> 1, z, GridPen)));
 
     int len = 0;       // arc length
     int beta = 16 * 180;  // start angle
@@ -1958,13 +2044,13 @@ void Diagram::createPolarDiagram(Axis *Axis, int Mode) {
             GridNum += GridStep;
             QString lbl;
             lbl = numberText(GridNum, GridStep);
-            Texts.append(new Text(((x2 + z) >> 1) - 10, tPos, lbl));
+            Texts.append(as(partOf(Axis), new Text(((x2 + z) >> 1) - 10, tPos, lbl)));
 
             phi = int(16.0 * 180.0 / pi * atan(double(2 * tHeight) / zD));
             if (!Below) tmp = beta + phi;
             else tmp = beta;
-            Arcs.append(new struct qucs::Arc((x2 - z) >> 1, (y2 + z) >> 1, z, z, tmp, len - phi,
-                                             GridPen));
+            Arcs.append(as(Part::Grid, new struct qucs::Arc((x2 - z) >> 1, (y2 + z) >> 1, z, z, tmp, len - phi,
+                                                            GridPen)));
             zD += zDstep;
         }
     } else {  // of  "if(GridOn)"
@@ -1974,11 +2060,11 @@ void Diagram::createPolarDiagram(Axis *Axis, int Mode) {
     }
 
     // create outer circle
-    Texts.append(new Text(x2 - 8, tPos, numberText(Axis->up)));
+    Texts.append(as(partOf(Axis), new Text(x2 - 8, tPos, numberText(Axis->up))));
     phi = int(16.0 * 180.0 / pi * atan(double(2 * tHeight) / double(x2)));
     if (!Below) tmp = phi;
     else tmp = 0;
-    Arcs.append(new struct qucs::Arc(0, y2, x2, y2, tmp, 16 * 360 - phi, QPen(Qt::black, 0)));
+    Arcs.append(as(Part::Frame, new struct qucs::Arc(0, y2, x2, y2, tmp, 16 * 360 - phi, QPen(Qt::black, 0))));
 
     // get size of text using the screen-compatible metric
     QFontMetrics metrics(QucsSettings.font, 0);
@@ -2191,7 +2277,7 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
                 if (z < y2)
                     if (z > 0) {
                         if (Axis->Units == Axis::NoUnits) {
-                            Lines.prepend(new qucs::Line(0, z, x2, z, GridPen));  // y grid
+                            Lines.prepend(as(Part::Grid, new qucs::Line(0, z, x2, z, GridPen)));  // y grid
                         }
                     }
 
@@ -2204,15 +2290,15 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
                 w = metrics.boundingRect(tmp).width();  // width of text
                 if (maxWidth < w) maxWidth = w;
                 if (x0 > 0)
-                    Texts.append(new Text(x0 + 7, z - 6, tmp)); // text aligned left
+                    Texts.append(as(partOf(Axis), new Text(x0 + 7, z - 6, tmp))); // text aligned left
                 else
-                    Texts.append(new Text(-w - 7, z - 6, tmp)); // text aligned right
+                    Texts.append(as(partOf(Axis), new Text(-w - 7, z - 6, tmp))); // text aligned right
 
                 // y marks
                 if (Axis->Units != Axis::NoUnits) {
-                    Lines.prepend(new qucs::Line(0, z, x2, z, GridPen));  // y grid
+                    Lines.prepend(as(Part::Grid, new qucs::Line(0, z, x2, z, GridPen)));  // y grid
                 }
-                Lines.append(new qucs::Line(x0 - 5, z, x0 + 5, z, QPen(Qt::black, 0)));
+                Lines.append(as(partOf(Axis), new qucs::Line(x0 - 5, z, x0 + 5, z, QPen(Qt::black, 0))));
             }
 
             zD += zDstep;
@@ -2239,16 +2325,16 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
             w = metrics.boundingRect(tmp).width();  // width of text
             if (maxWidth < w) maxWidth = w;
             if (x0 > 0)
-                Texts.append(new Text(x0 + 8, z - 6, tmp));  // text aligned left
+                Texts.append(as(partOf(Axis), new Text(x0 + 8, z - 6, tmp)));  // text aligned left
             else
-                Texts.append(new Text(-w - 7, z - 6, tmp));  // text aligned right
+                Texts.append(as(partOf(Axis), new Text(-w - 7, z - 6, tmp)));  // text aligned right
             GridNum += GridStep;
 
             if (Axis->GridOn)
                 if (z < y2)
                     if (z > 0)
-                        Lines.prepend(new qucs::Line(0, z, x2, z, GridPen));  // y grid
-            Lines.append(new qucs::Line(x0 - 5, z, x0 + 5, z, QPen(Qt::black, 0))); // y marks
+                        Lines.prepend(as(Part::Grid, new qucs::Line(0, z, x2, z, GridPen)));  // y grid
+            Lines.append(as(partOf(Axis), new qucs::Line(x0 - 5, z, x0 + 5, z, QPen(Qt::black, 0)))); // y marks
             zD += zDstep;
             z = gridPixel(zD);
         }

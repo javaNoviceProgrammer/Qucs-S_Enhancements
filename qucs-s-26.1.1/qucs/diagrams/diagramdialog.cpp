@@ -21,7 +21,9 @@
 */
 #include "diagramdialog.h"
 #include "extsimkernels/spicecompat.h"
+#include "ink.h"
 #include "main.h"
+#include "markerdialog.h"
 #include "misc.h"
 #include "qucs.h"
 #include "rect3ddiagram.h"
@@ -47,9 +49,11 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QSlider>
+#include <QStandardItemModel>
 #include <QStringList>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QtAlgorithms>
 
@@ -103,6 +107,54 @@ private:
                      int(CROSS3D_SIZE * (1.0 + cxz)),
                      int(CROSS3D_SIZE * (1.0 + cyz)));
   };
+};
+
+namespace theme = qucs_s::diagramtheme;
+
+// The diagram as the Theme tab's colours draw it, on the paper of its
+// schematic: the diagram itself, painted in those colours for the time of
+// a paint and put back.
+class ThemePreview : public QWidget {
+public:
+  ThemePreview(Diagram *d, const QColor &canvas, QWidget *parent = nullptr)
+      : QWidget(parent), m_diagram(d), m_canvas(canvas) {
+    setObjectName(QStringLiteral("diagramThemePreview"));
+    setMinimumSize(240, 180);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  }
+  void show(const theme::Theme &t) {
+    m_theme = t;
+    update();
+  }
+
+private:
+  void paintEvent(QPaintEvent *) override {
+    QPainter p(this);
+    p.fillRect(rect(), m_canvas);
+    p.setFont(QucsSettings.font);
+    // All it draws, with its background's margin, in the middle.
+    const QRectF drawn = (m_diagram->paintedRect(QFontMetricsF(p.font())) | QRectF(m_diagram->boundingRect()))
+                             .adjusted(-12, -12, 12, 12);
+    if (drawn.width() <= 0 || drawn.height() <= 0) return;
+    const qreal scale = std::min({width() / drawn.width(), height() / drawn.height(), 1.5});
+    p.translate(width() / 2.0, height() / 2.0);
+    p.scale(scale, scale);
+    p.translate(-drawn.center());
+    const theme::Theme kept = m_diagram->theme();
+    const bool selected = m_diagram->isSelected;
+    m_diagram->setTheme(m_theme);
+    m_diagram->isSelected = false;
+    {
+      const qucs_s::ink::Paper paper(m_canvas);
+      m_diagram->paint(&p);
+    }
+    m_diagram->setTheme(kept);
+    m_diagram->isSelected = selected;
+  }
+
+  Diagram *m_diagram;
+  QColor m_canvas;
+  theme::Theme m_theme;
 };
 
 // standard colors: blue, red, magenta, green, cyan, yellow, grey, black
@@ -512,15 +564,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       gp->addWidget(GridOn, Row, 0);
       Row++;
 
-      GridLabel1 = new QLabel(tr("Grid Color:"), Tab2);
-      gp->addWidget(GridLabel1, Row, 0);
-      GridColorButt = new QPushButton("        ", Tab2);
-      connect(GridColorButt, &QPushButton::clicked, this,
-              &DiagramDialog::slotSetGridColor);
-      gp->addWidget(GridColorButt, Row, 1);
-      Row++;
-      misc::setPickerColor(GridColorButt, Diag->GridPen.color());
-
+      // (Its colour: on the Theme tab, with the other parts'.)
       GridLabel2 = new QLabel(tr("Grid Style: "), Tab2);
       gp->addWidget(GridLabel2, Row, 0);
       GridStyleBox = new QComboBox(Tab2);
@@ -540,7 +584,6 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
               &DiagramDialog::slotSetGridBox);
     } else {
       GridOn = 0;
-      GridColorButt = 0;
       GridStyleBox = 0;
       NotationBox = 0;
     }
@@ -967,6 +1010,12 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       }
   } else
     stepX = 0;
+
+  // Tab #4 - Theme: the colours of its parts.
+  if (auto *doc = qobject_cast<Schematic *>(parent))
+    a_canvas = doc->viewport()->palette().color(doc->viewport()->backgroundRole());
+  if (!a_canvas.isValid()) a_canvas = Qt::white;
+  t->addTab(makeThemeTab(NameY, NameZ), tr("Theme"));
 
   connect(t, &QTabWidget::currentChanged, this, &DiagramDialog::slotChangeTab);
   // ...........................................................
@@ -1641,12 +1690,6 @@ void DiagramDialog::slotApply() {
         Diag->yAxis.GridOn = GridOn->isChecked();
         changed = true;
       }
-    if (GridColorButt)
-      if (Diag->GridPen.color() !=
-          misc::getWidgetBackgroundColor(GridColorButt)) {
-        Diag->GridPen.setColor(misc::getWidgetBackgroundColor(GridColorButt));
-        changed = true;
-      }
     if (GridStyleBox)
       if (Diag->GridPen.style() !=
           (Qt::PenStyle)(GridStyleBox->currentIndex() + 1)) {
@@ -1774,6 +1817,11 @@ void DiagramDialog::slotApply() {
 
   } // of "if(Diag->Name != "Tab")"
 
+  if (Diag->theme() != ofThisDiagram(a_theme)) {
+    Diag->setTheme(a_theme);
+    changed = true;
+  }
+
   qDeleteAll(Diag->Graphs);
   Diag->Graphs.clear(); // delete the graphs
 
@@ -1872,14 +1920,6 @@ void DiagramDialog::slotSetPointMarker(int marker) {
  * \brief Opens a color picker dialog and sets the grid color.
  *
  */
-void DiagramDialog::slotSetGridColor() {
-  QColor c = QColorDialog::getColor(
-      misc::getWidgetBackgroundColor(GridColorButt), this);
-  if (!c.isValid())
-    return;
-  misc::setPickerColor(GridColorButt, c);
-  changed = true;
-}
 
 /*!
  * \brief Updates the selected graph's variable expression when GraphInput
@@ -1986,14 +2026,10 @@ void DiagramDialog::slotSetNumMode(int Mode) {
  */
 void DiagramDialog::slotSetGridBox(int state) {
   if (state == 2) {
-    GridColorButt->setEnabled(true);
     GridStyleBox->setEnabled(true);
-    GridLabel1->setEnabled(true);
     GridLabel2->setEnabled(true);
   } else {
-    GridColorButt->setEnabled(false);
     GridStyleBox->setEnabled(false);
-    GridLabel1->setEnabled(false);
     GridLabel2->setEnabled(false);
   }
 }
@@ -2476,4 +2512,179 @@ void DiagramDialog::updateGraphListItem(int row) {
       axisItem->setText(axisName);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// The Theme tab.
+
+theme::Theme DiagramDialog::ofThisDiagram(const theme::Theme &t) const {
+  theme::Theme mine;
+  for (Part p : Diag->themeParts())
+    mine.choose(p, t.chosen(p));
+  return mine;
+}
+
+QWidget *DiagramDialog::makeThemeTab(const QString &nameY, const QString &nameZ) {
+  auto *tab = new QWidget();
+  tab->setObjectName(QStringLiteral("diagramTheme"));
+  auto *columns = new QHBoxLayout(tab);
+  auto *left = new QVBoxLayout();
+  columns->addLayout(left);
+
+  // A ready-made theme to start from; "Custom" when the colours are no
+  // one's (the item data: a Preset, -1 the default, -2 custom).
+  auto *presetRow = new QHBoxLayout();
+  presetRow->addWidget(new QLabel(tr("Theme:")));
+  a_themePreset = new QComboBox();
+  a_themePreset->setObjectName(QStringLiteral("diagramThemePreset"));
+  for (const auto &[preset, name] : theme::presets())
+    a_themePreset->addItem(name, int(preset));
+  a_themePreset->addItem(tr("My default for new diagrams"), -1);
+  a_themePreset->addItem(tr("Custom"), -2);
+  presetRow->addWidget(a_themePreset, 1);
+  left->addLayout(presetRow);
+  connect(a_themePreset, &QComboBox::activated, this, [this](int index) {
+    const int which = a_themePreset->itemData(index).toInt();
+    if (which == -2) return;
+    setTheme(which == -1 ? theme::defaultForNewDiagrams() : theme::preset(theme::Preset(which)));
+  });
+
+  // A row for each part it has, in sections: a button showing its colour
+  // (and "Automatic" when it is), and a reset back to automatic.
+  const QList<Part> parts = Diag->themeParts();
+  const bool table = parts.contains(Part::Text);
+  const QString axisTip = tr("Its ticks, numbers and label (the names of the traces keep their colours)");
+  struct Entry {
+    Part part;
+    QString label, tip;
+  };
+  const QList<QPair<QString, QList<Entry>>> sections = {
+      {tr("Areas"),
+       {{Part::Background, tr("Background:"),
+         tr("Under all of it: its frame, numbers, labels and title. Automatic: none on light paper, white on dark "
+            "paper")},
+        {Part::PlotArea, tr("Plot area:"), tr("Inside its frame. Automatic: the background")}}},
+      {tr("Lines"),
+       {{Part::Frame, table ? tr("Rules:") : tr("Frame:"),
+         table ? tr("The table's frame and rules") : tr("The frame around the plot area")},
+        {Part::Grid, tr("Grid:"), tr("The grid lines (shown or not on the Properties tab)")}}},
+      {tr("Axes"),
+       {{Part::XAxis, tr("x-Axis:"), axisTip},
+        {Part::YAxis, (nameY.isEmpty() ? tr("y-Axis") : nameY) + QLatin1Char(':'), axisTip},
+        {Part::RightAxis, (nameZ.isEmpty() ? tr("right Axis") : nameZ) + QLatin1Char(':'), axisTip}}},
+      {tr("Texts"),
+       {{Part::Title, tr("Title:"), tr("The title above it (Properties tab)")},
+        {Part::Text, tr("Text:"), tr("The table's texts")}}},
+      {tr("Legend"),
+       {{Part::LegendBackground, tr("Background:"), tr("The legend's box (and a histogram's statistics)")},
+        {Part::LegendBorder, tr("Border:"), tr("The line around the legend")},
+        {Part::LegendText, tr("Text:"), tr("The names of the traces in the legend")}}},
+  };
+  auto *grid = new QGridLayout();
+  grid->setColumnMinimumWidth(0, 12);
+  int row = 0;
+  for (const auto &[section, entries] : sections) {
+    if (std::none_of(entries.begin(), entries.end(), [&parts](const Entry &e) { return parts.contains(e.part); }))
+      continue;
+    grid->addWidget(new QLabel(QStringLiteral("<b>%1</b>").arg(section.toHtmlEscaped())), row++, 0, 1, 4);
+    for (const Entry &e : entries) {
+      if (!parts.contains(e.part)) continue;
+      auto *label = new QLabel(e.label);
+      label->setToolTip(e.tip);
+      auto *button = new QPushButton();
+      button->setObjectName(QStringLiteral("theme_") + theme::keyOf(e.part));
+      button->setIconSize(QSize(28, 16));
+      button->setToolTip(e.tip);
+      auto *reset = new QToolButton();
+      reset->setObjectName(QStringLiteral("theme_%1_auto").arg(theme::keyOf(e.part)));
+      reset->setText(tr("Reset"));
+      reset->setToolTip(tr("Back to automatic"));
+      grid->addWidget(label, row, 1);
+      grid->addWidget(button, row, 2);
+      grid->addWidget(reset, row, 3);
+      ++row;
+      const Part part = e.part;
+      const QString name = QString(e.label).remove(QLatin1Char(':'));
+      connect(button, &QPushButton::clicked, this, [this, part, name] {
+        const QColor c = QColorDialog::getColor(shownColor(part), this, tr("%1 Color").arg(name),
+                                                QColorDialog::ShowAlphaChannel);
+        if (!c.isValid()) return;
+        theme::Theme t = a_theme;
+        t.choose(part, c);
+        setTheme(t);
+      });
+      connect(reset, &QToolButton::clicked, this, [this, part] {
+        theme::Theme t = a_theme;
+        t.choose(part, QColor());
+        setTheme(t);
+      });
+      a_themeRows.append({part, button, reset});
+    }
+  }
+  grid->setColumnStretch(2, 1);
+  left->addLayout(grid);
+
+  auto *save = new QPushButton(tr("Save as Default for New Diagrams"));
+  save->setObjectName(QStringLiteral("diagramThemeSaveDefault"));
+  save->setToolTip(tr("The diagrams you place from now on start with these colours"));
+  connect(save, &QPushButton::clicked, this, [this] {
+    theme::setDefaultForNewDiagrams(a_theme);
+    showTheme();
+  });
+  left->addWidget(save);
+  auto *note = new QLabel(tr("Automatic: as Qucs-S has always drawn it, in colours that show on the background "
+                             "chosen. The traces keep their colours (Data tab), and the markers theirs."));
+  note->setWordWrap(true);
+  left->addWidget(note);
+  left->addStretch(1);
+
+  a_themePreview = new ThemePreview(Diag, a_canvas);
+  columns->addWidget(a_themePreview, 1);
+
+  a_theme = Diag->theme();
+  showTheme();
+  return tab;
+}
+
+void DiagramDialog::setTheme(const theme::Theme &t) {
+  a_theme = t;
+  showTheme();
+}
+
+QColor DiagramDialog::shownColor(Part part) const {
+  const QColor chosen = a_theme.chosen(part);
+  if (chosen.isValid()) return chosen;
+  // An automatic one: as it is drawn now (the areas: what shows there).
+  const theme::Colors shown = theme::colorsOn(ofThisDiagram(a_theme), a_canvas);
+  return part == Part::Background ? shown.outside : part == Part::PlotArea ? shown.inside : shown.of(part);
+}
+
+void DiagramDialog::showTheme() {
+  for (const ThemeRow &r : std::as_const(a_themeRows)) {
+    const QColor chosen = a_theme.chosen(r.part);
+    r.button->setIcon(colorSwatch(shownColor(r.part)));
+    r.button->setText(chosen.isValid() ? theme::colorText(chosen).toUpper() : tr("Automatic"));
+    r.reset->setEnabled(chosen.isValid());
+  }
+
+  // The ready-made theme the colours are, or Custom; the default only
+  // when one was saved.
+  const theme::Theme mine = ofThisDiagram(a_theme);
+  const theme::Theme saved = theme::defaultForNewDiagrams();
+  auto *model = qobject_cast<QStandardItemModel *>(a_themePreset->model());
+  int match = -1, custom = -1;
+  for (int i = 0; i < a_themePreset->count(); ++i) {
+    const int which = a_themePreset->itemData(i).toInt();
+    if (which == -2) {
+      custom = i;
+      continue;
+    }
+    if (which == -1 && model != nullptr) model->item(i)->setEnabled(!saved.isAutomatic());
+    if (which == -1 && saved.isAutomatic()) continue;
+    const theme::Theme t = which == -1 ? saved : theme::preset(theme::Preset(which));
+    if (match < 0 && ofThisDiagram(t) == mine) match = i;
+  }
+  if (model != nullptr && custom >= 0) model->item(custom)->setEnabled(match < 0);
+  a_themePreset->setCurrentIndex(match >= 0 ? match : custom);
+  if (a_themePreview != nullptr) a_themePreview->show(ofThisDiagram(a_theme));
 }
