@@ -1103,9 +1103,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   exponent that is a multiple of three (250e3). *Decimal places* is auto
   (as many as each number needs; decimal labels as many as the grid
   step needs, so they line up: 0.00, 0.25, 0.50) or a fixed number. The
-  markers and the cursor readout in the status bar follow the diagram.
-  Saved with the diagram; older versions read a notation of their own as
-  automatic. Fixed on the way: a diagram without graphs (or whose data
+  cursor readout in the status bar follows the diagram, and so does a
+  marker unless it has a notation of its own (its dialog's *Number
+  format*: as the diagram's axes, or any of the six, its *Precision* the
+  places after the point). The notation reaches every number in the
+  marker's box: its position, a complex value as real/imaginary or
+  magnitude/angle, a value in dB and a Smith chart's impedance (the
+  complex values and the impedance were always written in the automatic
+  way). `edit_diagram` and `edit_marker` set both. Saved with the diagram
+  and the marker; older versions read a notation of their own as
+  automatic, and a marker's as the diagram's. Fixed on the way: a diagram without graphs (or whose data
   had not changed) showed a new diagram's axes — 0 to 1, engineering —
   after the schematic was opened, instead of its own.
 - **Dashed and dotted graphs look dashed and dotted** (upstream #1723):

@@ -153,7 +153,6 @@ QString SmithDiagram::extraMarkerText(Marker const* m) const
   QUCS_ASSERT(nVarPos == Pos.size());
   double Zr, Zi;
   double Z0 = m->Z0;
-  double Precision = m->precision(); // hmmm
 
   Zr = m->powReal();
   Zi = m->powImag();
@@ -161,10 +160,11 @@ QString SmithDiagram::extraMarkerText(Marker const* m) const
   MatchDialog::r2z(Zr, Zi, Z0);
   QString Var = pGraph->Var;
 
+  // (In the marker's notation, as its other numbers.)
   if(Var.startsWith("S")) { // uuh, ooh hack.
-    return "\n"+ Var.replace('S', 'Z')+": " +misc::complexRect(Zr, Zi, Precision);
+    return "\n"+ Var.replace('S', 'Z')+": " +m->complexText(Zr, Zi, nM_Rect);
   }else{
-    return "\nZ("+ Var+"): " +misc::complexRect(Zr, Zi, Precision);
+    return "\nZ("+ Var+"): " +m->complexText(Zr, Zi, nM_Rect);
   }
 }
 

@@ -73,8 +73,27 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
   dblVal->setLocale(QLocale::C);
   XPosition->setValidator(dblVal);
 
+  Precision->setToolTip(tr("Significant digits in the automatic notation; places after the point in the "
+                           "others (of the mantissa, with an exponent or a prefix)."));
   g->addWidget(new QLabel(tr("Precision: ")), 0, 0);
   g->addWidget(Precision, 0, 1);
+
+  // How its numbers are written: as the diagram writes those of its axes,
+  // or a notation of its own - each with examples; the item's data is
+  // what the marker keeps (-1, or a numberformat::Notation).
+  NotationBox = new QComboBox();
+  NotationBox->setObjectName(QStringLiteral("markerNotation"));
+  QString diagramsNotation;
+  for (const auto& [notation, text] : qucs_s::numberformat::choices())
+    if (pMarker->diag() && notation == pMarker->diag()->notation) diagramsNotation = text.section(QLatin1String(" ("), 0, 0);
+  NotationBox->addItem(diagramsNotation.isEmpty() ? tr("as the diagram's axes")
+                                                  : tr("as the diagram's axes (now %1)").arg(diagramsNotation), -1);
+  for (const auto& [notation, text] : qucs_s::numberformat::choices())
+    NotationBox->addItem(text, int(notation));
+  NotationBox->setCurrentIndex(std::max(0, NotationBox->findData(pMarker->notation)));
+  NotationBox->setToolTip(tr("How the marker writes its numbers - its position and its value"));
+  g->addWidget(new QLabel(tr("Number format: ")), 1, 0);
+  g->addWidget(NotationBox, 1, 1);
 
   NumberBox = new QComboBox();
   NumberBox->addItem(tr("real/imaginary"));
@@ -82,12 +101,12 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
   NumberBox->addItem(tr("magnitude/angle (radian)"));
   NumberBox->setCurrentIndex(pMarker->numMode);
 
-  g->addWidget(new QLabel(tr("Number Notation: ")), 1,0);
-  g->addWidget(NumberBox, 1, 1);
+  g->addWidget(new QLabel(tr("Complex values: ")), 2, 0);
+  g->addWidget(NumberBox, 2, 1);
 
   QLabel *lblXpos = new QLabel(tr("X-axis position:"));
-  g->addWidget(lblXpos, 2, 0);
-  g->addWidget(XPosition, 2, 1);
+  g->addWidget(lblXpos, 3, 0);
+  g->addWidget(XPosition, 3, 1);
 
   IndicatorBox = new QComboBox();
   IndicatorBox->addItem(tr("Off"));
@@ -96,8 +115,8 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
   IndicatorBox->setCurrentIndex(pMarker->indicatorMode);
 
   QLabel *lblIndicator = new QLabel(tr("Marker Indicator"));
-  g->addWidget(lblIndicator, 3, 0);
-  g->addWidget(IndicatorBox, 3, 1);
+  g->addWidget(lblIndicator, 4, 0);
+  g->addWidget(IndicatorBox, 4, 1);
 
   QUCS_ASSERT(pMarker->diag());
   if(pMarker->diag()->Name=="Smith") // BUG
@@ -107,8 +126,8 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
       SourceImpedance = new QLineEdit();
       SourceImpedance->setText(QString::number(pMarker->Z0));
 
-      g->addWidget(new QLabel(tr("Z0: ")), 4, 0);
-      g->addWidget(SourceImpedance, 4, 1);
+      g->addWidget(new QLabel(tr("Z0: ")), 5, 0);
+      g->addWidget(SourceImpedance, 5, 1);
   }
   
   // The colours of its text and its background: automatic (the paper's
@@ -131,8 +150,8 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
     g->addWidget(new QLabel(label), row, 0);
     g->addLayout(both, row, 1);
   };
-  colorRow(5, tr("Text color:"), TextColorButton, TextColorAuto, "markerTextColor");
-  colorRow(6, tr("Background color:"), FillColorButton, FillColorAuto, "markerFillColor");
+  colorRow(6, tr("Text color:"), TextColorButton, TextColorAuto, "markerTextColor");
+  colorRow(7, tr("Background color:"), FillColorButton, FillColorAuto, "markerFillColor");
   connect(TextColorButton, &QPushButton::clicked, this, [this] {
     const QColor c = QColorDialog::getColor(a_textColor.isValid() ? a_textColor : pMarker->shownTextColor(), this,
                                             tr("Marker Text Color"));
@@ -149,7 +168,7 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
   TransBox = new QCheckBox(tr("Transparent background"));
   TransBox->setObjectName(QStringLiteral("markerTransparent"));
   TransBox->setChecked(pMarker->transparent);
-  g->addWidget(TransBox, 7, 0, 1, 2);
+  g->addWidget(TransBox, 8, 0, 1, 2);
   connect(TransBox, &QCheckBox::toggled, this, &MarkerDialog::showColors);
   a_textColor = pMarker->textColor;
   a_fillColor = pMarker->fillColor;
@@ -166,7 +185,7 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
   b->setSpacing(5);
   b->addWidget(ButtOK);
   b->addWidget(ButtCancel);
-  g->addLayout(b,8,0,1,2);   // (under the rest: it covered the check box once)
+  g->addLayout(b,9,0,1,2);   // (under the rest: it covered the check box once)
 
   this->setLayout(g);
 }
@@ -224,6 +243,10 @@ void MarkerDialog::slotAcceptValues()
 	}
   if(NumberBox->currentIndex() != pMarker->numMode) {
     pMarker->numMode = NumberBox->currentIndex();
+    changed = true;
+  }
+  if (NotationBox->currentData().toInt() != pMarker->notation) {
+    pMarker->notation = NotationBox->currentData().toInt();
     changed = true;
   }
   if (IndicatorBox->currentIndex() != pMarker->indicatorMode) {
