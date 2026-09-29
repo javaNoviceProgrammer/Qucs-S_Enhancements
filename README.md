@@ -966,10 +966,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   net, not a problem), two components of one name, no ground, no
   simulation block, and what the simulator in use would drop from the
   netlist (a component not available for it, one without a SPICE model,
-  an implicit equation-defined device, a winding without its core) —
+  an implicit equation-defined device, a winding without its core, a
+  SPICE library part whose library is not found or does not define it) —
   listed on a *Problems* tab of the message dock with
   error/warning icons; a click on a row selects the component and centres
-  the schematic on the place. Every simulation runs the check first and
+  the schematic on the place. ngspice and Xyce read names without regard
+  to case, and so does the check for them: labels `Out` and `out` are one
+  net (told, when the wires keep them apart), and `r1` beside `R1` is a
+  name used twice. A part switched to shorted joins its pins, as its
+  netlist does. Every simulation runs the check first and
   brings the tab up when there are errors (the run goes ahead anyway; the
   simulator has the last word). Subcircuits (schematics with ports) are
   not asked for a ground or a simulation. A ground symbol is required by

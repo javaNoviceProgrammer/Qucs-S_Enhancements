@@ -403,6 +403,18 @@ QString misc::properAbsFileName(const QString& filename, Schematic* sch)
     if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
   }
 
+  // A file of the shipped library, named by where that was on the
+  // author's machine (C:/QUCS-S 24.3.0/share/qucs-s/library/XyceDigital.lib):
+  // the same file in this installation's library. (Not found, the SPICE
+  // library parts of the Xyce digital examples had no pins.)
+  QString inLibrary = filename;
+  inLibrary.replace(QLatin1Char('\\'), QLatin1Char('/'));
+  const qsizetype at = inLibrary.lastIndexOf(QStringLiteral("/library/"), -1, Qt::CaseInsensitive);
+  if (at >= 0 && !QucsSettings.LibDir.isEmpty()) {
+    fileInfo.setFile(QDir(QucsSettings.LibDir).filePath(inLibrary.mid(at + 9)));
+    if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
+  }
+
   for (const QString& path : qucsPathList) {
     fileInfo.setFile(QDir(path).filePath(fName));
     if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
