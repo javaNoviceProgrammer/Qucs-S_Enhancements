@@ -5002,10 +5002,16 @@ private slots:
         for (const Wire* w : front()->a_DocWires) through = through || (w->P1() == QPoint(20, 250) || w->P2() == QPoint(20, 250));
         QVERIFY(through);
         const int wires = int(front()->a_DocWires.size());
-        r = call("connect", {{"from", "R9.2"}, {"to", "U1.2"}, {"via", QJsonArray{QJsonArray{20, 400}}}});
+        // (One point, built by append: QJsonArray{QJsonArray{20, 400}} is
+        // [20, 400] to Apple's newer clang - a copy - and 'via' was refused
+        // as no list of points, not as no way through them.)
+        QJsonArray onePoint;
+        onePoint.append(QJsonArray{20, 400});
+        r = call("connect", {{"from", "R9.2"}, {"to", "U1.2"}, {"via", onePoint}});
         QVERIFY2(failed(r) && text(r).contains("Not wired through the points given"), qPrintable(text(r)));
         QCOMPARE(int(front()->a_DocWires.size()), wires);
-        QVERIFY(failed(call("connect", {{"from", "R9.2"}, {"to", "U1.2"}, {"via", QJsonArray{QJsonArray{20, 400}}}, {"side", "below"}})));
+        r = call("connect", {{"from", "R9.2"}, {"to", "U1.2"}, {"via", onePoint}, {"side", "below"}});
+        QVERIFY2(failed(r) && text(r).contains("Give 'via' or 'side', not both"), qPrintable(text(r)));
 
         // A label's text where it is wanted; the same name again moves it.
         r = call("set_label", {{"at", "U1.3"}, {"name", "out"}, {"text_at", QJsonArray{500, 150}}});
