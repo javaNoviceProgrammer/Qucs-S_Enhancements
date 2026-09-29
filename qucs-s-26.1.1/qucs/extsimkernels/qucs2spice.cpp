@@ -50,6 +50,54 @@ namespace qucs2spice
 
    void ExtractVarsAndValues(QString line,QStringList& VarsAndVals);
    void subsVoltages(QStringList &tokens, QStringList& nods);
+   QStringList fieldsOf(const QString& line);
+   QString modelParameters(const QStringList& fields);
+}
+
+/*!
+ * \brief qucs2spice::fieldsOf A line of a Qucs netlist split into its
+ * fields: the name, the nodes, the properties - a quoted value one field,
+ * without the spaces in it. Split at each space, C="30 pF" of a library's
+ * model was C="30 and pF": the capacitor was netlisted as 30 farads.
+ */
+/*!
+ * \brief qucs2spice::modelParameters A .MODEL card's parameters from a
+ * model's fields (Is="1e-15 A" Cj0="10 fF"): each value as SPICE reads it
+ * (1e-15, 10f) - 1 MOhm is 1Meg, not a milliohm.
+ */
+QString qucs2spice::modelParameters(const QStringList& fields)
+{
+    QStringList out;
+    for (const QString& f : fields) {
+        const qsizetype eq = f.indexOf(QLatin1Char('='));
+        if (eq <= 0) {
+            out << QString(f).remove(QLatin1Char('"'));
+            continue;
+        }
+        QString value = f.mid(eq + 1);
+        value.remove(QLatin1Char('"'));
+        out << f.left(eq) + QLatin1Char('=') + spicecompat::normalize_value(value);
+    }
+    return out.join(QLatin1Char(' '));
+}
+
+QStringList qucs2spice::fieldsOf(const QString& line)
+{
+    QStringList fields;
+    QString field;
+    bool quoted = false;
+    for (const QChar c : line) {
+        if (c == QLatin1Char('"')) quoted = !quoted;
+        if ((c == QLatin1Char(' ') || c == QLatin1Char('\t')) && !quoted) {
+            if (!field.isEmpty()) fields << field;
+            field.clear();
+            continue;
+        }
+        if (c == QLatin1Char(' ') && quoted) continue;   // (30 pF: 30pF)
+        field += c;
+    }
+    if (!field.isEmpty()) fields << field;
+    return fields;
 }
 
 /*!
@@ -125,7 +173,7 @@ QString qucs2spice::convert_netlist(QString netlist, bool xyce)
 QString qucs2spice::convert_rcl(const QString& line)
 {
     QString s="";
-    QStringList lst = line.split(" ", Qt::SkipEmptyParts);
+    QStringList lst = fieldsOf(line);
     QString s1 = lst.takeFirst();
     s += s1.remove(':');
     s += " " + lst.takeFirst();
@@ -151,23 +199,21 @@ QString qucs2spice::convert_header(QString line)
 QString qucs2spice::convert_diode(QString line, [[maybe_unused]] bool xyce)
 {
     QString s="";
-    QStringList lst = line.split(" ", Qt::SkipEmptyParts);
+    QStringList lst = fieldsOf(line);
     QString name = lst.takeFirst();
     auto idx = name.indexOf(':');
     name =  name.right(name.size()-idx-1); // name
     QString K = lst.takeFirst();
     QString A = lst.takeFirst();
     s += QStringLiteral("D%1 %2 %3 DMOD_%4 \n").arg(name).arg(A).arg(K).arg(name);
-    QString mod_params = lst.join(" ");
-    mod_params.remove('\"');
-    s += QStringLiteral(".MODEL DMOD_%1 D(%2) \n").arg(name).arg(mod_params);
+    s += QStringLiteral(".MODEL DMOD_%1 D(%2) \n").arg(name).arg(modelParameters(lst));
     return s;
 }
 
 QString qucs2spice::convert_mosfet(QString line, bool xyce)
 {
     QString s="";
-    QStringList lst = line.split(" ", Qt::SkipEmptyParts);
+    QStringList lst = fieldsOf(line);
     QString name = lst.takeFirst();
     auto idx = name.indexOf(':');
     name =  name.right(name.size()-idx-1); // name
@@ -199,8 +245,7 @@ QString qucs2spice::convert_mosfet(QString line, bool xyce)
     }
     s += QStringLiteral("M%1 %2 %3 %4 %5 MMOD_%6 %7 %8 \n").arg(name).arg(D).arg(G).arg(S).arg(Sub)
             .arg(name).arg(L).arg(W);
-    QString mod_params = par_lst.join(" ");
-    mod_params.remove('\"');
+    const QString mod_params = modelParameters(par_lst);
     s += QStringLiteral(".MODEL MMOD_%1 %2(%3) \n").arg(name).arg(Typ).arg(mod_params);
     if (xyce) s.replace("Vt0=","VtO=");
     return s;
@@ -209,7 +254,7 @@ QString qucs2spice::convert_mosfet(QString line, bool xyce)
 QString qucs2spice::convert_jfet(const QString& line, bool xyce)
 {
     QString s="";
-    QStringList lst = line.split(" ", Qt::SkipEmptyParts);
+    QStringList lst = fieldsOf(line);
     QString name = lst.takeFirst();
     auto idx = name.indexOf(':');
     name =  name.right(name.size()-idx-1); // name
@@ -230,8 +275,7 @@ QString qucs2spice::convert_jfet(const QString& line, bool xyce)
         }
     }
     s += QStringLiteral("J%1 %2 %3 %4 JMOD_%5 \n").arg(name).arg(D).arg(G).arg(S).arg(name);
-    QString mod_params = par_lst.join(" ");
-    mod_params.remove('\"');
+    const QString mod_params = modelParameters(par_lst);
     s += QStringLiteral(".MODEL JMOD_%1 %2(%3) \n").arg(name).arg(Typ).arg(mod_params);
     if (xyce) s.replace(" Vt0="," VtO=");
     return s;
@@ -240,7 +284,7 @@ QString qucs2spice::convert_jfet(const QString& line, bool xyce)
 QString qucs2spice::convert_bjt(const QString& line)
 {
     QString s="";
-    QStringList lst = line.split(" ", Qt::SkipEmptyParts);
+    QStringList lst = fieldsOf(line);
     QString name = lst.takeFirst();
     auto idx = name.indexOf(':');
     name =  name.right(name.size()-idx-1); // name
@@ -272,8 +316,7 @@ QString qucs2spice::convert_bjt(const QString& line)
         }
     }
     s += QStringLiteral("Q%1 %2 %3 %4 %5 QMOD_%6 \n").arg(name).arg(C).arg(B).arg(E).arg(Sub).arg(name);
-    QString mod_params = par_lst.join(" ");
-    mod_params.remove('\"');
+    const QString mod_params = modelParameters(par_lst);
     s += QStringLiteral(".MODEL QMOD_%1 %2(%3) \n").arg(name).arg(Typ).arg(mod_params);
     return s;
 }
@@ -290,7 +333,7 @@ QString qucs2spice::convert_ccvs(const QString& line)
 
 QString qucs2spice::convert_ccs(const QString& line, bool voltage)
 {
-    QStringList lst = line.split(" ", Qt::SkipEmptyParts);
+    QStringList lst = fieldsOf(line);
     QString name = lst.takeFirst();
     auto idx = name.indexOf(':');
     name =  name.right(name.size()-idx-1); // name
@@ -301,7 +344,7 @@ QString qucs2spice::convert_ccs(const QString& line, bool voltage)
     QString nod3 = lst.takeFirst();
     QString s1 = lst.takeFirst().remove("\"");
     idx = s1.indexOf('=');
-    QString val = s1.right(s1.size()-idx-1);
+    QString val = spicecompat::normalize_value(s1.right(s1.size()-idx-1));   // (1 MOhm: 1Meg, not milli)
     QString s;
     if (voltage) s="H";
     else s="F";
@@ -322,7 +365,7 @@ QString qucs2spice::convert_vcvs(const QString& line)
 
 QString qucs2spice::convert_vcs(const QString& line,bool voltage)
 {
-    QStringList lst = line.split(" ", Qt::SkipEmptyParts);
+    QStringList lst = fieldsOf(line);
     QString name = lst.takeFirst();
     auto idx = name.indexOf(':');
     name =  name.right(name.size()-idx-1); // name
@@ -333,7 +376,7 @@ QString qucs2spice::convert_vcs(const QString& line,bool voltage)
     QString nod3 = lst.takeFirst();
     QString s1 = lst.takeFirst().remove("\"");
     idx = s1.indexOf('=');
-    QString val = s1.right(s1.size()-idx-1);
+    QString val = spicecompat::normalize_value(s1.right(s1.size()-idx-1));   // (1 MOhm: 1Meg, not milli)
 
     QString s;
     if (voltage) s="E";
@@ -345,15 +388,21 @@ QString qucs2spice::convert_vcs(const QString& line,bool voltage)
 QString qucs2spice::convert_dc_src(const QString& line)
 {
     QString s="";
-    QStringList lst = line.split(" ", Qt::SkipEmptyParts);
+    QStringList lst = fieldsOf(line);
     QString s1 = lst.takeFirst();
+    // A current source's nodes the other way round, as a schematic's Idc
+    // is netlisted (Ampere_dc::spice_netlist()): Qucs' Idc n1 n2 drives its
+    // current into the circuit at n1, SPICE's I n+ n- at n-. Written as they
+    // came, a library model's tail current (the TI and Boyle 741s' IEE)
+    // flowed the wrong way, and the op-amp sat at a rail.
+    const bool current = s1.startsWith(QLatin1String("Idc:"));
     s += s1.remove(':');
-    s += " " + lst.takeFirst();
-    s += " " + lst.takeFirst() + " ";
+    const QString n1 = lst.takeFirst(), n2 = lst.takeFirst();
+    s += current ? QStringLiteral(" %1 %2 ").arg(n2, n1) : QStringLiteral(" %1 %2 ").arg(n1, n2);
     s1 = lst.takeFirst().remove("\"");
     auto idx = s1.indexOf('=');
     QString val = s1.right(s1.size()-idx-1);
-    s += "DC " + val + "\n";
+    s += "DC " + spicecompat::normalize_value(val) + "\n";   // (10 mA: 10m)
     return s;
 }
 

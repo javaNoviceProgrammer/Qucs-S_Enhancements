@@ -3630,6 +3630,10 @@ private slots:
         QVERIFY(!failed(call("edit_painting", {{"symbol", true}, {"painting", a}, {"y", port.value("y").toInt() + 40}})));
         r = call("save_document", {{"path", "twopin.sch"}});
         QVERIFY2(!failed(r) && text(r).contains("the nets of usestwopin.sch are not as they were") && text(r).contains("R2.1"), qPrintable(text(r)));
+        // (Undo there does not put them back: said what does - sixth round.)
+        QVERIFY2(text(r).contains("The new symbol is no undo step there") && text(r).contains("connect each pin by its name")
+                     && !text(r).contains("undo there puts back"),
+                 qPrintable(text(r)));
         QVERIFY(!failed(call("close_document", {{"path", "usestwopin.sch"}, {"unsaved", "discard"}})));
         QVERIFY(!failed(call("close_document", {{"path", "twopin.sch"}, {"unsaved", "discard"}})));
     }
@@ -4959,6 +4963,152 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // The sixth round's small things: redo 'to' a step behind is refused (it
+    // undid thirteen steps); a misspelt field of tune's 'measure' is refused
+    // with the one meant (waht measured the default); import_netlist's
+    // save_as over a file there already is refused before anything is made,
+    // and 'replace' writes over it; the netlist map names the pins that
+    // have names.
+    void theSixthRoundsSmallThings()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        for (int i = 1; i <= 3; ++i)
+            QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", QStringLiteral("R%1").arg(i)}, {"x", 100 * i}, {"y", 100}})));
+        const int at = front()->undoIndex();
+        QJsonObject r = call("redo", {{"to", at - 2}});
+        QVERIFY2(failed(r) && text(r).contains("redo goes forward only") && text(r).contains("undo with 'to'"), qPrintable(text(r)));
+        QCOMPARE(front()->undoIndex(), at);
+        QVERIFY(front()->getComponentByName("R3") != nullptr);
+        QVERIFY(!failed(call("undo", {{"to", at - 2}})));   // (undo's goes either way)
+        QVERIFY(!failed(call("undo", {{"to", at}})));
+        QVERIFY(front()->getComponentByName("R3") != nullptr);
+
+        r = call("tune", {{"component", "R1"}, {"values", QJsonArray{"1k"}},
+                          {"measure", QJsonObject{{"variable", "ac.v(out)"}, {"waht", "max"}}}});
+        QVERIFY2(failed(r) && text(r).contains("measure has no waht") && text(r).contains("Meant what?"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        const QString there = dir.filePath("workspace/imported_there.sch");
+        writeFile("workspace/imported_there.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n");
+        const int documents = int(app->allDocuments().size());
+        r = call("import_netlist", {{"text", "t\nR1 a 0 1k\n.end\n"}, {"save_as", there}});
+        QVERIFY2(failed(r) && text(r).contains("'replace': true writes over it") && text(r).contains("Nothing was imported"), qPrintable(text(r)));
+        QCOMPARE(int(app->allDocuments().size()), documents);
+        r = call("import_netlist", {{"text", "t\nR1 a 0 1k\n.end\n"}, {"save_as", there}, {"replace", true}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("saved").toString() == QDir::toNativeSeparators(there), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"path", there}, {"unsaved", "discard"}})));
+
+        // The map: a subcircuit's pins by number and name (its symbol's).
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        for (const auto& [name, y] : {std::pair{"in", 100}, std::pair{"out", 200}})
+            QVERIFY(!failed(call("add_component", {{"type", "Port"}, {"name", name}, {"x", 100}, {"y", y}})));
+        QVERIFY(!failed(call("save_document", {{"as", "named_pins.sch"}, {"replace", true}})));
+        QVERIFY(!failed(call("make_symbol")));
+        QVERIFY(!failed(call("save_document")));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Sub"}, {"name", "SUB1"}, {"x", 300}, {"y", 200},
+                                                {"properties", QJsonObject{{"File", "named_pins.sch"}}}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "RL"}, {"x", 100}, {"y", 400}})));
+        QVERIFY(!failed(call("connect", {{"from", "SUB1.2"}, {"to", "RL.1"}})));
+        QVERIFY(!failed(call("save_document", {{"as", "uses_named_pins.sch"}, {"replace", true}})));
+        const QJsonObject map = json(call("get_netlist", {{"map", true}})).toObject();
+        bool named = false;
+        for (const QJsonValue& node : map.value("nodes").toObject())
+            for (const QJsonValue& pin : node.toArray()) named = named || pin.toString() == "SUB1.2 (out)";
+        QVERIFY2(named, qPrintable(QJsonDocument(map.value("nodes").toObject()).toJson()));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "named_pins.sch"}, {"unsaved", "discard"}})));
+    }
+
+    // The OpAmps library's 741s under ngspice (fifth round, 7): the
+    // transistor-level uA741's C="30 pF" was netlisted as 30 farads (the
+    // value split at its space), and the macromodels' tail current source
+    // IEE was written with its nodes in Qucs' order, not a schematic Idc's -
+    // the TI model's output sat at the negative rail.
+    void theOpAmpLibrarysModelsAreNetlistedRight()
+    {
+        const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
+        if (!QFileInfo::exists(library + "/OpAmps.lib")) QSKIP("no library here");
+        const QString was = QucsSettings.LibDir;
+        QucsSettings.LibDir = library + "/";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("add_component", {{"type", "Lib"}, {"name", "U2"}, {"x", 600}, {"y", 100},
+                                               {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", "uA741"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("batch", {{"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Lib"}, {"name", "U1"}, {"x", 300}, {"y", 200},
+                                                                              {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", "ua741(TI)"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 300},
+                                                                              {"properties", QJsonObject{{"U", "0.1 V"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V2"}, {"x", 100}, {"y", 500},
+                                                                              {"properties", QJsonObject{{"U", "15 V"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V3"}, {"x", 250}, {"y", 500},
+                                                                              {"properties", QJsonObject{{"U", "15 V"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "RG"}, {"x", 450}, {"y", 450}, {"rotation", 1}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "RF"}, {"x", 550}, {"y", 350},
+                                                                              {"properties", QJsonObject{{"R", "10k"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", ".DC"}, {"name", "DC1"}, {"x", 100}, {"y", 650}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "U1.1"}, {"name", "inn"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "U1.2"}, {"name", "inp"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "U1.3"}, {"name", "out"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "U1.4"}, {"name", "vcc"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "U1.5"}, {"name", "vee"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "V1.1"}, {"name", "inp"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "V2.1"}, {"name", "vcc"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V2.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V3.1"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "V3.2"}, {"name", "vee"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "RG.1"}, {"name", "inn"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "RG.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "RF.1"}, {"name", "inn"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "RF.2"}, {"name", "out"}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QStringList lines;
+        for (const QJsonValue& v : json(call("get_netlist", {{"map", true}})).toObject().value("netlist").toArray()) lines << v.toString();
+        QucsSettings.LibDir = was;
+        // 30 pF, not 30 (farads); the tail current source as a schematic's.
+        // (Its C1: the TI model has one too.)
+        const QStringList capacitor = lines.filter(QRegularExpression("^CC1 _net6 _net19 "));
+        QVERIFY2(capacitor.size() == 1 && QRegularExpression("^CC1 _net6 _net19 30p\\s*$", QRegularExpression::CaseInsensitiveOption).match(capacitor.first()).hasMatch(),
+                 qPrintable(lines.filter(QRegularExpression("^CC1 ")).join('\n')));
+        const QStringList tail = lines.filter(QRegularExpression("^IdcIEE "));
+        QVERIFY2(tail.size() == 1 && tail.first().startsWith("IdcIEE _net10 _netP_VEE DC 1.016e-05", Qt::CaseInsensitive), qPrintable(tail.join('\n')));
+        // The macromodels' pins by the names their models give them (sixth
+        // round, wishlist 2): the TI 741's INN, INP, OUT, VCC, VEE.
+        QStringList pinNames;
+        const QJsonObject read = json(call("get_schematic", {{"components", QJsonArray{"U1"}}})).toObject();
+        for (const QJsonValue& p : read.value("components").toArray().first().toObject().value("pins").toArray())
+            pinNames << p.toObject().value("name").toString();
+        QVERIFY2(pinNames == (QStringList{"INN", "INP", "OUT", "VCC", "VEE"}), qPrintable(QJsonDocument(read).toJson().left(3000)));
+        r = call("connect", {{"from", "U1.nothing"}, {"to", "RG.1"}});
+        QVERIFY2(failed(r) && text(r).contains("2 INP"), qPrintable(text(r)));
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (!ngspice.isEmpty()) {
+            // A non-inverting gain of 11: 0.1 V in, 1.1 V out (it sat at -12.9 V).
+            QVERIFY(!failed(call("delete", {{"names", QJsonArray{"U2"}}})));
+            QVERIFY(!failed(call("save_document", {{"as", dir.filePath("workspace/ua741_ti.sch")}, {"replace", true}})));
+            const QString before = QucsSettings.NgspiceExecutable;
+            QucsSettings.NgspiceExecutable = ngspice;
+            QucsSettings.LibDir = library + "/";
+            r = call("simulate", {{"operating_point", true}, {"timeout", 60}}, 90000);
+            double out = json(r).toObject().value("operating point").toObject().value("nodes").toObject().value("out").toDouble(-100);
+            QVERIFY2(std::abs(out - 1.1) < 0.02, qPrintable(text(r)));
+            // The Boyle 741 in its place, whose pins come INP first: taken by
+            // name, not by number (by number the inputs swapped, and the
+            // amplifier sat at a rail with every answer green).
+            r = call("replace_component", {{"name", "U1"}, {"type", "Lib"},
+                                           {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", "ua741(boyle)"}}}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            r = call("simulate", {{"operating_point", true}, {"timeout", 60}}, 90000);
+            out = json(r).toObject().value("operating point").toObject().value("nodes").toObject().value("out").toDouble(-100);
+            QucsSettings.LibDir = was;
+            QucsSettings.NgspiceExecutable = before;
+            QVERIFY2(std::abs(out - 1.1) < 0.02, qPrintable(text(r)));
+        }
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // D3, after a run: ngspice writes a computed vector of a voltage's type
     // as v(name) (a NutmegEq's mag(v(out))) - its trace, named before the
     // run, finds it so.
@@ -5389,9 +5539,17 @@ private slots:
             r = call("save_document", {{"as", bad}});
             QVERIFY2(failed(r) && (text(r).contains("no file's name") || text(r).contains("is a folder")), qPrintable(bad + ": " + text(r)));
             r = call("new_project", {{"name", bad}, {"open", false}});
-            QVERIFY2(failed(r) && (text(r).contains("no file's name") || text(r).contains("no slashes") || text(r).contains("is a folder")),
+            QVERIFY2(failed(r) && (text(r).contains("no file's name") || text(r).contains("has a slash") || text(r).contains("no project's name")),
                      qPrintable(bad + ": " + text(r)));
         }
+        // Each said as it is (sixth round): "." has no letter or digit, not
+        // a slash; a name beginning with a dot would be hidden.
+        r = call("new_project", {{"name", "."}, {"open", false}});
+        QVERIFY2(failed(r) && text(r).contains("no letter or digit") && !text(r).contains("slash"), qPrintable(text(r)));
+        r = call("new_project", {{"name", ".amp"}, {"open", false}});
+        QVERIFY2(failed(r) && text(r).contains("begins with a dot"), qPrintable(text(r)));
+        r = call("new_project", {{"name", "a/b"}, {"open", false}});
+        QVERIFY2(failed(r) && text(r).contains("has a slash"), qPrintable(text(r)));
         QVERIFY(!QFileInfo::exists(dir.filePath("workspace/{}_prj")) && !QFileInfo::exists(dir.filePath("workspace/'.sch")));
         QVERIFY(!QFileInfo::exists(dir.filePath("workspace.sch")));   // (".": the workspace, and .sch after it - beside it)
         r = call("export_netlist", {{"save_as", "?.cir"}});
@@ -5526,6 +5684,69 @@ private slots:
                  qPrintable(netlist));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
         QVERIFY(!failed(call("close_document", {{"path", top}, {"unsaved", "discard"}})));
+    }
+
+    // The divider's R1 and R2 in one row, C1 on the wire between them: the
+    // wire went with neither, and the instance put where they were landed
+    // both its pins on it (XSUB1 mid mid, v(mid) = 0) - with the net's label
+    // on R2.1, on C1's pin, or none (sixth round, 2.1). The wire between
+    // them goes now, the ports are joined by labels, and the instance is
+    // where none of its pins meets anything.
+    void aDividerInARowKeepsItsNets()
+    {
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        const QString R = "\"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        const QString parts = "<Components>\n"
+                              "  <Vdc V1 1 100 200 18 -26 0 1 \"5 V\" 1>\n"
+                              "  <GND * 1 100 230 0 0 0 0>\n"
+                              "  <R R1 1 200 100 -26 15 0 0 " + R +
+                              "  <R R2 1 300 100 -26 15 0 0 " + R +
+                              "  <GND * 1 400 100 0 0 0 0>\n"
+                              "  <C C1 1 250 200 17 -26 0 1 \"1 uF\" 1 \"\" 0 \"neutral\" 0>\n"
+                              "  <GND * 1 250 230 0 0 0 0>\n"
+                              "  <.DC DC1 1 100 400 0 43 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>\n"
+                              "</Components>\n";
+        const struct {
+            const char* name;
+            QString labels;   // (a label as a wire of no length)
+        } variants[] = {{"none", ""},
+                        {"on R2.1", "  <270 100 270 100 \"mid\" 280 70 0 \"\">\n"},
+                        {"on C1's pin", "  <250 170 250 170 \"mid\" 260 140 0 \"\">\n"}};
+        int n = 0;
+        for (const auto& v : variants) {
+            ++n;
+            QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+            QJsonObject r = call("set_schematic", {{"text", parts + "<Wires>\n"
+                                                                   "  <100 170 100 100 \"\" 0 0 0 \"\">\n  <100 100 170 100 \"\" 0 0 0 \"\">\n"
+                                                                   "  <230 100 250 100 \"\" 0 0 0 \"\">\n  <250 100 270 100 \"\" 0 0 0 \"\">\n"
+                                                                   "  <250 100 250 170 \"\" 0 0 0 \"\">\n  <330 100 400 100 \"\" 0 0 0 \"\">\n"
+                                                    + v.labels + "</Wires>\n"}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            QDir().mkpath(dir.filePath(QStringLiteral("workspace/inarow%1").arg(n)));
+            const QString top = dir.filePath(QStringLiteral("workspace/inarow%1/top.sch").arg(n));
+            QVERIFY(!failed(call("save_document", {{"as", top}})));
+            r = call("create_subcircuit", {{"names", QJsonArray{"R1", "R2"}}, {"save_as", "div.sch"}});
+            QVERIFY2(!failed(r), qPrintable(QStringLiteral("%1: %2").arg(v.name, text(r))));
+            // Two nets, each as it was: V1's and C1's.
+            const QString netlist = text(call("get_netlist", {{"path", top}}));
+            const QRegularExpressionMatch x = QRegularExpression("\\nXSUB1 (\\S+) (\\S+) ").match(netlist);
+            QVERIFY2(x.hasMatch() && x.captured(1) != x.captured(2), qPrintable(QStringLiteral("%1: %2").arg(v.name, netlist)));
+            QVERIFY2(QRegularExpression(QStringLiteral("\\nV1 %1 0 ").arg(QRegularExpression::escape(x.captured(1)))).match(netlist).hasMatch(),
+                     qPrintable(QStringLiteral("%1: %2").arg(v.name, netlist)));
+            QVERIFY2(QRegularExpression(QStringLiteral("\\nC1 0 %1 |\\nC1 %1 0 ").arg(QRegularExpression::escape(x.captured(2)))).match(netlist).hasMatch(),
+                     qPrintable(QStringLiteral("%1: %2").arg(v.name, netlist)));
+            const QString checked = text(call("check_schematic"));
+            QVERIFY2(!checked.contains("connected to nothing"), qPrintable(QStringLiteral("%1: %2").arg(v.name, checked)));
+            if (!ngspice.isEmpty()) {
+                const QString before = QucsSettings.NgspiceExecutable;
+                QucsSettings.NgspiceExecutable = ngspice;
+                r = call("simulate", {{"operating_point", true}, {"timeout", 60}}, 90000);
+                QucsSettings.NgspiceExecutable = before;
+                const double mid = json(r).toObject().value("operating point").toObject().value("nodes").toObject().value(x.captured(2)).toDouble(-1);
+                QVERIFY2(std::abs(mid - 2.5) < 1e-3, qPrintable(QStringLiteral("%1: %2").arg(v.name, text(r))));
+            }
+            QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        }
     }
 
     // A library part whose library is not found, a subcircuit whose file is
