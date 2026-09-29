@@ -5565,6 +5565,247 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // Where a wire crosses a part's symbol other than to leave one of its
+    // pins straight out of it (as the pin's stub goes: toward the nearest
+    // side of its box) - a ground symbol's too. Empty: none.
+    static QStringList wiresOverSymbols(Schematic* sch)
+    {
+        QStringList over;
+        for (const Wire* w : sch->a_DocWires) {
+            const QRect piece = QRect(w->P1(), w->P2()).normalized();
+            for (const Component* c : sch->a_DocComps) {
+                if (c->Ports.isEmpty()) continue;
+                const QRect box = c->boundingRect().adjusted(1, 1, -1, -1);
+                if (!piece.intersects(box)) continue;
+                bool leaves = false;
+                for (const Port* p : c->Ports) {
+                    const QPoint pin(c->cx + p->x, c->cy + p->y);
+                    for (const auto& [end, other] : {std::pair(w->P1(), w->P2()), std::pair(w->P2(), w->P1())}) {
+                        if (end != pin || !box.contains(pin)) continue;
+                        const int l = pin.x() - box.left(), r = box.right() - pin.x(), u = pin.y() - box.top(), d = box.bottom() - pin.y();
+                        const int least = std::min({l, r, u, d});
+                        const QPoint out = least == l ? QPoint(-1, 0) : least == r ? QPoint(1, 0) : least == u ? QPoint(0, -1) : QPoint(0, 1);
+                        const QPoint dir((other.x() > end.x()) - (other.x() < end.x()), (other.y() > end.y()) - (other.y() < end.y()));
+                        leaves = leaves || dir == out;
+                    }
+                }
+                if (!leaves)
+                    over << QStringLiteral("%1,%2-%3,%4 over %5").arg(w->P1().x()).arg(w->P1().y()).arg(w->P2().x()).arg(w->P2().y())
+                                .arg(c->Name.isEmpty() ? c->Model : c->Name);
+            }
+        }
+        return over;
+    }
+
+    // Where a wire crosses the texts of a part with no pin on its net (its
+    // name, its values): the router goes round them where there is room. (A
+    // part's own - an op-amp's name right under its VEE pin - a wire from
+    // that pin may have to pass.)
+    static QStringList wiresOverTexts(Schematic* sch)
+    {
+        QStringList over;
+        for (const Wire* w : sch->a_DocWires) {
+            const QRect piece = QRect(w->P1(), w->P2()).normalized();
+            QSet<const Node*> nodes{w->Port1, w->Port2};   // (its net's, through the wires)
+            for (QList<const Node*> todo(nodes.cbegin(), nodes.cend()); !todo.isEmpty();) {
+                const Node* n = todo.takeLast();
+                for (const Wire* o : n->wires())
+                    for (const Node* m : {o->Port1, o->Port2})
+                        if (!nodes.contains(m)) {
+                            nodes.insert(m);
+                            todo << m;
+                        }
+            }
+            for (const Component* c : sch->a_DocComps) {
+                if (c->Ports.isEmpty() || c->Model == "GND") continue;
+                bool ours = false;
+                for (const Port* p : c->Ports) ours = ours || nodes.contains(p->Connection);
+                if (!ours && piece.intersects(c->boundingRectIncludingProperties()))
+                    over << QStringLiteral("%1,%2-%3,%4 over %5").arg(w->P1().x()).arg(w->P1().y()).arg(w->P2().x()).arg(w->P2().y()).arg(c->Name);
+            }
+        }
+        return over;
+    }
+
+    // The seventh round: the 741 bench (a gain of 11 by pin name, supplies
+    // in a column, a load) arranged with its feedback below. The wires went
+    // over the parts - a library part's box is wider than its pins, an
+    // op-amp's supply pins are in its box, so no way from them was clear
+    // and they were drawn over anything (Rf's up through the op-amp, VEE's
+    // through a source's lead and a ground symbol's stem); Rg went to the
+    // load's column; the label sat at a pin, over the drawing.
+    void theFeedbackNetworkIsDrawnAsOne()
+    {
+        const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
+        if (!QFileInfo::exists(library + "/OpAmps.lib")) QSKIP("no library here");
+        const QString was = QucsSettings.LibDir;
+        QucsSettings.LibDir = library + "/";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const auto add = [](const char* type, const char* name, int x, int y, const QJsonObject& props = {}, int rotation = 0) {
+            return QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", type}, {"name", name}, {"x", x}, {"y", y},
+                                                                                     {"rotation", rotation}, {"properties", props}}}};
+        };
+        const auto connect = [](const char* from, const char* to) {
+            return QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", from}, {"to", to}}}};
+        };
+        QJsonObject r = call("batch", {{"calls", QJsonArray{
+            add("Lib", "U1", 400, 300, QJsonObject{{"Lib", "OpAmps"}, {"Comp", "ua741(TI)"}}),
+            add("Vac", "Vin", 150, 350, QJsonObject{{"U", "0.1 V"}}), add("R", "Rg", 300, 450, QJsonObject{{"R", "1k"}}, 1),
+            add("R", "Rf", 450, 150, QJsonObject{{"R", "10k"}}), add("R", "RL", 600, 400, QJsonObject{{"R", "10k"}}, 1),
+            add("Vdc", "V1", 50, 150, QJsonObject{{"U", "15 V"}}), add("Vdc", "V2", 50, 500, QJsonObject{{"U", "15 V"}}),
+            add(".TR", "TR1", 100, 650, QJsonObject{{"Stop", "3 ms"}}),
+            connect("Vin.1", "U1.INP"), connect("Vin.2", "ground"), connect("Rg.2", "U1.inn"), connect("Rg.1", "ground"),
+            connect("Rf.1", "U1.inn"), connect("Rf.2", "U1.out"), connect("RL.1", "U1.out"), connect("RL.2", "ground"),
+            connect("V1.1", "U1.vcc"), connect("V1.2", "ground"), connect("V2.1", "ground"), connect("V2.2", "U1.vee"),
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "U1.out"}, {"name", "out"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "U1.vee"}, {"name", "vn"}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        // connect's wires too go round the symbols (V2's to VEE went a step at a time).
+        const QStringList connected = wiresOverSymbols(front());
+        QVERIFY2(connected.isEmpty(), qPrintable(connected.join('\n')));
+        QStringList before;
+        for (const QJsonValue& v : json(call("get_netlist", {{"map", true}})).toObject().value("nodes").toObject()) before << v.toVariant().toStringList().join(' ');
+        r = call("arrange", {{"feedback", "below"}});
+        QVERIFY2(!failed(r) && text(r).contains("every net as it was"), qPrintable(text(r)));
+        // Rg with the feedback network: U1's column, not the load's.
+        const QJsonArray columns = json(r).toObject().value("columns").toArray();
+        QVERIFY2(columns.size() == 3 && columns.at(1).toArray().contains("Rg") && !columns.at(2).toArray().contains("Rg"), qPrintable(text(r)));
+        Schematic* sch = front();
+        const Component *u1 = sch->getComponentByName("U1"), *rf = sch->getComponentByName("Rf"), *rg = sch->getComponentByName("Rg");
+        QVERIFY(u1 && rf && rg);
+        // Standing under Rf's end on the inverting input's net, ground below.
+        const auto pinAt = [](const Component* c, int k) { return QPoint(c->cx + c->Ports.at(k)->x, c->cy + c->Ports.at(k)->y); };
+        int rfIn = -1, rgIn = -1;
+        for (const QJsonValue& v : json(call("get_netlist", {{"map", true}})).toObject().value("nodes").toObject()) {
+            const QStringList on = v.toVariant().toStringList();
+            if (!on.contains("U1.1 (INN)")) continue;
+            for (int k = 0; k < 2; ++k) {
+                if (on.contains(QStringLiteral("Rf.%1").arg(k + 1))) rfIn = k;
+                if (on.contains(QStringLiteral("Rg.%1").arg(k + 1))) rgIn = k;
+            }
+        }
+        QVERIFY(rfIn >= 0 && rgIn >= 0);
+        QVERIFY2(pinAt(rg, rgIn).x() == pinAt(rf, rfIn).x() && pinAt(rg, rgIn).y() > pinAt(rf, rfIn).y() && pinAt(rg, 1 - rgIn).y() > pinAt(rg, rgIn).y()
+                     && pinAt(rg, 0).x() == pinAt(rg, 1).x(),
+                 qPrintable(QStringLiteral("Rf.%1 %2,%3; Rg.%4 %5,%6").arg(rfIn + 1).arg(pinAt(rf, rfIn).x()).arg(pinAt(rf, rfIn).y())
+                                .arg(rgIn + 1).arg(pinAt(rg, rgIn).x()).arg(pinAt(rg, rgIn).y())));
+        // No wire over a symbol - the op-amp's, a source's, a ground's.
+        const QStringList over = wiresOverSymbols(sch);
+        QVERIFY2(over.isEmpty(), qPrintable(over.join('\n')));
+        // Nor over another part's texts (VEE's ran through the source's name).
+        const QStringList overTexts = wiresOverTexts(sch);
+        QVERIFY2(overTexts.isEmpty(), qPrintable(overTexts.join('\n')));
+        // Each label on the longest wire of its net, lying down, its text clear of every part.
+        for (const char* name : {"out", "vn"}) {
+            const Wire* labelled = nullptr;
+            for (const Wire* w : sch->a_DocWires)
+                if (w->hasLabel() && w->label()->Name == name) labelled = w;
+            QVERIFY2(labelled != nullptr && labelled->P1().y() == labelled->P2().y(), name);
+            QList<const Wire*> itsWires{labelled};   // (its net's: joined through their nodes)
+            for (int k = 0; k < itsWires.size(); ++k)
+                for (const Node* n : {itsWires.at(k)->Port1, itsWires.at(k)->Port2})
+                    for (const Wire* w : n->wires())
+                        if (!itsWires.contains(w)) itsWires << w;
+            for (const Wire* w : std::as_const(itsWires))
+                if (w->P1().y() == w->P2().y())
+                    QVERIFY2((w->P1() - w->P2()).manhattanLength() <= (labelled->P1() - labelled->P2()).manhattanLength(), name);
+            const QRect textBox(QPoint(labelled->label()->x1, labelled->label()->y1), QSize(8 * int(strlen(name)) + 10, 16));
+            for (const Component* c : sch->a_DocComps)
+                QVERIFY2(!textBox.intersects(c->boundingRectIncludingProperties()), qPrintable(QStringLiteral("%1 over %2").arg(name, c->Name)));
+        }
+        // And the nets as they were.
+        QStringList after;
+        for (const QJsonValue& v : json(call("get_netlist", {{"map", true}})).toObject().value("nodes").toObject()) after << v.toVariant().toStringList().join(' ');
+        QucsSettings.LibDir = was;
+        before.sort();
+        after.sort();
+        QCOMPARE(after, before);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // The seventh round's small things: replace_component from named pins
+    // to unnamed ones is refused, showing both (by number, INP went to the
+    // uA741's output); the uA741's and AD825's pins have names now, LM3886's
+    // come through its wrapper; 'near' says where the part went, and slides
+    // it off what is there; find_library_component says what a one-line
+    // part is placed as; an LM3886's rails are supplies.
+    void theSeventhRoundsSmallThings()
+    {
+        const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
+        if (!QFileInfo::exists(library + "/OpAmps.lib")) QSKIP("no library here");
+        const QString was = QucsSettings.LibDir;
+        QucsSettings.LibDir = library + "/";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const auto names = [this](const QString& part) {
+            QStringList n;
+            for (const QJsonValue& p : json(call("get_schematic", {{"components", QJsonArray{part}}})).toObject().value("components").toArray()
+                                           .first().toObject().value("pins").toArray())
+                n << p.toObject().value("name").toString();
+            return n;
+        };
+        for (const auto& [comp, want] : {std::pair("uA741", QStringList{"INN", "OUT", "INP", "VCC", "VEE"}),
+                                         std::pair("AD825", QStringList{"INP", "INN", "VCC", "OUT", "VEE"}),
+                                         std::pair("LM3886", QStringList{"POSIN", "NEGIN", "POSRAIL", "OUT", "NEGRAIL", "MUTE"})}) {
+            QJsonObject r = call("add_component", {{"type", "Lib"}, {"name", QString("X_") + QString(comp).remove('(').remove(')')},
+                                                   {"x", 1000}, {"y", 1000}, {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", comp}}}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            const QString n = json(r).toObject().value("name").toString();
+            QCOMPARE(names(n), want);
+            if (QString(comp) == "LM3886") {
+                // Its rails on nothing: a supply warning, by their names.
+                const QString checked = text(call("check_schematic"));
+                QVERIFY2(checked.contains(n + ": its supply pins POSRAIL, NEGRAIL are on nothing that powers it"), qPrintable(checked));
+            }
+            QVERIFY(!failed(call("delete", {{"names", QJsonArray{n}}})));
+        }
+        // Named pins to unnamed ones: refused, both shown; by name or 'pins' it goes.
+        QVERIFY(!failed(call("add_component", {{"type", "Lib"}, {"name", "U1"}, {"x", 300}, {"y", 300},
+                                               {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", "ua741(TI)"}}}})));
+        for (const char* pin : {"U1.inn", "U1.inp", "U1.out", "U1.vcc", "U1.vee"})
+            QVERIFY(!failed(call("set_label", {{"at", pin}, {"name", QString(pin).mid(3)}})));
+        QJsonObject r = call("replace_component", {{"name", "U1"}, {"type", "Lib"}, {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", "ua741(mod)"}}}});
+        QVERIFY2(failed(r) && text(r).contains("U1's pins have names the new part's do not (INN, INP, OUT, VCC, VEE)")
+                     && text(r).contains("1 INN (left, upper)") && text(r).contains("The new part's: 1 (left, upper), 2 (left, lower), 3 (right)")
+                     && text(r).contains("\"by number\""),
+                 qPrintable(text(r)));
+        r = call("replace_component", {{"name", "U1"}, {"type", "Lib"}, {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", "uA741"}}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("mapped").toString() == "by name", qPrintable(text(r)));
+        QStringList lines;
+        for (const QJsonValue& v : json(call("get_netlist", {{"map", true}})).toObject().value("netlist").toArray()) lines << v.toString();
+        QVERIFY2(!lines.filter(QRegularExpression("^XU1 ")).isEmpty()
+                     && QRegularExpression("^XU1 0 inn out inp vcc vee ", QRegularExpression::CaseInsensitiveOption).match(lines.filter(QRegularExpression("^XU1 ")).first()).hasMatch(),
+                 qPrintable(lines.filter(QRegularExpression("^XU1 ")).join('\n')));
+        r = call("replace_component", {{"name", "U1"}, {"type", "Lib"}, {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", "ua741(mod)"}}},
+                                       {"pins", "by number"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("mapped").toString().startsWith("by number"), qPrintable(text(r)));
+        QVERIFY(!failed(call("delete", {{"names", QJsonArray{"U1"}}})));
+
+        // near: where it went; slid off a wire where it was to go.
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "RA"}, {"x", 500}, {"y", 100}})));
+        r = call("add_component", {{"type", "R"}, {"name", "RB"}, {"near", QJsonObject{{"part", "RA"}, {"side", "below"}, {"gap", 40}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Placed below RA, 40 from its symbol, centred on it"), qPrintable(text(r)));
+        QVERIFY(!failed(call("delete", {{"names", QJsonArray{"RB"}}})));
+        const int x = front()->getComponentByName("RA")->cx - 30;   // (RB's left pin, centred below)
+        QVERIFY(!failed(call("add_wire", {{"points", QJsonArray{QJsonArray{x, 120}, QJsonArray{x, 250}}}})));
+        r = call("add_component", {{"type", "R"}, {"name", "RB"}, {"near", QJsonObject{{"part", "RA"}, {"side", "below"}, {"gap", 40}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Placed below RA, 40 from its symbol, slid"), qPrintable(text(r)));
+        const Component* rb = front()->getComponentByName("RB");
+        for (const Port* p : rb->Ports) QVERIFY(rb->cx + p->x != x);
+        r = call("edit_component", {{"name", "RB"}, {"near", QJsonObject{{"part", "RA"}, {"side", "above"}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Moved above RA, 40 from its symbol"), qPrintable(text(r)));
+
+        // find_library_component: what a one-line part becomes.
+        bool diode = false, led = false;
+        for (const QJsonValue& v : json(call("find_library_component", {{"search", "1N4148"}})).toObject().value("found").toArray())
+            if (v.toObject().value("component").toString() == "1N4148") diode = v.toObject().value("placed as").toString() == "Diode";
+        for (const QJsonValue& v : json(call("find_library_component", {{"search", "light emitting diode"}, {"library", "LEDs"}})).toObject().value("found").toArray())
+            led = led || v.toObject().contains("placed as");
+        QucsSettings.LibDir = was;
+        QVERIFY(diode);
+        QVERIFY(!led);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // D3, after a run: ngspice writes a computed vector of a voltage's type
     // as v(name) (a NutmegEq's mag(v(out))) - its trace, named before the
     // run, finds it so.

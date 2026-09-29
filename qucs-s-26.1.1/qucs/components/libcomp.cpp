@@ -235,6 +235,9 @@ void LibComp::namePinsFromModel()
     }
     if (!open.isEmpty() && !line.isEmpty()) defs[open.last()].lines << line;
   }
+  // (The part's own subcircuit, Lib_Comp, where the model defines others
+  // first - AD825's and LM3886's inner models come before it.)
+  if (const QString own = createType(); defs.contains(own)) top = own;
   if (top.isEmpty() || defs.value(top).ports.size() != Ports.size()) return;
   // A node's name: its own (_netC, _netP_INN, the Boyle models' _netN_INP),
   // else the name of the port of the subcircuit it goes into.
