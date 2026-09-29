@@ -667,7 +667,8 @@ conversion's own result.
 Beside this report, in `2026-09-28-claude-tools/`:
 - `mcp.py` runs a list of calls, `[[tool, args], ...]`, one after another against
   `qucs-s --mcp-server`. `_sh` and `_sleep` entries run a command or wait. `QUCS` picks the
-  binary and `HUNT_SETTINGS` a settings folder.
+  binary, `HUNT_SETTINGS` a settings folder and `HUNT_WORKSPACE` the workspace (`ws/` beside it by
+  default).
 - `pipe.py` sends each group of calls at once, without waiting between them (A2, A3).
 - `fuzz_tools.py SEED CALLS` is the fuzzer; `rpc.py` the JSON-RPC probe; `roundtrip.py SEED N` the
   JSON round trip (A4). `RT_EX` points it at a copy of the examples, `RT_SUB=/` takes all of them,
@@ -678,7 +679,13 @@ Beside this report, in `2026-09-28-claude-tools/`:
 - The `*.json` files are the cases named above. `HUNT` in them stands for the folder whose `p/ws`
   holds the schematics (tn.sch, rc.sch: built by the calls at the top of `race3.json` and `mkrc.json`).
 
-Settings must be isolated, and the workspace set to a scratch folder
-(`QucsHomeDir`, `location`, `S4Q_workdir` in `qucs/qucs_s.ini`). Otherwise tools write into the real
-workspace. Even then the untitled simulate writes into `~/Library/Caches/qucs-s/projects` unless
-the workspace has a `Scratch` folder.
+Settings must be isolated, and the workspace set to a scratch folder. Otherwise tools write into the
+real workspace: a run of `fuzz_tools.py` at 20:28 put 105 files and projects (`"`, `{}`,
+`<Components>_prj`, ...) into `~/QucsWorkspace`, because its settings folder was empty and the
+workspace fell back to the default (found in the fourth round of feedback,
+`docs/feature_gaps/2026-09-28-claude-mcp-api-feedback-round4.md`). The scripts now start the server
+with `--workspace` (an option added in that round), and each fuzzer seed has its own folder,
+`runs/<seed>/w/ws`, two folders down so that a call given `..` or `../..` stays inside `runs/`. The
+fuzzers and `mcp.py` stop before the first call if `get_state` names another workspace. The fuzzers
+also set `HOME` to `runs/<seed>/home`, because a folder opened as a project keeps its scratch files in
+`~/Library/Caches/qucs-s/projects`. What the scripts leave beside them is ignored (`.gitignore`).

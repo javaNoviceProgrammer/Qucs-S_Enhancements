@@ -2,7 +2,8 @@ import json, subprocess, os, select, time, sys
 H = os.path.dirname(os.path.abspath(__file__))
 app = os.environ.get('QUCS')
 env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QUCS_SETTINGS_DIR=H + '/p/settings', QUCS_NO_SHELL_ENV='1', ASAN_OPTIONS='detect_leaks=0')
-p = subprocess.Popen([app, '--mcp-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(H + '/rpc.err', 'w'), env=env)
+os.makedirs(H + '/p/ws', exist_ok=True)   # (its workspace, not the user's)
+p = subprocess.Popen([app, '--mcp-server', '--workspace', H + '/p/ws'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(H + '/rpc.err', 'w'), env=env)
 def w(b): p.stdin.write(b); p.stdin.flush()
 def drain(t=3):
     out = b''; end = time.time() + t

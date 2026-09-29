@@ -5,8 +5,12 @@ S = os.path.dirname(os.path.abspath(__file__))
 app = os.environ.get('QUCS', '/Users/meisam/git/Qucs-S_Enhancements/build/qucs/qucs-s.app/Contents/MacOS/qucs-s')
 calls = json.load(open(sys.argv[1]))
 full = '-v' in sys.argv
-env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QUCS_SETTINGS_DIR=os.environ.get('HUNT_SETTINGS', S + '/settings'), QUCS_NO_SHELL_ENV='1')
-p = subprocess.Popen([app, '--mcp-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True)
+# Its settings and workspace: folders of its own (the workspace checked
+# before the first call - the user's ~/QucsWorkspace is not for probes).
+settings = os.environ.get('HUNT_SETTINGS', S + '/settings'); ws = os.environ.get('HUNT_WORKSPACE', S + '/ws')
+os.makedirs(settings, exist_ok=True); os.makedirs(ws, exist_ok=True)
+env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QUCS_SETTINGS_DIR=settings, QUCS_NO_SHELL_ENV='1')
+p = subprocess.Popen([app, '--mcp-server', '--workspace', ws], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True)
 def send(o):
     p.stdin.write(json.dumps(o) + '\n'); p.stdin.flush()
 def recv(i):
@@ -17,6 +21,10 @@ def recv(i):
         if m.get('id') == i: return m
 send({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}}}); recv(0)
 send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+send({"jsonrpc": "2.0", "id": -1, "method": "tools/call", "params": {"name": "get_state", "arguments": {}}})
+state = json.loads(recv(-1)['result']['content'][0]['text'])
+if os.path.realpath(state['workspace']) != os.path.realpath(ws):
+    p.kill(); sys.exit(f"the server works in {state['workspace']}, not {ws}: stopped before any call")
 import time
 for n, (tool, args) in enumerate(calls, 1):
     if tool == '_sh':

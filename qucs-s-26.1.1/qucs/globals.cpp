@@ -240,11 +240,13 @@ bool saveApplSettings()
     qs.setItem<QString>("SpiceOpusExecutable",QucsSettings.SpiceOpusExecutable);
     qs.setItem<QString>("Qucsator",QucsSettings.Qucsator);
     qs.setItem<int>("Nprocs",QucsSettings.NProcs);
-    qs.setItem<QString>("S4Q_workdir",QucsSettings.S4Qworkdir);
+    if (QucsSettings.workspaceOfRun.isEmpty()) qs.setItem<QString>("S4Q_workdir",QucsSettings.S4Qworkdir);
     qs.setItem<QString>("OctaveExecutable",QucsSettings.OctaveExecutable);
     qs.setItem<QString>("OpenVAFExecutable",QucsSettings.OpenVAFExecutable);
     qs.setItem<QString>("PythonExecutable",QucsSettings.PythonExecutable);
-    qs.setItem<QString>("QucsHomeDir", QucsSettings.qucsWorkspaceDir.canonicalPath());
+    // (Not a workspace one run was given: the settings keep theirs.)
+    if (QucsSettings.workspaceOfRun.isEmpty())
+        qs.setItem<QString>("QucsHomeDir", QucsSettings.qucsWorkspaceDir.canonicalPath());
     qs.setItem<bool>("IgnoreVersion", QucsSettings.IgnoreFutureVersion);
     qs.setItem<bool>("GraphAntiAliasing", QucsSettings.GraphAntiAliasing);
     qs.setItem<bool>("TextAntiAliasing", QucsSettings.TextAntiAliasing);

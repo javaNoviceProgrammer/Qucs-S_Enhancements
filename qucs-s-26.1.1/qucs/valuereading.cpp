@@ -113,7 +113,7 @@ Reading read(const QString& input)
 
     r.kind = Reading::Number;
     double n = 0, factor = 1;
-    QString unused;   // str2num gives the whole text as the unit when there is none
+    QString unused;   // (the unit is read from the text below, the prefix taken apart)
     misc::str2num(value, n, unused, factor);
     r.value = n * factor;
     // The unit: what follows the prefix Qucs took (none when it took none).

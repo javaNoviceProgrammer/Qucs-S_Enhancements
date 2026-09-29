@@ -15,6 +15,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QDirIterator>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -533,6 +534,9 @@ private slots:
         // (nor their recent files) - and an ngspice to find: a machine
         // without one (a CI runner) has no simulator to write a netlist for.
         env.insert("QUCS_SETTINGS_DIR", home.filePath("settings"));
+        // (And a home of its own: with no workspace in its settings, it
+        // makes ~/QucsWorkspace - here, not the user's.)
+        env.insert("HOME", home.path());
 #ifndef Q_OS_WIN
         QDir().mkpath(home.filePath("bin"));
         QFile ngspice(home.filePath("bin/ngspice"));
@@ -616,6 +620,65 @@ private slots:
         const QJsonObject map = answers.value(6).value("result").toObject().value("structuredContent").toObject();
         QVERIFY2(QJsonDocument(map.value("lines").toArray()).toJson().contains("R1"), qPrintable(QJsonDocument(answers.value(6)).toJson()));
         QCOMPARE(answers.value(7).value("error").toObject().value("code").toInt(), -32601);
+    }
+
+    // --workspace DIR: the run works there - not in the settings' workspace
+    // (with none, ~/QucsWorkspace: a fuzzer's projects named "'" and {} went
+    // there) - and the settings keep theirs.
+    void theWorkspaceIsTheOneGiven()
+    {
+        const QString program = QStringLiteral(QUCS_BINARY);
+        if (!QFileInfo(program).isExecutable()) QSKIP("qucs-s is not built next to the tests");
+        QTemporaryDir home;
+        const QString workspace = home.filePath("its workspace");
+        QProcess p;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert("QUCS_CLAUDE", "/nonexistent/claude");
+        env.insert("QUCS_NO_SHELL_ENV", "1");
+        env.insert("QUCS_SETTINGS_DIR", home.filePath("settings"));
+        // (A home of its own: were --workspace not taken, the fallback -
+        // ~/QucsWorkspace - is made here, and the test fails, not the
+        // user's workspace filled.)
+        env.insert("HOME", home.path());
+        p.setProcessEnvironment(env);
+        p.start(program, {"--mcp-server", "--workspace", workspace});
+        QVERIFY(p.waitForStarted(10000));
+        const QList<QJsonObject> messages{
+            {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"}, {"params", QJsonObject{{"protocolVersion", "2025-06-18"}, {"capabilities", QJsonObject()}}}},
+            {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}},
+            {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "get_state"}, {"arguments", QJsonObject()}}}},
+            {{"jsonrpc", "2.0"}, {"id", 3}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "new_project"}, {"arguments", QJsonObject{{"name", "{}"}, {"open", false}}}}}},
+            {{"jsonrpc", "2.0"}, {"id", 4}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "new_project"}, {"arguments", QJsonObject{{"name", "amp"}, {"open", false}}}}}}};
+        QHash<int, QJsonObject> answers;
+        for (const QJsonObject& m : messages) {
+            p.write(QJsonDocument(m).toJson(QJsonDocument::Compact) + '\n');
+            if (!m.contains("id")) continue;
+            const int id = m.value("id").toInt();
+            QElapsedTimer t;
+            t.start();
+            while (!answers.contains(id) && t.elapsed() < 60000) {
+                p.waitForReadyRead(200);
+                while (p.canReadLine()) {
+                    const QJsonObject a = QJsonDocument::fromJson(p.readLine()).object();
+                    if (a.contains("id")) answers.insert(a.value("id").toInt(), a);
+                }
+            }
+            QVERIFY2(answers.contains(id), qPrintable(QStringLiteral("no answer to %1").arg(id)));
+        }
+        p.closeWriteChannel();
+        QVERIFY(p.waitForFinished(30000));
+        const QJsonObject state = answers.value(2).value("result").toObject().value("structuredContent").toObject();
+        QCOMPARE(QFileInfo(state.value("workspace").toString()).canonicalFilePath(), QFileInfo(workspace).canonicalFilePath());
+        QVERIFY(answers.value(3).value("result").toObject().value("isError").toBool());
+        QVERIFY(!answers.value(4).value("result").toObject().value("isError").toBool());
+        QVERIFY(QFileInfo(workspace + "/amp_prj").isDir());
+        // The settings' workspace is not this one.
+        QDirIterator files(home.filePath("settings"), {"*.ini", "*.conf"}, QDir::Files, QDirIterator::Subdirectories);
+        while (files.hasNext()) {
+            QFile f(files.next());
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QVERIFY2(!f.readAll().contains("its workspace"), qPrintable(f.fileName()));
+        }
     }
 };
 

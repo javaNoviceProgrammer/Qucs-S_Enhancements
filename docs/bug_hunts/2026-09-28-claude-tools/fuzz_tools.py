@@ -9,7 +9,11 @@ APP = os.environ.get('QUCS', '/Users/meisam/git/Qucs-S_Enhancements/build-asan/q
 EX = '/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/examples'
 seed, total = int(sys.argv[1]), int(sys.argv[2])
 rnd = random.Random(seed)
-WS = H + '/ws'
+# Its workspace, a folder of its own per run: --workspace, checked before
+# the first call (without it the server worked in ~/QucsWorkspace, and the
+# calls' files - projects named "'" or {} - went there). Two folders down in
+# runs/: a call given .. or ../.. (open_project, a path) stays in runs/ too.
+WS = H + f'/runs/{seed}/w/ws'
 SKIP = {'trigger_action', 'clean_scratch', 'set_dialog', 'get_dialog', 'run_script'}
 SLOW = {'simulate', 'tune', 'build_verilog_a'}
 SEEDS = ['ngspice/RF/Miscellaneous/RCL_resonance.sch', 'ngspice/Analog/Amplifiers/singleOPV.sch' if False else None]
@@ -26,13 +30,22 @@ def pick_examples():
 class Server:
     def __init__(self):
         self.err = open(errpath, 'a')
-        env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QUCS_SETTINGS_DIR=H + '/settings', QUCS_NO_SHELL_ENV='1',
+        # (A home of its own too: a folder opened as a project keeps its
+        # scratch files in the cache, ~/Library/Caches/qucs-s.)
+        os.makedirs(WS, exist_ok=True); os.makedirs(H + f'/runs/{seed}/home', exist_ok=True)
+        env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QUCS_SETTINGS_DIR=H + f'/runs/{seed}/settings', HOME=H + f'/runs/{seed}/home', QUCS_NO_SHELL_ENV='1',
                    ASAN_OPTIONS='detect_leaks=0', UBSAN_OPTIONS='print_stacktrace=1')
-        self.p = subprocess.Popen([APP, '--mcp-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err,
-                                  env=env, bufsize=0)
+        self.p = subprocess.Popen([APP, '--mcp-server', '--workspace', WS], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=self.err, env=env, bufsize=0)
         self.n = 0; self.buf = b''
         self.rpc('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}})
         self.send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        r = self.rpc('tools/call', {'name': 'get_state', 'arguments': {}})
+        try: ws = json.loads(r['result']['content'][0]['text'])['workspace']
+        except Exception: ws = repr(r)[:200]
+        if os.path.realpath(ws) != os.path.realpath(WS):
+            self.kill()
+            sys.exit(f'the server works in {ws}, not {WS}: stopped before any call')
     def send(self, o):
         self.p.stdin.write((json.dumps(o) + '\n').encode()); self.p.stdin.flush()
     def line(self, end):

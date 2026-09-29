@@ -6,7 +6,8 @@ H = os.path.dirname(os.path.abspath(__file__))
 app = '/Users/meisam/git/Qucs-S_Enhancements/build/qucs/qucs-s.app/Contents/MacOS/qucs-s'
 EX = os.environ.get('RT_EX', '/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/examples')
 env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QUCS_SETTINGS_DIR=H + '/p/settings', QUCS_NO_SHELL_ENV='1')
-p = subprocess.Popen([app, '--mcp-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True)
+os.makedirs(H + '/p/ws', exist_ok=True)   # (its workspace, not the user's)
+p = subprocess.Popen([app, '--mcp-server', '--workspace', H + '/p/ws'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True)
 n = 0
 def call(tool, args):
     global n; n += 1
