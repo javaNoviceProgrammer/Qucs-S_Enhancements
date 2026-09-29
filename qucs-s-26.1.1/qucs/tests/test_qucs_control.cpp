@@ -53,6 +53,7 @@
 #include "qucscontrol.h"
 #include "schematic.h"
 #include "simulationconsole.h"
+#include "valuereading.h"
 #include "wire.h"
 #include "wirelabel.h"
 #include "diagrams/graph.h"
@@ -4960,6 +4961,262 @@ private slots:
         QVERIFY(front()->getComponentByName("D1") != nullptr);
         QVERIFY(front()->getComponentByName("D1")->Ports.size() == 2);
         QVERIFY2(failed(missing) && text(missing).contains("NoSuchDiode"), qPrintable(text(missing)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Layout beyond arrange (sixth round, wishlist 1): a part put beside
+    // another ('near'); a wire round a side ('side') or through points of
+    // one's own ('via'); a label's text put where one wants it; arrange
+    // keeping the parts where they are and drawing the wiring again, an
+    // op-amp's feedback part below it, the supplies as labels.
+    void theLayoutHelpers()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "OpAmp"}, {"name", "U1"}, {"x", 400}, {"y", 200}})));
+        // Beside another part: its symbol that far from the other's, centred on it.
+        QJsonObject r = call("add_component", {{"type", "R"}, {"name", "RF"}, {"near", QJsonObject{{"part", "U1"}, {"side", "below"}, {"gap", 40}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const Component* u1 = front()->getComponentByName("U1");
+        const Component* rf = front()->getComponentByName("RF");
+        QVERIFY(rf->boundingRect().top() >= u1->boundingRect().bottom() + 40 - 10 && rf->boundingRect().top() <= u1->boundingRect().bottom() + 40 + 10);
+        QVERIFY(std::abs(rf->boundingRect().center().x() - u1->boundingRect().center().x()) <= 10);
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "RG"}, {"x", 100}, {"y", 100}})));
+        r = call("edit_component", {{"name", "RG"}, {"near", QJsonObject{{"part", "U1"}, {"side", "left"}, {"gap", 60}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const Component* rg = front()->getComponentByName("RG");
+        QVERIFY(rg->boundingRect().right() <= u1->boundingRect().left() - 60 + 10 && rg->boundingRect().right() >= u1->boundingRect().left() - 60 - 10);
+        QVERIFY(failed(call("add_component", {{"type", "R"}, {"x", 0}, {"y", 0}, {"near", QJsonObject{{"part", "U1"}, {"side", "below"}}}})));
+        QVERIFY(failed(call("edit_component", {{"name", "RF"}, {"near", QJsonObject{{"part", "RF"}, {"side", "below"}}}})));
+        QVERIFY(failed(call("edit_component", {{"name", "RF"}, {"near", QJsonObject{{"part", "U1"}, {"side", "under"}}}})));
+
+        // A wire round a side: the feedback path below the op-amp.
+        r = call("connect", {{"from", "U1.3"}, {"to", "RF.2"}, {"side", "below"}});
+        QVERIFY2(!failed(r) && text(r).contains("Round the lower side"), qPrintable(text(r)));
+        r = call("connect", {{"from", "U1.1"}, {"to", "RF.1"}, {"side", "left"}});
+        QVERIFY2(!failed(r) && text(r).contains("Round the left side"), qPrintable(text(r)));
+        // Through points of one's own; not through another net.
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R9"}, {"x", 100}, {"y", 400}})));
+        r = call("connect", {{"from", "R9.1"}, {"to", "RG.1"}, {"via", QJsonArray{QJsonArray{20, 400}, QJsonArray{20, 250}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Through 20, 400; 20, 250"), qPrintable(text(r)));
+        bool through = false;
+        for (const Wire* w : front()->a_DocWires) through = through || (w->P1() == QPoint(20, 250) || w->P2() == QPoint(20, 250));
+        QVERIFY(through);
+        const int wires = int(front()->a_DocWires.size());
+        r = call("connect", {{"from", "R9.2"}, {"to", "U1.2"}, {"via", QJsonArray{QJsonArray{20, 400}}}});
+        QVERIFY2(failed(r) && text(r).contains("Not wired through the points given"), qPrintable(text(r)));
+        QCOMPARE(int(front()->a_DocWires.size()), wires);
+        QVERIFY(failed(call("connect", {{"from", "R9.2"}, {"to", "U1.2"}, {"via", QJsonArray{QJsonArray{20, 400}}}, {"side", "below"}})));
+
+        // A label's text where it is wanted; the same name again moves it.
+        r = call("set_label", {{"at", "U1.3"}, {"name", "out"}, {"text_at", QJsonArray{500, 150}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const auto labelAt = [this](const QString& name) {
+            for (const Node* n : front()->a_DocNodes)
+                if (n->hasLabel() && n->label()->Name == name) return QPoint(n->label()->x1, n->label()->y1);
+            for (const Wire* w : front()->a_DocWires)
+                if (w->hasLabel() && w->label()->Name == name) return QPoint(w->label()->x1, w->label()->y1);
+            return QPoint(-1, -1);
+        };
+        QCOMPARE(labelAt("out"), QPoint(500, 150));
+        QVERIFY(!failed(call("set_label", {{"at", "U1.3"}, {"name", "out"}, {"text_at", QJsonArray{520, 250}}})));
+        QCOMPARE(labelAt("out"), QPoint(520, 250));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // arrange: a non-inverting amplifier with its supplies.
+        const auto amplifier = [this] {
+            QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+            const QJsonObject made = call("batch", {{"calls", QJsonArray{
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 300}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "OpAmp"}, {"name", "U1"}, {"x", 500}, {"y", 100}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "RF"}, {"x", 800}, {"y", 400}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "RG"}, {"x", 300}, {"y", 500}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "RL"}, {"x", 900}, {"y", 100}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V2"}, {"x", 100}, {"y", 600},
+                                                                                  {"properties", QJsonObject{{"U", "12 V"}}}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "RP1"}, {"x", 600}, {"y", 600}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "RP2"}, {"x", 700}, {"y", 700}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "U1.2"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "ground"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "U1.1"}, {"to", "RG.1"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "RG.2"}, {"to", "ground"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "RF.1"}, {"to", "RG.1"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "RF.2"}, {"to", "U1.3"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "U1.3"}, {"to", "RL.1"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "RL.2"}, {"to", "ground"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V2.2"}, {"to", "ground"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V2.1"}, {"to", "RP1.1"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "RP1.1"}, {"to", "RP2.1"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "RP1.2"}, {"to", "ground"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "RP2.2"}, {"to", "ground"}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", ".DC"}, {"name", "DC1"}, {"x", 100}, {"y", 900}}}}}}});
+            QVERIFY2(!failed(made), qPrintable(text(made)));
+        };
+        amplifier();
+        const QList<QStringList> nets = netsOfFront();
+        QHash<QString, QPoint> centres;
+        for (const Component* c : front()->a_DocComps) centres.insert(c->Name, c->center());
+        // Where they are, the wiring drawn again.
+        r = call("arrange", {{"keep_places", true}});
+        QVERIFY2(!failed(r) && text(r).contains("where they were"), qPrintable(text(r)));
+        for (const Component* c : front()->a_DocComps)
+            if (c->Model != "GND") QCOMPARE(c->center(), centres.value(c->Name));
+        QCOMPARE(netsOfFront(), nets);
+        QVERIFY(failed(call("arrange", {{"keep_places", true}, {"feedback", "below"}})));
+        // The feedback part below the op-amp, in its column.
+        r = call("arrange", {{"feedback", "below"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(netsOfFront(), nets);
+        u1 = front()->getComponentByName("U1");
+        rf = front()->getComponentByName("RF");
+        QVERIFY2(rf->center().y() > u1->boundingRect().bottom() && std::abs(rf->center().x() - u1->boundingRect().center().x()) <= 20,
+                 qPrintable(QStringLiteral("U1 %1,%2; RF %3,%4").arg(u1->cx).arg(u1->cy).arg(rf->cx).arg(rf->cy)));
+        QCOMPARE(rf->Ports.at(0)->y, rf->Ports.at(1)->y);   // lying
+        QVERIFY(rf->cx + rf->Ports.at(0)->x < rf->cx + rf->Ports.at(1)->x);   // its pin on U1's input side on the left
+        r = call("arrange", {{"feedback", "above"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        u1 = front()->getComponentByName("U1");
+        rf = front()->getComponentByName("RF");
+        QVERIFY(rf->center().y() < u1->boundingRect().top());
+        QCOMPARE(netsOfFront(), nets);
+        // The supplies as labels: a VCC label on each pin of the supply's net
+        // (three parts: a rail), a ground symbol on each pin on ground, no
+        // wire of theirs.
+        r = call("arrange", {{"supplies", "labels"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(netsOfFront(), nets);
+        int vcc = 0, grounds = 0;
+        for (const Node* n : front()->a_DocNodes) vcc += n->hasLabel() && n->label()->Name == "VCC";
+        for (const Component* c : front()->a_DocComps) grounds += c->Model == "GND";
+        QCOMPARE(vcc, 3);       // V2.1, RP1.1, RP2.1
+        QCOMPARE(grounds, 6);   // V1.2, RG.2, RL.2, V2.2, RP1.2, RP2.2
+        const Component* v2 = front()->getComponentByName("V2");
+        const QPoint plus(v2->cx + v2->Ports.at(0)->x, v2->cy + v2->Ports.at(0)->y);
+        for (const Wire* w : front()->a_DocWires) QVERIFY(w->P1() != plus && w->P2() != plus);
+        QVERIFY(failed(call("arrange", {{"supplies", "sideways"}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Answers of the size asked for, and before and after in one call
+    // (sixth round, wishlist 4 and 6): a batch's calls each in a line with
+    // 'brief'; simulate's with 'brief' without its log and long lists; its
+    // 'compare' measures this run and a kept one side by side.
+    void briefAnswersAndBeforeAndAfter()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"brief", true}, {"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vac"}, {"name", "V1"}, {"x", 100}, {"y", 200}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 220}, {"y", 100},
+                                                                              {"properties", QJsonObject{{"R", "1k"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "C"}, {"name", "C1"}, {"x", 340}, {"y", 200}, {"rotation", 1},
+                                                                              {"properties", QJsonObject{{"C", "1 uF"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", ".AC"}, {"name", "AC1"}, {"x", 100}, {"y", 400},
+                                                                              {"properties", QJsonObject{{"Type", "log"}, {"Start", "1 Hz"}, {"Stop", "100 kHz"}, {"Points", "201"}}}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.2"}, {"to", "C1.2"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "C1.1"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "R1.2"}, {"name", "out"}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "NoSuchType"}, {"x", 0}, {"y", 0}}}}}},
+                                       {"keep_going", true}});
+        const QString said = text(r);
+        QVERIFY2(said.contains("[2] add_component: name R1, type R, x 220, y 100"), qPrintable(said));
+        QVERIFY2(said.contains("[5] connect: Wired V1.1 to R1.1"), qPrintable(said));
+        QVERIFY2(!said.contains("\"properties\""), qPrintable(said));   // (not the whole answer)
+        QVERIFY2(said.contains("[10] add_component failed:") && said.contains("NoSuchType"), qPrintable(said));   // (a failure in full)
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (ngspice.isEmpty()) {
+            QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+            QSKIP("no ngspice here for the runs");
+        }
+        const QString was = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = ngspice;
+        QVERIFY(!failed(call("save_document", {{"as", "before_after"}, {"replace", true}})));
+        r = call("simulate", {{"keep_as", "rc_before"}, {"brief", true}, {"timeout", 60}}, 90000);
+        QVERIFY2(!failed(r) && json(r).toObject().value("succeeded").toBool(), qPrintable(text(r)));
+        QVERIFY2(!json(r).toObject().contains("last lines") && !json(r).toObject().contains("data display"), qPrintable(text(r)));
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "2k"}}}})));
+        r = call("simulate", {{"compare", QJsonObject{{"with", "rc_before"},
+                                                      {"measure", QJsonArray{QJsonObject{{"variable", "ac.v(out)"}, {"what", "bandwidth"}},
+                                                                             QJsonObject{{"variable", "ac.v(out)"}, {"what", "max"}}}}}},
+                              {"timeout", 60}}, 90000);
+        QucsSettings.NgspiceExecutable = was;
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject compared = json(r).toObject().value("compared").toObject();
+        QCOMPARE(compared.value("with").toString(), QStringLiteral("rc_before"));
+        const QJsonObject bw = compared.value("table").toArray().at(0).toObject();
+        QVERIFY2(std::abs(bw.value("before").toDouble() - 159.15) < 3 && std::abs(bw.value("after").toDouble() - 79.58) < 2
+                     && std::abs(bw.value("change %").toDouble() + 50) < 2,
+                 qPrintable(QJsonDocument(compared).toJson()));
+        const QJsonObject max = compared.value("table").toArray().at(1).toObject();
+        QVERIFY2(max.contains("before") && max.contains("after") && max.contains("change"), qPrintable(QJsonDocument(compared).toJson()));
+        // Not read: said so, before anything runs.
+        r = call("simulate", {{"compare", QJsonObject{{"with", "rc_before"}}}});
+        QVERIFY2(failed(r) && text(r).contains("'compare' is"), qPrintable(text(r)));
+        r = call("simulate", {{"compare", QJsonObject{{"with", "rc_before"}, {"measure", QJsonArray{QJsonObject{{"variable", "v(out)"}, {"wat", "max"}}}}}}});
+        QVERIFY2(failed(r) && text(r).contains("Meant what?"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // tune with two knobs for two targets (sixth round, wishlist 5): a
+    // chain of three resistors from 10 V, R1 and R2 for v(a) = 6 V and
+    // v(b) = 2 V (R3 1k): R1 = R2 = 2k. Found in a few runs, set as one
+    // step to undo; what does not read is said so.
+    void twoKnobsAreTunedTogether()
+    {
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (ngspice.isEmpty()) QSKIP("no ngspice here");
+        const QString before = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = ngspice;
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 200},
+                                                                              {"properties", QJsonObject{{"U", "10 V"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 220}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R2"}, {"x", 360}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R3"}, {"x", 480}, {"y", 200}, {"rotation", 1}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", ".DC"}, {"name", "DC1"}, {"x", 100}, {"y", 400}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.2"}, {"to", "R2.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R2.2"}, {"to", "R3.2"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R3.1"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "R1.2"}, {"name", "a"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "R2.2"}, {"name", "b"}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"as", "two_knobs"}, {"replace", true}})));
+        const int step = front()->undoIndex();
+        r = call("tune", {{"knobs", QJsonArray{QJsonObject{{"component", "R1"}, {"range", QJsonArray{"100", "100k"}}},
+                                               QJsonObject{{"component", "R2"}, {"range", QJsonArray{"100", "100k"}}}}},
+                          {"targets", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "a"}}}, {"target", 6}},
+                                                 QJsonObject{{"measure", QJsonObject{{"operating_point", "b"}}}, {"target", 2}}}}},
+                 600000);
+        QucsSettings.NgspiceExecutable = before;
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject o = json(r).toObject();
+        for (const QJsonValue& t : o.value("targets").toArray()) QVERIFY2(t.toObject().value("within tolerance").toBool(), qPrintable(text(r)));
+        QVERIFY2(o.value("runs").toArray().size() <= 12, qPrintable(text(r)));
+        const auto valueOf = [this](const QString& part) {
+            return front()->getComponentByName(part)->getProperty("R")->Value;
+        };
+        const auto near2k = [](const QString& v) {
+            const qucs_s::units::Reading x = qucs_s::units::read(QString(v).remove(QStringLiteral(" Ohm")));
+            return x.kind == qucs_s::units::Reading::Number && std::abs(x.value - 2000) < 30;
+        };
+        QVERIFY2(near2k(valueOf("R1")) && near2k(valueOf("R2")), qPrintable(valueOf("R1") + " " + valueOf("R2") + "\n" + text(r)));
+        QCOMPARE(front()->undoIndex(), step + 1);   // one step
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(valueOf("R1"), QStringLiteral("1 kOhm"));
+        // What does not read.
+        r = call("tune", {{"knobs", QJsonArray{QJsonObject{{"component", "R1"}, {"range", QJsonArray{"100", "100k"}}}}},
+                          {"targets", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "a"}}}, {"target", 6}}}}});
+        QVERIFY2(failed(r) && text(r).contains("2 to 4 parts"), qPrintable(text(r)));
+        r = call("tune", {{"knobs", QJsonArray{QJsonObject{{"component", "R1"}, {"range", QJsonArray{"100", "100k"}}},
+                                               QJsonObject{{"component", "R2"}, {"range", QJsonArray{"100", "100k"}}}}},
+                          {"targets", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "a"}}}, {"target", 6}},
+                                                 QJsonObject{{"measure", QJsonObject{{"variable", "v(b)"}}}, {"target", 2}}}}});
+        QVERIFY2(failed(r) && text(r).contains("all of the operating point"), qPrintable(text(r)));
+        r = call("tune", {{"knobs", QJsonArray{QJsonObject{{"component", "R1"}, {"rnage", QJsonArray{"100", "100k"}}}}}});
+        QVERIFY2(failed(r) && text(r).contains("Meant range?"), qPrintable(text(r)));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 

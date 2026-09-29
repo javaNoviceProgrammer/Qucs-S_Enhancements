@@ -267,6 +267,8 @@ private:
     void simulate(const QJsonObject& args, const Done& done);
     void buildVerilogA(const QJsonObject& args, const Done& done);
     void tune(const QJsonObject& args, const Done& done);
+    /// tune with several knobs, for as many targets.
+    void tuneKnobs(const QJsonObject& args, const Done& done);
     QJsonObject readPdf(const QJsonObject& args);
     QJsonObject undoHistory(const QJsonObject& args);
     QJsonObject newProject(const QJsonObject& args);
@@ -279,6 +281,10 @@ private:
     /// What a run of \a doc wrote: its dataset - written when it is newer than
     /// \a before (its time before the run; invalid when there was none) -
     /// its variables, the copy \a keepAs, and the traces left blank.
+    /// \a compare's measurements ({"with": a kept run, "measure": [...]})
+    /// on the run just made and on that one: a table of before, after and
+    /// the change.
+    QJsonObject comparedRuns(Schematic* doc, const QJsonObject& compare, const QJsonValue& simulator);
     QJsonObject datasetOfRun(Schematic* doc, int simulator, const QDateTime& before, const QString& keepAs, bool* written);
     QJsonObject getNetlist(const QJsonObject& args);
     QJsonObject getDataset(const QJsonObject& args);

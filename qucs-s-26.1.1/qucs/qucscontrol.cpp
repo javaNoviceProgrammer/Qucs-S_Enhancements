@@ -9,6 +9,7 @@
  * (at your option) any later version.
  */
 #include "qucscontrol.h"
+#include "valuereading.h"
 #include "qucscontrol_p.h"
 
 #include "components/component.h"
@@ -209,11 +210,14 @@ const char* const kTools = R"JSON([
    "diagrams": {"type": "array", "items": {"type": "integer"}, "description": "Diagrams to move along, by their numbers"}, "paintings": {"type": "array", "items": {"type": "integer"}, "description": "Paintings to move along, by their numbers"},
    "selection": {"type": "boolean", "description": "What the user selected - its parts, diagrams and paintings - instead of names"}}}},
 {"name": "arrange",
- "description": "Lays out a whole schematic again so a person can read it. The parts go in columns by signal flow: sources on the left, then each part one column to the right of the part that drives it, with room between them; a DC supply gets a column of its own on the left. Two-pin parts are turned the way schematics usually show them: in series lying down with the driving side on the left, to ground or a supply standing up with ground below. Every wire is redrawn by the same router connect uses (around the parts, never over another pin). Each piece of circuit that had a ground symbol gets one back, and net labels go back on the nets that had them. Blocks without pins (analyses, equations) go in a row below; diagrams and paintings the circuit would cover move to its right. The circuit is kept: every net is compared before and after, and if any would differ nothing changes and the answer says why. It suits a schematic built from scratch or imported; a carefully drawn one may read better as it was, and one undo step brings it back. 'wire_labels' draws wires where only labels join a net's pieces - an imported netlist's nets are labels on every pin - keeping one label for its name. 'preview' reports the result without keeping it.",
+ "description": "Lays out a whole schematic again so a person can read it. The parts go in columns by signal flow: sources on the left, then each part one column to the right of the part that drives it, with room between them; a DC supply gets a column of its own on the left. Two-pin parts are turned the way schematics usually show them: in series lying down with the driving side on the left, to ground or a supply standing up with ground below. Every wire is redrawn by the same router connect uses (around the parts, never over another pin). Each piece of circuit that had a ground symbol gets one back, and net labels go back on the nets that had them. Blocks without pins (analyses, equations) go in a row below; diagrams and paintings the circuit would cover move to its right. The circuit is kept: every net is compared before and after, and if any would differ nothing changes and the answer says why. It suits a schematic built from scratch or imported; a carefully drawn one may read better as it was, and one undo step brings it back. 'wire_labels' draws wires where only labels join a net's pieces - an imported netlist's nets are labels on every pin - keeping one label for its name. 'keep_places' leaves every part where it is and draws only the wiring again; 'feedback' puts an op-amp's feedback parts below (or above) it; 'supplies': labels joins the supplies by labels and each ground pin by a ground symbol instead of wires. 'preview' reports the result without keeping it.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"},
    "spacing": {"type": "integer", "minimum": 30, "maximum": 400, "description": "The room between parts, in the schematic's units: 60 unless given (more room is tried when the wires do not fit)"},
-   "wire_labels": {"type": "boolean", "description": "Wires where only net labels join the pieces of a net (an imported netlist's labels on every pin), one label kept for its name; ground symbols stay"}}}},
+   "wire_labels": {"type": "boolean", "description": "Wires where only net labels join the pieces of a net (an imported netlist's labels on every pin), one label kept for its name; ground symbols stay"},
+   "keep_places": {"type": "boolean", "description": "Every part stays where it is: only the wires, ground symbols and labels are drawn again (a tidy)"},
+   "feedback": {"type": "string", "enum": ["inline", "below", "above"], "description": "Where a feedback part goes - a two-pin part between two nets of one part of three pins or more (Rf from an op-amp's output to its inverting input): in the columns (inline, the default), or below or above that part, lying as its pins run"},
+   "supplies": {"type": "string", "enum": ["column", "labels"], "description": "column (the default): the supplies in a column at the left, wired; labels: a label of the supply's net on each of its pins (VCC above ground, VEE below, unless it has a name) and a ground symbol on each pin on ground - no wires for them"}}}},
 {"name": "connect",
  "description": "Draws a wire with right angles between two pins or points, along a path that runs over no other pin or wire (a wire connects to whatever it runs over): around the parts when possible, otherwise across them; 'side' makes it go round one side first, 'via' through points of yours. It joins the two nets and nothing else; if no path would, it draws nothing and explains why. A crossing of another net's wire along the way (no connection) is reported. A pin is \"R1.1\" (the component's name and the pin number, from 1, or the pin's name); a point is [x, y]. With \"ground\" (or \"gnd\") at either end, the pin gets a ground symbol of its own, placed on the pin when it fits there and otherwise a little away and wired to it.",
  "inputSchema": {"type": "object", "properties": {
@@ -277,6 +281,8 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); it is stopped after"},
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For this run alone (an installed one); set_simulator changes the setting"},
    "keep_as": {"type": "string", "description": "A name of letters, digits, _ and -: the copy is <name>.dat.ngspice (or .xyce, ...) beside the schematic"},
+   "compare": {"type": "object", "properties": {"with": {"type": "string"}, "measure": {"type": "array", "items": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "from": {"type": "number"}, "to": {"type": "number"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}}}}}, "description": "Before and after in one call: {\"with\": \"before\", \"measure\": [{\"variable\": \"ac.v(out)\", \"what\": \"bandwidth\"}, ...]} - each measured on this run and on the one kept as 'with' (keep_as), in a table of before, after and the change (and in %); 'what' is min, max, mean, rms, final, peak_to_peak or a get_dataset measurement, as tune's 'measure' takes it"},
+   "brief": {"type": "boolean", "description": "What came of the run only: no log lines, the errors, warnings, variables and traces without data cut to a few with how many more"},
    "operating_point": {"type": "boolean", "description": "Run the DC operating point alone, whatever analyses the schematic has, and return it: each node's voltage and branch current, and (ngspice) each device's quantities - gm, ic, vbe, gpi, gds, ... - with re = 1/gm, beta, ro"}}}},
 {"name": "get_netlist",
  "description": "Returns a schematic's netlist as text: as a simulation with the simulator from the settings would write it now, or with 'last' the one the last simulation ran (Simulation > Show Last Netlist; the one simulate's error line numbers refer to). 'numbered' puts each line's number in front of it. 'format' is spice (the default) or cdl (Simulation > Save CDL netlist, with the CDL settings). 'map' ties each netlist line to the part that wrote it and each node to the pins on it. If the netlister gives up (a part with no model, a subcircuit or library it cannot read), the error says why. export_netlist writes the netlist to a file.",
@@ -393,7 +399,7 @@ const char* const kTools = R"JSON([
    "calls": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
      "tool": {"type": "string", "description": "A tool's name: add_component, connect, ..."},
      "arguments": {"type": "object"}}, "required": ["tool"]}, "description": "The calls in order: [{\"tool\": \"add_component\", \"arguments\": {...}}, ...]; not another batch"},
-   "keep_going": {"type": "boolean", "description": "Go on after one that fails"},
+   "keep_going": {"type": "boolean", "description": "Go on after one that fails"}, "brief": {"type": "boolean", "description": "Each call that succeeds said in a line (what it made: a part's name, type and place, a note) instead of its whole answer; those that fail in full"},
    "atomic": {"type": "boolean", "description": "All or nothing: when one fails, the changes of those before it are undone"}}, "required": ["calls"]}},
 {"name": "add_painting",
  "description": "Draws a painting - a text, arrow, line, box, text box, table, dimension or formula - on a schematic, or on its symbol with 'symbol' (the document switches to show its symbol, like Edit Circuit Symbol; a .sym file is all symbol). Use it to annotate a result, label part of the circuit or draw a subcircuit's symbol. 'type' is text, line, arrow, rectangle, ellipse, arc, polyline, image (from 'file'), rounded_rectangle, polygon, brace, waveform, text_box (kind block, note or callout, with a 'tip' it points at), table, dimension or formula (TeX). Its fields go by name: a text's x, y, text (_x or _{xy} for a subscript, ^ for a superscript, as in TeX), size, color and angle; a line's or arrow's from and to ([x, y]) and an arrow's head (open or filled); a box's x, y (top left corner), width and height; color, thickness, style, fill_color, fill_style, filled and so on. describe_format with element painting lists every type's fields. Returns it as get_schematic lists it, with its number. One undo step.",
@@ -438,12 +444,14 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"file": {"type": "string", "description": "The .va file, relative to the project (else the workspace); the .va document in front when not given"}, "unsaved": {"type": "string", "enum": ["save", "as_saved"], "description": "For an open file with unsaved changes: save them first, or build the file as saved"},
    "timeout": {"type": "integer", "description": "Seconds, 120 unless given"}}}},
 {"name": "tune",
- "description": "Finds the value that makes a measurement come out right: it sets a component's property, simulates, measures, and repeats - searching 'range' for the value that brings the measurement to 'target' (false position, on a logarithmic scale across decades, so a few runs), within 'tolerance' (0.5% of the target by default) and at most 'max_runs' (12) simulations. With 'values' it simulates and measures each value and returns a table (with a target, the closest is chosen). 'measure' is {\"variable\": \"tran.v(out)\", \"what\": \"final\"}, where 'what' is min, max, mean, rms, initial, final, peak_to_peak or one of get_dataset's measurements (bandwidth, overshoot, rise_time, settling_time, frequency, gain, thd, phase_margin, ...: its value, or 'field'); 'at' takes an x value instead, 'from' and 'to' the range, plus the measurement's options as get_dataset accepts them. Or {\"operating_point\": \"e\"} measures a node's DC voltage (or a device quantity, Q1.ic), running only the operating point each time. The value found is set as one undo step ('apply' false leaves the part as it was) and simulated, so the diagrams show it. Returns each run's value and measurement, the value found and what it gives. An untitled schematic is saved in the scratch folder first. Examples: sweep RE until the emitter sits at 5 V; sweep C until the peaking is 1 dB.",
+ "description": "Finds the value that makes a measurement come out right: it sets a component's property, simulates, measures, and repeats - searching 'range' for the value that brings the measurement to 'target' (false position, on a logarithmic scale across decades, so a few runs), within 'tolerance' (0.5% of the target by default) and at most 'max_runs' (12) simulations. With 'values' it simulates and measures each value and returns a table (with a target, the closest is chosen). 'measure' is {\"variable\": \"tran.v(out)\", \"what\": \"final\"}, where 'what' is min, max, mean, rms, initial, final, peak_to_peak or one of get_dataset's measurements (bandwidth, overshoot, rise_time, settling_time, frequency, gain, thd, phase_margin, ...: its value, or 'field'); 'at' takes an x value instead, 'from' and 'to' the range, plus the measurement's options as get_dataset accepts them. Or {\"operating_point\": \"e\"} measures a node's DC voltage (or a device quantity, Q1.ic), running only the operating point each time. The value found is set as one undo step ('apply' false leaves the part as it was) and simulated, so the diagrams show it. Returns each run's value and measurement, the value found and what it gives. An untitled schematic is saved in the scratch folder first. With 'knobs' (2 to 4 parts, each a range) and as many 'targets' it tunes them together (Broyden's method: a run for each knob to begin with, then a few), setting the values found as one undo step - a gain and an input resistance from Rf and Rg. Examples: sweep RE until the emitter sits at 5 V; sweep C until the peaking is 1 dB.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "component": {"type": "string", "description": "The part whose property is tuned, by name"}, "property": {"type": "string", "description": "Its first property unless given (R of a resistor); of an equation block, a variable it defines"},
    "target": {"type": "number", "description": "The number the measurement is to come to"}, "range": {"type": "array", "items": {}, "minItems": 2, "maxItems": 2, "description": "[low, high]: numbers, or text with units (1k)"},
    "values": {"type": "array", "items": {}, "description": "Instead of a search: each value simulated and measured, [\"1k\", \"2.2k\", 4700] (40 at most)"},
-   "measure": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "at": {"type": "number"}, "from": {"type": "number"}, "to": {"type": "number"}, "operating_point": {"type": "string"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}, "simulator": {"type": "string"}}, "description": "What is measured after each run: {\"variable\": \"tran.v(out)\", \"what\": \"final\"} - 'what' min, max, mean, rms, initial, final, peak_to_peak or a get_dataset measurement (bandwidth, overshoot, gain, ...; 'field' picks one of its numbers); 'at' an x value instead; 'from', 'to' and the measurement's options as get_dataset takes them. Or {\"operating_point\": \"e\"}: a node's DC voltage or a device's quantity (Q1.ic)"}, "tolerance": {"type": "number", "description": "How near the target is near enough: 0.5% of the target by default"}, "max_runs": {"type": "integer", "minimum": 2, "maximum": 40, "description": "Simulations at most, 12 by default"},
+   "measure": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "at": {"type": "number"}, "from": {"type": "number"}, "to": {"type": "number"}, "operating_point": {"type": "string"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}, "simulator": {"type": "string"}}, "description": "What is measured after each run: {\"variable\": \"tran.v(out)\", \"what\": \"final\"} - 'what' min, max, mean, rms, initial, final, peak_to_peak or a get_dataset measurement (bandwidth, overshoot, gain, ...; 'field' picks one of its numbers); 'at' an x value instead; 'from', 'to' and the measurement's options as get_dataset takes them. Or {\"operating_point\": \"e\"}: a node's DC voltage or a device's quantity (Q1.ic)"}, "tolerance": {"type": "number", "description": "How near the target is near enough: 0.5% of the target by default"}, "max_runs": {"type": "integer", "minimum": 2, "maximum": 60, "description": "Simulations at most, 12 by default (24 with knobs)"},
+   "knobs": {"type": "array", "items": {"type": "object", "properties": {"component": {"type": "string"}, "property": {"type": "string"}, "range": {"type": "array", "items": {}, "minItems": 2, "maxItems": 2}}}, "description": "Instead of 'component': 2 to 4 parts tuned together, [{\"component\": \"RF\", \"range\": [\"1k\", \"100k\"]}, {\"component\": \"RG\", \"range\": [\"100\", \"10k\"]}], for as many 'targets'"},
+   "targets": {"type": "array", "items": {"type": "object", "properties": {"measure": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "at": {"type": "number"}, "from": {"type": "number"}, "to": {"type": "number"}, "operating_point": {"type": "string"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}, "simulator": {"type": "string"}}}, "target": {"type": "number"}, "tolerance": {"type": "number"}}}, "description": "With 'knobs': one target for each knob, [{\"measure\": {...as 'measure'}, \"target\": 20, \"tolerance\": 0.1}, ...]; all of the operating point or all of the analyses"},
    "apply": {"type": "boolean", "description": "Set the value found (the default), or leave the part as it was"}, "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For these runs alone; the one in the settings by default"},
    "timeout": {"type": "integer", "description": "Seconds for each run, 120 unless given"}},
    "required": ["component", "measure"]}},
@@ -6777,12 +6785,29 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
     if (sch == nullptr) return errorResult(error);
     const int asked = std::clamp(args.value(QLatin1String("spacing")).toInt(60), 30, 400);
     const bool wireLabels = args.value(QLatin1String("wire_labels")).toBool();
+    // The parts where they are, the wiring drawn again ("tidy"); a feedback
+    // part (Rf round an op-amp) below or above the part it goes round; the
+    // supplies as labels on every pin of theirs and a ground symbol on each
+    // pin on ground (up and down), not wires from a column of them.
+    const bool keepPlaces = args.value(QLatin1String("keep_places")).toBool();
+    const QString feedback = args.value(QLatin1String("feedback")).toString(QStringLiteral("inline")).trimmed().toLower();
+    const QString supplies = args.value(QLatin1String("supplies")).toString(QStringLiteral("column")).trimmed().toLower();
+    if (feedback != QLatin1String("inline") && feedback != QLatin1String("below") && feedback != QLatin1String("above"))
+        return errorResult(tr("'feedback' is inline (the default: in the columns), below or above (the part it goes round)."));
+    if (supplies != QLatin1String("column") && supplies != QLatin1String("labels"))
+        return errorResult(tr("'supplies' is column (the default: a column of them at the left, wired) or labels (a label on each "
+                              "pin of a supply, a ground symbol on each pin on ground)."));
+    if (keepPlaces && (args.contains(QLatin1String("feedback")) || args.contains(QLatin1String("spacing"))))
+        return errorResult(tr("'keep_places' keeps every part where it is: 'feedback' and 'spacing' place parts."));
+    const bool railLabels = supplies == QLatin1String("labels");
     prepare(sch);
     const QString state = sch->snapshot();
     QStringList faults;
     // Tried with more room when the wires cannot all be drawn - and then
     // with the parts turned as they are (turned, they may leave no way).
-    const std::pair<int, bool> tries[] = {{asked, true}, {asked * 3 / 2, true}, {asked, false}, {asked * 3 / 2, false}, {asked * 2, false}};
+    // (Where they are: once, as they are turned.)
+    std::vector<std::pair<int, bool>> tries{{asked, true}, {asked * 3 / 2, true}, {asked, false}, {asked * 3 / 2, false}, {asked * 2, false}};
+    if (keepPlaces) tries = {{asked, false}};
     for (const auto& [spacing, turn] : tries) {
         const int gy = std::max(sch->getGridY(), 1);
         // The parts with pins are laid out; the ground symbols put back anew;
@@ -6794,6 +6819,8 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
             else parts.push_back(c);
         }
         if (parts.empty()) return errorResult(tr("%1 has no parts with pins to arrange.").arg(titleOf(sch)));
+        std::vector<QPoint> home(parts.size());   // (where each is: kept, with keep_places)
+        for (std::size_t i = 0; i < parts.size(); ++i) home[i] = parts[i]->center();
         QHash<const Component*, QString> keyOf;   // netsOf's name of each
         {
             QHash<QString, int> seen;
@@ -6872,7 +6899,80 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
             if (parts[i]->Model == QLatin1String("Vdc") || parts[i]->Model == QLatin1String("Idc"))
                 for (int net : std::as_const(pinNet[i]))
                     if (net >= 0 && net != groundNet && partsOfNet.value(net).size() >= 3) rails << net;
+        // And a DC source's net to a supply pin (a 741's VCC) or of a
+        // supply's name (vcc, vee, vdd ...), however few parts are on it: the
+        // flow of the signal does not go through it.
+        {
+            static const QRegularExpression supplyName(QStringLiteral("^(v(cc|dd|ee|ss|s[+-]|[+-]|p|n|pos|neg)\\d*|avdd|dvdd|vbat)$"),
+                                                       QRegularExpression::CaseInsensitiveOption);
+            QSet<int> supplyish;
+            for (int i = 0; i < int(parts.size()); ++i)
+                for (int k = 0; k < parts[i]->Ports.size(); ++k)
+                    if (supplyName.match(parts[i]->Ports.at(k)->Name).hasMatch() && pinNet[i][k] >= 0) supplyish << pinNet[i][k];
+            for (auto it = before.netOf.cbegin(); it != before.netOf.cend(); ++it)
+                if (it.key().startsWith(QLatin1String("label ")) && supplyName.match(it.key().mid(6)).hasMatch()) supplyish << it.value();
+            for (int i = 0; i < int(parts.size()); ++i)
+                if ((parts[i]->Model == QLatin1String("Vdc") || parts[i]->Model == QLatin1String("Idc")) && pinNet[i].size() == 2
+                    && (pinNet[i][0] == groundNet || pinNet[i][1] == groundNet))
+                    for (int net : std::as_const(pinNet[i]))
+                        if (net >= 0 && net != groundNet && supplyish.contains(net)) rails << net;
+        }
         const auto railish = [&](int net) { return net < 0 || net == groundNet || rails.contains(net); };
+        QList<Piece> ownPieces;   // (a pin's own: of a rail, or on ground)
+        QSet<QString> railNames;
+        // Supplies as labels: each pin on a rail a piece of its own with the
+        // rail's label, each pin on ground one with a ground symbol - no
+        // wires for them. A rail without a label is named after its source's
+        // polarity: VCC above ground, VEE below.
+        if (railLabels) {
+            QSet<QString> taken;
+            for (auto it = before.netOf.cbegin(); it != before.netOf.cend(); ++it)
+                if (it.key().startsWith(QLatin1String("label "))) taken << it.key().mid(6).toLower();
+            QHash<int, QString> railName;
+            QList<int> ordered(rails.cbegin(), rails.cend());
+            std::sort(ordered.begin(), ordered.end());
+            for (int net : std::as_const(ordered)) {
+                QStringList own;
+                for (auto it = before.netOf.cbegin(); it != before.netOf.cend(); ++it)
+                    if (it.value() == net && it.key().startsWith(QLatin1String("label "))) own << it.key().mid(6);
+                own.sort();
+                if (!own.isEmpty()) {
+                    railName.insert(net, own.first());
+                    continue;
+                }
+                QString base = QStringLiteral("RAIL");
+                for (int i = 0; i < int(parts.size()); ++i) {
+                    if ((parts[i]->Model != QLatin1String("Vdc") && parts[i]->Model != QLatin1String("Idc")) || pinNet[i].size() != 2
+                        || parts[i]->Props.isEmpty())
+                        continue;
+                    const int plus = pinNet[i][0], minus = pinNet[i][1];
+                    if (!((plus == net && minus == groundNet) || (minus == net && plus == groundNet))) continue;
+                    const qucs_s::units::Reading r = qucs_s::units::read(parts[i]->Props.first()->Value);
+                    const double v = r.kind == qucs_s::units::Reading::Number ? r.value : 1.0;
+                    base = (plus == net) == (v >= 0) ? QStringLiteral("VCC") : QStringLiteral("VEE");
+                    break;
+                }
+                QString name = base;
+                for (int n = 2; taken.contains(name.toLower()); ++n) name = base + QString::number(n);
+                taken << name.toLower();
+                railName.insert(net, name);
+            }
+            for (const QString& n : std::as_const(railName)) railNames << n;
+            for (auto it = pieces.begin(); it != pieces.end(); ++it) {
+                QList<QPair<int, int>> kept;
+                for (const auto& [i, k] : std::as_const(it->pins)) {
+                    const int net = pinNet[i][k];
+                    if (net >= 0 && net == groundNet) ownPieces.append(Piece{{{i, k}}, {}, true});
+                    else if (railName.contains(net)) ownPieces.append(Piece{{{i, k}}, {railName.value(net)}, false});
+                    else kept << QPair<int, int>{i, k};
+                }
+                it->pins = kept;
+                if (kept.isEmpty()) {
+                    it->labels.clear();
+                    it->grounded = false;
+                }
+            }
+        }
         std::vector<QSet<int>> next(parts.size());
         for (auto it = partsOfNet.cbegin(); it != partsOfNet.cend(); ++it) {
             if (railish(it.key())) continue;
@@ -6951,6 +7051,27 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
             for (int i : queue) columns[layer[i]].push_back(i);
             columnsOf.push_back(columns);
         }
+        // Feedback parts, with 'feedback' below or above: a two-pin part on
+        // two nets of one part of three pins or more (Rf from an op-amp's
+        // output to its inverting input) goes in that part's column, below
+        // or above it, lying as its pins run - not a column to its right.
+        std::vector<int> hostOf(parts.size(), -1);
+        if (feedback != QLatin1String("inline") && !keepPlaces) {
+            for (int i = 0; i < int(parts.size()); ++i) {
+                if (parts[i]->Ports.size() != 2 || supply[i] || isSignalSource(parts[i]) || groupOf[i] < 0) continue;
+                const int a = pinNet[i][0], b = pinNet[i][1];
+                if (a == b || railish(a) || railish(b)) continue;
+                for (int j : partsOfNet.value(a))
+                    if (j != i && parts[j]->Ports.size() >= 3 && partsOfNet.value(b).contains(j) && groupOf[j] == groupOf[i]
+                        && (hostOf[i] < 0 || j < hostOf[i]))
+                        hostOf[i] = j;
+            }
+            for (int i = 0; i < int(parts.size()); ++i) {
+                if (hostOf[i] < 0) continue;
+                for (std::vector<int>& column : columnsOf[groupOf[i]]) std::erase(column, i);
+                layer[i] = layer[hostOf[i]];
+            }
+        }
         QRect was0;
         for (Component* c : parts)
             was0 = was0.isNull() ? c->boundingRectIncludingProperties() : was0.united(c->boundingRectIncludingProperties());
@@ -6989,6 +7110,15 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                 for (int k = 1; k >= 0; --k)
                     for (int j : partsOfNet.value(pinNet[i][k]))
                         if (j != i && layer[j] >= 0 && layer[j] < layer[i]) left = k;
+                // (A feedback part: its pin on the net of the part's left pin on the left.)
+                if (const int h = hostOf[i]; h >= 0) {
+                    int xa = INT_MAX, xb = INT_MAX;
+                    for (int m = 0; m < parts[h]->Ports.size(); ++m) {
+                        if (pinNet[h][m] == a) xa = std::min(xa, parts[h]->Ports.at(m)->x);
+                        if (pinNet[h][m] == b) xb = std::min(xb, parts[h]->Ports.at(m)->x);
+                    }
+                    left = xa <= xb ? 0 : 1;
+                }
                 placed = [c, left] {
                     const Port *p = c->Ports.at(left), *q = c->Ports.at(1 - left);
                     return p->y == q->y && p->x < q->x;
@@ -7044,7 +7174,7 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                     long sum = 0;
                     int n = 0;
                     for (int j : next[i]) {
-                        if (layer[j] < 0 || layer[j] >= l || groupOf[j] != groupOf[i]) continue;
+                        if (layer[j] < 0 || layer[j] >= l || groupOf[j] != groupOf[i] || hostOf[j] >= 0) continue;
                         for (int k = 0; k < pinNet[i].size(); ++k)
                             for (int m = 0; m < pinNet[j].size(); ++m)
                                 if (pinNet[i][k] >= 0 && pinNet[i][k] == pinNet[j][m] && !railish(pinNet[i][k])) {
@@ -7070,6 +7200,43 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                     groupBottom = std::max(groupBottom, lastBottom);
                     said.append(parts[i]->Name);
                 }
+                // Each part's feedback parts below (or above) it, centred on
+                // it, the others of the column moved on to make room.
+                for (const auto& [host, preferred] : wanted) {
+                    std::vector<int> round;
+                    for (int f = 0; f < int(parts.size()); ++f)
+                        if (hostOf[f] == host) round.push_back(f);
+                    if (round.empty()) continue;
+                    const bool below = feedback == QLatin1String("below");
+                    int y = below ? target[host].y() + rel[host].bottom() + gapY : target[host].y() + rel[host].top() - gapY;
+                    const int start = y;
+                    for (int f : round) {
+                        // Its pin under (or over) the outermost of the part's
+                        // pins it joins (Rf's under an op-amp's output, which
+                        // stands out furthest): that wire goes straight down,
+                        // and the other comes down at its pin's side, clear
+                        // of the part's symbol - not along its tip.
+                        int cx = target[host].x() + rel[host].center().x() - rel[f].center().x();
+                        int outermost = -1;
+                        for (int m = 0; m < parts[host]->Ports.size(); ++m)
+                            for (int k = 0; k < parts[f]->Ports.size(); ++k)
+                                if (pinNet[host][m] == pinNet[f][k] && std::abs(parts[host]->Ports.at(m)->x) > outermost) {
+                                    outermost = std::abs(parts[host]->Ports.at(m)->x);
+                                    cx = target[host].x() + parts[host]->Ports.at(m)->x - parts[f]->Ports.at(k)->x;
+                                }
+                        int cy = below ? y - rel[f].top() : y - rel[f].bottom();
+                        sch->setOnGrid(cx, cy);
+                        target[f] = QPoint(cx, cy);
+                        y = below ? cy + rel[f].bottom() + gapY : cy + rel[f].top() - gapY;
+                        said.append(parts[f]->Name);
+                    }
+                    const int room = gy * ((std::abs(y - start) + gy - 1) / gy);
+                    for (int i : columns[l])
+                        if (i != host && (below ? target[i].y() > target[host].y() : target[i].y() < target[host].y()))
+                            target[i] += QPoint(0, below ? room : -room);
+                    for (int f : round) groupBottom = std::max(groupBottom, target[f].y() + rel[f].bottom());
+                    for (int i : columns[l]) groupBottom = std::max(groupBottom, target[i].y() + rel[i].bottom());
+                }
                 if (groups.size() == 1) columnsSaid.append(said);
             }
             int highest = top;
@@ -7083,10 +7250,13 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
             bottom = std::max(bottom, groupBottom);
         }
 
-        // Put down where they go, the blocks in a row below.
+        // Put down where they go, the blocks in a row below. (Where they
+        // were, with keep_places: only the wiring is drawn again.)
+        if (keepPlaces) target = home;
         for (int i = 0; i < int(parts.size()); ++i) parts[i]->moveCenter(target[i].x() - parts[i]->cx, target[i].y() - parts[i]->cy);
         int bx = was0.left();
         for (Component* c : blocks) {
+            if (keepPlaces) break;
             const QRect r = c->boundingRectIncludingProperties().translated(-c->center());
             int cx = bx - r.left(), cy = bottom + 2 * gapY - r.top();
             sch->setOnGrid(cx, cy);
@@ -7109,7 +7279,9 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
             bool grounded;
         };
         QList<Put> puts;
-        for (const Piece& piece : std::as_const(pieces)) {
+        QList<Piece> allPieces = pieces.values();
+        allPieces << ownPieces;
+        for (const Piece& piece : std::as_const(allPieces)) {
             if (piece.pins.isEmpty() || (piece.labels.isEmpty() && !piece.grounded)) continue;
             QList<QPoint> at;
             for (const auto& [i, k] : piece.pins) at << parts[i]->center() + QPoint(parts[i]->Ports.at(k)->x, parts[i]->Ports.at(k)->y);
@@ -7130,7 +7302,9 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
             for (Put& put : puts) {
                 QStringList kept;
                 for (const QString& name : std::as_const(put.labels))
-                    if (!named.contains(name)) {
+                    if (railNames.contains(name)) {   // (a supply's, on each of its pins)
+                        kept << name;
+                    } else if (!named.contains(name)) {
                         named.insert(name);
                         kept << name;
                     }
@@ -7212,20 +7386,22 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
         int dn = 0;
         for (Diagram* d : sch->a_DocDiags) {
             ++dn;
-            if (!d->boundingRect().intersects(covers)) continue;
+            if (keepPlaces || !d->boundingRect().intersects(covers)) continue;
             d->moveCenter(covers.right() + 2 * spacing - d->boundingRect().left(), 0);
             aside << tr("diagram %1").arg(dn);
         }
         int pn = 0;
         for (Painting* p : sch->a_DocPaints) {
             ++pn;
-            if (!p->boundingRect().intersects(covers)) continue;
+            if (keepPlaces || !p->boundingRect().intersects(covers)) continue;
             p->moveCenter(covers.right() + 2 * spacing - p->boundingRect().left(), 0);
             aside << tr("painting %1").arg(pn);
         }
         finish(sch, {covers.center()});
         QJsonObject result{{QStringLiteral("document"), titleOf(sch)},
-                           {QStringLiteral("arranged"), tr("%1 parts with pins in columns by signal flow, %2 wires drawn again, "
+                           {QStringLiteral("arranged"), keepPlaces ? tr("%1 parts with pins where they were, %2 wires drawn again, "
+                                                                        "every net as it was").arg(arrangedCount).arg(sch->a_DocWires.size())
+                                                                   : tr("%1 parts with pins in columns by signal flow, %2 wires drawn again, "
                                                            "every net as it was").arg(arrangedCount).arg(sch->a_DocWires.size())},
                            {QStringLiteral("grounds"), groundsPut},
                            {QStringLiteral("labels"), labelsPut},
@@ -7235,7 +7411,7 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
         if (!aside.isEmpty()) result.insert(QStringLiteral("moved aside"), QJsonArray::fromStringList(aside));
         if (!dropped.isEmpty())
             result.insert(QStringLiteral("dropped"), tr("net labels on wires that reached no pin: %1").arg(dropped.join(QStringLiteral(", "))));
-        if (spacing != asked || !turn)
+        if (!keepPlaces && (spacing != asked || !turn))
             result.insert(QStringLiteral("note"), tr("Every wire could not be drawn with %1 of room and the parts turned as a schematic has them: %2 was "
                                                      "used%3.").arg(asked).arg(spacing).arg(turn ? QString() : tr(", the parts turned as they were")));
         return jsonResult(result);
@@ -8266,6 +8442,10 @@ public:
         noteFront();
     }
 
+    /// Each call that succeeds said in a line of its own: what it made or
+    /// changed, not its whole answer (those that fail in full).
+    void setBrief(bool brief) { a_brief = brief; }
+
     void next()
     {
         if (a_stopped || a_next >= a_calls.size()) {
@@ -8346,10 +8526,49 @@ private:
             else if (tool == QLatin1String("undo")) a_steps[where] -= steps;
             else if (tool == QLatin1String("redo")) a_steps[where] += steps;
         }
+        if (a_brief && !error) {
+            a_content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                         {QStringLiteral("text"), QStringLiteral("[%1] %2: %3").arg(index + 1).arg(tool, briefOf(result))}});
+            return;
+        }
         a_content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
                                      {QStringLiteral("text"),
                                       QStringLiteral("[%1] %2%3:").arg(index + 1).arg(tool, error ? tr(" failed") : QString())}});
         for (const QJsonValue& v : result.value(QLatin1String("content")).toArray()) a_content.append(v);
+    }
+
+    // An answer in a line: a few of its fields that say what it made (a
+    // part's name, type and place; a document; a note), or its first
+    // sentence; a picture as one.
+    static QString briefOf(const QJsonObject& result)
+    {
+        QString text;
+        bool picture = false;
+        for (const QJsonValue& v : result.value(QLatin1String("content")).toArray()) {
+            const QJsonObject o = v.toObject();
+            if (o.value(QLatin1String("type")).toString() == QLatin1String("image")) picture = true;
+            else if (text.isEmpty()) text = o.value(QLatin1String("text")).toString();
+        }
+        QString said;
+        const QJsonDocument parsed = QJsonDocument::fromJson(text.toUtf8());
+        if (parsed.isObject()) {
+            const QJsonObject o = parsed.object();
+            QStringList fields;
+            for (const char* key : {"name", "type", "x", "y", "document", "instance", "subcircuit", "succeeded", "dataset written", "arranged",
+                                    "diagram", "found", "value"}) {
+                const QJsonValue v = o.value(QLatin1String(key));
+                if (v.isString() && !v.toString().isEmpty()) fields << QStringLiteral("%1 %2").arg(QLatin1String(key), v.toString().left(80));
+                else if (v.isDouble() || v.isBool()) fields << QStringLiteral("%1 %2").arg(QLatin1String(key), v.toVariant().toString());
+            }
+            if (const QString note = o.value(QLatin1String("note")).toString(); !note.isEmpty()) fields << QStringLiteral("note: %1").arg(note.left(160));
+            said = fields.isEmpty() ? QStringLiteral("done (%1 fields)").arg(o.size()) : fields.join(QStringLiteral(", "));
+        } else {
+            said = text.section(QLatin1Char('\n'), 0, 0);
+            if (const qsizetype stop = said.indexOf(QLatin1String(". ")); stop > 0) said = said.left(stop + 1);
+            if (said.size() > 200) said = said.left(200) + QStringLiteral(" ...");
+            if (said.isEmpty()) said = QStringLiteral("done");
+        }
+        return picture ? said + QStringLiteral(" (a picture)") : said;
     }
 
     void finish()
@@ -8403,6 +8622,7 @@ private:
     bool a_hadFront = false;
     QJsonArray a_calls;
     bool a_keepGoing;
+    bool a_brief = false;
     bool a_atomic;
     std::function<void(const QJsonObject&)> a_done;
     QList<Before> a_before;
@@ -8428,7 +8648,9 @@ void QucsControl::runBatch(const QJsonObject& args, const Done& done)
     if (atomic)
         for (QucsDoc* doc : a_app->allDocuments())
             if (auto* sch = dynamic_cast<Schematic*>(doc)) schematics << sch;
-    (new BatchRun(this, a_app, calls, args.value(QLatin1String("keep_going")).toBool(), atomic, schematics, done))->next();
+    auto* run = new BatchRun(this, a_app, calls, args.value(QLatin1String("keep_going")).toBool(), atomic, schematics, done);
+    run->setBrief(args.value(QLatin1String("brief")).toBool());
+    run->next();
 }
 
 QWidget* QucsControl::openDialog() const
@@ -8807,6 +9029,52 @@ QString keptOwner(const QDir& dir, const QString& keepAs)
 // The dataset a run of \a simulator wrote for \a doc since \a before:
 // its file, whether it was written, its variables, a copy kept as
 // \a keepAs, the data display, and the traces that show nothing.
+QJsonObject QucsControl::comparedRuns(Schematic* doc, const QJsonObject& compare, const QJsonValue& simulator)
+{
+    const QString with = compare.value(QLatin1String("with")).toString().trimmed();
+    static const QStringList stats{QStringLiteral("min"), QStringLiteral("max"), QStringLiteral("mean"), QStringLiteral("rms"),
+                                   QStringLiteral("final"), QStringLiteral("peak_to_peak")};
+    QJsonArray table;
+    for (const QJsonValue& item : compare.value(QLatin1String("measure")).toArray()) {
+        const QJsonObject m = item.toObject();
+        const QString variable = m.value(QLatin1String("variable")).toString().trimmed();
+        const QString what = m.value(QLatin1String("what")).toString(QStringLiteral("final")).trimmed().toLower().replace(QLatin1Char(' '), QLatin1Char('_'));
+        const QString field = m.value(QLatin1String("field")).toString(QStringLiteral("value"));
+        QJsonObject read{{QStringLiteral("path"), doc->getDocName()}, {QStringLiteral("variables"), QJsonArray{variable}},
+                         {QStringLiteral("compare"), with}, {QStringLiteral("points"), 0}};
+        if (!simulator.isUndefined() && !simulator.isNull()) read.insert(QStringLiteral("simulator"), simulator);
+        for (const char* key : {"from", "to", "level", "tolerance", "fundamental", "harmonics", "periods", "decibels", "form"})
+            if (m.contains(QLatin1String(key))) read.insert(QLatin1String(key), m.value(QLatin1String(key)));
+        const bool stat = stats.contains(what);
+        if (!stat) read.insert(QStringLiteral("measure"), QJsonArray{what});
+        QJsonObject row{{QStringLiteral("variable"), variable}, {QStringLiteral("what"), what}};
+        const QJsonObject got = getDataset(read);
+        if (got.value(QLatin1String("isError")).toBool()) {
+            row.insert(QStringLiteral("error"), textOf(got).left(300));
+            table.append(row);
+            continue;
+        }
+        QJsonObject v = QJsonDocument::fromJson(textOf(got).toUtf8()).object().value(QStringLiteral("variables")).toArray().first().toObject();
+        if (v.contains(QStringLiteral("curves"))) v = v.value(QStringLiteral("curves")).toArray().first().toObject();   // (a sweep: its first curve)
+        const QJsonObject other = v.value(QStringLiteral("other run")).toObject();
+        const QString statKey = QString(what).replace(QLatin1Char('_'), QLatin1Char(' '));
+        const QJsonValue after = stat ? v.value(statKey) : v.value(QStringLiteral("measurements")).toObject().value(what).toObject().value(field);
+        const QJsonValue before = stat ? other.value(statKey) : other.value(QStringLiteral("measurements")).toObject().value(what).toObject().value(field);
+        if (after.isDouble()) row.insert(QStringLiteral("after"), after);
+        if (before.isDouble()) row.insert(QStringLiteral("before"), before);
+        if (after.isDouble() && before.isDouble()) {
+            const double a = after.toDouble(), b = before.toDouble();
+            row.insert(QStringLiteral("change"), a - b);
+            if (b != 0) row.insert(QStringLiteral("change %"), std::round((a - b) / std::abs(b) * 10000.0) / 100.0);
+        } else {
+            row.insert(QStringLiteral("note"), v.contains(QStringLiteral("compared")) ? v.value(QStringLiteral("compared")).toString()
+                                                                                        : tr("not measured on both runs (%1)").arg(field));
+        }
+        table.append(row);
+    }
+    return QJsonObject{{QStringLiteral("with"), with}, {QStringLiteral("table"), table}};
+}
+
 QJsonObject QucsControl::datasetOfRun(Schematic* doc, int simulator, const QDateTime& before, const QString& keepAs,
                                       bool* written)
 {
@@ -8971,6 +9239,22 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
         doneGiven(errorResult(tr("'keep_as' is a name of letters, digits, _ and -.")));
         return;
     }
+    // Before and after: what is measured on this run and on one kept
+    // before (keep_as), side by side - "did it improve" in one call.
+    const QJsonObject compare = args.value(QLatin1String("compare")).toObject();
+    if (args.contains(QLatin1String("compare"))) {
+        const QJsonArray items = compare.value(QLatin1String("measure")).toArray();
+        bool readable = !compare.value(QLatin1String("with")).toString().trimmed().isEmpty() && !items.isEmpty() && items.size() <= 12;
+        for (const QJsonValue& v : items) readable = readable && !v.toObject().value(QLatin1String("variable")).toString().trimmed().isEmpty();
+        if (!readable || operatingPoint) {
+            doneGiven(errorResult(operatingPoint ? tr("'compare' is of an analysis run's dataset, not of the operating point alone.")
+                                                 : tr("'compare' is {\"with\": \"before\", \"measure\": [{\"variable\": \"ac.v(out)\", \"what\": "
+                                                      "\"bandwidth\"}, ...]}: a run kept with keep_as, and up to 12 measurements as tune's "
+                                                      "'measure' takes them.")));
+            return;
+        }
+    }
+    const bool brief = args.value(QLatin1String("brief")).toBool();
     // What Check Schematic finds, before the run - the moment it matters:
     // put first in the answer.
     QJsonArray checkErrors, checkWarnings;
@@ -9174,7 +9458,8 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
         app->showDocument(doc);
         app->slotSimulateWithSpice();
     });
-    QTimer::singleShot(0, this, [this, done, timeout, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning, logBefore] {
+    QTimer::singleShot(0, this, [this, done, timeout, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning, logBefore,
+                                 compare, brief, simulatorArg = args.value(QLatin1String("simulator"))] {
         SimulationRun* run = console->currentRun();
         // Closed before it began (a call right behind this one): said -
         // not "did not start" with no reason, nor another run's log.
@@ -9195,7 +9480,8 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
         }
         run->setQuiet(true);   // (its errors in the answer, not in a box)
         auto answered = std::make_shared<bool>(false);
-        auto report = [this, done, answered, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning](SimulationRun* r, bool timedOut) {
+        auto report = [this, done, answered, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning,
+                       compare, brief, simulatorArg](SimulationRun* r, bool timedOut) {
             if (*answered) return;
             *answered = true;
             if (!timedOut) restore();
@@ -9274,6 +9560,23 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
             }
             if (timedOut) result.insert(QStringLiteral("note"), tr("Still running: its end was not waited for any longer."));
             changedWhileRunning(result);
+            // Before and after, measurement by measurement.
+            if (!compare.isEmpty() && doc && result.value(QStringLiteral("dataset written")).toBool())
+                result.insert(QStringLiteral("compared"), comparedRuns(doc, compare, simulatorArg));
+            // Brief: what came of it, not the log and the long lists.
+            if (brief) {
+                result.remove(QStringLiteral("last lines"));
+                result.remove(QStringLiteral("data display"));
+                for (const char* key : {"errors", "warnings", "variables", "traces without data"}) {
+                    QJsonArray list = result.value(QLatin1String(key)).toArray();
+                    const int keep = QLatin1String(key) == QLatin1String("errors") ? 5 : 3;
+                    if (list.size() <= keep) continue;
+                    const int more = int(list.size()) - keep;
+                    while (list.size() > keep) list.removeLast();
+                    list.append(tr("... %1 more").arg(more));
+                    result.insert(QLatin1String(key), list);
+                }
+            }
             done(jsonResult(result));
         };
         connect(run, &SimulationRun::simulated, this, [report](SimulationRun* r) { report(r, false); });

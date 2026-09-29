@@ -327,8 +327,378 @@ double measured(const QJsonObject& spec, const QJsonObject& answer, QString* use
 
 } // namespace
 
+// Several knobs at once, for as many targets (Rf and Rg for a gain and an
+// input resistance): Broyden's method on each value's place in its range -
+// on its logarithm across decades - from the middle; the first Jacobian by
+// a run with each knob moved, then each run's change folded in, a step
+// that makes it worse halved. The values found are set as one step to undo.
+void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
+{
+    QString error;
+    Schematic* sch = schematic(args, &error, true);
+    if (sch == nullptr) {
+        done(errorResult(error));
+        return;
+    }
+    struct Knob {
+        QString name, property, was, unit;
+        double lo = 0, hi = 0;
+        bool log = false;
+    };
+    struct Target {
+        QJsonObject spec;
+        double value = 0, tolerance = 0;
+    };
+    QList<Knob> knobs;
+    QList<Target> targets;
+    const QJsonArray knobArgs = args.value(QLatin1String("knobs")).toArray(), targetArgs = args.value(QLatin1String("targets")).toArray();
+    if (knobArgs.size() < 2 || knobArgs.size() > 4 || targetArgs.size() != knobArgs.size()) {
+        done(errorResult(tr("'knobs' are 2 to 4 parts, [{\"component\": \"RF\", \"range\": [\"1k\", \"100k\"]}, ...], and 'targets' as "
+                            "many, [{\"measure\": {...}, \"target\": 20}, ...]: one target for each knob.")));
+        return;
+    }
+    for (const QJsonValue& v : knobArgs) {
+        const QJsonObject knob = v.toObject();
+        Knob k;
+        k.name = knob.value(QLatin1String("component")).toString().trimmed();
+        Component* c = sch->getComponentByName(k.name);
+        if (c == nullptr) {
+            done(errorResult(tr("There is no component %1 in %2 (knobs: 'component').").arg(k.name, titleOf(sch))));
+            return;
+        }
+        k.property = knob.value(QLatin1String("property")).toString().trimmed();
+        if (k.property.isEmpty() && !c->Props.isEmpty()) k.property = c->Props.first()->Name;
+        if (c->getProperty(k.property) == nullptr) {
+            done(errorResult(tr("%1 has no property %2.").arg(k.name, k.property)));
+            return;
+        }
+        for (const Knob& other : std::as_const(knobs))
+            if (other.name == k.name && other.property == k.property) {
+                done(errorResult(tr("%1's %2 is a knob twice.").arg(k.name, k.property)));
+                return;
+            }
+        const QJsonArray range = knob.value(QLatin1String("range")).toArray();
+        if (range.size() != 2 || !valueOf(range.at(0), &k.lo) || !valueOf(range.at(1), &k.hi) || k.lo == k.hi) {
+            done(errorResult(tr("Knob %1: 'range' is [low, high], numbers or 4.7k.").arg(k.name)));
+            return;
+        }
+        if (k.lo > k.hi) std::swap(k.lo, k.hi);
+        k.was = c->getProperty(k.property)->Value;
+        k.unit = baseUnit(k.was);
+        k.log = k.lo > 0 && k.hi / k.lo >= 100;
+        knobs << k;
+    }
+    bool atOperatingPoint = false, anyDataset = false;
+    for (const QJsonValue& v : targetArgs) {
+        const QJsonObject item = v.toObject();
+        Target t;
+        t.spec = item.value(QLatin1String("measure")).toObject();
+        if (!item.value(QLatin1String("target")).isDouble()
+            || (!t.spec.contains(QLatin1String("operating_point")) && t.spec.value(QLatin1String("variable")).toString().trimmed().isEmpty())) {
+            done(errorResult(tr("Each of 'targets' is {\"measure\": {...as tune's 'measure'}, \"target\": 20, \"tolerance\": 0.1}.")));
+            return;
+        }
+        t.value = item.value(QLatin1String("target")).toDouble();
+        t.tolerance = item.value(QLatin1String("tolerance")).isDouble() ? std::abs(item.value(QLatin1String("tolerance")).toDouble())
+                                                                      : std::max(1e-12, std::abs(t.value) * 0.005);
+        (t.spec.contains(QLatin1String("operating_point")) ? atOperatingPoint : anyDataset) = true;
+        targets << t;
+    }
+    if (atOperatingPoint && anyDataset) {
+        done(errorResult(tr("The targets are all of the operating point, or all of the analyses' dataset: one run gives them.")));
+        return;
+    }
+    const int most = std::clamp(args.value(QLatin1String("max_runs")).toInt(24), 4, 60);
+    const bool apply = args.value(QLatin1String("apply")).toBool(true);
+    const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(120), 5, 3600);
+    QString savedNote;
+    if (sch->getDocName().isEmpty() && !saveInScratch(sch, &savedNote, &error)) {
+        done(errorResult(error));
+        return;
+    }
+    QPointer<Schematic> doc(sch);
+    const QString path = sch->getDocName();
+    const int n = int(knobs.size());
+
+    // A place in the ranges (0 to 1 each) as values, and back.
+    const auto valueAt = [knobs](int i, double u) {
+        const Knob& k = knobs.at(i);
+        return k.log ? std::exp(std::log(k.lo) + u * (std::log(k.hi) - std::log(k.lo))) : k.lo + u * (k.hi - k.lo);
+    };
+    const auto setValues = [doc, knobs](const QStringList& texts) {
+        if (!doc) return;
+        for (int i = 0; i < knobs.size(); ++i)
+            if (Component* c = doc->getComponentByName(knobs.at(i).name); c != nullptr && c->getProperty(knobs.at(i).property) != nullptr) {
+                c->getProperty(knobs.at(i).property)->Value = texts.at(i);
+                doc->recreateComponent(c);
+            }
+        doc->viewport()->update();
+    };
+    struct Run {
+        QStringList texts;
+        QList<double> measured;
+        double worst = INFINITY;   // (the largest miss, in tolerances)
+    };
+    struct State {
+        QList<Run> runs;
+        std::vector<double> u, f;               // where it is, its misses (scaled)
+        std::vector<std::vector<double>> J;     // d miss / d place
+        int column = 0;                         // the first Jacobian: the knob moved next
+        std::vector<double> tried;              // a step being halved
+        int halvings = 0;
+    };
+    auto state = std::make_shared<State>();
+    state->u.assign(n, 0.5);
+    const auto missOf = [targets](const QList<double>& m) {
+        std::vector<double> f;
+        for (int j = 0; j < targets.size(); ++j)
+            f.push_back((m.at(j) - targets.at(j).value) / std::max(std::abs(targets.at(j).value), targets.at(j).tolerance));
+        return f;
+    };
+    auto finishUp = std::make_shared<std::function<void(const QString&)>>();
+    auto evaluate = std::make_shared<std::function<void(const std::vector<double>&, std::function<void(const QList<double>&)>)>>();
+    *evaluate = [=, this](const std::vector<double>& u, std::function<void(const QList<double>&)> then) {
+        if (!doc) {
+            (*finishUp)(tr("The schematic was closed."));
+            return;
+        }
+        QStringList texts;
+        for (int i = 0; i < n; ++i) texts << valueText(valueAt(i, std::clamp(u[i], 0.0, 1.0)), knobs.at(i).unit);
+        setValues(texts);
+        QJsonObject run{{QStringLiteral("path"), path}, {QStringLiteral("timeout"), timeout}};
+        if (atOperatingPoint) run.insert(QStringLiteral("operating_point"), true);
+        if (args.contains(QLatin1String("simulator"))) run.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
+        simulate(run, [=, this](const QJsonObject& r) {
+            const QJsonObject result = QJsonDocument::fromJson(textOf(r).section(QLatin1Char('\n'), -1).toUtf8()).object();
+            QStringList said;
+            for (int i = 0; i < n; ++i) said << QStringLiteral("%1 = %2").arg(knobs.at(i).name, texts.at(i));
+            if (r.value(QStringLiteral("isError")).toBool() || !result.value(QStringLiteral("succeeded")).toBool(true) || result.isEmpty()) {
+                const QJsonArray errors = result.value(QStringLiteral("errors")).toArray();
+                (*finishUp)(tr("The simulation with %1 failed: %2").arg(said.join(QStringLiteral(", ")),
+                                                                     errors.isEmpty() ? textOf(r).left(600)
+                                                                                      : errors.first().toObject().value(QStringLiteral("message")).toString()));
+                return;
+            }
+            QList<double> m;
+            for (const Target& t : std::as_const(targets)) {
+                QJsonObject answer = result;
+                if (!atOperatingPoint) {
+                    QJsonObject read{{QStringLiteral("path"), path},
+                                     {QStringLiteral("variables"), QJsonArray{t.spec.value(QLatin1String("variable"))}},
+                                     {QStringLiteral("points"), 0}};
+                    for (const char* key : {"from", "to", "level", "tolerance", "fundamental", "harmonics", "periods", "decibels", "form", "simulator"})
+                        if (t.spec.contains(QLatin1String(key))) read.insert(QLatin1String(key), t.spec.value(QLatin1String(key)));
+                    if (args.contains(QLatin1String("simulator")) && !read.contains(QStringLiteral("simulator")))
+                        read.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
+                    if (t.spec.contains(QLatin1String("at"))) read.insert(QStringLiteral("at"), QJsonArray{t.spec.value(QLatin1String("at"))});
+                    const QString what = t.spec.value(QLatin1String("what")).toString(QStringLiteral("final")).trimmed().toLower();
+                    static const QStringList stats{QStringLiteral("min"), QStringLiteral("max"), QStringLiteral("mean"), QStringLiteral("rms"),
+                                                   QStringLiteral("initial"), QStringLiteral("final"), QStringLiteral("peak_to_peak"),
+                                                   QStringLiteral("peak to peak")};
+                    if (!t.spec.contains(QLatin1String("at")) && !stats.contains(what)) read.insert(QStringLiteral("measure"), QJsonArray{what});
+                    const QJsonObject got = getDataset(read);
+                    if (got.value(QStringLiteral("isError")).toBool()) {
+                        (*finishUp)(tr("The result could not be read: %1").arg(textOf(got)));
+                        return;
+                    }
+                    answer = QJsonDocument::fromJson(textOf(got).toUtf8()).object();
+                }
+                QString why, used;
+                const double value = measured(t.spec, answer, &used, &why);
+                if (std::isnan(value)) {
+                    (*finishUp)(tr("With %1 nothing could be measured: %2.").arg(said.join(QStringLiteral(", ")), why));
+                    return;
+                }
+                m << value;
+            }
+            Run run{texts, m};
+            run.worst = 0;
+            for (int j = 0; j < targets.size(); ++j)
+                run.worst = std::max(run.worst, std::abs(m.at(j) - targets.at(j).value) / targets.at(j).tolerance);
+            state->runs << run;
+            then(m);
+        });
+    };
+
+    auto step = std::make_shared<std::function<void()>>();
+    *step = [=, this]() {
+        if (!state->runs.isEmpty() && state->runs.last().worst <= 1) {
+            (*finishUp)(QString());
+            return;
+        }
+        if (state->runs.size() >= most) {
+            (*finishUp)(tr("%1 runs, the most asked for ('max_runs'), without every target within its tolerance.").arg(most));
+            return;
+        }
+        // Where it starts: the middle of every range.
+        if (state->f.empty()) {
+            (*evaluate)(state->u, [=](const QList<double>& m) {
+                state->f = missOf(m);
+                state->J.assign(n, std::vector<double>(n, 0.0));
+                (*step)();
+            });
+            return;
+        }
+        // The first Jacobian: each knob moved a tenth of its range.
+        if (state->column < n) {
+            const int i = state->column;
+            std::vector<double> moved = state->u;
+            const double h = moved[i] + 0.1 <= 1 ? 0.1 : -0.1;
+            moved[i] += h;
+            (*evaluate)(moved, [=](const QList<double>& m) {
+                const std::vector<double> f = missOf(m);
+                for (int j = 0; j < n; ++j) state->J[j][i] = (f[j] - state->f[j]) / h;
+                ++state->column;
+                (*step)();
+            });
+            return;
+        }
+        // Newton's step on the Jacobian as it is (Gaussian elimination), at
+        // most half the ranges, kept in them.
+        std::vector<double> du = state->tried;
+        if (du.empty()) {
+            std::vector<std::vector<double>> a = state->J;
+            std::vector<double> b(n);
+            for (int j = 0; j < n; ++j) b[j] = -state->f[j];
+            for (int c = 0; c < n; ++c) {
+                int pivot = c;
+                for (int r = c + 1; r < n; ++r)
+                    if (std::abs(a[r][c]) > std::abs(a[pivot][c])) pivot = r;
+                if (std::abs(a[pivot][c]) < 1e-12) {
+                    (*finishUp)(tr("The measurements do not change independently with the knobs here (the Jacobian is singular): "
+                                   "other knobs, or ranges, or targets."));
+                    return;
+                }
+                std::swap(a[c], a[pivot]);
+                std::swap(b[c], b[pivot]);
+                for (int r = c + 1; r < n; ++r) {
+                    const double k = a[r][c] / a[c][c];
+                    for (int cc = c; cc < n; ++cc) a[r][cc] -= k * a[c][cc];
+                    b[r] -= k * b[c];
+                }
+            }
+            du.assign(n, 0.0);
+            for (int c = n - 1; c >= 0; --c) {
+                double s = b[c];
+                for (int cc = c + 1; cc < n; ++cc) s -= a[c][cc] * du[cc];
+                du[c] = s / a[c][c];
+            }
+            double largest = 0;
+            for (double d : du) largest = std::max(largest, std::abs(d));
+            if (largest > 0.5)
+                for (double& d : du) d *= 0.5 / largest;
+        }
+        std::vector<double> next(n);
+        for (int i = 0; i < n; ++i) next[i] = std::clamp(state->u[i] + du[i], 0.0, 1.0);
+        for (int i = 0; i < n; ++i) du[i] = next[i] - state->u[i];
+        double moved = 0;
+        for (double d : du) moved += d * d;
+        if (moved < 1e-14) {
+            (*finishUp)(tr("It went to the end of a range and could go no further: widen the ranges ('runs' shows the way it went)."));
+            return;
+        }
+        (*evaluate)(next, [=](const QList<double>& m) {
+            const std::vector<double> f = missOf(m);
+            double before = 0, after = 0;
+            for (int j = 0; j < n; ++j) {
+                before += state->f[j] * state->f[j];
+                after += f[j] * f[j];
+            }
+            // Broyden: the Jacobian corrected by what this step did.
+            std::vector<double> jdu(n, 0.0);
+            for (int j = 0; j < n; ++j)
+                for (int i = 0; i < n; ++i) jdu[j] += state->J[j][i] * du[i];
+            for (int j = 0; j < n; ++j)
+                for (int i = 0; i < n; ++i) state->J[j][i] += ((f[j] - state->f[j]) - jdu[j]) * du[i] / moved;
+            // Worse: the step again, half as long (twice at most); better, or
+            // halved enough: taken.
+            if (after > before && state->halvings < 2) {
+                ++state->halvings;
+                state->tried = du;
+                for (double& d : state->tried) d /= 2;
+            } else {
+                state->halvings = 0;
+                state->tried.clear();
+                state->u = next;
+                state->f = f;
+            }
+            (*step)();
+        });
+    };
+
+    *finishUp = [=, this](const QString& stopped) {
+        if (!doc) {
+            done(errorResult(tr("The schematic was closed while it was tuned.")));
+            return;
+        }
+        int best = -1;
+        for (int r = 0; r < state->runs.size(); ++r)
+            if (best < 0 || state->runs.at(r).worst < state->runs.at(best).worst) best = r;
+        QStringList was;
+        for (const Knob& k : std::as_const(knobs)) was << k.was;
+        setValues(was);
+        QJsonArray runs;
+        for (const Run& r : std::as_const(state->runs)) {
+            QJsonObject values, got;
+            for (int i = 0; i < n; ++i) values.insert(knobs.at(i).name, r.texts.at(i));
+            QJsonArray measures;
+            for (double m : r.measured) measures.append(rounded(m));
+            runs.append(QJsonObject{{QStringLiteral("values"), values}, {QStringLiteral("measured"), measures}});
+        }
+        QJsonObject result{{QStringLiteral("runs"), runs}};
+        if (!savedNote.isEmpty()) result.insert(QStringLiteral("saved"), savedNote);
+        if (!stopped.isEmpty()) result.insert(QStringLiteral("stopped"), stopped);
+        if (best < 0) {
+            result.insert(QStringLiteral("set"), tr("Nothing changed."));
+            done(jsonResult(result));
+            return;
+        }
+        const Run& b = state->runs.at(best);
+        const bool reached = b.worst <= 1;
+        QJsonArray knobsOut, targetsOut;
+        for (int i = 0; i < n; ++i)
+            knobsOut.append(QJsonObject{{QStringLiteral("component"), knobs.at(i).name}, {QStringLiteral("property"), knobs.at(i).property},
+                                        {QStringLiteral("was"), knobs.at(i).was}, {QStringLiteral("value"), b.texts.at(i)}});
+        for (int j = 0; j < targets.size(); ++j) {
+            const Target& t = targets.at(j);
+            targetsOut.append(QJsonObject{{QStringLiteral("measure"), t.spec}, {QStringLiteral("target"), t.value},
+                                          {QStringLiteral("gives"), rounded(b.measured.at(j))},
+                                          {QStringLiteral("off by"), rounded(b.measured.at(j) - t.value)},
+                                          {QStringLiteral("within tolerance"), std::abs(b.measured.at(j) - t.value) <= t.tolerance}});
+        }
+        result.insert(QStringLiteral("knobs"), knobsOut);
+        result.insert(QStringLiteral("targets"), targetsOut);
+        if (apply && reached) {
+            setValues(b.texts);
+            doc->setChanged(true, true);
+            result.insert(QStringLiteral("set"), tr("The values found are set: one step to undo."));
+        } else {
+            result.insert(QStringLiteral("set"), !apply ? tr("not set ('apply' false): the knobs are as they were.")
+                                                        : tr("not set: no run gave every target within its tolerance; the knobs are as "
+                                                             "they were. The closest run is 'knobs' (edit_component sets them)."));
+        }
+        // The dataset of the values set (a run again, when the last was of others).
+        if (!(apply && reached) || best == state->runs.size() - 1) {
+            done(jsonResult(result));
+            return;
+        }
+        QJsonObject run{{QStringLiteral("path"), path}, {QStringLiteral("timeout"), timeout}};
+        if (atOperatingPoint) run.insert(QStringLiteral("operating_point"), true);
+        if (args.contains(QLatin1String("simulator"))) run.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
+        simulate(run, [done, result](const QJsonObject&) mutable {
+            result.insert(QStringLiteral("dataset"), tr("of the values set (simulated again)"));
+            done(jsonResult(result));
+        });
+    };
+    (*step)();
+}
+
 void QucsControl::tune(const QJsonObject& args, const Done& done)
 {
+    if (args.contains(QLatin1String("knobs")) || args.contains(QLatin1String("targets"))) {
+        tuneKnobs(args, done);
+        return;
+    }
     QString error;
     Schematic* sch = schematic(args, &error, true);
     if (sch == nullptr) {
