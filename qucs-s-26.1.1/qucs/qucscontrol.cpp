@@ -2002,7 +2002,8 @@ bool joinPieces(Schematic* sch, const Nets& before, const QString& edited, const
         // The two closest places of two pieces.
         QPoint from, to;
         qint64 best = -1;
-        const QList<int> ids = places.keys();
+        QList<int> ids = places.keys();
+        std::sort(ids.begin(), ids.end());   // (a hash's order: the closest of equals another each run)
         for (int i = 0; i < ids.size(); ++i)
             for (int j = i + 1; j < ids.size(); ++j)
                 for (const QPoint& p : places.value(ids.at(i)))

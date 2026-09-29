@@ -96,19 +96,33 @@ QPen SimulationComponent::pen() const
 void SimulationComponent::updateComponentBounds(const QRect& label_bounds)
 {
     auto sr = selectionRect(label_bounds);
-    x1 = sr.top();
-    y1 = sr.left();
+    x1 = sr.left();
+    y1 = sr.top();
     x2 = sr.right();
     y2 = sr.bottom();
     tx = 0;
     ty = y2;
 }
 
+QRect SimulationComponent::labelBox() const
+{
+    // As drawSymbol() draws it: the text's bounds from (0, 0), and the air
+    // around it. (Without that air, and by another measure, the bounds a
+    // component was made or loaded with changed at its first paint.)
+    return QFontMetrics{labelFont()}.boundingRect(QRect{0, 0, 1, 1}, Qt::TextDontClip, label_text).marginsAdded(label_margins);
+}
 
 void SimulationComponent::initSymbol(const QString &label)
 {
     label_text = wrapLabel(label);
-    updateComponentBounds(QRect{{0,0}, QFontMetrics{labelFont()}.size(0, label_text)});
+    updateComponentBounds(labelBox());
+}
+
+bool SimulationComponent::load(const QString& s)
+{
+    if (!Component::load(s)) return false;
+    updateComponentBounds(labelBox());
+    return true;
 }
 
 
@@ -158,7 +172,9 @@ void SimulationComponent::drawSymbol(QPainter *p)
     // around its label text, other parts of component has to be updated
     // when the text changes. E.g. when user makes font larger, we want
     // component selection box to reflect this change.
-    updateComponentBounds(ABCD);
+    // (Measured by the font, not by this painter: the same bounds as it was
+    // made and loaded with while the font is the same, on any device.)
+    updateComponentBounds(labelBox());
 }
 
 } // namespace qucs::component
