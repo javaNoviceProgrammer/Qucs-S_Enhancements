@@ -445,11 +445,31 @@ void supplyIssues(Schematic* doc, const Nets& nets, QList<Issue>& out)
     }
 }
 
-// A DC source whose + is on ground (or whose value is negative with its -
-// there): the net at its other pin is below ground. A negative supply is
-// so; one meant to be positive, drawn the other way round, is not.
-void polarityNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
+// A supply by its name: +1 a positive one (VCC, VDD, V+, POSRAIL), -1 a
+// negative one (VEE, VSS, V-, NEGRAIL), 0 another.
+int supplySign(const QString& name)
 {
+    static const QRegularExpression positive(QStringLiteral("^(v(cc|dd|s\\+|\\+|pos)\\d*|posrail|avdd|dvdd)$"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression negative(QStringLiteral("^(v(ee|ss|s-|-|neg)\\d*|negrail|avss|dvss)$"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    return positive.match(name).hasMatch() ? 1 : negative.match(name).hasMatch() ? -1 : 0;
+}
+
+// A DC source with one pin on ground: the level of the net at its other
+// pin, and what the names on that net say it is to be. A negative level
+// on a net of a negative supply's name (a label vee, an op-amp's VEE pin,
+// the source VEE itself) is as meant - nothing said. On a positive
+// supply's pin (VCC at -15 V), or a negative supply's at a positive level
+// (VEE at +15 V), the source is the wrong way round: a warning. A negative
+// level on a net nothing names: a note, as it may be either.
+void polarityIssues(Schematic* doc, const Nets& nets, QList<Issue>* warnings, QList<Issue>* notes)
+{
+    QHash<QString, QString> pinName;   // "U1.4": VCC
+    for (const Component* c : doc->a_DocComps)
+        for (int i = 0; i < c->Ports.size(); ++i)
+            if (!c->Ports.at(i)->Name.isEmpty())
+                pinName.insert(QStringLiteral("%1.%2").arg(c->Name.isEmpty() ? c->Model : c->Name).arg(i + 1), c->Ports.at(i)->Name);
     for (const Component* c : doc->a_DocComps) {
         if (!inCircuit(c) || c->Model != QLatin1String("Vdc") || c->Ports.size() != 2 || c->Props.isEmpty()) continue;
         const int plus = c->Ports.at(0)->Connection != nullptr ? nets.of.value(c->Ports.at(0)->Connection, -1) : -1;
@@ -459,14 +479,52 @@ void polarityNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
         if (r.kind != qucs_s::units::Reading::Number || r.value == 0) continue;
         const int other = plus == nets.ground ? minus : plus;
         const double level = plus == nets.ground ? -r.value : r.value;
-        if (level >= 0 || nets.pins.value(other).size() < 2) continue;
-        out << Issue{Severity::Warning,
-                     tr("%1: its %2 is on ground, so %3 is at %4 V - a negative supply is so; if it was to be positive, turn it round "
-                        "(edit_component with rotation) or give it %5")
-                         .arg(c->Name, plus == nets.ground ? tr("+") : tr("- (its value negative)"), netName(nets, other))
-                         .arg(level)
-                         .arg(plus == nets.ground ? tr("its + on the net") : tr("a positive value")),
-                     QPoint(c->cx, c->cy), c->Name};
+        if (nets.pins.value(other).size() < 2) continue;
+        // The supply pins on the net, by sign; its label; the source's name.
+        QStringList positivePins, negativePins;
+        const QString self = QStringLiteral("%1.").arg(c->Name);
+        for (const QString& pin : nets.pins.value(other)) {
+            if (pin.startsWith(self)) continue;
+            const int sign = supplySign(pinName.value(pin));
+            if (sign > 0) positivePins << QStringLiteral("%1 (%2)").arg(pin, pinName.value(pin));
+            else if (sign < 0) negativePins << QStringLiteral("%1 (%2)").arg(pin, pinName.value(pin));
+        }
+        const int labelSign = nets.labelled.contains(other) ? supplySign(nets.name.value(other)) : 0;
+        // The fix: its value the other sign (a turn is refused while wires
+        // would join other nets).
+        const QString value = c->Props.first()->Value.trimmed();
+        const QString flip = tr("set %1 to %2 (edit_component)")
+                                 .arg(c->Props.first()->Name, value.startsWith(QLatin1Char('-')) ? value.mid(1).trimmed() : QLatin1Char('-') + value);
+        // "VCC puts U1.4 (VCC) at -15 V, though it is a positive supply's
+        // pin"; "... puts vcc at -15 V, though U1.4 (VCC) on it is ...".
+        const auto wrongWay = [&](const QStringList& pins, const QString& sign, const QString& fix) {
+            const QString kind = pins.size() > 1 ? tr("%1 supply's pins").arg(sign) : tr("a %1 supply's pin").arg(sign);
+            const QString why = pins.isEmpty() ? tr("%1 at %2 V, though that is a %3 supply's name").arg(netName(nets, other)).arg(level).arg(sign)
+                                : nets.labelled.contains(other)
+                                    ? tr("%1 at %2 V, though %3 on it %4 %5").arg(netName(nets, other)).arg(level)
+                                          .arg(pins.join(QStringLiteral(", ")), pins.size() > 1 ? tr("are") : tr("is"), kind)
+                                    : tr("%1 at %2 V, though %3 %4").arg(pins.join(QStringLiteral(", "))).arg(level)
+                                          .arg(pins.size() > 1 ? tr("they are") : tr("it is"), kind);
+            return tr("%1 puts %2: the source is the wrong way round - %3").arg(c->Name, why, fix);
+        };
+        if (level < 0 && (!positivePins.isEmpty() || (negativePins.isEmpty() && labelSign > 0))) {
+            if (warnings) *warnings << Issue{Severity::Warning, wrongWay(positivePins, tr("positive"), flip), QPoint(c->cx, c->cy), c->Name};
+            continue;
+        }
+        if (level > 0 && (!negativePins.isEmpty() || (positivePins.isEmpty() && labelSign < 0))) {
+            if (warnings)
+                *warnings << Issue{Severity::Warning,
+                                   wrongWay(negativePins, tr("negative"), flip),
+                                   QPoint(c->cx, c->cy), c->Name};
+            continue;
+        }
+        if (level >= 0 || !negativePins.isEmpty() || labelSign < 0 || supplySign(c->Name) < 0 || !notes) continue;
+        *notes << Issue{Severity::Warning,
+                        tr("%1: its %2 is on ground, so %3 is at %4 V - a negative supply is so; if it was to be positive, %5")
+                            .arg(c->Name, plus == nets.ground ? tr("+") : tr("- (its value negative)"), netName(nets, other))
+                            .arg(level)
+                            .arg(flip),
+                        QPoint(c->cx, c->cy), c->Name};
     }
 }
 
@@ -960,7 +1018,7 @@ QList<Issue> notes(Schematic* doc)
     for (const Issue& i : std::as_const(all))
         if (i.message.contains(QLatin1String(" cross without a junction"))) out << i;
     labelNotes(doc, nets, out);
-    polarityNotes(doc, nets, out);
+    polarityIssues(doc, nets, nullptr, &out);
     if (!doc->isDigitalCircuit()) {
         valueIssues(doc, nullptr, &out);
         twoNamesNotes(doc, nets, out);
@@ -1206,6 +1264,7 @@ QList<Issue> check(Schematic* doc)
         wiringIssues(doc, nets, warnings, false);
         topologyIssues(doc, nets, port, warnings);
         supplyIssues(doc, nets, warnings);
+        polarityIssues(doc, nets, &warnings, nullptr);
         // What the parts do: for an analog simulation.
         if (simulator != spicecompat::simNotSpecified) {
             sourceLoops(doc, nets, errors, warnings);

@@ -201,7 +201,7 @@ const char* const kTools = R"JSON([
    "plot": {"type": "array", "items": {"type": "string"}, "description": "What a diagram of its results shows: nodes (out), v(out), i(V1) - or expressions, db(v(out)), v(out)/v(in), which a NutmegEq added beside the analysis computes (ngspice; on an AC plot on the right axis, as the left one shows dB already). No diagram when not given"}, "x": {"type": "integer", "description": "Where the block goes (with 'y'); beside the other analyses by default"}, "y": {"type": "integer", "description": "Where the block goes (with 'x'); beside the other analyses by default"}, "name": {"type": "string", "description": "Its name: AC1, TR1, ... the next free one by default"}, "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "The simulator its 'plot' expressions are made for - under ngspice and spiceopus a NutmegEq computes them; the one in the settings by default (simulate's 'simulator' runs another once)"}},
    "required": ["kind"]}},
 {"name": "create_subcircuit",
- "description": "Turns several components into a subcircuit. They and the wiring between them move into a new schematic 'save_as' (a .sch next to this one; 'replace' overwrites an existing file), with a port for each net that also reaches the rest of the circuit and a ground for each pin on ground. In their place comes one subcircuit component ('name', SUB1 by default) whose pins are connected to those nets by net labels. Analyses stay outside. Returns the file, the instance and its ports (port number and net). One undo step here (the file stays written; with 'preview' no file is left, and one it would replace is as it was); make_symbol then draws its symbol.",
+ "description": "Turns several components into a subcircuit. They and the wiring between them move into a new schematic 'save_as' (a .sch next to this one; 'replace' overwrites an existing file), with a port for each net that also reaches the rest of the circuit (named as the net's label, else as the one named pin of theirs on it - a 741's INN -, else file_n1) and a ground for each pin on ground. In their place comes one subcircuit component ('name', SUB1 by default) whose pins are connected to those nets by net labels. Analyses stay outside. Returns the file, the instance and its ports (port number and net). One undo step here (the file stays written; with 'preview' no file is left, and one it would replace is as it was); make_symbol then draws its symbol.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "names": {"type": "array", "items": {"type": "string"}, "description": "The components that go into it, by name (a ground by its ref (GND when there is one, GND#2 the second of several, as get_schematic gives it))"}, "save_as": {"type": "string", "description": "The subcircuit's file: a .sch beside this schematic (a name, or a path)"},
    "name": {"type": "string", "description": "The subcircuit component's name, SUB1 (the next free one) by default"}, "replace": {"type": "boolean", "description": "Write over the file 'save_as' names when it is there (else refused)"},
@@ -488,7 +488,7 @@ const char* const kTools = R"JSON([
  "description": "Moves a schematic's scratch files - its subfolder of the project's Scratch folder, with the netlists, simulator output and logs its runs left - to the system's trash; with 'datasets', its datasets too (name.dat, .dat.ngspice, ...). The next run creates them again.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "datasets": {"type": "boolean", "description": "Its datasets go to the trash too"}}}},
 {"name": "make_symbol",
- "description": "Draws a subcircuit's symbol from scratch: a box with each port on one side. 'sides' assigns ports by name or number ({\"in\": \"left\", \"out\": \"right\", \"vdd\": \"top\", \"gnd\": \"bottom\"}); a port not listed goes by its name (a supply - vdd, vcc, v+ - on top, a ground or negative supply - gnd, vss, v- - at the bottom) or its type (in on the left, out on the right), and the rest alternate left and right. Its name text goes below. Afterwards the document shows its symbol, like Edit Circuit Symbol. One undo step. Use it to finish what create_subcircuit started.",
+ "description": "Draws a subcircuit's symbol from scratch: a box with each port on one side. 'sides' assigns ports by name or number ({\"in\": \"left\", \"out\": \"right\", \"vdd\": \"top\", \"gnd\": \"bottom\"}); a port not listed goes by its name (a supply - vdd, vcc, v+ - on top, a ground or negative supply - gnd, vss, v- - at the bottom), its type or name (in, inp, in+ on the left; out on the right), and the rest alternate left and right. Its name text goes below. Afterwards the document shows its symbol, like Edit Circuit Symbol. One undo step. Use it to finish what create_subcircuit started.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "sides": {"type": "object", "additionalProperties": {"type": "string", "enum": ["left", "right", "top", "bottom"]}, "description": "Ports by name or number to a side: {\"in\": \"left\", \"out\": \"right\", \"vdd\": \"top\", \"gnd\": \"bottom\"}; the rest by their names and types"}}}},
 {"name": "import_netlist",
  "description": "Creates a schematic from a SPICE netlist ('text', or 'file': .cir, .sp, .net) in a new document. Each element becomes a SPICE part of its kind carrying its netlist text as written (R_SPICE, C_SPICE, S4Q_V for a source with SIN, PULSE and the rest, NPN_SPICE with its model, NMOS_SPICE, DIODE_SPICE, VCVS for a linear E, SPICE_dev for an X instance, K_SPICE, ...), placed in rows, with each pin's net as a net label on it and node 0 as a ground. Its .model cards become SpiceModel blocks; .param, .options, .include and .lib become blocks; .tran, .ac and .op become analyses; its .subckt definitions go into a library file next to it, which is included. The layout is rough but simulates as the netlist did; arrange (or move and connect) tidies it. The first line is the title unless it reads as an element ('title_line'). 'save_as' saves it. An untitled schematic nothing was done in (the one Qucs-S opens at start) is closed. Returns the parts, the nets and anything that was not taken.",
@@ -3086,7 +3086,24 @@ QString QucsControl::instructions() const
         "name alone (amp.sch). A conversation the user has pinned to a schematic says so in its prompts: the tools then "
         "act on that schematic when no path is given, whichever document is in front, and trigger_action brings it to "
         "the front first. Every tool also takes 'max_chars', the longest answer you want (200 or more): a longer one "
-        "comes back with its longest lists and texts cut (\"… 40 more\") and a 'trimmed' field that says what was cut.");
+        "comes back with its longest lists and texts cut (\"… 40 more\") and a 'trimmed' field that says what was cut.\n\n"
+        "How to work, as it has worked best:\n"
+        "1. A library part: describe_part first - its pins by name and role, its supplies, and whether its model passed "
+        "its bench (find_library_component with 'tested' finds only those). Wire it by pin name (connect \"U1.INP\" to "
+        "\"Vin.1\") in one batch with the rest, and give every supply pin a supply.\n"
+        "2. arrange once it is built. 'feedback': below puts an op-amp's feedback parts (Rf, and Rg to ground) under it; "
+        "an op-amp whose - input is its upper pin (ua741(TI), uA741) reads best mirrored ('mirror': true), and 'supplies': "
+        "labels spares the supply wires. 'straighten' lines up what is left; 'preview' shows it without keeping it.\n"
+        "3. check_schematic before simulate, with 'subcircuits': true when there are any. Its errors are what the "
+        "simulator fails on, its warnings what runs and gives nonsense, its notes fine if meant. Nothing found does not "
+        "mean the circuit works.\n"
+        "4. simulate ('brief': what came of it only), then get_dataset: 'operating_point' for DC, 'measure' for a gain, "
+        "a bandwidth, a rise time. Judge by numbers, not by a picture. simulate's 'keep_as' keeps a run; get_dataset's "
+        "'compare' sets the next against it.\n"
+        "5. A value to meet a target: tune, not a loop of edits and runs; 'hold' keeps other measurements within bounds, "
+        "'compare' gives each before and after.\n"
+        "6. Long answers: batch's 'brief', each tool's own filters, else 'max_chars'. To go back: undo (steps as "
+        "undo_history lists them) and undo with 'files' (the files the last calls wrote).");
 }
 
 QJsonObject QucsControl::forDocument(const QString& tool, const QJsonObject& arguments, const QString& document) const
@@ -6278,6 +6295,26 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
             handled.insert(net);
             if (!outside) continue;
             const bool named = !label.isEmpty();
+            // A net without a name: the name of the group's pin on it, when
+            // one pin has one (a 741's INN, VCC) and no net has it yet -
+            // the subcircuit's pins then say what they are (make_symbol
+            // sides them, arrange finds the output). Else file_n1.
+            if (label.isEmpty()) {
+                static const QRegularExpression word(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]+$"));
+                QStringList names;
+                for (Component* d : std::as_const(group))
+                    for (int j = 0; j < d->Ports.size(); ++j)
+                        if (const QString& n = d->Ports.at(j)->Name;
+                            !n.isEmpty() && nets.netOf.value(QStringLiteral("%1.%2").arg(keyOf.value(d)).arg(j + 1), -1) == net
+                            && !names.contains(n, Qt::CaseInsensitive))
+                            names << n;
+                if (names.size() == 1 && word.match(names.first()).hasMatch()
+                    && std::none_of(labelsInUse.cbegin(), labelsInUse.cend(),
+                                    [&names](const QString& l) { return l.compare(names.first(), Qt::CaseInsensitive) == 0; })) {
+                    label = names.first();
+                    labelsInUse.insert(label);
+                }
+            }
             if (label.isEmpty()) {
                 int n = 1;
                 const QString base = QFileInfo(file).completeBaseName();
@@ -7585,23 +7622,52 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                 layer[i] = layer[hostOf[i]];
             }
         }
+        // Which of the part's pins on a feedback part's two nets is its
+        // output: the one named so (OUT), else the one on a net named so (a
+        // label out), else the one standing out furthest (an op-amp's, at
+        // its tip), the right one of two as far. (By how far alone, a
+        // subcircuit's box with every pin at 110 took its inverting input
+        // for the output, and the load for Rg.)
+        std::vector<int> outPinOf(parts.size(), -1);    // a feedback part's host's output pin
+        {
+            static const QRegularExpression inName(QStringLiteral("^(v?in\\d*|input)$"), QRegularExpression::CaseInsensitiveOption);
+            const auto roleOf = [](const QString& role) {
+                return role == QLatin1String("output") ? 1 : role == QLatin1String("input") ? -1 : 0;
+            };
+            QHash<int, int> netRole;
+            for (auto it = before.netOf.cbegin(); it != before.netOf.cend(); ++it)
+                if (it.key().startsWith(QLatin1String("label "))) {
+                    const QString name = it.key().mid(6);
+                    const int role = inName.match(name).hasMatch() ? -1 : roleOf(qucs_s::erc::pinRole(name));
+                    if (role != 0) netRole.insert(it.value(), role);
+                }
+            for (int f = 0; f < int(parts.size()); ++f) {
+                if (hostOf[f] < 0) continue;
+                const int h = hostOf[f];
+                std::tuple<int, int, int, int> best;
+                for (int m = 0; m < parts[h]->Ports.size(); ++m) {
+                    if (pinNet[h][m] != pinNet[f][0] && pinNet[h][m] != pinNet[f][1]) continue;
+                    const Port* p = parts[h]->Ports.at(m);
+                    const std::tuple<int, int, int, int> key{roleOf(qucs_s::erc::pinRole(p->Name)), netRole.value(pinNet[h][m]), std::abs(p->x), p->x};
+                    if (outPinOf[f] < 0 || key > best) {
+                        best = key;
+                        outPinOf[f] = m;
+                    }
+                }
+            }
+        }
         // And with it, a two-pin part from its end on the input's net (the
-        // net of the part's pin it joins that is not the outermost one: an
-        // op-amp's inverting input, not its output) to ground - Rg of a
-        // non-inverting amplifier: the feedback network, not a column of
-        // the load's (its wire ran the width of the schematic).
+        // net of the part's pin it joins that is not its output: an
+        // op-amp's inverting input) to ground - Rg of a non-inverting
+        // amplifier: the feedback network, not a column of the load's (its
+        // wire ran the width of the schematic).
         std::vector<int> shuntOf(parts.size(), -1);     // the feedback part it goes with
         std::vector<int> shuntFor(parts.size(), -1);    // a feedback part's
         std::vector<int> inputNetOf(parts.size(), -1);  // a feedback part's net toward the input
         for (int f = 0; f < int(parts.size()); ++f) {
             if (hostOf[f] < 0) continue;
             const int h = hostOf[f];
-            int outermost = -1, outNet = -1;
-            for (int m = 0; m < parts[h]->Ports.size(); ++m)
-                if ((pinNet[h][m] == pinNet[f][0] || pinNet[h][m] == pinNet[f][1]) && std::abs(parts[h]->Ports.at(m)->x) > outermost) {
-                    outermost = std::abs(parts[h]->Ports.at(m)->x);
-                    outNet = pinNet[h][m];
-                }
+            const int outNet = pinNet[h][outPinOf[f]];
             inputNetOf[f] = pinNet[f][0] == outNet ? pinNet[f][1] : pinNet[f][0];
             for (int i = 0; i < int(parts.size()) && shuntFor[f] < 0; ++i) {
                 if (i == f || parts[i]->Ports.size() != 2 || hostOf[i] >= 0 || shuntOf[i] >= 0 || supply[i] || isSignalSource(parts[i])
@@ -7654,14 +7720,15 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                 for (int k = 1; k >= 0; --k)
                     for (int j : partsOfNet.value(pinNet[i][k]))
                         if (j != i && layer[j] >= 0 && layer[j] < layer[i]) left = k;
-                // (A feedback part: its pin on the net of the part's left pin on the left.)
+                // (A feedback part: its pin toward the part's input on the
+                // left, unless the output is left of the input.)
                 if (const int h = hostOf[i]; h >= 0) {
-                    int xa = INT_MAX, xb = INT_MAX;
-                    for (int m = 0; m < parts[h]->Ports.size(); ++m) {
-                        if (pinNet[h][m] == a) xa = std::min(xa, parts[h]->Ports.at(m)->x);
-                        if (pinNet[h][m] == b) xb = std::min(xb, parts[h]->Ports.at(m)->x);
-                    }
-                    left = xa <= xb ? 0 : 1;
+                    const int kIn = pinNet[i][0] == inputNetOf[i] ? 0 : 1;
+                    const int xOut = parts[h]->Ports.at(outPinOf[i])->x;
+                    int xIn = INT_MAX;
+                    for (int m = 0; m < parts[h]->Ports.size(); ++m)
+                        if (pinNet[h][m] == inputNetOf[i]) xIn = std::min(xIn, parts[h]->Ports.at(m)->x);
+                    left = xIn <= xOut ? kIn : 1 - kIn;
                 }
                 placed = [c, left] {
                     const Port *p = c->Ports.at(left), *q = c->Ports.at(1 - left);
@@ -7755,19 +7822,13 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                     int y = below ? target[host].y() + rel[host].bottom() + gapY : target[host].y() + rel[host].top() - gapY;
                     const int start = y;
                     for (int f : round) {
-                        // Its pin under (or over) the outermost of the part's
-                        // pins it joins (Rf's under an op-amp's output, which
-                        // stands out furthest): that wire goes straight down,
-                        // and the other comes down at its pin's side, clear
-                        // of the part's symbol - not along its tip.
-                        int cx = target[host].x() + rel[host].center().x() - rel[f].center().x();
-                        int outermost = -1;
-                        for (int m = 0; m < parts[host]->Ports.size(); ++m)
-                            for (int k = 0; k < parts[f]->Ports.size(); ++k)
-                                if (pinNet[host][m] == pinNet[f][k] && std::abs(parts[host]->Ports.at(m)->x) > outermost) {
-                                    outermost = std::abs(parts[host]->Ports.at(m)->x);
-                                    cx = target[host].x() + parts[host]->Ports.at(m)->x - parts[f]->Ports.at(k)->x;
-                                }
+                        // Its pin under (or over) the part's output (Rf's
+                        // under an op-amp's output): that wire goes straight
+                        // down, and the other comes down at its pin's side,
+                        // clear of the part's symbol - not along its tip.
+                        const int m = outPinOf[f];
+                        const int k = pinNet[f][0] == pinNet[host][m] ? 0 : 1;
+                        int cx = target[host].x() + parts[host]->Ports.at(m)->x - parts[f]->Ports.at(k)->x;
                         int cy = below ? y - rel[f].top() : y - rel[f].bottom();
                         sch->setOnGrid(cx, cy);
                         target[f] = QPoint(cx, cy);
