@@ -7925,9 +7925,37 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                 pairsOf[pairs[p].b].push_back(p);
             }
             const auto pinAt = [&](int i, int k) { return target[i] + QPoint(parts[i]->Ports.at(k)->x, parts[i]->Ports.at(k)->y); };
+            // Which way each pin leaves its symbol: as its stub goes (the
+            // line of the symbol that ends at it, from its other end), else
+            // toward the nearest side of the symbol's box. (By the box alone
+            // a coupled line's pins, at its corners, faced sideways - their
+            // stubs go up and down.)
+            const auto outOf = [&](int i, int k) {
+                const Port* pin = parts[i]->Ports.at(k);
+                const auto sign = [](double v) { return (v > 0) - (v < 0); };
+                for (const qucs::Line* l : std::as_const(parts[i]->Lines)) {
+                    const bool first = l->x1 == pin->x && l->y1 == pin->y, second = l->x2 == pin->x && l->y2 == pin->y;
+                    if (first == second) continue;
+                    const double dx = pin->x - (first ? l->x2 : l->x1), dy = pin->y - (first ? l->y2 : l->y1);
+                    if ((dx == 0) != (dy == 0)) return QPoint(sign(dx), sign(dy));
+                }
+                return outwardOf(parts[i]->boundingRect().translated(-parts[i]->center()), QPoint(pin->x, pin->y));
+            };
+            // Whether a straight wire can join the two along a row (rows)
+            // or a column: each pin leaves its symbol toward the other. (By
+            // their places alone, VCC's + and an op-amp's VCC pin, both
+            // facing up, were lined up by moving VCC down - the wire went
+            // over the top all the same, and VCC's ground was pushed aside
+            // onto a jog the VEE wire crossed.)
+            const auto facing = [&](const Pair& p, bool rows) {
+                const QPoint a = pinAt(p.a, p.ka), b = pinAt(p.b, p.kb);
+                const auto sign = [](int v) { return (v > 0) - (v < 0); };
+                if (rows) return a.x() != b.x() && outOf(p.a, p.ka) == QPoint(sign(b.x() - a.x()), 0) && outOf(p.b, p.kb) == QPoint(sign(a.x() - b.x()), 0);
+                return a.y() != b.y() && outOf(p.a, p.ka) == QPoint(0, sign(b.y() - a.y())) && outOf(p.b, p.kb) == QPoint(0, sign(a.y() - b.y()));
+            };
             const auto aligned = [&](const Pair& p) {
                 const QPoint a = pinAt(p.a, p.ka), b = pinAt(p.b, p.kb);
-                return a.x() == b.x() || a.y() == b.y();
+                return a == b || (a.y() == b.y() && facing(p, true)) || (a.x() == b.x() && facing(p, false));
             };
             const auto alignedOf = [&](int i) {
                 int n = 0;
@@ -7948,8 +7976,11 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                 for (const Pair& p : pairs) {
                     if (aligned(p)) continue;
                     const QPoint d = pinAt(p.b, p.kb) - pinAt(p.a, p.ka);
-                    // More across than down: the rows lined up; else the columns.
-                    const QPoint shift = std::abs(d.x()) >= std::abs(d.y()) ? QPoint(0, d.y()) : QPoint(d.x(), 0);
+                    // Pins facing each other across: the rows lined up; up
+                    // and down: the columns; else no move straightens it.
+                    const bool rows = facing(p, true), columns = facing(p, false);
+                    if (!rows && !columns) continue;
+                    const QPoint shift = rows ? QPoint(0, d.y()) : QPoint(d.x(), 0);
                     if (std::abs(shift.x()) > most || std::abs(shift.y()) > most) continue;
                     for (const auto& [part, sign] : {std::pair{p.a, 1}, std::pair{p.b, -1}}) {
                         const QPoint to = target[part] + shift * sign;
