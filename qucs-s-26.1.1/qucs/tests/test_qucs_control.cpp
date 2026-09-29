@@ -5492,6 +5492,60 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"path", top}, {"unsaved", "discard"}})));
     }
 
+    // Two parts of the subcircuit on one net that goes on outside: the wire
+    // between them stays outside (it goes on to C1), so inside each takes
+    // the port's label - R2 was on nothing there, and the divider read 5 V
+    // (the end-to-end scenarios' s2).
+    void aSubcircuitKeepsPinsWhoseWireGoesOn()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 200}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 220}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R2"}, {"x", 340}, {"y", 200}, {"rotation", 1}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "C"}, {"name", "C1"}, {"x", 460}, {"y", 200}, {"rotation", 1}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.2"}, {"to", "R2.2"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R2.1"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "C1.2"}, {"to", "R2.2"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "C1.1"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "R1.2"}, {"name", "mid"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "V1.1"}, {"name", "vin"}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QDir().mkpath(dir.filePath("workspace/goeson"));
+        const QString top = dir.filePath("workspace/goeson/div_top.sch");
+        QVERIFY(!failed(call("save_document", {{"as", top}})));
+        r = call("create_subcircuit", {{"names", QJsonArray{"R1", "R2"}}, {"save_as", "div.sch"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("open_document", {{"path", dir.filePath("workspace/goeson/div.sch")}})));
+        const QString checked = text(call("check_schematic"));
+        QVERIFY2(!checked.contains("connected to nothing"), qPrintable(checked));
+        const QString netlist = text(call("get_netlist", {{"path", top}}));
+        QVERIFY2(netlist.contains(QRegularExpression("\\nR2 0 mid ")) && netlist.contains(QRegularExpression("\\nR1 vin mid ")),
+                 qPrintable(netlist));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(!failed(call("close_document", {{"path", top}, {"unsaved", "discard"}})));
+    }
+
+    // A library part whose library is not found, a subcircuit whose file is
+    // not: Check Schematic says so - it said only that the wires to their
+    // pins ended on nothing (lm386_amp.sch in a build without libraries).
+    void aPartThatDidNotLoadIsSaid()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("set_schematic", {{"text", "<Components>\n"
+                                                        "  <Lib U1 1 200 200 -30 50 0 0 \"NoSuchLibrary\" 0 \"LM386\" 0>\n"
+                                                        "  <Sub SUB1 1 400 200 -26 21 0 0 \"no_such_sub.sch\" 0>\n"
+                                                        "  <R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                                                        "</Components>\n"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString checked = text(call("check_schematic"));
+        QVERIFY2(checked.contains("U1: the library part LM386 of NoSuchLibrary could not be loaded"), qPrintable(checked));
+        QVERIFY2(checked.contains("SUB1: its subcircuit no_such_sub.sch is not found"), qPrintable(checked));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // A port numbered anew in the subcircuit (a new one numbered 1): each
     // instance pin's label follows the port by its name, not its number.
     void aRenumberedPortKeepsItsNet()
@@ -5585,6 +5639,12 @@ private slots:
         r = call("tune", {{"component", "R2"}, {"target", 0.5}, {"range", QJsonArray{"100", "9k"}},
                           {"measure", QJsonObject{{"operating_point", "out"}}}, {"apply", false}}, 300000);
         QVERIFY2(!failed(r) && json(r).toObject().value("runs").toArray().size() <= 6, qPrintable(text(r)));
+        // A power of the value (R2's power goes as U squared): drawn on both
+        // logarithms, found at once - 1 mW at U = 2 V (8 runs on the value's
+        // logarithm alone).
+        r = call("tune", {{"component", "V1"}, {"property", "U"}, {"target", 1e-3}, {"range", QJsonArray{"0.1", "100"}},
+                          {"measure", QJsonObject{{"operating_point", "R2.p"}}}, {"apply", false}}, 300000);
+        QVERIFY2(!failed(r) && json(r).toObject().value("runs").toArray().size() <= 4, qPrintable(text(r)));
         // Values as written: 3 kOhm, not 3k.
         r = call("tune", {{"component", "R2"}, {"target", 0.75}, {"values", QJsonArray{"1k", "3 kOhm"}},
                           {"measure", QJsonObject{{"operating_point", "out"}}}}, 300000);

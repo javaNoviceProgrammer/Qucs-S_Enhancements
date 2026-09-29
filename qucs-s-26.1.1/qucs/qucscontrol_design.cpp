@@ -403,13 +403,17 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         QStringList texts;                       // each run's value as it was set
         QString used;                            // the variable measured
         QStringList notes;
-        double a = 0, fa = NAN, b = 0, fb = NAN; // the bracket, as values measured less the target
-        double ta = NAN, tb = NAN;               // (those, as measured: fa and fb are halved)
-        int side = 0;                            // (Illinois: the end kept twice)
-        // Whether the measurement goes as the logarithm of the value rather
-        // than as the value: at first when the range is two decades or
-        // more, then whichever of the two foretold the last run better.
-        bool logarithmic = false;
+        double a = 0, ma = NAN, b = 0, mb = NAN; // the bracket: its values and what they measured
+        double wa = 1, wb = 1;                   // (Illinois: the weight of an end kept twice, halved)
+        int side = 0;
+        // The scales the secant is drawn on: the value's or its logarithm's
+        // (logX), the measurement's or its logarithm's (logM) - a gain over
+        // decades of a resistance goes as the logarithm of the value, a
+        // bandwidth as a power of it. At first, the logarithms when the
+        // range is two decades or more (and, for the measurement, when both
+        // ends measured more than 0 and a decade apart); then whichever of
+        // the four foretold the last run best.
+        bool logX = false, logM = false;
         int next = 0;                            // the index of 'values' to try next
         QString lastSet;                         // the value it set last (a run that failed too)
     };
@@ -421,7 +425,7 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         return;
     }
     auto state = std::make_shared<State>();
-    state->logarithmic = lo > 0 && hi / lo >= 100;
+    state->logX = lo > 0 && hi / lo >= 100;
     QPointer<Schematic> doc(sch);
     const QString path = sch->getDocName();
 
@@ -514,61 +518,75 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
             (*finishUp)(QString());
             return;
         }
-        if (std::isnan(state->fa)) {
+        if (std::isnan(state->ma)) {
             (*evaluate)(lo, [=](double m) {
                 state->a = lo;
-                state->fa = state->ta = m - target;
+                state->ma = m;
                 (*step)();
             }, QString());
             return;
         }
-        if (std::isnan(state->fb)) {
+        if (std::isnan(state->mb)) {
             (*evaluate)(hi, [=](double m) {
                 state->b = hi;
-                state->fb = state->tb = m - target;
-                if ((state->fa > 0) == (state->fb > 0) && std::abs(state->fa) > tolerance && std::abs(state->fb) > tolerance) {
+                state->mb = m;
+                const double fa = state->ma - target, fb = m - target;
+                if ((fa > 0) == (fb > 0) && std::abs(fa) > tolerance && std::abs(fb) > tolerance) {
                     (*finishUp)(tr("The target is not between what the range's ends give (%1 at %2, %3 at %4): widen the range, or "
                                    "look at 'runs' for the way it goes.")
-                                    .arg(state->fa + target).arg(valueText(lo, unit)).arg(state->fb + target).arg(valueText(hi, unit)));
+                                    .arg(state->ma).arg(valueText(lo, unit)).arg(m).arg(valueText(hi, unit)));
                     return;
                 }
+                state->logM = state->logX && state->ma > 0 && m > 0 && target > 0
+                              && std::max(state->ma, m) / std::min(state->ma, m) >= 10;
                 (*step)();
             }, QString());
             return;
         }
-        // False position with the Illinois rule: on the value, or on its
-        // logarithm (a gain over decades of a resistance) - whichever
-        // foretells the measurements better. (On the logarithm alone, a
-        // linear answer - a divider's voltage - took six runs, not three.)
-        const bool logarithmic = state->logarithmic && state->a > 0 && state->b > 0;
-        const auto u = [logarithmic](double x) { return logarithmic ? std::log(x) : x; };
-        const auto back = [logarithmic](double t) { return logarithmic ? std::exp(t) : t; };
-        const double fa = state->fa, fb = state->fb;
-        double t = (u(state->a) * fb - u(state->b) * fa) / (fb - fa);
+        // False position with the Illinois rule, on the scales that foretell
+        // the measurements best. (On the value's logarithm alone, a divider's
+        // voltage over its source took six runs, not three; a bandwidth over
+        // a capacitance nine, not three.)
+        const bool logX = state->logX && state->a > 0 && state->b > 0;
+        const bool logM = state->logM && state->ma > 0 && state->mb > 0 && target > 0;
+        const auto u = [logX](double v) { return logX ? std::log(v) : v; };
+        const auto g = [logM, target](double m) { return logM ? std::log(m) - std::log(target) : m - target; };
+        const double ga = g(state->ma) * state->wa, gb = g(state->mb) * state->wb;
+        double t = (u(state->a) * gb - u(state->b) * ga) / (gb - ga);
         if (!std::isfinite(t) || t <= std::min(u(state->a), u(state->b)) || t >= std::max(u(state->a), u(state->b)))
             t = (u(state->a) + u(state->b)) / 2;
-        const double x = back(t);
-        const double a0 = state->a, b0 = state->b, fa0 = state->ta, fb0 = state->tb;
+        const double x = logX ? std::exp(t) : t;
+        const double a0 = state->a, b0 = state->b, ma0 = state->ma, mb0 = state->mb;
         (*evaluate)(x, [=](double m) {
-            const double fx = m - target;
-            // What each way foretold here, between the two ends as they were
-            // measured: the nearer one is taken from now on.
-            if (a0 > 0 && b0 > 0 && x > 0 && a0 != b0) {
-                const double linear = fa0 + (fb0 - fa0) * (x - a0) / (b0 - a0);
-                const double logarithmic = fa0 + (fb0 - fa0) * (std::log(x) - std::log(a0)) / (std::log(b0) - std::log(a0));
-                if (std::isfinite(linear) && std::isfinite(logarithmic)) state->logarithmic = std::abs(fx - logarithmic) < std::abs(fx - linear);
-            }
+            // What each pair of scales foretold here, between the two ends as
+            // they measured: the nearest is taken from now on.
+            double nearest = INFINITY;
+            for (const bool lx : {false, true})
+                for (const bool lm : {false, true}) {
+                    if ((lx && (a0 <= 0 || b0 <= 0 || x <= 0)) || (lm && (ma0 <= 0 || mb0 <= 0 || m <= 0)) || a0 == b0) continue;
+                    const auto sx = [lx](double v) { return lx ? std::log(v) : v; };
+                    const auto sm = [lm](double v) { return lm ? std::log(v) : v; };
+                    const double on = sm(ma0) + (sm(mb0) - sm(ma0)) * (sx(x) - sx(a0)) / (sx(b0) - sx(a0));
+                    const double foretold = lm ? std::exp(on) : on;
+                    if (std::isfinite(foretold) && std::abs(foretold - m) < nearest) {
+                        nearest = std::abs(foretold - m);
+                        state->logX = lx;
+                        state->logM = lm;
+                    }
+                }
             // The end on its side is replaced; the other, kept twice in a
             // row, counts half (so it does not hold the search back).
-            if ((fx > 0) == (state->fb > 0)) {
+            if ((m > target) == (state->mb > target)) {
                 state->b = x;
-                state->fb = state->tb = fx;
-                if (state->side == -1) state->fa /= 2;
+                state->mb = m;
+                state->wb = 1;
+                if (state->side == -1) state->wa /= 2;
                 state->side = -1;
             } else {
                 state->a = x;
-                state->fa = state->ta = fx;
-                if (state->side == 1) state->fb /= 2;
+                state->ma = m;
+                state->wa = 1;
+                if (state->side == 1) state->wb /= 2;
                 state->side = 1;
             }
             (*step)();
