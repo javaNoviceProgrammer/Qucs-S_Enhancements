@@ -45,6 +45,8 @@ class QTableWidget;
 class QListWidget;
 class QCompleter; // Variable completion
 class QSpinBox; // Thickness and decimal precission widgets
+class QToolButton;
+class ThemePreview;
 
 
 class DiagramDialog : public QDialog  {
@@ -74,7 +76,6 @@ private slots:
   /// The point marker of the selected graph (Graph::PointMarker, in the
   /// order of the box: none, auto, then the shapes).
   void slotSetPointMarker(int marker);
-  void slotSetGridColor();
   void slotResetToTake(const QString&);
   void slotSetNumMode(int);
   void slotSetGridBox(int);
@@ -148,6 +149,31 @@ private:
   Diagram *Diag;
   QString defaultDataSet;
 
+  // The Theme tab: the colours chosen for the diagram's parts (invalid:
+  // automatic) - a button and a reset for each part it has - the
+  // ready-made themes, and the diagram as they draw it.
+  using Part = qucs_s::diagramtheme::Part;
+  qucs_s::diagramtheme::Theme a_theme;
+  struct ThemeRow {
+    Part part;
+    QPushButton *button;
+    QToolButton *reset;
+  };
+  QList<ThemeRow> a_themeRows;
+  QComboBox *a_themePreset = nullptr;
+  ThemePreview *a_themePreview = nullptr;
+  QColor a_canvas;   // the paper the diagram is on (its schematic's)
+  /// The Theme tab, with \a nameY and \a nameZ for the y axes.
+  QWidget *makeThemeTab(const QString &nameY, const QString &nameZ);
+  /// The buttons, the ready-made theme they match and the preview, as
+  /// a_theme is.
+  void showTheme();
+  void setTheme(const qucs_s::diagramtheme::Theme &theme);
+  /// The colour \a part is drawn in: the one chosen, or the automatic one.
+  QColor shownColor(Part part) const;
+  /// \a theme with only the parts the diagram has.
+  qucs_s::diagramtheme::Theme ofThisDiagram(const qucs_s::diagramtheme::Theme &theme) const;
+
   QRegularExpression Expr;
   QDoubleValidator *ValDouble;
   QIntValidator    *ValInteger;
@@ -173,7 +199,7 @@ private:
   QLineEdit   *startY, *stepY, *stopY;
   QLineEdit   *startZ, *stepZ, *stopZ;
   QLineEdit   *rotationX, *rotationY, *rotationZ;
-  QLabel      *GridLabel1, *GridLabel2, *Label1, *Label2, *Label3, *Label4,
+  QLabel      *GridLabel2, *Label1, *Label2, *Label3, *Label4,
               *NotationLabel;
   QLabel      *thicknessLabel, *precisionLabel;
   QComboBox   *PropertyBox, *GridStyleBox, *yAxisBox, *NotationBox, *LegendBox = nullptr;
@@ -184,7 +210,7 @@ private:
   QComboBox   *HistHeight = nullptr;
   QCheckBox   *HistFit = nullptr, *HistStats = nullptr;
   QLineEdit   *HistLower = nullptr, *HistUpper = nullptr;
-  QPushButton *ColorButt, *GridColorButt;
+  QPushButton *ColorButt;
   QCheckBox   *AutoColorBox = nullptr;
   QLabel      *MarkerLabel = nullptr;
   QComboBox   *MarkerBox = nullptr;

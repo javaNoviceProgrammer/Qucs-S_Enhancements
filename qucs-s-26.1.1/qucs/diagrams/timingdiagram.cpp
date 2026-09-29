@@ -21,6 +21,7 @@
 */
 
 #include "timingdiagram.h"
+#include "ink.h"
 #include "main.h"
 #include "misc.h"
 
@@ -50,16 +51,23 @@ void TimingDiagram::paint(QPainter *painter) {
 }
 
 void TimingDiagram::paintDiagram(QPainter *painter) {
+  // In its theme's colours: its rules, its texts; the traces in theirs,
+  // fitted to its background.
+  const Colors colors = this->colors();
+  paintBackground(painter, colors);
   painter->save();
 
   painter->translate(cx, cy);
 
-  for (qucs::Line* line : Lines) {
-    painter->setPen(line->style);
-    painter->drawLine(line->x1, -line->y1, line->x2, -line->y2);
+  {
+    const qucs_s::ink::Paper inside(colors.inside);
+    for (qucs::Line* line : Lines) {
+      painter->setPen(line->part ? colors.pen(line->style, line->part) : qucs_s::ink::on(line->style));
+      painter->drawLine(line->x1, -line->y1, line->x2, -line->y2);
+    }
   }
 
-  painter->setPen(Qt::black);
+  painter->setPen(colors.of(Part::Text));
 
   for (Text *pt : Texts) {
     painter->drawText(pt->x, -pt->y, 1, 1, Qt::TextDontClip, pt->s);
@@ -145,11 +153,11 @@ int TimingDiagram::calcDiagram()
   y = y2 - tHeight - 6;
 
   // outer frame
-  Lines.append(new qucs::Line(0, y2, x2, y2, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(0, y2, 0, 0, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(x2, y2, x2, 0, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(0, 0, x2, 0, QPen(Qt::black,0)));
-  Lines.append(new qucs::Line(0, y+2, x2, y+2, QPen(Qt::black,0)));
+  Lines.append(as(Part::Frame, new qucs::Line(0, y2, x2, y2, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(0, y2, 0, 0, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(x2, y2, x2, 0, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(0, 0, x2, 0, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(0, y+2, x2, y+2, QPen(Qt::black,0))));
 
   if(xAxis.limit_min < 0.0)
     xAxis.limit_min = 0.0;
@@ -240,7 +248,7 @@ if(!firstGraph->isEmpty()) {
   }
   x += colWidth + 13;
   xAxis.numGraphs = x -6;
-  Lines.append(new qucs::Line(x-6, y2, x-6, 0, QPen(Qt::black,0)));
+  Lines.append(as(Part::Frame, new qucs::Line(x-6, y2, x-6, 0, QPen(Qt::black,0))));
   xStart = x;
 
 
@@ -265,7 +273,7 @@ if(!firstGraph->isEmpty()) {
     if(x+colWidth+2 >= x2)  break;
 
     Texts.append(new Text( x, y2-2, Str));
-    Lines.append(new qucs::Line(x+5, y, x+5, y-3, QPen(Qt::black,0)));
+    Lines.append(as(Part::Frame, new qucs::Line(x+5, y, x+5, y-3, QPen(Qt::black,0))));
     x += TimeStepWidth;
   }
 

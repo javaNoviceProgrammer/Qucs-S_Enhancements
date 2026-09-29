@@ -16,6 +16,7 @@
  ***************************************************************************/
 #include "graph.h"
 #include "misc.h"
+#include "ink.h"
 #include "diagram.h"
 
 #include <algorithm>
@@ -93,7 +94,8 @@ void Graph::paint(QPainter* painter) {
   }
 
   // **** not selected ****
-  painter->setPen(QPen(QColor(Color), Thick, Qt::SolidLine));
+  // (Its colour fitted to the paper it is on: a diagram's plot area.)
+  painter->setPen(QPen(qucs_s::ink::on(Color), Thick, Qt::SolidLine));
   paintLines(painter);
   drawPointMarkers(painter);
   painter->restore();
@@ -463,14 +465,14 @@ void Graph::drawPointMarkers(QPainter* painter) const
     for (qsizetype i = 1; i < points.size(); ++i) length += distance(points.at(i - 1), points.at(i));
     const bool every = points.size() < 2 || length / qreal(points.size() - 1) >= spacing;
     QPen pen = painter->pen();
-    pen.setColor(isSelected ? QColor(Qt::darkGray) : curveColor(c));
+    pen.setColor(isSelected ? QColor(Qt::darkGray) : qucs_s::ink::on(curveColor(c)));
     painter->setPen(pen);
     const PointMarker shape = curveMarker(c);
     qreal travelled = spacing - spacing * qreal(c % 4) / 4.0;
     for (qsizetype i = 0; i < points.size(); ++i) {
       if (i > 0) travelled += distance(points.at(i - 1), points.at(i));
       if (!every && travelled < spacing) continue;
-      drawPointMarker(painter, shape, points.at(i), size, Qt::white, +1.0);   // y grows upwards here
+      drawPointMarker(painter, shape, points.at(i), size, qucs_s::ink::paper(), +1.0);   // y grows upwards here
       travelled = 0;
     }
   }
@@ -641,7 +643,7 @@ static void curvePen(QPainter* painter, const Graph* g, bool perCurve, int curve
 {
   if (!perCurve) return;
   QPen pen = painter->pen();
-  pen.setColor(g->curveColor(curve));
+  pen.setColor(qucs_s::ink::on(g->curveColor(curve)));
   painter->setPen(pen);
 }
 
@@ -944,7 +946,7 @@ void Graph::drawLines(QPainter* painter) const {
       while (le < lines.size() && lineCurves.at(le) == c) ++le;
       while (se < strokes.size() && strokeCurves.at(se) == c) ++se;
       QPen curvePen = base;
-      curvePen.setColor(curveColor(c));
+      curvePen.setColor(qucs_s::ink::on(curveColor(c)));
       setLineStyle(curvePen, Style);
       painter->setPen(curvePen);
       if (curvePen.style() == Qt::CustomDashLine) {

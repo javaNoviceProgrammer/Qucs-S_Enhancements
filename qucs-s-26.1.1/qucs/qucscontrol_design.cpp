@@ -1245,6 +1245,7 @@ QStringList describeChanges(const QString& before, const QString& after, int mos
         if (to != td) what << (td.isEmpty() ? tr("its title taken away") : tr("its title “%1”").arg(td));
         const auto rest = [](const QStringList& f) { return QStringList(f.mid(5)).join(QLatin1Char(' ')).section(QLatin1Char('"'), 0, 5); };
         if (rest(fo) != rest(fd)) what << tr("its axes, grid or legend changed");
+        if (o.header.section(QLatin1Char('"'), 9, 9) != d.header.section(QLatin1Char('"'), 9, 9)) what << tr("its colours changed");
         const auto vars = [](const QStringList& traces) {
             QStringList v;
             for (const QString& t : traces) v << t.section(QLatin1Char('"'), 1, 1);

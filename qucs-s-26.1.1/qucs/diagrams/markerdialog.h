@@ -19,12 +19,17 @@
 #define MARKERDIALOG_H
 #include "marker.h"
 #include <QDialog>
+#include <QIcon>
 
 class QLineEdit;
 class QComboBox;
 class QCheckBox;
 class QPushButton;
 class QToolButton;
+
+/// A swatch of \a color for a colour button (28 x 16), a checkerboard
+/// under it when it is see-through.
+QIcon colorSwatch(const QColor& color);
 
 class MarkerDialog : public QDialog  {
 Q_OBJECT

@@ -344,7 +344,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   part out without a word. **Diagrams by name**:
   `add_diagram`, `edit_diagram`, `add_trace`, `edit_trace` (and `delete`
   for diagrams and traces) take named fields — type, place and size,
-  each axis's label, log scale, limits and step, grid, legend; each
+  each axis's label, log scale, limits and step, grid, legend, theme
+  (the colours of its parts: a preset — light, dark, no_background — and
+  each part's); each
   trace's variable (`v(out)` or `out` is found in the dataset and given
   its simulator's and analysis's name), color, thickness, style, axis,
   markers — instead of the positional fields of a `<Rect …>` line, and
@@ -957,6 +959,27 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Edit Diagram Properties → Properties → Legend*. Off by default; the
   position is saved with the diagram, and files without it load as before
   (upstream #1719).
+- **Diagram themes**: *Edit Diagram Properties → Theme* sets the colour of
+  each part of a diagram — its *Background* (under all of it: frame,
+  numbers, labels, title), the *Plot area* inside the frame (the circle
+  of a polar or Smith chart), the *Frame* (a table's rules), the *Grid*
+  (moved here from *Properties*), each axis (its ticks, numbers and
+  label), the *Title*, a table's *Text*, and the legend's *Background*,
+  *Border* and *Text* (a histogram's statistics box too). Each part is
+  *Automatic* or a colour of your own, with transparency; *Reset* goes
+  back. Automatic is how diagrams have always been drawn — nothing under
+  them on light paper, a white card on dark paper — every part fitted to
+  the background it is on: choose a dark background alone and the frame,
+  numbers and legend turn light, dark traces lighter. *Theme* starts
+  from *Automatic*, *Light* (white on any canvas), *Dark*, *No background*
+  (the canvas shows through, the parts fitted to it) or your own default,
+  and says *Custom* once you change a colour. A preview shows the diagram
+  in the colours as you choose them, on its schematic's canvas. *Save as
+  Default for New Diagrams* gives the diagrams you place from then on
+  those colours. The colours are saved with the diagram, after its title;
+  a diagram whose parts are all automatic is saved as before, and older
+  versions read the file as they did. Claude's `add_diagram` and
+  `edit_diagram` take a `theme` too.
 - **Auto colors and point markers for the curves of a sweep**: a graph
   whose variable was swept - a parameter sweep, NgSweep, a Monte Carlo
   family - draws a curve for each value; with *auto* ticked next to the
@@ -1058,7 +1081,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   drawn on: on dark paper a colour that would not show gets the
   lightness it lacks and keeps its hue (dark blue becomes light blue,
   black light grey, dark red pink), a colour that shows is left alone,
-  and a diagram is drawn as a light card, as it prints. On light paper,
+  and a diagram is drawn as a light card, as it prints (unless its
+  *Theme* gives it a background of its own). On light paper,
   and in every print and export, nothing changes. *Application
   Settings → Appearance → Schematic paper and grid from the theme*
   (off by default) gives the canvas dark paper whenever the theme is

@@ -34,6 +34,12 @@ public:
   void calcLimits();
   void calcCoordinate(const double*, const double*, const double*, float*, float*, Axis const*) const;
   QString extraMarkerText(Marker const*) const;
+  QList<Part> themeParts() const override;
+
+protected:
+  /// (A circle; its numbers inside it.)
+  QPainterPath plotAreaShape() const override;
+  bool numbersInside() const override { return true; }
 };
 
 #endif

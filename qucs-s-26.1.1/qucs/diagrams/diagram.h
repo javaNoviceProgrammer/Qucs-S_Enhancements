@@ -21,10 +21,12 @@
 #include "graph.h"
 #include "element.h"
 #include "numberformat.h"
+#include "diagramtheme.h"
 
 #include <QTextStream>
 #include <QFontMetricsF>
 #include <QList>
+#include <QPainterPath>
 
 #include <algorithm>
 #include <cmath>
@@ -111,6 +113,10 @@ double inline db2num(double zD, int unit) {
 
 class Diagram : public Element {
 public:
+  using Part = qucs_s::diagramtheme::Part;
+  using Theme = qucs_s::diagramtheme::Theme;
+  using Colors = qucs_s::diagramtheme::Colors;
+
   // At most this many grid lines per axis: limits so close together (a
   // zoom rectangle a pixel wide) or so far apart that the step does not
   // move the next line made the grid loops run forever.
@@ -201,7 +207,22 @@ public:
   enum LegendPosition { LegendOff = 0, LegendTopLeft, LegendTopRight,
                         LegendBottomLeft, LegendBottomRight };
   int legendPos;
-  void paintLegend(QPainter* painter);
+  void paintLegend(QPainter* painter, const Colors& colors);
+
+  /// The colours of its parts (the dialog's Theme tab): its background,
+  /// plot area, frame, grid, axes, title, legend. The grid's is GridPen's
+  /// (automatic when it is the light grey of old). Saved with it, after
+  /// the title, when one is chosen.
+  Theme theme() const;
+  void setTheme(const Theme& theme);
+  /// Its parts' colours as they are drawn on the paper in use
+  /// (ink::paper(): the canvas's, white on prints and exports).
+  Colors colors() const;
+  /// The parts it has, whose colours the Theme tab sets.
+  virtual QList<Part> themeParts() const;
+  /// Its background (behind all it draws, with a margin) and its plot
+  /// area filled, in the schematic's coordinates.
+  void paintBackground(QPainter* painter, const Colors& colors) const;
 
   // Whether updateGraphData() has laid the diagram out since it was made:
   // until then its axes and labels are the constructor's defaults.
@@ -219,7 +240,21 @@ protected:
   /// left corner, y upwards), and over the axis texts, in the diagram's
   /// (y downwards), before the legend.
   virtual void paintBehindGraphs(QPainter*) {}
-  virtual void paintInFront(QPainter*) {}
+  virtual void paintInFront(QPainter*, const Colors&) {}
+  /// The area inside its frame, in its coordinates (origin at the lower
+  /// left corner, y downwards).
+  virtual QPainterPath plotAreaShape() const;
+  /// Whether the numbers of its y axes are inside its frame (a polar or
+  /// Smith chart's), on the plot area.
+  virtual bool numbersInside() const { return false; }
+  /// \a item, drawn in the colour of \a part.
+  template <class Item> static Item* as(Part part, Item* item)
+  {
+    item->part = static_cast<unsigned char>(part);
+    return item;
+  }
+  /// The part an axis of its is (XAxis, YAxis, RightAxis).
+  Part partOf(const Axis* axis) const;
   /// Where \a text is drawn, in the diagram's coordinates (origin at the
   /// lower left corner, y downwards): from its baseline, turned.
   virtual QRectF textRect(const Text& text, const QFontMetricsF& metrics) const;
@@ -245,6 +280,7 @@ protected:
 
 private:
   int Bounding_x1, Bounding_x2, Bounding_y1, Bounding_y2;
+  Theme a_theme;   // (the grid's colour is GridPen's, not in it)
 };
 
 #endif

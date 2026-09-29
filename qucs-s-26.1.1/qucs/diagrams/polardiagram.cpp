@@ -41,7 +41,7 @@ PolarDiagram::PolarDiagram(int _cx, int _cy) : Diagram(_cx, _cy)
   x3 = 207;    // with some distance for right axes text
   Name = "Polar";
 
-  Arcs.append(new struct qucs::Arc(0, y2, x2, y2, 0, 16*360, QPen(Qt::black,0)));
+  Arcs.append(as(Part::Frame, new struct qucs::Arc(0, y2, x2, y2, 0, 16*360, QPen(Qt::black,0))));
 //  calcDiagram();
 }
 
@@ -82,11 +82,26 @@ int PolarDiagram::calcDiagram()
   Arcs.clear();
 
   // x line
-  Lines.append(new qucs::Line(0, y2>>1, x2, y2>>1, GridPen));
+  Lines.append(as(Part::Grid, new qucs::Line(0, y2>>1, x2, y2>>1, GridPen)));
 
   x3 = x2 + 7;
   createPolarDiagram(&yAxis);
   return 3;
+}
+
+// ------------------------------------------------------------
+QList<Diagram::Part> PolarDiagram::themeParts() const
+{
+  QList<Part> parts = Diagram::themeParts();
+  parts.removeAll(Part::RightAxis);
+  return parts;
+}
+
+QPainterPath PolarDiagram::plotAreaShape() const
+{
+  QPainterPath path;
+  path.addEllipse(QRectF(0, -y2, x2, y2));
+  return path;
 }
 
 // ------------------------------------------------------------

@@ -51,6 +51,8 @@ public:
 
   void createAxisLabels();
   bool insideDiagram(float, float) const;
+  /// (No plot area and no grid: a box in space.)
+  QList<Part> themeParts() const override;
 
   tPoint3D *Mem;   // memory for all points during hidden line algorithm
   tPoint3D *pMem;  // current position in "Mem"
@@ -76,7 +78,7 @@ private:
   void calcLine(tPoint3D* &, tPoint3D* &, tBound*, char*);
   void calcCoordinate3D(double, double, double, double, tPoint3D*, tPointZ*);
   void removeHiddenLines(char*, tBound*);
-  void removeHiddenCross(int, int, int, int, char*, tBound*);
+  void removeHiddenCross(int, int, int, int, char*, tBound*, Part);
 
   float  xorig, yorig; // where is the 3D origin with respect to cx/cy
   double cxx, cxy, cxz, cyx, cyy, cyz, czx, czy, czz; // coefficients 3D -> 2D
