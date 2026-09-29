@@ -123,8 +123,9 @@ const char* const kTools = R"JSON([
    "region": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4, "description": "Only the parts whose centre is in [x1, y1, x2, y2], with their nets and the wires in it"},
    "selection": {"type": "boolean", "description": "What the user selected: those components (or that region)"}}}},
 {"name": "check_schematic",
- "description": "Checks a schematic for anything a simulation would fail on or do differently than intended, like Simulation > Check Schematic, and reports each finding with its location and part. Errors: no ground, two parts with the same name, a part the simulator cannot handle, and so on. Warnings: pins and wire ends connected to nothing; a wire end or a pin lying on another net's wire mid-segment (not connected: a wire connects only at its ends); wires of two nets on top of each other; parts not connected to any ground (floating); nets that reach ground only through capacitors or current sources (no DC path, so no operating point); no simulation block. Notes, fine if intended: wires of two nets crossing without a junction (no connection there), and a net label on a single pin (a plotted node, or a label meant to match another one). Use it after building or rewiring a circuit and before simulate; get_schematic's summary also counts these findings.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}}}},
+ "description": "Checks a schematic for anything a simulation would fail on or do differently than intended, like Simulation > Check Schematic, and reports each finding with its location and part. Errors: no ground, two parts with the same name, a part the simulator cannot handle, voltage sources in parallel or shorted by a wire, and so on. Warnings: pins and wire ends connected to nothing; a wire end or a pin lying on another net's wire mid-segment (not connected: a wire connects only at its ends); wires of two nets on top of each other; parts not connected to any ground (floating); nets that reach ground only through capacitors or current sources (no DC path, so no operating point); an inductor across a source; a negative capacitance; an AC analysis with no AC source; a NutmegEq's v(node) of no net; no simulation block. Notes, fine if intended: wires of two nets crossing without a junction, a net label on a single pin, two labels on one net, a 0 Ohm part, a capacitor across a pulse source, an input, base or gate with no DC bias but through its own part, an op-amp loaded under 1 kOhm. A topology and netlist check: nothing found does not mean the circuit works. Use it after building or rewiring a circuit and before simulate; get_schematic's summary also counts these findings.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"},
+   "subcircuits": {"type": "boolean", "description": "Also the findings inside each subcircuit it uses, at any depth, each with its file (without it, a line of counts for each)"}}}},
 {"name": "set_schematic",
  "description": "Replaces the elements of a schematic in one undo step. Give either the JSON form - 'components' and 'wires', as get_schematic's format json returns them, with properties by name and checked against each type - or 'text': the text of a .sch file, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are ignored). Diagrams re-read their data. Returns what it read in each section it replaced: the components by name and type, the number of wires, the diagrams as get_schematic lists them (each trace's points or why it has none, each marker and the sample it shows) and the paintings. If the text cannot be read, the schematic stays unchanged and the error is reported. The same happens for a component line with more values than its type has properties, because values are positional and one extra value in the middle puts every later value in the wrong property. A line with fewer values is accepted, the rest at their defaults, and the result says so. A number with letters after it that are no scale and unit (1kk, 10uu) is refused, and the schematic stays unchanged. Other values that do not fit their property - a word where a number belongs, a word that is not one of the property's choices - are listed under 'values'. To hide or show a property or move a part's text, use edit_component instead of rewriting the line. describe_format explains each line's fields. For diagrams, traces and markers, add_diagram, edit_diagram, add_trace, edit_trace, add_marker and edit_marker are simpler and safer.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "text": {"type": "string", "description": "The .sch lines (or 'components' and 'wires' instead)"},
@@ -4707,8 +4708,40 @@ QJsonObject QucsControl::checkSchematic(const QJsonObject& args)
                        {QStringLiteral("warnings"), warnings},
                        {QStringLiteral("notes"), notes},
                        {QStringLiteral("found"), tr("%1 errors, %2 warnings, %3 notes").arg(errors.size()).arg(warnings.size()).arg(notes.size())}};
-    if (errors.isEmpty() && warnings.isEmpty())
-        result.insert(QStringLiteral("verdict"), notes.isEmpty() ? tr("Nothing found.") : tr("Nothing wrong found; the notes are fine if meant."));
+    // Its subcircuits, at any depth: a line of counts each, or all they
+    // hold. An open one as it is, the others from disk.
+    const bool full = args.value(QStringLiteral("subcircuits")).toBool();
+    const auto open = [this](const QString& file) { return dynamic_cast<Schematic*>(a_app->findDoc(file)); };
+    QJsonArray subcircuits;
+    int subErrors = 0, subWarnings = 0;
+    for (const auto& sub : qucs_s::erc::checkSubcircuits(sch, open)) {
+        const int e = qucs_s::erc::errorCount(sub.issues);
+        subErrors += e;
+        subWarnings += int(sub.issues.size()) - e;
+        QJsonObject o{{QStringLiteral("file"), QDir::toNativeSeparators(sub.file)},
+                      {QStringLiteral("errors"), e},
+                      {QStringLiteral("warnings"), int(sub.issues.size()) - e}};
+        if (full) {
+            QJsonArray subErrorList, subWarningList;
+            for (const auto& i : sub.issues)
+                (i.severity == qucs_s::erc::Severity::Error ? subErrorList : subWarningList).append(issueJson(i));
+            o.insert(QStringLiteral("error list"), subErrorList);
+            o.insert(QStringLiteral("warning list"), subWarningList);
+        }
+        subcircuits.append(o);
+    }
+    if (!subcircuits.isEmpty()) {
+        result.insert(QStringLiteral("subcircuits"), subcircuits);
+        result.insert(QStringLiteral("found"), result.value(QStringLiteral("found")).toString()
+                                                   + tr("; in its subcircuits %1 errors, %2 warnings").arg(subErrors).arg(subWarnings));
+    }
+    if (errors.isEmpty() && warnings.isEmpty()) {
+        QString verdict = notes.isEmpty() ? tr("Nothing found.") : tr("Nothing wrong found; the notes are fine if meant.");
+        if (subErrors + subWarnings > 0)
+            verdict += full ? tr(" Its subcircuits have findings of their own, listed.")
+                            : tr(" Its subcircuits have findings of their own: 'subcircuits': true lists them.");
+        result.insert(QStringLiteral("verdict"), verdict);
+    }
     return jsonResult(result);
 }
 

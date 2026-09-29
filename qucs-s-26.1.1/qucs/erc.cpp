@@ -36,6 +36,8 @@
 #include <QSet>
 #include <QStringList>
 #include <algorithm>
+#include <map>
+#include <memory>
 #include <numeric>
 #include <vector>
 
@@ -128,10 +130,10 @@ Nets netsOf(Schematic* doc)
     // them without: one net. Where the wires and the labels as written
     // keep them apart, that is told.
     if (namesWithoutCase(doc)) {
-        QHash<QString, QStringList> spellings;
+        std::map<QString, QStringList> spellings;   // (in order: the same findings every run)
         for (auto it = byLabel.cbegin(); it != byLabel.cend(); ++it) spellings[it.key().toLower()] << it.key();
         for (auto it = spellings.begin(); it != spellings.end(); ++it) {
-            QStringList& names = it.value();
+            QStringList& names = it->second;
             if (names.size() < 2) continue;
             names.sort();
             const Node* first = byLabel.value(names.first());
@@ -149,10 +151,14 @@ Nets netsOf(Schematic* doc)
     }
     for (auto it = index.cbegin(); it != index.cend(); ++it) nets.of.insert(it.key(), find(it.value()));
     if (ground != nullptr) nets.ground = nets.of.value(ground, -1);
-    for (auto it = byLabel.cbegin(); it != byLabel.cend(); ++it) {
-        const int net = nets.of.value(it.value(), -1);
+    // A net of several labels is named after the first in order, the same
+    // every run (a hash's order is not).
+    QStringList labels = byLabel.keys();
+    labels.sort();
+    for (const QString& label : std::as_const(labels)) {
+        const int net = nets.of.value(byLabel.value(label), -1);
         nets.labelled.insert(net);
-        if (!nets.name.contains(net)) nets.name.insert(net, it.key());
+        if (!nets.name.contains(net)) nets.name.insert(net, label);
     }
     if (nets.ground >= 0) nets.name.insert(nets.ground, QStringLiteral("gnd"));
     for (const Component* c : doc->a_DocComps) {
@@ -271,7 +277,10 @@ void topologyIssues(Schematic* doc, const Nets& nets, bool subcircuit, QList<Iss
     for (int net : nets.of) ids.insert(net);
     std::vector<int> any, dc;
     QHash<int, int> slot;
-    for (int net : std::as_const(ids)) {
+    // In order: the groups, and what is told of them, the same every run.
+    QList<int> sortedIds(ids.cbegin(), ids.cend());
+    std::sort(sortedIds.begin(), sortedIds.end());
+    for (int net : std::as_const(sortedIds)) {
         slot.insert(net, int(any.size()));
         any.push_back(int(any.size()));
         dc.push_back(int(dc.size()));
@@ -330,13 +339,17 @@ void topologyIssues(Schematic* doc, const Nets& nets, bool subcircuit, QList<Iss
         for (const Port* p : c->Ports) {
             if (p->Connection == nullptr || !nets.of.contains(p->Connection)) continue;
             group = find(any, slot.value(nets.of.value(p->Connection)));
-            if (p->Connection->conn_count() > 1) ++connected;
+            // (A pin with a label is on its net by the name.)
+            if (p->Connection->conn_count() > 1 || named(p->Connection)) ++connected;
         }
         if (group < 0 || anyReached.contains(group) || connected == 0) continue;
         if (!floatingAt.contains(group)) floatingAt.insert(group, QPoint(c->cx, c->cy));
         floating[group] << (c->Name.isEmpty() ? c->Model : c->Name);
     }
-    for (auto it = floating.cbegin(); it != floating.cend(); ++it) {
+    QList<int> groups = floating.keys();
+    std::sort(groups.begin(), groups.end());
+    for (int group : std::as_const(groups)) {
+        const auto it = floating.constFind(group);
         QStringList names = it.value();
         const int more = int(names.size()) - 6;
         names = names.mid(0, 6);
@@ -348,12 +361,12 @@ void topologyIssues(Schematic* doc, const Nets& nets, bool subcircuit, QList<Iss
     }
     // No DC path: reached, but only through capacitors or current sources.
     if (!subcircuit) {
-        QHash<int, int> netOfDcGroup;   // a DC group -> a net of it with pins
-        for (int net : std::as_const(ids)) {
+        std::map<int, int> netOfDcGroup;   // a DC group -> a net of it with pins
+        for (int net : std::as_const(sortedIds)) {
             const int group = find(dc, slot.value(net));
             if (dcReached.contains(group) || !anyReached.contains(find(any, slot.value(net)))) continue;
             if (nets.pins.value(net).size() < 2) continue;   // (an open pin, a stub: told already)
-            if (!netOfDcGroup.contains(group)) netOfDcGroup.insert(group, net);
+            netOfDcGroup.emplace(group, net);
         }
         for (auto it = netOfDcGroup.cbegin(); it != netOfDcGroup.cend(); ++it) {
             // What blocks it: the capacitors and current sources on its nets.
@@ -362,7 +375,7 @@ void topologyIssues(Schematic* doc, const Nets& nets, bool subcircuit, QList<Iss
             for (const Component* c : std::as_const(parts)) {
                 if (c->SpiceModel != QLatin1String("C") && c->SpiceModel != QLatin1String("I")) continue;
                 for (const Port* p : c->Ports)
-                    if (p->Connection != nullptr && find(dc, slot.value(nets.of.value(p->Connection, -1), 0)) == it.key()) {
+                    if (p->Connection != nullptr && find(dc, slot.value(nets.of.value(p->Connection, -1), 0)) == it->first) {
                         if (!blocking.contains(c->Name)) blocking << c->Name;
                         if (at.isNull()) at = QPoint(c->cx, c->cy);
                     }
@@ -370,30 +383,36 @@ void topologyIssues(Schematic* doc, const Nets& nets, bool subcircuit, QList<Iss
             out << Issue{Severity::Warning,
                          tr("net %1 reaches ground only through capacitors or current sources (%2): no DC path, so no "
                             "operating point (a large resistor to ground gives it one)")
-                             .arg(netName(nets, it.value()), blocking.mid(0, 6).join(QStringLiteral(", "))),
+                             .arg(netName(nets, it->second), blocking.mid(0, 6).join(QStringLiteral(", "))),
                          at, blocking.value(0)};
         }
     }
 }
 
-// A pin named as a supply's (VCC, VEE, VDD, VSS, V+, V-) on a net with no
-// other pin but supply pins: nothing powers the part - an op-amp's VCC and
-// VEE left open read as a part that does nothing, every answer green.
-void supplyIssues(Schematic* doc, const Nets& nets, QList<Issue>& out)
+// A pin name that is a supply's: VCC, VEE, VDD, VSS, V+, V-, POSRAIL ...
+bool supplyName(const QString& name)
 {
     static const QRegularExpression supply(QStringLiteral("^(v(cc|dd|ee|ss|s[+-]|[+-]|pos|neg)\\d*|(pos|neg)rail|avdd|dvdd)$"),
                                            QRegularExpression::CaseInsensitiveOption);
+    return supply.match(name).hasMatch();
+}
+
+// A pin named as a supply's on a net with no other pin but supply pins:
+// nothing powers the part - an op-amp's VCC and VEE left open read as a
+// part that does nothing, every answer green.
+void supplyIssues(Schematic* doc, const Nets& nets, QList<Issue>& out)
+{
     QHash<QString, bool> supplyPin;   // "U1.4": a supply pin
     for (const Component* c : doc->a_DocComps)
         for (int i = 0; i < c->Ports.size(); ++i)
             supplyPin.insert(QStringLiteral("%1.%2").arg(c->Name.isEmpty() ? c->Model : c->Name).arg(i + 1),
-                             supply.match(c->Ports.at(i)->Name).hasMatch());
+                             supplyName(c->Ports.at(i)->Name));
     for (const Component* c : doc->a_DocComps) {
         if (!inCircuit(c)) continue;
         QStringList unpowered;
         for (int i = 0; i < c->Ports.size(); ++i) {
             const Port* p = c->Ports.at(i);
-            if (!supply.match(p->Name).hasMatch() || p->Connection == nullptr) continue;
+            if (!supplyName(p->Name) || p->Connection == nullptr) continue;
             const int net = nets.of.value(p->Connection, -1);
             if (net < 0 || net == nets.ground) continue;
             const QStringList on = nets.pins.value(net);
@@ -439,7 +458,9 @@ void polarityNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 // expression, or a label meant to match another - a note.
 void labelNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 {
-    for (int net : std::as_const(nets.labelled)) {
+    QList<int> labelled(nets.labelled.cbegin(), nets.labelled.cend());
+    std::sort(labelled.begin(), labelled.end());
+    for (int net : std::as_const(labelled)) {
         if (net == nets.ground || nets.pins.value(net).size() != 1) continue;
         QPoint at;
         for (const Node* n : doc->a_DocNodes)
@@ -448,6 +469,461 @@ void labelNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
                      tr("the net %1 has one pin only (%2): nothing else is on it - a label of the same name elsewhere would join it")
                          .arg(netName(nets, net), nets.pins.value(net).first()),
                      at, QString()};
+    }
+}
+
+// ---- What the parts do, as far as the drawing tells it: sources and
+// the loops they make, values, what drives an AC analysis, names that
+// plot nothing - and, as notes, what a design review would ask.
+
+bool twoPins(const Component* c) { return c->Ports.size() == 2; }
+bool voltageSource(const Component* c) { return c->SpiceModel == QLatin1String("V") && twoPins(c); }
+bool inductor(const Component* c) { return c->SpiceModel == QLatin1String("L") && twoPins(c); }
+bool capacitor(const Component* c) { return c->SpiceModel == QLatin1String("C") && twoPins(c); }
+bool resistor(const Component* c) { return c->SpiceModel == QLatin1String("R") && twoPins(c); }
+
+// The net of a part's pin \a i; -1 on none.
+int netOfPin(const Nets& nets, const Component* c, int i)
+{
+    const Node* n = i < c->Ports.size() ? c->Ports.at(i)->Connection : nullptr;
+    return n != nullptr ? nets.of.value(n, -1) : -1;
+}
+
+// A part's value property (R, C, L; the first of a SPICE one), as read.
+qucs_s::units::Reading valueOf(const Component* c, QString* text)
+{
+    for (const Property* p : c->Props)
+        if (p->Name == c->SpiceModel) {
+            *text = p->Value;
+            return qucs_s::units::read(p->Value);
+        }
+    return {};
+}
+
+// Parts whose inside the check does not see: a subcircuit, a library
+// part, a SPICE netlist or text of the user's - an AC source or a node
+// may be in there.
+bool opaque(const Component* c)
+{
+    static const QStringList models{QStringLiteral("Sub"), QStringLiteral("Lib"), QStringLiteral("SpLib"),
+                                    QStringLiteral("SPICE"), QStringLiteral("SPICE_dev"), QStringLiteral("SpiceInclude"),
+                                    QStringLiteral("INCLSCR"), QStringLiteral(".CUSTOMSIM"), QStringLiteral(".XYCESCR")};
+    return models.contains(c->Model);
+}
+
+// "V1 and V2", "V1, V2 and L1".
+QString listed(const QStringList& names)
+{
+    if (names.size() < 2) return names.value(0);
+    return tr("%1 and %2").arg(names.mid(0, names.size() - 1).join(QStringLiteral(", ")), names.last());
+}
+
+// Voltage sources and inductors in loops. A voltage source across one net
+// (a wire from pin to pin) stops ngspice ("shorted VSRC"); voltage sources
+// in a loop fix one difference twice, and the operating point fails
+// (singular matrix); with inductors in the loop the same happens at DC,
+// where an inductor is a short.
+void sourceLoops(Schematic* doc, const Nets& nets, QList<Issue>& errors, QList<Issue>& warnings)
+{
+    QHash<int, int> up;
+    const auto find = [&up](int i) {
+        int root = i;
+        while (up.value(root, root) != root) root = up.value(root, root);
+        while (up.value(i, i) != root) {
+            const int next = up.value(i, i);
+            up.insert(i, root);
+            i = next;
+        }
+        return root;
+    };
+    struct Edge {
+        int a, b;
+        const Component* part;
+    };
+    std::vector<Edge> taken;
+    // The parts on a way from net \a from to net \a to over the edges taken.
+    const auto way = [&taken](int from, int to) {
+        QHash<int, int> cameBy;   // net -> index of the edge it was reached by
+        QList<int> todo{from};
+        cameBy.insert(from, -1);
+        while (!todo.isEmpty() && !cameBy.contains(to)) {
+            const int at = todo.takeFirst();
+            for (int k = 0; k < int(taken.size()); ++k) {
+                const Edge& e = taken.at(k);
+                const int next = e.a == at ? e.b : e.b == at ? e.a : -1;
+                if (next < 0 || cameBy.contains(next)) continue;
+                cameBy.insert(next, k);
+                todo << next;
+            }
+        }
+        QList<const Component*> parts;
+        for (int at = to; cameBy.value(at, -1) >= 0;) {
+            const Edge& e = taken.at(cameBy.value(at));
+            parts.prepend(e.part);
+            at = e.a == at ? e.b : e.a;
+        }
+        return parts;
+    };
+    int told = 0;
+    for (const bool sources : {true, false})
+        for (const Component* c : doc->a_DocComps) {
+            if (!inCircuit(c) || !(sources ? voltageSource(c) : inductor(c))) continue;
+            const int a = netOfPin(nets, c, 0), b = netOfPin(nets, c, 1);
+            if (a < 0 || b < 0) continue;
+            if (a == b) {
+                if (sources)
+                    errors << Issue{Severity::Error,
+                                    tr("%1 is shorted: both its pins are on %2, and a voltage source across a wire has no "
+                                       "solution (ngspice stops: \"shorted VSRC\")")
+                                        .arg(c->Name, netName(nets, a)),
+                                    QPoint(c->cx, c->cy), c->Name};
+                continue;
+            }
+            if (find(a) == find(b)) {
+                if (++told > 20) continue;
+                QList<const Component*> loop = way(a, b);
+                loop << c;
+                QStringList names;
+                bool withInductor = false;
+                for (const Component* p : std::as_const(loop)) {
+                    names << p->Name;
+                    if (inductor(p)) withInductor = true;
+                }
+                const QString how = loop.size() == 2 ? tr("%1 are in parallel").arg(listed(names))
+                                                     : tr("%1 are in a loop").arg(listed(names));
+                if (!withInductor)
+                    errors << Issue{Severity::Error,
+                                    tr("%1: voltage sources in a loop fix one voltage twice, and the operating point fails "
+                                       "(ngspice: singular matrix) - keep one, or put a resistor in the loop")
+                                        .arg(how),
+                                    QPoint(c->cx, c->cy), c->Name};
+                else
+                    warnings << Issue{Severity::Warning,
+                                      tr("%1: at DC an inductor is a short, so this loop of voltage sources and inductors has "
+                                         "no operating point (ngspice: singular matrix) - a resistor in series with the "
+                                         "inductor gives it one")
+                                          .arg(how),
+                                      QPoint(c->cx, c->cy), c->Name};
+                continue;
+            }
+            up.insert(find(a), find(b));
+            taken.push_back({a, b, c});
+        }
+}
+
+// Values a simulator takes but no one means. \a warnings: a negative
+// capacitance (a transient runs away with it: -9e8 V in a test). \a notes,
+// fine if meant: a resistor or an inductor of nothing (a short, a jumper
+// kept to be set later), a negative resistance or inductance.
+void valueIssues(Schematic* doc, QList<Issue>* warnings, QList<Issue>* notes)
+{
+    for (const Component* c : doc->a_DocComps) {
+        if (!inCircuit(c) || !(resistor(c) || capacitor(c) || inductor(c))) continue;
+        QString text;
+        const qucs_s::units::Reading r = valueOf(c, &text);
+        if (r.kind != qucs_s::units::Reading::Number) continue;
+        const QPoint at(c->cx, c->cy);
+        if (capacitor(c) && r.value < 0 && warnings != nullptr)
+            *warnings << Issue{Severity::Warning,
+                               tr("%1 is %2: a negative capacitance - a transient runs away with it").arg(c->Name, text.trimmed()),
+                               at, c->Name};
+        if (notes == nullptr || capacitor(c)) continue;
+        if (r.value == 0)
+            *notes << Issue{Severity::Warning,
+                            resistor(c) ? tr("%1 is 0 Ohm, a short (ngspice takes it as 1e-12 Ohm): a jumper, or a value still to "
+                                             "be set?").arg(c->Name)
+                                        : tr("%1 is 0 H, a short: a jumper, or a value still to be set?").arg(c->Name),
+                            at, c->Name};
+        else if (r.value < 0)
+            *notes << Issue{Severity::Warning, tr("%1 is %2: a negative value - meant?").arg(c->Name, text.trimmed()), at, c->Name};
+    }
+}
+
+// An AC analysis with nothing to drive it: every voltage and current of
+// it is 0. Not told when a part the check cannot see into may hold the
+// source.
+void acIssues(Schematic* doc, QList<Issue>& out)
+{
+    static const QStringList acSources{QStringLiteral("Vac"), QStringLiteral("Iac"), QStringLiteral("Pac"),
+                                       QStringLiteral("Vac_SPICE"), QStringLiteral("AM_Mod"), QStringLiteral("PM_Mod")};
+    static const QRegularExpression acWord(QStringLiteral("\\bac\\b"), QRegularExpression::CaseInsensitiveOption);
+    const Component* analysis = nullptr;
+    for (const Component* c : doc->a_DocComps) {
+        if (!inCircuit(c)) continue;
+        if (c->Model == QLatin1String(".AC") && analysis == nullptr) analysis = c;
+        if (opaque(c) || acSources.contains(c->Model)) return;
+        // A SPICE source of the user's text: "DC 0 AC 1".
+        if ((c->Model == QLatin1String("S4Q_V") || c->Model == QLatin1String("S4Q_I"))
+            && std::any_of(c->Props.cbegin(), c->Props.cend(), [](const Property* p) { return acWord.match(p->Value).hasMatch(); }))
+            return;
+    }
+    if (analysis != nullptr)
+        out << Issue{Severity::Warning,
+                     tr("%1 has nothing to drive it: no Vac, Iac, Pac or SPICE source with an AC value, so every voltage "
+                        "and current of it is 0")
+                         .arg(analysis->Name),
+                     QPoint(analysis->cx, analysis->cy), analysis->Name};
+}
+
+// Nodes named in a NutmegEq, v(out), that no net has: the equation reads
+// nothing. For a SPICE simulator, which reads the names without case; a
+// probe's name and an equation's variable count as names (v(pr1) reads a
+// probe, v(out) a vector out=pos-neg). Not told when a text of the user's
+// may make the node. (A diagram's traces are not looked at: v(s_1_1),
+// v(nf), a sensitivity's names are the analysis's own.)
+void nameIssues(Schematic* doc, QList<Issue>& out)
+{
+    static const QStringList texts{QStringLiteral("SpiceInclude"), QStringLiteral("INCLSCR"), QStringLiteral(".CUSTOMSIM"),
+                                   QStringLiteral(".XYCESCR")};
+    QSet<QString> known{QStringLiteral("0"), QStringLiteral("gnd")};
+    for (const Component* c : doc->a_DocComps) {
+        if (inCircuit(c) && texts.contains(c->Model)) return;
+        if (isPort(c) || c->isProbe) known.insert(c->Name.toLower());
+        if (c->isEquation)   // (a NutmegEq's "out=pos-neg" is the property out)
+            for (const Property* p : c->Props) known.insert(p->Name.toLower());
+    }
+    for (const Node* n : doc->a_DocNodes)
+        if (n->hasLabel()) known.insert(n->label()->Name.toLower());
+    for (const Wire* w : doc->a_DocWires)
+        if (w->hasLabel()) known.insert(w->label()->Name.toLower());
+    static const QRegularExpression ref(QStringLiteral("(?<![A-Za-z0-9_])v\\s*\\(\\s*([^,()\\s]+)\\s*(?:,\\s*([^,()\\s]+)\\s*)?\\)"),
+                                        QRegularExpression::CaseInsensitiveOption);
+    // The names \a text reads that are no node.
+    const auto unknown = [&](const QString& text) {
+        QStringList names;
+        for (auto it = ref.globalMatch(text); it.hasNext();) {
+            const QRegularExpressionMatch m = it.next();
+            for (int g : {1, 2}) {
+                const QString name = m.captured(g);
+                // A node inside a subcircuit (x1.out), a generated one, a device's.
+                if (name.isEmpty() || name.contains(QLatin1Char('.')) || name.contains(QLatin1Char(':'))
+                    || name.contains(QLatin1Char('#')) || name.startsWith(QLatin1String("_net"), Qt::CaseInsensitive))
+                    continue;
+                if (!known.contains(name.toLower()) && !names.contains(name)) names << name;
+            }
+        }
+        return names;
+    };
+    for (const Component* c : doc->a_DocComps) {
+        if (!inCircuit(c) || c->Model != QLatin1String("NutmegEq")) continue;
+        QStringList names;
+        for (int i = 1; i < c->Props.size(); ++i)
+            for (const QString& name : unknown(c->Props.at(i)->Value))
+                if (!names.contains(name)) names << name;
+        if (!names.isEmpty())
+            out << Issue{Severity::Warning,
+                         tr("%1 reads v(%2), but no net is labelled %3: the equation reads nothing")
+                             .arg(c->Name, names.first(), listed(names)),
+                         QPoint(c->cx, c->cy), c->Name};
+    }
+}
+
+// Notes. A net with two names (labels in and vin): the netlist keeps one,
+// and a plot or an equation of the other finds nothing.
+void twoNamesNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
+{
+    const bool caseless = namesWithoutCase(doc);
+    std::map<int, QStringList> names;
+    QHash<int, QPoint> at;
+    const auto note = [&](const QString& name, const Node* n, QPoint where) {
+        const int net = nets.of.value(n, -1);
+        if (net < 0 || net == nets.ground) return;
+        QStringList& list = names[net];
+        const auto same = [&](const QString& other) {
+            return other.compare(name, caseless ? Qt::CaseInsensitive : Qt::CaseSensitive) == 0;
+        };
+        if (std::none_of(list.cbegin(), list.cend(), same)) list << name;
+        if (!at.contains(net)) at.insert(net, where);
+    };
+    for (const Node* n : doc->a_DocNodes)
+        if (n->hasLabel()) note(n->label()->Name, n, n->center());
+    for (const Wire* w : doc->a_DocWires)
+        if (w->hasLabel()) note(w->label()->Name, w->Port1, QPoint(w->x1, w->y1));
+    for (auto& [net, list] : names) {
+        if (list.size() < 2) continue;
+        list.sort();
+        out << Issue{Severity::Warning,
+                     tr("one net has %1 names, %2: the netlist keeps one of them, and a plot or an equation of another "
+                        "finds nothing - keep one label")
+                         .arg(list.size())
+                         .arg(listed(list)),
+                     at.value(net), QString()};
+    }
+}
+
+// A capacitor straight across a source with edges (a pulse, a PWL): nothing
+// limits the current at the edges - C dV/dt, 5 A for 1 nF and 5 V in 1 ns.
+void edgeNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
+{
+    static const QStringList edgy{QStringLiteral("Vpulse"), QStringLiteral("Vrect"), QStringLiteral("vPWL")};
+    for (const Component* v : doc->a_DocComps) {
+        if (!inCircuit(v) || !voltageSource(v) || !edgy.contains(v->Model)) continue;
+        const int a = netOfPin(nets, v, 0), b = netOfPin(nets, v, 1);
+        if (a < 0 || b < 0 || a == b) continue;
+        for (const Component* c : doc->a_DocComps) {
+            if (!inCircuit(c) || !capacitor(c)) continue;
+            const int x = netOfPin(nets, c, 0), y = netOfPin(nets, c, 1);
+            if ((x == a && y == b) || (x == b && y == a))
+                out << Issue{Severity::Warning,
+                             tr("%1 is straight across %2: nothing limits its current at %2's edges (C dV/dt: 5 A for 1 nF "
+                                "and 5 V in 1 ns) - a resistor in series stands for the source's own")
+                                 .arg(c->Name, v->Name),
+                             QPoint(c->cx, c->cy), c->Name};
+        }
+    }
+}
+
+// A transistor's base or gate, an op-amp's input, with no DC path but
+// through its own part: no bias - the transistor sits off, the gate's
+// level is undefined, the input's bias current has nowhere to go. Driven
+// through a capacitor only, as an AC-coupled stage that forgot its bias.
+// (A net reached by nothing at all is told as floating.)
+void biasNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
+{
+    static const QRegularExpression input(QStringLiteral("^(in[+-]|[+-]in|inp|inn|in_?p|in_?n|in_?pos|in_?neg|posin|negin|"
+                                                         "non_?inv|inv|vin[+-]|vinp|vinn)$"),
+                                          QRegularExpression::CaseInsensitiveOption);
+    static const QStringList firstPin{QStringLiteral("BJT"), QStringLiteral("_BJT"), QStringLiteral("JFET"),
+                                      QStringLiteral("MOSFET"), QStringLiteral("_MOSFET")};
+    static const QStringList secondPin{QStringLiteral("NPN_SPICE"), QStringLiteral("PNP_SPICE"), QStringLiteral("NJF_SPICE"),
+                                       QStringLiteral("PJF_SPICE"), QStringLiteral("NMOS_SPICE"), QStringLiteral("PMOS_SPICE")};
+    enum class Kind { Base, Gate, Input };
+    struct Control {
+        const Component* part;
+        int pin;
+        Kind kind;
+        QString input;   // an op-amp's input: its pin's name, or - and + (the ideal one's)
+    };
+    QList<Control> controls;
+    QSet<const Component*> controlled;
+    for (const Component* c : doc->a_DocComps) {
+        if (!inCircuit(c)) continue;
+        const Kind own = c->SpiceModel == QLatin1String("Q") ? Kind::Base : Kind::Gate;
+        const qsizetype before = controls.size();
+        if (firstPin.contains(c->Model)) controls << Control{c, 0, own, QString()};
+        else if (secondPin.contains(c->Model)) controls << Control{c, 1, own, QString()};
+        else if (c->Model == QLatin1String("OpAmp"))
+            controls << Control{c, 0, Kind::Input, QStringLiteral("-")} << Control{c, 1, Kind::Input, QStringLiteral("+")};
+        else
+            for (int i = 0; i < c->Ports.size(); ++i)
+                if (input.match(c->Ports.at(i)->Name).hasMatch()) controls << Control{c, i, Kind::Input, c->Ports.at(i)->Name};
+        if (controls.size() > before) controlled.insert(c);
+    }
+    if (controls.isEmpty() || controlled.size() > 300) return;   // (a drawing of thousands: not worth the time)
+
+    // The nets joined by the parts that are not controlled, at DC (not by
+    // capacitors; a current source biases) and at all.
+    QHash<int, int> dcUp, anyUp;
+    const auto find = [](const QHash<int, int>& up, int i) {
+        while (up.value(i, i) != i) i = up.value(i, i);
+        return i;
+    };
+    const auto join = [&find](QHash<int, int>& up, const QList<int>& on) {
+        for (int k = 1; k < on.size(); ++k) {
+            const int a = find(up, on.at(k)), b = find(up, on.at(0));
+            if (a != b) up.insert(a, b);
+        }
+    };
+    const auto pinsOn = [&nets](const Component* c) {
+        QList<int> on;
+        for (const Port* p : c->Ports)
+            if (p->Connection != nullptr && nets.of.contains(p->Connection)) on << nets.of.value(p->Connection);
+        return on;
+    };
+    const auto joins = [](const Component* c) {
+        return (inCircuit(c) || c->isActive == COMP_IS_SHORTEN) && !isSimulation(c) && !c->isEquation && !isGround(c)
+               && !isPort(c) && !(c->isProbe && c->Model != QLatin1String("IProbe"));
+    };
+    QSet<int> reference;
+    if (nets.ground >= 0) reference.insert(nets.ground);
+    for (const Component* c : doc->a_DocComps) {
+        if (isPort(c) && inCircuit(c)) {
+            const int net = netOfPin(nets, c, 0);
+            if (net >= 0) reference.insert(net);
+        }
+        if (!joins(c) || controlled.contains(c)) continue;
+        const QList<int> on = pinsOn(c);
+        join(anyUp, on);
+        if (c->SpiceModel != QLatin1String("C")) join(dcUp, on);
+    }
+    if (reference.isEmpty()) return;
+    for (const Control& k : std::as_const(controls)) {
+        const Port* pin = k.part->Ports.value(k.pin);
+        // (A pin on nothing is told as such; one with a label is on its net.)
+        if (pin == nullptr || pin->Connection == nullptr || (pin->Connection->conn_count() <= 1 && !named(pin->Connection)))
+            continue;
+        const int net = nets.of.value(pin->Connection, -1);
+        if (net < 0) continue;
+        // An op-amp's output (and its supplies) drive: feedback to the input
+        // is a DC path. Its other inputs do not.
+        QSet<int> drivers = reference;
+        if (k.kind == Kind::Input)
+            for (int i = 0; i < k.part->Ports.size(); ++i) {
+                const bool anInput = std::any_of(controls.cbegin(), controls.cend(), [&](const Control& o) {
+                    return o.part == k.part && o.pin == i;
+                });
+                const int other = netOfPin(nets, k.part, i);
+                if (!anInput && other >= 0) drivers.insert(other);
+            }
+        // The other controlled parts join their pins as the rest do.
+        QHash<int, int> dc = dcUp, any = anyUp;
+        for (const Component* c : std::as_const(controlled))
+            if (c != k.part) {
+                join(any, pinsOn(c));
+                join(dc, pinsOn(c));
+            }
+        const auto reaches = [&](const QHash<int, int>& up) {
+            return std::any_of(drivers.cbegin(), drivers.cend(), [&](int r) { return find(up, r) == find(up, net); });
+        };
+        if (reaches(dc) || !reaches(any)) continue;
+        QString what;
+        switch (k.kind) {
+        case Kind::Base:
+            what = tr("%1: its base has no DC path but through %1 itself - no bias current reaches it, so %1 sits off "
+                      "(a resistor from a supply, or a divider, biases it)").arg(k.part->Name);
+            break;
+        case Kind::Gate:
+            what = tr("%1: its gate has no DC path but through %1 itself - its DC level is undefined (a resistor to "
+                      "ground or to a divider sets it)").arg(k.part->Name);
+            break;
+        case Kind::Input:
+            what = tr("%1: its input %2 has no DC path but through %1 itself - its bias current has nowhere to go (a "
+                      "resistor to ground gives it a path)").arg(k.part->Name, k.input);
+            break;
+        }
+        out << Issue{Severity::Warning, what, QPoint(k.part->cx, k.part->cy), k.part->Name};
+    }
+}
+
+// A load smaller than an op-amp drives: a resistor of less than 1 kOhm
+// from the output of a part with supply pins (a real op-amp's model) to
+// ground.
+void loadNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
+{
+    static const QRegularExpression output(QStringLiteral("^(out|vout|output)$"), QRegularExpression::CaseInsensitiveOption);
+    if (nets.ground < 0) return;
+    for (const Component* u : doc->a_DocComps) {
+        if (!inCircuit(u)) continue;
+        int outNet = -1;
+        bool powered = false;
+        for (int i = 0; i < u->Ports.size(); ++i) {
+            if (output.match(u->Ports.at(i)->Name).hasMatch()) outNet = netOfPin(nets, u, i);
+            if (supplyName(u->Ports.at(i)->Name)) powered = true;
+        }
+        if (outNet < 0 || !powered || outNet == nets.ground) continue;
+        for (const Component* r : doc->a_DocComps) {
+            if (!inCircuit(r) || !resistor(r)) continue;
+            const int a = netOfPin(nets, r, 0), b = netOfPin(nets, r, 1);
+            if (!((a == outNet && b == nets.ground) || (b == outNet && a == nets.ground))) continue;
+            QString text;
+            const qucs_s::units::Reading v = valueOf(r, &text);
+            if (v.kind != qucs_s::units::Reading::Number || v.value <= 0 || v.value >= 1000) continue;
+            out << Issue{Severity::Warning,
+                         tr("%1 (%2) loads %3's output to ground: op-amps are specified into 2 kOhm or so, and many limit "
+                            "their current below 1 kOhm (a 741 near 25 mA)")
+                             .arg(r->Name, text.trimmed(), u->Name),
+                         QPoint(r->cx, r->cy), r->Name};
+        }
     }
 }
 
@@ -473,6 +949,13 @@ QList<Issue> notes(Schematic* doc)
         if (i.message.contains(QLatin1String(" cross without a junction"))) out << i;
     labelNotes(doc, nets, out);
     polarityNotes(doc, nets, out);
+    if (!doc->isDigitalCircuit()) {
+        valueIssues(doc, nullptr, &out);
+        twoNamesNotes(doc, nets, out);
+        edgeNotes(doc, nets, out);
+        biasNotes(doc, nets, out);
+        loadNotes(doc, nets, out);
+    }
     for (Issue& i : out) i.file = doc->getDocName();
     return out;
 }
@@ -711,6 +1194,13 @@ QList<Issue> check(Schematic* doc)
         wiringIssues(doc, nets, warnings, false);
         topologyIssues(doc, nets, port, warnings);
         supplyIssues(doc, nets, warnings);
+        // What the parts do: for an analog simulation.
+        if (simulator != spicecompat::simNotSpecified) {
+            sourceLoops(doc, nets, errors, warnings);
+            valueIssues(doc, &warnings, nullptr);
+            acIssues(doc, warnings);
+            if (spiceSimulator(simulator)) nameIssues(doc, warnings);
+        }
     }
 
     // A circuit (not a subcircuit: those have ports) needs a simulation,
@@ -745,6 +1235,33 @@ QStringList subcircuitFiles(Schematic* doc)
         if (!file.isEmpty() && !files.contains(file)) files << file;
     }
     return files;
+}
+
+QList<SubcircuitFindings> checkSubcircuits(Schematic* doc, const std::function<Schematic*(const QString&)>& open)
+{
+    QList<SubcircuitFindings> found;
+    if (doc == nullptr) return found;
+    QSet<QString> visited{doc->getDocName()};
+    QStringList todo = subcircuitFiles(doc);
+    while (!todo.isEmpty()) {
+        const QString file = todo.takeFirst();
+        if (visited.contains(file)) continue;
+        visited.insert(file);
+        Schematic* sub = open ? open(file) : nullptr;
+        std::unique_ptr<Schematic> loaded;
+        if (sub == nullptr) {
+            loaded.reset(new Schematic(nullptr, file));
+            if (!loaded->load()) {
+                found << SubcircuitFindings{file, {Issue{Severity::Error, tr("the subcircuit file could not be loaded"),
+                                                         QPoint(), QString(), file}}};
+                continue;
+            }
+            sub = loaded.get();
+        }
+        found << SubcircuitFindings{file, check(sub)};
+        todo += subcircuitFiles(sub);
+    }
+    return found;
 }
 
 int errorCount(const QList<Issue>& issues)
