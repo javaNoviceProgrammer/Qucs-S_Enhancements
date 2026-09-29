@@ -51,6 +51,8 @@ NESTED = {
     ("batch", "calls"): ("next", "call"),
     ("delete", "traces"): ("remove", "t"),
     ("set_dialog", "set"): ("setDialog", "change"),
+    ("tune", "knobs"): ("tuneKnobs", "knob"),
+    ("tune", "targets"): ("tuneKnobs", "item"),
 }
 
 
