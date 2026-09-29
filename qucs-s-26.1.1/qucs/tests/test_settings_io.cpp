@@ -134,6 +134,9 @@ private slots:
             store.setValue("RecentDocs", "/a.sch*/b.sch");
             store.setValue("RecentProjects", "/p_prj");
             store.setValue("FileBrowser/location", "/somewhere");
+            store.setValue("Workspace/Session", "{}");                   // what was open at the close
+            store.setValue("Workspace/WindowState", QByteArray("state"));
+            store.setValue("RestoreWorkspace", true);                    // (a setting: in it)
             store.setValue("ClaudeCode/models", "[]");
             store.setValue("ClaudeCode/slashCommands", QStringList{"x"});
             store.setValue("firstRun", false);
@@ -148,11 +151,12 @@ private slots:
         QVERIFY(QDateTime::fromString(doc.value("exported").toString(), Qt::ISODate).isValid());
         const QJsonObject s = doc.value("settings").toObject();
         for (const char* key : {"IgnoreVersion", "maxUndo", "Export/Scale", "Editor", "FileTypes", "Blob",
-                                "GridColor", "SomeFont", "SyntaxFormats/python/Keyword", "ClaudeCode/model"})
+                                "GridColor", "SomeFont", "SyntaxFormats/python/Keyword", "ClaudeCode/model",
+                                "RestoreWorkspace"})
             QVERIFY2(s.contains(key), key);
         for (const char* key : {"MainWindowGeometry", "ComponentDialog/geometry", "RecentDocs", "RecentProjects",
                                 "FileBrowser/location", "ClaudeCode/models", "ClaudeCode/slashCommands",
-                                "firstRun"})
+                                "firstRun", "Workspace/Session", "Workspace/WindowState"})
             QVERIFY2(!s.contains(key), key);
         QCOMPARE(s.value("Editor").toString(), QString("vim"));
         QCOMPARE(s.value("FileTypes").toArray().size(), 2);
@@ -164,7 +168,7 @@ private slots:
         clearStore();
         settingsio::Import import;
         QVERIFY2(settingsio::read(file, import, &error), qPrintable(error));
-        QCOMPARE(import.count, 10);
+        QCOMPARE(import.count, 11);   // (RestoreWorkspace among them)
         QVERIFY(import.source.startsWith("Qucs-S " PACKAGE_VERSION ", "));
         QVERIFY(import.kept.isEmpty());
         settingsio::apply(import);

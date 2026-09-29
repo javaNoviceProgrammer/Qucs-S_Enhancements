@@ -1136,6 +1136,8 @@ int main(int argc, char *argv[])
 
     QucsMain = new QucsApp(netlist2Console);
     //1a.setMainWidget(QucsMain);
+    // This window's workspace is kept from one run to the next.
+    QucsApp::setWorkspaceKept(true);
 
     QucsMain->show();
     // The documents and project named on the command line: qucs-s FILE...,
@@ -1143,8 +1145,21 @@ int main(int argc, char *argv[])
     // installer). The -i of the batch modes is taken as one of them.
     QStringList named = parser.positionalArguments();
     if (!inputfile.isEmpty()) named.prepend(inputfile);
+    // First the workspace as it was at the last close (Application
+    // Settings > Workspace) - but not its project and documents when a
+    // project is named, which opens instead; and not a document with an
+    // autosaved copy after a crash, offered below instead (and opened as
+    // it is on disk when that is declined).
+    const bool projectNamed = std::any_of(named.cbegin(), named.cend(), [](const QString& item) {
+        return QFileInfo(qucs_s::systemopen::localPath(item)).isDir();
+    });
+    QSet<QString> recoverable;
+    for (const qucs_s::autosave::Entry& e : qucs_s::autosave::pending())
+        if (!e.untitled) recoverable.insert(QFileInfo(e.original).canonicalFilePath());
+    const QStringList heldBack = QucsMain->restoreWorkspace(projectNamed, recoverable, crashedLastTime);
     if (!named.isEmpty()) QucsMain->openFromSystem(named);
-    QucsMain->recoverPreviousSession(crashedLastTime);
+    if (!QucsMain->recoverPreviousSession(crashedLastTime))
+        for (const QString& file : heldBack) QucsMain->gotoPage(file, false, false);
     systemOpen.setTarget([](const QStringList &items) {
         if (QucsMain != nullptr) QucsMain->openFromSystem(items);
     });

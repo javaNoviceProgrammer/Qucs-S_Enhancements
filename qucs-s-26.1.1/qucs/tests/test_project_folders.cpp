@@ -449,7 +449,7 @@ private slots:
         for (int i = 0; i < tabs->count(); ++i)
             if (tabs->widget(i)->isAncestorOf(box)) tab = i;
         QVERIFY(tab >= 0);
-        QCOMPARE(tabs->tabText(tab), QStringLiteral("Locations"));
+        QCOMPARE(tabs->tabText(tab), QStringLiteral("Workspace"));
 
         box->setChecked(true);
         QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));

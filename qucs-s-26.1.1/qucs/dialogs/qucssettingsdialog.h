@@ -135,6 +135,8 @@ private slots:
     /// @see makePathTable(), ClearAllPathsButt
     ///
     void slotClearAllPaths();
+    /// Forgets the workspace kept for the next start, at once.
+    void slotForgetWorkspace();
 
 public:
 
@@ -220,7 +222,17 @@ public:
     QLineEdit *editorEdit;          ///< Path or name of the external text editor.
     QLineEdit *Input_Suffix;        ///< File suffix field for file type registration.
     QLineEdit *Input_Program;       ///< Program field for file type registration.
-    QLineEdit *homeEdit;            ///< Qucs home directory path.
+    QLineEdit *homeEdit;            ///< The workspace folder (Qucs Home), on the Workspace tab.
+    /// Application Settings > Workspace: what the next start brings back
+    /// (QucsSettings.Restore...; the Claude Code dock's conversations).
+    QCheckBox *restoreWorkspace;
+    QCheckBox *restoreProject;
+    QCheckBox *restoreDocuments;
+    QCheckBox *restorePanels;
+    QCheckBox *restoreWindowGeometry;
+    QCheckBox *reopenConversations;
+    QLabel *keptWorkspaceLabel;          ///< What is kept now, in words.
+    QPushButton *forgetWorkspaceButton;
     /// A project is any folder, not only one named NAME_prj
     /// (QucsSettings.AnyFolderIsProject).
     QCheckBox *anyFolderIsProject;
@@ -267,6 +279,9 @@ private:
 private:
     /// @brief Reconstructs the subcircuit search path table from @c currentPaths.
     void makePathTable();
+    /// What is kept for the next start, in words, and the Forget It button
+    /// enabled when anything is.
+    void showKeptWorkspace();
 
 };
 

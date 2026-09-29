@@ -40,6 +40,8 @@
 #include "projectView.h"
 #include "syntax.h"
 #include "syntaxsettings.h"
+#include "claudehistory.h"
+#include "workspacesession.h"
 
 #include <QWidget>
 #include <QLabel>
@@ -539,6 +541,111 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     t->addTab(contentsTab, tr("Contents"));
 
     // ...........................................................
+    // The workspace tab: its folder, which folders are projects, and what
+    // is brought back when Qucs-S starts (workspacesession.h).
+    QWidget *workspaceTab = new QWidget(t);
+    workspaceTab->setObjectName(QStringLiteral("workspaceTab"));
+    QVBoxLayout *workspaceBox = new QVBoxLayout(workspaceTab);
+
+    QGroupBox *folderGroup = new QGroupBox(tr("Workspace Folder"), workspaceTab);
+    QGridLayout *folderGrid = new QGridLayout(folderGroup);
+    folderGrid->addWidget(new QLabel(tr("Folder:"), folderGroup), 0, 0);
+    homeEdit = new QLineEdit(folderGroup);
+    homeEdit->setObjectName(QStringLiteral("workspaceFolder"));
+    homeEdit->setToolTip(tr("The folder of your projects and of the user libraries (user_lib), which the "
+                            "Projects panel lists (Qucs Home). Another closes the open documents."));
+    folderGrid->addWidget(homeEdit, 0, 1);
+    QPushButton *HomeButt = new QPushButton(tr("Browse"));
+    folderGrid->addWidget(HomeButt, 0, 2);
+    connect(HomeButt, SIGNAL(clicked()), SLOT(slotHomeDirBrowse()));
+    workspaceBox->addWidget(folderGroup);
+
+    // Which folders are projects: those named NAME_prj, or any folder.
+    QGroupBox *projectsGroup = new QGroupBox(tr("Projects"), workspaceTab);
+    projectsGroup->setObjectName("projectFolders");
+    QVBoxLayout *projectsBox = new QVBoxLayout(projectsGroup);
+    anyFolderIsProject = new QCheckBox(tr("Any folder is a project, not only one named NAME_prj"), projectsGroup);
+    anyFolderIsProject->setObjectName("anyFolderIsProject");
+    anyFolderIsProject->setToolTip(tr("Open Project and a folder dropped on the window open any folder as a "
+                                      "project, and New Project names the folder as typed (no \"_prj\" added). "
+                                      "A folder named NAME_prj is always a project; other Qucs-S installations "
+                                      "know only those."));
+    projectsBox->addWidget(anyFolderIsProject);
+    QLabel *projectsNote = new QLabel(
+        tr("When on, every folder of the workspace but user_lib (the user libraries) is a project, and "
+           "Import Project and Link Project keep a folder's name."),
+        projectsGroup);
+    projectsNote->setWordWrap(true);
+    projectsBox->addWidget(projectsNote);
+    workspaceBox->addWidget(projectsGroup);
+
+    // What the next start brings back.
+    QGroupBox *startGroup = new QGroupBox(tr("When Qucs-S Starts"), workspaceTab);
+    startGroup->setObjectName(QStringLiteral("workspaceAtStart"));
+    QVBoxLayout *startBox = new QVBoxLayout(startGroup);
+    restoreWorkspace = new QCheckBox(tr("Restore the workspace as it was when Qucs-S closed"), startGroup);
+    restoreWorkspace->setObjectName(QStringLiteral("restoreWorkspace"));
+    restoreWorkspace->setToolTip(tr("Qucs-S keeps what is open when it closes (and with each autosave), and opens it "
+                                    "again at the next start - as the parts below say.\n"
+                                    "Off: every start begins with an empty schematic, and nothing is kept."));
+    startBox->addWidget(restoreWorkspace);
+    const auto part = [&](const QString &text, const char *name, const QString &tip) {
+        auto *box = new QCheckBox(text, startGroup);
+        box->setObjectName(QLatin1String(name));
+        box->setToolTip(tip);
+        auto *row = new QHBoxLayout;
+        row->addSpacing(22);
+        row->addWidget(box, 1);
+        startBox->addLayout(row);
+        return box;
+    };
+    restoreProject = part(tr("The project that was open"), "restoreProject",
+                          tr("Opened again, when its folder is still there. A project named when Qucs-S starts "
+                             "(from the command line, or a folder opened with Qucs-S) opens instead."));
+    restoreDocuments = part(tr("The documents that were open, in their panes - split and sized as they were"),
+                            "restoreDocuments",
+                            tr("Each in the pane it was in, in its order, the one in front in front again. A "
+                               "document never saved has no file to open again, and a file no longer there is "
+                               "left out; the status bar says so."));
+    restorePanels = part(tr("The panels and toolbars: which were shown, where, and how big"), "restorePanels",
+                         tr("The docks - Projects and Content, Components, Claude Code, the simulation console, "
+                            "the Terminal ... - and the toolbars, as they were; the left dock's page too."));
+    connect(restoreWorkspace, &QCheckBox::toggled, this, [this](bool on) {
+        for (QCheckBox *box : {restoreProject, restoreDocuments, restorePanels}) box->setEnabled(on);
+    });
+    restoreWindowGeometry = new QCheckBox(tr("Remember the window's size and position"), startGroup);
+    restoreWindowGeometry->setObjectName(QStringLiteral("restoreWindowGeometry"));
+    restoreWindowGeometry->setToolTip(tr("Off: the window opens in the middle of the screen, half its size."));
+    startBox->addWidget(restoreWindowGeometry);
+    reopenConversations = new QCheckBox(tr("Reopen the Claude Code conversations that were open"), startGroup);
+    reopenConversations->setObjectName(QStringLiteral("reopenConversations"));
+    reopenConversations->setToolTip(tr("Each as it was, going on with its Claude Code session (as the Claude Code "
+                                       "dock's ⋯ > Reopen Conversations at Start)."));
+    startBox->addWidget(reopenConversations);
+    QLabel *startNote = new QLabel(
+        tr("After Qucs-S did not exit cleanly, it asks before it opens the workspace again. A document with "
+           "unsaved changes is asked about when Qucs-S closes, as always; its autosaved copy after a crash is "
+           "offered instead of the file."),
+        startGroup);
+    startNote->setWordWrap(true);
+    startBox->addWidget(startNote);
+    auto *keptRow = new QHBoxLayout;
+    keptWorkspaceLabel = new QLabel(startGroup);
+    keptWorkspaceLabel->setObjectName(QStringLiteral("keptWorkspace"));
+    keptWorkspaceLabel->setWordWrap(true);
+    keptRow->addWidget(keptWorkspaceLabel, 1);
+    forgetWorkspaceButton = new QPushButton(tr("Forget It"), startGroup);
+    forgetWorkspaceButton->setObjectName(QStringLiteral("forgetWorkspace"));
+    forgetWorkspaceButton->setToolTip(tr("Forgets the workspace kept, at once: the next start begins with an empty "
+                                         "schematic - unless Qucs-S keeps it again when it closes."));
+    connect(forgetWorkspaceButton, &QPushButton::clicked, this, &QucsSettingsDialog::slotForgetWorkspace);
+    keptRow->addWidget(forgetWorkspaceButton);
+    startBox->addLayout(keptRow);
+    workspaceBox->addWidget(startGroup);
+    workspaceBox->addStretch(1);
+    t->addTab(workspaceTab, tr("Workspace"));
+
+    // ...........................................................
     // The locations tab
     QWidget *locationsTab = new QWidget(t);
     QGridLayout *locationsGrid = new QGridLayout(locationsTab);
@@ -547,13 +654,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     QGroupBox *stdPathsGroup = new QGroupBox(tr("Standard Paths and External Applications"), locationsTab);
     QGridLayout *stdPathsGrid = new QGridLayout(stdPathsGroup);
 
-    stdPathsGrid->addWidget(new QLabel(tr("Qucs Home:"), stdPathsGroup), 0, 0);
-    homeEdit = new QLineEdit(locationsTab);
-    stdPathsGrid->addWidget(homeEdit, 0, 1);
-    QPushButton *HomeButt = new QPushButton(tr("Browse"));
-    stdPathsGrid->addWidget(HomeButt, 0, 2);
-    connect(HomeButt, SIGNAL(clicked()), SLOT(slotHomeDirBrowse()));
-
+    // (The workspace folder - Qucs Home - is on the Workspace tab.)
     stdPathsGrid->addWidget(new QLabel(tr("AdmsXml Path:"), stdPathsGroup), 1, 0);
     admsXmlEdit = new QLineEdit(locationsTab);
     stdPathsGrid->addWidget(admsXmlEdit, 1, 1);
@@ -601,24 +702,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
 
     locationsGrid->addWidget(stdPathsGroup, 0, 0, 1, 3);
 
-    // Which folders are projects: those named NAME_prj, or any folder.
-    QGroupBox *projectsGroup = new QGroupBox(tr("Projects"), locationsTab);
-    projectsGroup->setObjectName("projectFolders");
-    QVBoxLayout *projectsBox = new QVBoxLayout(projectsGroup);
-    anyFolderIsProject = new QCheckBox(tr("Any folder is a project, not only one named NAME_prj"), projectsGroup);
-    anyFolderIsProject->setObjectName("anyFolderIsProject");
-    anyFolderIsProject->setToolTip(tr("Open Project and a folder dropped on the window open any folder as a "
-                                      "project, and New Project names the folder as typed (no \"_prj\" added). "
-                                      "A folder named NAME_prj is always a project; other Qucs-S installations "
-                                      "know only those."));
-    projectsBox->addWidget(anyFolderIsProject);
-    QLabel *projectsNote = new QLabel(
-        tr("When on, every folder of the workspace but user_lib (the user libraries) is a project, and "
-           "Import Project and Link Project keep a folder's name."),
-        projectsGroup);
-    projectsNote->setWordWrap(true);
-    projectsBox->addWidget(projectsNote);
-    locationsGrid->addWidget(projectsGroup, 1, 0, 1, 3);
+    // (Which folders are projects: on the Workspace tab.)
 
 
     // The widgets related to the path searh are put in a groupbox widget
@@ -667,7 +751,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     pathsGrid->addWidget(ClearAllPathsButt, 2, 2);
     connect(ClearAllPathsButt, SIGNAL(clicked()), SLOT(slotClearAllPaths()));
 
-    locationsGrid->addWidget(pathsGroup, 2, 0, 1, 3);
+    locationsGrid->addWidget(pathsGroup, 1, 0, 1, 3);
 
     // create a copy of the current global path list
     currentPaths = QStringList(qucsPathList);
@@ -743,6 +827,14 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     /*! Load paths from settings */
     homeEdit->setText(QucsSettings.qucsWorkspaceDir.canonicalPath());
     anyFolderIsProject->setChecked(QucsSettings.AnyFolderIsProject);
+    restoreWorkspace->setChecked(QucsSettings.RestoreWorkspace);
+    restoreProject->setChecked(QucsSettings.RestoreProject);
+    restoreDocuments->setChecked(QucsSettings.RestoreDocuments);
+    restorePanels->setChecked(QucsSettings.RestorePanels);
+    for (QCheckBox *box : {restoreProject, restoreDocuments, restorePanels}) box->setEnabled(QucsSettings.RestoreWorkspace);
+    restoreWindowGeometry->setChecked(QucsSettings.RestoreWindowGeometry);
+    reopenConversations->setChecked(qucs_s::claude::history::reopenAtStart());
+    showKeptWorkspace();
     admsXmlEdit->setText(misc::canonicalDir(QucsSettings.AdmsXmlBinDir));
     ascoEdit->setText(misc::canonicalDir(QucsSettings.AscoBinDir));
     octaveEdit->setText(QucsSettings.OctaveExecutable);
@@ -1018,6 +1110,17 @@ void QucsSettingsDialog::slotApply()
         changed = true;
     }
 
+    // What the next start brings back. Off: nothing is kept (and what was
+    // is forgotten).
+    QucsSettings.RestoreWorkspace = restoreWorkspace->isChecked();
+    QucsSettings.RestoreProject = restoreProject->isChecked();
+    QucsSettings.RestoreDocuments = restoreDocuments->isChecked();
+    QucsSettings.RestorePanels = restorePanels->isChecked();
+    QucsSettings.RestoreWindowGeometry = restoreWindowGeometry->isChecked();
+    if (!QucsSettings.RestoreWorkspace) qucs_s::session::forget();
+    qucs_s::claude::history::setReopenAtStart(reopenConversations->isChecked());
+    showKeptWorkspace();
+
     // Which folders are projects: the Projects panel and the file browser
     // show them anew (after the workspace, which may have changed above).
     const bool projectsChanged = QucsSettings.AnyFolderIsProject != anyFolderIsProject->isChecked();
@@ -1201,6 +1304,9 @@ void QucsSettingsDialog::slotDefaultValues()
     slotRestoreContentPatterns();
     fillUserCategories({});   // (none of the user's: the defaults have none)
     anyFolderIsProject->setChecked(false);
+    for (QCheckBox *box : {restoreWorkspace, restoreProject, restoreDocuments, restorePanels, restoreWindowGeometry,
+                           reopenConversations})
+        box->setChecked(true);
     showPinNames->setChecked(true);
     showPinDirections->setChecked(false);
     embedVerilogA->setChecked(_settings::Get().itemDefault<bool>("EmbedVerilogAInLibraries"));
@@ -1213,6 +1319,24 @@ void QucsSettingsDialog::slotDefaultValues()
     checkAntiAliasing->setChecked(false);
     checkTextAntiAliasing->setChecked(true);
     checkFullTraceNames->setChecked(false);
+}
+
+void QucsSettingsDialog::slotForgetWorkspace()
+{
+    qucs_s::session::forget();
+    showKeptWorkspace();
+}
+
+void QucsSettingsDialog::showKeptWorkspace()
+{
+    const qucs_s::session::Workspace kept = qucs_s::session::saved();
+    const bool any = !kept.isEmpty() || !qucs_s::session::savedWindowState().isEmpty();
+    keptWorkspaceLabel->setText(
+        !any ? tr("Nothing is kept now.")
+             : tr("Kept: %1%2.").arg(kept.summary(),
+                                     kept.saved.isValid() ? tr(", at %1").arg(QLocale().toString(kept.saved, QLocale::ShortFormat))
+                                                          : QString()));
+    forgetWorkspaceButton->setEnabled(any);
 }
 
 void QucsSettingsDialog::slotTableClicked(int row, int col)

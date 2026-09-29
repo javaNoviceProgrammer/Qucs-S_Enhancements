@@ -118,6 +118,16 @@ struct tQucsSettings {
   // A project is any folder (in the workspace, or opened as one), not only
   // one named NAME_prj: qucs_s::workspace (workspace.h) says which are.
   bool AnyFolderIsProject = false;
+  // The workspace brought back at the start as it was at the last close
+  // (Application Settings > Workspace, workspacesession.h): the project,
+  // the documents in their panes, the panels and toolbars - each as said
+  // below, all of them only when RestoreWorkspace is on. The window's size
+  // and place are kept apart from them.
+  bool RestoreWorkspace = true;
+  bool RestoreProject = true;
+  bool RestoreDocuments = true;
+  bool RestorePanels = true;
+  bool RestoreWindowGeometry = true;
 
   bool IgnoreFutureVersion;
   bool GraphAntiAliasing;
