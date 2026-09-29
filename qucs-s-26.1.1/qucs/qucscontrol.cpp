@@ -83,6 +83,8 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <numeric>
+#include <queue>
 #include <memory>
 #include <optional>
 #include <tuple>
@@ -164,11 +166,11 @@ const char* const kTools = R"JSON([
    "steps": {"type": "integer", "minimum": 1, "description": "How many steps back in its undo history"},
    "against": {"type": "string", "description": "Another schematic: an open document's name or a .sch file"}}}},
 {"name": "replace_component",
- "description": "Replaces a component with one of another type - for example a built-in OpAmp with a subcircuit (Sub, with its File given) or a diode model with a Verilog-A one - and connects the new pins to the old pins' nets. 'pins' maps old pins to new ones by number or name ({\"2\": \"inp\", \"1\": \"inn\", \"3\": \"out\"}); without it, pins are matched by name when all the old pins' names exist on the new part, otherwise by number. The new part is turned, mirrored and placed so that its pins land where the old ones were; a pin that cannot is wired to its net along a path that touches nothing else. Of the placements that keep every net, the one with the fewest pins off their old positions and the least wire is chosen; 'rotation', 'mirror', 'x' and 'y' choose it yourself. The part keeps the old name unless 'rename' gives another, so traces and equations that refer to it stay correct. Properties, equations and flags are given as for add_component. It is refused if an old pin that has something connected has no new pin, or if no placement keeps the nets. One undo step. Returns the new part, which old pin became which new one, and how it was placed.",
+ "description": "Replaces a component with one of another type - for example a built-in OpAmp with a subcircuit (Sub, with its File given) or a diode model with a Verilog-A one - and connects the new pins to the old pins' nets. 'pins' maps old pins to new ones by number or name ({\"2\": \"inp\", \"1\": \"inn\", \"3\": \"out\"}); without it, pins are matched by name when all the old pins' names exist on the new part, otherwise by number - but when a wired old pin has a name the new part lacks it is refused, with both parts' pins and the side of the symbol each is on (give 'pins', or \"by number\"). The new part is turned, mirrored and placed so that its pins land where the old ones were; a pin that cannot is wired to its net along a path that touches nothing else. Of the placements that keep every net, the one with the fewest pins off their old positions and the least wire is chosen; 'rotation', 'mirror', 'x' and 'y' choose it yourself. The part keeps the old name unless 'rename' gives another, so traces and equations that refer to it stay correct. Properties, equations and flags are given as for add_component. It is refused if an old pin that has something connected has no new pin, or if no placement keeps the nets. One undo step. Returns the new part, which old pin became which new one, and how it was placed.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "name": {"type": "string", "description": "The component to replace"},
    "type": {"type": "string", "description": "The new part's type (list_component_types)"},
-   "pins": {"description": "Old pin to new pin, each by number or name: {\"1\": \"inn\"} or [[1, \"inn\"], ...]"},
+   "pins": {"description": "Old pin to new pin, each by number or name: {\"1\": \"inn\"} or [[1, \"inn\"], ...]; or \"by number\". Needed when the old part's wired pins have names the new part's lack (it is refused without, listing both parts' pins and the side each is on)"},
    "properties": {"type": "object", "description": "The new part's values by property name, as add_component takes them; a number mistyped (1kk) is refused"}, "equations": {"description": "As add_component takes them"},
    "flags": {"type": "array", "items": {"type": "string"}, "description": "An .OPTIONS block's options with no value, as add_component takes them"},
    "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns, 0-3: this placement instead of the one found"}, "mirror": {"type": "boolean", "description": "Mirrored about the x axis: with 'rotation', this placement instead of the one found"},
@@ -461,7 +463,7 @@ const char* const kTools = R"JSON([
  "description": "Reads the text of a PDF - a datasheet, an application note, a report - page by page, for example to take a model's parameters or a table's values from it. 'path' is relative to the project, otherwise the workspace (the PDF in front if not given); 'pages' is [3, 4], \"2-5\" or 7 (the first 3 by default); 'search' finds a word or value on every page (or those given) and returns the lines around each hit. A scanned page has no text: a screenshot of its tab shows it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\" or 7; the first 3 by default (with 'search', all)"}, "search": {"type": "string", "description": "A word or value to find: the lines around each hit"}}}},
 {"name": "find_library_component",
- "description": "Searches the component libraries - Qucs-S's own and the user's (user_lib) - and the SPICE model files (.model cards in .lib, .mod, .inc and .cir files) of the project and the workspace for a part by what it is and by its values. 'search' matches words in its name or description (2N3904, NPN 40V); 'type' is npn, pnp, nmos, pmos, njf, pjf, diode or a Qucs model (_BJT, _MOSFET, Diode, ...); 'near' gives parameter values ({\"Bf\": 200}, nearest first on a logarithmic scale); 'library' limits it to one library. Returns each part with its library, description, the values asked about and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp; a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value. Each library part says how it fared under ngspice ('ngspice'): tested - it netlists and its operating point converges, each pin to ground through 1 MOhm (a smoke test, not of what it does) - or failing, and why; 'tested' lists only those that pass.",
+ "description": "Searches the component libraries - Qucs-S's own and the user's (user_lib) - and the SPICE model files (.model cards in .lib, .mod, .inc and .cir files) of the project and the workspace for a part by what it is and by its values. 'search' matches words in its name or description (2N3904, NPN 40V); 'type' is npn, pnp, nmos, pmos, njf, pjf, diode or a Qucs model (_BJT, _MOSFET, Diode, ...); 'near' gives parameter values ({\"Bf\": 200}, nearest first on a logarithmic scale); 'library' limits it to one library. Returns each part with its library, description, the values asked about and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp ('placed as' names the component it becomes when its model is one component with the library's values - a Diode, a _BJT); a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value. Each library part says how it fared under ngspice ('ngspice'): tested - it netlists and its operating point converges, each pin to ground through 1 MOhm (a smoke test, not of what it does) - or failing, and why; 'tested' lists only those that pass.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string", "description": "Words in its name or description: 2N3904, NPN 40V"}, "type": {"type": "string", "description": "npn, pnp, nmos, pmos, njf, pjf, diode, or a Qucs model (_BJT, _MOSFET, Diode, ...)"}, "near": {"type": "object", "description": "Parameter values, nearest first on a logarithmic scale: {\"Bf\": 200}"},
    "library": {"type": "string", "description": "Only this library, by name"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Parts at most, 15 by default"},
    "tested": {"type": "boolean", "description": "Only the library parts the test of every part under ngspice found working (each result's 'ngspice' says how it fared)"}}}},
@@ -1764,9 +1766,11 @@ bool onSegment(const QPoint& p, const QPoint& a, const QPoint& b)
 // Where \a c's centre goes to be on a side of another part, as \a near
 // says - {"part": "U1", "side": "below", "gap": 40}: that far from its
 // symbol (the symbols' boxes, not their texts), centred on it across that
-// side, on the grid. As it is turned now. False, and why, when it does
-// not read.
-bool placeNear(Schematic* sch, const Component* c, const QJsonValue& near, QPoint* at, QString* error)
+// side, on the grid - or slid along that side, a grid step at a time,
+// to the nearest place where its symbol meets no other part's and none
+// of its pins comes down on a wire or another pin. As it is turned now.
+// \a how says where it went. False, and why, when it does not read.
+bool placeNear(Schematic* sch, const Component* c, const QJsonValue& near, QPoint* at, QString* error, QString* how = nullptr)
 {
     const QJsonObject o = near.toObject();
     const QString ref = o.value(QLatin1String("part")).toString().trimmed();
@@ -1795,15 +1799,75 @@ bool placeNear(Schematic* sch, const Component* c, const QJsonValue& near, QPoin
     x = within.x();
     y = within.y();
     sch->setOnGrid(x, y);
+    // Clear of the others there? (Its own wires, when it is moved, go with it.)
+    QSet<const Node*> own;
+    for (const Port* p : c->Ports)
+        if (p->Connection != nullptr) own.insert(p->Connection);
+    const auto clearAt = [&](const QPoint& centre) {
+        const QRect box = mine.translated(centre);
+        for (const Component* o : sch->a_DocComps)
+            if (o != c && !o->Ports.isEmpty() && box.intersects(o->boundingRect())) return false;
+        for (const Port* p : c->Ports) {
+            const QPoint pin = centre + QPoint(p->x, p->y);
+            for (const Node* n : sch->a_DocNodes)
+                if (!own.contains(n) && n->center() == pin) return false;
+            for (const Wire* w : sch->a_DocWires)
+                if (!own.contains(w->Port1) && !own.contains(w->Port2) && onSegment(pin, w->P1(), w->P2())) return false;
+        }
+        return true;
+    };
+    const bool across = side == QLatin1String("below") || side == QLatin1String("above");
+    const int step = across ? std::max(sch->getGridX(), 1) : std::max(sch->getGridY(), 1);
+    int slid = 0;
+    if (!clearAt(QPoint(x, y)))
+        for (int k = 1; k <= 30 && slid == 0; ++k)
+            for (int d : {k, -k})
+                if (slid == 0 && clearAt(QPoint(x + (across ? d * step : 0), y + (across ? 0 : d * step)))) slid = d * step;
+    if (slid != 0) {
+        if (across) x += slid;
+        else y += slid;
+    }
     *at = QPoint(x, y);
+    if (how != nullptr) {
+        *how = QObject::tr("%1 %2, %3 from its symbol").arg(side, ref).arg(gap);
+        *how += slid == 0 ? QObject::tr(", centred on it")
+                          : QObject::tr(", slid %1 %2 of its centre: there its symbol met another part's, or a pin came down on a wire or pin")
+                                .arg(std::abs(slid))
+                                .arg(across ? (slid > 0 ? QObject::tr("right") : QObject::tr("left")) : (slid > 0 ? QObject::tr("down") : QObject::tr("up")));
+    }
     return true;
+}
+
+// The way out of a part's symbol from \a p inside its box \a box: toward
+// the nearest side, as the pin's stub goes (an op-amp's VEE: down).
+QPoint outwardOf(const QRect& box, const QPoint& p)
+{
+    const int left = p.x() - box.left(), right = box.right() - p.x(), up = p.y() - box.top(), down = box.bottom() - p.y();
+    const int least = std::min({left, right, up, down});
+    return least == left ? QPoint(-1, 0) : least == right ? QPoint(1, 0) : least == up ? QPoint(0, -1) : QPoint(0, 1);
+}
+
+// Whether the piece \a p to \a q of a way from \a a to \a b may cross the
+// part's box \a box: it leaves \a a (or comes to \b), a pin of that part,
+// straight out of the box. A pin sits on its symbol's box or in it - a
+// library part's box is four points wider, an op-amp's supply pins are in
+// its box - so no way from it was clear of every symbol, and the wire went
+// over the parts (Rf's up through the op-amp).
+bool leavesItsBox(const QRect& box, const QPoint& a, const QPoint& b, const QPoint& p, const QPoint& q)
+{
+    const auto sign = [](int v) { return (v > 0) - (v < 0); };
+    for (const auto& [end, other] : {std::pair(a, p == a ? q : QPoint()), std::pair(b, q == b ? p : QPoint())}) {
+        if ((end == a ? p != a : q != b) || !box.contains(end) || other == end) continue;
+        if (QPoint(sign(other.x() - end.x()), sign(other.y() - end.y())) == outwardOf(box, end)) return true;
+    }
+    return false;
 }
 
 // Whether a wire along \a way (from \a way's first place to its last)
 // would touch nothing of another net than \a ours (nets of \a now) on its
 // way: no node (a pin, a wire's end) on it but at its two ends, none of
-// its bends on a wire - and, \a strict, no part's symbol crossed and every
-// piece straight across or up.
+// its bends on a wire - and, \a strict, no part's symbol crossed (but a
+// pin's own, straight out of it) and every piece straight across or up.
 bool clearWay(Schematic* sch, const std::vector<QPoint>& way, bool strict, const Nets& now, const QSet<int>& ours)
 {
     const QPoint a = way.front(), b = way.back();
@@ -1817,8 +1881,10 @@ bool clearWay(Schematic* sch, const std::vector<QPoint>& way, bool strict, const
         }
         if (strict) {
             const QRect piece = QRect(p, q).normalized();
-            for (const Component* c : sch->a_DocComps)
-                if (!c->Ports.isEmpty() && piece.intersects(c->boundingRect().adjusted(1, 1, -1, -1))) return false;
+            for (const Component* c : sch->a_DocComps) {
+                const QRect box = c->boundingRect().adjusted(1, 1, -1, -1);
+                if (!c->Ports.isEmpty() && piece.intersects(box) && !leavesItsBox(box, a, b, p, q)) return false;
+            }
         }
     }
     for (std::size_t k = 1; k + 1 < way.size(); ++k)
@@ -1838,7 +1904,11 @@ public:
     {
         for (const Node* n : sch->a_DocNodes) addNode(n->center(), now.nodeNet.value(n, -1));
         for (const Component* c : sch->a_DocComps)
-            if (!c->Ports.isEmpty()) addTo(m_parts, m_wideParts, c->boundingRect().adjusted(1, 1, -1, -1), c->boundingRect().adjusted(1, 1, -1, -1));
+            if (!c->Ports.isEmpty()) {
+                addTo(m_parts, m_wideParts, c->boundingRect().adjusted(1, 1, -1, -1), c->boundingRect().adjusted(1, 1, -1, -1));
+                const QRect texts = c->boundingRectIncludingProperties();
+                addTo(m_texts, m_wideTexts, texts, texts);
+            }
         for (const Wire* w : sch->a_DocWires) addWire(w->P1(), w->P2(), now.nodeNet.value(w->Port1, -1));
     }
     void addNode(const QPoint& p, int net) { m_nodes[cellOf(p)].append({p, net}); }
@@ -1847,7 +1917,10 @@ public:
         // (A little around it: a slanting wire's points are near it, not on it.)
         addTo(m_wires, m_wideWires, QRect(a, b).normalized().adjusted(-2, -2, 2, 2), Segment{a, b, net});
     }
-    bool clear(const std::vector<QPoint>& way, bool strict, const QSet<int>& ours) const
+    // (\a ownSymbols: a way's ends may leave their own symbols straight out
+    // - not a step of mazeWay(), whose ends are no pins. \a texts: nor over
+    // the texts of a part, but its own at the way's ends.)
+    bool clear(const std::vector<QPoint>& way, bool strict, const QSet<int>& ours, bool ownSymbols = true, bool texts = false) const
     {
         const QPoint a = way.front(), b = way.back();
         for (std::size_t k = 1; k < way.size(); ++k) {
@@ -1867,8 +1940,16 @@ public:
                     if (const auto it = m_nodes.constFind(cell); it != m_nodes.cend())
                         if (std::any_of(it.value().cbegin(), it.value().cend(), nodeInTheWay)) return false;
             }
+            if (texts) {
+                // (A piece from an end: over its own part's texts, as it leaves the pin.)
+                const auto over = [&](const QRect& r) { return piece.intersects(r) && !(p == a && r.contains(a)) && !(q == b && r.contains(b)); };
+                if (std::any_of(m_wideTexts.cbegin(), m_wideTexts.cend(), over)) return false;
+                for (const QPoint& cell : cellsOf(piece))
+                    if (const auto it = m_texts.constFind(cell); it != m_texts.cend())
+                        if (std::any_of(it.value().cbegin(), it.value().cend(), over)) return false;
+            }
             if (strict) {
-                const auto crosses = [&piece](const QRect& r) { return piece.intersects(r); };
+                const auto crosses = [&](const QRect& r) { return piece.intersects(r) && !(ownSymbols && leavesItsBox(r, a, b, p, q)); };
                 if (std::any_of(m_wideParts.cbegin(), m_wideParts.cend(), crosses)) return false;
                 for (const QPoint& cell : cellsOf(piece))
                     if (const auto it = m_parts.constFind(cell); it != m_parts.cend())
@@ -1883,6 +1964,53 @@ public:
                 if (std::any_of(it.value().cbegin(), it.value().cend(), under)) return false;
         }
         return true;
+    }
+
+    // What a way one grid step at a time (mazeWay()) asks: a node of
+    // another net at \a p; another net's wire through \a p (a bend there
+    // would join it); another net's wire along \a p to \a q (over it); the
+    // parts' boxes \a p is in.
+    bool nodeOfOthersAt(const QPoint& p, const QSet<int>& ours) const
+    {
+        const auto it = m_nodes.constFind(cellOf(p));
+        return it != m_nodes.cend()
+               && std::any_of(it.value().cbegin(), it.value().cend(), [&](const std::pair<QPoint, int>& n) { return n.first == p && !ours.contains(n.second); });
+    }
+    bool wireOfOthersAt(const QPoint& p, const QSet<int>& ours) const
+    {
+        const auto on = [&](const Segment& s) { return !ours.contains(s.net) && onSegment(p, s.a, s.b); };
+        if (std::any_of(m_wideWires.cbegin(), m_wideWires.cend(), on)) return true;
+        const auto it = m_wires.constFind(cellOf(p));
+        return it != m_wires.cend() && std::any_of(it.value().cbegin(), it.value().cend(), on);
+    }
+    bool alongWireOfOthers(const QPoint& p, const QPoint& q, const QSet<int>& ours) const
+    {
+        const auto along = [&](const Segment& s) { return !ours.contains(s.net) && onSegment(p, s.a, s.b) && onSegment(q, s.a, s.b); };
+        if (std::any_of(m_wideWires.cbegin(), m_wideWires.cend(), along)) return true;
+        const auto it = m_wires.constFind(cellOf(p));
+        return it != m_wires.cend() && std::any_of(it.value().cbegin(), it.value().cend(), along);
+    }
+    // Whether \a p to \a q goes over a part's texts (its name, its values):
+    // a way round them is better (mazeWay() weighs it).
+    bool overTexts(const QPoint& p, const QPoint& q) const
+    {
+        const QRect piece = QRect(p, q).normalized();
+        const auto over = [&](const QRect& r) { return piece.intersects(r); };
+        if (std::any_of(m_wideTexts.cbegin(), m_wideTexts.cend(), over)) return true;
+        for (const QPoint& cell : {cellOf(p), cellOf(q)})
+            if (const auto it = m_texts.constFind(cell); it != m_texts.cend() && std::any_of(it.value().cbegin(), it.value().cend(), over))
+                return true;
+        return false;
+    }
+    QList<QRect> boxesAt(const QPoint& p) const
+    {
+        QList<QRect> found;
+        for (const QRect& r : m_wideParts)
+            if (r.contains(p)) found << r;
+        if (const auto it = m_parts.constFind(cellOf(p)); it != m_parts.cend())
+            for (const QRect& r : it.value())
+                if (r.contains(p) && !found.contains(r)) found << r;
+        return found;
     }
 
 private:
@@ -1913,11 +2041,103 @@ private:
             for (int y = from.y(); y <= to.y(); ++y) cells[QPoint(x, y)] << item;
     }
     QHash<QPoint, QList<std::pair<QPoint, int>>> m_nodes;
-    QHash<QPoint, QList<QRect>> m_parts;
-    QList<QRect> m_wideParts;
+    QHash<QPoint, QList<QRect>> m_parts, m_texts;
+    QList<QRect> m_wideParts, m_wideTexts;
     QHash<QPoint, QList<Segment>> m_wires;
     QList<Segment> m_wideWires;
 };
+
+// A way from \a a to \a b a grid step at a time (A*), when none of the few
+// shapes waysBetween() tries is clear of every symbol: out of each end's
+// own symbol straight, then round every part's box, through no pin or wire
+// end of another net, along none of its wires and turning on none - the
+// fewest steps, a bend weighing three and a crossing two. Empty when there
+// is none within \a reach steps of the two ends' box (or too many tried).
+// A step over a part's texts weighs two more: round them where there is room.
+std::vector<QPoint> mazeWay(const WayIndex& index, const QPoint& a, const QPoint& b, const QSet<int>& ours, int gx, int gy, int reach = 30)
+{
+    // Out of each end's own symbol first, straight, as its stub goes.
+    const auto escape = [&](const QPoint& end) {
+        QPoint at = end;
+        const QList<QRect> boxes = index.boxesAt(end);
+        if (boxes.isEmpty()) return at;
+        const QPoint d = outwardOf(boxes.first(), end);
+        for (int k = 0; k < 20 && !index.boxesAt(at).isEmpty(); ++k) at += QPoint(d.x() * gx, d.y() * gy);
+        return at;
+    };
+    const QPoint from = escape(a), to = escape(b);
+    const auto outOk = [&](const QPoint& end, const QPoint& out) {
+        return end == out || (index.clear({end, out}, true, ours) && (out == a || out == b || !index.nodeOfOthersAt(out, ours)));
+    };
+    if (!outOk(a, from) || !outOk(b, to)) return {};
+    if (from == to) return {a, from, b};
+    const QRect area = QRect(from, to).normalized().adjusted(-reach * gx, -reach * gy, reach * gx, reach * gy);
+    const QPoint steps[4] = {QPoint(gx, 0), QPoint(-gx, 0), QPoint(0, gy), QPoint(0, -gy)};
+    struct State {
+        int cost, guess, dir;
+        QPoint at;
+        bool operator>(const State& o) const { return cost + guess > o.cost + o.guess; }
+    };
+    const auto key = [](const QPoint& p, int dir) { return std::tuple(p.x(), p.y(), dir); };
+    std::priority_queue<State, std::vector<State>, std::greater<State>> open;
+    std::map<std::tuple<int, int, int>, int> best;
+    std::map<std::tuple<int, int, int>, std::pair<QPoint, int>> cameFrom;
+    const auto guessOf = [&](const QPoint& p) { return std::abs(p.x() - to.x()) / gx + std::abs(p.y() - to.y()) / gy; };
+    open.push({0, guessOf(from), -1, from});
+    best[key(from, -1)] = 0;
+    int tried = 0, endDir = -2;
+    while (!open.empty() && ++tried < 60000) {
+        const State s = open.top();
+        open.pop();
+        if (s.cost > best[key(s.at, s.dir)]) continue;
+        if (s.at == to) {
+            endDir = s.dir;
+            break;
+        }
+        // (On another net's wire - a crossing - it goes straight on.)
+        const bool onWire = s.at != from && index.wireOfOthersAt(s.at, ours);
+        for (int d = 0; d < 4; ++d) {
+            if (s.dir >= 0 && (d ^ 1) == s.dir && d / 2 == s.dir / 2) continue;   // (not back)
+            if (onWire && s.dir >= 0 && d != s.dir) continue;
+            const QPoint q = s.at + steps[d];
+            if (!area.contains(q)) continue;
+            if (q != to && q != a && q != b && index.nodeOfOthersAt(q, ours)) continue;
+            if (index.alongWireOfOthers(s.at, q, ours) || !index.clear({s.at, q}, true, ours, false)) continue;
+            const bool crosses = q != to && index.wireOfOthersAt(q, ours);
+            const int cost = s.cost + 1 + (s.dir >= 0 && d != s.dir ? 3 : 0) + (crosses ? 2 : 0) + (index.overTexts(s.at, q) ? 2 : 0);
+            const auto k = key(q, d);
+            if (const auto it = best.find(k); it != best.end() && it->second <= cost) continue;
+            best[k] = cost;
+            cameFrom[k] = {s.at, s.dir};
+            open.push({cost, guessOf(q), d, q});
+        }
+    }
+    if (endDir == -2) return {};
+    // Back from the end, the bends kept.
+    std::vector<QPoint> path{to};
+    for (auto k = key(to, endDir); cameFrom.count(k);) {
+        const auto [p, dir] = cameFrom.at(k);
+        path.push_back(p);
+        k = key(p, dir);
+    }
+    std::reverse(path.begin(), path.end());
+    std::vector<QPoint> way{a};
+    for (const QPoint& p : path) {
+        if (way.size() >= 2) {
+            const QPoint u = way[way.size() - 2], v = way.back();
+            if ((u.x() == v.x() && v.x() == p.x()) || (u.y() == v.y() && v.y() == p.y())) way.back() = p;   // (straight on)
+            else way.push_back(p);
+        } else if (p != way.back()) {
+            way.push_back(p);
+        }
+    }
+    if (way.back() != b) {
+        const QPoint u = way.size() >= 2 ? way[way.size() - 2] : way.back(), v = way.back();
+        if (way.size() >= 2 && ((u.x() == v.x() && v.x() == b.x()) || (u.y() == v.y() && v.y() == b.y()))) way.back() = b;
+        else way.push_back(b);
+    }
+    return index.clear(way, true, ours) ? way : std::vector<QPoint>{};
+}
 
 // The ways a wire from \a a to \a b may go, in the order they are tried:
 // the wire planner's, then out to a line beside both ends - further and
@@ -1946,8 +2166,12 @@ std::vector<std::vector<QPoint>> waysBetween(Schematic* sch, const QPoint& a, co
 // why, when there is no such way. \a sch's elements may be new ones after.
 // As wireUp(), along the first of \a ways that touches nothing else and
 // that \a check finds nothing wrong with; \a used says which (its index).
+// \a maze: a way round the parts a step at a time when none of \a ways is
+// clear of them (not when the ways are the caller's own: 'via'); and
+// then, before it, a way of \a ways clear of the parts' texts too (not
+// when their order says something: 'side').
 bool wireAlong(Schematic* sch, const QPoint& a, const QPoint& b, const std::vector<std::vector<QPoint>>& ways,
-               const std::function<QStringList()>& check, QString* why, int* used = nullptr)
+               const std::function<QStringList()>& check, QString* why, int* used = nullptr, bool maze = true, bool tidy = false)
 {
     const QString state = sch->snapshot();
     // What is on the two nets already the wire may touch.
@@ -1961,16 +2185,43 @@ bool wireAlong(Schematic* sch, const QPoint& a, const QPoint& b, const std::vect
     look();
     int tries = 0;
     QStringList faults;
+    // Clear of every symbol: one of the ways given, else a way round them a
+    // step at a time (mazeWay(), after them: \a used counts only the ways
+    // given); over them only when neither will do.
+    std::vector<std::vector<QPoint>> all(ways);
+    std::vector<int> index(ways.size());   // (each way's place in \a ways; the maze's after them)
+    std::iota(index.begin(), index.end(), 0);
+    if (maze || tidy) {
+        const WayIndex place(sch, now);
+        const auto tidyOne = std::find_if(all.cbegin(), all.cend(), [&](const std::vector<QPoint>& w) { return place.clear(w, true, ours, true, true); });
+        if (tidy && tidyOne != all.cend()) {
+            // (Tried first: the others after it as they were.)
+            const int at = int(tidyOne - all.cbegin());
+            std::rotate(all.begin(), all.begin() + at, all.begin() + at + 1);
+            std::rotate(index.begin(), index.begin() + at, index.begin() + at + 1);
+        } else if (maze && (tidy || std::none_of(all.cbegin(), all.cend(), [&](const std::vector<QPoint>& w) { return place.clear(w, true, ours); }))) {
+            if (std::vector<QPoint> m = mazeWay(place, a, b, ours, std::max(sch->getGridX(), 1), std::max(sch->getGridY(), 1)); !m.empty()) {
+                // (Before the ways that cross texts when tidy; after all of them else.)
+                if (tidy) {
+                    all.insert(all.begin(), std::move(m));
+                    index.insert(index.begin(), int(ways.size()));
+                } else {
+                    all.push_back(std::move(m));
+                    index.push_back(int(ways.size()));
+                }
+            }
+        }
+    }
     for (bool strict : {true, false})
-        for (std::size_t w = 0; w < ways.size(); ++w) {
-            const std::vector<QPoint>& way = ways[w];
+        for (std::size_t w = 0; w < all.size(); ++w) {
+            const std::vector<QPoint>& way = all[w];
             if (!clearWay(sch, way, strict, now, ours) || (!strict && clearWay(sch, way, true, now, ours))) continue;
             for (std::size_t k = 1; k < way.size(); ++k)
                 if (way[k] != way[k - 1])
                     sch->connectWithWire(way[k - 1], way[k], true, qucs_s::wire::Planner::PlanType::Straight);
             faults = check();
             if (faults.isEmpty()) {
-                if (used != nullptr) *used = int(w);
+                if (used != nullptr) *used = index[w];
                 return true;
             }
             sch->restore(state);
@@ -1985,7 +2236,7 @@ bool wireAlong(Schematic* sch, const QPoint& a, const QPoint& b, const std::vect
 
 bool wireUp(Schematic* sch, const QPoint& a, const QPoint& b, const std::function<QStringList()>& check, QString* why)
 {
-    return wireAlong(sch, a, b, waysBetween(sch, a, b), check, why);
+    return wireAlong(sch, a, b, waysBetween(sch, a, b), check, why, nullptr, true, true);
 }
 
 // The ways from \a a to \a b around a side first - "below": along a line
@@ -2094,21 +2345,42 @@ bool joinPieces(Schematic* sch, const Nets& before, const QString& edited, const
                 }
                 const QSet<int> ours{netAt.value({from.x(), from.y()}, -1), netAt.value({to.x(), to.y()}, -1)};
                 bool wired = false;
-                for (bool strict : {true, false}) {
-                    for (const std::vector<QPoint>& way : waysBetween(sch, from, to)) {
-                        if (!index.clear(way, strict, ours) || (!strict && index.clear(way, true, ours))) continue;
-                        // (Merged once, after the lot: optimizeWires() scans every wire.)
-                        for (std::size_t k = 1; k < way.size(); ++k)
-                            if (way[k] != way[k - 1]) {
-                                sch->connectWithWire(way[k - 1], way[k], false, qucs_s::wire::Planner::PlanType::Straight);
-                                index.addWire(way[k - 1], way[k], -1);
-                            }
-                        for (std::size_t k = 1; k + 1 < way.size(); ++k) index.addNode(way[k], -1);   // (its bends)
-                        wired = true;
+                const auto draw = [&](const std::vector<QPoint>& way) {
+                    // (Merged once, after the lot: optimizeWires() scans every wire.)
+                    for (std::size_t k = 1; k < way.size(); ++k)
+                        if (way[k] != way[k - 1]) {
+                            sch->connectWithWire(way[k - 1], way[k], false, qucs_s::wire::Planner::PlanType::Straight);
+                            index.addWire(way[k - 1], way[k], -1);
+                        }
+                    for (std::size_t k = 1; k + 1 < way.size(); ++k) index.addNode(way[k], -1);   // (its bends)
+                    wired = true;
+                };
+                // Clear of every symbol: one of the few shapes, else a way
+                // round them a step at a time; over them only when neither.
+                // (Clear of the parts' texts too, first: a wire through a
+                // source's name read as joined to it.)
+                const std::vector<std::vector<QPoint>> ways = waysBetween(sch, from, to);
+                for (const std::vector<QPoint>& way : ways)
+                    if (index.clear(way, true, ours, true, true)) {
+                        draw(way);
                         break;
                     }
-                    if (wired) break;
-                }
+                if (!wired)
+                    if (const std::vector<QPoint> way = mazeWay(index, from, to, ours, std::max(sch->getGridX(), 1), std::max(sch->getGridY(), 1));
+                        !way.empty())
+                        draw(way);
+                if (!wired)
+                    for (const std::vector<QPoint>& way : ways)
+                        if (index.clear(way, true, ours)) {
+                            draw(way);
+                            break;
+                        }
+                if (!wired)
+                    for (const std::vector<QPoint>& way : ways)
+                        if (index.clear(way, false, ours)) {
+                            draw(way);
+                            break;
+                        }
                 if (!wired) {
                     all = false;
                     break;
@@ -4889,9 +5161,11 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     orient(c, args.value(QLatin1String("rotation")).toInt(), args.value(QLatin1String("mirror")).toBool());
     int x = args.value(QLatin1String("x")).toInt(), y = args.value(QLatin1String("y")).toInt();
     // Or beside another part: "Rf below U1".
+    QString nearHow;
     if (args.contains(QLatin1String("near"))) {
         QPoint there;
-        if (args.contains(QLatin1String("x")) || args.contains(QLatin1String("y")) || !placeNear(sch, c, args.value(QLatin1String("near")), &there, &error)) {
+        if (args.contains(QLatin1String("x")) || args.contains(QLatin1String("y"))
+            || !placeNear(sch, c, args.value(QLatin1String("near")), &there, &error, &nearHow)) {
             delete c;
             return errorResult(error.isEmpty() ? tr("Give x, y or 'near', not both.") : error);
         }
@@ -4953,6 +5227,7 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     if (!modelOf.isEmpty())
         notes.prepend(tr("%1 is a %2 with the library's values: placed as one, as the library panel places it (its "
                          "values are its properties)").arg(modelOf, c->Model));
+    if (!nearHow.isEmpty()) notes.prepend(tr("Placed %1").arg(nearHow));
     if (!notes.isEmpty()) result.insert(QStringLiteral("note"), notes.join(QStringLiteral("; ")) + QLatin1Char('.'));
     return jsonResult(result);
 }
@@ -4969,10 +5244,11 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
     if (c == nullptr) return errorResult(error);
     // Beside another part ("Rf below U1"): moved there, as x, y move it.
     QJsonObject placed = args;
+    QString nearHow;
     if (args.contains(QLatin1String("near"))) {
         if (args.contains(QLatin1String("x")) || args.contains(QLatin1String("y"))) return errorResult(tr("Give x, y or 'near', not both."));
         QPoint there;
-        if (!placeNear(sch, c, args.value(QLatin1String("near")), &there, &error)) return errorResult(error);
+        if (!placeNear(sch, c, args.value(QLatin1String("near")), &there, &error, &nearHow)) return errorResult(error);
         placed.insert(QStringLiteral("x"), there.x());
         placed.insert(QStringLiteral("y"), there.y());
     }
@@ -5057,6 +5333,7 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
         result.insert(QStringLiteral("dataset"), tr("The dataset still names it %1: the traces show it again after the next simulation.")
                                                      .arg(name));
     landed << newWiringIssues(sch, wiringBefore);
+    if (!nearHow.isEmpty()) landed.prepend(tr("Moved %1").arg(nearHow));
     if (!landed.isEmpty()) result.insert(QStringLiteral("note"), landed.join(QStringLiteral("; ")) + QLatin1Char('.'));
     return jsonResult(result);
 }
@@ -5142,9 +5419,28 @@ QJsonObject QucsControl::replaceComponent(const QJsonObject& args)
                                                      : QStringLiteral("%1 (%2)").arg(i + 1).arg(c->Ports.at(i)->Name));
         return names.join(QStringLiteral(", "));
     };
+    // Each pin with the side of the symbol it is on (a part whose model
+    // gives its pins no names: which is the output?).
+    const auto pinSides = [](const Component* c) {
+        const QRect box = c->boundingRect().translated(-c->center());
+        QStringList said;
+        for (int i = 0; i < c->Ports.size(); ++i) {
+            const QPoint at(c->Ports.at(i)->x, c->Ports.at(i)->y);
+            const QPoint d = outwardOf(box, at);
+            QString side = d.x() < 0 ? tr("left") : d.x() > 0 ? tr("right") : d.y() < 0 ? tr("top") : tr("bottom");
+            if (d.x() != 0 && at.y() != 0) side += at.y() < 0 ? tr(", upper") : tr(", lower");
+            if (d.y() != 0 && at.x() != 0) side += at.x() < 0 ? tr(", left") : tr(", right");
+            said << (c->Ports.at(i)->Name.isEmpty() ? QStringLiteral("%1 (%2)").arg(i + 1).arg(side)
+                                                    : QStringLiteral("%1 %2 (%3)").arg(i + 1).arg(c->Ports.at(i)->Name, side));
+        }
+        return said.join(QStringLiteral(", "));
+    };
     QHash<int, int> pins;   // old index -> new index
     QString mappedBy;
-    if (args.contains(QLatin1String("pins"))) {
+    if (args.value(QLatin1String("pins")).toString().trimmed().compare(QLatin1String("by number"), Qt::CaseInsensitive) == 0) {
+        for (int i = 0; i < std::min<qsizetype>(old->Ports.size(), sample->Ports.size()); ++i) pins.insert(i, i);
+        mappedBy = tr("by number, as 'pins' says");
+    } else if (args.contains(QLatin1String("pins"))) {
         const QJsonValue v = args.value(QLatin1String("pins"));
         QList<QPair<QJsonValue, QJsonValue>> pairs;
         if (v.isObject()) {
@@ -5155,7 +5451,8 @@ QJsonObject QucsControl::replaceComponent(const QJsonObject& args)
             for (const QJsonValue& e : v.toArray())
                 if (e.isArray() && e.toArray().size() == 2) pairs << qMakePair(e.toArray().at(0), e.toArray().at(1));
         if (pairs.isEmpty())
-            return errorResult(tr("'pins' maps the old part's pins to the new one's, by number or name: {\"1\": \"inn\", \"2\": \"inp\", \"3\": \"out\"}."));
+            return errorResult(tr("'pins' maps the old part's pins to the new one's, by number or name: {\"1\": \"inn\", \"2\": \"inp\", \"3\": \"out\"} "
+                                  "- or \"by number\"."));
         for (const auto& [from, to] : std::as_const(pairs)) {
             const int a = pinIndex(old, from), b = pinIndex(sample.get(), to);
             if (a < 0) return errorResult(tr("%1 has no pin %2 (its pins: %3).").arg(name, from.toVariant().toString(), pinList(old)));
@@ -5177,6 +5474,22 @@ QJsonObject QucsControl::replaceComponent(const QJsonObject& args)
             if (b < 0) byName = false;
             else pins.insert(i, b);
         }
+        // Named pins with something on them that the new part has no such
+        // names for: by number, pin 2 (INP) went to the transistor-level
+        // uA741's pin 2, its output, and the amplifier sat at a rail with
+        // nothing said. Which is which, and 'pins' to say it.
+        QStringList namedWired;
+        for (int i = 0; i < old->Ports.size(); ++i) {
+            const Port* p = old->Ports.at(i);
+            if (!p->Name.isEmpty() && p->Connection != nullptr && (p->Connection->conn_count() > 1 || p->Connection->hasLabel())
+                && pinIndex(sample.get(), p->Name) < 0)
+                namedWired << p->Name;
+        }
+        if (!byName && !namedWired.isEmpty())
+            return errorResult(tr("%1's pins have names the new part's do not (%2): by number they could go to other pins than meant. "
+                                  "Its pins: %3. The new part's: %4. Say which is which in 'pins' ({\"%5\": 2, ...}), or \"pins\": "
+                                  "\"by number\" when the numbers match.")
+                                   .arg(name, namedWired.join(QStringLiteral(", ")), pinSides(old), pinSides(sample.get()), namedWired.first()));
         if (!byName || namedPins == 0) {
             pins.clear();
             for (int i = 0; i < std::min<qsizetype>(old->Ports.size(), sample->Ports.size()); ++i) pins.insert(i, i);
@@ -6553,6 +6866,83 @@ private:
     QList<QRect> m_wide;
 };
 
+// Each net label on a pin (arrange puts them there) moved on to the longest
+// stretch of its piece's wiring - a straight one lying down first - where
+// its text keeps clear of the parts, their texts, the wires and the other
+// labels: at a pin's end its text sat over the drawing (out on Rf's wire).
+// A label where there is no such stretch stays; \a keep's (the supplies'
+// on each of their pins) stay.
+void relabelOnWires(Schematic* sch, const QSet<QString>& keep)
+{
+    RectCells room;
+    for (const Component* c : sch->a_DocComps) room.add(c->boundingRectIncludingProperties().adjusted(-2, -2, 2, 2));
+    for (const Wire* w : sch->a_DocWires) room.add(QRect(w->P1(), w->P2()).normalized().adjusted(-3, -3, 3, 3));
+    // (A label's text from its top left corner, as it is drawn.)
+    const auto textBox = [](const QString& name, const QPoint& at) { return QRect(at, QSize(8 * int(name.size()) + 10, 16)); };
+    std::vector<Node*> labelled;
+    for (Node* n : sch->a_DocNodes)
+        if (n->hasLabel()) {
+            labelled.push_back(n);
+            room.add(textBox(n->label()->Name, QPoint(n->label()->x1, n->label()->y1)));
+        }
+    // (In order of place: the first takes the room.)
+    std::sort(labelled.begin(), labelled.end(), [](const Node* a, const Node* b) { return std::pair(a->cx, a->cy) < std::pair(b->cx, b->cy); });
+    const int gx = std::max(sch->getGridX(), 1), gy = std::max(sch->getGridY(), 1);
+    for (Node* n : labelled) {
+        const QString name = n->label()->Name;
+        if (keep.contains(name)) continue;
+        // Its piece's wires, joined through their nodes.
+        QList<Wire*> wires;
+        QSet<const Node*> seen{n};
+        std::vector<const Node*> todo{n};
+        while (!todo.empty()) {
+            const Node* at = todo.back();
+            todo.pop_back();
+            for (Wire* w : at->wires()) {
+                if (wires.contains(w)) continue;
+                wires << w;
+                for (const Node* o : {w->Port1, w->Port2})
+                    if (o != nullptr && !seen.contains(o)) {
+                        seen.insert(o);
+                        todo.push_back(o);
+                    }
+            }
+        }
+        std::sort(wires.begin(), wires.end(), [](const Wire* a, const Wire* b) {
+            const bool la = a->P1().y() == a->P2().y(), lb = b->P1().y() == b->P2().y();
+            const int da = (a->P1() - a->P2()).manhattanLength(), db = (b->P1() - b->P2()).manhattanLength();
+            return std::tuple(!la, -da, a->P1().x(), a->P1().y()) < std::tuple(!lb, -db, b->P1().x(), b->P1().y());
+        });
+        for (Wire* w : std::as_const(wires)) {
+            const QPoint p = w->P1(), q = w->P2();
+            const bool across = p.y() == q.y();
+            if ((!across && p.x() != q.x()) || (p - q).manhattanLength() < 4 * std::max(gx, gy) || w->hasLabel()) continue;
+            int x = (p.x() + q.x()) / 2, y = (p.y() + q.y()) / 2;
+            sch->setOnGrid(x, y);
+            if (across) y = p.y();
+            else x = p.x();
+            const QPoint anchor(x, y);
+            if (anchor == p || anchor == q) continue;
+            const QRect box0 = textBox(name, QPoint());
+            // (Above it on the right, below it, above it on the left; beside
+            // a standing one, right or left.)
+            const QList<QPoint> offsets = across ? QList<QPoint>{QPoint(10, -10 - box0.height()), QPoint(10, 10), QPoint(-10 - box0.width(), -10 - box0.height())}
+                                                 : QList<QPoint>{QPoint(10, -box0.height() / 2), QPoint(-10 - box0.width(), -box0.height() / 2)};
+            bool moved = false;
+            for (const QPoint& d : offsets) {
+                const QPoint text = anchor + d;
+                if (room.meets(textBox(name, text))) continue;
+                n->dropLabel();
+                w->setName(name, QString(), anchor.x(), anchor.y(), text.x(), text.y());
+                room.add(textBox(name, text));
+                moved = true;
+                break;
+            }
+            if (moved) break;
+        }
+    }
+}
+
 // Where ground symbols may go, for many of them (arrange): the parts'
 // symbols and texts, the nodes and the wires by place - each part's texts
 // measured once, not every part's for every ground (a ladder's 500 grounds
@@ -6964,7 +7354,7 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
         // supply's name (vcc, vee, vdd ...), however few parts are on it: the
         // flow of the signal does not go through it.
         {
-            static const QRegularExpression supplyName(QStringLiteral("^(v(cc|dd|ee|ss|s[+-]|[+-]|p|n|pos|neg)\\d*|avdd|dvdd|vbat)$"),
+            static const QRegularExpression supplyName(QStringLiteral("^(v(cc|dd|ee|ss|s[+-]|[+-]|p|n|pos|neg)\\d*|(pos|neg)rail|avdd|dvdd|vbat)$"),
                                                        QRegularExpression::CaseInsensitiveOption);
             QSet<int> supplyish;
             for (int i = 0; i < int(parts.size()); ++i)
@@ -7133,6 +7523,37 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                 layer[i] = layer[hostOf[i]];
             }
         }
+        // And with it, a two-pin part from its end on the input's net (the
+        // net of the part's pin it joins that is not the outermost one: an
+        // op-amp's inverting input, not its output) to ground - Rg of a
+        // non-inverting amplifier: the feedback network, not a column of
+        // the load's (its wire ran the width of the schematic).
+        std::vector<int> shuntOf(parts.size(), -1);     // the feedback part it goes with
+        std::vector<int> shuntFor(parts.size(), -1);    // a feedback part's
+        std::vector<int> inputNetOf(parts.size(), -1);  // a feedback part's net toward the input
+        for (int f = 0; f < int(parts.size()); ++f) {
+            if (hostOf[f] < 0) continue;
+            const int h = hostOf[f];
+            int outermost = -1, outNet = -1;
+            for (int m = 0; m < parts[h]->Ports.size(); ++m)
+                if ((pinNet[h][m] == pinNet[f][0] || pinNet[h][m] == pinNet[f][1]) && std::abs(parts[h]->Ports.at(m)->x) > outermost) {
+                    outermost = std::abs(parts[h]->Ports.at(m)->x);
+                    outNet = pinNet[h][m];
+                }
+            inputNetOf[f] = pinNet[f][0] == outNet ? pinNet[f][1] : pinNet[f][0];
+            for (int i = 0; i < int(parts.size()) && shuntFor[f] < 0; ++i) {
+                if (i == f || parts[i]->Ports.size() != 2 || hostOf[i] >= 0 || shuntOf[i] >= 0 || supply[i] || isSignalSource(parts[i])
+                    || groupOf[i] != groupOf[f])
+                    continue;
+                const int a = pinNet[i][0], b = pinNet[i][1];
+                if ((a == inputNetOf[f] && b == groundNet) || (b == inputNetOf[f] && a == groundNet)) {
+                    shuntOf[i] = f;
+                    shuntFor[f] = i;
+                    for (std::vector<int>& column : columnsOf[groupOf[i]]) std::erase(column, i);
+                    layer[i] = layer[h];
+                }
+            }
+        }
         QRect was0;
         for (Component* c : parts)
             was0 = was0.isNull() ? c->boundingRectIncludingProperties() : was0.united(c->boundingRectIncludingProperties());
@@ -7235,7 +7656,7 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                     long sum = 0;
                     int n = 0;
                     for (int j : next[i]) {
-                        if (layer[j] < 0 || layer[j] >= l || groupOf[j] != groupOf[i] || hostOf[j] >= 0) continue;
+                        if (layer[j] < 0 || layer[j] >= l || groupOf[j] != groupOf[i] || hostOf[j] >= 0 || shuntOf[j] >= 0) continue;
                         for (int k = 0; k < pinNet[i].size(); ++k)
                             for (int m = 0; m < pinNet[j].size(); ++m)
                                 if (pinNet[i][k] >= 0 && pinNet[i][k] == pinNet[j][m] && !railish(pinNet[i][k])) {
@@ -7295,6 +7716,41 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
                     for (int i : columns[l])
                         if (i != host && (below ? target[i].y() > target[host].y() : target[i].y() < target[host].y()))
                             target[i] += QPoint(0, below ? room : -room);
+                    // Their parts to ground (Rg), standing, ground below: under
+                    // the feedback part's end on the input's net (below), or
+                    // under the part's input pin (above) - the others of the
+                    // column below moved on to make room.
+                    int under = below ? target[host].y() + rel[host].bottom() + room + gapY : target[host].y() + rel[host].bottom() + gapY;
+                    const int underStart = under;
+                    for (int f : round) {
+                        const int g = shuntFor[f];
+                        if (g < 0) continue;
+                        const int net = inputNetOf[f];
+                        const int kg = pinNet[g][0] == net ? 0 : 1;
+                        int x = target[f].x();
+                        if (below) {
+                            for (int k = 0; k < parts[f]->Ports.size(); ++k)
+                                if (pinNet[f][k] == net) x = target[f].x() + parts[f]->Ports.at(k)->x;
+                        } else {
+                            for (int m = 0; m < parts[host]->Ports.size(); ++m)
+                                if (pinNet[host][m] == net) x = target[host].x() + parts[host]->Ports.at(m)->x;
+                        }
+                        // (Below the feedback part: just under its texts.)
+                        const int topAt = below ? target[f].y() + rel[f].bottom() + gapY / 2 : under;
+                        int cx = x - parts[g]->Ports.at(kg)->x, cy = topAt - rel[g].top();
+                        sch->setOnGrid(cx, cy);
+                        target[g] = QPoint(cx, cy);
+                        under = std::max(under, cy + rel[g].bottom() + gapY);
+                        said.append(parts[g]->Name);
+                    }
+                    if (under > underStart) {
+                        // (The ground symbol goes under it too: room for it.)
+                        const int more = gy * ((under - underStart + 3 * gy + gy - 1) / gy);
+                        for (int i : columns[l])
+                            if (i != host && target[i].y() > target[host].y()) target[i] += QPoint(0, more);
+                        for (int f : round)
+                            if (shuntFor[f] >= 0) groupBottom = std::max(groupBottom, target[shuntFor[f]].y() + rel[shuntFor[f]].bottom() + 3 * gy);
+                    }
                     for (int f : round) groupBottom = std::max(groupBottom, target[f].y() + rel[f].bottom());
                     for (int i : columns[l]) groupBottom = std::max(groupBottom, target[i].y() + rel[i].bottom());
                 }
@@ -7437,6 +7893,14 @@ QJsonObject QucsControl::arrange(const QJsonObject& args)
             sch->restore(state);
             continue;
         }
+        relabelOnWires(sch, railNames);
+        if (!netChanges(was, withoutGroundSymbols(sch, netsOf(sch, nullptr), dropped), QString(), false, nullptr).isEmpty()) {
+            // (It cannot join or part a net: its name stays on it. Were it
+            // to, the labels go back where they were.)
+            faults << tr("with %1 of room: the labels moved on to the wires changed a net").arg(spacing);
+            sch->restore(state);
+            continue;
+        }
 
         // What it now covers, and the diagrams and paintings that were
         // there moved aside to its right.
@@ -7532,7 +7996,7 @@ QJsonObject QucsControl::connectPins(const QJsonObject& args)
     const std::vector<std::vector<QPoint>> ways = !via.isEmpty() ? std::vector<std::vector<QPoint>>{wayThrough(a, via, b)}
                                                   : !side.isEmpty() ? waysAround(sch, a, b, side, &preferred)
                                                                     : waysBetween(sch, a, b);
-    if (!wireAlong(sch, a, b, ways, check, &error, &used))
+    if (!wireAlong(sch, a, b, ways, check, &error, &used, via.isEmpty(), via.isEmpty() && side.isEmpty()))
         return errorResult(!via.isEmpty() ? tr("Not wired through the points given: %1. Other points, or 'side', or connect "
                                                "without them.").arg(error)
                                           : tr("Not wired: %1. Give the way with add_wire, or move a part out of it.").arg(error));

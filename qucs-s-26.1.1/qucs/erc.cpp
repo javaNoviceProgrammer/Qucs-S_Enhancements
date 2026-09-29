@@ -337,7 +337,7 @@ void topologyIssues(Schematic* doc, const Nets& nets, bool subcircuit, QList<Iss
 // VEE left open read as a part that does nothing, every answer green.
 void supplyIssues(Schematic* doc, const Nets& nets, QList<Issue>& out)
 {
-    static const QRegularExpression supply(QStringLiteral("^(v(cc|dd|ee|ss|s[+-]|[+-]|pos|neg)\\d*|avdd|dvdd)$"),
+    static const QRegularExpression supply(QStringLiteral("^(v(cc|dd|ee|ss|s[+-]|[+-]|pos|neg)\\d*|(pos|neg)rail|avdd|dvdd)$"),
                                            QRegularExpression::CaseInsensitiveOption);
     QHash<QString, bool> supplyPin;   // "U1.4": a supply pin
     for (const Component* c : doc->a_DocComps)
