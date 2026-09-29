@@ -4656,6 +4656,58 @@ private slots:
         QVERIFY2(read.value("labels").toArray().size() <= 50 && read.value("left out").toString().contains("'region'"), qPrintable(whole.left(300)));
     }
 
+    // arrange lays a schematic out the same way every time. A simulation
+    // block measured itself anew when it was first painted - other bounds
+    // (the air around its label) and its text placed again - so the blocks
+    // went a step one way or the other as the window painted before arrange
+    // or after; and among equal ways the closest was taken in a hash's
+    // order, which is another in every process. 66 of the 251 examples
+    // came out otherwise in two runs.
+    void arrangeIsTheSameEveryTime()
+    {
+        // A block's bounds and text place: as loaded, as painted, on any
+        // device - not the file's text place, nor the painter's measure.
+        std::unique_ptr<Component> block(qucs_s::control::newComponent(".TR"));
+        QVERIFY(block != nullptr);
+        QVERIFY(block->load("<.TR TR1 1 100 480 0 65 0 0 \"lin\" 1 \"0\" 1 \"1 ms\" 1 \"11\" 0>"));
+        const QRect loaded = block->boundingRectIncludingProperties();
+        const int ty = block->ty;
+        QVERIFY(ty != 65);
+        {
+            QImage image(600, 600, QImage::Format_ARGB32);
+            image.setDotsPerMeterX(5000);   // (a device of its own resolution: a picture written)
+            image.setDotsPerMeterY(5000);
+            QPainter painter(&image);
+            block->paint(&painter);
+        }
+        QCOMPARE(block->boundingRectIncludingProperties(), loaded);
+        QCOMPARE(block->ty, ty);
+        // The layout: painted first or not, and whatever the hashes' order.
+        for (const QString& example : {QStringLiteral("ngspice/General Electronics/chargepump.sch"),
+                                       QStringLiteral("ngspice/General Electronics/schmitt.sch"),
+                                       QStringLiteral("ngspice/NGspice features/RC_lowpass_ngsweep.sch"),
+                                       QStringLiteral("ngspice/RF/Oscillators/sym_osci.sch"), QStringLiteral("ngspice/RF/Mixers/gilbert.sch"),
+                                       QStringLiteral("ngspice/RF/Oscillators/rf_osci.sch")}) {
+            const QString file = QStringLiteral(QUCS_EXAMPLES_DIR "/") + example;
+            const auto arranged = [&](bool paint) {
+                if (failed(call("open_document", {{"path", file}}))) return QString();
+                if (paint) front()->viewport()->grab();
+                const QJsonObject r = call("arrange");
+                // (Its elements: not the view it was scrolled to, <View=...>.)
+                const QString laid = failed(r) ? text(r) : text(call("get_schematic", {{"format", "text"}})).section("</Properties>", 1);
+                call("close_document", {{"unsaved", "discard"}});
+                return laid;
+            };
+            const QString first = arranged(false);
+            QVERIFY(first.contains("<Components>") && first.contains("<Wires>"));
+            QVERIFY2(arranged(true) == first, qPrintable(example + ": another once painted"));
+            for (int k = 0; k < 6; ++k) {
+                QHashSeed::resetRandomGlobalSeed();
+                QVERIFY2(arranged(k % 2 == 1) == first, qPrintable(example + ": another with other hashes"));
+            }
+        }
+    }
+
     // B4, E7: no message box waits on a call (under --mcp-server no one
     // answers it): one opened in it is closed with its safe button, what it
     // said in the answer; what the window says in a box - a read-only
