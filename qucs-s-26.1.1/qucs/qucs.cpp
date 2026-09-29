@@ -135,8 +135,9 @@ QucsApp::QucsApp(bool netlist2Console) :
 
   QucsSettings.hasDarkTheme = misc::isDarkTheme();
 
-  // Instantiate settings singleton and restore window geometry.
-  const auto geometry = _settings::Get().item<QByteArray>("MainWindowGeometry");
+  // Instantiate settings singleton and restore window geometry (unless
+  // Application Settings > Workspace says the window starts afresh).
+  const auto geometry = QucsSettings.RestoreWindowGeometry ? _settings::Get().item<QByteArray>("MainWindowGeometry") : QByteArray();
 
   if (!geometry.isEmpty()) {
     qDebug() << "Saved geometry is: " << geometry;
@@ -328,13 +329,14 @@ int QucsApp::autosaveAll(bool emergency)
 void QucsApp::slotAutosave()
 {
   autosaveAll(false);
+  saveWorkspace();   // (a crash then loses little of it)
 }
 
-void QucsApp::recoverPreviousSession(bool crashedLastTime)
+bool QucsApp::recoverPreviousSession(bool crashedLastTime)
 {
   const QList<qucs_s::autosave::Entry> entries = qucs_s::autosave::pending();
   if (entries.isEmpty() && !crashedLastTime)
-    return;
+    return false;
 
   QString text;
   if (crashedLastTime) {
@@ -346,7 +348,7 @@ void QucsApp::recoverPreviousSession(bool crashedLastTime)
   }
   if (entries.isEmpty()) {
     QMessageBox::information(this, tr("Previous session"), text.trimmed());
-    return;
+    return false;
   }
 
   text += tr("Unsaved changes were found for the following documents:") + "\n";
@@ -360,6 +362,7 @@ void QucsApp::recoverPreviousSession(bool crashedLastTime)
   if (answer == QMessageBox::Yes)
     restoreAutosaved(entries);
   qucs_s::autosave::clear();
+  return answer == QMessageBox::Yes;
 }
 
 void QucsApp::restoreAutosaved(const QList<qucs_s::autosave::Entry> &entries)
@@ -496,6 +499,9 @@ void QucsApp::initView()
   initPaneArea();
 
   dock = new QDockWidget(tr("Main Dock"),this);
+  // (Each dock by a name: the window's state - its docks, where, how big
+  // - is kept by it, workspacesession.h.)
+  dock->setObjectName(QStringLiteral("MainDock"));
   TabView = new QTabWidget(dock);
   TabView->setTabPosition(QTabWidget::West);
 #if __APPLE__
@@ -738,6 +744,7 @@ void QucsApp::initView()
   // ----------------------------------------------------------
   // Octave docking window
   octDock = new QDockWidget(tr("Octave Dock"));
+  octDock->setObjectName(QStringLiteral("OctaveDock"));
 
   connect(octDock, SIGNAL(visibilityChanged(bool)), SLOT(slotToggleOctave(bool)));
   octave = new OctaveWindow(octDock);
@@ -3728,6 +3735,7 @@ void QucsApp::slotFileQuit()
 // To get all close events.
 void QucsApp::closeEvent(QCloseEvent* Event)
 {
+   saveWorkspace();   // what is open, before it is closed
    saveSettings();
    if(closeAllFiles()) {
       emit signalKillEmAll();   // kill all subprocesses
@@ -3886,6 +3894,7 @@ void QucsApp::slotTune(bool checked)
         TuningMode = true;
         if (tunerDock == nullptr) {
             auto *dock = new TunerDock(this);
+            dock->setObjectName(QStringLiteral("TunerDock"));
             addDockWidget(Qt::BottomDockWidgetArea, dock, Qt::Horizontal);
             connect(dock, &TunerDock::closeRequested, this, [this] {
                 if (tune->isChecked()) tune->setChecked(false);   // closes the tuner, which asks about its values

@@ -34,6 +34,7 @@
 
 class QucsDoc;
 class Schematic;
+namespace qucs_s::session { struct Workspace; }
 class TextDoc;
 class SimMessage;
 class MouseActions;
@@ -467,8 +468,40 @@ public slots:
   /// handler and must not touch the UI.
   int autosaveAll(bool emergency = false);
   /// Offers to restore documents left behind by a previous session
-  /// (autosave copies), and reports a crash of that session if there was one.
-  void recoverPreviousSession(bool crashedLastTime);
+  /// (autosave copies), and reports a crash of that session if there was
+  /// one. True when the user chose to restore them.
+  bool recoverPreviousSession(bool crashedLastTime);
+
+public:
+  // --- The workspace kept from one run to the next (workspacesession.h,
+  // Application Settings > Workspace).
+  /// What is open now: the project, the documents pane by pane (those
+  /// with a file), the panes' sizes, the left dock's page.
+  qucs_s::session::Workspace currentWorkspace() const;
+  /// Keeps it and the window's docks and toolbars in the settings - at
+  /// the close, and with each autosave, so that a crash loses little. Only
+  /// for the window of the application itself (setWorkspaceKept()).
+  void saveWorkspace();
+  /// Brings back the kept workspace as far as the settings say: the
+  /// panels and toolbars, the project (not when \a projectGiven - one
+  /// named on the command line opens instead), the documents in their panes
+  /// as they were split and sized. A file gone, or one in \a skip (its
+  /// autosaved copy is offered instead), is not opened; those skipped for
+  /// \a skip are returned. With \a askFirst (the last run did not end
+  /// cleanly) the user is asked before the project and documents open. Said
+  /// in the status bar.
+  QStringList restoreWorkspace(bool projectGiven = false, const QSet<QString> &skip = {}, bool askFirst = false);
+  /// Opens \a workspace's documents in panes laid out as its were (the
+  /// window's panes then are the placeholder's alone): restoreWorkspace()'s
+  /// work, and a test's. How many opened.
+  int openWorkspaceDocuments(const qucs_s::session::Workspace &workspace, const QSet<QString> &skip,
+                             QStringList *skipped, QStringList *gone);
+  /// Whether this window keeps the workspace: main() says so for the
+  /// application's own; tests and --mcp-server keep none.
+  static void setWorkspaceKept(bool on);
+  static bool workspaceKept();
+
+public slots:
 
 private slots:
   void slotMenuProjOpen();

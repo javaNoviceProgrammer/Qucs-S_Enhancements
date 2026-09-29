@@ -122,6 +122,7 @@ MessageDock::MessageDock(QucsApp *App_): QWidget()
     showOperatingPoint(nullptr, false);
 
     msgDock = new QDockWidget(tr("admsXml Dock"));
+    msgDock->setObjectName(QStringLiteral("MessagesDock"));
     msgDock->setWidget(builderTabs);
     App_->addDockWidget(Qt::BottomDockWidgetArea, msgDock);
 

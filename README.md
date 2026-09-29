@@ -802,6 +802,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Next Pane* (Ctrl+`) and *Close Pane* (its documents go to a
   neighbour); a pane whose last document is closed goes by itself. Save
   All, Close All and Find span every pane.
+- **The workspace as it was, at the next start** (*Application Settings →
+  Workspace*): when Qucs-S closes it keeps what is open, and opens it
+  again at the next start - the project; the documents, each in the
+  pane it was in, in its order, with the one in front, the panes split
+  and sized as they were; the panels and toolbars (which are shown,
+  where, how big, the left dock's page); the window's size and place;
+  and the Claude Code conversations. Each part can be turned off, or the
+  whole. It is kept with each autosave too, so a crash loses little of
+  it - and after a run that did not end cleanly Qucs-S asks before it
+  opens the workspace again, in case what it opens brought it down; a
+  document whose autosaved copy is offered is left for that offer (and
+  opened from its file when the offer is declined). A file no longer
+  there is left out and the status bar says so; a project named on the
+  command line opens instead of the kept one. *Forget It* on the tab
+  starts the next run afresh. The tab also holds the workspace folder
+  and *Any folder is a project*, which were under *Locations*.
 - **Toolbars locked in place** (*View → Toolbars → Lock Toolbars*, the
   menu of a right click on the toolbars, or *Application Settings →
   Appearance*): the toolbars lose their handles and cannot be dragged to
@@ -1351,7 +1367,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   When the workspace already has a project of that name, you are asked
   for another one.
 - **Any folder can be a project**: by default a project is a folder
-  whose name ends in `_prj`. With *Application Settings → Locations →
+  whose name ends in `_prj`. With *Application Settings → Workspace →
   Projects → Any folder is a project* on, a folder of any name is one:
   - every folder of the workspace is listed and opens as a project
     (except `user_lib`, which holds the user libraries, and hidden
