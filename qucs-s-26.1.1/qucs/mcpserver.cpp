@@ -13,7 +13,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QTimer>
+
+#include <algorithm>
+#include <cmath>
 
 namespace qucs_s::mcp {
 
@@ -37,6 +41,151 @@ QJsonObject failure(const QJsonValue& id, int code, const QString& text)
 QString idKey(const QJsonValue& id)
 {
     return id.isString() ? id.toString() : QString::number(id.toDouble(), 'g', 17);
+}
+
+// ---- max_chars: an answer no longer than the caller wants.
+
+QByteArray compact(const QJsonValue& v)
+{
+    if (v.isObject()) return QJsonDocument(v.toObject()).toJson(QJsonDocument::Compact);
+    if (v.isArray()) return QJsonDocument(v.toArray()).toJson(QJsonDocument::Compact);
+    return QJsonDocument(QJsonArray{v}).toJson(QJsonDocument::Compact).mid(1).chopped(1);
+}
+
+// A list already cut ends in "… n more"; a text in "… (n more characters)".
+const QRegularExpression& moreItems()
+{
+    static const QRegularExpression re(QStringLiteral("^… (\\d+) more$"));
+    return re;
+}
+const QRegularExpression& moreText()
+{
+    static const QRegularExpression re(QStringLiteral("^(.*)… \\((\\d+) more characters\\)$"), QRegularExpression::DotMatchesEverythingOption);
+    return re;
+}
+int moreOf(const QJsonArray& a)
+{
+    const QRegularExpressionMatch m = a.isEmpty() || !a.last().isString() ? QRegularExpressionMatch() : moreItems().match(a.last().toString());
+    return m.hasMatch() ? m.captured(1).toInt() : -1;
+}
+
+// Where in an answer the most is to cut: a list of more than one item, or
+// a text of more than 80 characters, the biggest - its path of keys and
+// indices.
+struct Spot {
+    QList<QJsonValue> path;
+    qsizetype size = 0;
+};
+void biggest(const QJsonValue& v, QList<QJsonValue>& path, Spot& best)
+{
+    if (v.isArray()) {
+        const QJsonArray a = v.toArray();
+        const qsizetype items = a.size() - (moreOf(a) >= 0 ? 1 : 0);
+        if (items > 1) {
+            if (const qsizetype size = compact(v).size(); size > best.size) best = Spot{path, size};
+        }
+        for (int i = 0; i < a.size(); ++i) {
+            path.append(i);
+            biggest(a.at(i), path, best);
+            path.removeLast();
+        }
+    } else if (v.isObject()) {
+        const QJsonObject o = v.toObject();
+        for (auto it = o.begin(); it != o.end(); ++it) {
+            path.append(it.key());
+            biggest(it.value(), path, best);
+            path.removeLast();
+        }
+    } else if (v.isString() && v.toString().size() > 80 && v.toString().size() > best.size) {
+        best = Spot{path, v.toString().size()};
+    }
+}
+
+// \a v with the list or text at \a path halved.
+QJsonValue halvedAt(const QJsonValue& v, const QList<QJsonValue>& path, int depth = 0)
+{
+    if (depth == path.size()) {
+        if (v.isArray()) {
+            QJsonArray a = v.toArray();
+            int more = moreOf(a);
+            if (more >= 0) a.removeLast();
+            else more = 0;
+            const qsizetype keep = std::max<qsizetype>(1, a.size() / 2);
+            more += int(a.size() - keep);
+            while (a.size() > keep) a.removeLast();
+            a.append(QStringLiteral("… %1 more").arg(more));
+            return a;
+        }
+        QString s = v.toString();
+        int more = 0;
+        if (const QRegularExpressionMatch m = moreText().match(s); m.hasMatch()) {
+            s = m.captured(1);
+            more = m.captured(2).toInt();
+        }
+        const qsizetype keep = s.size() / 2;
+        return s.left(keep) + QStringLiteral("… (%1 more characters)").arg(more + s.size() - keep);
+    }
+    const QJsonValue key = path.at(depth);
+    if (v.isObject()) {
+        QJsonObject o = v.toObject();
+        o.insert(key.toString(), halvedAt(o.value(key.toString()), path, depth + 1));
+        return o;
+    }
+    QJsonArray a = v.toArray();
+    a.replace(key.toInt(), halvedAt(a.at(key.toInt()), path, depth + 1));
+    return a;
+}
+
+// The answer cut to \a most characters: its biggest lists (to their first
+// items and "… n more") and texts (to their start and "… (n more
+// characters)") halved, the biggest first, until it fits; its 'trimmed'
+// says what was cut. A text answer is cut at its end.
+QJsonObject trimmedTo(const QJsonObject& result, int most)
+{
+    QJsonArray content = result.value(QLatin1String("content")).toArray();
+    if (content.isEmpty() || content.first().toObject().value(QLatin1String("type")).toString() != QLatin1String("text")) return result;
+    QJsonObject first = content.first().toObject();
+    const QString text = first.value(QLatin1String("text")).toString();
+    if (text.size() <= most) return result;
+    const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8());
+    QString out;
+    if (doc.isObject() || doc.isArray()) {
+        QJsonValue value = doc.isObject() ? QJsonValue(doc.object()) : QJsonValue(doc.array());
+        QStringList cut;
+        const int room = most - (doc.isObject() ? 260 : 0);   // (for 'trimmed' itself)
+        for (int round = 0; round < 400 && compact(value).size() > room; ++round) {
+            QList<QJsonValue> path;
+            Spot best;
+            biggest(value, path, best);
+            if (best.size == 0) break;
+            value = halvedAt(value, best.path);
+            QStringList where;
+            for (const QJsonValue& k : std::as_const(best.path)) where << (k.isString() ? k.toString() : QStringLiteral("[]"));
+            const QString at = where.isEmpty() ? QStringLiteral("the list") : where.join(QLatin1Char('.')).replace(QStringLiteral(".[]"), QStringLiteral("[]"));
+            if (!cut.contains(at)) cut << at;
+        }
+        if (value.isObject()) {
+            QJsonObject o = value.toObject();
+            o.insert(QStringLiteral("trimmed"), QStringLiteral("to %1 characters or less of %2, as max_chars asks: %3 cut - the tool's own "
+                                                               "filters ask for less, a larger max_chars for more")
+                                                    .arg(most)
+                                                    .arg(text.size())
+                                                    .arg(cut.mid(0, 6).join(QStringLiteral(", "))));
+            value = o;
+        }
+        out = QString::fromUtf8(compact(value));
+    }
+    // A text, or JSON that would not fit even so: cut at its end.
+    if (out.isEmpty() || out.size() > most) {
+        const QString base = out.isEmpty() ? text : out;
+        const qsizetype keep = std::max(0, most - 70);
+        out = base.left(keep) + QStringLiteral("\n… (%1 more characters: a larger max_chars gives them)").arg(base.size() - keep);
+    }
+    first.insert(QStringLiteral("text"), out);
+    content.replace(0, first);
+    QJsonObject r = result;
+    r.insert(QStringLiteral("content"), content);
+    return r;
 }
 
 } // namespace
@@ -174,10 +323,25 @@ void Server::handle(const QJsonObject& message, const Reply& reply)
             return;
         }
         const QString tool = params.value(QLatin1String("name")).toString();
-        const QJsonObject arguments = params.value(QLatin1String("arguments")).toObject();
+        QJsonObject arguments = params.value(QLatin1String("arguments")).toObject();
+        // max_chars: the longest answer the caller wants, for every tool -
+        // the server's, not the tool's: taken out before the tool sees it.
+        int most = 0;
+        if (arguments.contains(QLatin1String("max_chars"))) {
+            const QJsonValue v = arguments.take(QLatin1String("max_chars"));
+            if (!v.isDouble() || v.toDouble() < 200 || v.toDouble() != std::floor(v.toDouble())) {
+                reply(response(id, QJsonObject{{QStringLiteral("content"),
+                                                QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                                                       {QStringLiteral("text"), QStringLiteral("max_chars is a whole number of "
+                                                                                                               "characters, 200 or more. Nothing was done.")}}}},
+                                               {QStringLiteral("isError"), true}}));
+                return;
+            }
+            most = int(std::min(v.toDouble(), 1e9));
+        }
         QPointer<Server> self(this);
-        auto done = [self, id, reply](const QJsonObject& result) {
-            if (self) reply(response(id, self->callResult(result)));
+        auto done = [self, id, reply, most](const QJsonObject& result) {
+            if (self) reply(response(id, self->callResult(most > 0 ? trimmedTo(result, most) : result)));
         };
         if (a_call) a_call(tool, arguments, done);
         else a_host->callTool(tool, arguments, done);

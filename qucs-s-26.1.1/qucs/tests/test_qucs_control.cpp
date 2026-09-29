@@ -59,6 +59,7 @@
 #include "diagrams/graph.h"
 #include "qucscontrol_p.h"
 #include "paintings/portsymbol.h"
+#include "paintings/graphictext.h"
 #include "dialogs/simmessage.h"
 #include "textdoc.h"
 
@@ -5727,6 +5728,186 @@ private slots:
         after.sort();
         QCOMPARE(after, before);
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // tune's 'hold' and 'compare' (the assessment of 29 September): other
+    // measurements kept within bounds while the value moves, a value that
+    // reaches the target but breaks one told and not taken; every
+    // measurement before and after. A ladder: 10 V, R1, a, R2, b, R3; with
+    // R2 = R3 = 1k, a is 5 V at R1 = 2k, and b is then 2.5 V.
+    void tuneHoldsAndCompares()
+    {
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (ngspice.isEmpty()) QSKIP("no ngspice here");
+        // (Put back whatever happens: a test failing here left the others
+        // another ngspice.)
+        struct Restore {
+            QString was = QucsSettings.NgspiceExecutable;
+            ~Restore() { QucsSettings.NgspiceExecutable = was; }
+        } restore;
+        QucsSettings.NgspiceExecutable = ngspice;
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        const QString R = "\"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        QJsonObject r = call("set_schematic", {{"text", "<Components>\n"
+                                                        "  <Vdc V1 1 100 200 18 -26 0 1 \"10 V\" 1>\n"
+                                                        "  <GND * 1 100 230 0 0 0 0>\n"
+                                                        "  <R R1 1 200 100 15 -26 0 0 " + R +
+                                                        "  <R R2 1 300 100 15 -26 0 0 " + R +
+                                                        "  <R R3 1 400 200 15 -26 0 1 " + R +
+                                                        "  <GND * 1 400 230 0 0 0 0>\n"
+                                                        "  <.DC DC1 1 100 400 0 36 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>\n"
+                                                        "</Components>\n<Wires>\n"
+                                                        "  <100 170 100 100 \"\" 0 0 0 \"\">\n  <100 100 170 100 \"\" 0 0 0 \"\">\n"
+                                                        "  <230 100 270 100 \"a\" 240 70 20 \"\">\n"
+                                                        "  <330 100 400 100 \"b\" 350 70 30 \"\">\n  <400 100 400 170 \"\" 0 0 0 \"\">\n"
+                                                        "</Wires>\n"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"as", "ladder"}, {"replace", true}})));
+        const QJsonObject target{{"component", "R1"}, {"target", 5}, {"range", QJsonArray{"100", "100k"}},
+                                 {"measure", QJsonObject{{"operating_point", "a"}}}};
+        // b kept above 2.4 V: it is (2.5 V), the value set; before and after.
+        QJsonObject args = target;
+        args.insert("hold", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "b"}}}, {"min", 2.4}}});
+        r = call("tune", args, 300000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r).toObject();
+        QVERIFY2(o.value("within tolerance").toBool() && !o.contains("held back"), qPrintable(text(r)));
+        double value = 0, factor = 1;
+        QString unit;
+        misc::str2num(sch->getComponentByName("R1")->getProperty("R")->Value, value, unit, factor);
+        QVERIFY2(std::abs(value * factor - 2000) < 40, qPrintable(text(r)));
+        QJsonArray runs = o.value("runs").toArray();
+        QVERIFY2(runs.first().toObject().value("as it was").toBool() && runs.first().toObject().value("value").toString() == "1k"
+                     && runs.first().toObject().value("hold").toArray().size() == 1,
+                 qPrintable(text(r)));
+        QJsonArray table = o.value("before and after").toArray();
+        QVERIFY2(table.size() == 2 && std::abs(table.at(0).toObject().value("before").toDouble() - 20.0 / 3) < 0.01
+                     && std::abs(table.at(0).toObject().value("after").toDouble() - 5) < 0.05
+                     && std::abs(table.at(1).toObject().value("before").toDouble() - 10.0 / 3) < 0.01
+                     && std::abs(table.at(1).toObject().value("after").toDouble() - 2.5) < 0.05,
+                 qPrintable(text(r)));
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(sch->getComponentByName("R1")->getProperty("R")->Value, QStringLiteral("1k"));
+
+        // b kept above 2.6 V: the target breaks it - told, not taken.
+        args = target;
+        args.insert("hold", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "b"}}}, {"min", 2.6}}});
+        r = call("tune", args, 300000);
+        o = json(r).toObject();
+        QVERIFY2(!failed(r) && o.value("held back").toString().contains("gives the target, but")
+                     && o.value("held back").toString().contains("below 2.6 - not taken")
+                     && o.value("set").toString().startsWith("not set") && o.value("set").toString().contains("keeping every hold"),
+                 qPrintable(text(r)));
+        QCOMPARE(sch->getComponentByName("R1")->getProperty("R")->Value, QStringLiteral("1k"));
+        // compare alone: the table, no hold.
+        args = target;
+        args.insert("compare", true);
+        r = call("tune", args, 300000);
+        o = json(r).toObject();
+        QVERIFY2(!failed(r) && o.value("before and after").toArray().size() == 1 && !o.contains("hold"), qPrintable(text(r)));
+        QVERIFY(!failed(call("undo")));
+        // Not of the target's kind: refused.
+        args = target;
+        args.insert("hold", QJsonArray{QJsonObject{{"measure", QJsonObject{{"variable", "tran.v(b)"}}}, {"min", 1}}});
+        r = call("tune", args);
+        QVERIFY2(failed(r) && text(r).contains("'hold' measures what the target measures"), qPrintable(text(r)));
+        args.insert("hold", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "b"}}}}});
+        r = call("tune", args);
+        QVERIFY2(failed(r) && text(r).contains("a 'min', a 'max' or both"), qPrintable(text(r)));
+
+        // Two knobs, a hold: measured each run, before and after.
+        r = call("tune", {{"knobs", QJsonArray{QJsonObject{{"component", "R1"}, {"range", QJsonArray{"100", "100k"}}},
+                                               QJsonObject{{"component", "R2"}, {"range", QJsonArray{"100", "100k"}}}}},
+                          {"targets", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "a"}}}, {"target", 5}},
+                                                 QJsonObject{{"measure", QJsonObject{{"operating_point", "b"}}}, {"target", 2}}}},
+                          {"hold", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "a"}}}, {"min", 4}, {"max", 6}}}}},
+                 300000);
+        o = json(r).toObject();
+        QVERIFY2(!failed(r) && o.value("set").toString().startsWith("The values found are set")
+                     && o.value("before and after").toArray().size() == 3 && o.value("runs").toArray().first().toObject().value("as it was").toBool()
+                     && o.value("runs").toArray().last().toObject().value("keeps").toBool(),
+                 qPrintable(text(r)));
+        for (const QJsonValue& run : o.value("runs").toArray())
+            QVERIFY2(run.toObject().value("hold").toArray().size() == 1, qPrintable(text(r)));
+        QVERIFY(!failed(call("undo")));
+        // a kept under 4.9 V: the targets (a at 5 V) break it - told, not set.
+        r = call("tune", {{"knobs", QJsonArray{QJsonObject{{"component", "R1"}, {"range", QJsonArray{"100", "100k"}}},
+                                               QJsonObject{{"component", "R2"}, {"range", QJsonArray{"100", "100k"}}}}},
+                          {"targets", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "a"}}}, {"target", 5}},
+                                                 QJsonObject{{"measure", QJsonObject{{"operating_point", "b"}}}, {"target", 2}}}},
+                          {"hold", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "a"}}}, {"max", 4.9}}}}},
+                 300000);
+        o = json(r).toObject();
+        QVERIFY2(!failed(r) && o.value("held back").toString().contains("gives every target, but")
+                     && o.value("held back").toString().contains("above 4.9 - not taken") && o.value("set").toString().startsWith("not set"),
+                 qPrintable(text(r)));
+        QCOMPARE(sch->getComponentByName("R1")->getProperty("R")->Value, QStringLiteral("1k"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // The assessment of 29 September, its small things: import_netlist
+    // takes a title (a text above the circuit, the name of its subcircuits'
+    // library); get_netlist's map lists the parts whose pins have no names,
+    // each pin with its side.
+    void theAssessmentsSmallThings()
+    {
+        QJsonObject r = call("import_netlist", {{"text", "r1 in out 1k\nc1 out 0 1u\nv1 in 0 1\n.subckt buf a b\nr1 a b 1\n.ends\n"
+                                                         "x1 out 0 buf\n.end\n"},
+                                                {"title", "My \"filter\""}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("title").toString() == "My \"filter\""
+                     && json(r).toObject().value("subcircuits").toString().endsWith("My__filter__subcircuits.lib"),
+                 qPrintable(text(r)));
+        bool shown = false;
+        for (Painting* p : front()->a_DocPaints)
+            if (dynamic_cast<GraphicText*>(p) != nullptr && p->save().contains("\"My 'filter'\"")) shown = true;
+        QVERIFY(shown);
+
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "OpAmp"}, {"name", "OP1"}, {"x", 300}, {"y", 200}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 500}, {"y", 200}})));
+        QVERIFY(!failed(call("connect", {{"from", "R1.1"}, {"to", "ground"}})));
+        r = call("get_netlist", {{"map", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray unnamed = json(r).toObject().value("pins without names").toArray();
+        QVERIFY2(unnamed == QJsonArray{"OP1: 1 (left, lower), 2 (left, upper), 3 (right)"}, qPrintable(text(r)));   // (R1: two pins)
+
+        // describe_part: a library part's pins, model, supplies, test in one call.
+        const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
+        if (!QFileInfo::exists(library + "/OpAmps.lib")) QSKIP("no library here");
+        const QString was = QucsSettings.LibDir;
+        QucsSettings.LibDir = library + "/";
+        r = call("describe_part", {{"library", "opamps"}, {"part", "uA741"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject d = json(r).toObject();
+        QStringList pins;
+        for (const QJsonValue& v : d.value("pins").toArray()) {
+            const QJsonObject p = v.toObject();
+            pins << QStringLiteral("%1 %2 %3 %4").arg(p.value("pin").toInt()).arg(p.value("name").toString(), p.value("role").toString(),
+                                                         p.value("side").toString());
+        }
+        QVERIFY2(pins.size() == 5 && pins.at(0).startsWith("1 INN input ") && pins.at(1).startsWith("2 OUT output ")
+                     && pins.at(2).startsWith("3 INP input ") && pins.at(3).startsWith("4 VCC supply ") && pins.at(4).startsWith("5 VEE supply "),
+                 qPrintable(pins.join(" | ")));
+        QVERIFY2(d.value("library").toString() == "OpAmps" && d.value("supply pins").toArray() == QJsonArray({"VCC", "VEE"})
+                     && d.value("model").toString().startsWith("transistor level (21 transistors, 0 controlled sources, 0 diodes, 12 R/C/L")
+                     && d.value("ngspice").toString().startsWith("tested")
+                     && d.value("place").toObject().value("properties").toObject().value("Comp").toString() == "uA741"
+                     && !d.contains("pins without names"),
+                 qPrintable(text(r)));
+        r = call("describe_part", {{"library", "OpAmps"}, {"part", "ua741(mod)"}});
+        d = json(r).toObject();
+        QVERIFY2(!failed(r) && d.value("pins").toArray().size() == 5 && d.contains("pins without names")
+                     && d.value("model").toString().startsWith("macromodel") && !d.contains("supply pins"),
+                 qPrintable(text(r)));
+        r = call("describe_part", {{"library", "Diodes"}, {"part", "1N4148"}});
+        d = json(r).toObject();
+        QVERIFY2(!failed(r) && d.value("placed as").toString() == "Diode" && d.value("model").toString().startsWith("one component: placed as a Diode")
+                     && d.value("pins").toArray().size() == 2,
+                 qPrintable(text(r)));
+        r = call("describe_part", {{"library", "OpAmps"}, {"part", "nosuch"}});
+        QVERIFY2(failed(r) && text(r).contains("There is no part nosuch in a library OpAmps here"), qPrintable(text(r)));
+        QucsSettings.LibDir = was;
     }
 
     // check_schematic, the assessment of 29 September: it goes into the

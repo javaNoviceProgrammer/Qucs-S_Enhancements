@@ -58,6 +58,12 @@ QList<Component*> unnamedOf(const Schematic* sch, const QString& model);
 /// type when it is the only one of it, else by its number among them -
 /// GND#2, get_schematic's 'ref'. Every tool that names a part names it so.
 QString refOf(const Schematic* sch, const Component* c);
+/// Each pin of \a c by number, with its name when it has one and the side
+/// of the symbol it is on: "1 (left, upper), 2 (left, lower), 3 (right)" -
+/// for a part whose model gives its pins no names (which is the output?).
+QString pinSides(const Component* c);
+/// The side of \a c's symbol its pin \a i is on: "left, upper", "right".
+QString pinSide(const Component* c, int i);
 
 /// The name of the simulator in the settings as a trace's prefix gives it
 /// ("ngspice", "xyce", "spopus"); empty for Qucsator.

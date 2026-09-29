@@ -449,7 +449,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"file": {"type": "string", "description": "The .va file, relative to the project (else the workspace); the .va document in front when not given"}, "unsaved": {"type": "string", "enum": ["save", "as_saved"], "description": "For an open file with unsaved changes: save them first, or build the file as saved"},
    "timeout": {"type": "integer", "description": "Seconds, 120 unless given"}}}},
 {"name": "tune",
- "description": "Finds the value that makes a measurement come out right: it sets a component's property, simulates, measures, and repeats - searching 'range' for the value that brings the measurement to 'target' (false position, on a logarithmic scale across decades, so a few runs), within 'tolerance' (0.5% of the target by default) and at most 'max_runs' (12) simulations. With 'values' it simulates and measures each value and returns a table (with a target, the closest is chosen). 'measure' is {\"variable\": \"tran.v(out)\", \"what\": \"final\"}, where 'what' is min, max, mean, rms, initial, final, peak_to_peak or one of get_dataset's measurements (bandwidth, overshoot, rise_time, settling_time, frequency, gain, thd, phase_margin, ...: its value, or 'field'); 'at' takes an x value instead, 'from' and 'to' the range, plus the measurement's options as get_dataset accepts them. Or {\"operating_point\": \"e\"} measures a node's DC voltage (or a device quantity, Q1.ic), running only the operating point each time. The value found is set as one undo step ('apply' false leaves the part as it was) and simulated, so the diagrams show it. Returns each run's value and measurement, the value found and what it gives. An untitled schematic is saved in the scratch folder first. With 'knobs' (2 to 4 parts, each a range) and as many 'targets' it tunes them together (Broyden's method: a run for each knob to begin with, then a few), setting the values found as one undo step - a gain and an input resistance from Rf and Rg. Examples: sweep RE until the emitter sits at 5 V; sweep C until the peaking is 1 dB.",
+ "description": "Finds the value that makes a measurement come out right: it sets a component's property, simulates, measures, and repeats - searching 'range' for the value that brings the measurement to 'target' (false position, on a logarithmic scale across decades, so a few runs), within 'tolerance' (0.5% of the target by default) and at most 'max_runs' (12) simulations. With 'values' it simulates and measures each value and returns a table (with a target, the closest is chosen). 'measure' is {\"variable\": \"tran.v(out)\", \"what\": \"final\"}, where 'what' is min, max, mean, rms, initial, final, peak_to_peak or one of get_dataset's measurements (bandwidth, overshoot, rise_time, settling_time, frequency, gain, thd, phase_margin, ...: its value, or 'field'); 'at' takes an x value instead, 'from' and 'to' the range, plus the measurement's options as get_dataset accepts them. Or {\"operating_point\": \"e\"} measures a node's DC voltage (or a device quantity, Q1.ic), running only the operating point each time. The value found is set as one undo step ('apply' false leaves the part as it was) and simulated, so the diagrams show it. Returns each run's value and measurement, the value found and what it gives. An untitled schematic is saved in the scratch folder first. With 'knobs' (2 to 4 parts, each a range) and as many 'targets' it tunes them together (Broyden's method: a run for each knob to begin with, then a few), setting the values found as one undo step - a gain and an input resistance from Rf and Rg. 'hold' keeps other measurements within bounds (a gain of 11 while the bandwidth stays above 50 kHz): each run measures them, and only a value that keeps them all is set - one that reaches the target but breaks a hold is told, not taken. 'compare' (on with 'hold') runs the values as they are first and gives 'before and after', every measurement's value then and with the value found. Examples: sweep RE until the emitter sits at 5 V; sweep C until the peaking is 1 dB.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "component": {"type": "string", "description": "The part whose property is tuned, by name"}, "property": {"type": "string", "description": "Its first property unless given (R of a resistor); of an equation block, a variable it defines"},
    "target": {"type": "number", "description": "The number the measurement is to come to"}, "range": {"type": "array", "items": {}, "minItems": 2, "maxItems": 2, "description": "[low, high]: numbers, or text with units (1k)"},
@@ -457,12 +457,17 @@ const char* const kTools = R"JSON([
    "measure": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "at": {"type": "number"}, "from": {"type": "number"}, "to": {"type": "number"}, "operating_point": {"type": "string"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}, "simulator": {"type": "string"}}, "description": "What is measured after each run: {\"variable\": \"tran.v(out)\", \"what\": \"final\"} - 'what' min, max, mean, rms, initial, final, peak_to_peak or a get_dataset measurement (bandwidth, overshoot, gain, ...; 'field' picks one of its numbers); 'at' an x value instead; 'from', 'to' and the measurement's options as get_dataset takes them. Or {\"operating_point\": \"e\"}: a node's DC voltage or a device's quantity (Q1.ic)"}, "tolerance": {"type": "number", "description": "How near the target is near enough: 0.5% of the target by default"}, "max_runs": {"type": "integer", "minimum": 2, "maximum": 60, "description": "Simulations at most, 12 by default (24 with knobs)"},
    "knobs": {"type": "array", "items": {"type": "object", "properties": {"component": {"type": "string"}, "property": {"type": "string"}, "range": {"type": "array", "items": {}, "minItems": 2, "maxItems": 2}}}, "description": "Instead of 'component': 2 to 4 parts tuned together, [{\"component\": \"RF\", \"range\": [\"1k\", \"100k\"]}, {\"component\": \"RG\", \"range\": [\"100\", \"10k\"]}], for as many 'targets'"},
    "targets": {"type": "array", "items": {"type": "object", "properties": {"measure": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "at": {"type": "number"}, "from": {"type": "number"}, "to": {"type": "number"}, "operating_point": {"type": "string"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}, "simulator": {"type": "string"}}}, "target": {"type": "number"}, "tolerance": {"type": "number"}}}, "description": "With 'knobs': one target for each knob, [{\"measure\": {...as 'measure'}, \"target\": 20, \"tolerance\": 0.1}, ...]; all of the operating point or all of the analyses"},
+   "hold": {"type": "array", "items": {"type": "object", "properties": {"measure": {"type": "object", "description": "As 'measure'"}, "min": {"type": "number"}, "max": {"type": "number"}}}, "description": "Measurements to keep within bounds, [{\"measure\": {\"variable\": \"ac.v(out)\", \"what\": \"bandwidth\"}, \"min\": 50e3}]: of the operating point, or of the analyses, as the target is"},
+   "compare": {"type": "boolean", "description": "Run the values as they are first, and give every measurement before and after (on with 'hold')"},
    "apply": {"type": "boolean", "description": "Set the value found (the default), or leave the part as it was"}, "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For these runs alone; the one in the settings by default"},
    "timeout": {"type": "integer", "description": "Seconds for each run, 120 unless given"}},
    "required": ["component", "measure"]}},
 {"name": "read_pdf",
  "description": "Reads the text of a PDF - a datasheet, an application note, a report - page by page, for example to take a model's parameters or a table's values from it. 'path' is relative to the project, otherwise the workspace (the PDF in front if not given); 'pages' is [3, 4], \"2-5\" or 7 (the first 3 by default); 'search' finds a word or value on every page (or those given) and returns the lines around each hit. A scanned page has no text: a screenshot of its tab shows it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\" or 7; the first 3 by default (with 'search', all)"}, "search": {"type": "string", "description": "A word or value to find: the lines around each hit"}}}},
+{"name": "describe_part",
+ "description": "What a library part is, in one call: its pins in order, each with its name, the side of the symbol it is on and its role (input, output, supply); its supply pins; what its model is - one component placed as that component, a macromodel of controlled sources, a transistor-level subcircuit - with the count of its elements; how the test of every library part under ngspice found it; its description; and 'place' for add_component. find_library_component finds the part.",
+ "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "The library, as find_library_component gives it: OpAmps"}, "part": {"type": "string", "description": "The part in it: uA741"}}, "required": ["library", "part"]}},
 {"name": "find_library_component",
  "description": "Searches the component libraries - Qucs-S's own and the user's (user_lib) - and the SPICE model files (.model cards in .lib, .mod, .inc and .cir files) of the project and the workspace for a part by what it is and by its values. 'search' matches words in its name or description (2N3904, NPN 40V); 'type' is npn, pnp, nmos, pmos, njf, pjf, diode or a Qucs model (_BJT, _MOSFET, Diode, ...); 'near' gives parameter values ({\"Bf\": 200}, nearest first on a logarithmic scale); 'library' limits it to one library. Returns each part with its library, description, the values asked about and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp ('placed as' names the component it becomes when its model is one component with the library's values - a Diode, a _BJT); a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value. Each library part says how it fared under ngspice ('ngspice'): tested - it netlists and its operating point converges, each pin to ground through 1 MOhm (a smoke test, not of what it does) - or failing, and why; 'tested' lists only those that pass.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string", "description": "Words in its name or description: 2N3904, NPN 40V"}, "type": {"type": "string", "description": "npn, pnp, nmos, pmos, njf, pjf, diode, or a Qucs model (_BJT, _MOSFET, Diode, ...)"}, "near": {"type": "object", "description": "Parameter values, nearest first on a logarithmic scale: {\"Bf\": 200}"},
@@ -487,7 +492,8 @@ const char* const kTools = R"JSON([
 {"name": "import_netlist",
  "description": "Creates a schematic from a SPICE netlist ('text', or 'file': .cir, .sp, .net) in a new document. Each element becomes a SPICE part of its kind carrying its netlist text as written (R_SPICE, C_SPICE, S4Q_V for a source with SIN, PULSE and the rest, NPN_SPICE with its model, NMOS_SPICE, DIODE_SPICE, VCVS for a linear E, SPICE_dev for an X instance, K_SPICE, ...), placed in rows, with each pin's net as a net label on it and node 0 as a ground. Its .model cards become SpiceModel blocks; .param, .options, .include and .lib become blocks; .tran, .ac and .op become analyses; its .subckt definitions go into a library file next to it, which is included. The layout is rough but simulates as the netlist did; arrange (or move and connect) tidies it. The first line is the title unless it reads as an element ('title_line'). 'save_as' saves it. An untitled schematic nothing was done in (the one Qucs-S opens at start) is closed. Returns the parts, the nets and anything that was not taken.",
  "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "The netlist's text (or 'file'); its first line is the title unless it reads as an element"}, "file": {"type": "string", "description": "A netlist file instead of 'text' (.cir, .sp, .net), relative to the project or the workspace"}, "save_as": {"type": "string", "description": "Save the new schematic as this file (a .sch); one there already is refused unless 'replace'"}, "replace": {"type": "boolean", "description": "With save_as: write over a file of that name"},
-   "title_line": {"type": "boolean", "description": "Whether the first line is a title (skipped): told from the line when not given"}, "spacing": {"type": "integer", "minimum": 120, "maximum": 600, "description": "Room between the parts placed, 200 by default"}}}},
+   "title_line": {"type": "boolean", "description": "Whether the first line is a title (skipped): told from the line when not given"},
+   "title": {"type": "string", "description": "The schematic's title, in place of the netlist's: a text above the circuit, and the name of its subcircuits' library"}, "spacing": {"type": "integer", "minimum": 120, "maximum": 600, "description": "Room between the parts placed, 200 by default"}}}},
 {"name": "set_simulator",
  "description": "Chooses the simulator that simulate runs and get_netlist writes for, like the toolbar's simulator list (a setting kept for next time): ngspice, xyce, spiceopus or qucsator - one that is installed. To run another one once, simulate takes 'simulator'. To compare two engines, simulate, then simulate again with 'simulator'; get_dataset with 'simulator' reads each result. Returns the simulator in use and those installed.",
  "inputSchema": {"type": "object", "properties": {"simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "One that is installed (the answer lists them)"}}, "required": ["simulator"]}},
@@ -554,7 +560,8 @@ const struct {
 const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "list_component_types", "list_actions",
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
-                                 "read_pdf", "find_library_component", "undo_history", "describe_tool", "diff", "ngspice_commands"};
+                                 "read_pdf", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
+                                 "ngspice_commands"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
 // changed or taken away - a simulation writes its dataset anew, which it
@@ -626,6 +633,7 @@ const struct {
     {"tune", QT_TRANSLATE_NOOP("QucsControl", "Adjusts a component value, simulating and measuring until a measurement reaches its target (or measures a table of values).")},
     {"read_pdf", QT_TRANSLATE_NOOP("QucsControl", "Reads the text of a PDF, such as a datasheet, page by page.")},
     {"find_library_component", QT_TRANSLATE_NOOP("QucsControl", "Searches the libraries and the project's SPICE models for a part by name and values.")},
+    {"describe_part", QT_TRANSLATE_NOOP("QucsControl", "A library part's pins (names, sides, roles), model kind, supplies and tested status in one call.")},
     {"new_project", QT_TRANSLATE_NOOP("QucsControl", "Creates a project in the workspace.")},
     {"open_project", QT_TRANSLATE_NOOP("QucsControl", "Opens a project of the workspace.")},
     {"copy_document", QT_TRANSLATE_NOOP("QucsControl", "Copies a schematic together with its datasets and data display.")},
@@ -696,6 +704,7 @@ const struct {
     {"make_symbol", "subcircuit symbol draw pins sides"},
     {"import_netlist", "spice netlist to schematic import"},
     {"find_library_component", "library part search by values model"},
+    {"describe_part", "library part pins order names supply model macromodel transistor tested"},
     {"read_pdf", "datasheet pdf text read"},
     {"diff", "compare revisions files changes"},
     {"run_script", "script loop javascript many calls"},
@@ -1848,6 +1857,34 @@ QPoint outwardOf(const QRect& box, const QPoint& p)
     return least == left ? QPoint(-1, 0) : least == right ? QPoint(1, 0) : least == up ? QPoint(0, -1) : QPoint(0, 1);
 }
 
+} // namespace
+
+namespace qucs_s::control {
+
+QString pinSide(const Component* c, int i)
+{
+    const QRect box = c->boundingRect().translated(-c->center());
+    const QPoint at(c->Ports.at(i)->x, c->Ports.at(i)->y);
+    const QPoint d = outwardOf(box, at);
+    QString side = d.x() < 0 ? tr("left") : d.x() > 0 ? tr("right") : d.y() < 0 ? tr("top") : tr("bottom");
+    if (d.x() != 0 && at.y() != 0) side += at.y() < 0 ? tr(", upper") : tr(", lower");
+    if (d.y() != 0 && at.x() != 0) side += at.x() < 0 ? tr(", left") : tr(", right");
+    return side;
+}
+
+QString pinSides(const Component* c)
+{
+    QStringList said;
+    for (int i = 0; i < c->Ports.size(); ++i)
+        said << (c->Ports.at(i)->Name.isEmpty() ? QStringLiteral("%1 (%2)").arg(i + 1).arg(pinSide(c, i))
+                                                : QStringLiteral("%1 %2 (%3)").arg(i + 1).arg(c->Ports.at(i)->Name, pinSide(c, i)));
+    return said.join(QStringLiteral(", "));
+}
+
+} // namespace qucs_s::control
+
+namespace {
+
 // Whether the piece \a p to \a q of a way from \a a to \a b may cross the
 // part's box \a box: it leaves \a a (or comes to \b), a pin of that part,
 // straight out of the box. A pin sits on its symbol's box or in it - a
@@ -2983,6 +3020,7 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
                                                                + (a.value(QLatin1String("datasets")).toBool() ? tr(", datasets too") : QString());
     else if (tool == QLatin1String("read_pdf")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
     else if (tool == QLatin1String("find_library_component")) subject = (s("type") + QLatin1Char(' ') + s("search")).trimmed();
+    else if (tool == QLatin1String("describe_part")) subject = s("library") + QLatin1Char('/') + s("part");
     else if (tool == QLatin1String("tune"))
         subject = s("component") + (s("property").isEmpty() ? QString() : QLatin1Char('.') + s("property"))
                   + (a.value(QLatin1String("target")).isDouble() ? tr(" to %1").arg(a.value(QLatin1String("target")).toDouble()) : QString());
@@ -3030,7 +3068,8 @@ QString QucsControl::instructions() const
         "value, simulating and measuring until a measurement reaches its target - one call instead of three per "
         "iteration. build_verilog_a compiles a .va file now and reports errors with their lines; describe_component_type "
         "lists a Verilog-A module's parameters. find_library_component finds a part by its values (an NPN with Bf near "
-        "200); read_pdf reads a datasheet's text; import_netlist builds a schematic from a SPICE netlist; make_symbol "
+        "200), describe_part a library part's pins, model and tested status; read_pdf reads a datasheet's text; "
+        "import_netlist builds a schematic from a SPICE netlist; make_symbol "
         "draws a subcircuit's symbol. ngspice_commands tells which commands ngspice has (analyses, measurements, output, "
         "statistics, the .control language), their syntax and which the installed ngspice has - for a Nutmeg script or a "
         "NutmegEq. new_project, open_project, copy_document and clean_scratch manage files. "
@@ -3045,7 +3084,8 @@ QString QucsControl::instructions() const
         "by its path (relative to the open project's folder, otherwise the workspace) or, when it is open, by its file "
         "name alone (amp.sch). A conversation the user has pinned to a schematic says so in its prompts: the tools then "
         "act on that schematic when no path is given, whichever document is in front, and trigger_action brings it to "
-        "the front first.");
+        "the front first. Every tool also takes 'max_chars', the longest answer you want (200 or more): a longer one "
+        "comes back with its longest lists and texts cut (\"… 40 more\") and a 'trimmed' field that says what was cut.");
 }
 
 QJsonObject QucsControl::forDocument(const QString& tool, const QJsonObject& arguments, const QString& document) const
@@ -3465,7 +3505,8 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"),
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
         QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"),
-        QStringLiteral("find_library_component"), QStringLiteral("undo_history"), QStringLiteral("ngspice_commands")};
+        QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
+        QStringLiteral("ngspice_commands")};
     if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool))
         return errorResult(tr("“%1” is open in Qucs-S and waits for an answer: %2 waits until it is closed (get_dialog "
                               "reads it, set_dialog answers it - or ask the user to).")
@@ -3580,6 +3621,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("make_symbol")) return makeSymbol(args);
     if (tool == QLatin1String("import_netlist")) return importNetlist(args);
     if (tool == QLatin1String("find_library_component")) return findLibraryComponent(args);
+    if (tool == QLatin1String("describe_part")) return describePart(args);
     async = true;
     if (tool == QLatin1String("batch")) runBatch(args, done);
     else if (tool == QLatin1String("trigger_action")) triggerAction(args, done);
@@ -5452,22 +5494,7 @@ QJsonObject QucsControl::replaceComponent(const QJsonObject& args)
                                                      : QStringLiteral("%1 (%2)").arg(i + 1).arg(c->Ports.at(i)->Name));
         return names.join(QStringLiteral(", "));
     };
-    // Each pin with the side of the symbol it is on (a part whose model
-    // gives its pins no names: which is the output?).
-    const auto pinSides = [](const Component* c) {
-        const QRect box = c->boundingRect().translated(-c->center());
-        QStringList said;
-        for (int i = 0; i < c->Ports.size(); ++i) {
-            const QPoint at(c->Ports.at(i)->x, c->Ports.at(i)->y);
-            const QPoint d = outwardOf(box, at);
-            QString side = d.x() < 0 ? tr("left") : d.x() > 0 ? tr("right") : d.y() < 0 ? tr("top") : tr("bottom");
-            if (d.x() != 0 && at.y() != 0) side += at.y() < 0 ? tr(", upper") : tr(", lower");
-            if (d.y() != 0 && at.x() != 0) side += at.x() < 0 ? tr(", left") : tr(", right");
-            said << (c->Ports.at(i)->Name.isEmpty() ? QStringLiteral("%1 (%2)").arg(i + 1).arg(side)
-                                                    : QStringLiteral("%1 %2 (%3)").arg(i + 1).arg(c->Ports.at(i)->Name, side));
-        }
-        return said.join(QStringLiteral(", "));
-    };
+    // (Each pin with the side of the symbol it is on: pinSides().)
     QHash<int, int> pins;   // old index -> new index
     QString mappedBy;
     if (args.value(QLatin1String("pins")).toString().trimmed().compare(QLatin1String("by number"), Qt::CaseInsensitive) == 0) {
