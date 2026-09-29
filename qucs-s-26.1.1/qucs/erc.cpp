@@ -29,6 +29,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
 #include <QHash>
 #include <QSet>
 #include <QStringList>
@@ -450,6 +451,20 @@ QList<Issue> check(Schematic* doc)
                                 QPoint(c->cx, c->cy), c->Name};
             }
         }
+        // A library part or a subcircuit that could not be loaded: drawn as
+        // a box without pins, so the wires that met its pins end on nothing
+        // - which alone was told, never why (a library not found).
+        if (c->Model == QLatin1String("Lib") && c->Ports.isEmpty() && c->Props.size() >= 2)
+            errors << Issue{Severity::Error,
+                            tr("%1: the library part %2 of %3 could not be loaded (not in the libraries of %4, nor the "
+                               "project's user_lib): it has no pins, and what was wired to them is on nothing")
+                                .arg(c->Name, c->Props.at(1)->Value, c->Props.at(0)->Value, QDir::toNativeSeparators(QucsSettings.LibDir)),
+                            QPoint(c->cx, c->cy), c->Name};
+        if (c->Model == QLatin1String("Sub") && !c->Props.isEmpty() && !QFileInfo::exists(c->getSubcircuitFile()))
+            errors << Issue{Severity::Error,
+                            tr("%1: its subcircuit %2 is not found (beside the schematic, in the project or its user_lib): "
+                               "it has no pins, and what was wired to them is on nothing").arg(c->Name, c->Props.at(0)->Value),
+                            QPoint(c->cx, c->cy), c->Name};
         // NgOpt: an optimize line the netlist cannot write.
         if (c->Model == QLatin1String(".NGOPT") && simulator == spicecompat::simNgspice) {
             QString line, why;

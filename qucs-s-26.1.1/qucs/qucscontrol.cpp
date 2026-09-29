@@ -5682,6 +5682,7 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
         QString label;   // the name the port is joined by
         QPoint at;       // a pin of the group on it
         QString pin;
+        QList<QPoint> all;   // every pin of the group on it
     };
     QList<Boundary> boundaries;
     QList<QPoint> grounded;   // the group's pins on ground
@@ -5716,7 +5717,17 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
                 label = QStringLiteral("%1_n%2").arg(base).arg(n);
                 labelsInUse.insert(label);
             }
-            boundaries.append({net, label, at, said(key, {})});
+            // Every pin of the group on it takes the label inside: the
+            // wire between two of them stays outside when it goes on to
+            // a part outside (R1 and R2 of a divider, C1 on their node),
+            // and R2 was then on nothing in the subcircuit.
+            QList<QPoint> all;
+            for (Component* d : std::as_const(group))
+                for (int j = 0; j < d->Ports.size(); ++j) {
+                    const QPoint p(d->cx + d->Ports.at(j)->x, d->cy + d->Ports.at(j)->y);
+                    if (nets.netOf.value(QStringLiteral("%1.%2").arg(keyOf.value(d)).arg(j + 1), -1) == net && !all.contains(p)) all << p;
+                }
+            boundaries.append({net, label, at, said(key, {}), all});
         }
     // Grounds of pins on ground: one each (a pin may be on ground more
     // than once only by its own wires).
@@ -5768,6 +5779,10 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
         return QStringLiteral("  <%1 %2 %1 %2 \"%3\" %4 %5 0 \"\">").arg(p.x()).arg(p.y()).arg(name).arg(p.x() + 10).arg(p.y() - 20);
     };
     const int gx = std::max(1, sch->getGridX()), gy = std::max(1, sch->getGridY());
+    // (One label to a place: a node inside that has its own keeps it.)
+    QSet<QPoint> labelledInside;
+    for (Node* n : std::as_const(insideNodes))
+        if (n->hasLabel()) labelledInside.insert(n->center());
     for (int k = 0; k < boundaries.size(); ++k) {
         std::unique_ptr<Component> port{newComponent(QStringLiteral("Port"))};
         if (!port) return errorResult(tr("The library has no Port component."));
@@ -5779,7 +5794,12 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
         port->moveCenter(x - port->cx, y - port->cy);
         const QPoint pin(port->cx + port->Ports.first()->x, port->cy + port->Ports.first()->y);
         components << QStringLiteral("  ") + port->save();
-        wires << labelLine(pin, boundaries.at(k).label) << labelLine(boundaries.at(k).at, boundaries.at(k).label);
+        wires << labelLine(pin, boundaries.at(k).label);
+        for (const QPoint& p : boundaries.at(k).all)
+            if (!labelledInside.contains(p)) {
+                labelledInside.insert(p);
+                wires << labelLine(p, boundaries.at(k).label);
+            }
     }
     for (const QPoint& at : std::as_const(grounded)) {
         std::unique_ptr<Component> ground{newComponent(QStringLiteral("GND"))};
