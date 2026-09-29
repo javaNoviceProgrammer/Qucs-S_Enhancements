@@ -26,11 +26,13 @@
 #include "misc.h"
 #include "qucs.h"
 #include "components/vacomponent.h"
+#include "valuereading.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QHash>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStringList>
 #include <algorithm>
@@ -330,6 +332,65 @@ void topologyIssues(Schematic* doc, const Nets& nets, bool subcircuit, QList<Iss
     }
 }
 
+// A pin named as a supply's (VCC, VEE, VDD, VSS, V+, V-) on a net with no
+// other pin but supply pins: nothing powers the part - an op-amp's VCC and
+// VEE left open read as a part that does nothing, every answer green.
+void supplyIssues(Schematic* doc, const Nets& nets, QList<Issue>& out)
+{
+    static const QRegularExpression supply(QStringLiteral("^(v(cc|dd|ee|ss|s[+-]|[+-]|pos|neg)\\d*|avdd|dvdd)$"),
+                                           QRegularExpression::CaseInsensitiveOption);
+    QHash<QString, bool> supplyPin;   // "U1.4": a supply pin
+    for (const Component* c : doc->a_DocComps)
+        for (int i = 0; i < c->Ports.size(); ++i)
+            supplyPin.insert(QStringLiteral("%1.%2").arg(c->Name.isEmpty() ? c->Model : c->Name).arg(i + 1),
+                             supply.match(c->Ports.at(i)->Name).hasMatch());
+    for (const Component* c : doc->a_DocComps) {
+        if (!inCircuit(c)) continue;
+        QStringList unpowered;
+        for (int i = 0; i < c->Ports.size(); ++i) {
+            const Port* p = c->Ports.at(i);
+            if (!supply.match(p->Name).hasMatch() || p->Connection == nullptr) continue;
+            const int net = nets.of.value(p->Connection, -1);
+            if (net < 0 || net == nets.ground) continue;
+            const QStringList on = nets.pins.value(net);
+            if (std::all_of(on.cbegin(), on.cend(), [&](const QString& pin) { return supplyPin.value(pin); }))
+                unpowered << p->Name;
+        }
+        if (!unpowered.isEmpty())
+            out << Issue{Severity::Warning,
+                         tr("%1: its supply pin%2 %3 %4 on nothing that powers it (no source, no other part): the part is "
+                            "unpowered - wire a supply to it (a Vdc to ground)")
+                             .arg(c->Name, unpowered.size() > 1 ? QStringLiteral("s") : QString(), unpowered.join(QStringLiteral(", ")),
+                                  unpowered.size() > 1 ? tr("are") : tr("is")),
+                         QPoint(c->cx, c->cy), c->Name};
+    }
+}
+
+// A DC source whose + is on ground (or whose value is negative with its -
+// there): the net at its other pin is below ground. A negative supply is
+// so; one meant to be positive, drawn the other way round, is not.
+void polarityNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
+{
+    for (const Component* c : doc->a_DocComps) {
+        if (!inCircuit(c) || c->Model != QLatin1String("Vdc") || c->Ports.size() != 2 || c->Props.isEmpty()) continue;
+        const int plus = c->Ports.at(0)->Connection != nullptr ? nets.of.value(c->Ports.at(0)->Connection, -1) : -1;
+        const int minus = c->Ports.at(1)->Connection != nullptr ? nets.of.value(c->Ports.at(1)->Connection, -1) : -1;
+        if (nets.ground < 0 || (plus == nets.ground) == (minus == nets.ground)) continue;
+        const qucs_s::units::Reading r = qucs_s::units::read(c->Props.first()->Value);
+        if (r.kind != qucs_s::units::Reading::Number || r.value == 0) continue;
+        const int other = plus == nets.ground ? minus : plus;
+        const double level = plus == nets.ground ? -r.value : r.value;
+        if (level >= 0 || nets.pins.value(other).size() < 2) continue;
+        out << Issue{Severity::Warning,
+                     tr("%1: its %2 is on ground, so %3 is at %4 V - a negative supply is so; if it was to be positive, turn it round "
+                        "(edit_component with rotation) or give it %5")
+                         .arg(c->Name, plus == nets.ground ? tr("+") : tr("- (its value negative)"), netName(nets, other))
+                         .arg(level)
+                         .arg(plus == nets.ground ? tr("its + on the net") : tr("a positive value")),
+                     QPoint(c->cx, c->cy), c->Name};
+    }
+}
+
 // A net label on one pin alone: a node named to be plotted or read by an
 // expression, or a label meant to match another - a note.
 void labelNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
@@ -367,6 +428,7 @@ QList<Issue> notes(Schematic* doc)
     for (const Issue& i : std::as_const(all))
         if (i.message.contains(QLatin1String(" cross without a junction"))) out << i;
     labelNotes(doc, nets, out);
+    polarityNotes(doc, nets, out);
     for (Issue& i : out) i.file = doc->getDocName();
     return out;
 }
@@ -555,6 +617,7 @@ QList<Issue> check(Schematic* doc)
         const Nets nets = netsOf(doc);
         wiringIssues(doc, nets, warnings, false);
         topologyIssues(doc, nets, port, warnings);
+        supplyIssues(doc, nets, warnings);
     }
 
     // A circuit (not a subcircuit: those have ports) needs a ground and

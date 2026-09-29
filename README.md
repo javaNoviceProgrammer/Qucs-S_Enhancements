@@ -523,7 +523,42 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   ended on it is drawn on to it, a port numbered anew is followed by its
   name - and compares the parent's nets before and after. Check Schematic
   says when a library part or a subcircuit could not be loaded (a box
-  without pins), not only that the wires to it end on nothing. `connect` takes `"ground"` at one
+  without pins), not only that the wires to it end on nothing.
+  `create_subcircuit` of parts in a row (a divider's R1 and R2 on one
+  wire, a capacitor outside on the wire between them) keeps every net:
+  that wire goes with the group, each port's net is joined by a label,
+  the instance goes where none of its pins meets another net, and the
+  parent's nets are compared after - the change undone if one differs.
+  For drawings a person reads: `add_component` and `edit_component` put
+  a part beside another (`near`: Rf below U1, 80 apart), `connect` goes
+  round a side or through points given (`side`, `via`), `set_label`
+  puts the label's text where it is asked (`text_at`), and `arrange`
+  draws only the wiring again with the parts where they are
+  (`keep_places`), puts an op-amp's feedback part below or above it
+  with its pin under the output (`feedback`), and joins the supplies by
+  labels, VCC up and VEE down (`supplies`). A library part's pins have
+  the names its model gives them (an op-amp's INN, INP, OUT, VCC, VEE;
+  an LED's C and A): `connect` takes `U1.inp`, `replace_component` maps
+  them by name, and the netlist map shows them beside the numbers. A
+  library part that is one component with the library's values (a
+  varactor's diode, a transistor's model) is placed as that component,
+  as the library panel does. `batch` and `simulate` answer briefly when
+  asked (`brief`: a line a call; no ngspice log), `simulate` sets this
+  run's measurements beside a kept run's with the change (`compare`),
+  `tune` sets two to four parts together for as many targets (`knobs`,
+  `targets`: Rf and Rg for a gain and an input resistance), and `undo`
+  takes back the files the last calls wrote (`files`: a subcircuit
+  made, a file written over), not only the edits. Check Schematic warns
+  of a part whose supply pins nothing powers and notes a DC source with
+  its + on ground. `find_library_component` says how each part fared
+  when every part of the libraries was run under ngspice - placed alone,
+  each pin to ground through 1 MΩ, its operating point - and `tested`
+  lists only the parts that passed; `scripts/ci/test-library-parts.py`
+  makes that run, each night in CI (`library.yml`), and fails when a
+  part that passed fails. Library models keep a value's unit when it is
+  written with a space (`C="30 pF"`, once 30 farads), and a library
+  `Idc` flows as a schematic's does (a 741 macromodel's output sat at
+  the negative rail). `connect` takes `"ground"` at one
   end: a ground symbol of the pin's own. A ground has no name: every
   tool that takes a part's name takes its ref from `get_schematic`
   (`GND#2`) - `move`, `delete`, `select`, `edit_component` - and a read of

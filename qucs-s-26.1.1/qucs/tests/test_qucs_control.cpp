@@ -5220,6 +5220,85 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // Undo that covers files (sixth round, wishlist 7): the files a call
+    // wrote put back - one it made removed, one it wrote over as it was, an
+    // open document on it loaded again; one changed since left and said;
+    // a preview's writes are none of them.
+    void filesAreUndone()
+    {
+        const QString a = dir.filePath("workspace/undo_files_a.sch");
+        QFile::remove(a);
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document", {{"as", a}})));
+        QVERIFY(QFileInfo::exists(a));
+        QJsonObject r = call("undo", {{"files", true}});
+        QVERIFY2(!failed(r) && !QFileInfo::exists(a), qPrintable(text(r)));
+        QVERIFY(text(r).contains("removed (the call made them)"));
+        QVERIFY(!failed(call("save_document", {{"as", a}})));
+        QVERIFY(!failed(call("add_component", {{"type", "C"}, {"name", "C1"}, {"x", 300}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document")));
+        QVERIFY(readFile(a).contains("<C C1"));
+        const QJsonObject history = json(call("undo_history")).toObject();
+        QVERIFY2(history.value("files written").toArray().first().toObject().value("tool").toString() == "save_document",
+                 qPrintable(QJsonDocument(history).toJson()));
+        r = call("undo", {{"files", 1}});
+        QVERIFY2(!failed(r) && text(r).contains("put back"), qPrintable(text(r)));
+        QVERIFY(!readFile(a).contains("<C C1") && readFile(a).contains("<R R1"));
+        QVERIFY(front()->getComponentByName("C1") == nullptr);   // (loaded again: it had no unsaved changes)
+        // Changed since: left.
+        const QString net = dir.filePath("workspace/undo_files.cir");
+        QFile::remove(net);
+        QVERIFY(!failed(call("export_netlist", {{"save_as", net}})));
+        writeFile("workspace/undo_files.cir", "* edited by hand\n");
+        r = call("undo", {{"files", 1}});
+        QVERIFY2(!failed(r) && text(r).contains("changed since export_netlist") && QFileInfo::exists(net), qPrintable(text(r)));
+        // A preview writes nothing that is kept; not with 'steps'; not redone.
+        const int kept = int(json(call("undo_history")).toObject().value("files written").toArray().size());
+        QVERIFY(!failed(call("create_subcircuit", {{"names", QJsonArray{"R1"}}, {"save_as", "undo_files_sub.sch"}, {"preview", true}})));
+        QCOMPARE(int(json(call("undo_history")).toObject().value("files written").toArray().size()), kept);
+        QVERIFY(failed(call("undo", {{"files", 1}, {"steps", 2}})));
+        QVERIFY(failed(call("redo", {{"files", 1}})));
+        // A subcircuit's file, and its schematic's change: both taken back.
+        r = call("create_subcircuit", {{"names", QJsonArray{"R1"}}, {"save_as", "undo_files_sub.sch"}, {"replace", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString sub = dir.filePath("workspace/undo_files_sub.sch");
+        QVERIFY(QFileInfo::exists(sub));
+        QVERIFY(!failed(call("undo", {{"files", true}})));
+        QVERIFY(!QFileInfo::exists(sub));
+        QVERIFY(!failed(call("undo")));
+        QVERIFY(front()->getComponentByName("R1") != nullptr);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Check Schematic on supplies (sixth round, wishlist 8): an op-amp whose
+    // supply pins nothing powers - a warning; a DC source with its + on
+    // ground - a note, the net at its other pin below ground.
+    void suppliesAreChecked()
+    {
+        const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
+        if (!QFileInfo::exists(library + "/OpAmps.lib")) QSKIP("no library here");
+        const QString was = QucsSettings.LibDir;
+        QucsSettings.LibDir = library + "/";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("add_component", {{"type", "Lib"}, {"name", "U1"}, {"x", 300}, {"y", 200},
+                                               {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", "ua741(TI)"}}}});
+        QucsSettings.LibDir = was;
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("add_component", {{"type", ".DC"}, {"name", "DC1"}, {"x", 100}, {"y", 500}})));
+        QString checked = text(call("check_schematic"));
+        QVERIFY2(checked.contains("U1: its supply pins VCC, VEE are on nothing that powers it"), qPrintable(checked));
+        // VEE from a source drawn + to ground: -15 V there, a note; VCC still open.
+        QVERIFY(!failed(call("add_component", {{"type", "Vdc"}, {"name", "V3"}, {"x", 100}, {"y", 300}, {"properties", QJsonObject{{"U", "15 V"}}}})));
+        QVERIFY(!failed(call("connect", {{"from", "V3.1"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("set_label", {{"at", "V3.2"}, {"name", "vee"}})));
+        QVERIFY(!failed(call("set_label", {{"at", "U1.VEE"}, {"name", "vee"}})));
+        checked = text(call("check_schematic"));
+        QVERIFY2(checked.contains("U1: its supply pin VCC is on nothing that powers it") && !checked.contains("VCC, VEE"), qPrintable(checked));
+        QVERIFY2(checked.contains("V3: its + is on ground, so vee is at -15 V"), qPrintable(checked));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // The sixth round's small things: redo 'to' a step behind is refused (it
     // undid thirteen steps); a misspelt field of tune's 'measure' is refused
     // with the one meant (waht measured the default); import_netlist's
@@ -5363,6 +5442,126 @@ private slots:
             QucsSettings.NgspiceExecutable = before;
             QVERIFY2(std::abs(out - 1.1) < 0.02, qPrintable(text(r)));
         }
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Round 6, wish 3: find_library_component says how each part fared in
+    // the run of every part under ngspice (ngspice-tested.json beside the
+    // libraries), and 'tested' lists only the parts that passed - read
+    // again when the file changes.
+    void theLibrarysTestIsReported()
+    {
+        const QString source = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library/LEDs.lib").absoluteFilePath();
+        if (!QFileInfo::exists(source)) QSKIP("no library here");
+        QTemporaryDir libraries;
+        QVERIFY(QFile::copy(source, libraries.filePath("LEDs.lib")));
+        const auto writeResults = [&](const QByteArray& parts) {
+            QFile f(libraries.filePath("ngspice-tested.json"));
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("{\"tested\": \"2026-09-29\", \"ngspice\": \"46\", \"parts\": {" + parts + "}}");
+            f.close();
+        };
+        const QString was = QucsSettings.LibDir;
+        QucsSettings.LibDir = libraries.path() + "/";
+        const auto outcomes = [&](const QJsonObject& args) {
+            QMap<QString, QString> by;
+            for (const QJsonValue& v : json(call("find_library_component", args)).toObject().value("found").toArray())
+                if (v.toObject().value("library").toString() == "LEDs") by.insert(v.toObject().value("component").toString(), v.toObject().value("ngspice").toString());
+            return by;
+        };
+        // No results here: each part is untested.
+        QMap<QString, QString> by = outcomes({{"search", "light emitting diode"}, {"library", "LEDs"}});
+        QVERIFY2(by.size() == 5 && by.value("red").startsWith("not tested"), qPrintable(QStringList(by.values()).join('\n')));
+        QVERIFY(outcomes({{"search", "light emitting diode"}, {"tested", true}}).isEmpty());
+
+        writeResults("\"LEDs/red\": {\"passes\": true}, \"LEDs/blue\": {\"passes\": false, \"why\": \"the operating point fails: singular matrix\"}");
+        by = outcomes({{"search", "light emitting diode"}, {"library", "LEDs"}});
+        QVERIFY2(by.value("red").startsWith("tested: it netlists and its operating point converges") && by.value("red").contains("2026-09-29, ngspice 46"),
+                 qPrintable(by.value("red")));
+        QVERIFY2(by.value("blue").startsWith("tested: fails - the operating point fails: singular matrix"), qPrintable(by.value("blue")));
+        QCOMPARE(by.value("green"), QStringLiteral("not tested"));
+        QCOMPARE(outcomes({{"search", "light emitting diode"}, {"tested", true}}).keys(), QStringList{"red"});
+
+        // A new run: read again. A part with no pins is not tested.
+        QTest::qWait(1100);   // (a modification time a second on)
+        writeResults("\"LEDs/red\": {\"passes\": true}, \"LEDs/green\": {\"passes\": true}, "
+                     "\"LEDs/yellow\": {\"passes\": false, \"untested\": true, \"why\": \"it has no pins\"}");
+        QCOMPARE(outcomes({{"search", "light emitting diode"}, {"tested", true}}).keys(), (QStringList{"green", "red"}));
+        QCOMPARE(outcomes({{"search", "light emitting diode"}, {"library", "LEDs"}}).value("yellow"), QStringLiteral("not tested - it has no pins"));
+        QucsSettings.LibDir = was;
+    }
+
+    // Found by that run: a library part whose model is one component line
+    // (a varactor: a Diode with the library's values) was placed as a Lib,
+    // whose netlist read the diode's values as its library and part
+    // ("Cannot load library component "1.1718" from library/4.2156e-14").
+    // It is that component, as the library panel places it - by
+    // add_component, and by set_schematic's components.
+    void aOneLineLibraryPartIsThatComponent()
+    {
+        const QString source = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library/Varactor.lib").absoluteFilePath();
+        if (!QFileInfo::exists(source)) QSKIP("no library here");
+        const QString was = QucsSettings.LibDir;
+        QucsSettings.LibDir = QFileInfo(source).absolutePath() + "/";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("add_component", {{"type", "Lib"}, {"name", "D1"}, {"x", 300}, {"y", 300},
+                                               {"properties", QJsonObject{{"Lib", "Varactor"}, {"Comp", "BB833"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r).toObject();
+        QCOMPARE(o.value("type").toString(), QStringLiteral("Diode"));
+        QCOMPARE(o.value("name").toString(), QStringLiteral("D1"));
+        QVERIFY2(o.value("note").toString().startsWith("Varactor/BB833 is a Diode with the library's values"), qPrintable(text(r)));
+        // In a library with a default symbol too (the Lib took that symbol
+        // and named a subcircuit there was none of).
+        if (QFileInfo::exists(QucsSettings.LibDir + "NMOSFETs.lib")) {
+            r = call("add_component", {{"type", "Lib"}, {"name", "M1"}, {"x", 300}, {"y", 500},
+                                       {"properties", QJsonObject{{"Lib", "NMOSFETs"}, {"Comp", "2N3797"}}}});
+            QVERIFY2(!failed(r) && json(r).toObject().value("type").toString() == "_MOSFET", qPrintable(text(r)));
+            QVERIFY(!failed(call("delete", {{"names", QJsonArray{"M1"}}})));
+        }
+        // A Lib edited into one is refused; replace_component places it.
+        if (QFileInfo::exists(QucsSettings.LibDir + "LEDs.lib")) {
+            r = call("add_component", {{"type", "Lib"}, {"name", "X5"}, {"x", 600}, {"y", 500},
+                                       {"properties", QJsonObject{{"Lib", "LEDs"}, {"Comp", "red"}}}});
+            QVERIFY2(!failed(r) && json(r).toObject().value("type").toString() == "Lib", qPrintable(text(r)));
+            r = call("edit_component", {{"name", "X5"}, {"properties", QJsonObject{{"Lib", "Varactor"}, {"Comp", "BB833"}}}});
+            QVERIFY2(failed(r) && text(r).contains("replace_component X5 with type Lib"), qPrintable(text(r)));
+            r = call("replace_component", {{"name", "X5"}, {"type", "Lib"}, {"properties", QJsonObject{{"Lib", "Varactor"}, {"Comp", "BB833"}}}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            QString type;
+            for (const QJsonValue& v : json(call("get_schematic", {{"format", "json"}})).toObject().value("components").toArray())
+                if (v.toObject().value("name").toString() == "X5") type = v.toObject().value("type").toString();
+            QCOMPARE(type, QStringLiteral("Diode"));
+            // (A Lib that took the diode's looks for a while: its netlist
+            // was a Lib's, reading the values as its library and part.)
+            const QString placed = text(call("get_netlist"));
+            QVERIFY2(!placed.contains("Cannot load") && placed.contains("DMOD_X5 D"), qPrintable(placed));
+            QVERIFY(!failed(call("delete", {{"names", QJsonArray{"X5"}}})));
+        }
+        QJsonArray parts{QJsonObject{{"type", "Lib"}, {"name", "D2"}, {"x", 500}, {"y", 300},
+                                     {"properties", QJsonObject{{"Lib", "Varactor"}, {"Comp", "BB914"}}}},
+                         QJsonObject{{"type", "Lib"}, {"name", "D1"}, {"x", 300}, {"y", 300},
+                                     {"properties", QJsonObject{{"Lib", "Varactor"}, {"Comp", "BB833"}}}}};
+        // (Under a library's default symbol a Lib stays a Lib: named a
+        // subcircuit there is none of.)
+        const bool mosfets = QFileInfo::exists(QucsSettings.LibDir + "NMOSFETs.lib");
+        if (mosfets)
+            parts.append(QJsonObject{{"type", "Lib"}, {"name", "M3"}, {"x", 300}, {"y", 500},
+                                     {"properties", QJsonObject{{"Lib", "NMOSFETs"}, {"Comp", "2N3797"}}}});
+        r = call("set_schematic", {{"components", parts}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QStringList lines;
+        for (const QJsonValue& v : json(call("get_netlist", {{"map", true}})).toObject().value("netlist").toArray()) lines << v.toString();
+        QucsSettings.LibDir = was;
+        const QString netlist = lines.join('\n');
+        QVERIFY2(!netlist.contains("Cannot load"), qPrintable(netlist));
+        QVERIFY2(QRegularExpression("^\\.MODEL DMOD_D1 D \\(Is=4\\.2156E-14 N=1\\.1718 Cj0=2\\.9033E-11", QRegularExpression::MultilineOption).match(netlist).hasMatch(),
+                 qPrintable(netlist));
+        QVERIFY2(QRegularExpression("^\\.MODEL DMOD_D2 D \\(Is=1E-14 N=1\\.02 Cj0=7\\.554E-11", QRegularExpression::MultilineOption).match(netlist).hasMatch(),
+                 qPrintable(netlist));
+        if (mosfets)
+            QVERIFY2(QRegularExpression("^M3 \\S+ \\S+ \\S+ \\S+ MMOD_M3 ", QRegularExpression::MultilineOption).match(netlist).hasMatch() && !netlist.contains("NMOSFETs_2N3797"),
+                     qPrintable(netlist));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
@@ -5966,14 +6165,20 @@ private slots:
         const struct {
             const char* name;
             QString labels;   // (a label as a wire of no length)
-        } variants[] = {{"none", ""},
-                        {"on R2.1", "  <270 100 270 100 \"mid\" 280 70 0 \"\">\n"},
-                        {"on C1's pin", "  <250 170 250 170 \"mid\" 260 140 0 \"\">\n"}};
+            QString more;     // (parts besides)
+        } variants[] = {{"none", "", ""},
+                        {"on R2.1", "  <270 100 270 100 \"mid\" 280 70 0 \"\">\n", ""},
+                        {"on C1's pin", "  <250 170 250 170 \"mid\" 260 140 0 \"\">\n", ""},
+                        // Another net's wire where the instance's first pin
+                        // would be, put where the group was: it goes
+                        // elsewhere (it joined V1's net to ground).
+                        {"a ground wire where its pin would be", "  <220 40 220 160 \"\" 0 0 0 \"\">\n",
+                         "  <GND * 1 220 40 0 0 1 0>\n  <GND * 1 220 160 0 0 0 0>\n"}};
         int n = 0;
         for (const auto& v : variants) {
             ++n;
             QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
-            QJsonObject r = call("set_schematic", {{"text", parts + "<Wires>\n"
+            QJsonObject r = call("set_schematic", {{"text", QString(parts).replace("</Components>", v.more + "</Components>") + "<Wires>\n"
                                                                    "  <100 170 100 100 \"\" 0 0 0 \"\">\n  <100 100 170 100 \"\" 0 0 0 \"\">\n"
                                                                    "  <230 100 250 100 \"\" 0 0 0 \"\">\n  <250 100 270 100 \"\" 0 0 0 \"\">\n"
                                                                    "  <250 100 250 170 \"\" 0 0 0 \"\">\n  <330 100 400 100 \"\" 0 0 0 \"\">\n"
@@ -5994,6 +6199,8 @@ private slots:
                      qPrintable(QStringLiteral("%1: %2").arg(v.name, netlist)));
             const QString checked = text(call("check_schematic"));
             QVERIFY2(!checked.contains("connected to nothing"), qPrintable(QStringLiteral("%1: %2").arg(v.name, checked)));
+            // (Nor on another net's wire, unjoined: it looked joined.)
+            QVERIFY2(!checked.contains("without being connected to it"), qPrintable(QStringLiteral("%1: %2").arg(v.name, checked)));
             if (!ngspice.isEmpty()) {
                 const QString before = QucsSettings.NgspiceExecutable;
                 QucsSettings.NgspiceExecutable = ngspice;

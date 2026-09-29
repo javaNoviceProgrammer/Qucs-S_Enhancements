@@ -660,6 +660,18 @@ private slots:
         ngspice.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         env.insert("PATH", home.filePath("bin") + ':' + env.value("PATH"));
 #endif
+        // QUCS_LIBRARY_DIR: the libraries of this folder, not the installed
+        // ones (the run over every library part tests the source tree's).
+        // A library there alone is found.
+        QDir().mkpath(home.filePath("libraries"));
+        {
+            QFile lib(home.filePath("libraries/OnlyHere.lib"));
+            QVERIFY(lib.open(QIODevice::WriteOnly));
+            lib.write("<Qucs Library 0.0.10 \"OnlyHere\">\n\n<Component Lonely>\n  <Description>\n    a resistor found only here\n"
+                      "  </Description>\n  <Model>\n    <R R1 1 0 0 15 -26 0 1 \"4.7k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                      "  </Model>\n</Component>\n");
+        }
+        env.insert("QUCS_LIBRARY_DIR", home.filePath("libraries"));
         // (A circuit to run, in the workspace.)
         QDir().mkpath(workspace);
         QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/templates_ngspice/S-parameter_active_analysis.sch"), workspace + "/scratchy.sch"));
@@ -673,7 +685,8 @@ private slots:
             {{"jsonrpc", "2.0"}, {"id", 3}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "new_project"}, {"arguments", QJsonObject{{"name", "{}"}, {"open", false}}}}}},
             {{"jsonrpc", "2.0"}, {"id", 4}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "new_project"}, {"arguments", QJsonObject{{"name", "amp"}, {"open", false}}}}}},
             {{"jsonrpc", "2.0"}, {"id", 5}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "open_document"}, {"arguments", QJsonObject{{"path", "scratchy.sch"}}}}}},
-            {{"jsonrpc", "2.0"}, {"id", 8}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "simulate"}, {"arguments", QJsonObject{{"operating_point", true}}}}}}};
+            {{"jsonrpc", "2.0"}, {"id", 8}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "simulate"}, {"arguments", QJsonObject{{"operating_point", true}}}}}},
+            {{"jsonrpc", "2.0"}, {"id", 9}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "find_library_component"}, {"arguments", QJsonObject{{"search", "found only here"}}}}}}};
         QHash<int, QJsonObject> answers;
         for (const QJsonObject& m : messages) {
             p.write(QJsonDocument(m).toJson(QJsonDocument::Compact) + '\n');
@@ -704,6 +717,10 @@ private slots:
                  qPrintable(QJsonDocument(answers.value(8)).toJson()));
 #endif
         QVERIFY2(!QDirIterator(sharedScratch, QDir::Files, QDirIterator::Subdirectories).hasNext(), qPrintable(sharedScratch));
+        // The library of QUCS_LIBRARY_DIR.
+        const QJsonArray found = answers.value(9).value("result").toObject().value("structuredContent").toObject().value("found").toArray();
+        QVERIFY2(found.size() == 1 && found.first().toObject().value("library").toString() == "OnlyHere",
+                 qPrintable(QJsonDocument(answers.value(9)).toJson()));
         // The settings' workspace is not this one.
         QDirIterator files(home.filePath("settings"), {"*.ini", "*.conf"}, QDir::Files, QDirIterator::Subdirectories);
         while (files.hasNext()) {

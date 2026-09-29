@@ -59,6 +59,16 @@ Component* LibComp::newOne()
   return p;
 }
 
+QString LibComp::componentModel()
+{
+  // As the library panel reads it (makeModelString): a model of one line
+  // is that component, whatever the symbol - the library's default one too.
+  QString model;
+  if (Props.size() < 2 || loadSection("Model", model) < 0) return {};
+  model = model.trimmed();
+  return model.startsWith('<') && model.endsWith('>') && !model.contains('\n') ? model : QString();
+}
+
 // ---------------------------------------------------------------------
 // Makes the schematic symbol subcircuit with the correct number
 // of ports.

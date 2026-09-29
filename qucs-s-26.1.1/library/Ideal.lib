@@ -778,7 +778,7 @@ Eqn:Eqn1 fc2="fc/0.6436" Export="yes"
 .Def:End
   </Model>
   <Spice>
-.SUBCKT Ideal_APF1 0 _net3 _net2 fc=1E3 
+.SUBCKT Ideal_AP1 0 _net3 _net2 fc=1E3 
 .PARAM R=1k
 .PARAM C=1E-3/(6.2831853*fc2)
 .PARAM V0=0
@@ -826,7 +826,7 @@ VCVS:SRC1 _net3 _net1 gnd gnd G="2" T="0"
   </Model>
   <ModelIncludes "BP2.sch.lst" "VSub.sch.lst">
   <Spice>
-.SUBCKT Ideal_APF2 0 _net0 _net2 fc=1E3 
+.SUBCKT Ideal_AP2 0 _net0 _net2 fc=1E3 
 .PARAM fc2=1.064*fc
 .PARAM Q=0.58
 .PARAM C=1e-6

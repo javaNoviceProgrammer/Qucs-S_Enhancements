@@ -795,6 +795,10 @@ int main(int argc, char *argv[])
     QucsSettings.LangDir = QucsDir.canonicalPath() + "/share/" QUCS_NAME "/lang/";
 
     QucsSettings.LibDir = QucsDir.canonicalPath() + "/share/" QUCS_NAME "/library/";
+    // (Another library folder, for a run from the build tree - the test of
+    // every library part under ngspice, scripts/ci/test-library-parts.py.)
+    if (const QString library = qEnvironmentVariable("QUCS_LIBRARY_DIR"); !library.isEmpty())
+        QucsSettings.LibDir = QDir(library).absolutePath() + "/";
     QucsSettings.SpiceLibDir = QucsDir.canonicalPath() + "/share/" QUCS_NAME "/spicelibrary/";
     QucsSettings.OctaveDir = QucsDir.canonicalPath() + "/share/" QUCS_NAME "/octave/";
     QucsSettings.ExamplesDir = QucsDir.canonicalPath() + "/share/" QUCS_NAME "/examples/";
