@@ -5910,6 +5910,82 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // The ninth round: 'straighten' lines up two pins only when they face
+    // each other - a straight wire can join them. By their places alone it
+    // moved VCC down to put its + level with an op-amp's VCC pin, both
+    // facing up: the wire went over the top all the same, VCC's ground was
+    // pushed aside onto a jog, and the VEE wire crossed it.
+    void straightenLinesUpOnlyPinsThatFace()
+    {
+        // Two standing resistors, their top pins joined over the top, 20 apart.
+        const QString R = "\"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        const QString parts = "<Components>\n"
+                              "  <R R1 1 100 100 15 -26 0 1 " + R +
+                              "  <R R2 1 250 120 15 -26 0 1 " + R +
+                              "</Components>\n<Wires>\n"
+                              "  <100 70 100 40 \"\" 0 0 0 \"\">\n  <100 40 250 40 \"\" 0 0 0 \"\">\n  <250 40 250 90 \"\" 0 0 0 \"\">\n"
+                              "</Wires>\n";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("set_schematic", {{"text", parts}})));
+        QJsonObject r = call("arrange", {{"keep_places", true}, {"straighten", true}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("straightened").toString().startsWith("nothing to nudge"), qPrintable(text(r)));
+        QCOMPARE(front()->getComponentByName("R1")->cy, 100);
+        QCOMPARE(front()->getComponentByName("R2")->cy, 120);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        // A coupled line's pin sits at a corner of its box, its stub going
+        // up: a standing resistor 10 to its side, facing down onto it, is
+        // lined up (by the box alone the pin faced left).
+        const QString coupled = "<Components>\n"
+                                "  <MCOUPLED MS1 1 300 300 -26 37 0 0 \"Subst1\" 0 \"W1\" 1 \"L1\" 1 \"S1\" 1 \"Kirschning\" 0 \"Kirschning\" 0 \"26.85\" 0>\n"
+                                "  <R R1 1 260 210 15 -26 0 1 " + R +
+                                "</Components>\n<Wires>\n"
+                                "  <260 240 260 255 \"\" 0 0 0 \"\">\n  <260 255 270 255 \"\" 0 0 0 \"\">\n  <270 255 270 270 \"\" 0 0 0 \"\">\n"
+                                "</Wires>\n";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("set_schematic", {{"text", coupled}})));
+        r = call("arrange", {{"keep_places", true}, {"straighten", true}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("straightened").toString().startsWith("1 parts nudged"), qPrintable(text(r)));
+        const Component *ms1 = front()->getComponentByName("MS1"), *r1 = front()->getComponentByName("R1");
+        QVERIFY(ms1->cx + ms1->Ports.at(0)->x == r1->cx);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // The reviewer's bench: VCC stays, its ground under it, no wire over a ground's stub.
+        const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
+        if (!QFileInfo::exists(library + "/OpAmps.lib")) QSKIP("no library here");
+        const QString was = QucsSettings.LibDir;
+        QucsSettings.LibDir = library + "/";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const auto add = [](const char* type, const char* name, int x, int y, const QJsonObject& props = {}, int rotation = 0) {
+            return QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", type}, {"name", name}, {"x", x}, {"y", y},
+                                                                                     {"rotation", rotation}, {"properties", props}}}};
+        };
+        const auto connect = [](const char* from, const char* to) {
+            return QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", from}, {"to", to}}}};
+        };
+        r = call("batch", {{"calls", QJsonArray{
+            add("Lib", "U1", 400, 300, QJsonObject{{"Lib", "OpAmps"}, {"Comp", "ua741(TI)"}}),
+            add("Vac", "Vin", 150, 350, QJsonObject{{"U", "0.1 V"}}), add("R", "Rg", 300, 450, QJsonObject{{"R", "1k"}}, 1),
+            add("R", "Rf", 450, 150, QJsonObject{{"R", "10k"}}), add("R", "RL", 600, 400, QJsonObject{{"R", "10k"}}, 1),
+            add("Vdc", "VCC", 50, 150, QJsonObject{{"U", "15 V"}}), add("Vdc", "VEE", 50, 500, QJsonObject{{"U", "15 V"}}),
+            add(".TR", "TR1", 100, 650, QJsonObject{{"Stop", "3 ms"}}),
+            connect("Vin.1", "U1.INP"), connect("Vin.2", "ground"), connect("Rg.2", "U1.inn"), connect("Rg.1", "ground"),
+            connect("Rf.1", "U1.inn"), connect("Rf.2", "U1.out"), connect("RL.1", "U1.out"), connect("RL.2", "ground"),
+            connect("VCC.1", "U1.vcc"), connect("VCC.2", "ground"), connect("VEE.1", "ground"), connect("VEE.2", "U1.vee")}}});
+        QucsSettings.LibDir = was;
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("arrange", {{"feedback", "below"}, {"straighten", true}});
+        QVERIFY2(!failed(r) && text(r).contains("every net as it was"), qPrintable(text(r)));
+        QVERIFY2(!json(r).toObject().value("straightened").toString().contains("VCC"), qPrintable(text(r)));
+        const Component* vcc = front()->getComponentByName("VCC");
+        bool under = false;
+        for (const Component* c : front()->a_DocComps)
+            if (c->Model == "GND" && c->cx == vcc->cx + vcc->Ports.at(1)->x && c->cy == vcc->cy + vcc->Ports.at(1)->y) under = true;
+        QVERIFY(under);
+        const QString notes = QJsonDocument(json(call("check_schematic")).toObject().value("notes").toArray()).toJson(QJsonDocument::Compact);
+        QVERIFY2(!notes.contains("nets gnd and") && !notes.contains("and gnd are"), qPrintable(notes));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // The assessment of 29 September, its small things: import_netlist
     // takes a title (a text above the circuit, the name of its subcircuits'
     // library); get_netlist's map lists the parts whose pins have no names,
