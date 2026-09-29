@@ -161,10 +161,12 @@ bool AbstractSpiceKernel::checkGround()
 {
     // Not asked for (Simulators Settings): the netlist goes as it is, and
     // the simulator says what it thinks of a circuit without node 0.
+    // A ground symbol that is not active (off or shorted) names no node
+    // gnd in the netlist: it is no ground.
     if (!QucsSettings.RequireGround) return true;
     return std::ranges::any_of(
         a_schematic->a_DocComps,
-        [](auto* c) { return c->Model == "GND"; });
+        [](auto* c) { return c->Model == "GND" && c->isActive == COMP_IS_ACTIVE; });
 }
 
 bool AbstractSpiceKernel::checkSimulations()

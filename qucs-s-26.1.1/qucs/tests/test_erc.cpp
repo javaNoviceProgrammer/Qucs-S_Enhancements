@@ -31,6 +31,7 @@
 #include "extsimkernels/xyce.h"
 #include "extsimkernels/simsettingsdialog.h"
 #include <QCheckBox>
+#include <QToolButton>
 #include "isolated_settings.h"
 
 using namespace qucs_s::erc;
@@ -45,6 +46,15 @@ QStringList messages(const QList<Issue>& issues)
 {
     QStringList out;
     for (const Issue& i : issues) out << (i.severity == Severity::Error ? "E " : "W ") + i.message;
+    return out;
+}
+
+// The findings about a ground, of messages().
+QStringList aboutGround(const QStringList& got)
+{
+    QStringList out;
+    for (const QString& m : got)
+        if (m.contains("ground", Qt::CaseInsensitive)) out << m;
     return out;
 }
 
@@ -115,7 +125,7 @@ private slots:
 
     // Simulators Settings > Before a simulation: without "A schematic must
     // have a ground symbol" a circuit without one is simulated and the
-    // check only warns; the choice is kept and the dialog sets it.
+    // check says nothing of it; the choice is kept and the dialog sets it.
     void theGroundIsRequiredOnlyWhenTheSettingsSaySo()
     {
         // The settings as they were for the other tests, whatever happens.
@@ -128,17 +138,17 @@ private slots:
         GroundProbe<Ngspice> ngspice(&doc);
         GroundProbe<Xyce> xyce(&doc);
         const QString error = "E no ground: the circuit has no reference node";
-        const QString warning = "W no ground symbol: node 0 comes only from a net named 0 or a component that brings it";
 
         QVERIFY(QucsSettings.RequireGround);   // the default
         QStringList got = messages(check(&doc));
-        QVERIFY2(got.contains(error) && !got.contains(warning), qPrintable(got.join(" | ")));
+        QVERIFY2(got.contains(error), qPrintable(got.join(" | ")));
+        QCOMPARE(aboutGround(got).size(), 1);
         QVERIFY(!ngspice.groundFound());
         QVERIFY(!xyce.groundFound());
 
         QucsSettings.RequireGround = false;
         got = messages(check(&doc));
-        QVERIFY2(!got.contains(error) && got.contains(warning), qPrintable(got.join(" | ")));
+        QVERIFY2(aboutGround(got).isEmpty(), qPrintable(got.join(" | ")));
         QVERIFY(ngspice.groundFound());
         QVERIFY(xyce.groundFound());
 
@@ -157,6 +167,117 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(&dialog, "slotApply"));
         QVERIFY(QucsSettings.RequireGround);
         QVERIFY(messages(check(&doc)).contains(error));
+    }
+
+    // Node 0 from a net named 0 is no ground symbol; a ground symbol
+    // switched off names no node 0 in the netlist, so it is no ground -
+    // for the check and the simulators alike. Neither is mentioned when
+    // the settings leave the ground to the user.
+    void aNamedGroundAndOneSwitchedOff()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        // V1 and R1 side by side, their tops wired; their bottoms wired
+        // too, that wire named 0 - or a ground symbol there, off.
+        const QByteArray parts =
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <Vdc V1 1 0 60 18 -26 0 1 \"5 V\" 1>\n"
+            "  <R R1 1 100 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        const QByteArray end = "<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        const QString named = dir.filePath("named_ground.sch");
+        write(named, parts + "</Components>\n<Wires>\n"
+                     "  <0 30 100 30 \"\" 0 0 0 \"\">\n"
+                     "  <0 90 100 90 \"0\" 50 110 0 \"\">\n"
+                     "</Wires>\n" + end);
+        const QString off = dir.filePath("ground_off.sch");
+        write(off, parts + "  <GND * 0 0 90 0 0 0 0>\n</Components>\n<Wires>\n"
+                   "  <0 30 100 30 \"\" 0 0 0 \"\">\n"
+                   "  <0 90 100 90 \"\" 0 0 0 \"\">\n"
+                   "</Wires>\n" + end);
+        Schematic byName(nullptr, named), switchedOff(nullptr, off);
+        QVERIFY(byName.load());
+        QVERIFY(switchedOff.load());
+        GroundProbe<Ngspice> ngspiceByName(&byName), ngspiceOff(&switchedOff);
+        GroundProbe<Xyce> xyceOff(&switchedOff);
+
+        QucsSettings.RequireGround = true;
+        QStringList got = messages(check(&byName));
+        QVERIFY2(aboutGround(got) == QStringList{"E no ground symbol: the Simulators Settings require one (a net named 0 or "
+                                                 "gnd does not count)"},
+                 qPrintable(got.join(" | ")));
+        QVERIFY(!ngspiceByName.groundFound());
+        got = messages(check(&switchedOff));
+        QVERIFY2(aboutGround(got) == QStringList{"E no ground: the circuit has no reference node"}, qPrintable(got.join(" | ")));
+        QVERIFY(!ngspiceOff.groundFound());
+        QVERIFY(!xyceOff.groundFound());
+
+        QucsSettings.RequireGround = false;
+        for (Schematic* doc : {&byName, &switchedOff}) {
+            got = messages(check(doc));
+            QVERIFY2(aboutGround(got).isEmpty(), qPrintable(got.join(" | ")));
+        }
+        QVERIFY(ngspiceByName.groundFound());
+        QVERIFY(ngspiceOff.groundFound());
+    }
+
+    // Simulators Settings, applied: the Problems tab (this schematic's
+    // check, or the hierarchy's) and the status bar's chip show the check
+    // as the settings now say, with no edit in between.
+    void aSettingsChangeChecksAgain()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.gotoPage(broken, false, false));
+        MessageDock* dock = app.messages();
+        auto* chip = app.findChild<QToolButton*>("statusProblems");
+        QVERIFY(chip != nullptr);
+        const auto listed = [dock] { return aboutGround(messages(dock->issues())); };
+        // The dialog, its box ticked or not, applied.
+        const auto requireGround = [&app](bool on) {
+            QTimer poke;
+            poke.setInterval(20);
+            bool seen = false;
+            QObject::connect(&poke, &QTimer::timeout, [&] {
+                auto* dialog = qobject_cast<SimSettingsDialog*>(QApplication::activeModalWidget());
+                if (dialog == nullptr) return;
+                poke.stop();
+                seen = true;
+                dialog->findChild<QCheckBox*>("cbRequireGround")->setChecked(on);
+                QMetaObject::invokeMethod(dialog, "slotApply");
+            });
+            poke.start();
+            menuAction(&app, "Simulation", "Simulators Settings...")->trigger();
+            return seen;
+        };
+
+        // (The schematic has another error: R1 twice.)
+        QVERIFY(QucsSettings.RequireGround);
+        menuAction(&app, "Simulation", "Check Schematic")->trigger();
+        QCOMPARE(listed(), QStringList{"E no ground: the circuit has no reference node"});
+        QTRY_VERIFY2(chip->text().startsWith("2 errors,"), qPrintable(chip->text()));
+        QVERIFY(chip->toolTip().contains("no ground"));
+
+        QVERIFY(requireGround(false));
+        QVERIFY(!QucsSettings.RequireGround);
+        QVERIFY2(listed().isEmpty(), qPrintable(listed().join(" | ")));
+        QVERIFY(!dock->problemsOfHierarchy());
+        QTRY_VERIFY2(chip->text().startsWith("1 error,"), qPrintable(chip->text()));
+        QVERIFY(!chip->toolTip().contains("ground"));
+
+        // The hierarchy's check is run again as such.
+        menuAction(&app, "Simulation", "Check Schematic and Subcircuits")->trigger();
+        QVERIFY(dock->problemsOfHierarchy());
+        QVERIFY(listed().isEmpty());
+        QVERIFY(requireGround(true));
+        QCOMPARE(listed(), QStringList{"E no ground: the circuit has no reference node"});
+        QVERIFY(dock->problemsOfHierarchy());
+        QTRY_VERIFY2(chip->text().startsWith("2 errors,"), qPrintable(chip->text()));
     }
 
     void theChecksFindEachKindOfProblem()

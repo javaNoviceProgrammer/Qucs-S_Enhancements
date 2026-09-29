@@ -1605,6 +1605,18 @@ existing demand.
   let the netlist go and the check reports a missing ground as a warning.
   `test_erc` covers both kernels and the check either way, the setting
   kept across a save and a load, and the dialog.
+- *Done:* **The ground setting, honoured.** Off, the check still warned
+  of a missing ground symbol; it now says nothing of it. On, a circuit
+  whose node 0 is a net named `0` or `gnd` is told that the settings
+  require a symbol, not that it has no reference node. A ground symbol
+  switched off (it names no node `gnd` in the netlist) passed the
+  kernels' `checkGround()` though the check called it no ground; it is
+  no ground for either now. The status bar's chip re-checked only after
+  an edit or a change of simulator: it now re-checks when the setting
+  changes, and so does the *Problems* tab, as the check (or the
+  hierarchy's) that last filled it. The kernels' "No Ground found" says
+  where the setting is. `test_erc`: `aNamedGroundAndOneSwitchedOff`,
+  `aSettingsChangeChecksAgain` (the dialog applied from the menu).
 - *Done:* **Every line of a `.OPTIONS` section, however it is written.**
   `ComponentDialog::writeEquation()` read one `name = value` per line and
   threw away anything else, so an ngspice option that is a flag

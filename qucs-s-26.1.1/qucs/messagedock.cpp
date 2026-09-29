@@ -317,9 +317,10 @@ void MessageDock::slotCursor()
 
 
 
-void MessageDock::showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& issues, bool raise)
+void MessageDock::showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& issues, bool raise, bool hierarchy)
 {
     a_problemsDoc = doc;
+    a_problemsHierarchy = hierarchy;
     a_issues = issues;
     problems->clear();
     const QIcon error = style()->standardIcon(QStyle::SP_MessageBoxCritical);
