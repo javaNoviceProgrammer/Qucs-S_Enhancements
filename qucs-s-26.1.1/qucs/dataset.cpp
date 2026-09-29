@@ -1093,35 +1093,80 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
                 {QStringLiteral("final"), rounded(s.last)},
                 {QStringLiteral("band"), rounded(band)}};
     }
-    if (w == QLatin1String("period") || w == QLatin1String("frequency") || w == QLatin1String("duty_cycle")) {
+    if (w == QLatin1String("duty_cycle")) {
         QList<double> rises;
         for (const Crossing& x : crossings(c, mid))
             if (x.direction > 0) rises << x.x;
         if (rises.size() < 2) return cannot(tr("fewer than two rising crossings of %1").arg(rounded(mid)));
-        const double period = (rises.last() - rises.first()) / (rises.size() - 1);
-        if (w == QLatin1String("duty_cycle")) {
-            // The time above the level over the whole periods.
-            const Curve cycles = within(c, rises.first(), rises.last());
-            double above = 0;
-            QList<Crossing> all = crossings(cycles, mid);
-            double start = rises.first();
-            bool high = true;
-            for (const Crossing& x : all) {
-                if (x.x <= rises.first()) continue;
-                if (high && x.direction < 0) above += x.x - start;
-                if (x.direction > 0) start = x.x;
-                high = x.direction > 0;
-            }
-            if (high) above += rises.last() - start;
-            return {{QStringLiteral("value"), rounded(above / (rises.last() - rises.first()) * 100)},
-                    {QStringLiteral("unit"), QStringLiteral("%")},
-                    {QStringLiteral("level"), rounded(mid)},
-                    {QStringLiteral("periods"), int(rises.size() - 1)}};
+        // The time above the level over the whole periods.
+        const Curve cycles = within(c, rises.first(), rises.last());
+        double above = 0;
+        QList<Crossing> all = crossings(cycles, mid);
+        double start = rises.first();
+        bool high = true;
+        for (const Crossing& x : all) {
+            if (x.x <= rises.first()) continue;
+            if (high && x.direction < 0) above += x.x - start;
+            if (x.direction > 0) start = x.x;
+            high = x.direction > 0;
         }
-        QJsonObject r{{QStringLiteral("value"), rounded(w == QLatin1String("period") ? period : 1.0 / period)},
-                      {QStringLiteral("level"), rounded(mid)},
-                      {QStringLiteral("periods"), int(rises.size() - 1)}};
-        return r;
+        if (high) above += rises.last() - start;
+        return {{QStringLiteral("value"), rounded(above / (rises.last() - rises.first()) * 100)},
+                {QStringLiteral("unit"), QStringLiteral("%")},
+                {QStringLiteral("level"), rounded(mid)},
+                {QStringLiteral("periods"), int(rises.size() - 1)}};
+    }
+    if (w == QLatin1String("period") || w == QLatin1String("frequency")) {
+        // The level crossed: the one given; for a swing that dies down - a
+        // step's ring - the value it settles at, which a damped sine
+        // crosses every half period (halfway between its extremes is
+        // pulled toward its first swing: a ring's frequency came out 7%
+        // high); else halfway, a steady wave's middle.
+        double level = mid;
+        QString levelIs = std::isnan(o.level) ? tr("halfway between its lowest and highest") : tr("the level given");
+        if (std::isnan(o.level) && s.max > s.min) {
+            const Curve tail = within(c, c.x.first() + 0.75 * (c.x.last() - c.x.first()), c.x.last());
+            double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+            for (double y : tail.y)
+                if (!std::isnan(y)) {
+                    lo = std::min(lo, y);
+                    hi = std::max(hi, y);
+                }
+            if (hi >= lo && hi - lo < 0.5 * (s.max - s.min)) {
+                level = s.last;
+                levelIs = tr("its final value, which it dies down toward");
+            }
+        }
+        // Rising crossings, each after it went a hundredth of its swing
+        // below the level (the still end of a ring wiggles about it).
+        const double band = 0.01 * (s.max - s.min);
+        const int n = int(c.x.size());
+        QList<double> rises;
+        int state = 0;   // -1 below the band, 1 above it
+        for (int i = 0; i < n; ++i) {
+            const double y = c.y.at(i);
+            if (std::isnan(y)) continue;
+            if (y < level - band) state = -1;
+            else if (y > level + band) {
+                if (state == -1) {
+                    // Where it went through the level: between the last
+                    // sample at or below it and the first above.
+                    int j = i;
+                    while (j > 0 && !(c.y.at(j - 1) <= level)) --j;
+                    if (j > 0) {
+                        const double x0 = c.x.at(j - 1), y0 = c.y.at(j - 1), x1 = c.x.at(j), y1 = c.y.at(j);
+                        rises << (y1 != y0 ? x0 + (level - y0) / (y1 - y0) * (x1 - x0) : x1);
+                    }
+                }
+                state = 1;
+            }
+        }
+        if (rises.size() < 2) return cannot(tr("fewer than two rising crossings of %1 (%2)").arg(rounded(level)).arg(levelIs));
+        const double period = (rises.last() - rises.first()) / (rises.size() - 1);
+        return {{QStringLiteral("value"), rounded(w == QLatin1String("period") ? period : 1.0 / period)},
+                {QStringLiteral("level"), rounded(level)},
+                {QStringLiteral("level is"), levelIs},
+                {QStringLiteral("periods"), int(rises.size() - 1)}};
     }
     if (w == QLatin1String("crossings")) {
         QJsonArray list;

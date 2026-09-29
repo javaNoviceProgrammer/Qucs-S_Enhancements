@@ -156,6 +156,26 @@ private slots:
         QCOMPARE(qucs_s::units::engineering(5, "V"), QStringLiteral("5 V"));
     }
 
+    // misc::str2num: a number, its unit and the unit's prefix - a number
+    // alone has no unit (it was its own: "330" read as 330 of unit "330").
+    void aNumberAloneHasNoUnit()
+    {
+        double number = 0, factor = 0;
+        QString unit;
+        for (const QString& alone : {QStringLiteral("330"), QStringLiteral(" 2.5 "), QStringLiteral("-7"), QStringLiteral("1e3")}) {
+            misc::str2num(alone, number, unit, factor);
+            QVERIFY2(unit.isEmpty() && factor == 1.0, qPrintable(alone + " -> " + unit));
+            QCOMPARE(number, alone.trimmed().toDouble());
+        }
+        misc::str2num("4.7 kOhm", number, unit, factor);
+        QCOMPARE(number, 4.7);
+        QCOMPARE(unit, QStringLiteral("kOhm"));
+        QCOMPARE(factor, 1e3);
+        misc::str2num("1e-3 V", number, unit, factor);
+        QCOMPARE(number * factor, 1e-3);
+        QCOMPARE(unit, QStringLiteral("V"));
+    }
+
     // In the component dialog: the line under the table follows the value
     // being typed, the field turns amber on a warning, and the name and
     // the value carry the description as their tooltip.

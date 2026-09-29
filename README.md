@@ -425,7 +425,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   **Design tools**: `tune` sets a part's value, simulates and measures,
   over and over, until a number comes out right: sweep RE until the
   emitter sits at 5 V, or C until the peaking is 1 dB. It takes a few runs
-  in one call, and the value found is one step to undo. `build_verilog_a`
+  in one call, and the value found is one step to undo - set only when
+  it gives the target; a value with no unit (`330`) stays one. `build_verilog_a`
   compiles a `.va` now, with each error's line and column.
   `describe_component_type` gives a Verilog-A module's parameters and a
   `.model` card. `find_library_component` finds a part by its values (an
@@ -450,8 +451,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   3 dB below 0 dB or the DC value, not only below the peak. `get_dataset`
   measures a spectrum (`fft`), an eye (`eye`) and a Monte Carlo family's
   `distribution`, gives a table across a sweep, and reads `.csv` and
-  `.xlsx` results. `simulate` runs Check Schematic first and takes a
-  simulator for one run; a Qucsator run is waited for too. What the user
+  `.xlsx` results, and says when a dataset is stale: the last run failed
+  after it, or the circuit changed since (the netlist a run would be
+  given now is not the one it ran). A ring's frequency is measured at the
+  value it settles at. `simulate` runs Check Schematic first and takes a
+  simulator for one run; a Qucsator run is waited for too. A simulation
+  writes its dataset where the schematic's `DataSet` says, where the
+  diagrams read it - not after the file's name, which differs in a copy
+  made outside Qucs-S; `open_document` points such a copy out, and
+  `own_data_names` names its dataset and data display after it. What the user
   changes between Claude's calls is told part by part (R2: R 47k → 67k),
   and `undo_history` tells the steps to undo in words. `"selection": true`
   takes what the user selected. A document is found by its file's name
@@ -491,7 +499,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   flow, two-pin parts turned as schematics show them (in series lying
   down, to ground standing up), a ground symbol back on each piece that
   had one, every wire drawn again by the router - every net compared
-  before and after, one step to undo. `connect` takes `"ground"` at one
+  before and after, one step to undo. It takes about a third of a second
+  for a 2,000-part RLC ladder, and with `wire_labels` it draws wires where
+  only labels joined a net (an imported netlist's labels on every pin).
+  A tool refuses an argument it does not take, and names the one meant
+  (`rotaton`: "Meant rotation?"), instead of leaving it out. `connect` takes `"ground"` at one
   end: a ground symbol of the pin's own. A ground has no name: every
   tool that takes a part's name takes its ref from `get_schematic`
   (`GND#2`) - `move`, `delete`, `select`, `edit_component` - and a read of
@@ -564,7 +576,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     A dialog that opens is read with `get_dialog` and answered with
     `set_dialog`. Questions go to the client's user when the client can
     ask them (MCP elicitation); otherwise writing over a file needs
-    `"replace": true`.
+    `"replace": true`. The tools read and write wherever the user who
+    runs it can - a netlist exported to `/tmp`, the files of any folder
+    listed - as a desktop program does: give `--mcp-server` only to
+    clients you would let use your files.
 - **Conversations kept, and gone on with**: every conversation is kept
   as it goes; those open when Qucs-S closes come back when it opens
   again - what was said, their names, folders and pinned schematics -

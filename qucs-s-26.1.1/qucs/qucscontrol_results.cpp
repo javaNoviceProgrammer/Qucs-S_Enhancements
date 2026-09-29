@@ -1498,6 +1498,71 @@ QJsonObject comparedJson(const ds::Dataset& a, const ds::Variable& va, const ds:
 
 } // namespace
 
+namespace {
+
+// A netlist's lines as a simulator reads them: no comments (its first line
+// names the file and the version), no blank lines.
+QStringList netlistLines(const QString& file)
+{
+    QFile f(file);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return {};
+    QStringList lines;
+    for (const QString& l : QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'))) {
+        const QString t = l.trimmed();
+        if (!t.isEmpty() && !t.startsWith(QLatin1Char('*'))) lines << t;
+    }
+    return lines;
+}
+
+} // namespace
+
+QString QucsControl::staleness(Schematic* sch, const QString& file)
+{
+    const QDateTime written = QFileInfo(file).lastModified();
+    const QString when = written.toString(QStringLiteral("HH:mm:ss"));
+    // A run after it that failed: this is the run's before.
+    const QucsDoc::Run run = sch->lastRun();
+    if (run.at.isValid() && run.failed && run.at > written)
+        return tr("The last simulation of %1, at %2, failed: this dataset is of a run before it (written at %3), not of the "
+                  "circuit as it is.").arg(titleOf(sch), run.at.toString(QStringLiteral("HH:mm:ss")), when);
+    // The netlist the run that wrote it was given, against the one a run
+    // would be given now (the netlist is written as a run begins, so the
+    // run's is the one no newer than its dataset; a later run's - an
+    // operating point alone writes no dataset - tells nothing of it).
+    int simulator = spicecompat::simQucsator;
+    if (file.endsWith(QLatin1String(".ngspice"))) simulator = spicecompat::simNgspice;
+    else if (file.endsWith(QLatin1String(".spopus"))) simulator = spicecompat::simSpiceOpus;
+    else if (file.endsWith(QLatin1String(".xyce"))) simulator = spicecompat::simXyce;
+    if (simulator == QucsSettings.DefaultSimulator && (simulator == spicecompat::simNgspice || simulator == spicecompat::simSpiceOpus)) {
+        const QString last = QDir(misc::scratchDirFor(sch->getDocName())).filePath(QStringLiteral("spice4qucs.cir"));
+        const QFileInfo info(last);
+        QString head;
+        if (QFile f(last); info.isFile() && f.open(QIODevice::ReadOnly | QIODevice::Text)) head = QString::fromUtf8(f.readLine()).trimmed();
+        static const QRegularExpression named(QStringLiteral("^\\*\\s*Qucs\\S*\\s+\\S+\\s+(.+)$"));
+        const QRegularExpressionMatch m = named.match(head);
+        if (m.hasMatch() && sameFile(m.captured(1).trimmed(), sch->getDocName()) && info.lastModified() <= written.addSecs(2)) {
+            QTemporaryDir temporary;
+            const QString now = temporary.filePath(QStringLiteral("now.cir"));
+            misc::ErrorCapture capture;
+            SimulationRun netlister(sch, false);
+            if (netlister.writeNetlist(now)) {
+                if (netlistLines(now) != netlistLines(last))
+                    return tr("%1 changed since the run that wrote this dataset (at %2): the netlist a simulation would be given now "
+                              "is not the one that run was given - simulate again for results of the circuit as it is.")
+                        .arg(titleOf(sch), when);
+                return {};
+            }
+        }
+    }
+    // Else what can be told: an edit after it (which may not matter - a
+    // diagram, a move).
+    if (const auto& edits = sch->recentEdits(); !edits.isEmpty() && edits.last().at > written)
+        return tr("%1 was edited at %2, after this dataset was written (%3): if a value or a connection changed, the dataset is not "
+                  "of the circuit as it is (simulate again).")
+            .arg(titleOf(sch), edits.last().at.toString(QStringLiteral("HH:mm:ss")), when);
+    return {};
+}
+
 QJsonObject QucsControl::getDataset(const QJsonObject& args)
 {
     QString error;
@@ -1515,6 +1580,8 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
     if (args.value(QLatin1String("decibels")).isBool()) o.decibels = args.value(QLatin1String("decibels")).toBool();
 
     Schematic* sch = schematicOfDataset(file, args);
+    if (sch != nullptr)
+        if (const QString stale = staleness(sch, file); !stale.isEmpty()) result.insert(QStringLiteral("stale"), stale);
     if (args.value(QLatin1String("operating_point")).toBool()) {
         const QJsonObject op = operatingPointJson(data, sch, true);
         if (op.isEmpty())
@@ -1813,11 +1880,10 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
             if (!lines.isEmpty() && lines.last().isEmpty()) lines.removeLast();
             QHash<QString, QString> parts;   // a device's name in the netlist (lower case): its part
             QJsonObject nodes;
-            QHash<QString, int> seen;
             for (Component* c : sch->a_DocComps) {
-                const QString base = c->Name.isEmpty() ? c->Model : c->Name;
-                const int k = seen[base]++;
-                const QString ref = k == 0 ? base : QStringLiteral("%1#%2").arg(base).arg(k);
+                // (A ground by its ref, as the other tools take it: GND#1 of
+                // several, not GND.)
+                const QString ref = refOf(sch, c);
                 if (!c->Name.isEmpty()) {
                     parts.insert(c->Name.toLower(), c->Name);
                     if (!c->SpiceModel.isEmpty() && !c->SpiceModel.startsWith(QLatin1Char('.')))

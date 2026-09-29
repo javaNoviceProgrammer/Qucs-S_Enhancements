@@ -378,8 +378,12 @@ QJsonObject QucsControl::diffTool(const QJsonObject& args)
         const int steps = args.value(QLatin1String("steps")).toInt();
         const QStringList states = sch->undoStates();
         // (steps checked first: undoIndex() - INT_MIN overflows)
+        // (None back: said so - "1 to 0" read as a range.)
+        if (sch->undoIndex() <= 0)
+            return errorResult(tr("%1 has no step to go back to: it is at the start of its undo history (redo steps come after). "
+                                  "diff without 'steps' compares it with its file.").arg(titleOf(sch)));
         if (steps < 1 || steps > sch->undoIndex() || sch->undoIndex() - steps >= states.size())
-            return errorResult(tr("'steps' is how many steps back in its undo history: 1 to %1.").arg(std::max(0, sch->undoIndex())));
+            return errorResult(tr("'steps' is how many steps back in its undo history: 1 to %1.").arg(sch->undoIndex()));
         before = states.at(sch->undoIndex() - steps);
         against = tr("%1 step(s) back").arg(steps);
     } else {
