@@ -83,6 +83,11 @@ void settingsManager::initDefaults()
     m_Defaults["fullTraceName"] = false;
     m_Defaults["ContentTreeView"] = false;
     m_Defaults["AnyFolderIsProject"] = false;
+    m_Defaults["RestoreWorkspace"] = true;
+    m_Defaults["RestoreProject"] = true;
+    m_Defaults["RestoreDocuments"] = true;
+    m_Defaults["RestorePanels"] = true;
+    m_Defaults["RestoreWindowGeometry"] = true;
     m_Defaults["ContentFolderIcons"] = false;
     m_Defaults["ContentAutoRefresh"] = true;
     m_Defaults["ContentRefreshSeconds"] = 3;

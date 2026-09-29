@@ -223,8 +223,9 @@ bool isState(const QString& key)
         QStringLiteral("ClaudeCode/slashCommands"),  // the program's commands, as it last said
     };
     if (keys.contains(key)) return true;
-    // What the file browser showed last.
-    if (key.startsWith(QStringLiteral("FileBrowser/"))) return true;
+    // What the file browser showed last; the workspace kept for the next
+    // start (workspacesession.h: this machine's files, open when it closed).
+    if (key.startsWith(QStringLiteral("FileBrowser/")) || key.startsWith(QStringLiteral("Workspace/"))) return true;
     // Where the windows were.
     const QString last = key.section(QLatin1Char('/'), -1);
     return last.endsWith(QStringLiteral("geometry"), Qt::CaseInsensitive)

@@ -175,7 +175,7 @@ SET(QUCS_SRCS
   textdoc.cpp  markdowndoc.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp  zipdoc.cpp  main.cpp	schematic.cpp
   mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_script.cpp qucscontrol_ngspice.cpp dataset.cpp simulatorlog.cpp filebrowser.cpp
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
-  mouseactions.cpp qucs_actions.cpp	qucs_panes.cpp schematic_file.cpp
+  mouseactions.cpp qucs_actions.cpp	qucs_panes.cpp qucs_workspace.cpp workspacesession.cpp schematic_file.cpp
   wirelabel.cpp node.cpp qucs_init.cpp
   syntax.cpp misc.cpp messagedock.cpp simulationconsole.cpp processconsole.cpp
   settings.cpp

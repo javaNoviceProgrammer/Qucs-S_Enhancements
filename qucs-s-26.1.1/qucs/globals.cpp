@@ -125,6 +125,11 @@ bool loadSettings()
     QucsSettings.alwaysPrefixDataset = _settings::Get().item<bool>("alwaysPrefixDataset");
     QucsSettings.ContentTreeView = _settings::Get().item<bool>("ContentTreeView");
     QucsSettings.AnyFolderIsProject = _settings::Get().item<bool>("AnyFolderIsProject");
+    QucsSettings.RestoreWorkspace = _settings::Get().item<bool>("RestoreWorkspace");
+    QucsSettings.RestoreProject = _settings::Get().item<bool>("RestoreProject");
+    QucsSettings.RestoreDocuments = _settings::Get().item<bool>("RestoreDocuments");
+    QucsSettings.RestorePanels = _settings::Get().item<bool>("RestorePanels");
+    QucsSettings.RestoreWindowGeometry = _settings::Get().item<bool>("RestoreWindowGeometry");
     QucsSettings.ContentFolderIcons = _settings::Get().item<bool>("ContentFolderIcons");
     QucsSettings.ContentAutoRefresh = _settings::Get().item<bool>("ContentAutoRefresh");
     QucsSettings.ContentRefreshSeconds = qBound(1, _settings::Get().item<int>("ContentRefreshSeconds"), 3600);
@@ -254,6 +259,11 @@ bool saveApplSettings()
     qs.setItem<bool>("alwaysPrefixDataset",QucsSettings.alwaysPrefixDataset);
     qs.setItem<bool>("ContentTreeView",QucsSettings.ContentTreeView);
     qs.setItem<bool>("AnyFolderIsProject",QucsSettings.AnyFolderIsProject);
+    qs.setItem<bool>("RestoreWorkspace", QucsSettings.RestoreWorkspace);
+    qs.setItem<bool>("RestoreProject", QucsSettings.RestoreProject);
+    qs.setItem<bool>("RestoreDocuments", QucsSettings.RestoreDocuments);
+    qs.setItem<bool>("RestorePanels", QucsSettings.RestorePanels);
+    qs.setItem<bool>("RestoreWindowGeometry", QucsSettings.RestoreWindowGeometry);
     qs.setItem<bool>("ContentFolderIcons",QucsSettings.ContentFolderIcons);
     qs.setItem<bool>("ContentAutoRefresh",QucsSettings.ContentAutoRefresh);
     qs.setItem<int>("ContentRefreshSeconds",QucsSettings.ContentRefreshSeconds);
