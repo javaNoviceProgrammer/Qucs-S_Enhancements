@@ -5846,6 +5846,49 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // arrange's 'straighten' (the assessment of 29 September, wishlist 1): a
+    // part nudged a grid step or a few so the pins of a wire between two
+    // parts line up and it runs straight - here a jog of 10 between R1 and
+    // R2. Not where it would come onto another part.
+    void straightenLinesUpTheWires()
+    {
+        const QString R = "\"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        const QString parts = "<Components>\n"
+                              "  <R R1 1 100 100 -26 15 0 0 " + R +
+                              "  <R R2 1 250 110 -26 15 0 0 " + R +
+                              "  <R R3 1 400 110 -26 15 0 0 " + R +
+                              "</Components>\n<Wires>\n"
+                              "  <130 100 175 100 \"\" 0 0 0 \"\">\n  <175 100 175 110 \"\" 0 0 0 \"\">\n  <175 110 220 110 \"\" 0 0 0 \"\">\n"
+                              "  <280 110 370 110 \"\" 0 0 0 \"\">\n"
+                              "</Wires>\n";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("set_schematic", {{"text", parts}})));
+        Schematic* sch = front();
+        // The wire from R1.2 to R2.1, as drawn: its segments' heights.
+        const auto heights = [sch] {
+            QSet<int> ys;
+            for (const Wire* w : sch->a_DocWires)
+                if (std::min(w->x1, w->x2) < 220 && std::max(w->x1, w->x2) > 130) ys << w->y1 << w->y2;
+            return ys;
+        };
+        QCOMPARE(heights().size(), 2);
+        QJsonObject r = call("arrange", {{"keep_places", true}, {"straighten", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString said = json(r).toObject().value("straightened").toString();
+        QVERIFY2(said.startsWith("1 parts nudged so their wires run straight: R1 10 down"), qPrintable(text(r)));
+        QVERIFY2(heights().size() == 1, qPrintable(text(r)));   // one height: straight
+        QCOMPARE(sch->getComponentByName("R2")->cy, 110);          // (R2 and R3 were in line: R1 moved, not R2)
+        QCOMPARE(sch->getComponentByName("R1")->cy, 110);
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(sch->getComponentByName("R1")->cy, 100);
+        // A part in the way: R4 where R1 would go - nothing nudged into it.
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R4"}, {"x", 100}, {"y", 150}})));
+        r = call("arrange", {{"keep_places", true}, {"straighten", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(!json(r).toObject().value("straightened").toString().contains("R1 10 down"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // The assessment of 29 September, its small things: import_netlist
     // takes a title (a text above the circuit, the name of its subcircuits'
     // library); get_netlist's map lists the parts whose pins have no names,
@@ -5907,6 +5950,19 @@ private slots:
                  qPrintable(text(r)));
         r = call("describe_part", {{"library", "OpAmps"}, {"part", "nosuch"}});
         QVERIFY2(failed(r) && text(r).contains("There is no part nosuch in a library OpAmps here"), qPrintable(text(r)));
+        // The benches (wishlist 3): the uA741's passes; the S2K's diode, its
+        // Is written 1.3 (amperes), fails - and is not 'tested'.
+        r = call("describe_part", {{"library", "OpAmps"}, {"part", "uA741"}});
+        QVERIFY2(json(r).toObject().value("ngspice").toString().contains("; its bench passes (op-amp: follower of 1 V, gain of 11"),
+                 qPrintable(text(r)));
+        r = call("describe_part", {{"library", "Diodes"}, {"part", "S2K"}});
+        QVERIFY2(json(r).toObject().value("ngspice").toString().contains("but its bench FAILS (diode: 10 V through 9.3 kOhm")
+                     && json(r).toObject().value("ngspice").toString().contains("the model runs and does the wrong thing"),
+                 qPrintable(text(r)));
+        r = call("find_library_component", {{"search", "S2"}, {"library", "Diodes"}, {"limit", 100}});
+        QVERIFY2(text(r).contains("\"component\":\"S2K\""), qPrintable(text(r)));
+        r = call("find_library_component", {{"search", "S2"}, {"library", "Diodes"}, {"limit", 100}, {"tested", true}});
+        QVERIFY2(!text(r).contains("\"component\":\"S2K\"") && text(r).contains("\"component\":\"S2B\""), qPrintable(text(r)));
         QucsSettings.LibDir = was;
     }
 

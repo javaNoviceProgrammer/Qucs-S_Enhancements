@@ -542,7 +542,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   symbol - a ground's too - leaving a pin straight out of its own
   symbol, and where none of the usual shapes is clear, a way is found a
   grid step at a time; a label goes on the longest stretch of its net
-  where its text has room. A library part's pins have
+  where its text has room; `straighten` nudges a part up to four grid
+  steps, clear of the others, so the two pins of a wire between two
+  parts line up and it runs straight. A library part's pins have
   the names its model gives them (an op-amp's INN, INP, OUT, VCC, VEE;
   an LED's C and A; the transistor-level uA741's, AD825's and LM3886's
   too): `connect` takes `U1.inp`, `replace_component` maps them by name
@@ -557,7 +559,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   asked (`brief`: a line a call; no ngspice log), `simulate` sets this
   run's measurements beside a kept run's with the change (`compare`),
   `tune` sets two to four parts together for as many targets (`knobs`,
-  `targets`: Rf and Rg for a gain and an input resistance), and `undo`
+  `targets`: Rf and Rg for a gain and an input resistance), keeps other
+  measurements within bounds while it moves the values (`hold`: a gain
+  of 11 while the bandwidth stays above 50 kHz - a value that breaks one
+  is told, not set) and gives every measurement before and after
+  (`compare`), and `undo`
   takes back the files the last calls wrote (`files`: a subcircuit
   made, a file written over), not only the edits. Check Schematic warns
   of a part whose supply pins nothing powers and notes a DC source with
@@ -566,7 +572,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   each pin to ground through 1 MΩ, its operating point - and `tested`
   lists only the parts that passed; `scripts/ci/test-library-parts.py`
   makes that run, each night in CI (`library.yml`), and fails when a
-  part that passed fails. Library models keep a value's unit when it is
+  part that passed fails. An op-amp, a transistor, a FET or a diode
+  that passes is then put in a bench of its kind - a follower and a gain
+  of 11 on ±15 V, two bias points, |Vgs| 10 V, about 1 mA forward - and
+  its numbers checked against a range: a model that runs and does the
+  wrong thing (a diode's Is written 1.3 A) fails, and is not `tested`.
+  `describe_part` gives a library part in one call: its pins with their
+  names, sides and roles (input, output, supply), what its model is
+  (one component, a macromodel, transistor level) and how it fared. Library models keep a value's unit when it is
   written with a space (`C="30 pF"`, once 30 farads), and a library
   `Idc` flows as a schematic's does (a 741 macromodel's output sat at
   the negative rail). `connect` takes `"ground"` at one
@@ -582,7 +595,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `simulate` and `tune` save an
   untitled schematic in the scratch folder first, and a new document
   replaces the untitled one nothing was done in. Every field of every
-  tool says what it is in the schema. A `batch`, a script, `tune` and a
+  tool says what it is in the schema, and every tool takes `max_chars`:
+  a longer answer comes back with its biggest lists and texts halved
+  ("… 40 more") and a `trimmed` field that says what was cut. A `batch`, a script, `tune` and a
   preview run alone: a call that comes meanwhile - sent before the last
   was answered, or another conversation's - waits its turn, so no
   rollback takes it away, and a batch's calls stay with its document. No
@@ -595,7 +610,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `gnd` or `net2`), and `export_netlist` does not write over a document. `diff` compares a schematic with its
   file as saved, with a step of its history or with another file.
   `get_netlist` with `"map": true` ties each netlist line to its part and
-  each node to its pins. `run_script` runs a short JavaScript program
+  each node to its pins, and lists the parts whose pins have no names,
+  each pin with the side it is on. `import_netlist` takes a `title`. `run_script` runs a short JavaScript program
   that calls the tools (`qucs.call("add_component", {...})`) with loops
   and conditions between the calls, in one turn (its result the last
   expression, or a `return`) - with `"atomic": true` every schematic is

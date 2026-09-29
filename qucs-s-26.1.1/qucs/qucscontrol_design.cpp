@@ -1417,11 +1417,25 @@ QString testedText(const QString& library, const QString& part, bool* passes)
     const Tested& tested = testedParts();
     const QJsonObject outcome = tested.parts.value(library + QLatin1Char('/') + part);
     *passes = outcome.value(QLatin1String("passes")).toBool();
-    return outcome.isEmpty() ? (tested.parts.isEmpty() ? tr("not tested (no test of the libraries here)") : tr("not tested"))
-           : outcome.value(QLatin1String("untested")).toBool() ? tr("not tested - %1").arg(outcome.value(QLatin1String("why")).toString())
-           : *passes ? tr("tested: it netlists and its operating point converges, each pin to ground through 1 MOhm "
-                          "(%1, ngspice %2) - not a test of what it does").arg(tested.date, tested.ngspice)
-                     : tr("tested: fails - %1 (%2, ngspice %3)").arg(outcome.value(QLatin1String("why")).toString(), tested.date, tested.ngspice);
+    if (outcome.isEmpty()) return tested.parts.isEmpty() ? tr("not tested (no test of the libraries here)") : tr("not tested");
+    if (outcome.value(QLatin1String("untested")).toBool()) return tr("not tested - %1").arg(outcome.value(QLatin1String("why")).toString());
+    if (!*passes)
+        return tr("tested: fails - %1 (%2, ngspice %3)").arg(outcome.value(QLatin1String("why")).toString(), tested.date, tested.ngspice);
+    const QString smoke = tr("tested: it netlists and its operating point converges, each pin to ground through 1 MOhm (%1, ngspice %2)")
+                              .arg(tested.date, tested.ngspice);
+    // The bench of its kind: what it does, its numbers in a range. A part
+    // whose bench fails is not taken as working ('tested').
+    const QJsonObject bench = outcome.value(QLatin1String("bench")).toObject();
+    if (bench.isEmpty() || bench.value(QLatin1String("untested")).toBool()) return smoke + tr(" - not a test of what it does");
+    QStringList numbers;
+    const QJsonObject measured = bench.value(QLatin1String("measured")).toObject();
+    for (auto it = measured.begin(); it != measured.end(); ++it)
+        numbers << (it.value().isBool() ? it.key() : QStringLiteral("%1 %2").arg(it.key()).arg(it.value().toDouble(), 0, 'g', 4));
+    if (bench.value(QLatin1String("passes")).toBool())
+        return smoke + tr("; its bench passes (%1: %2)").arg(bench.value(QLatin1String("bench")).toString(), numbers.join(QStringLiteral(", ")));
+    *passes = false;
+    return smoke + tr("; but its bench FAILS (%1): %2 - the model runs and does the wrong thing")
+                       .arg(bench.value(QLatin1String("bench")).toString(), bench.value(QLatin1String("why")).toString());
 }
 
 } // namespace
