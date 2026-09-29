@@ -74,7 +74,9 @@ cp -p "$build/qucsator_rf/src/qucsator_rf" "$build/qucsator_rf/src/converter/quc
 cp -pR "$src/examples/." "$res/examples/"
 # The library as library/CMakeLists.txt installs it: the .lib files, the
 # blacklist, each part's outcome under ngspice (ngspice-tested.json), the
-# model directories some of them include, the symbols, and
+# model directories some of them include, the symbols of the Xyce digital
+# parts (library/XyceDigital: without them their wires meet no pin), the
+# symbols, and
 # the SPICE subcircuits of the transformer, relay, switch, coax and
 # magnetic core (spicelibrary - without it those components' netlists
 # point at a file that is not there).
@@ -82,6 +84,8 @@ cp -p  "$src"/library/*.lib "$src"/library/*.blacklist "$src"/library/ngspice-te
 for models in TubesExtended BJT_Darlington Optocoupler DualGateMOSFET; do
   cp -pR "$src/library/$models" "$res/library/"
 done
+mkdir -p "$res/library/XyceDigital"
+cp -p "$src"/library/XyceDigital/*.sym "$res/library/XyceDigital/"
 cp -pR "$src/library/symbols/." "$res/symbols/"
 cp -pR "$src/library/spicelibrary/." "$res/spicelibrary/"
 cp -p  "$build"/translations/*.qm "$res/lang/" 2>/dev/null || echo "    warning: no translations found" >&2
@@ -268,7 +272,7 @@ done)"
 # The resources main.cpp looks for next to the executable; a component
 # whose netlist includes one of the spicelibrary files fails in the
 # simulator when it is missing.
-for want in examples/ngspice library/Ideal.lib library/BJT_Darlington symbols \
+for want in examples/ngspice library/Ideal.lib library/BJT_Darlington library/XyceDigital/NAND2.sym symbols \
             spicelibrary/xfmr.cir spicelibrary/spdt.cir spicelibrary/spdt_xyce.cir \
             spicelibrary/coax.cir spicelibrary/core.cir spicelibrary/winding.cir; do
   [ -e "$res/$want" ] || { echo "error: share/qucs-s/$want is missing from the bundle" >&2; exit 1; }
