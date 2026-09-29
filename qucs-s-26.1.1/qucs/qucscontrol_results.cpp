@@ -136,6 +136,9 @@ const char* const kLegends[] = {"off", "top_left", "top_right", "bottom_left", "
 const char* const kUnits[] = {"none", "dB", "dBuV", "dBm"};
 const char* const kNumbers[] = {"real_imaginary", "magnitude_degrees", "magnitude_radians"};
 const char* const kIndicators[] = {"off", "square", "triangle"};
+// The ready-made themes, in diagramtheme::Preset's order, then the user's
+// default for new diagrams.
+const char* const kThemePresets[] = {"automatic", "light", "dark", "no_background", "default"};
 
 template <size_t N>
 int indexIn(const char* const (&names)[N], const QString& wanted)
@@ -233,8 +236,67 @@ bool applyAxis(Axis* a, const QJsonObject& o, const QString& which, QString* err
     return true;
 }
 
+// Sets the colours of a diagram's parts from {"preset", "background",
+// "plot_area", "frame", ...}: the preset first, then each part given
+// (#rrggbb, #aarrggbb, a name, or auto). Parts it does not have are left
+// out; what is not given stays.
+bool applyTheme(Diagram* d, const QJsonValue& v, QString* error)
+{
+    namespace theme = qucs_s::diagramtheme;
+    QStringList partNames;
+    for (theme::Part p : theme::allParts()) partNames << theme::keyOf(p);
+    if (!v.isObject()) {
+        *error = tr("'theme' is an object: {\"preset\": \"dark\"} or the colours of parts - %1.").arg(partNames.join(QStringLiteral(", ")));
+        return false;
+    }
+    const QJsonObject o = v.toObject();
+    theme::Theme t = d->theme();
+    if (o.contains(QLatin1String("preset"))) {
+        const int preset = indexIn(kThemePresets, o.value(QLatin1String("preset")).toString());
+        if (preset < 0) {
+            *error = tr("The theme's preset is one of %1.").arg(namesOf(kThemePresets));
+            return false;
+        }
+        t = preset == int(std::size(kThemePresets)) - 1 ? theme::defaultForNewDiagrams() : theme::preset(theme::Preset(preset));
+    }
+    for (auto it = o.begin(); it != o.end(); ++it) {
+        if (it.key() == QLatin1String("preset")) continue;
+        const std::optional<theme::Part> part = theme::partNamed(it.key());
+        if (!part) {
+            *error = tr("A theme has no part %1: its parts are %2, and preset.").arg(it.key(), partNames.join(QStringLiteral(", ")));
+            return false;
+        }
+        const QString text = it.value().toString().trimmed();
+        if (text.compare(QLatin1String("auto"), Qt::CaseInsensitive) == 0 || text.compare(QLatin1String("automatic"), Qt::CaseInsensitive) == 0) {
+            t.choose(*part, QColor());
+            continue;
+        }
+        const QColor c = QColor::fromString(text);
+        if (!c.isValid()) {
+            *error = tr("theme.%1: %2 is no color - give #rrggbb, #aarrggbb (see-through), a name (white, darkgray, ...) or auto.")
+                         .arg(it.key(), text.isEmpty() ? it.value().toVariant().toString() : text);
+            return false;
+        }
+        t.choose(*part, c);
+    }
+    d->setTheme(t);
+    return true;
+}
+
+// The colours chosen for a diagram's parts, by name; the others are
+// automatic.
+QJsonObject themeJson(const Diagram* d)
+{
+    namespace theme = qucs_s::diagramtheme;
+    QJsonObject o;
+    const theme::Theme t = d->theme();
+    for (theme::Part p : theme::allParts())
+        if (t.chosen(p).isValid()) o.insert(theme::keyOf(p), theme::colorText(t.chosen(p)));
+    return o;
+}
+
 // Sets what a diagram's arguments give: place and size, grid, legend,
-// axes. What is not given stays.
+// theme, axes. What is not given stays.
 bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
 {
     if (args.contains(QLatin1String("x"))) d->cx = misc::clampCoordinate(args.value(QLatin1String("x")).toInt());
@@ -259,6 +321,7 @@ bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
         }
         d->legendPos = pos;
     }
+    if (args.contains(QLatin1String("theme")) && !applyTheme(d, args.value(QLatin1String("theme")), error)) return false;
     const struct {
         const char* key;
         Axis* axis;
@@ -1117,6 +1180,7 @@ QJsonArray diagramsJson(Schematic* sch)
                       {QStringLiteral("width"), d->x2},
                       {QStringLiteral("height"), d->y2}};
         if (!d->title.isEmpty()) o.insert(QStringLiteral("title"), d->title);
+        if (const QJsonObject colors = themeJson(d); !colors.isEmpty()) o.insert(QStringLiteral("theme"), colors);
         if (d->Name != QLatin1String("Tab") && d->Name != QLatin1String("Truth")) {
             o.insert(QStringLiteral("x_axis"), axisJson(d->xAxis, false));
             o.insert(QStringLiteral("y_axis"), axisJson(d->yAxis, true));
@@ -2001,6 +2065,8 @@ QJsonObject QucsControl::addDiagram(const QJsonObject& args)
     const QString type = args.value(QLatin1String("type")).toString(QStringLiteral("rect")).trimmed();
     std::unique_ptr<Diagram> d(newDiagram(type.isEmpty() ? QStringLiteral("rect") : type));
     if (!d) return errorResult(tr("There is no diagram type %1: %2.").arg(type, kindNames()));
+    // In the colours new diagrams start with (the user's default).
+    d->setTheme(qucs_s::diagramtheme::defaultForNewDiagrams());
     if (!applyDiagram(d.get(), args, &error)) return errorResult(error);
     QStringList notes;
     // Not told where: below everything there is, room left for its axes'

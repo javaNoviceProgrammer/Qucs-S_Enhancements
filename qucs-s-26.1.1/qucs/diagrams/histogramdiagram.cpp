@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "histogramdiagram.h"
+#include "ink.h"
 
 #include <QCoreApplication>
 #include <QFontMetricsF>
@@ -57,6 +58,13 @@ HistogramDiagram::HistogramDiagram(int cx, int cy)
     Name = "Histogram";
     xAxis.log = yAxis.log = zAxis.log = false;
     calcDiagram();
+}
+
+QList<Diagram::Part> HistogramDiagram::themeParts() const
+{
+    QList<Part> parts = RectDiagram::themeParts();
+    parts.removeAll(Part::RightAxis);
+    return parts;
 }
 
 Diagram* HistogramDiagram::newOne()
@@ -279,9 +287,11 @@ void HistogramDiagram::paintBehindGraphs(QPainter* painter)
         const Graph* g = Graphs.at(i);
         const Bars& b = m_bars.at(i);
         const double f = scaleOf(b);
-        QColor fill = g->Color;
+        // (Its colour fitted to the plot area, as a trace's.)
+        const QColor color = qucs_s::ink::on(g->Color);
+        QColor fill = color;
         fill.setAlpha(alpha);
-        QPen pen(g->Color, g->isSelected ? g->Thick + 2 : std::max(1, g->Thick));
+        QPen pen(color, g->isSelected ? g->Thick + 2 : std::max(1, g->Thick));
         pen.setJoinStyle(Qt::MiterJoin);
         switch (g->Style) {   // the patterns of the graphs' lines
         case GRAPHSTYLE_DASH: pen.setDashPattern({10.0, 6.0}); break;
@@ -307,7 +317,7 @@ void HistogramDiagram::paintBehindGraphs(QPainter* painter)
                 const double pdf = std::exp(-0.5 * z * z) / (b.sigma * std::sqrt(2.0 * kPi));
                 curve << QPointF(X(x), Y(f * b.n * b.width * pdf));
             }
-            QPen fit(g->Color.darker(140), std::max(1.5, g->Thick * 1.0));
+            QPen fit(color.darker(140), std::max(1.5, g->Thick * 1.0));
             fit.setDashPattern({6.0, 3.0});
             painter->setPen(fit);
             painter->drawPolyline(curve);
@@ -321,7 +331,7 @@ void HistogramDiagram::paintBehindGraphs(QPainter* painter)
     painter->restore();
 }
 
-void HistogramDiagram::paintInFront(QPainter* painter)
+void HistogramDiagram::paintInFront(QPainter* painter, const Colors& colors)
 {
     if (!statistics || m_bars.isEmpty() || m_bars.size() != Graphs.size()) return;
     const bool limits = std::isfinite(lowerLimit) || std::isfinite(upperLimit);
@@ -365,18 +375,20 @@ void HistogramDiagram::paintInFront(QPainter* painter)
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setPen(QPen(Qt::darkGray, 1));
-    painter->setBrush(QColor(255, 255, 255, 230));
+    // In the legend's colours.
+    painter->setPen(QPen(colors.of(Part::LegendBorder), 1));
+    painter->setBrush(colors.of(Part::LegendBackground));
     painter->drawRect(QRectF(x, y, width, height));
+    const qucs_s::ink::Paper paper(colors.legend);
     qreal top = y + pad;
     for (int i = 0; i < rows.size(); ++i) {
         const qreal mid = top + fm.height() / 2.0;
-        QColor fill = Graphs.at(i)->Color;
+        QColor fill = qucs_s::ink::on(Graphs.at(i)->Color);
         painter->setPen(QPen(fill, 1));
         fill.setAlpha(110);
         painter->setBrush(fill);
         painter->drawRect(QRectF(x + pad, mid - swatch / 2, swatch, swatch));
-        painter->setPen(Qt::black);
+        painter->setPen(colors.of(Part::LegendText));
         painter->drawText(QPointF(x + pad + swatch + gap, top + fm.ascent()), rows.at(i));
         top += fm.height();
     }

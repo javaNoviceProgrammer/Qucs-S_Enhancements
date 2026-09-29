@@ -1187,6 +1187,8 @@ void MouseActions::MPressElement(Schematic *Doc, QMouseEvent *Event, float, floa
 
         Diagram *Diag = (Diagram *) selElem;
         QFileInfo Info(Doc->getDocName());
+        // In the colours new diagrams start with (the Theme tab's default).
+        Diag->setTheme(qucs_s::diagramtheme::defaultForNewDiagrams());
         // dialog is Qt::WDestructiveClose !!!
         DiagramDialog *dia = new DiagramDialog(Diag, Doc);
         if (dia->exec() == QDialog::Rejected) { // don't insert if dialog canceled

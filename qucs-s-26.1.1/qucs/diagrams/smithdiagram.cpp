@@ -46,7 +46,7 @@ SmithDiagram::SmithDiagram(int _cx, int _cy, bool ImpMode) : Diagram(_cx, _cy)
   if(ImpMode)  Name = "Smith";  // with impedance circles
   else  Name = "ySmith";        // with admittance circles
 
-  Arcs.append(new struct qucs::Arc(0, y2, x2, y2, 0, 16*360, QPen(Qt::black,0)));
+  Arcs.append(as(Part::Frame, new struct qucs::Arc(0, y2, x2, y2, 0, 16*360, QPen(Qt::black,0))));
 //  calcDiagram();    // calculate circles for smith chart with |r|=1
 }
 
@@ -94,12 +94,27 @@ int SmithDiagram::calcDiagram()
   else  createSmithChart(&yAxis);
 
   // outer most circle
-  Arcs.append(new qucs::Arc(0, x2, x2, x2, 0, 16*360, QPen(Qt::black,0)));
+  Arcs.append(as(Part::Frame, new qucs::Arc(0, x2, x2, x2, 0, 16*360, QPen(Qt::black,0))));
 
   // horizontal line Im(r)=0
-  Lines.append(new qucs::Line(0, x2>>1, x2, x2>>1, GridPen));
+  Lines.append(as(Part::Grid, new qucs::Line(0, x2>>1, x2, x2>>1, GridPen)));
 
   return 3;
+}
+
+// ------------------------------------------------------------
+QList<Diagram::Part> SmithDiagram::themeParts() const
+{
+  QList<Part> parts = Diagram::themeParts();
+  parts.removeAll(Part::RightAxis);
+  return parts;
+}
+
+QPainterPath SmithDiagram::plotAreaShape() const
+{
+  QPainterPath path;
+  path.addEllipse(QRectF(0, -x2, x2, x2));   // (the outer circle, as calcDiagram() draws it)
+  return path;
 }
 
 // ------------------------------------------------------------

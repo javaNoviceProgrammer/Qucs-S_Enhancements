@@ -34,6 +34,11 @@ public:
   int  calcDiagram();
   void calcLimits();
   void calcCoordinate(const double*, const double*, const double*, float*, float*, Axis const*) const;
+
+protected:
+  /// (A circle; its numbers inside it.)
+  QPainterPath plotAreaShape() const override;
+  bool numbersInside() const override { return true; }
 };
 
 #endif

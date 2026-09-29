@@ -29,11 +29,9 @@
 #include <QToolButton>
 #include "qucs_assert.h"
 
-namespace {
-
 // A swatch of \a color for a button, a checkerboard under it when it is
 // see-through.
-QIcon swatch(const QColor& color)
+QIcon colorSwatch(const QColor& color)
 {
   QPixmap pixmap(28, 16);
   pixmap.fill(Qt::transparent);
@@ -48,8 +46,6 @@ QIcon swatch(const QColor& color)
   p.drawRect(box);
   return QIcon(pixmap);
 }
-
-} // namespace
 
 
 MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
@@ -194,7 +190,7 @@ void MarkerDialog::setFillColor(const QColor& color)
 void MarkerDialog::showColors()
 {
   const auto show = [this](QPushButton* button, QToolButton* automatic, const QColor& chosen, const QColor& shown) {
-    button->setIcon(swatch(chosen.isValid() ? chosen : shown));
+    button->setIcon(colorSwatch(chosen.isValid() ? chosen : shown));
     button->setText(chosen.isValid() ? chosen.name(chosen.alpha() < 255 ? QColor::HexArgb : QColor::HexRgb).toUpper()
                                      : tr("Automatic"));
     automatic->setEnabled(chosen.isValid());

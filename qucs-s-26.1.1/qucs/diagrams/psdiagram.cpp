@@ -43,7 +43,7 @@ PSDiagram::PSDiagram(int _cx, int _cy, bool _polarUp)
   if(_polarUp)  Name = "PS";  // polar diagram upper half ?
   else  Name = "SP";
 
-  Arcs.append(new struct qucs::Arc(0, y2, x2, y2, 0, 16*360, QPen(Qt::black,0)));
+  Arcs.append(as(Part::Frame, new struct qucs::Arc(0, y2, x2, y2, 0, 16*360, QPen(Qt::black,0))));
 //  calcDiagram();
 }
 
@@ -112,8 +112,16 @@ int PSDiagram::calcDiagram()
   }
 
   // x line
-  Lines.append(new qucs::Line(0, y2>>1, x2, y2>>1, GridPen));
+  Lines.append(as(Part::Grid, new qucs::Line(0, y2>>1, x2, y2>>1, GridPen)));
   return 3;
+}
+
+// ------------------------------------------------------------
+QPainterPath PSDiagram::plotAreaShape() const
+{
+  QPainterPath path;
+  path.addEllipse(QRectF(0, -y2, x2, y2));
+  return path;
 }
 
 // ------------------------------------------------------------

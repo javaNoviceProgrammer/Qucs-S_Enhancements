@@ -69,6 +69,8 @@ public:
   double scaleOf(const Bars& bars) const;
 
   void getAxisLimits(Graph*) override;
+  /// (No right axis.)
+  QList<Part> themeParts() const override;
   int calcDiagram() override;
 
 protected:
@@ -77,7 +79,7 @@ protected:
   void calcData(Graph*) override {}   // the bars are painted, not traced
   void createAxisLabels() override;
   void paintBehindGraphs(QPainter*) override;
-  void paintInFront(QPainter*) override;
+  void paintInFront(QPainter*, const Colors&) override;
 
 private:
   QString shortName(const Graph* graph) const;

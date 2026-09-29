@@ -35,6 +35,8 @@ public:
   virtual bool scrollTo(int, int, int);
 
   void createAxisLabels() {};   // no labels in this diagram
+  /// Its background, its rules and its texts.
+  QList<Part> themeParts() const override;
 
 protected:
   void calcData(Graph*) {};  // no graph data
