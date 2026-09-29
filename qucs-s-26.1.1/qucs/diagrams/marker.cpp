@@ -60,6 +60,7 @@ Marker::Marker(Graph *pg_, int branchNo, int cx_, int cy_) :
   Precision(3),
   numMode(0),
   indicatorMode(indicator_Triangle),
+  notation(-1),
   Z0(default_Z0) // BUG: see declaration.
 {
   Type = isMarker;
@@ -242,17 +243,10 @@ void Marker::createText()
   pz[1] = VarDep[1];
 
   // now actually create text.
-  // In the diagram's notation; automatic keeps the marker's precision as
-  // significant digits, the others take it as places after the point.
-  using qucs_s::numberformat::Notation;
-  const Notation notation = pGraph->parentDiagram()->notation;
-  const auto number = [&](double v) {
-    return notation == Notation::Automatic ? QString::number(v, 'g', Precision)
-                                           : qucs_s::numberformat::format(v, notation, Precision);
-  };
+  // Every number in its notation (its own, or the diagram's).
   for(unsigned ii=0; (pD=pGraph->axis(ii)); ++ii) {
     Text += pD->Var + ": ";
-    Text += number(VarPos[ii]) + "\n";
+    Text += numberText(VarPos[ii]) + "\n";
   }
 
   if ( pGraph->Var.contains('/') )
@@ -263,19 +257,13 @@ void Marker::createText()
   if (pGraph->yAxisNo > 0) ax = &(diag()->zAxis);
   int units = ax->Units;
   if (units == Axis::NoUnits || !ax->log) {
-      switch(numMode) {
-      case nM_Rect: Text += misc::complexRect(*pz, *(pz+1), Precision);
-          break;
-      case nM_Deg: Text += misc::complexDeg(*pz, *(pz+1), Precision);
-          break;
-      case nM_Rad: Text += misc::complexRad(*pz, *(pz+1), Precision);
-          break;
-      }
+      Text += complexText(pz[0], pz[1], numMode);
   } else {
       double mag = sqrt(pz[0]*pz[0] + pz[1]*pz[1]);
       double val = qucs::num2db(mag,ax->Units);
-      Text += number(val);
-      if (notation != Notation::Automatic) Text += "\n";
+      // (A notation left a blank line under it, as the engineering one
+      // always had.)
+      Text += numberText(val);
   }
 
   QUCS_ASSERT(diag());
@@ -292,6 +280,38 @@ void Marker::createText()
   cx = int(fCX+0.5);
   cy = int(fCY+0.5);
   getTextSize();
+}
+
+// ---------------------------------------------------------------------
+qucs_s::numberformat::Notation Marker::shownNotation() const
+{
+  if (notation >= 0) return qucs_s::numberformat::fromInt(notation);
+  return diag() ? diag()->notation : qucs_s::numberformat::Notation::Automatic;
+}
+
+QString Marker::numberText(double v) const
+{
+  // Automatic as markers always wrote numbers (significant digits); the
+  // others with the precision as places after the point.
+  const qucs_s::numberformat::Notation n = shownNotation();
+  return n == qucs_s::numberformat::Notation::Automatic ? QString::number(v, 'g', Precision)
+                                                        : qucs_s::numberformat::format(v, n, Precision);
+}
+
+QString Marker::complexText(double re, double im, int mode) const
+{
+  // As misc::complexRect, complexDeg and complexRad write it, with the
+  // numbers in its notation: a real value alone, else re+jim, or the
+  // magnitude / the angle.
+  if (std::fabs(im) < 1e-250) return numberText(re);
+  if (mode == nM_Deg)
+    return numberText(std::sqrt(re*re + im*im)) + " / " + numberText(180.0/pi*std::atan2(im, re)) + QString::fromUtf8("°");
+  if (mode == nM_Rad)
+    return numberText(std::sqrt(re*re + im*im)) + " / " + numberText(std::atan2(im, re)) + "rad";
+  QString imag = numberText(im);
+  if (imag.startsWith('-')) imag = "-j" + imag.mid(1);
+  else imag = "+j" + imag;
+  return numberText(re) + imag;
 }
 
 // ---------------------------------------------------------------------
@@ -538,8 +558,11 @@ QString Marker::save()
     return !c.isValid() ? QStringLiteral("-") : c.name(c.alpha() < 255 ? QColor::HexArgb : QColor::HexRgb);
   };
   const bool colours = textColor.isValid() || fillColor.isValid();
-  if (indicatorMode != indicator_Triangle || colours) s += " " + QString::number(int(indicatorMode));
-  if (colours) s += " " + colour(textColor) + " " + colour(fillColor);
+  // Last, a notation of its own (none: the diagram's).
+  const bool own = notation >= 0;
+  if (indicatorMode != indicator_Triangle || colours || own) s += " " + QString::number(int(indicatorMode));
+  if (colours || own) s += " " + colour(textColor) + " " + colour(fillColor);
+  if (own) s += " " + QString::number(notation);
   return s + ">";
 }
 
@@ -608,6 +631,11 @@ bool Marker::load(const QString& Line)
   textColor = colour(s.section(' ',8,8));
   fillColor = colour(s.section(' ',9,9));
 
+  // Its own notation (optional; none, or one there is not: the diagram's).
+  n = s.section(' ',10,10);
+  const int own = n.toInt(&ok);
+  notation = ok && own >= 0 && own <= int(qucs_s::numberformat::Notation::Power) ? own : -1;
+
   return true;
 }
 
@@ -647,6 +675,7 @@ Marker* Marker::sameNewOne(Graph *pGraph_)
   pm->Precision     = Precision;
   pm->numMode       = numMode;
   pm->indicatorMode = indicatorMode;
+  pm->notation      = notation;
   pm->textColor     = textColor;
   pm->fillColor     = fillColor;
 

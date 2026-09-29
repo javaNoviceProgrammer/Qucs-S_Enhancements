@@ -54,7 +54,8 @@ private:
 public:
   Marker *pMarker;
 
-  QComboBox  *NumberBox;
+  QComboBox  *NumberBox;      // complex values: real/imaginary, magnitude/angle
+  QComboBox  *NotationBox;    // the notation: the diagram's, or its own
   QLineEdit  *Precision;
   QLineEdit  *XPosition;
   QComboBox  *IndicatorBox;

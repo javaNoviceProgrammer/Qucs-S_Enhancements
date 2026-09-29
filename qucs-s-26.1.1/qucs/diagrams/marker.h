@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "element.h"
+#include "numberformat.h"
 
 #include <QColor>
 
@@ -116,6 +117,17 @@ public:
   int Precision; // number of digits to show
   int numMode;   // real/imag or polar (deg/rad)
   indicatorMode_t indicatorMode; // off/square/triangle supported. 
+  // How its numbers are written: -1 as its diagram writes those of its
+  // axes, else a numberformat::Notation of its own.
+  int notation;
+  /// The notation its numbers are written in: its own, or its diagram's.
+  qucs_s::numberformat::Notation shownNotation() const;
+  /// \a v as it writes numbers: Precision significant digits in the
+  /// automatic notation, Precision places after the point in the others.
+  QString numberText(double v) const;
+  /// A complex value as \a mode says (numMode_t: re+jim, or magnitude /
+  /// angle), its parts written as numberText() writes them.
+  QString complexText(double re, double im, int mode) const;
 
 public: // shouldn't be there, cross-manipulated by MarkerDialog
         // to be implemented within SmithDiagram.
