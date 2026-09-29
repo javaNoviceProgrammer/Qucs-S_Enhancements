@@ -1205,7 +1205,12 @@ private slots:
             many += QStringLiteral("  <R R%1 1 %2 %3 15 -26 0 0 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n")
                         .arg(i + 10).arg(100 * (i % 20)).arg(100 * (i / 20) + 400);
         QVERIFY(!failed(call("set_schematic", {{"text", "<Components>\n" + many + "</Components>\n"}})));
+        // Read whole, more than 200 parts: the first 50; asked for by place,
+        // 200 of them.
         summary = json(call("get_schematic")).toObject();
+        QCOMPARE(summary.value("components").toArray().size(), 50);
+        QVERIFY2(summary.value("left out").toString().contains("200 more components"), qPrintable(summary.value("left out").toString()));
+        summary = json(call("get_schematic", {{"region", QJsonArray{-100, 0, 2100, 3000}}})).toObject();
         QCOMPARE(summary.value("components").toArray().size(), 200);
         QVERIFY2(summary.value("left out").toString().contains("50 more components"), qPrintable(summary.value("left out").toString()));
         // At a glance: the parts counted by type, most first.
@@ -2274,7 +2279,10 @@ private slots:
         QCOMPARE(sch->getComponentByName("R1")->cx, 100);
         QCOMPARE(netsNow(), before);
         QVERIFY(failed(call("move", {{"names", QJsonArray{"R9"}}, {"dx", 10}})));
-        QVERIFY(failed(call("move", {{"names", QJsonArray{"R1"}}, {"dx", 1}})));
+        // (Less than a step of the grid: moved by nothing - said, and what
+        // would move told.)
+        r = call("move", {{"names", QJsonArray{"R1"}}, {"dx", 1}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("moved").toArray().isEmpty(), qPrintable(text(r)));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
@@ -2910,10 +2918,28 @@ private slots:
                 QVERIFY(!failed(call("edit_component", {{"name", "R2"}, {"properties", QJsonObject{{"R", "1k"}}}})));
             }
         }
-        // Not bracketed: said.
+        // Not bracketed: said - and the closest value tried, which misses the
+        // target, not set.
         r = call("tune", {{"component", "R1"}, {"target", 20}, {"range", QJsonArray{"1k", "2k"}},
                           {"measure", QJsonObject{{"operating_point", "out"}}}}, 300000);
         QVERIFY2(json(r).toObject().value("stopped").toString().contains("widen"), qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("set").toString().startsWith("not set"), qPrintable(text(r)));
+        QCOMPARE(sch->getComponentByName("R1")->getProperty("R")->Value, QStringLiteral("1k"));
+        // A value that is a number alone (330): no unit to keep - the number
+        // is not taken for one (it was, and every value tried was "3k 330").
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "330"}}}})));
+        r = call("tune", {{"component", "R1"}, {"target", 2.5}, {"range", QJsonArray{100, 100000}},
+                          {"measure", QJsonObject{{"operating_point", "out"}}}}, 300000);
+        o = json(r).toObject();
+        QVERIFY2(o.value("within tolerance").toBool(), qPrintable(text(r)));
+        // (Each value in six figures at most: 1k, not 999.999719.)
+        for (const QJsonValue& run : o.value("runs").toArray()) {
+            const QString v = run.toObject().value("value").toString();
+            QVERIFY2(!v.contains(' ') && v.count(QRegularExpression("\\d")) <= 6, qPrintable(text(r)));
+        }
+        misc::str2num(sch->getComponentByName("R1")->getProperty("R")->Value, value, unit, factor);
+        QVERIFY2(std::abs(value * factor - 3000) < 60 && unit.size() <= 1, qPrintable(text(r)));
+        QVERIFY(!failed(call("undo")));
         QVERIFY(failed(call("tune", {{"component", "R1"}, {"target", 1}})));
         QVERIFY(failed(call("tune", {{"component", "R9"}, {"target", 1}, {"range", QJsonArray{1, 2}}, {"measure", QJsonObject{{"operating_point", "out"}}}})));
         QucsSettings.NgspiceExecutable = before;
@@ -4596,6 +4622,38 @@ private slots:
         const qint64 small = arranged(800), large = arranged(3200);
         QVERIFY(small >= 0 && large >= 0);
         QVERIFY2(large < 8 * std::max<qint64>(small, 20), qPrintable(QStringLiteral("800 parts: %1 ms, 3200: %2 ms").arg(small).arg(large)));
+        // A long chain with a ground at every stage (an RLC ladder): each
+        // ground placed against every part - their texts measured each time -
+        // was quadratic, 24 s at 2,000 parts. Read whole, it lists the first
+        // 50 of each kind, not its 2,500 labels.
+        const auto ladder = [this](int stages, QString* read) -> qint64 {
+            QStringList lines{"* ladder", "V1 n0 0 DC 0 AC 1"};
+            for (int i = 1; i <= stages; ++i)
+                lines << QStringLiteral("R%1 n%2 m%1 10").arg(i).arg(i - 1) << QStringLiteral("L%1 m%1 n%1 1u").arg(i)
+                      << QStringLiteral("C%1 n%1 0 1n").arg(i);
+            lines << ".tran 1n 50u" << ".end";
+            if (failed(call("import_netlist", {{"text", lines.join('\n')}}))) return -1;
+            QElapsedTimer clock;
+            clock.start();
+            const QJsonObject r = call("arrange", {}, 300000);
+            const qint64 took = clock.elapsed();
+            const bool kept = !failed(r) && text(r).contains("every net as it was");
+            if (!kept) qWarning().noquote() << text(r).left(400);
+            if (read != nullptr) *read = text(call("get_schematic"));
+            call("close_document", {{"unsaved", "discard"}});
+            return kept ? took : -1;
+        };
+        QString whole;
+        const qint64 short_ = ladder(100, nullptr), long_ = ladder(400, &whole);
+        QVERIFY(short_ >= 0 && long_ >= 0);
+        QVERIFY2(long_ < 8 * std::max<qint64>(short_, 20), qPrintable(QStringLiteral("100 stages: %1 ms, 400: %2 ms").arg(short_).arg(long_)));
+        const QJsonObject read = QJsonDocument::fromJson(whole.toUtf8()).object();
+        QCOMPARE(read.value("components").toArray().size(), 50);
+        QVERIFY(!failed(call("import_netlist", {{"text", "* rc\nV1 a 0 DC 1\nR1 a b 1k\nR2 b c 1k\nR3 c d 1k\nR4 d 0 1k\n.end"}})));
+        const QJsonArray some = json(call("get_schematic", {{"components", QJsonArray{"R4"}}})).toObject().value("labels").toArray();
+        QVERIFY2(some.size() == 1 && some.first().toObject().value("net").toString() == "d", "a read of R4: the labels on its pins alone");
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY2(read.value("labels").toArray().size() <= 50 && read.value("left out").toString().contains("'region'"), qPrintable(whole.left(300)));
     }
 
     // B4, E7: no message box waits on a call (under --mcp-server no one
@@ -4879,6 +4937,259 @@ private slots:
         for (const QJsonValue& d : json(call("get_state")).toObject().value("documents").toArray()) titles << d.toObject().value("title").toString();
         QVERIFY2(QSet<QString>(titles.cbegin(), titles.cend()).size() == titles.size(), qPrintable(titles.join(", ")));
         discardAll();
+    }
+
+    // The third round's small things: diff with no step back says so (not
+    // "1 to 0"); a move by nothing tells what would move and moves nothing;
+    // undo tells what it changed as that; add_analysis's expressions for a
+    // simulator of its own, not only the settings'.
+    void theThirdRoundsSmallThings()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("diff", {{"steps", 1}});
+        QVERIFY2(failed(r) && text(r).contains("no step to go back to") && !text(r).contains("1 to 0"), qPrintable(text(r)));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R2"}, {"x", 200}, {"y", 100}})));
+        QVERIFY(!failed(call("connect", {{"from", "R1.2"}, {"to", "R2.1"}})));
+        r = call("move", {{"names", QJsonArray{"R1"}}, {"dx", 0}, {"dy", 0}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("wires to the rest, drawn on to them").toInt() == 1, qPrintable(text(r)));
+        QVERIFY(json(r).toObject().value("moved").toArray().isEmpty());
+        QVERIFY(!failed(call("edit_component", {{"name", "R2"}, {"rotation", 1}})));
+        r = call("undo");
+        QVERIFY2(text(r).contains("The undo changed:") && !text(r).contains("Now:"), qPrintable(text(r)));
+        const int was = QucsSettings.DefaultSimulator;
+        QucsSettings.DefaultSimulator = spicecompat::simQucsator;
+        r = call("add_analysis", {{"kind", "ac"}, {"plot", QJsonArray{"db(v(out))"}}});
+        QVERIFY2(failed(r) && text(r).contains("'simulator'"), qPrintable(text(r)));
+        r = call("add_analysis", {{"kind", "ac"}, {"plot", QJsonArray{"db(v(out))"}}, {"simulator", "ngspice"}});
+        QucsSettings.DefaultSimulator = was;
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        bool nutmeg = false;
+        for (Component* c : front()->a_DocComps) nutmeg = nutmeg || c->Model == "NutmegEq";
+        QVERIFY(nutmeg);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // An imported netlist's nets are labels on every pin: arranged with
+    // wire_labels, its pieces are wired together, one label kept for each
+    // name - every net as it was.
+    void anImportedNetlistIsWiredWhenAsked()
+    {
+        QJsonObject r = call("import_netlist", {{"text", "* rc\nV1 in 0 DC 0 AC 1\nR1 in mid 1k\nC1 mid 0 1n\nR2 mid out 1k\n"
+                                                         "C2 out 0 1n\n.ac dec 10 1 1meg\n.end"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("arrange", {{"wire_labels", true}});
+        QVERIFY2(!failed(r) && text(r).contains("every net as it was"), qPrintable(text(r)));
+        const QJsonObject read = json(call("get_schematic")).toObject();
+        QStringList names;
+        for (const QJsonValue& l : read.value("labels").toArray()) names << l.toObject().value("net").toString();
+        names.sort();
+        QCOMPARE(names, (QStringList{"in", "mid", "out"}));
+        QVERIFY2(read.value("wires").toArray().size() >= 5, qPrintable(text(call("get_schematic"))));
+        const QString checked = text(call("check_schematic"));
+        QVERIFY2(checked.contains("Nothing found"), qPrintable(checked));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Every tool listed is one call() runs - the tool list, its tables and
+    // the dispatch are kept apart, and nothing else says they agree: each
+    // called with nothing gets its own answer (mostly: what it needs), not
+    // "There is no tool".
+    void everyListedToolIsDispatched()
+    {
+        QStringList names;
+        for (const QJsonValue& v : control->tools()) names << v.toObject().value("name").toString();
+        // describe_tool lists each one's summary - the tools not in every
+        // turn with theirs too, not their whole description.
+        for (const QJsonValue& v : json(call("describe_tool")).toObject().value("tools").toArray())
+            if (v.toObject().value("name").toString() == "tune")
+                QVERIFY2(v.toObject().value("summary").toString().size() < 300, qPrintable(v.toObject().value("summary").toString()));
+        for (const QString& name : std::as_const(names)) {
+            if (name == "close_document" || name == "clean_scratch") continue;   // (on the document in front: nothing to see)
+            QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+            const QJsonObject r = call(name, {}, 60000);
+            QVERIFY2(!text(r).startsWith("There is no tool"), qPrintable(name + ": " + text(r).left(200)));
+            discardAll();
+        }
+    }
+
+    // An argument a tool does not take is refused, with those it takes and
+    // the one meant - it was left out, and the call done without it. A
+    // painting's fields are its type's (the tools refuse the rest). A text
+    // box keeps the width it was given alone; a tip makes it point.
+    void unknownArgumentsAreRefused()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}, {"rotaton", 1}});
+        QVERIFY2(failed(r) && text(r).contains("takes no rotaton") && text(r).contains("Meant rotation?"), qPrintable(text(r)));
+        QVERIFY(front()->getComponentByName("R1") == nullptr);
+        QVERIFY(failed(call("get_state", {{"verbose", true}})));
+        QVERIFY(!failed(call("get_state", {{"path", "anything"}})));   // (as a pinned conversation names its schematic)
+        QVERIFY2(text(call("zoom", {{"to", "all"}, {"preview", true}})).contains("takes no preview"), "preview is of the tools that change");
+        r = call("batch", {{"calls", QJsonArray{QJsonObject{{"tool", "add_component"},
+                                                            {"arguments", QJsonObject{{"type", "C"}, {"x", 0}, {"y", 0}, {"colour", "red"}}}}}}});
+        QVERIFY2(failed(r) || text(r).contains("takes no colour"), qPrintable(text(r)));
+        // Paintings: their type's fields, all of them.
+        r = call("add_painting", {{"type", "text_box"}, {"x", 100}, {"y", 300}, {"width", 180}, {"text", "hello"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("added").toObject().value("width").toInt(), 180);
+        r = call("add_painting", {{"type", "text_box"}, {"x", 100}, {"y", 500}, {"text", "there"}, {"tip", QJsonArray{50, 600}}});
+        QVERIFY2(json(r).toObject().value("added").toObject().value("pointer").toBool(), qPrintable(text(r)));
+        r = call("add_painting", {{"type", "text_box"}, {"x", 100}, {"y", 700}, {"text", "x"}, {"sides", 5}});
+        QVERIFY2(failed(r) && text(r).contains("has no sides"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A dataset that is not of the circuit as it is says so: after a value
+    // changed (the netlist now is not the one its run was given), after a
+    // run that failed - not after a diagram or a move.
+    void aStaleDatasetIsSaid()
+    {
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (ngspice.isEmpty()) QSKIP("no ngspice here");
+        const QString before = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = ngspice;
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 200}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 200}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "GND"}, {"x", 100}, {"y", 300}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", ".TR"}, {"name", "TR1"}, {"x", 300}, {"y", 100}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "GND.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.2"}, {"to", "GND.1"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "R1.1"}, {"name", "top"}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"as", "stale"}, {"replace", true}})));
+        QVERIFY2(json(call("simulate", {}, 120000)).toObject().value("succeeded").toBool(), "the first run");
+        const auto stale = [this] {
+            const QJsonObject r = call("get_dataset");
+            return failed(r) ? QStringLiteral("(failed) ") + text(r) : json(r).toObject().value("stale").toString();
+        };
+        QVERIFY2(stale().isEmpty(), qPrintable(stale()));
+        QVERIFY(!failed(call("add_diagram", {{"type", "rect"}, {"traces", QJsonArray{"tran.i(V1)"}}})));
+        QVERIFY(!failed(call("move", {{"names", QJsonArray{"R1"}}, {"dx", 0}, {"dy", 20}})));
+        QVERIFY2(stale().isEmpty(), qPrintable(stale()));
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "2k"}}}})));
+        QVERIFY2(stale().contains("changed since the run"), qPrintable(stale()));
+        QVERIFY2(json(call("simulate", {}, 120000)).toObject().value("succeeded").toBool(), "the second run");
+        QVERIFY2(stale().isEmpty(), qPrintable(stale()));
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "{nosuchparam}"}}}})));
+        QVERIFY(!json(call("simulate", {}, 120000)).toObject().value("succeeded").toBool());
+        QVERIFY2(stale().contains("failed"), qPrintable(stale()));
+        QucsSettings.NgspiceExecutable = before;
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // The subcircuit path as make_symbol's description gives it: grounds
+    // told alike in the netlist map and everywhere else; a ground on a wire
+    // stub to the group goes with it; a net that goes inside and an
+    // equation names is told; the symbol drawn and saved, the instance's
+    // pins take their labels along - the parent still netlists whole.
+    void theSubcircuitPathKeepsTheParentWhole()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vac"}, {"name", "V1"}, {"x", 100}, {"y", 200}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 250}, {"y", 100}, {"rotation", 1}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "C"}, {"name", "C1"}, {"x", 350}, {"y", 200}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "GND"}, {"x", 100}, {"y", 300}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "GND"}, {"x", 350}, {"y", 300}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", ".AC"}, {"name", "AC1"}, {"x", 500}, {"y", 100}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.2"}, {"to", "C1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "GND#1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "C1.2"}, {"to", "GND#2.1"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "C1.1"}, {"name", "out"}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "NutmegEq"}, {"name", "NutmegEq1"}, {"x", 500}, {"y", 300},
+                                                                              {"equations", QJsonArray{"gain=db(v(out))"}}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        // The netlist map names the grounds as get_schematic's refs do.
+        QStringList refs;
+        for (const QJsonValue& c : json(call("get_schematic")).toObject().value("components").toArray())
+            if (c.toObject().contains("ref")) refs << c.toObject().value("ref").toString();
+        QCOMPARE(refs, (QStringList{"GND#1", "GND#2"}));
+        const QString map = text(call("get_netlist", {{"map", true}}));
+        QVERIFY2(map.contains("\"GND#1.1\"") && map.contains("\"GND#2.1\"") && !map.contains("\"GND.1\""), qPrintable(map));
+        QDir().mkpath(dir.filePath("workspace/subpath"));
+        QVERIFY(!failed(call("save_document", {{"as", dir.filePath("workspace/subpath/top.sch")}})));
+        r = call("create_subcircuit", {{"names", QJsonArray{"R1", "C1"}}, {"name", "LP1"}, {"save_as", "lp.sch"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("inside now").toString().contains("gain=db(v(out)) in NutmegEq1"), qPrintable(text(r)));
+        QString checked = text(call("check_schematic"));
+        QVERIFY2(!checked.contains("connected to nothing"), qPrintable(checked));
+        // The symbol drawn and saved: the instance's pin moves, its label with it.
+        QVERIFY(!failed(call("open_document", {{"path", dir.filePath("workspace/subpath/lp.sch")}})));
+        QVERIFY(!failed(call("make_symbol")));
+        // (Its pin put in the open: where make_symbol puts it may be on a wire.)
+        int port = 0, px = 0, py = 0;
+        for (const QJsonValue& p : json(call("get_schematic")).toObject().value("symbol paintings").toArray())
+            if (p.toObject().value("type").toString() == "port") {
+                port = p.toObject().value("painting").toInt();
+                px = p.toObject().value("x").toInt();
+                py = p.toObject().value("y").toInt();
+            }
+        QVERIFY(port > 0);
+        r = call("edit_painting", {{"painting", port}, {"x", px - 60}, {"y", py - 60}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("save_document");
+        QVERIFY2(text(r).contains("followed their pins") && !text(r).contains("no longer meets"), qPrintable(text(r)));
+        const QString top = dir.filePath("workspace/subpath/top.sch");
+        checked = text(call("check_schematic", {{"path", top}}));
+        QVERIFY2(!checked.contains("connected to nothing"), qPrintable(checked));
+        const QString netlist = text(call("get_netlist", {{"path", top}}));
+        QVERIFY2(netlist.contains(QRegularExpression("\\nXLP1 lp_n1 ", QRegularExpression::CaseInsensitiveOption)), qPrintable(netlist));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(!failed(call("close_document", {{"path", top}, {"unsaved", "discard"}})));
+    }
+
+    // A schematic copied outside Qucs-S keeps the dataset and data display
+    // names of the one it was copied from: said when it is opened, and
+    // named after it on request. Its runs write where its DataSet says,
+    // where get_dataset and its diagrams read (the runs wrote after its
+    // file's name, where nothing read them).
+    void aCopyMadeOutsideQucsIsToldOfItsDataNames()
+    {
+        QDir().mkpath(dir.filePath("workspace/copied"));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 200}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 200}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "GND"}, {"x", 100}, {"y", 300}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", ".DC"}, {"name", "DC1"}, {"x", 300}, {"y", 100}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "GND.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.2"}, {"to", "GND.1"}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString original = dir.filePath("workspace/copied/rc.sch"), copy = dir.filePath("workspace/copied/rc_copy.sch");
+        QVERIFY(!failed(call("save_document", {{"as", original}})));
+        QVERIFY(!failed(call("close_document")));
+        QVERIFY(QFile::copy(original, copy));
+        r = call("open_document", {{"path", copy}});
+        QVERIFY2(!failed(r) && text(r).contains("not named after it") && text(r).contains("rc.dat.ngspice")
+                     && text(r).contains("rc_copy.dat"), qPrintable(text(r)));
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        const QString before = QucsSettings.NgspiceExecutable;
+        if (!ngspice.isEmpty()) {
+            QucsSettings.NgspiceExecutable = ngspice;
+            r = call("simulate", {}, 120000);
+            QVERIFY2(json(r).toObject().value("dataset").toString().endsWith("rc.dat.ngspice"), qPrintable(text(r)));
+            QVERIFY2(json(r).toObject().value("dataset written").toBool(), qPrintable(text(r)));
+            r = call("get_dataset");
+            QVERIFY2(json(r).toObject().value("dataset").toString().endsWith("rc.dat.ngspice"), qPrintable(text(r)));
+        }
+        // Named after it, on request.
+        r = call("open_document", {{"path", copy}, {"own_data_names", true}});
+        QVERIFY2(text(r).contains("named after it now"), qPrintable(text(r)));
+        QCOMPARE(json(call("get_schematic")).toObject().value("settings").toObject().value("dataset").toString(), QStringLiteral("rc_copy.dat"));
+        QVERIFY2(!text(call("open_document", {{"path", copy}})).contains("not named after it"), "told once it is right");
+        if (!ngspice.isEmpty()) {
+            r = call("simulate", {}, 120000);
+            QVERIFY2(json(r).toObject().value("dataset").toString().endsWith("rc_copy.dat.ngspice")
+                         && QFileInfo::exists(dir.filePath("workspace/copied/rc_copy.dat.ngspice")), qPrintable(text(r)));
+        }
+        QucsSettings.NgspiceExecutable = before;
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
     // ngspice's commands summed up: every one in a line by category, one

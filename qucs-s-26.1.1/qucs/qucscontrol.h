@@ -129,6 +129,7 @@ private:
     QHash<quint64, Asker> a_askers;
     // Each tool as it was written, its description in full (describe_tool).
     QHash<QString, QJsonObject> a_details;
+    QHash<QString, QString> a_summaries;   // each tool's summary (the core tools' list description)
     /// Asks the user of the conversation whose call runs (MCP elicitation):
     /// its answer, {action: accept|decline|cancel, content}; cancel when
     /// it cannot be asked.
@@ -278,6 +279,13 @@ private:
     QJsonObject datasetOfRun(Schematic* doc, int simulator, const QDateTime& before, const QString& keepAs, bool* written);
     QJsonObject getNetlist(const QJsonObject& args);
     QJsonObject getDataset(const QJsonObject& args);
+    /// Why \a args has arguments \a tool does not take (its schema's
+    /// fields), and the ones it does; empty when it has none.
+    QString unknownArguments(const QString& tool, const QJsonObject& args) const;
+    /// Why \a file, the dataset of \a sch, is not of the circuit as it is -
+    /// the last run failed after it, the netlist a run would be given now is
+    /// not the one it ran, or an edit after it - or empty.
+    QString staleness(Schematic* sch, const QString& file);
     QJsonObject reloadData(const QJsonObject& args);
     // Diagrams and their traces.
     QJsonObject addDiagram(const QJsonObject& args);

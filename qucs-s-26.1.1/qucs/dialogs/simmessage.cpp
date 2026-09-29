@@ -859,6 +859,7 @@ void SimMessage::FinishSimulation(int Status)
     }
   }
 
+  if (Schematic *sch = schematicDoc()) sch->setLastRun(QDateTime::currentDateTime(), Status != 0);
   emit SimulationEnded(Status, this);
 }
 

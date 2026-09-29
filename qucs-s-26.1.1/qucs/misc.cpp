@@ -244,8 +244,9 @@ void misc::str2num(const QString& s_, double& Number, QString& Unit, double& Fac
       i = j;
     }
 
-  Number = str.left(i).toDouble();
-  Unit   = str.mid(i).trimmed();
+  // (No letters: a number alone, with no unit - not itself as its unit.)
+  Number = i < 0 ? str.toDouble() : str.left(i).toDouble();
+  Unit   = i < 0 ? QString() : str.mid(i).trimmed();
   if(Unit.length()>0)
   {
     switch(Unit.at(0).toLatin1()) {

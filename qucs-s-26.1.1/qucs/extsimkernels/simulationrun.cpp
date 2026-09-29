@@ -212,8 +212,14 @@ void SimulationRun::slotProcessOutput()
         a_console->insertPlainText("Simulation finished\n");
 
     if ( !a_hasError && !a_schematic.isNull() ) {
+        // Where the schematic's DataSet says (name.dat, then .ngspice ...),
+        // as Qucsator writes it and the diagrams, the data display and
+        // Claude's tools read it - not after the file's name, which is
+        // another in a schematic copied outside Qucs-S: its runs went where
+        // nothing read them.
         QFileInfo inf(a_schematic->getDocName());
-        QString qucs_dataset = inf.canonicalPath()+QDir::separator()+inf.completeBaseName()+ext;
+        const QString dataSet = a_schematic->getDataSet().isEmpty() ? inf.completeBaseName() + ".dat" : a_schematic->getDataSet();
+        QString qucs_dataset = inf.canonicalPath() + QDir::separator() + dataSet + ext.mid(4);   // (ext less its ".dat")
         switch (QucsSettings.DefaultSimulator) {
             case spicecompat::simNgspice:
             case spicecompat::simSpiceOpus:
@@ -232,6 +238,9 @@ void SimulationRun::slotProcessOutput()
                 QMessageBox::warning(nullptr, tr("Simulate"), a_datasetError);
         }
     }
+    // (How it ended, on the schematic: a dataset older than a run that
+    // failed is not of the circuit as it is.)
+    if (!a_schematic.isNull()) a_schematic->setLastRun(QDateTime::currentDateTime(), a_hasError || !a_wasSimulated);
     emit simulated(this);
 }
 

@@ -200,6 +200,26 @@ private slots:
         const QJsonObject over = ds::measure(ringing, QStringLiteral("overshoot"), o);
         QVERIFY2(near(over.value("value").toDouble(), 100 * std::exp(-M_PI * z / std::sqrt(1 - z * z)), 1e-3),
                  QJsonDocument(over).toJson().constData());
+        // Its ring's frequency: the damped one, wd - crossing the value it
+        // settles at, which a damped sine crosses every half period (halfway
+        // between its extremes, 1 + overshoot/2, gave 7% more on the round
+        // 3 feedback's RLC). A lighter damping, 0.158, rings longer.
+        const double z2 = 0.158, wd2 = w * std::sqrt(1 - z2 * z2);
+        const ds::Curve ring = curve(80001, 0, 20e-6, [&](double t) {
+            return 1 - std::exp(-z2 * w * t) * (std::cos(wd2 * t) + z2 / std::sqrt(1 - z2 * z2) * std::sin(wd2 * t));
+        });
+        const QJsonObject rang = ds::measure(ring, QStringLiteral("frequency"), o);
+        QVERIFY2(near(rang.value("value").toDouble(), wd2 / (2 * M_PI), 2e-3), QJsonDocument(rang).toJson().constData());
+        QVERIFY2(rang.value("level is").toString().contains("final value"), QJsonDocument(rang).toJson().constData());
+        // A ripple riding on it - a hundredth of a millivolt at 37 MHz - is
+        // all that is left at its still end: its crossings of the final
+        // value are no half periods of the ring (a band about the level).
+        const ds::Curve rippled = curve(160001, 0, 20e-6, [&](double t) {
+            return 1 - std::exp(-z2 * w * t) * (std::cos(wd2 * t) + z2 / std::sqrt(1 - z2 * z2) * std::sin(wd2 * t))
+                   + 1e-5 * std::sin(2 * M_PI * 37e6 * t);
+        });
+        const QJsonObject rang2 = ds::measure(rippled, QStringLiteral("frequency"), o);
+        QVERIFY2(near(rang2.value("value").toDouble(), wd2 / (2 * M_PI), 5e-3), QJsonDocument(rang2).toJson().constData());
 
         // A pulse train: 1 us period, high 30% of it.
         const ds::Curve pulses = curve(100001, 0, 10e-6, [](double t) {
