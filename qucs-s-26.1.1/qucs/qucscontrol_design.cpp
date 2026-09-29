@@ -1313,6 +1313,11 @@ QJsonObject QucsControl::findLibraryComponent(const QJsonObject& args)
                                                                     {QStringLiteral("properties"), QJsonObject{{QStringLiteral("Lib"), library},
                                                                                                                {QStringLiteral("Comp"), name}}}}}};
                 if (!shown.isEmpty()) o.insert(QStringLiteral("values"), shown);
+                // A part whose model is one component line: 'place' makes that
+                // component with the library's values, not a Lib (said here, as
+                // add_component says it).
+                if (modelLine.startsWith(QLatin1Char('<')) && modelLine.endsWith(QLatin1Char('>')) && !modelLine.contains(QLatin1Char('\n')))
+                    o.insert(QStringLiteral("placed as"), type);
                 o.insert(QStringLiteral("ngspice"),
                          outcome.isEmpty() ? (tested.parts.isEmpty() ? tr("not tested (no test of the libraries here)") : tr("not tested"))
                          : outcome.value(QLatin1String("untested")).toBool() ? tr("not tested - %1").arg(outcome.value(QLatin1String("why")).toString())

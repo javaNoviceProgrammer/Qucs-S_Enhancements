@@ -530,19 +530,30 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the instance goes where none of its pins meets another net, and the
   parent's nets are compared after - the change undone if one differs.
   For drawings a person reads: `add_component` and `edit_component` put
-  a part beside another (`near`: Rf below U1, 80 apart), `connect` goes
-  round a side or through points given (`side`, `via`), `set_label`
-  puts the label's text where it is asked (`text_at`), and `arrange`
-  draws only the wiring again with the parts where they are
+  a part beside another (`near`: Rf below U1, 80 apart - slid along
+  that side off whatever is there, and the answer says where it went),
+  `connect` goes round a side or through points given (`side`, `via`),
+  `set_label` puts the label's text where it is asked (`text_at`), and
+  `arrange` draws only the wiring again with the parts where they are
   (`keep_places`), puts an op-amp's feedback part below or above it
-  with its pin under the output (`feedback`), and joins the supplies by
-  labels, VCC up and VEE down (`supplies`). A library part's pins have
+  with its pin under the output and the part from its input to ground
+  (Rg) standing under it (`feedback`), and joins the supplies by
+  labels, VCC up and VEE down (`supplies`). Wires go round every part's
+  symbol - a ground's too - leaving a pin straight out of its own
+  symbol, and where none of the usual shapes is clear, a way is found a
+  grid step at a time; a label goes on the longest stretch of its net
+  where its text has room. A library part's pins have
   the names its model gives them (an op-amp's INN, INP, OUT, VCC, VEE;
-  an LED's C and A): `connect` takes `U1.inp`, `replace_component` maps
-  them by name, and the netlist map shows them beside the numbers. A
+  an LED's C and A; the transistor-level uA741's, AD825's and LM3886's
+  too): `connect` takes `U1.inp`, `replace_component` maps them by name
+  - and refuses to map named pins by number to a part without those
+  names, listing both parts' pins and the side each is on, until
+  `pins` says which is which - and the netlist map shows them beside
+  the numbers. A
   library part that is one component with the library's values (a
   varactor's diode, a transistor's model) is placed as that component,
-  as the library panel does. `batch` and `simulate` answer briefly when
+  as the library panel does, and `find_library_component` says what it
+  is placed as. `batch` and `simulate` answer briefly when
   asked (`brief`: a line a call; no ngspice log), `simulate` sets this
   run's measurements beside a kept run's with the change (`compare`),
   `tune` sets two to four parts together for as many targets (`knobs`,
