@@ -427,9 +427,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   emitter sits at 5 V, or C until the peaking is 1 dB. It takes a few runs
   in one call, and the value found is one step to undo - set only when
   it gives the target; a value with no unit (`330`) stays one. The search
-  follows the value or its logarithm, whichever foretells the runs better
-  (a divider's voltage over its source: three runs), and a value of a
-  list given is set as it is written (`3 kOhm`). `build_verilog_a`
+  draws its secant on the value or its logarithm, and the measurement or
+  its logarithm, whichever foretells the runs best (a divider's voltage
+  over its source, or a bandwidth over a capacitance: three runs), and a
+  value of a list given is set as it is written (`3 kOhm`). `build_verilog_a`
   compiles a `.va` now, with each error's line and column.
   `describe_component_type` gives a Verilog-A module's parameters and a
   `.model` card. `find_library_component` finds a part by its values (an
@@ -518,7 +519,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   one. Saving a subcircuit whose new symbol moves an instance's pins
   joins each pin to its net again - its label goes along, a wire that
   ended on it is drawn on to it, a port numbered anew is followed by its
-  name - and compares the parent's nets before and after. `connect` takes `"ground"` at one
+  name - and compares the parent's nets before and after. Check Schematic
+  says when a library part or a subcircuit could not be loaded (a box
+  without pins), not only that the wires to it end on nothing. `connect` takes `"ground"` at one
   end: a ground symbol of the pin's own. A ground has no name: every
   tool that takes a part's name takes its ref from `get_schematic`
   (`GND#2`) - `move`, `delete`, `select`, `edit_component` - and a read of
