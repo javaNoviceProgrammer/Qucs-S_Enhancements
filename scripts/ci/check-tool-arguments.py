@@ -55,6 +55,7 @@ NESTED = {
     ("set_dialog", "set"): ("setDialog", "change"),
     ("tune", "knobs"): ("tuneKnobs", "knob"),
     ("tune", "targets"): ("tuneKnobs", "item"),
+    ("tune", "hold"): ("readHolds", "item"),
 }
 
 

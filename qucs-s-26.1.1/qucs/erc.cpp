@@ -397,6 +397,22 @@ bool supplyName(const QString& name)
     return supply.match(name).hasMatch();
 }
 
+// An op-amp's input by its pin's name: IN+, INP, NONINV, POSIN ...
+bool inputName(const QString& name)
+{
+    static const QRegularExpression input(QStringLiteral("^(in[+-]|[+-]in|inp|inn|in_?p|in_?n|in_?pos|in_?neg|posin|negin|"
+                                                         "non_?inv|inv|vin[+-]|vinp|vinn)$"),
+                                          QRegularExpression::CaseInsensitiveOption);
+    return input.match(name).hasMatch();
+}
+
+// An output by its pin's name: OUT, VOUT, OUTPUT.
+bool outputName(const QString& name)
+{
+    static const QRegularExpression output(QStringLiteral("^(out|vout|output)$"), QRegularExpression::CaseInsensitiveOption);
+    return output.match(name).hasMatch();
+}
+
 // A pin named as a supply's on a net with no other pin but supply pins:
 // nothing powers the part - an op-amp's VCC and VEE left open read as a
 // part that does nothing, every answer green.
@@ -780,9 +796,6 @@ void edgeNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 // (A net reached by nothing at all is told as floating.)
 void biasNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 {
-    static const QRegularExpression input(QStringLiteral("^(in[+-]|[+-]in|inp|inn|in_?p|in_?n|in_?pos|in_?neg|posin|negin|"
-                                                         "non_?inv|inv|vin[+-]|vinp|vinn)$"),
-                                          QRegularExpression::CaseInsensitiveOption);
     static const QStringList firstPin{QStringLiteral("BJT"), QStringLiteral("_BJT"), QStringLiteral("JFET"),
                                       QStringLiteral("MOSFET"), QStringLiteral("_MOSFET")};
     static const QStringList secondPin{QStringLiteral("NPN_SPICE"), QStringLiteral("PNP_SPICE"), QStringLiteral("NJF_SPICE"),
@@ -806,7 +819,7 @@ void biasNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
             controls << Control{c, 0, Kind::Input, QStringLiteral("-")} << Control{c, 1, Kind::Input, QStringLiteral("+")};
         else
             for (int i = 0; i < c->Ports.size(); ++i)
-                if (input.match(c->Ports.at(i)->Name).hasMatch()) controls << Control{c, i, Kind::Input, c->Ports.at(i)->Name};
+                if (inputName(c->Ports.at(i)->Name)) controls << Control{c, i, Kind::Input, c->Ports.at(i)->Name};
         if (controls.size() > before) controlled.insert(c);
     }
     if (controls.isEmpty() || controlled.size() > 300) return;   // (a drawing of thousands: not worth the time)
@@ -900,14 +913,13 @@ void biasNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 // ground.
 void loadNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 {
-    static const QRegularExpression output(QStringLiteral("^(out|vout|output)$"), QRegularExpression::CaseInsensitiveOption);
     if (nets.ground < 0) return;
     for (const Component* u : doc->a_DocComps) {
         if (!inCircuit(u)) continue;
         int outNet = -1;
         bool powered = false;
         for (int i = 0; i < u->Ports.size(); ++i) {
-            if (output.match(u->Ports.at(i)->Name).hasMatch()) outNet = netOfPin(nets, u, i);
+            if (outputName(u->Ports.at(i)->Name)) outNet = netOfPin(nets, u, i);
             if (supplyName(u->Ports.at(i)->Name)) powered = true;
         }
         if (outNet < 0 || !powered || outNet == nets.ground) continue;
@@ -1235,6 +1247,12 @@ QStringList subcircuitFiles(Schematic* doc)
         if (!file.isEmpty() && !files.contains(file)) files << file;
     }
     return files;
+}
+
+QString pinRole(const QString& name)
+{
+    return supplyName(name) ? QStringLiteral("supply") : inputName(name) ? QStringLiteral("input")
+                                                       : outputName(name) ? QStringLiteral("output") : QString();
 }
 
 QList<SubcircuitFindings> checkSubcircuits(Schematic* doc, const std::function<Schematic*(const QString&)>& open)

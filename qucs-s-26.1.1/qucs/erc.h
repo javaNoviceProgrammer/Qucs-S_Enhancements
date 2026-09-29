@@ -79,6 +79,11 @@ struct SubcircuitFindings {
 /// others read from disk. A file that does not load is one error.
 QList<SubcircuitFindings> checkSubcircuits(Schematic* doc, const std::function<Schematic*(const QString&)>& open);
 
+/// What a pin's name says it is: "supply" (VCC, VEE, VDD, V+, POSRAIL ...),
+/// "input" (INP, IN-, NONINV, POSIN ...) or "output" (OUT, VOUT) - an
+/// op-amp's; empty for any other name. The check reads pins so.
+QString pinRole(const QString& name);
+
 /// How many of \a issues are errors.
 int errorCount(const QList<Issue>& issues);
 

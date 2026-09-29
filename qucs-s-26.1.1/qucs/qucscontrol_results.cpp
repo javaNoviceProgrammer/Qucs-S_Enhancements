@@ -1981,6 +1981,13 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
                     nodes.insert(node, on);
                 }
             }
+            // Parts of more than two pins none of which has a name: by number
+            // only, each with the side it is on (the pin order is the model's).
+            QJsonArray unnamed;
+            for (Component* c : sch->a_DocComps)
+                if (c->isActive == COMP_IS_ACTIVE && c->Ports.size() > 2
+                    && std::all_of(c->Ports.cbegin(), c->Ports.cend(), [](const Port* p) { return p->Name.isEmpty(); }))
+                    unnamed.append(QStringLiteral("%1: %2").arg(refOf(sch, c), pinSides(c)));
             QJsonArray owned;
             QString owner;
             for (int i = 0; i < lines.size(); ++i) {
@@ -1995,14 +2002,16 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
                 if (!owner.isEmpty())
                     owned.append(QJsonObject{{QStringLiteral("line"), i + 1}, {QStringLiteral("part"), owner}, {QStringLiteral("text"), line}});
             }
-            return jsonResult(QJsonObject{{QStringLiteral("document"), titleOf(sch)},
-                                          {QStringLiteral("simulator"), simName},
-                                          {QStringLiteral("netlist"), QJsonArray::fromStringList(lines)},
-                                          {QStringLiteral("lines"), owned},
-                                          {QStringLiteral("nodes"), nodes},
-                                          {QStringLiteral("how"), tr("'lines': each line a part wrote (its number in 'netlist', from 1); "
-                                                                     "'nodes': each node of the netlist with the pins it joins, "
-                                                                     "by number and, when the pin has one, name (0 is ground)")}});
+            QJsonObject result{{QStringLiteral("document"), titleOf(sch)},
+                               {QStringLiteral("simulator"), simName},
+                               {QStringLiteral("netlist"), QJsonArray::fromStringList(lines)},
+                               {QStringLiteral("lines"), owned},
+                               {QStringLiteral("nodes"), nodes},
+                               {QStringLiteral("how"), tr("'lines': each line a part wrote (its number in 'netlist', from 1); "
+                                                          "'nodes': each node of the netlist with the pins it joins, "
+                                                          "by number and, when the pin has one, name (0 is ground)")}};
+            if (!unnamed.isEmpty()) result.insert(QStringLiteral("pins without names"), unnamed);
+            return jsonResult(result);
         }
     }
     if (!saveAs.isEmpty()) {

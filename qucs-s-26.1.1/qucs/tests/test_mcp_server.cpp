@@ -230,6 +230,52 @@ private slots:
 
     // Results are structured: a tool's JSON as it is, a text as a summary,
     // an error as the error - and a note of what the tool did beside it.
+    // max_chars, taken by every tool (the server's, not the tool's): a
+    // longer answer comes back with its biggest lists and texts halved -
+    // "… n more" - and 'trimmed' says what was cut; a text answer is cut at
+    // its end; a short one is as it was.
+    void everyToolTakesMaxChars()
+    {
+        QString text = "<Components>\n";
+        for (int k = 0; k < 60; ++k)
+            text += QStringLiteral("  <R R%1 1 %2 %3 15 -26 0 1 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n")
+                        .arg(k + 1).arg(100 + (k % 10) * 100).arg(100 + (k / 10) * 100);
+        text += "</Components>\n";
+        QJsonObject r = callTool("new_document", {{"kind", "schematic"}});
+        r = callTool("set_schematic", {{"text", text}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QJsonDocument(r).toJson()));
+        const auto first = [](const QJsonObject& result) {
+            return result.value("content").toArray().first().toObject().value("text").toString();
+        };
+        const QString whole = first(callTool("get_schematic"));
+        QVERIFY(whole.size() > 5000);
+        r = callTool("get_schematic", {{"max_chars", 2000}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(first(r)));
+        const QString cut = first(r);
+        QVERIFY2(cut.size() <= 2000, qPrintable(QString::number(cut.size())));
+        const QJsonObject o = QJsonDocument::fromJson(cut.toUtf8()).object();
+        QVERIFY2(o.value("trimmed").toString().startsWith(QStringLiteral("to 2000 characters or less of %1, as max_chars asks: ").arg(whole.size()))
+                     && o.value("trimmed").toString().contains("components"),
+                 qPrintable(cut));
+        const QJsonArray parts = o.value("components").toArray();
+        QVERIFY2(!parts.isEmpty() && parts.last().toString().startsWith("… ") && parts.last().toString().endsWith(" more"), qPrintable(cut));
+        QVERIFY(structured(r).contains("trimmed"));   // (the structured form is of the text as cut)
+
+        // A text answer, cut at its end.
+        r = callTool("get_netlist", {{"max_chars", 300}});
+        QVERIFY2(!r.value("isError").toBool() && first(r).size() <= 300 && first(r).endsWith("a larger max_chars gives them)"), qPrintable(first(r)));
+        // A short one, as it was.
+        r = callTool("get_state", {{"max_chars", 1000000}});
+        QVERIFY(!r.value("isError").toBool() && !first(r).contains("trimmed"));
+        // Not a number of characters: refused, nothing done.
+        for (const QJsonValue& bad : {QJsonValue(50), QJsonValue("4000"), QJsonValue(2500.5)}) {
+            r = callTool("delete", {{"names", QJsonArray{"R1"}}, {"max_chars", bad}});
+            QVERIFY2(r.value("isError").toBool() && first(r).contains("max_chars is a whole number of characters, 200 or more"), qPrintable(first(r)));
+        }
+        QVERIFY(front()->getComponentByName("R1") != nullptr);
+        callTool("close_document", {{"unsaved", "discard"}});
+    }
+
     void resultsAreStructured()
     {
         QJsonObject r = callTool("new_document", {{"kind", "schematic"}});

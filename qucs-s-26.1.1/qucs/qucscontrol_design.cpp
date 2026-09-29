@@ -13,6 +13,7 @@
  */
 #include "qucscontrol.h"
 #include "qucscontrol_p.h"
+#include "erc.h"
 
 #include "dataset.h"
 #include "main.h"
@@ -325,7 +326,79 @@ double measured(const QJsonObject& spec, const QJsonObject& answer, QString* use
     return value.toDouble();
 }
 
+// A measurement 'hold' keeps within bounds while tune moves the values:
+// {"measure": {...}, "min": 50e3, "max": ...}.
+struct Hold {
+    QJsonObject spec;
+    double min = -INFINITY, max = INFINITY;
+    bool keeps(double v) const { return v >= min && v <= max; }
+    // "ac.v(out) bandwidth 42.1k, below 50k"
+    QString broken(const QString& name, double v) const
+    {
+        return v < min ? tr("%1 is %2, below %3").arg(name).arg(v, 0, 'g', 4).arg(min, 0, 'g', 4)
+                       : tr("%1 is %2, above %3").arg(name).arg(v, 0, 'g', 4).arg(max, 0, 'g', 4);
+    }
+};
+
+// tune's 'hold', read: all of the operating point, or all of the analyses,
+// as the targets are (one run gives them all).
+bool readHolds(const QJsonObject& args, bool atOperatingPoint, QList<Hold>* holds, QString* error)
+{
+    for (const QJsonValue& v : args.value(QLatin1String("hold")).toArray()) {
+        const QJsonObject item = v.toObject();
+        Hold h;
+        h.spec = item.value(QLatin1String("measure")).toObject();
+        const bool op = h.spec.contains(QLatin1String("operating_point"));
+        if ((!op && h.spec.value(QLatin1String("variable")).toString().trimmed().isEmpty())
+            || (!item.value(QLatin1String("min")).isDouble() && !item.value(QLatin1String("max")).isDouble())) {
+            *error = tr("Each of 'hold' is {\"measure\": {...as 'measure'}, \"min\": 50e3} - a 'min', a 'max' or both.");
+            return false;
+        }
+        if (op != atOperatingPoint) {
+            *error = tr("'hold' measures what the target measures: all of the operating point, or all of the analyses' "
+                        "dataset (one run gives them all).");
+            return false;
+        }
+        if (item.value(QLatin1String("min")).isDouble()) h.min = item.value(QLatin1String("min")).toDouble();
+        if (item.value(QLatin1String("max")).isDouble()) h.max = item.value(QLatin1String("max")).toDouble();
+        if (h.min > h.max) {
+            *error = tr("A hold's 'min' is above its 'max'.");
+            return false;
+        }
+        *holds << h;
+    }
+    return true;
+}
+
 } // namespace
+
+double QucsControl::measureRun(const QJsonObject& spec, const QJsonObject& simulated, const QString& path, const QJsonObject& args,
+                               QString* used, QString* why)
+{
+    QJsonObject answer = simulated;
+    if (!spec.contains(QLatin1String("operating_point"))) {
+        QJsonObject read{{QStringLiteral("path"), path},
+                         {QStringLiteral("variables"), QJsonArray{spec.value(QLatin1String("variable"))}},
+                         {QStringLiteral("points"), 0}};
+        for (const char* key : {"from", "to", "level", "tolerance", "fundamental", "harmonics", "periods", "decibels", "form", "simulator"})
+            if (spec.contains(QLatin1String(key))) read.insert(QLatin1String(key), spec.value(QLatin1String(key)));
+        if (args.contains(QLatin1String("simulator")) && !read.contains(QStringLiteral("simulator")))
+            read.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
+        if (spec.contains(QLatin1String("at"))) read.insert(QStringLiteral("at"), QJsonArray{spec.value(QLatin1String("at"))});
+        const QString what = spec.value(QLatin1String("what")).toString(QStringLiteral("final")).trimmed().toLower();
+        static const QStringList stats{QStringLiteral("min"), QStringLiteral("max"), QStringLiteral("mean"), QStringLiteral("rms"),
+                                       QStringLiteral("initial"), QStringLiteral("final"), QStringLiteral("peak_to_peak"),
+                                       QStringLiteral("peak to peak")};
+        if (!spec.contains(QLatin1String("at")) && !stats.contains(what)) read.insert(QStringLiteral("measure"), QJsonArray{what});
+        const QJsonObject got = getDataset(read);
+        if (got.value(QStringLiteral("isError")).toBool()) {
+            *why = tr("the result could not be read: %1").arg(textOf(got));
+            return NAN;
+        }
+        answer = QJsonDocument::fromJson(textOf(got).toUtf8()).object();
+    }
+    return measured(spec, answer, used, why);
+}
 
 // Several knobs at once, for as many targets (Rf and Rg for a gain and an
 // input resistance): Broyden's method on each value's place in its range -
@@ -411,6 +484,12 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
     const int most = std::clamp(args.value(QLatin1String("max_runs")).toInt(24), 4, 60);
     const bool apply = args.value(QLatin1String("apply")).toBool(true);
     const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(120), 5, 3600);
+    QList<Hold> holds;
+    if (!readHolds(args, atOperatingPoint, &holds, &error)) {
+        done(errorResult(error));
+        return;
+    }
+    const bool compare = args.value(QLatin1String("compare")).toBool() || !holds.isEmpty();
     QString savedNote;
     if (sch->getDocName().isEmpty() && !saveInScratch(sch, &savedNote, &error)) {
         done(errorResult(error));
@@ -438,9 +517,13 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
         QStringList texts;
         QList<double> measured;
         double worst = INFINITY;   // (the largest miss, in tolerances)
+        QList<double> held;        // the hold measurements
     };
     struct State {
         QList<Run> runs;
+        QStringList targetNames, holdNames;     // what each target and hold measured
+        int before = -1;                        // the run of the values as they were ('compare')
+        bool beforeTried = false;
         std::vector<double> u, f;               // where it is, its misses (scaled)
         std::vector<std::vector<double>> J;     // d miss / d place
         int column = 0;                         // the first Jacobian: the knob moved next
@@ -456,14 +539,19 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
         return f;
     };
     auto finishUp = std::make_shared<std::function<void(const QString&)>>();
+    // A run of the values as written, measured.
+    auto evaluateTexts = std::make_shared<std::function<void(const QStringList&, std::function<void(const QList<double>&)>)>>();
     auto evaluate = std::make_shared<std::function<void(const std::vector<double>&, std::function<void(const QList<double>&)>)>>();
-    *evaluate = [=, this](const std::vector<double>& u, std::function<void(const QList<double>&)> then) {
+    *evaluate = [=](const std::vector<double>& u, std::function<void(const QList<double>&)> then) {
+        QStringList texts;
+        for (int i = 0; i < n; ++i) texts << valueText(valueAt(i, std::clamp(u[i], 0.0, 1.0)), knobs.at(i).unit);
+        (*evaluateTexts)(texts, then);
+    };
+    *evaluateTexts = [=, this](const QStringList& texts, std::function<void(const QList<double>&)> then) {
         if (!doc) {
             (*finishUp)(tr("The schematic was closed."));
             return;
         }
-        QStringList texts;
-        for (int i = 0; i < n; ++i) texts << valueText(valueAt(i, std::clamp(u[i], 0.0, 1.0)), knobs.at(i).unit);
         setValues(texts);
         QJsonObject run{{QStringLiteral("path"), path}, {QStringLiteral("timeout"), timeout}};
         if (atOperatingPoint) run.insert(QStringLiteral("operating_point"), true);
@@ -480,38 +568,29 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
                 return;
             }
             QList<double> m;
-            for (const Target& t : std::as_const(targets)) {
-                QJsonObject answer = result;
-                if (!atOperatingPoint) {
-                    QJsonObject read{{QStringLiteral("path"), path},
-                                     {QStringLiteral("variables"), QJsonArray{t.spec.value(QLatin1String("variable"))}},
-                                     {QStringLiteral("points"), 0}};
-                    for (const char* key : {"from", "to", "level", "tolerance", "fundamental", "harmonics", "periods", "decibels", "form", "simulator"})
-                        if (t.spec.contains(QLatin1String(key))) read.insert(QLatin1String(key), t.spec.value(QLatin1String(key)));
-                    if (args.contains(QLatin1String("simulator")) && !read.contains(QStringLiteral("simulator")))
-                        read.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
-                    if (t.spec.contains(QLatin1String("at"))) read.insert(QStringLiteral("at"), QJsonArray{t.spec.value(QLatin1String("at"))});
-                    const QString what = t.spec.value(QLatin1String("what")).toString(QStringLiteral("final")).trimmed().toLower();
-                    static const QStringList stats{QStringLiteral("min"), QStringLiteral("max"), QStringLiteral("mean"), QStringLiteral("rms"),
-                                                   QStringLiteral("initial"), QStringLiteral("final"), QStringLiteral("peak_to_peak"),
-                                                   QStringLiteral("peak to peak")};
-                    if (!t.spec.contains(QLatin1String("at")) && !stats.contains(what)) read.insert(QStringLiteral("measure"), QJsonArray{what});
-                    const QJsonObject got = getDataset(read);
-                    if (got.value(QStringLiteral("isError")).toBool()) {
-                        (*finishUp)(tr("The result could not be read: %1").arg(textOf(got)));
-                        return;
-                    }
-                    answer = QJsonDocument::fromJson(textOf(got).toUtf8()).object();
-                }
+            for (int j = 0; j < targets.size(); ++j) {
                 QString why, used;
-                const double value = measured(t.spec, answer, &used, &why);
+                const double value = measureRun(targets.at(j).spec, result, path, args, &used, &why);
                 if (std::isnan(value)) {
                     (*finishUp)(tr("With %1 nothing could be measured: %2.").arg(said.join(QStringLiteral(", ")), why));
                     return;
                 }
                 m << value;
+                if (state->targetNames.size() <= j) state->targetNames << used;
+            }
+            QList<double> held;
+            for (int j = 0; j < holds.size(); ++j) {
+                QString why, used;
+                const double value = measureRun(holds.at(j).spec, result, path, args, &used, &why);
+                if (std::isnan(value)) {
+                    (*finishUp)(tr("With %1 hold %2 could not be measured: %3.").arg(said.join(QStringLiteral(", "))).arg(j + 1).arg(why));
+                    return;
+                }
+                held << value;
+                if (state->holdNames.size() <= j) state->holdNames << used;
             }
             Run run{texts, m};
+            run.held = held;
             run.worst = 0;
             for (int j = 0; j < targets.size(); ++j)
                 run.worst = std::max(run.worst, std::abs(m.at(j) - targets.at(j).value) / targets.at(j).tolerance);
@@ -522,6 +601,17 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
 
     auto step = std::make_shared<std::function<void()>>();
     *step = [=, this]() {
+        // First the values as they are, for 'compare' (and 'hold').
+        if (compare && !state->beforeTried) {
+            state->beforeTried = true;
+            QStringList was;
+            for (const Knob& k : std::as_const(knobs)) was << k.was;
+            (*evaluateTexts)(was, [state, step](const QList<double>&) {
+                state->before = int(state->runs.size()) - 1;
+                (*step)();
+            });
+            return;
+        }
         if (!state->runs.isEmpty() && state->runs.last().worst <= 1) {
             (*finishUp)(QString());
             return;
@@ -631,25 +721,70 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
             done(errorResult(tr("The schematic was closed while it was tuned.")));
             return;
         }
-        int best = -1;
-        for (int r = 0; r < state->runs.size(); ++r)
-            if (best < 0 || state->runs.at(r).worst < state->runs.at(best).worst) best = r;
+        // The best run: the nearest the targets of those that keep every hold.
+        const auto keeps = [&](const Run& r) {
+            for (int j = 0; j < holds.size(); ++j)
+                if (j >= r.held.size() || !holds.at(j).keeps(r.held.at(j))) return false;
+            return true;
+        };
+        int best = -1, closest = -1;
+        for (int r = 0; r < state->runs.size(); ++r) {
+            if (closest < 0 || state->runs.at(r).worst < state->runs.at(closest).worst) closest = r;
+            if (keeps(state->runs.at(r)) && (best < 0 || state->runs.at(r).worst < state->runs.at(best).worst)) best = r;
+        }
         QStringList was;
         for (const Knob& k : std::as_const(knobs)) was << k.was;
         setValues(was);
         QJsonArray runs;
-        for (const Run& r : std::as_const(state->runs)) {
+        for (int r = 0; r < state->runs.size(); ++r) {
+            const Run& run = state->runs.at(r);
             QJsonObject values, got;
-            for (int i = 0; i < n; ++i) values.insert(knobs.at(i).name, r.texts.at(i));
+            for (int i = 0; i < n; ++i) values.insert(knobs.at(i).name, run.texts.at(i));
             QJsonArray measures;
-            for (double m : r.measured) measures.append(rounded(m));
-            runs.append(QJsonObject{{QStringLiteral("values"), values}, {QStringLiteral("measured"), measures}});
+            for (double m : run.measured) measures.append(rounded(m));
+            QJsonObject row{{QStringLiteral("values"), values}, {QStringLiteral("measured"), measures}};
+            if (!holds.isEmpty()) {
+                QJsonArray hv;
+                for (double v : run.held) hv.append(rounded(v));
+                row.insert(QStringLiteral("hold"), hv);
+                row.insert(QStringLiteral("keeps"), keeps(run));
+            }
+            if (r == state->before) row.insert(QStringLiteral("as it was"), true);
+            runs.append(row);
         }
         QJsonObject result{{QStringLiteral("runs"), runs}};
         if (!savedNote.isEmpty()) result.insert(QStringLiteral("saved"), savedNote);
         if (!stopped.isEmpty()) result.insert(QStringLiteral("stopped"), stopped);
+        if (!holds.isEmpty() && closest >= 0 && closest != best && state->runs.at(closest).worst <= 1) {
+            QStringList broken, values;
+            for (int j = 0; j < holds.size(); ++j)
+                if (!holds.at(j).keeps(state->runs.at(closest).held.at(j)))
+                    broken << holds.at(j).broken(state->holdNames.value(j), state->runs.at(closest).held.at(j));
+            for (int i = 0; i < n; ++i) values << QStringLiteral("%1 = %2").arg(knobs.at(i).name, state->runs.at(closest).texts.at(i));
+            result.insert(QStringLiteral("held back"), tr("%1 gives every target, but %2 - not taken").arg(values.join(QStringLiteral(", ")),
+                                                                                                           broken.join(QStringLiteral("; "))));
+        }
+        if (compare && state->before >= 0) {
+            const int after = best >= 0 ? best : closest;
+            QJsonArray table;
+            const auto row = [&](const QString& what, double beforeValue, double afterValue) {
+                QJsonObject r{{QStringLiteral("measured"), what}, {QStringLiteral("before"), rounded(beforeValue)}};
+                if (after >= 0) {
+                    r.insert(QStringLiteral("after"), rounded(afterValue));
+                    r.insert(QStringLiteral("change"), rounded(afterValue - beforeValue));
+                }
+                table.append(r);
+            };
+            for (int j = 0; j < targets.size(); ++j)
+                row(state->targetNames.value(j), state->runs.at(state->before).measured.at(j),
+                    after >= 0 ? state->runs.at(after).measured.at(j) : NAN);
+            for (int j = 0; j < holds.size(); ++j)
+                row(state->holdNames.value(j), state->runs.at(state->before).held.at(j), after >= 0 ? state->runs.at(after).held.at(j) : NAN);
+            result.insert(QStringLiteral("before and after"), table);
+        }
         if (best < 0) {
-            result.insert(QStringLiteral("set"), tr("Nothing changed."));
+            result.insert(QStringLiteral("set"), holds.isEmpty() || closest < 0 ? tr("Nothing changed.")
+                                                                                : tr("Nothing changed: no run kept every hold."));
             done(jsonResult(result));
             return;
         }
@@ -674,8 +809,11 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
             result.insert(QStringLiteral("set"), tr("The values found are set: one step to undo."));
         } else {
             result.insert(QStringLiteral("set"), !apply ? tr("not set ('apply' false): the knobs are as they were.")
-                                                        : tr("not set: no run gave every target within its tolerance; the knobs are as "
-                                                             "they were. The closest run is 'knobs' (edit_component sets them)."));
+                                                        : holds.isEmpty()
+                                                              ? tr("not set: no run gave every target within its tolerance; the knobs are as "
+                                                                   "they were. The closest run is 'knobs' (edit_component sets them).")
+                                                              : tr("not set: no run gave every target within its tolerance and kept every "
+                                                                   "hold; the knobs are as they were. The closest that keeps them is 'knobs'."));
         }
         // The dataset of the values set (a run again, when the last was of others).
         if (!(apply && reached) || best == state->runs.size() - 1) {
@@ -767,6 +905,14 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
     const QString was = p->Value;
     const QString unit = baseUnit(was);
     const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(120), 5, 3600);
+    // What must stay within bounds; the measurements before and after (a
+    // run of the value as it is first).
+    QList<Hold> holds;
+    if (!readHolds(args, atOperatingPoint, &holds, &error)) {
+        done(errorResult(error));
+        return;
+    }
+    const bool compare = args.value(QLatin1String("compare")).toBool() || !holds.isEmpty();
 
     struct State {
         QList<std::pair<double, double>> runs;   // value, measured
@@ -786,6 +932,10 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         bool logX = false, logM = false;
         int next = 0;                            // the index of 'values' to try next
         QString lastSet;                         // the value it set last (a run that failed too)
+        QList<QList<double>> held;               // each run's hold measurements
+        QStringList holdNames;                   // what each hold measured
+        int before = -1;                         // the run of the value as it was ('compare')
+        bool beforeTried = false;
     };
     // Untitled: saved in the scratch folder first (each run simulates the
     // file's schematic), and said.
@@ -832,36 +982,27 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
                                                                                                 : errors.first().toObject().value(QStringLiteral("message")).toString()));
                 return;
             }
-            if (!atOperatingPoint) {
-                QJsonObject read{{QStringLiteral("path"), path},
-                                 {QStringLiteral("variables"), QJsonArray{spec.value(QLatin1String("variable"))}},
-                                 {QStringLiteral("points"), 0}};
-                for (const char* key : {"from", "to", "level", "tolerance", "fundamental", "harmonics", "periods", "decibels", "form", "simulator"})
-                    if (spec.contains(QLatin1String(key))) read.insert(QLatin1String(key), spec.value(QLatin1String(key)));
-                if (args.contains(QLatin1String("simulator")) && !read.contains(QStringLiteral("simulator")))
-                    read.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
-                if (spec.contains(QLatin1String("at"))) read.insert(QStringLiteral("at"), QJsonArray{spec.value(QLatin1String("at"))});
-                const QString what = spec.value(QLatin1String("what")).toString(QStringLiteral("final")).trimmed().toLower();
-                static const QStringList stats{QStringLiteral("min"), QStringLiteral("max"), QStringLiteral("mean"), QStringLiteral("rms"),
-                                               QStringLiteral("initial"), QStringLiteral("final"), QStringLiteral("peak_to_peak"),
-                                               QStringLiteral("peak to peak")};
-                if (!spec.contains(QLatin1String("at")) && !stats.contains(what)) read.insert(QStringLiteral("measure"), QJsonArray{what});
-                const QJsonObject got = getDataset(read);
-                if (got.value(QStringLiteral("isError")).toBool()) {
-                    (*finishUp)(tr("The result could not be read: %1").arg(textOf(got)));
-                    return;
-                }
-                answer = QJsonDocument::fromJson(textOf(got).toUtf8()).object();
-            }
             QString why, used;
-            const double m = measured(spec, answer, &used, &why);
+            const double m = measureRun(spec, answer, path, args, &used, &why);
             if (std::isnan(m)) {
                 (*finishUp)(tr("With %1 = %2 nothing could be measured: %3.").arg(property, text, why));
                 return;
             }
+            QList<double> held;
+            for (int j = 0; j < holds.size(); ++j) {
+                QString holdUsed, holdWhy;
+                const double v = measureRun(holds.at(j).spec, answer, path, args, &holdUsed, &holdWhy);
+                if (std::isnan(v)) {
+                    (*finishUp)(tr("With %1 = %2 hold %3 could not be measured: %4.").arg(property, text).arg(j + 1).arg(holdWhy));
+                    return;
+                }
+                held << v;
+                if (state->holdNames.size() <= j) state->holdNames << holdUsed;
+            }
             if (state->used.isEmpty()) state->used = used;
             state->runs.append({x, m});
             state->texts.append(text);
+            state->held.append(held);
             then(m);
         });
     };
@@ -869,6 +1010,19 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
     // The search.
     auto step = std::make_shared<std::function<void()>>();
     *step = [=]() {
+        // First the value as it is, for 'compare' (and 'hold').
+        if (compare && !state->beforeTried) {
+            state->beforeTried = true;
+            double x = 0;
+            if (valueOf(QJsonValue(was), &x)) {
+                (*evaluate)(x, [state, step](double) {
+                    state->before = int(state->runs.size()) - 1;
+                    (*step)();
+                }, was);
+                return;
+            }
+            state->notes << tr("no run of the value as it was: %1 is not a number").arg(was);
+        }
         if (!values.isEmpty()) {
             if (state->next >= values.size()) {
                 (*finishUp)(QString());
@@ -968,14 +1122,33 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
             done(errorResult(tr("The schematic was closed while it was tuned.")));
             return;
         }
-        // The best value: the one closest to the target (or, for a list
-        // without one, none - the table is the answer).
-        int best = -1;
-        for (int i = 0; i < state->runs.size(); ++i)
-            if (hasTarget && (best < 0 || std::abs(state->runs.at(i).second - target) < std::abs(state->runs.at(best).second - target))) best = i;
+        // The best value: the one closest to the target that keeps every
+        // hold (or, for a list without a target, none - the table is the
+        // answer).
+        const auto keeps = [&](int i) {
+            for (int j = 0; j < holds.size(); ++j)
+                if (i >= state->held.size() || j >= state->held.at(i).size() || !holds.at(j).keeps(state->held.at(i).at(j))) return false;
+            return true;
+        };
+        int best = -1, closest = -1;
+        for (int i = 0; i < state->runs.size(); ++i) {
+            if (!hasTarget) continue;
+            const double off = std::abs(state->runs.at(i).second - target);
+            if (closest < 0 || off < std::abs(state->runs.at(closest).second - target)) closest = i;
+            if (keeps(i) && (best < 0 || off < std::abs(state->runs.at(best).second - target))) best = i;
+        }
         QJsonArray runs;
-        for (int i = 0; i < state->runs.size(); ++i)
-            runs.append(QJsonObject{{QStringLiteral("value"), state->texts.at(i)}, {QStringLiteral("measured"), rounded(state->runs.at(i).second)}});
+        for (int i = 0; i < state->runs.size(); ++i) {
+            QJsonObject row{{QStringLiteral("value"), state->texts.at(i)}, {QStringLiteral("measured"), rounded(state->runs.at(i).second)}};
+            if (!holds.isEmpty()) {
+                QJsonArray hv;
+                for (double v : state->held.at(i)) hv.append(rounded(v));
+                row.insert(QStringLiteral("hold"), hv);
+                row.insert(QStringLiteral("keeps"), keeps(i));
+            }
+            if (i == state->before) row.insert(QStringLiteral("as it was"), true);
+            runs.append(row);
+        }
         // (The best value as it was set: a value of 'values' as written.)
         const QString bestText = best >= 0 ? state->texts.at(best) : QString();
         QJsonObject result{{QStringLiteral("component"), name},
@@ -985,6 +1158,43 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
                            {QStringLiteral("runs"), runs}};
         if (hasTarget) result.insert(QStringLiteral("target"), target);
         if (!savedNote.isEmpty()) result.insert(QStringLiteral("saved"), savedNote);
+        if (!holds.isEmpty()) {
+            QJsonArray kept;
+            for (int j = 0; j < holds.size(); ++j) {
+                QJsonObject h{{QStringLiteral("measured"), state->holdNames.value(j, holds.at(j).spec.value(QLatin1String("variable")).toString())}};
+                if (std::isfinite(holds.at(j).min)) h.insert(QStringLiteral("min"), holds.at(j).min);
+                if (std::isfinite(holds.at(j).max)) h.insert(QStringLiteral("max"), holds.at(j).max);
+                kept.append(h);
+            }
+            result.insert(QStringLiteral("hold"), kept);
+            // The target reached, but not keeping what it was to keep: said.
+            if (closest >= 0 && closest != best && std::abs(state->runs.at(closest).second - target) <= tolerance) {
+                QStringList broken;
+                for (int j = 0; j < holds.size(); ++j)
+                    if (!holds.at(j).keeps(state->held.at(closest).at(j)))
+                        broken << holds.at(j).broken(state->holdNames.value(j), state->held.at(closest).at(j));
+                result.insert(QStringLiteral("held back"), tr("%1 = %2 gives the target, but %3 - not taken").arg(property, state->texts.at(closest),
+                                                                                                                  broken.join(QStringLiteral("; "))));
+            }
+        }
+        // Every measurement, as it was and with the value found.
+        if (compare && state->before >= 0) {
+            const int after = best >= 0 ? best : closest;
+            QJsonArray table;
+            const auto row = [&](const QString& what, double beforeValue, double afterValue) {
+                QJsonObject r{{QStringLiteral("measured"), what}, {QStringLiteral("before"), rounded(beforeValue)}};
+                if (after >= 0) {
+                    r.insert(QStringLiteral("after"), rounded(afterValue));
+                    r.insert(QStringLiteral("change"), rounded(afterValue - beforeValue));
+                }
+                table.append(r);
+            };
+            row(state->used, state->runs.at(state->before).second, after >= 0 ? state->runs.at(after).second : NAN);
+            for (int j = 0; j < holds.size(); ++j)
+                row(state->holdNames.value(j), state->held.at(state->before).at(j), after >= 0 ? state->held.at(after).at(j) : NAN);
+            result.insert(QStringLiteral("before and after"), table);
+        }
+        if (!state->notes.isEmpty()) result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(state->notes));
         // Changed while it was tuned (the user, in the window): left as they
         // made it - not put back to what it was, and nothing applied over it.
         const QString lastSet = state->lastSet.isEmpty() ? was : state->lastSet;
@@ -1021,9 +1231,11 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
             result.insert(QStringLiteral("gives"), rounded(m));
             result.insert(QStringLiteral("off by"), rounded(m - target));
             result.insert(QStringLiteral("within tolerance"), false);
-            result.insert(QStringLiteral("set"), tr("not set: no value tried gave the target, within %1; %2 is %3 as it was. The closest, "
+            result.insert(QStringLiteral("set"), tr("not set: no value tried gave the target, within %1%6; %2 is %3 as it was. The closest%7, "
                                                     "%4, gives %5 (edit_component sets it).")
-                                                     .arg(rounded(tolerance)).arg(property, was, bestText).arg(rounded(m)));
+                                                     .arg(rounded(tolerance)).arg(property, was, bestText).arg(rounded(m))
+                                                     .arg(holds.isEmpty() ? QString() : tr(", keeping every hold"),
+                                                          holds.isEmpty() ? QString() : tr(" that keeps them")));
         } else if (best >= 0) {
             const double m = state->runs.at(best).second;
             result.insert(QStringLiteral("value"), bestText);
@@ -1198,7 +1410,126 @@ const Tested& testedParts()
     return tested;
 }
 
+// How the run of every library part under ngspice found \a library's
+// \a part, and whether it passed.
+QString testedText(const QString& library, const QString& part, bool* passes)
+{
+    const Tested& tested = testedParts();
+    const QJsonObject outcome = tested.parts.value(library + QLatin1Char('/') + part);
+    *passes = outcome.value(QLatin1String("passes")).toBool();
+    return outcome.isEmpty() ? (tested.parts.isEmpty() ? tr("not tested (no test of the libraries here)") : tr("not tested"))
+           : outcome.value(QLatin1String("untested")).toBool() ? tr("not tested - %1").arg(outcome.value(QLatin1String("why")).toString())
+           : *passes ? tr("tested: it netlists and its operating point converges, each pin to ground through 1 MOhm "
+                          "(%1, ngspice %2) - not a test of what it does").arg(tested.date, tested.ngspice)
+                     : tr("tested: fails - %1 (%2, ngspice %3)").arg(outcome.value(QLatin1String("why")).toString(), tested.date, tested.ngspice);
+}
+
 } // namespace
+
+// A library part in one call: its pins (order, names, sides, roles), what
+// its model is, its supplies, how the test of the libraries found it.
+QJsonObject QucsControl::describePart(const QJsonObject& args)
+{
+    const QString wantedLibrary = args.value(QLatin1String("library")).toString().trimmed();
+    const QString part = args.value(QLatin1String("part")).toString().trimmed();
+    if (wantedLibrary.isEmpty() || part.isEmpty())
+        return errorResult(tr("Say which part: 'library' and 'part', as find_library_component gives them (OpAmps, uA741)."));
+    // Its block in its library: the installed ones, then the user's.
+    QString library, body;
+    for (const QString& dirName : {QucsSettings.LibDir, QucsSettings.qucsWorkspaceDir.filePath(QStringLiteral("user_lib"))}) {
+        for (const QFileInfo& fi : QDir(dirName).entryInfoList({QStringLiteral("*.lib")}, QDir::Files, QDir::Name)) {
+            if (fi.completeBaseName().compare(wantedLibrary, Qt::CaseInsensitive) != 0) continue;
+            QFile f(fi.filePath());
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+            const QRegularExpression block(QStringLiteral("<Component\\s+%1>(.*?)</Component>").arg(QRegularExpression::escape(part)),
+                                           QRegularExpression::DotMatchesEverythingOption);
+            if (const QRegularExpressionMatch m = block.match(QString::fromUtf8(f.readAll())); m.hasMatch()) {
+                library = fi.completeBaseName();
+                body = m.captured(1);
+                break;
+            }
+        }
+        if (!body.isEmpty()) break;
+    }
+    if (body.isEmpty())
+        return errorResult(tr("There is no part %1 in a library %2 here: find_library_component finds one by its name or values.")
+                               .arg(part, wantedLibrary));
+    const auto section = [&body](const QString& name) {
+        return body.section(QStringLiteral("<%1>").arg(name), 1).section(QStringLiteral("</%1>").arg(name), 0, 0).trimmed();
+    };
+    const QString description = section(QStringLiteral("Description"));
+    const QString modelLine = section(QStringLiteral("Model"));
+    const QString spice = section(QStringLiteral("Spice"));
+    const bool oneLine = modelLine.startsWith(QLatin1Char('<')) && modelLine.endsWith(QLatin1Char('>')) && !modelLine.contains(QLatin1Char('\n'));
+    const QString placedAs = oneLine ? modelLine.mid(1).section(QLatin1Char(' '), 0, 0) : QString();
+
+    // The part as add_component makes it: its pins.
+    std::unique_ptr<Component> c(newComponent(oneLine ? placedAs : QStringLiteral("Lib")));
+    if (c == nullptr) return errorResult(tr("%1's model is a %2, which this Qucs-S does not have.").arg(part, placedAs));
+    if (!oneLine && c->Props.size() >= 2) {
+        c->Props.at(0)->Value = library;
+        c->Props.at(1)->Value = part;
+    }
+    c->recreate();
+    QJsonArray pins;
+    QStringList supplies;
+    for (int i = 0; i < c->Ports.size(); ++i) {
+        const QString name = c->Ports.at(i)->Name;
+        QJsonObject pin{{QStringLiteral("pin"), i + 1}, {QStringLiteral("side"), pinSide(c.get(), i)}};
+        if (!name.isEmpty()) pin.insert(QStringLiteral("name"), name);
+        if (const QString role = qucs_s::erc::pinRole(name); !role.isEmpty()) pin.insert(QStringLiteral("role"), role);
+        if (qucs_s::erc::pinRole(name) == QLatin1String("supply")) supplies << name;
+        pins.append(pin);
+    }
+
+    // What its model is, by the elements the simulator gets: the SPICE
+    // model when it has one, else the Qucs one (Type:Name lines).
+    QString kind;
+    if (oneLine) {
+        kind = tr("one component: placed as a %1 with the library's values").arg(placedAs);
+    } else {
+        int transistors = 0, controlled = 0, diodes = 0, passives = 0, calls = 0, elements = 0;
+        static const QStringList transistorTypes{QStringLiteral("BJT"), QStringLiteral("_BJT"), QStringLiteral("MOSFET"),
+                                                 QStringLiteral("_MOSFET"), QStringLiteral("JFET"), QStringLiteral("MESFET")};
+        static const QStringList controlledTypes{QStringLiteral("VCVS"), QStringLiteral("VCCS"), QStringLiteral("CCCS"),
+                                                 QStringLiteral("CCVS"), QStringLiteral("EDD"), QStringLiteral("RFEDD")};
+        for (const QString& raw : (spice.isEmpty() ? modelLine : spice).split(QLatin1Char('\n'))) {
+            const QString line = raw.trimmed();
+            if (line.isEmpty() || line.startsWith(QLatin1Char('*')) || line.startsWith(QLatin1Char('+')) || line.startsWith(QLatin1Char('.')))
+                continue;
+            ++elements;
+            const QString type = spice.isEmpty() ? line.section(QLatin1Char(':'), 0, 0) : QString(line.at(0).toUpper());
+            if (transistorTypes.contains(type) || (type.size() == 1 && QStringLiteral("QMJZ").contains(type))) ++transistors;
+            else if (controlledTypes.contains(type) || (type.size() == 1 && QStringLiteral("EFGHB").contains(type))) ++controlled;
+            else if (type == QLatin1String("Diode") || type == QLatin1String("D")) ++diodes;
+            else if (type == QLatin1String("R") || type == QLatin1String("C") || type == QLatin1String("L")) ++passives;
+            else if (type == QLatin1String("Sub") || type == QLatin1String("X")) ++calls;
+        }
+        const QString counts = tr("%1 transistors, %2 controlled sources, %3 diodes, %4 R/C/L, %5 subcircuit calls")
+                                   .arg(transistors).arg(controlled).arg(diodes).arg(passives).arg(calls);
+        kind = transistors >= 6 && controlled == 0 ? tr("transistor level (%1): slow to simulate, true to the silicon's limits").arg(counts)
+             : controlled > 0 ? tr("macromodel (%1): fast, as good as its maker's fit").arg(counts)
+             : tr("subcircuit of %1 elements (%2)").arg(elements).arg(counts);
+    }
+    bool passes = false;
+    QJsonObject result{{QStringLiteral("library"), library},
+                       {QStringLiteral("part"), part},
+                       {QStringLiteral("description"), description.simplified()},
+                       {QStringLiteral("pins"), pins},
+                       {QStringLiteral("model"), kind},
+                       {QStringLiteral("ngspice"), testedText(library, part, &passes)},
+                       {QStringLiteral("place"), QJsonObject{{QStringLiteral("type"), QStringLiteral("Lib")},
+                                                             {QStringLiteral("properties"), QJsonObject{{QStringLiteral("Lib"), library},
+                                                                                                        {QStringLiteral("Comp"), part}}}}}};
+    if (!description.isEmpty()) result.insert(QStringLiteral("note"), description.section(QLatin1Char('\n'), 0, 0).simplified());
+    if (!supplies.isEmpty()) result.insert(QStringLiteral("supply pins"), QJsonArray::fromStringList(supplies));
+    if (oneLine) result.insert(QStringLiteral("placed as"), placedAs);
+    if (!c->Ports.isEmpty() && std::all_of(c->Ports.cbegin(), c->Ports.cend(), [](const Port* p) { return p->Name.isEmpty(); })
+        && c->Ports.size() > 2)
+        result.insert(QStringLiteral("pins without names"),
+                      tr("wired by number: its model's pin order is the only guide (the sides above say where each is)"));
+    return jsonResult(result);
+}
 
 QJsonObject QucsControl::findLibraryComponent(const QJsonObject& args)
 {
@@ -1300,9 +1631,8 @@ QJsonObject QucsControl::findLibraryComponent(const QJsonObject& args)
                 }
                 if (!all) continue;
                 // As the run of every part under ngspice found it.
-                const Tested& tested = testedParts();
-                const QJsonObject outcome = tested.parts.value(library + QLatin1Char('/') + name);
-                const bool passes = outcome.value(QLatin1String("passes")).toBool();
+                bool passes = false;
+                const QString outcome = testedText(library, name, &passes);
                 if (onlyTested && !passes) continue;
                 if (const int t = int(names.indexOf(QStringLiteral("Type"))); t >= 0) shown.insert(QStringLiteral("Type"), values.value(t));
                 QJsonObject o{{QStringLiteral("library"), library},
@@ -1318,12 +1648,7 @@ QJsonObject QucsControl::findLibraryComponent(const QJsonObject& args)
                 // add_component says it).
                 if (modelLine.startsWith(QLatin1Char('<')) && modelLine.endsWith(QLatin1Char('>')) && !modelLine.contains(QLatin1Char('\n')))
                     o.insert(QStringLiteral("placed as"), type);
-                o.insert(QStringLiteral("ngspice"),
-                         outcome.isEmpty() ? (tested.parts.isEmpty() ? tr("not tested (no test of the libraries here)") : tr("not tested"))
-                         : outcome.value(QLatin1String("untested")).toBool() ? tr("not tested - %1").arg(outcome.value(QLatin1String("why")).toString())
-                         : passes ? tr("tested: it netlists and its operating point converges, each pin to ground through 1 MOhm "
-                                       "(%1, ngspice %2) - not a test of what it does").arg(tested.date, tested.ngspice)
-                                  : tr("tested: fails - %1 (%2, ngspice %3)").arg(outcome.value(QLatin1String("why")).toString(), tested.date, tested.ngspice));
+                o.insert(QStringLiteral("ngspice"), outcome);
                 found.append(Found{o, score});
             }
         }
@@ -2123,6 +2448,8 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
         if (title.startsWith(QLatin1Char(';'))) title = title.mid(1).trimmed();
         raw.removeAt(firstAt);
     }
+    // A title of the caller's, in place of the netlist's.
+    if (const QString given = args.value(QLatin1String("title")).toString().simplified(); !given.isEmpty()) title = given;
     QStringList lines = netlistLines(raw.join(QLatin1Char('\n')));
 
     // What is in it.
@@ -2489,8 +2816,14 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
     QJsonObject newDoc;
     Schematic* sch = schematic(newDoc, &error, true);
     if (sch == nullptr) return errorResult(error);
-    const QString content = QStringLiteral("<Components>\n%1\n</Components>\n<Wires>\n%2\n</Wires>\n")
-                                .arg(componentLines.join(QLatin1Char('\n')), wireLines.join(QLatin1Char('\n')));
+    QString content = QStringLiteral("<Components>\n%1\n</Components>\n<Wires>\n%2\n</Wires>\n")
+                          .arg(componentLines.join(QLatin1Char('\n')), wireLines.join(QLatin1Char('\n')));
+    // The title, a text above the parts (which start at 200, 200).
+    if (!title.isEmpty()) {
+        QString text = title.left(200);
+        text.replace(QLatin1Char('"'), QLatin1Char('\'')).replace(QLatin1Char('\\'), QLatin1Char('/'));
+        content += QStringLiteral("<Paintings>\n  <Text 100 60 14 #000000 0 \"%1\">\n</Paintings>\n").arg(text);
+    }
     QStringList notes;
     if (!sch->replaceContent(content, &error, &notes)) return errorResult(tr("The schematic made of it does not read: %1").arg(error));
     closeUntouched(sch);
