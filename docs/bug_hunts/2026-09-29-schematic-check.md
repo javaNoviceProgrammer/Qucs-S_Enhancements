@@ -19,7 +19,7 @@ after each run. Methods:
 3. **Reading the check against the netlister**: what each rule counts as a part, a net and a
    ground, and what the netlist writes for the same drawing.
 
-*Status:* A1-A4 and B1-B2 fixed in `5d7c0cf`, with tests in `test_erc`; each fix
+*Status:* A1-A4 and B1-B2 fixed in `5d7c0cf`, with tests in `test_erc`, B3 in `101bb0a`; each fix
 was broken on purpose and its test failed (11 breaks, each caught). C1 is the survey itself.
 The examples of section D are left as they are. The survey went from 6 files with errors and 15
 with warnings (every file checked for ngspice) to 4 and 7, and what is left is section D.
@@ -32,6 +32,7 @@ with warnings (every file checked for ngspice) to 4 and 7, and what is left is s
 | A4 | medium | SPICE library parts | A SPICE library part that cannot be loaded is told only by its symptoms, never its cause |
 | B1 | medium | subcircuits | A subcircuit named without `.sch`, as Qucs wrote them, is not found: it has no pins |
 | B2 | medium | SPICE libraries | A library named by its path in another installation is not found in this one |
+| B3 | medium | macOS package | The macOS package leaves out the Xyce digital parts' symbols: their wires meet no pin |
 | C1 | low | the survey | Every example was checked for ngspice, without the installed symbols |
 | D1-D6 | - | examples | What the check says of six examples, rightly |
 
@@ -129,6 +130,19 @@ beside the schematic, in the project, its `user_lib` and the path list, but not 
 that ships the same file. Every part of those examples was a box without pins, on any machine but
 the one they were drawn on. Now they load with their symbols (`library/XyceDigital/*.sym`) and the
 check finds nothing wrong.
+
+### B3. The macOS package leaves out the Xyce digital parts' symbols: their wires meet no pin
+
+**Fixed in `101bb0a`.** `package-macos.sh` copies `library/XyceDigital/*.sym` into the bundle,
+and its check of what the bundle holds asks for `NAND2.sym`.
+
+Found when the DMG built after `5d7c0cf` was tried on `testNAND2.sch`. The parts had their pins
+now (B2), but its netlist had every pin on a net of its own (`XX6 _net2 _net3 _net4 _net5
+A2DBRIDGEX2`), and none of the labels `nA0`, `nD0`, ... `library/CMakeLists.txt` installs
+`library/XyceDigital` (the Linux and Windows packages have it); the macOS script copies the
+library by hand and had left it out. Without `A2DBRIDGEX2.sym` the part gets the automatic
+symbol, whose pins are not where the drawing's wires end. The survey, which reads the source
+tree's library, could not see it.
 
 ## C. The survey
 
