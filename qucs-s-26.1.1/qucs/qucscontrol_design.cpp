@@ -234,6 +234,11 @@ QString baseUnit(const QString& value)
 
 QString valueText(double value, const QString& unit)
 {
+    // Six figures at most: 1k, not 999.999719.
+    if (std::isfinite(value) && value != 0) {
+        const double scale = std::pow(10.0, 5 - int(std::floor(std::log10(std::abs(value)))));
+        value = std::round(value * scale) / scale;
+    }
     QString text = misc::num2str(value, 6);
     // Without the zeros after the point: 1k, not 1.000000k.
     static const QRegularExpression zeros(QStringLiteral("^([-+]?\\d+)(?:\\.(\\d*?))?0*(\\D*)$"));
@@ -571,9 +576,12 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         if (Component* comp = doc->getComponentByName(name); comp != nullptr && comp->getProperty(property) != nullptr)
             now = comp->getProperty(property)->Value;
         const bool changedMeanwhile = now != lastSet;
-        // Back to where it was; the value found is one step to undo.
+        // Back to where it was; the value found is one step to undo - when
+        // it gives the target (the closest of a search that missed it is
+        // told, not set).
         if (!changedMeanwhile) setValue(was);
-        const bool applying = apply && best >= 0 && !changedMeanwhile;
+        const bool reached = best >= 0 && std::abs(state->runs.at(best).second - target) <= tolerance;
+        const bool applying = apply && reached && !changedMeanwhile;
         if (changedMeanwhile) {
             if (best >= 0) {
                 const auto& [x, m] = state->runs.at(best);
@@ -591,6 +599,15 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
             result.insert(QStringLiteral("off by"), rounded(m - target));
             result.insert(QStringLiteral("within tolerance"), std::abs(m - target) <= tolerance);
             result.insert(QStringLiteral("set"), tr("%1 of %2 is %3 now: one step to undo (it was %4).").arg(property, name, valueText(x, unit), was));
+        } else if (best >= 0 && apply) {
+            const auto& [x, m] = state->runs.at(best);
+            result.insert(QStringLiteral("value"), valueText(x, unit));
+            result.insert(QStringLiteral("gives"), rounded(m));
+            result.insert(QStringLiteral("off by"), rounded(m - target));
+            result.insert(QStringLiteral("within tolerance"), false);
+            result.insert(QStringLiteral("set"), tr("not set: no value tried gave the target, within %1; %2 is %3 as it was. The closest, "
+                                                    "%4, gives %5 (edit_component sets it).")
+                                                     .arg(rounded(tolerance)).arg(property, was, valueText(x, unit)).arg(rounded(m)));
         } else if (best >= 0) {
             const auto& [x, m] = state->runs.at(best);
             result.insert(QStringLiteral("value"), valueText(x, unit));

@@ -87,6 +87,14 @@ public:
   };
   /// The latest edits, the last one last (a few dozen of them).
   const QList<Edit>& recentEdits() const { return a_recentEdits; }
+  /// How its last simulation ended - when, and whether it failed (its
+  /// dataset, if any, is then a run's before); none yet: an invalid time.
+  struct Run {
+    QDateTime at;
+    bool failed = false;
+  };
+  Run lastRun() const { return a_lastRun; }
+  void setLastRun(const QDateTime& at, bool failed) { a_lastRun = {at, failed}; }
   /// Counts an edit of the content, made by editor().
   void edited();
   /// Who edits now: the conversation whose tool call runs (a number of its
@@ -117,6 +125,7 @@ protected:
 private:
   quint64 a_revision = 0;
   QList<Edit> a_recentEdits;
+  Run a_lastRun;
 };
 
 #endif

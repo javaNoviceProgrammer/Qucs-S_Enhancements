@@ -783,6 +783,10 @@ bool changeFields(Painting* p, const QString& type, const QJsonObject& changes, 
             }
             if (has("pointer") && changes.value(QLatin1String("pointer")).isBool())
                 t[21] = changes.value(QLatin1String("pointer")).toBool() ? QStringLiteral("1") : QStringLiteral("0");
+            // A tip is where it points: given one, it points (it was kept,
+            // and drew nothing).
+            else if (has("tip"))
+                t[21] = QStringLiteral("1");
             QPoint tip(tokenInt(t, 22), tokenInt(t, 23));
             if (has("tip")) {
                 if (!pointArg(changes.value(QLatin1String("tip")), QStringLiteral("tip"), &tip, error)) return false;
@@ -818,10 +822,20 @@ bool changeFields(Painting* p, const QString& type, const QJsonObject& changes, 
         *error = tr("That does not make a %1.").arg(type);
         return false;
     }
-    // A new shape given no size: its own, as a click places one.
+    // A new shape given no size: its own, as a click places one - and what
+    // it was given of its size kept (a width alone was lost to it, 80 wide).
     if (isNew && isShape(type)) {
         p->MousePressing(nullptr);
         p->MousePressing(nullptr);
+        if (has("width") || has("height")) {
+            QStringList sized = tokensOf(p->save());
+            if (has("width")) sized[3] = t[3];
+            if (has("height")) sized[4] = t[4];
+            if (!p->load(sized.join(QLatin1Char(' ')))) {
+                *error = tr("That does not make a %1.").arg(type);
+                return false;
+            }
+        }
     }
     auto* editable = dynamic_cast<FieldEditable*>(p);
     if (editable == nullptr) return true;

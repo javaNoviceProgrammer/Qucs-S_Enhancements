@@ -45,6 +45,13 @@ bool sameFile(const QString& a, const QString& b);
 bool isQucsDocument(const QString& file);
 /// A path as given, or taken from the workspace folder.
 QString absolute(const QString& path);
+/// The parts of type \a model (any case: gnd is GND) that have no name
+/// (grounds), in order.
+QList<Component*> unnamedOf(const Schematic* sch, const QString& model);
+/// What a part is told by: its name; one without a name (a ground) by its
+/// type when it is the only one of it, else by its number among them -
+/// GND#2, get_schematic's 'ref'. Every tool that names a part names it so.
+QString refOf(const Schematic* sch, const Component* c);
 
 /// The name of the simulator in the settings as a trace's prefix gives it
 /// ("ngspice", "xyce", "spopus"); empty for Qucsator.
