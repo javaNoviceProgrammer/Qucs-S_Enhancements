@@ -426,7 +426,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   over and over, until a number comes out right: sweep RE until the
   emitter sits at 5 V, or C until the peaking is 1 dB. It takes a few runs
   in one call, and the value found is one step to undo - set only when
-  it gives the target; a value with no unit (`330`) stays one. `build_verilog_a`
+  it gives the target; a value with no unit (`330`) stays one. The search
+  follows the value or its logarithm, whichever foretells the runs better
+  (a divider's voltage over its source: three runs), and a value of a
+  list given is set as it is written (`3 kOhm`). `build_verilog_a`
   compiles a `.va` now, with each error's line and column.
   `describe_component_type` gives a Verilog-A module's parameters and a
   `.model` card. `find_library_component` finds a part by its values (an
@@ -453,9 +456,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `distribution`, gives a table across a sweep, and reads `.csv` and
   `.xlsx` results, and says when a dataset is stale: the last run failed
   after it, or the circuit changed since (the netlist a run would be
-  given now is not the one it ran). A ring's frequency is measured at the
-  value it settles at. `simulate` runs Check Schematic first and takes a
-  simulator for one run; a Qucsator run is waited for too. A simulation
+  given now is not the one it ran; where that netlist is not at hand - a
+  copy not simulated yet - an edit after it, and that no more can be
+  told). A preview is no edit. A ring's frequency is measured at the
+  value it settles at. `simulate` runs Check Schematic first - what it
+  finds comes first in the answer, and a failed run's errors begin with
+  a part's pin connected to nothing - and takes a simulator for one run;
+  a Qucsator run is waited for too. A simulation
   writes its dataset where the schematic's `DataSet` says, where the
   diagrams read it - not after the file's name, which differs in a copy
   made outside Qucs-S; `open_document` points such a copy out, and
@@ -503,7 +510,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   for a 2,000-part RLC ladder, and with `wire_labels` it draws wires where
   only labels joined a net (an imported netlist's labels on every pin).
   A tool refuses an argument it does not take, and names the one meant
-  (`rotaton`: "Meant rotation?"), instead of leaving it out. `connect` takes `"ground"` at one
+  (`rotaton`: "Meant rotation?"), instead of leaving it out - inside an
+  argument too (a `set_schematic` part's, a wire's, a trace's); a script
+  in CI (`scripts/ci/check-tool-arguments.py`) checks that every argument
+  a tool reads is in its schema, and the other way round. A name that is
+  no file's (`"`, `{}`, `NUL`, `.`) is refused by the tools that write
+  one. Saving a subcircuit whose new symbol moves an instance's pins
+  joins each pin to its net again - its label goes along, a wire that
+  ended on it is drawn on to it, a port numbered anew is followed by its
+  name - and compares the parent's nets before and after. `connect` takes `"ground"` at one
   end: a ground symbol of the pin's own. A ground has no name: every
   tool that takes a part's name takes its ref from `get_schematic`
   (`GND#2`) - `move`, `delete`, `select`, `edit_component` - and a read of
@@ -579,7 +594,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     `"replace": true`. The tools read and write wherever the user who
     runs it can - a netlist exported to `/tmp`, the files of any folder
     listed - as a desktop program does: give `--mcp-server` only to
-    clients you would let use your files.
+    clients you would let use your files. `--workspace DIR` gives the run
+    a workspace of its own (relative paths, new projects and the scratch
+    folder go there) instead of the settings' - nor is it saved as
+    theirs.
 - **Conversations kept, and gone on with**: every conversation is kept
   as it goes; those open when Qucs-S closes come back when it opens
   again - what was said, their names, folders and pinned schematics -

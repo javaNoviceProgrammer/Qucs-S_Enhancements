@@ -52,6 +52,16 @@ bool askedFor(int argc, char* argv[])
     return false;
 }
 
+QString workspaceAsked(int argc, char* argv[])
+{
+    for (int i = 1; i < argc; ++i) {
+        const QString a = QString::fromLocal8Bit(argv[i]);
+        if ((a == QLatin1String("--workspace") || a == QLatin1String("-workspace")) && i + 1 < argc) return QString::fromLocal8Bit(argv[i + 1]);
+        if (a.startsWith(QLatin1String("--workspace="))) return a.mid(12);
+    }
+    return {};
+}
+
 void prepareHeadless()
 {
     // No window on screen, and no claude or gh run by the dock of this

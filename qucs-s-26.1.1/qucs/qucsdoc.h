@@ -97,6 +97,13 @@ public:
   void setLastRun(const QDateTime& at, bool failed) { a_lastRun = {at, failed}; }
   /// Counts an edit of the content, made by editor().
   void edited();
+  /// Its revision and latest edits as they were: a preview's changes, put
+  /// back, leave it as it was - not edited.
+  void rewind(quint64 revision, const QList<Edit>& edits)
+  {
+    a_revision = revision;
+    a_recentEdits = edits;
+  }
   /// Who edits now: the conversation whose tool call runs (a number of its
   /// own), or 0 - the user. Set by whoever runs the tool calls.
   static quint64 editor();

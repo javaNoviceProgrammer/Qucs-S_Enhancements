@@ -147,6 +147,9 @@ private:
     // each with what it held, or none when it was not there - put back after.
     int a_previewing = 0;
     QList<QPair<QString, std::optional<QByteArray>>> a_previewFiles;
+    /// Each open document's revision and whether it had unsaved changes,
+    /// while a preview runs: what a subscriber to its resource reads.
+    QHash<const QucsDoc*, QPair<quint64, bool>> a_revisionsKept;
     /// \a file, which held \a before (or was not there), is written: a
     /// preview puts it back.
     void written(const QString& file, const std::optional<QByteArray>& before);

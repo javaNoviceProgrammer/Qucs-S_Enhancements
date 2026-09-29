@@ -165,15 +165,17 @@ QString QucsControl::resourceVersion(const QString& uri) const
     QString kind, error;
     QucsDoc* doc = nullptr;
     if (!resourceOf(uri, &kind, &doc, &error)) return {};
+    // (During a preview, as they were before it: what it changes is put back.)
+    const auto revisionOf = [this](const QucsDoc* d) { return a_revisionsKept.value(d, {d->revision(), d->getDocChanged()}); };
     if (kind == QLatin1String("state")) {
         QString v;
         for (QucsDoc* d : a_app->allDocuments())
-            v += QStringLiteral("%1:%2:%3;").arg(seenKey(d)).arg(d->revision()).arg(d->getDocChanged() ? 1 : 0);
+            v += QStringLiteral("%1:%2:%3;").arg(seenKey(d)).arg(revisionOf(d).first).arg(revisionOf(d).second ? 1 : 0);
         return v;
     }
     if (kind == QLatin1String("ngspice-commands")) return QStringLiteral("1");
     if (kind == QLatin1String("dataset")) return datasetWritten(doc).toString(Qt::ISODateWithMs);
-    return QString::number(doc->revision());
+    return QString::number(revisionOf(doc).first);
 }
 
 bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
@@ -278,17 +280,26 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
 {
     // The open schematics as they are - elements, symbol, where their undo
     // stacks stand, whether changed, which view - to put back after.
+    // (And its revision and latest edits: a preview is no edit - its
+    // dataset is not called stale after it, nor is it told as "yours".)
     struct Kept {
         QPointer<Schematic> sch;
         QPair<QString, QString> state;
         Schematic::UndoStacks marks;
         bool changed;
         bool symbolMode;
+        quint64 revision;
+        QList<QucsDoc::Edit> edits;
     };
     auto kept = std::make_shared<QList<Kept>>();
     for (QucsDoc* doc : a_app->allDocuments())
         if (auto* sch = dynamic_cast<Schematic*>(doc))
-            kept->append(Kept{sch, sch->snapshotAll(), sch->undoStacks(), sch->getDocChanged(), sch->getSymbolMode()});
+            kept->append(Kept{sch, sch->snapshotAll(), sch->undoStacks(), sch->getDocChanged(), sch->getSymbolMode(), sch->revision(),
+                              sch->recentEdits()});
+    // What a subscriber reads meanwhile (a batch previewed runs over
+    // several turns of the event loop): the revisions as they were.
+    if (a_previewing == 0)
+        for (const Kept& k : std::as_const(*kept)) a_revisionsKept.insert(k.sch.data(), {k.revision, k.changed});
     QPointer<QWidget> front = a_app->DocumentTab->currentWidget();
     // A batch: of calls that change schematics or look alone - not one that
     // writes a file, runs a simulation or opens a document.
@@ -333,7 +344,9 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
                 QMetaObject::invokeMethod(a_app, "slotSymbolEdit", Qt::DirectConnection);
             }
             k.sch->setChanged(k.changed, false);
+            k.sch->rewind(k.revision, k.edits);
         }
+        if (a_previewing == 0) a_revisionsKept.clear();
         if (front && a_app->DocumentTab->indexOf(front) >= 0) a_app->showDocument(front);
         a_callNotes.clear();   // (what the tool would have said beside it: part of the preview's answer)
         QJsonObject result{{QStringLiteral("preview"), true},
