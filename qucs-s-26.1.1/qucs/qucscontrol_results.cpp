@@ -1970,8 +1970,13 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
                     if (n == nullptr || n->Name.isEmpty()) continue;
                     // (Ground as the netlist writes it: 0, not Qucs-S's gnd.)
                     const QString node = n->Name == QLatin1String("gnd") ? QStringLiteral("0") : n->Name;
+                    // (With its name: after its ports were numbered anew,
+                    // "SUB1.1" on in looked right while the pin called out
+                    // sat there.)
                     QJsonArray on = nodes.value(node).toArray();
-                    on.append(QStringLiteral("%1.%2").arg(ref).arg(i + 1));
+                    const QString pinName = c->Ports.at(i)->Name;
+                    on.append(pinName.isEmpty() ? QStringLiteral("%1.%2").arg(ref).arg(i + 1)
+                                                : QStringLiteral("%1.%2 (%3)").arg(ref).arg(i + 1).arg(pinName));
                     nodes.insert(node, on);
                 }
             }
@@ -1995,8 +2000,8 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
                                           {QStringLiteral("lines"), owned},
                                           {QStringLiteral("nodes"), nodes},
                                           {QStringLiteral("how"), tr("'lines': each line a part wrote (its number in 'netlist', from 1); "
-                                                                     "'nodes': each node of the netlist with the pins it joins "
-                                                                     "(0 is ground)")}});
+                                                                     "'nodes': each node of the netlist with the pins it joins, "
+                                                                     "by number and, when the pin has one, name (0 is ground)")}});
         }
     }
     if (!saveAs.isEmpty()) {

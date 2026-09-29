@@ -132,7 +132,7 @@ const char* const kTools = R"JSON([
 {"name": "add_component",
  "description": "Places a library component at x, y (snapped to the grid). 'type' is its model - R, C, L, GND, Vdc, Vac, Idc, Iac, Diode, _BJT, _MOSFET, OpAmp, Sub, .DC, .AC, .TR, .SP and many more (list_component_types lists them all). Properties go by name, as get_schematic shows them, for example {\"R\": \"4.7k\"}. 'rotation' is in quarter turns from the type's own orientation, as Rotate turns it; 'mirror' mirrors it about the x axis; 'shown' chooses which properties are written on the schematic; 'name_shown' and 'text_at' control its name and where its text goes. An equation block (Eqn, NutmegEq, .PARAM, .OPTIONS, ...) takes 'equations' - they replace its placeholder y=1; an .OPTIONS block takes options without a value (noinit) as 'flags'; an ngspice Monte Carlo (.NGMONTECARLO) or corners block takes 'records' and 'specs'. Returns the component with its pin positions, its equations if it is an equation block, a note on a common mistake with its type, and a note when a pin landed on a wire or another pin (it is then connected to it) or on another net's wire without connecting.",
  "inputSchema": {"type": "object", "properties": {
-   "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "type": {"type": "string", "description": "Its model: R, C, L, GND, Vdc, Vac, Diode, _BJT, OpAmp, Sub, .TR, .AC, ... (list_component_types)"}, "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10)"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10)"},
+   "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "type": {"type": "string", "description": "Its model: R, C, L, GND, Vdc, Vac, Diode, _BJT, OpAmp, Sub, .TR, .AC, ... (list_component_types)"}, "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10)"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10)"}, "near": {"type": "object", "properties": {"part": {"type": "string"}, "side": {"type": "string", "enum": ["above", "below", "left", "right"]}, "gap": {"type": "integer", "minimum": 0}}, "description": "Instead of x, y: beside another part - {\"part\": \"U1\", \"side\": \"below\", \"gap\": 40}, the room between their symbols (40 unless given), centred on it across that side"},
    "name": {"type": "string", "description": "Its name; the next free one (R1, R2, ...) when not given"},
    "properties": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Values by property name, as get_schematic and describe_component_type show them: {\"R\": \"4.7k\"}; the others stay at the type's defaults. A number with letters after it that are no scale and unit (1kk) is refused"},
    "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3"}, "mirror": {"type": "boolean", "description": "Mirrored about the x axis"},
@@ -148,7 +148,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "name": {"type": "string", "description": "The part: its name, or a ground by its ref (GND when there is one, GND#2 the second of several, as get_schematic gives it)"}, "rename": {"type": "string", "description": "Its new name; the traces, equations and markers that name it follow"},
    "properties": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Values to change, by property name: {\"R\": \"10k\"}; the rest stay. A number with letters after it that are no scale and unit (1kk) is refused"},
-   "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3, as get_schematic gives it"},
+   "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "near": {"type": "object", "properties": {"part": {"type": "string"}, "side": {"type": "string", "enum": ["above", "below", "left", "right"]}, "gap": {"type": "integer", "minimum": 0}}, "description": "Instead of x, y: moved beside another part - {\"part\": \"U1\", \"side\": \"below\", \"gap\": 40}, the room between their symbols (40 unless given), centred on it across that side"}, "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3, as get_schematic gives it"},
    "mirror": {"type": "boolean", "description": "Mirrored about the x axis"}, "active": {"type": "boolean", "description": "false leaves it out of the simulation (inactive); true puts it back"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"Is\": false, \"Bf\": true}"},
    "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
@@ -215,19 +215,22 @@ const char* const kTools = R"JSON([
    "spacing": {"type": "integer", "minimum": 30, "maximum": 400, "description": "The room between parts, in the schematic's units: 60 unless given (more room is tried when the wires do not fit)"},
    "wire_labels": {"type": "boolean", "description": "Wires where only net labels join the pieces of a net (an imported netlist's labels on every pin), one label kept for its name; ground symbols stay"}}}},
 {"name": "connect",
- "description": "Draws a wire with right angles between two pins or points, along a path that runs over no other pin or wire (a wire connects to whatever it runs over): around the parts when possible, otherwise across them. It joins the two nets and nothing else; if no path would, it draws nothing and explains why. A crossing of another net's wire along the way (no connection) is reported. A pin is \"R1.1\" (the component's name and the pin number, from 1, or the pin's name); a point is [x, y]. With \"ground\" (or \"gnd\") at either end, the pin gets a ground symbol of its own, placed on the pin when it fits there and otherwise a little away and wired to it.",
+ "description": "Draws a wire with right angles between two pins or points, along a path that runs over no other pin or wire (a wire connects to whatever it runs over): around the parts when possible, otherwise across them; 'side' makes it go round one side first, 'via' through points of yours. It joins the two nets and nothing else; if no path would, it draws nothing and explains why. A crossing of another net's wire along the way (no connection) is reported. A pin is \"R1.1\" (the component's name and the pin number, from 1, or the pin's name); a point is [x, y]. With \"ground\" (or \"gnd\") at either end, the pin gets a ground symbol of its own, placed on the pin when it fits there and otherwise a little away and wired to it.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"},
-   "from": {"description": "\"R1.2\" or [x, y]; a ground is GND.1 when there is one, GND#2.1 the second of several (get_schematic's 'ref')"}, "to": {"description": "\"C1.1\", [x, y] - or \"ground\": a ground symbol of the pin's own, on it or beside it, wired"}}, "required": ["from", "to"]}},
+   "from": {"description": "\"R1.2\" or [x, y]; a ground is GND.1 when there is one, GND#2.1 the second of several (get_schematic's 'ref')"}, "to": {"description": "\"C1.1\", [x, y] - or \"ground\": a ground symbol of the pin's own, on it or beside it, wired"},
+   "side": {"type": "string", "enum": ["above", "below", "left", "right"], "description": "The side of the two ends the wire goes round first (a feedback path below an op-amp): along a line past both ends, a grid step further out each try; the shortest other way when none there is clear"},
+   "via": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}, "description": "Points the wire goes through, in order, [[x, y], ...]: a right angle, across first, where a step is not straight; refused when it would touch another net"}}, "required": ["from", "to"]}},
 {"name": "add_wire",
  "description": "Draws a wire through points, [[x, y], [x, y], ...], one segment from each point to the next (a step that is not straight gets a right angle). Whatever is at its points is connected - a wire connects only where it ends or bends. A wire that would run along another pin or wire between its points is not drawn, and the error names what is in the way. A wire that crosses another net's wire is drawn, but a crossing is not a junction and makes no connection; the result says so (\"Look: ...\"). To join the other wire, end this one on it.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "points": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}, "minItems": 2, "description": "Its points in order, [[x1, y1], [x2, y2], ...]: a segment from each to the next, a bend where a step is not straight"}},
    "required": ["points"]}},
 {"name": "set_label",
- "description": "Names the net at a pin or at a point on a wire (a net label: nets with the same name are connected). An empty name removes the label.",
+ "description": "Names the net at a pin or at a point on a wire (a net label: nets with the same name are connected). An empty name removes the label. 'text_at' puts the label's text where you want it (the same name again moves only its text).",
  "inputSchema": {"type": "object", "properties": {
-   "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "at": {"description": "\"R1.1\" or [x, y]"}, "name": {"type": "string", "description": "The net's name (\"\" takes the label away); nets of one name are one. As the label dialog takes one: a letter, then letters, digits and single _ - not gnd, 0 or net1, net2 ..."}}, "required": ["at", "name"]}},
+   "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "at": {"description": "\"R1.1\" or [x, y]"}, "name": {"type": "string", "description": "The net's name (\"\" takes the label away); nets of one name are one. As the label dialog takes one: a letter, then letters, digits and single _ - not gnd, 0 or net1, net2 ..."},
+   "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where the label's text goes, [x, y] on the schematic (above right of the place unless given)"}}, "required": ["at", "name"]}},
 {"name": "select",
  "description": "Selects components by name (a ground by its ref, GND#2), and diagrams and paintings by their numbers from get_schematic, in a schematic; everything else is deselected. Nothing given deselects everything.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "names": {"type": "array", "items": {"type": "string"}, "description": "Components by name (a ground by its ref (GND when there is one, GND#2 the second of several, as get_schematic gives it))"},
@@ -243,9 +246,9 @@ const char* const kTools = R"JSON([
  "description": "Lists a schematic's undo steps in words - \"step 7: R2 R 47k → 67k; step 8: diagram 2: trace 2's look changed\" - the last 'steps' (10 by default) up to the current position, plus those that can be redone after it, so undo can go to a known step ('to') instead of counting.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 200, "description": "How many steps before the current one are listed, 10 by default"}}}},
 {"name": "redo",
- "description": "Redoes the last undone change, like Edit > Redo; 'steps' redoes that many, 'to' goes to a step of a schematic as undo_history numbers them (as undo's 'to').",
+ "description": "Redoes the last undone change, like Edit > Redo; 'steps' redoes that many, 'to' goes forward to a step of a schematic as undo_history numbers them (a step before the current one is refused: undo's 'to' goes back).",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many changes to redo, 1 by default"},
-   "to": {"type": "integer", "minimum": 0, "description": "A step as undo_history lists them: the schematic as it was after it"}}}},
+   "to": {"type": "integer", "minimum": 0, "description": "A later step as undo_history lists them: the schematic as it was after it"}}}},
 {"name": "screenshot",
  "description": "Takes a picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] in schematic units) captures only that, as printed, to check a plot without the whole page. 'area' chooses what is captured: paper (or all, the default) is the whole schematic as it is printed and exported, on white paper in its print colors whatever the theme; screen (or visible) is the canvas exactly as the user sees it now, with the theme's colors (a dark canvas in the dark theme), its zoom and what is scrolled into view - use it to see what the user sees, especially for a problem with how something looks on screen; window is the whole Qucs-S window (panes, tabs, docks, status bar), plus each dialog open over it as a separate picture. For a text document or a PDF, paper and screen show what its tab shows.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "area": {"type": "string", "enum": ["paper", "screen", "window", "all", "visible"], "description": "paper (or all): the whole schematic as printed, the default; screen (or visible): the canvas as the user sees it; window: the whole Qucs-S window and its dialogs"},
@@ -440,7 +443,7 @@ const char* const kTools = R"JSON([
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "component": {"type": "string", "description": "The part whose property is tuned, by name"}, "property": {"type": "string", "description": "Its first property unless given (R of a resistor); of an equation block, a variable it defines"},
    "target": {"type": "number", "description": "The number the measurement is to come to"}, "range": {"type": "array", "items": {}, "minItems": 2, "maxItems": 2, "description": "[low, high]: numbers, or text with units (1k)"},
    "values": {"type": "array", "items": {}, "description": "Instead of a search: each value simulated and measured, [\"1k\", \"2.2k\", 4700] (40 at most)"},
-   "measure": {"type": "object", "description": "What is measured after each run: {\"variable\": \"tran.v(out)\", \"what\": \"final\"} - 'what' min, max, mean, rms, initial, final, peak_to_peak or a get_dataset measurement (bandwidth, overshoot, gain, ...; 'field' picks one of its numbers); 'at' an x value instead; 'from', 'to' and the measurement's options as get_dataset takes them. Or {\"operating_point\": \"e\"}: a node's DC voltage or a device's quantity (Q1.ic)"}, "tolerance": {"type": "number", "description": "How near the target is near enough: 0.5% of the target by default"}, "max_runs": {"type": "integer", "minimum": 2, "maximum": 40, "description": "Simulations at most, 12 by default"},
+   "measure": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "at": {"type": "number"}, "from": {"type": "number"}, "to": {"type": "number"}, "operating_point": {"type": "string"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}, "simulator": {"type": "string"}}, "description": "What is measured after each run: {\"variable\": \"tran.v(out)\", \"what\": \"final\"} - 'what' min, max, mean, rms, initial, final, peak_to_peak or a get_dataset measurement (bandwidth, overshoot, gain, ...; 'field' picks one of its numbers); 'at' an x value instead; 'from', 'to' and the measurement's options as get_dataset takes them. Or {\"operating_point\": \"e\"}: a node's DC voltage or a device's quantity (Q1.ic)"}, "tolerance": {"type": "number", "description": "How near the target is near enough: 0.5% of the target by default"}, "max_runs": {"type": "integer", "minimum": 2, "maximum": 40, "description": "Simulations at most, 12 by default"},
    "apply": {"type": "boolean", "description": "Set the value found (the default), or leave the part as it was"}, "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For these runs alone; the one in the settings by default"},
    "timeout": {"type": "integer", "description": "Seconds for each run, 120 unless given"}},
    "required": ["component", "measure"]}},
@@ -469,7 +472,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "sides": {"type": "object", "additionalProperties": {"type": "string", "enum": ["left", "right", "top", "bottom"]}, "description": "Ports by name or number to a side: {\"in\": \"left\", \"out\": \"right\", \"vdd\": \"top\", \"gnd\": \"bottom\"}; the rest by their names and types"}}}},
 {"name": "import_netlist",
  "description": "Creates a schematic from a SPICE netlist ('text', or 'file': .cir, .sp, .net) in a new document. Each element becomes a SPICE part of its kind carrying its netlist text as written (R_SPICE, C_SPICE, S4Q_V for a source with SIN, PULSE and the rest, NPN_SPICE with its model, NMOS_SPICE, DIODE_SPICE, VCVS for a linear E, SPICE_dev for an X instance, K_SPICE, ...), placed in rows, with each pin's net as a net label on it and node 0 as a ground. Its .model cards become SpiceModel blocks; .param, .options, .include and .lib become blocks; .tran, .ac and .op become analyses; its .subckt definitions go into a library file next to it, which is included. The layout is rough but simulates as the netlist did; arrange (or move and connect) tidies it. The first line is the title unless it reads as an element ('title_line'). 'save_as' saves it. An untitled schematic nothing was done in (the one Qucs-S opens at start) is closed. Returns the parts, the nets and anything that was not taken.",
- "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "The netlist's text (or 'file'); its first line is the title unless it reads as an element"}, "file": {"type": "string", "description": "A netlist file instead of 'text' (.cir, .sp, .net), relative to the project or the workspace"}, "save_as": {"type": "string", "description": "Save the new schematic as this file (a .sch)"},
+ "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "The netlist's text (or 'file'); its first line is the title unless it reads as an element"}, "file": {"type": "string", "description": "A netlist file instead of 'text' (.cir, .sp, .net), relative to the project or the workspace"}, "save_as": {"type": "string", "description": "Save the new schematic as this file (a .sch); one there already is refused unless 'replace'"}, "replace": {"type": "boolean", "description": "With save_as: write over a file of that name"},
    "title_line": {"type": "boolean", "description": "Whether the first line is a title (skipped): told from the line when not given"}, "spacing": {"type": "integer", "minimum": 120, "maximum": 600, "description": "Room between the parts placed, 200 by default"}}}},
 {"name": "set_simulator",
  "description": "Chooses the simulator that simulate runs and get_netlist writes for, like the toolbar's simulator list (a setting kept for next time): ngspice, xyce, spiceopus or qucsator - one that is installed. To run another one once, simulate takes 'simulator'. To compare two engines, simulate, then simulate again with 'simulator'; get_dataset with 'simulator' reads each result. Returns the simulator in use and those installed.",
@@ -1747,6 +1750,44 @@ bool onSegment(const QPoint& p, const QPoint& a, const QPoint& b)
     return p == a || p == b || qucs_s::geom::is_between(p, a, b);
 }
 
+// Where \a c's centre goes to be on a side of another part, as \a near
+// says - {"part": "U1", "side": "below", "gap": 40}: that far from its
+// symbol (the symbols' boxes, not their texts), centred on it across that
+// side, on the grid. As it is turned now. False, and why, when it does
+// not read.
+bool placeNear(Schematic* sch, const Component* c, const QJsonValue& near, QPoint* at, QString* error)
+{
+    const QJsonObject o = near.toObject();
+    const QString ref = o.value(QLatin1String("part")).toString().trimmed();
+    const QString side = o.value(QLatin1String("side")).toString(QStringLiteral("right")).trimmed().toLower();
+    static const QStringList sides{QStringLiteral("above"), QStringLiteral("below"), QStringLiteral("left"), QStringLiteral("right")};
+    if (!near.isObject() || ref.isEmpty() || !sides.contains(side)) {
+        *error = QObject::tr("'near' is {\"part\": \"U1\", \"side\": \"below\", \"gap\": 40}: a part, the side of it (above, below, "
+                             "left or right) and the room between their symbols (40 unless given).");
+        return false;
+    }
+    const Component* other = componentOf(sch, ref, error);
+    if (other == nullptr) return false;
+    if (other == c) {
+        *error = QObject::tr("'near' names the part itself.");
+        return false;
+    }
+    const int gap = std::clamp(o.value(QLatin1String("gap")).toInt(40), 0, 2000);
+    const QRect them = other->boundingRect();
+    const QRect mine = c->boundingRect().translated(-c->center());
+    int x = them.center().x() - mine.center().x(), y = them.center().y() - mine.center().y();
+    if (side == QLatin1String("below")) y = them.bottom() + gap - mine.top();
+    else if (side == QLatin1String("above")) y = them.top() - gap - mine.bottom();
+    else if (side == QLatin1String("left")) x = them.left() - gap - mine.right();
+    else x = them.right() + gap - mine.left();
+    const QPoint within = Schematic::withinModelLimit(QPoint(x, y));
+    x = within.x();
+    y = within.y();
+    sch->setOnGrid(x, y);
+    *at = QPoint(x, y);
+    return true;
+}
+
 // Whether a wire along \a way (from \a way's first place to its last)
 // would touch nothing of another net than \a ours (nets of \a now) on its
 // way: no node (a pin, a wire's end) on it but at its two ends, none of
@@ -1892,10 +1933,12 @@ std::vector<std::vector<QPoint>> waysBetween(Schematic* sch, const QPoint& a, co
 // with the nets, in words - finds nothing wrong with; a way it finds fault
 // with is taken back (\a sch put back as it was). False, and why in \a
 // why, when there is no such way. \a sch's elements may be new ones after.
-bool wireUp(Schematic* sch, const QPoint& a, const QPoint& b, const std::function<QStringList()>& check, QString* why)
+// As wireUp(), along the first of \a ways that touches nothing else and
+// that \a check finds nothing wrong with; \a used says which (its index).
+bool wireAlong(Schematic* sch, const QPoint& a, const QPoint& b, const std::vector<std::vector<QPoint>>& ways,
+               const std::function<QStringList()>& check, QString* why, int* used = nullptr)
 {
     const QString state = sch->snapshot();
-    const std::vector<std::vector<QPoint>> ways = waysBetween(sch, a, b);
     // What is on the two nets already the wire may touch.
     Nets now;
     QSet<int> ours;
@@ -1908,13 +1951,17 @@ bool wireUp(Schematic* sch, const QPoint& a, const QPoint& b, const std::functio
     int tries = 0;
     QStringList faults;
     for (bool strict : {true, false})
-        for (const std::vector<QPoint>& way : ways) {
+        for (std::size_t w = 0; w < ways.size(); ++w) {
+            const std::vector<QPoint>& way = ways[w];
             if (!clearWay(sch, way, strict, now, ours) || (!strict && clearWay(sch, way, true, now, ours))) continue;
             for (std::size_t k = 1; k < way.size(); ++k)
                 if (way[k] != way[k - 1])
                     sch->connectWithWire(way[k - 1], way[k], true, qucs_s::wire::Planner::PlanType::Straight);
             faults = check();
-            if (faults.isEmpty()) return true;
+            if (faults.isEmpty()) {
+                if (used != nullptr) *used = int(w);
+                return true;
+            }
             sch->restore(state);
             look();   // (new nodes)
             if (++tries == 8) break;
@@ -1923,6 +1970,53 @@ bool wireUp(Schematic* sch, const QPoint& a, const QPoint& b, const std::functio
                              : tr("every way from %1, %2 to %3, %4 goes over another pin or wire")
                                    .arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y());
     return false;
+}
+
+bool wireUp(Schematic* sch, const QPoint& a, const QPoint& b, const std::function<QStringList()>& check, QString* why)
+{
+    return wireAlong(sch, a, b, waysBetween(sch, a, b), check, why);
+}
+
+// The ways from \a a to \a b around a side first - "below": along a line
+// under both ends, each grid step further down, then the others.
+// \a preferred says how many of them go round that side.
+std::vector<std::vector<QPoint>> waysAround(Schematic* sch, const QPoint& a, const QPoint& b, const QString& side, int* preferred)
+{
+    std::vector<std::vector<QPoint>> ways;
+    const int gx = std::max(sch->getGridX(), 1), gy = std::max(sch->getGridY(), 1);
+    for (int k = 1; k <= 40; ++k) {
+        if (side == QLatin1String("above")) {
+            const int y = std::min(a.y(), b.y()) - k * gy;
+            ways.push_back({a, {a.x(), y}, {b.x(), y}, b});
+        } else if (side == QLatin1String("below")) {
+            const int y = std::max(a.y(), b.y()) + k * gy;
+            ways.push_back({a, {a.x(), y}, {b.x(), y}, b});
+        } else if (side == QLatin1String("left")) {
+            const int x = std::min(a.x(), b.x()) - k * gx;
+            ways.push_back({a, {x, a.y()}, {x, b.y()}, b});
+        } else {
+            const int x = std::max(a.x(), b.x()) + k * gx;
+            ways.push_back({a, {x, a.y()}, {x, b.y()}, b});
+        }
+    }
+    *preferred = int(ways.size());
+    for (std::vector<QPoint>& w : waysBetween(sch, a, b)) ways.push_back(std::move(w));
+    return ways;
+}
+
+// A way from \a a through \a via to \a b: a right angle, across first,
+// where a step is not straight.
+std::vector<QPoint> wayThrough(const QPoint& a, const QList<QPoint>& via, const QPoint& b)
+{
+    std::vector<QPoint> way{a};
+    QList<QPoint> points = via;
+    points << b;
+    for (const QPoint& q : std::as_const(points)) {
+        const QPoint p = way.back();
+        if (p.x() != q.x() && p.y() != q.y()) way.push_back(QPoint(q.x(), p.y()));
+        if (q != way.back()) way.push_back(q);
+    }
+    return way;
 }
 
 // Joins again the nets of \a before that are in pieces now, each piece
@@ -3838,9 +3932,14 @@ QString refreshedInstances(const QList<Instance>& before)
         QStringList differ = netChangesBeyond(it.value(), netsOf(sch, nullptr), {});
         for (QString& d : differ)
             d.replace(QObject::tr(" would no longer be "), QObject::tr(" is no longer ")).replace(QObject::tr(" would be "), QObject::tr(" is "));
+        // (Undo there does not put them back: the symbol's change is no
+        // step of that schematic - it takes away the wires drawn on to the
+        // pins, and leaves them on nothing.)
         if (!differ.isEmpty())
-            look << QObject::tr("the nets of %1 are not as they were - %2: connect them again (undo there puts back what was "
-                                "wired for them)").arg(title, differ.join(QStringLiteral(", ")));
+            look << QObject::tr("the nets of %1 are not as they were - %2. The new symbol is no undo step there (an undo there "
+                                "takes away only the wires drawn on to the pins): delete the wires at those pins and connect each "
+                                "pin by its name (connect takes SUB1.in), or put the ports back as they were in the subcircuit and "
+                                "save it again").arg(title, differ.join(QStringLiteral(", ")));
     }
     QStringList refreshed;
     for (auto it = where.cbegin(); it != where.cend(); ++it)
@@ -4737,6 +4836,16 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     prepare(sch);
     orient(c, args.value(QLatin1String("rotation")).toInt(), args.value(QLatin1String("mirror")).toBool());
     int x = args.value(QLatin1String("x")).toInt(), y = args.value(QLatin1String("y")).toInt();
+    // Or beside another part: "Rf below U1".
+    if (args.contains(QLatin1String("near"))) {
+        QPoint there;
+        if (args.contains(QLatin1String("x")) || args.contains(QLatin1String("y")) || !placeNear(sch, c, args.value(QLatin1String("near")), &there, &error)) {
+            delete c;
+            return errorResult(error.isEmpty() ? tr("Give x, y or 'near', not both.") : error);
+        }
+        x = there.x();
+        y = there.y();
+    }
     const QPoint at = Schematic::withinModelLimit(QPoint(x, y));
     x = at.x();
     y = at.y();
@@ -4803,6 +4912,15 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
     if (c == nullptr && unnamedOf(sch, name.section(QLatin1Char('#'), 0, 0)).isEmpty())
         return errorResult(tr("There is no component %1 in %2.").arg(name, titleOf(sch)));
     if (c == nullptr) return errorResult(error);
+    // Beside another part ("Rf below U1"): moved there, as x, y move it.
+    QJsonObject placed = args;
+    if (args.contains(QLatin1String("near"))) {
+        if (args.contains(QLatin1String("x")) || args.contains(QLatin1String("y"))) return errorResult(tr("Give x, y or 'near', not both."));
+        QPoint there;
+        if (!placeNear(sch, c, args.value(QLatin1String("near")), &there, &error)) return errorResult(error);
+        placed.insert(QStringLiteral("x"), there.x());
+        placed.insert(QStringLiteral("y"), there.y());
+    }
     // A part without a name (a ground): by its ref, GND#2.
     const bool unnamed = c->Name.isEmpty();
     int named = 0;
@@ -4831,14 +4949,14 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
         sch->recreateComponent(c);
     }
     QStringList landed;
-    if (args.contains(QLatin1String("x")) || args.contains(QLatin1String("y")) || args.contains(QLatin1String("rotation"))
+    if (placed.contains(QLatin1String("x")) || placed.contains(QLatin1String("y")) || args.contains(QLatin1String("rotation"))
         || args.contains(QLatin1String("mirror"))) {
         QString why;
         // turnAndMove() finds the part by its name: one without has one
         // while it is turned and moved.
         const QString key = unnamed ? QStringLiteral("%1 being moved").arg(c->Model) : c->Name;
         c->Name = key;
-        c = turnAndMove(sch, key, args, &why, &landed);
+        c = turnAndMove(sch, key, placed, &why, &landed);
         if (c != nullptr && unnamed) c->Name.clear();
         if (c == nullptr) {
             sch->restore(before);
@@ -5689,6 +5807,7 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
         QPoint at;       // a pin of the group on it
         QString pin;
         QList<QPoint> all;   // every pin of the group on it
+        bool named;      // the label is the net's own (on it outside already)
     };
     QList<Boundary> boundaries;
     QList<QPoint> grounded;   // the group's pins on ground
@@ -5716,6 +5835,7 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
             }
             handled.insert(net);
             if (!outside) continue;
+            const bool named = !label.isEmpty();
             if (label.isEmpty()) {
                 int n = 1;
                 const QString base = QFileInfo(file).completeBaseName();
@@ -5733,7 +5853,7 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
                     const QPoint p(d->cx + d->Ports.at(j)->x, d->cy + d->Ports.at(j)->y);
                     if (nets.netOf.value(QStringLiteral("%1.%2").arg(keyOf.value(d)).arg(j + 1), -1) == net && !all.contains(p)) all << p;
                 }
-            boundaries.append({net, label, at, said(key, {}), all});
+            boundaries.append({net, label, at, said(key, {}), all, named});
         }
     // Grounds of pins on ground: one each (a pin may be on ground more
     // than once only by its own wires).
@@ -5873,17 +5993,18 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
         return errorResult(tr("The subcircuit written has %1 pins where %2 were meant: nothing changed, and %3 is as it was.")
                                .arg(sub->Ports.size()).arg(boundaries.size()).arg(QFileInfo(file).fileName()));
     }
-    int cx = box.center().x(), cy = box.center().y();
-    sch->setOnGrid(cx, cy);
-    sub->moveCenter(cx - sub->cx, cy - sub->cy);
     // What the group leaves behind with nothing to do: a ground that was
     // on its pins alone, a wire to where one of its pins was (and on from
     // there, as far as it goes to nothing) - not the ends the labels keep.
+    // The wire between two of its pins goes too, when their net goes on to
+    // a part outside: left, the instance put where the group was landed
+    // both its pins on it (a divider's R1 and R2 in a row, C1 on their
+    // node: XSUB1 mid mid). The ports are joined by labels, on what is left
+    // of their nets.
     QSet<QPoint> gone;
     for (Component* c : std::as_const(group))
         for (const Port* p : c->Ports) gone.insert(QPoint(c->cx + p->x, c->cy + p->y));
     QSet<QPoint> labelled;
-    for (const Boundary& b : std::as_const(boundaries)) labelled.insert(b.at);
     for (Node* n : sch->a_DocNodes)
         if (n->hasLabel() && !insideNodes.contains(n)) labelled.insert(n->center());
     QList<Component*> kept;
@@ -5952,6 +6073,95 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
             again = true;
         }
     }
+    // Each port's net in this schematic: by its own label, which stays; or
+    // a label of the port's name on what is left of it - a wire's end, else
+    // a pin outside - the one nearest where the group's pin was.
+    QList<QPoint> anchors;
+    for (const Boundary& b : std::as_const(boundaries)) {
+        QPoint anchor(INT_MIN, INT_MIN);
+        if (!b.named) {
+            qint64 best = std::numeric_limits<qint64>::max();
+            const auto consider = [&](const QPoint& p) {
+                const qint64 d = qint64(std::abs(p.x() - b.at.x())) + std::abs(p.y() - b.at.y());
+                if (d < best) {
+                    best = d;
+                    anchor = p;
+                }
+            };
+            for (const Wire* w : std::as_const(wiresKept))
+                if (w->Port1 != nullptr && nets.nodeNet.value(w->Port1, -1) == b.net) {
+                    consider(w->P1());
+                    consider(w->P2());
+                }
+            if (best == std::numeric_limits<qint64>::max())
+                for (const Component* c : std::as_const(kept))
+                    for (int i = 0; i < c->Ports.size(); ++i)
+                        if (nets.netOf.value(QStringLiteral("%1.%2").arg(keyOf.value(c)).arg(i + 1), -1) == b.net)
+                            consider(QPoint(c->cx + c->Ports.at(i)->x, c->cy + c->Ports.at(i)->y));
+        }
+        anchors << anchor;
+    }
+    // The instance where the group was, or the nearest place from there
+    // where none of its pins lands on a wire, a pin or a label of another
+    // net than its port's - clear of the parts too, when there is such a
+    // place near. (On its own net's wire end, where the group's pin was, it
+    // is joined as it was.)
+    {
+        QHash<QPoint, int> taken;   // a place: the net there
+        const int groundNet = nets.netOf.value(QStringLiteral("ground"), -2);
+        for (const Component* c : std::as_const(kept))
+            for (int i = 0; i < c->Ports.size(); ++i)
+                taken.insert(QPoint(c->cx + c->Ports.at(i)->x, c->cy + c->Ports.at(i)->y),
+                             c->Model == QLatin1String("GND") ? groundNet
+                                                              : nets.netOf.value(QStringLiteral("%1.%2").arg(keyOf.value(c)).arg(i + 1), -3));
+        for (Node* n : sch->a_DocNodes)
+            if (n->hasLabel() && !insideNodes.contains(n)) taken.insert(n->center(), nets.nodeNet.value(n, -3));
+        for (int k = 0; k < anchors.size(); ++k)
+            if (anchors.at(k).x() != INT_MIN) taken.insert(anchors.at(k), boundaries.at(k).net);
+        QSet<int> portNets;
+        for (const Boundary& b : std::as_const(boundaries)) portNets.insert(b.net);
+        const auto pinsClear = [&] {
+            for (int k = 0; k < sub->Ports.size(); ++k) {
+                const QPoint at(sub->cx + sub->Ports.at(k)->x, sub->cy + sub->Ports.at(k)->y);
+                const int own = k < boundaries.size() ? boundaries.at(k).net : -4;
+                if (auto it = taken.constFind(at); it != taken.constEnd() && *it != own) return false;
+                for (const Wire* w : std::as_const(wiresKept))
+                    if (onSegment(at, w->P1(), w->P2()) && nets.nodeNet.value(w->Port1, -3) != own) return false;
+                // (Nor two of its pins on one place.)
+                for (int j = 0; j < k; ++j)
+                    if (QPoint(sub->cx + sub->Ports.at(j)->x, sub->cy + sub->Ports.at(j)->y) == at) return false;
+            }
+            return true;
+        };
+        const auto boxClear = [&] {
+            const QRect mine = sub->boundingRect().adjusted(-10, -10, 10, 10);
+            for (const Component* c : std::as_const(kept))
+                if (mine.intersects(c->boundingRect())) return false;
+            for (const Wire* w : std::as_const(wiresKept))
+                if (!portNets.contains(nets.nodeNet.value(w->Port1, -3))
+                    && mine.intersects(QRect(w->P1(), w->P2()).normalized().adjusted(0, 0, 1, 1)))
+                    return false;
+            return true;
+        };
+        int cx = box.center().x(), cy = box.center().y();
+        sch->setOnGrid(cx, cy);
+        const auto placeAt = [&](int x, int y) { sub->moveCenter(x - sub->cx, y - sub->cy); };
+        placeAt(cx, cy);
+        bool placed = pinsClear();   // (where the group was: its box was there)
+        for (int pass = 0; pass < 2 && !placed; ++pass)
+            for (int ring = 1; ring <= 30 && !placed; ++ring)
+                for (int dy = -ring; dy <= ring && !placed; ++dy)
+                    for (int dx = -ring; dx <= ring && !placed; ++dx) {
+                        if (std::max(std::abs(dx), std::abs(dy)) != ring) continue;
+                        placeAt(cx + dx * gx, cy + dy * gy);
+                        placed = pinsClear() && (pass == 1 || boxClear());
+                    }
+        if (!placed) {
+            putBack();
+            return errorResult(tr("There is no place near the group for the instance whose pins would land on nothing of this "
+                                  "schematic: nothing changed, and %1 is as it was.").arg(QFileInfo(file).fileName()));
+        }
+    }
     QStringList mine, theirWires;
     for (Component* c : std::as_const(kept)) mine << QStringLiteral("  ") + c->save();
     mine << QStringLiteral("  ") + sub->save();
@@ -5961,7 +6171,8 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
     QJsonArray ports;
     for (int k = 0; k < boundaries.size(); ++k) {
         const QPoint pin(sub->cx + sub->Ports.at(k)->x, sub->cy + sub->Ports.at(k)->y);
-        theirWires << labelLine(boundaries.at(k).at, boundaries.at(k).label) << labelLine(pin, boundaries.at(k).label);
+        if (anchors.at(k).x() != INT_MIN) theirWires << labelLine(anchors.at(k), boundaries.at(k).label);
+        theirWires << labelLine(pin, boundaries.at(k).label);
         ports.append(QJsonObject{{QStringLiteral("port"), k + 1}, {QStringLiteral("net"), boundaries.at(k).label},
                                  {QStringLiteral("was at"), boundaries.at(k).pin}});
     }
@@ -5983,13 +6194,63 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
         for (Wire* w : std::as_const(inside))
             if (w->hasLabel() && !outside.contains(w->label()->Name) && !goneInside.contains(w->label()->Name)) goneInside << w->label()->Name;
     }
+    // The nets as they are to be: those of before without the group, the
+    // instance's pins on the ports' nets.
+    Nets expected;
+    {
+        QSet<QString> keptParts, labelsLeft;
+        bool groundLeft = false;
+        for (const Component* c : std::as_const(kept)) {
+            if (c->Model == QLatin1String("GND")) groundLeft = groundLeft || c->isActive == COMP_IS_ACTIVE;
+            else if (!c->Name.isEmpty()) keptParts.insert(keyOf.value(c));
+        }
+        for (Node* n : sch->a_DocNodes)
+            if (n->hasLabel() && !insideNodes.contains(n)) labelsLeft.insert(n->label()->Name);
+        for (const Wire* w : std::as_const(wiresKept))
+            if (w->hasLabel()) labelsLeft.insert(w->label()->Name);
+        for (auto it = nets.netOf.cbegin(); it != nets.netOf.cend(); ++it) {
+            const QString& key = it.key();
+            const bool keep = key == QLatin1String("ground") ? groundLeft
+                              : key.startsWith(QLatin1String("label ")) ? labelsLeft.contains(key.mid(6))
+                              : !key.startsWith(QLatin1String("at ")) && keptParts.contains(key.section(QLatin1Char('.'), 0, -2));
+            if (keep) expected.netOf.insert(key, it.value());
+        }
+        for (int k = 0; k < boundaries.size(); ++k) expected.netOf.insert(QStringLiteral("%1.%2").arg(subName).arg(k + 1), boundaries.at(k).net);
+    }
     prepare(sch);
     const QString sections = QStringLiteral("<Components>\n%1\n</Components>\n<Wires>\n%2</Wires>\n")
                                  .arg(mine.join(QLatin1Char('\n')), theirWires.isEmpty() ? QString() : theirWires.join(QLatin1Char('\n')) + QLatin1Char('\n'));
+    // (To put back if its nets are not as they are to be.)
+    const QPair<QString, QString> stateBefore = sch->snapshotAll();
+    const Schematic::UndoStacks marksBefore = sch->undoStacks();
+    const bool changedBefore = sch->getDocChanged();
+    const quint64 revisionBefore = sch->revision();
+    const QList<QucsDoc::Edit> editsBefore = sch->recentEdits();
     QString why;
     if (!sch->replaceContent(sections, &why)) {
         putBack();
         return errorResult(tr("The schematic could not take the subcircuit (%1 is as it was): %2").arg(QFileInfo(file).fileName(), why));
+    }
+    // Every net as it was, the group's pins now the instance's: checked on
+    // the schematic made, and undone when not - a subcircuit that answered
+    // well joined two nets, and the next simulation read 0 V.
+    {
+        const Nets now = netsOf(sch, nullptr);
+        Nets after;
+        for (auto it = now.netOf.cbegin(); it != now.netOf.cend(); ++it)
+            if (expected.netOf.contains(it.key())) after.netOf.insert(it.key(), it.value());
+        QStringList differ = netChangesBeyond(expected, after, {});
+        if (!differ.isEmpty()) {
+            sch->restoreAll(stateBefore, false);
+            sch->setUndoStacks(marksBefore);
+            sch->setChanged(changedBefore, false);
+            sch->rewind(revisionBefore, editsBefore);
+            putBack();
+            for (QString& d : differ) d.replace(tr(" would no longer be "), tr(" was no longer ")).replace(tr(" would be "), tr(" was "));
+            return errorResult(tr("The instance would not keep this schematic's nets - %1: nothing changed, and %2 is as it was. "
+                                  "Move the parts apart (or their wires) and try again.")
+                                   .arg(differ.join(QStringLiteral(", ")), QFileInfo(file).fileName()));
+        }
     }
     written(file, held);
     QJsonObject result{{QStringLiteral("subcircuit"), QDir::toNativeSeparators(file)},
@@ -6178,7 +6439,11 @@ bool QucsControl::pointOf(Schematic* sch, const QJsonValue& at, QPoint* point, Q
     for (const Port* p : c->Ports)
         if (port == nullptr && !p->Name.isEmpty() && p->Name.compare(which, Qt::CaseInsensitive) == 0) port = p;
     if (port == nullptr) {
-        *error = tr("%1 has no pin %2 (it has %3).").arg(name, which).arg(c->Ports.size());
+        QStringList names;
+        for (int i = 0; i < c->Ports.size(); ++i)
+            if (!c->Ports.at(i)->Name.isEmpty()) names << QStringLiteral("%1 %2").arg(i + 1).arg(c->Ports.at(i)->Name);
+        *error = names.isEmpty() ? tr("%1 has no pin %2 (it has %3, by number).").arg(name, which).arg(c->Ports.size())
+                                 : tr("%1 has no pin %2 (it has %3: %4).").arg(name, which).arg(c->Ports.size()).arg(names.join(QStringLiteral(", ")));
         return false;
     }
     *point = QPoint(c->cx + port->x, c->cy + port->y);
@@ -7005,16 +7270,48 @@ QJsonObject QucsControl::connectPins(const QJsonObject& args)
     const QStringList ends{QStringLiteral("at %1,%2").arg(a.x()).arg(a.y()), QStringLiteral("at %1,%2").arg(b.x()).arg(b.y())};
     if (before.netOf.value(ends.at(0)) == before.netOf.value(ends.at(1)))
         return textResult(tr("%1 and %2 are on one net already: nothing drawn.").arg(from, to));
+    // The way: through the points given; else round a side first, when one
+    // is asked for; else the shortest that touches nothing.
+    const QString side = args.value(QLatin1String("side")).toString().trimmed().toLower();
+    if (!side.isEmpty() && side != QLatin1String("above") && side != QLatin1String("below") && side != QLatin1String("left")
+        && side != QLatin1String("right"))
+        return errorResult(tr("'side' is above, below, left or right: the side of the two ends the wire goes round."));
+    QList<QPoint> via;
+    for (const QJsonValue& v : args.value(QLatin1String("via")).toArray()) {
+        const QJsonArray p = v.toArray();
+        if (p.size() != 2 || !p.at(0).isDouble() || !p.at(1).isDouble())
+            return errorResult(tr("'via' is a list of points the wire goes through, [[x, y], ...]."));
+        int x = p.at(0).toInt(), y = p.at(1).toInt();
+        sch->setOnGrid(x, y);
+        via << QPoint(x, y);
+    }
+    if (!via.isEmpty() && !side.isEmpty()) return errorResult(tr("Give 'via' or 'side', not both."));
     prepare(sch);
     // A wire that joins these two nets and nothing else: one going over a
     // pin on its way would join that pin's net too.
     const auto check = [&] { return netChangesBeyond(before, netsOf(sch, nullptr, {a, b}), ends); };
     const QList<qucs_s::erc::Issue> wiringBefore = qucs_s::erc::wiring(sch);
-    if (!wireUp(sch, a, b, check, &error))
-        return errorResult(tr("Not wired: %1. Give the way with add_wire, or move a part out of it.").arg(error));
+    int preferred = 0, used = -1;
+    const std::vector<std::vector<QPoint>> ways = !via.isEmpty() ? std::vector<std::vector<QPoint>>{wayThrough(a, via, b)}
+                                                  : !side.isEmpty() ? waysAround(sch, a, b, side, &preferred)
+                                                                    : waysBetween(sch, a, b);
+    if (!wireAlong(sch, a, b, ways, check, &error, &used))
+        return errorResult(!via.isEmpty() ? tr("Not wired through the points given: %1. Other points, or 'side', or connect "
+                                               "without them.").arg(error)
+                                          : tr("Not wired: %1. Give the way with add_wire, or move a part out of it.").arg(error));
     finish(sch, {a, b});
     QString text = tr("Wired %1 to %2 (%3, %4 to %5, %6), going over no other pin or wire.")
                        .arg(from, to).arg(a.x()).arg(a.y()).arg(b.x()).arg(b.y());
+    if (!via.isEmpty()) {
+        QStringList points;
+        for (const QPoint& p : std::as_const(via)) points << QStringLiteral("%1, %2").arg(p.x()).arg(p.y());
+        text += QLatin1Char(' ') + tr("Through %1.").arg(points.join(QStringLiteral("; ")));
+    } else if (!side.isEmpty()) {
+        text += QLatin1Char(' ') + (used < preferred ? tr("Round the %1 side.").arg(side == QLatin1String("above") ? tr("upper")
+                                                                                     : side == QLatin1String("below") ? tr("lower") : side)
+                                                     : tr("Not round the %1 side: no way there went over nothing - the shortest "
+                                                          "other way.").arg(side));
+    }
     if (const QStringList look = newWiringIssues(sch, wiringBefore); !look.isEmpty())
         text += QLatin1Char(' ') + tr("Look: %1.").arg(look.join(QStringLiteral("; ")));
     return textResult(text);
@@ -7079,13 +7376,25 @@ QJsonObject QucsControl::setLabel(const QJsonObject& args)
         return errorResult(tr("The net is ground: it cannot be labelled."));
     const QString before = labelled != nullptr && static_cast<Conductor*>(labelled)->hasLabel()
                                ? static_cast<Conductor*>(labelled)->label()->Name : QString();
+    // (Its initial value kept when the name is: moving its text, say.)
+    const QString initial = labelled != nullptr && static_cast<Conductor*>(labelled)->hasLabel() && before == name
+                                ? static_cast<Conductor*>(labelled)->label()->initValue : QString();
+    // Where its text goes: given, else above right of the place.
+    int xl = p.x() + 30, yl = p.y() - 30;
+    if (args.contains(QLatin1String("text_at"))) {
+        const QJsonArray t = args.value(QLatin1String("text_at")).toArray();
+        if (t.size() != 2 || !t.at(0).isDouble() || !t.at(1).isDouble())
+            return errorResult(tr("'text_at' is where the label's text goes, [x, y] on the schematic."));
+        const QPoint within = Schematic::withinModelLimit(QPoint(t.at(0).toInt(), t.at(1).toInt()));
+        xl = within.x();
+        yl = within.y();
+    }
     prepare(sch);
     if (labelled != nullptr) static_cast<Conductor*>(labelled)->dropLabel();
     if (!name.isEmpty()) {
-        int xl = p.x() + 30, yl = p.y() - 30;
         sch->setOnGrid(xl, yl);
-        if (wire != nullptr) wire->setName(name, QString(), p.x(), p.y(), xl, yl);
-        else node->setName(name, QString(), xl, yl);
+        if (wire != nullptr) wire->setName(name, initial, p.x(), p.y(), xl, yl);
+        else node->setName(name, initial, xl, yl);
     }
     finish(sch, {p});
     QString text = name.isEmpty() ? tr("The label at %1, %2 is gone.").arg(p.x()).arg(p.y())
@@ -7314,6 +7623,11 @@ QJsonObject QucsControl::undoRedo(const QJsonObject& args, bool redo)
         if (!args.value(QLatin1String("to")).isDouble() || to < 0 || to > last)
             return errorResult(tr("'to' is a step from 0 (as loaded) to %1, as undo_history lists them.").arg(last));
         if (to == at) return textResult(tr("It is at step %1 already.").arg(at));
+        // (A redo goes forward only: one that undid thirteen steps, from a
+        // step misremembered, was a trap. Undo's 'to' goes either way.)
+        if (redo && to < at)
+            return errorResult(tr("Step %1 is before the current step %2: redo goes forward only - undo with 'to': %1 goes back there.")
+                                   .arg(to).arg(at));
         redo = to > at;
         steps = std::abs(to - at);
     }

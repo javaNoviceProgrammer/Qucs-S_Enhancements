@@ -754,14 +754,15 @@ int main(int argc, char *argv[])
 
     // --workspace DIR: this run's workspace, not the settings' (a client of
     // --mcp-server keeps its files in a folder of its own) - and its scratch
-    // folder there, when the settings name none. Before it is made.
+    // folder there too (neither is saved), whatever the settings name: the
+    // netlists and logs of two runs, or of a run and the user's window, were
+    // written over each other in the cache's one folder. Before it is made.
     if (const QString asked = qucs_s::mcp::workspaceAsked(argc, argv); !asked.isEmpty()) {
-        const QString defaultScratch = QDir::toNativeSeparators(QucsSettings.QucsWorkDir.absolutePath() + "/spice4qucs");
         QucsSettings.workspaceOfRun = QDir(asked).absolutePath();
         QucsSettings.qucsWorkspaceDir.setPath(QucsSettings.workspaceOfRun);
         QucsSettings.QucsWorkDir = QucsSettings.qucsWorkspaceDir;
-        if (QucsSettings.S4Qworkdir == defaultScratch)
-            QucsSettings.S4Qworkdir = QDir::toNativeSeparators(QucsSettings.workspaceOfRun + "/spice4qucs");
+        QucsSettings.S4Qworkdir = QDir::toNativeSeparators(QucsSettings.workspaceOfRun + "/spice4qucs");
+        QucsSettings.tempFilesDir.setPath(misc::cacheDir());
     }
 
     // The saved style for the platform's themes, then the theme (a

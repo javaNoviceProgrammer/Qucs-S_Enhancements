@@ -640,6 +640,29 @@ private slots:
         // ~/QucsWorkspace - is made here, and the test fails, not the
         // user's workspace filled.)
         env.insert("HOME", home.path());
+        // Settings that name a scratch folder of their own, as the cache's
+        // default does: the run's scratch is in its workspace all the same
+        // (its netlists and logs went to the one folder every run shared).
+        const QString sharedScratch = home.filePath("shared scratch");
+        QDir().mkpath(home.filePath("settings/qucs"));
+        {
+            QFile ini(home.filePath("settings/qucs/qucs_s.ini"));
+            QVERIFY(ini.open(QIODevice::WriteOnly));
+            ini.write(QStringLiteral("[General]\nS4Q_workdir=%1\n").arg(sharedScratch).toUtf8());
+        }
+#ifndef Q_OS_WIN
+        // (An ngspice that does nothing: the netlist is written before it runs.)
+        QDir().mkpath(home.filePath("bin"));
+        QFile ngspice(home.filePath("bin/ngspice"));
+        QVERIFY(ngspice.open(QIODevice::WriteOnly));
+        ngspice.write("#!/bin/sh\nexit 0\n");
+        ngspice.close();
+        ngspice.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        env.insert("PATH", home.filePath("bin") + ':' + env.value("PATH"));
+#endif
+        // (A circuit to run, in the workspace.)
+        QDir().mkpath(workspace);
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/templates_ngspice/S-parameter_active_analysis.sch"), workspace + "/scratchy.sch"));
         p.setProcessEnvironment(env);
         p.start(program, {"--mcp-server", "--workspace", workspace});
         QVERIFY(p.waitForStarted(10000));
@@ -648,7 +671,9 @@ private slots:
             {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}},
             {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "get_state"}, {"arguments", QJsonObject()}}}},
             {{"jsonrpc", "2.0"}, {"id", 3}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "new_project"}, {"arguments", QJsonObject{{"name", "{}"}, {"open", false}}}}}},
-            {{"jsonrpc", "2.0"}, {"id", 4}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "new_project"}, {"arguments", QJsonObject{{"name", "amp"}, {"open", false}}}}}}};
+            {{"jsonrpc", "2.0"}, {"id", 4}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "new_project"}, {"arguments", QJsonObject{{"name", "amp"}, {"open", false}}}}}},
+            {{"jsonrpc", "2.0"}, {"id", 5}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "open_document"}, {"arguments", QJsonObject{{"path", "scratchy.sch"}}}}}},
+            {{"jsonrpc", "2.0"}, {"id", 8}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "simulate"}, {"arguments", QJsonObject{{"operating_point", true}}}}}}};
         QHash<int, QJsonObject> answers;
         for (const QJsonObject& m : messages) {
             p.write(QJsonDocument(m).toJson(QJsonDocument::Compact) + '\n');
@@ -672,6 +697,13 @@ private slots:
         QVERIFY(answers.value(3).value("result").toObject().value("isError").toBool());
         QVERIFY(!answers.value(4).value("result").toObject().value("isError").toBool());
         QVERIFY(QFileInfo(workspace + "/amp_prj").isDir());
+        // Its netlist in its workspace's scratch folder, none in the one the
+        // settings name.
+#ifndef Q_OS_WIN
+        QVERIFY2(QDirIterator(workspace + "/spice4qucs", {"*.cir"}, QDir::Files, QDirIterator::Subdirectories).hasNext(),
+                 qPrintable(QJsonDocument(answers.value(8)).toJson()));
+#endif
+        QVERIFY2(!QDirIterator(sharedScratch, QDir::Files, QDirIterator::Subdirectories).hasNext(), qPrintable(sharedScratch));
         // The settings' workspace is not this one.
         QDirIterator files(home.filePath("settings"), {"*.ini", "*.conf"}, QDir::Files, QDirIterator::Subdirectories);
         while (files.hasNext()) {

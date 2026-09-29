@@ -1368,9 +1368,15 @@ bool toTrash(const QString& path, bool* trashed)
 QJsonObject QucsControl::newProject(const QJsonObject& args)
 {
     const QString name = args.value(QLatin1String("name")).toString().trimmed();
-    if (name.isEmpty() || name.contains(QLatin1Char('/')) || name.contains(QLatin1Char('\\')) || name.startsWith(QLatin1Char('.')))
-        return errorResult(tr("'name' is the project's name (a folder name: no slashes)."));
+    // (Each fault said as it is: "." was told "no slashes".)
+    if (name.isEmpty()) return errorResult(tr("'name' is the project's name, a folder's name: amp (or amp_prj)."));
+    if (!name.contains(QRegularExpression(QStringLiteral("[\\p{L}\\p{N}]"))))
+        return errorResult(tr("'name': %1 is no project's name - it has no letter or digit.").arg(name));
+    if (name.contains(QLatin1Char('/')) || name.contains(QLatin1Char('\\')))
+        return errorResult(tr("'name': %1 has a slash - a project's name is one folder's name, made in the workspace.").arg(name));
     if (const QString bad = badFileName(name); !bad.isEmpty()) return errorResult(tr("'name': %1.").arg(bad));
+    if (name.startsWith(QLatin1Char('.')))
+        return errorResult(tr("'name': %1 begins with a dot - a folder so named is hidden. Begin it with a letter or digit.").arg(name));
     const QString folder = qucs_s::workspace::folderFor(name);
     const QDir workspace(QucsSettings.qucsWorkspaceDir.absolutePath());
     const QString path = workspace.filePath(folder);
@@ -1637,6 +1643,24 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
         source = QFileInfo(file).fileName();
     }
     if (text.trimmed().isEmpty()) return errorResult(tr("Give the netlist: 'text', or 'file' (.cir, .sp, .net)."));
+    // Where it is to be saved, checked first: a file there already kept the
+    // document untitled, said only in its 'saved' field, and the next call
+    // by that name found nothing open.
+    const bool replace = args.value(QLatin1String("replace")).toBool();
+    if (const QString saveAs = args.value(QLatin1String("save_as")).toString().trimmed(); !saveAs.isEmpty()) {
+        if (const QString bad = badFileName(QFileInfo(saveAs).fileName()); !bad.isEmpty()) return errorResult(tr("'save_as': %1.").arg(bad));
+        QString target = absolute(saveAs);
+        if (QFileInfo(target).suffix().isEmpty()) target += QStringLiteral(".sch");
+        if (QFileInfo(target).suffix().compare(QLatin1String("sch"), Qt::CaseInsensitive) != 0)
+            return errorResult(tr("'save_as': %1 - a schematic's file ends in .sch.").arg(QFileInfo(target).fileName()));
+        for (QucsDoc* doc : a_app->allDocuments())
+            if (!doc->getDocName().isEmpty() && sameFile(doc->getDocName(), target))
+                return errorResult(tr("%1 is open: close it, or choose another name. Nothing was imported.").arg(QDir::toNativeSeparators(target)));
+        if (QFileInfo::exists(target) && !replace)
+            return errorResult(tr("%1 exists: 'replace': true writes over it. Nothing was imported.").arg(QDir::toNativeSeparators(target)));
+        if (!QFileInfo(QFileInfo(target).absolutePath()).isDir())
+            return errorResult(tr("There is no folder %1. Nothing was imported.").arg(QDir::toNativeSeparators(QFileInfo(target).absolutePath())));
+    }
     // A SPICE netlist's first line is its title - unless it plainly is an
     // element of a kind placed here (a fragment of a netlist), with a
     // value where one belongs.
@@ -2049,7 +2073,7 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
     if (!skipped.isEmpty()) result.insert(QStringLiteral("not taken"), QJsonArray::fromStringList(skipped));
     if (!notes.isEmpty()) result.insert(QStringLiteral("note"), notes.join(QLatin1Char(' ')));
     if (!saveAs.isEmpty()) {
-        const QJsonObject saved = callNow(QStringLiteral("save_document"), {{QStringLiteral("as"), saveAs}});
+        const QJsonObject saved = callNow(QStringLiteral("save_document"), {{QStringLiteral("as"), saveAs}, {QStringLiteral("replace"), replace}});
         result.insert(QStringLiteral("saved"), saved.value(QStringLiteral("isError")).toBool() ? textOf(saved) : QDir::toNativeSeparators(sch->getDocName()));
     }
     return jsonResult(result);
