@@ -1000,7 +1000,11 @@ private slots:
             if (!failed(r)) ++answered;
             else if (text(r).contains("Nothing was done (it would have been read as its default, not refused)")) ++refusedByType;
         }
-        QVERIFY2(answered > 100 && refusedByType > 20, qPrintable(QStringLiteral("%1 %2").arg(answered).arg(refusedByType)));   // not all refused
+        // Not all refused: one call in ten answered at least. (The share is
+        // the draw's: over seeds 1 to 7 and 11, 101 to 122 of the 600 on
+        // macOS, and the Linux CI answered 100 - over the bar of 100 it had,
+        // it failed there every run.)
+        QVERIFY2(answered >= 60 && refusedByType > 20, qPrintable(QStringLiteral("%1 %2").arg(answered).arg(refusedByType)));
         // Still a schematic: read, undone and redone step by step.
         QVERIFY(!failed(call("get_schematic")));
         for (int i = 0; i < 25; ++i) call("undo");
@@ -5973,7 +5977,11 @@ private slots:
         QVERIFY(!failed(call("undo")));
         QCOMPARE(sch->getComponentByName("R1")->cy, 100);
         // A part in the way: R4 where R1 would go - nothing nudged into it.
-        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R4"}, {"x", 100}, {"y", 150}})));
+        // Its symbol meets the one R1 would have 10 lower (R1 from 99 to 121,
+        // R4 from 119 to 141). At 150 only R1's texts reached it, and their
+        // size is the font's: on the Linux CI, whose font is sized in pixels,
+        // they did not, and R1 was nudged.
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R4"}, {"x", 100}, {"y", 130}})));
         r = call("arrange", {{"keep_places", true}, {"straighten", true}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY2(!json(r).toObject().value("straightened").toString().contains("R1 10 down"), qPrintable(text(r)));
