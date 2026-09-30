@@ -18,6 +18,7 @@
 
 #include "ngspice.h"
 
+#include <algorithm>
 #include <functional>
 #include <QStandardPaths>
 #include "osdiselection.h"
@@ -88,9 +89,38 @@ QString programFile(const QString& command)
 } // namespace
 
 /*!
+ * \brief Ngspice::besideSchematic The files of \a patterns in the schematic's
+ *        own folder (not its subfolders): a schematic's Verilog-A is found
+ *        there when no project is open. None for an untitled one.
+ */
+QStringList Ngspice::besideSchematic(const QStringList& patterns) const
+{
+    QStringList files;
+    const QString name = a_schematic != nullptr ? a_schematic->getDocName() : QString();
+    if (name.isEmpty()) return files;
+    const QDir folder = QFileInfo(name).absoluteDir();
+    for (const QString& file : folder.entryList(patterns, QDir::Files, QDir::Name))
+        files << folder.absoluteFilePath(file);
+    return files;
+}
+
+namespace {
+// Whether \a files has \a file, by where it is (a project's folder may be
+// written another way).
+bool containsFile(const QStringList& files, const QString& file)
+{
+    const QString real = QFileInfo(file).canonicalFilePath();
+    return std::any_of(files.cbegin(), files.cend(), [&](const QString& f) {
+        return f == file || (!real.isEmpty() && QFileInfo(f).canonicalFilePath() == real);
+    });
+}
+} // namespace
+
+/*!
  * \brief Ngspice::osdiLoads The pre_osdi lines of the OSDI libraries
  *        (compiled Verilog-A) the netlist needs: of the project's - its
- *        folder and subfolders, as the Content panel lists them - and of
+ *        folder and subfolders, as the Content panel lists them -, those
+ *        beside the schematic (with no project open, the only ones), and of
  *        the libraries whose components the circuit uses (compiled
  *        from the sources Create Library embeds), those that define a
  *        module a .model card of \a netlist, or of a file it includes,
@@ -103,6 +133,8 @@ QString Ngspice::osdiLoads(const QString& netlist) const
     if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty())
         for (const QString& file : misc::projectFiles(QucsSettings.QucsWorkDir, {"*.osdi"}))
             files << QucsSettings.QucsWorkDir.absoluteFilePath(file);
+    for (const QString& file : besideSchematic({"*.osdi"}))
+        if (!containsFile(files, file)) files << file;
     for (const QString& file : collectVerilogAFiles(a_schematic))
         if (file.endsWith(QLatin1String(".osdi"), Qt::CaseInsensitive) && QFileInfo(file).isFile()
             && !files.contains(file))
@@ -136,6 +168,11 @@ QList<qucs_s::osdi::Build> Ngspice::verilogABuilds()
         for (const QString& file : misc::projectFiles(project, {"*.osdi"}))
             libraries << project.absoluteFilePath(file);
     }
+    // Those beside the schematic too - with no project open, the only ones.
+    for (const QString& file : besideSchematic({"*.va"}))
+        if (!containsFile(sources, file)) sources << file;
+    for (const QString& file : besideSchematic({"*.osdi"}))
+        if (!containsFile(libraries, file)) libraries << file;
     // The sources the libraries of the circuit's components embed: their
     // models are compiled here, beside them, before the first simulation,
     // and again when out of date or built on another platform.

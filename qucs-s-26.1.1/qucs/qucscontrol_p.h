@@ -119,6 +119,10 @@ Painting* paintingOf(const std::list<Painting*>& paintings, const QJsonValue& wh
 bool isFixedPainting(const Painting* p);
 /// The fields add_painting and edit_painting take, type by type.
 QString paintingFieldsText();
+/// The parameters of \a sch's symbol (a subcircuit's), as get_schematic
+/// and set_subcircuit_parameters give them: [{name, default, description,
+/// type, shown}].
+QJsonArray subcircuitParametersJson(const Schematic* sch);
 
 /// A new component of \a type (its model: R, Vpulse, Eqn, ...) - those of
 /// the library's hash, and the equation blocks that are only in its

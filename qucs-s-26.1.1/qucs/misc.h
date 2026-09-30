@@ -22,6 +22,7 @@
  * \Declaration of some miscellaneous function
  */
 
+#include <QDateTime>
 #include <QPushButton>
 
 #define Q_UINT32 uint32_t
@@ -84,7 +85,7 @@ namespace misc {
   /// Where temporary files go that belong to no project folder: the cache
   /// directory - or, in a run given --workspace, spice4qucs in that
   /// workspace, so that two runs (or a run and the user's window) do not
-  /// write over each other's.
+  /// write over each other's. QUCS_CACHE_DIR, when set, is it (a test's).
   QString cacheDir();
   /// Where the simulations of one schematic write their temporary files:
   /// a folder of the schematic's name (its path relative to the project,
@@ -95,6 +96,17 @@ namespace misc {
   /// project gets its base name. Without a project it is scratchDir()
   /// itself, as headless runs expect.
   QString scratchDirFor(const QString& docName);
+  /// The netlist the SPICE run that wrote \a dataset was given, kept for
+  /// it (in cacheDir()/netlists, one for each dataset): what a dataset is
+  /// of, to be told whether it still is of the circuit. keepRunNetlist
+  /// writes it - its first line the dataset's time and size, then the
+  /// netlist, whose first line (* Qucs <version> <schematic>) names
+  /// \a schematic when given; \a when, when valid, is the record's time.
+  /// runNetlistOf reads it: empty unless it is of \a dataset as it is now.
+  QString runNetlistFile(const QString& dataset);
+  bool    keepRunNetlist(const QString& dataset, const QString& netlist, const QString& schematic = QString(),
+                         const QDateTime& when = QDateTime());
+  QString runNetlistOf(const QString& dataset, QDateTime* kept = nullptr);
   /// Whether the file looks like text: readable and no NUL byte in its
   /// first 8 KiB. Decides what a dropped file of unknown type opens with.
   bool    isTextFile(const QString& path);

@@ -227,6 +227,31 @@ void Subcircuit::readPortDirections(const QString& fileString) {
   }
 }
 
+// ---------------------------------------------------------------------
+// Its symbol's .ID line, as loadSymbol reads it: "1=Rs=1k=series R=" for
+// each parameter (shown, name=default, what, type).
+QList<Subcircuit::Parameter> Subcircuit::symbolParameters() {
+  QList<Parameter> found;
+  QFile file(getSubcircuitFile());
+  if (!file.open(QIODevice::ReadOnly)) return found;
+  QTextStream stream(&file);
+  bool inSymbol = false;
+  while (!stream.atEnd()) {
+    const QString line = stream.readLine().trimmed();
+    if (line == QLatin1String("<Symbol>")) inSymbol = true;
+    else if (line == QLatin1String("</Symbol>")) break;
+    else if (inSymbol && line.startsWith(QLatin1String("<.ID "))) {
+      for (int i = 1;; i += 2) {
+        const QString s = line.section('"', i, i);
+        if (s.isEmpty()) break;
+        found << Parameter{s.section('=', 1, 1), s.section('=', 2, 2), s.at(0) != '0'};
+      }
+      break;
+    }
+  }
+  return found;
+}
+
 // -------------------------------------------------------
 QString Subcircuit::netlist() {
   QString s = Model + ":" + Name;

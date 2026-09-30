@@ -71,6 +71,9 @@ private slots:
     {
         QVERIFY(dir.isValid());
         useIsolatedSettings(dir.filePath("settings"));
+        // The caches the test's own (the netlists runs keep went into the
+        // user's caches otherwise).
+        QCOMPARE(misc::cacheDir(), QDir::toNativeSeparators(dir.filePath("settings") + "/cache"));
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         // QucsApp lists the simulators it can find and puts up a modal
         // error box when there is none: name one that exists.
@@ -136,8 +139,7 @@ private slots:
         QVERIFY(app.ProjName.isEmpty());
         QCOMPARE(misc::scratchDir(), QucsSettings.S4Qworkdir);
         QCOMPARE(misc::scratchDirFor(project + "/circuit.sch"), QucsSettings.S4Qworkdir);   // flat, as headless runs expect
-        QCOMPARE(QucsSettings.tempFilesDir.absolutePath(),
-                 QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
+        QCOMPARE(QDir::toNativeSeparators(QucsSettings.tempFilesDir.absolutePath()), misc::cacheDir());
     }
 
 #ifndef Q_OS_WIN

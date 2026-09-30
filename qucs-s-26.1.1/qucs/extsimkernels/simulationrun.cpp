@@ -231,6 +231,14 @@ void SimulationRun::slotProcessOutput()
             default:
                 break;
         }
+        // The netlist it was given, kept for the dataset: whether the
+        // dataset is still of the circuit is told by it (Claude's tools).
+        if (a_datasetError.isEmpty() && (QucsSettings.DefaultSimulator == spicecompat::simNgspice
+                                         || QucsSettings.DefaultSimulator == spicecompat::simSpiceOpus)) {
+            QFile netlist(QDir(a_ngspice->workdir()).filePath(QStringLiteral("spice4qucs.cir")));
+            if (netlist.open(QIODevice::ReadOnly | QIODevice::Text))
+                misc::keepRunNetlist(qucs_dataset, QString::fromUtf8(netlist.readAll()));
+        }
         if (!a_datasetError.isEmpty()) {
             addLogEntry(a_datasetError, QApplication::style()->standardIcon(QStyle::SP_MessageBoxCritical));
             a_hasError = true;

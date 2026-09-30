@@ -546,13 +546,50 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
     }
 
-    void withoutAProjectNoLibraryIsLoaded()
+    // With no project open, the libraries beside the schematic - not those
+    // in its subfolders, as a project's are found: a schematic that works
+    // in a project failed outside one with an unknown device.
+    void withoutAProjectTheLibrariesBesideItAreLoaded()
     {
         Module::registerModules();   // a QucsApp's destructor unregisters them
-        Schematic sch(nullptr, project + "/circuit.sch");
+        const QString loose = workspace + "/loose";
+        write(loose + "/circuit.sch", circuit);
+        write(loose + "/models/devices.lib", ".model q1 hicum_l2 (is=1e-16)\n");
+        write(loose + "/psp103.osdi", foreignLibrary("psp103"));
+        write(loose + "/models/hicum.osdi", foreignLibrary("hicum_l2"));
+        write(loose + "/unused.osdi", foreignLibrary("bsimcmg"));
+        Schematic sch(nullptr, loose + "/circuit.sch");
         QVERIFY(sch.load());
         NetlistProbe kernel(&sch);
-        QVERIFY(!kernel.netlist().contains("pre_osdi"));   // headless: no project
+        const QString netlist = kernel.netlist();
+        QVERIFY2(preOsdi(netlist) == QStringList{real(loose + "/psp103.osdi")}, qPrintable(netlist));
+    }
+
+    // And the check looks there too: a Verilog-A part whose module is not
+    // beside the schematic is said, with no project open (it was not).
+    void theCheckLooksBesideTheSchematicWithoutAProject()
+    {
+        Module::registerModules();
+        const QString loose = workspace + "/loose_erc";
+        write(loose + "/circuit.sch", circuit);
+        Schematic sch(nullptr, loose + "/circuit.sch");
+        QVERIFY(sch.load());
+        auto* ghost = new vacomponent(vamodule::propsObject(vamodule::readSource("module ghost(a, b); endmodule")));
+        ghost->Name = "X1";
+        sch.a_DocComps.push_back(ghost);
+        const auto warned = [&] {
+            for (const erc::Issue& issue : erc::check(&sch))
+                if (issue.component == "X1" && issue.message.contains("Verilog-A module ghost")
+                    && issue.message.contains("beside the schematic"))
+                    return true;
+            return false;
+        };
+        QVERIFY(warned());
+        write(loose + "/ghost.va", "module ghost(a, b); endmodule\n");
+        QVERIFY(!warned());
+        QFile::remove(loose + "/ghost.va");
+        write(loose + "/deeper/ghost.va", "module ghost(a, b); endmodule\n");   // not beside it
+        QVERIFY(warned());
     }
 };
 
