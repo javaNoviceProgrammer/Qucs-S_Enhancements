@@ -15,6 +15,7 @@
 #include <QDateTime>
 #include <QJsonObject>
 #include <QList>
+#include <QPair>
 #include <QString>
 #include <QStringList>
 
@@ -71,6 +72,17 @@ QList<Summary> claudeSessions(const QString& folder, int limit = 50);
 QString claudeSessionFile(const QString& sessionId);
 /// The first prompt (or title) and folder of a session file.
 Summary claudeSessionSummary(const QString& file);
+
+/// Where a session of Claude Code stands, from its file: each prompt in
+/// order - its text as the dock shows it (a command as it was typed), and
+/// the message before it, where the conversation stood (its uuid; empty
+/// for the first: nothing before it) - and its last message. Its
+/// subagents' messages are left out.
+struct SessionPoints {
+    QList<QPair<QString, QString>> prompts;   ///< text, the message before it
+    QString last;                             ///< the last message's uuid
+};
+SessionPoints sessionPoints(const QString& file);
 
 } // namespace qucs_s::claude::history
 

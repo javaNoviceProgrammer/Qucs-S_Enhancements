@@ -541,6 +541,27 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     connect(a_gitBar, &ClaudeGitBar::promptRequested, this, [this](const QString& prompt) { sendPrompt(prompt); });
     connect(a_gitBar, &ClaudeGitBar::openFileRequested, this, &ClaudeCodePanel::openFileRequested);
     composerLayout->addWidget(a_gitBar);
+    // Editing a prompt sent before: said above the composer, with Cancel.
+    a_editBar = new QFrame(composerHolder);
+    a_editBar->setObjectName(QStringLiteral("claudeEditBar"));
+    auto* editLayout = new QHBoxLayout(a_editBar);
+    editLayout->setContentsMargins(10, 4, 4, 4);
+    editLayout->setSpacing(6);
+    a_editText = new QLabel(a_editBar);
+    a_editText->setObjectName(QStringLiteral("claudeMuted"));
+    a_editText->setWordWrap(true);
+    a_editText->setText(tr("Editing a prompt: when sent, it replaces the original and everything after it. "
+                           "Files Claude changed since then stay as they are."));
+    a_editCancel = new QToolButton(a_editBar);
+    a_editCancel->setObjectName(QStringLiteral("claudeLink"));
+    a_editCancel->setText(tr("Cancel"));
+    a_editCancel->setAutoRaise(true);
+    a_editCancel->setToolTip(tr("Leave the conversation as it was (Esc)"));
+    editLayout->addWidget(a_editText, 1);
+    editLayout->addWidget(a_editCancel, 0, Qt::AlignTop);
+    a_editBar->hide();
+    connect(a_editCancel, &QToolButton::clicked, this, &ClaudeCodePanel::cancelEdit);
+    composerLayout->addWidget(a_editBar);
     composerLayout->addWidget(a_composer);
     layout->addWidget(composerHolder);
 
@@ -582,7 +603,43 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
         // Its commands, for the list before its next start too.
         const QStringList commands = a_session->slashCommands();
         if (!commands.isEmpty()) QucsSettingsFile().setValue(kCommands, commands);
+        // Taken back to before an edited prompt: what was after it goes.
+        if (a_rewinding) {
+            a_rewinding = false;
+            a_rewindIndex = -1;
+            a_setAside.clear();
+            scheduleRender();
+        }
         emit conversationChanged();
+    });
+    connect(a_session, &qucs_s::claude::Session::rewindFailed, this, [this](const QString& why) {
+        if (!a_rewinding) {
+            append({Entry::Problem, why, {}, {}});
+            return;
+        }
+        // The conversation as it was, and the edited prompt back in the
+        // composer.
+        QString sent;
+        for (qsizetype i = a_rewindIndex; i < a_entries.size(); ++i)
+            if (a_entries.at(i).kind == Entry::You) {
+                sent = a_entries.at(i).text;
+                break;
+            }
+        a_entries.resize(a_rewindIndex);
+        if (a_editStopped) endStoppedTurn(a_setAside);
+        a_entries += a_setAside;
+        a_setAside.clear();
+        a_rewinding = false;
+        a_rewindIndex = -1;
+        a_editStopped = false;
+        if (a_input->toPlainText().trimmed().isEmpty()) a_input->setPlainText(sent);
+        append({Entry::Problem,
+                tr("Claude Code could not go back to before that prompt (%1): the conversation is as it was, and the edited "
+                   "prompt is in the box again.")
+                    .arg(why),
+                {}, {}});
+        emit conversationChanged();
+        updateState();
     });
     connect(a_modelQuery, &qucs_s::claude::ModelQuery::finished, this, [this](const QJsonArray& models) {
         if (!models.isEmpty() && models != a_listedModels) {
@@ -1110,6 +1167,7 @@ void ClaudeCodePanel::restyle()
         " font-weight: 600; }"
         "QToolButton#claudePin[pinned=\"true\"]:hover { background: %9; }"
         "QFrame#claudePermission { background: %11; border: 1px solid %5; border-radius: 10px; }"
+        "QFrame#claudeEditBar { background: %11; border: 1px solid %2; border-radius: 8px; }"
         "QLabel#claudeCardTitle { font-weight: 600; }"
         "QPlainTextEdit#claudeCardDetail { background: %13; border: 1px solid %2; border-radius: 6px; color: %7; }"
         "QToolButton#claudeAllow { background: %5; color: %8; border: none; border-radius: 7px; padding: 4px 14px;"
@@ -1188,6 +1246,10 @@ bool ClaudeCodePanel::eventFilter(QObject* watched, QEvent* event)
             }
             if (key->key() == Qt::Key_Escape && a_session->isBusy()) {
                 stopTurn();
+                return true;
+            }
+            if (key->key() == Qt::Key_Escape && a_editing >= 0) {
+                cancelEdit();
                 return true;
             }
         } else if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut) {
@@ -1340,6 +1402,7 @@ void ClaudeCodePanel::setDefaultDirectory(const QString& dir)
     }
     const bool talking = !a_entries.isEmpty();
     a_session->setWorkingDirectory(workingDirectory());
+    forgetEdit();
     a_entries.clear();
     a_requests.clear();
     showNextRequest();
@@ -1362,6 +1425,7 @@ void ClaudeCodePanel::setWorkingDirectory(const QString& dir)
         return;
     }
     a_session->setWorkingDirectory(workingDirectory());
+    forgetEdit();
     a_entries.clear();
     a_requests.clear();
     showNextRequest();
@@ -1616,7 +1680,131 @@ void ClaudeCodePanel::sendComposer()
 
 bool ClaudeCodePanel::sendPrompt(const QString& text)
 {
+    if (a_editing >= 0) cancelEdit();   // (the git bar's: not the prompt edited)
     return sendText(text.trimmed(), false);
+}
+
+ClaudeCodePanel::Entry ClaudeCodePanel::promptEntry(const QString& text, const QString& extra)
+{
+    Entry e{Entry::You, text, extra, {}};
+    if (a_editing >= 0) {
+        // Sent in the place of one edited: the conversation goes back to
+        // where that one stood. The entries set aside stay until the program
+        // starts on it (or put back, when it cannot).
+        const Entry& edited = a_setAside.constFirst();
+        a_session->rewind(edited.session, edited.at);
+        e.session = edited.session;
+        e.at = edited.at;
+        e.rewindable = true;
+        a_rewinding = true;
+        a_rewindIndex = a_editing;
+        a_editing = -1;
+        a_draft.clear();
+        a_editBar->hide();
+        return e;
+    }
+    // Where the conversation stands before it: nothing said yet, or its
+    // last message (unknown in a session continued whose file was not found).
+    e.session = a_session->sessionId();
+    e.at = a_session->lastMessageId();
+    e.rewindable = e.session.isEmpty() || !e.at.isEmpty();
+    return e;
+}
+
+bool ClaudeCodePanel::canEdit(qsizetype index) const
+{
+    return index >= 0 && index < a_entries.size() && a_entries.at(index).kind == Entry::You && a_entries.at(index).rewindable
+           && !a_rewinding;
+}
+
+bool ClaudeCodePanel::editPrompt(qsizetype index)
+{
+    if (!canEdit(index)) return false;
+    if (a_editing >= 0) cancelEdit();   // (another one: back first - the entries before it stay where they are)
+    // A turn under way: stopped - it is among what is set aside.
+    const bool stopped = a_session->isBusy();
+    if (stopped) a_session->stop();
+    a_editing = index;
+    a_editStopped = stopped;
+    a_setAside = a_entries.mid(index);
+    a_entries.resize(index);
+    a_draft = a_input->toPlainText();
+    a_input->setPlainText(a_setAside.constFirst().text);
+    a_input->moveCursor(QTextCursor::End);
+    a_editBar->show();
+    a_requests.clear();
+    showNextRequest();
+    updateState();
+    render();
+    focusComposer();
+    emit titleChanged();
+    return true;
+}
+
+void ClaudeCodePanel::cancelEdit()
+{
+    if (a_editing < 0) return;
+    if (a_editStopped) endStoppedTurn(a_setAside);
+    a_entries += a_setAside;
+    a_setAside.clear();
+    a_editing = -1;
+    a_editStopped = false;
+    a_input->setPlainText(a_draft);
+    a_input->moveCursor(QTextCursor::End);
+    a_draft.clear();
+    a_editBar->hide();
+    updateState();
+    render();
+    emit titleChanged();
+    emit conversationChanged();
+}
+
+void ClaudeCodePanel::endStoppedTurn(QList<Entry>& list) const
+{
+    for (Entry& e : list) {
+        e.streaming = false;
+        if (e.kind == Entry::Tool && e.tool == Entry::Running) {
+            e.tool = Entry::Failed;
+            if (e.output.isEmpty()) e.output = tr("Stopped.");
+        }
+    }
+    if (!list.isEmpty() && list.constLast().kind != Entry::Summary) list.append({Entry::Summary, tr("Stopped"), {}, {}});
+}
+
+void ClaudeCodePanel::forgetEdit()
+{
+    a_editing = -1;
+    a_setAside.clear();
+    a_draft.clear();
+    a_editStopped = false;
+    a_rewinding = false;
+    a_rewindIndex = -1;
+    if (a_editBar != nullptr) a_editBar->hide();
+}
+
+void ClaudeCodePanel::placePrompts(const QString& sessionId)
+{
+    const QString file = qucs_s::claude::history::claudeSessionFile(sessionId);
+    if (file.isEmpty()) return;
+    const qucs_s::claude::history::SessionPoints points = qucs_s::claude::history::sessionPoints(file);
+    a_session->setLastMessageId(points.last);
+    // Each prompt not placed, by its text, in order (one the dock sent may
+    // have the document's note after it in the file).
+    qsizetype next = 0;
+    for (Entry& e : a_entries) {
+        if (e.kind != Entry::You) continue;
+        for (qsizetype k = next; k < points.prompts.size(); ++k) {
+            const QString& text = points.prompts.at(k).first;
+            if (text != e.text && !text.startsWith(e.text + QLatin1Char('\n'))) continue;
+            if (!e.rewindable) {
+                e.session = sessionId;
+                e.at = points.prompts.at(k).second;
+                e.rewindable = true;
+            }
+            next = k + 1;
+            break;
+        }
+    }
 }
 
 bool ClaudeCodePanel::sendText(const QString& text, bool withDocument)
@@ -1641,7 +1829,7 @@ bool ClaudeCodePanel::sendText(const QString& text, bool withDocument)
     if (text.startsWith(QLatin1Char('/'))) {
         static const QRegularExpression command(QStringLiteral("^/[A-Za-z0-9][A-Za-z0-9:_.-]*(\\s|$)"));
         if (command.match(text).hasMatch()) {
-            append({Entry::You, text, {}, {}});
+            append(promptEntry(text, QString()));
             const bool sent = a_session->send(text);
             updateState();
             return sent;
@@ -1664,7 +1852,7 @@ bool ClaudeCodePanel::sendText(const QString& text, bool withDocument)
         if (!attached.isEmpty())
             prompt += QStringLiteral("\n\n") + tr("(The document open in Qucs-S: %1)").arg(QDir::toNativeSeparators(attached));
     }
-    append({Entry::You, text, attached.isEmpty() ? QString() : QFileInfo(attached).fileName(), {}});
+    append(promptEntry(text, attached.isEmpty() ? QString() : QFileInfo(attached).fileName()));
     const bool sent = a_session->send(prompt);
     updateState();
     return sent;
@@ -1684,6 +1872,7 @@ void ClaudeCodePanel::newConversation()
     a_session->setPermissionMode(QucsSettingsFile().value(kMode).toString());
     a_name.clear();
     pinDocument(QString());   // (a new one is pinned to nothing, as at first)
+    forgetEdit();
     a_entries.clear();
     a_expanded.clear();
     a_requests.clear();
@@ -1867,6 +2056,10 @@ void ClaudeCodePanel::handleLink(const QUrl& url)
         toggle(url.path());
         return;
     }
+    if (url.scheme() == QLatin1String("edit")) {
+        editPrompt(url.path().toLongLong());
+        return;
+    }
     if (url.scheme() == QLatin1String("prompt")) {
         const int n = url.path().toInt();
         if (n < 0 || n >= int(std::size(kSuggestions))) return;
@@ -1932,7 +2125,7 @@ void ClaudeCodePanel::renderConversation(QTextCursor& c)
             i = j;
             continue;
         }
-        renderEntry(c, a_entries.at(i), captioned);
+        renderEntry(c, a_entries.at(i), captioned, i);
         ++i;
     }
 }
@@ -1989,7 +2182,7 @@ void ClaudeCodePanel::renderWelcome(QTextCursor& c)
     c.insertHtml(html);
 }
 
-void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captioned)
+void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captioned, qsizetype index)
 {
     const Colours col = colours(drawingPalette());
     const QFont base = a_view->font();
@@ -2021,6 +2214,17 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
         QTextCharFormat you = caption;
         you.setForeground(col.muted);
         c.insertText(tr("You"), you);
+        // Edit: back to before it, to send it again as changed.
+        if (!a_exporting && canEdit(index)) {
+            QTextCharFormat edit = muted;
+            edit.setFontWeight(QFont::Normal);
+            edit.setForeground(col.faint);
+            edit.setAnchor(true);
+            edit.setAnchorHref(QStringLiteral("edit:%1").arg(index));
+            edit.setToolTip(tr("Edit this prompt and send it again: the conversation goes back to before it"));
+            c.insertText(QStringLiteral("   "), muted);
+            c.insertText(tr("Edit"), edit);
+        }
         QTextFrameFormat frame;
         frame.setBackground(col.bubble);
         frame.setPadding(8);
@@ -2451,7 +2655,8 @@ void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
 QString ClaudeCodePanel::title() const
 {
     if (!a_name.isEmpty()) return a_name;
-    for (const Entry& e : a_entries)
+    // (A prompt being edited: the conversation as it is until it is sent.)
+    for (const Entry& e : a_editing >= 0 ? a_entries + a_setAside : a_entries)
         if (e.kind == Entry::You) {
             QString t = e.text.simplified();
             if (t.size() > 40) t = t.left(39).trimmed() + QChar(0x2026);
@@ -2490,8 +2695,14 @@ void ClaudeCodePanel::setNewInTab(bool on)
 QJsonObject ClaudeCodePanel::conversationJson() const
 {
     QJsonArray entries;
-    for (const Entry& e : a_entries) {
+    // A prompt being edited: the conversation as it is until it is sent.
+    const QList<Entry> all = a_editing >= 0 ? a_entries + a_setAside : a_entries;
+    for (const Entry& e : all) {
         QJsonObject o{{QStringLiteral("kind"), int(e.kind)}, {QStringLiteral("text"), e.text}};
+        if (e.kind == Entry::You && e.rewindable) {
+            o.insert(QStringLiteral("session"), e.session);
+            o.insert(QStringLiteral("at"), e.at);
+        }
         if (!e.extra.isEmpty()) o.insert(QStringLiteral("extra"), e.extra);
         if (!e.id.isEmpty()) o.insert(QStringLiteral("id"), e.id);
         if (!e.output.isEmpty()) o.insert(QStringLiteral("output"), e.output);
@@ -2523,6 +2734,7 @@ void ClaudeCodePanel::restoreConversation(const QJsonObject& conversation)
     // In its folder: Claude Code keeps a session with the folder it ran in.
     const QString folder = conversation.value(QLatin1String("folder")).toString();
     if (!folder.isEmpty() && QFileInfo(folder).isDir()) setWorkingDirectory(folder);
+    forgetEdit();
     a_entries.clear();
     a_expanded.clear();
     a_requests.clear();
@@ -2535,6 +2747,11 @@ void ClaudeCodePanel::restoreConversation(const QJsonObject& conversation)
         e.output = o.value(QLatin1String("output")).toString();
         e.detail = o.value(QLatin1String("detail")).toString();
         e.result = o.value(QLatin1String("result")).toString();
+        if (e.kind == Entry::You && o.contains(QLatin1String("at"))) {
+            e.session = o.value(QLatin1String("session")).toString();
+            e.at = o.value(QLatin1String("at")).toString();
+            e.rewindable = true;
+        }
         if (e.kind == Entry::Summary) {
             e.tokens = tokensFromJson(o.value(QLatin1String("tokens")).toObject());
             e.allTokens = tokensFromJson(o.value(QLatin1String("allTokens")).toObject());
@@ -2573,6 +2790,9 @@ void ClaudeCodePanel::restoreConversation(const QJsonObject& conversation)
     a_name = conversation.value(QLatin1String("name")).toString().simplified();
     pinDocument(conversation.value(QLatin1String("pinned")).toString());
     a_session->resume(conversation.value(QLatin1String("sessionId")).toString());
+    // Where it stands, and its prompts kept before they knew where they
+    // stood: from Claude Code's file of the session.
+    placePrompts(a_session->sessionId());
     // Its totals go on from its last turn's.
     for (auto it = a_entries.crbegin(); it != a_entries.crend(); ++it) {
         if (it->kind != Entry::Summary || (it->allTokens.isEmpty() && it->allCost < 0.0)) continue;
@@ -2674,12 +2894,14 @@ bool ClaudeCodePanel::importClaudeSession(const QString& file)
     a_session->reset();
     a_conversationId.clear();   // (kept as one of ours from now on)
     if (!folder.isEmpty() && QFileInfo(folder).isDir()) setWorkingDirectory(folder);
+    forgetEdit();
     a_entries = entries;
     a_expanded.clear();
     a_requests.clear();
     a_name = title.simplified();
     pinDocument(QString());
     a_session->resume(QFileInfo(file).completeBaseName());
+    placePrompts(a_session->sessionId());
     showNextRequest();
     updateState();
     scheduleRender();
