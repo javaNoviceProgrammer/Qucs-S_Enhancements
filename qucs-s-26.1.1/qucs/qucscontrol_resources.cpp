@@ -302,6 +302,11 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
     if (a_previewing == 0)
         for (const Kept& k : std::as_const(*kept)) a_revisionsKept.insert(k.sch.data(), {k.revision, k.changed});
     QPointer<QWidget> front = a_app->DocumentTab->currentWidget();
+    // The documents open: one the call opens - a data display it makes for
+    // add_diagram's 'document' - is closed after, and its file, made for it,
+    // taken away.
+    auto openBefore = std::make_shared<QSet<QucsDoc*>>();
+    for (QucsDoc* doc : a_app->allDocuments()) openBefore->insert(doc);
     // A batch: of calls that change schematics or look alone - not one that
     // writes a file, runs a simulation or opens a document.
     if (tool == QLatin1String("batch"))
@@ -314,7 +319,7 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
         }
     // What it did, told; all put back.
     ++a_previewing;
-    const auto conclude = [this, kept, front](const QJsonObject& answer) {
+    const auto conclude = [this, kept, front, openBefore](const QJsonObject& answer) {
         // Files written: as they were.
         QJsonArray files;
         if (--a_previewing == 0) {
@@ -347,6 +352,23 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
             k.sch->setChanged(k.changed, false);
             k.sch->rewind(k.revision, k.edits);
         }
+        // What the call opened: said, and closed as it was not (its file,
+        // if made for it, is gone with the files above).
+        if (a_previewing == 0)
+            for (QucsDoc* doc : a_app->allDocuments()) {
+                if (openBefore->contains(doc)) continue;
+                QJsonArray lines;
+                const bool made = !doc->getDocName().isEmpty() && !QFileInfo::exists(doc->getDocName());
+                lines.append(made ? tr("made (it had none), and opened") : tr("opened"));
+                if (auto* sch = dynamic_cast<Schematic*>(doc))
+                    for (const QString& line : describeChanges(stateOfText(QString()), sch->snapshotAll().first, 60)) lines.append(line);
+                changes.append(QJsonObject{{QStringLiteral("document"), titleOf(doc)}, {QStringLiteral("changes"), lines}});
+                if (auto* sch = dynamic_cast<Schematic*>(doc)) sch->setChanged(false);
+                doc->setDocChanged(false);
+                QWidget* w = QucsApp::documentWidget(doc);
+                a_app->showDocument(w);
+                a_app->slotFileClose(a_app->DocumentTab->indexOf(w));
+            }
         if (a_previewing == 0) a_revisionsKept.clear();
         if (front && a_app->DocumentTab->indexOf(front) >= 0) a_app->showDocument(front);
         a_callNotes.clear();   // (what the tool would have said beside it: part of the preview's answer)

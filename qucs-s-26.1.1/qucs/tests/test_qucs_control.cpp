@@ -3425,16 +3425,26 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(QFileInfo::exists(ws + "/round5_prj/orig.sch"));
         // Scratch: the schematic's own subfolder, cleared.
+        // No project open: the folder schematics of no project share - its
+        // files when the last run there was this one's, never the folder
+        // or what else is in it (it was trashed whole).
         const QString scratch = misc::scratchDirFor(ws + "/orig.sch");
-        QDir().mkpath(scratch);
-        {
+        QCOMPARE(scratch, QucsSettings.S4Qworkdir);
+        QDir().mkpath(scratch + "/other");
+        const auto netlist = [&](const QString& of) {
             QFile f(scratch + "/spice4qucs.cir");
             QVERIFY(f.open(QIODevice::WriteOnly));
-            f.write("* netlist\n");
-        }
+            f.write(("* Qucs " PACKAGE_VERSION "  " + of + "\n").toUtf8());
+        };
+        netlist(ws + "/another.sch");
+        r = call("clean_scratch");
+        QVERIFY2(!failed(r) && text(r).contains("nothing of its own is there"), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(scratch + "/spice4qucs.cir"));
+        netlist(ws + "/orig.sch");
         r = call("clean_scratch");
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(!QFileInfo::exists(scratch + "/spice4qucs.cir"));
+        QVERIFY(QFileInfo(scratch + "/other").isDir() && QFileInfo(scratch).isDir());
         QVERIFY(QFileInfo::exists(ws + "/orig.dat.ngspice"));   // datasets only when asked
         QVERIFY(!failed(call("clean_scratch", {{"datasets", true}})));
         QVERIFY(!QFileInfo::exists(ws + "/orig.dat.ngspice"));
@@ -7876,6 +7886,73 @@ private slots:
         QVERIFY2(!failed(r) && json(r).toObject().value("mapped").toString() == "by number", qPrintable(text(r)));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
         QVERIFY(!failed(call("close_document", {{"path", "twopin.sch"}, {"unsaved", "discard"}})));
+    }
+
+    // Round 10: a preview that makes a data display left it open and its
+    // empty file on disk, "would change" saying nothing; an untitled
+    // schematic simulated in a project ran in Scratch/Scratch/untitled, and
+    // one outside the project ran in the project's Scratch.
+    void roundTensFindings()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document", {{"as", "nodpl.sch"}, {"replace", true}})));
+        const QString folder = QFileInfo(front()->getDocName()).absolutePath();
+        QFile::remove(folder + "/nodpl.dpl");
+        const auto opened = [this] {
+            QStringList titles;
+            for (const QJsonValue& d : json(call("get_state")).toObject().value("documents").toArray()) titles << d.toObject().value("title").toString();
+            return titles;
+        };
+        const QStringList before = opened();
+        QJsonObject r = call("add_diagram", {{"path", "nodpl.sch"}, {"document", "data_display"}, {"type", "rect"}, {"preview", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray would = json(r).toObject().value("would change").toArray();
+        QVERIFY2(would.size() == 1 && would.first().toObject().value("document").toString() == "nodpl.dpl"
+                     && would.first().toObject().value("changes").toArray().first().toString() == "made (it had none), and opened"
+                     && QJsonDocument(would).toJson().contains("diagram"),
+                 qPrintable(text(r)));
+        QVERIFY2(!QFileInfo::exists(folder + "/nodpl.dpl"), "the data display's file is gone again");
+        QCOMPARE(opened(), before);
+        // One that is there but not open: opened for the preview, closed
+        // after, its file as it was.
+        QVERIFY(!failed(call("add_diagram", {{"path", "nodpl.sch"}, {"document", "data_display"}, {"type", "rect"}})));
+        QVERIFY(!failed(call("save_document", {{"path", "nodpl.dpl"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "nodpl.dpl"}})));
+        QFile dpl(folder + "/nodpl.dpl");
+        QVERIFY(dpl.open(QIODevice::ReadOnly));
+        const QByteArray saved = dpl.readAll();
+        dpl.close();
+        r = call("add_diagram", {{"path", "nodpl.dpl"}, {"type", "tab"}, {"preview", true}});
+        QVERIFY2(!failed(r) && QJsonDocument(json(r).toObject().value("would change").toArray()).toJson().contains("\"opened\""), qPrintable(text(r)));
+        QVERIFY(dpl.open(QIODevice::ReadOnly));
+        QCOMPARE(dpl.readAll(), saved);
+        QCOMPARE(opened(), before);
+        QVERIFY(!failed(call("close_document", {{"path", "nodpl.sch"}, {"unsaved", "discard"}})));
+
+        // The Scratch folder of an untitled schematic, and of a foreign one.
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (ngspice.isEmpty()) QSKIP("no ngspice here");
+        const QString wasNgspice = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = ngspice;
+        r = call("new_project", {{"name", "round10"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString project = QucsSettings.QucsWorkDir.absolutePath();
+        QVERIFY2(project.endsWith("round10_prj") && app->ProjName == "round10", qPrintable(project));
+        const QString lowpass = "lowpass\nV1 in 0 DC 0 AC 1\nR1 in out 1k\nC1 out 0 100n\n.ac dec 5 10 1meg\n.end";
+        QVERIFY(!failed(call("import_netlist", {{"text", lowpass}})));
+        QVERIFY2(json(call("simulate", {}, 120000)).toObject().value("succeeded").toBool(), "the untitled one's run");
+        QVERIFY2(QFileInfo(project + "/Scratch/untitled").isDir() && !QFileInfo::exists(project + "/Scratch/Scratch"),
+                 qPrintable(QDir(project + "/Scratch").entryList().join(", ")));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(QDir().mkpath(dir.filePath("foreign")));
+        QVERIFY(!failed(call("import_netlist", {{"text", lowpass}, {"save_as", dir.filePath("foreign/alien.sch")}})));
+        QVERIFY2(json(call("simulate", {}, 120000)).toObject().value("succeeded").toBool(), "the foreign one's run");
+        QVERIFY2(!QFileInfo::exists(project + "/Scratch/alien"), qPrintable(QDir(project + "/Scratch").entryList().join(", ")));
+        QVERIFY(QFileInfo::exists(misc::scratchDirFor(dir.filePath("foreign/alien.sch")) + "/spice4qucs.cir"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+        QucsSettings.NgspiceExecutable = wasNgspice;
     }
 
     // 4: a Verilog-A module ngspice was not given: where Qucs-S looked

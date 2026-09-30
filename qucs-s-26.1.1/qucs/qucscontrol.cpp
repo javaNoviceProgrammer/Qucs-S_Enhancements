@@ -4251,6 +4251,8 @@ bool QucsControl::toDataDisplay(QJsonObject* args, QString* error)
                 return false;
             }
         }
+        // (In a preview the file made for it goes again after.)
+        written(file, std::nullopt);
         const QJsonObject made = newDocument(QJsonObject{{QStringLiteral("kind"), QStringLiteral("data_display")}, {QStringLiteral("path"), schematicName}});
         if (made.value(QLatin1String("isError")).toBool()) {
             *error = made.value(QLatin1String("content")).toArray().at(0).toObject().value(QLatin1String("text")).toString();

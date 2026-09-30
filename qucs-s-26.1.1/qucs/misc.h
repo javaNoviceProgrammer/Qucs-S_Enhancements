@@ -92,9 +92,11 @@ namespace misc {
   /// without the extension - "amp" for amp.sch, "sub/amp" for sub/amp.sch)
   /// inside scratchDir(), so every simulated schematic has a folder of
   /// its own and a new run of the same schematic updates the same folder.
-  /// "untitled" for a schematic without a name; a schematic outside the
-  /// project gets its base name. Without a project it is scratchDir()
-  /// itself, as headless runs expect.
+  /// "untitled" for a schematic without a name, and one in the Scratch
+  /// folder (saved there to be simulated) by its place there. A schematic
+  /// outside the project writes nothing into it: a folder of its name in
+  /// S4Qworkdir, where schematics of no project go. Without a project it is
+  /// scratchDir() itself, as headless runs expect.
   QString scratchDirFor(const QString& docName);
   /// The netlist the SPICE run that wrote \a dataset was given, kept for
   /// it (in cacheDir()/netlists, one for each dataset): what a dataset is
