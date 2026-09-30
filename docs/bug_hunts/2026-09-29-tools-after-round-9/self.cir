@@ -1,0 +1,9 @@
+* self
+.SUBCKT self a
+R1 a 0 1K
+X1 _net0 self
+.ENDS
+R1 a 0 1K
+X1 _net0 self
+.op
+.end

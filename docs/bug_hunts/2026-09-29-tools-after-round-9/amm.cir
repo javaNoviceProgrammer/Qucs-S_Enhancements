@@ -1,0 +1,6 @@
+* ammeter across V
+V1 1 0 DC 5
+VPr1 1 0 DC 0
+.op
+.print dc v(1)
+.end
