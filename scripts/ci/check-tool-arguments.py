@@ -29,8 +29,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(HERE, "..", "..", "qucs-s-26.1.1", "qucs")
 FILES = sorted(f for f in os.listdir(SOURCE) if re.fullmatch(r"qucscontrol(_\w+)?\.cpp", f))
 
-# Read by call() or the machinery around it, not by a handler.
-AROUND = {"preview", "selection"}
+# Read by call() or the machinery around it, not by a handler (add_diagram's
+# 'document' by toDataDisplay(), before the handler).
+AROUND = {"preview", "selection", "document"}
 # Arguments a handler reads on purpose though its schema has them not
 # (none), and schema fields no handler is expected to read, by tool.
 NOT_READ = {
@@ -56,6 +57,8 @@ NESTED = {
     ("tune", "knobs"): ("tuneKnobs", "knob"),
     ("tune", "targets"): ("tuneKnobs", "item"),
     ("tune", "hold"): ("readHolds", "item"),
+    ("make_symbol", "parameters"): ("changeParameters", "o"),
+    ("set_subcircuit_parameters", "parameters"): ("changeParameters", "o"),
 }
 
 
