@@ -64,7 +64,8 @@ QList<Issue> wiring(Schematic* doc);
 QList<Issue> notes(Schematic* doc);
 
 /// The subcircuit files \a doc uses directly (Subcircuit components, as
-/// absolute paths, each once).
+/// absolute paths, each once) - those that are there: a file not found is
+/// an error of check(), not a path to read.
 QStringList subcircuitFiles(Schematic* doc);
 
 /// A subcircuit's own findings (check()).
@@ -74,14 +75,17 @@ struct SubcircuitFindings {
 };
 
 /// The findings of each subcircuit \a doc uses, at any depth, each file
-/// once, in the order they are met: an open document as it is, unsaved
-/// changes included (\a open finds it by its file, or gives nullptr), the
-/// others read from disk. A file that does not load is one error.
+/// once, depth first in the order they are met: an open document as it is,
+/// unsaved changes included (\a open finds it by its file, or gives
+/// nullptr), the others read from disk. A file that does not load is one
+/// error; a file that uses one above it (a -> b -> a) is an error of the
+/// file that closes the cycle.
 QList<SubcircuitFindings> checkSubcircuits(Schematic* doc, const std::function<Schematic*(const QString&)>& open);
 
 /// What a pin's name says it is: "supply" (VCC, VEE, VDD, V+, POSRAIL ...),
-/// "input" (INP, IN-, NONINV, POSIN ...) or "output" (OUT, VOUT) - an
-/// op-amp's; empty for any other name. The check reads pins so.
+/// "input" (INP, IN-, NONINV, POSIN, IN1+, and one of one pin: IN, IN1,
+/// VIN) or "output" (OUT, VOUT, OUT1, OUTA); empty for any other name. The
+/// check reads pins so (an op-amp's input by the names of a pair only).
 QString pinRole(const QString& name);
 
 /// How many of \a issues are errors.
