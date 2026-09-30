@@ -309,13 +309,29 @@ private slots:
         // A text answer, cut at its end.
         r = callTool("get_netlist", {{"max_chars", 300}});
         QVERIFY2(!r.value("isError").toBool() && first(r).size() <= 300 && first(r).endsWith("a larger max_chars gives them)"), qPrintable(first(r)));
+        // Its digits in a text, as a client sends what no schema types (the
+        // Claude Code panel sent "1000", and every direct call was refused):
+        // as the number - in a batch's call too.
+        const QString asNumber = first(r);
+        for (const QJsonValue& digits : {QJsonValue("300"), QJsonValue(" 300 ")}) {
+            r = callTool("get_netlist", {{"max_chars", digits}});
+            QVERIFY2(!r.value("isError").toBool() && first(r) == asNumber, qPrintable(first(r)));
+        }
+        r = callTool("batch", {{"calls", QJsonArray{QJsonObject{{"tool", "get_netlist"}, {"arguments", QJsonObject{{"max_chars", "300"}}}}}}});
+        QVERIFY2(!r.value("isError").toBool() && texts(r).join("\n").contains("a larger max_chars gives them)"), qPrintable(texts(r).join("\n")));
+        r = callTool("batch", {{"calls", QJsonArray{QJsonObject{{"tool", "get_netlist"}, {"arguments", QJsonObject{{"max_chars", "abc"}}}}}}});
+        QVERIFY2(r.value("isError").toBool() && texts(r).join(" ").contains("not the text \"abc\""), qPrintable(texts(r).join("\n")));
         // A short one, as it was.
         r = callTool("get_state", {{"max_chars", 1000000}});
         QVERIFY(!r.value("isError").toBool() && !first(r).contains("trimmed"));
-        // Not a number of characters: refused, nothing done.
-        for (const QJsonValue& bad : {QJsonValue(50), QJsonValue("4000"), QJsonValue(2500.5)}) {
+        // Not a number of characters: refused, saying what was given, nothing done.
+        for (const auto& [bad, said] : {std::pair(QJsonValue(50), "not the number 50"), std::pair(QJsonValue(2500.5), "not the number 2500.5"),
+                                        std::pair(QJsonValue("abc"), "not the text \"abc\""), std::pair(QJsonValue("4e3"), "not the text \"4e3\""),
+                                        std::pair(QJsonValue("-500"), "not the text \"-500\""), std::pair(QJsonValue("150"), "not the text \"150\""),
+                                        std::pair(QJsonValue(true), "not true")}) {
             r = callTool("delete", {{"names", QJsonArray{"R1"}}, {"max_chars", bad}});
-            QVERIFY2(r.value("isError").toBool() && first(r).contains("max_chars is a whole number of characters, 200 or more"), qPrintable(first(r)));
+            QVERIFY2(r.value("isError").toBool() && first(r).contains("max_chars is a whole number of characters, 200 or more") && first(r).contains(said),
+                     qPrintable(first(r)));
         }
         QVERIFY(front()->getComponentByName("R1") != nullptr);
         callTool("close_document", {{"unsaved", "discard"}});
