@@ -984,6 +984,12 @@ bool importFile(const QString& folder, const QString& source, const Options& opt
     Data data;
     if (!read(source, options, &data, error)) return false;
     if (notes != nullptr) *notes = data.notes;
+    return importRead(folder, source, data, options, imported, error, name);
+}
+
+bool importRead(const QString& folder, const QString& source, const Data& data, const Options& options, Imported* imported,
+                QString* error, const QString& name)
+{
     imported->name = name.isEmpty() ? datasetNameFor(folder, source) : name;
     imported->path = QDir(folder).filePath(imported->name + QStringLiteral(".dat"));
     imported->origin.source = QFileInfo(source).absoluteFilePath();

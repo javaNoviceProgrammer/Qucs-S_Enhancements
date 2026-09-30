@@ -99,6 +99,16 @@ QString whyNoData(Schematic* sch, Graph* g);
 /// The dataset file a trace's variable \a var reads (ngspice/tran.v(out):
 /// name.dat.ngspice), and the variable in it in \a variable.
 QString datasetOfTrace(Schematic* sch, const QString& var, QString* variable);
+/// The dataset \a name in \a folder when it is no simulator's - imported
+/// (import_data, the Import tab; the file it came from in \a source), or a
+/// name.dat with no name.dat.<simulator> of the settings beside it: its
+/// traces are name:variable, without a prefix. Its file, else empty.
+QString plainDataset(const QString& folder, const QString& name, QString* source = nullptr);
+/// An imported dataset in \a folder that has \a variable: its name (the
+/// file it came from in \a source), else empty.
+QString importedWith(const QString& folder, const QString& variable, QString* source = nullptr);
+/// \a file as a person reads it from \a folder: relative when inside it.
+QString shownFrom(const QString& folder, const QString& file);
 
 /// The operating point a DC bias run (Simulation > Calculate DC bias) of
 /// \a sch left in its Scratch folder \a scratch: each node's value and

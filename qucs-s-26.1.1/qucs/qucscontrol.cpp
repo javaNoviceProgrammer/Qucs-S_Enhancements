@@ -29,6 +29,7 @@
 #include "schematic.h"
 #include "simulationconsole.h"
 #include "simulatorlog.h"
+#include "dataimport.h"
 #include "dataset.h"
 #include "erc.h"
 #include "mcpserver.h"
@@ -255,7 +256,7 @@ const char* const kTools = R"JSON([
  "description": "Undoes the last change of a document (the one in front unless 'path' names another), like Edit > Undo; with 'files', the files the last calls wrote instead. 'steps' undoes that many changes (a batch that stopped halfway reports how many changes it made); 'to' goes to a step of a schematic as undo_history numbers them, backward or forward again. Reports what it changed back, part by part.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many changes to undo, 1 by default"},
    "to": {"type": "integer", "minimum": 0, "description": "A step as undo_history lists them: the schematic as it was after it (0: as it was loaded)"},
-   "files": {"description": "Instead of a document's changes: the files the last calls wrote put back as they were (true or 1: the last call's; a number: that many calls') - save_document's, create_subcircuit's, copy_document's, import_netlist's, the exports', rename_net's data display. A file made by the call is removed; one changed since is left, and said. undo_history lists them"}}}},
+   "files": {"description": "Instead of a document's changes: the files the last calls wrote put back as they were (true or 1: the last call's; a number: that many calls') - save_document's, create_subcircuit's, copy_document's, import_netlist's, import_data's, the exports', rename_net's data display. A file made by the call is removed; one changed since is left, and said. undo_history lists them"}}}},
 {"name": "undo_history",
  "description": "Lists a schematic's undo steps in words - \"step 7: R2 R 47k → 67k; step 8: diagram 2: trace 2's look changed\" - the last 'steps' (10 by default) up to the current position, plus those that can be redone after it, so undo can go to a known step ('to') instead of counting.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 200, "description": "How many steps before the current one are listed, 10 by default"}}}},
@@ -355,7 +356,7 @@ const char* const kTools = R"JSON([
 {"name": "add_trace",
  "description": "Adds a trace to a diagram. 'variable' is named as get_dataset names it (tran.v(out); v(out) or out when unambiguous; the simulator's prefix is added). You can set its color (#rrggbb, a name, or auto), thickness, style (solid, dash, dot, long_dash, stars, circles, arrows), the y axis it is drawn on (left or right), point markers (none, auto, circle, square, triangle, diamond, triangle_down, cross, plus) and auto_color (each swept curve its own color); in a table, precision and numbers (real_imaginary, magnitude_degrees, magnitude_radians). Returns its points, or why it shows nothing.",
  "inputSchema": {"type": "object", "properties": {
-   "path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "diagram": {"type": "integer", "description": "The diagram's number from get_schematic; may be left out when there is one"}, "variable": {"type": "string", "description": "As get_dataset names it: tran.v(out) (v(out) or out when that is one); the simulator's prefix is added"},
+   "path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "diagram": {"type": "integer", "description": "The diagram's number from get_schematic; may be left out when there is one"}, "variable": {"type": "string", "description": "As get_dataset names it: tran.v(out) (v(out) or out when that is one); the simulator's prefix is added - not to name:variable of an imported dataset (import_data), which has none"},
    "color": {"type": "string", "description": "#rrggbb, a colour's name, or auto"}, "thickness": {"type": "integer", "minimum": 0, "maximum": 99, "description": "Line width in pixels, 0-99"},
    "style": {"type": "string", "enum": ["solid", "dash", "dot", "long_dash", "stars", "circles", "arrows"], "description": "How the curve is drawn"},
    "axis": {"type": "string", "enum": ["left", "right"], "description": "The y axis it is drawn against: left (the default) or right"},
@@ -442,7 +443,7 @@ const char* const kTools = R"JSON([
    "angle": {"type": "integer", "description": "A text's angle in degrees, -360 to 360"}, "head": {"type": "string", "enum": ["open", "filled"], "description": "An arrow's head: open or filled"}, "file": {"type": "string", "description": "An image's file"}},
    "required": ["painting"]}},
 {"name": "list_documents",
- "description": "Lists the files of the workspace, a project or a folder - schematics, symbols, data displays, datasets, netlists, texts, PDFs, spreadsheets, pictures - newest first, each with its path (relative to the folder listed), kind, size, modification time and whether it is open. A dataset also says which simulator wrote it, which schematic it belongs to, and which traces of open diagrams read it but find nothing there; an open schematic lists the traces whose dataset does not exist at all (ngspice/... reads name.dat.ngspice - the usual Qucsator-versus-ngspice mix-up). Without 'folder' it lists the workspace, including its projects. 'folder' is a project's name (amp or amp_prj) or a folder (relative to the workspace, or absolute). 'kind' keeps one kind, 'search' the files whose name contains it, and 'sort' is newest (the default) or name. Subfolders are included up to 4 levels deep; at most 300 files, with what was left out.",
+ "description": "Lists the files of the workspace, a project or a folder - schematics, symbols, data displays, datasets, netlists, texts, PDFs, spreadsheets, pictures - newest first, each with its path (relative to the folder listed), kind, size, modification time and whether it is open. A dataset also says which simulator wrote it, which schematic it belongs to, and which traces of open diagrams read it but find nothing there; an open schematic lists the traces whose dataset does not exist at all (ngspice/... reads name.dat.ngspice - the usual Qucsator-versus-ngspice mix-up, or an imported dataset's trace with a prefix: import_data's name.dat is read as name:variable). An imported dataset says which file it came from. Without 'folder' it lists the workspace, including its projects. 'folder' is a project's name (amp or amp_prj) or a folder (relative to the workspace, or absolute). 'kind' keeps one kind, 'search' the files whose name contains it, and 'sort' is newest (the default) or name. Subfolders are included up to 4 levels deep; at most 300 files, with what was left out.",
  "inputSchema": {"type": "object", "properties": {
    "folder": {"type": "string", "description": "A project's name (amp or amp_prj) or a folder, relative to the workspace or absolute; the workspace when not given"},
    "kind": {"type": "string", "enum": ["schematic", "symbol", "data display", "dataset", "netlist", "text", "pdf", "spreadsheet", "markdown", "picture", "verilog-a"], "description": "Only files of this kind"},
@@ -514,6 +515,15 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "The netlist's text (or 'file'); its first line is the title unless it reads as an element"}, "file": {"type": "string", "description": "A netlist file instead of 'text' (.cir, .sp, .net), relative to the project or the workspace"}, "save_as": {"type": "string", "description": "Save the new schematic as this file (a .sch); one there already is refused unless 'replace'"}, "replace": {"type": "boolean", "description": "With save_as: write over a file of that name"},
    "title_line": {"type": "boolean", "description": "Whether the first line is a title (skipped): told from the line when not given"},
    "title": {"type": "string", "description": "The schematic's title, in place of the netlist's: a text above the circuit, and the name of its subcircuits' library"}, "spacing": {"type": "integer", "minimum": 120, "maximum": 600, "description": "Room between the parts placed, 200 by default"}}}},
+{"name": "import_data",
+ "description": "Imports a data file - a measurement, a script's results - as a dataset beside a schematic, to plot in its diagrams with (or without) a simulation's, as the Import tab of a diagram's dialog does: CSV or TSV, an Excel workbook (.xlsx, a sheet of it), text of numbers in columns (.txt, .prn, ...), NumPy .npy or .npz, Touchstone (.s1p ... .sNp) or a Qucs-S dataset from elsewhere. It is written as name.dat in the schematic's folder, with the file it came from. Its traces are name:variable, with no simulator's prefix: add_diagram with traces [\"name:v1\"] plots it, no simulation needed. In a table one column is x: the first that rises or falls steadily, else the row, unless 'x' says (a name 'columns' lists, or \"#row\"). Returns the dataset's name and file, its variables (x first, each with its points and range), the traces to use, the columns and a workbook's sheets, and anything left out. 'reload' reads an imported dataset again from its file after the file changed; 'remove' deletes one (to the trash; the file it came from stays). The diagrams showing it are read again. The schematic must have a file: the dataset goes beside it. undo with 'files' puts the dataset back as it was.",
+ "inputSchema": {"type": "object", "properties": {"file": {"type": "string", "description": "The data file: beside the schematic, in the project or the workspace, or absolute"},
+   "path": {"type": "string", "description": "The schematic (or data display) whose folder the dataset goes in; the one in front when not given"},
+   "name": {"type": "string", "description": "The dataset's name (letters, digits, _): by default the file's, with a number after it when a dataset or a schematic there has it. With 'reload' or 'remove': the imported dataset's"},
+   "x": {"type": "string", "description": "The column that is x, by its name as 'columns' lists it, or \"#row\" for the row; by default the first column when it rises or falls steadily, else the row"},
+   "sheet": {"type": "string", "description": "A workbook's sheet, by its name; the first by default"},
+   "reload": {"type": "boolean", "description": "Read the imported dataset 'name' (or the one of 'file') again from its file, with its x and sheet unless given"},
+   "remove": {"type": "boolean", "description": "Delete the imported dataset 'name' (or the one of 'file'): its .dat, to the trash; the file it came from stays"}}}},
 {"name": "set_simulator",
  "description": "Chooses the simulator that simulate runs and get_netlist writes for, like the toolbar's simulator list (a setting kept for next time): ngspice, xyce, spiceopus or qucsator - one that is installed. To run another one once, simulate takes 'simulator'. To compare two engines, simulate, then simulate again with 'simulator'; get_dataset with 'simulator' reads each result. Returns the simulator in use and those installed.",
  "inputSchema": {"type": "object", "properties": {"simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "One that is installed (the answer lists them)"}}, "required": ["simulator"]}},
@@ -575,6 +585,7 @@ const struct {
     {"make_symbol", QT_TRANSLATE_NOOP("QucsControl", "draw a subcircuit's symbol in Qucs-S")},
     {"set_subcircuit_parameters", QT_TRANSLATE_NOOP("QucsControl", "set a subcircuit's parameters in Qucs-S")},
     {"import_netlist", QT_TRANSLATE_NOOP("QucsControl", "make a schematic of a netlist in Qucs-S")},
+    {"import_data", QT_TRANSLATE_NOOP("QucsControl", "import a data file as a dataset in Qucs-S")},
 };
 
 // Tools that only look (or move the view): used without asking.
@@ -662,6 +673,7 @@ const struct {
     {"make_symbol", QT_TRANSLATE_NOOP("QucsControl", "Draws a subcircuit symbol with ports on four sides.")},
     {"set_subcircuit_parameters", QT_TRANSLATE_NOOP("QucsControl", "Sets the parameters a subcircuit's instances take, with their defaults.")},
     {"import_netlist", QT_TRANSLATE_NOOP("QucsControl", "Creates a schematic from a SPICE netlist.")},
+    {"import_data", QT_TRANSLATE_NOOP("QucsControl", "Imports a CSV, workbook, NumPy or Touchstone file as a dataset beside a schematic, to plot in its diagrams (traces name:variable).")},
     {"set_simulator", QT_TRANSLATE_NOOP("QucsControl", "Chooses the simulator that simulate runs and get_netlist writes for.")},
     {"ngspice_commands", QT_TRANSLATE_NOOP("QucsControl", "Lists ngspice's commands by category, each in a line, and which the installed ngspice has; a command's syntax, example and how Qucs-S writes it; a search by what they do.")},
     {"run_script", QT_TRANSLATE_NOOP("QucsControl", "Runs a short JavaScript program that calls these tools (qucs.call) with loops and conditions, in one turn; 'atomic' restores every schematic if it throws.")},
@@ -726,6 +738,7 @@ const struct {
     {"make_symbol", "subcircuit symbol draw pins sides inputs outputs supplies"},
     {"set_subcircuit_parameters", "subcircuit parameters params subckt default value symbol id prefix instance"},
     {"import_netlist", "spice netlist to schematic import"},
+    {"import_data", "import csv tsv excel xlsx spreadsheet workbook measurement measured data file table columns npy npz numpy touchstone s2p plot dataset"},
     {"find_library_component", "library part search by values model"},
     {"describe_part", "library part pins order names supply model macromodel transistor tested bench roles input output"},
     {"read_pdf", "datasheet pdf text read"},
@@ -3046,6 +3059,9 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
     else if (tool == QLatin1String("set_simulator")) subject = s("simulator");
     else if (tool == QLatin1String("build_verilog_a")) subject = s("file").isEmpty() ? tr("the .va in front") : s("file");
     else if (tool == QLatin1String("new_project") || tool == QLatin1String("open_project")) subject = s("name");
+    else if (tool == QLatin1String("import_data"))
+        subject = (a.value(QLatin1String("remove")).toBool() ? tr("remove ") : a.value(QLatin1String("reload")).toBool() ? tr("read again ") : QString())
+                  + (s("file").isEmpty() ? s("name") : s("file"));
     else if (tool == QLatin1String("import_netlist")) subject = s("file").isEmpty() ? tr("%1 lines").arg(s("text").count(QLatin1Char('\n')) + 1) : s("file");
     else if (tool == QLatin1String("copy_document")) subject = (s("path").isEmpty() ? tr("the schematic in front") : s("path")) + QStringLiteral(" → ") + s("to");
     else if (tool == QLatin1String("clean_scratch")) subject = (s("path").isEmpty() ? tr("the schematic in front") : s("path"))
@@ -3102,7 +3118,9 @@ QString QucsControl::instructions() const
         "iteration. build_verilog_a compiles a .va file now and reports errors with their lines; describe_component_type "
         "lists a Verilog-A module's parameters. find_library_component finds a part by its values (an NPN with Bf near "
         "200), describe_part a library part's pins, model and tested status; read_pdf reads a datasheet's text; "
-        "import_netlist builds a schematic from a SPICE netlist; make_symbol "
+        "import_netlist builds a schematic from a SPICE netlist; import_data brings a data file (CSV, a workbook, NumPy, "
+        "Touchstone) in as a dataset beside the schematic, whose traces are name:variable - measured data plotted with a "
+        "simulation's, or alone; make_symbol "
         "draws a subcircuit's symbol and set_subcircuit_parameters gives it parameters (a value inside uses {Rs}; each "
         "instance sets its own). ngspice_commands tells which commands ngspice has (analyses, measurements, output, "
         "statistics, the .control language), their syntax and which the installed ngspice has - for a Nutmeg script or a "
@@ -3798,6 +3816,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("make_symbol")) return makeSymbol(args);
     if (tool == QLatin1String("set_subcircuit_parameters")) return setSubcircuitParameters(args);
     if (tool == QLatin1String("import_netlist")) return importNetlist(args);
+    if (tool == QLatin1String("import_data")) return importData(args);
     if (tool == QLatin1String("find_library_component")) return findLibraryComponent(args);
     if (tool == QLatin1String("describe_part")) return describePart(args);
     async = true;
@@ -9242,7 +9261,13 @@ QJsonObject QucsControl::listDocuments(const QJsonObject& args)
                       {QStringLiteral("changed"), e.info.lastModified().toString(Qt::ISODate)}};
         if (open.contains(e.info.absoluteFilePath())) f.insert(QStringLiteral("open"), true);
         if (e.kind == QLatin1String("dataset")) {
-            f.insert(QStringLiteral("simulator"), e.simulator);
+            // Imported (import_data, the Import tab): no simulator's; from where.
+            if (qucs_s::dataimport::Origin origin; qucs_s::dataimport::originOf(e.info.absoluteFilePath(), &origin)) {
+                f.insert(QStringLiteral("imported from"), shownFrom(e.info.absolutePath(), origin.source));
+                f.insert(QStringLiteral("traces"), e.info.completeBaseName() + QStringLiteral(":variable"));
+            } else {
+                f.insert(QStringLiteral("simulator"), e.simulator);
+            }
             // The schematic beside it of its name: rc.dat.ngspice is rc.sch's.
             QString base = e.info.fileName();
             base.truncate(base.toLower().indexOf(QLatin1String(".dat")));
@@ -9264,11 +9289,24 @@ QJsonObject QucsControl::listDocuments(const QJsonObject& args)
         // (a trace names its simulator: ngspice/... reads name.dat.ngspice).
         if (e.kind == QLatin1String("schematic") && tracesOf.contains(e.info.absoluteFilePath())) {
             QJsonArray missing;
-            for (const Shown& t : tracesOf.value(e.info.absoluteFilePath()))
-                if (!QFileInfo::exists(t.file) && missing.size() < 20)
-                    missing.append(QJsonObject{{QStringLiteral("trace"), t.trace}, {QStringLiteral("diagram"), t.diagram},
-                                               {QStringLiteral("document"), t.document},
-                                               {QStringLiteral("needs"), QFileInfo(t.file).fileName()}});
+            for (const Shown& t : tracesOf.value(e.info.absoluteFilePath())) {
+                if (QFileInfo::exists(t.file) || missing.size() >= 20) continue;
+                QJsonObject m{{QStringLiteral("trace"), t.trace}, {QStringLiteral("diagram"), t.diagram},
+                              {QStringLiteral("document"), t.document}, {QStringLiteral("needs"), QFileInfo(t.file).fileName()}};
+                // A prefix on a trace of a dataset of no simulator: its name.dat is there.
+                const QString bare = qucs_s::dataset::withoutSimulator(t.trace);
+                if (bare != t.trace && bare.contains(QLatin1Char(':'))) {
+                    const QString name = bare.section(QLatin1Char(':'), 0, 0);
+                    const QString plain = QFileInfo(t.file).absoluteDir().filePath(name + QStringLiteral(".dat"));
+                    qucs_s::dataimport::Origin origin;
+                    if (qucs_s::dataimport::originOf(plain, &origin))
+                        m.insert(QStringLiteral("instead"), tr("%1: %2.dat is imported (from %3), read without a prefix")
+                                                                .arg(bare, name, shownFrom(QFileInfo(plain).absolutePath(), origin.source)));
+                    else if (QFileInfo(plain).isFile())
+                        m.insert(QStringLiteral("instead"), tr("%1: %2.dat is there, a dataset of no simulator").arg(bare, name));
+                }
+                missing.append(m);
+            }
             if (!missing.isEmpty()) f.insert(QStringLiteral("traces without their dataset"), missing);
         }
         files.append(f);

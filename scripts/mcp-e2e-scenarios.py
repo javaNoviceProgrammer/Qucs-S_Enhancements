@@ -7,7 +7,7 @@ answers along the way. Written by the reviewer of the tools (rounds 4 to 8,
 docs/feature_gaps/); s8 is round 8's: the 741 bench, from wiring by pin name
 to a subcircuit, checked and simulated at each step.
 
-    scripts/mcp-e2e-scenarios.py [s1 s2 ... s8]
+    scripts/mcp-e2e-scenarios.py [s1 s2 ... s10]
 
 QUCS names the qucs-s binary (the installed app by default). A packaged
 app is tested with its own library (share/qucs-s/library beside its
@@ -510,11 +510,43 @@ def s9_dialogs(s):
     s.call('save_document', {'path': 's9.sch'})
 
 # ---------------------------------------------------------------------------
+@scenario
+def s10_csv_plot(s):
+    """a data file plotted with no circuit and no simulation (qucs-s-csv-import-mcp-fix): a CSV imported beside a
+    saved schematic, its three variables in a diagram with their points and no simulator's prefix; a trace added
+    before the import told how to read it; the file changed and read again, the diagram with it"""
+    s.call('new_document', {})
+    s.call('save_document', {'as': WS + '/s10.sch'})
+    rows = lambda n: 'time,v1,v2,v3\n' + ''.join('%g,%g,%g,%g\n' % (i * 1e-5, math.sin(i / 8), 0.8 * math.cos(i / 8), math.exp(-i / 30))
+                                                  for i in range(n))
+    open(WS + '/dummy_data.csv', 'w').write(rows(101))
+    early = s.call('add_diagram', {'path': 's10.sch', 'traces': ['dummy_data:v1']})
+    imp = s.call('import_data', {'path': 's10.sch', 'file': 'dummy_data.csv'})
+    check('s10', 'imported: dummy_data, x time, three traces name:variable', imp['dataset'] == 'dummy_data' and imp['x'] == 'time'
+          and imp['traces'] == ['dummy_data:v1', 'dummy_data:v2', 'dummy_data:v3'] and os.path.isfile(WS + '/dummy_data.dat'), imp)
+    prefixed = (imp.get('diagrams') or [{}])[0].get("with a simulator's prefix", [])
+    check('s10', 'the trace added before it: its prefix said, and the name that reads it', early['traces'][0]['variable'] == 'ngspice/dummy_data:v1'
+          and prefixed and prefixed[0]['to read it'] == 'dummy_data:v1', imp.get('diagrams'))
+    d = s.call('add_diagram', {'path': 's10.sch', 'traces': imp['traces']})
+    check('s10', 'plotted: each trace without a prefix, 101 points', [t['variable'] for t in d['traces']] == imp['traces']
+          and all(t.get('points') == 101 for t in d['traces']), d['traces'])
+    fixed = s.call('edit_trace', {'path': 's10.sch', 'diagram': 1, 'trace': 1, 'variable': 'dummy_data:v1'})
+    check('s10', 'edit_trace takes the early trace\'s prefix off', fixed['variable'] == 'dummy_data:v1' and fixed.get('points') == 101, fixed)
+    ds = s.call('get_dataset', {'path': 'dummy_data.dat'})
+    check('s10', 'get_dataset: imported from the CSV, each variable with its trace', ds.get('imported from', {}).get('file', '').endswith('dummy_data.csv')
+          and [v.get('trace') for v in ds['variables']] == imp['traces'], (ds.get('imported from'), [v.get('trace') for v in ds['variables']]))
+    open(WS + '/dummy_data.csv', 'w').write(rows(201))
+    again = s.call('import_data', {'path': 's10.sch', 'name': 'dummy_data', 'reload': True})
+    points = [t.get('points') for t in s.call('get_schematic', {'path': 's10.sch'})['diagrams'][1]['traces']]
+    check('s10', 'the file changed: read again, and the diagram shows its 201 points', again.get('read again') and points == [201, 201, 201], points)
+    s.call('save_document', {'path': 's10.sch'})
+
+# ---------------------------------------------------------------------------
 if __name__ == '__main__':
-    which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9']
+    which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10']
     print('files in', ROOT, '- library:', os.path.abspath(LIBRARY) if LIBRARY else own_library(APP) + " (the app's own)")
     for name, fn in list(globals().items()):
-        if name[:2] in which and name[2] == '_' and callable(fn): fn()
+        if name.split('_')[0] in which and name[:1] == 's' and '_' in name and callable(fn): fn()
     json.dump(LOG, open(ROOT + '/log.json', 'w'), indent=1, default=str)
     bad = [r for r in RESULTS if not r[2]]
     print(f'\n{len(RESULTS)} checks, {len(bad)} failed')
