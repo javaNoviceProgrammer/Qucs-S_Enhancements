@@ -302,6 +302,7 @@ private:
     QJsonObject makeSymbol(const QJsonObject& args);
     QJsonObject setSubcircuitParameters(const QJsonObject& args);
     QJsonObject importNetlist(const QJsonObject& args);
+    QJsonObject importData(const QJsonObject& args);
     QJsonObject findLibraryComponent(const QJsonObject& args);
     QJsonObject describePart(const QJsonObject& args);
     /// What a run of \a doc wrote: its dataset - written when it is newer than

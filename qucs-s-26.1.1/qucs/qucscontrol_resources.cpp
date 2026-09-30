@@ -434,7 +434,7 @@ QJsonObject QucsControl::undoFiles(int steps)
 {
     if (a_fileSteps.isEmpty())
         return errorResult(tr("No file written by a tool is kept to put back (save_document, create_subcircuit, copy_document, "
-                              "import_netlist, export_netlist, export_image and rename_net's data display are)."));
+                              "import_netlist, import_data, export_netlist, export_image and rename_net's data display are)."));
     QStringList restored, removed, skipped, reload;
     QJsonArray undone;
     for (int n = 0; n < steps && !a_fileSteps.isEmpty(); ++n) {

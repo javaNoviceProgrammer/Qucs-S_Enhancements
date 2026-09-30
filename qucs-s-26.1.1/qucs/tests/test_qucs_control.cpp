@@ -42,6 +42,7 @@
 #include "claudecodetabs.h"
 #include "components/component.h"
 #include "config.h"
+#include "dataimport.h"
 #include "diagrams/diagram.h"
 #include "erc.h"
 #include "extsimkernels/spicecompat.h"
@@ -8009,6 +8010,181 @@ private slots:
         QucsSettings.qucsWorkspaceDir.setPath(workspace);
         QVERIFY2(said.contains("zzamp is a Verilog-A module, defined in models/zzamp.va - not loaded"), qPrintable(said));
         QucsSettings.NgspiceExecutable = before;
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A data file plotted with no simulation (qucs-s-csv-import-mcp-fix):
+    // there was no tool to import one, and a trace of an imported dataset
+    // (name.dat, name:variable) was given the simulator's prefix by
+    // add_diagram, add_trace and edit_trace - read from a name.dat.ngspice
+    // that is not there, "simulate to make it". import_data writes it as
+    // the Import tab does; its traces have no prefix; the texts say so.
+    void aDataFileIsImportedAndPlotted()
+    {
+        const QString folder = QFileInfo(QucsSettings.qucsWorkspaceDir.absoluteFilePath("imports")).absoluteFilePath();
+        QVERIFY(QDir().mkpath(folder));
+        const auto write = [&folder](const QString& name, const QByteArray& bytes) {
+            QFile f(folder + "/" + name);
+            if (f.open(QIODevice::WriteOnly)) f.write(bytes);
+        };
+        const auto csv = [](int rows) {
+            QByteArray b = "time,v1,v2,v3\n";
+            for (int i = 0; i < rows; ++i)
+                b += QByteArray::number(i * 1e-5) + ',' + QByteArray::number(i * 0.1) + ',' + QByteArray::number(1 - i * 0.1) + ','
+                     + QByteArray::number(i * i) + '\n';
+            return b;
+        };
+        const auto traceIn = [](const QJsonObject& diagram, int n) { return diagram.value("traces").toArray().at(n - 1).toObject(); };
+        write("dummy_data.csv", csv(11));
+
+        // A schematic of no file: refused (the dataset goes beside it).
+        QVERIFY(!failed(call("new_document")));
+        QJsonObject r = call("import_data", {{"file", folder + "/dummy_data.csv"}});
+        QVERIFY2(failed(r) && text(r).contains("save it first"), qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"as", folder + "/csv_plot.sch"}, {"replace", true}})));
+        // A trace of it before it is there: the simulator's, as ever.
+        r = call("add_diagram", {{"traces", QJsonArray{"dummy_data:v1"}}});
+        QCOMPARE(traceIn(json(r).toObject(), 1).value("variable").toString(), QStringLiteral("ngspice/dummy_data:v1"));
+
+        // Imported, beside the schematic.
+        r = call("import_data", {{"file", "dummy_data.csv"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r).toObject();
+        QCOMPARE(o.value("dataset").toString(), QStringLiteral("dummy_data"));
+        QCOMPARE(o.value("traces").toArray(), (QJsonArray{"dummy_data:v1", "dummy_data:v2", "dummy_data:v3"}));
+        QCOMPARE(o.value("x").toString(), QStringLiteral("time"));
+        QCOMPARE(o.value("columns").toArray(), (QJsonArray{"time", "v1", "v2", "v3"}));
+        QVERIFY2(!o.contains("sheets") && !o.contains("read again") && !o.contains("replaced"), qPrintable(text(r)));
+        const QJsonArray vars = o.value("variables").toArray();
+        QCOMPARE(vars.size(), 4);
+        QVERIFY(vars.at(0).toObject().value("independent").toBool());
+        QCOMPARE(vars.at(0).toObject().value("points").toInt(), 11);
+        QCOMPARE(vars.at(3).toObject().value("max").toDouble(), 100.0);
+        qucs_s::dataimport::Origin origin;
+        QVERIFY(qucs_s::dataimport::originOf(folder + "/dummy_data.dat", &origin));
+        QCOMPARE(QFileInfo(origin.source).canonicalFilePath(), QFileInfo(folder + "/dummy_data.csv").canonicalFilePath());
+        // The trace added before it: read again, and its prefix said.
+        const QJsonObject shown = o.value("diagrams").toArray().at(0).toObject();
+        QVERIFY2(shown.value("traces of it").toInt() == 1 && shown.value("with data").toInt() == 0, qPrintable(text(r)));
+        QCOMPARE(shown.value("with a simulator's prefix").toArray().at(0).toObject().value("to read it").toString(),
+                 QStringLiteral("dummy_data:v1"));
+
+        // Plotted: no prefix, its points at once (the report's call).
+        r = call("add_diagram", {{"traces", QJsonArray{"dummy_data:v1", "dummy_data:v2", "dummy_data:v3"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        for (int n = 1; n <= 3; ++n) {
+            const QJsonObject t = traceIn(json(r).toObject(), n);
+            QCOMPARE(t.value("variable").toString(), QStringLiteral("dummy_data:v%1").arg(n));
+            QVERIFY2(t.value("points").toInt() == 11 && !t.contains("no data"), qPrintable(text(r)));
+        }
+        // The first diagram's trace: why it shows nothing, and edit_trace
+        // takes the prefix off (it put it back).
+        const QJsonObject blank = json(call("reload_data")).toObject().value("reloaded").toArray().at(0).toObject();
+        const QString why = blank.value("traces without data").toArray().at(0).toObject().value("why").toString();
+        QVERIFY2(why.contains("dummy_data.dat is imported (from dummy_data.csv)") && why.contains("dummy_data:v1, without a simulator's prefix")
+                     && !why.contains("simulate to make it"),
+                 qPrintable(why));
+        r = call("edit_trace", {{"diagram", 1}, {"trace", 1}, {"variable", "dummy_data:v1"}});
+        QCOMPARE(json(r).toObject().value("variable").toString(), QStringLiteral("dummy_data:v1"));
+        QCOMPARE(json(r).toObject().value("points").toInt(), 11);
+        QVERIFY(!failed(call("add_diagram", {{"type", "rect"}})));   // (3: the traces below)
+        // A prefix given is kept (as the diagram's dialog writes it); qucsator/
+        // is no simulator's; a variable of it named alone is pointed to.
+        r = call("add_trace", {{"diagram", 3}, {"variable", "ngspice/dummy_data:v1"}});
+        QCOMPARE(json(r).toObject().value("variable").toString(), QStringLiteral("ngspice/dummy_data:v1"));
+        QVERIFY2(json(r).toObject().value("no data").toString().contains("dummy_data.dat is imported"), qPrintable(text(r)));
+        r = call("add_trace", {{"diagram", 3}, {"variable", "qucsator/dummy_data:v2"}});
+        QVERIFY2(json(r).toObject().value("variable").toString() == "dummy_data:v2", qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("points").toInt(), 11);
+        r = call("add_trace", {{"diagram", 3}, {"variable", "v3"}});
+        QVERIFY2(json(r).toObject().value("note").toString().contains("dummy_data (imported from dummy_data.csv) has v3: the trace "
+                                                                        "dummy_data:v3 shows it"),
+                 qPrintable(text(r)));
+
+        // list_documents and get_dataset: imported, from where; its traces.
+        QJsonObject listed = json(call("list_documents", {{"folder", folder}})).toObject();
+        QJsonObject dat, sch;
+        for (const QJsonValue& f : listed.value("files").toArray()) {
+            if (f.toObject().value("path").toString() == "dummy_data.dat") dat = f.toObject();
+            if (f.toObject().value("path").toString() == "csv_plot.sch") sch = f.toObject();
+        }
+        QVERIFY2(dat.value("imported from").toString() == "dummy_data.csv" && !dat.contains("simulator")
+                     && dat.value("traces").toString() == "dummy_data:variable",
+                 qPrintable(QJsonDocument(listed).toJson()));
+        const QJsonObject missing = sch.value("traces without their dataset").toArray().at(0).toObject();
+        QVERIFY2(missing.value("trace").toString() == "ngspice/dummy_data:v1"
+                     && missing.value("instead").toString().startsWith("dummy_data:v1: dummy_data.dat is imported"),
+                 qPrintable(QJsonDocument(listed).toJson()));
+        o = json(call("get_dataset", {{"path", folder + "/dummy_data.dat"}})).toObject();
+        QVERIFY2(o.value("imported from").toObject().value("file").toString().endsWith("dummy_data.csv")
+                     && o.value("variables").toArray().at(0).toObject().value("trace").toString() == "dummy_data:v1",
+                 qPrintable(QJsonDocument(o).toJson()));
+
+        // name:variable of another dataset: no prefix when it is no
+        // simulator's (a name.dat with no name.dat.ngspice beside it, or
+        // imported); the simulator's with one beside it, and for a kept run.
+        write("plain.dat", "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time 3>\n  0\n  1\n  2\n</indep>\n<dep v1 time>\n  1\n  2\n  3\n</dep>\n");
+        r = call("add_trace", {{"diagram", 3}, {"variable", "plain:v1"}});
+        QVERIFY2(json(r).toObject().value("variable").toString() == "plain:v1" && json(r).toObject().value("points").toInt() == 3,
+                 qPrintable(text(r)));
+        QVERIFY(QFile::copy(folder + "/plain.dat", folder + "/plain.dat.ngspice"));
+        QCOMPARE(json(call("add_trace", {{"diagram", 3}, {"variable", "plain:v1"}})).toObject().value("variable").toString(),
+                 QStringLiteral("ngspice/plain:v1"));
+        QVERIFY(QFile::copy(folder + "/plain.dat", folder + "/dummy_data.dat.ngspice"));
+        QCOMPARE(json(call("add_trace", {{"diagram", 3}, {"variable", "dummy_data:v3"}})).toObject().value("variable").toString(),
+                 QStringLiteral("dummy_data:v3"));
+        QVERIFY(QFile::remove(folder + "/dummy_data.dat.ngspice"));
+        QVERIFY(QFile::copy(folder + "/plain.dat", folder + "/run1.dat.ngspice"));
+        r = call("add_trace", {{"diagram", 3}, {"variable", "run1:v1"}});
+        QVERIFY2(json(r).toObject().value("variable").toString() == "ngspice/run1:v1" && json(r).toObject().value("points").toInt() == 3,
+                 qPrintable(text(r)));
+
+        // What is not there, or not so: said, and nothing written.
+        const auto refused = [this](const QJsonObject& args, const QString& said) {
+            const QJsonObject answer = call("import_data", args);
+            return failed(answer) && text(answer).contains(said) ? QString() : text(answer);
+        };
+        QCOMPARE(refused({{"file", "dummy_data.csv"}, {"x", "volts"}}, "has no column volts (it has time, v1, v2, v3"), QString());
+        QCOMPARE(refused({{"file", "dummy_data.csv"}, {"sheet", "S1"}}, "is a CSV, which has no sheets"), QString());
+        QCOMPARE(refused({{"file", "dummy_data.csv"}, {"name", "a:b"}}, "letters, digits and _"), QString());
+        QCOMPARE(refused({{"file", "dummy_data.csv"}, {"name", "csv_plot"}}, "csv_plot.sch is there"), QString());
+        QCOMPARE(refused({{"file", "dummy_data.csv"}, {"name", "run1"}}, "run1.dat.ngspice is a simulation's dataset"), QString());
+        QVERIFY(QFile::remove(folder + "/plain.dat.ngspice"));
+        QCOMPARE(refused({{"file", "dummy_data.csv"}, {"name", "plain"}}, "plain.dat is a dataset that was not imported"), QString());
+        QCOMPARE(refused({{"file", "nothere.csv"}}, "There is no file nothere.csv"), QString());
+        QCOMPARE(refused({{"name", "dummy_data"}, {"remove", true}, {"reload", true}}, "not both"), QString());
+        QCOMPARE(refused({{"name", "nothere"}, {"remove", true}}, "imported there: dummy_data"), QString());
+        QVERIFY(!qucs_s::dataimport::originOf(folder + "/plain.dat", &origin));
+        QVERIFY(!QFileInfo::exists(folder + "/csv_plot.dat"));
+        // x by its column's name in another case, or the row.
+        r = call("import_data", {{"file", "dummy_data.csv"}, {"x", "V1"}});
+        QVERIFY2(json(r).toObject().value("x").toString() == "v1" && json(r).toObject().value("read again").toBool(), qPrintable(text(r)));
+        r = call("import_data", {{"file", "dummy_data.csv"}, {"x", "#row"}});
+        QCOMPARE(json(r).toObject().value("x").toString(), QStringLiteral("the row"));
+
+        // The file changed: read again - with the x it had (the row), then
+        // with time - and the diagrams show it.
+        write("dummy_data.csv", csv(21));
+        r = call("import_data", {{"name", "dummy_data"}, {"reload", true}});
+        QVERIFY2(json(r).toObject().value("x").toString() == "the row", qPrintable(text(r)));
+        r = call("import_data", {{"file", "dummy_data.csv"}, {"reload", true}, {"x", "time"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("x").toString() == "time", qPrintable(text(r)));
+        o = json(r).toObject();
+        QVERIFY2(o.value("read again").toBool() && o.value("variables").toArray().at(0).toObject().value("points").toInt() == 21,
+                 qPrintable(text(r)));
+        const QJsonObject d2 = json(call("get_schematic")).toObject().value("diagrams").toArray().at(1).toObject();
+        QCOMPARE(traceIn(d2, 1).value("points").toInt(), 21);
+
+        // Another name for it; removed (the file it came from stays), and
+        // put back by undo with 'files'.
+        r = call("import_data", {{"file", "dummy_data.csv"}, {"name", "second"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("dataset").toString() == "second", qPrintable(text(r)));
+        r = call("import_data", {{"name", "second"}, {"remove", true}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("removed").toString() == "second", qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(folder + "/second.dat"));
+        QVERIFY(QFileInfo::exists(folder + "/dummy_data.csv"));
+        QVERIFY(!failed(call("undo", {{"files", true}})));
+        QVERIFY(qucs_s::dataimport::originOf(folder + "/second.dat", &origin));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
