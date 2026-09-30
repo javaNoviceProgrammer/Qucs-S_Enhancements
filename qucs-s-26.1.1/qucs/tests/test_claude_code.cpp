@@ -331,6 +331,44 @@ while IFS= read -r line; do
 done
 )SH";
 
+// Each start a line of its arguments (rewinder-starts), each prompt a line
+// (rewinder-prompts) and a reply whose message has a uuid, m<k> for the
+// k-th prompt of all. Taken back to "bad-point" (--resume-session-at), it
+// says it has no such message, as Claude Code does, and ends; forked, its
+// session is forked-<starts>. A prompt with "slow" in it does not end.
+const char* const kRewinder = R"SH(#!/bin/sh
+echo "$*" >> "$QUCS_FAKE_DIR/rewinder-starts"
+sid=s-1
+case " $* " in
+  *" --resume-session-at bad-point "*)
+    read -r line
+    echo '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"session_id":"x","total_cost_usd":0}'
+    echo 'No message found with message.uuid of: bad-point' >&2
+    exit 1
+    ;;
+  *" --fork-session "*) sid=forked-$(wc -l < "$QUCS_FAKE_DIR/rewinder-starts" | tr -d ' ') ;;
+  *" --resume "*) sid=$(echo " $* " | sed 's/.* --resume \([^ ]*\) .*/\1/') ;;
+esac
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"user"'*)
+      printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/rewinder-prompts"
+      k=$(wc -l < "$QUCS_FAKE_DIR/rewinder-prompts" | tr -d ' ')
+      echo '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"claude-test-1"}'
+      case "$line" in
+        *slow*)
+          echo '{"type":"assistant","uuid":"m'"$k"'","message":{"content":[{"type":"tool_use","id":"t'"$k"'","name":"Bash","input":{"command":"sleep 100"}}]}}'
+          ;;
+        *)
+          echo '{"type":"assistant","uuid":"m'"$k"'","message":{"content":[{"type":"text","text":"Reply '"$k"'."}]}}'
+          echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"'"$sid"'"}'
+          ;;
+      esac
+      ;;
+  esac
+done
+)SH";
+
 // A program that fails at once.
 const char* const kBroken = "#!/bin/sh\necho 'Invalid API key' >&2\nexit 3\n";
 
@@ -2046,6 +2084,252 @@ private slots:
         QVERIFY(turns.wait(10000));
         QVERIFY(read(dir.filePath("resumer-args")).contains("--resume\nfresh-1"));
         s.stop();
+    }
+
+    // The command line of a prompt edited: the session continued up to a
+    // message, as a new one - only when a session is continued. The last
+    // message of the conversation, the program's own (not a subagent's).
+    void aRewindIsOnTheCommandLine()
+    {
+        qucs_s::claude::Options o;
+        o.resume = "s-1";
+        o.resumeAt = "m1";
+        o.fork = true;
+        const QStringList args = qucs_s::claude::arguments(o);
+        const qsizetype at = args.indexOf("--resume");
+        QVERIFY(at >= 0);
+        QCOMPARE(args.mid(at, 5), QStringList({"--resume", "s-1", "--resume-session-at", "m1", "--fork-session"}));
+        o.resume.clear();
+        QVERIFY(!qucs_s::claude::arguments(o).contains("--resume-session-at") && !qucs_s::claude::arguments(o).contains("--fork-session"));
+
+        Session s;
+        QCOMPARE(s.lastMessageId(), QString());
+        s.handleLine(R"({"type":"assistant","uuid":"u1","message":{"content":[{"type":"text","text":"Hi."}]}})");
+        QCOMPARE(s.lastMessageId(), QStringLiteral("u1"));
+        s.handleLine(R"({"type":"assistant","uuid":"u2","parent_tool_use_id":"t9","message":{"content":[{"type":"text","text":"sub"}]}})");
+        QCOMPARE(s.lastMessageId(), QStringLiteral("u1"));   // (a subagent's: its own transcript)
+        s.handleLine(R"({"type":"user","uuid":"u3","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"x"}]}})");
+        QCOMPARE(s.lastMessageId(), QStringLiteral("u3"));
+        s.resume("other");
+        QCOMPARE(s.lastMessageId(), QString());   // (not known until said)
+    }
+
+    // A prompt edited and sent again (it could be stopped, not changed):
+    // Edit beside it sets it and all after it aside and puts it in the
+    // composer; Cancel (or Esc) puts all back. Sent, the conversation goes
+    // back to where it stood before it - Claude Code started on the session
+    // up to the message before it, as a new session - and goes on from the
+    // edited prompt. The first prompt: a new conversation. A turn under way
+    // is stopped for it. Where the program cannot go back, all is as it
+    // was, and the edited prompt is in the box again.
+    void aPromptIsEditedAndSentAgain()
+    {
+        skipWithoutShell();
+        QFile::remove(dir.filePath("rewinder-starts"));
+        QFile::remove(dir.filePath("rewinder-prompts"));
+        const QString work = fresh("rewindwork");
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(work);
+        panel.session()->setProgram(script("rewinder", kRewinder));
+        QSignalSpy turns(panel.session(), &Session::turnFinished);
+        const auto say = [&](const QString& text) {
+            panel.composer()->setPlainText(text);
+            panel.sendComposer();
+            return turns.wait(10000);
+        };
+        // The prompts, by their place in the conversation.
+        const auto prompts = [&panel] {
+            QList<QPair<qsizetype, QJsonObject>> list;
+            const QJsonArray entries = panel.conversationJson().value("entries").toArray();
+            for (qsizetype i = 0; i < entries.size(); ++i)
+                if (entries.at(i).toObject().value("kind").toInt() == 0) list << qMakePair(i, entries.at(i).toObject());
+            return list;
+        };
+        const auto lastStart = [this] { return read(dir.filePath("rewinder-starts")).split('\n', Qt::SkipEmptyParts).last(); };
+        QVERIFY(say("one"));
+        QVERIFY(say("two"));
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("Reply 2."));
+        // Where each stood: the first before anything, the second after m1.
+        auto list = prompts();
+        QCOMPARE(list.size(), 2);
+        QVERIFY(list.at(0).second.contains("at") && list.at(0).second.value("at").toString().isEmpty());
+        QCOMPARE(list.at(1).second.value("session").toString(), QStringLiteral("s-1"));
+        QCOMPARE(list.at(1).second.value("at").toString(), QStringLiteral("m1"));
+        const qsizetype two = list.at(1).first;
+        // An Edit beside each prompt, not in an export.
+        const QString html = panel.transcript()->toHtml();
+        QVERIFY2(html.contains("href=\"edit:0\"") && html.contains(QStringLiteral("href=\"edit:%1\"").arg(two)), qPrintable(html.left(2000)));
+        QVERIFY(!panel.conversationMarkdown().contains("Edit"));
+
+        // For a look: QUCS_TEST_GRAB=<dir> saves the dock, then editing.
+        const QString grabDir = qEnvironmentVariable("QUCS_TEST_GRAB");
+        if (!grabDir.isEmpty()) {
+            panel.resize(420, 520);
+            panel.show();
+            panel.renderNow();
+            QTest::qWait(50);
+            panel.grab().save(grabDir + "/claude-edit-links.png");
+        }
+        // Edited, a draft in the composer: set aside, and back on Cancel.
+        panel.composer()->setPlainText("a draft");
+        QVERIFY(panel.editPrompt(two));
+        QVERIFY(panel.isEditing() && panel.editBar()->isVisibleTo(&panel));
+        if (!grabDir.isEmpty()) {
+            QTest::qWait(50);
+            panel.grab().save(grabDir + "/claude-editing.png");
+        }
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("two"));
+        panel.renderNow();
+        QVERIFY(!panel.transcriptText().contains("Reply 2.") && panel.transcriptText().contains("Reply 1."));
+        QCOMPARE(prompts().size(), 2);   // (kept as it is until sent)
+        panel.cancelEdit();
+        QVERIFY(!panel.isEditing() && !panel.editBar()->isVisibleTo(&panel));
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("a draft"));
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("Reply 2."));
+        QVERIFY(panel.editPrompt(two));
+        QTest::keyClick(panel.composer(), Qt::Key_Escape);
+        QVERIFY(!panel.isEditing());
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("a draft"));
+
+        // Sent: the program again, on s-1 up to m1, as a new session.
+        QVERIFY(panel.editPrompt(two));
+        panel.composer()->setPlainText("TWO, edited");
+        panel.sendComposer();
+        QVERIFY(turns.wait(10000));
+        QVERIFY2(lastStart().contains("--resume s-1 --resume-session-at m1 --fork-session"), qPrintable(lastStart()));
+        QVERIFY(panel.session()->sessionId().startsWith("forked-"));
+        QVERIFY(!panel.isEditing() && !panel.editBar()->isVisibleTo(&panel));
+        panel.renderNow();
+        QString text = panel.transcriptText();
+        QVERIFY2(text.contains("Reply 1.") && text.contains("TWO, edited") && text.contains("Reply 3.") && !text.contains("Reply 2."),
+                 qPrintable(text));
+        list = prompts();
+        QCOMPARE(list.size(), 2);
+        QCOMPARE(list.at(1).second.value("text").toString(), QStringLiteral("TWO, edited"));
+        QCOMPARE(list.at(1).second.value("at").toString(), QStringLiteral("m1"));   // (where it stands: where the one it replaced stood)
+        // The next prompt stands after the forked session's last message.
+        QVERIFY(say("three"));
+        QCOMPARE(prompts().at(2).second.value("at").toString(), QStringLiteral("m3"));
+        QVERIFY(prompts().at(2).second.value("session").toString().startsWith("forked-"));
+
+        // The first prompt edited: a new conversation, nothing continued.
+        QVERIFY(panel.editPrompt(0));
+        panel.composer()->setPlainText("ONE again");
+        panel.sendComposer();
+        QVERIFY(turns.wait(10000));
+        QVERIFY2(!lastStart().contains("--resume"), qPrintable(lastStart()));
+        panel.renderNow();
+        text = panel.transcriptText();
+        QVERIFY2(text.contains("ONE again") && text.contains("Reply 5.") && !text.contains("Reply 1.") && !text.contains("three"),
+                 qPrintable(text));
+        QCOMPARE(prompts().size(), 1);
+
+        // A turn under way: stopped for the edit; Cancel puts it back, stopped.
+        panel.composer()->setPlainText("slow one");
+        panel.sendComposer();
+        QTRY_VERIFY_WITH_TIMEOUT(panel.session()->isBusy() && panel.transcriptText().contains("sleep 100"), 10000);
+        const qsizetype slow = prompts().last().first;
+        QVERIFY(panel.editPrompt(slow));
+        QVERIFY(!panel.session()->isBusy());
+        panel.cancelEdit();
+        const QJsonArray kept = panel.conversationJson().value("entries").toArray();
+        QCOMPARE(kept.last().toObject().value("kind").toInt(), 5);   // Summary
+        QCOMPARE(kept.last().toObject().value("text").toString(), QStringLiteral("Stopped"));
+        for (const QJsonValue& v : kept)
+            if (v.toObject().value("kind").toInt() == 2) QVERIFY(v.toObject().value("tool").toInt() != 0);   // (none running)
+
+        // Where the program cannot go back: all as it was, the prompt in the box.
+        panel.restoreConversation({{"sessionId", "s-1"}, {"folder", work}, {"entries", QJsonArray{
+            QJsonObject{{"kind", 0}, {"text", "first"}, {"session", ""}, {"at", ""}}, QJsonObject{{"kind", 1}, {"text", "Reply first."}},
+            QJsonObject{{"kind", 0}, {"text", "second"}, {"session", "s-1"}, {"at", "bad-point"}},
+            QJsonObject{{"kind", 1}, {"text", "Reply second."}}}}});
+        QSignalSpy refused(panel.session(), &Session::rewindFailed);
+        QVERIFY(panel.editPrompt(2));
+        panel.composer()->setPlainText("second, edited");
+        panel.sendComposer();
+        QVERIFY(refused.wait(10000));
+        panel.renderNow();
+        text = panel.transcriptText();
+        QVERIFY2(text.contains("Reply second.") && text.contains("could not go back to before that prompt")
+                     && text.contains("No message found with message.uuid of: bad-point") && !text.contains("second, edited"),
+                 qPrintable(text));
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("second, edited"));
+        QCOMPARE(panel.session()->sessionId(), QStringLiteral("s-1"));
+        QVERIFY(!panel.isEditing() && panel.canEdit(2));
+        panel.session()->stop();
+    }
+
+    // Where the prompts of one of Claude Code's own sessions stood, from
+    // its file: each the nearest message before it (not an attachment), a
+    // command as typed, not a subagent's or a meta line; its last message.
+    // Brought back, its prompts can be edited, and the next goes on from
+    // the last.
+    void aSessionsPromptsKnowWhereTheyStood()
+    {
+        namespace history = qucs_s::claude::history;
+        const QString work = fresh("pointswork");
+        QString folderName = work;
+        for (QChar& c : folderName)
+            if (!(c.isLetterOrNumber() && c.unicode() < 128)) c = '-';
+        const QString projects = history::claudeDirectory() + "/projects/" + folderName;
+        QVERIFY(projects.startsWith(dir.path()));   // (not the user's)
+        QDir().mkpath(projects);
+        const QString id = "9o1n75-0000-2222";
+        QFile file(projects + "/" + id + ".jsonl");
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        const auto line = [&](const char* uuid, const char* parent, const char* type, const QJsonValue& content, bool meta = false,
+                              bool side = false) {
+            QJsonObject o{{"type", type}, {"uuid", uuid}, {"parentUuid", parent ? QJsonValue(parent) : QJsonValue()}, {"cwd", work},
+                          {"sessionId", id}, {"message", QJsonObject{{"role", type}, {"content", content}}}};
+            if (meta) o.insert("isMeta", true);
+            if (side) o.insert("isSidechain", true);
+            file.write(QJsonDocument(o).toJson(QJsonDocument::Compact) + "\n");
+        };
+        const QJsonArray said{QJsonObject{{"type", "text"}, {"text", "Said."}}};
+        line("u1", nullptr, "user", "Explain the filter");
+        line("a1", "u1", "attachment", QJsonValue());
+        line("u2", "a1", "assistant", said);
+        line("a2", "u2", "attachment", QJsonValue());
+        line("u3", "a2", "user", "Next question");
+        line("u4", "u3", "user", "meta stuff", true);
+        line("s1", "u3", "assistant", said, false, true);
+        line("u5", "u4", "assistant", said);
+        line("u6", "u5", "user", "<command-name>/compact</command-name>\n<command-args>keep the math</command-args>");
+        line("u7", "u6", "assistant", said);
+        file.close();
+        const history::SessionPoints points = history::sessionPoints(file.fileName());
+        QCOMPARE(points.prompts.size(), 3);
+        QCOMPARE(points.prompts.at(0), qMakePair(QStringLiteral("Explain the filter"), QString()));
+        QCOMPARE(points.prompts.at(1), qMakePair(QStringLiteral("Next question"), QStringLiteral("u2")));
+        QCOMPARE(points.prompts.at(2), qMakePair(QStringLiteral("/compact keep the math"), QStringLiteral("u5")));
+        QCOMPARE(points.last, QStringLiteral("u7"));
+
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(work);
+        QVERIFY(panel.importClaudeSession(file.fileName()));
+        QCOMPARE(panel.session()->lastMessageId(), QStringLiteral("u7"));
+        QStringList at;
+        const QJsonArray entries = panel.conversationJson().value("entries").toArray();
+        for (qsizetype i = 0; i < entries.size(); ++i)
+            if (entries.at(i).toObject().value("kind").toInt() == 0) {
+                at << entries.at(i).toObject().value("at").toString();
+                QVERIFY(panel.canEdit(i));
+            }
+        QCOMPARE(at, QStringList({"", "u2", "u5"}));
+        // Kept before prompts knew where they stood: placed from the file.
+        panel.restoreConversation({{"sessionId", id}, {"folder", work}, {"entries", QJsonArray{
+            QJsonObject{{"kind", 0}, {"text", "Explain the filter"}}, QJsonObject{{"kind", 1}, {"text", "Said."}},
+            QJsonObject{{"kind", 0}, {"text", "Next question"}}}}});
+        QVERIFY(panel.canEdit(0) && panel.canEdit(2));
+        QCOMPARE(panel.conversationJson().value("entries").toArray().at(2).toObject().value("at").toString(), QStringLiteral("u2"));
+        QCOMPARE(panel.session()->lastMessageId(), QStringLiteral("u7"));
+        // One whose file is gone: its prompts not placed, no Edit.
+        panel.restoreConversation({{"sessionId", "gone-9"}, {"folder", work}, {"entries", QJsonArray{
+            QJsonObject{{"kind", 0}, {"text", "Old prompt"}}}}});
+        QVERIFY(!panel.canEdit(0));
+        QVERIFY(file.remove());
     }
 
     // A conversation kept and brought back: what was said, its name, its

@@ -218,7 +218,11 @@ QStringList arguments(const Options& options)
     if (!options.permissionMode.isEmpty())
         args << QStringLiteral("--permission-mode") << options.permissionMode;
     if (!options.model.isEmpty()) args << QStringLiteral("--model") << options.model;
-    if (!options.resume.isEmpty()) args << QStringLiteral("--resume") << options.resume;
+    if (!options.resume.isEmpty()) {
+        args << QStringLiteral("--resume") << options.resume;
+        if (!options.resumeAt.isEmpty()) args << QStringLiteral("--resume-session-at") << options.resumeAt;
+        if (options.fork) args << QStringLiteral("--fork-session");
+    }
     if (!options.appendSystemPrompt.isEmpty())
         args << QStringLiteral("--append-system-prompt") << options.appendSystemPrompt;
     if (!options.mcpConfig.isEmpty()) args << QStringLiteral("--mcp-config") << options.mcpConfig;
@@ -507,6 +511,8 @@ void Session::setWorkingDirectory(const QString& dir)
     stop();
     a_workDir = clean;
     a_sessionId.clear();   // a conversation belongs to its directory
+    a_lastMessageId.clear();
+    a_rewindAt.clear();
     a_toolsAllowed = false;
     a_modelInUse.clear();
     a_conversationCost = 0.0;
@@ -518,6 +524,27 @@ void Session::resume(const QString& sessionId)
 {
     if (isRunning()) stop();
     a_sessionId = sessionId;
+    a_lastMessageId.clear();   // (not known until said: setLastMessageId())
+    a_rewindAt.clear();
+}
+
+void Session::rewind(const QString& sessionId, const QString& messageId)
+{
+    // The program holds the conversation as it was: it ends, and the next
+    // prompt starts it at the message before the one edited.
+    stop();
+    endTurn();
+    a_rewoundSession = a_sessionId;
+    a_rewoundFrom = a_lastMessageId;
+    if (sessionId.isEmpty() || messageId.isEmpty()) {
+        a_sessionId.clear();   // (the first prompt: nothing said before it)
+        a_rewindAt.clear();
+    } else {
+        a_sessionId = sessionId;
+        a_rewindAt = messageId;
+    }
+    a_lastMessageId = messageId;
+    setState(a_program.isEmpty() ? State::NotFound : State::Off);
 }
 
 void Session::setConversationTotals(const TokenUsage& tokens, double costUsd)
@@ -677,6 +704,10 @@ void Session::start()
     options.permissionMode = a_mode;
     options.model = a_model;
     options.resume = a_sessionId;
+    // A prompt edited: the conversation up to the message before it, as a
+    // new session (until the program says it started on it).
+    options.resumeAt = a_rewindAt;
+    options.fork = !a_rewindAt.isEmpty();
     options.appendSystemPrompt = a_systemPrompt;
     if (a_host != nullptr) {
         // The host's tools, as an "sdk" MCP server: their messages come over
@@ -879,6 +910,8 @@ void Session::reset()
     stop();
     endTurn();   // and any permission request asked without a program
     a_sessionId.clear();
+    a_lastMessageId.clear();
+    a_rewindAt.clear();
     a_conversationCost = 0.0;
     a_conversationTokens = {};
     a_modelInUse.clear();
@@ -924,6 +957,19 @@ void Session::processFinished(int exitCode)
     // the prompt goes to a new one.
     if (a_resumeFailed) {
         a_resumeFailed = false;
+        // A rewind to a message the conversation has not: said, and the
+        // conversation as it was (the prompt not sent).
+        if (!a_rewindAt.isEmpty() && QString::fromUtf8(a_stderr).contains(QLatin1String("No message found"))) {
+            const QString why = oneLine(QString::fromUtf8(a_stderr).trimmed(), 200);
+            endTurn();
+            a_rewindAt.clear();
+            a_sessionId = a_rewoundSession;
+            a_lastMessageId = a_rewoundFrom;
+            a_stderr.clear();
+            setState(State::Off);
+            emit rewindFailed(why);
+            return;
+        }
         if (QString::fromUtf8(a_stderr).contains(QLatin1String("No conversation found"))) {
             const QString prompt = a_lastPrompt;
             endTurn();
@@ -996,6 +1042,7 @@ void Session::handleSystem(const QJsonObject& m)
     if (subtype == QLatin1String("init")) {
         a_initSeen = true;
         a_sessionId = m.value(QLatin1String("session_id")).toString();
+        a_rewindAt.clear();   // (gone back: the new session goes on from here)
         // Its commands, less those only its terminal has.
         QStringList commands;
         const QJsonArray terminal = m.value(QLatin1String("terminal_slash_commands")).toArray();
@@ -1060,6 +1107,7 @@ void Session::handleStreamEvent(const QJsonObject& m)
 void Session::handleAssistant(const QJsonObject& m)
 {
     const bool subagent = fromSubagent(m);
+    if (!subagent && m.value(QLatin1String("uuid")).isString()) a_lastMessageId = m.value(QLatin1String("uuid")).toString();
     const QJsonArray content = m.value(QLatin1String("message")).toObject().value(QLatin1String("content")).toArray();
     for (const QJsonValue& v : content) {
         const QJsonObject block = v.toObject();
@@ -1092,6 +1140,7 @@ void Session::handleAssistant(const QJsonObject& m)
 void Session::handleUser(const QJsonObject& m)
 {
     if (fromSubagent(m)) return;
+    if (m.value(QLatin1String("uuid")).isString()) a_lastMessageId = m.value(QLatin1String("uuid")).toString();
     const QJsonValue content = m.value(QLatin1String("message")).toObject().value(QLatin1String("content"));
     for (const QJsonValue& v : content.toArray()) {
         const QJsonObject block = v.toObject();
