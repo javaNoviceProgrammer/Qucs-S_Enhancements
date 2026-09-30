@@ -8,6 +8,7 @@ SET(DIAGRAMS_HDRS
 curvediagram.h
 diagram.h
 diagramdialog.h
+dataimportpanel.h
 diagrams.h
 diagramtheme.h
 graph.h
@@ -30,10 +31,12 @@ diagram.cpp		marker.cpp		psdiagram.cpp		tabdiagram.cpp
 diagramdialog.cpp	markerdialog.cpp	rect3ddiagram.cpp	timingdiagram.cpp
 rectdiagram.cpp		truthdiagram.cpp	histogramdiagram.cpp
 diagramtheme.cpp
+dataimportpanel.cpp
 )
 
 SET(DIAGRAMS_MOC_HDRS
 diagramdialog.h
+dataimportpanel.h
 markerdialog.h
 )
 
