@@ -465,7 +465,7 @@ private slots:
             auto* tabs = dialog->findChild<QTabWidget*>();
             QStringList titles;
             for (int i = 0; i < tabs->count(); ++i) titles << tabs->tabText(i);
-            QCOMPARE(titles, (QStringList{"Data", "Properties", "Limits", "Theme", "Import"}));
+            QCOMPARE(titles, (QStringList{"Data", "Properties", "Limits", "Theme", "Import", "Export"}));
             auto* panel = dialog->findChild<DataImportPanel*>();
             QVERIFY(panel != nullptr && panel->addButton()->isEnabled());
             QCOMPARE(panel->folder(), folder);

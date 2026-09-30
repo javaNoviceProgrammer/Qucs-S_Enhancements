@@ -400,7 +400,7 @@ private slots:
         QVERIFY(tabs != nullptr);
         QStringList titles;
         for (int i = 0; i < tabs->count(); ++i) titles << tabs->tabText(i);
-        QCOMPARE(titles, (QStringList{"Data", "Properties", "Limits", "Theme", "Import"}));
+        QCOMPARE(titles, (QStringList{"Data", "Properties", "Limits", "Theme", "Import", "Export"}));
         for (QLabel* label : dialog->findChildren<QLabel*>()) QVERIFY(label->text() != "Grid Color:");
         const QList<Part> parts = d->themeParts();
         QCOMPARE(parts.size(), 11);

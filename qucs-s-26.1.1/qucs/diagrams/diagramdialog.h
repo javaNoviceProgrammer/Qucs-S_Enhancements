@@ -24,6 +24,8 @@
 #endif*/
 
 #include <QDialog>
+#include <QList>
+#include <QPair>
 #include <QSet>
 #include <QSpinBox>
 #include <QRegularExpression>
@@ -48,6 +50,7 @@ class QCompleter; // Variable completion
 class QSpinBox; // Thickness and decimal precission widgets
 class QToolButton;
 class ThemePreview;
+class DataExportPanel;
 class DataImportPanel;
 
 
@@ -157,6 +160,10 @@ private:
   // and the names of those datasets.
   DataImportPanel *a_import = nullptr;
   QSet<QString> a_importedNames;
+  // The Export tab (a dataset's variables written to a file).
+  DataExportPanel *a_export = nullptr;
+  /// Each trace's dataset file and variable, as the diagram reads them.
+  QList<QPair<QString, QString>> traceFiles() const;
   /// The Data tab's datasets: those beside the schematic - the
   /// simulations', those imported (said so) - \a select chosen, else the
   /// one chosen before, else the schematic's own.

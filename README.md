@@ -1066,6 +1066,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   a diagram whose parts are all automatic is saved as before, and older
   versions read the file as they did. Claude's `add_diagram` and
   `edit_diagram` take a `theme` too.
+- **Data in and out of a diagram**: *Edit Diagram Properties → Import*
+  reads data files — CSV, TSV, Excel (.xlsx), text in columns, NumPy
+  (.npy, .npz), Touchstone, Qucs-S datasets — into datasets of their own
+  beside the schematic, to plot next to a simulation's (a trace
+  `name:variable`); Claude's `import_data` does the same. *Export* writes
+  a dataset's variables to a file for another program: check them (*All*,
+  *None*, or *The Diagram's Traces*), choose the format — CSV, TSV, an
+  Excel workbook, text in columns, NumPy arrays (.npz) or a Qucs-S
+  dataset — and *Export…*. Variables over the same sweep make a table, a
+  row for each point, the independent variables first (a parameter
+  sweep's repeated as they go round); a complex one takes two columns —
+  real and imaginary parts, magnitude and phase, or dB and phase. CSV,
+  TSV and text hold one table; a workbook has a sheet for each sweep;
+  NumPy has an array for each variable, shaped by what it is over, complex
+  ones complex. The tab shows the Data tab's dataset until you choose
+  another, and says what would be written before you do.
 - **Auto colors and point markers for the curves of a sweep**: a graph
   whose variable was swept - a parameter sweep, NgSweep, a Monte Carlo
   family - draws a curve for each value; with *auto* ticked next to the
