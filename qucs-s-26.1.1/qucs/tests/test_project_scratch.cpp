@@ -129,8 +129,15 @@ private slots:
         QCOMPARE(misc::scratchDirFor(project + "/circuit.sch"), kernel.workdir());
         QCOMPARE(misc::scratchDirFor(project + "/sub/dir/amp.sch"),
                  QDir::toNativeSeparators(scratch + "/sub/dir/amp"));   // keeps the project's tree
-        QCOMPARE(misc::scratchDirFor(dir.filePath("elsewhere/x.sch")),
-                 QDir::toNativeSeparators(scratch + "/x"));             // outside the project: the name
+        // Outside the project: nothing of it in the project - a folder of
+        // its name where schematics of no project go.
+        const QString foreign = misc::scratchDirFor(dir.filePath("elsewhere/x.sch"));
+        QVERIFY2(foreign.startsWith(QDir::toNativeSeparators(QucsSettings.S4Qworkdir + "/x-")) && !foreign.startsWith(scratch),
+                 qPrintable(foreign));
+        QVERIFY(misc::scratchDirFor(dir.filePath("other/x.sch")) != foreign);   // another x, another folder
+        // One in the Scratch folder (untitled, saved there to be simulated):
+        // by its place there, not Scratch/Scratch/untitled.
+        QCOMPARE(misc::scratchDirFor(scratch + "/untitled.sch"), QDir::toNativeSeparators(scratch + "/untitled"));
         QCOMPARE(misc::scratchDirFor(QString()), QDir::toNativeSeparators(scratch + "/untitled"));
         QCOMPARE(misc::scratchDirFor(project + "/two.dots.sch"), QDir::toNativeSeparators(scratch + "/two.dots"));
 
