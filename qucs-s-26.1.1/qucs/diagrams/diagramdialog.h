@@ -24,6 +24,7 @@
 #endif*/
 
 #include <QDialog>
+#include <QSet>
 #include <QSpinBox>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
@@ -47,6 +48,7 @@ class QCompleter; // Variable completion
 class QSpinBox; // Thickness and decimal precission widgets
 class QToolButton;
 class ThemePreview;
+class DataImportPanel;
 
 
 class DiagramDialog : public QDialog  {
@@ -96,6 +98,9 @@ private slots:
   void slotRecalcDbLimitsZ();
 
   void slotPlotVs(int);
+  /// The Import tab imported, read again or removed datasets: the Data
+  /// tab's list of them again, \a select chosen (empty: as it was).
+  void slotDatasetsChanged(const QString &select);
 
   ///
   /// \brief Handles key press events
@@ -148,6 +153,16 @@ private:
 
   Diagram *Diag;
   QString defaultDataSet;
+  // The Import tab (data files read into datasets beside the schematic),
+  // and the names of those datasets.
+  DataImportPanel *a_import = nullptr;
+  QSet<QString> a_importedNames;
+  /// The Data tab's datasets: those beside the schematic - the
+  /// simulations', those imported (said so) - \a select chosen, else the
+  /// one chosen before, else the schematic's own.
+  void fillDatasets(const QString &select);
+  /// The dataset chosen in the Data tab, by its name.
+  QString chosenDataset() const;
 
   // The Theme tab: the colours chosen for the diagram's parts (invalid:
   // automatic) - a button and a reset for each part it has - the

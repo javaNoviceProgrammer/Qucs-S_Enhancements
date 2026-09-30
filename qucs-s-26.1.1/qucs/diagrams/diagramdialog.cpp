@@ -20,6 +20,8 @@
   \brief The DiagramDialog is used to setup and edit diagrams.
 */
 #include "diagramdialog.h"
+#include "dataimport.h"
+#include "dataimportpanel.h"
 #include "extsimkernels/spicecompat.h"
 #include "ink.h"
 #include "main.h"
@@ -395,6 +397,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   QVBoxLayout *DataGroupLayout = new QVBoxLayout();
   DataGroup->setLayout(DataGroupLayout);
   ChooseData = new QComboBox();
+  ChooseData->setObjectName(QStringLiteral("diagramDataset"));
   DataGroupLayout->addWidget(ChooseData);
   ChooseData->setMinimumWidth(300); // will force also min width of table below
   connect(ChooseData, QOverload<int>::of(&QComboBox::activated), this,
@@ -406,6 +409,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
 
   QHBoxLayout *hb1 = new QHBoxLayout;
   ChooseSimulator = new QComboBox;
+  ChooseSimulator->setObjectName(QStringLiteral("diagramSimulator"));
   QStringList lst_sim;
   lst_sim << "Qucsator" << "Ngspice" << "Xyce" << "SpiceOpus";
   ChooseSimulator->addItems(lst_sim);
@@ -417,6 +421,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   DataGroupLayout->addLayout(hb1);
 
   ChooseVars = new QTableWidget(1, 3);
+  ChooseVars->setObjectName(QStringLiteral("diagramVariables"));
   ChooseVars->verticalHeader()->setVisible(false);
   ChooseVars->horizontalHeader()->setStretchLastSection(true);
   ChooseVars->horizontalHeader()->setSectionResizeMode(
@@ -448,6 +453,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   // the user to identify the visual properties of the trace such as color,
   // thickness, style and the y-axis
   GraphList = new QTableWidget();
+  GraphList->setObjectName(QStringLiteral("diagramGraphs"));
 
   // Determine which columns to show based on diagram type
   // Tabular data and truth tables doesn't contain traces, so it makes no sense
@@ -1017,6 +1023,16 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   if (!a_canvas.isValid()) a_canvas = Qt::white;
   t->addTab(makeThemeTab(NameY, NameZ), tr("Theme"));
 
+  // The Import tab: data files read into datasets beside the schematic,
+  // for the Data tab to list next to the simulations'. (A schematic not
+  // saved has no folder for them: the tab says so.)
+  QString importFolder;
+  if (const auto *s = dynamic_cast<const Schematic *>(parent); s != nullptr && !s->getDocName().isEmpty())
+    importFolder = QFileInfo(s->getDocName()).absolutePath();
+  a_import = new DataImportPanel(importFolder, t);
+  t->addTab(a_import, tr("Import"));
+  connect(a_import, &DataImportPanel::datasetsChanged, this, &DiagramDialog::slotDatasetsChanged);
+
   connect(t, &QTabWidget::currentChanged, this, &DiagramDialog::slotChangeTab);
   // ...........................................................
   QWidget *Butts = new QWidget();
@@ -1040,33 +1056,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
 
   // ...........................................................
   // put all data files into ComboBox
-  QFileInfo Info(defaultDataSet);
-  QDir ProjDir(Info.absolutePath());
-  QStringList entries;
-  entries << "*.dat" << "*.dat.ngspice" << "*.dat.xyce" << "*.dat.spopus";
-  QStringList Elements = ProjDir.entryList(entries, QDir::Files, QDir::Name);
-  QStringList::iterator it;
-  for (it = Elements.begin(); it != Elements.end(); ++it) {
-    if (it->endsWith(".dat")) {
-      QString dat = (*it).left((*it).length() - 4);
-      if (ChooseData->findText(dat) < 0)
-        ChooseData->addItem((*it).left((*it).length() - 4));
-    } else {
-      QString ext = (*it).section('.', -2, -1); // double extension
-      int extl = ext.length() + 1;              // full extension length
-      int shextl = extl - 4; // extension length without ".dat"
-      QString dat = (*it).left((*it).length() - extl);
-      if (ChooseData->findText(dat) < 0)
-        ChooseData->addItem((*it).left((*it).length() - extl));
-      if ((*it).left((*it).length() - shextl) ==
-          Info.fileName()) // default dataset should be the current
-        ChooseData->setCurrentIndex(ChooseData->count() - 1);
-    }
-
-    if ((*it) == Info.fileName())
-      // default dataset should be the current
-      ChooseData->setCurrentIndex(ChooseData->count() - 1);
-  }
+  fillDatasets(QString());
   slotReadVarsAndSetSimulator(0); // put variables into the ListView
 
   // ...........................................................
@@ -1098,6 +1088,57 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   }
 }
 
+void DiagramDialog::fillDatasets(const QString &select) {
+  const QString before = select.isEmpty() ? chosenDataset() : select;
+  QFileInfo Info(defaultDataSet);
+  QDir ProjDir(Info.absolutePath());
+  a_importedNames.clear();
+  if (a_import != nullptr && !a_import->folder().isEmpty())
+    for (const qucs_s::dataimport::Imported &i : qucs_s::dataimport::importedIn(a_import->folder()))
+      a_importedNames.insert(i.name);
+  ChooseData->clear();
+  // Each dataset once, by its name (its data), an imported one said so.
+  const auto add = [this](const QString &name) {
+    if (ChooseData->findData(name) >= 0)
+      return;
+    ChooseData->addItem(a_importedNames.contains(name) ? tr("%1  (imported)").arg(name) : name, name);
+  };
+  QStringList entries;
+  entries << "*.dat" << "*.dat.ngspice" << "*.dat.xyce" << "*.dat.spopus";
+  QStringList Elements = ProjDir.entryList(entries, QDir::Files, QDir::Name);
+  QStringList::iterator it;
+  int own = -1;   // the schematic's own
+  for (it = Elements.begin(); it != Elements.end(); ++it) {
+    if (it->endsWith(".dat")) {
+      add((*it).left((*it).length() - 4));
+      if ((*it) == Info.fileName())
+        own = ChooseData->findData((*it).left((*it).length() - 4));
+    } else {
+      QString ext = (*it).section('.', -2, -1); // double extension
+      int extl = ext.length() + 1;              // full extension length
+      int shextl = extl - 4; // extension length without ".dat"
+      add((*it).left((*it).length() - extl));
+      if ((*it).left((*it).length() - shextl) == Info.fileName()) // default dataset should be the current
+        own = ChooseData->findData((*it).left((*it).length() - extl));
+    }
+  }
+  const int chosen = ChooseData->findData(before);
+  if (chosen >= 0)
+    ChooseData->setCurrentIndex(chosen);
+  else if (own >= 0)
+    ChooseData->setCurrentIndex(own);
+}
+
+QString DiagramDialog::chosenDataset() const {
+  const QVariant name = ChooseData->currentData();
+  return name.isValid() ? name.toString() : ChooseData->currentText();
+}
+
+void DiagramDialog::slotDatasetsChanged(const QString &select) {
+  fillDatasets(select);
+  slotReadVarsAndSetSimulator(0);
+}
+
 DiagramDialog::~DiagramDialog() {
   delete all; // delete all widgets from heap
   delete ValInteger;
@@ -1118,7 +1159,23 @@ DiagramDialog::~DiagramDialog() {
  */
 void DiagramDialog::slotReadVarsAndSetSimulator(int) {
   QFileInfo Info(defaultDataSet);
-  QString DocName = ChooseData->currentText() + ".dat";
+  QString DocName = chosenDataset() + ".dat";
+  // Imported: from its file, no simulator's.
+  if (a_importedNames.contains(chosenDataset())) {
+    lblSim->setText(tr("Data from:"));
+    ChooseSimulator->blockSignals(true);
+    ChooseSimulator->clear();
+    qucs_s::dataimport::Origin origin;
+    qucs_s::dataimport::originOf(Info.absolutePath() + QDir::separator() + DocName, &origin);
+    ChooseSimulator->addItem(QFileInfo(origin.source).fileName());
+    ChooseSimulator->setToolTip(QDir::toNativeSeparators(origin.source));
+    ChooseSimulator->blockSignals(false);
+    slotReadVars(0);
+    updateCompleter();
+    return;
+  }
+  lblSim->setText(tr("Data from simulator:"));
+  ChooseSimulator->setToolTip(QString());
 
   QString curr_sim;
   switch (QucsSettings.DefaultSimulator) {
@@ -1178,7 +1235,7 @@ void DiagramDialog::slotReadVarsAndSetSimulator(int) {
  */
 void DiagramDialog::slotReadVars(int) {
   QFileInfo Info(defaultDataSet);
-  QString DocName = ChooseData->currentText() + ".dat";
+  QString DocName = chosenDataset() + ".dat";
 
   if (ChooseSimulator->currentText() == "Ngspice") {
     DocName += ".ngspice";
@@ -1297,8 +1354,8 @@ void DiagramDialog::slotTakeVar(QTableWidgetItem *Item) {
   int row = Item->row();
   QString s1 = ChooseVars->item(row, 0)->text();
   QFileInfo Info(defaultDataSet);
-  if (ChooseData->currentText() != Info.baseName())
-    s1 = ChooseData->currentText() + ":" + s1;
+  if (chosenDataset() != Info.baseName())
+    s1 = chosenDataset() + ":" + s1;
   if (ChooseSimulator->currentText() == "Ngspice") {
     s1 = "ngspice/" + s1;
   } else if (ChooseSimulator->currentText() == "Xyce") {
@@ -2293,8 +2350,8 @@ void DiagramDialog::updateCompleter() {
   // Get current dataset and simulator prefix
   QFileInfo Info(defaultDataSet);
   QString datasetPrefix = "";
-  if (ChooseData->currentText() != Info.baseName())
-    datasetPrefix = ChooseData->currentText() + ":";
+  if (chosenDataset() != Info.baseName())
+    datasetPrefix = chosenDataset() + ":";
 
   QString simPrefix = "";
   if (ChooseSimulator->currentText() == "Ngspice") {
