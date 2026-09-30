@@ -2365,12 +2365,42 @@ QJsonObject QucsControl::cleanScratch(const QJsonObject& args)
     QStringList gone;
     bool trashed = true;
     const QString scratch = misc::scratchDirFor(docName);
-    // Its own subfolder of the Scratch folder only - never the folder shared.
-    if (QFileInfo(scratch).isDir() && QFileInfo(scratch).fileName() != QLatin1String(misc::ScratchFolder)) {
+    QString note;
+    // Its own subfolder of the Scratch folder only - never the folder shared:
+    // the project's Scratch, or with no project open the one every
+    // schematic of none runs in (trashed whole, it was).
+    const bool shared = QFileInfo(scratch).fileName() == QLatin1String(misc::ScratchFolder) || sameFile(scratch, misc::scratchDir())
+                        || sameFile(scratch, QucsSettings.S4Qworkdir);
+    if (QFileInfo(scratch).isDir() && !shared) {
         const int files = int(QDir(scratch).entryList(QDir::Files | QDir::NoDotAndDotDot).size());
         bool t = false;
         if (toTrash(scratch, &t)) gone << tr("%1 (%2 files: netlists, the simulator's output, logs)").arg(QDir::toNativeSeparators(scratch)).arg(files);
         trashed = trashed && t;
+    } else if (QFileInfo(scratch).isDir()) {
+        // The shared one: the files of its last run there, when that was
+        // this schematic's (its netlist's first line names it) - not the
+        // folder, nor what else is in it.
+        QString head;
+        if (QFile f(QDir(scratch).filePath(QStringLiteral("spice4qucs.cir"))); f.open(QIODevice::ReadOnly | QIODevice::Text))
+            head = QString::fromUtf8(f.readLine()).trimmed();
+        static const QRegularExpression named(QStringLiteral("^\\*\\s*Qucs\\S*\\s+\\S+\\s+(.+)$"));
+        const QRegularExpressionMatch m = named.match(head);
+        if (m.hasMatch() && sameFile(m.captured(1).trimmed(), docName)) {
+            int files = 0;
+            for (const QString& file : QDir(scratch).entryList(QDir::Files | QDir::NoDotAndDotDot)) {
+                bool t = false;
+                if (toTrash(QDir(scratch).filePath(file), &t)) ++files;
+                trashed = trashed && t;
+            }
+            if (files > 0)
+                gone << (files == 1 ? tr("the file of its last run in %1, the scratch folder schematics of no project share (the folder "
+                                         "stays)").arg(QDir::toNativeSeparators(scratch))
+                                    : tr("the %1 files of its last run in %2, the scratch folder schematics of no project share (the "
+                                         "folder stays)").arg(files).arg(QDir::toNativeSeparators(scratch)));
+        } else {
+            note = tr("Its runs go to %1, the scratch folder schematics of no project share, and the last run there was another "
+                      "schematic's: nothing of its own is there.").arg(QDir::toNativeSeparators(scratch));
+        }
     }
     if (args.value(QLatin1String("datasets")).toBool()) {
         const QFileInfo info(docName);
@@ -2383,7 +2413,8 @@ QJsonObject QucsControl::cleanScratch(const QJsonObject& args)
             }
         }
     }
-    if (gone.isEmpty()) return textResult(tr("There was nothing to clear for %1.").arg(QFileInfo(docName).fileName()));
+    if (gone.isEmpty())
+        return textResult(tr("There was nothing to clear for %1.").arg(QFileInfo(docName).fileName()) + (note.isEmpty() ? QString() : QLatin1Char(' ') + note));
     return textResult(tr("Cleared: %1. %2").arg(gone.join(QStringLiteral("; ")),
                                                  trashed ? tr("(In the trash, to take back.)") : tr("(Deleted: this system has no trash.)")));
 }

@@ -526,9 +526,21 @@ QString misc::scratchDirFor(const QString& docName)
   QString name;
   if (!docName.isEmpty()) {
     const QFileInfo info(docName);
-    QString relative = QDir::fromNativeSeparators(QucsSettings.QucsWorkDir.relativeFilePath(info.absoluteFilePath()));
-    if (relative.startsWith(QLatin1String("../")) || QDir::isAbsolutePath(relative))
-      relative = info.fileName();   // not inside the project
+    const auto outside = [](const QString& r) { return r.startsWith(QLatin1String("../")) || QDir::isAbsolutePath(r); };
+    // One in the Scratch folder itself (a schematic of no file, saved there
+    // to be simulated): by its place there - not Scratch/Scratch/untitled.
+    QString relative = QDir::fromNativeSeparators(QDir(root).relativeFilePath(info.absoluteFilePath()));
+    if (outside(relative)) {
+      relative = QDir::fromNativeSeparators(QucsSettings.QucsWorkDir.relativeFilePath(info.absoluteFilePath()));
+      if (outside(relative)) {
+        // Not the project's: nothing of it goes into the project - a folder
+        // of its own where schematics of no project go, named by it (and
+        // told apart from another of its name).
+        const QByteArray key = QCryptographicHash::hash(QDir::cleanPath(info.absolutePath()).toUtf8(), QCryptographicHash::Sha1).toHex().left(10);
+        return QDir::toNativeSeparators(QucsSettings.S4Qworkdir + QLatin1Char('/') + info.completeBaseName() + QLatin1Char('-')
+                                        + QString::fromLatin1(key));
+      }
+    }
     name = relative;
     const int dot = name.lastIndexOf(QLatin1Char('.'));
     if (dot > name.lastIndexOf(QLatin1Char('/'))) name.truncate(dot);   // drop the extension
