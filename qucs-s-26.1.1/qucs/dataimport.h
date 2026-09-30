@@ -123,6 +123,10 @@ QString datasetNameFor(const QString& folder, const QString& source);
 /// and why in \a error when it cannot be read or written.
 bool importFile(const QString& folder, const QString& source, const Options& options, Imported* imported, QString* error,
                 QStringList* notes = nullptr, const QString& name = QString());
+/// importFile() of \a data, read already from \a source as \a options say
+/// (to look at what it holds before it is written).
+bool importRead(const QString& folder, const QString& source, const Data& data, const Options& options, Imported* imported,
+                QString* error, const QString& name = QString());
 
 } // namespace qucs_s::dataimport
 
