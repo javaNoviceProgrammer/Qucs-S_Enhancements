@@ -200,6 +200,23 @@ public:
     /// sent (Claude busy, no program).
     bool sendPrompt(const QString& text);
 
+    /// Edits the prompt that is the \a index th line of the conversation
+    /// (its Edit, beside it): a turn under way stops, the prompt and all
+    /// after it are set aside, and the prompt is put in the composer, a bar
+    /// above saying so. Sent, the conversation goes back to where it stood
+    /// before that prompt (Session::rewind(): Claude Code's session up to
+    /// that point, as a new session - the old one kept) and goes on from
+    /// the edited one; what was set aside is dropped. Cancelled (the bar's
+    /// Cancel, Esc), it is all as it was. The files Claude changed after
+    /// that point stay as they are. False when that prompt cannot be
+    /// edited (where it stood is not known).
+    bool editPrompt(qsizetype index);
+    void cancelEdit();
+    /// A prompt is being edited.
+    bool isEditing() const { return a_editing >= 0; }
+    /// Whether the \a index th line is a prompt that can be edited.
+    bool canEdit(qsizetype index) const;
+
     // For the tests.
     ClaudeGitBar* gitBar() const { return a_gitBar; }
     QPlainTextEdit* composer() const { return a_input; }
@@ -219,6 +236,8 @@ public:
     QToolButton* denyButton() const { return a_deny; }
     QToolButton* newButton() const { return a_newButton; }
     QLabel* stateLabel() const { return a_stateText; }
+    /// The bar above the composer while a prompt is edited.
+    QFrame* editBar() const { return a_editBar; }
     QLabel* modelLabel() const { return a_modelLabel; }
     QList<QAction*> modelActions() const;
     QList<QAction*> permissionActions() const;
@@ -283,6 +302,12 @@ private:
         // says. A cost below 0 is not known.
         qucs_s::claude::TokenUsage tokens = {}, allTokens = {};
         double cost = -1.0, allCost = -1.0;
+        // A prompt's place in Claude Code's conversation, to go back to
+        // when it is edited: the session, and the message before it (its
+        // uuid; empty for the first prompt of a conversation). Known:
+        // rewindable.
+        QString session = QString(), at = QString();
+        bool rewindable = false;
     };
     /// A turn's line, as usageShown() has it: each part, with its tooltip.
     static QList<QPair<QString, QString>> summaryParts(const Entry& e);
@@ -313,7 +338,8 @@ private:
     /// Whether a line of tools or a tool is open (all are, exported).
     bool isOpen(const QString& key) const;
     void renderWelcome(QTextCursor& c);
-    void renderEntry(QTextCursor& c, const Entry& e, bool& captioned);
+    /// \a index: its place in a_entries (a prompt's Edit names it).
+    void renderEntry(QTextCursor& c, const Entry& e, bool& captioned, qsizetype index = -1);
     void renderCaption(QTextCursor& c, bool& captioned);
     /// The tools a_entries[from, to) used in a row: one line that opens.
     void renderTools(QTextCursor& c, qsizetype from, qsizetype to, bool& captioned);
@@ -329,6 +355,19 @@ private:
     void renderMarkdown(QTextCursor& c, const QString& text);
     qucs_s::math::Typeset typesetMath(const QString& tex, const QFont& font, bool display);
     void append(const Entry& e);
+    /// A prompt's line, with where the conversation stands before it -
+    /// and, when a prompt was being edited, the conversation taken back to
+    /// where that one stood (Session::rewind()).
+    Entry promptEntry(const QString& text, const QString& extra);
+    /// The prompts of a conversation continued from Claude Code's session
+    /// \a sessionId that do not know where they stood: from its file
+    /// (history::sessionPoints()), as its last message.
+    void placePrompts(const QString& sessionId);
+    /// A turn stopped under the entries \a list: nothing in it runs or is
+    /// written any more, and it ends "Stopped".
+    void endStoppedTurn(QList<Entry>& list) const;
+    /// Nothing edited, nothing set aside (a new conversation, another one).
+    void forgetEdit();
     /// Runs \a text as a command or sends it as a prompt (with the note of
     /// the document in front when \a withDocument); true when it is done
     /// with - what the composer held can go.
@@ -383,6 +422,17 @@ private:
     QList<qucs_s::claude::ModelChoice> a_choices;
 
     QList<Entry> a_entries;
+    // A prompt edited (editPrompt()): its index, the entries from it on set
+    // aside, what the composer held, whether a turn under way was stopped
+    // for it. Sent, the entries set aside are kept until the program starts
+    // on the conversation taken back (a_rewinding), then dropped - or put
+    // back when it cannot go back there.
+    qsizetype a_editing = -1;
+    QList<Entry> a_setAside;
+    QString a_draft;
+    bool a_editStopped = false;
+    bool a_rewinding = false;
+    qsizetype a_rewindIndex = -1;
     QSet<QString> a_expanded;  // the tool lines opened
     QHash<QString, qucs_s::math::Typeset> a_math;   // typeset math, by TeX, size and colour
     bool a_newInTab = false;
@@ -425,6 +475,10 @@ private:
     QToolButton* a_deny;
     // The git repository, above the composer.
     ClaudeGitBar* a_gitBar = nullptr;
+    // Editing a prompt: the bar above the composer.
+    QFrame* a_editBar = nullptr;
+    QLabel* a_editText = nullptr;
+    QToolButton* a_editCancel = nullptr;
     // The composer.
     QFrame* a_composer;
     QPlainTextEdit* a_input;

@@ -101,6 +101,10 @@ struct Options {
     QString permissionMode;   ///< empty: ask; acceptEdits, auto, plan, bypassPermissions
     QString model;            ///< empty: the program's default; opus, sonnet, haiku, ...
     QString resume;           ///< a session to continue
+    /// With \a resume: the conversation up to this message alone (its
+    /// uuid), the rest left out (--resume-session-at) - a prompt edited.
+    QString resumeAt;
+    bool fork = false;        ///< with \a resume: as a new session (--fork-session)
     QString appendSystemPrompt;
     QString mcpConfig;        ///< --mcp-config: the host's tool server
     QStringList allowedTools; ///< tools used without asking
@@ -323,6 +327,20 @@ public:
     /// own. When Claude Code no longer has it, the prompt is sent again to
     /// a new conversation (and a notice says so).
     void resume(const QString& sessionId);
+    /// The last message of the conversation (its uuid, as the program
+    /// keeps it): where it stands now, to go back to before the next
+    /// prompt. Empty before the first reply, and when not known (a session
+    /// continued, until setLastMessageId()).
+    QString lastMessageId() const { return a_lastMessageId; }
+    void setLastMessageId(const QString& id) { a_lastMessageId = id; }
+    /// Goes back to where the conversation \a sessionId stood at the
+    /// message \a messageId, to go on from there as a new session (the
+    /// old one kept whole): the program ends, and the next prompt starts
+    /// it so (--resume --resume-session-at --fork-session). With no
+    /// \a messageId: a new conversation, nothing said before. When the
+    /// program cannot go back there, rewindFailed() says why, and the
+    /// conversation is as it was.
+    void rewind(const QString& sessionId, const QString& messageId);
     /// What the conversation has taken so far - one kept from before, its
     /// last turn's totals -: the next turns' are added to it.
     void setConversationTotals(const TokenUsage& tokens, double costUsd);
@@ -388,6 +406,9 @@ signals:
     void turnFinished(const qucs_s::claude::TurnResult& result);
     /// The program could not start or ended unexpectedly.
     void failed(const QString& message);
+    /// rewind() could not go back where it was asked to (the program's
+    /// words): the prompt was not sent, and the conversation is as before.
+    void rewindFailed(const QString& message);
 
 private:
     void start();
@@ -436,6 +457,10 @@ private:
     bool a_initSeen = false;   // the program said it started
     bool a_resumeFailed = false;   // it could not continue a_resumedFrom
     QString a_lastPrompt;      // (sent again to a new conversation then)
+    QString a_lastMessageId;   // the conversation's last message (lastMessageId())
+    QString a_rewindAt;        // the next start goes back to this message (rewind())
+    QString a_rewoundFrom;     // the last message before the rewind (put back when it fails)
+    QString a_rewoundSession;  // the session before it
     // Who this conversation is to the tools' host: a number no other
     // conversation of this run has (ToolHost::callToolFor()).
     const quint64 a_caller = nextCaller();

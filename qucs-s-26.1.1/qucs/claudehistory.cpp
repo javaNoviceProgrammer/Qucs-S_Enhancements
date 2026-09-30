@@ -18,6 +18,8 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
+#include <QHash>
 #include <QSaveFile>
 #include <QStandardPaths>
 
@@ -276,6 +278,54 @@ QString claudeSessionFile(const QString& sessionId)
         if (QFileInfo::exists(file)) return file;
     }
     return {};
+}
+
+SessionPoints sessionPoints(const QString& file)
+{
+    SessionPoints points;
+    QFile f(file);
+    if (!f.open(QIODevice::ReadOnly)) return points;
+    static const QRegularExpression typedCommand(QStringLiteral("<command-name>([^<]*)</command-name>"));
+    static const QRegularExpression typedArguments(QStringLiteral("<command-args>([^<]*)</command-args>"),
+                                                   QRegularExpression::DotMatchesEverythingOption);
+    // Each entry of the conversation (a message, an attachment...): whether
+    // it is a message - the user's or Claude's - and its parent. The one
+    // before a prompt is its nearest parent that is a message.
+    QHash<QString, QPair<bool, QString>> chain;
+    const auto before = [&chain](QString uuid) {
+        for (int guard = 0; !uuid.isEmpty() && guard < 1000000; ++guard) {
+            const auto it = chain.constFind(uuid);
+            if (it == chain.cend()) return QString();
+            if (it->first) return uuid;
+            uuid = it->second;
+        }
+        return QString();
+    };
+    while (!f.atEnd()) {
+        const QJsonObject o = QJsonDocument::fromJson(f.readLine()).object();
+        const QString uuid = o.value(QLatin1String("uuid")).toString();
+        if (uuid.isEmpty() || o.value(QLatin1String("isSidechain")).toBool()) continue;   // (a subagent's)
+        const QString type = o.value(QLatin1String("type")).toString();
+        const bool message = type == QLatin1String("user") || type == QLatin1String("assistant");
+        const QString parent = o.value(QLatin1String("parentUuid")).toString();
+        chain.insert(uuid, {message, parent});
+        if (message) points.last = uuid;
+        if (type != QLatin1String("user") || o.value(QLatin1String("isMeta")).toBool()) continue;
+        // A prompt as the dock shows it (importClaudeSession()): its text; a
+        // command as typed; not a tool's result, not what Claude Code adds.
+        const QJsonValue content = o.value(QLatin1String("message")).toObject().value(QLatin1String("content"));
+        QString text = content.toString();
+        for (const QJsonValue& v : content.toArray())
+            if (v.toObject().value(QLatin1String("type")).toString() == QLatin1String("text"))
+                text += v.toObject().value(QLatin1String("text")).toString();
+        text = text.trimmed();
+        if (const auto m = typedCommand.match(text); m.hasMatch())
+            text = (m.captured(1).trimmed() + QLatin1Char(' ') + typedArguments.match(text).captured(1).trimmed()).trimmed();
+        else if (text.startsWith(QLatin1Char('<')) || text.startsWith(QLatin1String("Caveat:")))
+            continue;
+        if (!text.isEmpty()) points.prompts << qMakePair(text, before(parent));
+    }
+    return points;
 }
 
 } // namespace qucs_s::claude::history
