@@ -1031,9 +1031,10 @@ QStringList notesOn(const QString& type)
     QStringList notes;
     if (type == QLatin1String("Vpulse") || type == QLatin1String("Ipulse")) {
         const QString other = type.at(0) == QLatin1Char('V') ? QStringLiteral("Vrect") : QStringLiteral("Irect");
-        notes << tr("One pulse, not a train: under the SPICE simulators it is netlisted as PULSE with no period, so it "
-                    "rises at T1, falls so that it ends at T2 and stays at the first value after. For a repeating pulse "
-                    "train use %1.").arg(other);
+        notes << tr("One pulse, not a train: it rises at T1, falls so that it ends at T2 and stays at the first value "
+                    "after. Under the SPICE simulators it is netlisted as PULSE with a period of 1e9 s, beyond any run (a "
+                    "PULSE with no period is not one pulse under ngspice: it repeats, high most of the time). For a "
+                    "repeating pulse train use %1.").arg(other);
     }
     if (type == QLatin1String("Vrect") || type == QLatin1String("Irect"))
         notes << tr("A repeating rectangular wave: high for TH, low for TL, with edges Tr and Tf between them (period "
@@ -1041,7 +1042,13 @@ QStringList notesOn(const QString& type)
                     "period; the value outside the pulses is U0 (I0).");
     if (type == QLatin1String("Vdc") || type == QLatin1String("Idc"))
         notes << tr("A DC value only: nothing in an AC analysis. To drive an AC analysis use Vac (Iac), whose "
-                    "amplitude is also the AC magnitude.");
+                    "amplitude is also the AC magnitude unless its ACmag is set.");
+    if (type == QLatin1String("Vac") || type == QLatin1String("Iac"))
+        notes << tr("One source for a transient and an AC analysis: its %1 is the sine's peak and, unless ACmag is set, "
+                    "the AC magnitude as well - so %1 = 0 to silence the transient silences the AC analysis too (every "
+                    "voltage of it 0, and check_schematic says so). ACmag (SPICE simulators) sets the AC magnitude "
+                    "apart: %1 = 0.1 for a small-signal transient with ACmag = 1 for a transfer function.")
+                     .arg(type == QLatin1String("Vac") ? QStringLiteral("U") : QStringLiteral("I"));
     if (type == QLatin1String(".TR"))
         notes << tr("Under ngspice the transient's print step is (Stop - Start) / (Points - 1): the dataset has at least "
                     "Points samples; raise Points for finer results. MaxStep bounds the simulator's own step.");
@@ -1618,19 +1625,25 @@ QStringList netlistLines(const QString& file)
 
 } // namespace
 
-QString QucsControl::staleness(Schematic* sch, const QString& file)
+QString QucsControl::staleness(Schematic* sch, const QString& file, bool* certain)
 {
+    bool sure = false;
+    if (certain == nullptr) certain = &sure;
+    *certain = false;
     const QDateTime written = QFileInfo(file).lastModified();
     const QString when = written.toString(QStringLiteral("HH:mm:ss"));
     // A run after it that failed: this is the run's before.
     const QucsDoc::Run run = sch->lastRun();
-    if (run.at.isValid() && run.failed && run.at > written)
+    if (run.at.isValid() && run.failed && run.at > written) {
+        *certain = true;
         return tr("The last simulation of %1, at %2, failed: this dataset is of a run before it (written at %3), not of the "
                   "circuit as it is.").arg(titleOf(sch), run.at.toString(QStringLiteral("HH:mm:ss")), when);
+    }
     // The netlist the run that wrote it was given, against the one a run
-    // would be given now (the netlist is written as a run begins, so the
-    // run's is the one no newer than its dataset; a later run's - an
-    // operating point alone writes no dataset - tells nothing of it).
+    // would be given now: kept for the dataset when the run wrote it (and
+    // by copy_document for a copy's), else the last run's in the scratch
+    // folder, when that wrote this dataset (the netlist is written as a
+    // run begins, so the run's is the one no newer than its dataset).
     int simulator = spicecompat::simQucsator;
     if (file.endsWith(QLatin1String(".ngspice"))) simulator = spicecompat::simNgspice;
     else if (file.endsWith(QLatin1String(".spopus"))) simulator = spicecompat::simSpiceOpus;
@@ -1638,28 +1651,42 @@ QString QucsControl::staleness(Schematic* sch, const QString& file)
     const auto& edits = sch->recentEdits();
     const QDateTime edited = edits.isEmpty() ? QDateTime() : edits.last().at;
     if (simulator == QucsSettings.DefaultSimulator && (simulator == spicecompat::simNgspice || simulator == spicecompat::simSpiceOpus)) {
-        const QString last = QDir(misc::scratchDirFor(sch->getDocName())).filePath(QStringLiteral("spice4qucs.cir"));
-        const QFileInfo info(last);
-        QString head;
-        if (QFile f(last); info.isFile() && f.open(QIODevice::ReadOnly | QIODevice::Text)) head = QString::fromUtf8(f.readLine()).trimmed();
+        QDateTime at;
+        QString last = misc::runNetlistOf(file, &at);
+        if (last.isEmpty()) {
+            const QString scratch = QDir(misc::scratchDirFor(sch->getDocName())).filePath(QStringLiteral("spice4qucs.cir"));
+            const QFileInfo info(scratch);
+            if (QFile f(scratch); info.isFile() && info.lastModified() <= written.addSecs(2) && f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                last = QString::fromUtf8(f.readAll());
+                at = info.lastModified();
+            }
+        }
+        // It is this schematic's: "* Qucs 26.1.4  /path/amp.sch" first.
         static const QRegularExpression named(QStringLiteral("^\\*\\s*Qucs\\S*\\s+\\S+\\s+(.+)$"));
-        const QRegularExpressionMatch m = named.match(head);
-        if (m.hasMatch() && sameFile(m.captured(1).trimmed(), sch->getDocName()) && info.lastModified() <= written.addSecs(2)) {
-            // Nothing done to it since that run began - no edit, its file
-            // not written since (by another program, before it was opened):
-            // as it was, and not netlisted again (tune and scripts read a
-            // dataset after every run).
+        const QRegularExpressionMatch m = named.match(last.section(QLatin1Char('\n'), 0, 0).trimmed());
+        if (m.hasMatch() && sameFile(m.captured(1).trimmed(), sch->getDocName())) {
+            // Nothing done to it since that run began - no edit, no part
+            // made again (a value set for a while and put back), its file
+            // not written since (by another program, before it was opened,
+            // or a copy's): as it was, and not netlisted again (tune and
+            // scripts read a dataset after every run).
             const QDateTime saved = QFileInfo(sch->getDocName()).lastModified();
-            if (!(edited.isValid() && edited > info.lastModified()) && !(saved.isValid() && saved > info.lastModified())) return {};
+            const QDateTime touched = sch->touched();
+            if (!(edited.isValid() && edited > at) && !(saved.isValid() && saved > at) && !(touched.isValid() && touched > at)) return {};
             QTemporaryDir temporary;
             const QString now = temporary.filePath(QStringLiteral("now.cir"));
             misc::ErrorCapture capture;
             SimulationRun netlister(sch, false);
             if (netlister.writeNetlist(now)) {
-                if (netlistLines(now) != netlistLines(last))
+                QStringList lines;
+                for (const QString& l : last.split(QLatin1Char('\n')))
+                    if (const QString t = l.trimmed(); !t.isEmpty() && !t.startsWith(QLatin1Char('*'))) lines << t;
+                if (netlistLines(now) != lines) {
+                    *certain = true;
                     return tr("%1 changed since the run that wrote this dataset (at %2): the netlist a simulation would be given now "
                               "is not the one that run was given - simulate again for results of the circuit as it is.")
                         .arg(titleOf(sch), when);
+                }
                 return {};
             }
         }
@@ -1669,8 +1696,8 @@ QString QucsControl::staleness(Schematic* sch, const QString& file)
     if (edited.isValid() && edited > written)
         return tr("%1 was edited at %2, after this dataset was written (%3): if a value or a connection changed, the dataset is not "
                   "of the circuit as it is (simulate again). The netlist of the run that wrote it is not at hand to compare with "
-                  "- %1 was not simulated here since it was opened, copied or renamed, or by another simulator - so only the time "
-                  "tells.")
+                  "- it was written by another simulator than the one set now, or by another way than a simulation here - so "
+                  "only the time tells.")
             .arg(titleOf(sch), edited.toString(QStringLiteral("HH:mm:ss")), when);
     return {};
 }
@@ -1692,8 +1719,13 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
     if (args.value(QLatin1String("decibels")).isBool()) o.decibels = args.value(QLatin1String("decibels")).toBool();
 
     Schematic* sch = schematicOfDataset(file, args);
-    if (sch != nullptr)
-        if (const QString stale = staleness(sch, file); !stale.isEmpty()) result.insert(QStringLiteral("stale"), stale);
+    if (sch != nullptr) {
+        bool certain = false;
+        if (const QString stale = staleness(sch, file, &certain); !stale.isEmpty()) {
+            result.insert(QStringLiteral("stale"), stale);
+            result.insert(QStringLiteral("stale certain"), certain);
+        }
+    }
     if (args.value(QLatin1String("operating_point")).toBool()) {
         const QJsonObject op = operatingPointJson(data, sch, true);
         if (op.isEmpty())

@@ -497,6 +497,9 @@ QString misc::scratchDir()
 
 QString misc::cacheDir()
 {
+  // (A test's own: nothing of its goes into the user's caches.)
+  if (const QString given = qEnvironmentVariable("QUCS_CACHE_DIR"); !given.isEmpty())
+    return QDir::toNativeSeparators(given);
   if (!QucsSettings.workspaceOfRun.isEmpty())
     return QDir::toNativeSeparators(QucsSettings.workspaceOfRun + QStringLiteral("/spice4qucs"));
   return QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
@@ -532,6 +535,57 @@ QString misc::scratchDirFor(const QString& docName)
   }
   if (name.isEmpty() || name == QLatin1String(".")) name = QStringLiteral("untitled");
   return QDir::toNativeSeparators(root + QLatin1Char('/') + name);
+}
+
+// #########################################################################
+QString misc::runNetlistFile(const QString& dataset)
+{
+  const QFileInfo info(dataset);
+  // (By where it is: /var/... and /private/var/... are one file.)
+  const QString where = info.canonicalFilePath().isEmpty() ? QDir::cleanPath(info.absoluteFilePath()) : info.canonicalFilePath();
+  const QByteArray key = QCryptographicHash::hash(where.toUtf8(), QCryptographicHash::Sha1).toHex().left(12);
+  return QDir::toNativeSeparators(cacheDir() + QStringLiteral("/netlists/") + info.fileName() + QLatin1Char('-')
+                                  + QString::fromLatin1(key) + QStringLiteral(".cir"));
+}
+
+namespace {
+// What tells a dataset from the one written before: its time and size.
+QString datasetStamp(const QString& dataset)
+{
+  const QFileInfo info(dataset);
+  return QStringLiteral("* dataset %1 %2").arg(info.lastModified().toMSecsSinceEpoch()).arg(info.size());
+}
+} // namespace
+
+bool misc::keepRunNetlist(const QString& dataset, const QString& netlist, const QString& schematic, const QDateTime& when)
+{
+  if (!QFileInfo(dataset).isFile() || netlist.isEmpty()) return false;
+  QStringList lines = netlist.split(QLatin1Char('\n'));
+  // "* Qucs 26.1.4  /path/amp.sch": the schematic it is of.
+  static const QRegularExpression head(QStringLiteral("^(\\*\\s*Qucs\\S*\\s+\\S+\\s+)(.+)$"));
+  if (!schematic.isEmpty() && !lines.isEmpty())
+    if (const QRegularExpressionMatch m = head.match(lines.first()); m.hasMatch()) lines.first() = m.captured(1) + schematic;
+  const QString file = runNetlistFile(dataset);
+  if (!QDir().mkpath(QFileInfo(file).absolutePath())) return false;
+  QSaveFile out(file);
+  if (!out.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+  out.write((datasetStamp(dataset) + QLatin1Char('\n') + lines.join(QLatin1Char('\n'))).toUtf8());
+  if (!out.commit()) return false;
+  if (when.isValid()) {
+    QFile f(file);
+    if (f.open(QIODevice::ReadWrite)) f.setFileTime(when, QFileDevice::FileModificationTime);
+  }
+  return true;
+}
+
+QString misc::runNetlistOf(const QString& dataset, QDateTime* kept)
+{
+  QFile f(runNetlistFile(dataset));
+  if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return {};
+  const QString stamp = QString::fromUtf8(f.readLine()).trimmed();
+  if (stamp != datasetStamp(dataset)) return {};   // (another dataset written since, by another way)
+  if (kept != nullptr) *kept = QFileInfo(f).lastModified();
+  return QString::fromUtf8(f.readAll());
 }
 
 // #########################################################################

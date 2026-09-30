@@ -73,6 +73,11 @@ vPulse::~vPulse()
 {
 }
 
+// One pulse, from T1 to T2: a period far beyond any run. With none, ngspice
+// does not hold the first value after it but repeats the pulse, high most
+// of the time.
+static const char* const kOnePulse = "1e9";
+
 QString vPulse::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat::SPICEDefault */)
 {
     Q_UNUSED(dialect);
@@ -92,8 +97,8 @@ QString vPulse::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompat
     QString T1 = spicecompat::normalize_value(getProperty("T1")->Value); // T1
     QString T2 = spicecompat::normalize_value(getProperty("T2")->Value); // T2
 
-    s += QStringLiteral(" DC 0 PULSE(%1 %2 %3 %4 %5 {(%6)-(%3)-(%4)-(%5)}) AC 0\n")
-             .arg(VL).arg(VH).arg(T1).arg(Tr).arg(Tf).arg(T2);
+    s += QStringLiteral(" DC 0 PULSE(%1 %2 %3 %4 %5 {(%6)-(%3)-(%4)-(%5)} %7) AC 0\n")
+             .arg(VL).arg(VH).arg(T1).arg(Tr).arg(Tf).arg(T2).arg(kOnePulse);
 
     return s;
 }

@@ -1411,33 +1411,30 @@ int Component::analyseLine(const QString &Row, int numProps) {
         Name = Row.section(' ', 3, 3);
         if (Name.isEmpty()) Name = "SUB";
 
+        // The parameters follow the component's own numProps properties:
+        // each takes the place after the last, keeping its value there
+        // (Schematic::recreateComponent matches them by name).
         i1 = 1;
-        auto pp = Props.begin();
-        std::advance(pp,std::min<int>( (numProps-1), std::distance(pp, Props.end())));
+        qsizetype last = std::min<qsizetype>(numProps - 1, Props.size() - 1);
         for (;;) {
             s = Row.section('"', i1, i1);
             if (s.isEmpty()) break;
 
-            pp++;
-            if (pp == Props.end()) {
-                Props.append(new Property(
-                    "",
-                    s.section('=', 2, 2),
-                    (s.at(0) == '1')));
-                pp = --Props.end();
-            }
+            ++last;
+            if (last == Props.size())
+                Props.append(new Property("", s.section('=', 2, 2), (s.at(0) == '1')));
 
-            (*pp)->Name = s.section('=', 1, 1);
-            (*pp)->Description = s.section('=', 3, 3);
-            if ((*pp)->Description.isEmpty())
-                (*pp)->Description = " ";
+            Props.at(last)->Name = s.section('=', 1, 1);
+            Props.at(last)->Description = s.section('=', 3, 3);
+            if (Props.at(last)->Description.isEmpty())
+                Props.at(last)->Description = " ";
 
             i1 += 2;
         }
 
-        if(pp != Props.end()-1){
-            Props.erase(pp, Props.end());
-        }
+        // Those the symbol no longer has. (The last it has stays: it was
+        // taken away too, and with no parameters left, the file's name.)
+        if (Props.size() > last + 1) Props.remove(last + 1, Props.size() - last - 1);
         return 0;   // do not count IDs
     } else if (s == "Arrow") {
         if (!getIntegers(Row, &i1, &i2, &i3, &i4, &i5, &i6)) return -1;

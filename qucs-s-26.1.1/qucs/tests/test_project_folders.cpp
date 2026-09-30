@@ -262,7 +262,7 @@ private slots:
         // Nothing written into a folder not made for Qucs: its Scratch is in
         // the cache directory, named by it.
         QVERIFY(!QFileInfo::exists(copied + "/Scratch"));
-        const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        const QString cache = misc::cacheDir();
         QVERIFY2(misc::scratchDir().startsWith(QDir::toNativeSeparators(cache + "/projects/plain-")), qPrintable(misc::scratchDir()));
         QVERIFY(QFileInfo(misc::scratchDir()).isDir());
         QCOMPARE(QDir::toNativeSeparators(QucsSettings.tempFilesDir.absolutePath()), misc::scratchDir());

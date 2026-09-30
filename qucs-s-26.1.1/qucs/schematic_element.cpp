@@ -25,6 +25,7 @@
 #include "schematic.h"
 #include "settings.h"
 #include "component.h"
+#include "components/subcircuit.h"
 #include "diagram.h"
 #include "node.h"
 #include "wire.h"
@@ -2207,11 +2208,40 @@ void Schematic::recreateComponent(Component* comp)
     int y2 = comp->y2;
     QString name = comp->Name;  // is sometimes changed by "recreate"
 
+    // A subcircuit's parameters, by name: its symbol gives them again in
+    // their places, each keeping the value that was in that place - after
+    // one was taken away or moved, another's.
+    struct Given {
+        QString value;
+        bool shown;
+    };
+    QHash<QString, Given> given;
+    auto* sub = dynamic_cast<Subcircuit*>(comp);
+    if (sub != nullptr)
+        for (qsizetype i = 1; i < comp->Props.size(); ++i)
+            given.insert(comp->Props.at(i)->Name, {comp->Props.at(i)->Value, comp->Props.at(i)->display});
+
     detachComp(comp);
     comp->recreate();  // to apply changes to the schematic symbol
     insertRawComponent(comp);
+    touch();
 
     comp->Name = name;
+
+    if (sub != nullptr && !given.isEmpty()) {
+        QHash<QString, Subcircuit::Parameter> defaults;
+        for (const Subcircuit::Parameter& p : sub->symbolParameters()) defaults.insert(p.name, p);
+        for (qsizetype i = 1; i < comp->Props.size(); ++i) {
+            Property* p = comp->Props.at(i);
+            if (given.contains(p->Name)) {
+                p->Value = given.value(p->Name).value;
+                p->display = given.value(p->Name).shown;
+            } else if (defaults.contains(p->Name)) {   // a new one
+                p->Value = defaults.value(p->Name).value;
+                p->display = defaults.value(p->Name).shown;
+            }
+        }
+    }
 
     // This is wrong place to adjust component's text position.
     // It should be better done in "recreate()" (idea for refactoring)

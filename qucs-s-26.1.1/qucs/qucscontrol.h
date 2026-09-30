@@ -300,6 +300,7 @@ private:
     QJsonObject copyDocument(const QJsonObject& args);
     QJsonObject cleanScratch(const QJsonObject& args);
     QJsonObject makeSymbol(const QJsonObject& args);
+    QJsonObject setSubcircuitParameters(const QJsonObject& args);
     QJsonObject importNetlist(const QJsonObject& args);
     QJsonObject findLibraryComponent(const QJsonObject& args);
     QJsonObject describePart(const QJsonObject& args);
@@ -322,8 +323,9 @@ private:
     QString wrongTypes(const QString& tool, const QJsonObject& args) const;
     /// Why \a file, the dataset of \a sch, is not of the circuit as it is -
     /// the last run failed after it, the netlist a run would be given now is
-    /// not the one it ran, or an edit after it - or empty.
-    QString staleness(Schematic* sch, const QString& file);
+    /// not the one it ran, or an edit after it - or empty. \a certain: the
+    /// first two, not the edit's time alone (which may be of no value).
+    QString staleness(Schematic* sch, const QString& file, bool* certain = nullptr);
     QJsonObject reloadData(const QJsonObject& args);
     // Diagrams and their traces.
     QJsonObject addDiagram(const QJsonObject& args);
@@ -371,6 +373,10 @@ private:
     /// true): its parts' names, its diagrams, paintings and wires - or, for
     /// add_painting ("around": "selection"), a place about it.
     QJsonObject withSelection(const QString& tool, const QJsonObject& args, QString* error) const;
+    /// 'document': "data_display", or a data display in 'path' not open:
+    /// \a args with the .dpl in 'path', open - made for its schematic when
+    /// it has none. False and why when it cannot be.
+    bool toDataDisplay(QJsonObject* args, QString* error);
     Schematic* schematic(const QJsonObject& args, QString* error, bool forChange) const;
     /// The document in front, the property editor closed: before a change.
     void prepare(Schematic* sch);

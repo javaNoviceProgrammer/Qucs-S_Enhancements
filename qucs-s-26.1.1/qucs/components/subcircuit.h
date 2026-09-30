@@ -30,6 +30,15 @@ public:
 
   QString getSubcircuitFile();
 
+  /// A parameter of its symbol (its .ID line): its name, its default and
+  /// whether an instance shows it.
+  struct Parameter {
+    QString name, value;
+    bool shown = true;
+  };
+  /// The parameters its file's symbol has now, in their order.
+  QList<Parameter> symbolParameters();
+
 protected:
   QString netlist();
   QString spice_netlist(spicecompat::SpiceDialect dialect = spicecompat::SPICEDefault);

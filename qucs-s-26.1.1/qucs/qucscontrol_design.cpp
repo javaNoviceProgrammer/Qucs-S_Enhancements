@@ -28,6 +28,7 @@
 #include "valuereading.h"
 
 #include "components/component.h"
+#include "paintings/id_text.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -41,9 +42,11 @@
 #include <QPdfSelection>
 #endif
 
+#include <climits>
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <optional>
 
 using namespace qucs_s::control;
 using qucs_s::dataset::rounded;
@@ -2326,7 +2329,14 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
             const QString a = src.absoluteDir().filePath(base + suffix), b = dst.absoluteDir().filePath(newBase + suffix);
             if (!QFileInfo::exists(a)) continue;
             aboutToWrite(b);
-            if (misc::copyFileOver(a, b)) written << QFileInfo(b).fileName();
+            if (!misc::copyFileOver(a, b)) continue;
+            written << QFileInfo(b).fileName();
+            // The netlist its run was given, the copy's now: get_dataset
+            // then tells by it whether the copy is still of that circuit.
+            // (Kept as of that run: the copy, written after, is compared
+            // with it once - it may have unsaved changes of the original.)
+            QDateTime at;
+            if (const QString netlist = misc::runNetlistOf(a, &at); !netlist.isEmpty()) misc::keepRunNetlist(b, netlist, to, at);
         }
         const QString dpl = src.absoluteDir().filePath(base + QStringLiteral(".dpl"));
         if (QFileInfo::exists(dpl)) {
@@ -2381,6 +2391,172 @@ QJsonObject QucsControl::cleanScratch(const QJsonObject& args)
 // ----------------------------------------------------------------------
 // A subcircuit's symbol drawn: a box, each pin on its side
 
+namespace {
+
+// A subcircuit's symbol's name text, which holds its parameters.
+ID_Text* idOf(const std::list<Painting*>& paintings)
+{
+    for (Painting* p : paintings)
+        if (p->Name == QLatin1String(".ID ")) return static_cast<ID_Text*>(p);
+    return nullptr;
+}
+
+QJsonObject parameterJson(const SubParameter& p)
+{
+    return {{QStringLiteral("name"), p.name.section(QLatin1Char('='), 0, 0)},
+            {QStringLiteral("default"), p.name.section(QLatin1Char('='), 1)},
+            {QStringLiteral("description"), p.description},
+            {QStringLiteral("type"), p.type},
+            {QStringLiteral("shown"), p.display}};
+}
+
+// How they go on the .SUBCKT line: Rs=1k k=2.
+QString subcktParameters(const ID_Text* id)
+{
+    QStringList pairs;
+    for (const auto& p : id->subParameters) pairs << p->name;
+    return pairs.join(QLatin1Char(' '));
+}
+
+// Changes \a id's parameters as 'parameters' (each set or added by name;
+// with \a replace, the list is those alone), 'remove' and 'prefix' ask.
+// What changed in words in \a done; nothing is changed when one is wrong.
+bool changeParameters(ID_Text* id, const QJsonObject& args, bool replace, QStringList* done, bool* reordered, QString* error)
+{
+    const auto quoteOrEquals = [](const QString& s) { return s.contains(QLatin1Char('"')) || s.contains(QLatin1Char('=')); };
+    struct Wanted {
+        QString name;
+        std::optional<QString> value, description, type;
+        std::optional<bool> shown;
+    };
+    QList<Wanted> wanted;
+    for (const QJsonValue& v : args.value(QLatin1String("parameters")).toArray()) {
+        Wanted w;
+        if (v.isString()) {
+            // "Rs=1k"
+            const QString text = v.toString().trimmed();
+            const int eq = int(text.indexOf(QLatin1Char('=')));
+            w.name = (eq < 0 ? text : text.left(eq)).trimmed();
+            if (eq >= 0) w.value = text.mid(eq + 1).trimmed();
+        } else {
+            const QJsonObject o = v.toObject();
+            w.name = o.value(QLatin1String("name")).toString().trimmed();
+            const QJsonValue d = o.value(QLatin1String("default"));
+            if (d.isString()) w.value = d.toString().trimmed();
+            else if (d.isDouble()) w.value = QString::number(d.toDouble(), 'g', 12);
+            if (o.contains(QLatin1String("description"))) w.description = o.value(QLatin1String("description")).toString();
+            if (o.contains(QLatin1String("type"))) w.type = o.value(QLatin1String("type")).toString();
+            if (o.contains(QLatin1String("shown"))) w.shown = o.value(QLatin1String("shown")).toBool();
+        }
+        static const QRegularExpression word(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+        if (!word.match(w.name).hasMatch()) {
+            *error = tr("A parameter's name is a word (letters, digits and _, not starting with a digit), as SPICE takes it: %1 is not.")
+                         .arg(w.name.isEmpty() ? tr("\"\"") : w.name);
+            return false;
+        }
+        if (w.name.compare(QLatin1String("File"), Qt::CaseInsensitive) == 0) {
+            *error = tr("A parameter cannot be called File: an instance's first property is its file.");
+            return false;
+        }
+        for (const Wanted& other : std::as_const(wanted))
+            if (other.name.compare(w.name, Qt::CaseInsensitive) == 0) {
+                *error = tr("%1 is given twice (SPICE reads names without case).").arg(w.name);
+                return false;
+            }
+        static const QRegularExpression space(QStringLiteral("\\s"));
+        if ((w.value && (w.value->isEmpty() || quoteOrEquals(*w.value) || w.value->contains(space)))
+            || (w.description && quoteOrEquals(*w.description)) || (w.type && quoteOrEquals(*w.type))) {
+            *error = tr("%1: a default is one value with no space in it, as the .SUBCKT line takes it (1k, 2.5, {2*Rs}), and none of "
+                        "default, description and type has = or \" in it.").arg(w.name);
+            return false;
+        }
+        wanted << w;
+    }
+    QStringList remove;
+    for (const QJsonValue& v : args.value(QLatin1String("remove")).toArray()) remove << v.toString().trimmed();
+
+    // The list as it is, then as it will be.
+    std::vector<std::unique_ptr<SubParameter>> now;
+    for (const auto& p : id->subParameters) now.push_back(std::make_unique<SubParameter>(*p));
+    const auto nameOf = [](const SubParameter& p) { return p.name.section(QLatin1Char('='), 0, 0); };
+    const auto find = [&](std::vector<std::unique_ptr<SubParameter>>& in, const QString& name) {
+        return std::find_if(in.begin(), in.end(), [&](const auto& p) { return nameOf(*p).compare(name, Qt::CaseInsensitive) == 0; });
+    };
+    QStringList names;
+    for (const auto& p : now) names << nameOf(*p);
+    for (const QString& r : std::as_const(remove)) {
+        const auto it = find(now, r);
+        if (it == now.end()) {
+            *error = tr("There is no parameter %1 to remove: %2.").arg(r, names.isEmpty() ? tr("it has none") : names.join(QStringLiteral(", ")));
+            return false;
+        }
+        done->append(tr("%1 removed").arg(nameOf(**it)));
+        now.erase(it);
+    }
+    std::vector<std::unique_ptr<SubParameter>> result;
+    if (!replace) result = std::move(now);
+    for (const Wanted& w : std::as_const(wanted)) {
+        auto it = find(result, w.name);
+        if (it == result.end() && replace) {
+            // (Kept from the list as it was: its fields not given stay.)
+            const auto was = find(now, w.name);
+            if (was != now.end()) {
+                result.push_back(std::move(*was));
+                now.erase(was);
+                it = result.end() - 1;
+            }
+        }
+        if (it == result.end()) {
+            if (!w.value) {
+                *error = tr("%1 is new: it needs a 'default' (ngspice refuses a .SUBCKT parameter with none).").arg(w.name);
+                return false;
+            }
+            result.push_back(std::make_unique<SubParameter>(w.shown.value_or(true), w.name + QLatin1Char('=') + *w.value,
+                                                            w.description.value_or(QString()), w.type.value_or(QString())));
+            done->append(tr("%1 added, %2 by default").arg(w.name, *w.value));
+            continue;
+        }
+        SubParameter& p = **it;
+        const QString before = p.name;
+        if (nameOf(p) != w.name) done->append(tr("%1 now written %2").arg(nameOf(p), w.name));
+        p.name = w.name + QLatin1Char('=') + w.value.value_or(p.name.section(QLatin1Char('='), 1));
+        if (w.value && before != p.name) done->append(tr("%1's default is %2").arg(w.name, *w.value));
+        if (w.description) p.description = *w.description;
+        if (w.type) p.type = *w.type;
+        if (w.shown) p.display = *w.shown;
+    }
+    if (replace)
+        for (const auto& gone : now) done->append(tr("%1 removed").arg(nameOf(*gone)));
+    // Did any keep its place? An instance in a schematic not open takes
+    // its values by place when that opens.
+    QStringList after;
+    for (const auto& p : result) after << nameOf(*p);
+    *reordered = false;
+    for (int i = 0; i < names.size() && i < after.size(); ++i)
+        if (names.at(i).compare(after.at(i), Qt::CaseInsensitive) != 0) *reordered = true;
+    if (args.contains(QLatin1String("prefix"))) {
+        const QString prefix = args.value(QLatin1String("prefix")).toString().trimmed();
+        if (prefix.isEmpty() || prefix.contains(QRegularExpression(QStringLiteral("[\\s\"=]")))) {
+            *error = tr("'prefix' is a word: what the instances' names begin with (SUB gives SUB1, SUB2, ...).");
+            return false;
+        }
+        if (prefix != id->prefix) done->append(tr("the instances' names begin with %1").arg(prefix));
+        id->prefix = prefix;
+    }
+    id->subParameters = std::move(result);
+    return true;
+}
+
+} // namespace
+
+QJsonArray qucs_s::control::subcircuitParametersJson(const Schematic* sch)
+{
+    QJsonArray list;
+    if (const ID_Text* id = idOf(sch->a_SymbolPaints))
+        for (const auto& p : id->subParameters) list.append(parameterJson(*p));
+    return list;
+}
+
 QJsonObject QucsControl::makeSymbol(const QJsonObject& args)
 {
     QString error, note;
@@ -2394,8 +2570,12 @@ QJsonObject QucsControl::makeSymbol(const QJsonObject& args)
     const QJsonObject given = args.value(QLatin1String("sides")).toObject();
     for (auto it = given.begin(); it != given.end(); ++it) sides.insert(it.key().toLower(), it.value().toString().trimmed().toLower());
     const auto before = sch->snapshotAll();
-    QStringList placed;
-    if (!sch->buildSymbol(sides, &error, &placed)) {
+    QStringList placed, changed;
+    bool reordered = false;
+    if (!sch->buildSymbol(sides, &error, &placed)
+        || ((args.contains(QLatin1String("parameters")) || args.contains(QLatin1String("prefix")))
+            && !changeParameters(idOf(sch->a_SymbolPaints), args, args.contains(QLatin1String("parameters")), &changed, &reordered,
+                                 &error))) {
         sch->restoreAll(before);
         return errorResult(error);
     }
@@ -2405,6 +2585,73 @@ QJsonObject QucsControl::makeSymbol(const QJsonObject& args)
     QJsonObject result{{QStringLiteral("document"), titleOf(sch)}, {QStringLiteral("pins"), QJsonArray::fromStringList(placed)},
                        {QStringLiteral("then"), tr("Save it for the subcircuit's instances to take it; edit_painting moves a port or the name "
                                                    "text, add_painting draws more.")}};
+    const QJsonArray parameters = subcircuitParametersJson(sch);
+    if (!parameters.isEmpty()) result.insert(QStringLiteral("parameters"), parameters);
+    if (!note.isEmpty()) result.insert(QStringLiteral("note"), note);
+    return jsonResult(result);
+}
+
+QJsonObject QucsControl::setSubcircuitParameters(const QJsonObject& args)
+{
+    if (!args.contains(QLatin1String("parameters")) && !args.contains(QLatin1String("remove")) && !args.contains(QLatin1String("prefix")))
+        return errorResult(tr("Give 'parameters' ([{\"name\": \"Rs\", \"default\": \"1k\"}] or [\"Rs=1k\"]), 'remove' or 'prefix'."));
+    QString error, note;
+    std::list<Painting*>* list = nullptr;
+    QJsonObject onSymbol = args;
+    onSymbol.insert(QStringLiteral("symbol"), true);
+    Schematic* sch = paintingsOf(onSymbol, &list, &note, &error);
+    if (sch == nullptr) return errorResult(error);
+    if (sch->getIsSymbolOnly())
+        return errorResult(tr("%1 is a symbol file: a subcircuit's parameters are on the symbol of its schematic (.sch).").arg(titleOf(sch)));
+    const auto before = sch->snapshotAll();
+    QStringList drawn;
+    ID_Text* id = idOf(sch->a_SymbolPaints);
+    if (id == nullptr) {
+        if (sch->a_SymbolPaints.empty() || std::none_of(sch->a_SymbolPaints.begin(), sch->a_SymbolPaints.end(),
+                                                        [](const Painting* p) { return p->Name != QLatin1String(".PortSym "); })) {
+            // No symbol yet: one as make_symbol draws it.
+            if (!sch->buildSymbol({}, &error, &drawn)) {
+                sch->restoreAll(before);
+                return errorResult(tr("A subcircuit's parameters are on its symbol, and %1").arg(error.left(1).toLower() + error.mid(1)));
+            }
+        } else {
+            // A symbol drawn by hand with no name text: one below it.
+            int left = INT_MAX, bottom = INT_MIN;
+            for (const Painting* p : sch->a_SymbolPaints) {
+                const QRect box = p->boundingRect();
+                left = std::min(left, box.left());
+                bottom = std::max(bottom, box.bottom());
+            }
+            sch->a_SymbolPaints.push_front(new ID_Text(left, bottom + 4));
+        }
+        id = idOf(sch->a_SymbolPaints);
+    }
+    QStringList changed;
+    bool reordered = false;
+    if (!changeParameters(id, args, args.value(QLatin1String("replace")).toBool(), &changed, &reordered, &error)) {
+        sch->restoreAll(before);
+        return errorResult(error);
+    }
+    sch->updateAllBoundingRect();
+    sch->setChanged(true, true);
+    sch->viewport()->update();
+    QJsonObject result{{QStringLiteral("document"), titleOf(sch)},
+                       {QStringLiteral("parameters"), subcircuitParametersJson(sch)},
+                       {QStringLiteral("prefix"), id->prefix},
+                       {QStringLiteral("on the .SUBCKT line"), subcktParameters(id)},
+                       {QStringLiteral("changed"), changed.isEmpty() ? QJsonValue(tr("nothing: they were so already"))
+                                                                     : QJsonValue(changed.join(QStringLiteral("; ")))},
+                       {QStringLiteral("one step to undo"), true},
+                       {QStringLiteral("then"), tr("Save it: its instances in open schematics take the parameters by name, each keeping "
+                                                   "the value set on it, a new one at its default. Inside the subcircuit a value uses one "
+                                                   "as {Rs}.")}};
+    if (!drawn.isEmpty())
+        result.insert(QStringLiteral("symbol drawn"), tr("It had no symbol: one was drawn as make_symbol draws it - %1.").arg(drawn.join(QStringLiteral("; "))));
+    if (reordered)
+        result.insert(QStringLiteral("instances not open"),
+                      tr("A schematic saved with an instance of it keeps the instance's values in order, not by name: one not open now "
+                         "reads them by place when it opens, and a parameter taken away or moved shifts the values after it. Open those "
+                         "schematics before saving this one - their instances then follow by name - and save them after."));
     if (!note.isEmpty()) result.insert(QStringLiteral("note"), note);
     return jsonResult(result);
 }

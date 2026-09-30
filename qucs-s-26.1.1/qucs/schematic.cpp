@@ -242,10 +242,19 @@ bool Schematic::recreateSubcircuitSymbol()
 
 bool Schematic::buildSymbol(const QHash<QString, QString>& sides, QString* error, QStringList* placed)
 {
+    // The name text's prefix and parameters stay as they were: a symbol
+    // drawn again is the same subcircuit.
+    QString prefix;
+    std::vector<std::unique_ptr<SubParameter>> parameters;
     for (auto painting = a_SymbolPaints.begin(); painting != a_SymbolPaints.end();) {
         if ((*painting)->Name == ".PortSym ") {
             ++painting;
             continue;
+        }
+        if ((*painting)->Name == ".ID ") {
+            auto* id = static_cast<ID_Text*>(*painting);
+            prefix = id->prefix;
+            parameters = std::move(id->subParameters);
         }
         delete *painting;
         painting = a_SymbolPaints.erase(painting);
@@ -346,7 +355,10 @@ bool Schematic::buildSymbol(const QHash<QString, QString>& sides, QString* error
     place(right, QStringLiteral("right"));
     place(top, QStringLiteral("top"));
     place(bottom, QStringLiteral("bottom"));
-    a_SymbolPaints.push_front(new ID_Text(-halfWidth, halfHeight + (bottom.empty() ? 4 : 24)));
+    auto* id = new ID_Text(-halfWidth, halfHeight + (bottom.empty() ? 4 : 24));
+    if (!prefix.isEmpty()) id->prefix = prefix;
+    id->subParameters = std::move(parameters);
+    a_SymbolPaints.push_front(id);
     a_SymbolPaints.push_back(new GraphicLine(-halfWidth, -halfHeight, halfWidth, -halfHeight, pen));
     a_SymbolPaints.push_back(new GraphicLine(halfWidth, -halfHeight, halfWidth, halfHeight, pen));
     a_SymbolPaints.push_back(new GraphicLine(-halfWidth, halfHeight, halfWidth, halfHeight, pen));
