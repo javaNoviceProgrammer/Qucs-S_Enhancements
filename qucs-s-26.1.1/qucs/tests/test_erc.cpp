@@ -64,6 +64,23 @@ template <typename Kernel>
 struct GroundProbe : Kernel {
     using Kernel::Kernel;
     bool groundFound() { return this->checkGround(); }
+    // The named nets the netlist prints, sorted.
+    QStringList printed(spicecompat::SpiceDialect dialect)
+    {
+        const QSet<QString> nets = this->getValidNets(dialect);
+        QStringList list(nets.cbegin(), nets.cend());
+        list.sort();
+        return list;
+    }
+    QString netlist()
+    {
+        QString text;
+        QTextStream stream(&text);
+        QStringList simulations, vars, outputs;
+        this->createNetlist(stream, simulations, vars, outputs);
+        stream.flush();
+        return text;
+    }
 };
 
 QAction* menuAction(QucsApp* app, const QString& menuTitle, const QString& text)
@@ -226,6 +243,56 @@ private slots:
         }
         QVERIFY(ngspiceByName.groundFound());
         QVERIFY(ngspiceOff.groundFound());
+    }
+
+    // A net named as ground is node 0, which has no voltage to print: the
+    // netlist asked ngspice for v(0) and the run stopped ("no such vector
+    // 0") - with a ground symbol too, and with none, as the settings allow.
+    // ngspice takes gnd in any case as ground; Xyce only 0 (and gnd, which
+    // the netlist writes as 0).
+    void aNetNamedAsGroundIsNotPrinted()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        QucsSettings.RequireGround = false;
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        // V1 and R1 side by side, the top wire named out, the bottom one
+        // named as ground.
+        const auto schematic = [this](const QString& ground, bool symbol) {
+            const QString file = dir.filePath(QStringLiteral("named_%1%2.sch").arg(ground, symbol ? "_sym" : ""));
+            write(file, QByteArray("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                                   "  <Vdc V1 1 0 60 18 -26 0 1 \"5 V\" 1>\n"
+                                   "  <R R1 1 100 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                                   "  <.DC DC1 1 200 40 0 40 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>\n")
+                            + (symbol ? "  <GND * 1 50 90 0 0 0 0>\n" : "")
+                            + "</Components>\n<Wires>\n"
+                              "  <0 30 100 30 \"out\" 50 10 0 \"\">\n"
+                              "  <0 90 100 90 \"" + ground.toUtf8() + "\" 50 110 0 \"\">\n"
+                              "</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+            return file;
+        };
+        const QRegularExpression groundVector(QStringLiteral("v\\((0|gnd)\\)"), QRegularExpression::CaseInsensitiveOption);
+        for (const QString& ground : {QStringLiteral("0"), QStringLiteral("gnd"), QStringLiteral("GND")})
+            for (bool symbol : {false, true}) {
+                Schematic doc(nullptr, schematic(ground, symbol));
+                QVERIFY(doc.load());
+                GroundProbe<Ngspice> ngspice(&doc);
+                const QString netlist = ngspice.netlist();
+                QVERIFY2(netlist.contains("print v(out)"), qPrintable(netlist));
+                QVERIFY2(!netlist.contains(groundVector), qPrintable(ground + ":\n" + netlist));
+                QCOMPARE(ngspice.printed(spicecompat::SPICEDefault), QStringList{"out"});
+                GroundProbe<Xyce> xyce(&doc);
+                QCOMPARE(xyce.printed(spicecompat::SPICEXyce),
+                         ground == "GND" ? QStringList({"GND", "out"}) : QStringList{"out"});
+            }
+        // SPICE OPUS reads gnd as any other name: only 0 is ground there.
+        QucsSettings.DefaultSimulator = spicecompat::simSpiceOpus;
+        Schematic doc(nullptr, schematic(QStringLiteral("GND"), false));
+        QVERIFY(doc.load());
+        GroundProbe<Ngspice> opus(&doc);
+        QCOMPARE(opus.printed(spicecompat::SPICEDefault), QStringList({"GND", "out"}));
     }
 
     // Simulators Settings, applied: the Problems tab (this schematic's

@@ -447,7 +447,19 @@ QSet<QString> AbstractSpiceKernel::getValidNets(spicecompat::SpiceDialect dialec
         }
     }
     // intersection between all and activeNets
-    return allNets & activeNets;
+    QSet<QString> valid = allNets & activeNets;
+    // A net named as ground is node 0, which has no vector: "print v(0)"
+    // stopped the whole run ("no such vector 0"). 0, and gnd, which the
+    // netlist writes as 0 - ngspice takes gnd in any case as ground (the
+    // netlist is read in lower case); Xyce and SPICE OPUS only 0.
+    const bool anyCase = dialect == spicecompat::SPICEDefault && QucsSettings.DefaultSimulator == spicecompat::simNgspice;
+    for (auto it = valid.begin(); it != valid.end();) {
+        const bool ground = spicecompat::normalize_node_name(*it) == QLatin1String("0")
+                         || (anyCase && it->compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0);
+        if (ground) it = valid.erase(it);
+        else ++it;
+    }
+    return valid;
 }
 
 /*!
