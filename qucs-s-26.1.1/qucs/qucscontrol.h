@@ -316,6 +316,10 @@ private:
     /// Why \a args has arguments \a tool does not take (its schema's
     /// fields), and the ones it does; empty when it has none.
     QString unknownArguments(const QString& tool, const QJsonObject& args) const;
+    /// The first argument of \a args (inside them too) whose JSON type is
+    /// not its schema's - 1 for a boolean, an object for a list - said, or
+    /// empty: it was read as its default, silently. A null is not given.
+    QString wrongTypes(const QString& tool, const QJsonObject& args) const;
     /// Why \a file, the dataset of \a sch, is not of the circuit as it is -
     /// the last run failed after it, the netlist a run would be given now is
     /// not the one it ran, or an edit after it - or empty.

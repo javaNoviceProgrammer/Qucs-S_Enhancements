@@ -74,3 +74,16 @@ The tools sent every turn grew by 114 bytes (114,333 to 114,447): how
 `create_subcircuit` names its ports and how `make_symbol` sides them.
 The instructions, sent once, grew by 1,495 characters (4,329 to 5,824)
 with the guide.
+
+## A correction
+
+*30 September.* "What layout is left" says the ua741(TI) and the uA741 have
+their − input as the upper pin, and the guide said to mirror both. The
+uA741 does not: its symbol has INN on the left, lower (`describe_part` says
+"left, lower"), so mirrored its − input goes on top, the opposite of what
+the advice is for. The ua741(TI) and ua741(boyle) have it on top, as do
+op27(boyle), opa27(TI), tl081(TI), tl071(TI), OP07(TI), OP37(TI) and
+mc1458(TI); the AD825 and the LM3886 have it below. The guide now says to
+read the side from `describe_part`, with an example of each, and a test
+checks each part it names against `describe_part` (the bug hunt of
+29 September, E1).

@@ -45,6 +45,9 @@ public:
   /// there is none of under the library's default symbol. Empty for any
   /// other part.
   QString componentModel();
+  /// The part's description in its library ("68W audio amplifier"); empty
+  /// when it has none or the library is not found.
+  QString description();
 
 protected:
   QString netlist();

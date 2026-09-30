@@ -16,6 +16,7 @@
 #include "wire.h"
 #include "wirelabel.h"
 #include "components/component.h"
+#include "components/libcomp.h"
 #include "main.h"
 #include "extsimkernels/spicecompat.h"
 #include "optimization.h"
@@ -36,6 +37,8 @@
 #include <QSet>
 #include <QStringList>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <map>
 #include <memory>
 #include <numeric>
@@ -173,6 +176,22 @@ Nets netsOf(Schematic* doc)
         }
     }
     return nets;
+}
+
+// A subcircuit's file that is there: a file, not a folder, by a path that
+// is whole (a relative one would be read from the process's working folder).
+bool foundFile(const QString& file)
+{
+    const QFileInfo fi(file);
+    return fi.isAbsolute() && fi.isFile();
+}
+
+// Whether two paths are one file (through a link: /tmp and /private/tmp).
+bool sameFile(const QString& a, const QString& b)
+{
+    if (a.isEmpty() || b.isEmpty()) return false;
+    const QString one = QFileInfo(a).canonicalFilePath();
+    return !one.isEmpty() && one == QFileInfo(b).canonicalFilePath();
 }
 
 QString netName(const Nets& nets, int net)
@@ -397,19 +416,31 @@ bool supplyName(const QString& name)
     return supply.match(name).hasMatch();
 }
 
-// An op-amp's input by its pin's name: IN+, INP, NONINV, POSIN ...
+// An op-amp's input by its pin's name: IN+, INP, NONINV, POSIN ... - and a
+// dual's, numbered or lettered: IN1+, -INA, INBN, NONINV2.
 bool inputName(const QString& name)
 {
-    static const QRegularExpression input(QStringLiteral("^(in[+-]|[+-]in|inp|inn|in_?p|in_?n|in_?pos|in_?neg|posin|negin|"
-                                                         "non_?inv|inv|vin[+-]|vinp|vinn)$"),
+    static const QRegularExpression input(QStringLiteral("^(in\\d*[a-d]?[+-]|[+-]in\\d*[a-d]?|in\\d*[a-d]?_?(p|n|pos|neg)|"
+                                                         "(pos|neg)in\\d*[a-d]?|non_?inv\\d*[a-d]?|inv\\d*[a-d]?|"
+                                                         "vin\\d*[a-d]?[+-]|vin\\d*[a-d]?[pn])$"),
                                           QRegularExpression::CaseInsensitiveOption);
     return input.match(name).hasMatch();
 }
 
-// An output by its pin's name: OUT, VOUT, OUTPUT.
+// An input of one pin, not an op-amp's pair: IN, IN1, INA, VIN, INPUT. (A
+// regulator's IN, a coupler's: a role, but no bias for the check to ask of.)
+bool plainInputName(const QString& name)
+{
+    static const QRegularExpression input(QStringLiteral("^(v?in\\d*[a-d]?|input\\d*[a-d]?)$"), QRegularExpression::CaseInsensitiveOption);
+    return input.match(name).hasMatch();
+}
+
+// An output by its pin's name: OUT, VOUT, OUTPUT - numbered or lettered
+// (OUT1, OUTA: a dual's), or one of a pair (OUT+, OUTN).
 bool outputName(const QString& name)
 {
-    static const QRegularExpression output(QStringLiteral("^(out|vout|output)$"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression output(QStringLiteral("^(v?out\\d*[a-d]?[+pn-]?|output\\d*[a-d]?)$"),
+                                           QRegularExpression::CaseInsensitiveOption);
     return output.match(name).hasMatch();
 }
 
@@ -489,19 +520,32 @@ void polarityIssues(Schematic* doc, const Nets& nets, QList<Issue>* warnings, QL
             if (sign > 0) positivePins << QStringLiteral("%1 (%2)").arg(pin, pinName.value(pin));
             else if (sign < 0) negativePins << QStringLiteral("%1 (%2)").arg(pin, pinName.value(pin));
         }
-        const int labelSign = nets.labelled.contains(other) ? supplySign(nets.name.value(other)) : 0;
+        // The net's name: its label, or in a subcircuit a port on it (VEE:
+        // the net's name to the outside) when the label says no supply.
+        int labelSign = nets.labelled.contains(other) ? supplySign(nets.name.value(other)) : 0;
+        QString net = netName(nets, other);
+        if (labelSign == 0)
+            for (const Component* port : doc->a_DocComps)
+                if (isPort(port) && inCircuit(port) && !port->Ports.isEmpty() && port->Ports.first()->Connection != nullptr
+                    && nets.of.value(port->Ports.first()->Connection, -1) == other && supplySign(port->Name) != 0) {
+                    labelSign = supplySign(port->Name);
+                    net = tr("the port %1").arg(port->Name);
+                    break;
+                }
         // The fix: its value the other sign (a turn is refused while wires
-        // would join other nets).
+        // would join other nets). "+15 V" is "-15 V" so, not "-+15 V".
         const QString value = c->Props.first()->Value.trimmed();
-        const QString flip = tr("set %1 to %2 (edit_component)")
-                                 .arg(c->Props.first()->Name, value.startsWith(QLatin1Char('-')) ? value.mid(1).trimmed() : QLatin1Char('-') + value);
+        const QString flipped = value.startsWith(QLatin1Char('-'))   ? value.mid(1).trimmed()
+                                : value.startsWith(QLatin1Char('+')) ? QLatin1Char('-') + value.mid(1).trimmed()
+                                                                     : QLatin1Char('-') + value;
+        const QString flip = tr("set %1 to %2 (edit_component)").arg(c->Props.first()->Name, flipped);
         // "VCC puts U1.4 (VCC) at -15 V, though it is a positive supply's
         // pin"; "... puts vcc at -15 V, though U1.4 (VCC) on it is ...".
         const auto wrongWay = [&](const QStringList& pins, const QString& sign, const QString& fix) {
             const QString kind = pins.size() > 1 ? tr("%1 supply's pins").arg(sign) : tr("a %1 supply's pin").arg(sign);
-            const QString why = pins.isEmpty() ? tr("%1 at %2 V, though that is a %3 supply's name").arg(netName(nets, other)).arg(level).arg(sign)
+            const QString why = pins.isEmpty() ? tr("%1 at %2 V, though that is a %3 supply's name").arg(net).arg(level).arg(sign)
                                 : nets.labelled.contains(other)
-                                    ? tr("%1 at %2 V, though %3 on it %4 %5").arg(netName(nets, other)).arg(level)
+                                    ? tr("%1 at %2 V, though %3 on it %4 %5").arg(net).arg(level)
                                           .arg(pins.join(QStringLiteral(", ")), pins.size() > 1 ? tr("are") : tr("is"), kind)
                                     : tr("%1 at %2 V, though %3 %4").arg(pins.join(QStringLiteral(", "))).arg(level)
                                           .arg(pins.size() > 1 ? tr("they are") : tr("it is"), kind);
@@ -521,7 +565,7 @@ void polarityIssues(Schematic* doc, const Nets& nets, QList<Issue>* warnings, QL
         if (level >= 0 || !negativePins.isEmpty() || labelSign < 0 || supplySign(c->Name) < 0 || !notes) continue;
         *notes << Issue{Severity::Warning,
                         tr("%1: its %2 is on ground, so %3 is at %4 V - a negative supply is so; if it was to be positive, %5")
-                            .arg(c->Name, plus == nets.ground ? tr("+") : tr("- (its value negative)"), netName(nets, other))
+                            .arg(c->Name, plus == nets.ground ? tr("+") : tr("- (its value negative)"), net)
                             .arg(level)
                             .arg(flip),
                         QPoint(c->cx, c->cy), c->Name};
@@ -592,11 +636,45 @@ QString listed(const QStringList& names)
     return tr("%1 and %2").arg(names.mid(0, names.size() - 1).join(QStringLiteral(", ")), names.last());
 }
 
+// A branch that fixes a voltage, as the netlist has it: an independent
+// voltage source; a current probe (a 0 V source); a controlled voltage
+// source's output (E, H, B); a current-controlled source's input (the 0 V
+// source the netlist adds to sense its current); an ideal op-amp's output
+// (a voltage to ground). Its two pins (-1: ground), what to call it, and
+// what ngspice calls it shorted.
+struct Branch {
+    int a, b;
+    QString what;      // "V1", "Pr1 (a current probe: a 0 V source)"
+    QString shorted;   // "VSRC"
+};
+
+QList<Branch> voltageBranches(const Component* c)
+{
+    const QString name = c->Name;
+    if (c->Model == QLatin1String("IProbe") && twoPins(c))
+        return {{0, 1, tr("%1 (a current probe: a 0 V source)").arg(name), QStringLiteral("VSRC")}};
+    if (voltageSource(c)) return {{0, 1, name, QStringLiteral("VSRC")}};
+    if (c->Model == QLatin1String("eNL") && twoPins(c))
+        return {{0, 1, tr("%1 (a controlled voltage source)").arg(name), QStringLiteral("VCVS")}};
+    if (c->Model == QLatin1String("src_eqndef") && twoPins(c))
+        return {{0, 1, tr("%1 (a controlled voltage source)").arg(name), QStringLiteral("ASRC")}};
+    if (c->Model == QLatin1String("OpAmp") && c->Ports.size() == 3)
+        return {{2, -1, tr("%1's output (an ideal op-amp's: a voltage to ground)").arg(name), QStringLiteral("ASRC")}};
+    if (c->Ports.size() == 4) {   // in+ out+ out- in-
+        const Branch sense{0, 3, tr("%1's input (a 0 V source that senses its current)").arg(name), QStringLiteral("VSRC")};
+        if (c->Model == QLatin1String("VCVS")) return {{1, 2, tr("%1's output").arg(name), QStringLiteral("VCVS")}};
+        if (c->Model == QLatin1String("CCVS")) return {{1, 2, tr("%1's output").arg(name), QStringLiteral("CCVS")}, sense};
+        if (c->Model == QLatin1String("CCCS")) return {sense};
+    }
+    return {};
+}
+
 // Voltage sources and inductors in loops. A voltage source across one net
 // (a wire from pin to pin) stops ngspice ("shorted VSRC"); voltage sources
 // in a loop fix one difference twice, and the operating point fails
 // (singular matrix); with inductors in the loop the same happens at DC,
-// where an inductor is a short.
+// where an inductor is a short. A voltage source is any branch that fixes
+// a voltage (voltageBranches).
 void sourceLoops(Schematic* doc, const Nets& nets, QList<Issue>& errors, QList<Issue>& warnings)
 {
     QHash<int, int> up;
@@ -612,10 +690,11 @@ void sourceLoops(Schematic* doc, const Nets& nets, QList<Issue>& errors, QList<I
     };
     struct Edge {
         int a, b;
-        const Component* part;
+        QString what;
+        bool inductor;
     };
     std::vector<Edge> taken;
-    // The parts on a way from net \a from to net \a to over the edges taken.
+    // The branches on a way from net \a from to net \a to over the edges taken.
     const auto way = [&taken](int from, int to) {
         QHash<int, int> cameBy;   // net -> index of the edge it was reached by
         QList<int> todo{from};
@@ -630,58 +709,69 @@ void sourceLoops(Schematic* doc, const Nets& nets, QList<Issue>& errors, QList<I
                 todo << next;
             }
         }
-        QList<const Component*> parts;
+        QList<const Edge*> edges;
         for (int at = to; cameBy.value(at, -1) >= 0;) {
             const Edge& e = taken.at(cameBy.value(at));
-            parts.prepend(e.part);
+            edges.prepend(&e);
             at = e.a == at ? e.b : e.a;
         }
-        return parts;
+        return edges;
     };
     int told = 0;
     for (const bool sources : {true, false})
         for (const Component* c : doc->a_DocComps) {
-            if (!inCircuit(c) || !(sources ? voltageSource(c) : inductor(c))) continue;
-            const int a = netOfPin(nets, c, 0), b = netOfPin(nets, c, 1);
-            if (a < 0 || b < 0) continue;
-            if (a == b) {
-                if (sources)
-                    errors << Issue{Severity::Error,
-                                    tr("%1 is shorted: both its pins are on %2, and a voltage source across a wire has no "
-                                       "solution (ngspice stops: \"shorted VSRC\")")
-                                        .arg(c->Name, netName(nets, a)),
-                                    QPoint(c->cx, c->cy), c->Name};
-                continue;
-            }
-            if (find(a) == find(b)) {
-                if (++told > 20) continue;
-                QList<const Component*> loop = way(a, b);
-                loop << c;
-                QStringList names;
-                bool withInductor = false;
-                for (const Component* p : std::as_const(loop)) {
-                    names << p->Name;
-                    if (inductor(p)) withInductor = true;
+            if (!inCircuit(c)) continue;
+            QList<Branch> branches;
+            if (sources) branches = voltageBranches(c);
+            else if (inductor(c)) branches = {{0, 1, c->Name, QString()}};
+            for (const Branch& branch : std::as_const(branches)) {
+                const int a = branch.a < 0 ? nets.ground : netOfPin(nets, c, branch.a);
+                const int b = branch.b < 0 ? nets.ground : netOfPin(nets, c, branch.b);
+                if (a < 0 || b < 0) continue;
+                if (a == b) {
+                    if (sources)
+                        errors << Issue{Severity::Error,
+                                        branch.what == c->Name
+                                            ? tr("%1 is shorted: both its pins are on %2, and a voltage source across a wire has "
+                                                 "no solution (ngspice stops: \"shorted %3\")")
+                                                  .arg(c->Name, netName(nets, a), branch.shorted)
+                                            : tr("%1 is shorted: both its ends are on %2, and a voltage source across a wire has "
+                                                 "no solution (ngspice stops: \"shorted %3\")")
+                                                  .arg(branch.what, netName(nets, a), branch.shorted),
+                                        QPoint(c->cx, c->cy), c->Name};
+                    continue;
                 }
-                const QString how = loop.size() == 2 ? tr("%1 are in parallel").arg(listed(names))
-                                                     : tr("%1 are in a loop").arg(listed(names));
-                if (!withInductor)
-                    errors << Issue{Severity::Error,
-                                    tr("%1: voltage sources in a loop fix one voltage twice, and the operating point fails "
-                                       "(ngspice: singular matrix) - keep one, or put a resistor in the loop")
-                                        .arg(how),
-                                    QPoint(c->cx, c->cy), c->Name};
-                else
-                    warnings << Issue{Severity::Warning,
-                                      tr("%1: at DC an inductor is a short, so this loop of voltage sources and inductors has "
-                                         "no operating point (ngspice: singular matrix) - a resistor in series with the "
-                                         "inductor gives it one")
-                                          .arg(how),
-                                      QPoint(c->cx, c->cy), c->Name};
-                continue;
+                if (find(a) == find(b)) {
+                    if (++told > 20) continue;
+                    QList<const Edge*> loop = way(a, b);
+                    const Edge self{a, b, branch.what, !sources};
+                    loop << &self;
+                    QStringList names;
+                    bool withInductor = false;
+                    for (const Edge* e : std::as_const(loop)) {
+                        names << e->what;
+                        if (e->inductor) withInductor = true;
+                    }
+                    const QString how = loop.size() == 2 ? tr("%1 are in parallel").arg(listed(names))
+                                                         : tr("%1 are in a loop").arg(listed(names));
+                    if (!withInductor)
+                        errors << Issue{Severity::Error,
+                                        tr("%1: voltage sources in a loop fix one voltage twice, and the operating point fails "
+                                           "(ngspice: singular matrix) - keep one, or put a resistor in the loop")
+                                            .arg(how),
+                                        QPoint(c->cx, c->cy), c->Name};
+                    else
+                        warnings << Issue{Severity::Warning,
+                                          tr("%1: at DC an inductor is a short, so this loop of voltage sources and inductors has "
+                                             "no operating point (ngspice: singular matrix) - a resistor in series with the "
+                                             "inductor gives it one")
+                                              .arg(how),
+                                          QPoint(c->cx, c->cy), c->Name};
+                    continue;
+                }
+                up.insert(find(a), find(b));
+                taken.push_back({a, b, branch.what, !sources});
             }
-            up.insert(find(a), find(b));
-            taken.push_back({a, b, c});
         }
 }
 
@@ -825,24 +915,126 @@ void twoNamesNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
     }
 }
 
-// A capacitor straight across a source with edges (a pulse, a PWL): nothing
-// limits the current at the edges - C dV/dt, 5 A for 1 nF and 5 V in 1 ns.
+// A source's edges, as far as its values tell them: the step of its
+// fastest edge and that edge's time (0: a step with no rise time given).
+struct Edges {
+    enum { None, Unknown, Known } kind = Unknown;   // None: no edges (a flat pulse)
+    double step = 0, time = 0;
+};
+
+// The steepest segment of a PWL list, "0 0 10n 5 (...)": its pairs of time
+// and value, up to the first word that is no number (r=, td=).
+Edges pwlEdges(QString text)
+{
+    text.replace(QLatin1Char('('), QLatin1Char(' ')).replace(QLatin1Char(')'), QLatin1Char(' ')).replace(QLatin1Char(','), QLatin1Char(' '));
+    QList<double> numbers;
+    for (const QString& word : text.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+        bool ok = false;
+        const double n = qucs_s::units::spiceNumber(word, &ok);
+        if (!ok || word.contains(QLatin1Char('='))) break;
+        numbers << n;
+    }
+    Edges e;
+    e.kind = Edges::None;
+    double steepest = 0;
+    for (int i = 2; i + 1 < numbers.size(); i += 2) {
+        const double dv = std::abs(numbers.at(i + 1) - numbers.at(i - 1)), dt = numbers.at(i) - numbers.at(i - 2);
+        if (dv == 0 || dt < 0) continue;
+        const double slope = dt == 0 ? std::numeric_limits<double>::infinity() : dv / dt;
+        if (e.kind == Edges::None || slope > steepest) {
+            e = Edges{Edges::Known, dv, dt};
+            steepest = slope;
+        }
+    }
+    return e;
+}
+
+Edges edgesOf(const Component* v)
+{
+    // Qucs's sources: their values by name, each a number or nothing known.
+    const auto value = [v](const char* name, double* out) {
+        for (const Property* p : v->Props)
+            if (p->Name == QLatin1String(name)) {
+                const qucs_s::units::Reading r = qucs_s::units::read(p->Value);
+                *out = r.value;
+                return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value);
+            }
+        return false;
+    };
+    const auto edge = [](double step, double rise, double fall) {
+        if (step == 0) return Edges{Edges::None, 0, 0};
+        if (rise < 0 || fall < 0) return Edges{};
+        return Edges{Edges::Known, step, std::min(rise, fall)};
+    };
+    double u1, u2, rise, fall;
+    if (v->Model == QLatin1String("Vpulse"))
+        return value("U1", &u1) && value("U2", &u2) && value("Tr", &rise) && value("Tf", &fall) ? edge(std::abs(u2 - u1), rise, fall)
+                                                                                                 : Edges{};
+    if (v->Model == QLatin1String("Vrect"))
+        return value("U", &u2) && value("U0", &u1) && value("Tr", &rise) && value("Tf", &fall) ? edge(std::abs(u2 - u1), rise, fall)
+                                                                                                : Edges{};
+    // The SPICE ones: their text, continuation lines and all.
+    QStringList lines;
+    for (const Property* p : v->Props) lines << p->Value;
+    const QString text = lines.join(QLatin1Char(' '));
+    if (v->Model == QLatin1String("vPWL")) return pwlEdges(text);
+    static const QRegularExpression pulse(QStringLiteral("\\bpulse\\s*\\(?([^)]*)"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression pwl(QStringLiteral("\\bpwl\\s*\\(?([^)]*)"), QRegularExpression::CaseInsensitiveOption);
+    if (const QRegularExpressionMatch m = pwl.match(text); m.hasMatch()) return pwlEdges(m.captured(1));
+    if (const QRegularExpressionMatch m = pulse.match(text); m.hasMatch()) {
+        // PULSE(V1 V2 TD TR TF PW PER): TR and TF left out are the time step.
+        const QStringList words = m.captured(1).simplified().replace(QLatin1Char(','), QLatin1Char(' ')).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        QList<double> n;
+        for (const QString& word : words) {
+            bool ok = false;
+            const double x = qucs_s::units::spiceNumber(word, &ok);
+            if (!ok) break;
+            n << x;
+        }
+        if (n.size() < 2) return Edges{};
+        return edge(std::abs(n.at(1) - n.at(0)), n.value(3, 0), n.value(4, 0));
+    }
+    return Edges{Edges::None, 0, 0};
+}
+
+// A capacitor straight across a source with edges (a pulse, a PWL, and the
+// SPICE source's PULSE and PWL): nothing limits the current at the edges -
+// C dV/dt, worked out from the values when they are numbers.
 void edgeNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 {
-    static const QStringList edgy{QStringLiteral("Vpulse"), QStringLiteral("Vrect"), QStringLiteral("vPWL")};
+    static const QStringList edgy{QStringLiteral("Vpulse"), QStringLiteral("Vrect"), QStringLiteral("vPWL"), QStringLiteral("S4Q_V")};
     for (const Component* v : doc->a_DocComps) {
         if (!inCircuit(v) || !voltageSource(v) || !edgy.contains(v->Model)) continue;
         const int a = netOfPin(nets, v, 0), b = netOfPin(nets, v, 1);
         if (a < 0 || b < 0 || a == b) continue;
+        const Edges edges = edgesOf(v);
+        if (edges.kind == Edges::None) continue;
         for (const Component* c : doc->a_DocComps) {
             if (!inCircuit(c) || !capacitor(c)) continue;
             const int x = netOfPin(nets, c, 0), y = netOfPin(nets, c, 1);
-            if ((x == a && y == b) || (x == b && y == a))
-                out << Issue{Severity::Warning,
-                             tr("%1 is straight across %2: nothing limits its current at %2's edges (C dV/dt: 5 A for 1 nF "
-                                "and 5 V in 1 ns) - a resistor in series stands for the source's own")
-                                 .arg(c->Name, v->Name),
-                             QPoint(c->cx, c->cy), c->Name};
+            if (!((x == a && y == b) || (x == b && y == a))) continue;
+            QString text;
+            const qucs_s::units::Reading r = valueOf(c, &text);
+            const bool numbers = edges.kind == Edges::Known && r.kind == qucs_s::units::Reading::Number && r.value > 0
+                                 && std::isfinite(r.value);
+            const double current = numbers && edges.time > 0 ? r.value * edges.step / edges.time : 0;
+            QString how;
+            if (numbers && edges.time == 0)
+                how = tr(" - its steps of %1 have no rise time, so only the simulator's time step limits C dV/dt")
+                          .arg(qucs_s::units::engineering(edges.step, QStringLiteral("V")));
+            else if (numbers && std::isfinite(current))
+                how = tr(" - C dV/dt is %1 here (%2, a step of %3 in %4)")
+                          .arg(qucs_s::units::engineering(current, QStringLiteral("A")),
+                               qucs_s::units::engineering(r.value, QStringLiteral("F")),
+                               qucs_s::units::engineering(edges.step, QStringLiteral("V")),
+                               qucs_s::units::engineering(edges.time, QStringLiteral("s")));
+            else
+                how = tr(" (C dV/dt)");
+            out << Issue{Severity::Warning,
+                         tr("%1 is straight across %2: nothing limits its current at %2's edges%3; a resistor in series "
+                            "stands for the source's own")
+                             .arg(c->Name, v->Name, how),
+                         QPoint(c->cx, c->cy), c->Name};
         }
     }
 }
@@ -966,28 +1158,45 @@ void biasNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
     }
 }
 
+// A library part that its library calls a power amplifier (LM3886: "68W
+// audio amplifier"): made to drive a speaker.
+bool powerAmplifier(const Component* u)
+{
+    static const QRegularExpression power(QStringLiteral("power\\s+(op-?\\s*)?amp|audio\\s+(power\\s+)?amp|\\d\\s*W\\b"),
+                                          QRegularExpression::CaseInsensitiveOption);
+    auto* part = dynamic_cast<LibComp*>(const_cast<Component*>(u));
+    return part != nullptr && power.match(part->description()).hasMatch();
+}
+
 // A load smaller than an op-amp drives: a resistor of less than 1 kOhm
 // from the output of a part with supply pins (a real op-amp's model) to
-// ground.
+// ground. Not a power amplifier's.
 void loadNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 {
     if (nets.ground < 0) return;
     for (const Component* u : doc->a_DocComps) {
         if (!inCircuit(u)) continue;
-        int outNet = -1;
+        QSet<int> outNets;   // (a dual's OUTA and OUTB)
         bool powered = false;
         for (int i = 0; i < u->Ports.size(); ++i) {
-            if (outputName(u->Ports.at(i)->Name)) outNet = netOfPin(nets, u, i);
+            const int net = netOfPin(nets, u, i);
+            if (outputName(u->Ports.at(i)->Name) && net >= 0 && net != nets.ground) outNets.insert(net);
             if (supplyName(u->Ports.at(i)->Name)) powered = true;
         }
-        if (outNet < 0 || !powered || outNet == nets.ground) continue;
+        if (outNets.isEmpty() || !powered) continue;
+        bool amplifierKnown = false, amplifier = false;   // (its library read once, when a load is small)
         for (const Component* r : doc->a_DocComps) {
             if (!inCircuit(r) || !resistor(r)) continue;
             const int a = netOfPin(nets, r, 0), b = netOfPin(nets, r, 1);
-            if (!((a == outNet && b == nets.ground) || (b == outNet && a == nets.ground))) continue;
+            if (!((outNets.contains(a) && b == nets.ground) || (outNets.contains(b) && a == nets.ground))) continue;
             QString text;
             const qucs_s::units::Reading v = valueOf(r, &text);
             if (v.kind != qucs_s::units::Reading::Number || v.value <= 0 || v.value >= 1000) continue;
+            if (!amplifierKnown) {
+                amplifier = powerAmplifier(u);
+                amplifierKnown = true;
+            }
+            if (amplifier) break;
             out << Issue{Severity::Warning,
                          tr("%1 (%2) loads %3's output to ground: op-amps are specified into 2 kOhm or so, and many limit "
                             "their current below 1 kOhm (a 741 near 25 mA)")
@@ -1137,11 +1346,28 @@ QList<Issue> check(Schematic* doc)
                                "project's user_lib): it has no pins, and what was wired to them is on nothing")
                                 .arg(c->Name, c->Props.at(1)->Value, c->Props.at(0)->Value, QDir::toNativeSeparators(QucsSettings.LibDir)),
                             QPoint(c->cx, c->cy), c->Name};
-        if (c->Model == QLatin1String("Sub") && !c->Props.isEmpty() && !QFileInfo::exists(c->getSubcircuitFile()))
-            errors << Issue{Severity::Error,
-                            tr("%1: its subcircuit %2 is not found (beside the schematic, in the project or its user_lib): "
-                               "it has no pins, and what was wired to them is on nothing").arg(c->Name, c->Props.at(0)->Value),
-                            QPoint(c->cx, c->cy), c->Name};
+        // A subcircuit: its file given, found (a file, not a folder), and
+        // not this schematic itself - a subcircuit that holds itself nests
+        // in the netlist until ngspice gives up.
+        if (c->Model == QLatin1String("Sub") && !c->Props.isEmpty()) {
+            const QString file = c->getSubcircuitFile();
+            if (c->Props.at(0)->Value.trimmed().isEmpty())
+                errors << Issue{Severity::Error,
+                                tr("%1: no subcircuit file is given: it has no pins, and what was wired to them is on nothing")
+                                    .arg(c->Name),
+                                QPoint(c->cx, c->cy), c->Name};
+            else if (!foundFile(file))
+                errors << Issue{Severity::Error,
+                                tr("%1: its subcircuit %2 is not found (beside the schematic, in the project or its user_lib): "
+                                   "it has no pins, and what was wired to them is on nothing").arg(c->Name, c->Props.at(0)->Value),
+                                QPoint(c->cx, c->cy), c->Name};
+            else if (sameFile(file, doc->getDocName()))
+                errors << Issue{Severity::Error,
+                                tr("%1 uses this schematic itself (%2): a subcircuit cannot hold itself - ngspice nests it until "
+                                   "it gives up (\"unknown subckt\")")
+                                    .arg(c->Name, QFileInfo(file).fileName()),
+                                QPoint(c->cx, c->cy), c->Name};
+        }
         // A SPICE library part whose library is nowhere (the netlist
         // includes a file the simulator cannot read; with the automatic
         // symbol, a box without pins), or whose library does not define
@@ -1302,42 +1528,72 @@ QStringList subcircuitFiles(Schematic* doc)
     if (doc == nullptr) return files;
     for (Component* c : doc->a_DocComps) {
         if (c->Model != QLatin1String("Sub")) continue;
+        // (Only a file that is there: a name not found is no path to read,
+        // and an empty one gave the schematic's folder.)
         const QString file = c->getSubcircuitFile();
-        if (!file.isEmpty() && !files.contains(file)) files << file;
+        if (foundFile(file) && !files.contains(file)) files << file;
     }
     return files;
 }
 
 QString pinRole(const QString& name)
 {
-    return supplyName(name) ? QStringLiteral("supply") : inputName(name) ? QStringLiteral("input")
-                                                       : outputName(name) ? QStringLiteral("output") : QString();
+    return supplyName(name)                           ? QStringLiteral("supply")
+           : inputName(name) || plainInputName(name) ? QStringLiteral("input")
+           : outputName(name)                         ? QStringLiteral("output")
+                                                      : QString();
 }
 
 QList<SubcircuitFindings> checkSubcircuits(Schematic* doc, const std::function<Schematic*(const QString&)>& open)
 {
     QList<SubcircuitFindings> found;
     if (doc == nullptr) return found;
-    QSet<QString> visited{doc->getDocName()};
-    QStringList todo = subcircuitFiles(doc);
-    while (!todo.isEmpty()) {
-        const QString file = todo.takeFirst();
-        if (visited.contains(file)) continue;
-        visited.insert(file);
-        Schematic* sub = open ? open(file) : nullptr;
-        std::unique_ptr<Schematic> loaded;
-        if (sub == nullptr) {
-            loaded.reset(new Schematic(nullptr, file));
-            if (!loaded->load()) {
-                found << SubcircuitFindings{file, {Issue{Severity::Error, tr("the subcircuit file could not be loaded"),
-                                                         QPoint(), QString(), file}}};
+    const auto canonical = [](const QString& file) {
+        const QString path = QFileInfo(file).canonicalFilePath();
+        return path.isEmpty() ? file : path;
+    };
+    QSet<QString> done{canonical(doc->getDocName())};
+    QStringList path{canonical(doc->getDocName())};   // the files from the top down to the one read
+    // Depth first, each file checked once, in the order met. A file that
+    // uses one on its own way down from the top is a cycle: an error of
+    // the file that closes it (\a index: its findings; a file that uses
+    // itself is told by its own check).
+    std::function<void(Schematic*, int)> walk = [&](Schematic* sch, int index) {
+        for (Component* c : sch->a_DocComps) {
+            if (c->Model != QLatin1String("Sub")) continue;
+            const QString file = canonical(c->getSubcircuitFile());
+            if (!foundFile(file) || file == path.last()) continue;
+            if (const qsizetype at = path.indexOf(file); at >= 0) {
+                if (index < 0 || !inCircuit(c)) continue;   // (one left out of the netlist nests nothing)
+                QStringList chain{QFileInfo(path.last()).fileName()};
+                for (const QString& f : path.mid(at)) chain << QFileInfo(f).fileName();
+                found[index].issues << Issue{Severity::Error,
+                                             tr("%1 uses %2, which uses this schematic again (%3): a subcircuit cannot hold "
+                                                "itself - ngspice nests it until it gives up (\"unknown subckt\")")
+                                                 .arg(c->Name, QFileInfo(file).fileName(), chain.join(QStringLiteral(" -> "))),
+                                             QPoint(c->cx, c->cy), c->Name, sch->getDocName()};
                 continue;
             }
-            sub = loaded.get();
+            if (done.contains(file)) continue;
+            done.insert(file);
+            Schematic* sub = open ? open(file) : nullptr;
+            std::unique_ptr<Schematic> loaded;
+            if (sub == nullptr) {
+                loaded.reset(new Schematic(nullptr, file));
+                if (!loaded->load()) {
+                    found << SubcircuitFindings{file, {Issue{Severity::Error, tr("the subcircuit file could not be loaded"),
+                                                             QPoint(), QString(), file}}};
+                    continue;
+                }
+                sub = loaded.get();
+            }
+            found << SubcircuitFindings{file, check(sub)};
+            path << file;
+            walk(sub, int(found.size()) - 1);
+            path.removeLast();
         }
-        found << SubcircuitFindings{file, check(sub)};
-        todo += subcircuitFiles(sub);
-    }
+    };
+    walk(doc, -1);
     return found;
 }
 

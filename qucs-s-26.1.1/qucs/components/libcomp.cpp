@@ -207,6 +207,14 @@ int LibComp::loadSection(const QString& Name, QString& Section,
 }
 
 // ---------------------------------------------------------------------
+QString LibComp::description()
+{
+  QString text;
+  if (Props.size() < 2 || loadSection("Description", text) < 0) return QString();
+  return text.simplified();
+}
+
+// ---------------------------------------------------------------------
 void LibComp::namePinsFromModel()
 {
   QString model;

@@ -666,6 +666,107 @@ private slots:
         QVERIFY2(has(got, "N Q1: its base has no DC path but through Q1 itself"), qPrintable(got.join(" | ")));
         got = findings(amplifier + R("RB", 400, "470k"), amplifierWires + top(400, "vcc") + bottom(400, "b"));
         QVERIFY2(got.filter("no DC path").isEmpty() && got.filter("fixture").isEmpty(), qPrintable(got.join(" | ")));
+
+        // (The hunt after round 9, A3.) What fixes a voltage besides a
+        // voltage source, each straight across V1 (ngspice: a singular
+        // matrix): a current probe, a 0 V source; a VCVS's output; a
+        // current-controlled source's input, the 0 V source the netlist
+        // adds to sense its current; an ideal op-amp's output, a voltage to
+        // ground. A four-pin source at (400, 60): in+ (370, 30), out+ (430,
+        // 30), out- (430, 90), in- (370, 90).
+        const QString supply = Vdc("V1", 0, "5 V") + gnd(0) + load + dc;
+        const QString supplyWires = top(0, "a") + top(200, "a");
+        const QString probe = part("IProbe", "Pr1", 100, QString());
+        got = findings(supply + probe + gnd(100), supplyWires + top(100, "a"));
+        QVERIFY2(has(got, "E V1 and Pr1 (a current probe: a 0 V source) are in parallel: voltage sources in a loop"),
+                 qPrintable(got.join(" | ")));
+        got = findings(supply + probe + R("R2", 300, "1k") + gnd(300), supplyWires + top(100, "a") + bottom(100, "b") + top(300, "b"));
+        QVERIFY2(got.filter("loop").isEmpty() && got.filter("parallel").isEmpty() && got.filter("fixture").isEmpty(),
+                 qPrintable(got.join(" | ")));   // in series: as meant
+        got = findings(supply + probe, supplyWires + "  <100 30 100 90 \"\" 0 0 0 \"\">\n" + top(100, "a"));
+        QVERIFY2(has(got, "E Pr1 (a current probe: a 0 V source) is shorted: both its ends are on a, and a voltage source "
+                          "across a wire has no solution (ngspice stops: \"shorted VSRC\")"),
+                 qPrintable(got.join(" | ")));
+        const auto fourPin = [&](const QString& type, const QString& name) {
+            return QStringLiteral("  <%1 %2 1 400 60 35 -26 0 0 \"1\" 1 \"0\" 0>\n").arg(type, name);
+        };
+        const QString controlled = R("R3", 600, "1k") + gnd(600);
+        const QString inputFromC = label(370, 30, "c") + label(370, 90, "gnd") + top(600, "c");
+        got = findings(supply + fourPin("VCVS", "SRC1") + controlled, supplyWires + inputFromC + label(430, 30, "a") + label(430, 90, "gnd"));
+        QVERIFY2(has(got, "E V1 and SRC1's output are in parallel: voltage sources in a loop"), qPrintable(got.join(" | ")));
+        got = findings(supply + fourPin("VCVS", "SRC1") + controlled + R("R4", 700, "1k") + gnd(700),
+                       supplyWires + inputFromC + label(430, 30, "o") + label(430, 90, "gnd") + top(700, "o"));
+        QVERIFY2(got.filter("loop").isEmpty() && got.filter("parallel").isEmpty() && got.filter("fixture").isEmpty(),
+                 qPrintable(got.join(" | ")));   // into a load of its own
+        got = findings(supply + fourPin("CCCS", "SRC2") + R("R4", 700, "1k") + gnd(700),
+                       supplyWires + label(370, 30, "a") + label(370, 90, "gnd") + label(430, 30, "o") + label(430, 90, "gnd") + top(700, "o"));
+        QVERIFY2(has(got, "E V1 and SRC2's input (a 0 V source that senses its current) are in parallel"), qPrintable(got.join(" | ")));
+        got = findings(supply + fourPin("CCVS", "SRC3") + R("R4", 700, "1k") + gnd(700),
+                       supplyWires + label(370, 30, "o") + label(370, 90, "o") + label(430, 30, "a") + label(430, 90, "gnd") + top(700, "o"));
+        QVERIFY2(has(got, "E V1 and SRC3's output are in parallel")
+                     && has(got, "E SRC3's input (a 0 V source that senses its current) is shorted: both its ends are on o"),
+                 qPrintable(got.join(" | ")));
+        got = findings(supply + amp + R("R5", 600, "1k") + gnd(600) + R("R6", 700, "1k") + gnd(700),
+                       supplyWires + label(370, 110, "p") + label(370, 150, "n") + top(600, "p") + top(700, "n") + label(440, 130, "a"));
+        QVERIFY2(has(got, "E V1 and OP1's output (an ideal op-amp's: a voltage to ground) are in parallel"), qPrintable(got.join(" | ")));
+
+        // (A6.) The current at a pulse's edges, as the circuit's values
+        // make it; with no rise time, or values that are no numbers, no
+        // made-up figure; a pulse from 5 V to 5 V has no edges. The SPICE
+        // source's PULSE too.
+        const auto across = [&](const QString& source, const QString& capacitance) {
+            return findings(source + gnd(0) + C("C1", 100, capacitance) + gnd(100) + tran, top(0, "a") + top(100, "a"))
+                .filter("straight across");
+        };
+        const auto vpulse = [&](const QString& u2, const QString& rise) {
+            return part("Vpulse", "V1", 0, QStringLiteral("\"0 V\" 1 \"%1\" 1 \"1 us\" 1 \"6 us\" 1 \"%2\" 0 \"%2\" 0").arg(u2, rise));
+        };
+        const QString rest = "; a resistor in series stands for the source's own";
+        got = across(vpulse("5 V", "1 ns"), "1 nF");
+        QVERIFY2(got == QStringList{"N C1 is straight across V1: nothing limits its current at V1's edges - C dV/dt is 5 A here "
+                                    "(1 nF, a step of 5 V in 1 ns)" + rest},
+                 qPrintable(got.join(" | ")));
+        got = across(vpulse("12 V", "10 ns"), "100 nF");
+        QVERIFY2(got.size() == 1 && got.first().contains("C dV/dt is 120 A here (100 nF, a step of 12 V in 10 ns)"), qPrintable(got.join(" | ")));
+        got = across(vpulse("5 V", "0"), "1 nF");
+        QVERIFY2(got.size() == 1 && got.first().contains("its steps of 5 V have no rise time, so only the simulator's time step limits C dV/dt"),
+                 qPrintable(got.join(" | ")));
+        for (const QString& c : {QStringLiteral("Cx"), QStringLiteral("-1 nF"), QStringLiteral("1e308")}) {
+            got = across(vpulse("5 V", "1 ns"), c);
+            QVERIFY2(got == QStringList{"N C1 is straight across V1: nothing limits its current at V1's edges (C dV/dt)" + rest},
+                     qPrintable(c + ": " + got.join(" | ")));
+        }
+        got = across(vpulse("5 V", "Trise"), "1 nF");
+        QVERIFY2(got.size() == 1 && got.first().contains("edges (C dV/dt)"), qPrintable(got.join(" | ")));
+        got = across(vpulse("0 V", "1 ns"), "1 nF");
+        QVERIFY2(got.isEmpty(), qPrintable(got.join(" | ")));
+        got = across(part("S4Q_V", "V1", 0, "\"DC 0 PULSE(0 3.3 1u 2n 2n 5u 10u)\" 1 \"\" 0 \"\" 0 \"\" 0 \"\" 0"), "10 nF");
+        QVERIFY2(got.size() == 1 && got.first().contains("C dV/dt is 16.5 A here (10 nF, a step of 3.3 V in 2 ns)"), qPrintable(got.join(" | ")));
+        got = across(part("S4Q_V", "V1", 0, "\"DC 5\" 1 \"\" 0 \"\" 0 \"\" 0 \"\" 0"), "10 nF");
+        QVERIFY2(got.isEmpty(), qPrintable(got.join(" | ")));   // decoupling a DC supply
+        got = across(part("vPWL", "V1", 0, "\"0 0 1u 0 1.01u 5 3u 5\" 1 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0"), "1 nF");
+        QVERIFY2(got.size() == 1 && got.first().contains("C dV/dt is 0.5 A here (1 nF, a step of 5 V in 10 ns)"), qPrintable(got.join(" | ")));
+
+        // (A8, A9.) In a subcircuit a port names its net as a label does:
+        // VEE at -5 V is as meant, VCC at -5 V the wrong way round. The
+        // other sign of "+15 V" is "-15 V". V1's + on ground, its - on r.
+        const QString port = "  <Port %1 1 100 30 -23 12 0 0 \"1\" 1 \"analog\" 0>\n";
+        const QString rail = Vdc("V1", 0, "5 V") + R("R1", 200, "1k") + gnd(200);
+        const QString railWires = top(0, "gnd") + bottom(0, "r") + top(200, "r") + label(100, 30, "r");
+        got = findings(rail + port.arg("VEE"), railWires);
+        QVERIFY2(got.filter("V1").isEmpty() && got.filter("fixture").isEmpty(), qPrintable(got.join(" | ")));
+        got = findings(rail + port.arg("VCC"), railWires);
+        QVERIFY2(got.contains("W V1 puts the port VCC at -5 V, though that is a positive supply's name: the source is the wrong way "
+                              "round - set U to -5 V (edit_component)"),
+                 qPrintable(got.join(" | ")));
+        got = findings(rail + port.arg("P1"), railWires);
+        QVERIFY2(got.contains("N V1: its + is on ground, so r is at -5 V - a negative supply is so; if it was to be positive, set U "
+                              "to -5 V (edit_component)"),
+                 qPrintable(got.join(" | ")));
+        got = findings(Vdc("V1", 0, "+15 V") + R("R1", 200, "1k") + gnd(200) + dc, top(0, "gnd") + bottom(0, "r") + top(200, "r"));
+        QVERIFY2(got.contains("N V1: its + is on ground, so r is at -15 V - a negative supply is so; if it was to be positive, set U "
+                              "to -15 V (edit_component)"),
+                 qPrintable(got.join(" | ")));
     }
 
     // The same findings in the same order every run: a hash's order (Qt
@@ -1047,6 +1148,93 @@ private slots:
         // For a look: QUCS_TEST_GRAB=<dir> saves a picture of the toolbar rows.
         const QString grabDir = qEnvironmentVariable("QUCS_TEST_GRAB");
         if (!grabDir.isEmpty()) app.grab(QRect(0, 0, app.width(), 130)).save(grabDir + "/toolbars.png");
+    }
+
+    // (The hunt after round 9, A2, D1, D2.) A schematic that uses itself,
+    // and a cycle of files: errors (ngspice nests them until it gives up),
+    // and the walk ends. A subcircuit with no file: an error of its own,
+    // and the schematic's folder is not read as its file. A file not found
+    // beside the schematic is not read from the process's working folder.
+    void subcircuitsThatAreNoFileOrHoldThemselves()
+    {
+        const auto schematic = [](const QString& subs) {
+            return ("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                    "  <Port P1 1 100 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+                    "  <R R1 1 200 100 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                    "  <GND * 1 200 130 0 0 0 0>\n" + subs
+                    + "</Components>\n<Wires>\n  <100 100 100 100 \"p\" 110 80 0 \"\">\n  <200 70 200 70 \"p\" 210 50 0 \"\">\n"
+                      "</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n").toUtf8();
+        };
+        const auto sub = [](const QString& name, const QString& file) {
+            return QStringLiteral("  <Sub %1 1 400 300 -26 17 0 0 \"%2\" 1>\n").arg(name, file);
+        };
+        const auto fileNames = [](const QList<SubcircuitFindings>& found) {
+            QStringList names;
+            for (const SubcircuitFindings& f : found) names << QFileInfo(f.file).fileName();
+            return names;
+        };
+        QDir(dir.path()).mkpath("hold");
+        const QString here = dir.filePath("hold");
+        write(here + "/self.sch", schematic(sub("X1", "self.sch")));
+        {
+            Schematic doc(nullptr, here + "/self.sch");
+            QVERIFY(doc.load());
+            const QStringList got = messages(check(&doc));
+            QVERIFY2(got.contains("E X1 uses this schematic itself (self.sch): a subcircuit cannot hold itself - ngspice nests it "
+                                  "until it gives up (\"unknown subckt\")"),
+                     qPrintable(got.join(" | ")));
+            QVERIFY(checkSubcircuits(&doc, nullptr).isEmpty());
+        }
+        // top -> a -> b -> a.
+        write(here + "/cyc_a.sch", schematic(sub("X1", "cyc_b.sch")));
+        write(here + "/cyc_b.sch", schematic(sub("X1", "cyc_a.sch")));
+        write(here + "/cyc_top.sch", schematic(sub("XT", "cyc_a.sch")));
+        {
+            Schematic doc(nullptr, here + "/cyc_top.sch");
+            QVERIFY(doc.load());
+            QVERIFY2(errorCount(check(&doc)) == 0, qPrintable(messages(check(&doc)).join(" | ")));
+            const QList<SubcircuitFindings> found = checkSubcircuits(&doc, nullptr);
+            QCOMPARE(fileNames(found), (QStringList{"cyc_a.sch", "cyc_b.sch"}));
+            QCOMPARE(errorCount(found.at(0).issues), 0);
+            const QStringList got = messages(found.at(1).issues);
+            QVERIFY2(got.contains("E X1 uses cyc_a.sch, which uses this schematic again (cyc_b.sch -> cyc_a.sch -> cyc_b.sch): a "
+                                  "subcircuit cannot hold itself - ngspice nests it until it gives up (\"unknown subckt\")"),
+                     qPrintable(got.join(" | ")));
+            QCOMPARE(QFileInfo(found.at(1).issues.last().file).fileName(), QString("cyc_b.sch"));
+        }
+        // No file name; a name found only in the working folder.
+        QDir(dir.path()).mkpath("elsewhere");
+        write(dir.filePath("elsewhere/stray.sch"), schematic(QString()));
+        const QString before = QDir::currentPath();
+        QVERIFY(QDir::setCurrent(dir.filePath("elsewhere")));
+        struct Back {
+            QString path;
+            tQucsSettings saved = QucsSettings;
+            ~Back() {
+                QDir::setCurrent(path);
+                QucsSettings = saved;
+            }
+        } back{before};
+        QucsSettings.QucsWorkDir.setPath(here);   // (the project: by default the working folder)
+        write(here + "/nofile.sch", schematic(sub("X2", "") + QStringLiteral("  <Sub X3 1 600 300 -26 17 0 0 \"stray.sch\" 1>\n")));
+        {
+            Schematic doc(nullptr, here + "/nofile.sch");
+            QVERIFY(doc.load());
+            const QStringList got = messages(check(&doc));
+            QVERIFY2(got.contains("E X2: no subcircuit file is given: it has no pins, and what was wired to them is on nothing")
+                         && got.contains("E X3: its subcircuit stray.sch is not found (beside the schematic, in the project or its "
+                                         "user_lib): it has no pins, and what was wired to them is on nothing"),
+                     qPrintable(got.join(" | ")));
+            QVERIFY(subcircuitFiles(&doc).isEmpty());
+            QVERIFY(checkSubcircuits(&doc, nullptr).isEmpty());
+            for (Component* c : doc.a_DocComps)
+                if (c->Name == "X3") {
+                    QCOMPARE(c->getSubcircuitFile(), QDir(here).filePath("stray.sch"));   // beside it, not in the working folder
+                    QCOMPARE(c->Ports.size(), 0);
+                } else if (c->Name == "X2") {
+                    QCOMPARE(c->getSubcircuitFile(), QString());
+                }
+        }
     }
 
     void aSimulationRunsTheCheckFirst()

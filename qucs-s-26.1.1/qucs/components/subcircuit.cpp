@@ -22,6 +22,7 @@
 #include "schematic.h"
 #include "node.h"
 
+#include <QDir>
 #include <QFileInfo>
 #include <QMutex>
 #include <QTextStream>
@@ -333,13 +334,23 @@ QString Subcircuit::verilogCode(int) {
 // -------------------------------------------------------
 QString Subcircuit::getSubcircuitFile() {
   const QString name = Props.at(0)->Value;
+  // No name, no file (found beside the schematic, "" was its folder).
+  if (name.trimmed().isEmpty()) return QString();
+  const auto found = [](const QString& f) { return QFileInfo(f).isAbsolute() && QFileInfo::exists(f); };
   const QString file = misc::properAbsFileName(name, containingSchematic);
+  if (found(file)) return file;
   // A name without a suffix (Qucs wrote them so, and took them for a
   // schematic): name.sch, when the name alone is nowhere. (Not found,
   // the subcircuit had no pins.)
-  if (!name.isEmpty() && QFileInfo(name).suffix().isEmpty() && !QFileInfo::exists(file)) {
+  if (QFileInfo(name).suffix().isEmpty()) {
     const QString schematic = misc::properAbsFileName(name + QStringLiteral(".sch"), containingSchematic);
-    if (QFileInfo::exists(schematic)) return schematic;
+    if (found(schematic)) return schematic;
+  }
+  // Not found: where it was looked for first, beside the schematic - not a
+  // relative name, which the process's working folder would find a file of.
+  if (QFileInfo(file).isRelative() && containingSchematic != nullptr) {
+    const QDir beside = containingSchematic->getFileInfo().dir();
+    if (beside.isAbsolute()) return QDir::cleanPath(beside.filePath(name));
   }
   return file;
 }

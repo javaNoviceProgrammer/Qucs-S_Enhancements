@@ -261,6 +261,51 @@ private slots:
         QVERIFY2(!parts.isEmpty() && parts.last().toString().startsWith("… ") && parts.last().toString().endsWith(" more"), qPrintable(cut));
         QVERIFY(structured(r).contains("trimmed"));   // (the structured form is of the text as cut)
 
+        // (The hunt after round 9, B1.) However small: JSON still, with its
+        // 'trimmed' - cut as text, it no longer parsed.
+        for (const int most : {200, 300, 600, 1000}) {
+            r = callTool("get_schematic", {{"max_chars", most}});
+            const QString small = first(r);
+            const QJsonDocument parsed = QJsonDocument::fromJson(small.toUtf8());
+            QVERIFY2(!r.value("isError").toBool() && small.size() <= most && parsed.isObject() && parsed.object().contains("trimmed"),
+                     qPrintable(QStringLiteral("%1: %2").arg(most).arg(small)));
+            // Cut inside first - a list's single item, a record's fields -
+            // not its fields left out at once: the components are there.
+            if (most >= 300)
+                QVERIFY2(parsed.object().value("components").toArray().size() >= 2, qPrintable(QStringLiteral("%1: %2").arg(most).arg(small)));
+        }
+        // (B2) An object of many keys - a netlist map's nodes - is cut too:
+        // "…": "n more".
+        const QString mapped = first(callTool("get_netlist", {{"map", true}}));
+        QVERIFY(QJsonDocument::fromJson(mapped.toUtf8()).object().value("nodes").toObject().size() > 60);
+        r = callTool("get_netlist", {{"map", true}, {"max_chars", 1500}});
+        const QJsonObject map = QJsonDocument::fromJson(first(r).toUtf8()).object();
+        QVERIFY2(first(r).size() <= 1500 && map.contains("trimmed") && map.value("nodes").toObject().value(QStringLiteral("…")).toString().endsWith(" more"),
+                 qPrintable(first(r)));
+        // (B3) A batch's answers, cut together; (B4) and a call's own
+        // max_chars in it, its answer cut - refused, it failed the batch.
+        const auto texts = [](const QJsonObject& result) {
+            QStringList all;
+            for (const QJsonValue& v : result.value("content").toArray()) all << v.toObject().value("text").toString();
+            return all;
+        };
+        const QJsonArray twice{QJsonObject{{"tool", "get_schematic"}}, QJsonObject{{"tool", "get_schematic"}}};
+        r = callTool("batch", {{"calls", twice}, {"max_chars", 2000}});
+        QStringList items = texts(r);
+        QVERIFY2(!r.value("isError").toBool() && items.join(QString()).size() <= 2000 && items.size() == 5
+                     && QJsonDocument::fromJson(items.at(2).toUtf8()).object().contains("trimmed")
+                     && QJsonDocument::fromJson(items.at(4).toUtf8()).object().contains("trimmed"),
+                 qPrintable(items.join("\n")));
+        r = callTool("batch", {{"calls", QJsonArray{QJsonObject{{"tool", "get_schematic"}, {"arguments", QJsonObject{{"max_chars", 400}}}},
+                                                    QJsonObject{{"tool", "get_state"}}}}});
+        items = texts(r);
+        QVERIFY2(!r.value("isError").toBool() && items.size() == 5 && items.at(2).size() <= 400
+                     && QJsonDocument::fromJson(items.at(2).toUtf8()).object().contains("trimmed") && !items.at(4).contains("trimmed"),
+                 qPrintable(items.join("\n")));
+        r = callTool("batch", {{"calls", QJsonArray{QJsonObject{{"tool", "get_schematic"}, {"arguments", QJsonObject{{"max_chars", 50}}}}}}});
+        QVERIFY2(r.value("isError").toBool() && texts(r).join(" ").contains("max_chars is a whole number of characters, 200 or more"),
+                 qPrintable(texts(r).join("\n")));
+
         // A text answer, cut at its end.
         r = callTool("get_netlist", {{"max_chars", 300}});
         QVERIFY2(!r.value("isError").toBool() && first(r).size() <= 300 && first(r).endsWith("a larger max_chars gives them)"), qPrintable(first(r)));

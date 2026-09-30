@@ -597,7 +597,7 @@
   </Model>
 </Component>
 
-<Component 2N4221>
+<Component 2N4221_FAIRCHILD>
   <Description>
     n-channel field-effect transistor
     Bvmin: 30

@@ -286,8 +286,9 @@ SOD323 Package
   </Model>
 </Component>
 
-<Component BB804>
+<Component BB804_2>
   <Description>
+A second model of the BB804; BB804 is the other.
 Infineon BB804 Dual Varactor
 Ct=45pF @ Vr=2Volt
 SOT-23 Package
