@@ -25,6 +25,7 @@
 #include "workspace.h"
 #include "textdoc.h"
 #include "vamodule.h"
+#include "valuereading.h"
 
 #include "components/component.h"
 
@@ -284,8 +285,12 @@ double measured(const QJsonObject& spec, const QJsonObject& answer, QString* use
                 }
             }
         }
-        QStringList have = nodes.keys();
-        *why = tr("the operating point has no %1 (its nodes: %2)").arg(op, have.mid(0, 20).join(QStringLiteral(", ")));
+        // (Its nodes and its branch currents, each called so: i(v1) is no node.)
+        QStringList nodeNames, currents;
+        for (const QString& name : nodes.keys()) (name.contains(QLatin1Char('(')) ? currents : nodeNames) << name;
+        *why = tr("the operating point has no %1 (its nodes: %2%3)")
+                   .arg(op, nodeNames.mid(0, 20).join(QStringLiteral(", ")),
+                        currents.isEmpty() ? QString() : tr("; its currents: %1").arg(currents.mid(0, 20).join(QStringLiteral(", "))));
         return NAN;
     }
     const QJsonArray variables = answer.value(QStringLiteral("variables")).toArray();
@@ -1439,21 +1444,36 @@ QString benchNumbers(const QString& kind, const QJsonObject& measured)
         if (key == QLatin1String("Vf")) return tr("Vf %1 V (0.1 to 4.5 V)").arg(n(v));
         return QStringLiteral("%1 %2").arg(key, n(v));
     };
+    // A transistor's bias points in the order the bench tried them, 9 uA
+    // then 0.9 mA (a JSON object's keys come sorted: "at 0.9 mA" first).
+    QStringList keys = measured.keys();
+    const auto current = [](const QString& key) {
+        const qucs_s::units::Reading r = qucs_s::units::read(key.mid(3));
+        return key.startsWith(QLatin1String("at ")) && r.kind == qucs_s::units::Reading::Number ? r.value : -1.0;
+    };
+    std::stable_sort(keys.begin(), keys.end(), [&](const QString& a, const QString& b) { return current(a) < current(b); });
     QStringList said;
-    for (auto it = measured.begin(); it != measured.end(); ++it) {
-        if (!it.value().isObject()) {
-            said << one(it.key(), it.value());
+    for (const QString& key : std::as_const(keys)) {
+        const QJsonValue value = measured.value(key);
+        if (!value.isObject()) {
+            said << one(key, value);
             continue;
         }
         // A bias point's: Vbe and beta first (the numbers judged), Vce after.
-        const QJsonObject point = it.value().toObject();
+        const QJsonObject point = value.toObject();
         QStringList here;
-        for (const char* key : {"Vbe", "beta", "saturated", "Vce"})
-            if (point.contains(QLatin1String(key))) here << one(QLatin1String(key), point.value(QLatin1String(key)));
+        for (const char* k : {"Vbe", "beta", "saturated", "Vce"})
+            if (point.contains(QLatin1String(k))) here << one(QLatin1String(k), point.value(QLatin1String(k)));
         for (auto p = point.begin(); p != point.end(); ++p)
             if (!QStringList{QStringLiteral("Vbe"), QStringLiteral("beta"), QStringLiteral("saturated"), QStringLiteral("Vce")}.contains(p.key()))
                 here << one(p.key(), p.value());
-        said << QStringLiteral("%1: %2").arg(it.key(), here.join(QStringLiteral(", ")));
+        // Out of its ranges, as the bench judges them: said - a power part
+        // that passes at 0.9 mA has failed at 9 uA.
+        const double vbe = point.value(QLatin1String("Vbe")).toDouble(), vce = point.value(QLatin1String("Vce")).toDouble();
+        const double beta = point.value(QLatin1String("beta")).toDouble();
+        const bool inRange = vbe >= 0.1 && vbe <= 1.6 && vce >= -0.05 && vce <= 10.05
+                             && (point.value(QLatin1String("saturated")).toBool() || (beta >= 3 && beta <= 5000));
+        said << (inRange ? QStringLiteral("%1: %2") : tr("%1, out of range: %2")).arg(key, here.join(QStringLiteral(", ")));
     }
     return said.join(QStringLiteral("; "));
 }

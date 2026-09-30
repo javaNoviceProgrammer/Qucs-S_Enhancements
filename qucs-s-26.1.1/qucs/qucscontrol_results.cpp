@@ -323,6 +323,15 @@ bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
         }
         d->legendPos = pos;
     }
+    // A table and a truth table have no axes: each trace writes its numbers
+    // with its own 'numbers' and 'precision'. (Taken, nothing used them.)
+    if ((args.contains(QLatin1String("notation")) || args.contains(QLatin1String("decimals")))
+        && (d->Name == QLatin1String("Tab") || d->Name == QLatin1String("Truth"))) {
+        *error = tr("A %1 has no axes: 'notation' and 'decimals' are for diagrams with axes - a table writes each trace's numbers "
+                    "with the trace's 'numbers' and 'precision' (edit_trace).")
+                     .arg(d->Name == QLatin1String("Tab") ? tr("table") : tr("truth table"));
+        return false;
+    }
     if (args.contains(QLatin1String("notation"))) {
         const int n = indexIn(kNotations, args.value(QLatin1String("notation")).toString());
         if (n < 0) {
@@ -407,7 +416,14 @@ bool applyTrace(Graph* g, const Diagram* d, const QJsonObject& o, QString* error
         g->pointMarker = Graph::PointMarker(m);
     }
     if (o.contains(QLatin1String("auto_color"))) g->autoColor = o.value(QLatin1String("auto_color")).toBool();
-    if (o.contains(QLatin1String("precision"))) g->Precision = std::clamp(o.value(QLatin1String("precision")).toInt(), 0, 16);
+    if (o.contains(QLatin1String("precision"))) {
+        const QJsonValue p = o.value(QLatin1String("precision"));
+        if (!p.isDouble() || p.toDouble() != std::floor(p.toDouble()) || p.toDouble() < 0 || p.toDouble() > 16) {
+            *error = tr("A trace's 'precision' is a whole number from 0 to 16: a table's digits.");
+            return false;
+        }
+        g->Precision = p.toInt();
+    }
     if (o.contains(QLatin1String("numbers"))) {
         const int n = indexIn(kNumbers, o.value(QLatin1String("numbers")).toString());
         if (n < 0) {
@@ -2452,7 +2468,17 @@ bool applyMarker(Marker* m, const Diagram* d, const QJsonObject& args, QString* 
         m->x1 = misc::clampCoordinate(m->cx + p.at(0).toInt());
         m->y1 = misc::clampCoordinate(-m->cy + p.at(1).toInt());
     }
-    if (args.contains(QLatin1String("precision"))) m->Precision = std::clamp(args.value(QLatin1String("precision")).toInt(), 1, 12);
+    // (As the marker dialog takes it: 0 to 12. Clamped, 99 was 12 and 2.7
+    // was 1, without a word.)
+    if (args.contains(QLatin1String("precision"))) {
+        const QJsonValue p = args.value(QLatin1String("precision"));
+        if (!p.isDouble() || p.toDouble() != std::floor(p.toDouble()) || p.toDouble() < 0 || p.toDouble() > 12) {
+            *error = tr("'precision' is a whole number from 0 to 12: significant digits (automatic notation) or places after the "
+                        "point (the others).");
+            return false;
+        }
+        m->Precision = p.toInt();
+    }
     if (args.contains(QLatin1String("format"))) {
         const int n = indexIn(kNumbers, args.value(QLatin1String("format")).toString());
         if (n < 0) {

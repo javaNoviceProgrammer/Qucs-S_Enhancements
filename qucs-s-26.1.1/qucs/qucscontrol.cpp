@@ -31,6 +31,7 @@
 #include "simulatorlog.h"
 #include "dataset.h"
 #include "erc.h"
+#include "mcpserver.h"
 #include "dialogs/simmessage.h"
 #include "ngstatistics.h"
 #include "ngsweep.h"
@@ -142,7 +143,7 @@ const char* const kTools = R"JSON([
    "properties": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Values by property name, as get_schematic and describe_component_type show them: {\"R\": \"4.7k\"}; the others stay at the type's defaults. A number with letters after it that are no scale and unit (1kk) is refused"},
    "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3"}, "mirror": {"type": "boolean", "description": "Mirrored about the x axis"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"R\": true, \"Temp\": false}"},
-   "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
+   "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": ["array", "object"], "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
    "flags": {"type": "array", "items": {"type": "string"}, "description": "An ngspice .OPTIONS block's (SpiceOptions) options with no value, each written alone: [\"noinit\", \"keepopinfo\"] - as {\"noinit\": true} in 'equations'"},
    "replace_equations": {"type": "boolean", "description": "The equations become those given alone (else each given is set or added)"},
    "records": {"type": "array", "items": {}, "description": "An ngspice Monte Carlo's or corners' values recorded for each sample: [{\"name\": \"gain\", \"expression\": \"db(v(out))\"}] or \"gain|db(v(out))\" - the list it records"},
@@ -156,7 +157,7 @@ const char* const kTools = R"JSON([
    "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "near": {"type": "object", "properties": {"part": {"type": "string"}, "side": {"type": "string", "enum": ["above", "below", "left", "right"]}, "gap": {"type": "integer", "minimum": 0}}, "description": "Instead of x, y: moved beside another part - {\"part\": \"U1\", \"side\": \"below\", \"gap\": 40}, the room between their symbols (40 unless given), centred on it across that side"}, "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3, as get_schematic gives it"},
    "mirror": {"type": "boolean", "description": "Mirrored about the x axis"}, "active": {"type": "boolean", "description": "false leaves it out of the simulation (inactive); true puts it back"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"Is\": false, \"Bf\": true}"},
-   "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
+   "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": ["array", "object"], "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
    "flags": {"type": "array", "items": {"type": "string"}, "description": "An ngspice .OPTIONS block's (SpiceOptions) options with no value, each written alone: [\"noinit\", \"keepopinfo\"] - as {\"noinit\": true} in 'equations'"},
    "replace_equations": {"type": "boolean", "description": "The equations become those given alone (else each given is set or added)"},
    "records": {"type": "array", "items": {}, "description": "An ngspice Monte Carlo's or corners' values recorded for each sample: [{\"name\": \"gain\", \"expression\": \"db(v(out))\"}] or \"gain|db(v(out))\" - the list it records"},
@@ -356,7 +357,7 @@ const char* const kTools = R"JSON([
    "style": {"type": "string", "enum": ["solid", "dash", "dot", "long_dash", "stars", "circles", "arrows"], "description": "How the curve is drawn"},
    "axis": {"type": "string", "enum": ["left", "right"], "description": "The y axis it is drawn against: left (the default) or right"},
    "marker": {"type": "string", "enum": ["none", "auto", "circle", "square", "triangle", "diamond", "triangle_down", "cross", "plus"], "description": "A mark at each point, or none"},
-   "auto_color": {"type": "boolean", "description": "Each curve of a sweep its own colour"}, "precision": {"type": "integer", "description": "A table's digits"},
+   "auto_color": {"type": "boolean", "description": "Each curve of a sweep its own colour"}, "precision": {"type": "integer", "minimum": 0, "maximum": 16, "description": "A table's digits, 0-16"},
    "numbers": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"], "description": "How a table shows complex values"}},
    "required": ["variable"]}},
 {"name": "edit_trace",
@@ -367,7 +368,7 @@ const char* const kTools = R"JSON([
    "style": {"type": "string", "enum": ["solid", "dash", "dot", "long_dash", "stars", "circles", "arrows"], "description": "How the curve is drawn"},
    "axis": {"type": "string", "enum": ["left", "right"], "description": "The y axis it is drawn against: left or right"},
    "marker": {"type": "string", "enum": ["none", "auto", "circle", "square", "triangle", "diamond", "triangle_down", "cross", "plus"], "description": "A mark at each point, or none"},
-   "auto_color": {"type": "boolean", "description": "Each curve of a sweep its own colour"}, "precision": {"type": "integer", "description": "A table's digits"},
+   "auto_color": {"type": "boolean", "description": "Each curve of a sweep its own colour"}, "precision": {"type": "integer", "minimum": 0, "maximum": 16, "description": "A table's digits, 0-16"},
    "numbers": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"], "description": "How a table shows complex values"}}}},
 {"name": "add_marker",
  "description": "Places a marker on a trace of a diagram; it shows the sample nearest to where it is placed, and the value there. 'at' is an x value, or a point on the trace: peak (or max), min, -3dB (3 dB below the peak - for a curve in dB, the peak minus 3; for a magnitude, the peak divided by sqrt(2) - after the peak first, otherwise before it; 'reference' dc or a level, such as 0 dB for a filter specification, measures from that instead), or crossing:<y> (the first crossing of y). Returns the marker as get_schematic lists it and what 'at' found (the exact crossing, and the sample the marker is on). 'label' places its box's top left corner at [x, y] on the schematic; 'label_offset' [dx, dy] places it that far from the marked point (y pointing down). Also 'precision' (digits), 'format' for complex values, a 'transparent' background, an 'indicator' at the point, and text and background colors (#rrggbb, #aarrggbb, a name, or auto). One undo step.",
@@ -377,7 +378,7 @@ const char* const kTools = R"JSON([
    "reference": {"description": "What -3dB is 3 dB below: \"peak\" (the default), \"dc\" (the value at the curve's start, the lowest frequency), or a level - 0 for a filter's spec in dB (on a magnitude, 1 is a gain of one)"},
    "label": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its box's top left corner goes, [x, y] on the schematic"},
    "label_offset": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Its box [dx, dy] from the marked point (y pointing down), instead of 'label'"},
-   "precision": {"type": "integer", "minimum": 1, "maximum": 12, "description": "Significant digits (automatic notation) or places after the point, 1-12"},
+   "precision": {"type": "integer", "minimum": 0, "maximum": 12, "description": "Significant digits (automatic notation) or places after the point, 0-12"},
    "format": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"], "description": "How a complex value is shown"},
    "notation": {"type": "string", "enum": ["diagram", "automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent"], "description": "How its numbers are written: as its diagram's axes (the default), or a notation of its own (edit_diagram's)"},
    "transparent": {"type": "boolean", "description": "No background behind its text"}, "indicator": {"type": "string", "enum": ["off", "square", "triangle"], "description": "A mark at the point: square, triangle or off"},
@@ -391,7 +392,7 @@ const char* const kTools = R"JSON([
    "reference": {"description": "What -3dB is 3 dB below: \"peak\" (the default), \"dc\" (the value at the curve's start, the lowest frequency), or a level - 0 for a filter's spec in dB (on a magnitude, 1 is a gain of one)"},
    "label": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its box's top left corner goes, [x, y] on the schematic"},
    "label_offset": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Its box [dx, dy] from the marked point (y pointing down)"},
-   "precision": {"type": "integer", "minimum": 1, "maximum": 12, "description": "Significant digits (automatic notation) or places after the point, 1-12"},
+   "precision": {"type": "integer", "minimum": 0, "maximum": 12, "description": "Significant digits (automatic notation) or places after the point, 0-12"},
    "format": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"], "description": "How a complex value is shown"},
    "notation": {"type": "string", "enum": ["diagram", "automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent"], "description": "How its numbers are written: as its diagram's axes (the default), or a notation of its own (edit_diagram's)"},
    "transparent": {"type": "boolean", "description": "No background behind its text"}, "indicator": {"type": "string", "enum": ["off", "square", "triangle"], "description": "A mark at the point: square, triangle or off"},
@@ -464,7 +465,7 @@ const char* const kTools = R"JSON([
    "measure": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "at": {"type": "number"}, "from": {"type": "number"}, "to": {"type": "number"}, "operating_point": {"type": "string"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}, "simulator": {"type": "string"}}, "description": "What is measured after each run: {\"variable\": \"tran.v(out)\", \"what\": \"final\"} - 'what' min, max, mean, rms, initial, final, peak_to_peak or a get_dataset measurement (bandwidth, overshoot, gain, ...; 'field' picks one of its numbers); 'at' an x value instead; 'from', 'to' and the measurement's options as get_dataset takes them. Or {\"operating_point\": \"e\"}: a node's DC voltage or a device's quantity (Q1.ic)"}, "tolerance": {"type": "number", "description": "How near the target is near enough: 0.5% of the target by default"}, "max_runs": {"type": "integer", "minimum": 2, "maximum": 60, "description": "Simulations at most, 12 by default (24 with knobs)"},
    "knobs": {"type": "array", "items": {"type": "object", "properties": {"component": {"type": "string"}, "property": {"type": "string"}, "range": {"type": "array", "items": {}, "minItems": 2, "maxItems": 2}}}, "description": "Instead of 'component': 2 to 4 parts tuned together, [{\"component\": \"RF\", \"range\": [\"1k\", \"100k\"]}, {\"component\": \"RG\", \"range\": [\"100\", \"10k\"]}], for as many 'targets'"},
    "targets": {"type": "array", "items": {"type": "object", "properties": {"measure": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "at": {"type": "number"}, "from": {"type": "number"}, "to": {"type": "number"}, "operating_point": {"type": "string"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}, "simulator": {"type": "string"}}}, "target": {"type": "number"}, "tolerance": {"type": "number"}}}, "description": "With 'knobs': one target for each knob, [{\"measure\": {...as 'measure'}, \"target\": 20, \"tolerance\": 0.1}, ...]; all of the operating point or all of the analyses"},
-   "hold": {"type": "array", "items": {"type": "object", "properties": {"measure": {"type": "object", "description": "As 'measure'"}, "min": {"type": "number"}, "max": {"type": "number"}}}, "description": "Measurements to keep within bounds, [{\"measure\": {\"variable\": \"ac.v(out)\", \"what\": \"bandwidth\"}, \"min\": 50e3}]: of the operating point, or of the analyses, as the target is"},
+   "hold": {"type": "array", "items": {"type": "object", "properties": {"measure": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "at": {"type": "number"}, "from": {"type": "number"}, "to": {"type": "number"}, "operating_point": {"type": "string"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}, "simulator": {"type": "string"}}, "description": "As 'measure'"}, "min": {"type": "number"}, "max": {"type": "number"}}}, "description": "Measurements to keep within bounds, [{\"measure\": {\"variable\": \"ac.v(out)\", \"what\": \"bandwidth\"}, \"min\": 50e3}]: of the operating point, or of the analyses, as the target is"},
    "compare": {"type": "boolean", "description": "Run the values as they are first, and give every measurement before and after (on with 'hold')"},
    "apply": {"type": "boolean", "description": "Set the value found (the default), or leave the part as it was"}, "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For these runs alone; the one in the settings by default"},
    "timeout": {"type": "integer", "description": "Seconds for each run, 120 unless given"}},
@@ -676,7 +677,7 @@ const struct {
     {"describe_format", "sch file line fields format component wire diagram painting"},
     {"replace_component", "swap substitute part type opamp subcircuit keep wiring pins"},
     {"add_analysis", "analysis ac transient dc sweep simulation block plot"},
-    {"create_subcircuit", "group parts into subcircuit hierarchy"},
+    {"create_subcircuit", "group parts into subcircuit hierarchy block ports pin names"},
     {"select", "select highlight parts"},
     {"zoom", "zoom view fit region"},
     {"redo", "redo undone step"},
@@ -685,16 +686,16 @@ const struct {
     {"trigger_action", "menu action run command"},
     {"get_dialog", "dialog read open window fields"},
     {"set_dialog", "dialog answer fill fields press button"},
-    {"add_diagram", "diagram plot graph rectangular polar smith table"},
-    {"edit_diagram", "diagram axes limits log scale grid legend title theme colour color background dark"},
+    {"add_diagram", "diagram plot graph rectangular polar smith table notation number format scientific engineering"},
+    {"edit_diagram", "diagram axes limits log scale grid legend title theme colour color background dark notation number format scientific engineering decimals"},
     {"add_trace", "trace curve plot variable diagram"},
-    {"edit_trace", "trace colour thickness style axis"},
+    {"edit_trace", "trace colour thickness style axis precision table digits"},
     {"reload_data", "reload dataset simulation results diagrams"},
-    {"add_marker", "marker cursor value on curve peak 3dB"},
-    {"edit_marker", "marker label precision format"},
+    {"add_marker", "marker cursor value on curve peak 3dB notation number format scientific engineering precision"},
+    {"edit_marker", "marker label precision format notation number format scientific engineering decimal"},
     {"delete_marker", "remove marker"},
     {"rename_net", "rename net label node"},
-    {"arrange", "layout tidy arrange autoplace auto route reroute neat schematic"},
+    {"arrange", "layout tidy arrange autoplace auto route reroute neat schematic feedback straighten supplies rails columns mirror"},
     {"add_painting", "drawing text arrow line box callout table formula dimension symbol"},
     {"edit_painting", "change drawing text arrow symbol port label"},
     {"export_netlist", "write netlist file spice cdl"},
@@ -703,15 +704,15 @@ const struct {
     {"set_simulator", "simulator ngspice xyce qucsator choose"},
     {"move_to_pane", "split pane window layout"},
     {"build_verilog_a", "verilog-a openvaf compile osdi"},
-    {"tune", "tune optimize sweep value until target"},
+    {"tune", "tune optimize sweep value until target hold constraint keep within bounds compare knobs targets"},
     {"new_project", "new project folder"},
     {"open_project", "open project"},
     {"copy_document", "copy schematic duplicate with results"},
     {"clean_scratch", "clear scratch files netlists"},
-    {"make_symbol", "subcircuit symbol draw pins sides"},
+    {"make_symbol", "subcircuit symbol draw pins sides inputs outputs supplies"},
     {"import_netlist", "spice netlist to schematic import"},
     {"find_library_component", "library part search by values model"},
-    {"describe_part", "library part pins order names supply model macromodel transistor tested"},
+    {"describe_part", "library part pins order names supply model macromodel transistor tested bench roles input output"},
     {"read_pdf", "datasheet pdf text read"},
     {"diff", "compare revisions files changes"},
     {"run_script", "script loop javascript many calls"},
@@ -3092,14 +3093,16 @@ QString QucsControl::instructions() const
         "name alone (amp.sch). A conversation the user has pinned to a schematic says so in its prompts: the tools then "
         "act on that schematic when no path is given, whichever document is in front, and trigger_action brings it to "
         "the front first. Every tool also takes 'max_chars', the longest answer you want (200 or more): a longer one "
-        "comes back with its longest lists and texts cut (\"… 40 more\") and a 'trimmed' field that says what was cut.\n\n"
+        "comes back with its longest lists and texts cut (\"… 40 more\") and a 'trimmed' field that says what was cut - JSON "
+        "still, however short; a batch's answers are cut together, and each of its calls takes one of its own.\n\n"
         "How to work, as it has worked best:\n"
         "1. A library part: describe_part first - its pins by name and role, its supplies, and whether its model passed "
         "its bench (find_library_component with 'tested' finds only those). Wire it by pin name (connect \"U1.INP\" to "
         "\"Vin.1\") in one batch with the rest, and give every supply pin a supply.\n"
         "2. arrange once it is built. 'feedback': below puts an op-amp's feedback parts (Rf, and Rg to ground) under it; "
-        "an op-amp whose - input is its upper pin (ua741(TI), uA741) reads best mirrored ('mirror': true), and 'supplies': "
-        "labels spares the supply wires. 'straighten' lines up what is left; 'preview' shows it without keeping it.\n"
+        "an op-amp whose - input is its upper pin reads best mirrored ('mirror': true) - describe_part's 'side' says which "
+        "(upper in ua741(TI), tl081(TI), OP07(TI); lower in uA741 and AD825: leave those) - and 'supplies': labels spares "
+        "the supply wires. 'straighten' lines up what is left; 'preview' shows it without keeping it.\n"
         "3. check_schematic before simulate, with 'subcircuits': true when there are any. Its errors are what the "
         "simulator fails on, its warnings what runs and gives nonsense, its notes fine if meant. Nothing found does not "
         "mean the circuit works.\n"
@@ -3470,7 +3473,114 @@ QString unknownIn(const QJsonValue& value, const QJsonObject& schema, const QStr
                                                             near.isEmpty() ? QString() : tr(" Meant %1?").arg(near.join(tr(" or "))));
 }
 
+// What a JSON value is, said: "the number 1", "the text \"yes\"".
+QString whatItIs(const QJsonValue& v)
+{
+    if (v.isBool()) return v.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    if (v.isDouble()) return tr("the number %1").arg(v.toDouble(), 0, 'g', 12);
+    if (v.isString()) return tr("the text \"%1\"").arg(v.toString().size() > 40 ? v.toString().left(40) + QStringLiteral("...") : v.toString());
+    if (v.isArray()) return tr("a list");
+    if (v.isObject()) return tr("an object");
+    return tr("null");
+}
+
+// Whether \a v is of the JSON schema's \a type (one this does not know takes all).
+bool isOfType(const QJsonValue& v, const QString& type)
+{
+    if (type == QLatin1String("string")) return v.isString();
+    if (type == QLatin1String("number")) return v.isDouble();
+    if (type == QLatin1String("integer")) return v.isDouble() && std::isfinite(v.toDouble()) && v.toDouble() == std::floor(v.toDouble());
+    if (type == QLatin1String("boolean")) return v.isBool();
+    if (type == QLatin1String("array")) return v.isArray();
+    if (type == QLatin1String("object")) return v.isObject();
+    if (type == QLatin1String("null")) return v.isNull();
+    return true;
+}
+
+// A schema's types: "string", ["string", "number"]; none when it names none.
+QStringList typesOf(const QJsonObject& schema)
+{
+    const QJsonValue t = schema.value(QLatin1String("type"));
+    if (t.isString()) return {t.toString()};
+    QStringList types;
+    for (const QJsonValue& v : t.toArray()) types << v.toString();
+    return types;
+}
+
+QString typeWords(const QStringList& types)
+{
+    QStringList words;
+    for (const QString& t : types)
+        words << (t == QLatin1String("string")    ? tr("a text")
+                  : t == QLatin1String("number")  ? tr("a number")
+                  : t == QLatin1String("integer") ? tr("a whole number")
+                  : t == QLatin1String("boolean") ? tr("true or false")
+                  : t == QLatin1String("array")   ? tr("a list")
+                  : t == QLatin1String("object")  ? tr("an object")
+                                                  : t);
+    words.removeDuplicates();
+    return words.join(tr(" or "));
+}
+
+// The first value in \a value of another JSON type than its schema says,
+// inside it too (a list's items, an object's fields, a map's values), as
+// "where is a list, not an object"; empty when all are. \a schema's
+// 'type' names the types, else each alternative of its 'anyOf' does.
+QString wrongTypeIn(const QJsonValue& value, const QJsonObject& schema, const QString& where)
+{
+    if (value.isNull() || value.isUndefined()) return {};
+    QJsonObject object = schema;
+    QStringList types = typesOf(schema);
+    if (types.isEmpty() && schema.contains(QLatin1String("anyOf"))) {
+        QStringList all;
+        bool one = false;
+        for (const QJsonValue& alt : schema.value(QLatin1String("anyOf")).toArray()) {
+            const QStringList altTypes = typesOf(alt.toObject());
+            if (altTypes.isEmpty()) return {};   // (an alternative of any type)
+            all << altTypes;
+            if (std::any_of(altTypes.cbegin(), altTypes.cend(), [&](const QString& t) { return isOfType(value, t); })) {
+                object = alt.toObject();
+                one = true;
+                break;
+            }
+        }
+        if (!one) return tr("%1 is %2, not %3").arg(where, typeWords(all), whatItIs(value));
+    } else if (!types.isEmpty() && std::none_of(types.cbegin(), types.cend(), [&](const QString& t) { return isOfType(value, t); })) {
+        return tr("%1 is %2, not %3").arg(where, typeWords(types), whatItIs(value));
+    }
+    if (value.isArray()) {
+        const QJsonObject items = object.value(QLatin1String("items")).toObject();
+        if (items.isEmpty()) return {};
+        const QJsonArray a = value.toArray();
+        for (int i = 0; i < a.size(); ++i)
+            if (QString u = wrongTypeIn(a.at(i), items, QStringLiteral("%1[%2]").arg(where).arg(i)); !u.isEmpty()) return u;
+    } else if (value.isObject()) {
+        const QJsonObject fields = object.value(QLatin1String("properties")).toObject();
+        const QJsonValue more = object.value(QLatin1String("additionalProperties"));
+        const QJsonObject o = value.toObject();
+        for (auto it = o.begin(); it != o.end(); ++it) {
+            const QJsonObject field = fields.contains(it.key()) ? fields.value(it.key()).toObject() : more.toObject();
+            if (field.isEmpty()) continue;
+            if (QString u = wrongTypeIn(it.value(), field, where + QLatin1Char('.') + it.key()); !u.isEmpty()) return u;
+        }
+    }
+    return {};
+}
+
 } // namespace
+
+QString QucsControl::wrongTypes(const QString& tool, const QJsonObject& args) const
+{
+    const auto known = a_details.constFind(tool);
+    if (known == a_details.constEnd()) return {};
+    const QJsonObject fields = known->value(QLatin1String("inputSchema")).toObject().value(QLatin1String("properties")).toObject();
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        if (!fields.contains(it.key())) continue;
+        if (const QString wrong = wrongTypeIn(it.value(), fields.value(it.key()).toObject(), it.key()); !wrong.isEmpty())
+            return tr("%1: %2. Nothing was done (it would have been read as its default, not refused).").arg(tool, wrong);
+    }
+    return {};
+}
 
 QString QucsControl::unknownArguments(const QString& tool, const QJsonObject& args) const
 {
@@ -3519,6 +3629,10 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     // was left out, and the call done without it (a text box's tip, a
     // misspelt width: the box came out as if neither was given).
     if (const QString unknown = unknownArguments(tool, args); !unknown.isEmpty()) return errorResult(unknown);
+    // An argument of another JSON type than the tool takes ('straighten':
+    // 1, 'hold' one object for a list): refused - it was read as its
+    // default, and the call done as if it was not given.
+    if (const QString wrong = wrongTypes(tool, args); !wrong.isEmpty()) return errorResult(wrong);
     // A dialog waiting for an answer - the user's, editing a part or a
     // diagram, or one Claude opened - holds on to what it edits: a change
     // under it (an undo rebuilds the whole schematic) freed what it held.
@@ -6303,9 +6417,10 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
             if (!outside) continue;
             const bool named = !label.isEmpty();
             // A net without a name: the name of the group's pin on it, when
-            // one pin has one (a 741's INN, VCC) and no net has it yet -
-            // the subcircuit's pins then say what they are (make_symbol
-            // sides them, arrange finds the output). Else file_n1.
+            // one pin has one (a 741's INN, VCC), set_label would take it
+            // (not GND: ground's name) and no net has it yet - the
+            // subcircuit's pins then say what they are (make_symbol sides
+            // them, arrange finds the output). Else file_n1.
             if (label.isEmpty()) {
                 static const QRegularExpression word(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]+$"));
                 QStringList names;
@@ -6315,7 +6430,7 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
                             !n.isEmpty() && nets.netOf.value(QStringLiteral("%1.%2").arg(keyOf.value(d)).arg(j + 1), -1) == net
                             && !names.contains(n, Qt::CaseInsensitive))
                             names << n;
-                if (names.size() == 1 && word.match(names.first()).hasMatch()
+                if (names.size() == 1 && word.match(names.first()).hasMatch() && badNetName(names.first()).isEmpty()
                     && std::none_of(labelsInUse.cbegin(), labelsInUse.cend(),
                                     [&names](const QString& l) { return l.compare(names.first(), Qt::CaseInsensitive) == 0; })) {
                     label = names.first();
@@ -9236,11 +9351,15 @@ public:
         const int index = a_next++;
         const QJsonObject call = a_calls.at(index).toObject();
         const QString tool = call.value(QLatin1String("tool")).toString();
-        const QJsonObject arguments = call.value(QLatin1String("arguments")).toObject();
+        QJsonObject arguments = call.value(QLatin1String("arguments")).toObject();
+        // A call's own max_chars, as every tool takes it: its answer cut.
+        int most = 0;
+        const bool badMost = arguments.contains(QLatin1String("max_chars"))
+                             && !qucs_s::mcp::readMaxChars(arguments.take(QLatin1String("max_chars")), &most);
         const QPointer<BatchRun> self(this);
-        const auto answered = [self, index, tool, arguments](const QJsonObject& result) {
+        const auto answered = [self, index, tool, arguments, most](const QJsonObject& result) {
             if (!self) return;
-            self->record(index, tool, arguments, result);
+            self->record(index, tool, arguments, most > 0 ? qucs_s::mcp::trimmedTo(result, most) : result);
             QTimer::singleShot(0, self, [self] {
                 if (self) self->next();
             });
@@ -9262,6 +9381,7 @@ public:
             answered(result);
         };
         if (tool == QLatin1String("batch")) answered(errorResult(tr("A batch cannot hold another batch.")));
+        else if (badMost) answered(errorResult(tr("max_chars is a whole number of characters, 200 or more. Nothing was done.")));
         else a_control->callTool(tool, arguments, after);
     }
 
@@ -10072,7 +10192,8 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
         *restored = true;
         QucsSettings.DefaultSimulator = previous;
     };
-    const Done done = [doneGiven, checkText, checkErrors, checkWarnings, oneOff, savedNote](const QJsonObject& r) {
+    const QPointer<Schematic> checked(sch);
+    const Done done = [this, checked, doneGiven, checkText, checkErrors, checkWarnings, oneOff, savedNote](const QJsonObject& r) {
         QJsonObject result = r;
         QJsonArray content = result.value(QStringLiteral("content")).toArray();
         // Into the report itself, too.
@@ -10082,31 +10203,54 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
             if (!report.isEmpty()) {
                 if (!savedSaid) report.insert(QStringLiteral("saved"), savedNote);   // (where the file now is)
                 savedSaid = true;
-                if (!checkErrors.isEmpty() || !checkWarnings.isEmpty()) {
+                const bool failed = report.contains(QStringLiteral("succeeded")) && !report.value(QStringLiteral("succeeded")).toBool();
+                // A run that failed: the errors of its subcircuits too - two
+                // sources in parallel inside one, which ngspice names by a
+                // node alone (v.x1.vx#branch). (Not before every run: a
+                // hierarchy is read from disk for it.)
+                QJsonArray subErrors;
+                QStringList subText;
+                if (failed && checked) {
+                    const auto open = [this](const QString& file) { return dynamic_cast<Schematic*>(a_app->findDoc(file)); };
+                    for (const auto& sub : qucs_s::erc::checkSubcircuits(checked, open))
+                        for (const auto& i : sub.issues) {
+                            if (i.severity != qucs_s::erc::Severity::Error) continue;
+                            QJsonObject o = issueJson(i);
+                            o.insert(QStringLiteral("file"), QDir::toNativeSeparators(sub.file));
+                            subErrors.append(o);
+                            subText << tr("error in %1: %2").arg(QFileInfo(sub.file).fileName(), i.message);
+                        }
+                }
+                if (!checkErrors.isEmpty() || !checkWarnings.isEmpty() || !subErrors.isEmpty()) {
                     // (Named to come first in the answer, which lists its
                     // fields in order of their names.)
-                    report.insert(QStringLiteral("before the run"), QJsonObject{{QStringLiteral("errors"), checkErrors},
-                                                                                 {QStringLiteral("warnings"), checkWarnings}});
+                    QJsonObject before{{QStringLiteral("errors"), checkErrors}, {QStringLiteral("warnings"), checkWarnings}};
+                    if (!subErrors.isEmpty()) before.insert(QStringLiteral("errors in its subcircuits"), subErrors);
+                    report.insert(QStringLiteral("before the run"), before);
                     // A run that failed: the cause may be among them - a
                     // part's pin connected to nothing, not ngspice's
                     // "argument out of range for db" it led to. First in its
                     // errors: the check's errors, and its warnings of a part
-                    // (not a loose wire end's).
-                    if (report.contains(QStringLiteral("succeeded")) && !report.value(QStringLiteral("succeeded")).toBool()) {
+                    // (not a loose wire end's), and its subcircuits' errors.
+                    if (failed) {
                         QJsonArray errors;
                         const auto take = [&errors](QJsonObject o) {
-                            o.insert(QStringLiteral("found"), tr("before the run, by Check Schematic"));
+                            o.insert(QStringLiteral("found"), o.contains(QStringLiteral("file")) ? tr("by Check Schematic, in a subcircuit")
+                                                                                              : tr("before the run, by Check Schematic"));
                             errors.append(o);
                         };
                         for (const QJsonValue& v : checkErrors) take(v.toObject());
                         for (const QJsonValue& v : checkWarnings)
                             if (v.toObject().contains(QStringLiteral("component"))) take(v.toObject());
+                        for (const QJsonValue& v : std::as_const(subErrors)) take(v.toObject());
                         for (const QJsonValue& v : report.value(QStringLiteral("errors")).toArray()) errors.append(v);
                         report.insert(QStringLiteral("errors"), errors);
                     }
                     // The run's log begins with them: where they are read.
-                    report.insert(QStringLiteral("last lines"),
-                                  checkText + QStringLiteral("\n\n") + report.value(QStringLiteral("last lines")).toString());
+                    QString said = checkText;
+                    if (!subText.isEmpty())
+                        said += (said.isEmpty() ? QString() : QStringLiteral("\n")) + tr("Check Schematic, of its subcircuits: %1").arg(subText.mid(0, 12).join(QStringLiteral("; ")));
+                    report.insert(QStringLiteral("last lines"), said + QStringLiteral("\n\n") + report.value(QStringLiteral("last lines")).toString());
                 }
                 if (!oneOff.isEmpty())
                     report.insert(QStringLiteral("simulator in the settings"),

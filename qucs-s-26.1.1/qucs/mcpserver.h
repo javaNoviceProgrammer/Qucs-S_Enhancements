@@ -33,6 +33,17 @@ namespace qucs_s::mcp {
 /// conversation's last call, when it was told.
 QJsonObject structuredOf(const QJsonObject& result);
 
+/// max_chars as a call gives it: a whole number of characters, 200 or
+/// more (\a most then holds it); false for anything else.
+bool readMaxChars(const QJsonValue& value, int* most);
+
+/// A tools/call result cut to \a most characters of text: JSON as JSON, its
+/// biggest lists, maps and texts halved until it fits, then its items and
+/// fields, with 'trimmed' saying what was cut; a text cut at its end.
+/// Several texts (a batch's answers): the longest cut first, together to
+/// \a most. Images are left as they are.
+QJsonObject trimmedTo(const QJsonObject& result, int most);
+
 /*!
  * An MCP server over a ToolHost (the Model Context Protocol, 2025-06-18):
  * initialize, ping, tools/list, tools/call, resources/list, resources/

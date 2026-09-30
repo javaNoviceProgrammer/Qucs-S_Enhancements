@@ -1732,6 +1732,10 @@ bool Schematic::throughAllComps(QTextStream *stream, int& countInit,
       int i;
       // tell the subcircuit it belongs to this schematic
       pc->setSchematic (this);
+      if (pc->Props.first()->Value.trimmed().isEmpty()) {
+        ErrText->appendPlainText(QObject::tr("ERROR: No file name in subcircuit component \"%1\".").arg(pc->Name));
+        return false;
+      }
       QString f = pc->getSubcircuitFile();
       SubMap::Iterator it = FileList.find(f);
       if(it != FileList.end())

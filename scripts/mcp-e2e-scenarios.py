@@ -9,19 +9,35 @@ to a subcircuit, checked and simulated at each step.
 
     scripts/mcp-e2e-scenarios.py [s1 s2 ... s8]
 
-QUCS names the qucs-s binary (the installed app by default); the build
-tree's has no component libraries, so QUCS_LIBRARY_DIR is set to the
-source's. The server runs with its own settings and HOME under the root
-(QUCS_E2E_ROOT, /tmp/e2e by default), so nothing is written to the user's
-workspace or caches; the simulator is the first ngspice on PATH. s7 copies
-a project (QUCS_E2E_PROJECT, ~/QucsWorkspace/project1_prj by default) and
-is skipped when there is none.
+QUCS names the qucs-s binary (the installed app by default). A packaged
+app is tested with its own library (share/qucs-s/library beside its
+binary); the build tree's has none, so QUCS_LIBRARY_DIR is set to the
+source's - unless it is set already. Each run has a folder of its own under
+the root (QUCS_E2E_ROOT, /tmp/e2e by default), <date>-<time>-<pid>, with
+the server's workspace, settings and HOME in it: nothing is written to the
+user's workspace or caches, and a run does not meet the files of the last
+(save_document refused to write over them). The simulator is the first
+ngspice on PATH. s7 copies a project (QUCS_E2E_PROJECT,
+~/QucsWorkspace/project1_prj by default) and is skipped when there is none.
 """
 import json, subprocess, os, sys, time, math, shutil, glob
 
 APP = os.environ.get('QUCS', '/Applications/qucs-s.app/Contents/MacOS/qucs-s')
-ROOT = os.environ.get('QUCS_E2E_ROOT', '/tmp/e2e'); WS = ROOT + '/ws'; SETTINGS = ROOT + '/settings'; HOME = ROOT + '/home'
-LIBRARY = os.environ.get('QUCS_LIBRARY_DIR') or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'qucs-s-26.1.1', 'library')
+ROOT = os.path.join(os.environ.get('QUCS_E2E_ROOT', '/tmp/e2e'), time.strftime('%Y%m%d-%H%M%S') + '-%d' % os.getpid())
+WS = ROOT + '/ws'; SETTINGS = ROOT + '/settings'; HOME = ROOT + '/home'
+
+def own_library(app):
+    """The library an installed qucs-s has beside its binary (a packaged app's
+    Contents/MacOS/share/qucs-s/library, an installation's share/qucs-s/library),
+    or None (the build tree's)."""
+    here = os.path.dirname(os.path.realpath(app))
+    for rel in ('share/qucs-s/library', '../share/qucs-s/library'):
+        lib = os.path.normpath(os.path.join(here, rel))
+        if os.path.isfile(os.path.join(lib, 'OpAmps.lib')): return lib
+    return None
+
+SOURCE_LIBRARY = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'qucs-s-26.1.1', 'library')
+LIBRARY = os.environ.get('QUCS_LIBRARY_DIR') or (None if own_library(APP) else SOURCE_LIBRARY)
 PROJECT = os.environ.get('QUCS_E2E_PROJECT', os.path.expanduser('~/QucsWorkspace/project1_prj'))
 for d in (WS, SETTINGS, HOME):
     os.makedirs(d, exist_ok=True)
@@ -29,7 +45,7 @@ for d in (WS, SETTINGS, HOME):
 class Server:
     def __init__(self):
         env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QUCS_SETTINGS_DIR=SETTINGS, QUCS_NO_SHELL_ENV='1', HOME=HOME)
-        if os.path.isfile(os.path.join(LIBRARY, 'OpAmps.lib')): env['QUCS_LIBRARY_DIR'] = os.path.abspath(LIBRARY)
+        if LIBRARY and os.path.isfile(os.path.join(LIBRARY, 'OpAmps.lib')): env['QUCS_LIBRARY_DIR'] = os.path.abspath(LIBRARY)
         self.p = subprocess.Popen([APP, '--mcp-server', '--workspace', WS], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=open(ROOT + '/server.err', 'a'), env=env, text=True)
         self.n = 0
@@ -440,6 +456,7 @@ def s8_741_bench(s):
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
     which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8']
+    print('files in', ROOT, '- library:', os.path.abspath(LIBRARY) if LIBRARY else own_library(APP) + " (the app's own)")
     for name, fn in list(globals().items()):
         if name[:2] in which and name[2] == '_' and callable(fn): fn()
     json.dump(LOG, open(ROOT + '/log.json', 'w'), indent=1, default=str)

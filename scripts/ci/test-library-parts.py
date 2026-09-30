@@ -31,10 +31,11 @@ too, and "tested" lists only the parts that pass.
 
 With --merge, the parts run (--only) replace theirs in the results file,
 the others kept. With --baseline, exits 1 when a part (or its bench) that passed there
-fails now (the nightly job's regression check). Each server gets
+fails now, or is missing from the results (the nightly job's regression check). Each server gets
 settings, a home and a workspace of its own in a temporary folder.
 """
 import argparse
+import collections
 import datetime
 import json
 import os
@@ -460,6 +461,11 @@ def main():
     out = args.out or os.path.join(library, "ngspice-tested.json")
     only = {s for s in args.only.split(",") if s}
     todo = parts_of(library, only)
+    # A part named twice within one library: every lookup by name finds the
+    # first, and the second can never be placed or tested (13 were so, until
+    # 30 September). Said, and the run fails at the end.
+    counts = collections.Counter((lib, part) for lib, part, _ in todo)
+    twice = sorted("%s/%s" % key for key, n in counts.items() if n > 1)
     version = subprocess.run([args.ngspice, "-v"], capture_output=True, text=True).stdout
     m = re.search(r"ngspice-(\S+)", version)
     version = m.group(1) if m else "?"
@@ -520,18 +526,41 @@ def main():
     print("%d of %d parts pass (%d with no pins, not tested); benches: %d of %d pass; written to %s"
           % (passed, len(results), untested, bench_passed, len(benched), out))
 
+    for k in twice:
+        print("DUPLICATE %s: named twice in its library - only the first can be placed or tested" % k)
+
     if args.baseline:
         with open(args.baseline, encoding="utf-8") as f:
             before = json.load(f).get("parts", {})
-        worse = [k for k, v in before.items() if v.get("passes") and not results.get(k, {}).get("passes", True)]
-        # (A bench that passed there and fails now: a model that runs and
-        # now does the wrong thing.)
-        worse += [k for k, v in before.items() if (v.get("bench") or {}).get("passes") and k in results
-                  and results[k].get("passes") and not (results[k].get("bench") or {}).get("passes", True)]
-        for k in worse:
-            print("REGRESSION %s: %s" % (k, results[k].get("why") or (results[k].get("bench") or {}).get("why")))
+        # The parts of the libraries run this time (--only: those alone).
+        # One that passed there and is not in this run's results is a
+        # regression too: its library no longer loads, or it is gone - a
+        # part missing counted as passing, and the job stayed green.
+        ran = {k for k in before if not only or k.split("/", 1)[0] in only}
+        worse = []
+        for k in sorted(ran):
+            v, now = before[k], results.get(k)
+            bench_before = v.get("bench") or {}
+            if not v.get("passes") and not bench_before.get("passes"):
+                continue
+            if now is None:
+                worse.append((k, "not in this run's results: its library did not load, or the part is gone"))
+            elif v.get("passes") and not now.get("passes"):
+                worse.append((k, now.get("why")))
+            elif bench_before.get("passes") and not args.no_benches:
+                # (A bench that passed there and fails now - a model that
+                # runs and now does the wrong thing - or is not run now.)
+                bench_now = now.get("bench") or {}
+                if not bench_now or bench_now.get("untested"):
+                    worse.append((k, "its bench was not run: %s" % (bench_now.get("why") or "no bench for it this time")))
+                elif not bench_now.get("passes"):
+                    worse.append((k, bench_now.get("why")))
+        for k, why in worse:
+            print("REGRESSION %s: %s" % (k, why))
         if worse:
             sys.exit(1)
+    if twice:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
