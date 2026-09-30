@@ -6666,20 +6666,25 @@ private slots:
             const QJsonObject r = call("get_dataset");
             return failed(r) ? QStringLiteral("(failed) ") + text(r) : json(r).toObject().value("stale").toString();
         };
+        // Whether the verdict is known (the netlists compared, a run failed)
+        // or only the time of an edit tells.
+        const auto certain = [this] { return json(call("get_dataset")).toObject().value("stale certain"); };
         QVERIFY2(stale().isEmpty(), qPrintable(stale()));
         QVERIFY(!failed(call("add_diagram", {{"type", "rect"}, {"traces", QJsonArray{"tran.i(V1)"}}})));
         QVERIFY(!failed(call("move", {{"names", QJsonArray{"R1"}}, {"dx", 0}, {"dy", 20}})));
         QVERIFY2(stale().isEmpty(), qPrintable(stale()));
         QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "2k"}}}})));
         QVERIFY2(stale().contains("changed since the run"), qPrintable(stale()));
+        QCOMPARE(certain(), QJsonValue(true));
         QVERIFY2(json(call("simulate", {}, 120000)).toObject().value("succeeded").toBool(), "the second run");
         QVERIFY2(stale().isEmpty(), qPrintable(stale()));
         // A preview that changes nothing is no edit.
         QTest::qWait(1100);
         QVERIFY(!failed(call("set_schematic", {{"text", front()->documentText()}, {"preview", true}})));
         QVERIFY2(stale().isEmpty(), qPrintable(stale()));
-        // A copy, with the dataset and no run of its own: an edit after the
-        // dataset is told from its time alone - and said so.
+        // A copy, with the dataset and no run of its own: the netlist its
+        // run was given comes with it, and tells exactly - a move is no
+        // change, a value is (the time alone said "edited" of both).
         QJsonObject copied = call("copy_document", {{"to", "stalecopy"}, {"replace", true}});
         QVERIFY2(!failed(copied), qPrintable(text(copied)));
         QVERIFY(!failed(call("open_document", {{"path", "stalecopy.sch"}})));
@@ -6687,12 +6692,38 @@ private slots:
         QVERIFY(!failed(call("move", {{"names", QJsonArray{"R1"}}, {"dx", 0}, {"dy", 20}, {"preview", true}})));
         QVERIFY2(stale().isEmpty(), qPrintable(stale()));
         QVERIFY(!failed(call("move", {{"names", QJsonArray{"R1"}}, {"dx", 0}, {"dy", 20}})));
+        QVERIFY2(stale().isEmpty(), qPrintable(stale()));
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "3k"}}}})));
+        QVERIFY2(stale().contains("changed since the run"), qPrintable(stale()));
+        QCOMPARE(certain(), QJsonValue(true));
+        // A dataset written otherwise than by a run here (touched, copied
+        // in): no netlist is known for it, and an edit after it is told by
+        // its time alone - as not certain.
+        {
+            QFile touched(QFileInfo(front()->getDocName()).absoluteDir().filePath("stalecopy.dat.ngspice"));
+            QVERIFY(touched.open(QIODevice::ReadWrite));
+            QVERIFY(touched.setFileTime(QDateTime::currentDateTime(), QFileDevice::FileModificationTime));
+        }
+        QTest::qWait(1100);
+        QVERIFY(!failed(call("move", {{"names", QJsonArray{"R1"}}, {"dx", 0}, {"dy", 20}})));
         QVERIFY2(stale().contains("not at hand to compare"), qPrintable(stale()));
+        QCOMPARE(certain(), QJsonValue(false));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
         QVERIFY(!failed(call("show_document", {{"path", "stale.sch"}})));
+        // A value tune tries and puts back ('apply': false) is no edit, yet
+        // the dataset is its last trial's: said, and certain.
+        QVERIFY2(stale().isEmpty(), qPrintable(stale()));
+        const QJsonObject tuned = call("tune", {{"component", "R1"}, {"measure", QJsonObject{{"variable", "tran.i(V1)"}, {"what", "final"}}},
+                                                {"target", -0.25e-3}, {"range", QJsonArray{"1k", "10k"}}, {"apply", false}}, 240000);
+        QVERIFY2(!failed(tuned), qPrintable(text(tuned)));
+        QVERIFY2(stale().contains("changed since the run"), qPrintable(stale() + " | " + text(tuned)));
+        QCOMPARE(certain(), QJsonValue(true));
+        QVERIFY2(json(call("simulate", {}, 120000)).toObject().value("succeeded").toBool(), "the run after tune");
+        QVERIFY2(stale().isEmpty(), qPrintable(stale()));
         QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "{nosuchparam}"}}}})));
         QVERIFY(!json(call("simulate", {}, 120000)).toObject().value("succeeded").toBool());
         QVERIFY2(stale().contains("failed"), qPrintable(stale()));
+        QCOMPARE(certain(), QJsonValue(true));
         QucsSettings.NgspiceExecutable = before;
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
@@ -7481,6 +7512,419 @@ private slots:
                 else seen.insert(name);
         }
         QVERIFY2(twice.isEmpty(), qPrintable(twice.join(", ")));
+    }
+
+    // ---- the wishlist of 2026-09-30 ------------------------------------
+
+    // 1: a subcircuit's parameters set by a tool, not by editing its file:
+    // listed as they are set, drawn with a symbol when there is none, kept
+    // when the symbol is drawn again, and followed by the instances by
+    // name - one taken away shifted every value after it, and taking all
+    // of them away took the instance's file too.
+    void subcircuitParametersAreSetAndFollowByName()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"atomic", true}, {"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Port"}, {"name", "P1"}, {"x", 100}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 100}, {"rotation", 1},
+                                                                                {"properties", QJsonObject{{"R", "{Rs*k}"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Port"}, {"name", "P2"}, {"x", 300}, {"y", 100},
+                                                                                {"properties", QJsonObject{{"Num", "2"}}}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "P1.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.2"}, {"to", "P2.1"}}}},
+            QJsonObject{{"tool", "save_document"}, {"arguments", QJsonObject{{"as", "rsub.sch"}, {"replace", true}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const auto names = [](const QJsonArray& list) {
+            QStringList n;
+            for (const QJsonValue& v : list) n << v.toObject().value("name").toString() + "=" + v.toObject().value("default").toString();
+            return n.join(' ');
+        };
+        // No symbol yet: one is drawn, and the parameters are on it.
+        r = call("set_subcircuit_parameters", {{"parameters", QJsonArray{QJsonObject{{"name", "Rs"}, {"default", "1k"}, {"description", "series R"}}, "k=2"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r).toObject();
+        QCOMPARE(names(o.value("parameters").toArray()), QString("Rs=1k k=2"));
+        QCOMPARE(o.value("on the .SUBCKT line").toString(), QString("Rs=1k k=2"));
+        // (On the symbol's name text - the symbol Edit Circuit Symbol draws
+        // for a schematic with none.)
+        bool onTheId = false;
+        for (const QJsonValue& p : json(call("get_schematic", {{"symbol", true}})).toObject().value("symbol paintings").toArray())
+            onTheId = onTheId || (p.toObject().value("type").toString() == "id" && names(p.toObject().value("parameters").toArray()) == "Rs=1k k=2");
+        QVERIFY(onTheId);
+        QCOMPARE(o.value("parameters").toArray().first().toObject().value("description").toString(), QString("series R"));
+        // Refused, each with why, and nothing changed.
+        for (const auto& [given, said] : {std::pair(QJsonObject{{"parameters", QJsonArray{"bad name=1"}}}, "is a word"),
+                                          std::pair(QJsonObject{{"parameters", QJsonArray{"m"}}}, "needs a 'default'"),
+                                          std::pair(QJsonObject{{"parameters", QJsonArray{"m=1 k"}}}, "no space"),
+                                          std::pair(QJsonObject{{"parameters", QJsonArray{"RS=3", "rs=4"}}}, "given twice"),
+                                          std::pair(QJsonObject{{"parameters", QJsonArray{"File=1"}}}, "cannot be called File"),
+                                          std::pair(QJsonObject{{"remove", QJsonArray{"zz"}}}, "no parameter zz"),
+                                          std::pair(QJsonObject{{"parameters", QJsonArray{QJsonObject{{"name", "k"}, {"bogus", 1}}}}}, "has no bogus")}) {
+            r = call("set_subcircuit_parameters", given);
+            QVERIFY2(failed(r) && text(r).contains(said), qPrintable(text(r)));
+        }
+        QCOMPARE(names(json(call("get_schematic")).toObject().value("subcircuit parameters").toArray()), QString("Rs=1k k=2"));
+        // Drawn again: kept; drawn again with only a prefix: kept too.
+        r = call("make_symbol", {{"sides", QJsonObject{{"P1", "left"}}}});
+        QVERIFY2(names(json(r).toObject().value("parameters").toArray()) == "Rs=1k k=2", qPrintable(text(r)));
+        r = call("make_symbol", {{"prefix", "RS"}});
+        QVERIFY2(names(json(r).toObject().value("parameters").toArray()) == "Rs=1k k=2", qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document")));
+        // An instance: its values by name, on the netlist's X line.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("add_component", {{"type", "Sub"}, {"name", "X1"}, {"x", 300}, {"y", 200},
+                                   {"properties", QJsonObject{{"File", "rsub.sch"}, {"Rs", "5k"}, {"k", "3"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"as", "rtop.sch"}, {"replace", true}})));
+        const auto props = [this] {
+            QStringList p;
+            for (const QJsonValue& v : componentIn(json(call("get_schematic", {{"path", "rtop.sch"}, {"properties", "all"}})).toObject(), "X1")
+                                           .value("properties").toArray())
+                p << v.toObject().value("name").toString() + "=" + v.toObject().value("value").toString();
+            return p.join(' ');
+        };
+        QCOMPARE(props(), QString("File=rsub.sch Rs=5k k=3"));
+        const QString netlist = text(call("get_netlist", {{"path", "rtop.sch"}}));
+        QVERIFY2(netlist.contains(QRegularExpression("\\.SUBCKT rsub [^\\n]*Rs=1k k=2")) && netlist.contains(QRegularExpression("\\nX1 [^\\n]*rsub Rs=5K k=3")),
+                 qPrintable(netlist));
+        // Rs taken away, m added: k keeps its 3, m starts at its default.
+        r = call("set_subcircuit_parameters", {{"path", "rsub.sch"}, {"remove", QJsonArray{"Rs"}}, {"parameters", QJsonArray{"m=7"}}});
+        QVERIFY2(!failed(r) && json(r).toObject().contains("instances not open"), qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"path", "rsub.sch"}})));
+        QCOMPARE(props(), QString("File=rsub.sch k=3 m=7"));
+        // All taken away: the instance keeps its file.
+        r = call("set_subcircuit_parameters", {{"path", "rsub.sch"}, {"parameters", QJsonArray{}}, {"replace", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"path", "rsub.sch"}})));
+        QCOMPARE(props(), QString("File=rsub.sch"));
+        // One step to undo.
+        QVERIFY(!failed(call("undo", {{"path", "rsub.sch"}})));
+        QCOMPARE(names(json(call("get_schematic", {{"path", "rsub.sch"}})).toObject().value("subcircuit parameters").toArray()), QString("k=2 m=7"));
+        for (const char* doc : {"rtop.sch", "rsub.sch"}) QVERIFY(!failed(call("close_document", {{"path", doc}, {"unsaved", "discard"}})));
+    }
+
+    // 2: sources that netlist as they say: a Vpulse (Ipulse) one pulse,
+    // with a period beyond any run (with none, ngspice repeated it, high
+    // most of the time); a Vac's (Iac's) AC magnitude of its own, ACmag -
+    // and the check says when an AC analysis's sources are all of 0.
+    void sourcesNetlistAsMeant()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"atomic", true}, {"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vpulse"}, {"name", "V1"}, {"x", 100}, {"y", 200},
+                                                                                {"properties", QJsonObject{{"U1", "0"}, {"U2", "1"}, {"T1", "1u"}, {"T2", "5u"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Ipulse"}, {"name", "I1"}, {"x", 300}, {"y", 200}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vac"}, {"name", "V2"}, {"x", 500}, {"y", 200},
+                                                                                {"properties", QJsonObject{{"U", "0"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Iac"}, {"name", "I2"}, {"x", 700}, {"y", 200},
+                                                                                {"properties", QJsonObject{{"I", "0"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 400}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "I1.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V2.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "I2.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "add_analysis"}, {"arguments", QJsonObject{{"kind", "ac"}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const auto line = [this](const QString& name) {
+            for (const QString& l : text(call("get_netlist")).split('\n'))
+                if (l.startsWith(name + ' ')) return l;
+            return QString();
+        };
+        QVERIFY2(line("V1").contains(QRegularExpression("PULSE\\(0 1 1U \\S+ \\S+ \\{[^}]*\\} 1e9\\)")), qPrintable(line("V1")));
+        QVERIFY2(line("I1").contains(QRegularExpression("PULSE\\(.* 1e9\\)")), qPrintable(line("I1")));
+        // U = 0: the AC magnitude 0 too, and said.
+        QVERIFY2(line("V2").contains(" AC 0 "), qPrintable(line("V2")));
+        const auto warnings = [this] { return QJsonDocument(json(call("check_schematic")).toObject().value("warnings").toArray()).toJson(); };
+        QVERIFY2(warnings().contains("of AC magnitude 0") && warnings().contains("V2 (its U is 0") && warnings().contains("I2 (its I is 0"),
+                 qPrintable(warnings()));
+        // ACmag sets it apart from the transient's amplitude.
+        QVERIFY(!failed(call("edit_component", {{"name", "V2"}, {"properties", QJsonObject{{"ACmag", "1"}}}})));
+        QVERIFY2(line("V2").contains("SIN(0 0 ") && line("V2").contains(" AC 1 ACPHASE"), qPrintable(line("V2")));
+        QVERIFY2(!warnings().contains("of AC magnitude 0") && !warnings().contains("nothing to drive it"), qPrintable(warnings()));
+        QVERIFY(!failed(call("edit_component", {{"name", "I2"}, {"properties", QJsonObject{{"ACmag", "2m"}}}})));
+        QVERIFY2(line("I2").contains(" AC 2M ") || line("I2").contains(" AC 2m "), qPrintable(line("I2")));
+        // Under Qucsator the SPICE-only properties stay out.
+        for (const char* name : {"V2", "I2"}) {
+            const QString q = front()->getComponentByName(name)->getNetlist();
+            QVERIFY2(!q.contains("ACmag") && !q.contains("TD=") && !q.contains("VO=") && !q.contains("IO="), qPrintable(q));
+            QVERIFY2(q.contains("f=\"") && q.contains("Theta=\""), qPrintable(q));
+        }
+        // An old file's Vac (no ACmag in its line): U is the AC magnitude.
+        QVERIFY(!failed(call("set_schematic", {{"text", "<Components>\n  <Vac V9 1 900 200 18 -26 0 1 \"2 V\" 1 \"1 kHz\" 0 \"0\" 0 \"0\" 0 \"0\" 0 \"0\" 0>\n</Components>\n"}})));
+        QVERIFY2(line("V9").contains(" AC 2 "), qPrintable(line("V9")));
+        // What describe_component_type says.
+        QVERIFY(text(call("describe_component_type", {{"type", "Vac"}})).contains("ACmag"));
+        QVERIFY(text(call("describe_component_type", {{"type", "Vpulse"}})).contains("1e9 s"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        // Under ngspice: one pulse, low again after T2.
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (ngspice.isEmpty()) return;
+        const QString before = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = ngspice;
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("batch", {{"atomic", true}, {"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vpulse"}, {"name", "V1"}, {"x", 100}, {"y", 200},
+                                                                                {"properties", QJsonObject{{"U1", "0"}, {"U2", "1"}, {"T1", "1u"}, {"T2", "5u"},
+                                                                                                           {"Tr", "1u"}, {"Tf", "1u"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 250}, {"y", 200}, {"rotation", 1}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "R1.2"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.1"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "R1.2"}, {"name", "a"}}}},
+            QJsonObject{{"tool", "add_analysis"}, {"arguments", QJsonObject{{"kind", "tran"}, {"stop", "20u"}, {"points", 201}}}},
+            QJsonObject{{"tool", "save_document"}, {"arguments", QJsonObject{{"as", "onepulse.sch"}, {"replace", true}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(call("simulate", {}, 120000)).toObject().value("succeeded").toBool(), "the pulse's run");
+        r = call("get_dataset", {{"variables", QJsonArray{"tran.v(a)"}}, {"at", QJsonArray{3e-6, 8e-6, 15e-6}}});
+        const QJsonArray at = json(r).toObject().value("variables").toArray().first().toObject().value("at").toArray();
+        QVERIFY2(at.size() == 3 && std::abs(at.at(0).toArray().at(1).toDouble() - 1) < 1e-6 && std::abs(at.at(1).toArray().at(1).toDouble()) < 1e-6
+                     && std::abs(at.at(2).toArray().at(1).toDouble()) < 1e-6,
+                 qPrintable(text(r)));
+        QucsSettings.NgspiceExecutable = before;
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // 3: an equation's variable named as a net - under ngspice it writes
+    // over the node's voltage, and never appears. Not a .param's, nor a
+    // name no net has.
+    void anEquationNamedAsANetIsWarned()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"atomic", true}, {"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 200}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 250}, {"y", 200}, {"rotation", 1}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.1"}, {"to", "R1.2"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "R1.1"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "R1.2"}, {"name", "tj1"}}}},
+            QJsonObject{{"tool", "add_analysis"}, {"arguments", QJsonObject{{"kind", "tran"}, {"stop", "1m"}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "NutmegEq"}, {"name", "NutmegEq1"}, {"x", 400}, {"y", 400},
+                                                                                {"equations", QJsonArray{"Tj1=v(tj1)+27", "ok1=v(tj1)*2", "time=1"}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Eqn"}, {"name", "Eqn1"}, {"x", 600}, {"y", 400},
+                                                                                {"equations", QJsonArray{"TJ1=3", "tj1b=v(tj1)"}}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QStringList said;
+        for (const QJsonValue& w : json(call("check_schematic")).toObject().value("warnings").toArray()) said << w.toObject().value("message").toString();
+        const QString all = said.join(" | ");
+        QVERIFY2(all.contains("NutmegEq1: its variable Tj1 is named as the net tj1"), qPrintable(all));
+        QVERIFY2(all.contains("NutmegEq1: its variable time is named as the analysis's axis time"), qPrintable(all));
+        QVERIFY2(!all.contains("ok1") && !all.contains("variable TJ1") && !all.contains("tj1b"), qPrintable(all));   // a .param, and names of no net
+        // An Eqn that reads a voltage is a 'let' too.
+        QVERIFY(!failed(call("edit_component", {{"name", "Eqn1"}, {"equations", QJsonArray{"TJ1=v(tj1)"}}})));
+        said.clear();
+        for (const QJsonValue& w : json(call("check_schematic")).toObject().value("warnings").toArray()) said << w.toObject().value("message").toString();
+        QVERIFY2(said.join(" | ").contains("Eqn1: its variable TJ1 is named as the net tj1"), qPrintable(said.join(" | ")));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // 6: a dialog's tree read and its rows checked: Find and Replace's
+    // results, each a row with a check box - unchecked, nothing replaced;
+    // checked, the value.
+    void aDialogsTreeIsReadAndChecked()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 100}, {"properties", QJsonObject{{"R", "1k"}}}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R2"}, {"x", 300}, {"y", 100}, {"properties", QJsonObject{{"R", "1k"}}}})));
+        QJsonObject r = call("trigger_action", {{"action", "Edit > Replace..."}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "Find"}, {"value", "1k"}}, QJsonObject{{"control", "Replace with"}, {"value", "2k"}},
+                                                  QJsonObject{{"control", "Property"}, {"value", "R"}}}},
+                                {"press", "Find"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject tree;
+        for (const QJsonValue& c : json(call("get_dialog")).toObject().value("controls").toArray())
+            if (c.toObject().value("kind").toString() == "tree") tree = c.toObject();
+        QVERIFY2(tree.value("rows").toArray().size() == 2 && tree.value("checked").toArray() == QJsonArray({true, true})
+                     && tree.value("columns").toArray().contains("New value"),
+                 qPrintable(QJsonDocument(tree).toJson()));
+        const QString id = tree.value("id").toString();
+        const int r2 = tree.value("rows").toArray().at(0).toArray().at(1).toString() == "R2" ? 0 : 1;
+        r = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", id}, {"value", QJsonArray{r2, 0, false}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        tree = QJsonObject();
+        for (const QJsonValue& c : json(call("get_dialog")).toObject().value("controls").toArray())
+            if (c.toObject().value("kind").toString() == "tree") tree = c.toObject();
+        QCOMPARE(tree.value("checked").toArray().at(r2), QJsonValue(false));
+        // A row that is not there, or a text where a box is: said.
+        QVERIFY(failed(call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", id}, {"value", QJsonArray{7, 0, true}}}}}})));
+        QVERIFY(!failed(call("set_dialog", {{"press", "Replace Checked"}})));
+        QVERIFY(!failed(call("set_dialog", {{"press", "Close"}})));
+        const QJsonObject summary = json(call("get_schematic")).toObject();
+        const auto value = [&](const char* name) {
+            for (const QJsonValue& p : componentIn(summary, name).value("properties").toArray())
+                if (p.toObject().value("name").toString() == "R") return p.toObject().value("value").toString();
+            return QString();
+        };
+        QCOMPARE(value("R1"), QString("2k"));
+        QCOMPARE(value("R2"), QString("1k"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // 7: diagrams on a data display: 'document': "data_display" makes the
+    // schematic's; a .dpl named but not open is opened; one of no open
+    // schematic is refused, saying why.
+    void diagramsGoOnTheDataDisplay()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document", {{"as", "withdpl.sch"}, {"replace", true}})));
+        const QString dpl = QFileInfo(front()->getDocName()).absoluteDir().filePath("withdpl.dpl");
+        QFile::remove(dpl);
+        QJsonObject r = call("add_diagram", {{"path", "withdpl.sch"}, {"document", "data_display"}, {"type", "rect"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("withdpl.dpl, the data display, is open for it"), qPrintable(text(r)));
+        QVERIFY(front()->getDocName().endsWith("withdpl.dpl"));
+        QVERIFY(json(call("get_schematic", {{"path", "withdpl.sch"}})).toObject().value("diagrams").toArray().isEmpty());
+        QCOMPARE(json(call("get_schematic", {{"path", "withdpl.dpl"}})).toObject().value("diagrams").toArray().size(), 1);
+        QVERIFY(!failed(call("save_document", {{"path", "withdpl.dpl"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "withdpl.dpl"}})));
+        // Closed: opened again for the next diagram tool.
+        r = call("edit_diagram", {{"path", "withdpl.dpl"}, {"diagram", 1}, {"title", "again"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(front()->getDocName().endsWith("withdpl.dpl"));
+        // Its schematic closed too: the .dpl is there, and opened all the same.
+        QVERIFY(!failed(call("save_document", {{"path", "withdpl.dpl"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "withdpl.dpl"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "withdpl.sch"}, {"unsaved", "discard"}})));
+        r = call("add_trace", {{"path", "withdpl.dpl"}, {"diagram", 1}, {"variable", "v(x)"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(front()->getDocName().endsWith("withdpl.dpl"));
+        QVERIFY(!failed(call("open_document", {{"path", "withdpl.sch"}})));
+        // None of a schematic that is open: refused.
+        r = call("add_diagram", {{"path", "nosuch.dpl"}});
+        QVERIFY2(failed(r) && text(r).contains("no open schematic nosuch.sch"), qPrintable(text(r)));
+        // 'document' is add_diagram's alone.
+        QVERIFY(failed(call("edit_diagram", {{"path", "withdpl.sch"}, {"document", "data_display"}, {"diagram", 1}})));
+        QVERIFY(failed(call("add_diagram", {{"path", "withdpl.sch"}, {"document", "elsewhere"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "withdpl.dpl"}, {"unsaved", "discard"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "withdpl.sch"}, {"unsaved", "discard"}})));
+    }
+
+    // The smaller notes: replace_component from unnamed pins (the built-in
+    // OpAmp) onto named ones (a library 741) went by number - its + input
+    // to the 741's output - with nothing said. Refused when the numbers do
+    // not match the roles and places, with a map to pass back as 'pins';
+    // taken by number when they do (the TI model's).
+    void unnamedPinsOntoNamedOnesAreGuessed()
+    {
+        const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
+        if (!QFileInfo::exists(library + "/OpAmps.lib")) QSKIP("no library here");
+        const QString was = QucsSettings.LibDir;
+        QucsSettings.LibDir = library + "/";
+        struct Back {
+            QString was;
+            ~Back() { QucsSettings.LibDir = was; }
+        } back{was};
+        for (const int turns : {0, 2}) {
+            QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+            QJsonObject r = call("batch", {{"atomic", true}, {"calls", QJsonArray{
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "OpAmp"}, {"name", "U1"}, {"x", 400}, {"y", 300}, {"rotation", turns}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "Rin"}, {"x", 200}, {"y", 200}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "Rp"}, {"x", 200}, {"y", 400}}}},
+                QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "RL"}, {"x", 600}, {"y", 300}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "Rin.2"}, {"to", "U1.1"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "Rp.2"}, {"to", "U1.2"}}}},
+                QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "U1.3"}, {"to", "RL.1"}}}}}}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            const QJsonObject lib{{"Lib", "OpAmps"}, {"Comp", "uA741"}};
+            r = call("replace_component", {{"name", "U1"}, {"type", "Lib"}, {"properties", lib}});
+            QVERIFY2(failed(r) && text(r).contains("'pins': {\"1\": \"INN\", \"2\": \"INP\", \"3\": \"OUT\"}")
+                         && text(r).contains("2 (the + input) would go to 2 (OUT), not 3 (INP)"),
+                     qPrintable(QString::number(turns) + ": " + text(r)));
+            r = call("replace_component", {{"name", "U1"}, {"type", "Lib"}, {"properties", lib},
+                                           {"pins", QJsonObject{{"1", "INN"}, {"2", "INP"}, {"3", "OUT"}}}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            const QJsonObject nodes = json(call("get_netlist", {{"map", true}})).toObject().value("nodes").toObject();
+            const auto together = [&](const QString& a, const QString& b) {
+                for (const QJsonValue& pins : nodes)
+                    if (pins.toArray().contains(a) && pins.toArray().contains(b)) return true;
+                return false;
+            };
+            QVERIFY2(together("Rin.2", "U1.1 (INN)") && together("Rp.2", "U1.3 (INP)") && together("RL.1", "U1.2 (OUT)"),
+                     qPrintable(QJsonDocument(nodes).toJson()));
+            QVERIFY(!failed(call("undo")));
+            // The TI model's numbers are its roles (1 INN, 2 INP, 3 OUT): by number.
+            r = call("replace_component", {{"name", "U1"}, {"type", "Lib"}, {"properties", QJsonObject{{"Lib", "OpAmps"}, {"Comp", "ua741(TI)"}}}});
+            QVERIFY2(!failed(r) && json(r).toObject().value("mapped").toString() == "by number", qPrintable(text(r)));
+            QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        }
+        // A part with no roles, turned: its pins' places as its type draws
+        // them (a resistor turned round has pin 1 on the right, where the
+        // new part's b is - but as drawn it is on the left, a's side).
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"atomic", true}, {"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Port"}, {"name", "a"}, {"x", 100}, {"y", 100}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "Port"}, {"name", "b"}, {"x", 300}, {"y", 100},
+                                                                                {"properties", QJsonObject{{"Num", "2"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 200}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "a.1"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "b.1"}, {"to", "R1.2"}}}},
+            QJsonObject{{"tool", "save_document"}, {"arguments", QJsonObject{{"as", "twopin.sch"}, {"replace", true}}}},
+            QJsonObject{{"tool", "make_symbol"}, {"arguments", QJsonObject{{"sides", QJsonObject{{"a", "left"}, {"b", "right"}}}}}},
+            QJsonObject{{"tool", "save_document"}, {"arguments", QJsonObject{}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("batch", {{"atomic", true}, {"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "RX"}, {"x", 300}, {"y", 200}, {"rotation", 2}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "Ra"}, {"x", 100}, {"y", 300}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "Rb"}, {"x", 500}, {"y", 300}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "RX.1"}, {"to", "Rb.1"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "RX.2"}, {"to", "Ra.2"}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("replace_component", {{"name", "RX"}, {"type", "Sub"}, {"properties", QJsonObject{{"File", "twopin.sch"}}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("mapped").toString() == "by number", qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "twopin.sch"}, {"unsaved", "discard"}})));
+    }
+
+    // 4: a Verilog-A module ngspice was not given: where Qucs-S looked
+    // (no project: beside the schematic), and where the module is if it
+    // can see it - said with ngspice's error.
+    void aModuleNotLoadedIsExplained()
+    {
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (ngspice.isEmpty()) QSKIP("no ngspice here");
+        const QString before = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = ngspice;
+        const QString folder = dir.filePath("va_loose");
+        QVERIFY(QDir().mkpath(folder));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("batch", {{"atomic", true}, {"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "SpiceModel"}, {"name", "SpiceModel1"}, {"x", 400}, {"y", 400},
+                                                                                {"properties", QJsonObject{{"Line_1", ".model amp_model zzamp (gain=10)"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "SPICE_dev"}, {"name", "X1"}, {"x", 300}, {"y", 200},
+                                                                                {"properties", QJsonObject{{"Letter", "N"}, {"Model", "amp_model"}}}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 200}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "X1.1"}, {"to", "R1.2"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "X1.2"}, {"to", "ground"}}}},
+            QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "X1.3"}, {"to", "R1.1"}}}},
+            QJsonObject{{"tool", "add_analysis"}, {"arguments", QJsonObject{{"kind", "op"}}}},
+            QJsonObject{{"tool", "save_document"}, {"arguments", QJsonObject{{"as", folder + "/vauser.sch"}, {"replace", true}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const auto hint = [this] {
+            const QJsonObject run = json(call("simulate", {}, 120000)).toObject();
+            for (const QJsonValue& e : run.value("errors").toArray())
+                if (e.toObject().contains("hint")) return e.toObject().value("hint").toString();
+            return QStringLiteral("(no hint) ") + QJsonDocument(run.value("errors").toArray()).toJson();
+        };
+        QString said = hint();
+        QVERIFY2(said.contains("no .va or .osdi it can see defines a module zzamp") && said.contains("no project is open")
+                     && said.contains(QDir::toNativeSeparators(QFileInfo(folder).absoluteFilePath()).section('/', -1)),
+                 qPrintable(said));
+        // In a folder below it: found there, and said not to be loaded.
+        QVERIFY(QDir().mkpath(folder + "/models"));
+        QFile va(folder + "/models/zzamp.va");
+        QVERIFY(va.open(QIODevice::WriteOnly));
+        va.write("`include \"disciplines.vams\"\nmodule zzamp(a, b, c);\ninout a, b, c;\nelectrical a, b, c;\nanalog begin\nend\nendmodule\n");
+        va.close();
+        const QString workspace = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QucsSettings.qucsWorkspaceDir.setPath(folder);
+        said = hint();
+        QucsSettings.qucsWorkspaceDir.setPath(workspace);
+        QVERIFY2(said.contains("zzamp is a Verilog-A module, defined in models/zzamp.va - not loaded"), qPrintable(said));
+        QucsSettings.NgspiceExecutable = before;
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
 };

@@ -61,6 +61,8 @@ Volt_ac::Volt_ac()
                             QObject::tr("offset voltage (SPICE only)")));
   Props.append(new Property("TD", "0", false,
                             QObject::tr("delay time (SPICE only)")));
+  Props.append(new Property("ACmag", "", false,
+                            QObject::tr("magnitude in an AC analysis, when not U (SPICE only; empty: U)")));
 
   rotate();  // fix historical flaw
 }
@@ -107,9 +109,13 @@ QString Volt_ac::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompa
 
     QString VO = spicecompat::normalize_value(getProperty("VO")->Value);
     QString TD = spicecompat::normalize_value(getProperty("TD")->Value);
+    // The AC magnitude is U unless ACmag says: U = 0 for no transient
+    // left an AC analysis at 0 too.
+    const Property* acmag = getProperty("ACmag");
+    const QString mag = acmag == nullptr || acmag->Value.trimmed().isEmpty() ? volts : spicecompat::normalize_value(acmag->Value);
 
     s += QStringLiteral(" DC %1 SIN(%1 %2 %3 %4 %5 %6) AC %7 ACPHASE %8\n")
-            .arg(VO).arg(volts).arg(freq).arg(TD).arg(theta).arg(phase).arg(volts).arg(phase);
+            .arg(VO).arg(volts).arg(freq).arg(TD).arg(theta).arg(phase).arg(mag).arg(phase);
     return s;
 }
 
@@ -121,8 +127,8 @@ QString Volt_ac::netlist()
   for (Port *p1 : Ports)
     s += " "+p1->Connection->Name;   // node names
 
-  // output all properties
-  for(int i=0; i <= Props.count()-3; i++)
+  // output all properties but the SPICE ones (VO and after)
+  for(int i=0; i < Props.count() && Props.at(i)->Name != "VO"; i++)
     if(Props.at(i)->Name != "Symbol")
       s += " "+Props.at(i)->Name+"=\""+Props.at(i)->Value+"\"";
 

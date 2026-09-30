@@ -805,23 +805,46 @@ void valueIssues(Schematic* doc, QList<Issue>* warnings, QList<Issue>* notes)
 
 // An AC analysis with nothing to drive it: every voltage and current of
 // it is 0. Not told when a part the check cannot see into may hold the
-// source.
+// source. A Vac or Iac of AC magnitude 0 drives nothing either: its
+// magnitude is its amplitude U (I) unless ACmag says - U = 0 to silence a
+// transient silences the AC analysis too.
 void acIssues(Schematic* doc, QList<Issue>& out)
 {
     static const QStringList acSources{QStringLiteral("Vac"), QStringLiteral("Iac"), QStringLiteral("Pac"),
                                        QStringLiteral("Vac_SPICE"), QStringLiteral("AM_Mod"), QStringLiteral("PM_Mod")};
     static const QRegularExpression acWord(QStringLiteral("\\bac\\b"), QRegularExpression::CaseInsensitiveOption);
     const Component* analysis = nullptr;
+    QStringList silent;   // Vac and Iac of AC magnitude 0
     for (const Component* c : doc->a_DocComps) {
         if (!inCircuit(c)) continue;
         if (c->Model == QLatin1String(".AC") && analysis == nullptr) analysis = c;
+        if ((c->Model == QLatin1String("Vac") || c->Model == QLatin1String("Iac")) && !c->Props.isEmpty()) {
+            const Property* acmag = nullptr;
+            for (const Property* p : c->Props)
+                if (p->Name == QLatin1String("ACmag")) acmag = p;
+            const bool own = acmag != nullptr && !acmag->Value.trimmed().isEmpty();
+            const qucs_s::units::Reading r = qucs_s::units::read(own ? acmag->Value : c->Props.first()->Value);
+            if (r.kind == qucs_s::units::Reading::Number && r.value == 0) {
+                silent << (own ? tr("%1 (its ACmag is %2)").arg(c->Name, acmag->Value.trimmed())
+                               : tr("%1 (its %2 is %3, which with no ACmag is its AC magnitude too)")
+                                     .arg(c->Name, c->Props.first()->Name, c->Props.first()->Value.trimmed()));
+                continue;
+            }
+        }
         if (opaque(c) || acSources.contains(c->Model)) return;
         // A SPICE source of the user's text: "DC 0 AC 1".
         if ((c->Model == QLatin1String("S4Q_V") || c->Model == QLatin1String("S4Q_I"))
             && std::any_of(c->Props.cbegin(), c->Props.cend(), [](const Property* p) { return acWord.match(p->Value).hasMatch(); }))
             return;
     }
-    if (analysis != nullptr)
+    if (analysis == nullptr) return;
+    if (!silent.isEmpty())
+        out << Issue{Severity::Warning,
+                     tr("%1's only AC source%2 %3 of AC magnitude 0, so every voltage and current of it is 0: an "
+                        "ACmag (1 for a transfer function) sets the AC magnitude apart from the transient's amplitude")
+                         .arg(analysis->Name, silent.size() == 1 ? tr(" is") : tr("s are"), silent.join(tr(" and "))),
+                     QPoint(analysis->cx, analysis->cy), analysis->Name};
+    else
         out << Issue{Severity::Warning,
                      tr("%1 has nothing to drive it: no Vac, Iac, Pac or SPICE source with an AC value, so every voltage "
                         "and current of it is 0")
@@ -879,6 +902,49 @@ void nameIssues(Schematic* doc, QList<Issue>& out)
                          tr("%1 reads v(%2), but no net is labelled %3: the equation reads nothing")
                              .arg(c->Name, names.first(), listed(names)),
                          QPoint(c->cx, c->cy), c->Name};
+    }
+}
+
+// An equation's variable named as a net (Tj1 = v(tj1) + 27 beside the
+// net tj1), a probe, or the analysis's axis (time, frequency). Under a
+// SPICE simulator the equation is a 'let' after the run, and a vector of
+// that name is the node's: it writes over the node's voltage - v(tj1)
+// then reads the equation's result - and its variable never appears. An
+// Eqn that reads no voltage or current is a .param, apart from the nodes.
+void shadowIssues(Schematic* doc, QList<Issue>& out)
+{
+    QHash<QString, QString> nets;   // lower case: as written
+    for (const Node* n : doc->a_DocNodes)
+        if (n->hasLabel()) nets.insert(n->label()->Name.toLower(), n->label()->Name);
+    for (const Wire* w : doc->a_DocWires)
+        if (w->hasLabel()) nets.insert(w->label()->Name.toLower(), w->label()->Name);
+    QHash<QString, QString> probes;
+    for (const Component* c : doc->a_DocComps)
+        if (inCircuit(c) && c->isProbe) probes.insert(c->Name.toLower(), c->Name);
+    static const QStringList axes{QStringLiteral("time"), QStringLiteral("frequency")};
+    static const QRegularExpression simulated(QStringLiteral("(?<![A-Za-z0-9_])[vi]\\s*\\("), QRegularExpression::CaseInsensitiveOption);
+    for (const Component* c : doc->a_DocComps) {
+        const bool nutmeg = c->Model == QLatin1String("NutmegEq");
+        if (!inCircuit(c) || !(nutmeg || c->Model == QLatin1String("Eqn"))) continue;
+        for (int i = nutmeg ? 1 : 0; i < c->Props.size(); ++i) {
+            const Property* p = c->Props.at(i);
+            if (!nutmeg && p->Name == QLatin1String("Export")) continue;
+            if (!nutmeg && !simulated.match(p->Value).hasMatch()) continue;
+            const QString name = p->Name.toLower();
+            QString clash;
+            if (nets.contains(name))
+                clash = tr("the net %1: under ngspice the equation writes over the node's voltage (v(%1) reads its result "
+                           "instead)").arg(nets.value(name));
+            else if (probes.contains(name))
+                clash = tr("the probe %1: under ngspice the equation writes over the probe's vector").arg(probes.value(name));
+            else if (axes.contains(name))
+                clash = tr("the analysis's axis %1: under ngspice the equation writes over it").arg(name);
+            if (clash.isEmpty()) continue;
+            out << Issue{Severity::Warning,
+                         tr("%1: its variable %2 is named as %3, and %2 is not in the dataset - name it otherwise (%2_eq)")
+                             .arg(c->Name, p->Name, clash),
+                         QPoint(c->cx, c->cy), c->Name};
+        }
     }
 }
 
@@ -1251,18 +1317,27 @@ QList<Issue> check(Schematic* doc)
     QHash<QString, const Component*> byName;
     QHash<QString, const Component*> byNameWithoutCase;   // "r r1": SpiceModel and name, lower case
     const bool caseless = spiceSimulator(simulator) && simulator != spicecompat::simNotSpecified;
-    // The Verilog-A libraries and sources of the open project, read when a
+    // The Verilog-A libraries and sources of the open project and those
+    // beside the schematic (with no project, the only ones), read when a
     // Verilog-A component asks: ngspice gets its modules from them.
     QStringList vaLibraries, vaSources;
     bool vaListed = false;
+    const bool inAProject = QucsMain != nullptr && !QucsMain->ProjName.isEmpty();
     const auto moduleInProject = [&](const QString& module) {
-        if (QucsMain == nullptr || QucsMain->ProjName.isEmpty()) return true;   // nowhere to look
+        if (!inAProject && doc->getDocName().isEmpty()) return true;   // nowhere to look
         if (!vaListed) {
-            const QDir project(QucsSettings.QucsWorkDir);
-            for (const QString& file : misc::projectFiles(project, {"*.osdi"}))
-                vaLibraries << project.absoluteFilePath(file);
-            for (const QString& file : misc::projectFiles(project, {"*.va"}))
-                vaSources << project.absoluteFilePath(file);
+            if (inAProject) {
+                const QDir project(QucsSettings.QucsWorkDir);
+                for (const QString& file : misc::projectFiles(project, {"*.osdi"}))
+                    vaLibraries << project.absoluteFilePath(file);
+                for (const QString& file : misc::projectFiles(project, {"*.va"}))
+                    vaSources << project.absoluteFilePath(file);
+            }
+            if (!doc->getDocName().isEmpty()) {
+                const QDir beside = QFileInfo(doc->getDocName()).absoluteDir();
+                for (const QString& file : beside.entryList({"*.osdi"}, QDir::Files)) vaLibraries << beside.absoluteFilePath(file);
+                for (const QString& file : beside.entryList({"*.va"}, QDir::Files)) vaSources << beside.absoluteFilePath(file);
+            }
             vaListed = true;
         }
         return std::any_of(vaLibraries.cbegin(), vaLibraries.cend(),
@@ -1415,8 +1490,10 @@ QList<Issue> check(Schematic* doc)
         if (simulator == spicecompat::simNgspice && dynamic_cast<const vacomponent*>(c) != nullptr
             && !moduleInProject(c->Model))
             warnings << Issue{Severity::Warning,
-                              tr("%1: the Verilog-A module %2 is in no library (.osdi) or source (.va) of the project")
-                                  .arg(c->Name, c->Model),
+                              inAProject ? tr("%1: the Verilog-A module %2 is in no library (.osdi) or source (.va) of the project, nor "
+                                              "beside the schematic").arg(c->Name, c->Model)
+                                         : tr("%1: the Verilog-A module %2 is in no library (.osdi) or source (.va) beside the "
+                                              "schematic - with no project open, those are the ones loaded").arg(c->Name, c->Model),
                               QPoint(c->cx, c->cy), c->Name};
         // A winding refers to its magnetic core by name.
         if (c->Model == QLatin1String("WINDING")) {
@@ -1496,7 +1573,10 @@ QList<Issue> check(Schematic* doc)
             sourceLoops(doc, nets, errors, warnings);
             valueIssues(doc, &warnings, nullptr);
             acIssues(doc, warnings);
-            if (spiceSimulator(simulator)) nameIssues(doc, warnings);
+            if (spiceSimulator(simulator)) {
+                nameIssues(doc, warnings);
+                shadowIssues(doc, warnings);
+            }
         }
     }
 

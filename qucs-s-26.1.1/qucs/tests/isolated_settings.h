@@ -22,6 +22,9 @@ inline void useIsolatedSettings(const QString& dir)
     // it lists: there too, not the user's.
     qputenv("QUCS_CLAUDE_HISTORY", (dir + "/claude-conversations").toUtf8());
     qputenv("CLAUDE_CONFIG_DIR", (dir + "/claude-config").toUtf8());
+    // The caches - project scratch folders, the netlists runs are kept
+    // with: there too (misc::cacheDir()).
+    qputenv("QUCS_CACHE_DIR", (dir + "/cache").toUtf8());
 }
 
 #endif // ISOLATED_SETTINGS_H

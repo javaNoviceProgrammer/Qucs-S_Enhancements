@@ -58,7 +58,7 @@ const PaintingType kTypes[] = {
     {"dimension", "Dimension", "a dimension: the distance between two points, written along a line"},
     {"formula", "Formula", "a formula in TeX, typeset"},
     {"port", ".PortSym", "a pin of a symbol (moved, and given a label - what the instances show beside the pin instead of its name, \"\" for nothing: the schematic's Port components make them)"},
-    {"id", ".ID", "the symbol's name text (only moved)"},
+    {"id", ".ID", "the symbol's name text (moved; its prefix and the subcircuit's parameters, which set_subcircuit_parameters sets)"},
 };
 
 const char* const kPenStyles[] = {"none", "solid", "dash", "dot", "dash_dot", "dash_dot_dot"};

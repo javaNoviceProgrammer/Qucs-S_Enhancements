@@ -51,6 +51,7 @@ private:
     void cleanSpiceinit();
     void createSpiceinit(const QString &initial_spiceinit);
     QString osdiLoads(const QString& netlist) const;
+    QStringList besideSchematic(const QStringList& patterns) const;
 
 public:
     explicit Ngspice(Schematic* schematic, QObject *parent = 0);

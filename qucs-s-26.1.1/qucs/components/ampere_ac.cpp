@@ -59,6 +59,8 @@ Ampere_ac::Ampere_ac()
                             QObject::tr("offset current (SPICE only)")));
   Props.append(new Property("TD", "0", false,
                             QObject::tr("delay time (SPICE only)")));
+  Props.append(new Property("ACmag", "", false,
+                            QObject::tr("magnitude in an AC analysis, when not I (SPICE only; empty: I)")));
 
   rotate();  // fix historical flaw
 }
@@ -97,6 +99,9 @@ QString Ampere_ac::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecom
 
     QString IO = spicecompat::normalize_value(getProperty("IO")->Value);
     QString TD = spicecompat::normalize_value(getProperty("TD")->Value);
+    // The AC magnitude is I unless ACmag says.
+    const Property* acmag = getProperty("ACmag");
+    const QString mag = acmag == nullptr || acmag->Value.trimmed().isEmpty() ? amperes : spicecompat::normalize_value(acmag->Value);
 
     QString phase = Props.at(2)->Value;
     phase.remove(' ');
@@ -106,7 +111,22 @@ QString Ampere_ac::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecom
     theta.remove(' ');
     if (theta.isEmpty()) theta="0";
     s += QStringLiteral(" DC %7 SIN(%7 %1 %2 %8 %3 %4) AC %5 ACPHASE %6\n")
-             .arg(amperes).arg(freq).arg(theta).arg(phase).arg(amperes).arg(phase)
+             .arg(amperes).arg(freq).arg(theta).arg(phase).arg(mag).arg(phase)
              .arg(IO).arg(TD);
     return s;
+}
+
+QString Ampere_ac::netlist()
+{
+  QString s = Model+":"+Name;
+
+  // output all node names
+  for (Port *p1 : Ports)
+    s += " "+p1->Connection->Name;   // node names
+
+  // output all properties but the SPICE ones (IO and after)
+  for(int i=0; i < Props.count() && Props.at(i)->Name != "IO"; i++)
+    s += " "+Props.at(i)->Name+"=\""+Props.at(i)->Value+"\"";
+
+  return s + '\n';
 }

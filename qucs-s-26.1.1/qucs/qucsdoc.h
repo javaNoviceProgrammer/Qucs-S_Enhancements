@@ -94,6 +94,11 @@ public:
     bool failed = false;
   };
   Run lastRun() const { return a_lastRun; }
+  /// When a part of it was last made again from its properties - an edit,
+  /// or a value set for a while and put back (tune, the tuner), which is
+  /// none: its circuit may have changed then.
+  QDateTime touched() const { return a_touched; }
+  void touch() { a_touched = QDateTime::currentDateTime(); }
   void setLastRun(const QDateTime& at, bool failed) { a_lastRun = {at, failed}; }
   /// Counts an edit of the content, made by editor().
   void edited();
@@ -133,6 +138,7 @@ private:
   quint64 a_revision = 0;
   QList<Edit> a_recentEdits;
   Run a_lastRun;
+  QDateTime a_touched;
 };
 
 #endif

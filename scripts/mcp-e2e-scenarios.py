@@ -453,9 +453,65 @@ def s8_741_bench(s):
     check('s8', 'the subcircuit simulates as the part did (2.1 V)', sim.get('succeeded') and peak and near(peak, 2.1, 0.02), (sim.get('errors'), _stats(ds, 'tran.v(out)')))
     s.call('save_document', {'path': 's8.sch'})
 
+@scenario
+def s9_dialogs(s):
+    """the window side: Document Settings and Find and Replace opened by their menu actions, read, answered - Cancel
+    changes nothing, OK does - a tool refused while a dialog waits, a search's rows checked and unchecked, the
+    schematic, its netlist and a simulation checked after each"""
+    s.call('import_netlist', {'text': 'lowpass\nV1 in 0 DC 0 AC 1\nR1 in out 1k\nC1 out 0 100n\n.ac dec 20 10 1meg\n.end',
+                              'save_as': WS + '/s9.sch'})
+    settings = lambda: s.call('get_schematic', {'path': 's9.sch'})['settings']
+    rvalue = lambda: [p['value'] for c in s.call('get_schematic', {'path': 's9.sch', 'components': ['R1']})['components']
+                      for p in c['properties'] if p['name'] == 'R'][0]
+    s.call('trigger_action', {'action': 'File > Document Settings...', 'path': 's9.sch'})
+    d = s.call('get_dialog', {})
+    field = {c['label']: c for c in d['controls']}
+    check('s9', 'Document Settings: read, its Data Set field the schematic\'s', d['title'] == 'Edit File Properties'
+          and field.get('Data Set', {}).get('value') == 's9.dat', [(c['label'], c.get('value')) for c in d['controls']][:14])
+    parts = len(s.call('get_schematic', {'path': 's9.sch'})['components'])
+    refused = s.call('add_component', {'path': 's9.sch', 'type': 'R', 'x': 600, 'y': 600}, ok=False)
+    check('s9', 'while it waits: another tool refused, the schematic as it was', isinstance(refused, str) and 'waits for an answer' in refused
+          and len(s.call('get_schematic', {'path': 's9.sch'})['components']) == parts, refused)
+    s.call('set_dialog', {'set': [{'control': 'Data Set', 'value': 's9_zzz.dat'}], 'press': 'Cancel'})
+    check('s9', 'Cancel: the dataset setting unchanged', settings().get('dataset') == 's9.dat', settings())
+    s.call('trigger_action', {'action': 'File > Document Settings...', 'path': 's9.sch'})
+    s.call('set_dialog', {'set': [{'control': 'Data Set', 'value': 's9_run.dat'}], 'press': 'OK'})
+    check('s9', 'OK: the dataset is s9_run.dat', settings().get('dataset') == 's9_run.dat', settings())
+    sim = s.call('simulate', {'path': 's9.sch', 'brief': True})
+    fc = 1 / (2 * math.pi * 1e3 * 100e-9)
+    bw = lambda: s.call('get_dataset', {'path': 's9.sch', 'variables': ['ac.v(out)'], 'measure': ['bandwidth']})
+    ds = bw()
+    check('s9', 'simulated into s9_run.dat.ngspice: the bandwidth 1/(2 pi RC) within 1 %', sim.get('succeeded')
+          and os.path.isfile(WS + '/s9_run.dat.ngspice') and ds['dataset'].endswith('s9_run.dat.ngspice')
+          and near(ds['variables'][0]['measurements']['bandwidth']['value'], fc, 0.01), (sim.get('errors'), ds.get('dataset')))
+    # Find and Replace: its results a tree of rows, each checked or not.
+    s.call('trigger_action', {'action': 'Edit > Replace...', 'path': 's9.sch'})
+    s.call('set_dialog', {'set': [{'control': 'Find', 'value': '1k'}, {'control': 'Replace with', 'value': '2k'},
+                                  {'control': 'Component type', 'value': 'R_SPICE'}], 'press': 'Find'})
+    tree = [c for c in s.call('get_dialog', {})['controls'] if c['kind'] == 'tree']
+    check('s9', 'Find: R1 found, a row of the tree, checked', len(tree) == 1 and tree[0]['rows'] == [['s9.sch', 'R1', 'R_SPICE', 'R', '1k', '2k']]
+          and tree[0].get('checked') == [True], tree)
+    s.call('set_dialog', {'set': [{'control': tree[0]['id'], 'value': [0, 0, False]}], 'press': 'Replace Checked'})
+    check('s9', 'the row unchecked: Replace Checked replaces nothing', rvalue() == '1k', rvalue())
+    s.call('set_dialog', {'set': [{'control': tree[0]['id'], 'value': [0, 0, True]}], 'press': 'Replace Checked'})
+    s.call('set_dialog', {'press': 'Close'})
+    _, net = netlist_nodes(s, 's9.sch')
+    net = '\n'.join(net) if isinstance(net, list) else net
+    check('s9', 'checked: R1 is 2k, in the netlist too', rvalue() == '2k' and any(l.startswith('R1 ') and '2K' in l.upper() for l in net.splitlines()),
+          [l for l in net.splitlines() if l.startswith('R1')])
+    ds = bw()
+    check('s9', 'the dataset (of 1k) is stale, and certainly', ds.get('stale certain') is True, {k: ds.get(k) for k in ('stale', 'stale certain')})
+    s.call('simulate', {'path': 's9.sch', 'brief': True})
+    ds = bw()
+    check('s9', 'simulated again: half the bandwidth, and not stale', near(ds['variables'][0]['measurements']['bandwidth']['value'], fc / 2, 0.01)
+          and 'stale' not in ds, (ds['variables'][0]['measurements']['bandwidth'].get('value'), ds.get('stale')))
+    s.call('undo', {'path': 's9.sch'})
+    check('s9', 'undo takes the replace back: R1 is 1k', rvalue() == '1k', rvalue())
+    s.call('save_document', {'path': 's9.sch'})
+
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
-    which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8']
+    which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9']
     print('files in', ROOT, '- library:', os.path.abspath(LIBRARY) if LIBRARY else own_library(APP) + " (the app's own)")
     for name, fn in list(globals().items()):
         if name[:2] in which and name[2] == '_' and callable(fn): fn()
