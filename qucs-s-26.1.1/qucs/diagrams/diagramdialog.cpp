@@ -21,6 +21,7 @@
 */
 #include "diagramdialog.h"
 #include "dataimport.h"
+#include "dataexportpanel.h"
 #include "dataimportpanel.h"
 #include "extsimkernels/spicecompat.h"
 #include "ink.h"
@@ -1033,6 +1034,13 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   t->addTab(a_import, tr("Import"));
   connect(a_import, &DataImportPanel::datasetsChanged, this, &DiagramDialog::slotDatasetsChanged);
 
+  // The Export tab: a dataset's variables written to a file for another
+  // program (CSV, Excel, text, NumPy, ...); the Data tab's dataset shown
+  // until one is chosen there.
+  a_export = new DataExportPanel(importFolder, t);
+  a_export->setTraces([this] { return traceFiles(); });
+  t->addTab(a_export, tr("Export"));
+
   connect(t, &QTabWidget::currentChanged, this, &DiagramDialog::slotChangeTab);
   // ...........................................................
   QWidget *Butts = new QWidget();
@@ -1129,12 +1137,38 @@ void DiagramDialog::fillDatasets(const QString &select) {
     ChooseData->setCurrentIndex(own);
 }
 
+QList<QPair<QString, QString>> DiagramDialog::traceFiles() const {
+  // As Graph::loadDatFile finds them: a simulator's prefix is the file's
+  // suffix (ngspice/tran.v(out): name.dat.ngspice), name:variable another
+  // dataset beside the schematic.
+  QList<QPair<QString, QString>> list;
+  const QString dir = QFileInfo(defaultDataSet).absolutePath();
+  for (const auto &g : Graphs) {
+    QString var = g->Var, tail;
+    const qsizetype slash = var.indexOf('/');
+    if (slash > 0) {
+      tail = '.' + var.left(slash);
+      var = var.mid(slash + 1);
+    }
+    const qsizetype colon = var.indexOf(':');
+    QString file = defaultDataSet + tail;
+    if (colon > 0) {
+      file = dir + QDir::separator() + var.left(colon) + ".dat" + tail;
+      var = var.mid(colon + 1);
+    }
+    list.append({file, var.section('@', 0, 0)});
+  }
+  return list;
+}
+
 QString DiagramDialog::chosenDataset() const {
   const QVariant name = ChooseData->currentData();
   return name.isValid() ? name.toString() : ChooseData->currentText();
 }
 
 void DiagramDialog::slotDatasetsChanged(const QString &select) {
+  if (a_export != nullptr)
+    a_export->refresh();
   fillDatasets(select);
   slotReadVarsAndSetSimulator(0);
 }
@@ -1244,6 +1278,8 @@ void DiagramDialog::slotReadVars(int) {
   } else if (ChooseSimulator->currentText() == "SpiceOpus") {
     DocName += ".spopus";
   }
+  if (a_export != nullptr)
+    a_export->follow(Info.absolutePath() + QDir::separator() + DocName);
 
   QFile file(Info.absolutePath() + QDir::separator() + DocName);
   if (!file.open(QIODevice::ReadOnly)) {
