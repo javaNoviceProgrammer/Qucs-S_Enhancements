@@ -9608,8 +9608,8 @@ public:
         QJsonObject arguments = call.value(QLatin1String("arguments")).toObject();
         // A call's own max_chars, as every tool takes it: its answer cut.
         int most = 0;
-        const bool badMost = arguments.contains(QLatin1String("max_chars"))
-                             && !qucs_s::mcp::readMaxChars(arguments.take(QLatin1String("max_chars")), &most);
+        const QJsonValue given = arguments.take(QLatin1String("max_chars"));
+        const bool badMost = !given.isUndefined() && !qucs_s::mcp::readMaxChars(given, &most);
         const QPointer<BatchRun> self(this);
         const auto answered = [self, index, tool, arguments, most](const QJsonObject& result) {
             if (!self) return;
@@ -9635,7 +9635,7 @@ public:
             answered(result);
         };
         if (tool == QLatin1String("batch")) answered(errorResult(tr("A batch cannot hold another batch.")));
-        else if (badMost) answered(errorResult(tr("max_chars is a whole number of characters, 200 or more. Nothing was done.")));
+        else if (badMost) answered(errorResult(qucs_s::mcp::maxCharsRefusal(given)));
         else a_control->callTool(tool, arguments, after);
     }
 

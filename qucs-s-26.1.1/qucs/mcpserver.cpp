@@ -251,9 +251,33 @@ QString trimmedText(const QString& text, int most)
 
 bool readMaxChars(const QJsonValue& v, int* most)
 {
-    if (!v.isDouble() || v.toDouble() < 200 || v.toDouble() != std::floor(v.toDouble())) return false;
-    *most = int(std::min(v.toDouble(), 1e9));
+    double n = 0;
+    if (v.isDouble()) {
+        n = v.toDouble();
+    } else if (v.isString()) {
+        // Its digits, as a client with no type for it sends them.
+        static const QRegularExpression digits(QStringLiteral("^\\s*(\\d{1,12})\\s*$"));
+        const QRegularExpressionMatch m = digits.match(v.toString());
+        if (!m.hasMatch()) return false;
+        n = m.captured(1).toDouble();
+    } else {
+        return false;
+    }
+    if (n < 200 || n != std::floor(n)) return false;
+    *most = int(std::min(n, 1e9));
     return true;
+}
+
+QString maxCharsRefusal(const QJsonValue& v)
+{
+    QString given;
+    if (v.isDouble()) given = QStringLiteral("the number %1").arg(v.toDouble(), 0, 'g', 12);
+    else if (v.isString()) given = QStringLiteral("the text \"%1\"").arg(v.toString().left(40));
+    else if (v.isBool()) given = v.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    else if (v.isArray()) given = QStringLiteral("a list");
+    else if (v.isObject()) given = QStringLiteral("an object");
+    else given = QStringLiteral("null");
+    return QStringLiteral("max_chars is a whole number of characters, 200 or more (1000, or \"1000\"), not %1. Nothing was done.").arg(given);
 }
 
 QJsonObject trimmedTo(const QJsonObject& result, int most)
@@ -440,8 +464,7 @@ void Server::handle(const QJsonObject& message, const Reply& reply)
             if (!readMaxChars(v, &most)) {
                 reply(response(id, QJsonObject{{QStringLiteral("content"),
                                                 QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
-                                                                       {QStringLiteral("text"), QStringLiteral("max_chars is a whole number of "
-                                                                                                               "characters, 200 or more. Nothing was done.")}}}},
+                                                                       {QStringLiteral("text"), maxCharsRefusal(v)}}}},
                                                {QStringLiteral("isError"), true}}));
                 return;
             }

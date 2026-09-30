@@ -34,8 +34,14 @@ namespace qucs_s::mcp {
 QJsonObject structuredOf(const QJsonObject& result);
 
 /// max_chars as a call gives it: a whole number of characters, 200 or
-/// more (\a most then holds it); false for anything else.
+/// more (\a most then holds it) - a number, or its digits in a text
+/// ("1000": no tool's schema declares it, so a client with no type for it
+/// sends it so); false for anything else.
 bool readMaxChars(const QJsonValue& value, int* most);
+/// Why \a value is no max_chars, said: "max_chars is a whole number of
+/// characters, 200 or more (1000, or "1000"), not the text "abc". Nothing
+/// was done."
+QString maxCharsRefusal(const QJsonValue& value);
 
 /// A tools/call result cut to \a most characters of text: JSON as JSON, its
 /// biggest lists, maps and texts halved until it fits, then its items and
