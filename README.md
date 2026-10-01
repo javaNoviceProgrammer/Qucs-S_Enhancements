@@ -115,6 +115,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   other projects, none on a folder that is no project; the tooltip says
   which. A linked project shows open whether it was opened through its
   link or by the folder it leads to, and a long name ends before the dot.
+- **Long file names cut** (*Application Settings → Appearance → Cut long
+  file names after*, 50 characters unless set; *Never* shows them
+  whole): in a document's tab and in the Claude Code panel's pin and
+  document chip, a file's name longer than that ends in "…", its
+  extension always shown whole (`a_very_long_schematic_name_that_goes_on_and_on_pas….sch`).
+  Characters are counted as read: an accented letter or an emoji is one,
+  and never cut in two. The tab's tooltip gives the whole path; a change
+  of the setting retitles the open tabs at once. Claude's tools still
+  name each document whole, and take the cut name too. Found on the
+  way: an `&` in a file's name was taken for a shortcut's mark on its
+  tab ("R&D.sch" showed "RD.sch").
 - **Content panel categories are yours to set**: a *Text* category, right
   before *Others*, lists the `.txt` files. *Application Settings →
   Contents* has a row per category, its name and the patterns of the

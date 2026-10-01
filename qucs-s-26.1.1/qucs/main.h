@@ -140,6 +140,10 @@ struct tQucsSettings {
   bool ContentFolderIcons = false;   // Content panel: a folder icon on the sub-trees' folder rows
   bool ContentAutoRefresh = true;   // Content panel: look for files that came or went, every ...
   int ContentRefreshSeconds = 3;    // ... this many seconds
+  // A file's name in a document's tab and in the Claude Code panel: cut
+  // after this many characters, "…" for the rest, its extension whole
+  // (misc::shownFileName()); 0, never cut.
+  int FileNameCap = 50;
   // Content panel: the file name patterns of the categories the user
   // changed, by category key (ProjectView::patterns() has the defaults).
   QMap<QString, QString> ContentPatterns;

@@ -35,6 +35,7 @@
 #include <QString>
 #include <QStringList>
 #include <QRegularExpression>
+#include <QTextBoundaryFinder>
 #include <QFileInfo>
 #include <QDir>
 #include <QCryptographicHash>
@@ -428,6 +429,31 @@ QString misc::properFileName(const QString& Name)
 {
   QFileInfo Info(Name);
   return Info.fileName();
+}
+
+QString misc::shownFileName(const QString& path, int cap)
+{
+  const QString name = QFileInfo(path).fileName();
+  if (cap <= 0) return name;
+  // The extension, from the last dot: not a name's first character
+  // (.bashrc), nor its last.
+  const qsizetype dot = name.lastIndexOf(QLatin1Char('.'));
+  const bool extended = dot > 0 && dot < name.size() - 1;
+  const QString base = extended ? name.left(dot) : name;
+  // Characters as the reader counts them: a letter and its accent, an
+  // emoji of two halves, are one - and are not cut in two.
+  QTextBoundaryFinder characters(QTextBoundaryFinder::Grapheme, base);
+  int count = 0;
+  qsizetype cut = base.size();
+  for (qsizetype at = characters.toNextBoundary(); at >= 0; at = characters.toNextBoundary())
+    if (++count == cap) cut = at;
+  if (count <= cap) return name;
+  return base.left(cut) + QChar(0x2026) + (extended ? name.mid(dot) : QString());
+}
+
+QString misc::shownFileName(const QString& path)
+{
+  return shownFileName(path, QucsSettings.FileNameCap);
 }
 
 // #########################################################################

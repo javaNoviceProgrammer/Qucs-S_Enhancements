@@ -5176,6 +5176,52 @@ private slots:
         QVERIFY2(subject.contains("Settings/Language=English") && subject.contains("Grid/horizontal Grid=20"), qPrintable(subject));
     }
 
+    // A long file name, cut on its tab (Application Settings > Appearance),
+    // is whole to Claude: get_state and every answer name it whole, get_ui's
+    // tabs list it whole and say what the tab shows - and the name as shown
+    // finds it too. The setting is read and set by its key.
+    void longFileNamesAreWholeToClaude()
+    {
+        const QString name = QStringLiteral("a_very_long_schematic_name_that_goes_on_and_on_past_any_tabs.sch");   // 60 + .sch
+        const QString file = QucsSettings.qucsWorkspaceDir.absoluteFilePath(name);
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("save_document", {{"as", file}, {"replace", true}})));
+        const QString shown = misc::shownFileName(file, 50);
+        QVERIFY(shown != name && shown.endsWith(QChar(0x2026) + QStringLiteral(".sch")));
+        QCOMPARE(app->paneOf(QucsApp::documentWidget(app->getDoc()))->tabText(app->DocumentTab->currentIndex()), shown);
+        // Whole in the answers.
+        QJsonObject r = call("get_state");
+        bool whole = false;
+        for (const QJsonValue& v : json(r).toObject().value("documents").toArray()) whole = whole || v.toObject().value("title").toString() == name;
+        QVERIFY2(whole, qPrintable(text(r)));
+        // Found by either name.
+        QVERIFY(!failed(call("show_document", {{"path", name}})));
+        r = call("get_schematic", {{"path", shown}, {"format", "overview"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("get_ui", {{"area", "tabs"}});
+        QVERIFY2(json(r).toObject().value("controls").toArray().first().toObject().value("items").toArray().contains(QJsonValue(name)), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("shown cut").toObject().value("names").toObject().value(name).toString(), shown);
+        QVERIFY(!failed(call("new_document", {{"kind", "text"}})));
+        r = call("set_ui", {{"area", "tabs"}, {"set", QJsonArray{QJsonObject{{"control", "c1"}, {"value", shown}}}}});
+        QVERIFY2(!failed(r) && QFileInfo(app->getDoc()->getDocName()).fileName() == name, qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"path", "untitled"}, {"unsaved", "discard"}})));
+        r = call("context_menu", {{"on", QJsonObject{{"tab", shown}}}});
+        QVERIFY2(!failed(r) && text(r).contains("menu"), qPrintable(text(r)));
+        // The setting by its key; the tab follows at once.
+        r = call("get_settings", {{"scope", "app"}});
+        QJsonObject setting;
+        for (const QJsonValue& v : json(r).toObject().value("settings").toArray())
+            if (v.toObject().value("key").toString() == "Appearance/Cut long file names after (characters)") setting = v.toObject();
+        QVERIFY2(setting.value("value").toInt() == 50 && setting.value("type").toString() == "integer", qPrintable(text(r)));
+        r = call("set_settings", {{"scope", "app"}, {"values", QJsonObject{{"Cut long file names after (characters)", 8}}}}, 20000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(QucsSettings.FileNameCap, 8);
+        QCOMPARE(app->DocumentTab->tabText(app->DocumentTab->currentIndex()), name.left(8) + QChar(0x2026) + QStringLiteral(".sch"));
+        QVERIFY(!failed(call("set_settings", {{"scope", "app"}, {"values", QJsonObject{{"Cut long file names after (characters)", 50}}}}, 20000)));
+        QCOMPARE(QucsSettings.FileNameCap, 50);
+        QVERIFY(!failed(call("close_document", {{"path", name}, {"unsaved", "discard"}})));
+    }
+
     // A number made into a whole one is refused when it is no whole number
     // in reach (UBSan, the access tools' fuzzer, 1 October: edit_text's
     // 'revision' -1 made unsigned): a revision, a point.
