@@ -1657,9 +1657,14 @@ void QucsApp::setDefaultShortcut() {
                       QKeySequence::Paste);
 
 #ifdef __APPLE__
-  mgr.registerCommand(
-      "Edit.Delete", "Edit", "Delete", editDelete,
-      QKeySequence(QKeySequence::Backspace, QKeySequence::Delete));
+  // The key labelled "delete" (Backspace), and forward Delete beside it -
+  // keys, not QKeySequence::Backspace and ::Delete, which are the numbers of
+  // standard keys: as two keys those made the chord "E, Ctrl+G", and
+  // neither deleted anything.
+  mgr.registerCommand("Edit.Delete", "Edit", "Delete", editDelete,
+                      QKeySequence(Qt::Key_Backspace));
+  if (QucsCommand *del = mgr.command("Edit.Delete"))
+    del->setAlsoByDefault({QKeySequence(Qt::Key_Delete)});
 #else
   mgr.registerCommand("Edit.Delete", "Edit", "Delete", editDelete,
                       QKeySequence::Delete);

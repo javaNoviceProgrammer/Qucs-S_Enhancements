@@ -58,6 +58,8 @@ public:
     Q_INVOKABLE QJSValue call(const QString& tool, const QJSValue& args = QJSValue())
     {
         if (tool == QLatin1String("run_script")) return fail(QStringLiteral("run_script cannot run from a script"));
+        // (A script runs alone: every other call would wait with it.)
+        if (tool == QLatin1String("wait_for")) return fail(QStringLiteral("wait_for cannot run from a script, which every other call waits for"));
         if (++a_calls > kMostCalls) return fail(QStringLiteral("more than %1 calls: the script is stopped").arg(kMostCalls));
         QJsonObject arguments;
         if (!args.isUndefined() && !args.isNull()) {

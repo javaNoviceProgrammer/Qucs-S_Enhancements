@@ -359,7 +359,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   permissions and settings - stays yours, and Claude reads the consoles
   but types into them only with the `console` tool: one line into the
   Octave, Python Shell or Terminal dock, shown there as you would type
-  it, you asked about each line (it runs with your rights), and what it
+  it, you asked about each line - also where Claude acts on its own (it
+  runs with your rights, outside Claude Code's rules for commands) -, and what it
   printed until its prompt came back - or "still running", stopped with
   Ctrl-C when you allow that too. `get_settings` and `set_settings` read
   and set Application Settings, Simulators Settings, CDL Settings and a
@@ -382,7 +383,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   its subcircuit's part) and the node, and it says which traces of the
   diagrams show no data and why; with `keep_as` it keeps a copy of the
   run's dataset under a name, to read later or to plot beside the next
-  run (`ngspice/run1:tran.v(out)`). `get_netlist` gives the netlist a
+  run (`ngspice/run1:tran.v(out)`). **A long run in the background**:
+  `simulate` with `background` answers at once with the run's id, while
+  Claude goes on - a Monte Carlo, a long transient; `simulation_status`
+  says how it goes and gives its outcome once it has ended,
+  `stop_simulation` stops it (or the run going, the user's too), and a
+  run past its `timeout` goes on the same way. **Waiting rather than
+  asking again and again**: `wait_for` returns when a run has ended (its
+  outcome), a dialog has come up, a document has been changed (by whom)
+  or a file written - and what the user edits while Claude waits is the
+  user's. `get_netlist` gives the netlist a
   simulation would run, or the last one run; when the netlister gives up
   (a part with no model, a subcircuit or library it cannot read) it says
   why - it gave a title line alone, and the next netlist then left the
@@ -419,7 +429,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   did not change — the user's edits, another conversation's, a
   simulation the user ran, documents opened or closed — and `get_state`
   gives each document's revision (it counts every edit, undo and reload)
-  and who made the last edit. **Markers**: `add_marker` places one at an
+  and who made the last edit, and names the open project. **Markers**: `add_marker` places one at an
   x, the peak, 3 dB below it or a crossing of a level (the exact point
   found, the marker on the nearest sample), with its label, precision,
   format, indicator and colours; `edit_marker` and `delete_marker`; and
@@ -444,8 +454,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   harmonic's amplitude over the last whole periods of a stated
   fundamental, as ngspice's `.four` does; and on a loop gain, `gain`,
   `phase_margin` and `gain_margin`. `list_documents` lists the files of
-  the workspace or a project without a shell: kinds, sizes, times, newest
-  first, and which dataset is which schematic's. `get_schematic`'s
+  the open project (else the workspace) or a folder without a shell:
+  kinds, sizes, times, newest first, and which dataset is which
+  schematic's. `get_schematic`'s
   `overview` tells a 24,000-part schematic in 721 bytes. `export_image`
   writes a picture of a schematic, or of one diagram alone, as PNG, SVG,
   PDF and more, without the export dialog. `set_simulator` chooses the
@@ -498,13 +509,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `clean_scratch`, `rename_file` (a file or folder renamed or moved, the
   documents open from it following) and `trash_file` (to the system's
   trash, the documents open from it closing; asked about every time) tend
-  the files. `get_text` and `edit_text` read and edit a text tab - a
+  the files; `undo` with `files` renames back, and takes back from the
+  trash. `get_text` and `edit_text` read and edit a text tab - a
   netlist, a `.va`, a script - as it is in the window, the user's unsaved
   edits kept: the edits are one step of the tab's undo, and refused when
   the user typed since the revision Claude read. `goto_line` shows a line.
   `build_verilog_a` marks its errors and warnings in the open `.va` tab as
   the editor shows them to you: a wavy line, a dot in the line numbers'
-  margin, the message on the line. `new_document` opens a schematic's data
+  margin, the message on the line. `read_help` finds what this build's
+  help says on a topic - each menu action's own help, the component
+  types, the examples - and where the online manual is. **The last
+  resort**: `send_input` clicks, drags, double-clicks and types on the
+  canvas (in the schematic's coordinates) or a panel (in its pixels, which
+  `get_ui` gives each control) as your mouse and keyboard would - a key
+  that is a shortcut sets off its action -, with a picture after; asked
+  about each time, and never on a console, on the Claude Code panel, or
+  with a key that would quit Qucs-S. `new_document` opens a schematic's data
   display for a report's plots. Equation blocks, Monte Carlo records and
   specs, and hidden text are set by name, so `set_schematic` is rarely
   needed. Diagrams have a title that moves with them. A marker can sit
@@ -995,7 +1015,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Found on the way: the shortcuts set in the Shortcut Manager were saved
   but never loaded again, so they were lost at the next start, and one
   set back to its default stayed saved. The PDF viewer's sidebar was
-  kept outside the application's settings.
+  kept outside the application's settings. On a Mac, *Edit → Delete*'s
+  key was the chord "E, Ctrl+G" (two standard keys' numbers read as keys
+  upstream), so neither Delete key deleted anything on the canvas: the
+  key labelled delete and forward Delete both do now, and a key set in
+  the Shortcut Manager takes their place.
 - **Theme** (*Application Settings → Appearance → Theme*, or *View →
   Theme* to switch at once): *System*, *Dark* or *Light* — the
   platform's own look — or one of ten designed themes that look the same

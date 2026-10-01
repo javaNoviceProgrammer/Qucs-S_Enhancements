@@ -307,6 +307,19 @@ public:
     }
 };
 
+// ... whose "change" types a command when it types: asked about every
+// time, also where Claude acts on its own.
+class TypingHost : public LastingHost
+{
+public:
+    QString askedEachTime(const QString& tool, const QJsonObject& a) const override
+    {
+        return tool == QLatin1String("change") && a.value("what").toString() == QLatin1String("type")
+                   ? QStringLiteral("What is typed runs with your rights.")
+                   : QString();
+    }
+};
+
 // ... with more to say than Claude Code keeps unless told: \a instructions
 // characters of them, and a tool of \a description characters.
 class WordyHost : public FakeHost
@@ -1016,6 +1029,36 @@ private slots:
         // A new conversation asks again.
         s.reset();
         QVERIFY(!s.toolsAllowed());
+    }
+
+    // Where Claude acts on its own (auto), a use that cannot be undone goes
+    // unasked - but one asked about every time (a line typed into a
+    // console: ToolHost::askedEachTime()) is asked, with its reason and no
+    // "allow all"; only where nothing is asked (bypassPermissions) not.
+    void aConsoleLineIsAskedAboutEvenInAutoMode()
+    {
+        TypingHost host;
+        Session s;
+        s.setProgram("claude");
+        s.setToolHost(&host);
+        s.setPermissionMode("auto");
+        QSignalSpy asks(&s, &Session::permissionRequested);
+        const auto request = [&s](const QString& id, const QString& what) {
+            s.handleLine(QStringLiteral(R"({"type":"control_request","request_id":"%1","request":{"subtype":"can_use_tool","tool_name":"mcp__fake__change","input":{"what":"%2"}}})")
+                             .arg(id, what).toUtf8());
+        };
+        request("r1", "wipe");
+        QCOMPARE(asks.count(), 0);
+        request("r2", "type");
+        QCOMPARE(asks.count(), 1);
+        const auto asked = asks.last().at(0).value<PermissionRequest>();
+        QCOMPARE(asked.subject, QStringLiteral("what: type"));
+        QCOMPARE(asked.detail, QStringLiteral("What is typed runs with your rights."));
+        QVERIFY(!asked.canAllowTools);
+        s.answer(asked.id, true);
+        s.setPermissionMode("bypassPermissions");
+        request("r3", "type");
+        QCOMPARE(asks.count(), 1);
     }
 
     // A question the server asks (elicitation) is a card in the dock: yes

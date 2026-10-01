@@ -58,6 +58,7 @@
 #include <QCheckBox>
 #include <QCollator>
 #include <QComboBox>
+#include <QDockWidget>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDateTime>
@@ -109,7 +110,7 @@ namespace {
 // The tools, as MCP's tools/list gives them.
 const char* const kTools = R"JSON([
 {"name": "get_state",
- "description": "Returns the state of the Qucs-S window. Panes: each pane's number, row, column, rectangle and documents, with the active one marked (move_to_pane rearranges them). Documents: path, title, kind, whether it has unsaved changes, whether it is in front, its pane, its revision (a counter of every edit, undo and reload, by anyone), who made the last edit (you, the user, another conversation, or its file changed on disk and loaded again) and when its dataset was last written. Also the simulator chosen in the settings, the workspace folder, any simulation in progress and any dialog waiting for an answer. Start here. Every tool result also reports what changed since your last call that you did not do yourself, such as the user's edits or a simulation the user ran.",
+ "description": "Returns the state of the Qucs-S window. Panes: each pane's number, row, column, rectangle and documents, with the active one marked (move_to_pane rearranges them). Documents: path, title, kind, whether it has unsaved changes, whether it is in front, its pane, its revision (a counter of every edit, undo and reload, by anyone), who made the last edit (you, the user, another conversation, or its file changed on disk and loaded again) and when its dataset was last written. Also the simulator chosen in the settings, the workspace folder, the open project ('project': its name and folder, null when none is open; relative paths are resolved against its folder), any simulation in progress, the simulations followed in the background (their ids) and any dialog waiting for an answer. Start here. Every tool result also reports what changed since your last call that you did not do yourself, such as the user's edits or a simulation the user ran.",
  "inputSchema": {"type": "object", "properties": {}}},
 {"name": "move_to_pane",
  "description": "Moves a document (the one in front unless 'path' names another) to another pane, to show documents side by side. 'pane' is a pane number from get_state, or \"right\" or \"below\" for a new pane next to the document's current one (at most two panes per row, and two rows). Returns the state with the panes.",
@@ -266,7 +267,7 @@ const char* const kTools = R"JSON([
  "description": "Undoes the last change of a document (the one in front unless 'path' names another), like Edit > Undo; with 'files', the files the last calls wrote instead. 'steps' undoes that many changes (a batch that stopped halfway reports how many changes it made); 'to' goes to a step of a schematic as undo_history numbers them, backward or forward again. Reports what it changed back, part by part.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many changes to undo, 1 by default"},
    "to": {"type": "integer", "minimum": 0, "description": "A step as undo_history lists them: the schematic as it was after it (0: as it was loaded)"},
-   "files": {"description": "Instead of a document's changes: the files the last calls wrote put back as they were (true or 1: the last call's; a number: that many calls') - save_document's, create_subcircuit's, copy_document's, import_netlist's, import_data's, the exports', rename_net's data display. A file made by the call is removed; one changed since is left, and said. undo_history lists them"}}}},
+   "files": {"description": "Instead of a document's changes: the files the last calls wrote put back as they were (true or 1: the last call's; a number: that many calls') - save_document's, create_subcircuit's, copy_document's, import_netlist's, import_data's, the exports', rename_net's data display; a file rename_file moved or trash_file put in the trash is moved back. A file made by the call is removed; one changed since is left, and said. undo_history lists them"}}}},
 {"name": "undo_history",
  "description": "Lists a schematic's undo steps in words - \"step 7: R2 R 47k → 67k; step 8: diagram 2: trace 2's look changed\" - the last 'steps' (10 by default) up to the current position, plus those that can be redone after it, so undo can go to a known step ('to') instead of counting.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 200, "description": "How many steps before the current one are listed, 10 by default"}}}},
@@ -306,6 +307,31 @@ const char* const kTools = R"JSON([
 {"name": "console",
  "description": "Types a line into a console dock of Qucs-S - octave (the Octave dock), python (the Python Shell) or terminal (the Terminal dock, a shell) - as the user would there, and returns what it printed once its prompt is back, or what came by 'wait' seconds (10 unless given; the run goes on, and 'interrupt': true stops it with Ctrl-C). What is typed runs with the user's rights, outside Claude Code's own rules for commands: each use is asked about, every time, with the line shown. Without 'input': the last 'lines' of what the console shows, nothing typed. The user sees it all in the dock.",
  "inputSchema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["octave", "python", "terminal"], "description": "The console"}, "input": {"type": "string", "description": "One line, typed and entered"}, "wait": {"type": "integer", "description": "Seconds to wait for its prompt back (1 to 600; 10 unless given)"}, "interrupt": {"type": "boolean", "description": "Ctrl-C to what runs (python, terminal)"}, "lines": {"type": "integer", "description": "How many of the last lines to give (40 unless given)"}}, "required": ["kind"]}},
+{"name": "wait_for",
+ "description": "Waits for something to happen in Qucs-S and returns when it has, instead of asking again and again: 'event' simulation_finished (the run 'id' names, followed since simulate's 'background' or its timeout - its outcome then, as simulate gives it; without 'id', the run going now or the next one, the user's too), dialog (a dialog comes up; one open already counts), document_changed (the document 'path' names, the one in front unless given, is edited, undone or reloaded - by the user, another conversation, its file - since 'revision' from an answer before, else since now; or closed) or file_written (the file 'path' names is written, made or removed, then left alone for a moment). 'timeout' is in seconds, 60 unless given (1 to 3600): then it returns with happened false, and wait_for again waits on. Other calls go on meanwhile; what the user edits while it waits is the user's. Not in a batch or a script.",
+ "inputSchema": {"type": "object", "properties": {"event": {"type": "string", "enum": ["simulation_finished", "dialog", "document_changed", "file_written"], "description": "What is waited for"}, "id": {"type": "integer", "description": "simulation_finished: the run followed (from simulate's answer, simulation_status)"}, "path": {"type": "string", "description": "document_changed: the document, the one in front unless given; file_written: the file"}, "revision": {"type": "integer", "description": "document_changed: changed since this revision (get_state's, an answer's), not since now"}, "timeout": {"type": "integer", "description": "Seconds to wait at most, 60 unless given (1 to 3600)"}}, "required": ["event"]}},
+{"name": "simulation_status",
+ "description": "Tells how a simulation followed by its id goes - one simulate began with 'background', or one still running at its timeout: running (for how long, the last lines it printed), or ended and then its outcome as simulate gives it (succeeded, errors, the dataset written ...). Without 'id': the runs followed, the last first.",
+ "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The run's id, from simulate's answer"}}}},
+{"name": "stop_simulation",
+ "description": "Stops a simulation - the one 'id' names (followed since simulate's 'background' or its timeout), or without it the one running now, the user's too (as Simulation > Stop Simulation, or Qucsator's Abort) - and returns its outcome once it has ended.",
+ "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The run's id; the one running when not given"}}}},
+{"name": "send_input",
+ "description": "Raw mouse and keyboard input - the last resort, for what no other tool does, or to do something exactly as the user did: a 'click' (left unless 'button' says right or middle; 'double'; 'drag_to' drags from it, in steps; 'modifiers' held), then 'keys' (as list_actions writes shortcuts: \"Ctrl+Z\", \"Delete\", \"Escape, Return\" - at most four; Ctrl is Command on a Mac; a key that is an action's shortcut sets off that action, as the keyboard does), then 'text' typed into what has the focus there. On a schematic's canvas ('target' canvas, the default; points in the schematic's coordinates as get_schematic gives them, brought into view - or with 'pixels' the canvas picture's pixels) or on a part of the window as get_ui names it (dock:Content, toolbar:Simulate, statusbar; points in its picture's pixels). Returns what it opened (a dialog: get_dialog reads it; a menu: read and closed - context_menu chooses from one), the status bar's message, and a picture of the target as it is after, with how its pixels map. Not the consoles (console types there), not the Claude Code panel, not keys that would quit Qucs-S or set off what trigger_action refuses: then nothing is sent. Asked about each time.",
+ "inputSchema": {"type": "object", "properties": {
+   "target": {"type": "string", "description": "canvas (the default), or dock:<title>, a panel's name, toolbar:<title> or statusbar"},
+   "path": {"type": "string", "description": "For the canvas: the schematic, the one in front unless given"},
+   "click": {"type": "array", "items": {"type": "number"}, "description": "[x, y]: on the canvas the schematic's coordinates (pixels with 'pixels'); on a part of the window its picture's pixels"},
+   "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "The mouse button, left unless given"},
+   "double": {"type": "boolean", "description": "A double click"},
+   "drag_to": {"type": "array", "items": {"type": "number"}, "description": "[x, y] where a drag from 'click' ends, the button held"},
+   "modifiers": {"type": "array", "items": {"type": "string", "enum": ["shift", "ctrl", "alt", "meta"]}, "description": "Keys held during the click or drag (ctrl is Command on a Mac)"},
+   "keys": {"type": "string", "description": "Keys pressed after: \"Ctrl+Z\", \"Delete\", \"Escape, Return\" (at most four)"},
+   "text": {"type": "string", "description": "Characters typed after, into what has the focus there"},
+   "pixels": {"type": "boolean", "description": "On the canvas: 'click' and 'drag_to' in the picture's pixels, not the schematic's coordinates"}}}},
+{"name": "read_help",
+ "description": "Finds what this build of Qucs-S says on a topic, to answer from the help this version ships: each menu action's own help (its What's This, status tip and shortcut), the component types (describe_component_type explains one), the example schematics (open_document opens one), and any papers or tutorials it has (read_pdf reads them) - and where the online manual and Getting Started tutorial are, which are not in the build. 'topic' is words a match has all of (tuner, s-parameter, monte carlo); without it, what help there is.",
+ "inputSchema": {"type": "object", "properties": {"topic": {"type": "string", "description": "Words to find: tuner, s-parameter, monte carlo; none: what help there is"}}}},
 {"name": "get_ui",
  "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), or the documents' tabs (tabs). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
  "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "dock:<title> or a panel's name (dock:Content), toolbar:<title>, statusbar or tabs; none: the list"}}}},
@@ -320,8 +346,9 @@ const char* const kTools = R"JSON([
    "choose": {"type": "string", "description": "The entry chosen, by its path in the menu (\"Edit Properties\", \"Toggle hierarchy search view > Flat\") or its name alone; none: the menu is only read"},
    "path": {"type": "string", "description": "The schematic, for part, diagram and canvas: its file or tab's title; the one in front when not given"}}, "required": ["on"]}},
 {"name": "simulate",
- "description": "Simulates a schematic (the one in front unless 'path' names another; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into. A run going - the user's too - is stopped by trigger_action \"Simulation > Stop Simulation\".",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); it is stopped after"},
+ "description": "Simulates a schematic (the one in front unless 'path' names another; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into. 'background' answers at once with the run's id - for a long run (Monte Carlo, a long transient): simulation_status gives how it goes and its outcome once it has ended, wait_for waits for its end, stop_simulation stops it; meanwhile other calls go on. A run still going at its timeout goes on the same way, the answer giving its id. A run going - the user's too - is stopped by stop_simulation (as Simulation > Stop Simulation).",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); a run still going then goes on, followed by the id the answer gives. With background: the most it may run, stopped then (none unless given)"},
+   "background": {"type": "boolean", "description": "Answer at once with the run's id; simulation_status, wait_for and stop_simulation follow it"},
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For this run alone (an installed one); set_simulator changes the setting"},
    "keep_as": {"type": "string", "description": "A name of letters, digits, _ and -: the copy is <name>.dat.ngspice (or .xyce, ...) beside the schematic"},
    "compare": {"type": "object", "properties": {"with": {"type": "string"}, "measure": {"type": "array", "items": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "from": {"type": "number"}, "to": {"type": "number"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}}}}}, "description": "Before and after in one call: {\"with\": \"before\", \"measure\": [{\"variable\": \"ac.v(out)\", \"what\": \"bandwidth\"}, ...]} - each measured on this run and on the one kept as 'with' (keep_as), in a table of before, after and the change (and in %); 'what' is min, max, mean, rms, final, peak_to_peak or a get_dataset measurement, as tune's 'measure' takes it"},
@@ -481,9 +508,9 @@ const char* const kTools = R"JSON([
    "angle": {"type": "integer", "description": "A text's angle in degrees, -360 to 360"}, "head": {"type": "string", "enum": ["open", "filled"], "description": "An arrow's head: open or filled"}, "file": {"type": "string", "description": "An image's file"}},
    "required": ["painting"]}},
 {"name": "list_documents",
- "description": "Lists the files of the workspace, a project or a folder - schematics, symbols, data displays, datasets, netlists, texts, PDFs, spreadsheets, pictures - newest first, each with its path (relative to the folder listed), kind, size, modification time and whether it is open. A dataset also says which simulator wrote it, which schematic it belongs to, and which traces of open diagrams read it but find nothing there; an open schematic lists the traces whose dataset does not exist at all (ngspice/... reads name.dat.ngspice - the usual Qucsator-versus-ngspice mix-up, or an imported dataset's trace with a prefix: import_data's name.dat is read as name:variable). An imported dataset says which file it came from. Without 'folder' it lists the workspace, including its projects. 'folder' is a project's name (amp or amp_prj) or a folder (relative to the workspace, or absolute). 'kind' keeps one kind, 'search' the files whose name contains it, and 'sort' is newest (the default) or name. Subfolders are included up to 4 levels deep; at most 300 files, with what was left out.",
+ "description": "Lists the files of the workspace, a project or a folder - schematics, symbols, data displays, datasets, netlists, texts, PDFs, spreadsheets, pictures - newest first, each with its path (relative to the folder listed), kind, size, modification time and whether it is open. A dataset also says which simulator wrote it, which schematic it belongs to, and which traces of open diagrams read it but find nothing there; an open schematic lists the traces whose dataset does not exist at all (ngspice/... reads name.dat.ngspice - the usual Qucsator-versus-ngspice mix-up, or an imported dataset's trace with a prefix: import_data's name.dat is read as name:variable). An imported dataset says which file it came from. Without 'folder' it lists the open project's files, or the workspace's when no project is open - the workspace's projects named either way. 'folder' is a project's name (amp or amp_prj) or a folder (relative to the open project's folder, else the workspace; or absolute - the workspace's path lists the workspace). 'kind' keeps one kind, 'search' the files whose name contains it, and 'sort' is newest (the default) or name. Subfolders are included up to 4 levels deep; at most 300 files, with what was left out.",
  "inputSchema": {"type": "object", "properties": {
-   "folder": {"type": "string", "description": "A project's name (amp or amp_prj) or a folder, relative to the workspace or absolute; the workspace when not given"},
+   "folder": {"type": "string", "description": "A project's name (amp or amp_prj) or a folder, relative to the open project's folder (else the workspace) or absolute; the open project (else the workspace) when not given"},
    "kind": {"type": "string", "enum": ["schematic", "symbol", "data display", "dataset", "netlist", "text", "pdf", "spreadsheet", "markdown", "picture", "verilog-a"], "description": "Only files of this kind"},
    "search": {"type": "string", "description": "Only files whose name contains it"}, "sort": {"type": "string", "enum": ["newest", "name"], "description": "newest first (the default) or by name"}}}},
 {"name": "export_image",
@@ -549,10 +576,10 @@ const char* const kTools = R"JSON([
  "description": "Moves a schematic's scratch files - its subfolder of the project's Scratch folder, with the netlists, simulator output and logs its runs left - to the system's trash; with 'datasets', its datasets too (name.dat, .dat.ngspice, ...). The next run creates them again.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "datasets": {"type": "boolean", "description": "Its datasets go to the trash too"}}}},
 {"name": "rename_file",
- "description": "Renames a file or folder, or moves it, as the File Browser does: 'to' is its new name in the same folder (amp2.sch), or a path - into a folder that is there, or as the name it ends in. The documents open from it follow, their tabs renamed, unsaved changes kept. Refused when something is there already, and for the workspace, the home folder and the project open now (Project > Close Project first). A schematic's datasets and data display keep their names: copy_document copies a schematic with them under a new name. Use it rather than mv, which leaves an open document's tab on a file that is not there.",
+ "description": "Renames a file or folder, or moves it, as the File Browser does: 'to' is its new name in the same folder (amp2.sch), or a path - into a folder that is there, or as the name it ends in. The documents open from it follow, their tabs renamed, unsaved changes kept; undo with 'files' renames it back. Refused when something is there already, and for the workspace, the home folder and the project open now (Project > Close Project first). A schematic's datasets and data display keep their names: copy_document copies a schematic with them under a new name. Use it rather than mv, which leaves an open document's tab on a file that is not there.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file or folder: a path, relative to the open project's folder (else the workspace)"}, "to": {"type": "string", "description": "Its new name in the same folder (amp2.sch), or a path to move it to: into a folder that is there, or as the name it ends in"}}, "required": ["path", "to"]}},
 {"name": "trash_file",
- "description": "Moves a file or folder to the system's trash, from which the user can take it back (undo cannot). The documents open from it close; refused while one of them has unsaved changes, while a simulation runs, and for the workspace, the home folder and the project open now. Nothing is deleted when the trash cannot take it. Use it rather than rm, which deletes for good.",
+ "description": "Moves a file or folder to the system's trash, from which undo with 'files' takes it back (as Finder's Put Back does; the documents it closed are not opened again). The documents open from it close; refused while one of them has unsaved changes, while a simulation runs, and for the workspace, the home folder and the project open now. Nothing is deleted when the trash cannot take it. Use it rather than rm, which deletes for good.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file or folder: a path, relative to the open project's folder (else the workspace)"}}, "required": ["path"]}},
 {"name": "make_symbol",
  "description": "Draws a subcircuit's symbol from scratch: a box with each port on one side. 'sides' assigns ports by name or number ({\"in\": \"left\", \"out\": \"right\", \"vdd\": \"top\", \"gnd\": \"bottom\"}); a port not listed goes by its name (a supply - vdd, vcc, v+ - on top, a ground or negative supply - gnd, vss, v- - at the bottom), its type or name (in, inp, in+ on the left; out on the right), and the rest alternate left and right. Its name text goes below, with the parameters and prefix it had; 'parameters' gives the parameters its instances take instead, as set_subcircuit_parameters takes them. Afterwards the document shows its symbol, like Edit Circuit Symbol. One undo step. Use it to finish what create_subcircuit started.",
@@ -629,6 +656,8 @@ const struct {
     {"set_settings", QT_TRANSLATE_NOOP("QucsControl", "change the settings of Qucs-S")},
     {"context_menu", QT_TRANSLATE_NOOP("QucsControl", "use a right-click menu of Qucs-S")},
     {"simulate", QT_TRANSLATE_NOOP("QucsControl", "run a simulation in Qucs-S")},
+    {"stop_simulation", QT_TRANSLATE_NOOP("QucsControl", "stop a simulation in Qucs-S")},
+    {"send_input", QT_TRANSLATE_NOOP("QucsControl", "click or type in Qucs-S as the mouse and keyboard would")},
     {"add_diagram", QT_TRANSLATE_NOOP("QucsControl", "add a diagram in Qucs-S")},
     {"edit_diagram", QT_TRANSLATE_NOOP("QucsControl", "change a diagram in Qucs-S")},
     {"add_trace", QT_TRANSLATE_NOOP("QucsControl", "add a trace to a diagram in Qucs-S")},
@@ -670,7 +699,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
                                  "read_pdf", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
-                                 "get_text", "goto_line", "get_ui", "get_settings",
+                                 "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
                                  "ngspice_commands"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
@@ -686,7 +715,7 @@ const struct {
     const char* tool;
     const char* summary;
 } kSummaries[] = {
-    {"get_state", QT_TRANSLATE_NOOP("QucsControl", "Returns the state of the Qucs-S window: panes, open documents (each with its revision and who edited it last), the simulator, a running simulation and any open dialog. Start here.")},
+    {"get_state", QT_TRANSLATE_NOOP("QucsControl", "Returns the state of the Qucs-S window: panes, open documents (each with its revision and who edited it last), the simulator, the open project, a running simulation and any open dialog. Start here.")},
     {"move_to_pane", QT_TRANSLATE_NOOP("QucsControl", "Moves a document to another pane (a number from get_state, or \"right\" or \"below\") to show documents side by side.")},
     {"open_document", QT_TRANSLATE_NOOP("QucsControl", "Opens a file in a tab (schematic, symbol, data display, text, netlist or PDF), or brings it to the front if it is already open. Warns when a component line has more values than its type.")},
     {"new_document", QT_TRANSLATE_NOOP("QucsControl", "Creates an untitled schematic or text document, or opens a schematic's data display (.dpl) for plots.")},
@@ -722,6 +751,11 @@ const struct {
     {"set_dialog", QT_TRANSLATE_NOOP("QucsControl", "Fills in the open dialog and presses a button.")},
     {"get_ui", QT_TRANSLATE_NOOP("QucsControl", "Reads a dock, panel, toolbar, the status bar or the tabs, as get_dialog a dialog.")},
     {"console", QT_TRANSLATE_NOOP("QucsControl", "Types a line into the Octave, Python Shell or Terminal dock and returns what it printed.")},
+    {"wait_for", QT_TRANSLATE_NOOP("QucsControl", "Waits until a simulation ends, a dialog comes up, a document changes or a file is written, and returns then.")},
+    {"simulation_status", QT_TRANSLATE_NOOP("QucsControl", "Tells how a simulation run in the background goes, and its outcome once it has ended.")},
+    {"stop_simulation", QT_TRANSLATE_NOOP("QucsControl", "Stops a simulation (one followed by its id, or the one running) and returns its outcome.")},
+    {"send_input", QT_TRANSLATE_NOOP("QucsControl", "Raw mouse and keyboard input on the canvas or a part of the window - the last resort - with a picture after.")},
+    {"read_help", QT_TRANSLATE_NOOP("QucsControl", "Finds what this build's help says on a topic: menu actions' help, component types, examples, papers.")},
     {"get_settings", QT_TRANSLATE_NOOP("QucsControl", "Reads the settings (application, simulators, a document's, CDL) by typed keys.")},
     {"set_settings", QT_TRANSLATE_NOOP("QucsControl", "Changes settings by their keys through their own dialog, each with its old value.")},
     {"set_ui", QT_TRANSLATE_NOOP("QucsControl", "Uses a dock, panel, toolbar or the tabs, as set_dialog a dialog.")},
@@ -805,6 +839,11 @@ const struct {
     {"get_settings", "settings preferences options configuration read application simulators document cdl grid language path"},
     {"set_settings", "settings preferences options configuration change set application simulators document cdl grid language path"},
     {"console", "octave python shell terminal console command type run repl interpreter"},
+    {"wait_for", "wait event notify until simulation finished dialog document changed file written watch poll"},
+    {"simulation_status", "simulation status background progress running outcome result id long monte carlo"},
+    {"stop_simulation", "stop abort cancel kill simulation run background"},
+    {"send_input", "click mouse keyboard keys type drag double click raw input shortcut press reproduce"},
+    {"read_help", "help documentation manual docs whats this tutorial examples paper"},
     {"get_ui", "dock panel toolbar status bar tabs widget read log tuner problems operating point content projects components filter"},
     {"set_ui", "dock panel toolbar status bar tabs widget click button filter row select open expand slider tuner"},
     {"context_menu", "right-click context menu popup entries choose canvas part diagram tab file project"},
@@ -3157,6 +3196,19 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
     } else if (tool == QLatin1String("console")) {
         subject = s("kind") + QStringLiteral(": ") + (a.value(QLatin1String("interrupt")).toBool() ? tr("interrupt (Ctrl-C)")
                                                                                                  : s("input").isEmpty() ? tr("read") : s("input"));
+    } else if (tool == QLatin1String("send_input")) {
+        // What is sent, all of it: the user is asked about each.
+        QStringList given;
+        if (a.contains(QLatin1String("click")))
+            given << tr("%1%2 click at %3%4")
+                         .arg(a.value(QLatin1String("double")).toBool() ? tr("double ") : QString(), s("button").isEmpty() ? tr("left") : s("button"),
+                              point(a.value(QLatin1String("click"))),
+                              a.contains(QLatin1String("drag_to")) ? tr(", dragged to %1").arg(point(a.value(QLatin1String("drag_to")))) : QString());
+        if (!s("keys").isEmpty()) given << tr("keys %1").arg(s("keys"));
+        if (!s("text").isEmpty()) given << tr("typed \"%1\"").arg(s("text"));
+        subject = tr("%1 on %2").arg(given.join(QStringLiteral(", ")), s("target").isEmpty() ? tr("the canvas") : s("target"));
+    } else if (tool == QLatin1String("stop_simulation")) {
+        subject = a.contains(QLatin1String("id")) ? tr("simulation %1").arg(a.value(QLatin1String("id")).toInt()) : tr("the simulation running");
     } else if (tool == QLatin1String("context_menu")) {
         const QJsonObject on = a.value(QLatin1String("on")).toObject();
         const QString where = on.isEmpty() ? QString() : on.constBegin().key() + QLatin1Char(' ') + propertyValue(on.constBegin().value());
@@ -3276,8 +3328,13 @@ QString QucsControl::instructions() const
         "Tuner), a toolbar, the status bar, the tabs - and context_menu a right-click menu. console types a line into the Octave, Python Shell or Terminal dock and "
         "returns what it printed - it runs, and the user is asked each time. get_settings and set_settings read and "
         "change the settings (application, simulators, a document's, CDL) by typed keys, each change with its old "
-        "value. "
-        "simulate runs the simulator and reports errors; get_netlist returns the netlist. get_dataset reads results as "
+        "value. send_input is the last resort: a raw click, drag or keys on the canvas or a part of the window, with a "
+        "picture after (asked each time). read_help finds what this build's help says (menu actions, component types, "
+        "examples). "
+        "simulate runs the simulator and reports errors; with 'background' it answers at once with an id, which "
+        "simulation_status, wait_for and stop_simulation follow (a long run: Monte Carlo, a long transient), and a run "
+        "past its timeout goes on the same way. wait_for waits until a run ends, a dialog comes up, a document changes "
+        "or a file is written - rather than asking again and again. get_netlist returns the netlist. get_dataset reads results as "
         "numbers and measures them (rise time, overshoot, value at a time, ...): use it rather than a screenshot to judge "
         "a simulation. Diagrams: add_diagram (on the schematic, or with document: \"data_display\" on its data display, "
         "a .dpl for a report apart from the circuit), edit_diagram, add_trace, edit_trace, delete; markers: add_marker (at an x "
@@ -3299,7 +3356,8 @@ QString QucsControl::instructions() const
         "instance sets its own). ngspice_commands tells which commands ngspice has (analyses, measurements, output, "
         "statistics, the .control language), their syntax and which the installed ngspice has - for a Nutmeg script or a "
         "NutmegEq. new_project, open_project, copy_document, clean_scratch, rename_file and trash_file manage files (rather "
-        "than mv and rm: open documents follow, and the trash keeps what goes). "
+        "than mv and rm: open documents follow, and the trash keeps what goes; undo with 'files' renames back and takes "
+        "back from the trash). get_state names the open project. "
         "undo_history lists the undo steps in words. \"selection\": true acts on what the user selected (move, delete, "
         "create_subcircuit, get_schematic).\n\n"
         "Each tool result reports, part by part, what the user changed since your last call. Changes appear in the "
@@ -3456,10 +3514,12 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
     const QStringList changes = changesSince(caller) + notesFor(caller);
     a_callers.append(caller);
     QucsDoc::setEditor(caller);
-    callTool(tool, arguments, [this, caller, changes, done, alone](const QJsonObject& r) {
+    auto over = std::make_shared<bool>(false), released = std::make_shared<bool>(false);
+    callTool(tool, arguments, [this, caller, changes, done, alone, over, released](const QJsonObject& r) {
+        *over = true;
         if (alone && --a_alone == 0 && !a_waiting.isEmpty())
             QTimer::singleShot(0, this, [this] { runWaiting(); });
-        a_callers.removeOne(caller);
+        if (!*released) a_callers.removeOne(caller);
         QucsDoc::setEditor(a_callers.isEmpty() ? 0 : a_callers.last());
         noteSeen(caller);
         QJsonObject result = r;
@@ -3471,6 +3531,15 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
         }
         done(result);
     });
+    // A call that only waits (wait_for; a console's line running; a run
+    // simulated) edits nothing while it waits: what is edited meanwhile is
+    // the user's - or another call's -, not its caller's. (A run's own
+    // edit at its end - apply_optimum's - is said to be its caller's.)
+    if (!*over && (tool == QLatin1String("wait_for") || tool == QLatin1String("console") || tool == QLatin1String("simulate"))) {
+        *released = true;
+        a_callers.removeOne(caller);
+        QucsDoc::setEditor(a_callers.isEmpty() ? 0 : a_callers.last());
+    }
 }
 
 void QucsControl::noteForConversations(const QString& text)
@@ -3866,7 +3935,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
         QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
-        QStringLiteral("ngspice_commands")};
+        QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help")};
     if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool))
         return errorResult(tr("“%1” is open in Qucs-S and waits for an answer: %2 waits until it is closed (get_dialog "
                               "reads it, set_dialog answers it - or ask the user to).")
@@ -4004,6 +4073,8 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("export_data")) return exportData(args);
     if (tool == QLatin1String("find_library_component")) return findLibraryComponent(args);
     if (tool == QLatin1String("describe_part")) return describePart(args);
+    if (tool == QLatin1String("simulation_status")) return simulationStatus(args);
+    if (tool == QLatin1String("read_help")) return readHelp(args);
     async = true;
     if (tool == QLatin1String("batch")) runBatch(args, done);
     else if (tool == QLatin1String("trigger_action")) triggerAction(args, done);
@@ -4014,6 +4085,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     else if (tool == QLatin1String("set_settings")) setSettings(args, done);
     else if (tool == QLatin1String("context_menu")) contextMenu(args, done);
     else if (tool == QLatin1String("simulate")) simulate(args, done);
+    else if (tool == QLatin1String("stop_simulation")) stopSimulation(args, done);
+    else if (tool == QLatin1String("wait_for")) waitFor(args, done);
+    else if (tool == QLatin1String("send_input")) sendInput(args, done);
     else if (tool == QLatin1String("build_verilog_a")) buildVerilogA(args, done);
     else if (tool == QLatin1String("tune")) tune(args, done);
     else {
@@ -4326,6 +4400,17 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
     if (!pinned.isEmpty())
         state.insert(QStringLiteral("this conversation works on"),
                      pinnedOpen ? pinned : tr("%1 (not open: open_document opens it)").arg(pinned));
+    // The open project, its name and folder - null when none is (told from
+    // an older build, which has no such field).
+    state.insert(QStringLiteral("project"), a_app->ProjName.isEmpty()
+                                                ? QJsonValue(QJsonValue::Null)
+                                                : QJsonValue(QJsonObject{{QStringLiteral("name"), a_app->ProjName},
+                                                                         {QStringLiteral("folder"), QDir::toNativeSeparators(QucsSettings.QucsWorkDir.absolutePath())}}));
+    // Simulations followed in the background, while they run.
+    QJsonArray following;
+    for (const SimRun& r : std::as_const(a_simRuns))
+        if (!r.ended.isValid()) following.append(QJsonObject{{QStringLiteral("id"), r.id}, {QStringLiteral("schematic"), QFileInfo(r.schematic).fileName()}});
+    if (!following.isEmpty()) state.insert(QStringLiteral("simulations followed"), following);
     return jsonResult(state);
 }
 
@@ -9404,7 +9489,10 @@ QString kindOfFile(const QString& name, QString* simulator = nullptr)
 QJsonObject QucsControl::listDocuments(const QJsonObject& args)
 {
     const QString workspace = QucsSettings.qucsWorkspaceDir.absolutePath();
-    QString root = workspace;
+    // The open project's files, when one is open ("my files"); else the
+    // workspace's, and its projects.
+    const bool inProject = !a_app->ProjName.isEmpty();
+    QString root = inProject ? QucsSettings.QucsWorkDir.absolutePath() : workspace;
     const QString folder = args.value(QLatin1String("folder")).toString().trimmed();
     if (!folder.isEmpty()) {
         // A folder, or a project by its name (amp for amp_prj).
@@ -9557,9 +9645,16 @@ QJsonObject QucsControl::listDocuments(const QJsonObject& args)
         files.append(f);
     }
     QJsonObject result{{QStringLiteral("folder"), QDir::toNativeSeparators(root)}, {QStringLiteral("files"), files}};
-    if (sameFile(root, workspace)) {
+    // (The workspace's projects, also while one is listed: the others stay
+    // in sight.)
+    const bool ofProject = inProject && folder.isEmpty();
+    if (ofProject)
+        result.insert(QStringLiteral("project"),
+                      tr("%1, open now: its files ('folder' with the workspace's path, %2, lists the workspace)")
+                          .arg(a_app->ProjName, QDir::toNativeSeparators(workspace)));
+    if (sameFile(root, workspace) || ofProject) {
         QJsonArray projects;
-        for (const QFileInfo& fi : QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+        for (const QFileInfo& fi : QDir(workspace).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
             if (qucs_s::workspace::isProjectFolder(fi.filePath()))
                 projects.append(QJsonObject{{QStringLiteral("project"), qucs_s::workspace::projectName(fi.fileName())},
                                             {QStringLiteral("folder"), fi.fileName()},
@@ -9784,6 +9879,22 @@ QJsonObject QucsControl::listActions(const QJsonObject& args)
     return jsonResult(list);
 }
 
+QString QucsControl::refusedAction(QAction* action) const
+{
+    if (action == a_app->fileQuit) return tr("Claude does not quit Qucs-S.");
+    if (action == a_app->fileOpen || action == a_app->fileSaveAs)
+        return tr("%1: open_document and save_document do this.").arg(cleanText(action->text()));
+    if (action == a_app->filePrint || action == a_app->filePrintFit)
+        return tr("%1 prints on paper, which Claude does not do: export_image writes a picture of the schematic or of a "
+                  "diagram.").arg(cleanText(action->text()));
+    // (The Claude Code panel's own: its prompts, permissions and settings
+    // are the user's.)
+    if (QDockWidget* claude = a_app->claudeDockWidget())
+        for (QObject* o = action; o != nullptr; o = o->parent())
+            if (o == claude) return tr("%1 is the Claude Code panel's: it is the user's.").arg(cleanText(action->text()));
+    return {};
+}
+
 void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
 {
     // The document it is for in front first: the menus act on that one.
@@ -9814,17 +9925,8 @@ void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
         done(errorResult(tr("There is no action %1 (list_actions lists them).").arg(wanted)));
         return;
     }
-    if (action == a_app->fileQuit) {
-        done(errorResult(tr("Claude does not quit Qucs-S.")));
-        return;
-    }
-    if (action == a_app->fileOpen || action == a_app->fileSaveAs) {
-        done(errorResult(tr("%1: open_document and save_document do this.").arg(cleanText(action->text()))));
-        return;
-    }
-    if (action == a_app->filePrint || action == a_app->filePrintFit) {
-        done(errorResult(tr("%1 prints on paper, which Claude does not do: export_image writes a picture of the "
-                            "schematic or of a diagram.").arg(cleanText(action->text()))));
+    if (const QString why = refusedAction(action); !why.isEmpty()) {
+        done(errorResult(why));
         return;
     }
     if (!action->isEnabled()) {
@@ -9927,6 +10029,8 @@ public:
             answered(result);
         };
         if (tool == QLatin1String("batch")) answered(errorResult(tr("A batch cannot hold another batch.")));
+        // (A batch runs alone: every other call would wait with it.)
+        else if (tool == QLatin1String("wait_for")) answered(errorResult(tr("wait_for is not for a batch, which every other call waits for: call it alone.")));
         else if (badMost) answered(errorResult(qucs_s::mcp::maxCharsRefusal(given)));
         else a_control->callTool(tool, arguments, after);
     }
@@ -10583,6 +10687,12 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
         QWidget* w = list.at(i);
         QJsonObject o{{QStringLiteral("id"), QStringLiteral("c%1").arg(i + 1)}, {QStringLiteral("label"), shownLabel(w, dialog, ui)}};
         if (const QString tab = tabOf(w, dialog); !tab.isEmpty()) o.insert(QStringLiteral("tab"), tab);
+        // Where it is in the area's picture (send_input's pixels), while
+        // the area is shown.
+        if (ui && w != dialog && dialog->isVisible() && w->isVisible()) {
+            const QPoint at = w->mapTo(dialog, QPoint(0, 0));
+            o.insert(QStringLiteral("at"), QJsonArray{at.x(), at.y(), w->width(), w->height()});
+        }
         if (!w->isEnabled()) o.insert(QStringLiteral("enabled"), false);
         auto* edit = qobject_cast<QLineEdit*>(w);
         if (edit != nullptr && edit->echoMode() != QLineEdit::Normal) {
@@ -11323,8 +11433,29 @@ QString osdiHint(const QString& message, const QStringList& netlist, const QStri
 
 } // namespace
 
-void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
+namespace {
+
+// A run's answer at its timeout: it goes on, followed by \a id.
+QString stillRunning(int timeout, int id)
 {
+    return QucsControl::tr("Still running after %1 s: it goes on. simulation_status {\"id\": %2} says how it goes and gives its "
+                           "outcome once it has ended; wait_for {\"event\": \"simulation_finished\", \"id\": %2} waits for its end; "
+                           "stop_simulation stops it.").arg(timeout / 1000).arg(id);
+}
+
+} // namespace
+
+void QucsControl::simulate(const QJsonObject& args, const Done& given)
+{
+    // Followed by an id - begun with 'background', or still running at its
+    // 'timeout' -: its outcome kept (simulation_status, wait_for) once it
+    // has ended, not answered (the answer went).
+    const bool background = args.value(QLatin1String("background")).toBool();
+    auto followed = std::make_shared<int>(0);
+    const Done doneGiven = [this, given, followed](const QJsonObject& r) {
+        if (*followed == 0) given(r);
+        else endSimRun(*followed, r);
+    };
     QString error;
     Schematic* sch = schematic(args, &error, false);
     if (sch == nullptr) {
@@ -11396,7 +11527,9 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
                                  "with operating_point for the DC operating point alone.").arg(titleOf(sch))));
         return;
     }
-    const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(120), 5, 3600) * 1000;
+    // (In the background: no limit unless given - then it is stopped at it.)
+    const int timeout = background ? (args.contains(QLatin1String("timeout")) ? std::clamp(args.value(QLatin1String("timeout")).toInt(), 5, 7 * 86400) * 1000 : 0)
+                                   : std::clamp(args.value(QLatin1String("timeout")).toInt(120), 5, 3600) * 1000;
     const QString keepAs = args.value(QLatin1String("keep_as")).toString().trimmed();
     if (!keepAs.isEmpty() && !QRegularExpression(QStringLiteral("^[A-Za-z0-9_-]{1,64}$")).match(keepAs).hasMatch()) {
         doneGiven(errorResult(tr("'keep_as' is a name of letters, digits, _ and -.")));
@@ -11578,6 +11711,38 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
                           .arg(revision).arg(doc->revision()));
     };
 
+    const QString simulatorName = spicecompat::getDefaultSimulatorName(simulator);
+    // In the background: answered now, with its id.
+    if (background) {
+        *followed = beginSimRun(sch->getDocName(), simulatorName);
+        QJsonObject begun{{QStringLiteral("id"), *followed},
+                          {QStringLiteral("running"), true},
+                          {QStringLiteral("schematic"), QDir::toNativeSeparators(sch->getDocName())},
+                          {QStringLiteral("simulator"), simulatorName},
+                          {QStringLiteral("note"), tr("It runs in the background%1: simulation_status {\"id\": %2} says how it goes, and gives "
+                                                      "its outcome once it has ended (as simulate would have); wait_for {\"event\": "
+                                                      "\"simulation_finished\", \"id\": %2} waits for its end; stop_simulation stops it.")
+                                                       .arg(timeout > 0 ? tr(", stopped after %1 s").arg(timeout / 1000) : QString())
+                                                       .arg(*followed)}};
+        if (!checkText.isEmpty()) begun.insert(QStringLiteral("before the run"), checkText);
+        if (!savedNote.isEmpty()) begun.insert(QStringLiteral("saved"), savedNote);
+        given(jsonResult(begun));
+    }
+    // Past its timeout, not in the background: answered, and followed from
+    // then on by an id (it goes on). In the background: stopped.
+    const auto pastTimeout = [this, followed, background, timeout, path = sch->getDocName(), simulatorName](QObject* process) -> int {
+        if (background) {
+            if (SimRun* r = simRun(*followed)) {
+                r->stoppedBy = tr("its timeout of %1 s").arg(timeout / 1000);
+                stopProcess(process);
+            }
+            return 0;
+        }
+        const int id = beginSimRun(path, simulatorName);
+        if (SimRun* r = simRun(id)) r->process = process;
+        return id;
+    };
+
     if (simulator == spicecompat::simQucsator) {
         // Qucsator runs in a window of its own (SimMessage): its end waited
         // for as a SPICE run's is.
@@ -11589,7 +11754,7 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
             app->showDocument(doc);
             app->slotSimulate();
         });
-        QTimer::singleShot(0, this, [=] {
+        QTimer::singleShot(0, this, [=, this] {
             SimMessage* sim = nullptr;
             for (SimMessage* m : a_app->findChildren<SimMessage*>())
                 if (!before.contains(m)) sim = m;
@@ -11598,11 +11763,14 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
                 done(errorResult(tr("The simulation with Qucsator did not start.")));
                 return;
             }
-            auto answered = std::make_shared<bool>(false);
+            if (SimRun* r = simRun(*followed)) r->process = sim;
+            // Answered at its end - or at its timeout, and its end then kept
+            // under the id the answer gave.
+            auto answered = std::make_shared<int>(0);   // 1: at its timeout, 2: at its end
             QPointer<SimMessage> message(sim);
-            auto report = [=](int status, bool timedOut) {
-                if (*answered) return;
-                *answered = true;
+            auto report = [=, this](int status, bool timedOut, int id) {
+                if (*answered == 2 || (*answered == 1 && timedOut)) return;
+                *answered = timedOut ? 1 : 2;
                 if (!timedOut) restore();
                 if (!doc) {
                     done(errorResult(tr("%1 was closed while it was simulated: its results were discarded.").arg(title)));
@@ -11625,21 +11793,26 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
                     if (status == 0 && !written)
                         result.insert(QStringLiteral("note"), tr("Qucsator reported no error but wrote no new dataset."));
                 } else {
-                    result.insert(QStringLiteral("note"), tr("Still running: its end was not waited for any longer."));
+                    result.insert(QStringLiteral("note"), stillRunning(timeout, id));
                 }
                 changedWhileRunning(result);
                 done(jsonResult(result));
             };
-            connect(sim, &SimMessage::SimulationEnded, this, [report](int status, SimMessage*) { report(status, false); });
+            connect(sim, &SimMessage::SimulationEnded, this, [report](int status, SimMessage*) { report(status, false, 0); });
             // Ended already (it could not start).
             if (sim->SimProcess.state() == QProcess::NotRunning && !sim->ErrText->toPlainText().trimmed().isEmpty())
-                QTimer::singleShot(0, this, [report] { report(1, false); });
-            QTimer::singleShot(timeout, this, [report, sim = QPointer<SimMessage>(sim), restore] {
-                report(0, true);
-                // Put back when it does end.
-                if (sim) connect(sim, &SimMessage::SimulationEnded, sim, [restore] { restore(); });
-                else restore();
-            });
+                QTimer::singleShot(0, this, [report] { report(1, false, 0); });
+            if (timeout > 0)
+                QTimer::singleShot(timeout, this, [report, answered, followed, pastTimeout, sim = QPointer<SimMessage>(sim), restore] {
+                    if (*answered != 0) return;
+                    const int id = pastTimeout(sim);
+                    if (id == 0) return;   // (in the background: stopped, its end reported)
+                    report(0, true, id);
+                    *followed = id;   // (its end, from now on, kept under it)
+                    // Put back when it does end.
+                    if (sim) connect(sim, &SimMessage::SimulationEnded, sim, [restore] { restore(); });
+                    else restore();
+                });
         });
         return;
     }
@@ -11659,7 +11832,7 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
         app->slotSimulateWithSpice();
     });
     QTimer::singleShot(0, this, [this, done, timeout, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning, logBefore,
-                                 compare, brief, simulatorArg = args.value(QLatin1String("simulator")),
+                                 compare, brief, followed, pastTimeout, caller, simulatorArg = args.value(QLatin1String("simulator")),
                                  applyOptimum = args.value(QLatin1String("apply_optimum")).toBool()] {
         SimulationRun* run = console->currentRun();
         // Closed before it began (a call right behind this one): said -
@@ -11680,11 +11853,14 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
             return;
         }
         run->setQuiet(true);   // (its errors in the answer, not in a box)
-        auto answered = std::make_shared<bool>(false);
+        if (SimRun* f = simRun(*followed)) f->process = run;
+        // Answered at its end - or at its timeout, and its end then kept
+        // under the id the answer gave.
+        auto answered = std::make_shared<int>(0);   // 1: at its timeout, 2: at its end
         auto report = [this, done, answered, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning,
-                       compare, brief, simulatorArg, applyOptimum](SimulationRun* r, bool timedOut) {
-            if (*answered) return;
-            *answered = true;
+                       compare, brief, simulatorArg, applyOptimum, timeout, caller](SimulationRun* r, bool timedOut, int id) {
+            if (*answered == 2 || (*answered == 1 && timedOut)) return;
+            *answered = timedOut ? 1 : 2;
             if (!timedOut) restore();
             if (!doc) {
                 done(errorResult(tr("%1 was closed while it was simulated: its results were discarded.").arg(title)));
@@ -11764,16 +11940,21 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
                 if (!succeeded && errors.isEmpty() && !r->wasStopped())
                     result.insert(QStringLiteral("note"), tr("The simulator failed without an error message of its own: see the last lines."));
             }
-            if (timedOut) result.insert(QStringLiteral("note"), tr("Still running: its end was not waited for any longer."));
+            if (timedOut) result.insert(QStringLiteral("note"), stillRunning(timeout, id));
             changedWhileRunning(result);
             // Before and after, measurement by measurement.
             if (!compare.isEmpty() && doc && result.value(QStringLiteral("dataset written")).toBool())
                 result.insert(QStringLiteral("compared"), comparedRuns(doc, compare, simulatorArg));
             // An ngspice optimize's result: what it found, and whether the
             // parameters now hold it.
-            if (doc && !timedOut && simulator == spicecompat::simNgspice && !operatingPoint)
-                if (const QJsonArray optimum = optimumOf(doc, output, applyOptimum); !optimum.isEmpty())
-                    result.insert(QStringLiteral("optimum"), optimum);
+            if (doc && !timedOut && simulator == spicecompat::simNgspice && !operatingPoint) {
+                // (Written in for its caller, who asked: its edit.)
+                const quint64 editor = QucsDoc::editor();
+                QucsDoc::setEditor(caller);
+                const QJsonArray optimum = optimumOf(doc, output, applyOptimum);
+                QucsDoc::setEditor(editor);
+                if (!optimum.isEmpty()) result.insert(QStringLiteral("optimum"), optimum);
+            }
             // Brief: what came of it, not the log and the long lists.
             if (brief) {
                 result.remove(QStringLiteral("last lines"));
@@ -11790,9 +11971,16 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
             }
             done(jsonResult(result));
         };
-        connect(run, &SimulationRun::simulated, this, [report](SimulationRun* r) { report(r, false); });
+        connect(run, &SimulationRun::simulated, this, [report](SimulationRun* r) { report(r, false, 0); });
         // Put back when it ends, even after the answer went (timed out).
         connect(run, &SimulationRun::simulated, this, [restore] { restore(); });
-        QTimer::singleShot(timeout, this, [report] { report(nullptr, true); });
+        if (timeout > 0)
+            QTimer::singleShot(timeout, this, [report, answered, followed, pastTimeout, live = QPointer<SimulationRun>(run)] {
+                if (*answered != 0) return;
+                const int id = pastTimeout(live);
+                if (id == 0) return;   // (in the background: stopped, its end reported)
+                report(nullptr, true, id);
+                *followed = id;   // (its end, from now on, kept under it)
+            });
     });
 }
