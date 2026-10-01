@@ -34,6 +34,7 @@
 #include <QStatusBar>
 #include <QShortcut>
 #include <QApplication>
+#include <QPainter>
 #include <QClipboard>
 #include <QInputDialog>
 #include <QDesktopServices>
@@ -126,6 +127,63 @@
 #include "diagram.h"
 #include "extsimkernels/CdlSettingsDialog.h"
 #include "qucs_assert.h"
+
+namespace {
+
+// The Projects panel's rows: at the right end of a project's, a dot - green
+// for the project open now, grey for the others; a folder that is no
+// project has none. The name ends before it.
+class ProjectStateDelegate : public QStyledItemDelegate
+{
+public:
+  using QStyledItemDelegate::QStyledItemDelegate;
+
+  static int stateOf(const QModelIndex &index)
+  {
+    return index.data(QucsFileSystemModel::ProjectStateRole).toInt();
+  }
+  // The dot's size and its room at the right end, in a row \a rect.
+  static int dotSize(const QRect &rect) { return std::clamp(rect.height() * 2 / 5, 7, 12); }
+  static int dotRoom(const QRect &rect) { return dotSize(rect) + 12; }
+  static QRect dotRect(const QRect &rect)
+  {
+    const int d = dotSize(rect);
+    return QRect(rect.right() - dotRoom(rect) + (dotRoom(rect) - d) / 2, rect.center().y() - d / 2 + 1, d, d);
+  }
+  static QColor openColour() { return QColor(0x34, 0xc7, 0x59); }
+
+  void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override
+  {
+    QStyledItemDelegate::paint(painter, option, index);
+    const int state = stateOf(index);
+    if (state == QucsFileSystemModel::NoProject) return;
+    // (A neutral grey on a highlighted row too: of the list's colours, not
+    // the highlight's, which would tint it.)
+    const QColor colour = state == QucsFileSystemModel::OpenProject
+                              ? openColour()
+                              : qucs_s::apptheme::mix(option.palette.color(QPalette::Base), option.palette.color(QPalette::Text), 0.45);
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(colour);
+    painter->drawEllipse(dotRect(option.rect));
+    painter->restore();
+  }
+
+protected:
+  void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override
+  {
+    QStyledItemDelegate::initStyleOption(option, index);
+    if (stateOf(index) == QucsFileSystemModel::NoProject) return;
+    // The name cut short before the dot rather than under it.
+    const QStyle *style = option->widget != nullptr ? option->widget->style() : QApplication::style();
+    const int margin = style->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, option->widget) + 1;
+    const int room = option->rect.width() - option->decorationSize.width() - 4 * margin - dotRoom(option->rect);
+    option->text = option->fontMetrics.elidedText(option->text, option->textElideMode, std::max(room, 0));
+  }
+};
+
+} // namespace
 
 QucsApp::QucsApp(bool netlist2Console) :
   a_netlist2Console(netlist2Console)
@@ -573,6 +631,7 @@ void QucsApp::initView()
   ProjGroupLayout->addLayout(projectsFilterRow);
 
   Projects = new QListView();
+  Projects->setItemDelegate(new ProjectStateDelegate(Projects));   // the open project's dot
 
   ProjGroupLayout->addWidget(Projects);
   ProjGroup->setLayout(ProjGroupLayout);
@@ -1955,6 +2014,8 @@ void QucsApp::openProject(const QString& PathGiven)
   TabView->setCurrentIndex(1);   // switch to "Content"-Tab
 
   ProjName = qucs_s::workspace::projectName(openProjName);   // "amp_prj" is amp
+  a_homeDirModel->setOpenProject(QucsSettings.QucsWorkDir.absolutePath());
+  Projects->viewport()->update();
   QDir parentDir = QucsSettings.QucsWorkDir;
   parentDir.cdUp();
     // show name in title of main window
@@ -2028,6 +2089,8 @@ void QucsApp::slotMenuProjClose()
 
   TabView->setCurrentIndex(0);   // switch to "Projects"-Tab
   ProjName = "";
+  a_homeDirModel->setOpenProject(QString());
+  Projects->viewport()->update();
   fillLibrariesTreeView();
 }
 
@@ -5931,21 +5994,43 @@ void QucsApp::runPostSimCommands(Schematic* sch)
   }
 }
 
+void QucsFileSystemModel::setOpenProject(const QString &path)
+{
+  a_openProject = path.isEmpty() ? QString() : QDir::cleanPath(path);
+  a_openProjectCanonical = path.isEmpty() ? QString() : QFileInfo(path).canonicalFilePath();
+}
+
 QVariant QucsFileSystemModel::data( const QModelIndex& index, int role ) const
 {
+    if (role == ProjectStateRole || role == Qt::ToolTipRole) {
+        ProjectState state = NoProject;
+        const QString path = filePath(index);
+        if (isDir(index) && qucs_s::workspace::isProjectFolder(path)) {   // (".." never is)
+            const bool open = !a_openProject.isEmpty()
+                              && (QDir::cleanPath(path) == a_openProject
+                                  || (!a_openProjectCanonical.isEmpty() && QFileInfo(path).canonicalFilePath() == a_openProjectCanonical));
+            state = open ? OpenProject : ClosedProject;
+        }
+        if (role == ProjectStateRole) return int(state);
+        // What its dot says, and where a linked project is from.
+        QStringList lines;
+        if (state != NoProject) lines << (state == OpenProject ? tr("The project open now") : tr("A project, not open"));
+        if (qucs_s::workspace::isLink(path))
+            lines << tr("Linked from %1").arg(QDir::toNativeSeparators(qucs_s::workspace::linkTarget(path)));
+        if (!lines.isEmpty()) return lines.join(QLatin1Char('\n'));
+        return QFileSystemModel::data(index, role);
+    }
     if (role == Qt::DecorationRole) { // it's an icon
         if (isDir(index) && qucs_s::workspace::isProjectFolder(filePath(index))) { // it's a Qucs project
             // for some reason SVG does not always work on Windows, so use PNG
             return QIcon(":bitmaps/hicolor/128x128/apps/qucs.png");
         }
     }
-    // A project linked into the workspace (Link Project): in italics, and
-    // where it is as the tooltip.
-    if (role == Qt::FontRole || role == Qt::ToolTipRole) {
+    // A project linked into the workspace (Link Project): in italics (and
+    // where it is as the tooltip, above).
+    if (role == Qt::FontRole) {
         const QString path = filePath(index);
         if (qucs_s::workspace::isLink(path)) {
-            if (role == Qt::ToolTipRole)
-                return tr("Linked from %1").arg(QDir::toNativeSeparators(qucs_s::workspace::linkTarget(path)));
             QFont font = QFileSystemModel::data(index, role).value<QFont>();
             font.setItalic(true);
             return font;
