@@ -110,6 +110,14 @@ public:
   static bool treeView();
   void setTreeView(bool on);
 
+  /// Shows only the files whose names hold \a text, without regard to
+  /// case - the name as the row shows it, so that a folder's name finds
+  /// the files in it - and the categories and folders they are in, open.
+  /// Empty: every row again, those that were open before open again. It
+  /// stays through refresh(). The header says how many files it found.
+  void setFilterText(const QString& text);
+  QString filterText() const { return m_filter; }
+
   QStandardItemModel *model() { return m_model; };
 
   /// The files of the selected rows as file:// URLs: what a drag out of
@@ -162,6 +170,16 @@ private:
   bool m_looking = false;   // refreshIfChanged() is looking at the files
   bool m_folderIcons = false;   // QucsSettings.ContentFolderIcons the listing was built with
   QStringList m_patterns;       // the categories (names, patterns) the listing was built with
+  QString m_filter;             // setFilterText()'s
+  QStringList m_openUnfiltered; // rowKey()s of the rows open before the filter
+  QString m_header;             // the first column's header, unfiltered
+
+  /// Hides the rows under \a parent that the filter leaves out, and shows
+  /// the others (opening a category or folder that holds a file found);
+  /// the number of files shown.
+  int filterRows(const QModelIndex& parent);
+  /// filterRows() from the top, and the header said so.
+  void applyFilter();
 
   /// Adds a file row (path relative to the project, optional note) under
   /// its category, inside the folder rows of its directory in tree view.
