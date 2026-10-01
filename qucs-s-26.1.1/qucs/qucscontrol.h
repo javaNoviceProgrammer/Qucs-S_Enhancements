@@ -299,6 +299,8 @@ private:
     QJsonObject openProject(const QJsonObject& args);
     QJsonObject copyDocument(const QJsonObject& args);
     QJsonObject cleanScratch(const QJsonObject& args);
+    QJsonObject renameFile(const QJsonObject& args);
+    QJsonObject trashFile(const QJsonObject& args);
     QJsonObject makeSymbol(const QJsonObject& args);
     QJsonObject setSubcircuitParameters(const QJsonObject& args);
     QJsonObject importNetlist(const QJsonObject& args);

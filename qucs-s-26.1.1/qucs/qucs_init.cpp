@@ -1173,12 +1173,14 @@ void QucsApp::initMenuBar() {
 
   simMenu = new QMenu(tr("&Simulation")); // menuBar entry simMenu
   simMenu->addAction(simulate);
+  simMenu->addAction(simConsole->stopAction());
   simMenu->addAction(tune);
   simMenu->addAction(dpl_sch);
   simMenu->addAction(dcbias);
   simMenu->addAction(checkSchematicAction);
   simMenu->addAction(checkHierarchyAction);
   simMenu->addAction(showMsg);
+  simMenu->addAction(simConsole->clearAction());
   simMenu->addAction(showNet);
   simMenu->addAction(reloadSimData);
   simMenu->addAction(save_netlist);
@@ -1843,6 +1845,12 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("Sim.Tune", "Simulation", "Tune", tune,
                       QKeySequence(Qt::Key_F3));
+
+  mgr.registerCommand("Sim.Stop", "Simulation", "Stop Simulation", simConsole->stopAction(),
+                      QKeySequence());
+
+  mgr.registerCommand("Sim.ClearConsole", "Simulation", "Clear Simulation Console",
+                      simConsole->clearAction(), QKeySequence());
 
   mgr.registerCommand("Sim.ViewDisplay", "Simulation",
                       "View Data Display Schematic", dpl_sch,

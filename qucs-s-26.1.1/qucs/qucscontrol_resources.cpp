@@ -190,11 +190,12 @@ QString QucsControl::resourceVersion(const QString& uri) const
 bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
 {
     const auto exists = [this](const QString& path) { return !path.trimmed().isEmpty() && QFileInfo::exists(absolute(path.trimmed())); };
-    if (tool == QLatin1String("clean_scratch")) return true;
+    if (tool == QLatin1String("clean_scratch") || tool == QLatin1String("trash_file")) return true;
     // A script that names what cannot be undone.
     if (tool == QLatin1String("run_script")) {
         const QString script = a.value(QLatin1String("script")).toString();
-        return script.contains(QLatin1String("clean_scratch")) || script.contains(QLatin1String("discard"))
+        return script.contains(QLatin1String("clean_scratch")) || script.contains(QLatin1String("trash_file"))
+               || script.contains(QLatin1String("discard"))
                || script.contains(QLatin1String("replace")) || script.contains(QLatin1String("save_as"));
     }
     if (tool == QLatin1String("close_document")) {

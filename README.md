@@ -248,8 +248,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   of the modal "Simulate with external simulator" dialog, so the schematic
   stays usable while ngspice/Xyce work. The dock has the simulator's
   output, a status list, a progress bar, *Stop*, *Save netlist* and
-  *Clear*; it comes up with the first simulation and can be shown or hidden
-  from *View → Simulation Console*. A second Simulate while one is running
+  *Clear* (*Stop* and *Clear* are also *Simulation → Stop Simulation* and
+  *Clear Simulation Console*); it comes up with the first simulation and
+  can be shown or hidden from *View → Simulation Console*. A second Simulate while one is running
   is refused (the console says so); closing the schematic being simulated
   stops its run (upstream #235). *Simulation → Simulators Settings →
   Simulation console* offers two alternatives: the same console in a
@@ -341,8 +342,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   they must not touch: a wire never joins a net it was not meant to), label
   nets, delete, replace whole sections from text, undo and redo, each
   change one step of Edit > Undo - take a screenshot of it to see what it
-  did, use any menu action and fill in and answer the dialog it opens,
-  and run a simulation and read its outcome. **It reads the results as
+  did, use any menu action and fill in and answer the dialog it opens (a
+  file dialog too: one Claude opens is Qt's, which it fills in with a
+  path, where the system's panel would wait for you; those you open stay
+  the system's), and run a simulation and read its outcome. **It reads the results as
   numbers, not only as pictures**: `get_dataset` gives a dataset's
   variables and, for those asked for, their statistics (min, max and
   where, mean, RMS), samples over a range, values at given times or
@@ -469,8 +472,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the ngspice of the settings for its own list, so the answer marks what
   that ngspice lacks - a stock one has none of the enhanced build's
   commands - and names any it has besides. `new_project`, `open_project`,
-  `copy_document` (a schematic with its datasets and data display) and
-  `clean_scratch` tend the files. `new_document` opens a schematic's data
+  `copy_document` (a schematic with its datasets and data display),
+  `clean_scratch`, `rename_file` (a file or folder renamed or moved, the
+  documents open from it following) and `trash_file` (to the system's
+  trash, the documents open from it closing; asked about every time) tend
+  the files. `new_document` opens a schematic's data
   display for a report's plots. Equation blocks, Monte Carlo records and
   specs, and hidden text are set by name, so `set_schematic` is rarely
   needed. Diagrams have a title that moves with them. A marker can sit
@@ -1769,7 +1775,11 @@ preferences; the application offers the same for trying a build out:
 `QUCS_SETTINGS_DIR=<dir> qucs-s` keeps that run's settings in
 `<dir>/qucs/qucs_s.ini`, and its crash reports and autosave copies under
 `<dir>` as well — a trial run that is killed leaves nothing for your own
-next start to report or offer.
+next start to report or offer. `QUCS_TRASH_DIR=<dir>` does the same for
+the trash: what Qucs-S moves to the trash (the File Browser, Delete
+Project, Claude's `trash_file`, `clean_scratch` and `import_data`'s
+`remove`) goes into `<dir>` instead of the system's. The tests set it, so a
+test run puts nothing in your trash.
 
 `scripts/ci/smoke-test.sh` has three suites — `load` (render every ngspice
 example, and one in every export format), `simulate` (netlist → ngspice → dataset → render; needs `ngspice` on

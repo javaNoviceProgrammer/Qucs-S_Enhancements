@@ -678,6 +678,20 @@ bool misc::isSameFile(const QString& a, const QString& b)
   return deviceA == deviceB && indexA == indexB;
 }
 
+bool misc::moveToTrash(const QString& path, QString* where)
+{
+  const QString kept = qEnvironmentVariable("QUCS_TRASH_DIR");
+  if (kept.isEmpty()) return QFile::moveToTrash(path, where);
+  if (!QDir().mkpath(kept)) return false;
+  const QString name = QFileInfo(path).fileName();
+  QString target = QDir(kept).filePath(name);
+  for (int n = 2; QFileInfo::exists(target) || QFileInfo(target).isSymLink(); ++n)
+    target = QDir(kept).filePath(QStringLiteral("%1 %2").arg(name).arg(n));
+  if (!QDir().rename(path, target)) return false;
+  if (where != nullptr) *where = target;
+  return true;
+}
+
 bool misc::copyFileOver(const QString& source, const QString& target, QString* error)
 {
   auto fail = [error](const QString& why) {

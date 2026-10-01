@@ -152,14 +152,8 @@ private slots:
         QVERIFY(dir.isValid());
         useIsolatedSettings(dir.filePath("settings"));
         top = QFileInfo(dir.path()).canonicalFilePath();
-#ifdef Q_OS_LINUX
-        // The trash in here, not the user's. The folder must be there, as
-        // ~/.local/share is: Qt makes $XDG_DATA_HOME/Trash but not
-        // $XDG_DATA_HOME, and without it moveToTrash() fails (Replace then
-        // reports the file as not moved).
-        qputenv("XDG_DATA_HOME", QFile::encodeName(top + "/xdg"));
-        QVERIFY(QDir().mkpath(top + "/xdg"));
-#endif
+        // (What goes to the trash goes into the settings' folder here, not
+        // into the user's trash: QUCS_TRASH_DIR, useIsolatedSettings.)
     }
 
     // Files compared as files, not names: another case where the file
@@ -293,12 +287,11 @@ private slots:
         QCOMPARE(questions, 1);
         QCOMPARE(done, QStringList({here + "/c/one 2.sch", here + "/c/two 3.txt"}));
 
-#ifdef Q_OS_LINUX
         // Replace: the one there goes to the trash (here, not the user's).
         answering([&] { done = fb.transfer({here + "/two.txt"}, here + "/c", Qt::MoveAction); }, clash("fbClashReplace"));
         QCOMPARE(done, QStringList({here + "/c/two.txt"}));
         QCOMPARE(read(here + "/c/two.txt"), QByteArray("two again"));
-#endif
+        QVERIFY(QFileInfo::exists(qEnvironmentVariable("QUCS_TRASH_DIR") + "/two.txt"));
     }
 
     // Replace is not offered for the one there when it holds the one moved
@@ -331,7 +324,6 @@ private slots:
             QCOMPARE(read(here + "/x/x/data.txt"), QByteArray("precious"));
             QCOMPARE(read(here + "/x/other.txt"), QByteArray("also precious"));
         }
-#ifdef Q_OS_LINUX
         // Replace chosen for the rest (the trash here, not the user's):
         // asked again for the one that holds the source, without Replace.
         write(here + "/z/z/deep.txt", "deep");
@@ -359,7 +351,6 @@ private slots:
         QCOMPARE(done, QStringList({here + "/one.txt"}));
         QCOMPARE(read(here + "/one.txt"), QByteArray("one moved"));
         QCOMPARE(read(here + "/z/z/deep.txt"), QByteArray("deep"));
-#endif
         // Keep Both: beside it, all kept.
         answering([&] { done = fb.transfer({here + "/x/x"}, here, Qt::MoveAction); }, clash("fbClashKeepBoth"));
         QCOMPARE(done, QStringList({here + "/x 2"}));
@@ -660,7 +651,6 @@ private slots:
         QVERIFY2(said.contains("amp2.txt") && said.contains("notes.txt") && said.contains("close"), qPrintable(said));
         QVERIFY(QFileInfo::exists(here + "/proj2/notes.txt"));
         QVERIFY(named(here + "/proj2/notes.txt") != nullptr);
-#ifdef Q_OS_LINUX
         // Yes (the trash here, not the user's): gone, their tabs closed.
         answering([&] { fb->moveToTrash(here + "/proj2"); },
                   [&](QWidget* w) {
@@ -670,9 +660,9 @@ private slots:
                       return true;
                   });
         QVERIFY(!QFileInfo::exists(here + "/proj2"));
+        QVERIFY(QFileInfo::exists(qEnvironmentVariable("QUCS_TRASH_DIR") + "/proj2/notes.txt"));
         QVERIFY(named(here + "/proj2/notes.txt") == nullptr);
         QVERIFY(named(here + "/proj2/amp2.txt") == nullptr);
-#endif
         app.closeAllFiles();
     }
 };

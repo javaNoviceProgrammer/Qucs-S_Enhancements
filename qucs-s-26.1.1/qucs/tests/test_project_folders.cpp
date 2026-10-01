@@ -145,12 +145,8 @@ private slots:
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
         QucsSettings.firstRun = false;
-#ifdef Q_OS_LINUX
-        // The trash in here, not the user's (Qt makes $XDG_DATA_HOME/Trash,
-        // not $XDG_DATA_HOME).
-        qputenv("XDG_DATA_HOME", QFile::encodeName(dir.filePath("xdg")));
-        QVERIFY(QDir().mkpath(dir.filePath("xdg")));
-#endif
+        // (What goes to the trash goes into the settings' folder here, not
+        // into the user's trash: QUCS_TRASH_DIR, useIsolatedSettings.)
         QucsSettings.maxUndo = 20;
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
         Module::registerModules();
@@ -395,7 +391,6 @@ private slots:
         QVERIFY2(said.contains("letter.txt") && said.contains("unsaved"), qPrintable(said));
         QCOMPARE(read(workspace + "/Documents/letter.txt"), QByteArray("precious"));
         letter()->setDocChanged(false);
-#ifdef Q_OS_LINUX
         // To the trash (here, not the user's): gone from the workspace,
         // kept in the trash; the document open from it closed.
         answering([&] { QVERIFY(app.deleteProject(workspace + "/Documents")); },
@@ -408,9 +403,8 @@ private slots:
                   });
         QVERIFY2(details.contains("letter.txt"), qPrintable(details));   // it closes
         QVERIFY(!QFileInfo::exists(workspace + "/Documents"));
-        QCOMPARE(read(dir.filePath("xdg/Trash/files/Documents/letter.txt")), QByteArray("precious"));
+        QCOMPARE(read(dir.filePath("settings/trash/Documents/letter.txt")), QByteArray("precious"));
         QVERIFY(letter() == nullptr);
-#endif
         app.closeAllFiles();
     }
 

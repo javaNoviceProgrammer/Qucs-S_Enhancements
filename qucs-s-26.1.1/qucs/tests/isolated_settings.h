@@ -25,6 +25,9 @@ inline void useIsolatedSettings(const QString& dir)
     // The caches - project scratch folders, the netlists runs are kept
     // with: there too (misc::cacheDir()).
     qputenv("QUCS_CACHE_DIR", (dir + "/cache").toUtf8());
+    // What Claude's tools move to the trash (clean_scratch, trash_file):
+    // there too, not into the user's trash (QUCS_TRASH_DIR).
+    qputenv("QUCS_TRASH_DIR", (dir + "/trash").toUtf8());
 }
 
 #endif // ISOLATED_SETTINGS_H
