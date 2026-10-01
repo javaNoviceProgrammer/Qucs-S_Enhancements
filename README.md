@@ -544,8 +544,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   specs, and hidden text are set by name, so `set_schematic` is rarely
   needed. Diagrams have a title that moves with them. A marker can sit
   3 dB below 0 dB or the DC value, not only below the peak. `get_dataset`
-  measures a spectrum (`fft`), an eye (`eye`: the bit period told from the
-  crossings when not given, PAM4's three eyes with `levels` 4) and a Monte
+  measures a spectrum (`fft`), an eye (`eye`: the bit period, when not
+  given, the Tbit of the V(PRBS) source the signal comes from or told from
+  its crossings; PAM4's three eyes with `levels` 4) and a Monte
   Carlo family's `distribution`, gives a table across a sweep, and reads `.csv` and
   `.xlsx` results, and says when a dataset is stale: the last run failed
   after it, or the circuit changed since (the netlist a run would be
@@ -1238,10 +1239,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   apart, and laid over each other, the eye's centre in the middle. Drawn
   as a density - how many traces pass each point, from blue to red, as
   ngspice's `pyplot -eye` draws it - or as the traces themselves, fainter
-  the more there are. The UI is given or told from where the first graph
-  crosses its threshold (its crossings' times fitted against their UI's
-  number, so the fold does not drift); the settling at the start can be
-  left out (*From*). Beside it, what is measured on each graph, as
+  the more there are. The UI is given; or, on a schematic (or its data
+  display), the *Tbit* of the V(PRBS) source the trace comes from - the
+  one nearest its node, never through ground, said beside it ("UI 100 ps,
+  V1's Tbit"); or, with none, told from where the first graph crosses its
+  threshold (its crossings' times fitted against their UI's number, so
+  the fold does not drift). The settling at the start can be left out
+  (*From*). Beside it, what is measured on each graph, as
   ngspice's `eye` command measures it: the UI, the eye's height (the
   lowest 1 less the highest 0 at the centre) and width (a UI less the
   crossings' spread), the jitter, rms and peak to peak, the levels and Q

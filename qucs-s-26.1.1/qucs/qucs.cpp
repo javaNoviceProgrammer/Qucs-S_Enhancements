@@ -127,6 +127,7 @@
 #include "diagram.h"
 #include "extsimkernels/CdlSettingsDialog.h"
 #include "qucs_assert.h"
+#include "prbssource.h"
 
 namespace {
 
@@ -192,6 +193,9 @@ QucsApp::QucsApp(bool netlist2Console) :
   setWindowTitle(windowTitle);
 
   QucsSettings.hasDarkTheme = misc::isDarkTheme();
+  // An eye diagram folds a trace at the Tbit of the PRBS source it comes
+  // from (looked for among the open documents).
+  qucs_s::prbs::installForEyeDiagrams();
 
   // Instantiate settings singleton and restore window geometry (unless
   // Application Settings > Workspace says the window starts afresh).

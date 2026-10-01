@@ -352,7 +352,9 @@ QJsonObject toJson(const Result& r)
     using dataset::rounded;
     if (!r.ok()) return {{QStringLiteral("error"), r.error}};
     QJsonObject o{{QStringLiteral("unit interval"), rounded(r.ui)},
-                  {QStringLiteral("unit interval from"), r.uiEstimated ? tr("the crossings") : tr("given")},
+                  {QStringLiteral("unit interval from"), r.uiEstimated           ? tr("the crossings")
+                                                         : !r.uiSource.isEmpty() ? tr("%1's Tbit").arg(r.uiSource)
+                                                                                 : tr("given")},
                   {QStringLiteral("symbols"), r.symbols}};
     QJsonArray levels, eyes;
     for (double l : r.levels) levels << rounded(l);
