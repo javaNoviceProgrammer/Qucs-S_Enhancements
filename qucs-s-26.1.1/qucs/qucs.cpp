@@ -564,10 +564,29 @@ void QucsApp::initView()
 
   ProjGroupLayout->addWidget(ProjButts);
 
+  // A filter by name, as the File Browser's and the Content panel's.
+  QLineEdit *projectsFilter = qucs_s::files::nameFilterEdit(ProjGroup);
+  projectsFilter->setObjectName(QStringLiteral("projectsFilter"));
+  QHBoxLayout *projectsFilterRow = new QHBoxLayout;
+  projectsFilterRow->setContentsMargins(4, 4, 4, 3);
+  projectsFilterRow->addWidget(projectsFilter);
+  ProjGroupLayout->addLayout(projectsFilterRow);
+
   Projects = new QListView();
 
   ProjGroupLayout->addWidget(Projects);
   ProjGroup->setLayout(ProjGroupLayout);
+  connect(projectsFilter, &QLineEdit::textChanged, this, [this](const QString &text) {
+    const QString chosen = Projects->currentIndex().isValid()
+                               ? a_homeDirModel->filePath(a_proxyModel->mapToSource(Projects->currentIndex()))
+                               : QString();
+    a_proxyModel->setNameFilter(text.trimmed());
+    // A project the filter leaves out is no longer chosen: the view would
+    // choose the row beside it, and Open and Delete act on the one chosen.
+    if (!chosen.isEmpty() && !a_proxyModel->mapFromSource(a_homeDirModel->index(chosen)).isValid()
+        && Projects->selectionModel() != nullptr)
+      Projects->selectionModel()->clear();   // (the current row too)
+  });
 
   TabView->addTab(ProjGroup, tr("Projects"));
   TabView->setTabToolTip(TabView->indexOf(ProjGroup), tr("content of project directory"));
@@ -5934,6 +5953,30 @@ QVariant QucsFileSystemModel::data( const QModelIndex& index, int role ) const
     }
     // return default system icon
     return QFileSystemModel::data(index, role);
+}
+
+void QucsSortFilterProxyModel::setNameFilter(const QString &text)
+{
+  if (text == a_nameFilter) return;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+  beginFilterChange();
+  a_nameFilter = text;
+  endFilterChange(QSortFilterProxyModel::Direction::Rows);
+#else
+  a_nameFilter = text;
+  invalidateFilter();
+#endif
+}
+
+bool QucsSortFilterProxyModel::filterAcceptsRow(int row, const QModelIndex &parent) const
+{
+  if (a_nameFilter.isEmpty()) return true;
+  const auto *model = qobject_cast<const QFileSystemModel *>(sourceModel());
+  if (model == nullptr) return true;
+  // Only the folder shown is filtered: those on the way to it hold it.
+  if (parent != model->index(model->rootPath())) return true;
+  const QString name = model->fileName(model->index(row, 0, parent));
+  return name == QLatin1String("..") || name.contains(a_nameFilter, Qt::CaseInsensitive);
 }
 
 // function below is adapted from https://stackoverflow.com/questions/10789284/qfilesystemmodel-sorting-dirsfirst
