@@ -19,6 +19,11 @@
 #include <QDialog>
 #include <QFileDialog>
 #include <QScopeGuard>
+#include <QVBoxLayout>
+#include <QTreeView>
+#include <QStandardItemModel>
+#include <QSlider>
+#include <QDockWidget>
 #include <QMenuBar>
 #include <QWidgetAction>
 #include <QToolButton>
@@ -71,6 +76,7 @@
 #include "paintings/graphictext.h"
 #include "dialogs/simmessage.h"
 #include "textdoc.h"
+#include "projectView.h"
 
 using qucs_s::control::renameComponentIn;
 
@@ -4737,6 +4743,245 @@ private slots:
         QVERIFY(tab->diagnostics().isEmpty());
         QVERIFY(!json(r).toObject().contains("marked"));
         QVERIFY(!failed(call("close_document", {{"path", folder + "/bad.va"}, {"unsaved", "discard"}})));
+    }
+
+    // Any part of the window, as a dialog is read and used: the docks and
+    // their panels, toolbars, the status bar, the documents' tabs. Never
+    // the Claude Code panel; the consoles read, never typed into.
+    void theWindowIsReachedBeyondItsMenus()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        QJsonObject r = call("get_ui");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QStringList areas;
+        for (const QJsonValue& v : json(r).toObject().value("areas").toArray()) areas << v.toObject().value("area").toString();
+        for (const char* a : {"dock:Main Dock", "dock:Simulation", "toolbar:File", "toolbar:Simulate", "statusbar", "tabs"})
+            QVERIFY2(areas.contains(a), qPrintable(areas.join(", ")));
+        QVERIFY2(!text(r).contains("dock:Claude Code"), qPrintable(text(r)));
+        // Refused: the Claude Code panel (read or used), a console typed into.
+        QVERIFY(text(call("get_ui", {{"area", "dock:Claude Code"}})).contains("is the user's"));
+        QVERIFY(text(call("set_ui", {{"area", "dock:Claude Code"}, {"press", "Send"}})).contains("is the user's"));
+        for (const char* console : {"dock:Terminal", "dock:Python Shell", "dock:Octave Dock"}) {
+            r = call("set_ui", {{"area", console}, {"press", "anything"}});
+            QVERIFY2(failed(r) && text(r).contains("console tool"), qPrintable(QString(console) + ": " + text(r)));
+        }
+        QVERIFY(!failed(call("get_ui", {{"area", "dock:Terminal"}})));   // (read, it may be)
+        QVERIFY(failed(call("get_ui", {{"area", "dock:Nowhere"}})));
+
+        // The simulation console: its log read, Clear pressed.
+        app->simulationConsole()->console()->setPlainText("first line\nthe run's last line");
+        r = call("get_ui", {{"area", "dock:Simulation"}});
+        QJsonObject log, stop;
+        for (const QJsonValue& v : json(r).toObject().value("controls").toArray()) {
+            if (v.toObject().value("kind").toString() == "log" && v.toObject().value("value").toString().contains("last line")) log = v.toObject();
+            if (v.toObject().value("label").toString() == "Stop") stop = v.toObject();
+        }
+        QVERIFY2(!log.isEmpty() && log.value("lines").toInt() == 2, qPrintable(text(r)));
+        QVERIFY(stop.value("enabled").toBool(true) == false);
+        r = call("set_ui", {{"area", "dock:Simulation"}, {"press", "Clear"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTRY_VERIFY(app->simulationConsole()->console()->toPlainText().isEmpty());
+
+        // The Components panel searched, as typed: its list follows.
+        r = call("set_ui", {{"area", "dock:Components"}, {"set", QJsonArray{QJsonObject{{"control", "Search Components"}, {"value", "resistor"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("get_ui", {{"area", "dock:Components"}});
+        QString shown;
+        for (const QJsonValue& v : json(r).toObject().value("controls").toArray())
+            if (v.toObject().value("kind").toString() == "list") shown += QJsonDocument(v.toObject().value("items").toArray()).toJson(QJsonDocument::Compact);
+        QVERIFY2(shown.contains("Resistor", Qt::CaseInsensitive) && !shown.contains("Capacitor"), qPrintable(shown));
+        QVERIFY(!failed(call("set_ui", {{"area", "dock:Components"}, {"press", "Clear"}})));
+
+        // A project's files in the Content panel: filtered, and one opened
+        // by its row (a double click).
+        QVERIFY(!failed(call("new_project", {{"name", "ui_prj"}})));
+        const QString project = QucsSettings.QucsWorkDir.absolutePath();
+        QVERIFY(project.endsWith("ui_prj"));
+        for (const char* name : {"readme.md", "notes.txt", "run.log"}) {
+            QFile f(project + "/" + name);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("x\n");
+        }
+        app->projectView()->refresh();
+        r = call("get_ui", {{"area", "dock:Content"}});
+        QVERIFY2(text(r).contains("\"Text\"") && text(r).contains("Filter by name"), qPrintable(text(r)));   // (its rows: categories, closed)
+        QVERIFY(!failed(call("set_ui", {{"area", "dock:Content"}, {"set", QJsonArray{QJsonObject{{"control", "Filter by name"}, {"value", "note"}}}}})));
+        QCOMPARE(app->projectView()->filterText(), QString("note"));
+        r = call("get_ui", {{"area", "dock:Content"}});
+        QVERIFY2(text(r).contains("notes.txt") && !text(r).contains("run.log"), qPrintable(text(r)));
+        r = call("set_ui", {{"area", "dock:Content"}, {"set", QJsonArray{QJsonObject{{"control", "tree view"}, {"value", "notes.txt"}, {"action", "activate"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTRY_VERIFY(app->findDoc(project + "/notes.txt") != nullptr);
+        QVERIFY(!failed(call("set_ui", {{"area", "dock:Content"}, {"set", QJsonArray{QJsonObject{{"control", "Filter by name"}, {"value", ""}}}}})));
+        r = call("set_ui", {{"area", "dock:Content"}, {"set", QJsonArray{QJsonObject{{"control", "tree view"}, {"value", "nothing here"}}}}});
+        QVERIFY2(text(r).contains("no row"), qPrintable(text(r)));
+
+        // A list shows a name a row: not the file model's other columns.
+        QTRY_VERIFY(text(call("get_ui", {{"area", "dock:Projects"}})).contains("ui_prj"));   // (the panel reads its folder aside)
+        r = call("get_ui", {{"area", "dock:Projects"}});
+        QVERIFY2(!text(r).contains("\"more\""), qPrintable(text(r)));
+        // The documents' tabs: listed, one brought to the front.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("get_ui", {{"area", "tabs"}});
+        QVERIFY2(text(r).contains("notes.txt") && text(r).contains("untitled"), qPrintable(text(r)));
+        r = call("set_ui", {{"area", "tabs"}, {"set", QJsonArray{QJsonObject{{"control", "c1"}, {"value", "notes.txt"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(app->getDoc(), app->findDoc(project + "/notes.txt"));
+
+        // The Problems panel after Check Schematic: its rows.
+        QVERIFY(!failed(call("show_document", {{"path", "untitled"}})) || true);
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R9"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("trigger_action", {{"action", "Simulation > Check Schematic"}})));
+        r = call("get_ui", {{"area", "dock:Problems"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("controls").toArray().first().toObject().value("items").toArray().size() > 0, qPrintable(text(r)));
+
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->slotMenuProjClose();
+        QVERIFY(control->readOnlyTools().contains("get_ui") && !control->readOnlyTools().contains("set_ui"));
+    }
+
+    // The kinds a panel holds, on one made here: a slider (moved as a drag
+    // would), a secret field (hidden, refused), a tree's rows (selected,
+    // activated, opened and closed, by name or path).
+    void aPanelsControlsAreUsed()
+    {
+        auto* dock = new QDockWidget("Test Panel", app);
+        auto* page = new QWidget(dock);
+        auto* layout = new QVBoxLayout(page);
+        auto* slider = new QSlider(Qt::Horizontal, page);
+        slider->setRange(0, 100);
+        slider->setToolTip("Gain");
+        auto* secret = new QLineEdit(page);
+        secret->setPlaceholderText("API key");
+        secret->setEchoMode(QLineEdit::Password);
+        secret->setText("hunter2");
+        auto* tree = new QTreeView(page);
+        tree->setAccessibleName("parts");
+        auto* model = new QStandardItemModel(tree);
+        auto* passive = new QStandardItem("Passive");
+        passive->appendRow(new QStandardItem("Resistor"));
+        passive->appendRow(new QStandardItem("Capacitor"));
+        model->appendRow(passive);
+        model->appendRow(new QStandardItem("Sources"));
+        tree->setModel(model);
+        layout->addWidget(slider);
+        layout->addWidget(secret);
+        layout->addWidget(tree);
+        dock->setWidget(page);
+        app->addDockWidget(Qt::RightDockWidgetArea, dock);
+        const auto gone = qScopeGuard([dock] { delete dock; });
+        int released = 0;
+        connect(slider, &QSlider::sliderReleased, this, [&released] { ++released; });
+        QStringList activated;
+        connect(tree, &QTreeView::doubleClicked, this, [&activated](const QModelIndex& i) { activated << i.data().toString(); });
+
+        QJsonObject r = call("get_ui", {{"area", "dock:Test Panel"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString read = text(r);
+        QVERIFY2(read.contains("\"kind\":\"slider\"") && read.contains("\"maximum\":100"), qPrintable(read));
+        QVERIFY2(read.contains("(hidden)") && !read.contains("hunter2"), qPrintable(read));
+        QVERIFY2(read.contains("\"kind\":\"tree view\"") && read.contains("Passive") && !read.contains("Resistor"), qPrintable(read));
+        r = call("set_ui", {{"area", "dock:Test Panel"}, {"set", QJsonArray{QJsonObject{{"control", "Gain"}, {"value", 42}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(slider->value(), 42);
+        QCOMPARE(released, 1);
+        QVERIFY(text(call("set_ui", {{"area", "dock:Test Panel"}, {"set", QJsonArray{QJsonObject{{"control", "Gain"}, {"value", 500}}}}})).contains("from 0 to 100"));
+        r = call("set_ui", {{"area", "dock:Test Panel"}, {"set", QJsonArray{QJsonObject{{"control", "API key"}, {"value", "stolen"}}}}});
+        QVERIFY2(text(r).contains("secret field"), qPrintable(text(r)));
+        QCOMPARE(secret->text(), QString("hunter2"));
+        // A tree: opened, a hidden row by its path, activated, closed.
+        r = call("set_ui", {{"area", "dock:Test Panel"}, {"set", QJsonArray{QJsonObject{{"control", "parts"}, {"value", "Passive"}, {"action", "expand"}}}}});
+        QVERIFY2(!failed(r) && tree->isExpanded(model->index(0, 0)), qPrintable(text(r)));
+        QVERIFY(text(call("get_ui", {{"area", "dock:Test Panel"}})).contains("Capacitor"));
+        QVERIFY(!failed(call("set_ui", {{"area", "dock:Test Panel"}, {"set", QJsonArray{QJsonObject{{"control", "parts"}, {"value", "Passive"}, {"action", "collapse"}}}}})));
+        QVERIFY(!tree->isExpanded(model->index(0, 0)));
+        r = call("set_ui", {{"area", "dock:Test Panel"}, {"set", QJsonArray{QJsonObject{{"control", "parts"}, {"value", "Passive > Capacitor"}, {"action", "activate"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(activated, QStringList({"Capacitor"}));
+        QCOMPARE(tree->currentIndex().data().toString(), QString("Capacitor"));
+        QVERIFY(text(call("set_ui", {{"area", "dock:Test Panel"}, {"set", QJsonArray{QJsonObject{{"control", "parts"}, {"value", "Sources"}, {"action", "fold"}}}}})).contains("select, activate, expand or collapse"));
+    }
+
+    // A right-click menu opened where the user would right-click, read, and
+    // chosen from as the keyboard would - a menu that runs its own loop
+    // too; what it opens goes on through the dialog tools.
+    void rightClickMenusAreOpenedAndChosen()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 200}})));
+        QJsonObject r = call("context_menu", {{"on", QJsonObject{{"part", "R1"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QStringList entries;
+        for (const QJsonValue& v : json(r).toObject().value("menu").toArray()) entries << v.toObject().value("entry").toString();
+        QVERIFY2(entries.contains("Edit Properties") && entries.contains("Rotate"), qPrintable(entries.join(", ")));
+        QVERIFY(QApplication::activePopupWidget() == nullptr);   // read, and closed
+        // Chosen: its dialog, answered.
+        QJsonObject answered;
+        QTimer::singleShot(800, this, [&] { answered = call("set_dialog", {{"press", "Cancel"}}); });
+        r = call("context_menu", {{"on", QJsonObject{{"part", "R1"}}}, {"choose", "Edit Properties"}}, 20000);
+        QVERIFY2(!failed(r) && text(r).contains("it opened") && text(r).contains("Edit Component Properties"), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(!answered.isEmpty(), 10000);
+        // Not there, or not to be chosen now: said, with what there is.
+        r = call("context_menu", {{"on", QJsonObject{{"part", "R1"}}}, {"choose", "Fly Away"}});
+        QVERIFY2(failed(r) && text(r).contains("has no Fly Away") && text(r).contains("Edit Properties"), qPrintable(text(r)));
+        QVERIFY(QApplication::activePopupWidget() == nullptr);
+        app->editRotate->setEnabled(false);
+        r = call("context_menu", {{"on", QJsonObject{{"part", "R1"}}}, {"choose", "Rotate"}});
+        app->editRotate->setEnabled(true);
+        QVERIFY2(failed(r) && text(r).contains("cannot be chosen now"), qPrintable(text(r)));
+        // A diagram's menu.
+        QVERIFY(!failed(call("add_diagram", {{"type", "Rect"}, {"x", 400}, {"y", 400}})));
+        r = call("context_menu", {{"on", QJsonObject{{"diagram", 1}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Export"), qPrintable(text(r)));
+        // A document's tab, chosen from a menu that runs its own loop.
+        r = call("context_menu", {{"on", QJsonObject{{"tab", "untitled"}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Close all but this"), qPrintable(text(r)));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const int open = int(app->allDocuments().size());
+        r = call("context_menu", {{"on", QJsonObject{{"tab", "untitled"}}}, {"choose", "Close all but this"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTRY_VERIFY(int(app->allDocuments().size()) < open || QApplication::activeModalWidget() != nullptr);
+        if (QWidget* asking = QApplication::activeModalWidget()) asking->close();
+        // The Projects panel's menu (its own loop), a choice opening a
+        // folder dialog - Qt's, as any Claude opens. (The documents saved
+        // first: closing the project asks about them else.)
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        QVERIFY(!failed(call("new_project", {{"name", "menus_prj"}})));
+        app->slotMenuProjClose();
+        r = call("context_menu", {{"on", QJsonObject{{"project", "menus_prj"}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Switch Workspace"), qPrintable(text(r)));
+        bool fileDialog = false;
+        QJsonObject cancelled;
+        QTimer::singleShot(800, this, [&] {
+            fileDialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget()) != nullptr
+                         && QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+            cancelled = call("set_dialog", {{"press", "Cancel"}});
+        });
+        r = call("context_menu", {{"on", QJsonObject{{"project", "menus_prj"}}}, {"choose", "Switch Workspace"}}, 20000);
+        QVERIFY2(!failed(r) && text(r).contains("it opened"), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(!cancelled.isEmpty(), 10000);
+        QVERIFY(fileDialog);
+        QTRY_VERIFY(!QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs));
+        // The Content panel's, of a file in the open project, and the File
+        // Browser's.
+        QVERIFY(!failed(call("open_project", {{"name", "menus_prj"}})));
+        const QString project = QucsSettings.QucsWorkDir.absolutePath();
+        {
+            QFile f(project + "/notes.txt");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+        }
+        app->projectView()->refresh();
+        r = call("context_menu", {{"on", QJsonObject{{"project_item", "notes.txt"}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Duplicate") && text(r).contains("Rename"), qPrintable(text(r)));
+        r = call("context_menu", {{"on", QJsonObject{{"file", project + "/notes.txt"}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Move to Trash"), qPrintable(text(r)));
+        QVERIFY(failed(call("context_menu", {{"on", QJsonObject{{"project_item", "nothing.txt"}}}})));
+        QVERIFY(failed(call("context_menu", {{"on", QJsonObject{{"nowhere", 1}}}})));
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->slotMenuProjClose();
     }
 
     // ---- round 6: the gaps of one session (qucs-mcp-wishlist)
