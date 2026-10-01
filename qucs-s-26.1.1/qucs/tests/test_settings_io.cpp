@@ -409,6 +409,7 @@ private slots:
             {"LockToolbars", true},
             {"WriteTextDocSettings", false},
             {"ContentRefreshSeconds", 7},
+            {"FileNameCap", 12},
             {"GridMode", 1},
             {"Shortcuts/File.New", "Ctrl+Alt+Shift+N"},
             {"ClaudeCode/model", "claude-haiku-4-5-20251001"},
@@ -423,6 +424,7 @@ private slots:
         QVERIFY(app.toolbarsLocked());
         QVERIFY(!QucsSettings.WriteTextDocSettings);
         QCOMPARE(QucsSettings.ContentRefreshSeconds, 7);
+        QCOMPARE(QucsSettings.FileNameCap, 12);
         QCOMPARE(QucsSettings.GridMode, 1);
         QCOMPARE(app.fileNew->shortcut(), QKeySequence("Ctrl+Alt+Shift+N"));
         QCOMPARE(QDir(QucsSettings.qucsWorkspaceDir).canonicalPath(), QDir(path("their-workspace")).canonicalPath());

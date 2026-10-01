@@ -201,6 +201,7 @@ public:
     QCheckBox *paperFollowsTheme;
     QComboBox *gridModeCombo;
     QCheckBox *lockToolbarsCheck;
+    QSpinBox *fileNameCapSpin;        ///< Characters of a file name shown in a tab, the Claude Code panel.
 
     /// @brief Opens the schematic font picker dialog.
     QPushButton *FontButton;

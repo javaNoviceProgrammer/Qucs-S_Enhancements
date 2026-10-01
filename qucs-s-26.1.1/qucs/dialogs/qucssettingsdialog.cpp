@@ -360,6 +360,18 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     lockToolbarsCheck->setChecked(QucsSettings.LockToolbars);
     appAppearanceGrid->addWidget(lockToolbarsCheck, 13, 1);
 
+    appAppearanceGrid->addWidget(new QLabel(tr("Cut long file names after (characters):"), appSettingsTab), 14, 0);
+    fileNameCapSpin = new QSpinBox(appSettingsTab);
+    fileNameCapSpin->setObjectName("fileNameCapSpin");
+    fileNameCapSpin->setRange(0, 1000);
+    fileNameCapSpin->setSpecialValueText(tr("Never"));
+    fileNameCapSpin->setToolTip(tr("A file's name longer than this is cut in its document's tab and in the "
+                                   "Claude Code panel, and \u2026 stands for the rest: its extension is "
+                                   "always shown whole (a_very_long_na\u2026.sch). The tab's tooltip gives "
+                                   "the whole path.\n0 (Never): names are shown whole."));
+    fileNameCapSpin->setValue(QucsSettings.FileNameCap);
+    appAppearanceGrid->addWidget(fileNameCapSpin, 14, 1);
+
     t->addTab(appAppearanceTab, tr("Appearance"));
 
     // ...........................................................
@@ -956,6 +968,12 @@ void QucsSettingsDialog::slotApply()
         App->setToolbarsLocked(lockToolbarsCheck->isChecked());
         changed = true;
     }
+    if (QucsSettings.FileNameCap != fileNameCapSpin->value())
+    {
+        QucsSettings.FileNameCap = fileNameCapSpin->value();
+        App->titleFileNames();   // (at once: the tabs and the Claude Code panels)
+        changed = true;
+    }
     if (QucsSettings.PaperFollowsTheme != paperFollowsTheme->isChecked())
     {
         QucsSettings.PaperFollowsTheme = paperFollowsTheme->isChecked();
@@ -1315,6 +1333,7 @@ void QucsSettingsDialog::slotDefaultValues()
     paperFollowsTheme->setChecked(false);
     gridModeCombo->setCurrentIndex(gridModeCombo->findData(0));
     lockToolbarsCheck->setChecked(false);
+    fileNameCapSpin->setValue(_settings::Get().itemDefault<int>("FileNameCap"));
     checkLoadFromFutureVersions->setChecked(false);
     checkAntiAliasing->setChecked(false);
     checkTextAntiAliasing->setChecked(true);

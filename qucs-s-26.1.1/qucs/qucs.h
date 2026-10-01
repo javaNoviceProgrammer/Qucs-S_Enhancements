@@ -198,6 +198,13 @@ public:
   /// Draws every open schematic again with the grid the settings say
   /// (QucsSettings.GridMode), and brings View > Show Grid in line.
   void applyGridSetting();
+  /// The tab of the document \a w: its file's name, cut as the settings
+  /// say (QucsSettings.FileNameCap, misc::shownFileName()), its whole path
+  /// as its tooltip; "untitled" without a file.
+  void titleDocumentTab(QWidget *w);
+  /// Every document's tab, and the Claude Code panels' names of files,
+  /// titled again (the cap of file names changed).
+  void titleFileNames();
   /// View > Show Grid: for the current document, or - when the settings
   /// show or hide the grid everywhere - for all schematics.
   void updateGridAction();

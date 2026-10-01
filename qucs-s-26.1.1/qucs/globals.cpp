@@ -133,6 +133,7 @@ bool loadSettings()
     QucsSettings.ContentFolderIcons = _settings::Get().item<bool>("ContentFolderIcons");
     QucsSettings.ContentAutoRefresh = _settings::Get().item<bool>("ContentAutoRefresh");
     QucsSettings.ContentRefreshSeconds = qBound(1, _settings::Get().item<int>("ContentRefreshSeconds"), 3600);
+    QucsSettings.FileNameCap = qBound(0, _settings::Get().item<int>("FileNameCap"), 1000);
     // The categories' patterns the user changed; the others keep their
     // defaults, those of this version.
     QucsSettings.ContentPatterns.clear();
@@ -268,6 +269,7 @@ bool saveApplSettings()
     qs.setItem<bool>("ContentFolderIcons",QucsSettings.ContentFolderIcons);
     qs.setItem<bool>("ContentAutoRefresh",QucsSettings.ContentAutoRefresh);
     qs.setItem<int>("ContentRefreshSeconds",QucsSettings.ContentRefreshSeconds);
+    qs.setItem<int>("FileNameCap",QucsSettings.FileNameCap);
     settings.remove("ContentPatterns");
     settings.beginGroup("ContentPatterns");
     for (auto it = QucsSettings.ContentPatterns.cbegin(); it != QucsSettings.ContentPatterns.cend(); ++it)
