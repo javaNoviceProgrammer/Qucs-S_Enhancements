@@ -526,6 +526,19 @@ const char* const kTools = R"JSON([
    "sheet": {"type": "string", "description": "A workbook's sheet, by its name; the first by default"},
    "reload": {"type": "boolean", "description": "Read the imported dataset 'name' (or the one of 'file') again from its file, with its x and sheet unless given"},
    "remove": {"type": "boolean", "description": "Delete the imported dataset 'name' (or the one of 'file'): its .dat, to the trash; the file it came from stays"}}}},
+{"name": "export_data",
+ "description": "Writes curves to a file for another program - a spreadsheet, Python, MATLAB - as the Export tab of a diagram's dialog does: a diagram's traces (all, or 'traces' of it by their numbers or variables), or 'variables' of a dataset (names, trace names such as ngspice/tran.v(out), m:gain or ngspice/run1:v(out), or expressions such as db(ac.v(out)/ac.v(in))). Formats: csv, tsv, xlsx (an Excel workbook), text (columns lined up, the names in a comment), npz (NumPy: an array for each variable, shaped by what it is over) or dataset (a Qucs-S .dat, to plot as name:variable). The variables go in tables by what they are over: the independent variables first (time, frequency, a swept parameter, the fastest first), then the variables on them, a row for each point. CSV, TSV and text hold one table - variables of one sweep - a workbook a sheet for each; NumPy and a dataset any. A complex variable takes two columns: real and imaginary parts (by default), magnitude and phase in degrees, or dB and phase ('complex'). One dataset's variables in a file: the traces of a run and of a measurement in one diagram are written in two calls ('traces'). 'save_as' is a path, or a name in the project's folder (else the workspace's); a suffix of a format gives the format (out.xlsx is a workbook), else 'format''s is added (csv by default). A file there is written over - never the dataset read, nor a file a dataset was imported from. Returns the file, its format, the dataset read, the tables' rows and columns (or the arrays, the variables) and what was left out. undo with 'files' puts back a file written over.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The schematic or data display whose diagram or dataset it is; the one in front when not given"},
+   "diagram": {"type": "integer", "description": "The diagram whose traces are written, by its number (get_schematic numbers them)"},
+   "traces": {"type": "array", "items": {}, "description": "With 'diagram': only these of its traces, by their numbers (from 1) or variables; all by default"},
+   "variables": {"type": "array", "items": {"type": "string"}, "description": "Instead of a diagram: the variables to write - names, trace names (ngspice/tran.v(out), m:gain) or expressions; the independent variables they are over come with them"},
+   "dataset": {"type": "string", "description": "With 'variables': the dataset - a file (run1.dat.ngspice, m.dat), or a name keep_as or import_data gave (run1, m); the schematic's own by default, or the one name:variable names"},
+   "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "With 'variables' and no 'dataset': the simulator whose dataset of the schematic is read (the one in the settings, else the newest there)"},
+   "save_as": {"type": "string", "description": "The file: a path, or a name in the project's folder (else the workspace's); written over when it is there. A format's suffix gives the format; another name gets 'format''s added"},
+   "format": {"type": "string", "enum": ["csv", "tsv", "xlsx", "text", "npz", "dataset"], "description": "csv (the default), tsv, xlsx (an Excel workbook), text (columns lined up), npz (NumPy) or dataset (a Qucs-S .dat); a suffix of one in 'save_as' gives it"},
+   "complex": {"type": "string", "enum": ["real_imaginary", "magnitude_phase", "db_phase"], "description": "A complex variable's two columns in a table: real and imaginary parts (the default), magnitude and phase (degrees), or dB and phase"}},
+   "required": ["save_as"]}},
 {"name": "set_simulator",
  "description": "Chooses the simulator that simulate runs and get_netlist writes for, like the toolbar's simulator list (a setting kept for next time): ngspice, xyce, spiceopus or qucsator - one that is installed. To run another one once, simulate takes 'simulator'. To compare two engines, simulate, then simulate again with 'simulator'; get_dataset with 'simulator' reads each result. Returns the simulator in use and those installed.",
  "inputSchema": {"type": "object", "properties": {"simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "One that is installed (the answer lists them)"}}, "required": ["simulator"]}},
@@ -588,6 +601,7 @@ const struct {
     {"set_subcircuit_parameters", QT_TRANSLATE_NOOP("QucsControl", "set a subcircuit's parameters in Qucs-S")},
     {"import_netlist", QT_TRANSLATE_NOOP("QucsControl", "make a schematic of a netlist in Qucs-S")},
     {"import_data", QT_TRANSLATE_NOOP("QucsControl", "import a data file as a dataset in Qucs-S")},
+    {"export_data", QT_TRANSLATE_NOOP("QucsControl", "write curves of Qucs-S to a file")},
 };
 
 // Tools that only look (or move the view): used without asking.
@@ -676,6 +690,7 @@ const struct {
     {"set_subcircuit_parameters", QT_TRANSLATE_NOOP("QucsControl", "Sets the parameters a subcircuit's instances take, with their defaults.")},
     {"import_netlist", QT_TRANSLATE_NOOP("QucsControl", "Creates a schematic from a SPICE netlist.")},
     {"import_data", QT_TRANSLATE_NOOP("QucsControl", "Imports a CSV, workbook, NumPy or Touchstone file as a dataset beside a schematic, to plot in its diagrams (traces name:variable).")},
+    {"export_data", QT_TRANSLATE_NOOP("QucsControl", "Writes a diagram's traces, or a dataset's variables, to a file for another program: CSV, TSV, an Excel workbook, text in columns, NumPy or a Qucs-S dataset - as the Export tab does.")},
     {"set_simulator", QT_TRANSLATE_NOOP("QucsControl", "Chooses the simulator that simulate runs and get_netlist writes for.")},
     {"ngspice_commands", QT_TRANSLATE_NOOP("QucsControl", "Lists ngspice's commands by category, each in a line, and which the installed ngspice has; a command's syntax, example and how Qucs-S writes it; a search by what they do.")},
     {"run_script", QT_TRANSLATE_NOOP("QucsControl", "Runs a short JavaScript program that calls these tools (qucs.call) with loops and conditions, in one turn; 'atomic' restores every schematic if it throws.")},
@@ -741,6 +756,7 @@ const struct {
     {"set_subcircuit_parameters", "subcircuit parameters params subckt default value symbol id prefix instance"},
     {"import_netlist", "spice netlist to schematic import"},
     {"import_data", "import csv tsv excel xlsx spreadsheet workbook measurement measured data file table columns npy npz numpy touchstone s2p plot dataset"},
+    {"export_data", "export save write csv tsv excel xlsx spreadsheet workbook text columns numpy npz matlab python curves traces diagram plot graph data dataset variables file"},
     {"find_library_component", "library part search by values model"},
     {"describe_part", "library part pins order names supply model macromodel transistor tested bench roles input output"},
     {"read_pdf", "datasheet pdf text read"},
@@ -3064,7 +3080,12 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
     else if (tool == QLatin1String("import_data"))
         subject = (a.value(QLatin1String("remove")).toBool() ? tr("remove ") : a.value(QLatin1String("reload")).toBool() ? tr("read again ") : QString())
                   + (s("file").isEmpty() ? s("name") : s("file"));
-    else if (tool == QLatin1String("import_netlist")) subject = s("file").isEmpty() ? tr("%1 lines").arg(s("text").count(QLatin1Char('\n')) + 1) : s("file");
+    else if (tool == QLatin1String("export_data")) {
+        QStringList what;
+        for (const QJsonValue& v : a.value(QLatin1String("variables")).toArray()) what << v.toString();
+        subject = s("save_as") + QStringLiteral(" \u2190 ")
+                  + (a.contains(QLatin1String("diagram")) ? tr("diagram %1").arg(a.value(QLatin1String("diagram")).toInt()) : what.join(QStringLiteral(", ")));
+    } else if (tool == QLatin1String("import_netlist")) subject = s("file").isEmpty() ? tr("%1 lines").arg(s("text").count(QLatin1Char('\n')) + 1) : s("file");
     else if (tool == QLatin1String("copy_document")) subject = (s("path").isEmpty() ? tr("the schematic in front") : s("path")) + QStringLiteral(" → ") + s("to");
     else if (tool == QLatin1String("clean_scratch")) subject = (s("path").isEmpty() ? tr("the schematic in front") : s("path"))
                                                                + (a.value(QLatin1String("datasets")).toBool() ? tr(", datasets too") : QString());
@@ -3122,7 +3143,8 @@ QString QucsControl::instructions() const
         "200), describe_part a library part's pins, model and tested status; read_pdf reads a datasheet's text; "
         "import_netlist builds a schematic from a SPICE netlist; import_data brings a data file (CSV, a workbook, NumPy, "
         "Touchstone) in as a dataset beside the schematic, whose traces are name:variable - measured data plotted with a "
-        "simulation's, or alone; make_symbol "
+        "simulation's, or alone; export_data writes a diagram's curves (or a dataset's variables) out for another program - "
+        "CSV, an Excel workbook, text, NumPy; make_symbol "
         "draws a subcircuit's symbol and set_subcircuit_parameters gives it parameters (a value inside uses {Rs}; each "
         "instance sets its own). ngspice_commands tells which commands ngspice has (analyses, measurements, output, "
         "statistics, the .control language), their syntax and which the installed ngspice has - for a Nutmeg script or a "
@@ -3819,6 +3841,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("set_subcircuit_parameters")) return setSubcircuitParameters(args);
     if (tool == QLatin1String("import_netlist")) return importNetlist(args);
     if (tool == QLatin1String("import_data")) return importData(args);
+    if (tool == QLatin1String("export_data")) return exportData(args);
     if (tool == QLatin1String("find_library_component")) return findLibraryComponent(args);
     if (tool == QLatin1String("describe_part")) return describePart(args);
     async = true;

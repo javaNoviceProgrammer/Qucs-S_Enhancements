@@ -62,6 +62,9 @@ public:
     /// left out. The first of these that finds any gives them all - but
     /// the operating point's v(out) comes with the analyses' v(out).
     QStringList resolve(const QString& wanted) const;
+    /// \a v as a variable of its own (an expression evaluated, to be
+    /// written with the others); false when one has its name already.
+    bool add(const Variable& v);
 
 private:
     QString a_path;
