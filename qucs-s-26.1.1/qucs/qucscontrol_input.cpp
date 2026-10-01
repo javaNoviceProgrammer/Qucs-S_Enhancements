@@ -320,6 +320,13 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
         // On the widget under the point (a view's viewport, a button).
         if (QWidget* under = sch ? nullptr : root->childAt(at)) receiver = under;
     }
+    // (The status bar's Claude chip shows and hides the Claude Code panel:
+    // the user's, as the panel is.)
+    if (receiver && usersOnly(receiver)) {
+        done(errorResult(tr("What is at %1, %2 is the Claude Code panel's (the Claude chip, which shows and hides it): the "
+                            "user's. Nothing was sent.").arg(click.x()).arg(click.y())));
+        return;
+    }
     const QPoint local = receiver && receiver != root ? receiver->mapFrom(root, at) : at;
     const QPoint localTo = receiver && receiver != root ? receiver->mapFrom(root, to) : to;
     if (hasClick)

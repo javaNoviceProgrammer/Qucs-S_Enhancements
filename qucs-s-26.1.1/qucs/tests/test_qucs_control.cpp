@@ -4666,6 +4666,10 @@ private slots:
         QCOMPARE(tab->textCursor().blockNumber(), 2);
         QCOMPARE(tab->textCursor().positionInBlock(), 2);
         QCOMPARE(json(r).toObject().value("text").toString(), QString("  analog begin"));
+        // ... and get_text says so, nothing between (test report, 1 October).
+        r = call("get_text", {{"path", "amp.va"}, {"from_line", 1}, {"to_line", 1}});
+        QCOMPARE(json(r).toObject().value("cursor").toObject().value("line").toInt(), 3);
+        QCOMPARE(json(r).toObject().value("cursor").toObject().value("column").toInt(), 3);
         QVERIFY(failed(call("goto_line", {{"path", "amp.va"}, {"line", 99}})));
         // Not a text document, or not open.
         QVERIFY(text(call("get_text")).contains("module amp"));   // (the one in front)
@@ -4985,6 +4989,21 @@ private slots:
         QVERIFY2(!failed(r) && text(r).contains("Move to Trash"), qPrintable(text(r)));
         QVERIFY(failed(call("context_menu", {{"on", QJsonObject{{"project_item", "nothing.txt"}}}})));
         QVERIFY(failed(call("context_menu", {{"on", QJsonObject{{"nowhere", 1}}}})));
+        // A row the panel's filter hides: said so, and how to clear it.
+        app->projectView()->setFilterText("zz");
+        r = call("context_menu", {{"on", QJsonObject{{"project_item", "notes.txt"}}}});
+        QVERIFY2(failed(r) && text(r).contains("hidden by the Content panel's filter \"zz\"") && text(r).contains("set_ui on dock:Content"),
+                 qPrintable(text(r)));
+        r = call("context_menu", {{"on", QJsonObject{{"project_item", "nothing.txt"}}}});
+        QVERIFY2(failed(r) && text(r).contains("is not in the Content panel"), qPrintable(text(r)));   // (not there at all)
+        app->projectView()->setFilterText(QString());
+        auto* projects = qobject_cast<QucsSortFilterProxyModel*>(app->projectsView()->model());
+        QVERIFY(projects != nullptr);
+        projects->setNameFilter("zz");
+        r = call("context_menu", {{"on", QJsonObject{{"project", "menus_prj"}}}});
+        QVERIFY2(failed(r) && text(r).contains("hidden by the Projects panel's filter \"zz\"") && text(r).contains("or there is no such project"),
+                 qPrintable(text(r)));
+        projects->setNameFilter(QString());
         for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
         app->slotMenuProjClose();
     }
@@ -5005,6 +5024,28 @@ private slots:
         QVERIFY(!control->readOnlyTools().contains("console"));
         QVERIFY(control->subjectOf("console", {{"kind", "python"}, {"input", "print(42)"}}).contains("print(42)"));
         QVERIFY(text(call("console", {{"kind", "matlab"}, {"input", "1"}})).contains("octave, python or terminal"));
+        // What came back, as a console shows it (what a pseudo-terminal
+        // gives): what came after the line's echo - the terminal's, and again
+        // after the prompt on Python's first line -, no banner before it, no
+        // prompt at its end (test report, 1 October).
+        {
+            using qucs_s::control::consoleReply;
+            const QRegularExpression python(QStringLiteral("(>>>|\\.\\.\\.) ?$")), shell(QStringLiteral("[$#%>\\x{276F}] ?$"));
+            bool back = false;
+            QCOMPARE(consoleReply("Python 3.14.7 (main)\nType \"help\" for more.\nprint(sum([1, 2, 3]))\n>>> print(sum([1, 2, 3]))\n6\n>>> ",
+                                  "print(sum([1, 2, 3]))", python, &back), QString("6"));
+            QVERIFY(back);
+            QCOMPARE(consoleReply("Python 3.14.7 (main)\n>>> print(6*7)\n42\n>>> ", "print(6*7)", python, &back), QString("42"));
+            QCOMPARE(consoleReply(">>> print(6*7)\n42\n>>> ", "print(6*7)", python, &back), QString("42"));
+            // A result the same as the line typed: kept (one echo, two at most).
+            QCOMPARE(consoleReply("1\n>>> 1\n1\n>>> ", "1", python, &back), QString("1"));
+            QCOMPARE(consoleReply(">>> 1\n1\n>>> ", "1", python, &back), QString("1"));
+            QCOMPARE(consoleReply("$ echo hi\nhi\n$ ", "echo hi", shell, &back), QString("hi"));
+            QCOMPARE(consoleReply("bash-3.2$ echo hi\nhi\nbash-3.2$ ", "echo hi", shell, &back), QString("hi"));
+            // Still running: its prompt not back.
+            QCOMPARE(consoleReply(">>> import time; time.sleep(9)\n", "import time; time.sleep(9)", python, &back), QString());
+            QVERIFY(!back);
+        }
         QVERIFY(text(call("console", {{"kind", "python"}, {"input", "a\nb"}})).contains("one line"));
         QVERIFY(text(call("console", {{"kind", "python"}, {"input", "x"}, {"interrupt", true}})).contains("not both"));
         // The terminal - a plain shell here, the user's profile not read.
@@ -5012,7 +5053,7 @@ private slots:
         QJsonObject r = call("console", {{"kind", "terminal"}, {"input", "echo console-$((40+2))"}, {"wait", 20}}, 30000);
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QJsonObject o = json(r).toObject();
-        QVERIFY2(o.value("output").toString().contains("console-42") && o.value("finished").toBool(), qPrintable(text(r)));
+        QVERIFY2(o.value("output").toString() == "console-42" && o.value("finished").toBool(), qPrintable(text(r)));
         QVERIFY(!o.value("output").toString().contains("echo console"));   // (not the line typed)
         QVERIFY(!app->terminalDockWidget()->isHidden());   // in view, as typed there
         r = call("console", {{"kind", "terminal"}});
@@ -5025,7 +5066,7 @@ private slots:
         // Python, when there is one: a result, a run left going, stopped.
         if (!app->pythonProgram().isEmpty() && !QStandardPaths::findExecutable(app->pythonProgram()).isEmpty()) {
             r = call("console", {{"kind", "python"}, {"input", "print(6*7)"}, {"wait", 30}}, 40000);
-            QVERIFY2(!failed(r) && json(r).toObject().value("output").toString().contains("42")
+            QVERIFY2(!failed(r) && json(r).toObject().value("output").toString() == "42"   // (no banner, no echo, no prompt)
                          && json(r).toObject().value("finished").toBool(), qPrintable(text(r)));
             QElapsedTimer clock;
             clock.start();
@@ -5176,6 +5217,33 @@ private slots:
         QVERIFY2(subject.contains("Settings/Language=English") && subject.contains("Grid/horizontal Grid=20"), qPrintable(subject));
     }
 
+    // The status bar's Claude chip - it says what Claude does, and shows
+    // and hides the Claude Code panel - is the user's, as the panel is:
+    // get_ui does not list it, set_ui and send_input do not use it (test
+    // report, 1 October: it was listed as a button).
+    void theClaudeChipIsTheUsers()
+    {
+        auto* chip = app->findChild<QToolButton*>("statusClaude");
+        QVERIFY(chip != nullptr && chip->property("qucsUsersOnly").toBool());
+        chip->setText("Claude · mcp__qucs__get_ui 13 s");
+        // (The window shown, as the user has it: its status row lays its
+        // chips out side by side.)
+        const bool wasShown = app->isVisible();
+        app->show();
+        const auto hidden = qScopeGuard([this, wasShown] { if (!wasShown) app->hide(); });
+        QTRY_VERIFY(chip->isVisible());
+        QTRY_COMPARE(app->statusBar()->childAt(chip->mapTo(app->statusBar(), chip->rect().center())), static_cast<QWidget*>(chip));
+        const QPoint at = chip->mapTo(app->statusBar(), chip->rect().center());
+        QJsonObject r = call("get_ui", {{"area", "statusbar"}});
+        QVERIFY2(!failed(r) && !text(r).contains("Claude") && !json(r).toObject().value("controls").toArray().isEmpty(), qPrintable(text(r)));
+        r = call("set_ui", {{"area", "statusbar"}, {"set", QJsonArray{QJsonObject{{"control", "Claude · mcp__qucs__get_ui 13 s"}, {"value", true}}}}});
+        QVERIFY2(failed(r), qPrintable(text(r)));
+        const bool panelShown = !app->claudeDockWidget()->isHidden();
+        r = call("send_input", {{"target", "statusbar"}, {"click", QJsonArray{at.x(), at.y()}}});
+        QVERIFY2(failed(r) && text(r).contains("Claude chip") && text(r).contains("Nothing was sent"), qPrintable(text(r)));
+        QCOMPARE(!app->claudeDockWidget()->isHidden(), panelShown);
+    }
+
     // A long file name, cut on its tab (Application Settings > Appearance),
     // is whole to Claude: get_state and every answer name it whole, get_ui's
     // tabs list it whole and say what the tab shows - and the name as shown
@@ -5296,6 +5364,11 @@ private slots:
         QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("Simulation %1").arg(id)) && text(r).contains("ended")
                      && text(r).contains("\"finished\":true") && text(r).contains("done at last"),
                  qPrintable(text(r)));
+        // One answer, the outcome's JSON with what is said of it - not a
+        // second text, which read as a string (test report, 1 October).
+        QVERIFY2(json(r).toObject().value("summary").toString().contains(QStringLiteral("Simulation %1").arg(id))
+                     && json(r).toObject().value("finished").toBool() && json(r).toObject().contains("succeeded"),
+                 qPrintable(text(r)));
         // Told in a conversation's next answer, too.
         r = control->callNow("simulation_status", {{"id", id}}, 30000, 5);
         QVERIFY2(text(r).contains("ended at") && text(r).contains("has ended"), qPrintable(text(r)));
@@ -5310,6 +5383,13 @@ private slots:
         r = call("stop_simulation", {{"id", second}}, 20000);
         QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("Simulation %1 stopped").arg(second)) && text(r).contains("\"stopped\":true"),
                  qPrintable(text(r)));
+        // Stopped, not crashed: no error of a crash, and said so.
+        {
+            const QJsonObject o = json(r).toObject();
+            QVERIFY2(o.value("stopped").toBool() && o.value("stopped by").toString() == "stop_simulation" && o.value("errors").toArray().isEmpty()
+                         && o.value("note").toString().contains("Stopped before it ended") && !text(r).contains("crashed"),
+                     qPrintable(text(r)));
+        }
         QVERIFY(clock.elapsed() < 10000);
         QVERIFY(!app->simulationConsole()->isRunning());
         r = call("simulation_status");
@@ -5319,6 +5399,16 @@ private slots:
         QVERIFY2(byStop, qPrintable(text(r)));
         r = call("stop_simulation", {{"id", second}});
         QVERIFY2(!failed(r) && text(r).contains("had ended already"), qPrintable(text(r)));
+        // Stopped by the user while Claude waits for it (Simulation > Stop
+        // Simulation): no crash either.
+        QTimer::singleShot(1500, app, [this] { app->simulationConsole()->stopAction()->trigger(); });
+        r = call("simulate", {{"path", sch}, {"timeout", 30}}, 40000);
+        {
+            const QJsonObject o = json(r).toObject();
+            QVERIFY2(o.value("stopped").toBool() && o.value("errors").toArray().isEmpty() && !text(r).contains("crashed")
+                         && o.value("note").toString().contains("Stopped before it ended"),
+                     qPrintable(text(r)));
+        }
         r = call("stop_simulation");
         QVERIFY2(failed(r) && text(r).contains("No simulation is running"), qPrintable(text(r)));
 
@@ -5350,6 +5440,17 @@ private slots:
         QVERIFY2(text(r).contains("stopped after 5 s"), qPrintable(text(r)));
         r = call("wait_for", {{"event", "simulation_finished"}, {"id", limited}, {"timeout", 20}}, 30000);
         QVERIFY2(text(r).contains("stopped by its timeout of 5 s") && text(r).contains("\"stopped\":true"), qPrintable(text(r)));
+
+        // A schematic not open: opened first, and said.
+        QucsSettings.NgspiceExecutable = slowSimulator(1);
+        QVERIFY(!failed(call("close_document", {{"path", sch}, {"unsaved", "discard"}})));
+        QVERIFY(app->findDoc(sch) == nullptr);
+        r = call("simulate", {{"path", sch}, {"background", true}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("opened").toString().contains("was not open") && app->findDoc(sch) != nullptr,
+                 qPrintable(text(r)));
+        r = call("wait_for", {{"event", "simulation_finished"}, {"id", json(r).toObject().value("id").toInt()}, {"timeout", 30}}, 40000);
+        QVERIFY2(json(r).toObject().value("opened").toString().contains("was not open"), qPrintable(text(r)));
+        QVERIFY(failed(call("simulate", {{"path", dir.filePath("nothing-here.sch")}})));   // (no such file)
 
         // A run the user starts: waited for without an id.
         QucsSettings.NgspiceExecutable = slowSimulator(2);
