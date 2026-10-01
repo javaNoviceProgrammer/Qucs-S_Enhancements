@@ -19,7 +19,9 @@
 #include "dataexport.h"
 #include "dataimport.h"
 #include "dataset.h"
+#include "eyeanalysis.h"
 #include "ngstatistics.h"
+#include "valuereading.h"
 #include "vamodule.h"
 #include "textdoc.h"
 #include "diagrams/diagrams.h"
@@ -85,6 +87,7 @@ const DiagramKind kDiagramKinds[] = {
     {"3d", "Rect3D", "3D cartesian"},
     {"locus", "Curve", "locus curve"},
     {"histogram", "Histogram", "histogram"},
+    {"eye", "Eye", "eye diagram (a transient folded at its unit interval)"},
 };
 
 QString kindName(const Diagram* d)
@@ -111,6 +114,7 @@ Diagram* newDiagram(const QString& wanted)
     if (file == QLatin1String("Time")) return new TimingDiagram();
     if (file == QLatin1String("Truth")) return new TruthDiagram();
     if (file == QLatin1String("Histogram")) return new HistogramDiagram();
+    if (file == QLatin1String("Eye")) return new EyeDiagram();
     return nullptr;
 }
 
@@ -326,10 +330,144 @@ QJsonObject themeJson(const Diagram* d)
     return o;
 }
 
+const char* const kEyeDrawn[] = {"density", "traces"};
+
+// An eye diagram's own, from {"unit_interval", "span", "from", "levels",
+// "threshold", "drawn", "measurements", "mask"}: all checked before any
+// is set. What is not given stays; null is automatic (or no mask).
+bool applyEye(EyeDiagram* d, const QJsonValue& value, QString* error)
+{
+    if (!value.isObject()) {
+        *error = tr("'eye' is an object: {\"unit_interval\", \"span\", \"from\", \"levels\", \"threshold\", \"drawn\", "
+                    "\"measurements\", \"mask\"}.");
+        return false;
+    }
+    const QJsonObject o = value.toObject();
+    // A number, a value written as in a property ("100p", "1 ns"), or null.
+    auto valueOf = [&](const QJsonValue& v, double* out) {
+        if (v.isNull()) {
+            *out = NaN;
+            return true;
+        }
+        double x = NaN;
+        if (v.isDouble()) x = v.toDouble();
+        else if (v.isString()) {
+            const qucs_s::units::Reading r = qucs_s::units::read(v.toString());
+            if (r.kind == qucs_s::units::Reading::Number) x = r.value;
+        }
+        *out = x;
+        return std::isfinite(x);
+    };
+    double ui = d->ui, from = d->start, threshold = d->threshold;
+    if (o.contains(QLatin1String("unit_interval")) && (!valueOf(o.value(QLatin1String("unit_interval")), &ui) || !(ui > 0))
+        && !o.value(QLatin1String("unit_interval")).isNull()) {
+        *error = tr("'unit_interval' is a bit's length in seconds above 0 (1e-10, \"100p\"), or null: told from the crossings.");
+        return false;
+    }
+    if (o.contains(QLatin1String("from")) && !valueOf(o.value(QLatin1String("from")), &from) && !o.value(QLatin1String("from")).isNull()) {
+        *error = tr("'from' is the time the eye starts at, in seconds (2e-9, \"2n\"), or null: from the start.");
+        return false;
+    }
+    if (o.contains(QLatin1String("threshold")) && !valueOf(o.value(QLatin1String("threshold")), &threshold)
+        && !o.value(QLatin1String("threshold")).isNull()) {
+        *error = tr("'threshold' is a value in the signal's unit (0.5), or null: halfway between the levels.");
+        return false;
+    }
+    int span = d->span;
+    if (o.contains(QLatin1String("span"))) {
+        const double s = o.value(QLatin1String("span")).toDouble(NaN);
+        if (!(s >= 1 && s <= EyeDiagram::MaxSpan) || s != std::floor(s)) {
+            *error = tr("'span' is how many UIs across it, 1 to %1.").arg(EyeDiagram::MaxSpan);
+            return false;
+        }
+        span = int(s);
+    }
+    int levels = d->levels;
+    if (o.contains(QLatin1String("levels"))) {
+        const double l = o.value(QLatin1String("levels")).toDouble(NaN);
+        if (l != 2 && l != 4) {
+            *error = tr("'levels' is 2 (NRZ) or 4 (PAM4).");
+            return false;
+        }
+        levels = int(l);
+    }
+    int drawn = d->drawn;
+    if (o.contains(QLatin1String("drawn"))) {
+        drawn = indexIn(kEyeDrawn, o.value(QLatin1String("drawn")).toString());
+        if (drawn < 0) {
+            *error = tr("'drawn' is %1.").arg(namesOf(kEyeDrawn));
+            return false;
+        }
+    }
+    bool measurements = d->measurements;
+    if (o.contains(QLatin1String("measurements"))) {
+        if (!o.value(QLatin1String("measurements")).isBool()) {
+            *error = tr("'measurements' is true or false.");
+            return false;
+        }
+        measurements = o.value(QLatin1String("measurements")).toBool();
+    }
+    double maskWidth = d->maskWidth, maskHeight = d->maskHeight;
+    if (o.contains(QLatin1String("mask"))) {
+        const QJsonValue m = o.value(QLatin1String("mask"));
+        if (m.isNull() || (m.isBool() && !m.toBool())) {
+            maskWidth = maskHeight = NaN;
+        } else {
+            const QJsonObject mo = m.toObject();
+            if (!m.isObject() || !valueOf(mo.value(QLatin1String("width")), &maskWidth) || !(maskWidth > 0 && maskWidth <= 1)
+                || !valueOf(mo.value(QLatin1String("height")), &maskHeight) || !(maskHeight > 0)) {
+                *error = tr("'mask' is {\"width\": in UI, above 0 and at most 1, \"height\": in the signal's unit, above 0}, or "
+                            "null for none.");
+                return false;
+            }
+        }
+    }
+    d->ui = ui;
+    d->start = from;
+    d->threshold = threshold;
+    d->span = span;
+    d->levels = levels;
+    d->drawn = drawn;
+    d->measurements = measurements;
+    d->maskWidth = maskWidth;
+    d->maskHeight = maskHeight;
+    return true;
+}
+
+// An eye diagram's settings, and what was measured on each trace.
+QJsonObject eyeJson(const EyeDiagram* d)
+{
+    QJsonObject o{{QStringLiteral("span"), d->span},
+                  {QStringLiteral("levels"), d->levels},
+                  {QStringLiteral("drawn"), QString::fromLatin1(kEyeDrawn[d->drawn == EyeDiagram::Traces ? 1 : 0])},
+                  {QStringLiteral("measurements"), d->measurements}};
+    if (std::isfinite(d->ui)) o.insert(QStringLiteral("unit_interval"), d->ui);
+    if (std::isfinite(d->start)) o.insert(QStringLiteral("from"), d->start);
+    if (std::isfinite(d->threshold)) o.insert(QStringLiteral("threshold"), d->threshold);
+    if (std::isfinite(d->maskWidth))
+        o.insert(QStringLiteral("mask"), QJsonObject{{QStringLiteral("width"), d->maskWidth}, {QStringLiteral("height"), d->maskHeight}});
+    QJsonArray measured;
+    for (int i = 0; i < d->results().size(); ++i) {
+        QJsonObject m = qucs_s::eye::toJson(d->results().at(i));
+        m.insert(QStringLiteral("trace"), i + 1);
+        measured << m;
+    }
+    if (!measured.isEmpty()) o.insert(QStringLiteral("measured"), measured);
+    return o;
+}
+
 // Sets what a diagram's arguments give: place and size, grid, legend,
-// theme, axes. What is not given stays.
+// theme, axes, an eye diagram's own. What is not given stays.
 bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
 {
+    if (args.contains(QLatin1String("eye"))) {
+        auto* eyeDiagram = dynamic_cast<EyeDiagram*>(d);
+        if (eyeDiagram == nullptr) {
+            *error = tr("'eye' is an eye diagram's (type eye); this is a %1.").arg(kindName(d));
+            return false;
+        }
+        if (!applyEye(eyeDiagram, args.value(QLatin1String("eye")), error)) return false;
+    }
     if (args.contains(QLatin1String("x"))) d->cx = misc::clampCoordinate(args.value(QLatin1String("x")).toInt());
     if (args.contains(QLatin1String("y"))) d->cy = misc::clampCoordinate(args.value(QLatin1String("y")).toInt());
     if (args.contains(QLatin1String("width"))) d->x2 = std::clamp(args.value(QLatin1String("width")).toInt(), 10, 100000);
@@ -1294,6 +1432,7 @@ QJsonArray diagramsJson(Schematic* sch)
                       {QStringLiteral("width"), d->x2},
                       {QStringLiteral("height"), d->y2}};
         if (!d->title.isEmpty()) o.insert(QStringLiteral("title"), d->title);
+        if (const auto* eyeDiagram = dynamic_cast<const EyeDiagram*>(d)) o.insert(QStringLiteral("eye"), eyeJson(eyeDiagram));
         if (const QJsonObject colors = themeJson(d); !colors.isEmpty()) o.insert(QStringLiteral("theme"), colors);
         if (d->Name != QLatin1String("Tab") && d->Name != QLatin1String("Truth")) {
             o.insert(QStringLiteral("x_axis"), axisJson(d->xAxis, false));
@@ -2042,6 +2181,11 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
         o.measureOptions.period = t;
     }
     if (args.contains(QLatin1String("offset"))) o.measureOptions.offset = args.value(QLatin1String("offset")).toDouble(0);
+    if (args.contains(QLatin1String("levels"))) {
+        const double l = args.value(QLatin1String("levels")).toDouble(NaN);
+        if (l != 2 && l != 4) return errorResult(tr("'levels' is 2 (NRZ) or 4 (PAM4)."));
+        o.measureOptions.levels = int(l);
+    }
     const QString form = args.value(QLatin1String("form")).toString();
     if (form == QLatin1String("db_phase")) o.form = ds::Form::DbPhase;
     else if (form == QLatin1String("real_imaginary")) o.form = ds::Form::RealImaginary;

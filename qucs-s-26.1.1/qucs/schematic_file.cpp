@@ -1205,6 +1205,7 @@ bool Schematic::loadDiagrams(QTextStream *stream, std::list<Diagram*> *List)
     else if(cstr == "<Time") d = new TimingDiagram();
     else if(cstr == "<Truth") d = new TruthDiagram();
     else if(cstr == "<Histogram") d = new HistogramDiagram();
+    else if(cstr == "<Eye") d = new EyeDiagram();
     else {
       misc::reportError(QObject::tr("Format Error:\nUnknown diagram!"));
       return false;

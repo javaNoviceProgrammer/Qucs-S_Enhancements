@@ -371,6 +371,7 @@ void Module::registerModules (void) {
       REGISTER_SOURCE_1 (vTRNOISE);
       REGISTER_SOURCE_1 (iTRNOISE);
       REGISTER_SOURCE_1 (vTRRANDOM);
+      REGISTER_SOURCE_1 (vPRBS);
   //}
 
   // probes
@@ -582,6 +583,7 @@ void Module::registerModules (void) {
   // diagrams
   REGISTER_DIAGRAM_1 (RectDiagram);
   REGISTER_DIAGRAM_1 (HistogramDiagram);
+  REGISTER_DIAGRAM_1 (EyeDiagram);
   REGISTER_DIAGRAM_1 (PolarDiagram);
   REGISTER_DIAGRAM_1 (TabDiagram);
   REGISTER_DIAGRAM_2 (SmithDiagram, info, info_y);

@@ -31,6 +31,7 @@
 #include "qucs.h"
 #include "rect3ddiagram.h"
 #include "histogramdiagram.h"
+#include "eyediagram.h"
 #include "valuereading.h"
 #include "schematic.h"
 #include "settings.h"
@@ -207,7 +208,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   } else if (Diag->Name == "Rect3D") {
     NameY = tr("y-Axis");
     NameZ = tr("z-Axis");
-  } else if (Diag->Name == "Histogram") {
+  } else if (Diag->Name == "Histogram" || Diag->Name == "Eye") {
     NameY = tr("y-Axis");
   }
 
@@ -565,7 +566,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     gp->addWidget(ylLabel, Row, 1);
     Row++;
 
-    if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram")) {
+    if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram") && (Diag->Name != "Eye")) {
       gp->addWidget(new QLabel(NameZ + " " + tr("Label:"), Tab2), Row, 0);
       yrLabel = new QLineEdit(Tab2);
       yrLabel->setValidator(Validator);
@@ -682,6 +683,75 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       HistLower->setToolTip(tr("A line at a spec limit, and the share of the values between the two "
                                "in the statistics (1.432k, 2e-3)"));
       HistUpper->setToolTip(HistLower->toolTip());
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // An eye diagram: the unit interval, the windows, the levels, the mask.
+    if (auto *eyeDiagram = dynamic_cast<EyeDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Eye"), Tab2);
+      QGridLayout *el = new QGridLayout(box);
+      // (What a field showed: read again only when it was changed, as one
+      // written back would lose digits.)
+      auto valueEdit = [](double value, const QString &unit, const QString &empty) {
+        // ("333.333 ps"; a value without a unit "450m".)
+        auto *e = new QLineEdit(!std::isfinite(value) ? QString()
+                                : unit.isEmpty()      ? misc::num2str(value, -1, QString())
+                                                      : qucs_s::units::engineering(value, unit));
+        e->setPlaceholderText(empty);
+        e->setProperty("qucsShown", e->text());
+        return e;
+      };
+      int r = 0;
+      el->addWidget(new QLabel(tr("Unit interval:")), r, 0);
+      EyeUi = valueEdit(eyeDiagram->ui, "s", tr("from the crossings"));
+      EyeUi->setToolTip(tr("A bit's length (a PAM4 symbol's): 100 ps, 1n. Empty: told from where the "
+                           "first graph crosses its threshold"));
+      el->addWidget(EyeUi, r++, 1);
+      el->addWidget(new QLabel(tr("Across it:")), r, 0);
+      EyeSpan = new QSpinBox();
+      EyeSpan->setRange(1, EyeDiagram::MaxSpan);
+      EyeSpan->setSuffix(tr(" UI"));
+      EyeSpan->setValue(eyeDiagram->span);
+      EyeSpan->setToolTip(tr("How many unit intervals each trace is long: 2 shows an eye in the middle, "
+                             "half an eye either side"));
+      el->addWidget(EyeSpan, r++, 1);
+      el->addWidget(new QLabel(tr("From:")), r, 0);
+      EyeStart = valueEdit(eyeDiagram->start, "s", tr("the start"));
+      EyeStart->setToolTip(tr("The eye from this time on, the settling before it left out (2 ns)"));
+      el->addWidget(EyeStart, r++, 1);
+      el->addWidget(new QLabel(tr("Levels:")), r, 0);
+      EyeLevels = new QComboBox();
+      EyeLevels->addItem(tr("2 (NRZ)"));
+      EyeLevels->addItem(tr("4 (PAM4)"));
+      EyeLevels->setCurrentIndex(eyeDiagram->levels == 4 ? 1 : 0);
+      el->addWidget(EyeLevels, r++, 1);
+      el->addWidget(new QLabel(tr("Threshold:")), r, 0);
+      EyeThreshold = valueEdit(eyeDiagram->threshold, "", tr("halfway between the levels"));
+      EyeThreshold->setToolTip(tr("Where a bit is told 0 or 1 (0.5, 450m). PAM4's thresholds are halfway "
+                                  "between its levels"));
+      EyeThreshold->setEnabled(eyeDiagram->levels != 4);
+      connect(EyeLevels, &QComboBox::currentIndexChanged, EyeThreshold,
+              [this](int index) { EyeThreshold->setEnabled(index == 0); });
+      el->addWidget(EyeThreshold, r++, 1);
+      el->addWidget(new QLabel(tr("Drawn as:")), r, 0);
+      EyeDrawn = new QComboBox();
+      EyeDrawn->addItem(tr("density: how many traces pass"));
+      EyeDrawn->addItem(tr("traces"));
+      EyeDrawn->setCurrentIndex(eyeDiagram->drawn);
+      el->addWidget(EyeDrawn, r++, 1);
+      EyeMeasure = new QCheckBox(tr("measurements beside it; its height and width marked"));
+      EyeMeasure->setChecked(eyeDiagram->measurements);
+      el->addWidget(EyeMeasure, r++, 0, 1, 2);
+      el->addWidget(new QLabel(tr("Mask width:")), r, 0);
+      EyeMaskWidth = valueEdit(eyeDiagram->maskWidth, "", tr("no mask"));
+      EyeMaskWidth->setToolTip(tr("A hexagon at the eye's centre that no trace should enter: its width "
+                                  "in UI, 0 to 1 (0.5)"));
+      el->addWidget(EyeMaskWidth, r++, 1);
+      el->addWidget(new QLabel(tr("Mask height:")), r, 0);
+      EyeMaskHeight = valueEdit(eyeDiagram->maskHeight, "", tr("no mask"));
+      EyeMaskHeight->setToolTip(tr("... and its height, in the unit of the signal (0.2, 200m)"));
+      el->addWidget(EyeMaskHeight, r++, 1);
       gp->addWidget(box, Row, 0, 1, 2);
       Row++;
     }
@@ -1019,11 +1089,11 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     stopZ->setText(QString::number(val_stopZ));
 
     if ((Diag->Name == "Smith") || (Diag->Name == "ySmith") ||
-        (Diag->Name == "Polar") || (Diag->Name == "Histogram")) {
+        (Diag->Name == "Polar") || (Diag->Name == "Histogram") || (Diag->Name == "Eye")) {
       axisZ->setEnabled(false);
     }
     if (Diag->Name.left(4) != "Rect") // cartesian 2D and 3D
-      if (Diag->Name != "Curve" && Diag->Name != "Histogram") {
+      if (Diag->Name != "Curve" && Diag->Name != "Histogram" && Diag->Name != "Eye") {
         axisX->setEnabled(false);
         startY->setEnabled(false);
         startZ->setEnabled(false);
@@ -1783,6 +1853,41 @@ void DiagramDialog::slotApply() {
       }
     }
 
+    if (auto *eyeDiagram = dynamic_cast<EyeDiagram *>(Diag); eyeDiagram && EyeUi) {
+      // A field as it was shown keeps the value it showed.
+      auto valueOf = [](const QLineEdit *e, double was) {
+        if (e->text() == e->property("qucsShown").toString()) return was;
+        const qucs_s::units::Reading r = qucs_s::units::read(e->text());
+        return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
+      };
+      auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
+      double ui = valueOf(EyeUi, eyeDiagram->ui);
+      if (!(ui > 0)) ui = std::nan("");
+      const double start = valueOf(EyeStart, eyeDiagram->start);
+      const double threshold = valueOf(EyeThreshold, eyeDiagram->threshold);
+      double maskWidth = valueOf(EyeMaskWidth, eyeDiagram->maskWidth);
+      double maskHeight = valueOf(EyeMaskHeight, eyeDiagram->maskHeight);
+      if (!(maskWidth > 0 && maskWidth <= 1) || !(maskHeight > 0)) maskWidth = maskHeight = std::nan("");
+      const int levels = EyeLevels->currentIndex() == 1 ? 4 : 2;
+      if (!same(eyeDiagram->ui, ui) || eyeDiagram->span != EyeSpan->value() || !same(eyeDiagram->start, start)
+          || eyeDiagram->levels != levels || !same(eyeDiagram->threshold, threshold)
+          || eyeDiagram->drawn != EyeDrawn->currentIndex() || eyeDiagram->measurements != EyeMeasure->isChecked()
+          || !same(eyeDiagram->maskWidth, maskWidth) || !same(eyeDiagram->maskHeight, maskHeight)) {
+        eyeDiagram->ui = ui;
+        eyeDiagram->span = EyeSpan->value();
+        eyeDiagram->start = start;
+        eyeDiagram->levels = levels;
+        eyeDiagram->threshold = threshold;
+        eyeDiagram->drawn = EyeDrawn->currentIndex();
+        eyeDiagram->measurements = EyeMeasure->isChecked();
+        eyeDiagram->maskWidth = maskWidth;
+        eyeDiagram->maskHeight = maskHeight;
+        changed = true;
+      }
+      // Shown as they are now.
+      for (QLineEdit *e : {EyeUi, EyeStart, EyeThreshold, EyeMaskWidth, EyeMaskHeight}) e->setProperty("qucsShown", e->text());
+    }
+
     if ((Diag->Name.left(4) == "Rect") || (Diag->Name == "Curve")) {
       auto yUnit = Diag->yAxis.Units;
       if (yUnit != LogUnitsY->currentIndex()) {
@@ -1810,7 +1915,7 @@ void DiagramDialog::slotApply() {
             (Qt::PenStyle)(GridStyleBox->currentIndex() + 1));
         changed = true;
       }
-    if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram")) {
+    if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram") && (Diag->Name != "Eye")) {
       if (Diag->zAxis.Label.isEmpty())
         Diag->zAxis.Label = ""; // can be not 0 and empty!
       if (yrLabel->text().isEmpty())
