@@ -357,7 +357,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   menu you would get on a part, a diagram, a file, a project or a tab,
   lists it and chooses from it. The Claude Code panel - its prompts,
   permissions and settings - stays yours, and Claude reads the consoles
-  but types into them only with the `console` tool. **It reads the results as
+  but types into them only with the `console` tool: one line into the
+  Octave, Python Shell or Terminal dock, shown there as you would type
+  it, you asked about each line (it runs with your rights), and what it
+  printed until its prompt came back - or "still running", stopped with
+  Ctrl-C when you allow that too. `get_settings` and `set_settings` read
+  and set Application Settings, Simulators Settings, CDL Settings and a
+  document's own by typed keys ("Tab/Label": a text, a choice and its
+  choices, a number and its range): set through the dialog's own OK, so
+  what the window does after it is done, each change told with what it
+  was (set back with that) and what it is now; Claude Code's own
+  settings are refused. **It reads the results as
   numbers, not only as pictures**: `get_dataset` gives a dataset's
   variables and, for those asked for, their statistics (min, max and
   where, mean, RMS), samples over a range, values at given times or
