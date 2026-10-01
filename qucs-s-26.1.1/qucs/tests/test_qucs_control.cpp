@@ -77,6 +77,7 @@
 #include "dialogs/simmessage.h"
 #include "textdoc.h"
 #include "projectView.h"
+#include "processconsole.h"
 
 using qucs_s::control::renameComponentIn;
 
@@ -4982,6 +4983,122 @@ private slots:
         QVERIFY(failed(call("context_menu", {{"on", QJsonObject{{"nowhere", 1}}}})));
         for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
         app->slotMenuProjClose();
+    }
+
+    // A line typed into a console as the user types it there: what it
+    // printed once its prompt is back; a run that goes on is left at
+    // 'wait', and stopped with 'interrupt'. Asked about each time it types
+    // (it runs), not when it only reads.
+    void consolesAreTypedIntoAskedEachTime()
+    {
+        QVERIFY(control->irreversible("console", {{"kind", "python"}, {"input", "1+1"}}));
+        QVERIFY(control->irreversible("console", {{"kind", "python"}, {"interrupt", true}}));
+        QVERIFY(!control->irreversible("console", {{"kind", "python"}}));
+        QVERIFY(!control->readOnlyTools().contains("console"));
+        QVERIFY(control->subjectOf("console", {{"kind", "python"}, {"input", "print(42)"}}).contains("print(42)"));
+        QVERIFY(text(call("console", {{"kind", "matlab"}, {"input", "1"}})).contains("octave, python or terminal"));
+        QVERIFY(text(call("console", {{"kind", "python"}, {"input", "a\nb"}})).contains("one line"));
+        QVERIFY(text(call("console", {{"kind", "python"}, {"input", "x"}, {"interrupt", true}})).contains("not both"));
+        // The terminal - a plain shell here, the user's profile not read.
+        app->terminalConsole()->setProgram("/bin/sh", {"-i"}, {"PS1=$ ", "ENV="});
+        QJsonObject r = call("console", {{"kind", "terminal"}, {"input", "echo console-$((40+2))"}, {"wait", 20}}, 30000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r).toObject();
+        QVERIFY2(o.value("output").toString().contains("console-42") && o.value("finished").toBool(), qPrintable(text(r)));
+        QVERIFY(!o.value("output").toString().contains("echo console"));   // (not the line typed)
+        QVERIFY(!app->terminalDockWidget()->isHidden());   // in view, as typed there
+        r = call("console", {{"kind", "terminal"}});
+        QVERIFY2(json(r).toObject().value("output").toString().contains("console-42"), qPrintable(text(r)));
+        // Quiet for a while is not over: until its prompt is back.
+        r = call("console", {{"kind", "terminal"}, {"input", "sleep 3; echo late-$((1+1))"}, {"wait", 20}}, 30000);
+        QVERIFY2(json(r).toObject().value("output").toString().contains("late-2") && json(r).toObject().value("finished").toBool(),
+                 qPrintable(text(r)));
+        app->terminalConsole()->stop();
+        // Python, when there is one: a result, a run left going, stopped.
+        if (!app->pythonProgram().isEmpty() && !QStandardPaths::findExecutable(app->pythonProgram()).isEmpty()) {
+            r = call("console", {{"kind", "python"}, {"input", "print(6*7)"}, {"wait", 30}}, 40000);
+            QVERIFY2(!failed(r) && json(r).toObject().value("output").toString().contains("42")
+                         && json(r).toObject().value("finished").toBool(), qPrintable(text(r)));
+            QElapsedTimer clock;
+            clock.start();
+            r = call("console", {{"kind", "python"}, {"input", "import time; time.sleep(30)"}, {"wait", 1}}, 20000);
+            QVERIFY2(!failed(r) && !json(r).toObject().value("finished").toBool()
+                         && json(r).toObject().value("note").toString().contains("Still running"), qPrintable(text(r)));
+            QVERIFY2(clock.elapsed() < 8000, qPrintable(QString::number(clock.elapsed())));
+            r = call("console", {{"kind", "python"}, {"interrupt", true}, {"wait", 10}}, 20000);
+            QVERIFY2(!failed(r) && json(r).toObject().value("output").toString().contains("KeyboardInterrupt"), qPrintable(text(r)));
+            app->pythonConsole()->stop();
+        }
+        // Octave, when there is none: said.
+        if (QStandardPaths::findExecutable("octave").isEmpty() && QStandardPaths::findExecutable("octave-cli").isEmpty()) {
+            const QString was = QucsSettings.OctaveExecutable;
+            QucsSettings.OctaveExecutable = "/nonexistent/octave";
+            r = call("console", {{"kind", "octave"}, {"input", "1+1"}});
+            QucsSettings.OctaveExecutable = was;
+            QVERIFY2(failed(r) && text(r).contains("Octave could not be started"), qPrintable(text(r)));
+        }
+    }
+
+    // Settings by typed keys ("Tab/Label"): read without a dialog shown;
+    // set through their own dialog and its OK, each change told with what
+    // it was and what it is now, read again; a key that is not, a value it
+    // does not take, Claude Code's own: said, not done.
+    void settingsAreReadAndSetByKeys()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        QVERIFY(control->readOnlyTools().contains("get_settings") && !control->readOnlyTools().contains("set_settings"));
+        QJsonObject r = call("get_settings", {{"scope", "app"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(QApplication::activeModalWidget() == nullptr);   // (no dialog shown to read them)
+        QHash<QString, QJsonObject> app;
+        for (const QJsonValue& v : json(r).toObject().value("settings").toArray()) app.insert(v.toObject().value("key").toString(), v.toObject());
+        QVERIFY2(app.size() > 30, qPrintable(text(r)));
+        bool aChoice = false, anInteger = false, aBool = false;
+        for (const QJsonObject& o : std::as_const(app)) {
+            aChoice = aChoice || (o.value("type").toString() == "choice" && !o.value("choices").toArray().isEmpty());
+            anInteger = anInteger || (o.value("type").toString() == "integer" && o.contains("maximum"));
+            aBool = aBool || o.value("type").toString() == "bool";
+        }
+        QVERIFY(aChoice && anInteger && aBool);
+        r = call("get_settings", {{"scope", "simulators"}});
+        QHash<QString, QJsonObject> sims;
+        for (const QJsonValue& v : json(r).toObject().value("settings").toArray()) sims.insert(v.toObject().value("key").toString(), v.toObject());
+        QVERIFY2(sims.contains("Simulators/Ngspice executable location") && sims.value("Simulators/Ngspice executable location").value("type") == "text",
+                 qPrintable(text(r)));   // (its label above it)
+        QVERIFY(sims.contains("Simulators/Warn of commands a simulation runs besides the simulator"));
+        // Set, by a label alone that is one setting's; the window's own
+        // setting follows; put back with 'was'.
+        QVERIFY(!QucsSettings.CheckCommands);
+        r = call("set_settings", {{"scope", "simulators"}, {"values", QJsonObject{{"Warn of commands a simulation runs besides the simulator", true}}}}, 20000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject change = json(r).toObject().value("changed").toArray().first().toObject();
+        QCOMPARE(change.value("key").toString(), QString("Simulators/Warn of commands a simulation runs besides the simulator"));
+        QCOMPARE(change.value("was"), QJsonValue(false));
+        QCOMPARE(change.value("now"), QJsonValue(true));
+        QVERIFY(QucsSettings.CheckCommands);
+        QVERIFY(QApplication::activeModalWidget() == nullptr);
+        r = call("set_settings", {{"scope", "simulators"}, {"values", QJsonObject{{"Simulators/Warn of commands a simulation runs besides the simulator", false}}}}, 20000);
+        QVERIFY2(!failed(r) && !QucsSettings.CheckCommands, qPrintable(text(r)));
+        // A document's own.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("set_settings", {{"scope", "document"}, {"values", QJsonObject{{"Grid/horizontal Grid", "20"}}}}, 20000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("changed").toArray().first().toObject().value("was").toString(), QString("10"));
+        QCOMPARE(front()->getGridX(), 20);
+        // Not done, each with why - and nothing changed.
+        r = call("set_settings", {{"scope", "simulators"}, {"values", QJsonObject{{"Nowhere", 1}, {"Simulators/Ngspice compatibility mode", "Klingon"}}}});
+        QVERIFY2(failed(r) && text(r).contains("no such setting") && text(r).contains("it is one of"), qPrintable(text(r)));
+        QString claudeKey;
+        for (auto it = app.cbegin(); it != app.cend(); ++it)
+            if (it.key().contains("Claude")) claudeKey = it.key();
+        QVERIFY(!claudeKey.isEmpty());
+        r = call("set_settings", {{"scope", "app"}, {"values", QJsonObject{{claudeKey, !app.value(claudeKey).value("value").toBool()}}}});
+        QVERIFY2(failed(r) && text(r).contains("Claude Code's settings are the user's"), qPrintable(text(r)));
+        QVERIFY(failed(call("get_settings", {{"scope", "everything"}})));
+        QVERIFY(failed(call("set_settings", {{"scope", "app"}})));
+        QVERIFY(QApplication::activeModalWidget() == nullptr);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
     // ---- round 6: the gaps of one session (qucs-mcp-wishlist)

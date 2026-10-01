@@ -81,6 +81,16 @@ QSize OctaveWindow::sizeHint() const
 }
 
 // ------------------------------------------------------------------------
+QString OctaveWindow::outputText() const
+{
+  return output->toPlainText();
+}
+
+bool OctaveWindow::isRunning() const
+{
+  return octProcess.state() == QProcess::Running;
+}
+
 bool OctaveWindow::startOctave()
 {
   if(octProcess.state()==QProcess::Running)

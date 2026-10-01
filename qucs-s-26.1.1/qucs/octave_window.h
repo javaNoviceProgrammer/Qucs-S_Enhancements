@@ -24,6 +24,9 @@ public:
 
   QSize sizeHint() const;
   bool startOctave();
+  /// What it has printed, the commands sent with it.
+  QString outputText() const;
+  bool isRunning() const;
   void runOctaveScript(const QString&);
   void sendCommand(const QString&);
   void adjustDirectory();

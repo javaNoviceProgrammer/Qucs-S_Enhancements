@@ -239,6 +239,7 @@ public:
   /// The Terminal dock's shell and the Python Shell dock's interpreter.
   ProcessConsole *terminalConsole() const { return terminal; }
   ProcessConsole *pythonConsole() const { return pythonShell; }
+  OctaveWindow *octaveWindow() const { return octave; }
   QDockWidget *terminalDockWidget() const { return terminalDock; }
   QDockWidget *pythonDockWidget() const { return pythonDock; }
   /// The Claude Code dock (claudecodetabs.h): conversations with Claude

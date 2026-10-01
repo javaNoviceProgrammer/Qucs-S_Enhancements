@@ -288,12 +288,30 @@ private:
     QJsonObject getUi(const QJsonObject& args);
     void setUi(const QJsonObject& args, const Done& done);
     void contextMenu(const QJsonObject& args, const Done& done);
+    // A console dock typed into (qucscontrol_console.cpp).
+    void console(const QJsonObject& args, const Done& done);
     /// The part of the window \a area names, and what it is called; null
     /// and why when there is none, or it is not Claude's (the Claude Code
     /// panel). \a forChange: also not a console's (typing runs commands).
     QWidget* uiArea(const QString& area, QString* name, QString* error, bool forChange) const;
     /// The parts of the window get_ui reads.
     QJsonArray uiAreas() const;
+    // Settings, typed (qucscontrol_settings.cpp): a settings dialog opened
+    // as its menu action opens it, read or set by keys "Tab/Label".
+    void getSettings(const QJsonObject& args, const Done& done);
+    void setSettings(const QJsonObject& args, const Done& done);
+    /// The settings dialog of args' 'scope', made but not shown (to read).
+    QWidget* settingsDialogFor(const QJsonObject& args, QString* error);
+    /// Opens the settings dialog of args' 'scope' as its action does, and
+    /// hands it to \a with once it is up; done() with why when it is not.
+    void withSettingsDialog(const QJsonObject& args, std::function<void(QWidget* dialog)> with, const Done& done);
+    /// A settings dialog's settings: each control by its key ("Tab/Label"),
+    /// its type, value and what it takes. \a byKey: the controls by key.
+    QJsonArray typedSettings(QWidget* dialog, QHash<QString, QWidget*>* byKey) const;
+    /// A control's value, typed (text, true or false, a number).
+    QJsonValue typedValue(QWidget* w) const;
+    /// Sets a control of \a dialog as typed; false and why.
+    bool setTyped(QWidget* dialog, QWidget* w, const QJsonValue& value, QString* why);
     /// Where on \a sch's canvas context_menu's \a on points ('part',
     /// 'diagram' or 'canvas'), in the schematic's coordinates, and what is
     /// there; false and why.
