@@ -1,0 +1,42 @@
+19:51 start. Release build of 6511b15 (build/); ASan build stale (07:53), not rebuilt.
+- clean_scratch datasets: by file name, not Data Set: trashed amp.dat (not its), kept run.dat.ngspice (h_clean.py)
+- copy_document: no dataset copied when Data Set != file name (AC_Passive_analysis template) (h_names.py)
+- data display (add_diagram document data_display; GUI F4 too): DataSet = dpl base, not the schematic's: "no dataset amp.dat.ngspice (simulate)" (h_dpl.py)
+- export memory: CSV 2.5M values -> 809 MB peak, 17 MB file; text 316 MB; Excel 500k x5 -> 1.6 GB 5.3 s GUI thread (h_big.patch)
+- export: typed suffix ignored, format from combo (out.xlsx with CSV = CSV text); formatOfSuffix unused (reading)
+- importedWith hint: reads every imported dataset in full per trace w/o data: add_diagram 8 traces 9.8 s, get_schematic 4.9 s, reload_data 4.9 s (h_slow.py)
+- run_script qucs.call refuses max_chars ("takes no max_chars") (h_maxscript.py)
+- import_data takes a .sch as text of numbers (h_import.py)
+- set_subcircuit_parameters: any default w/o space ("-", "1k;", "1,5") (h_subpar.py)
+- label GND/Gnd: node 0 without ground symbol, node GND with one (even unconnected); SPICE OPUS/Xyce no ground; ERC calls it ground (h_gndsim/h_gndlabel)
+- test_erc aNetNamedAsGroundIsNotPrinted: GND symbol mid-wire, connected to nothing (test weakness)
+- kept run netlists in cache never removed
+- clean_scratch shared folder: trashes every file there
+- argfuzz: 30,502 calls, 12 tools, no server death; nothing written outside ws
+- acIssues: Vac_SPICE counted as AC source whatever its text (no AC word check, unlike S4Q_V): 'SIN(0 1 1k)' alone -> silent AC, no warning (reading erc.cpp:812)
+- Export tab writes a .dat beside: its own list refreshes, the Data tab's does not (reading)
+- new rules sweep: 251 examples, 0 messages from the two rules (no false alarm)
+- export fuzz: 400 random datasets, 25,542 exports (3,258 refused as designed), no crash; odd cases = generator's (all-NaN columns dropped by the importer as documented; duplicate names in a dataset) (h_exgen.py, h_exfuzz.patch)
+- get_dataset gives imported variables' trace 'm:gain' but refuses 'm:gain' in its variables ('m.dat has no variable m:gain'); ngspice/ prefix is taken (h_tracename.py)
+- set_dialog on a tree: 60 rounds, no death; a row out of range (or a tree of no rows) answered only 'does not take [99,0,true]', not why (h_treefuzz.py)
+- !!! a net with a label AND a ground symbol: the netlist names the net by the label, not 0. Tools: set_label foo on R1.2, then connect R2.2 to ground -> V1, R1, R2 all on "foo", nothing on 0: no ground; check says nothing (h_split2.py). File: label on a wire, ground at its end -> one net, two nodes (V1 on foo, R1 on 0) (h_split.py, h_gndcase.py); simulate "succeeds". ngspice hides it for a label GND/gnd (its alias of 0); SPICE OPUS/Xyce not.
+- (artifact) h_gndsim's GND/Gnd rows: n_GND.sch and n_gnd.sch are one file on macOS - ignore
+- make_symbol prefix: 'X;Y' accepted -> instance X;Y1, netlist 'X;Y1 ...' (';' starts a comment in ngspice); 'é', '1X' accepted (h_prefix.py)
+- keep_as run1 beside an imported run1.dat: accepted; run1:ac.v(out) reads the import ('no variable ac.v(out); its variables: g'); the Data tab lists run1 once (imported), its kept run unreachable there (h_keepas.py)
+- !!! simplest route: label a net 'ret', connect one of its pins to the grounded net (one wire, as in the GUI): V1, R1 on 0, R2 on ret - the merged net split, R2 dangling; check silent; simulate succeeds (h_merge.py)
+- !!! two labels on one net (a wired to b): R1, R2 on a, R3 on b - split too; the check's note says 'the netlist keeps one of them' - it keeps both, as two nodes (h_merge2.py). Label+ground: no note at all (h_merge.py).
+- export tab under 12 diagram kinds x 6 formats x 3 forms: 108 exports, graphs kept on OK, no crash (one SIGSEGV was the harness's own use of a deleted panel) (h_kinds.patch)
+- arrange on a net with two labels: refuses ('the net label b would be gone'), keep_places keeps both - consistent (h_arrange2.py)
+- Data Set '../up.dat' -> the simulation writes ../up.dat.ngspice outside the schematic's folder (any relative path taken; with Qucsator no suffix is added, so a schematic from elsewhere could have a run write over a file beside it - not run, no Qucsator here); Data Set 'run'/'run.csv' -> run.ngspice / run.csv.ngspice, which the Data and Export tabs (patterns *.dat*) do not list (h_dsname.py)
+- add_diagram document data_display with Data Display '../out.dpl' or 'amp.txt': answers 'could not be opened' but leaves an empty out.dpl (outside the folder) / amp.txt behind (h_dplpath.py)
+- !!! security: Claude's simulate runs a schematic's System command (CMD) components - shell commands - after the run, unasked; the answer says nothing; open/check say nothing (marker made) (h_cmd.py). Upstream feature in the GUI; the tools make it reachable by an agent opening a file from elsewhere.
+- !!! security 2: ngspice's 'shell' line in a custom simulation (.CUSTOMSIM) runs when simulated; check silent (h_shell.py, marker made)
+- (upstream) SpiceFile's Preprocessor: script << interpreter; script << script; -> runs 'ps2sp' with args perl ps2sp perl <file>: never works (reading components/spicefile.cpp:281)
+- !!! subcircuit with two ports on one net (pass-through): .SUBCKT thru P1 P1 P3; ngspice takes it silently and connects one: i(RL)=0 not 1 mA; check silent (h_twoports.py)
+- !!! subcircuit port named gnd/GND on an unlabelled net: nameUnlabelledPortNets (ours, 9d583cf) names the net gnd -> .SUBCKT sub P1 gnd + R1 P1 0 (or GND): the pin is global ground inside; parent's 2 V ignored: i(R1)=5 mA not 3 mA (h_portgnd.py)
+- !!! (A9 too) port P1 named net beside a net labelled p1: R1 P1 p1 - ngspice joins them: R1 shorted, i(R1)=0, i(R2)=2 mA not 1 mA; check silent (h_portcase.py)
+- import_data of a 26 MB CSV (500k x 5): 2.3 s, server RSS 1151 MB after; reload 2.3 s (h_bigimport.py)
+- import_data name 'run' taken when p.sch's Data Set is run.dat (only name.sch checked): its Qucsator run writes run.dat over the import (h_dsimport.py)
+- Export tab proposes <dataset>.<suffix> in the folder: for an import of bench.csv beside it, that is bench.csv, the source (reading exportFile)
+- import_data of 5,000 columns: answer 112 KB, columns all 5,001 listed, not cut (traces/variables cut at 100) (h_wide.py)
+- get_dataset of a kept run run1.dat.ngspice gives traces 'ngspice/ac.v(in)' (no run1:) - they plot the current run (h_keptrace.py)
