@@ -262,6 +262,10 @@ private slots:
         QCOMPARE(viewMenu->title(), QString("Toggle hierarchy search view"));
         QAction* flat = viewMenu->actions().at(0);
         QAction* tree = viewMenu->actions().at(1);
+        QCOMPARE(flat->text(), QString("Flat"));
+        QVERIFY(flat->statusTip().contains("models/bjt.va"));
+        // Sub-trees unless the user chose Flat (a setting saved keeps it).
+        QVERIFY(_settings::Get().itemDefault<bool>("ContentTreeView"));
         QVERIFY(flat->isCheckable() && tree->isCheckable());
         // ...as a sub-menu of the panel menu only: not of the file menu, not
         // of the Verilog-A menu.

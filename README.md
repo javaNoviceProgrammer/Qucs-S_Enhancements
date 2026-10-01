@@ -82,9 +82,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   project (at any depth; hidden directories, `node_modules`,
   `__pycache__`, `venv` and CMake build trees excluded; at most 20,000
   files and folders looked at, the panel's header saying so when a folder
-  holds more) are listed under their category, either as `sub/dir/name.ext` rows or as sub-trees with
-  one folder row per directory — right-click the empty area of the panel,
-  *Toggle hierarchy search view*, to switch; the choice is remembered.
+  holds more) are listed under their category, as sub-trees with one
+  folder row per directory (*Sub-trees per folder*, the default) or as
+  `sub/dir/name.ext` rows (*Flat*) — right-click the empty area of the
+  panel, *Toggle hierarchy search view*, to switch; the choice is
+  remembered.
   The folder rows are plain; *Application Settings → Settings → Folder
   icons in the Content panel* puts a folder icon on them.
   Open, copy, rename, delete, drag and subcircuit insertion work on them in
