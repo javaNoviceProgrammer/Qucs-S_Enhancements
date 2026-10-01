@@ -39,6 +39,11 @@ public:
   bool createSpiceSubckt(QTextStream * stream);
   QString getErrorText() { return ErrText; }
   QString getSubcircuitFile();
+  /// The program and its arguments that preprocess \a file with
+  /// \a preprocessor (ps2sp, spicepp, spiceprm): Perl running the script
+  /// - the one beside Qucs-S, else found on PATH (perl -S) - on it, into
+  /// \a output too for spiceprm. Empty for none, or one not known.
+  static QStringList preprocessorCommand(const QString& preprocessor, const QString& file, const QString& output);
 
 private:
   bool makeSubcircuit;

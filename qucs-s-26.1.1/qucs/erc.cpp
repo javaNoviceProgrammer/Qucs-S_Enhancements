@@ -1335,6 +1335,74 @@ QList<Issue> notes(Schematic* doc)
     return out;
 }
 
+namespace {
+
+// A command as it is shown: its first line, and how many more.
+QString commandShown(const QStringList& lines)
+{
+    QString first = lines.first();
+    if (first.size() > 120) first = first.left(117) + QStringLiteral("...");
+    return lines.size() == 1 ? first : tr("%1 (and %2 more lines)").arg(first).arg(lines.size() - 1);
+}
+
+// What a simulation of \a doc runs besides the simulator (commandsRun()),
+// each with the part that holds it (none for the Octave script).
+QList<std::pair<QString, const Component*>> commandsOf(Schematic* doc)
+{
+    QList<std::pair<QString, const Component*>> list;
+    // ngspice's commands that start a program: shell, system, and !.
+    static const QRegularExpression runs(QStringLiteral("^\\s*(shell|system)(\\s|$)|^\\s*!"), QRegularExpression::CaseInsensitiveOption);
+    for (const Component* c : doc->a_DocComps) {
+        if (!inCircuit(c)) continue;
+        if (c->Model == QLatin1String("CMD")) {
+            // As runPostSimCommands runs it: its lines but blank ones and
+            // comments (#).
+            QStringList lines;
+            if (!c->Props.isEmpty())
+                for (const QString& l : c->Props.at(0)->Value.split(QLatin1Char('\n')))
+                    if (const QString t = l.trimmed(); !t.isEmpty() && !t.startsWith(QLatin1Char('#'))) lines << t;
+            if (!lines.isEmpty())
+                list.append({tr("%1 runs a command in a shell after each simulation: %2").arg(c->Name, commandShown(lines)), c});
+        } else if (c->Model == QLatin1String(".CUSTOMSIM") || c->Model == QLatin1String("NutmegEq") || c->Model == QLatin1String("SPICEINIT")) {
+            QStringList lines;
+            for (const Property* p : c->Props)
+                for (const QString& l : p->Value.split(QLatin1Char('\n')))
+                    if (runs.match(l).hasMatch()) lines << l.trimmed();
+            if (!lines.isEmpty())
+                list.append({tr("%1's ngspice text runs a command in a shell: %2").arg(c->Name, commandShown(lines)), c});
+        }
+    }
+    if (doc->getSimRunScript() && !doc->getScript().trimmed().isEmpty())
+        list.append({tr("Octave runs the script %1 after each simulation (Document Settings: run script after simulation)")
+                         .arg(doc->getScript().trimmed()),
+                     nullptr});
+    return list;
+}
+
+} // namespace
+
+QStringList commandsRun(Schematic* doc)
+{
+    QStringList said;
+    if (doc != nullptr)
+        for (const auto& [what, part] : commandsOf(doc)) said << what;
+    return said;
+}
+
+namespace {
+
+// The warnings of commandsRun(), at their parts.
+void commandIssues(Schematic* doc, QList<Issue>& out)
+{
+    for (const auto& [what, part] : commandsOf(doc)) {
+        const QPoint where = part != nullptr ? QPoint(part->cx, part->cy)
+                                             : doc->a_DocComps.empty() ? QPoint() : QPoint((*doc->a_DocComps.begin())->cx, (*doc->a_DocComps.begin())->cy);
+        out << Issue{Severity::Warning, what, where, part != nullptr ? part->Name : QString()};
+    }
+}
+
+} // namespace
+
 QList<Issue> check(Schematic* doc)
 {
     QList<Issue> errors, warnings;
@@ -1639,6 +1707,9 @@ QList<Issue> check(Schematic* doc)
             }
         }
     }
+
+    // What a run executes besides the simulator: said, whatever else is.
+    commandIssues(doc, warnings);
 
     // A circuit (not a subcircuit: those have ports) needs a simulation,
     // and a ground symbol unless the settings leave node 0 to the user (a
