@@ -108,6 +108,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   what is typed (`..` always, to go back up). The project chosen stays
   chosen while it is listed; one it leaves out is no longer the one Open
   and Delete act on. It stays as you go into a folder.
+- **Which project is open, at a glance**: in the Projects panel a green
+  dot at the right end of the open project's row, a grey one on the
+  other projects, none on a folder that is no project; the tooltip says
+  which. A linked project shows open whether it was opened through its
+  link or by the folder it leads to, and a long name ends before the dot.
 - **Content panel categories are yours to set**: a *Text* category, right
   before *Others*, lists the `.txt` files. *Application Settings →
   Contents* has a row per category, its name and the patterns of the
