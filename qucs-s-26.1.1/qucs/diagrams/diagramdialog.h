@@ -233,6 +233,14 @@ private:
   QComboBox   *HistHeight = nullptr;
   QCheckBox   *HistFit = nullptr, *HistStats = nullptr;
   QLineEdit   *HistLower = nullptr, *HistUpper = nullptr;
+  // An eye diagram's own: the unit interval, the UIs across, where it
+  // starts, the levels, the threshold, how it is drawn, the measurements,
+  // the mask.
+  QLineEdit   *EyeUi = nullptr, *EyeStart = nullptr, *EyeThreshold = nullptr;
+  QLineEdit   *EyeMaskWidth = nullptr, *EyeMaskHeight = nullptr;
+  QSpinBox    *EyeSpan = nullptr;
+  QComboBox   *EyeLevels = nullptr, *EyeDrawn = nullptr;
+  QCheckBox   *EyeMeasure = nullptr;
   QPushButton *ColorButt;
   QCheckBox   *AutoColorBox = nullptr;
   QLabel      *MarkerLabel = nullptr;

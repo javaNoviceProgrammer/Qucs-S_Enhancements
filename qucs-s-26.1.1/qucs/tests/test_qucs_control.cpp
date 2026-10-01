@@ -56,6 +56,7 @@
 #include "config.h"
 #include "dataimport.h"
 #include "diagrams/diagram.h"
+#include "diagrams/eyediagram.h"
 #include "erc.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -3199,6 +3200,57 @@ private slots:
         QVERIFY2(std::abs(eye.value("height").toDouble() - 1.0) < 0.05, qPrintable(text(r)));
         QVERIFY2(eye.value("width, UI").toDouble() > 0.9, qPrintable(text(r)));
         QVERIFY(failed(call("get_dataset", {{"variables", QJsonArray{"tran.v(data)"}}, {"measure", QJsonArray{"eye"}}, {"bit_period", -1}})));
+        // Without the bit period: told from the crossings.
+        r = call("get_dataset", {{"variables", QJsonArray{"tran.v(data)"}}, {"measure", QJsonArray{"eye"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject told = json(r).toObject().value("variables").toArray().first().toObject().value("measurements").toObject().value("eye").toObject();
+        QVERIFY2(std::abs(told.value("unit interval").toDouble() / 40e-6 - 1) < 1e-3 && told.contains("unit interval from"), qPrintable(text(r)));
+        r = call("get_dataset", {{"variables", QJsonArray{"tran.v(data)"}}, {"measure", QJsonArray{"eye"}}, {"levels", 3}});
+        QVERIFY2(failed(r) && text(r).contains("2 (NRZ) or 4 (PAM4)"), qPrintable(text(r)));
+
+        // An eye diagram of it: its settings by name, what it measured on
+        // each trace in get_schematic.
+        r = call("add_diagram", {{"type", "eye"}, {"x", 100}, {"y", 600}, {"traces", QJsonArray{"tran.v(data)"}},
+                                 {"eye", QJsonObject{{"unit_interval", "40u"}, {"from", 0}, {"mask", QJsonObject{{"width", 0.4}, {"height", 0.3}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* eyeDiagram = dynamic_cast<EyeDiagram*>(front()->a_DocDiags.back());
+        QVERIFY(eyeDiagram != nullptr);
+        QCOMPARE(eyeDiagram->ui, 40e-6);
+        QCOMPARE(eyeDiagram->maskWidth, 0.4);
+        QJsonObject listed = json(call("get_schematic")).toObject().value("diagrams").toArray().last().toObject();
+        QCOMPARE(listed.value("type").toString(), QStringLiteral("eye"));
+        QJsonObject eyeJson = listed.value("eye").toObject();
+        QCOMPARE(eyeJson.value("unit_interval").toDouble(), 40e-6);
+        QCOMPARE(eyeJson.value("drawn").toString(), QStringLiteral("density"));
+        const QJsonObject measured = eyeJson.value("measured").toArray().first().toObject();
+        QVERIFY2(std::abs(measured.value("eyes").toArray().first().toObject().value("height").toDouble() - 1.0) < 0.05,
+                 qPrintable(QJsonDocument(listed).toJson()));
+        QCOMPARE(measured.value("mask hits").toInt(), 0);
+        QCOMPARE(measured.value("unit interval from").toString(), QStringLiteral("given"));
+        // Changed by name; null is automatic, or no mask.
+        r = call("edit_diagram", {{"diagram", int(front()->a_DocDiags.size())},
+                                  {"eye", QJsonObject{{"unit_interval", QJsonValue::Null}, {"span", 3}, {"drawn", "traces"}, {"mask", QJsonValue::Null}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(std::isnan(eyeDiagram->ui) && std::isnan(eyeDiagram->maskWidth));
+        QCOMPARE(eyeDiagram->span, 3);
+        QCOMPARE(eyeDiagram->drawn, int(EyeDiagram::Traces));
+        QVERIFY(std::abs(eyeDiagram->foldedUi() / 40e-6 - 1) < 1e-3);
+        // Refused whole, nothing changed: each wrong value, and 'eye' on another diagram.
+        for (const QJsonObject& bad : {QJsonObject{{"span", 9}}, QJsonObject{{"levels", 3}}, QJsonObject{{"drawn", "dots"}},
+                                       QJsonObject{{"unit_interval", -1}}, QJsonObject{{"unit_interval", "fast"}},
+                                       QJsonObject{{"mask", QJsonObject{{"width", 2}, {"height", 0.1}}}},
+                                       QJsonObject{{"measurements", "yes"}}, QJsonObject{{"span", 2}, {"levels", 5}}}) {
+            r = call("edit_diagram", {{"diagram", int(front()->a_DocDiags.size())}, {"eye", bad}});
+            QVERIFY2(failed(r), qPrintable(QJsonDocument(bad).toJson()));
+            QCOMPARE(eyeDiagram->span, 3);
+        }
+        QVERIFY(!failed(call("add_diagram", {{"x", 100}, {"y", 900}, {"traces", QJsonArray{"tran.v(data)"}}})));
+        r = call("edit_diagram", {{"diagram", int(front()->a_DocDiags.size())}, {"eye", QJsonObject{{"span", 2}}}});
+        QVERIFY2(failed(r) && text(r).contains("an eye diagram's"), qPrintable(text(r)));
+        // The source of such signals, for ngspice.
+        const QJsonObject prbs = json(call("describe_component_type", {{"type", "vPRBS"}})).toObject();
+        QVERIFY2(prbs.value("netlist").toObject().value("with the defaults").toString().contains("PRBS(0 1 1N 0 0 0 7)"),
+                 qPrintable(QJsonDocument(prbs).toJson()));
         // A Monte Carlo's workbook: a column per value, a row per sample.
         {
             QFile f(dir.filePath("workspace/mc_results.csv"));

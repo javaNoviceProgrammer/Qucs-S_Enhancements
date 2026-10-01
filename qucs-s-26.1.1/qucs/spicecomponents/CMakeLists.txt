@@ -36,6 +36,7 @@ gNL.cpp
 vTRNOISE.cpp
 iTRNOISE.cpp
 vTRRANDOM.cpp
+vPRBS.cpp
 C_SPICE.cpp
 L_SPICE.cpp
 R_SPICE.cpp
@@ -131,6 +132,7 @@ gNL.h
 vTRNOISE.h
 iTRNOISE.h
 vTRRANDOM.h
+vPRBS.h
 C_SPICE.h
 L_SPICE.h
 R_SPICE.h

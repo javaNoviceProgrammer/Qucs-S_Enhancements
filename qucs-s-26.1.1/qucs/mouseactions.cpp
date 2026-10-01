@@ -761,7 +761,7 @@ void MouseActions::fillContextMenu(Schematic *Doc, float fX, float fY)
                 Diagram* diagram = static_cast<Diagram*>(focusElement);
 
                 // Only show reset limits action if one or more axis is not autoscaled.
-                if ((diagram->Name == "Rect" || diagram->Name == "Histogram") &&
+                if ((diagram->Name == "Rect" || diagram->Name == "Histogram" || diagram->Name == "Eye") &&
                     (!diagram->xAxis.autoScale || !diagram->yAxis.autoScale || !diagram->zAxis.autoScale)) {
                     ComponentMenu->addAction(QucsMain->resetDiagramLimits);
                 }
@@ -937,7 +937,8 @@ void MouseActions::MPressSelect(Schematic *Doc, QMouseEvent *Event, float fX, fl
 
         case isDiagramResize: // resize diagram ?
             if (((Diagram *) focusElement)->Name.left(4) != "Rect"
-                && ((Diagram *) focusElement)->Name != "Histogram")
+                && ((Diagram *) focusElement)->Name != "Histogram"
+                && ((Diagram *) focusElement)->Name != "Eye")
                 if (((Diagram *) focusElement)->Name.at(0) != 'T')
                     if (((Diagram *) focusElement)->Name != "Curve")
                         isMoveEqual = true; // diagram must be square
@@ -1344,7 +1345,7 @@ void MouseActions::MPressSetLimits(Schematic *Doc, QMouseEvent*, float fX, float
     for (Diagram* diagram : *Doc->a_Diagrams) {
         // BUG: Obtaining the diagram type by name is marked as a bug elsewhere (to be solved separately).
         // TODO: Currently only rectangular diagrams are supported.
-        if (diagram->getSelected(fX, fY) && (diagram->Name == "Rect" || diagram->Name == "Histogram")) {
+        if (diagram->getSelected(fX, fY) && (diagram->Name == "Rect" || diagram->Name == "Histogram" || diagram->Name == "Eye")) {
             qDebug() << "In a rectangular diagram, setting up for area selection.";
 
             // cx and cy are the adjusted points of the diagram's bottom left hand corner.
