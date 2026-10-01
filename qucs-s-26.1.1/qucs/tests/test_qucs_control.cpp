@@ -4516,6 +4516,56 @@ private slots:
         QVERIFY(!control->readOnlyTools().contains("rename_file") && !control->readOnlyTools().contains("trash_file"));
     }
 
+    // A CDL netlist's include block - the .INCLUDE and .LIB lines of the
+    // schematic and of every subcircuit under it - once, as ngspice's
+    // netlist has it (upstream's CDL writer wrote the whole block twice;
+    // qucs-s-cdl-duplicate-include, 1 October).
+    void aCdlNetlistIncludesEachFileOnce()
+    {
+        const QString folder = QucsSettings.qucsWorkspaceDir.absoluteFilePath("cdl1");
+        QVERIFY(QDir().mkpath(folder));
+        const auto put = [](const QString& path, const QByteArray& text) {
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(text) == text.size();
+        };
+        QVERIFY(put(folder + "/models.cir", ".SUBCKT buf a b\nR1 a b 1k\n.ENDS\n"));
+        QVERIFY(put(folder + "/top.cir", "* top-level models\n"));
+        QVERIFY(put(folder + "/sub.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                                         "  <SpiceInclude SpiceInclude1 1 300 380 -26 14 0 0 \"models.cir\" 1 \"\" 0 \"\" 0 \"\" 0 \"\" 0>\n"
+                                         "  <Port P1 1 180 140 -23 12 0 0 \"1\" 1 \"inout\" 0>\n"
+                                         "  <Port P2 1 420 140 8 12 0 2 \"2\" 1 \"inout\" 0>\n"
+                                         "  <R R1 1 300 140 -26 15 0 0 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"US\" 0>\n"
+                                         "</Components>\n<Wires>\n  <180 140 270 140 \"\" 0 0 0 \"\">\n  <330 140 420 140 \"\" 0 0 0 \"\">\n</Wires>\n"));
+        QVERIFY(put(folder + "/top.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                                         "  <SpiceInclude SpiceInclude1 1 300 380 -26 14 0 0 \"top.cir\" 1 \"\" 0 \"\" 0 \"\" 0 \"\" 0>\n"
+                                         "  <Sub U1 1 400 240 10 24 0 0 \"sub.sch\" 0>\n"
+                                         "  <GND * 1 360 300 0 0 0 0>\n"
+                                         "</Components>\n<Wires>\n</Wires>\n"));
+        QVERIFY(!failed(call("open_document", {{"path", folder + "/top.sch"}})));
+        const auto includes = [](const QString& netlist, const QString& file) {
+            return int(netlist.count(QRegularExpression(QStringLiteral("^\\.INCLUDE .*%1\"$").arg(QRegularExpression::escape(file)),
+                                                         QRegularExpression::MultilineOption)));
+        };
+        QJsonObject r = call("get_netlist", {{"path", folder + "/top.sch"}, {"format", "cdl"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(includes(text(r), "models.cir"), 1);
+        QCOMPARE(includes(text(r), "top.cir"), 1);
+        // Written to a file, the same.
+        r = call("export_netlist", {{"path", folder + "/top.sch"}, {"save_as", folder + "/top.cdl"}, {"format", "cdl"}, {"replace", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QFile written(folder + "/top.cdl");
+        QVERIFY(written.open(QIODevice::ReadOnly));
+        const QString file = QString::fromUtf8(written.readAll());
+        QCOMPARE(includes(file, "models.cir"), 1);
+        QCOMPARE(includes(file, "top.cir"), 1);
+        // As ngspice's netlist has them.
+        r = call("get_netlist", {{"path", folder + "/top.sch"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(includes(text(r), "models.cir"), 1);
+        QCOMPARE(includes(text(r), "top.cir"), 1);
+        QVERIFY(!failed(call("close_document", {{"path", folder + "/top.sch"}, {"unsaved", "discard"}})));
+    }
+
     // ---- round 6: the gaps of one session (qucs-mcp-wishlist)
 
     // An ngspice .OPTIONS option with no value - a flag, written alone - is
