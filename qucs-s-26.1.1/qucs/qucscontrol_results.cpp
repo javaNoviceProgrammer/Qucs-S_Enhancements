@@ -662,8 +662,19 @@ struct ReadOptions {
     std::optional<bool> decibels;   // as said; else told from the unit
     ds::Form form = ds::Form::MagnitudePhase;
     QString prefix;   // the simulator's, for the name of a trace
+    QString dataset;  // a dataset not the schematic's own (imported, a run kept): its name, for a trace (name:variable)
     QHash<QString, QString> definitions;   // the equations' variables (lower case): what they are defined as
 };
+
+// The trace that shows \a variable of the dataset read: ngspice/v(out),
+// ngspice/run1:v(out) of a run kept, m:gain of an imported one; none of a
+// Qucsator run's own (its variable as it is).
+QString traceOf(const ReadOptions& o, const QString& variable)
+{
+    const QString named = o.dataset.isEmpty() ? variable : o.dataset + QLatin1Char(':') + variable;
+    if (!o.prefix.isEmpty()) return o.prefix + QLatin1Char('/') + named;
+    return o.dataset.isEmpty() ? QString() : named;
+}
 
 // What an equation of the schematic defines a variable of the dataset as
 // ("y" of ac.y: db(norm(v(out)))), or empty.
@@ -842,7 +853,7 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
         out.insert(QStringLiteral("max"), number(hi));
         return out;
     }
-    if (!o.prefix.isEmpty()) out.insert(QStringLiteral("trace"), o.prefix + QLatin1Char('/') + v.name);
+    if (const QString trace = traceOf(o, v.name); !trace.isEmpty()) out.insert(QStringLiteral("trace"), trace);
     describe(out, v, o);
     ds::MeasureOptions measureOptions = o.measureOptions;
     measureOptions.decibels = o.decibels.value_or(ds::isDecibels(ds::unitOf(v.name, definitionOf(o, v.name))));
@@ -1347,16 +1358,48 @@ QString plainDataset(const QString& folder, const QString& name, QString* source
     return plain;
 }
 
+namespace {
+// The names of a dataset's dependent variables, from its headers alone
+// (<dep name ...>), kept while its file is as it was: a trace of no data
+// read every imported dataset beside it in full for a hint - 47 MB each,
+// for every trace of every listing.
+QSet<QString> dependentNames(const QString& path)
+{
+    struct Known {
+        QDateTime at;
+        qint64 size = -1;
+        QSet<QString> names;
+    };
+    static QHash<QString, Known> known;
+    const QFileInfo info(path);
+    if (const auto it = known.constFind(info.absoluteFilePath());
+        it != known.constEnd() && it->size == info.size() && it->at == info.lastModified())
+        return it->names;
+    Known k{info.lastModified(), info.size(), {}};
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return {};
+    QByteArray read;
+    const uchar* mapped = f.size() > 0 ? f.map(0, f.size()) : nullptr;
+    if (mapped == nullptr) read = f.readAll();
+    const QByteArrayView all = mapped != nullptr ? QByteArrayView(mapped, f.size()) : QByteArrayView(read);
+    for (qsizetype at = all.indexOf("<dep "); at >= 0; at = all.indexOf("<dep ", at + 5)) {
+        qsizetype end = at + 5;
+        while (end < all.size() && all.at(end) != ' ' && all.at(end) != '>' && all.at(end) != '\n') ++end;
+        if (end > at + 5) k.names.insert(QString::fromUtf8(all.sliced(at + 5, end - at - 5)));
+    }
+    if (known.size() > 500) known.clear();
+    known.insert(info.absoluteFilePath(), k);
+    return k.names;
+}
+} // namespace
+
 QString importedWith(const QString& folder, const QString& variable, QString* source)
 {
     if (folder.isEmpty() || variable.isEmpty()) return QString();
     int looked = 0;
     for (const di::Imported& i : di::importedIn(folder)) {
         if (++looked > 20) break;
-        ds::Dataset data;
-        if (!data.read(i.path)) continue;
-        const ds::Variable* v = data.find(variable);
-        if (v == nullptr || v->independent) continue;
+        if (!dependentNames(i.path).contains(variable)) continue;
         if (source != nullptr) *source = i.origin.source;
         return i.name;
     }
@@ -1789,7 +1832,50 @@ QString QucsControl::staleness(Schematic* sch, const QString& file, bool* certai
 QJsonObject QucsControl::getDataset(const QJsonObject& args)
 {
     QString error;
-    const QString file = datasetPath(args, &error);
+    // Its variables named name:variable, as the traces of a dataset beside
+    // the schematic's own are (m:gain imported, ngspice/run1:v(out) kept):
+    // that dataset's.
+    QString file;
+    if (const QString path = args.value(QLatin1String("path")).toString().trimmed(); path.isEmpty() || !isDatasetFile(path)) {
+        QSet<QString> names;
+        QString simulator;
+        bool all = !args.value(QLatin1String("variables")).toArray().isEmpty();
+        for (const QJsonValue& w : args.value(QLatin1String("variables")).toArray()) {
+            QString sim;
+            const QString bare = ds::withoutSimulator(w.toString().trimmed(), &sim);
+            const qsizetype colon = bare.indexOf(QLatin1Char(':'));
+            if (colon <= 0 || bare.left(colon).contains(QLatin1Char('('))) {
+                all = false;
+                break;
+            }
+            names.insert(bare.left(colon).toLower());
+            if (!sim.isEmpty()) simulator = sim;
+        }
+        QString folder;
+        if (QucsDoc* doc = document(args, &error); doc != nullptr && !doc->getDocName().isEmpty()) folder = QFileInfo(doc->getDocName()).absolutePath();
+        else if (!path.isEmpty() && QFileInfo(absolute(path)).isFile()) folder = QFileInfo(absolute(path)).absolutePath();
+        error.clear();
+        if (all && names.size() > 1)
+            return errorResult(tr("The variables are of %1 datasets: get_dataset reads one at a time.").arg(names.size()));
+        if (all && names.size() == 1 && !folder.isEmpty()) {
+            const QString name = args.value(QLatin1String("variables")).toArray().first().toString().trimmed();
+            const QString stem = ds::withoutSimulator(name).section(QLatin1Char(':'), 0, 0);
+            QStringList tried;
+            for (const QString& suffix : {simulator.isEmpty() ? QString() : QStringLiteral(".dat.") + simulator, QStringLiteral(".dat"),
+                                          QStringLiteral(".dat.") + simulatorPrefix()}) {
+                if (suffix.isEmpty() || suffix == QLatin1String(".dat.")) continue;
+                const QString candidate = QDir(folder).filePath(stem + suffix);
+                tried << QFileInfo(candidate).fileName();
+                if (QFileInfo(candidate).isFile()) {
+                    file = candidate;
+                    break;
+                }
+            }
+            if (file.isEmpty())
+                return errorResult(tr("There is no dataset %1 beside it (%2).").arg(stem, tried.join(QStringLiteral(", "))));
+        }
+    }
+    if (file.isEmpty()) file = datasetPath(args, &error);
     if (file.isEmpty()) return errorResult(error);
     ds::Dataset data;
     if (!data.read(file, &error)) return errorResult(error);
@@ -1813,6 +1899,14 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
         result.insert(QStringLiteral("imported from"), from);
     }
     if (Schematic* definer = schematicOfDataset(file, args)) o.definitions = definitionsIn(definer);
+    // A dataset not of a schematic's Data Set - imported, a run keep_as
+    // kept - is named in a trace: ngspice/v(out) is the schematic's own.
+    if (!importedName.isEmpty()) {
+        o.dataset = importedName;
+    } else if (const qsizetype d = info.fileName().indexOf(QLatin1String(".dat")); d > 0 && schematicOfDataset(file, args) == nullptr) {
+        const QString name = info.fileName().left(d);
+        if (!di::dataSetsOfSchematics(info.absolutePath()).contains(name, Qt::CaseInsensitive)) o.dataset = name;
+    }
     if (args.value(QLatin1String("decibels")).isBool()) o.decibels = args.value(QLatin1String("decibels")).toBool();
 
     Schematic* sch = schematicOfDataset(file, args);
@@ -1843,8 +1937,7 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
             }
             QJsonObject e{{QStringLiteral("name"), v.name}, {QStringLiteral("depends on"), QJsonArray::fromStringList(v.dependencies)},
                           {QStringLiteral("points"), v.size()}};
-            if (!o.prefix.isEmpty()) e.insert(QStringLiteral("trace"), o.prefix + QLatin1Char('/') + v.name);
-            else if (!importedName.isEmpty()) e.insert(QStringLiteral("trace"), importedName + QLatin1Char(':') + v.name);
+            if (const QString trace = traceOf(o, v.name); !trace.isEmpty()) e.insert(QStringLiteral("trace"), trace);
             if (v.isComplex()) e.insert(QStringLiteral("complex"), true);
             describe(e, v, o);
             const ds::Curve all{QVector<double>(v.size(), 0), [&v] {
@@ -2254,7 +2347,12 @@ QJsonObject QucsControl::importData(const QJsonObject& args)
                        {QStringLiteral("variables"), variables},
                        {QStringLiteral("traces"), QJsonArray::fromStringList(traces.mid(0, 100))}};
     if (left > 0) result.insert(QStringLiteral("left out"), tr("%1 more variables (get_dataset lists them all)").arg(left));
-    if (!data.columns.isEmpty()) result.insert(QStringLiteral("columns"), QJsonArray::fromStringList(data.columns));
+    // The columns x may be chosen from, cut as the variables are: 5,000 of
+    // them made an answer of 112 KB.
+    if (!data.columns.isEmpty()) result.insert(QStringLiteral("columns"), QJsonArray::fromStringList(data.columns.mid(0, 100)));
+    if (data.columns.size() > 100)
+        result.insert(QStringLiteral("columns left out"),
+                      tr("%1 more columns (%2 in all): 'x' takes any of them by its name").arg(data.columns.size() - 100).arg(data.columns.size()));
     if (const QStringList sheets = sheetsOf(data); !sheets.isEmpty()) {
         result.insert(QStringLiteral("sheets"), QJsonArray::fromStringList(sheets));
         result.insert(QStringLiteral("sheet"), options.sheet.isEmpty() ? sheets.first() : options.sheet);

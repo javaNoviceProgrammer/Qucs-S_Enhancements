@@ -10120,6 +10120,20 @@ QJsonObject QucsControl::getDialog()
                                   {QStringLiteral("controls"), controls}});
 }
 
+namespace {
+// What a table's or tree's rows (columns) are, for a row out of them.
+QString rowsSaid(int rows, const QString& what)
+{
+    if (rows == 0) return QucsControl::tr("the %1 has no rows").arg(what);
+    return rows == 1 ? QucsControl::tr("the %1 has 1 row (0)").arg(what) : QucsControl::tr("the %1 has %2 rows (0 to %3)").arg(what).arg(rows).arg(rows - 1);
+}
+QString columnsSaid(int columns, const QString& what)
+{
+    return columns == 1 ? QucsControl::tr("the %1 has 1 column (0)").arg(what)
+                        : QucsControl::tr("the %1 has %2 columns (0 to %3)").arg(what).arg(columns).arg(columns - 1);
+}
+} // namespace
+
 void QucsControl::setDialog(const QJsonObject& args, const Done& done)
 {
     QWidget* dialog = openDialog();
@@ -10153,6 +10167,7 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
         }
         const QString text = propertyValue(value);
         bool ok = true;
+        QString why;   // (what it does take, when that is not plain)
         reveal(w, dialog);   // as the user would, on its tab
         if (auto* e = qobject_cast<QLineEdit*>(w)) {
             e->setText(text);
@@ -10183,6 +10198,9 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
             const int r = cell.at(0).toInt(-1), k = cell.at(1).toInt(-1);
             if (cell.size() < 3 || r < 0 || r >= table->rowCount() || k < 0 || k >= table->columnCount()) {
                 ok = false;
+                why = cell.size() < 3 ? tr("a cell is [row, column, value]")
+                                      : r < 0 || r >= table->rowCount() ? rowsSaid(table->rowCount(), tr("table"))
+                                                                        : columnsSaid(table->columnCount(), tr("table"));
             } else if (QWidget* cw = table->cellWidget(r, k)) {
                 if (auto* cc = qobject_cast<QComboBox*>(cw)) cc->setCurrentIndex(std::max(0, cc->findText(propertyValue(cell.at(2)))));
                 else if (auto* cb = qobject_cast<QAbstractButton*>(cw)) {
@@ -10204,11 +10222,20 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
             int n = 0;
             for (QTreeWidgetItemIterator it(tree); *it != nullptr && item == nullptr; ++it, ++n)
                 if (n == r) item = *it;
-            if (cell.size() < 3 || item == nullptr || k < 0 || k >= tree->columnCount()) ok = false;
-            else if (cell.at(2).isBool() && (item->flags() & Qt::ItemIsUserCheckable))
+            if (cell.size() < 3 || item == nullptr || k < 0 || k >= tree->columnCount()) {
+                ok = false;
+                int rows = 0;
+                for (QTreeWidgetItemIterator it(tree); *it != nullptr; ++it) ++rows;
+                why = cell.size() < 3 ? tr("a row is [row, column, true or false (checked), or a text]")
+                                      : item == nullptr ? rowsSaid(rows, tr("tree")) : columnsSaid(tree->columnCount(), tr("tree"));
+            } else if (cell.at(2).isBool() && (item->flags() & Qt::ItemIsUserCheckable)) {
                 item->setCheckState(k, cell.at(2).toBool() ? Qt::Checked : Qt::Unchecked);
-            else if (!cell.at(2).isBool() && (item->flags() & Qt::ItemIsEditable)) item->setText(k, propertyValue(cell.at(2)));
-            else ok = false;
+            } else if (!cell.at(2).isBool() && (item->flags() & Qt::ItemIsEditable)) {
+                item->setText(k, propertyValue(cell.at(2)));
+            } else {
+                ok = false;
+                why = cell.at(2).isBool() ? tr("row %1 has no check box").arg(r) : tr("row %1's text is not one to edit").arg(r);
+            }
             if (ok) tree->setCurrentItem(item, k);
         } else if (auto* lw = qobject_cast<QListWidget*>(w)) {
             const QList<QListWidgetItem*> items = lw->findItems(text, Qt::MatchFixedString);
@@ -10221,7 +10248,8 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
             else if (!b->isCheckable()) ok = false;
         }
         if (ok) changed << labelOf(w, dialog);
-        else problems << tr("%1 does not take %2").arg(labelOf(w, dialog), text);
+        else if (why.isEmpty()) problems << tr("%1 does not take %2").arg(labelOf(w, dialog), text);
+        else problems << tr("%1 does not take %2: %3").arg(labelOf(w, dialog), text, why);
     }
     const QString press = args.value(QLatin1String("press")).toString().trimmed();
     QAbstractButton* button = nullptr;

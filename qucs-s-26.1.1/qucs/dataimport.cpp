@@ -865,6 +865,13 @@ bool read(const QString& path, const Options& options, Data* data, QString* erro
         if (error != nullptr) *error = why;
         return false;
     };
+    // Qucs-S's own documents are no data: a schematic was read as text of
+    // numbers, its coordinates.
+    static const QHash<QString, const char*> documents{{QStringLiteral("sch"), QT_TRANSLATE_NOOP("DataImport", "a schematic")},
+                                                       {QStringLiteral("dpl"), QT_TRANSLATE_NOOP("DataImport", "a data display")},
+                                                       {QStringLiteral("sym"), QT_TRANSLATE_NOOP("DataImport", "a symbol")}};
+    if (const char* kind = documents.value(QFileInfo(path).suffix().toLower()))
+        return fail(tr("%1 is %2 of Qucs-S, not data: it opens as a document.").arg(QFileInfo(path).fileName(), tr(kind)));
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return fail(tr("%1 cannot be read: %2").arg(QDir::toNativeSeparators(path), file.errorString()));
     if (file.size() > 1024ll * 1024 * 1024) return fail(tr("%1 is larger than 1 GB.").arg(QFileInfo(path).fileName()));

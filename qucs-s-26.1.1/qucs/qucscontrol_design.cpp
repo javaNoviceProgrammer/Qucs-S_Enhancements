@@ -2545,6 +2545,20 @@ bool changeParameters(ID_Text* id, const QJsonObject& args, bool replace, QStrin
                         "default, description and type has = or \" in it.").arg(w.name);
             return false;
         }
+        // One SPICE reads as a value: a number (a scale and unit letters
+        // after it), an expression in braces or quotes, or a name - not
+        // "-", "1k;" (a comment from the ;) or "1,5".
+        if (w.value) {
+            static const QRegularExpression number(QStringLiteral("^[+-]?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?[A-Za-z]*$"));
+            const QString& v = *w.value;
+            const bool braced = v.size() > 2 && ((v.startsWith(QLatin1Char('{')) && v.endsWith(QLatin1Char('}')) && v.count(QLatin1Char('{')) == v.count(QLatin1Char('}')))
+                                                 || (v.startsWith(QLatin1Char('\'')) && v.endsWith(QLatin1Char('\'')) && v.count(QLatin1Char('\'')) == 2));
+            if (!braced && !number.match(v).hasMatch() && !word.match(v).hasMatch()) {
+                *error = tr("%1's default %2 is no value SPICE reads: a number (1k, 2.5, 4.7n), an expression in braces ({2*Rs}) or "
+                            "a parameter's name.").arg(w.name, v);
+                return false;
+            }
+        }
         wanted << w;
     }
     QStringList remove;
@@ -2611,8 +2625,11 @@ bool changeParameters(ID_Text* id, const QJsonObject& args, bool replace, QStrin
         if (names.at(i).compare(after.at(i), Qt::CaseInsensitive) != 0) *reordered = true;
     if (args.contains(QLatin1String("prefix"))) {
         const QString prefix = args.value(QLatin1String("prefix")).toString().trimmed();
-        if (prefix.isEmpty() || prefix.contains(QRegularExpression(QStringLiteral("[\\s\"=]")))) {
-            *error = tr("'prefix' is a word: what the instances' names begin with (SUB gives SUB1, SUB2, ...).");
+        // (A SPICE word: X;Y1 was a comment to ngspice from the ;.)
+        static const QRegularExpression spiceWord(QStringLiteral("^[A-Za-z][A-Za-z0-9_]*$"));
+        if (!spiceWord.match(prefix).hasMatch()) {
+            *error = tr("'prefix' is a word SPICE reads as a name - a letter, then letters, digits and _ -: what the instances' names "
+                        "begin with (SUB gives SUB1, SUB2, ...). %1 is not.").arg(prefix.isEmpty() ? tr("\"\"") : prefix);
             return false;
         }
         if (prefix != id->prefix) done->append(tr("the instances' names begin with %1").arg(prefix));
