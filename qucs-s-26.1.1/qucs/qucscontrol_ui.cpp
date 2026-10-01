@@ -37,6 +37,7 @@
 #include <QTabWidget>
 #include <QTimer>
 #include <QToolBar>
+#include <QTreeView>
 
 #include <memory>
 
@@ -414,14 +415,35 @@ void QucsControl::contextMenu(const QJsonObject& args, const Done& done)
         const QString notThere = content ? tr("%1 is not in the Content panel (a file of the open project, as the panel names it: "
                                               "amp.sch, models/bjt.va).").arg(item)
                                          : tr("%1 is not in the Projects panel.").arg(item);
+        // Hidden by the panel's filter ("Filter by name"): said, with how
+        // to clear it - it is the user's, to be set back after.
+        QString filter;
+        if (content) {
+            if (auto* projects = qobject_cast<ProjectView*>(view)) filter = projects->filterText();
+        } else if (auto* proxy = qobject_cast<QucsSortFilterProxyModel*>(view->model())) {
+            filter = proxy->nameFilter();
+        }
+        const QString filtered = filter.isEmpty() ? QString()
+            : tr("%1 is hidden by the %2 panel's filter \"%3\": clear it (set_ui on %4, its \"Filter by name\" field set to \"\"), "
+                 "then set it back after - it is the user's.")
+                  .arg(item, content ? tr("Content") : tr("Projects"), filter, content ? QStringLiteral("dock:Content") : QStringLiteral("dock:Projects"));
         QPointer<QAbstractItemView> target(view);
-        open = [target, item, content, notThere, missing] {
+        open = [target, item, content, notThere, missing, filtered] {
             if (!target) return false;
             const QModelIndex index = rowNamed(target, item, content ? int(ProjectView::FilePathRole) : -1);
             if (!index.isValid()) {
-                *missing = notThere;
+                // (The Projects panel leaves out what its filter hides; the
+                // Content panel keeps it, hidden.)
+                *missing = filtered.isEmpty() || content ? notThere : tr("%1 - or there is no such project.").arg(filtered.chopped(1));
                 return false;
             }
+            // (A row the filter hides is there, but no right-click finds it.)
+            if (auto* tree = qobject_cast<QTreeView*>(target.data()); tree != nullptr && !filtered.isEmpty())
+                for (QModelIndex at = index; at.isValid(); at = at.parent())
+                    if (tree->isRowHidden(at.row(), at.parent())) {
+                        *missing = filtered;
+                        return false;
+                    }
             missing->clear();
             if (auto* tree = qobject_cast<QTreeView*>(target.data()))
                 for (QModelIndex up = index.parent(); up.isValid(); up = up.parent()) tree->expand(up);

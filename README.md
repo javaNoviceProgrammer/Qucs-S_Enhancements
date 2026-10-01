@@ -366,13 +366,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   views of files and parts row by row (selected, opened with a double
   click, a tree's folders opened). `context_menu` opens the right-click
   menu you would get on a part, a diagram, a file, a project or a tab,
-  lists it and chooses from it. The Claude Code panel - its prompts,
-  permissions and settings - stays yours, and Claude reads the consoles
+  lists it and chooses from it (a row a panel's filter hides is said to
+  be). The Claude Code panel - its prompts, permissions and settings, and
+  its chip in the status bar - stays yours, and Claude reads the consoles
   but types into them only with the `console` tool: one line into the
   Octave, Python Shell or Terminal dock, shown there as you would type
   it, you asked about each line - also where Claude acts on its own (it
   runs with your rights, outside Claude Code's rules for commands) -, and what it
-  printed until its prompt came back - or "still running", stopped with
+  printed (no banner, no echo of the line, no prompt) until its prompt
+  came back - or "still running", stopped with
   Ctrl-C when you allow that too. `get_settings` and `set_settings` read
   and set Application Settings, Simulators Settings, CDL Settings and a
   document's own by typed keys ("Tab/Label": a text, a choice and its
@@ -397,9 +399,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   run (`ngspice/run1:tran.v(out)`). **A long run in the background**:
   `simulate` with `background` answers at once with the run's id, while
   Claude goes on - a Monte Carlo, a long transient; `simulation_status`
-  says how it goes and gives its outcome once it has ended,
-  `stop_simulation` stops it (or the run going, the user's too), and a
-  run past its `timeout` goes on the same way. **Waiting rather than
+  says how it goes and gives its outcome once it has ended (one JSON, a
+  stopped run told as stopped, not crashed), `stop_simulation` stops it
+  (or the run going, the user's too), and a run past its `timeout` goes
+  on the same way. A schematic `simulate` names that is not open is
+  opened first, and said. **Waiting rather than
   asking again and again**: `wait_for` returns when a run has ended (its
   outcome), a dialog has come up, a document has been changed (by whom)
   or a file written - and what the user edits while Claude waits is the
