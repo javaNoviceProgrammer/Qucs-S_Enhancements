@@ -73,10 +73,10 @@ QString tr(const char* text)
 }
 
 // What the rule check depends on besides the schematic: the simulator,
-// and whether a ground symbol is required.
-std::pair<int, bool> checkSettings()
+// whether a ground symbol is required, whether commands are looked for.
+std::tuple<int, bool, bool> checkSettings()
 {
-    return {QucsSettings.DefaultSimulator, QucsSettings.RequireGround};
+    return {QucsSettings.DefaultSimulator, QucsSettings.RequireGround, QucsSettings.CheckCommands};
 }
 
 // A minus that lines up with the digits.
@@ -775,7 +775,7 @@ void StatusPanel::refresh()
     updateLanguage(qobject_cast<TextDoc*>(front));
     if (!isCircuit(doc)) a_row->setWanted(a_problems, false);
     else if (checkSettings() != a_checkedSettings && !a_checkTimer->isActive())
-        a_checkTimer->start(0);   // the checks depend on the simulator and the ground setting
+        a_checkTimer->start(0);   // the checks depend on the simulator, the ground and the commands settings
     if (front == nullptr) {
         a_row->setWanted(a_position, false);
         a_row->setWanted(a_readout, false);

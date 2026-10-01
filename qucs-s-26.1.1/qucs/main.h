@@ -172,6 +172,11 @@ struct tQucsSettings {
   // refuse it, Check Schematic calls it an error); off, nothing is said
   // of a missing one and the simulator decides.
   bool RequireGround = true;
+  // What a simulation runs besides the simulator - a System command part,
+  // ngspice's shell, the Octave script after it - is looked for: Check
+  // Schematic warns of each, and Claude's simulate and tune refuse a
+  // schematic with one unless asked (erc::commandsRun). Off by default.
+  bool CheckCommands = false;
   // The application's colours: the system's (0), dark (1) or light (2) -
   // qucs_s::apptheme::Theme.
   int Theme = 0;

@@ -3728,18 +3728,32 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // A run's commands besides the simulator (bug hunt 2026-09-30, E1): a
-    // schematic that carries one is not simulated, nor tuned, unless asked
-    // ('allow_commands') - and check_schematic says what they are. (It has
-    // no analysis: a run asked for stops there too, and nothing runs.)
+    // A run's commands besides the simulator (bug hunt 2026-09-30, E1): with
+    // the Simulator Settings' check of commands on, a schematic that
+    // carries one is not simulated, nor tuned, unless asked
+    // ('allow_commands') - and check_schematic says what they are. Off (the
+    // default): neither. (It has no analysis: a run stops there, and
+    // nothing runs.)
     void commandsAreNotRunUnasked()
     {
+        struct Restore {
+            bool was = QucsSettings.CheckCommands;
+            ~Restore() { QucsSettings.CheckCommands = was; }
+        } restore;
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
         QJsonObject r = call("add_component", {{"type", "CMD"}, {"name", "CMD1"}, {"x", 100}, {"y", 100}, {"properties", QJsonObject{{"cmd", "echo qucs-test"}}}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 300}, {"y", 100}})));
         QVERIFY(!failed(call("save_document", {{"as", dir.filePath("workspace/commands.sch")}, {"replace", true}})));
         const QString said = "CMD1 runs a command in a shell after each simulation: echo qucs-test";
+        // Off: not looked for - neither refused nor said.
+        QVERIFY(!QucsSettings.CheckCommands);
+        r = call("simulate", {{"timeout", 5}});
+        QVERIFY2(failed(r) && text(r).contains("has no analysis to run"), qPrintable(text(r)));
+        r = call("check_schematic");
+        QVERIFY2(!text(r).contains(said), qPrintable(text(r)));
+        // On.
+        QucsSettings.CheckCommands = true;
         r = call("simulate", {{"timeout", 5}});
         QVERIFY2(failed(r) && text(r).contains("runs commands besides the simulator") && text(r).contains(said) && text(r).contains("Nothing was run"),
                  qPrintable(text(r)));

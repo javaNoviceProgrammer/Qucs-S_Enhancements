@@ -22,6 +22,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <tuple>
 #include <utility>
 
 class QucsApp;
@@ -163,7 +164,7 @@ private:
     QPointer<QWidget> a_watched;   // the document in front, followed
     // The settings the last check was for: the simulator, and whether a
     // ground symbol is required (Simulators Settings).
-    std::pair<int, bool> a_checkedSettings{-1, false};
+    std::tuple<int, bool, bool> a_checkedSettings{-1, false, false};
 
     // The last simulation.
     enum class RunState { None, Running, Ended };
