@@ -16,6 +16,8 @@
 #include <QTimer>
 #include <QDockWidget>
 #include <QListWidget>
+#include <QMenuBar>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
@@ -30,6 +32,7 @@
 #include "main.h"
 #include "misc.h"
 #include "simulationconsole.h"
+#include "qucsshortcutmanager.h"
 #include "messagedock.h"
 #include "extsimkernels/simulationrun.h"
 #include "extsimkernels/spicecompat.h"
@@ -201,6 +204,46 @@ private slots:
         QVERIFY(console->isRunning());
         button(console, "Stop")->click();
         QTRY_VERIFY_WITH_TIMEOUT(!console->isRunning(), 5000);
+        app.closeAllFiles();
+    }
+
+    // Simulation > Stop Simulation and Clear Simulation Console: the
+    // console's Stop and Clear in the menu bar - Stop enabled while a run
+    // goes, as its button is; each does what its button does.
+    void theMenuStopsTheRunAndClearsTheConsole()
+    {
+        resetSchematic();
+        QucsSettings.NgspiceExecutable = fakeSimulator;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.gotoPage(sch));
+        SimulationConsole* console = app.simulationConsole();
+        QAction* stop = console->stopAction();
+        QAction* clear = console->clearAction();
+        // In the Simulation menu.
+        QMenu* simulation = nullptr;
+        for (QAction* top : app.menuBar()->actions())
+            if (top->menu() != nullptr && top->menu()->actions().contains(stop)) simulation = top->menu();
+        QVERIFY(simulation != nullptr && simulation->actions().contains(clear));
+        QCOMPARE(stop->text(), QString("Stop Simulation"));
+        QCOMPARE(clear->text(), QString("Clear Simulation Console"));
+        // Shortcuts can be given to them (Application Settings, Shortcuts).
+        QucsCommand* stopCommand = QucsShortcutManager::instance().command("Sim.Stop");
+        QucsCommand* clearCommand = QucsShortcutManager::instance().command("Sim.ClearConsole");
+        QVERIFY(stopCommand != nullptr && stopCommand->description() == "Stop Simulation");
+        QVERIFY(clearCommand != nullptr && clearCommand->description() == "Clear Simulation Console");
+        QVERIFY(!stop->isEnabled());
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotSimulateWithSpice"));
+        QTRY_VERIFY(console->console()->toPlainText().contains("fake ngspice"));
+        QVERIFY(stop->isEnabled());
+        stop->trigger();
+        QTRY_VERIFY_WITH_TIMEOUT(!console->isRunning(), 5000);   // not the 3 s the script takes
+        QVERIFY(statusLines(console).join("\n").contains("stopped"));
+        QVERIFY(!stop->isEnabled());
+        QVERIFY(!console->console()->toPlainText().isEmpty());
+        clear->trigger();
+        QVERIFY(console->console()->toPlainText().isEmpty());
+        QCOMPARE(console->statusLog()->count(), 0);
         app.closeAllFiles();
     }
 

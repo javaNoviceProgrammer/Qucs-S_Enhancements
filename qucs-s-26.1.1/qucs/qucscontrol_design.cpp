@@ -19,6 +19,7 @@
 #include "main.h"
 #include "misc.h"
 #include "dataimport.h"
+#include "filebrowser.h"
 #include "projectView.h"
 #include "qucs.h"
 #include "schematic.h"
@@ -2242,7 +2243,7 @@ QString resultName(QucsDoc* open, const QString& file, bool display)
 // To the system's trash; else away (scratch files are made again).
 bool toTrash(const QString& path, bool* trashed)
 {
-    if (QFile::moveToTrash(path)) {
+    if (misc::moveToTrash(path)) {
         *trashed = true;
         return true;
     }
@@ -2488,6 +2489,130 @@ QJsonObject QucsControl::cleanScratch(const QJsonObject& args)
         return textResult(tr("There was nothing to clear for %1.").arg(QFileInfo(docName).fileName()) + (note.isEmpty() ? QString() : QLatin1Char(' ') + note));
     return textResult(tr("Cleared: %1. %2").arg(gone.join(QStringLiteral("; ")),
                                                  trashed ? tr("(In the trash, to take back.)") : tr("(Deleted: this system has no trash.)")));
+}
+
+// ----------------------------------------------------------------------
+// Files renamed, moved and trashed, as the File Browser does them
+
+namespace {
+
+// Why \a path may not be renamed or trashed - the workspace, the home
+// folder, a folder holding either, or the project open now (or a folder
+// holding it), which Qucs-S works in; empty when it may.
+QString keptInPlace(const QString& path)
+{
+    const auto holds = [](const QString& folder, const QString& inside) {
+        const QString f = QFileInfo(folder).canonicalFilePath(), i = QFileInfo(inside).canonicalFilePath();
+        return !f.isEmpty() && !i.isEmpty() && (i == f || i.startsWith(f + QLatin1Char('/')));
+    };
+    if (holds(path, QucsSettings.qucsWorkspaceDir.absolutePath()))
+        return QObject::tr("%1 is the workspace, or holds it").arg(QDir::toNativeSeparators(path));
+    if (holds(path, QDir::homePath())) return QObject::tr("%1 is the home folder, or holds it").arg(QDir::toNativeSeparators(path));
+    if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty() && holds(path, QucsSettings.QucsWorkDir.absolutePath()))
+        return QObject::tr("%1 is the project open now, or holds it: Project > Close Project first").arg(QDir::toNativeSeparators(path));
+    return {};
+}
+
+} // namespace
+
+QJsonObject QucsControl::renameFile(const QJsonObject& args)
+{
+    const QString given = args.value(QLatin1String("path")).toString().trimmed();
+    const QString to = args.value(QLatin1String("to")).toString().trimmed();
+    if (given.isEmpty()) return errorResult(tr("'path' is the file or folder renamed or moved."));
+    if (to.isEmpty()) return errorResult(tr("'to' is its new name (amp2.sch), or a path to move it to."));
+    const QString path = absolute(given);
+    const QFileInfo info(path);
+    if (!info.exists() && !info.isSymLink()) return errorResult(tr("There is no %1.").arg(QDir::toNativeSeparators(path)));
+    if (const QString why = keptInPlace(path); !why.isEmpty()) return errorResult(tr("%1: it is not renamed or moved.").arg(why));
+    const bool isFile = info.isFile();   // (asked before: afterwards nothing is there)
+    // Its documents open now, to say which followed.
+    QStringList open;
+    for (QucsDoc* doc : a_app->allDocuments())
+        if (const QString name = doc->getDocName(); !name.isEmpty() && (name == QDir::cleanPath(path) || name.startsWith(QDir::cleanPath(path) + QLatin1Char('/'))))
+            open << name;
+    // A name stays in its folder (the File Browser's rename, which takes
+    // another case of the same name too); a path goes there - into a
+    // folder that is there, or as the name it ends in.
+    const bool asPath = to.contains(QLatin1Char('/')) || to.contains(QLatin1Char('\\'));
+    QString target;
+    if (!asPath) {
+        if (const QString bad = badFileName(to); !bad.isEmpty()) return errorResult(tr("'to': %1.").arg(bad));
+        target = QDir::cleanPath(info.dir().filePath(to));
+        FileBrowser* browser = a_app->fileBrowserPanel();
+        if (browser == nullptr) return errorResult(tr("Files cannot be renamed here."));
+        if (const QString why = browser->renameEntry(path, to); !why.isEmpty()) return errorResult(why);
+    } else {
+        target = absolute(to);
+        if (QFileInfo(target).isDir() && !sameFile(target, path)) target = QDir::cleanPath(QDir(target).filePath(info.fileName()));
+        if (QFileInfo::exists(target) || QFileInfo(target).isSymLink())
+            return errorResult(tr("There is one there already: %1. Nothing was moved.").arg(QDir::toNativeSeparators(target)));
+        if (!QFileInfo(QFileInfo(target).absolutePath()).isDir())
+            return errorResult(tr("There is no folder %1 to move it into.").arg(QDir::toNativeSeparators(QFileInfo(target).absolutePath())));
+        if (info.isDir() && QFileInfo(target).absoluteFilePath().startsWith(QDir::cleanPath(path) + QLatin1Char('/')))
+            return errorResult(tr("%1 cannot go into itself.").arg(QDir::toNativeSeparators(path)));
+        if (!QDir().rename(path, target))
+            return errorResult(tr("%1 could not be moved to %2 (another disk? then copy it, and trash_file the first).")
+                                   .arg(QDir::toNativeSeparators(path), QDir::toNativeSeparators(target)));
+        a_app->documentsMoved({QDir::cleanPath(path)}, {target});
+    }
+    if (a_app->projectView() != nullptr) a_app->projectView()->refresh();
+    QJsonObject result{{QStringLiteral("renamed"), QDir::toNativeSeparators(path)}, {QStringLiteral("to"), QDir::toNativeSeparators(target)}};
+    if (!open.isEmpty()) {
+        QJsonArray followed;
+        for (const QString& was : open) {
+            const QString now = target + was.mid(QDir::cleanPath(path).size());
+            followed.append(QStringLiteral("%1 -> %2").arg(QFileInfo(was).fileName(), QDir::toNativeSeparators(now)));
+        }
+        result.insert(QStringLiteral("documents"), followed);
+    }
+    QStringList notes;
+    if (isFile && info.suffix().compare(QFileInfo(target).suffix(), Qt::CaseInsensitive) != 0)
+        notes << tr("Its suffix changed (.%1 to %2): Qucs-S opens it as its new suffix says.")
+                     .arg(info.suffix(), QFileInfo(target).suffix().isEmpty() ? tr("none") : QStringLiteral(".") + QFileInfo(target).suffix());
+    if (isFile && info.suffix().compare(QLatin1String("sch"), Qt::CaseInsensitive) == 0)
+        notes << tr("Its datasets and data display keep their names (its Data Set still names them): copy_document copies a "
+                    "schematic with them under a new name.");
+    if (!notes.isEmpty()) result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(notes));
+    return jsonResult(result);
+}
+
+QJsonObject QucsControl::trashFile(const QJsonObject& args)
+{
+    const QString given = args.value(QLatin1String("path")).toString().trimmed();
+    if (given.isEmpty()) return errorResult(tr("'path' is the file or folder moved to the trash."));
+    const QString path = QDir::cleanPath(absolute(given));
+    const QFileInfo info(path);
+    if (!info.exists() && !info.isSymLink()) return errorResult(tr("There is no %1.").arg(QDir::toNativeSeparators(path)));
+    if (const QString why = keptInPlace(path); !why.isEmpty()) return errorResult(tr("%1: it is not moved to the trash.").arg(why));
+    // The documents open from it close with it - unless one has unsaved
+    // changes, which would be lost.
+    QStringList open, unsaved;
+    for (QucsDoc* doc : a_app->allDocuments()) {
+        const QString name = doc->getDocName();
+        if (name.isEmpty() || !(name == path || name.startsWith(path + QLatin1Char('/')))) continue;
+        (doc->getDocChanged() ? unsaved : open) << name;
+    }
+    const auto names = [](const QStringList& paths) {
+        QStringList list;
+        for (const QString& p : paths) list << QFileInfo(p).fileName();
+        return list.join(QStringLiteral(", "));
+    };
+    if (!unsaved.isEmpty())
+        return errorResult(tr("%1 is not moved to the trash: %2 open here with unsaved changes. Save or close it first.")
+                               .arg(info.fileName(), names(unsaved)));
+    if (a_app->simulationConsole() != nullptr && a_app->simulationConsole()->isRunning())
+        return errorResult(tr("A simulation is running: files are moved to the trash after it has ended."));
+    QString where;
+    if (!misc::moveToTrash(path, &where))
+        return errorResult(tr("%1 could not be moved to the trash. Nothing was deleted.").arg(QDir::toNativeSeparators(path)));
+    a_app->documentsTrashed(open);
+    if (a_app->projectView() != nullptr) a_app->projectView()->refresh();
+    QJsonObject result{{QStringLiteral("trashed"), QDir::toNativeSeparators(path)},
+                       {QStringLiteral("note"), tr("In the trash, to take back from there; undo does not.")}};
+    if (!where.isEmpty()) result.insert(QStringLiteral("in trash"), QDir::toNativeSeparators(where));
+    if (!open.isEmpty()) result.insert(QStringLiteral("closed"), QJsonArray::fromStringList(open));
+    return jsonResult(result);
 }
 
 // ----------------------------------------------------------------------

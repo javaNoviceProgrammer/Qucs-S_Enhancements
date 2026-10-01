@@ -44,6 +44,8 @@ SimulationConsole::SimulationConsole(QucsApp* app)
       a_dock(new QDockWidget(tr("Simulation"), app)),
       a_window(new QDialog(app)),
       a_viewAction(new QAction(tr("&Simulation Console"), this)),
+      a_stopAction(new QAction(tr("Stop Simulation"), this)),
+      a_clearAction(new QAction(tr("Clear Simulation Console"), this)),
       a_console(new QPlainTextEdit(this)),
       a_statusLog(new QListWidget(this)),
       a_progress(new QProgressBar(this)),
@@ -86,6 +88,12 @@ SimulationConsole::SimulationConsole(QucsApp* app)
     connect(a_buttonStop, &QPushButton::clicked, this, &SimulationConsole::slotStop);
     connect(a_buttonSaveNetlist, &QPushButton::clicked, this, &SimulationConsole::slotSaveNetlist);
     connect(a_buttonClear, &QPushButton::clicked, this, &SimulationConsole::clear);
+    a_stopAction->setObjectName(QStringLiteral("simStop"));
+    a_stopAction->setStatusTip(tr("Stops the simulation that is running"));
+    connect(a_stopAction, &QAction::triggered, this, &SimulationConsole::slotStop);
+    a_clearAction->setObjectName(QStringLiteral("simClearConsole"));
+    a_clearAction->setStatusTip(tr("Clears the simulation console's output"));
+    connect(a_clearAction, &QAction::triggered, this, &SimulationConsole::clear);
     setRunning(false);
 
     // The dock host: at the bottom, sharing the space with the
@@ -301,4 +309,5 @@ void SimulationConsole::slotSaveNetlist()
 void SimulationConsole::setRunning(bool running)
 {
     a_buttonStop->setEnabled(running);
+    a_stopAction->setEnabled(running);
 }

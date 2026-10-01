@@ -277,7 +277,7 @@ const char* const kTools = R"JSON([
  "description": "Lists the actions of Qucs-S's menus: the menu path to give trigger_action (\"Simulation > Simulate\"), whether it can be used now, whether it is checked, and its shortcut. 'search' keeps only those whose path contains it.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string", "description": "Only actions whose menu path contains it (Simulate, Rotate)"}}}},
 {"name": "trigger_action",
- "description": "Runs a menu action as a click would: 'action' is its menu path (\"Edit > Rotate\") or its object name. If it opens a dialog, the dialog stays open: get_dialog reads it, and set_dialog fills it in and closes it. Actions that open the system's file or print dialogs are refused; use open_document and save_document instead.",
+ "description": "Runs a menu action as a click would: 'action' is its menu path (\"Edit > Rotate\") or its object name. If it opens a dialog, the dialog stays open: get_dialog reads it, and set_dialog fills it in and closes it - a file dialog too, which is Qt's when Claude opens it: its \"File name\" (or \"Directory\") field takes a path, then Open, Save or Choose. File > Open and Save As are refused (open_document and save_document do them), and printing.",
  "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "description": "Its menu path (\"Edit > Rotate\") as list_actions gives it, or its object name"},
    "path": {"type": "string", "description": "The document to use it on, brought to the front first; the one in front when not given"}},
   "required": ["action"]}},
@@ -290,7 +290,7 @@ const char* const kTools = R"JSON([
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, or [row, column, true or false] for a tree's check box}]"},
    "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id"}}}},
 {"name": "simulate",
- "description": "Simulates a schematic (the one in front unless 'path' names another; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into.",
+ "description": "Simulates a schematic (the one in front unless 'path' names another; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into. A run going - the user's too - is stopped by trigger_action \"Simulation > Stop Simulation\".",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); it is stopped after"},
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For this run alone (an installed one); set_simulator changes the setting"},
    "keep_as": {"type": "string", "description": "A name of letters, digits, _ and -: the copy is <name>.dat.ngspice (or .xyce, ...) beside the schematic"},
@@ -507,6 +507,12 @@ const char* const kTools = R"JSON([
 {"name": "clean_scratch",
  "description": "Moves a schematic's scratch files - its subfolder of the project's Scratch folder, with the netlists, simulator output and logs its runs left - to the system's trash; with 'datasets', its datasets too (name.dat, .dat.ngspice, ...). The next run creates them again.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "datasets": {"type": "boolean", "description": "Its datasets go to the trash too"}}}},
+{"name": "rename_file",
+ "description": "Renames a file or folder, or moves it, as the File Browser does: 'to' is its new name in the same folder (amp2.sch), or a path - into a folder that is there, or as the name it ends in. The documents open from it follow, their tabs renamed, unsaved changes kept. Refused when something is there already, and for the workspace, the home folder and the project open now (Project > Close Project first). A schematic's datasets and data display keep their names: copy_document copies a schematic with them under a new name. Use it rather than mv, which leaves an open document's tab on a file that is not there.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file or folder: a path, relative to the open project's folder (else the workspace)"}, "to": {"type": "string", "description": "Its new name in the same folder (amp2.sch), or a path to move it to: into a folder that is there, or as the name it ends in"}}, "required": ["path", "to"]}},
+{"name": "trash_file",
+ "description": "Moves a file or folder to the system's trash, from which the user can take it back (undo cannot). The documents open from it close; refused while one of them has unsaved changes, while a simulation runs, and for the workspace, the home folder and the project open now. Nothing is deleted when the trash cannot take it. Use it rather than rm, which deletes for good.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file or folder: a path, relative to the open project's folder (else the workspace)"}}, "required": ["path"]}},
 {"name": "make_symbol",
  "description": "Draws a subcircuit's symbol from scratch: a box with each port on one side. 'sides' assigns ports by name or number ({\"in\": \"left\", \"out\": \"right\", \"vdd\": \"top\", \"gnd\": \"bottom\"}); a port not listed goes by its name (a supply - vdd, vcc, v+ - on top, a ground or negative supply - gnd, vss, v- - at the bottom), its type or name (in, inp, in+ on the left; out on the right), and the rest alternate left and right. Its name text goes below, with the parameters and prefix it had; 'parameters' gives the parameters its instances take instead, as set_subcircuit_parameters takes them. Afterwards the document shows its symbol, like Edit Circuit Symbol. One undo step. Use it to finish what create_subcircuit started.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "sides": {"type": "object", "additionalProperties": {"type": "string", "enum": ["left", "right", "top", "bottom"]}, "description": "Ports by name or number to a side: {\"in\": \"left\", \"out\": \"right\", \"vdd\": \"top\", \"gnd\": \"bottom\"}; the rest by their names and types"},
@@ -604,6 +610,8 @@ const struct {
     {"open_project", QT_TRANSLATE_NOOP("QucsControl", "open a project in Qucs-S")},
     {"copy_document", QT_TRANSLATE_NOOP("QucsControl", "copy a schematic in Qucs-S")},
     {"clean_scratch", QT_TRANSLATE_NOOP("QucsControl", "clear a schematic's scratch files in Qucs-S")},
+    {"rename_file", QT_TRANSLATE_NOOP("QucsControl", "rename or move a file in Qucs-S")},
+    {"trash_file", QT_TRANSLATE_NOOP("QucsControl", "move a file to the trash from Qucs-S")},
     {"make_symbol", QT_TRANSLATE_NOOP("QucsControl", "draw a subcircuit's symbol in Qucs-S")},
     {"set_subcircuit_parameters", QT_TRANSLATE_NOOP("QucsControl", "set a subcircuit's parameters in Qucs-S")},
     {"import_netlist", QT_TRANSLATE_NOOP("QucsControl", "make a schematic of a netlist in Qucs-S")},
@@ -693,6 +701,8 @@ const struct {
     {"open_project", QT_TRANSLATE_NOOP("QucsControl", "Opens a project of the workspace.")},
     {"copy_document", QT_TRANSLATE_NOOP("QucsControl", "Copies a schematic together with its datasets and data display.")},
     {"clean_scratch", QT_TRANSLATE_NOOP("QucsControl", "Moves a schematic's temporary files (netlists, logs, and datasets if asked) to the trash.")},
+    {"rename_file", QT_TRANSLATE_NOOP("QucsControl", "Renames or moves a file or folder; the documents open from it follow.")},
+    {"trash_file", QT_TRANSLATE_NOOP("QucsControl", "Moves a file or folder to the trash; the documents open from it close.")},
     {"make_symbol", QT_TRANSLATE_NOOP("QucsControl", "Draws a subcircuit symbol with ports on four sides.")},
     {"set_subcircuit_parameters", QT_TRANSLATE_NOOP("QucsControl", "Sets the parameters a subcircuit's instances take, with their defaults.")},
     {"import_netlist", QT_TRANSLATE_NOOP("QucsControl", "Creates a schematic from a SPICE netlist.")},
@@ -759,6 +769,8 @@ const struct {
     {"open_project", "open project"},
     {"copy_document", "copy schematic duplicate with results"},
     {"clean_scratch", "clear scratch files netlists"},
+    {"rename_file", "rename move file folder document mv"},
+    {"trash_file", "delete remove trash file folder document rm"},
     {"make_symbol", "subcircuit symbol draw pins sides inputs outputs supplies"},
     {"set_subcircuit_parameters", "subcircuit parameters params subckt default value symbol id prefix instance"},
     {"import_netlist", "spice netlist to schematic import"},
@@ -3131,6 +3143,8 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
                   + (a.contains(QLatin1String("diagram")) ? tr("diagram %1").arg(a.value(QLatin1String("diagram")).toInt()) : what.join(QStringLiteral(", ")));
     } else if (tool == QLatin1String("import_netlist")) subject = s("file").isEmpty() ? tr("%1 lines").arg(s("text").count(QLatin1Char('\n')) + 1) : s("file");
     else if (tool == QLatin1String("copy_document")) subject = (s("path").isEmpty() ? tr("the schematic in front") : s("path")) + QStringLiteral(" → ") + s("to");
+    else if (tool == QLatin1String("rename_file")) subject = s("path") + QStringLiteral(" → ") + s("to");
+    else if (tool == QLatin1String("trash_file")) subject = s("path");
     else if (tool == QLatin1String("clean_scratch")) subject = (s("path").isEmpty() ? tr("the schematic in front") : s("path"))
                                                                + (a.value(QLatin1String("datasets")).toBool() ? tr(", datasets too") : QString());
     else if (tool == QLatin1String("read_pdf")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
@@ -3194,15 +3208,17 @@ QString QucsControl::instructions() const
         "draws a subcircuit's symbol and set_subcircuit_parameters gives it parameters (a value inside uses {Rs}; each "
         "instance sets its own). ngspice_commands tells which commands ngspice has (analyses, measurements, output, "
         "statistics, the .control language), their syntax and which the installed ngspice has - for a Nutmeg script or a "
-        "NutmegEq. new_project, open_project, copy_document and clean_scratch manage files. "
+        "NutmegEq. new_project, open_project, copy_document, clean_scratch, rename_file and trash_file manage files (rather "
+        "than mv and rm: open documents follow, and the trash keeps what goes). "
         "undo_history lists the undo steps in words. \"selection\": true acts on what the user selected (move, delete, "
         "create_subcircuit, get_schematic).\n\n"
         "Each tool result reports, part by part, what the user changed since your last call. Changes appear in the "
         "window immediately, each as one undo step. Prefer these tools to editing the file of an open schematic: a file "
         "you change on disk is reloaded only if its document has no unsaved changes in Qucs-S, and the next tool result "
         "tells you when it was not. A ground has no name: get_schematic gives each its 'ref' (GND#2), which the tools "
-        "that take a part's name accept. Coordinates are schematic units (the grid is usually 10; keep pins on it). The "
-        "system's file and print dialogs cannot be filled in: use open_document and save_document. A document is named "
+        "that take a part's name accept. Coordinates are schematic units (the grid is usually 10; keep pins on it). A file "
+        "dialog an action opens is Qt's: set_dialog answers it with its \"File name\" (or \"Directory\") field, a path, and "
+        "Open, Save or Choose. A document is named "
         "by its path (relative to the open project's folder, otherwise the workspace) or, when it is open, by its file "
         "name alone (amp.sch). A conversation the user has pinned to a schematic says so in its prompts: the tools then "
         "act on that schematic when no path is given, whichever document is in front, and trigger_action brings it to "
@@ -3885,6 +3901,8 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("open_project")) return openProject(args);
     if (tool == QLatin1String("copy_document")) return copyDocument(args);
     if (tool == QLatin1String("clean_scratch")) return cleanScratch(args);
+    if (tool == QLatin1String("rename_file")) return renameFile(args);
+    if (tool == QLatin1String("trash_file")) return trashFile(args);
     if (tool == QLatin1String("make_symbol")) return makeSymbol(args);
     if (tool == QLatin1String("set_subcircuit_parameters")) return setSubcircuitParameters(args);
     if (tool == QLatin1String("import_netlist")) return importNetlist(args);
@@ -9628,6 +9646,32 @@ QJsonObject QucsControl::listComponentTypes(const QJsonObject& args)
 // ----------------------------------------------------------------------
 // Menus and dialogs
 
+namespace {
+
+// While Claude clicks - a menu action, a dialog's button -, the file
+// dialogs that click opens are Qt's own: get_dialog reads them and
+// set_dialog fills them in ("File name" or "Directory", then Open, Save
+// or Choose). The system's (macOS's panel) is drawn by the system, out
+// of reach, and waited for the user. Those the user opens stay the
+// system's. (A modal dialog's click returns when it is answered: the
+// setting holds until then.)
+class QtFileDialogs
+{
+public:
+    QtFileDialogs() : a_was(QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs))
+    {
+        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+    }
+    ~QtFileDialogs() { QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, a_was); }
+    QtFileDialogs(const QtFileDialogs&) = delete;
+    QtFileDialogs& operator=(const QtFileDialogs&) = delete;
+
+private:
+    bool a_was;
+};
+
+} // namespace
+
 QList<QAction*> QucsControl::menuActions(QStringList* paths) const
 {
     QList<QAction*> actions;
@@ -9696,12 +9740,17 @@ void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
         done(errorResult(tr("There is no action %1 (list_actions lists them).").arg(wanted)));
         return;
     }
-    const QList<QAction*> refused = {a_app->fileQuit, a_app->fileOpen, a_app->fileSaveAs, a_app->filePrint, a_app->filePrintFit};
-    if (refused.contains(action)) {
-        done(errorResult(action == a_app->fileQuit
-                             ? tr("Claude does not quit Qucs-S.")
-                             : tr("%1 opens a dialog of the system, which cannot be filled here: open_document and "
-                                  "save_document do this.").arg(cleanText(action->text()))));
+    if (action == a_app->fileQuit) {
+        done(errorResult(tr("Claude does not quit Qucs-S.")));
+        return;
+    }
+    if (action == a_app->fileOpen || action == a_app->fileSaveAs) {
+        done(errorResult(tr("%1: open_document and save_document do this.").arg(cleanText(action->text()))));
+        return;
+    }
+    if (action == a_app->filePrint || action == a_app->filePrintFit) {
+        done(errorResult(tr("%1 prints on paper, which Claude does not do: export_image writes a picture of the "
+                            "schematic or of a diagram.").arg(cleanText(action->text()))));
         return;
     }
     if (!action->isEnabled()) {
@@ -9733,7 +9782,10 @@ void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
     });
     watch->start();
     QTimer::singleShot(0, a_app, [this, target, answer] {
-        if (target) target->trigger();
+        {
+            const QtFileDialogs qt;
+            if (target) target->trigger();
+        }
         QTimer::singleShot(30, this, answer);
     });
 }
@@ -10513,6 +10565,7 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
     QPointer<QWidget> was(dialog);
     const QString name = cleanText(button->text());
     QTimer::singleShot(0, a_app, [target] {
+        const QtFileDialogs qt;
         if (target && target->isEnabled()) target->click();
     });
     QTimer::singleShot(500, this, [this, done, report, name, was] {

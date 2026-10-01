@@ -2250,7 +2250,7 @@ QJsonObject QucsControl::importData(const QJsonObject& args)
     }
     if (remove) {
         aboutToWrite(chosen->path);
-        const bool trashed = QFile::moveToTrash(chosen->path);
+        const bool trashed = misc::moveToTrash(chosen->path);
         if (!trashed && !QFile::remove(chosen->path))
             return errorResult(tr("%1 could not be removed.").arg(QDir::toNativeSeparators(chosen->path)));
         QJsonObject result{{QStringLiteral("removed"), chosen->name},
