@@ -307,6 +307,28 @@ public:
     }
 };
 
+// ... with more to say than Claude Code keeps unless told: \a instructions
+// characters of them, and a tool of \a description characters.
+class WordyHost : public FakeHost
+{
+public:
+    WordyHost(int instructions, int description) : a_instructions(instructions), a_description(description) {}
+    QString instructions() const override { return QString(a_instructions, QLatin1Char('i')); }
+    QJsonArray tools() const override
+    {
+        QJsonArray list = FakeHost::tools();
+        list.append(QJsonObject{{"name", "explain"}, {"description", QString(a_description, QLatin1Char('d'))}, {"inputSchema", QJsonObject{{"type", "object"}}}});
+        return list;
+    }
+
+private:
+    int a_instructions;
+    int a_description;
+};
+
+// A program that says how much of a server's instructions it keeps.
+const char* const kCapper = "#!/bin/sh\nIFS= read -r line\nprintf '%s' \"${CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH-unset}\" > \"$QUCS_FAKE_DIR/cap\"\nexit 3\n";
+
 // A program that has no conversation to continue (--resume): it says so as
 // Claude Code does, and ends; without, it answers, with its commands.
 const char* const kResumer = R"SH(#!/bin/sh
@@ -867,6 +889,55 @@ private slots:
         none.setProgram(QString());
         QCOMPARE(none.state(), State::NotFound);
         QVERIFY(!none.send("Hello"));
+    }
+
+    // Claude Code keeps 2,048 characters of a server's instructions and of
+    // each tool's description unless CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH
+    // says more: the program is started with what the host's need, when
+    // they need more - and with what the user set, when they set it.
+    void theHostsInstructionsAreNotCut()
+    {
+        using qucs_s::claude::claudeEnvironment;
+        const QString name = QStringLiteral("CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH");
+        QProcessEnvironment base;
+        base.insert("PATH", "/bin");
+        QCOMPARE(claudeEnvironment(base, nullptr), base);
+        FakeHost brief;
+        QCOMPARE(claudeEnvironment(base, &brief), base);
+        WordyHost atTheCap(qucs_s::claude::kDescriptionCap, 10);
+        QCOMPARE(claudeEnvironment(base, &atTheCap), base);
+        WordyHost wordy(5000, 300);
+        QCOMPARE(qucs_s::claude::longestDescription(wordy), 5000);
+        QCOMPARE(claudeEnvironment(base, &wordy).value(name), QStringLiteral("5000"));
+        QCOMPARE(claudeEnvironment(base, &wordy).value("PATH"), QStringLiteral("/bin"));
+        WordyHost described(100, 3000);
+        QCOMPARE(claudeEnvironment(base, &described).value(name), QStringLiteral("3000"));
+        QProcessEnvironment set = base;
+        set.insert(name, "1000");
+        QCOMPARE(claudeEnvironment(set, &wordy).value(name), QStringLiteral("1000"));
+
+        // The program is started so; without a host, as it was.
+        skipWithoutShell();
+        const QByteArray was = qgetenv(name.toLatin1());
+        const bool wasSet = qEnvironmentVariableIsSet(name.toLatin1());
+        qunsetenv(name.toLatin1());
+        const auto started = [&](qucs_s::claude::ToolHost* host) {
+            QFile::remove(dir.filePath("cap"));
+            Session s;
+            s.setProgram(script("capper", kCapper));
+            s.setWorkingDirectory(fresh("capwork"));
+            if (host != nullptr) s.setToolHost(host);
+            QSignalSpy failed(&s, &Session::failed);
+            if (!s.send("Hello") || !failed.wait(10000)) return QStringLiteral("(not started)");
+            return read(dir.filePath("cap"));
+        };
+        QCOMPARE(started(&wordy), QStringLiteral("5000"));
+        QCOMPARE(started(&brief), QStringLiteral("unset"));
+        QCOMPARE(started(nullptr), QStringLiteral("unset"));
+        qputenv(name.toLatin1(), "1000");
+        QCOMPARE(started(&wordy), QStringLiteral("1000"));
+        if (wasSet) qputenv(name.toLatin1(), was);
+        else qunsetenv(name.toLatin1());
     }
 
     // The host's tools (an "sdk" MCP server) over the program's own

@@ -313,7 +313,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   conversation that waits behind another.
   **Claude drives the window**: Qucs-S offers Claude tools of its own
   (an MCP server inside Qucs-S, served over the same stream as the
-  conversation), so that it can open, show, save and close documents,
+  conversation; Claude Code is started with
+  `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` as long as the server's
+  instructions, so that none of them is cut - unless you set it
+  yourself), so that it can open, show, save and close documents,
   read the schematic in front (its parts, their pins' places, or its
   `.sch` text) and change it as you watch - place components, set their
   properties, move, turn and rename them (their wires follow, the
@@ -677,6 +680,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     a workspace of its own (relative paths, new projects and the scratch
     folder go there) instead of the settings' - nor is it saved as
     theirs.
+
+    Claude Code keeps 2,048 characters of a server's instructions unless
+    `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` says more (from Claude Code
+    2.1.280), and Qucs-S's run to about 6,800: the part it keeps says
+    that the resource `qucs://instructions` holds them whole. To give
+    Claude all of them at once, set it in the environment Claude Code
+    starts in (the dock does so itself):
+
+    ```bash
+    export CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=8000
+    ```
 - **Conversations kept, and gone on with**: every conversation is kept
   as it goes; those open when Qucs-S closes come back when it opens
   again - what was said, their names, folders and pinned schematics -

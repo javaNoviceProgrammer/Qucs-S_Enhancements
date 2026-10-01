@@ -190,6 +190,33 @@ private slots:
             if (!control->readOnlyTools().contains(name))
                 QVERIFY2(control->actionOf(name).contains("Qucs-S"), qPrintable(name));
         QVERIFY(!control->instructions().isEmpty());
+        // Claude Code keeps 2,048 characters of each unless told more: the
+        // dock tells it what these need, each tool's description is whole
+        // in a terminal's, and what a terminal's keeps of the instructions
+        // says where the rest is.
+        const QString instructions = control->instructions();
+        const int cap = qucs_s::claude::claudeEnvironment(QProcessEnvironment(), control)
+                            .value("CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH", QString::number(qucs_s::claude::kDescriptionCap))
+                            .toInt();
+        QVERIFY2(cap >= instructions.size(), qPrintable(QString::number(cap)));
+        for (const QJsonValue& t : control->tools()) {
+            const QString description = t.toObject().value("description").toString();
+            QVERIFY2(description.size() <= qucs_s::claude::kDescriptionCap,
+                     qPrintable(t.toObject().value("name").toString() + ": " + QString::number(description.size())));
+        }
+        QVERIFY2(instructions.left(qucs_s::claude::kDescriptionCap).contains("the resource qucs://instructions holds them whole"),
+                 qPrintable(instructions.left(qucs_s::claude::kDescriptionCap)));
+        {
+            QString error;
+            const QJsonArray contents = control->readResource("qucs://instructions", &error);
+            QVERIFY2(!contents.isEmpty(), qPrintable(error));
+            QCOMPARE(contents.first().toObject().value("text").toString(), instructions);
+            QCOMPARE(contents.first().toObject().value("mimeType").toString(), QStringLiteral("text/plain"));
+            bool listed = false;
+            for (const QJsonValue& v : control->resources()) listed = listed || v.toObject().value("uri").toString() == "qucs://instructions";
+            QVERIFY(listed);
+            QVERIFY(!control->resourceVersion("qucs://instructions").isEmpty());
+        }
         QVERIFY(failed(call("no_such_tool")));
         // Every session of the dock offers them.
         QCOMPARE(app->claudeCode()->current()->session()->toolHost(), control);
