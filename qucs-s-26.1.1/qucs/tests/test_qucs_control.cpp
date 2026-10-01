@@ -17,6 +17,12 @@
 #include <QAction>
 #include <QApplication>
 #include <QDialog>
+#include <QFileDialog>
+#include <QScopeGuard>
+#include <QMenuBar>
+#include <QWidgetAction>
+#include <QToolButton>
+#include <QToolBar>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -3481,8 +3487,9 @@ private slots:
         QVERIFY(QFileInfo::exists(scratch + "/spice4qucs.cir"));
         netlist(ws + "/orig.sch");
         r = call("clean_scratch");
-        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(!failed(r) && text(r).contains("In the trash"), qPrintable(text(r)));
         QVERIFY(!QFileInfo::exists(scratch + "/spice4qucs.cir"));
+        QVERIFY(QFileInfo::exists(qEnvironmentVariable("QUCS_TRASH_DIR") + "/spice4qucs.cir"));   // (the test's trash)
         QVERIFY(QFileInfo(scratch + "/other").isDir() && QFileInfo(scratch).isDir());
         QVERIFY(QFileInfo::exists(scratch + "/another_run.txt"));
         QVERIFY(QFileInfo::exists(ws + "/orig.dat.ngspice"));   // datasets only when asked
@@ -4179,6 +4186,334 @@ private slots:
         const QString changes = QJsonDocument(json(r).toObject().value("would change").toArray()).toJson(QJsonDocument::Compact);
         QVERIFY2(changes.contains("2 wires drawn (") && changes.contains("2 wires taken away (220,260-310,260; 310,160-310,260)"), qPrintable(changes));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // ---- what Claude can and cannot reach (qucs-s-claude-access, 1 October)
+
+    // The file dialogs Claude opens - a menu action's, a dialog's button's -
+    // are Qt's, which get_dialog reads and set_dialog fills in; the
+    // system's (macOS's panel) could not be, and waited for the user. Those
+    // the user opens stay the system's. File > Open and Save As are refused
+    // (open_document and save_document do them), and printing.
+    void fileDialogsClaudeOpensAreQts()
+    {
+        // (A modal dialog runs a loop of its own: what answers it is set
+        // going before the call that opens it, and runs in that loop.)
+        QVERIFY(!QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs));
+        const QString example = QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch");
+        bool fileDialog = false, qts = false;
+        QJsonObject answered;
+        QTimer::singleShot(800, this, [&] {
+            fileDialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget()) != nullptr;
+            qts = QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);   // while it is open
+            answered = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "File name"}, {"value", example}}}}, {"press", "Open"}});
+        });
+        QJsonObject r = call("trigger_action", {{"action", "File > Examples"}}, 20000);
+        QVERIFY2(!failed(r) && text(r).contains("waits for an answer"), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(!answered.isEmpty(), 10000);
+        QVERIFY(fileDialog);
+        QVERIFY(qts);
+        QVERIFY2(!failed(answered) && text(answered).contains("no dialog is open now"), qPrintable(text(answered)));
+        QTRY_VERIFY(!QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs));   // as it was after it
+        QVERIFY(app->findDoc(example) != nullptr);
+        QVERIFY(!failed(call("close_document", {{"path", example}, {"unsaved", "discard"}})));
+
+        // A dialog's button that opens one (Export as Image's Browse).
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        // (The export dialog is deleted once closed: looked at only while
+        // it is open.)
+        bool exportDialog = false, browseIsQts = false, stillQts = false, backToExport = false;
+        QJsonObject browsed, cancelled, closed;
+        QTimer::singleShot(800, this, [&] {
+            const QPointer<QWidget> exporting = QApplication::activeModalWidget();
+            exportDialog = exporting != nullptr && qobject_cast<QFileDialog*>(exporting.data()) == nullptr;
+            QTimer::singleShot(800, this, [&] {
+                browseIsQts = qobject_cast<QFileDialog*>(QApplication::activeModalWidget()) != nullptr
+                              && QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+                cancelled = call("set_dialog", {{"press", "Cancel"}});
+            });
+            browsed = call("set_dialog", {{"press", "Browse..."}});
+            backToExport = exporting != nullptr && QApplication::activeModalWidget() == exporting.data();
+            stillQts = QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);   // (the action's dialog is still open)
+            closed = call("set_dialog", {{"press", "Cancel"}});
+        });
+        r = call("trigger_action", {{"action", "File > Export as image..."}}, 30000);
+        QVERIFY2(!failed(r) && text(r).contains("waits for an answer"), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(!closed.isEmpty(), 15000);
+        QVERIFY(exportDialog);
+        QVERIFY2(!failed(browsed) && text(browsed).contains("is open now"), qPrintable(text(browsed)));
+        QVERIFY(browseIsQts);
+        QVERIFY2(!failed(cancelled), qPrintable(text(cancelled)));
+        QVERIFY(backToExport);
+        QVERIFY(stillQts);
+        QVERIFY2(!failed(closed) && text(closed).contains("no dialog is open now"), qPrintable(text(closed)));
+        QTRY_VERIFY(!QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // A dialog the user opened, whose button Claude presses: the file
+        // dialog that opens is Qt's too, and the user's setting is back
+        // after it, the user's dialog still open.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        bool theirsBrowseIsQts = false, theirsAfter = true, theirsOpen = false;
+        QJsonObject theirsPressed;
+        QTimer::singleShot(500, this, [&] {
+            QWidget* theirs = QApplication::activeModalWidget();
+            QTimer::singleShot(800, this, [&] {
+                theirsBrowseIsQts = qobject_cast<QFileDialog*>(QApplication::activeModalWidget()) != nullptr
+                                    && QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+                call("set_dialog", {{"press", "Cancel"}});
+            });
+            theirsPressed = call("set_dialog", {{"press", "Browse..."}});
+            theirsAfter = QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+            theirsOpen = QApplication::activeModalWidget() == theirs;
+            if (auto* d = qobject_cast<QDialog*>(theirs)) d->reject();
+        });
+        app->exportAsImage->trigger();   // the user's
+        QVERIFY2(!failed(theirsPressed) && text(theirsPressed).contains("is open now"), qPrintable(text(theirsPressed)));
+        QVERIFY(theirsBrowseIsQts);
+        QVERIFY(!theirsAfter);
+        QVERIFY(theirsOpen);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // The user's own: the system's, as before.
+        bool forced = true;
+        QTimer::singleShot(300, app, [&forced] {
+            if (auto* d = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+                forced = QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+                d->reject();
+            }
+        });
+        app->fileExamples->trigger();
+        QVERIFY(!forced);
+
+        // A folder chooser: Switch Workspace, reached now. (It closes the
+        // documents first, asking about unsaved changes: those of the tests
+        // before are not kept.)
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        const QString was = QucsSettings.qucsWorkspaceDir.absolutePath();
+        const QString other = dir.filePath("access-workspace");
+        QVERIFY(QDir().mkpath(other));
+        QJsonObject chosen;
+        QTimer::singleShot(800, this, [&] {
+            chosen = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "Directory"}, {"value", other}}}}, {"press", "Choose"}});
+        });
+        r = call("trigger_action", {{"action", "Project > Switch Workspace..."}}, 20000);
+        QVERIFY2(!failed(r) && text(r).contains("waits for an answer"), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(!chosen.isEmpty(), 10000);
+        QVERIFY2(!failed(chosen), qPrintable(text(chosen)));
+        QTRY_COMPARE(QFileInfo(QucsSettings.qucsWorkspaceDir.absolutePath()).canonicalFilePath(), QFileInfo(other).canonicalFilePath());
+        QVERIFY(app->switchWorkspace(was));
+        QCOMPARE(QucsSettings.qucsWorkspaceDir.absolutePath(), was);
+
+        // Refused, each with what does it instead.
+        r = call("trigger_action", {{"action", "File > Save as..."}});
+        QVERIFY2(failed(r) && text(r).contains("open_document and save_document do this"), qPrintable(text(r)));
+        r = call("trigger_action", {{"action", "File > Print..."}});
+        QVERIFY2(failed(r) && text(r).contains("prints on paper") && text(r).contains("export_image"), qPrintable(text(r)));
+        r = call("trigger_action", {{"action", "File > Print Fit to Page..."}});
+        QVERIFY2(failed(r) && text(r).contains("prints on paper"), qPrintable(text(r)));
+        QVERIFY(QApplication::activeModalWidget() == nullptr);
+    }
+
+    // Every toolbar button is a menu action too, which trigger_action
+    // reaches (it walks the menu bar); the simulator's list, the one
+    // toolbar item that is no action, is set_simulator's.
+    void everyToolbarButtonIsInAMenu()
+    {
+        QSet<QAction*> inMenus;
+        const std::function<void(QMenu*)> walk = [&](QMenu* menu) {
+            for (QAction* a : menu->actions()) {
+                inMenus.insert(a);
+                if (a->menu() != nullptr) walk(a->menu());
+            }
+        };
+        for (QAction* top : app->menuBar()->actions())
+            if (top->menu() != nullptr) walk(top->menu());
+        QStringList missing;
+        int buttons = 0;
+        for (QToolBar* bar : app->findChildren<QToolBar*>()) {
+            if (bar->window() != app) continue;
+            for (QAction* a : bar->actions()) {
+                if (a->isSeparator() || qobject_cast<QWidgetAction*>(a) != nullptr) continue;
+                if (bar->widgetForAction(a) != nullptr && qobject_cast<QToolButton*>(bar->widgetForAction(a)) == nullptr) continue;
+                ++buttons;
+                if (!inMenus.contains(a)) missing << bar->windowTitle() + ": " + a->text();
+            }
+        }
+        QVERIFY(buttons > 20);
+        QVERIFY2(missing.isEmpty(), qPrintable(missing.join("; ")));
+    }
+
+    // The simulation console's Stop and Clear are in the Simulation menu,
+    // where trigger_action reaches them: Stop only while a run goes.
+    void theConsolesStopAndClearAreReached()
+    {
+        QJsonObject r = call("list_actions", {{"search", "Simulation >"}});
+        QJsonObject stop, clear;
+        for (const QJsonValue& v : json(r).toArray()) {
+            if (v.toObject().value("action").toString() == "Simulation > Stop Simulation") stop = v.toObject();
+            if (v.toObject().value("action").toString() == "Simulation > Clear Simulation Console") clear = v.toObject();
+        }
+        QVERIFY2(!stop.isEmpty() && !clear.isEmpty(), qPrintable(text(r)));
+        QVERIFY(!stop.value("enabled").toBool());
+        r = call("trigger_action", {{"action", "Simulation > Stop Simulation"}});
+        QVERIFY2(failed(r) && text(r).contains("cannot be used now"), qPrintable(text(r)));
+        app->simulationConsole()->console()->setPlainText("the last run's output");
+        r = call("trigger_action", {{"action", "Simulation > Clear Simulation Console"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTRY_VERIFY(app->simulationConsole()->console()->toPlainText().isEmpty());
+        QVERIFY(text(call("describe_tool", {{"name", "simulate"}})).contains("Simulation > Stop Simulation"));
+
+        // A run the user started (a simulator that takes its time): Stop
+        // is there, and stops it; trash_file waits for its end.
+        const QString slow = dir.filePath("slow-ngspice.sh");
+        {
+            QFile f(slow);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("#!/bin/sh\necho \"slow ngspice\"\nsleep 5\nexit 0\n");
+        }
+        QFile::setPermissions(slow, QFile::permissions(slow) | QFileDevice::ExeOwner | QFileDevice::ExeUser);
+        const QString simulatorWas = QucsSettings.NgspiceExecutable;
+        const auto back = qScopeGuard([simulatorWas] { QucsSettings.NgspiceExecutable = simulatorWas; });
+        QucsSettings.NgspiceExecutable = slow;
+        const QString sch = QucsSettings.qucsWorkspaceDir.absoluteFilePath("access-run.sch");
+        QFile::remove(sch);
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"), sch));
+        QVERIFY(!failed(call("open_document", {{"path", sch}})));
+        QVERIFY(QMetaObject::invokeMethod(app, "slotSimulateWithSpice"));
+        QTRY_VERIFY(app->simulationConsole()->console()->toPlainText().contains("slow ngspice"));
+        r = call("list_actions", {{"search", "Stop Simulation"}});
+        QVERIFY2(json(r).toArray().first().toObject().value("enabled").toBool(), qPrintable(text(r)));
+        r = call("trash_file", {{"path", QucsSettings.qucsWorkspaceDir.absoluteFilePath("nothing-here.txt")}});
+        QVERIFY(failed(r));   // (not there)
+        {
+            QFile f(QucsSettings.qucsWorkspaceDir.absoluteFilePath("access-note.txt"));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+        }
+        r = call("trash_file", {{"path", QucsSettings.qucsWorkspaceDir.absoluteFilePath("access-note.txt")}});
+        QVERIFY2(failed(r) && text(r).contains("simulation is running"), qPrintable(text(r)));
+        r = call("trigger_action", {{"action", "Simulation > Stop Simulation"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(!app->simulationConsole()->isRunning(), 4000);   // not the 5 s it takes
+        QVERIFY(QFileInfo::exists(QucsSettings.qucsWorkspaceDir.absoluteFilePath("access-note.txt")));
+        QVERIFY(!failed(call("close_document", {{"path", sch}, {"unsaved", "discard"}})));
+    }
+
+    // rename_file and trash_file, as the File Browser renames and trashes:
+    // the documents open from a file follow it, or close with it; the trash
+    // keeps what goes (here a folder of the test's, QUCS_TRASH_DIR, not the
+    // user's). Not the workspace, the home folder or the project open now.
+    void filesAreRenamedAndTrashed()
+    {
+        const QByteArray trashWas = qgetenv("QUCS_TRASH_DIR");
+        const auto restore = qScopeGuard([trashWas] {
+            if (trashWas.isEmpty()) qunsetenv("QUCS_TRASH_DIR");
+            else qputenv("QUCS_TRASH_DIR", trashWas);
+        });
+        const QString trash = dir.filePath("access-trash");
+        qputenv("QUCS_TRASH_DIR", trash.toUtf8());
+        const QString folder = QucsSettings.qucsWorkspaceDir.absoluteFilePath("access3");
+        QVERIFY(QDir().mkpath(folder + "/sub"));
+        const auto put = [](const QString& path) {
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write("x\n") == 2;
+        };
+        QVERIFY(put(folder + "/notes.txt") && put(folder + "/x.txt") && put(folder + "/y.txt"));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document", {{"as", folder + "/amp.sch"}, {"replace", true}})));
+
+        // A file closed: renamed in its folder.
+        QJsonObject r = call("rename_file", {{"path", folder + "/notes.txt"}, {"to", "readme.txt"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(folder + "/readme.txt") && !QFileInfo::exists(folder + "/notes.txt"));
+        QCOMPARE(json(r).toObject().value("to").toString(), QDir::toNativeSeparators(folder + "/readme.txt"));
+        // An open schematic: its tab follows, its unsaved changes kept.
+        QVERIFY(!failed(call("add_component", {{"type", "C"}, {"name", "C1"}, {"x", 200}, {"y", 100}})));
+        r = call("rename_file", {{"path", folder + "/amp.sch"}, {"to", "amp2.sch"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("documents").toArray().first().toString(),
+                 QStringLiteral("amp.sch -> %1").arg(QDir::toNativeSeparators(folder + "/amp2.sch")));
+        QVERIFY2(text(r).contains("Data Set"), qPrintable(text(r)));
+        QucsDoc* amp = app->findDoc(folder + "/amp2.sch");
+        QVERIFY(amp != nullptr && amp->getDocChanged());
+        QVERIFY(app->findDoc(folder + "/amp.sch") == nullptr);
+        QVERIFY(!failed(call("save_document", {{"path", folder + "/amp2.sch"}})));
+        QVERIFY(QFileInfo::exists(folder + "/amp2.sch") && !QFileInfo::exists(folder + "/amp.sch"));
+        // Moved: into a folder there, or as the name the path ends in.
+        r = call("rename_file", {{"path", folder + "/readme.txt"}, {"to", folder + "/sub"}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(folder + "/sub/readme.txt"), qPrintable(text(r)));
+        r = call("rename_file", {{"path", folder + "/sub/readme.txt"}, {"to", folder + "/manual.txt"}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(folder + "/manual.txt"), qPrintable(text(r)));
+        // An open document moved by a path: its tab follows too.
+        r = call("rename_file", {{"path", folder + "/amp2.sch"}, {"to", folder + "/sub"}});
+        QVERIFY2(!failed(r) && app->findDoc(folder + "/sub/amp2.sch") != nullptr, qPrintable(text(r)));
+        QVERIFY(app->findDoc(folder + "/amp2.sch") == nullptr);
+        QVERIFY(!failed(call("rename_file", {{"path", folder + "/sub/amp2.sch"}, {"to", folder}})));
+        QVERIFY(app->findDoc(folder + "/amp2.sch") != nullptr);
+        // Another suffix: said.
+        r = call("rename_file", {{"path", folder + "/manual.txt"}, {"to", "manual.md"}});
+        QVERIFY2(!failed(r) && text(r).contains("Its suffix changed (.txt to .md)"), qPrintable(text(r)));
+        // Refused, and nothing moved.
+        r = call("rename_file", {{"path", folder + "/x.txt"}, {"to", "y.txt"}});
+        QVERIFY2(failed(r) && text(r).contains("one of that name already"), qPrintable(text(r)));
+        r = call("rename_file", {{"path", folder + "/x.txt"}, {"to", folder + "/y.txt"}});
+        QVERIFY2(failed(r) && text(r).contains("one there already"), qPrintable(text(r)));
+        r = call("rename_file", {{"path", folder + "/x.txt"}, {"to", ".."}});
+        QVERIFY2(failed(r), qPrintable(text(r)));
+        r = call("rename_file", {{"path", folder + "/sub"}, {"to", folder + "/sub/inner"}});
+        QVERIFY2(failed(r) && text(r).contains("cannot go into itself"), qPrintable(text(r)));
+        r = call("rename_file", {{"path", QucsSettings.qucsWorkspaceDir.absolutePath()}, {"to", "elsewhere"}});
+        QVERIFY2(failed(r) && text(r).contains("is the workspace"), qPrintable(text(r)));
+        r = call("rename_file", {{"path", folder + "/nothing.txt"}, {"to", "something.txt"}});
+        QVERIFY2(failed(r) && text(r).contains("There is no"), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(folder + "/x.txt") && QFileInfo::exists(folder + "/y.txt"));
+
+        // To the trash: a file closed.
+        r = call("trash_file", {{"path", folder + "/y.txt"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(folder + "/y.txt") && QFileInfo::exists(trash + "/y.txt"));
+        QCOMPARE(json(r).toObject().value("in trash").toString(), QDir::toNativeSeparators(trash + "/y.txt"));
+        // One of the name there already: kept beside it.
+        QVERIFY(put(folder + "/y.txt"));
+        QVERIFY(!failed(call("trash_file", {{"path", folder + "/y.txt"}})));
+        QVERIFY(QFileInfo::exists(trash + "/y.txt 2"));
+        // An open document with unsaved changes: refused.
+        QVERIFY(!failed(call("add_component", {{"type", "L"}, {"name", "L1"}, {"x", 300}, {"y", 100}, {"path", folder + "/amp2.sch"}})));
+        r = call("trash_file", {{"path", folder + "/amp2.sch"}});
+        QVERIFY2(failed(r) && text(r).contains("unsaved changes"), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(folder + "/amp2.sch"));
+        // Saved: it goes, and its tab closes.
+        QVERIFY(!failed(call("save_document", {{"path", folder + "/amp2.sch"}})));
+        r = call("trash_file", {{"path", folder + "/amp2.sch"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("closed").toArray().first().toString(), folder + "/amp2.sch");
+        QVERIFY(app->findDoc(folder + "/amp2.sch") == nullptr);
+        QVERIFY(QFileInfo::exists(trash + "/amp2.sch"));
+        // A folder, with the document open from it.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("save_document", {{"as", folder + "/sub/inner.sch"}, {"replace", true}})));
+        r = call("trash_file", {{"path", folder + "/sub"}});
+        QVERIFY2(!failed(r) && app->findDoc(folder + "/sub/inner.sch") == nullptr, qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(trash + "/sub/inner.sch"));
+        // Never the workspace, nor the project open now.
+        r = call("trash_file", {{"path", QucsSettings.qucsWorkspaceDir.absolutePath()}});
+        QVERIFY2(failed(r) && text(r).contains("is the workspace"), qPrintable(text(r)));
+        QVERIFY(!failed(call("new_project", {{"name", "access_prj"}})));
+        QVERIFY(!failed(call("open_project", {{"name", "access_prj"}})));
+        const QString project = QucsSettings.QucsWorkDir.absolutePath();
+        r = call("trash_file", {{"path", project}});
+        QVERIFY2(failed(r) && text(r).contains("project open now"), qPrintable(text(r)));
+        r = call("rename_file", {{"path", project}, {"to", "other_prj"}});
+        QVERIFY2(failed(r) && text(r).contains("project open now"), qPrintable(text(r)));
+        QVERIFY(QFileInfo(project).isDir());
+        app->slotMenuProjClose();
+        // trash_file is asked about every time; rename_file as a change is.
+        QVERIFY(control->irreversible("trash_file", {{"path", folder + "/x.txt"}}));
+        QVERIFY(!control->irreversible("rename_file", {{"path", folder + "/x.txt"}, {"to", "z.txt"}}));
+        QVERIFY(!control->readOnlyTools().contains("rename_file") && !control->readOnlyTools().contains("trash_file"));
     }
 
     // ---- round 6: the gaps of one session (qucs-mcp-wishlist)
@@ -8914,6 +9249,8 @@ private slots:
         QVERIFY2(!failed(r) && json(r).toObject().value("removed").toString() == "second", qPrintable(text(r)));
         QVERIFY(!QFileInfo::exists(folder + "/second.dat"));
         QVERIFY(QFileInfo::exists(folder + "/dummy_data.csv"));
+        // (The trash of the test's settings, not the user's.)
+        QVERIFY(QFileInfo::exists(qEnvironmentVariable("QUCS_TRASH_DIR") + "/second.dat"));
         QVERIFY(!failed(call("undo", {{"files", true}})));
         QVERIFY(qucs_s::dataimport::originOf(folder + "/second.dat", &origin));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));

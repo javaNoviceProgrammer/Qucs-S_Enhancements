@@ -121,6 +121,11 @@ namespace misc {
   /// the files themselves (device and inode, or volume and file index);
   /// a path that does not exist is the same only as its own spelling.
   bool    isSameFile(const QString& a, const QString& b);
+  /// Moves \a path to the trash: the system's, or the folder QUCS_TRASH_DIR
+  /// names (a run kept apart - a test's - fills no one's trash). Its place
+  /// there in \a where when known. False, and nothing deleted, when it
+  /// cannot.
+  bool    moveToTrash(const QString& path, QString* where = nullptr);
   /// Copies \a source over \a target so that a copy that fails leaves
   /// target as it was: the copy is written beside target under another
   /// name, then renamed over it. Nothing is done (true) when they are

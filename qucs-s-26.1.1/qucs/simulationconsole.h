@@ -61,6 +61,11 @@ public:
     /// View > Simulation Console: shows or hides the current host, and
     /// is checked while that host is shown.
     QAction* viewAction() const { return a_viewAction; }
+    /// Simulation > Stop Simulation and Clear Simulation Console: the
+    /// console's Stop and Clear buttons, in the menu (where Claude's
+    /// trigger_action reaches them too). Stop is enabled while a run goes.
+    QAction* stopAction() const { return a_stopAction; }
+    QAction* clearAction() const { return a_clearAction; }
 
     QPlainTextEdit* console() const { return a_console; }
     QListWidget* statusLog() const { return a_statusLog; }
@@ -125,6 +130,8 @@ private:
     QObject* a_dockObject = nullptr;
     QObject* a_windowObject = nullptr;
     QAction* a_viewAction;
+    QAction* a_stopAction;
+    QAction* a_clearAction;
     QPlainTextEdit* a_console;
     QListWidget* a_statusLog;
     QProgressBar* a_progress;

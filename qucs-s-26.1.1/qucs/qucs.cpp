@@ -2224,7 +2224,7 @@ bool QucsApp::deleteProject(const QString& PathGiven)
   box.exec();
   if (box.clickedButton() != trash) return false;
 
-  if (!QFile::moveToTrash(Path)) {
+  if (!misc::moveToTrash(Path)) {
     // No trash for it (a network drive, a desktop without one): only a
     // deletion for good, asked for on its own.
     if (QMessageBox::warning(this, tr("Delete Project"),

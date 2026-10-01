@@ -1995,7 +1995,7 @@ void FileBrowser::moveToTrash(const QString& pathGiven)
     if (QMessageBox::question(this, tr("File Browser"), question, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
         != QMessageBox::Yes)
         return;
-    if (!QFile::moveToTrash(path)) {
+    if (!misc::moveToTrash(path)) {
         QMessageBox::warning(this, tr("File Browser"), tr("“%1” could not be moved to the trash.").arg(info.fileName()));
         return;
     }
@@ -2269,7 +2269,7 @@ QStringList FileBrowser::transfer(const QStringList& sources, const QString& tar
             if (clash == Skip) continue;
             if (clash == KeepBoth) {
                 dest = freeNameIn(target, info.fileName(), folder, false);
-            } else if (!QFile::moveToTrash(dest)) {   // Replace: the one there to the trash
+            } else if (!misc::moveToTrash(dest)) {   // Replace: the one there to the trash
                 failed << info.fileName();
                 continue;
             }
