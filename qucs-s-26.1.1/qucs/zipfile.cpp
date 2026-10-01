@@ -286,8 +286,10 @@ QByteArray inflate(const QByteArray& deflated, bool* ok, qsizetype limit)
 QByteArray deflate(const QByteArray& data)
 {
     // qCompress: the size (4 bytes), then zlib's stream: a header of two
-    // bytes, the DEFLATE data, and a checksum of four.
-    const QByteArray z = qCompress(data, 9);
+    // bytes, the DEFLATE data, and a checksum of four. (A large part - a
+    // workbook's sheet of 500,000 rows, 150 MB of XML - at zlib's own
+    // level: the most took seconds more for a few per cent.)
+    const QByteArray z = qCompress(data, data.size() > (4 << 20) ? 6 : 9);
     if (z.size() < 10) return QByteArray();
     return z.mid(6, z.size() - 10);
 }

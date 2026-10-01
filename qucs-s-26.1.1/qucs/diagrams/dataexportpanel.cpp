@@ -15,6 +15,7 @@
 
 #include <QComboBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -22,11 +23,15 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMessageBox>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QSet>
 #include <QTableWidget>
 #include <QShowEvent>
 #include <QVBoxLayout>
+
+#include <memory>
 
 namespace de = qucs_s::dataexport;
 namespace ds = qucs_s::dataset;
@@ -359,7 +364,7 @@ void DataExportPanel::checkTraces()
     a_status->setText(tr("The diagram's traces: %1.").arg(found.join(QStringLiteral(", "))));
 }
 
-bool DataExportPanel::exportTo(const QString& path, QString* error)
+bool DataExportPanel::exportTo(const QString& given, QString* error)
 {
     const auto fail = [this, error](const QString& why) {
         a_status->setText(why);
@@ -368,13 +373,48 @@ bool DataExportPanel::exportTo(const QString& path, QString* error)
     };
     if (a_stale) readDataset();
     if (!a_read) return fail(tr("Choose a dataset."));
-    if (misc::isSameFile(path, dataset())) return fail(tr("%1 is the dataset itself: choose another file.").arg(QFileInfo(path).fileName()));
+    // The file's name says its format when it ends in one's suffix (out.xlsx
+    // is a workbook, whatever was chosen); another gets the chosen one's.
+    QString path = given;
+    QString asNamed;
+    bool known = false;
+    const de::Format named = de::formatOfSuffix(QFileInfo(path).suffix(), &known);
+    if (!known) {
+        path += QLatin1Char('.') + de::suffixOf(options().format);
+    } else if (named != options().format) {
+        a_format->setCurrentIndex(a_format->findData(int(named)));
+        asNamed = tr("(%1, as its name says.)").arg(de::formatName(named));
+    }
+    for (const QString& file : {given, path})
+        if (misc::isSameFile(file, dataset())) return fail(tr("%1 is the dataset itself: choose another file.").arg(QFileInfo(file).fileName()));
+    // Nor the file a dataset here was imported from: the measurement itself.
+    if (!a_folder.isEmpty())
+        for (const qucs_s::dataimport::Imported& i : qucs_s::dataimport::importedIn(a_folder))
+            if (QFileInfo::exists(i.origin.source) && misc::isSameFile(path, i.origin.source))
+                return fail(tr("%1 is the file the dataset %2 was imported from: choose another file.").arg(QFileInfo(path).fileName(), i.name));
     // Read again: a simulation may have written it since.
     ds::Dataset now;
     QString why;
     if (!now.read(dataset(), &why)) return fail(why);
     de::Written w;
-    if (!de::write(path, now, chosen(), options(), &w, &why)) return fail(why);
+    // One that takes a while: how far it is, and a way to stop it (a file
+    // there stays as it was). A quick one opens no window.
+    std::unique_ptr<QProgressDialog> progress;
+    QElapsedTimer clock;
+    clock.start();
+    const de::Progress step = [&](qint64 done, qint64 total) {
+        if (progress == nullptr) {
+            if (clock.elapsed() < a_progressAfter) return true;
+            progress = std::make_unique<QProgressDialog>(tr("Writing %1...").arg(QFileInfo(path).fileName()), tr("Stop"), 0, 1000, this);
+            progress->setWindowModality(Qt::ApplicationModal);
+            progress->setMinimumDuration(0);
+        }
+        progress->setValue(int(done * 1000 / std::max<qint64>(total, 1)));
+        return !progress->wasCanceled();
+    };
+    const bool wrote = de::write(path, now, chosen(), options(), &w, &why, step);
+    progress.reset();
+    if (!wrote) return fail(why);
     QString what;
     switch (options().format) {
     case de::Format::Xlsx:
@@ -386,22 +426,42 @@ bool DataExportPanel::exportTo(const QString& path, QString* error)
     default: what = tr("%1 rows of %2 columns").arg(w.rows).arg(w.columns); break;
     }
     QString said = tr("Wrote %1: %2.").arg(QDir::toNativeSeparators(path), what);
+    if (!asNamed.isEmpty()) said += QLatin1Char(' ') + asNamed;
     if (!w.notes.isEmpty()) said += QLatin1Char(' ') + w.notes.join(QLatin1Char(' '));
     a_status->setText(said);
-    // A dataset written here is one to plot, and to export, too.
-    if (options().format == de::Format::Dataset && misc::isSameFile(QFileInfo(path).absolutePath(), a_folder)) refresh();
+    // A dataset written here is one to plot, and to export, too: listed
+    // here and in the Data tab.
+    if (options().format == de::Format::Dataset && misc::isSameFile(QFileInfo(path).absolutePath(), a_folder)) {
+        refresh();
+        emit datasetsChanged(QString());
+    }
     return true;
+}
+
+QString DataExportPanel::proposedFile() const
+{
+    const de::Format f = options().format;
+    QString base = baseOf(dataset());
+    // (A dataset beside it by the same name would be written over - and
+    // for an imported one, bench, the file it came from, bench.csv.)
+    qucs_s::dataimport::Origin origin;
+    if (f == de::Format::Dataset || qucs_s::dataimport::originOf(dataset(), &origin)) base += QStringLiteral("_export");
+    return QDir(a_folder).filePath(base + QLatin1Char('.') + de::suffixOf(f));
 }
 
 void DataExportPanel::exportFile()
 {
     const de::Format f = options().format;
-    QString base = baseOf(dataset());
-    // (A dataset beside it by the same name would be written over.)
-    if (f == de::Format::Dataset) base += QStringLiteral("_export");
-    const QString proposed = QDir(a_folder).filePath(base + QLatin1Char('.') + de::suffixOf(f));
-    QString path = QFileDialog::getSaveFileName(this, tr("Export Data"), proposed, de::filterOf(f));
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export Data"), proposedFile(), de::filterOf(f));
     if (path.isEmpty()) return;
-    if (QFileInfo(path).suffix().isEmpty()) path += QLatin1Char('.') + de::suffixOf(f);
+    // A suffix to be added (a name of no format's): its file asked about
+    // as the dialog asks about the one named.
+    bool known = false;
+    de::formatOfSuffix(QFileInfo(path).suffix(), &known);
+    const QString withSuffix = path + QLatin1Char('.') + de::suffixOf(f);
+    if (!known && QFileInfo::exists(withSuffix)
+        && QMessageBox::question(this, tr("Export Data"), tr("%1 exists. Replace it?").arg(QDir::toNativeSeparators(withSuffix)))
+               != QMessageBox::Yes)
+        return;
     exportTo(path);
 }

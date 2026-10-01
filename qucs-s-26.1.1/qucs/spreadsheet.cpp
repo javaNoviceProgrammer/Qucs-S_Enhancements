@@ -614,6 +614,34 @@ void calculateOnLoad(QList<zip::Entry>& package, const QString& workbookPart)
 // A package of its own: the sheets, one part each, the cells as written.
 QByteArray freshXlsx(const Workbook& book)
 {
+    QList<SheetXml> sheets;
+    for (const Sheet& each : book.sheets) {
+        Sheet sheet = each;
+        for (Row& row : sheet.rows) {
+            row.attributes.clear();
+            for (Cell& cell : row.cells) {
+                cell.changed = true;   // written as it is
+                cell.style = -1;
+                if (book.format == Format::Csv) cell.formula.clear();
+            }
+        }
+        sheets << SheetXml{sheet.name, dimensionOf(sheet), sheetDataXml(sheet, QString()).toUtf8()};
+    }
+    return xlsxOf(sheets);
+}
+
+QString workbookPartOf(const QList<zip::Entry>& package)
+{
+    const QHash<QString, Relationship> root = relationships(package, QString());
+    for (const Relationship& r : root)
+        if (r.type.endsWith(QLatin1String("/officeDocument"))) return r.target;
+    return QStringLiteral("xl/workbook.xml");
+}
+
+} // namespace
+
+QByteArray xlsxOf(const QList<SheetXml>& tables)
+{
     const QString main = QStringLiteral("http://schemas.openxmlformats.org/spreadsheetml/2006/main");
     const QString rel = QStringLiteral("http://schemas.openxmlformats.org/officeDocument/2006/relationships");
     const QString head = QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
@@ -626,9 +654,9 @@ QByteArray freshXlsx(const Workbook& book)
         "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>");
     QString sheets, rels;
     QSet<QString> names;
-    for (int k = 0; k < book.sheets.size(); ++k) {
+    for (int k = 0; k < tables.size(); ++k) {
         // A sheet's name: at most 31 characters, none of []:*?/\, each its own.
-        QString name = book.sheets.at(k).name;
+        QString name = tables.at(k).name;
         name.remove(QRegularExpression(QStringLiteral("[\\[\\]:*?/\\\\]")));
         name = name.left(31).trimmed();
         if (name.isEmpty() || names.contains(name.toLower())) name = QStringLiteral("Sheet%1").arg(k + 1);
@@ -642,24 +670,20 @@ QByteArray freshXlsx(const Workbook& book)
         rels += QStringLiteral("<Relationship Id=\"rId%1\" Type=\"%2/worksheet\" Target=\"worksheets/sheet%1.xml\"/>")
                     .arg(k + 1)
                     .arg(rel);
-        Sheet sheet = book.sheets.at(k);
-        for (Row& row : sheet.rows) {
-            row.attributes.clear();
-            for (Cell& cell : row.cells) {
-                cell.changed = true;   // written as it is
-                cell.style = -1;
-                if (book.format == Format::Csv) cell.formula.clear();
-            }
-        }
-        parts << zip::Entry{QStringLiteral("xl/worksheets/sheet%1.xml").arg(k + 1),
-                            (head + QStringLiteral("<worksheet xmlns=\"%1\" xmlns:r=\"%2\"><dimension ref=\"%3\"/>")
-                                        .arg(main, rel, dimensionOf(sheet))
-                             + sheetDataXml(sheet, QString()) + QStringLiteral("</worksheet>"))
-                                .toUtf8()};
+        // (Its rows as written already: put between its head and its end.)
+        const QByteArray start = (head + QStringLiteral("<worksheet xmlns=\"%1\" xmlns:r=\"%2\"><dimension ref=\"%3\"/>")
+                                              .arg(main, rel, tables.at(k).dimension))
+                                     .toUtf8();
+        QByteArray part;
+        part.reserve(start.size() + tables.at(k).sheetData.size() + 16);
+        part += start;
+        part += tables.at(k).sheetData;
+        part += "</worksheet>";
+        parts << zip::Entry{QStringLiteral("xl/worksheets/sheet%1.xml").arg(k + 1), part};
     }
     types += QStringLiteral("</Types>");
     rels += QStringLiteral("<Relationship Id=\"rId%1\" Type=\"%2/styles\" Target=\"styles.xml\"/>")
-                .arg(book.sheets.size() + 1)
+                .arg(tables.size() + 1)
                 .arg(rel);
     parts.prepend(zip::Entry{QStringLiteral("xl/styles.xml"),
                              (head + QStringLiteral(
@@ -691,15 +715,10 @@ QByteArray freshXlsx(const Workbook& book)
     return zip::write(parts);
 }
 
-QString workbookPartOf(const QList<zip::Entry>& package)
+QString escapedXml(const QString& text)
 {
-    const QHash<QString, Relationship> root = relationships(package, QString());
-    for (const Relationship& r : root)
-        if (r.type.endsWith(QLatin1String("/officeDocument"))) return r.target;
-    return QStringLiteral("xl/workbook.xml");
+    return escaped(text);
 }
-
-} // namespace
 
 // ---------------------------------------------------------------------
 int Sheet::columnCount() const
