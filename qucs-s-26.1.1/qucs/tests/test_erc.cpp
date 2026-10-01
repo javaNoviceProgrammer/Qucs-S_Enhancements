@@ -23,6 +23,7 @@
 #include "main.h"
 #include "misc.h"
 #include "erc.h"
+#include "components/spicefile.h"
 #include "messagedock.h"
 #include "simulationconsole.h"
 #include "components/component.h"
@@ -306,6 +307,64 @@ private slots:
     // (bug hunt 2026-09-30, A1). One node now, named as the check names
     // it: ground, else the first label; the check says which is dropped.
     // A net named GND is ground to ngspice only (A6).
+    // What a run executes besides the simulator (bug hunt 2026-09-30, E1):
+    // each said - a command part's lines but its comments, ngspice's shell
+    // in a custom simulation, the Octave script run after it; nothing of a
+    // part turned off, of a command of comments alone, or of a word that
+    // only begins so. (Read here, never run.)
+    void commandsARunExecutesAreSaid()
+    {
+        const QString file = dir.filePath("commands.sch");
+        write(file, "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <RunScript=1>\n  <Script=post.m>\n</Properties>\n<Components>\n"
+                    "  <CMD CMD1 1 100 200 -30 20 0 0 \"# what it does\\necho qucs-test\\nls\" 1 \"no\" 1 \"no\" 0>\n"
+                    "  <CMD CMD2 0 100 300 -30 20 0 0 \"echo off\" 1 \"no\" 1 \"no\" 0>\n"
+                    "  <CMD CMD3 1 100 400 -30 20 0 0 \"# a comment alone\" 1 \"no\" 1 \"no\" 0>\n"
+                    "  <.CUSTOMSIM CUSTOM1 1 300 30 0 40 0 0 \"\\nlet a=1\\n  SHELL echo qucs-test\\n\" 1 \"V(out)\" 0 \"\" 0>\n"
+                    "  <.CUSTOMSIM CUSTOM2 1 300 200 0 40 0 0 \"\\nlet shellish=1\\nshells\\n\" 1 \"V(out)\" 0 \"\" 0>\n"
+                    "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        Schematic doc(nullptr, file);
+        QVERIFY(doc.load());
+        const QStringList said = qucs_s::erc::commandsRun(&doc);
+        QCOMPARE(said, (QStringList{"CMD1 runs a command in a shell after each simulation: echo qucs-test (and 1 more lines)",
+                                    "CUSTOM1's ngspice text runs a command in a shell: SHELL echo qucs-test",
+                                    "Octave runs the script post.m after each simulation (Document Settings: run script after simulation)"}));
+        // Check Schematic warns of each, at its part.
+        const QList<Issue> issues = check(&doc);
+        for (const QString& s : said)
+            QVERIFY2(std::any_of(issues.cbegin(), issues.cend(), [&](const Issue& i) { return i.severity == Severity::Warning && i.message == s; }),
+                     qPrintable(s));
+        const auto at = std::find_if(issues.cbegin(), issues.cend(), [](const Issue& i) { return i.message.startsWith("CMD1 "); });
+        QVERIFY(at != issues.cend() && at->component == "CMD1" && at->where == QPoint(100, 200));
+        // None: none said.
+        doc.setSimRunScript(false);
+        for (Component* c : doc.a_DocComps)
+            if (c->Name == "CMD1" || c->Name == "CUSTOM1") c->isActive = COMP_IS_OPEN;
+        QVERIFY(qucs_s::erc::commandsRun(&doc).isEmpty());
+    }
+
+    // The SPICE file part's preprocessor (bug hunt 2026-09-30, D5): Perl
+    // running the script on the file - the list was added to itself, and
+    // the script was the program started. (Built here, not run.)
+    void aSpiceFilesPreprocessorIsPerlRunningItsScript()
+    {
+        QStringList c = SpiceFile::preprocessorCommand("ps2sp", "/x/a.cir", "/x/a.cir.pre");
+#if defined(_WIN32) || defined(__MINGW32__)
+        QCOMPARE(c.first(), QStringLiteral("tinyperl.exe"));
+#else
+        QCOMPARE(c.first(), QStringLiteral("perl"));
+#endif
+        QCOMPARE(c.filter("ps2sp").size(), 1);
+        QVERIFY(c.at(1) == "-S" || c.at(1).endsWith("/ps2sp"));
+        QCOMPARE(c.last(), QStringLiteral("/x/a.cir"));
+        QCOMPARE(c.count("perl"), 1);
+        c = SpiceFile::preprocessorCommand("spiceprm", "/x/a.cir", "/x/a.cir.pre");
+        QCOMPARE(c.mid(c.size() - 2), (QStringList{"/x/a.cir", "/x/a.cir.pre"}));
+        QVERIFY(c.contains("spiceprm") || c.filter("/spiceprm").size() == 1);
+        QVERIFY(SpiceFile::preprocessorCommand("spicepp", "/x/a.cir", "").filter("spicepp.pl").size() == 1);
+        QVERIFY(SpiceFile::preprocessorCommand("none", "/x/a.cir", "").isEmpty());
+        QVERIFY(SpiceFile::preprocessorCommand("anything", "/x/a.cir", "").isEmpty());
+    }
+
     void aNetWithTwoNamesIsOneNode()
     {
         struct Restore {

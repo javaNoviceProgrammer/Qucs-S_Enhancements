@@ -90,6 +90,14 @@ QString pinRole(const QString& name);
 
 /// How many of \a issues are errors.
 int errorCount(const QList<Issue>& issues);
+/// What a simulation of \a doc runs besides the simulator, with the
+/// user's rights: each active System command part's command (in a shell,
+/// after each run), each line of ngspice text that runs one (shell,
+/// system, !) - a custom simulation's, Nutmeg's, .spiceinit's -, and the
+/// Octave script the Document Settings run after each simulation. Each
+/// said so ("CMD1 runs a command in a shell after each simulation: touch
+/// x"); check() warns of each.
+QStringList commandsRun(Schematic* doc);
 
 } // namespace qucs_s::erc
 

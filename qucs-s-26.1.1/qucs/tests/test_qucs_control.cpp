@@ -3728,6 +3728,37 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // A run's commands besides the simulator (bug hunt 2026-09-30, E1): a
+    // schematic that carries one is not simulated, nor tuned, unless asked
+    // ('allow_commands') - and check_schematic says what they are. (It has
+    // no analysis: a run asked for stops there too, and nothing runs.)
+    void commandsAreNotRunUnasked()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("add_component", {{"type", "CMD"}, {"name", "CMD1"}, {"x", 100}, {"y", 100}, {"properties", QJsonObject{{"cmd", "echo qucs-test"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 300}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document", {{"as", dir.filePath("workspace/commands.sch")}, {"replace", true}})));
+        const QString said = "CMD1 runs a command in a shell after each simulation: echo qucs-test";
+        r = call("simulate", {{"timeout", 5}});
+        QVERIFY2(failed(r) && text(r).contains("runs commands besides the simulator") && text(r).contains(said) && text(r).contains("Nothing was run"),
+                 qPrintable(text(r)));
+        r = call("tune", {{"component", "R1"}, {"target", 1}, {"range", QJsonArray{"1k", "2k"}}, {"measure", QJsonObject{{"variable", "v(x)"}}}});
+        QVERIFY2(failed(r) && text(r).contains("runs commands besides the simulator"), qPrintable(text(r)));
+        r = call("tune", {{"knobs", QJsonArray{}}, {"targets", QJsonArray{}}});
+        QVERIFY2(failed(r) && text(r).contains("runs commands besides the simulator"), qPrintable(text(r)));
+        // Asked for: past it (to what comes next - no analysis here).
+        r = call("simulate", {{"timeout", 5}, {"allow_commands", true}});
+        QVERIFY2(failed(r) && text(r).contains("has no analysis to run"), qPrintable(text(r)));
+        r = call("check_schematic");
+        QVERIFY2(text(r).contains(said), qPrintable(text(r)));
+        // Turned off: nothing to say, nothing refused.
+        QVERIFY(!failed(call("edit_component", {{"name", "CMD1"}, {"active", false}})));
+        r = call("simulate", {{"timeout", 5}});
+        QVERIFY2(failed(r) && text(r).contains("has no analysis to run"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // ---- round 6: the gaps of one session (qucs-mcp-wishlist)
 
     // An ngspice .OPTIONS option with no value - a flag, written alone - is

@@ -27,6 +27,7 @@
 #include <QFile>
 #include <QDir>
 #include <QFileInfo>
+#include <QCoreApplication>
 #include <QMutex>
 #include <QDebug>
 #include <QStatusBar>
@@ -167,6 +168,27 @@ QString SpiceFile::netlist()
 }
 
 // -------------------------------------------------------
+QStringList SpiceFile::preprocessorCommand(const QString& preprocessor, const QString& file, const QString& output)
+{
+#if defined(_WIN32) || defined(__MINGW32__)
+  const QString interpreter = "tinyperl.exe";
+#else
+  const QString interpreter = "perl";
+#endif
+  QString script;
+  if (preprocessor == "ps2sp") script = "ps2sp";
+  else if (preprocessor == "spicepp") script = "spicepp.pl";
+  else if (preprocessor == "spiceprm") script = "spiceprm";
+  else return {};
+  QStringList command{interpreter};
+  const QString beside = QDir(QCoreApplication::applicationDirPath()).filePath(script);
+  if (QFileInfo::exists(beside)) command << beside;
+  else command << "-S" << script;
+  command << file;
+  if (preprocessor == "spiceprm") command << output;
+  return command;
+}
+
 QString SpiceFile::getSubcircuitFile()
 {
   return misc::properAbsFileName(Props.front()->Value, containingSchematic);
@@ -263,31 +285,19 @@ bool SpiceFile::recreateSubNetlist(QString *SpiceFile, QString *FileName)
   // preprocessor run if necessary
   QString preprocessor = Props.at(3)->Value;
   if (preprocessor != "none") {
-    bool piping = true;
-    QStringList script;
-#if defined(_WIN32) || defined(__MINGW32__)
-    QString interpreter = "tinyperl.exe";
-#else
-    QString interpreter = "perl";
-#endif
-    if (preprocessor == "ps2sp") {
-      script << "ps2sp";
-    } else if (preprocessor == "spicepp") {
-      script << "spicepp.pl";
-    } else if (preprocessor == "spiceprm") {
-      script << "spiceprm";
-      piping = false;
-    }
-    SpicePrep = new QProcess(this);
-    script << interpreter;
-    script << script;
-    script << *SpiceFile;
-
+    // (The list was added to itself: ps2sp ran with perl as its first
+    // argument, and was no program on PATH - the option never worked.)
+    const bool piping = preprocessor != "spiceprm";
     QFile PrepFile;
     QString PrepName = *SpiceFile + ".pre";
+    const QStringList script = preprocessorCommand(preprocessor, *SpiceFile, PrepName);
+    if (script.isEmpty()) {
+      ErrText += QObject::tr("ERROR: No preprocessor \"%1\".").arg(preprocessor);
+      return false;
+    }
+    SpicePrep = new QProcess(this);
 
     if (!piping) {
-      script << PrepName;
       connect(SpicePrep, SIGNAL(readyReadStandardOutput()), SLOT(slotSkipOut()));
       connect(SpicePrep, SIGNAL(readyReadStandardError()), SLOT(slotGetPrepErr()));
     } else {
@@ -326,7 +336,7 @@ bool SpiceFile::recreateSubNetlist(QString *SpiceFile, QString *FileName)
     if(SpicePrep->state()!=QProcess::Running&&
             SpicePrep->state()!=QProcess::Starting) {
       ErrText += QObject::tr("ERROR: Cannot execute \"%1\".").
-              arg(interpreter + " " + script.join(" ") + "\".");
+              arg(script.join(" "));
       if (piping) {
         PrepFile.close();
         delete prestream;
