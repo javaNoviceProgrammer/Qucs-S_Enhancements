@@ -53,6 +53,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <tuple>
 
 using namespace qucs_s::control;
 namespace ds = qucs_s::dataset;
@@ -137,6 +138,31 @@ const char* const kStyles[] = {"solid", "dash", "dot", "long_dash", "stars", "ci
 const char* const kMarkers[] = {"none", "auto", "circle", "square", "triangle", "diamond", "triangle_down", "cross", "plus"};
 const char* const kLegends[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
 const char* const kUnits[] = {"none", "dB", "dBuV", "dBm"};
+// A trace's part of each value, by Graph::ValuePart's value.
+const char* const kParts[] = {"auto", "magnitude", "db", "phase", "real", "imaginary"};
+
+// What is easily misread in \a d: an axis's units on a linear axis (they
+// label a logarithmic one's ticks in dB of the values, and do nothing on
+// a linear one), and, when \a legendNote, several traces with no legend.
+QStringList diagramNotes(const Diagram* d, bool legendNote)
+{
+    QStringList notes;
+    for (const auto& [axis, name, number] : {std::tuple<const Axis*, const char*, int>{&d->yAxis, "y_axis", 0}, {&d->zAxis, "y2_axis", 1}}) {
+        if (axis->Units <= 0 || axis->Units >= int(std::size(kUnits)) || axis->log) continue;
+        const bool inDb = std::any_of(d->Graphs.cbegin(), d->Graphs.cend(), [n = number](const Graph* g) { return g->yAxisNo == n; })
+                          && std::all_of(d->Graphs.cbegin(), d->Graphs.cend(), [n = number](const Graph* g) {
+                                 return g->yAxisNo != n || g->valuePart == Graph::ValuePart::Db;
+                             });
+        notes << (inDb ? tr("%1's units %2 do nothing on a linear axis, and its traces are in dB already ('part': 'db'): the "
+                            "units can go.")
+                       : tr("%1's units %2 label a logarithmic axis's numbers (20 log10 of the values); this axis is linear, so "
+                            "the values show as they are - 'log': true reads them so, or a trace's 'part': 'db' plots them in dB."))
+                     .arg(QLatin1String(name), QLatin1String(kUnits[axis->Units]));
+    }
+    if (legendNote && drawsCurves(d) && d->Graphs.size() > 1 && d->legendPos == Diagram::LegendOff)
+        notes << tr("No legend (a new diagram's is off, in the window too): 'legend': \"top_right\" says which curve is which.");
+    return notes;
+}
 const char* const kNumbers[] = {"real_imaginary", "magnitude_degrees", "magnitude_radians"};
 const char* const kIndicators[] = {"off", "square", "triangle"};
 // The notations by numberformat::Notation's value (what a file keeps).
@@ -419,6 +445,18 @@ bool applyTrace(Graph* g, const Diagram* d, const QJsonObject& o, QString* error
         g->pointMarker = Graph::PointMarker(m);
     }
     if (o.contains(QLatin1String("auto_color"))) g->autoColor = o.value(QLatin1String("auto_color")).toBool();
+    if (o.contains(QLatin1String("part"))) {
+        const int part = indexIn(kParts, o.value(QLatin1String("part")).toString().trimmed().toLower());
+        if (part < 0) {
+            *error = tr("A trace's 'part' is one of %1.").arg(namesOf(kParts));
+            return false;
+        }
+        if (part != 0 && !Graph::valuePartApplies(d->Name)) {
+            *error = tr("A %1 diagram plots the complex value itself: 'part' is for a Cartesian diagram or a table.").arg(kindName(d));
+            return false;
+        }
+        g->valuePart = Graph::ValuePart(part);
+    }
     if (o.contains(QLatin1String("precision"))) {
         const QJsonValue p = o.value(QLatin1String("precision"));
         if (!p.isDouble() || p.toDouble() != std::floor(p.toDouble()) || p.toDouble() < 0 || p.toDouble() > 16) {
@@ -592,6 +630,7 @@ void reloadDiagram(Schematic* sch, Diagram* d)
 QJsonObject traceJson(Schematic* sch, const Diagram* d, Graph* g, int number)
 {
     QJsonObject t{{QStringLiteral("trace"), number}, {QStringLiteral("variable"), g->Var}};
+    if (g->valuePart != Graph::ValuePart::Auto) t.insert(QStringLiteral("part"), QString::fromLatin1(kParts[int(g->valuePart)]));
     if (drawsCurves(d)) {
         t.insert(QStringLiteral("color"), g->Color.name());
         if (g->autoColor) t.insert(QStringLiteral("auto_color"), true);
@@ -2312,9 +2351,20 @@ QJsonObject QucsControl::importData(const QJsonObject& args)
                                       "another name. Nothing was imported.")
                                        .arg(set));
     }
+    QString renamed;   // (why the file's name was not the dataset's)
     if (name.isEmpty()) {
         name = di::datasetNameFor(folder, source);
         replaced = importedNamed(name);   // (this file's, read again)
+        if (const QString base = di::datasetBaseFor(source); name != base) {
+            QString by;
+            if (const auto other = importedNamed(base)) by = tr("the dataset imported from %1").arg(shownFrom(folder, other->origin.source));
+            else if (!QDir(folder).entryList({base + QStringLiteral(".dat.*")}, QDir::Files).isEmpty()) by = tr("a simulation's dataset");
+            else if (QFileInfo::exists(QDir(folder).filePath(base + QStringLiteral(".sch")))) by = tr("the schematic %1.sch (its runs write %1.dat)").arg(base);
+            else if (di::dataSetsOfSchematics(folder).contains(base, Qt::CaseInsensitive)) by = tr("a schematic's Data Set");
+            else by = tr("a dataset there");
+            renamed = importedNamed(base) ? tr("%1 is %2: this one is %3 ('name': \"%1\" puts it in that one's place).").arg(base, by, name)
+                                          : tr("%1 is %2: this one is %3.").arg(base, by, name);
+        }
     }
     aboutToWrite(QDir(folder).filePath(name + QStringLiteral(".dat")));
     di::Imported imported;
@@ -2369,6 +2419,7 @@ QJsonObject QucsControl::importData(const QJsonObject& args)
         result.insert(QStringLiteral("sheet"), options.sheet.isEmpty() ? sheets.first() : options.sheet);
     }
     if (!data.notes.isEmpty()) result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(data.notes));
+    if (!renamed.isEmpty()) result.insert(QStringLiteral("named"), renamed);
     if (reload) result.insert(QStringLiteral("read again"), true);
     else if (replaced && !sameFile(replaced->origin.source, source))
         result.insert(QStringLiteral("replaced"), tr("%1, imported before from %2").arg(replaced->name, shownFrom(folder, replaced->origin.source)));
@@ -2856,6 +2907,7 @@ QJsonObject QucsControl::addDiagram(const QJsonObject& args)
     finish(sch, {QPoint(placed->cx, placed->cy)});
     QJsonObject result = diagramsJson(sch).last().toObject();
     if (const QString over = overlapOf(sch, placed); !over.isEmpty()) notes << over;
+    notes << diagramNotes(placed, !args.contains(QLatin1String("legend")));
     if (!notes.isEmpty()) result.insert(QStringLiteral("note"), notes.join(QLatin1Char(' ')));
     return jsonResult(result);
 }
@@ -2891,7 +2943,10 @@ QJsonObject QucsControl::editDiagram(const QJsonObject& args)
         ++n;
     }
     QJsonObject result = diagramsJson(sch).at(n).toObject();
-    if (const QString over = overlapOf(sch, d); !over.isEmpty()) result.insert(QStringLiteral("note"), over);
+    QStringList notes;
+    if (const QString over = overlapOf(sch, d); !over.isEmpty()) notes << over;
+    if (args.contains(QLatin1String("y_axis")) || args.contains(QLatin1String("y2_axis"))) notes << diagramNotes(d, false);
+    if (!notes.isEmpty()) result.insert(QStringLiteral("note"), notes.join(QLatin1Char(' ')));
     return jsonResult(result);
 }
 
@@ -2959,6 +3014,21 @@ QJsonObject QucsControl::editTrace(const QJsonObject& args)
         var = expressionTrace(sch, wanted, args.value(QLatin1String("path")), false, &note, &error);
         if (var.isEmpty()) return errorResult(error);
     }
+    // Nothing to change: said, and why when the variable asked for is
+    // written as the trace has it already (the simulator's prefix added).
+    const std::unique_ptr<Graph> after(g->sameNewOne());
+    after->Var = var;
+    applyTrace(after.get(), d, args, &error);
+    const int number = int(d->Graphs.indexOf(g)) + 1;
+    if (after->save() == g->save()) {
+        QJsonObject result = traceJson(sch, d, g, number);
+        result.insert(QStringLiteral("changed"), false);
+        QString why = tr("Nothing changed: trace %1 is so already.").arg(number);
+        if (args.contains(QLatin1String("variable")) && wanted.trimmed() != var)
+            why += QLatin1Char(' ') + tr("'variable' %1 is written %2 here, which it is.").arg(wanted.trimmed(), var);
+        result.insert(QStringLiteral("note"), note.isEmpty() ? why : why + QLatin1Char(' ') + note);
+        return jsonResult(result);
+    }
     prepare(sch);
     applyTrace(g, d, args, &error);
     if (var != g->Var) {
@@ -2967,9 +3037,11 @@ QJsonObject QucsControl::editTrace(const QJsonObject& args)
         qDeleteAll(g->Markers);
         g->Markers.clear();
     }
+    // (Another part of the value: read again for it.)
+    g->lastLoaded = QDateTime();
     reloadDiagram(sch, d);
     finish(sch, {QPoint(d->cx, d->cy)});
-    QJsonObject result = traceJson(sch, d, g, int(d->Graphs.indexOf(g)) + 1);
+    QJsonObject result = traceJson(sch, d, g, number);
     if (!note.isEmpty()) result.insert(QStringLiteral("note"), note);
     return jsonResult(result);
 }
@@ -3558,6 +3630,17 @@ QJsonObject QucsControl::describeComponentType(const QJsonObject& args)
     for (Category* cat : Category::Categories)
         if (cat->Content.contains(m)) category = cat->Name;
 
+    // Turned and mirrored as a placed part is (mirrored first, as a file
+    // has it): its pins where they then are.
+    const QJsonValue rotationArg = args.value(QLatin1String("rotation"));
+    if (!rotationArg.isUndefined() && (!rotationArg.isDouble() || rotationArg.toDouble() != std::floor(rotationArg.toDouble())
+                                       || rotationArg.toInt() < 0 || rotationArg.toInt() > 3))
+        return errorResult(tr("'rotation' is 0 to 3, a quarter turn each, as add_component takes it."));
+    const int rotation = rotationArg.toInt(0);
+    const bool mirror = args.value(QLatin1String("mirror")).toBool();
+    if (mirror) c->mirrorX();
+    for (int r = 0; r < rotation; ++r) c->rotate();
+
     QJsonArray pins;
     for (int i = 0; i < c->Ports.size(); ++i) {
         QJsonObject pin{{QStringLiteral("pin"), i + 1}, {QStringLiteral("x"), c->Ports.at(i)->x}, {QStringLiteral("y"), c->Ports.at(i)->y}};
@@ -3587,6 +3670,19 @@ QJsonObject QucsControl::describeComponentType(const QJsonObject& args)
                        {QStringLiteral("properties"), props},
                        {QStringLiteral("simulators"), simulatorsOf(c->Simulator)},
                        {QStringLiteral("property order"), tr("as listed: the order of the values in a .sch line")}};
+    if (!c->Ports.isEmpty()) {
+        if (rotation != 0 || mirror) {
+            result.insert(QStringLiteral("rotation"), rotation);
+            result.insert(QStringLiteral("mirror"), mirror);
+        } else {
+            result.insert(QStringLiteral("turned"),
+                          tr("the pins above are at rotation 0; each quarter turn moves a pin at (x, y) to (y, -x): rotation 1 "
+                             "puts it at (y, -x), 2 at (-x, -y), 3 at (-y, x); mirror puts it at (x, -y) first. 'rotation' and "
+                             "'mirror' here give them turned so."));
+        }
+    }
+    if (const QJsonArray repeated = repeatedProperties(c.get()); !repeated.isEmpty())
+        result.insert(QStringLiteral("repeated properties"), repeated);
     const QString prefix = c->Name;
     if (!prefix.isEmpty() && prefix != QLatin1String("*"))
         result.insert(QStringLiteral("names"), tr("%1 and a number: %2, %3, ... (the next free one when add_component is given none)")

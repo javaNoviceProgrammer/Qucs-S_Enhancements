@@ -122,6 +122,9 @@ QStringList dataSetsOfSchematics(const QString& folder);
 /// a schematic there or a schematic's Data Set has it - unless it is the
 /// dataset imported from \a source itself, which is read again.
 QString datasetNameFor(const QString& folder, const QString& source);
+/// The name datasetNameFor() starts from: \a source's, made safe (no
+/// number after it).
+QString datasetBaseFor(const QString& source);
 /// Reads \a source and writes it into \a folder (datasetNameFor() names
 /// it, unless \a name is given); the dataset's name in \a imported. False
 /// and why in \a error when it cannot be read or written.

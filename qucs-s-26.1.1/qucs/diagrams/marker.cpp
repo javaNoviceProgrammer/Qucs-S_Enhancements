@@ -249,10 +249,7 @@ void Marker::createText()
     Text += numberText(VarPos[ii]) + "\n";
   }
 
-  if ( pGraph->Var.contains('/') )
-    Text += pGraph->Var.section('/', 1) + ": ";
-  else
-    Text += pGraph->Var + ": ";
+  Text += pGraph->withValuePart(pGraph->Var.contains('/') ? pGraph->Var.section('/', 1) : pGraph->Var) + ": ";
   const Axis *ax = &(diag()->yAxis);
   if (pGraph->yAxisNo > 0) ax = &(diag()->zAxis);
   int units = ax->Units;

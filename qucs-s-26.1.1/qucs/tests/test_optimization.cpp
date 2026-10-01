@@ -557,6 +557,10 @@ private slots:
         QVERIFY(Variable::parse(values(find(doc, "Opt1"), "Var").value(0), &v));
         QVERIFY2(std::abs(v.initial - expected) <= tolerance * expected, qPrintable(QString::number(v.initial, 'g', 10)));
         QVERIFY(doc->getDocChanged());
+        // The simulation's own edit, not the user's (the assessment of
+        // 2026-10-01: Claude's simulate called it a change while it ran).
+        QVERIFY(!doc->recentEdits().isEmpty());
+        QCOMPARE(doc->recentEdits().last().by, QucsDoc::kSimulation);
         // The equation is as it was.
         if (equations.startsWith("\"Rx=")) QCOMPARE(find(doc, "Eqn1")->Props.at(0)->Value, QStringLiteral("1k"));
 

@@ -261,6 +261,19 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   graphCompleter->setCompletionMode(QCompleter::PopupCompletion);
   GraphInput->setCompleter(graphCompleter);
 
+  // What of each value a graph shows - a complex one's magnitude (auto),
+  // dB, phase, ... - on a Cartesian diagram or in a table.
+  if (Graph::valuePartApplies(Diag->Name)) {
+    PartLabel = new QLabel(tr("Shows:"));
+    Box2Layout->addWidget(PartLabel);
+    PartBox = new QComboBox();
+    PartBox->setObjectName(QStringLiteral("graphValuePart"));
+    PartBox->addItems({tr("auto"), tr("magnitude"), tr("dB"), tr("phase (deg)"), tr("real part"), tr("imaginary part")});
+    PartBox->setToolTip(tr("What of each value the graph shows: auto is a complex value's magnitude, and a real one as it is"));
+    Box2Layout->addWidget(PartBox);
+    connect(PartBox, QOverload<int>::of(&QComboBox::activated), this, &DiagramDialog::slotSetValuePart);
+  }
+
   if (Diag->Name == "Tab") {
     Label1 = new QLabel(tr("Number Notation: "));
     Box2Layout->addWidget(Label1);
@@ -1408,6 +1421,7 @@ void DiagramDialog::slotTakeVar(QTableWidgetItem *Item) {
   GraphList->setRowCount(newRow + 1);
 
   Graph *g = new Graph(Diag, GraphInput->text());
+  if (PartBox != nullptr) g->valuePart = Graph::ValuePart(PartBox->currentIndex());
 
   if (Diag->Name != "Tab" && Diag->Name != "Truth") {
     g->Color = misc::getWidgetBackgroundColor(ColorButt);
@@ -1509,6 +1523,10 @@ void DiagramDialog::SelectGraph(Graph *g) {
   GraphInput->setText(g->Var);
   GraphInput->blockSignals(false);
   updateXVar();
+  if (PartBox) {
+    const QSignalBlocker block(PartBox);
+    PartBox->setCurrentIndex(int(g->valuePart));
+  }
 
   if (Diag->Name != "Tab") {
     if (Diag->Name != "Truth") {
@@ -1660,6 +1678,7 @@ void DiagramDialog::slotNewGraph() {
   GraphList->setRowCount(newRow + 1);
 
   Graph *g = new Graph(Diag, GraphInput->text());
+  if (PartBox != nullptr) g->valuePart = Graph::ValuePart(PartBox->currentIndex());
 
   if (Diag->Name != "Tab" && Diag->Name != "Truth") {
     g->Color = misc::getWidgetBackgroundColor(ColorButt);
@@ -1994,6 +2013,17 @@ void DiagramDialog::enableMarkerBox(const Graph *g) {
   const bool line = g != nullptr && g->Style >= GRAPHSTYLE_SOLID && g->Style <= GRAPHSTYLE_LONGDASH;
   MarkerBox->setEnabled(line);
   MarkerLabel->setEnabled(line);
+}
+
+void DiagramDialog::slotSetValuePart(int part) {
+  const int i = GraphList->currentRow();
+  if (i < 0)
+    return;
+  Graphs.at(i)->valuePart = Graph::ValuePart(part);
+  Graphs.at(i)->lastLoaded = QDateTime();   // (read again for it)
+  updateGraphListItem(i);
+  changed = true;
+  toTake = false;
 }
 
 void DiagramDialog::slotSetPointMarker(int marker) {
@@ -2502,11 +2532,11 @@ void DiagramDialog::updateGraphListItem(int row) {
   // Column 0: Variable name (always shown)
   QTableWidgetItem *varItem = GraphList->item(row, 0);
   if (!varItem) {
-    varItem = new QTableWidgetItem(g->Var);
+    varItem = new QTableWidgetItem(g->withValuePart(g->Var));
     varItem->setFlags(varItem->flags() ^ Qt::ItemIsEditable);
     GraphList->setItem(row, 0, varItem);
   } else {
-    varItem->setText(g->Var);
+    varItem->setText(g->withValuePart(g->Var));
   }
 
   // Only show trace properties if we have more than 1 column

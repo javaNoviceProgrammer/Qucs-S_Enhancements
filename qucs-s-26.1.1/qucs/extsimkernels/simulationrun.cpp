@@ -604,7 +604,14 @@ void SimulationRun::writeBackOptimum()
         p->Value = f.join('|');
         changed = true;
     }
-    if (changed) a_schematic->setChanged(true, true);
+    if (changed) {
+        // (The simulation's own edit: not the user's, nor a change of the
+        // circuit its results do not show.)
+        const quint64 editor = QucsDoc::editor();
+        QucsDoc::setEditor(QucsDoc::kSimulation);
+        a_schematic->setChanged(true, true);
+        QucsDoc::setEditor(editor);
+    }
 }
 
 void SimulationRun::reportNgOptimizations(const QString& out)
@@ -654,7 +661,14 @@ void SimulationRun::reportNgOptimizations(const QString& out)
         addLogEntry(text, doubtful ? style->standardIcon(QStyle::SP_MessageBoxWarning)
                                    : QIcon(":/bitmaps/svg/ok_apply.svg"));
     }
-    if (changed) a_schematic->setChanged(true, true);
+    if (changed) {
+        // (The simulation's own edit: not the user's, nor a change of the
+        // circuit its results do not show.)
+        const quint64 editor = QucsDoc::editor();
+        QucsDoc::setEditor(QucsDoc::kSimulation);
+        a_schematic->setChanged(true, true);
+        QucsDoc::setEditor(editor);
+    }
 }
 
 void SimulationRun::reportNgStatistics(const QString& out)

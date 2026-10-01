@@ -198,6 +198,24 @@ public:
   /// colors: no two curves alike in both before the 57th.
   enum class PointMarker { None = 0, Auto, Circle, Square, Triangle, Diamond, TriangleDown, Cross, Plus };
   PointMarker pointMarker = PointMarker::None;
+  /// What of each value the graph shows: Auto, as the diagrams always did -
+  /// a complex value's magnitude, a real one as it is - or the magnitude,
+  /// dB (20 log10 of the magnitude), the phase in degrees (-180 to 180),
+  /// the real or the imaginary part. Applied as the data is read, so the
+  /// curve, its markers and a table all show it; the legend and an axis's
+  /// label wrap the name in it (dB(ac.v(out))). A tenth field of the
+  /// graph's line, which versions before it do not read.
+  enum class ValuePart { Auto = 0, Magnitude, Db, Phase, Real, Imaginary };
+  ValuePart valuePart = ValuePart::Auto;
+  /// Whether a diagram of \a diagramName shows a part (a Cartesian one,
+  /// a table): a Smith chart, a polar or a locus diagram plots the complex
+  /// value itself.
+  static bool valuePartApplies(const QString& diagramName);
+  /// \a name as the graph shows it: dB(name), phase(name), mag(name),
+  /// re(name), im(name), or as it is.
+  QString withValuePart(const QString& name) const;
+  /// \a re, \a im made the part: \a re its value, \a im 0.
+  static void takeValuePart(ValuePart part, double* re, double* im);
   static const QList<PointMarker>& autoMarkers();
   /// Whether this graph marks its points (a line graph in a diagram that
   /// draws curves, with a marker chosen).

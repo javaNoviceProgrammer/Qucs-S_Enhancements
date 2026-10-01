@@ -274,13 +274,13 @@ void Diagram::paintLegend(QPainter *painter, const Colors &colors) {
         if (pg->distinguishesCurves() && pg->countY > 1) {
             const int shown = std::min(pg->countY, maxCurveRows);
             for (int c = 0; c < shown; ++c)
-                rows.append({pg->curveColor(c), pg->Style, pg->Thick, pg->Var + "  " + pg->curveLabel(c), true,
+                rows.append({pg->curveColor(c), pg->Style, pg->Thick, pg->withValuePart(pg->Var) + "  " + pg->curveLabel(c), true,
                              pg->curveMarker(c)});
             if (pg->countY > shown)
                 rows.append({QColor(), GRAPHSTYLE_SOLID, 0,
-                             QObject::tr("... %1 more curves of %2").arg(pg->countY - shown).arg(pg->Var), false});
+                             QObject::tr("... %1 more curves of %2").arg(pg->countY - shown).arg(pg->withValuePart(pg->Var)), false});
         } else {
-            rows.append({pg->curveColor(0), pg->Style, pg->Thick, pg->Var, true, pg->curveMarker(0)});
+            rows.append({pg->curveColor(0), pg->Style, pg->Thick, pg->withValuePart(pg->Var), true, pg->curveMarker(0)});
         }
     }
 
@@ -457,6 +457,7 @@ void Diagram::createAxisLabels() {
                         var_name = var_name.mid(p + 1);
                     }
                 }
+                var_name = pg->withValuePart(var_name);
                 if (Name[0] != 'C') {   // location curve ?
                     w = metrics.boundingRect(var_name).width() >> 1;
                     if (w > wmax) wmax = w;
@@ -503,6 +504,7 @@ void Diagram::createAxisLabels() {
                         var_name = var_name.mid(p + 1);
                     }
                 }
+                var_name = pg->withValuePart(var_name);
                 if (Name[0] != 'C') {   // location curve ?
                     w = metrics.boundingRect(var_name).width() >> 1;
                     if (w > wmax) wmax = w;
@@ -1321,6 +1323,8 @@ int Graph::loadDatFile(const QString &fileName) {
                 }
                 pPos = pEnd;
             }
+            // The part of the value shown (dB, the phase, ...), as read.
+            if (g->valuePart != Graph::ValuePart::Auto) Graph::takeValuePart(g->valuePart, &x, &y);
             *(p++) = x;
             *(p++) = y;
 #if 0 // FIXME there is no Name here.
