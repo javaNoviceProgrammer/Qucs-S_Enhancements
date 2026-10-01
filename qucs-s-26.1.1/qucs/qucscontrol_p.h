@@ -28,6 +28,8 @@ class Marker;
 class Module;
 class Painting;
 class Schematic;
+class QWidget;
+class QRegularExpression;
 
 namespace qucs_s::control {
 
@@ -51,6 +53,16 @@ bool sameFile(const QString& a, const QString& b);
 bool isQucsDocument(const QString& file);
 /// A path as given, or taken from the workspace folder.
 QString absolute(const QString& path);
+/// Whether \a w is the user's alone - a control of the Claude Code panel's
+/// outside its dock (the status bar's Claude chip, which shows and hides
+/// it): marked so (the property "qucsUsersOnly"), itself or a widget it is
+/// in. Claude's tools neither list nor use it.
+bool usersOnly(const QWidget* w);
+/// What a console printed for \a input, typed into it, from what it showed
+/// since (\a shown): after the line's echo - the terminal's, and again after
+/// the prompt -, nothing before it (a banner), its prompt at the end left
+/// out. \a promptBack: whether that prompt is back (the line is done).
+QString consoleReply(const QString& shown, const QString& input, const QRegularExpression& prompt, bool* promptBack);
 /// Why \a name (a file's or a folder's, without its folder) is no name of
 /// a file, in words: a character a file system refuses (<>:"/\|?* and
 /// control characters - Windows refuses them all), a space or a dot at

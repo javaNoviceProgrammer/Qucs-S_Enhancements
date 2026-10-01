@@ -26,6 +26,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QTimer>
@@ -47,11 +48,27 @@ QString tailOf(const QString& text, int count)
     return lines.mid(std::max<qsizetype>(0, lines.size() - count)).join(QLatin1Char('\n'));
 }
 
-// A text answer put before an answer of a tool's.
-QJsonObject withText(const QString& text, const QJsonObject& result)
+// What is said of a tool's answer (\a summary), with it: in its JSON
+// object as "summary" - one answer, as every tool gives it, not a second
+// text that reads as a string -; before its text when it is no JSON (an
+// error said in words).
+QJsonObject withText(const QString& summary, const QJsonObject& result)
 {
-    QJsonArray content{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")}, {QStringLiteral("text"), text}}};
-    for (const QJsonValue& v : result.value(QLatin1String("content")).toArray()) content.append(v);
+    QJsonArray content = result.value(QLatin1String("content")).toArray();
+    const QJsonObject first = content.isEmpty() ? QJsonObject() : content.at(0).toObject();
+    const QString text = first.value(QLatin1String("text")).toString();
+    QJsonParseError parsed;
+    const QJsonDocument json = QJsonDocument::fromJson(text.toUtf8(), &parsed);
+    if (first.value(QLatin1String("type")).toString() == QLatin1String("text") && parsed.error == QJsonParseError::NoError && json.isObject()) {
+        QJsonObject o = json.object();
+        o.insert(QStringLiteral("summary"), summary);
+        content[0] = QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                 {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))}};
+    } else if (first.value(QLatin1String("type")).toString() == QLatin1String("text")) {
+        content[0] = QJsonObject{{QStringLiteral("type"), QStringLiteral("text")}, {QStringLiteral("text"), summary + QLatin1Char('\n') + text}};
+    } else {
+        content.prepend(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")}, {QStringLiteral("text"), summary}});
+    }
     return {{QStringLiteral("content"), content}, {QStringLiteral("isError"), result.value(QLatin1String("isError")).toBool()}};
 }
 
@@ -87,6 +104,24 @@ void QucsControl::endSimRun(int id, const QJsonObject& result)
     run->ended = QDateTime::currentDateTime();
     run->result = result;
     run->process.clear();
+    // Stopped (stop_simulation, its timeout): said so in its outcome, with
+    // by what - Qucsator's too, which says nothing of it.
+    if (!run->stoppedBy.isEmpty()) {
+        QJsonArray content = result.value(QLatin1String("content")).toArray();
+        const QJsonDocument json = QJsonDocument::fromJson(content.isEmpty() ? QByteArray()
+                                                                             : content.at(0).toObject().value(QLatin1String("text")).toString().toUtf8());
+        if (json.isObject()) {
+            QJsonObject o = json.object();
+            o.insert(QStringLiteral("stopped"), true);
+            o.insert(QStringLiteral("stopped by"), run->stoppedBy);
+            if (!o.contains(QStringLiteral("note")))
+                o.insert(QStringLiteral("note"), tr("Stopped before it ended: its dataset is the one from before the run, or what "
+                                                    "the simulator wrote of it up to then."));
+            content[0] = QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                     {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))}};
+            run->result.insert(QStringLiteral("content"), content);
+        }
+    }
     // Told in the next answer of every conversation (the one that began it
     // may be waiting for something else).
     noteForConversations(tr("Simulation %1 (%2, %3) has ended%4: simulation_status {\"id\": %1} gives its outcome.")
@@ -136,7 +171,7 @@ QJsonObject QucsControl::simulationStatus(const QJsonObject& args)
         return errorResult(tr("There is no simulation %1 followed (%2).").arg(id).arg(ids.isEmpty() ? tr("none is") : tr("these are: %1").arg(ids.join(QStringLiteral(", ")))));
     }
     if (run->ended.isValid())
-        return withText(tr("Simulation %1 (%2, %3) ended at %4, after %5 s%6. Its outcome, as simulate gives it:")
+        return withText(tr("Simulation %1 (%2, %3) ended at %4, after %5 s%6; its outcome, as simulate gives it, is this answer.")
                             .arg(id).arg(QFileInfo(run->schematic).fileName(), run->simulator, run->ended.toString(QStringLiteral("HH:mm:ss")))
                             .arg(run->began.secsTo(run->ended))
                             .arg(run->stoppedBy.isEmpty() ? QString() : tr(" - stopped by %1").arg(run->stoppedBy)),
@@ -217,7 +252,7 @@ void QucsControl::stopSimulation(const QJsonObject& args, const Done& done)
             return;
         }
         if (r != nullptr && r->ended.isValid()) {
-            done(withText(tr("Simulation %1 stopped. Its outcome, as simulate gives it:").arg(id), r->result));
+            done(withText(tr("Simulation %1 stopped; its outcome, as simulate gives it, is this answer.").arg(id), r->result));
             return;
         }
         QString output;

@@ -53,6 +53,48 @@ QString lastLines(const QString& text, int count)
 
 } // namespace
 
+namespace qucs_s::control {
+
+QString consoleReply(const QString& shown, const QString& input, const QRegularExpression& prompt, bool* promptBack)
+{
+    QString said = shown;
+    // What it printed is what came after the line typed, echoed back - by
+    // the terminal, and again after the prompt by the program's own line
+    // editor (Python's, on its first line) -: not the line, nor what came
+    // before it (a program started for it says who it is first: Python's
+    // banner).
+    const QString typed = input.trimmed();
+    const auto echo = [&typed, &prompt](const QString& line) {
+        const QString l = line.trimmed();
+        if (l == typed) return 1;   // the terminal's
+        if (l.endsWith(typed) && prompt.match(l.left(l.size() - typed.size()).trimmed() + QLatin1Char(' ')).hasMatch()) return 2;   // after the prompt
+        return 0;
+    };
+    if (!typed.isEmpty()) {
+        const QStringList lines = said.split(QLatin1Char('\n'));
+        qsizetype at = -1;
+        for (qsizetype i = 0; i < lines.size() && at < 0; ++i)
+            if (echo(lines.at(i)) != 0) at = i;
+        if (at >= 0) {
+            qsizetype from = at + 1;
+            if (echo(lines.at(at)) == 1 && from < lines.size() && echo(lines.at(from)) == 2) ++from;   // (shown twice)
+            said = lines.mid(from).join(QLatin1Char('\n'));
+        }
+    }
+    // Its prompt back: not what it printed either.
+    const QString tail = said.right(40);
+    *promptBack = !tail.trimmed().isEmpty() && prompt.match(tail.trimmed() + QLatin1Char(' ')).hasMatch();
+    if (*promptBack) {
+        QStringList kept = said.split(QLatin1Char('\n'));
+        // (">>> " ends in its space already: matched as written.)
+        if (!kept.isEmpty() && prompt.match(kept.last().trimmed() + QLatin1Char(' ')).hasMatch()) kept.removeLast();
+        said = kept.join(QLatin1Char('\n'));
+    }
+    return said;
+}
+
+} // namespace qucs_s::control
+
 void QucsControl::console(const QJsonObject& args, const Done& done)
 {
     const QString kind = args.value(QLatin1String("kind")).toString().trimmed().toLower();
@@ -160,17 +202,11 @@ void QucsControl::console(const QJsonObject& args, const Done& done)
             w->seen = all.size();
             w->quiet.restart();
         }
-        QString said = all.mid(std::min(before, all.size()));
-        // (The line typed, echoed back first, is not what it printed.)
-        if (!input.isEmpty()) {
-            const qsizetype newline = said.indexOf(QLatin1Char('\n'));
-            if (newline >= 0 && said.left(newline).trimmed().endsWith(input.trimmed())) said = said.mid(newline + 1);
-        }
+        bool promptBack = false;
+        const QString said = consoleReply(all.mid(std::min(before, all.size())), input, prompt, &promptBack);
         // Its prompt back (Octave's, which a pipe may not show: quiet for a
         // while after it printed) - a run that prints nothing for long is
         // not over.
-        const QString tail = said.right(40);
-        const bool promptBack = !tail.trimmed().isEmpty() && prompt.match(tail.trimmed() + QLatin1Char(' ')).hasMatch();
         const bool settled = w->clock.elapsed() > 300
                              && ((promptBack && w->quiet.elapsed() > 300)
                                  || (kind == QLatin1String("octave") && !said.trimmed().isEmpty() && w->quiet.elapsed() > 1500));
@@ -178,15 +214,8 @@ void QucsControl::console(const QJsonObject& args, const Done& done)
         if (!settled && !timedOut) return;
         timer->stop();
         timer->deleteLater();
-        // The prompt it came back with is not what it printed either.
-        QString output = said;
-        if (promptBack) {
-            QStringList kept = output.split(QLatin1Char('\n'));
-            if (!kept.isEmpty() && prompt.match(kept.last() + QLatin1Char(' ')).hasMatch()) kept.removeLast();
-            output = kept.join(QLatin1Char('\n'));
-        }
         QJsonObject result{{QStringLiteral("kind"), kind},
-                           {QStringLiteral("output"), lastLines(output, lines)},
+                           {QStringLiteral("output"), lastLines(said, lines)},
                            {QStringLiteral("finished"), settled}};
         if (!settled)
             result.insert(QStringLiteral("note"),

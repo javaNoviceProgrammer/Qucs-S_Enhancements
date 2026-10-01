@@ -568,6 +568,9 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
     a_simulator = makeChip(a_row, "statusSimulator");
     a_saved = makeChip(a_row, "statusSaved");
     a_claude = makeChip(a_row, "statusClaude");
+    // (It shows and hides the Claude Code panel, and says what Claude does:
+    // the user's alone, as the panel is - Claude's tools leave it be.)
+    a_claude->setProperty("qucsUsersOnly", true);
     a_theme = makeChip(a_row, "statusTheme");
     a_theme->setToolButtonStyle(Qt::ToolButtonIconOnly);
     a_theme->setIconSize(QSize(14, 14));

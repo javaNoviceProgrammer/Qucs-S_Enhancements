@@ -346,7 +346,7 @@ const char* const kTools = R"JSON([
    "choose": {"type": "string", "description": "The entry chosen, by its path in the menu (\"Edit Properties\", \"Toggle hierarchy search view > Flat\") or its name alone; none: the menu is only read"},
    "path": {"type": "string", "description": "The schematic, for part, diagram and canvas: its file or tab's title; the one in front when not given"}}, "required": ["on"]}},
 {"name": "simulate",
- "description": "Simulates a schematic (the one in front unless 'path' names another; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into. 'background' answers at once with the run's id - for a long run (Monte Carlo, a long transient): simulation_status gives how it goes and its outcome once it has ended, wait_for waits for its end, stop_simulation stops it; meanwhile other calls go on. A run still going at its timeout goes on the same way, the answer giving its id. A run going - the user's too - is stopped by stop_simulation (as Simulation > Stop Simulation).",
+ "description": "Simulates a schematic (the one in front unless 'path' names another - a file not open is opened first, as open_document opens it, and the answer says so; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into. 'background' answers at once with the run's id - for a long run (Monte Carlo, a long transient): simulation_status gives how it goes and its outcome once it has ended, wait_for waits for its end, stop_simulation stops it; meanwhile other calls go on. A run still going at its timeout goes on the same way, the answer giving its id. A run going - the user's too - is stopped by stop_simulation (as Simulation > Stop Simulation).",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); a run still going then goes on, followed by the id the answer gives. With background: the most it may run, stopped then (none unless given)"},
    "background": {"type": "boolean", "description": "Answer at once with the run's id; simulation_status, wait_for and stop_simulation follow it"},
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For this run alone (an installed one); set_simulator changes the setting"},
@@ -954,6 +954,13 @@ QString badFileName(const QString& name)
     const QString stem = QFileInfo(name).completeBaseName().isEmpty() ? name : QFileInfo(name).completeBaseName();
     if (!stem.contains(QRegularExpression(QStringLiteral("[\\p{L}\\p{N}]")))) return tr("%1 is no file's name: it has no letter or digit").arg(name);
     return {};
+}
+
+bool usersOnly(const QWidget* w)
+{
+    for (; w != nullptr; w = w->parentWidget())
+        if (w->property("qucsUsersOnly").toBool()) return true;
+    return false;
 }
 
 QString absolute(const QString& path)
@@ -10279,6 +10286,7 @@ QList<QWidget*> QucsControl::dialogControls(QWidget* dialog, bool ui) const
     if (ui) all.prepend(dialog);
     for (QWidget* w : std::as_const(all)) {
         if (w != dialog && !shown(w, dialog)) continue;
+        if (usersOnly(w)) continue;   // (the user's alone: the Claude chip)
         // The line edit inside a combo box or a spin box is theirs.
         if (qobject_cast<QLineEdit*>(w) != nullptr
             && (qobject_cast<QComboBox*>(w->parentWidget()) != nullptr || qobject_cast<QAbstractSpinBox*>(w->parentWidget()) != nullptr))
@@ -10852,7 +10860,7 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
         if (!box->informativeText().isEmpty()) texts.append(box->informativeText());
     } else {
         for (QLabel* l : dialog->findChildren<QLabel*>())
-            if (l->isVisibleTo(dialog) && !l->text().trimmed().isEmpty() && l->buddy() == nullptr && texts.size() < 80)
+            if (l->isVisibleTo(dialog) && !l->text().trimmed().isEmpty() && l->buddy() == nullptr && texts.size() < 80 && !usersOnly(l))
                 texts.append(cleanText(l->text()));
     }
     return QJsonObject{{QStringLiteral("texts"), texts}, {QStringLiteral("controls"), controls}};
@@ -11474,6 +11482,24 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
     };
     QString error;
     Schematic* sch = schematic(args, &error, false);
+    // A schematic not open: opened first, as open_document opens it (a run
+    // is of a document in its tab), and said.
+    QString openedNote;
+    if (sch == nullptr) {
+        const QString path = args.value(QLatin1String("path")).toString().trimmed();
+        const QString file = path.isEmpty() ? QString() : absolute(path);
+        if (!file.isEmpty() && QFileInfo(file).isFile() && QFileInfo(file).suffix().compare(QLatin1String("sch"), Qt::CaseInsensitive) == 0
+            && a_app->findDoc(file) == nullptr) {
+            const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), file}});
+            if (opened.value(QLatin1String("isError")).toBool()) {
+                doneGiven(opened);
+                return;
+            }
+            error.clear();
+            sch = schematic(QJsonObject{{QStringLiteral("path"), file}}, &error, false);
+            openedNote = tr("%1 was not open: it is open now, in a tab of its own.").arg(QFileInfo(file).fileName());
+        }
+    }
     if (sch == nullptr) {
         doneGiven(errorResult(error));
         return;
@@ -11616,7 +11642,7 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
         QucsSettings.DefaultSimulator = previous;
     };
     const QPointer<Schematic> checked(sch);
-    const Done done = [this, checked, doneGiven, checkText, checkErrors, checkWarnings, oneOff, savedNote](const QJsonObject& r) {
+    const Done done = [this, checked, doneGiven, checkText, checkErrors, checkWarnings, oneOff, savedNote, openedNote](const QJsonObject& r) {
         QJsonObject result = r;
         QJsonArray content = result.value(QStringLiteral("content")).toArray();
         // Into the report itself, too.
@@ -11625,6 +11651,7 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
             QJsonObject report = QJsonDocument::fromJson(content.at(0).toObject().value(QStringLiteral("text")).toString().toUtf8()).object();
             if (!report.isEmpty()) {
                 if (!savedSaid) report.insert(QStringLiteral("saved"), savedNote);   // (where the file now is)
+                if (!openedNote.isEmpty()) report.insert(QStringLiteral("opened"), openedNote);
                 savedSaid = true;
                 const bool failed = report.contains(QStringLiteral("succeeded")) && !report.value(QStringLiteral("succeeded")).toBool();
                 // A run that failed: the errors of its subcircuits too - two
@@ -11742,6 +11769,7 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
                                                        .arg(*followed)}};
         if (!checkText.isEmpty()) begun.insert(QStringLiteral("before the run"), checkText);
         if (!savedNote.isEmpty()) begun.insert(QStringLiteral("saved"), savedNote);
+        if (!openedNote.isEmpty()) begun.insert(QStringLiteral("opened"), openedNote);
         given(jsonResult(begun));
     }
     // Past its timeout, not in the background: answered, and followed from
@@ -11943,10 +11971,15 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
                 result.insert(QStringLiteral("succeeded"), succeeded);
                 result.insert(QStringLiteral("stopped"), r->wasStopped());
                 result.insert(QStringLiteral("exit code"), r->exitCode());
-                if (r->exitCode() != 0 && errors.isEmpty())
+                // (Stopped - by the user, stop_simulation, a timeout - is no
+                // crash: its exit code is the stop's.)
+                if (r->exitCode() != 0 && errors.isEmpty() && !r->wasStopped())
                     errors.append(QJsonObject{{QStringLiteral("message"),
                                                r->exitCode() < 0 ? tr("The simulator crashed or did not start.")
                                                                  : tr("The simulator ended with exit code %1.").arg(r->exitCode())}});
+                if (r->wasStopped())
+                    result.insert(QStringLiteral("note"), tr("Stopped before it ended: its dataset is the one from before the run, or "
+                                                             "what the simulator wrote of it up to then."));
                 result.insert(QStringLiteral("errors"), errors);
                 if (succeeded && !written && !operatingPoint)
                     result.insert(QStringLiteral("note"), tr("The simulator reported no error but wrote no new dataset: its analyses may "
