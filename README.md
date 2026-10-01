@@ -96,6 +96,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   text editor) and *Images* (`.png`, `.jpg`/`.jpeg`, `.svg`, `.gif`,
   `.bmp`, `.tif`, `.webp` and the other formats Qt reads; they open with
   the system's viewer). Files in *Scratch* stay under *Scratch*.
+- **Content panel filter**: above the panel, the File Browser's *Filter
+  by name* box. It shows only the files whose names hold what is typed,
+  whatever its case - the name as the row has it, so a folder's name
+  (`docs`) finds the files in it -, in their categories and folders,
+  opened; the header says how many it found. A row it hides is no longer
+  selected, so no menu or drag takes it along. It stays as the panel
+  refreshes; cleared, every row is back and the categories are open as
+  they were.
 - **Content panel categories are yours to set**: a *Text* category, right
   before *Others*, lists the `.txt` files. *Application Settings →
   Contents* has a row per category, its name and the patterns of the

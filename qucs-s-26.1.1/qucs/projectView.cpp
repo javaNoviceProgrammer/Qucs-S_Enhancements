@@ -322,9 +322,13 @@ ProjectView::setProjPath(const QString &path)
     m_projName = qucs_s::workspace::projectName(QDir(m_projPath).dirName());
   }
   refresh();
-  // A freshly opened project shows its schematics.
-  if (m_valid)
-    setExpanded(m_model->index(rowOf(Schematics), 0), true);
+  // A freshly opened project shows its schematics - when the filter is
+  // cleared, if one is typed.
+  if (m_valid) {
+    const QModelIndex schematics = m_model->index(rowOf(Schematics), 0);
+    setExpanded(schematics, true);
+    if (!m_filter.isEmpty()) m_openUnfiltered = QStringList{rowKey(schematics)};
+  }
 }
 
 QString ProjectView::rowKey(const QModelIndex& idx) const
@@ -418,12 +422,10 @@ ProjectView::refresh()
   // files and folders: said in the header when that was not all).
   bool complete = true;
   const QStringList files = m_valid ? misc::projectFiles(QDir(m_projPath), QStringList(), &complete) : QStringList();
-  QStringList header;
-  header << (complete ? tr("Content of %1").arg(m_projName)
+  m_header = complete ? tr("Content of %1").arg(m_projName)
                       : tr("Content of %1 (the first %2 files and folders)")
-                            .arg(m_projName, QLocale().toString(misc::MaxProjectEntries)))
-         << tr("Note");
-  m_model->setHorizontalHeaderLabels(header);
+                            .arg(m_projName, QLocale().toString(misc::MaxProjectEntries));
+  m_model->setHorizontalHeaderLabels(QStringList{m_header, tr("Note")});
 
   const QList<int> order = categories();
   for (const int category : order) {
@@ -463,10 +465,64 @@ ProjectView::refresh()
   }
 
   restoreExpanded(QModelIndex(), expanded);
+  if (!m_filter.isEmpty()) applyFilter();
   resizeColumnToContents(0);
   m_signature = m_valid ? signatureOf(m_projPath, files) : QString();
   m_folderIcons = QucsSettings.ContentFolderIcons;
   m_patterns = categoryLines();
+}
+
+void ProjectView::setFilterText(const QString& text)
+{
+  const QString filter = text.trimmed();
+  if (filter == m_filter) return;
+  // The rows the user had open, for when the filter is cleared: the filter
+  // opens those that hold what it finds.
+  if (m_filter.isEmpty()) {
+    m_openUnfiltered.clear();
+    collectExpanded(QModelIndex(), m_openUnfiltered);
+  }
+  m_filter = filter;
+  applyFilter();
+  if (m_filter.isEmpty()) {
+    collapseAll();
+    restoreExpanded(QModelIndex(), m_openUnfiltered);
+  }
+}
+
+void ProjectView::applyFilter()
+{
+  const int found = filterRows(QModelIndex());
+  m_model->setHeaderData(0, Qt::Horizontal,
+                         m_filter.isEmpty() ? m_header : tr("%1: %n found", "", found).arg(m_header));
+  resizeColumnToContents(0);   // (the header too: not cut)
+}
+
+int ProjectView::filterRows(const QModelIndex& parent)
+{
+  int found = 0;
+  for (int row = 0; row < m_model->rowCount(parent); ++row) {
+    const QModelIndex idx = m_model->index(row, 0, parent);
+    bool shown = true;
+    if (isFile(idx)) {
+      // As the row is named: relative to the project, or to the Scratch
+      // folder under Scratch.
+      QString name = filePath(idx);
+      if (categoryOf(idx) == Scratch) name = name.section('/', 1);
+      shown = m_filter.isEmpty() || name.contains(m_filter, Qt::CaseInsensitive);
+      found += shown ? 1 : 0;
+      // What is hidden is not acted on: no menu or drag takes it along.
+      if (!shown && selectionModel() != nullptr)
+        selectionModel()->select(idx, QItemSelectionModel::Deselect | QItemSelectionModel::Rows);
+    } else {
+      const int inside = filterRows(idx);
+      found += inside;
+      shown = m_filter.isEmpty() || inside > 0;
+      if (inside > 0 && !m_filter.isEmpty()) setExpanded(idx, true);
+    }
+    setRowHidden(row, parent, !shown);
+  }
+  return found;
 }
 
 QString ProjectView::signatureOf(const QString& projPath, const QStringList& files)

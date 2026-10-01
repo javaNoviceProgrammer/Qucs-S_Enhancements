@@ -607,6 +607,16 @@ QString sizeText(qint64 bytes)
 // ----------------------------------------------------------------------
 namespace qucs_s::files {
 
+QLineEdit* nameFilterEdit(QWidget* parent)
+{
+    auto* edit = new QLineEdit(parent);
+    edit->setPlaceholderText(trf("Filter by name"));
+    edit->setClearButtonEnabled(true);
+    edit->addAction(glyphIcon(Glyph::Search), QLineEdit::LeadingPosition);
+    edit->setAttribute(Qt::WA_MacShowFocusRect, false);
+    return edit;
+}
+
 Kind kindOf(const QFileInfo& info)
 {
     Kind kind;
@@ -1245,12 +1255,8 @@ void FileBrowser::buildToolbar()
     layout->addWidget(a_pathStack);
 
     // The filter.
-    a_filter = new QLineEdit(this);
+    a_filter = qucs_s::files::nameFilterEdit(this);
     a_filter->setObjectName(QStringLiteral("fbFilter"));
-    a_filter->setPlaceholderText(tr("Filter by name"));
-    a_filter->setClearButtonEnabled(true);
-    a_filter->addAction(glyphIcon(Glyph::Search), QLineEdit::LeadingPosition);
-    a_filter->setAttribute(Qt::WA_MacShowFocusRect, false);
     connect(a_filter, &QLineEdit::textChanged, this, [this] { refilter(); });
     auto* filterRow = new QHBoxLayout;
     filterRow->setContentsMargins(4, 0, 4, 0);
