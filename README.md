@@ -1081,7 +1081,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   TSV and text hold one table; a workbook has a sheet for each sweep;
   NumPy has an array for each variable, shaped by what it is over, complex
   ones complex. The tab shows the Data tab's dataset until you choose
-  another, and says what would be written before you do.
+  another, and says what would be written before you do. Claude's
+  `export_data` writes the same files: a diagram's traces (or some of
+  them), or a dataset's variables - by name, as a trace names them
+  (`ngspice/run1:v(out)`, `m:gain`), or as an expression
+  (`db(ac.v(out)/ac.v(in))`) - so "export these curves as a CSV" is one
+  call. As in the tab, the file's suffix gives the format, and neither
+  the dataset nor a file a dataset was imported from is written over.
 - **Auto colors and point markers for the curves of a sweep**: a graph
   whose variable was swept - a parameter sweep, NgSweep, a Monte Carlo
   family - draws a curve for each value; with *auto* ticked next to the

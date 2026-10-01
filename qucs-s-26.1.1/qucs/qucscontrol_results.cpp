@@ -16,6 +16,7 @@
 
 #include "components/component.h"
 #include "components/libcomp.h"
+#include "dataexport.h"
 #include "dataimport.h"
 #include "dataset.h"
 #include "ngstatistics.h"
@@ -1829,52 +1830,62 @@ QString QucsControl::staleness(Schematic* sch, const QString& file, bool* certai
     return {};
 }
 
+namespace {
+// The dataset \a stem in \a folder: the simulator's (stem.dat.ngspice when
+// \a simulator says), an imported or Qucsator's (stem.dat), the one of the
+// simulator in the settings - the first there; empty when none is, the
+// files looked for in \a tried.
+QString datasetCalled(const QString& folder, const QString& stem, const QString& simulator, QStringList* tried)
+{
+    for (const QString& suffix : {simulator.isEmpty() ? QString() : QStringLiteral(".dat.") + simulator, QStringLiteral(".dat"),
+                                  QStringLiteral(".dat.") + simulatorPrefix()}) {
+        if (suffix.isEmpty() || suffix == QLatin1String(".dat.")) continue;
+        const QString candidate = QDir(folder).filePath(stem + suffix);
+        if (tried != nullptr && !tried->contains(QFileInfo(candidate).fileName())) *tried << QFileInfo(candidate).fileName();
+        if (QFileInfo(candidate).isFile()) return candidate;
+    }
+    return QString();
+}
+} // namespace
+
+QString QucsControl::datasetNamedBy(const QJsonObject& args, const QJsonArray& wanted, const QString& tool, QString* error) const
+{
+    error->clear();
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (wanted.isEmpty() || (!path.isEmpty() && isDatasetFile(path))) return QString();
+    QSet<QString> names;
+    QString simulator;
+    for (const QJsonValue& w : wanted) {
+        QString sim;
+        const QString bare = ds::withoutSimulator(w.toString().trimmed(), &sim);
+        const qsizetype colon = bare.indexOf(QLatin1Char(':'));
+        if (colon <= 0 || bare.left(colon).contains(QLatin1Char('('))) return QString();
+        names.insert(bare.left(colon).toLower());
+        if (!sim.isEmpty()) simulator = sim;
+    }
+    QString folder, ignored;
+    if (QucsDoc* doc = document(args, &ignored); doc != nullptr && !doc->getDocName().isEmpty()) folder = QFileInfo(doc->getDocName()).absolutePath();
+    else if (!path.isEmpty() && QFileInfo(absolute(path)).isFile()) folder = QFileInfo(absolute(path)).absolutePath();
+    if (names.size() > 1) {
+        *error = tr("The variables are of %1 datasets: %2 reads one at a time.").arg(names.size()).arg(tool);
+        return QString();
+    }
+    if (folder.isEmpty()) return QString();
+    const QString stem = ds::withoutSimulator(wanted.first().toString().trimmed()).section(QLatin1Char(':'), 0, 0);
+    QStringList tried;
+    const QString file = datasetCalled(folder, stem, simulator, &tried);
+    if (file.isEmpty()) *error = tr("There is no dataset %1 beside it (%2).").arg(stem, tried.join(QStringLiteral(", ")));
+    return file;
+}
+
 QJsonObject QucsControl::getDataset(const QJsonObject& args)
 {
     QString error;
     // Its variables named name:variable, as the traces of a dataset beside
     // the schematic's own are (m:gain imported, ngspice/run1:v(out) kept):
     // that dataset's.
-    QString file;
-    if (const QString path = args.value(QLatin1String("path")).toString().trimmed(); path.isEmpty() || !isDatasetFile(path)) {
-        QSet<QString> names;
-        QString simulator;
-        bool all = !args.value(QLatin1String("variables")).toArray().isEmpty();
-        for (const QJsonValue& w : args.value(QLatin1String("variables")).toArray()) {
-            QString sim;
-            const QString bare = ds::withoutSimulator(w.toString().trimmed(), &sim);
-            const qsizetype colon = bare.indexOf(QLatin1Char(':'));
-            if (colon <= 0 || bare.left(colon).contains(QLatin1Char('('))) {
-                all = false;
-                break;
-            }
-            names.insert(bare.left(colon).toLower());
-            if (!sim.isEmpty()) simulator = sim;
-        }
-        QString folder;
-        if (QucsDoc* doc = document(args, &error); doc != nullptr && !doc->getDocName().isEmpty()) folder = QFileInfo(doc->getDocName()).absolutePath();
-        else if (!path.isEmpty() && QFileInfo(absolute(path)).isFile()) folder = QFileInfo(absolute(path)).absolutePath();
-        error.clear();
-        if (all && names.size() > 1)
-            return errorResult(tr("The variables are of %1 datasets: get_dataset reads one at a time.").arg(names.size()));
-        if (all && names.size() == 1 && !folder.isEmpty()) {
-            const QString name = args.value(QLatin1String("variables")).toArray().first().toString().trimmed();
-            const QString stem = ds::withoutSimulator(name).section(QLatin1Char(':'), 0, 0);
-            QStringList tried;
-            for (const QString& suffix : {simulator.isEmpty() ? QString() : QStringLiteral(".dat.") + simulator, QStringLiteral(".dat"),
-                                          QStringLiteral(".dat.") + simulatorPrefix()}) {
-                if (suffix.isEmpty() || suffix == QLatin1String(".dat.")) continue;
-                const QString candidate = QDir(folder).filePath(stem + suffix);
-                tried << QFileInfo(candidate).fileName();
-                if (QFileInfo(candidate).isFile()) {
-                    file = candidate;
-                    break;
-                }
-            }
-            if (file.isEmpty())
-                return errorResult(tr("There is no dataset %1 beside it (%2).").arg(stem, tried.join(QStringLiteral(", "))));
-        }
-    }
+    QString file = datasetNamedBy(args, args.value(QLatin1String("variables")).toArray(), QStringLiteral("get_dataset"), &error);
+    if (!error.isEmpty()) return errorResult(error);
     if (file.isEmpty()) file = datasetPath(args, &error);
     if (file.isEmpty()) return errorResult(error);
     ds::Dataset data;
@@ -2368,6 +2379,191 @@ QJsonObject QucsControl::importData(const QJsonObject& args)
                   tr("Its traces are %1:variable, with no simulator's prefix - add_diagram with traces [\"%2\"] plots it. After %3 "
                      "changes, import_data with 'reload' reads it again.")
                       .arg(name, traces.value(0, name + QStringLiteral(":variable")), shownSource));
+    return jsonResult(result);
+}
+
+// Curves for another program: a diagram's traces, or a dataset's
+// variables, written as the Export tab writes them (dataexport.h).
+QJsonObject QucsControl::exportData(const QJsonObject& args)
+{
+    namespace de = qucs_s::dataexport;
+    QString error;
+    Schematic* sch = schematic(args, &error, false);
+    if (sch == nullptr) return errorResult(error);
+    if (sch->getDocName().isEmpty()) return errorResult(tr("%1 has no file yet, so no dataset: save_document with 'as' first.").arg(titleOf(sch)));
+    const bool fromDiagram = args.contains(QLatin1String("diagram"));
+    if (fromDiagram && (args.contains(QLatin1String("variables")) || args.contains(QLatin1String("dataset"))))
+        return errorResult(tr("Either a 'diagram' (its traces) or 'variables' (of 'dataset'): not both."));
+    if (!fromDiagram && args.contains(QLatin1String("traces"))) return errorResult(tr("'traces' are a 'diagram''s: give its number too."));
+    if (!fromDiagram && args.value(QLatin1String("variables")).toArray().isEmpty())
+        return errorResult(tr("What to write: a 'diagram' (its traces, or 'traces' of it), or 'variables' of a dataset."));
+    const QString folder = QFileInfo(sch->getDocName()).absolutePath();
+
+    // The dataset and the variables of it asked for.
+    QString file;
+    QStringList asked;   // as asked: a trace's variable, a name, an expression
+    if (fromDiagram) {
+        Diagram* d = diagramOf(sch, args.value(QLatin1String("diagram")), &error);
+        if (d == nullptr) return errorResult(error);
+        if (d->Graphs.isEmpty()) return errorResult(tr("Diagram %1 has no trace.").arg(args.value(QLatin1String("diagram")).toInt()));
+        QList<Graph*> graphs;
+        if (args.contains(QLatin1String("traces"))) {
+            const QJsonArray which = args.value(QLatin1String("traces")).toArray();
+            if (which.isEmpty()) return errorResult(tr("'traces': the diagram's traces to write, by their numbers or variables (all by default)."));
+            for (const QJsonValue& w : which) {
+                Graph* g = traceOf(d, w, &error);
+                if (g == nullptr) return errorResult(error);
+                if (!graphs.contains(g)) graphs << g;
+            }
+        } else {
+            graphs = QList<Graph*>(d->Graphs.cbegin(), d->Graphs.cend());
+        }
+        // One dataset: the traces of two (a run and a measurement) are
+        // written one dataset at a time.
+        QMap<QString, QStringList> byFile;   // dataset file: its traces
+        for (Graph* g : std::as_const(graphs)) {
+            QString variable;
+            const QString f = traceFile(sch, g->Var, &variable);
+            const int n = int(d->Graphs.indexOf(g)) + 1;
+            if (!QFileInfo(f).isFile())
+                return errorResult(tr("Trace %1 (%2) shows no data: %3.").arg(n).arg(g->Var, whyNoData(sch, g)));
+            if (byFile.isEmpty() || byFile.contains(f)) file = f;
+            byFile[f] << tr("%1 (%2)").arg(n).arg(g->Var);
+            if (!asked.contains(variable)) asked << variable;
+        }
+        if (byFile.size() > 1) {
+            QStringList parts;
+            for (auto it = byFile.cbegin(); it != byFile.cend(); ++it)
+                parts << tr("%1: traces %2").arg(QFileInfo(it.key()).fileName(), it.value().join(QStringLiteral(", ")));
+            return errorResult(tr("The traces are of %1 datasets - %2. A file holds one dataset's: give 'traces' of one (and "
+                                  "another call, another file, for the others).")
+                                   .arg(byFile.size())
+                                   .arg(parts.join(QStringLiteral("; "))));
+        }
+    } else {
+        const QJsonArray wanted = args.value(QLatin1String("variables")).toArray();
+        for (const QJsonValue& w : wanted) asked << w.toString().trimmed();
+        if (const QString named = args.value(QLatin1String("dataset")).toString().trimmed(); !named.isEmpty()) {
+            // A file (beside the schematic, or a path), or a name keep_as
+            // or import_data gave.
+            QStringList tried;
+            if (isDatasetFile(named)) {
+                const QString beside = QDir(folder).filePath(named);
+                file = QFileInfo(beside).isFile() ? beside : QFileInfo(absolute(named)).isFile() ? absolute(named) : QString();
+                tried << QDir::toNativeSeparators(named);
+            } else {
+                file = datasetCalled(folder, named, QString(), &tried);
+            }
+            if (file.isEmpty()) return errorResult(tr("There is no dataset %1 (%2).").arg(named, tried.join(QStringLiteral(", "))));
+        } else {
+            file = datasetNamedBy(args, wanted, QStringLiteral("export_data"), &error);
+            if (!error.isEmpty()) return errorResult(error);
+            if (file.isEmpty()) file = datasetPath(args, &error);
+            if (file.isEmpty()) return errorResult(error);
+        }
+    }
+    ds::Dataset data;
+    if (!data.read(file, &error)) return errorResult(error);
+    // Each as the dataset names it: itself, a trace's name of it (resolve()
+    // leaves its simulator and name: out), one it may mean, or an
+    // expression, evaluated and written as a variable of its own.
+    QStringList chosen, notes;
+    for (const QString& w : std::as_const(asked)) {
+        const QString bare = ds::withoutSimulator(w);
+        if (data.find(bare) != nullptr) {
+            if (!chosen.contains(bare)) chosen << bare;
+            continue;
+        }
+        const QStringList names = data.resolve(bare);
+        if (names.size() == 1) {
+            if (!chosen.contains(names.first())) chosen << names.first();
+            continue;
+        }
+        if (names.size() > 1) return errorResult(tr("%1 may be any of %2: say which.").arg(w, names.join(QStringLiteral(", "))));
+        if (ds::isExpression(bare)) {
+            ds::Variable made;
+            if (!ds::evaluate(data, bare, &made, &error)) return errorResult(tr("%1 does not evaluate: %2.").arg(w, error));
+            data.add(made);
+            if (!chosen.contains(made.name)) chosen << made.name;
+            continue;
+        }
+        QStringList some;
+        for (const ds::Variable& v : data.variables())
+            if (!v.independent && some.size() < 12) some << v.name;
+        return errorResult(tr("%1 has no variable %2; its variables: %3.").arg(QFileInfo(file).fileName(), w, some.join(QStringLiteral(", "))));
+    }
+
+    // The file: its suffix gives the format when it is one's (out.xlsx),
+    // else 'format''s is added (csv by default).
+    QString target = args.value(QLatin1String("save_as")).toString().trimmed();
+    if (target.isEmpty()) return errorResult(tr("'save_as' names the file to write."));
+    if (const QString bad = badFileName(QFileInfo(target).fileName()); !bad.isEmpty()) return errorResult(tr("'save_as': %1.").arg(bad));
+    target = absolute(target);
+    static const QHash<QString, de::Format> formats{{QStringLiteral("csv"), de::Format::Csv},     {QStringLiteral("tsv"), de::Format::Tsv},
+                                                    {QStringLiteral("xlsx"), de::Format::Xlsx},   {QStringLiteral("text"), de::Format::Text},
+                                                    {QStringLiteral("npz"), de::Format::Npz},     {QStringLiteral("dataset"), de::Format::Dataset}};
+    const QString formatName = args.value(QLatin1String("format")).toString().trimmed().toLower();
+    if (!formatName.isEmpty() && !formats.contains(formatName)) return errorResult(tr("'format' is csv, tsv, xlsx, text, npz or dataset."));
+    bool known = false;
+    const de::Format bySuffix = de::formatOfSuffix(QFileInfo(target).suffix(), &known);
+    de::Options options;
+    options.format = !formatName.isEmpty() ? formats.value(formatName) : known ? bySuffix : de::Format::Csv;
+    if (known && !formatName.isEmpty() && bySuffix != options.format)
+        return errorResult(tr("'save_as' %1 is a file of %2, and 'format' is %3: the one or the other.")
+                               .arg(QFileInfo(target).fileName(), de::formatName(bySuffix), formatName));
+    if (!known) target += QLatin1Char('.') + de::suffixOf(options.format);
+    if (const QString bad = badFileName(QFileInfo(target).fileName()); !bad.isEmpty()) return errorResult(tr("'save_as': %1.").arg(bad));
+    if (!QFileInfo(QFileInfo(target).absolutePath()).isDir())
+        return errorResult(tr("There is no folder %1.").arg(QDir::toNativeSeparators(QFileInfo(target).absolutePath())));
+    // Never the dataset read, nor a file a dataset beside it was imported
+    // from (the measurement itself).
+    if (sameFile(target, file)) return errorResult(tr("%1 is the dataset itself: write another file.").arg(QFileInfo(target).fileName()));
+    for (const QString& where : {QFileInfo(file).absolutePath(), folder})
+        for (const di::Imported& i : di::importedIn(where))
+            if (QFileInfo::exists(i.origin.source) && sameFile(target, i.origin.source))
+                return errorResult(tr("%1 is the file the dataset %2 was imported from: write another file.").arg(QFileInfo(target).fileName(), i.name));
+    const QString complex = args.value(QLatin1String("complex")).toString(QStringLiteral("real_imaginary")).trimmed().toLower();
+    if (complex == QLatin1String("real_imaginary")) options.complex = ds::Form::RealImaginary;
+    else if (complex == QLatin1String("magnitude_phase")) options.complex = ds::Form::MagnitudePhase;
+    else if (complex == QLatin1String("db_phase")) options.complex = ds::Form::DbPhase;
+    else return errorResult(tr("'complex' is real_imaginary (the default), magnitude_phase or db_phase."));
+
+    const QList<de::Table> tables = de::tablesOf(data, chosen);
+    const bool replacing = QFileInfo::exists(target);
+    aboutToWrite(target);
+    de::Written w;
+    if (!de::write(target, data, chosen, options, &w, &error)) return errorResult(error);
+
+    QJsonObject result{{QStringLiteral("file"), QDir::toNativeSeparators(target)},
+                       {QStringLiteral("format"), de::formatName(options.format)},
+                       {QStringLiteral("dataset"), QDir::toNativeSeparators(file)}};
+    if (replacing) result.insert(QStringLiteral("written over"), tr("the file that was there (undo with 'files' puts it back)"));
+    if (de::isTable(options.format)) {
+        QJsonArray list;
+        for (const de::Table& t : tables) {
+            QStringList columns;
+            for (const QString& name : t.independents + t.dependents) columns << de::columnsOf(*data.find(name), options.complex);
+            QJsonObject o{{QStringLiteral("over"), t.name()}, {QStringLiteral("rows"), t.rows},
+                          {QStringLiteral("columns"), QJsonArray::fromStringList(columns.mid(0, 100))}};
+            if (columns.size() > 100) o.insert(QStringLiteral("columns left out"), int(columns.size() - 100));
+            list.append(o);
+        }
+        result.insert(options.format == de::Format::Xlsx ? QStringLiteral("sheets") : QStringLiteral("table"),
+                      options.format == de::Format::Xlsx ? QJsonValue(list) : list.first());
+    } else {
+        QStringList written;
+        for (const de::Table& t : tables)
+            for (const QString& name : t.independents + t.dependents)
+                if (!written.contains(name)) written << name;
+        result.insert(options.format == de::Format::Npz ? QStringLiteral("arrays") : QStringLiteral("variables"),
+                      QJsonArray::fromStringList(written.mid(0, 100)));
+    }
+    notes << w.notes;
+    if (!notes.isEmpty()) result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(notes));
+    // A dataset written beside the schematic is one to plot.
+    if (options.format == de::Format::Dataset && sameFile(QFileInfo(target).absolutePath(), folder))
+        result.insert(QStringLiteral("then"), tr("Its traces are %1:variable (no simulator's prefix): add_diagram plots it.")
+                                                  .arg(QFileInfo(target).completeBaseName()));
     return jsonResult(result);
 }
 
