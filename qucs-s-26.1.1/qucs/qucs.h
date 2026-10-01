@@ -104,9 +104,19 @@ public:
   explicit QucsSortFilterProxyModel(QObject *parent = nullptr)
       : QSortFilterProxyModel(parent){};
 
+  /// Lists only the entries of the folder shown whose names hold \a text,
+  /// without regard to case - ".." always; empty: all of them. The folders
+  /// above it are never left out (they hold it).
+  void setNameFilter(const QString &text);
+  QString nameFilter() const { return a_nameFilter; }
+
 protected:
   bool lessThan(const QModelIndex &left,
                 const QModelIndex &right) const override;
+  bool filterAcceptsRow(int row, const QModelIndex &parent) const override;
+
+private:
+  QString a_nameFilter;
 };
 
 class QucsApp : public QMainWindow {
