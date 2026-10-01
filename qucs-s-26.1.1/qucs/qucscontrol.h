@@ -377,6 +377,11 @@ private:
     /// simulator (erc::commandsRun), unless 'allow_commands' in \a args;
     /// empty when it is.
     QString commandsRefused(Schematic* sch, const QJsonObject& args) const;
+    /// What each active .NGOPT block of \a sch found in ngspice's \a output:
+    /// its summary and the knobs' values, written into the parameters' and
+    /// parts' definitions when \a apply (one undo step; what cannot be is
+    /// said). Empty when it has none.
+    QJsonArray optimumOf(Schematic* sch, const QString& output, bool apply);
     /// The open documents that show \a sch's dataset: itself and its data
     /// displays.
     QList<Schematic*> showingDataOf(Schematic* sch) const;

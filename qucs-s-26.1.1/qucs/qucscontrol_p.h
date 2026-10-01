@@ -31,6 +31,11 @@ class Schematic;
 namespace qucs_s::control {
 
 QString tr(const char* text);
+/// The properties \a c has any number of (.NGOPT's Knob and Target,
+/// NgSweep's Record and Vs, a Monte Carlo's Record and Spec, an
+/// optimization's Var and Goal): each one's fields and an example, as
+/// describe_component_type gives them; empty for any other type.
+QJsonArray repeatedProperties(const Component* c);
 QJsonObject textResult(const QString& text, bool error = false);
 /// \a value as JSON text: indented, or on one line (\a compact) - numbers
 /// by the hundred read better so, and cost less.

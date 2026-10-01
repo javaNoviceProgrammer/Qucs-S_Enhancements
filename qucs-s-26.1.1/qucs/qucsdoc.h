@@ -138,6 +138,9 @@ public:
   /// The editor while a document is loaded again from its file, changed on
   /// disk by something outside Qucs-S (a command, another program).
   static constexpr quint64 kOnDisk = ~quint64(0);
+  /// The editor while a simulation writes into its schematic: an
+  /// optimizer's result into its knobs (NgOpt, Optimization).
+  static constexpr quint64 kSimulation = ~quint64(0) - 1;
   static void setEditor(quint64 who);
 
 protected:

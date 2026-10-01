@@ -2056,12 +2056,25 @@ QStringList describeChanges(const QString& before, const QString& after, int mos
         if (!label.isEmpty()) labelsNow.insert(label);
     }
     int wiresAdded = 0, wiresRemoved = 0;
-    for (auto it = wiresNow.cbegin(); it != wiresNow.cend(); ++it) wiresAdded += std::max(0, it.value() - wiresWas.value(it.key()));
-    for (auto it = wiresWas.cbegin(); it != wiresWas.cend(); ++it) wiresRemoved += std::max(0, it.value() - wiresNow.value(it.key()));
+    QStringList drawn, takenAway;   // (each by its ends)
+    const auto ends = [](const QString& key) {
+        const QStringList n = key.split(QLatin1Char(' '));
+        return n.size() == 4 ? QStringLiteral("%1,%2-%3,%4").arg(n.at(0), n.at(1), n.at(2), n.at(3)) : key;
+    };
+    for (auto it = wiresNow.cbegin(); it != wiresNow.cend(); ++it)
+        for (int k = wiresWas.value(it.key()); k < it.value(); ++k, ++wiresAdded) drawn << ends(it.key());
+    for (auto it = wiresWas.cbegin(); it != wiresWas.cend(); ++it)
+        for (int k = wiresNow.value(it.key()); k < it.value(); ++k, ++wiresRemoved) takenAway << ends(it.key());
     if (wiresAdded > 0 || wiresRemoved > 0) {
+        // Where, when they are few: a wire drawn again round a turned part
+        // is seen before it is made.
+        const auto where = [](QStringList list) {
+            list.sort();
+            return list.size() <= 6 ? QStringLiteral(" (%1)").arg(list.join(QStringLiteral("; "))) : QString();
+        };
         QStringList w;
-        if (wiresAdded > 0) w << (wiresAdded == 1 ? tr("a wire drawn") : tr("%1 wires drawn").arg(wiresAdded));
-        if (wiresRemoved > 0) w << (wiresRemoved == 1 ? tr("a wire taken away") : tr("%1 wires taken away").arg(wiresRemoved));
+        if (wiresAdded > 0) w << (wiresAdded == 1 ? tr("a wire drawn") : tr("%1 wires drawn").arg(wiresAdded)) + where(drawn);
+        if (wiresRemoved > 0) w << (wiresRemoved == 1 ? tr("a wire taken away") : tr("%1 wires taken away").arg(wiresRemoved)) + where(takenAway);
         changes << w.join(QStringLiteral(", "));
     }
     for (const QString& l : labelsNow - labelsWas) changes << tr("net label %1 set").arg(l);

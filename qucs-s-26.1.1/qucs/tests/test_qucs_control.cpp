@@ -30,6 +30,7 @@
 #include <QTextStream>
 #include <QTimer>
 #include <QPdfWriter>
+#include <QProcess>
 #include <QPainter>
 #include <QUrl>
 
@@ -3879,6 +3880,277 @@ private slots:
         r = call("export_data", {{"diagram", 1}, {"traces", QJsonArray{1}}, {"save_as", folder + "/copy"}, {"format", "dataset"}});
         QVERIFY2(!failed(r) && json(r).toObject().value("then").toString().contains("copy:variable"), qPrintable(text(r)));
         QVERIFY(QFileInfo::exists(folder + "/copy.dat"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // ---- the assessment of 2026-10-01 (qucs-s-mcp-api-assessment-2026-10-01)
+
+    // 2: a trace shows a part of each value - dB, phase, magnitude, real,
+    // imaginary - as it is read, so its markers and a table show it too, and
+    // its name says it; kept in the file as a field of its own. Refused
+    // where the complex value itself is drawn. An axis's units on a linear
+    // axis, and several traces with no legend, said.
+    void aTraceShowsAPartOfItsValues()
+    {
+        const QString folder = QucsSettings.qucsWorkspaceDir.absoluteFilePath("parts");
+        QVERIFY(QDir().mkpath(folder));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document", {{"as", folder + "/p.sch"}, {"replace", true}})));
+        {
+            QFile f(folder + "/p.dat.ngspice");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("<Qucs Dataset " PACKAGE_VERSION ">\n<indep frequency 3>\n1\n2\n3\n</indep>\n<dep ac.v(out) frequency>\n3+j4\n0+j1\n-1+j0\n</dep>\n");
+        }
+        QJsonObject r = call("add_diagram", {{"traces", QJsonArray{QJsonObject{{"variable", "ac.v(out)"}, {"part", "db"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("traces").toArray().at(0).toObject().value("part").toString(), QStringLiteral("db"));
+        Diagram* d = front()->a_DocDiags.back();
+        Graph* g = d->Graphs.first();
+        const auto values = [&g](int n) {
+            QList<double> v;
+            for (int i = 0; i < n; ++i) {
+                v << std::round(g->cPointsY[2 * i] * 1e3) / 1e3;
+                if (g->cPointsY[2 * i + 1] != 0 && g->valuePart != Graph::ValuePart::Auto) v << 999;   // (no imaginary part left)
+            }
+            return v;
+        };
+        QCOMPARE(values(3), (QList<double>{13.979, 0, 0}));
+        QCOMPARE(g->withValuePart(QStringLiteral("ac.v(out)")), QStringLiteral("dB(ac.v(out))"));
+        const QList<std::pair<const char*, QList<double>>> parts{{"phase", {53.13, 90, 180}}, {"real", {3, 0, -1}},
+                                                                 {"imaginary", {4, 1, 0}}, {"magnitude", {5, 1, 1}}};
+        for (const auto& [part, expected] : parts) {
+            r = call("edit_trace", {{"diagram", 1}, {"trace", 1}, {"part", part}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            QCOMPARE(values(3), expected);
+        }
+        r = call("edit_trace", {{"diagram", 1}, {"trace", 1}, {"part", "phase"}});
+        // A marker says it: its value, under its name.
+        r = call("add_marker", {{"diagram", 1}, {"trace", 1}, {"at", 2}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("text").toString().contains("phase(ac.v(out)): 90"), qPrintable(text(r)));
+        // Kept in the file: the tenth field of the trace's line; read back so.
+        QVERIFY(!failed(call("save_document")));
+        QFile file(folder + "/p.sch");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QString saved = QString::fromUtf8(file.readAll());
+        QVERIFY2(saved.contains("<\"ngspice/ac.v(out)\" #0000ff 1 3 0 0 0 0 0 3>"), qPrintable(saved.section("<Diagrams>", 1)));
+        QVERIFY(!failed(call("close_document")));
+        QVERIFY(!failed(call("open_document", {{"path", folder + "/p.sch"}})));
+        QCOMPARE(front()->a_DocDiags.back()->Graphs.first()->valuePart, Graph::ValuePart::Phase);
+        QCOMPARE(json(call("get_schematic")).toObject().value("diagrams").toArray().at(0).toObject().value("traces").toArray().at(0)
+                     .toObject().value("part").toString(),
+                 QStringLiteral("phase"));
+        // Where the complex value is drawn: no part.
+        r = call("add_diagram", {{"type", "smith"}, {"traces", QJsonArray{QJsonObject{{"variable", "ac.v(out)"}, {"part", "db"}}}}});
+        QVERIFY2(failed(r) && text(r).contains("plots the complex value itself"), qPrintable(text(r)));
+        QVERIFY(failed(call("edit_trace", {{"diagram", 1}, {"trace", 1}, {"part", "decibels"}})));
+        // Units on a linear axis: said, and what does it.
+        r = call("add_diagram", {{"traces", QJsonArray{"ac.v(out)"}}, {"y_axis", QJsonObject{{"units", "dB"}}}});
+        QVERIFY2(!failed(r) && text(r).contains("y_axis's units dB label a logarithmic axis's numbers"), qPrintable(text(r)));
+        r = call("add_diagram", {{"traces", QJsonArray{QJsonObject{{"variable", "ac.v(out)"}, {"part", "db"}}}}, {"y_axis", QJsonObject{{"units", "dB"}}}});
+        QVERIFY2(!failed(r) && text(r).contains("its traces are in dB already"), qPrintable(text(r)));
+        r = call("add_diagram", {{"traces", QJsonArray{"ac.v(out)"}}, {"y_axis", QJsonObject{{"units", "dB"}, {"log", true}}}});
+        QVERIFY2(!failed(r) && !text(r).contains("units dB"), qPrintable(text(r)));
+        // Two traces, no legend: said; with one, not.
+        r = call("add_diagram", {{"traces", QJsonArray{"ac.v(out)", QJsonObject{{"variable", "ac.v(out)"}, {"part", "phase"}}}}});
+        QVERIFY2(!failed(r) && text(r).contains("No legend"), qPrintable(text(r)));
+        r = call("add_diagram", {{"traces", QJsonArray{"ac.v(out)", QJsonObject{{"variable", "ac.v(out)"}, {"part", "phase"}}}}, {"legend", "top_right"}});
+        QVERIFY2(!failed(r) && !text(r).contains("No legend"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // 3: a property a block has any number of - .NGOPT's Knob and Target -
+    // given as a list (the schema took only a text, and refused a list the
+    // tool reads); described with its fields.
+    void aRepeatedPropertyTakesAList()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("add_component", {{"type", ".NGOPT"}, {"name", "NgOpt1"}, {"x", 100}, {"y", 100},
+                                               {"properties", QJsonObject{{"Method", "lm"}, {"Knob", QJsonArray{"dparam|R|500|100|10k"}},
+                                                                          {"Target", QJsonArray{"AC1|db(v(out)[0])|-3.0103|1", "AC1|db(v(out)[1])|-6|1"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const auto props = [this] {
+            for (const QJsonValue& c : json(call("get_schematic", {{"format", "json"}})).toObject().value("components").toArray())
+                if (c.toObject().value("name") == "NgOpt1") return c.toObject().value("properties").toObject();
+            return QJsonObject();
+        };
+        QCOMPARE(props().value("Knob").toArray(), QJsonArray{"dparam|R|500|100|10k"});
+        QCOMPARE(props().value("Target").toArray().size(), 2);
+        r = call("edit_component", {{"name", "NgOpt1"}, {"properties", QJsonObject{{"Knob", QJsonArray{"dparam|R|600|100|10k", "dparam|C|1n|100p|10n"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(props().value("Knob").toArray(), (QJsonArray{"dparam|R|600|100|10k", "dparam|C|1n|100p|10n"}));
+        QCOMPARE(props().value("Target").toArray().size(), 2);
+        r = call("edit_component", {{"name", "NgOpt1"}, {"properties", QJsonObject{{"Knob", QJsonArray{1}}}}});
+        QVERIFY2(failed(r) && text(r).contains("a text"), qPrintable(text(r)));
+        // Described: each with its fields, an example and how to give it.
+        const QJsonArray repeated = json(call("describe_component_type", {{"type", ".NGOPT"}})).toObject().value("repeated properties").toArray();
+        QCOMPARE(repeated.size(), 2);
+        QCOMPARE(repeated.at(0).toObject().value("name").toString(), QStringLiteral("Knob"));
+        QVERIFY(repeated.at(0).toObject().value("fields").toString().startsWith("kind|name|initial|low|high"));
+        QCOMPARE(repeated.at(1).toObject().value("example").toString(), QStringLiteral("SP1|db(S_2_1[20])|-0.0771|1"));
+        QVERIFY(json(call("describe_component_type", {{"type", "R"}})).toObject().value("repeated properties").isUndefined());
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // 4: what an ngspice optimize found comes back in simulate's answer;
+    // with apply_optimum it goes into the parameters (one undo step) and
+    // the dataset is not read as stale. The knobs Qucs-S writes after the
+    // run are the simulation's own edit, not "changed while it ran".
+    void anOptimumIsReportedAndApplied()
+    {
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (ngspice.isEmpty()) QSKIP("no ngspice here");
+        {
+            QTemporaryDir probe;
+            QFile deck(probe.filePath("probe.cir"));
+            QVERIFY(deck.open(QIODevice::WriteOnly));
+            deck.write("* probe\nR1 1 0 1\nV1 1 0 1\n.control\nhelp optimize\n.endc\n.end\n");
+            deck.close();
+            QProcess p;
+            p.setProcessChannelMode(QProcess::MergedChannels);
+            p.start(ngspice, {"-b", deck.fileName()});
+            QVERIFY(p.waitForFinished(20000));
+            if (!QString::fromUtf8(p.readAll()).contains("parameter optimizer")) QSKIP("no ngspice with the optimize command");
+        }
+        const QString before = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = ngspice;
+        const QString file = dir.filePath("workspace/rc_fit.sch");
+        QJsonObject r = call("import_netlist", {{"text", "rc\nV1 in 0 DC 0 AC 1\nR1 in out {R}\nC1 out 0 1n\n.param R=500\n.ac lin 1 159.155k 159.155k\n.end"},
+                                                {"save_as", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("add_component", {{"type", ".NGOPT"}, {"name", "NgOpt1"}, {"x", 400}, {"y", 500},
+                                               {"properties", QJsonObject{{"Method", "lm"}, {"Knob", QJsonArray{"dparam|R|500|100|10k"}},
+                                                                          {"Target", QJsonArray{"AC1|db(v(out)[0])|-3.0103|1"}}}}})));
+        const auto parameter = [this] {
+            for (const QJsonValue& c : json(call("get_schematic", {{"format", "json"}})).toObject().value("components").toArray())
+                if (c.toObject().value("type") == "SpicePar") return c.toObject().value("equations").toArray().at(0).toString();
+            return QString();
+        };
+        QCOMPARE(parameter(), QStringLiteral("R=500"));
+        r = call("simulate", {{"timeout", 60}}, 90000);
+        QJsonObject o = json(r).toObject();
+        QVERIFY2(o.value("succeeded").toBool(), qPrintable(text(r)));
+        QJsonObject optimum = o.value("optimum").toArray().at(0).toObject();
+        QCOMPARE(optimum.value("block").toString(), QStringLiteral("NgOpt1"));
+        QVERIFY2(optimum.value("summary").toString().startsWith("converged"), qPrintable(text(r)));
+        QVERIFY2(std::abs(qucs_s::units::read(optimum.value("found").toObject().value("R").toString()).value - 1000) < 1, qPrintable(text(r)));
+        QVERIFY2(optimum.value("applied").toString().startsWith("no:"), qPrintable(text(r)));
+        QVERIFY2(!o.contains("changed while it ran"), qPrintable(text(r)));
+        QCOMPARE(parameter(), QStringLiteral("R=500"));
+        // Applied: into SpicePar1's R, one undo step; the dataset not stale.
+        r = call("simulate", {{"timeout", 60}, {"apply_optimum", true}}, 90000);
+        optimum = json(r).toObject().value("optimum").toArray().at(0).toObject();
+        QCOMPARE(optimum.value("applied to").toObject().value("R").toString(), QStringLiteral("SpicePar1.R"));
+        QCOMPARE(parameter(), QStringLiteral("R=1k"));
+        r = call("get_dataset", {{"variables", QJsonArray{"ac.v(out)"}}, {"points", 1}});
+        QVERIFY2(!failed(r) && !json(r).toObject().contains("stale"), qPrintable(text(r).left(600)));
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(parameter(), QStringLiteral("R=500"));
+        QucsSettings.NgspiceExecutable = before;
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // 5: a pin's place on a part turned or mirrored, by rotation and
+    // mirror or by the rule given - as a part placed so has it; connect
+    // says when a pin faces away from the other end, and a body it crosses.
+    void pinsAreGivenTurnedAndConnectSaysWhy()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        // (An op-amp: its pins off its centre line both ways, so a mirror
+        // moves them.)
+        const QJsonObject plain = json(call("describe_component_type", {{"type", "OpAmp"}})).toObject();
+        QVERIFY(plain.value("turned").toString().contains("rotation 1 puts it at (y, -x)"));
+        const QJsonArray at0 = plain.value("pins").toArray();
+        QCOMPARE(at0.size(), 3);
+        int n = 0;
+        for (const bool mirror : {false, true})
+            for (int rotation = 0; rotation < 4; ++rotation) {
+                const QString name = QStringLiteral("OP%1").arg(++n);
+                QVERIFY(!failed(call("add_component", {{"type", "OpAmp"}, {"name", name}, {"x", 200 * n}, {"y", 300}, {"rotation", rotation}, {"mirror", mirror}})));
+                const QJsonArray placed = json(call("get_schematic", {{"components", QJsonArray{name}}})).toObject().value("components").toArray()
+                                              .at(0).toObject().value("pins").toArray();
+                const QJsonArray described = json(call("describe_component_type", {{"type", "OpAmp"}, {"rotation", rotation}, {"mirror", mirror}}))
+                                                 .toObject().value("pins").toArray();
+                for (int i = 0; i < 3; ++i) {
+                    // As described; and as the rule says: mirror (x, -y), then (y, -x) each turn.
+                    const int px = placed.at(i).toObject().value("x").toInt() - 200 * n, py = placed.at(i).toObject().value("y").toInt() - 300;
+                    QCOMPARE(described.at(i).toObject().value("x").toInt(), px);
+                    QCOMPARE(described.at(i).toObject().value("y").toInt(), py);
+                    int x = at0.at(i).toObject().value("x").toInt(), y = at0.at(i).toObject().value("y").toInt();
+                    if (mirror) y = -y;
+                    for (int k = 0; k < rotation; ++k) std::tie(x, y) = std::make_pair(y, -x);
+                    QVERIFY2(x == px && y == py, qPrintable(QStringLiteral("%1 rotation %2 mirror %3 pin %4").arg(name).arg(rotation).arg(mirror).arg(i + 1)));
+                }
+            }
+        QVERIFY(failed(call("describe_component_type", {{"type", "OpAmp"}, {"rotation", 4}})));
+        // The reviewer's case: C at rotation 1 (pin 1 at its bottom) wired to L above.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "C"}, {"name", "C1"}, {"x", 220}, {"y", 230}, {"rotation", 1}})));
+        QVERIFY(!failed(call("add_component", {{"type", "L"}, {"name", "L1"}, {"x", 340}, {"y", 160}})));
+        QJsonObject r = call("connect", {{"from", "C1.1"}, {"to", "L1.1"}});
+        QVERIFY2(!failed(r) && text(r).contains("C1's pin 1 faces down, away from L1.1: the wire goes round C1. At rotation 3 (now 1) it faces L1.1."),
+                 qPrintable(text(r)));
+        // Pins facing each other: nothing to say of them.
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R2"}, {"x", 220}, {"y", 100}, {"rotation", 1}})));
+        r = call("connect", {{"from", "C1.2"}, {"to", "R2.1"}});
+        QVERIFY2(!failed(r) && !text(r).contains("faces"), qPrintable(text(r)));
+        // A wire through a part's body, by the way given: said.
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R9"}, {"x", 600}, {"y", 300}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R7"}, {"x", 600}, {"y", 200}, {"rotation", 1}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R8"}, {"x", 600}, {"y", 400}, {"rotation", 1}})));
+        r = call("connect", {{"from", "R7.1"}, {"to", "R8.2"}, {"via", QJsonArray{QJsonArray{600, 300}}}});
+        QVERIFY2(text(r).contains("It crosses the body of R9"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // 6: the smaller notes - a bracketed name in an expression (db(S[2,1]));
+    // a second import of a file of that name told why it is name_2;
+    // edit_trace that changes nothing says so; a preview's wires by their
+    // ends.
+    void theSmallerNotesOfTheAssessment()
+    {
+        const QString folder = QucsSettings.qucsWorkspaceDir.absoluteFilePath("assess6");
+        QVERIFY(QDir().mkpath(folder + "/other"));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "C"}, {"name", "C1"}, {"x", 220}, {"y", 230}, {"rotation", 1}})));
+        QVERIFY(!failed(call("add_component", {{"type", "L"}, {"name", "L1"}, {"x", 340}, {"y", 160}})));
+        QVERIFY(!failed(call("connect", {{"from", "C1.1"}, {"to", "L1.1"}})));
+        QVERIFY(!failed(call("save_document", {{"as", folder + "/t.sch"}, {"replace", true}})));
+        {
+            QFile f(folder + "/target.dat");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("<Qucs Dataset " PACKAGE_VERSION ">\n<indep frequency 2>\n1e6\n2e6\n</indep>\n<dep S[2,1] frequency>\n0.6+j0.8\n0+j0.5\n</dep>\n");
+        }
+        QJsonObject r = call("get_dataset", {{"path", folder + "/target.dat"}, {"variables", QJsonArray{"db(S[2,1])", "phase(S[2,1])+1"}}, {"at", QJsonArray{1e6}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray vars = json(r).toObject().value("variables").toArray();
+        QVERIFY2(std::abs(vars.at(0).toObject().value("at").toArray().at(0).toArray().at(1).toDouble()) < 1e-9, qPrintable(text(r)));
+        QVERIFY2(std::abs(vars.at(1).toObject().value("at").toArray().at(0).toArray().at(1).toDouble() - 54.1301) < 1e-3, qPrintable(text(r)));
+        // A second file of the name: named, and why.
+        for (const QString& where : {folder, folder + "/other"}) {
+            QFile f(where + "/meas.csv");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("t,v\n0,1\n1,2\n");
+        }
+        QVERIFY(!failed(call("import_data", {{"file", folder + "/meas.csv"}})));
+        r = call("import_data", {{"file", folder + "/other/meas.csv"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("named").toString()
+                                   == "meas is the dataset imported from meas.csv: this one is meas_2 ('name': \"meas\" puts it in that one's place).",
+                 qPrintable(text(r)));
+        r = call("import_data", {{"file", folder + "/meas.csv"}, {"reload", true}});
+        QVERIFY2(!failed(r) && !json(r).toObject().contains("named"), qPrintable(text(r)));
+        // edit_trace changing nothing: said so, and why.
+        QVERIFY(!failed(call("add_diagram", {{"traces", QJsonArray{"meas:v"}}})));
+        r = call("edit_trace", {{"diagram", 1}, {"trace", 1}, {"variable", "meas:v"}, {"thickness", 0}});
+        r = call("edit_trace", {{"diagram", 1}, {"trace", 1}, {"variable", "meas:v"}, {"thickness", 0}});
+        QVERIFY2(json(r).toObject().value("changed") == false && text(r).contains("Nothing changed: trace 1 is so already."), qPrintable(text(r)));
+        r = call("edit_trace", {{"diagram", 1}, {"trace", 1}, {"thickness", 2}});
+        QVERIFY2(!json(r).toObject().contains("changed"), qPrintable(text(r)));
+        // A turn's wires by their ends, in the preview.
+        r = call("edit_component", {{"name", "C1"}, {"rotation", 3}, {"preview", true}});
+        const QString changes = QJsonDocument(json(r).toObject().value("would change").toArray()).toJson(QJsonDocument::Compact);
+        QVERIFY2(changes.contains("2 wires drawn (") && changes.contains("2 wires taken away (220,260-310,260; 310,160-310,260)"), qPrintable(changes));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 

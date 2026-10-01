@@ -81,6 +81,7 @@ private slots:
   /// The point marker of the selected graph (Graph::PointMarker, in the
   /// order of the box: none, auto, then the shapes).
   void slotSetPointMarker(int marker);
+  void slotSetValuePart(int part);
   void slotResetToTake(const QString&);
   void slotSetNumMode(int);
   void slotSetGridBox(int);
@@ -236,6 +237,9 @@ private:
   QCheckBox   *AutoColorBox = nullptr;
   QLabel      *MarkerLabel = nullptr;
   QComboBox   *MarkerBox = nullptr;
+  // What of each value a graph shows (Graph::ValuePart), where it applies.
+  QLabel      *PartLabel = nullptr;
+  QComboBox   *PartBox = nullptr;
   /// Enables the marker box for \a g (a line graph) or a new graph.
   void enableMarkerBox(const Graph *g);
   QSlider     *SliderRotX, *SliderRotY, *SliderRotZ;

@@ -18,6 +18,7 @@
 #include "diagrams/diagramdialog.h"
 #include "diagrams/graph.h"
 #include "diagrams/rectdiagram.h"
+#include "diagrams/smithdiagram.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
 #include "main.h"
@@ -660,6 +661,58 @@ private slots:
         }
         QucsSettings.DefaultSimulator = simulator;
     }
+    // What of each value a trace shows (the assessment of 2026-10-01, 2):
+    // the dialog's Shows box, for a Cartesian diagram and a table, not a
+    // Smith chart; it shows the trace's, sets it, and the trace keeps it
+    // through OK; the trace's row names it.
+    void aTracesPartInTheDialog()
+    {
+        const QString folder = QFileInfo(dir.filePath("parts")).absoluteFilePath();
+        write("parts/amp.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n");
+        write("parts/amp.dat.ngspice", kDataset);
+        const int simulator = QucsSettings.DefaultSimulator;
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        {
+            Schematic sch(nullptr, folder + "/amp.sch");
+            RectDiagram d;
+            auto* g = new Graph(&d, "ngspice/ac.v(out)");
+            g->valuePart = Graph::ValuePart::Db;
+            d.Graphs.append(g);
+            auto* dialog = new DiagramDialog(&d, &sch);
+            auto* box = dialog->findChild<QComboBox*>("graphValuePart");
+            QVERIFY(box != nullptr);
+            QCOMPARE(box->count(), 6);
+            auto* list = dialog->findChild<QTableWidget*>("diagramGraphs");
+            QVERIFY(list != nullptr && list->rowCount() == 1);
+            QCOMPARE(list->item(0, 0)->text(), QStringLiteral("dB(ngspice/ac.v(out))"));
+            list->setCurrentCell(0, 0);
+            QMetaObject::invokeMethod(dialog, "slotSelectGraph", Q_ARG(QTableWidgetItem*, list->item(0, 0)));
+            QCOMPARE(box->currentIndex(), int(Graph::ValuePart::Db));
+            box->setCurrentIndex(int(Graph::ValuePart::Phase));
+            emit box->activated(int(Graph::ValuePart::Phase));
+            QCOMPARE(list->item(0, 0)->text(), QStringLiteral("phase(ngspice/ac.v(out))"));
+            QMetaObject::invokeMethod(dialog, "slotApply");
+            QCOMPARE(d.Graphs.size(), 1);
+            QCOMPARE(d.Graphs.first()->valuePart, Graph::ValuePart::Phase);
+            dialog->close();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            // Read so: the phase of 1+j1 is 45 degrees.
+            QVERIFY(d.Graphs.first()->loadDatFile(folder + "/amp.dat") >= 0);
+            QVERIFY(d.Graphs.first()->cPointsY != nullptr);
+            QVERIFY(std::abs(d.Graphs.first()->cPointsY[0] - 45.0) < 1e-9);
+            QCOMPARE(d.Graphs.first()->cPointsY[1], 0.0);
+        }
+        {
+            Schematic sch(nullptr, folder + "/amp.sch");
+            SmithDiagram smith;
+            auto* dialog = new DiagramDialog(&smith, &sch);
+            QVERIFY(dialog->findChild<QComboBox*>("graphValuePart") == nullptr);
+            dialog->close();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        }
+        QucsSettings.DefaultSimulator = simulator;
+    }
+
     // QUCS_TEST_EXPORT_DIR=<dir>: a file of each format there, of the
     // transient and the AC analysis (Excel, NumPy: both), to open in the
     // programs they are for; with QUCS_TEST_GRAB=<dir>, a picture of the tab.
