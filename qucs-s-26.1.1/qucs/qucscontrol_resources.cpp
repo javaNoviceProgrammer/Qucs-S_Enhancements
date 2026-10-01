@@ -66,6 +66,13 @@ QJsonArray QucsControl::resources() const
                                 {QStringLiteral("title"), tr("ngspice's commands")},
                                 {QStringLiteral("description"), tr("What ngspice_commands tells: every ngspice command in a line, by category, "
                                                                    "which the installed ngspice has, and how Qucs-S uses them")},
+                                {QStringLiteral("mimeType"), QStringLiteral("text/plain")}},
+                    QJsonObject{{QStringLiteral("uri"), kPrefix + QStringLiteral("instructions")},
+                                {QStringLiteral("name"), QStringLiteral("instructions")},
+                                {QStringLiteral("title"), tr("How to use these tools")},
+                                {QStringLiteral("description"), tr("The server's instructions whole, for a client that cuts them "
+                                                                   "(Claude Code keeps 2,048 characters unless "
+                                                                   "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH says more)")},
                                 {QStringLiteral("mimeType"), QStringLiteral("text/plain")}}};
     for (QucsDoc* doc : a_app->allDocuments()) {
         auto* sch = dynamic_cast<Schematic*>(doc);
@@ -98,7 +105,7 @@ QJsonArray QucsControl::resourceTemplates() const
 // A resource's URI read: its kind and the document it is of.
 bool QucsControl::resourceOf(const QString& uri, QString* kind, QucsDoc** doc, QString* error) const
 {
-    for (const QString& whole : {QStringLiteral("state"), QStringLiteral("ngspice-commands")})
+    for (const QString& whole : {QStringLiteral("state"), QStringLiteral("ngspice-commands"), QStringLiteral("instructions")})
         if (uri == kPrefix + whole) {
             *kind = whole;
             *doc = nullptr;
@@ -147,6 +154,7 @@ QJsonArray QucsControl::readResource(const QString& uri, QString* error)
     };
     if (kind == QLatin1String("state")) return fromTool(QStringLiteral("get_state"), {}, QStringLiteral("application/json"));
     if (kind == QLatin1String("ngspice-commands")) return fromTool(QStringLiteral("ngspice_commands"), {}, QStringLiteral("text/plain"));
+    if (kind == QLatin1String("instructions")) return contents(instructions(), QStringLiteral("text/plain"));
     const QJsonObject path{{QStringLiteral("path"), doc->getDocName()}};
     if (kind == QLatin1String("schematic")) return contents(static_cast<Schematic*>(doc)->documentText(), QStringLiteral("text/x-qucs-schematic"));
     if (kind == QLatin1String("dataset")) return fromTool(QStringLiteral("get_dataset"), path, QStringLiteral("application/json"));
@@ -174,7 +182,7 @@ QString QucsControl::resourceVersion(const QString& uri) const
             v += QStringLiteral("%1:%2:%3;").arg(seenKey(d)).arg(revisionOf(d).first).arg(revisionOf(d).second ? 1 : 0);
         return v;
     }
-    if (kind == QLatin1String("ngspice-commands")) return QStringLiteral("1");
+    if (kind == QLatin1String("ngspice-commands") || kind == QLatin1String("instructions")) return QStringLiteral("1");
     if (kind == QLatin1String("dataset")) return datasetWritten(doc).toString(Qt::ISODateWithMs);
     return QString::number(revisionOf(doc).first);
 }
