@@ -34,7 +34,7 @@ what is said of them comes from their netlists, not runs. Methods:
      (one of them in no dataset, one an expression): 108 exports, the graphs kept on OK
      (`h_kinds.patch`).
 
-   No crash, no server that died. Nothing was written outside the scratch folder. Two probes
+   No crash and no server that died, but for the one probe of F1. Nothing was written outside the scratch folder. Two probes
    (A7) wrote outside their own workspace on purpose, still inside the scratch folder.
 
 *Status:* found, not fixed (as asked: the hunt went on past each finding).
@@ -46,6 +46,7 @@ scratch files to the system's trash, as `clean_scratch`'s test does.
 
 | | severity | area | finding |
 |---|---|---|---|
+| F1 | high | crash | A subcircuit with two ports of the same number crashes Qucs-S when a schematic that uses it is netlisted |
 | E1 | high | security | Claude's `simulate` runs a schematic's commands, unannounced: a System command part (`CMD`) after the run, ngspice's `shell` in a custom simulation. Nothing asks about them or reports them |
 | A1 | high | netlist | A net with two names - a label and a ground, or two labels - is netlisted as two nodes: parts on one name are cut off from the others. Check Schematic says nothing, or that "the netlist keeps one of them" |
 | A2 | medium | `clean_scratch` | `datasets` trashes `<file name>.dat*`, not the schematic's Data Set: another dataset goes (an import), its own stays |
@@ -75,6 +76,25 @@ scratch files to the system's trash, as `clean_scratch`'s test does.
 | D3 | low | `clean_scratch` | In the folder schematics of no project share, it trashes every file there, not only its last run's |
 | D4 | low | test | `aNetNamedAsGroundIsNotPrinted`'s cases "with a ground symbol" put it mid-wire, connected to nothing |
 | D5 | low | SPICE file (upstream) | The Preprocessor option starts the wrong program: the script's name, with `perl` as its first argument |
+
+## F. A crash
+
+### F1. Two ports of the same number crash the netlister
+
+A subcircuit of three ports, with P2's number set to 1 as P1's is (`edit_component`, as its
+dialog does): Check Schematic said nothing of it, nor did the parent's check with `subcircuits`
+("in its subcircuits 0 errors", `h_portnum_check.py`). An instance of it placed in another schematic
+showed three pins. `get_netlist` of that schematic killed the server (`h_portnum.py`). The crash
+report (its crashed thread in `crash-portnum.txt` beside this report) gives a bus error in `QString::operator=` (a
+pointer that fails authentication) under `Schematic::throughAllComps`, from `giveNodeNames`,
+`prepareSpiceNetlist`, `SaveNetlist`, and `QucsControl::getNetlist`. By reading, it is the loop
+that gives each pin of an instance its port's type: `pp->Type = it.value().PortTypes[i]` for
+every pin. The subcircuit's file gives one type for each port number, so two ports of one number
+give fewer types than the instance has pins, and the index runs past the list (no check in a
+Release build). The window crashes the same way on Simulate or on any netlist of the parent.
+
+*Fix:* Check Schematic calls two ports of one number an error, and so does the netlister. The
+loop stops at the shorter of the two lists.
 
 ## A. Wrong answers, or silent
 

@@ -1,0 +1,18 @@
+qucs-s --mcp-server (Release build of 6511b15), 2026-09-30 20:34, the crashed thread:
+EXC_BAD_ACCESS SIGBUS
+  QtCore  QArrayDataPointer<char16_t>::operator=(QArrayDataPointer<char16_t> const&)
+  QtCore  QString::operator=(QString const&)
+  qucs-s  Schematic::throughAllComps(QTextStream*, int&, QList<QString>&, QPlainTextEdit*, int)
+  qucs-s  Schematic::giveNodeNames(QTextStream*, int&, QList<QString>&, QPlainTextEdit*, int)
+  qucs-s  Schematic::prepareNetlist(QTextStream&, QList<QString>&, QPlainTextEdit*)
+  qucs-s  AbstractSpiceKernel::prepareSpiceNetlist(QTextStream&, bool)
+  qucs-s  Ngspice::createNetlist(QTextStream&, QList<QString>&, QList<QString>&, QList<QString>&)
+  qucs-s  Ngspice::SaveNetlist(QString, bool)
+  qucs-s  SimulationRun::writeNetlist(QString const&)
+  qucs-s  QucsControl::getNetlist(QJsonObject const&)
+  qucs-s  QucsControl::call(QString const&, QJsonObject const&, std::__1::function<void (QJsonObject const&)> const&, bool&)
+  qucs-s  QucsControl::callTool(QString const&, QJsonObject const&, std::__1::function<void (QJsonObject const&)>)
+  qucs-s  QucsControl::callToolFor(unsigned long long, QString const&, QJsonObject const&, std::__1::function<void (QJsonObject const&)>, bool)
+  qucs-s  QucsControl::callToolFor(unsigned long long, QString const&, QJsonObject const&, std::__1::function<void (QJsonObject const&)>)
+  qucs-s  std::__1::__function::__func<qucs_s::mcp::runStdio(QApplication&, QucsApp*, QTimer*)::$_0, void (QString const&, QJsonObject const&, std::__1::function<void (QJsonObject const&)>)>::operator()(QString const&, QJsonObject const&, std::__1::function<void (QJsonObject const&)>&&)
+  qucs-s  qucs_s::mcp::Server::handle(QJsonObject const&, std::__1::function<void (QJsonObject const&)> const&)
