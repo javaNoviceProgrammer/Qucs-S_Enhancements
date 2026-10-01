@@ -422,6 +422,11 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
         done(errorResult(error));
         return;
     }
+    // (Run after run: its commands not unasked, as simulate's.)
+    if (const QString refused = commandsRefused(sch, args); !refused.isEmpty()) {
+        done(errorResult(refused));
+        return;
+    }
     struct Knob {
         QString name, property, was, unit;
         double lo = 0, hi = 0;
@@ -565,6 +570,7 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
         QJsonObject run{{QStringLiteral("path"), path}, {QStringLiteral("timeout"), timeout}};
         if (atOperatingPoint) run.insert(QStringLiteral("operating_point"), true);
         if (args.contains(QLatin1String("simulator"))) run.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
+        if (args.value(QLatin1String("allow_commands")).toBool()) run.insert(QStringLiteral("allow_commands"), true);
         simulate(run, [=, this](const QJsonObject& r) {
             const QJsonObject result = QJsonDocument::fromJson(textOf(r).section(QLatin1Char('\n'), -1).toUtf8()).object();
             QStringList said;
@@ -832,6 +838,7 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
         QJsonObject run{{QStringLiteral("path"), path}, {QStringLiteral("timeout"), timeout}};
         if (atOperatingPoint) run.insert(QStringLiteral("operating_point"), true);
         if (args.contains(QLatin1String("simulator"))) run.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
+        if (args.value(QLatin1String("allow_commands")).toBool()) run.insert(QStringLiteral("allow_commands"), true);
         simulate(run, [done, result](const QJsonObject&) mutable {
             result.insert(QStringLiteral("dataset"), tr("of the values set (simulated again)"));
             done(jsonResult(result));
@@ -850,6 +857,11 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
     Schematic* sch = schematic(args, &error, true);
     if (sch == nullptr) {
         done(errorResult(error));
+        return;
+    }
+    // (Run after run: its commands not unasked, as simulate's.)
+    if (const QString refused = commandsRefused(sch, args); !refused.isEmpty()) {
+        done(errorResult(refused));
         return;
     }
     const QString name = args.value(QLatin1String("component")).toString().trimmed();
@@ -980,6 +992,7 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         QJsonObject run{{QStringLiteral("path"), path}, {QStringLiteral("timeout"), timeout}};
         if (atOperatingPoint) run.insert(QStringLiteral("operating_point"), true);
         if (args.contains(QLatin1String("simulator"))) run.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
+        if (args.value(QLatin1String("allow_commands")).toBool()) run.insert(QStringLiteral("allow_commands"), true);
         simulate(run, [=, this](const QJsonObject& r) {
             const QJsonObject result = QJsonDocument::fromJson(textOf(r).section(QLatin1Char('\n'), -1).toUtf8()).object();
             QJsonObject answer = result;
@@ -1270,6 +1283,7 @@ void QucsControl::tune(const QJsonObject& args, const Done& done)
         QJsonObject run{{QStringLiteral("path"), path}, {QStringLiteral("timeout"), timeout}};
         if (atOperatingPoint) run.insert(QStringLiteral("operating_point"), true);
         if (args.contains(QLatin1String("simulator"))) run.insert(QStringLiteral("simulator"), args.value(QLatin1String("simulator")));
+        if (args.value(QLatin1String("allow_commands")).toBool()) run.insert(QStringLiteral("allow_commands"), true);
         simulate(run, [done, result](const QJsonObject&) mutable {
             result.insert(QStringLiteral("dataset"), tr("of the value set (simulated again)"));
             done(jsonResult(result));

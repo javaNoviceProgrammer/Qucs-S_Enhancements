@@ -366,6 +366,10 @@ private:
     /// The open schematic whose simulations write the dataset \a file (the
     /// document \a args name first), or nullptr.
     Schematic* schematicOfDataset(const QString& file, const QJsonObject& args) const;
+    /// Why \a sch is not simulated: the commands it runs besides the
+    /// simulator (erc::commandsRun), unless 'allow_commands' in \a args;
+    /// empty when it is.
+    QString commandsRefused(Schematic* sch, const QJsonObject& args) const;
     /// The open documents that show \a sch's dataset: itself and its data
     /// displays.
     QList<Schematic*> showingDataOf(Schematic* sch) const;
