@@ -86,6 +86,16 @@ struct Nets {
 
 // Whether the simulator in use reads names without regard to case: the
 // SPICE ones (ngspice, Xyce, SPICE OPUS), for an analog circuit.
+// A name that makes a net ground in the netlist: 0, and gnd, which the
+// netlist writes as 0 - and gnd in any case under ngspice, which reads it
+// so. SPICE OPUS and Xyce read GND as a node of its own.
+bool groundName(Schematic* doc, const QString& name)
+{
+    if (name == QLatin1String("0") || name == QLatin1String("gnd")) return true;
+    return QucsSettings.DefaultSimulator == spicecompat::simNgspice && !doc->isDigitalCircuit()
+           && name.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0;
+}
+
 bool namesWithoutCase(Schematic* doc)
 {
     return spiceSimulator(QucsSettings.DefaultSimulator) && !doc->isDigitalCircuit();
@@ -112,7 +122,7 @@ Nets netsOf(Schematic* doc)
     QHash<QString, const Node*> byLabel;
     const Node* ground = nullptr;
     const auto label = [&](const QString& name, const Node* n) {
-        if (name.compare(QLatin1String("0")) == 0 || name.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0) {
+        if (groundName(doc, name)) {
             if (ground != nullptr) join(n, ground);
             else ground = n;
         }
@@ -831,9 +841,10 @@ void acIssues(Schematic* doc, QList<Issue>& out)
                 continue;
             }
         }
-        if (opaque(c) || acSources.contains(c->Model)) return;
+        // (Vac_SPICE is the user's text too: told by it, as S4Q_V is.)
+        if (opaque(c) || (acSources.contains(c->Model) && c->Model != QLatin1String("Vac_SPICE"))) return;
         // A SPICE source of the user's text: "DC 0 AC 1".
-        if ((c->Model == QLatin1String("S4Q_V") || c->Model == QLatin1String("S4Q_I"))
+        if ((c->Model == QLatin1String("S4Q_V") || c->Model == QLatin1String("S4Q_I") || c->Model == QLatin1String("Vac_SPICE"))
             && std::any_of(c->Props.cbegin(), c->Props.cend(), [](const Property* p) { return acWord.match(p->Value).hasMatch(); }))
             return;
     }
@@ -955,9 +966,19 @@ void twoNamesNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
     const bool caseless = namesWithoutCase(doc);
     std::map<int, QStringList> names;
     QHash<int, QPoint> at;
+    QStringList groundLabels;
+    QPoint groundAt;
     const auto note = [&](const QString& name, const Node* n, QPoint where) {
         const int net = nets.of.value(n, -1);
-        if (net < 0 || net == nets.ground) return;
+        if (net < 0) return;
+        if (net == nets.ground) {
+            // A label on ground: the netlist calls the net 0.
+            if (!groundName(doc, name) && !groundLabels.contains(name)) {
+                if (groundLabels.isEmpty()) groundAt = where;
+                groundLabels << name;
+            }
+            return;
+        }
         QStringList& list = names[net];
         const auto same = [&](const QString& other) {
             return other.compare(name, caseless ? Qt::CaseInsensitive : Qt::CaseSensitive) == 0;
@@ -971,13 +992,22 @@ void twoNamesNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
         if (w->hasLabel()) note(w->label()->Name, w->Port1, QPoint(w->x1, w->y1));
     for (auto& [net, list] : names) {
         if (list.size() < 2) continue;
-        list.sort();
+        list.sort();   // (the netlister keeps the first, Schematic::unifyNamedNets)
         out << Issue{Severity::Warning,
-                     tr("one net has %1 names, %2: the netlist keeps one of them, and a plot or an equation of another "
-                        "finds nothing - keep one label")
+                     tr("one net has %1 names, %2: the netlist calls it %3, and a plot or an equation of %4 finds "
+                        "nothing - keep one label")
                          .arg(list.size())
-                         .arg(listed(list)),
+                         .arg(listed(list), list.first(), listed(list.mid(1))),
                      at.value(net), QString()};
+    }
+    if (!groundLabels.isEmpty()) {
+        groundLabels.sort();
+        out << Issue{Severity::Warning,
+                     tr("the label%1 %2 %3 on ground (a ground symbol is on the net): the netlist calls it 0, and a plot "
+                        "or an equation of %2 finds nothing - take the label off")
+                         .arg(groundLabels.size() > 1 ? QStringLiteral("s") : QString(), listed(groundLabels),
+                              groundLabels.size() > 1 ? tr("are") : tr("is")),
+                     groundAt, QString()};
     }
 }
 
@@ -1527,20 +1557,50 @@ QList<Issue> check(Schematic* doc)
     // label of that name on some other net takes it first, and the pin
     // reaches the netlist under a generated name instead.
     if (port) {
+        // (In any case: the simulator reads names so, and the netlister
+        // compares them so - Schematic::nameUnlabelledPortNets.)
         QSet<QString> labels;
         for (const Node* n : doc->a_DocNodes)
-            if (n->hasLabel()) labels.insert(n->label()->Name);
+            if (n->hasLabel()) labels.insert(n->label()->Name.toLower());
         for (const Wire* w : doc->a_DocWires)
-            if (w->hasLabel()) labels.insert(w->label()->Name);
+            if (w->hasLabel()) labels.insert(w->label()->Name.toLower());
 
         for (Component* c : doc->a_DocComps) {
             if (!isPort(c) || !inCircuit(c) || c->Ports.isEmpty()) continue;
             if (!doc->netLabelOf(c->Ports.first()->Connection).isEmpty()) continue;
-            if (!labels.contains(c->Name)) continue;
+            // A port named as ground's net: the pin is not made ground.
+            if (c->Name.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0) {
+                warnings << Issue{Severity::Warning,
+                                  tr("%1: gnd is ground's name, so this pin gets a generated name (named so, it was ground "
+                                     "inside, whatever the parent wired to it)")
+                                      .arg(c->Name),
+                                  QPoint(c->cx, c->cy), c->Name};
+                continue;
+            }
+            if (!labels.contains(c->Name.toLower())) continue;
 
             warnings << Issue{Severity::Warning,
                               tr("%1: another net is labelled %1, so this pin gets a generated name").arg(c->Name),
                               QPoint(c->cx, c->cy), c->Name};
+        }
+    }
+
+    // Ports of one number: the instances' pins and the subcircuit's do not
+    // match (and the netlister crashed on it).
+    {
+        std::map<int, QList<const Component*>> byNumber;
+        for (const Component* c : doc->a_DocComps)
+            if (isPort(c) && inCircuit(c) && !c->Props.isEmpty()) byNumber[c->Props.first()->Value.toInt()] << c;
+        for (const auto& [number, ports] : byNumber) {
+            if (ports.size() < 2) continue;
+            QStringList names;
+            for (const Component* c : ports) names << c->Name;
+            errors << Issue{Severity::Error,
+                            tr("%1 are all port %2: each port needs a number of its own, or an instance's pins and the "
+                               "subcircuit's do not match")
+                                .arg(listed(names))
+                                .arg(number),
+                            QPoint(ports.at(1)->cx, ports.at(1)->cy), ports.at(1)->Name};
         }
     }
 

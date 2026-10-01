@@ -309,8 +309,29 @@ void AbstractSpiceKernel::createSubNetlist(QTextStream &stream, bool lib)
     }
     std::sort(ports.begin(), ports.end());
     if (lib) header += " gnd "; // Ground node forwarding for Library
+    // Each port a node of its own on the line. A second port on a net (a
+    // pass-through) named it twice, and a port on the subcircuit's ground
+    // named gnd: ngspice tied one of them and left the other open, or the
+    // global ground. Such a port gets a node of its own, joined to its net
+    // by next to no resistance, as a shorted part is (Component::
+    // getSpiceNetlist) - a 0 V source was a loop of sources where the
+    // parent grounds the pin too.
+    QSet<QString> taken;
+    for (Node* pn : a_schematic->a_DocNodes) taken.insert(pn->Name.toLower());
+    QStringList used, joins;
     for (const auto& pp : ports) {
-        header += pp.second + " ";
+        QString node = pp.second;
+        const bool ground = node.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0 || node == QLatin1String("0");
+        if (ground || used.contains(node, Qt::CaseInsensitive)) {
+            QString own;
+            for (int n = 1; own.isEmpty() || taken.contains(own.toLower()); ++n)
+                own = QStringLiteral("_port%1_%2").arg(pp.first).arg(n);
+            taken.insert(own.toLower());
+            joins << QStringLiteral("R_qucsport%1 %2 %3 1e-12\n").arg(joins.size() + 1).arg(own, ground ? QStringLiteral("0") : node);
+            node = own;
+        }
+        used << node;
+        header += node + " ";
     }
 
     for(Painting* pai : a_schematic->a_SymbolPaints)
@@ -330,6 +351,7 @@ void AbstractSpiceKernel::createSubNetlist(QTextStream &stream, bool lib)
     const spicecompat::SpiceDialect dialect(
             QucsSettings.DefaultSimulator == spicecompat::simXyce ? spicecompat::SPICEXyce : spicecompat::SPICEDefault);
     startNetlist(stream, dialect);
+    for (const QString& line : std::as_const(joins)) stream << line;
     stream<<".ENDS\n";
 }
 
@@ -452,6 +474,14 @@ QSet<QString> AbstractSpiceKernel::getValidNets(spicecompat::SpiceDialect dialec
     // stopped the whole run ("no such vector 0"). 0, and gnd, which the
     // netlist writes as 0 - ngspice takes gnd in any case as ground (the
     // netlist is read in lower case); Xyce and SPICE OPUS only 0.
+    // A label whose net the netlist names otherwise (another label of the
+    // net, or ground: Schematic::unifyNamedNets) is no node to print.
+    QSet<QString> nodes;
+    for (Node* pn : a_schematic->a_DocNodes) nodes.insert(pn->Name);
+    for (Node* pn : a_schematic->a_DocNodes)
+        if (pn->hasLabel() && !nodes.contains(pn->label()->Name)) valid.remove(pn->label()->Name);
+    for (Wire* pw : a_schematic->a_DocWires)
+        if (pw->hasLabel() && !nodes.contains(pw->label()->Name)) valid.remove(pw->label()->Name);
     const bool anyCase = dialect == spicecompat::SPICEDefault && QucsSettings.DefaultSimulator == spicecompat::simNgspice;
     for (auto it = valid.begin(); it != valid.end();) {
         const bool ground = spicecompat::normalize_node_name(*it) == QLatin1String("0")

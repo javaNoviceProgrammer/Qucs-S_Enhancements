@@ -64,9 +64,13 @@ template <typename Kernel>
 struct GroundProbe : Kernel {
     using Kernel::Kernel;
     bool groundFound() { return this->checkGround(); }
-    // The named nets the netlist prints, sorted.
+    // The named nets the netlist prints, sorted (the nets named first, as a
+    // netlist does).
     QStringList printed(spicecompat::SpiceDialect dialect)
     {
+        QString text;
+        QTextStream stream(&text);
+        this->prepareSpiceNetlist(stream);
         const QSet<QString> nets = this->getValidNets(dialect);
         QStringList list(nets.cbegin(), nets.cend());
         list.sort();
@@ -266,7 +270,7 @@ private slots:
                                    "  <Vdc V1 1 0 60 18 -26 0 1 \"5 V\" 1>\n"
                                    "  <R R1 1 100 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
                                    "  <.DC DC1 1 200 40 0 40 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0>\n")
-                            + (symbol ? "  <GND * 1 50 90 0 0 0 0>\n" : "")
+                            + (symbol ? "  <GND * 1 100 90 0 0 0 0>\n" : "")   // (at R1's pin: connected)
                             + "</Components>\n<Wires>\n"
                               "  <0 30 100 30 \"out\" 50 10 0 \"\">\n"
                               "  <0 90 100 90 \"" + ground.toUtf8() + "\" 50 110 0 \"\">\n"
@@ -284,8 +288,10 @@ private slots:
                 QVERIFY2(!netlist.contains(groundVector), qPrintable(ground + ":\n" + netlist));
                 QCOMPARE(ngspice.printed(spicecompat::SPICEDefault), QStringList{"out"});
                 GroundProbe<Xyce> xyce(&doc);
+                // (GND alone is a node of its own to Xyce; with a ground
+                // symbol on it, the net is ground's: Schematic::unifyNamedNets.)
                 QCOMPARE(xyce.printed(spicecompat::SPICEXyce),
-                         ground == "GND" ? QStringList({"GND", "out"}) : QStringList{"out"});
+                         ground == "GND" && !symbol ? QStringList({"GND", "out"}) : QStringList{"out"});
             }
         // SPICE OPUS reads gnd as any other name: only 0 is ground there.
         QucsSettings.DefaultSimulator = spicecompat::simSpiceOpus;
@@ -293,6 +299,76 @@ private slots:
         QVERIFY(doc.load());
         GroundProbe<Ngspice> opus(&doc);
         QCOMPARE(opus.printed(spicecompat::SPICEDefault), QStringList({"GND", "out"}));
+    }
+
+    // A net with two names - a label and a ground symbol, two labels - was
+    // netlisted as two nodes, each part on whichever name reached its pin
+    // (bug hunt 2026-09-30, A1). One node now, named as the check names
+    // it: ground, else the first label; the check says which is dropped.
+    // A net named GND is ground to ngspice only (A6).
+    void aNetWithTwoNamesIsOneNode()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        const QByteArray head = "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                                "  <Vdc V1 1 0 60 18 -26 0 1 \"5 V\" 1>\n"
+                                "  <R R1 1 100 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                                "  <R R2 1 300 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        const QByteArray end = "<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        const auto netlistOf = [](Schematic* doc) {
+            GroundProbe<Ngspice> ngspice(doc);
+            QStringList lines;
+            for (const QString& l : ngspice.netlist().split('\n'))
+                if (l.startsWith("V1 ") || l.startsWith("R1 ") || l.startsWith("R2 ")) lines << l.simplified();
+            return lines;
+        };
+        // The bottom wire labelled fb (before gnd in order: ground is chosen, not the first), a ground at its end: all of it 0.
+        const QString onGround = dir.filePath("fb_on_ground.sch");
+        write(onGround, head + "  <GND * 1 100 90 0 0 0 0>\n</Components>\n<Wires>\n"
+                               "  <0 30 100 30 \"out\" 50 10 0 \"\">\n  <0 90 100 90 \"fb\" 50 110 0 \"\">\n"
+                               "  <100 90 300 90 \"\" 0 0 0 \"\">\n  <100 30 300 30 \"\" 0 0 0 \"\">\n</Wires>\n" + end);
+        Schematic grounded(nullptr, onGround);
+        QVERIFY(grounded.load());
+        QCOMPARE(netlistOf(&grounded), (QStringList{"V1 out 0 DC 5", "R1 0 out 1K tc1=0.0 tc2=0.0", "R2 0 out 1K tc1=0.0 tc2=0.0"}));
+        GroundProbe<Ngspice> printing(&grounded);
+        QCOMPARE(printing.printed(spicecompat::SPICEDefault), QStringList{"out"});
+        QStringList got = messages(qucs_s::erc::notes(&grounded));
+        QVERIFY2(got.filter("the label fb is on ground (a ground symbol is on the net): the netlist calls it 0").size() == 1,
+                 qPrintable(got.join(" | ")));
+        // Two labels on one net, b also on R2's wire apart from it: all a.
+        const QString twoLabels = dir.filePath("two_labels.sch");
+        write(twoLabels, head + "  <GND * 1 0 90 0 0 0 0>\n</Components>\n<Wires>\n"
+                                "  <0 30 50 30 \"b\" 20 10 0 \"\">\n  <50 30 100 30 \"a\" 70 10 0 \"\">\n"
+                                "  <300 30 350 30 \"b\" 320 10 0 \"\">\n"
+                                "  <0 90 100 90 \"\" 0 0 0 \"\">\n  <100 90 300 90 \"\" 0 0 0 \"\">\n</Wires>\n" + end);
+        Schematic labelled(nullptr, twoLabels);
+        QVERIFY(labelled.load());
+        QCOMPARE(netlistOf(&labelled), (QStringList{"V1 a 0 DC 5", "R1 0 a 1K tc1=0.0 tc2=0.0", "R2 0 a 1K tc1=0.0 tc2=0.0"}));
+        GroundProbe<Ngspice> both(&labelled);
+        QCOMPARE(both.printed(spicecompat::SPICEDefault), QStringList{"a"});
+        got = messages(qucs_s::erc::notes(&labelled));
+        QVERIFY2(got.filter("one net has 2 names, a and b: the netlist calls it a, and a plot or an equation of b finds nothing").size() == 1,
+                 qPrintable(got.join(" | ")));
+
+        // A net named GND: ground to ngspice, a node of its own to SPICE OPUS.
+        const QString named = dir.filePath("named_GND.sch");
+        write(named, head + "</Components>\n<Wires>\n  <0 30 100 30 \"out\" 50 10 0 \"\">\n"
+                            "  <0 90 100 90 \"GND\" 50 110 0 \"\">\n</Wires>\n" + end);
+        Schematic byName(nullptr, named);
+        QVERIFY(byName.load());
+        QucsSettings.RequireGround = true;
+        got = messages(check(&byName));
+        QVERIFY2(aboutGround(got) == QStringList{"E no ground symbol: the Simulators Settings require one (a net named 0 or gnd "
+                                                 "does not count)"},
+                 qPrintable(got.join(" | ")));
+        QucsSettings.DefaultSimulator = spicecompat::simSpiceOpus;
+        got = messages(check(&byName));
+        QVERIFY2(aboutGround(got) == QStringList{"E no ground: the circuit has no reference node"}, qPrintable(got.join(" | ")));
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+
     }
 
     // Simulators Settings, applied: the Problems tab (this schematic's
@@ -700,7 +776,7 @@ private slots:
 
         // Two labels on one net.
         got = findings(Vdc("V1", 0, "5 V") + gnd(0) + load + dc, "  <0 30 200 30 \"in\" 20 0 0 \"\">\n" + top(200, "vin"));
-        QVERIFY2(has(got, "N one net has 2 names, in and vin: the netlist keeps one of them"), qPrintable(got.join(" | ")));
+        QVERIFY2(has(got, "N one net has 2 names, in and vin: the netlist calls it in, and a plot or an equation of vin finds nothing"), qPrintable(got.join(" | ")));
 
         // An op-amp's + input fed through a capacitor alone; its - input
         // biased through the feedback from its own output, the output's only
