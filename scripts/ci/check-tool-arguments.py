@@ -59,6 +59,7 @@ NESTED = {
     ("tune", "hold"): ("readHolds", "item"),
     ("make_symbol", "parameters"): ("changeParameters", "o"),
     ("set_subcircuit_parameters", "parameters"): ("changeParameters", "o"),
+    ("edit_text", "edits"): ("editText", "e"),
 }
 
 

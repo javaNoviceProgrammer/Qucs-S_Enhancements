@@ -483,6 +483,17 @@ const char* const kTools = R"JSON([
    "apply": {"type": "boolean", "description": "Set the value found (the default), or leave the part as it was"}, "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For these runs alone; the one in the settings by default"},
    "timeout": {"type": "integer", "description": "Seconds for each run, 120 unless given"}},
    "required": ["component", "measure"]}},
+{"name": "get_text",
+ "description": "Reads a text document open in a tab (.cir, .va, .m, .py, .txt, ...) as it is in the window, its unsaved edits included: each line with its number ('12| text'), 'lines' (how many), 'revision' (give it to edit_text), 'unsaved', the cursor and the selection, and the errors and warnings marked in it. 'from_line' and 'to_line' read a part. A file not open: open_document opens it.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "from_line": {"type": "integer", "description": "The first line read (from 1)"}, "to_line": {"type": "integer", "description": "The last line read"}}}},
+{"name": "edit_text",
+ "description": "Edits a text document open in a tab as one step of its undo (Edit > Undo takes all of it back), keeping the user's unsaved edits. 'edits' are made in order, each on the text the ones before it left: {\"find\": exact text, \"replace\": its new text} - refused when it is not there, or there more than once unless 'all': true -, or {\"lines\": [first, last], \"text\": the lines in their place} (\"\" takes them away; [n, n - 1] puts the text before line n). All are made or none. 'revision' (get_text's) refuses the edits when the text changed since - the user typed. It is not saved: save_document saves it.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"},
+   "edits": {"type": "array", "items": {"type": "object", "properties": {"find": {"type": "string"}, "replace": {"type": "string"}, "all": {"type": "boolean"}, "lines": {"type": "array", "items": {"type": "integer"}}, "text": {"type": "string"}}}, "description": "[{\"find\": ..., \"replace\": ..., \"all\": false}] or [{\"lines\": [first, last], \"text\": ...}], in order"},
+   "revision": {"type": "number", "description": "get_text's 'revision': refused when the text changed since"}}, "required": ["edits"]}},
+{"name": "goto_line",
+ "description": "Brings a text document to the front with a line in the middle of its view and the cursor there - to show the user an error or a place in the text. The keyboard stays where it is.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "line": {"type": "integer", "description": "The line, from 1"}, "column": {"type": "integer", "description": "The column, from 1 (1 unless given)"}}, "required": ["line"]}},
 {"name": "read_pdf",
  "description": "Reads the text of a PDF - a datasheet, an application note, a report - page by page, for example to take a model's parameters or a table's values from it. 'path' is relative to the project, otherwise the workspace (the PDF in front if not given); 'pages' is [3, 4], \"2-5\" or 7 (the first 3 by default); 'search' finds a word or value on every page (or those given) and returns the lines around each hit. A scanned page has no text: a screenshot of its tab shows it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\" or 7; the first 3 by default (with 'search', all)"}, "search": {"type": "string", "description": "A word or value to find: the lines around each hit"}}}},
@@ -610,6 +621,7 @@ const struct {
     {"open_project", QT_TRANSLATE_NOOP("QucsControl", "open a project in Qucs-S")},
     {"copy_document", QT_TRANSLATE_NOOP("QucsControl", "copy a schematic in Qucs-S")},
     {"clean_scratch", QT_TRANSLATE_NOOP("QucsControl", "clear a schematic's scratch files in Qucs-S")},
+    {"edit_text", QT_TRANSLATE_NOOP("QucsControl", "edit a text document in Qucs-S")},
     {"rename_file", QT_TRANSLATE_NOOP("QucsControl", "rename or move a file in Qucs-S")},
     {"trash_file", QT_TRANSLATE_NOOP("QucsControl", "move a file to the trash from Qucs-S")},
     {"make_symbol", QT_TRANSLATE_NOOP("QucsControl", "draw a subcircuit's symbol in Qucs-S")},
@@ -624,6 +636,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
                                  "read_pdf", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
+                                 "get_text", "goto_line",
                                  "ngspice_commands"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
@@ -695,6 +708,9 @@ const struct {
     {"build_verilog_a", QT_TRANSLATE_NOOP("QucsControl", "Compiles a Verilog-A file with OpenVAF, reporting each error with its line and column.")},
     {"tune", QT_TRANSLATE_NOOP("QucsControl", "Adjusts a component value, simulating and measuring until a measurement reaches its target (or measures a table of values).")},
     {"read_pdf", QT_TRANSLATE_NOOP("QucsControl", "Reads the text of a PDF, such as a datasheet, page by page.")},
+    {"get_text", QT_TRANSLATE_NOOP("QucsControl", "Reads a text tab (.cir, .va, ...) with its unsaved edits, line by line.")},
+    {"edit_text", QT_TRANSLATE_NOOP("QucsControl", "Edits a text tab as one undo step, keeping the user's unsaved edits.")},
+    {"goto_line", QT_TRANSLATE_NOOP("QucsControl", "Shows a line of a text tab, the cursor there.")},
     {"find_library_component", QT_TRANSLATE_NOOP("QucsControl", "Searches the libraries and the project's SPICE models for a part by name and values.")},
     {"describe_part", QT_TRANSLATE_NOOP("QucsControl", "A library part's pins (names, sides, roles), model kind, supplies and tested status in one call.")},
     {"new_project", QT_TRANSLATE_NOOP("QucsControl", "Creates a project in the workspace.")},
@@ -779,6 +795,9 @@ const struct {
     {"find_library_component", "library part search by values model"},
     {"describe_part", "library part pins order names supply model macromodel transistor tested bench roles input output"},
     {"read_pdf", "datasheet pdf text read"},
+    {"get_text", "text document tab read cir va verilog-a netlist script lines unsaved"},
+    {"edit_text", "text document tab edit change replace lines cir va verilog-a netlist script"},
+    {"goto_line", "text document line cursor show error"},
     {"diff", "compare revisions files changes"},
     {"run_script", "script loop javascript many calls"},
     {"ngspice_commands", "ngspice commands supported control nutmeg script syntax analysis meas let help spice"},
@@ -3147,7 +3166,12 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
     else if (tool == QLatin1String("trash_file")) subject = s("path");
     else if (tool == QLatin1String("clean_scratch")) subject = (s("path").isEmpty() ? tr("the schematic in front") : s("path"))
                                                                + (a.value(QLatin1String("datasets")).toBool() ? tr(", datasets too") : QString());
-    else if (tool == QLatin1String("read_pdf")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
+    else if (tool == QLatin1String("edit_text") || tool == QLatin1String("get_text") || tool == QLatin1String("goto_line")) {
+        subject = s("path").isEmpty() ? tr("the text in front") : s("path");
+        if (tool == QLatin1String("edit_text"))
+            subject += tr(": %n edit(s)", "", int(a.value(QLatin1String("edits")).toArray().size()));
+        else if (tool == QLatin1String("goto_line")) subject += tr(", line %1").arg(a.value(QLatin1String("line")).toInt());
+    } else if (tool == QLatin1String("read_pdf")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
     else if (tool == QLatin1String("find_library_component")) subject = (s("type") + QLatin1Char(' ') + s("search")).trimmed();
     else if (tool == QLatin1String("describe_part")) subject = s("library") + QLatin1Char('/') + s("part");
     else if (tool == QLatin1String("tune"))
@@ -3201,6 +3225,8 @@ QString QucsControl::instructions() const
         "iteration. build_verilog_a compiles a .va file now and reports errors with their lines; describe_component_type "
         "lists a Verilog-A module's parameters. find_library_component finds a part by its values (an NPN with Bf near "
         "200), describe_part a library part's pins, model and tested status; read_pdf reads a datasheet's text; "
+        "get_text and edit_text read and edit a text tab (a netlist, a .va) with the user's unsaved edits, goto_line "
+        "shows a line of it; "
         "import_netlist builds a schematic from a SPICE netlist; import_data brings a data file (CSV, a workbook, NumPy, "
         "Touchstone) in as a dataset beside the schematic, whose traces are name:variable - measured data plotted with a "
         "simulation's, or alone; export_data writes a diagram's curves (or a dataset's variables) out for another program - "
@@ -3774,7 +3800,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("list_component_types"), QStringLiteral("list_actions"), QStringLiteral("get_dialog"),
         QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"),
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
-        QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"),
+        QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
         QStringLiteral("ngspice_commands")};
     if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool))
@@ -3896,6 +3922,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("export_image")) return exportImage(args);
     if (tool == QLatin1String("set_simulator")) return setSimulator(args);
     if (tool == QLatin1String("read_pdf")) return readPdf(args);
+    if (tool == QLatin1String("get_text")) return getText(args);
+    if (tool == QLatin1String("edit_text")) return editText(args);
+    if (tool == QLatin1String("goto_line")) return gotoLine(args);
     if (tool == QLatin1String("undo_history")) return undoHistory(args);
     if (tool == QLatin1String("new_project")) return newProject(args);
     if (tool == QLatin1String("open_project")) return openProject(args);

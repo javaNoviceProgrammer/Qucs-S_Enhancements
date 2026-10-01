@@ -190,6 +190,24 @@ void QucsControl::buildVerilogA(const QJsonObject& args, const Done& done)
                 result.insert(QStringLiteral("next"), tr("describe_component_type with the module's name lists its parameters and a .model card."));
             }
         }
+        // Marked in the open tab, as the user sees them: a wavy line, a dot
+        // in the margin, the message on the line (none: those of the last
+        // build go).
+        for (QucsDoc* doc : a_app->allDocuments()) {
+            auto* text = dynamic_cast<TextDoc*>(doc);
+            if (text == nullptr || !sameFile(doc->getDocName(), file)) continue;
+            QList<TextDoc::Diagnostic> marks;
+            for (const char* severity : {"errors", "warnings"})
+                for (const QJsonValue& v : result.value(QLatin1String(severity)).toArray()) {
+                    const QJsonObject o = v.toObject();
+                    if (o.value(QLatin1String("file")).toString() != QFileInfo(file).fileName() || o.value(QLatin1String("line")).toInt() < 1) continue;
+                    marks.append({o.value(QLatin1String("line")).toInt(), o.value(QLatin1String("column")).toInt(),
+                                  o.value(QLatin1String("message")).toString(), qstrcmp(severity, "errors") == 0});
+                }
+            text->setDiagnostics(marks);
+            if (!marks.isEmpty())
+                result.insert(QStringLiteral("marked"), tr("in the open tab: %n place(s), each with its message", "", int(marks.size())));
+        }
         if (a_app->projectView() != nullptr) a_app->projectView()->refresh();   // the .osdi
         if (guard) guard->deleteLater();
         done(jsonResult(result));

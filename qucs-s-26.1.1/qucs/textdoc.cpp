@@ -28,6 +28,9 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 #include <QTextBlock>
 #include <QTextStream>
 #include <QPainter>
+#include <QHelpEvent>
+#include <QToolTip>
+#include <algorithm>
 #include <qpalette.h>
 
 #include "main.h"
@@ -39,6 +42,12 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 #include "components/vhdlfile.h"
 #include "components/verilogfile.h"
 #include "components/vafile.h"
+
+namespace {
+// The room in the line numbers' margin for a diagnostic's dot, for lines
+// \a height pixels high.
+int dotRoom(int height) { return std::clamp(height * 2 / 3, 8, 12) + 2; }
+} // namespace
 
 /*!
  * \file textdoc.cpp
@@ -795,7 +804,82 @@ void TextDoc::highlightCurrentLine()
         extraSelections.append(selection);
     }
 
+    // The diagnostics shown: a wavy line under each, from its column to
+    // its line's end.
+    for (const ShownDiagnostic &shown : std::as_const(a_diagnostics)) {
+        QTextEdit::ExtraSelection mark;
+        mark.format.setUnderlineStyle(QTextCharFormat::WaveUnderline);
+        mark.format.setUnderlineColor(shown.diagnostic.error ? QColor(0xe0, 0x35, 0x2b) : QColor(0xe0, 0x9a, 0x1a));
+        mark.cursor = shown.at;
+        mark.cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        if (!mark.cursor.hasSelection()) {   // at the line's end: its last character
+            mark.cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
+        }
+        extraSelections.append(mark);
+    }
+
     setExtraSelections(extraSelections);
+}
+
+void TextDoc::setDiagnostics(const QList<Diagnostic> &list)
+{
+    a_diagnostics.clear();
+    for (const Diagnostic &d : list) {
+        const QTextBlock block = document()->findBlockByNumber(d.line - 1);
+        if (!block.isValid()) continue;
+        QTextCursor at(block);
+        if (d.column > 1) at.setPosition(block.position() + std::min(d.column - 1, std::max(0, block.length() - 1)));
+        a_diagnostics.append({at, d});
+    }
+    updateLineNumberAreaWidth(0);   // (the dots' room)
+    highlightCurrentLine();
+    lineNumberArea->update();
+}
+
+QList<TextDoc::Diagnostic> TextDoc::diagnostics() const
+{
+    QList<Diagnostic> list;
+    for (const ShownDiagnostic &shown : a_diagnostics) {
+        Diagnostic d = shown.diagnostic;
+        d.line = shown.at.blockNumber() + 1;
+        d.column = shown.at.positionInBlock() + 1;
+        list.append(d);
+    }
+    return list;
+}
+
+QString TextDoc::diagnosticsAtY(int y) const
+{
+    if (a_diagnostics.isEmpty()) return {};
+    const int line = cursorForPosition(QPoint(0, y)).blockNumber();
+    QStringList messages;
+    for (const ShownDiagnostic &shown : a_diagnostics)
+        if (shown.at.blockNumber() == line)
+            messages << (shown.diagnostic.error ? tr("Error: %1") : tr("Warning: %1")).arg(shown.diagnostic.message);
+    return messages.join(QLatin1Char('\n'));
+}
+
+bool TextDoc::viewportEvent(QEvent *event)
+{
+    if (event->type() == QEvent::ToolTip) {
+        const QString said = diagnosticsAtY(static_cast<QHelpEvent *>(event)->pos().y());
+        if (!said.isEmpty()) {
+            QToolTip::showText(static_cast<QHelpEvent *>(event)->globalPos(), said, viewport());
+            return true;
+        }
+    }
+    return QPlainTextEdit::viewportEvent(event);
+}
+
+bool LineNumberArea::event(QEvent *event)
+{
+    if (event->type() == QEvent::ToolTip) {
+        const QString said = codeEditor->diagnosticsAtY(static_cast<QHelpEvent *>(event)->pos().y());
+        if (!said.isEmpty()) QToolTip::showText(static_cast<QHelpEvent *>(event)->globalPos(), said, this);
+        else QToolTip::hideText();
+        return true;
+    }
+    return QWidget::event(event);
 }
 
 /*!
@@ -865,6 +949,7 @@ int TextDoc::lineNumberAreaWidth() const
     }
 
     int space = 3 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
+    if (!a_diagnostics.isEmpty()) space += dotRoom(fontMetrics().height());   // their dots
     return space;
 }
 
@@ -913,6 +998,21 @@ void TextDoc::lineNumberAreaPaintEvent(QPaintEvent *event)
             painter.setPen(a_marginText);
             painter.drawText(0, top, lineNumberArea->width(), fontMetrics().height(),
                 Qt::AlignRight, number);
+            // A diagnostic's dot, at the left: red for an error, amber
+            // for a warning (an error first).
+            int found = 0;   // 0 none, 1 warning, 2 error
+            for (const ShownDiagnostic &shown : std::as_const(a_diagnostics))
+                if (shown.at.blockNumber() == blockNumber) found = std::max(found, shown.diagnostic.error ? 2 : 1);
+            if (found > 0) {
+                const int h = fontMetrics().height();
+                const int d = std::max(4, dotRoom(h) - 4);
+                painter.save();
+                painter.setRenderHint(QPainter::Antialiasing);
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(found == 2 ? QColor(0xe0, 0x35, 0x2b) : QColor(0xe0, 0x9a, 0x1a));
+                painter.drawEllipse(QRectF(2, top + (h - d) / 2.0, d, d));
+                painter.restore();
+            }
         }
 
         block = block.next();
