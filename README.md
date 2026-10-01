@@ -103,7 +103,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   opened; the header says how many it found. A row it hides is no longer
   selected, so no menu or drag takes it along. It stays as the panel
   refreshes; cleared, every row is back and the categories are open as
-  they were.
+  they were. The **Projects panel** has the same box, under its New,
+  Open and Delete buttons: the projects and folders whose names hold
+  what is typed (`..` always, to go back up). The project chosen stays
+  chosen while it is listed; one it leaves out is no longer the one Open
+  and Delete act on. It stays as you go into a folder.
 - **Content panel categories are yours to set**: a *Text* category, right
   before *Others*, lists the `.txt` files. *Application Settings →
   Contents* has a row per category, its name and the patterns of the

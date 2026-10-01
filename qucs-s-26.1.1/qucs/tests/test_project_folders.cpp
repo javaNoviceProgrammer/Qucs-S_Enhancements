@@ -423,6 +423,83 @@ private slots:
         app.slotMenuProjClose();
     }
 
+    // Above the projects, the File Browser's filter: the projects and
+    // folders whose names hold what is typed, whatever its case - ".."
+    // always, to go back up. The project chosen stays chosen while it is
+    // listed; one it leaves out is no longer the one Open and Delete act
+    // on. It stays as the panel goes into a folder and as folders come;
+    // cleared, all of them again.
+    void aFilterByNameAsTheFileBrowsers()
+    {
+        fresh("filter");
+        for (const char* name : {"amp_prj", "filter_prj", "Amplifiers/opamp_prj", "Amplifiers/bjt_prj", "notes"})
+            QVERIFY(QDir().mkpath(workspace + "/" + name));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.switchWorkspace(workspace));
+        QListView* panel = app.projectsView();
+        QTRY_COMPARE(listed(panel), QStringList({"amp_prj", "filter_prj", "Amplifiers", "notes"}));
+        const auto shownFolder = [panel] {
+            return QFileInfo(panel->rootIndex().data(QFileSystemModel::FilePathRole).toString()).canonicalFilePath();
+        };
+        const QString top = QFileInfo(workspace).canonicalFilePath();
+        QCOMPARE(shownFolder(), top);
+
+        auto* box = app.findChild<QLineEdit*>("projectsFilter");
+        QVERIFY(box != nullptr);
+        auto* browsers = app.findChild<QLineEdit*>("fbFilter");
+        QVERIFY(browsers != nullptr);
+        QCOMPARE(box->placeholderText(), QStringLiteral("Filter by name"));
+        QCOMPARE(box->placeholderText(), browsers->placeholderText());
+        QVERIFY(box->isClearButtonEnabled());
+        QCOMPARE(box->actions().size(), browsers->actions().size());   // the magnifier
+        // On the Projects tab, between its buttons and the list.
+        QWidget* page = nullptr;
+        for (auto* tabs : app.findChildren<QTabWidget*>())
+            for (int i = 0; i < tabs->count(); ++i)
+                if (tabs->tabText(i) == "Projects") page = tabs->widget(i);
+        QVERIFY(page != nullptr && page->isAncestorOf(box) && page->isAncestorOf(panel));
+        int boxAt = -1;
+        for (int i = 0; i < page->layout()->count(); ++i)
+            if (QLayout* row = page->layout()->itemAt(i)->layout(); row != nullptr && row->indexOf(box) >= 0) boxAt = i;
+        QVERIFY(boxAt > 0);   // after the buttons
+        QCOMPARE(page->layout()->indexOf(panel), boxAt + 1);
+
+        panel->setCurrentIndex(rowOf(panel, "amp_prj"));
+        box->setText("AMP");
+        QCOMPARE(listed(panel), QStringList({"amp_prj", "Amplifiers"}));
+        QCOMPARE(shownFolder(), top);
+        QCOMPARE(panel->currentIndex().data().toString(), QStringLiteral("amp_prj"));   // still chosen
+        box->setText(" filter ");
+        QCOMPARE(listed(panel), QStringList({"filter_prj"}));
+        QVERIFY(!panel->currentIndex().isValid());   // left out: no longer chosen
+        QVERIFY(panel->selectionModel()->selectedIndexes().isEmpty());
+        // Nor is the project beside it chosen instead (as the view would).
+        box->clear();
+        panel->setCurrentIndex(rowOf(panel, "filter_prj"));
+        box->setText("amp");
+        QCOMPARE(listed(panel), QStringList({"amp_prj", "Amplifiers"}));
+        QVERIFY2(!panel->currentIndex().isValid(), qPrintable(panel->currentIndex().data().toString()));
+        QVERIFY(panel->selectionModel()->selectedIndexes().isEmpty());
+        box->setText("nothing like it");
+        QCOMPARE(listed(panel), QStringList());
+        QCOMPARE(shownFolder(), top);
+
+        // As folders come.
+        box->setText("amp");
+        QVERIFY(QDir().mkpath(workspace + "/amp2_prj"));
+        QVERIFY(QDir().mkpath(workspace + "/other_prj"));
+        QTRY_COMPARE(listed(panel), QStringList({"amp2_prj", "amp_prj", "Amplifiers"}));
+        // Into a folder: filtered too, ".." kept.
+        emit panel->doubleClicked(rowOf(panel, "Amplifiers"));
+        QTRY_COMPARE(listed(panel), QStringList({"..", "opamp_prj"}));
+        QCOMPARE(shownFolder(), QFileInfo(workspace + "/Amplifiers").canonicalFilePath());
+        box->clear();
+        QTRY_COMPARE(listed(panel), QStringList({"..", "bjt_prj", "opamp_prj"}));
+        emit panel->doubleClicked(rowOf(panel, ".."));
+        QTRY_COMPARE(listed(panel), QStringList({"amp2_prj", "amp_prj", "filter_prj", "other_prj", "Amplifiers", "notes"}));
+    }
+
     // The setting in the dialog: on the Locations tab, applied at once (the
     // Projects panel sorts and marks the projects anew), kept, and off by
     // Default Values.
