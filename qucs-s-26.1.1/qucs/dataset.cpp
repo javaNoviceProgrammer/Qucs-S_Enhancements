@@ -311,8 +311,15 @@ QString bareName(const QString& name)
 
 QStringList Dataset::resolve(const QString& wanted) const
 {
-    const QString w = withoutSimulator(wanted.trimmed());
+    QString w = withoutSimulator(wanted.trimmed());
     if (w.isEmpty()) return {};
+    // name:variable - a trace of a dataset beside a schematic's own (one
+    // imported, a run kept): this one's own name, then its variable.
+    if (const qsizetype colon = w.indexOf(QLatin1Char(':')); colon > 0 && find(w) == nullptr) {
+        const QString file = QFileInfo(a_path).fileName();
+        const qsizetype dat = file.indexOf(QLatin1String(".dat"));
+        if (dat > 0 && w.left(colon).compare(file.left(dat), Qt::CaseInsensitive) == 0) w = w.mid(colon + 1);
+    }
     // A SPICE simulator's dataset names its variables after the analysis
     // (tran.v(out)); Qucsator's after the node or the part (out.Vt).
     const bool spice = !a_path.endsWith(QLatin1String(".dat"));
