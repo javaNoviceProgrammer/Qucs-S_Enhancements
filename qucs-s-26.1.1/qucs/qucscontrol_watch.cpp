@@ -31,6 +31,7 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <optional>
 
@@ -310,8 +311,14 @@ void QucsControl::waitFor(const QJsonObject& args, const Done& done)
         }
         // Changed since 'revision' (from an answer before: no change missed
         // in between), else since now.
-        const quint64 since = args.contains(QLatin1String("revision")) ? quint64(args.value(QLatin1String("revision")).toDouble())
-                                                                        : doc->revision();
+        const QJsonValue revision = args.value(QLatin1String("revision"));
+        if (args.contains(QLatin1String("revision"))
+            && (!revision.isDouble() || revision.toDouble() < 0 || revision.toDouble() > 9007199254740992.0
+                || revision.toDouble() != std::floor(revision.toDouble()))) {
+            done(errorResult(tr("'revision' is a revision get_state or an answer gave, a whole number from 0.")));
+            return;
+        }
+        const quint64 since = args.contains(QLatin1String("revision")) ? quint64(revision.toDouble()) : doc->revision();
         const QString title = titleOf(doc);
         QPointer<QWidget> widget(QucsApp::documentWidget(doc));
         what = tr("a change of %1").arg(title);

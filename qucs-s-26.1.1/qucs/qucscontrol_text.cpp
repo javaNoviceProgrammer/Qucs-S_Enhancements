@@ -22,6 +22,7 @@
 #include <QTextDocument>
 
 #include <algorithm>
+#include <cmath>
 
 using namespace qucs_s::control;
 
@@ -115,7 +116,12 @@ QJsonObject QucsControl::editText(const QJsonObject& args)
     if (text == nullptr) return errorResult(error);
     if (text->isReadOnly()) return errorResult(tr("%1 is read-only.").arg(titleOf(text)));
     if (args.contains(QLatin1String("revision"))) {
-        const auto given = quint64(args.value(QLatin1String("revision")).toDouble(-1));
+        // (A whole number from 0, as get_text gives it - -1 or 1e308 made
+        // into an unsigned one was undefined.)
+        const QJsonValue value = args.value(QLatin1String("revision"));
+        if (!value.isDouble() || value.toDouble() < 0 || value.toDouble() > 9007199254740992.0 || value.toDouble() != std::floor(value.toDouble()))
+            return errorResult(tr("'revision' is the revision get_text gave, a whole number from 0. Nothing was changed."));
+        const auto given = quint64(value.toDouble());
         if (given != text->revision())
             return errorResult(tr("%1 is at revision %2, not %3: it was edited since (the user typed, or another call). Nothing was "
                                   "changed - get_text reads it as it is now.")

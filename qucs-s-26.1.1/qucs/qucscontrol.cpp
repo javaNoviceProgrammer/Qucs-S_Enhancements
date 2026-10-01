@@ -3190,7 +3190,10 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
         subject = parts.join(QStringLiteral(", "));
     } else if (tool == QLatin1String("set_settings") || tool == QLatin1String("get_settings")) {
         QStringList parts{s("scope")};
-        for (auto it = a.value(QLatin1String("values")).toObject().constBegin(); it != a.value(QLatin1String("values")).toObject().constEnd(); ++it)
+        // (Iterated as one object kept here: an iterator of a temporary's
+        // pointed into an object already gone - and took the window down.)
+        const QJsonObject values = a.value(QLatin1String("values")).toObject();
+        for (auto it = values.constBegin(); it != values.constEnd(); ++it)
             parts << it.key() + QLatin1Char('=') + propertyValue(it.value());
         subject = parts.join(QStringLiteral(", "));
     } else if (tool == QLatin1String("console")) {
