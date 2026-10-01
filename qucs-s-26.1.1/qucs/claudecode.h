@@ -19,6 +19,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QObject>
+#include <QProcessEnvironment>
 #include <QString>
 #include <QStringList>
 
@@ -211,6 +212,20 @@ public:
         Q_UNUSED(asker);
     }
 };
+
+/// What Claude Code keeps of an MCP server's instructions and of each tool's
+/// description unless CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH says more (in
+/// characters): the rest is cut, "… [truncated]".
+constexpr int kDescriptionCap = 2048;
+/// The longest of \a host's instructions and tool descriptions, in
+/// characters as Claude Code counts them (UTF-16).
+int longestDescription(const ToolHost& host);
+/// The environment the claude program is started in: \a base, with
+/// CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH set to longestDescription() when
+/// \a host has more than kDescriptionCap to say - unless \a base sets it
+/// already (the user's, kept). Claude Code reads it from 2.1.280; an older
+/// one cuts at kDescriptionCap whatever it says.
+QProcessEnvironment claudeEnvironment(const QProcessEnvironment& base, const ToolHost* host);
 
 /// Whether \a mode is the one where Claude asks before acting: not named,
 /// or as the program names it ("default", "manual").

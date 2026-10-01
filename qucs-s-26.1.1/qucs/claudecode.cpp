@@ -313,6 +313,26 @@ QString qucsSystemPrompt()
         "the file of a schematic that is open.");
 }
 
+int longestDescription(const ToolHost& host)
+{
+    int longest = int(host.instructions().size());
+    for (const QJsonValue& tool : host.tools())
+        longest = std::max(longest, int(tool.toObject().value(QLatin1String("description")).toString().size()));
+    return longest;
+}
+
+QProcessEnvironment claudeEnvironment(const QProcessEnvironment& base, const ToolHost* host)
+{
+    static const QString name = QStringLiteral("CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH");
+    QProcessEnvironment env = base;
+    if (host == nullptr || env.contains(name)) return env;
+    // The server's instructions run past the default: cut there, Claude
+    // would not be told how the tools work best.
+    const int longest = longestDescription(*host);
+    if (longest > kDescriptionCap) env.insert(name, QString::number(longest));
+    return env;
+}
+
 bool isAskMode(const QString& mode)
 {
     return mode.isEmpty() || mode == QLatin1String("default") || mode == QLatin1String("manual");
@@ -725,6 +745,7 @@ void Session::start()
             options.allowedTools << QStringLiteral("mcp__") + name + QStringLiteral("__") + tool;
     }
     process->setArguments(arguments(options));
+    process->setProcessEnvironment(claudeEnvironment(QProcessEnvironment::systemEnvironment(), a_host));
     if (!a_workDir.isEmpty()) process->setWorkingDirectory(a_workDir);
     connect(process, &QProcess::readyReadStandardOutput, this, &Session::readOutput);
     connect(process, &QProcess::readyReadStandardError, this, [this, process] {
