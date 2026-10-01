@@ -3205,6 +3205,20 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r)));
         const QJsonObject told = json(r).toObject().value("variables").toArray().first().toObject().value("measurements").toObject().value("eye").toObject();
         QVERIFY2(std::abs(told.value("unit interval").toDouble() / 40e-6 - 1) < 1e-3 && told.contains("unit interval from"), qPrintable(text(r)));
+        // The circuit sends its bits from a V(PRBS) on the data net: its Tbit,
+        // exact, before what the crossings tell.
+        {
+            QString body = text(call("get_schematic", {{"format", "text"}}));
+            body.replace("</Components>", "  <vPRBS V1 1 100 130 18 -26 0 1 \"0 V\" 1 \"1 V\" 1 \"40 us\" 1 \"0\" 0 \"4 us\" 0 \"4 us\" 0 "
+                                          "\"7\" 1 \"\" 0 \"NRZ\" 0>\n  <GND * 1 100 190 0 0 0 0>\n</Components>");
+            body.replace("</Wires>", "  <100 160 100 190 \"\" 0 0 0 \"\">\n  <100 100 200 100 \"data\" 150 70 10 \"\">\n</Wires>");
+            QVERIFY2(!failed(call("set_schematic", {{"text", body}})), qPrintable(body));
+            r = call("get_dataset", {{"variables", QJsonArray{"tran.v(data)"}}, {"measure", QJsonArray{"eye"}}});
+            const QJsonObject sent = json(r).toObject().value("variables").toArray().first().toObject().value("measurements").toObject().value("eye").toObject();
+            QVERIFY2(sent.value("unit interval").toDouble() == 40e-6 && sent.value("unit interval from").toString().startsWith("V1's Tbit"),
+                     qPrintable(text(r)));
+            QVERIFY(!failed(call("undo")));
+        }
         r = call("get_dataset", {{"variables", QJsonArray{"tran.v(data)"}}, {"measure", QJsonArray{"eye"}}, {"levels", 3}});
         QVERIFY2(failed(r) && text(r).contains("2 (NRZ) or 4 (PAM4)"), qPrintable(text(r)));
 

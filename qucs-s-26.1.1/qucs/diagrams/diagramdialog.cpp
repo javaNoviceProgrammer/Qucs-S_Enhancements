@@ -704,9 +704,10 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       };
       int r = 0;
       el->addWidget(new QLabel(tr("Unit interval:")), r, 0);
-      EyeUi = valueEdit(eyeDiagram->ui, "s", tr("from the crossings"));
-      EyeUi->setToolTip(tr("A bit's length (a PAM4 symbol's): 100 ps, 1n. Empty: told from where the "
-                           "first graph crosses its threshold"));
+      EyeUi = valueEdit(eyeDiagram->ui, "s", tr("the PRBS source's Tbit, or from the crossings"));
+      EyeUi->setToolTip(tr("A bit's length (a PAM4 symbol's): 100 ps, 1n. Empty: the Tbit of the V(PRBS) "
+                           "source the first graph comes from - the nearest to its node, never through ground "
+                           "- or, with none, told from where it crosses its threshold"));
       el->addWidget(EyeUi, r++, 1);
       el->addWidget(new QLabel(tr("Across it:")), r, 0);
       EyeSpan = new QSpinBox();

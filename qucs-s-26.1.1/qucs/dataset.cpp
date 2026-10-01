@@ -1532,6 +1532,7 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
         r.insert(QStringLiteral("value"), rounded(worst->height));
         r.insert(QStringLiteral("unit interval"), rounded(e.ui));
         if (e.uiEstimated) r.insert(QStringLiteral("unit interval from"), tr("the crossings (no bit_period given)"));
+        else if (!o.periodFrom.isEmpty()) r.insert(QStringLiteral("unit interval from"), tr("%1's Tbit (no bit_period given)").arg(o.periodFrom));
         r.insert(QStringLiteral("crossing level"), rounded(worst->threshold));
         if (e.levels.size() == 2) {
             r.insert(QStringLiteral("levels"), QJsonObject{{QStringLiteral("high"), rounded(e.levels.at(1))}, {QStringLiteral("low"), rounded(e.levels.at(0))}});

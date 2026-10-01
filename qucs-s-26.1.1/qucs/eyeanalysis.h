@@ -73,6 +73,7 @@ struct Result {
     QString error;               ///< why there is no eye (empty: there is one)
     double ui = NaN;
     bool uiEstimated = false;    ///< told from the crossings, not given
+    QString uiSource;            ///< given as the Tbit of this PRBS source ("V1")
     double start = NaN, end = NaN;
     double centre = NaN;         ///< the eye's centre: the time of a sampling instant (others a UI apart)
     QVector<double> levels;      ///< lowest first

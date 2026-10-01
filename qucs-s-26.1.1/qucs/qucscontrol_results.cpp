@@ -21,6 +21,7 @@
 #include "dataset.h"
 #include "eyeanalysis.h"
 #include "ngstatistics.h"
+#include "prbssource.h"
 #include "valuereading.h"
 #include "vamodule.h"
 #include "textdoc.h"
@@ -842,6 +843,7 @@ struct ReadOptions {
     QString prefix;   // the simulator's, for the name of a trace
     QString dataset;  // a dataset not the schematic's own (imported, a run kept): its name, for a trace (name:variable)
     QHash<QString, QString> definitions;   // the equations' variables (lower case): what they are defined as
+    const Schematic* circuit = nullptr;    // the schematic of the dataset: an eye's PRBS source
 };
 
 // The trace that shows \a variable of the dataset read: ngspice/v(out),
@@ -1035,6 +1037,13 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
     describe(out, v, o);
     ds::MeasureOptions measureOptions = o.measureOptions;
     measureOptions.decibels = o.decibels.value_or(ds::isDecibels(ds::unitOf(v.name, definitionOf(o, v.name))));
+    // An eye without a bit period: the Tbit of the PRBS source the signal
+    // comes from, before what its crossings tell.
+    if (std::isnan(measureOptions.period) && o.measure.contains(QStringLiteral("eye")) && o.circuit != nullptr)
+        if (const qucs_s::prbs::Source s = qucs_s::prbs::sourceOf(o.circuit, v.name); s.found()) {
+            measureOptions.period = s.ui;
+            measureOptions.periodFrom = s.name;
+        }
     const QString xName = v.dependencies.value(0, QStringLiteral("index"));
     out.insert(QStringLiteral("x"), xName);
     if (v.dependencies.size() > 1) out.insert(QStringLiteral("swept"), QJsonArray::fromStringList(v.dependencies.mid(1)));
@@ -2087,7 +2096,10 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
         if (!origin.options.sheet.isEmpty()) from.insert(QStringLiteral("sheet"), origin.options.sheet);
         result.insert(QStringLiteral("imported from"), from);
     }
-    if (Schematic* definer = schematicOfDataset(file, args)) o.definitions = definitionsIn(definer);
+    if (Schematic* definer = schematicOfDataset(file, args)) {
+        o.definitions = definitionsIn(definer);
+        o.circuit = definer;
+    }
     // A dataset not of a schematic's Data Set - imported, a run keep_as
     // kept - is named in a trace: ngspice/v(out) is the schematic's own.
     if (!importedName.isEmpty()) {
