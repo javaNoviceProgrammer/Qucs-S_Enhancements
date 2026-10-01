@@ -55,9 +55,9 @@ bool CdlNetlistWriter::write()
 {
     a_effectiveNetlistStream << "* Qucs " << PACKAGE_VERSION << "  " << a_schematic->getDocName() << "\n";
 
+    // The .INCLUDE and .LIB lines of the schematic and of every subcircuit
+    // under it, once (upstream's wrote the whole block twice).
     a_effectiveNetlistStream << AbstractSpiceKernel::collectSpiceLibs(a_schematic);
-    QString s(AbstractSpiceKernel::collectSpiceLibs(a_schematic));
-    a_effectiveNetlistStream << s;
 
     if (prepareNetlist() == -10)
     {
