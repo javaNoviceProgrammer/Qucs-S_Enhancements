@@ -1708,8 +1708,9 @@ QList<Issue> check(Schematic* doc)
         }
     }
 
-    // What a run executes besides the simulator: said, whatever else is.
-    commandIssues(doc, warnings);
+    // What a run executes besides the simulator: said, whatever else is,
+    // when the settings look for it.
+    if (QucsSettings.CheckCommands) commandIssues(doc, warnings);
 
     // A circuit (not a subcircuit: those have ports) needs a simulation,
     // and a ground symbol unless the settings leave node 0 to the user (a

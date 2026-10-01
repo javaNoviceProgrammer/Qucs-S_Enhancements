@@ -140,6 +140,15 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
            "Off: it is simulated as it is - node 0 then comes from a net named 0 or from a component "
            "(a SPICE netlist, a library part) that brings it - and Check Schematic says nothing of it."));
     checksLayout->addWidget(a_cbRequireGround);
+    a_cbCheckCommands = new QCheckBox(tr("Warn of commands a simulation runs besides the simulator"), gbChecks);
+    a_cbCheckCommands->setObjectName(QStringLiteral("cbCheckCommands"));
+    a_cbCheckCommands->setChecked(QucsSettings.CheckCommands);
+    a_cbCheckCommands->setToolTip(
+        tr("On: Check Schematic warns of each command a simulation of the schematic runs with your rights - a System "
+           "command part, ngspice's shell in a custom simulation, Nutmeg or .spiceinit text, the Octave script run "
+           "after it - and Claude's tools do not simulate such a schematic unless asked to run them. "
+           "Off: they run as they are, unsaid."));
+    checksLayout->addWidget(a_cbCheckCommands);
     gbChecks->setLayout(checksLayout);
     simulatorsLayout->addWidget(gbChecks);
     simulatorsLayout->addStretch(1);
@@ -200,6 +209,7 @@ void SimSettingsDialog::slotApply()
     qs.setItem<QString>("XyceParams", a_edtXyceSimParam->text());
     qs.setItem<QString>("SpopusParams", a_edtSpopusSimParam->text());
     QucsSettings.RequireGround = a_cbRequireGround->isChecked();
+    QucsSettings.CheckCommands = a_cbCheckCommands->isChecked();
     QucsSettings.SimulationConsoleHost = a_rbConsoleLegacy->isChecked() ? tQucsSettings::SimConsoleLegacyWindow
                                        : a_rbConsoleWindow->isChecked() ? tQucsSettings::SimConsoleWindow
                                                                         : tQucsSettings::SimConsoleDock;

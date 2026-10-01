@@ -63,6 +63,9 @@ private:
 
     // A ground symbol is required to simulate (QucsSettings.RequireGround).
     QCheckBox *a_cbRequireGround;
+    // What a simulation runs besides the simulator is looked for
+    // (QucsSettings.CheckCommands).
+    QCheckBox *a_cbCheckCommands;
 
 public:
     explicit SimSettingsDialog(QWidget *parent = 0);
