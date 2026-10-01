@@ -39,6 +39,7 @@
 #include "eyeanalysis.h"
 #include "ink.h"
 #include "main.h"
+#include "prbssource.h"
 #include "misc.h"
 #include "module.h"
 #include "qucs.h"
@@ -195,6 +196,39 @@ int dark(const QImage& img, const QRect& area)
     return n;
 }
 
+// A link: V1 (bits of \a tbit1) through R1 to tx, R2 to rx, C1 to ground;
+// an aggressor V3 (\a tbit3) through R6 (\a r6, else a wire) and R5 to agg,
+// coupled to rx by Cc. Every source's other end on ground. The Data Set
+// \a dataset.
+QString linkSchematic(const QString& tbit1, const QString& tbit3, bool r6 = true, bool v1Active = true,
+                      const QString& dataset = QStringLiteral("link.dat"))
+{
+    QString s = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <DataSet=%1>\n</Properties>\n"
+                               "<Symbol>\n</Symbol>\n<Components>\n").arg(dataset);
+    auto prbs = [](const QString& name, int y, const QString& tbit, bool active) {
+        return QStringLiteral("  <vPRBS %1 %2 100 %3 18 -26 0 1 \"0 V\" 1 \"1 V\" 1 \"%4\" 1 \"0\" 0 \"0\" 0 \"0\" 0 \"7\" 1 "
+                              "\"\" 0 \"NRZ\" 0>\n").arg(name).arg(active ? 1 : 0).arg(y).arg(tbit);
+    };
+    auto r = [](const QString& name, int x, int y) {
+        return QStringLiteral("  <R %1 1 %2 %3 -26 15 0 0 \"50\" 1 \"26.85\" 0 \"european\" 0>\n").arg(name).arg(x).arg(y);
+    };
+    auto c = [](const QString& name, int x, int y) {
+        return QStringLiteral("  <C %1 1 %2 %3 17 -26 0 1 \"1 pF\" 1 \"\" 0 \"neutral\" 0>\n").arg(name).arg(x).arg(y);
+    };
+    s += prbs("V1", 130, tbit1, v1Active) + "  <GND * 1 100 190 0 0 0 0>\n" + r("R1", 160, 100) + r("R2", 250, 100) + c("C1", 340, 130)
+         + "  <GND * 1 340 190 0 0 0 0>\n" + c("Cc", 400, 200);
+    s += prbs("V3", 330, tbit3, true) + "  <GND * 1 100 390 0 0 0 0>\n" + (r6 ? r("R6", 160, 300) : QString()) + r("R5", 250, 300);
+    s += "</Components>\n<Wires>\n"
+         "  <100 160 100 190 \"\" 0 0 0 \"\">\n  <100 100 130 100 \"\" 0 0 0 \"\">\n"
+         "  <190 100 220 100 \"tx\" 200 70 10 \"\">\n  <280 100 340 100 \"rx\" 300 70 10 \"\">\n"
+         "  <340 160 340 190 \"\" 0 0 0 \"\">\n  <340 100 400 100 \"\" 0 0 0 \"\">\n  <400 100 400 170 \"\" 0 0 0 \"\">\n"
+         "  <100 360 100 390 \"\" 0 0 0 \"\">\n";
+    s += r6 ? "  <100 300 130 300 \"\" 0 0 0 \"\">\n  <190 300 220 300 \"\" 0 0 0 \"\">\n" : "  <100 300 220 300 \"\" 0 0 0 \"\">\n";
+    s += "  <280 300 400 300 \"agg\" 300 270 10 \"\">\n  <400 300 400 230 \"\" 0 0 0 \"\">\n"
+         "</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+    return s;
+}
+
 } // namespace
 
 class TestPrbsEye : public QObject
@@ -337,6 +371,112 @@ private slots:
             levels << int(std::round(x));
         }
         QCOMPARE(levels, QSet<int>({0, 1, 2, 3}));
+    }
+
+    // The node a trace's variable is the voltage of.
+    void aVariableNamesItsNode()
+    {
+        QCOMPARE(qucs_s::prbs::nodeOf("ngspice/tran.v(rx)"), QString("rx"));
+        QCOMPARE(qucs_s::prbs::nodeOf("v( RX )"), QString("RX"));
+        QVERIFY(qucs_s::prbs::nodeOf("ngspice/run1:tran.v(out)").isEmpty());   // a run kept: its Tbit may be another
+        QCOMPARE(qucs_s::prbs::nodeOf("rx.Vt"), QString("rx"));
+        for (const char* none : {"tran.i(v1)", "v(a,b)", "v(out)/v(in)", "time", "", "db(v(out))"})
+            QVERIFY2(qucs_s::prbs::nodeOf(none).isEmpty(), none);
+    }
+
+    // The PRBS source a trace comes from: the nearest to its net, never
+    // through ground; as near with different bits, none, and why; a Tbit
+    // that is no number, or a source left out, not taken.
+    void theSourceIsTheNearestPrbs()
+    {
+        auto source = [&](const QString& text, const QString& variable) {
+            const QString file = dir.filePath("link.sch");
+            QFile f(file);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return qucs_s::prbs::Source();
+            f.write(text.toUtf8());
+            f.close();
+            Schematic sch(nullptr, file);
+            if (!sch.loadDocument()) return qucs_s::prbs::Source();
+            return qucs_s::prbs::sourceOf(&sch, variable);
+        };
+        // V1 two parts from rx (R2, R1), V3 three (Cc, R5, R6); from agg the other way round.
+        qucs_s::prbs::Source s = source(linkSchematic("50 ps", "80 ps"), "ngspice/tran.v(rx)");
+        QVERIFY2(s.found() && s.name == "V1" && s.ui == 50e-12, qPrintable(s.name + s.why));
+        s = source(linkSchematic("50 ps", "80 ps"), "ngspice/tran.v(agg)");
+        QVERIFY2(s.found() && s.name == "V3" && s.ui == 80e-12, qPrintable(s.name + s.why));
+        s = source(linkSchematic("50 ps", "80 ps"), "v(TX)");   // (ngspice's names are lower case)
+        QVERIFY2(s.found() && s.name == "V1", qPrintable(s.name + s.why));
+        // As near, different bits: none, said; one Tbit: one source.
+        s = source(linkSchematic("50 ps", "80 ps", false), "v(rx)");
+        QVERIFY2(!s.found() && s.why.contains("different lengths") && s.why.contains("V1") && s.why.contains("V3"), qPrintable(s.why));
+        s = source(linkSchematic("50 ps", "50p", false), "v(rx)");
+        QVERIFY2(s.found() && s.name == "V1 and V3" && s.ui == 50e-12, qPrintable(s.name + s.why));
+        // A parameter: no number, said.
+        s = source(linkSchematic("tb", "80 ps"), "v(rx)");
+        QVERIFY2(!s.found() && s.why.contains("V1's Tbit is tb"), qPrintable(s.why));
+        // V1 left out of the simulation: V3.
+        s = source(linkSchematic("50 ps", "80 ps", true, false), "v(rx)");
+        QVERIFY2(s.found() && s.name == "V3", qPrintable(s.name + s.why));
+        // No such net, a current, ground: none, nothing said.
+        for (const char* none : {"v(nowhere)", "i(v1)", "v(gnd)"}) {
+            s = source(linkSchematic("50 ps", "80 ps"), QString::fromLatin1(none));
+            QVERIFY2(!s.found() && s.why.isEmpty(), none);
+        }
+        QVERIFY(!qucs_s::prbs::sourceOf(nullptr, "v(rx)").found());
+    }
+
+    // In the application: an eye diagram on the schematic folds at its
+    // source's Tbit, not at what the crossings tell (here other bits), and
+    // says so - on its data display too; a UI given still rules, and with no
+    // PRBS source the crossings tell it.
+    void theDiagramFoldsAtTheSourcesTbit()
+    {
+        const QString folder = dir.filePath("app");
+        QVERIFY(QDir().mkpath(folder));
+        // The data: bits of 60 ps; V1 sends 50 ps ones (say).
+        ds::Curve c = waveform(nrz(150), 10e-12, 2.5e-12);
+        for (double& t : c.x) t *= 0.6;
+        QVERIFY(writeDataset(folder + "/link.dat", c, "v(rx)"));
+        auto open = [&](const QString& name, const QString& text, const QString& extra) -> EyeDiagram* {
+            QString withDiagram = text;
+            withDiagram.replace("<Diagrams>\n</Diagrams>", "<Diagrams>\n  " + eyeLine(extra) + "\n\t<\"v(rx)\" #0050c8 1 3 0 0 0>\n  </Eye>\n</Diagrams>");
+            QFile f(folder + "/" + name);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return nullptr;
+            f.write(withDiagram.toUtf8());
+            f.close();
+            if (!app->gotoPage(folder + "/" + name, false, false)) return nullptr;
+            auto* sch = dynamic_cast<Schematic*>(app->findDoc(folder + "/" + name));
+            if (sch == nullptr || sch->a_DocDiags.empty()) return nullptr;
+            sch->reloadGraphs();
+            return dynamic_cast<EyeDiagram*>(sch->a_DocDiags.front());
+        };
+        EyeDiagram* d = open("link.sch", linkSchematic("50 ps", "80 ps"), " - 2 - 2 - 0 1 - -");
+        QVERIFY(d);
+        QCOMPARE(d->foldedUi(), 50e-12);
+        QCOMPARE(d->results().first().uiSource, QString("V1"));
+        QVERIFY(!d->results().first().uiEstimated);
+        QVERIFY2(d->measurementLines().contains("UI 50 ps, V1's Tbit"), qPrintable(d->measurementLines().join("\n")));
+        QCOMPARE(eye::toJson(d->results().first()).value("unit interval from").toString(), QString("V1's Tbit"));
+        // Given: it rules.
+        d->ui = 60e-12;
+        d->updateGraphData();
+        QCOMPARE(d->foldedUi(), 60e-12);
+        QVERIFY(d->results().first().uiSource.isEmpty());
+        // A data display of the same dataset: the schematic's source.
+        QString display = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <DataSet=link.dat>\n</Properties>\n"
+                                         "<Symbol>\n</Symbol>\n<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n"
+                                         "<Paintings>\n</Paintings>\n");
+        EyeDiagram* shown = open("link.dpl", display, " - 2 - 2 - 0 1 - -");
+        QVERIFY(shown);
+        QCOMPARE(shown->results().first().uiSource, QString("V1"));
+        // No PRBS source (the Tbits as near and unlike): the crossings, and why not the source.
+        EyeDiagram* other = open("link2.sch", linkSchematic("50 ps", "80 ps", false, true, "link.dat"), " - 2 - 2 - 0 1 - -");
+        QVERIFY(other);
+        QVERIFY(other->results().first().uiEstimated);
+        QVERIFY(std::abs(other->foldedUi() / 60e-12 - 1) < 1e-4);
+        const QStringList lines = other->measurementLines();
+        QVERIFY2(lines.contains("UI 60 ps, from the crossings") && lines.join(" ").contains("(not the source's: as near"),
+                 qPrintable(lines.join("\n")));
     }
 
     // Crossings leave a band about the level: ringing within it is none.

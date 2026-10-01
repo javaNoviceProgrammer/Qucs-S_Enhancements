@@ -241,10 +241,35 @@ void EyeDiagram::getAxisLimits(Graph* pg)
         }
 }
 
+EyeDiagram::SourceFinder& EyeDiagram::sourceFinder()
+{
+    static SourceFinder finder;
+    return finder;
+}
+
+void EyeDiagram::setSourceFinder(SourceFinder finder)
+{
+    sourceFinder() = std::move(finder);
+}
+
 void EyeDiagram::analyse()
 {
     m_results.clear();
+    m_sourceWhy.clear();
     m_ui = std::isfinite(ui) && ui > 0.0 ? ui : eye::NaN;
+    // None given: the Tbit of the PRBS source a trace comes from, exact,
+    // before what the crossings tell.
+    QString source;
+    if (!std::isfinite(m_ui) && sourceFinder())
+        for (const Graph* g : Graphs) {
+            const qucs_s::prbs::Source s = sourceFinder()(this, g->Var);
+            if (s.found()) {
+                m_ui = s.ui;
+                source = s.name;
+                break;
+            }
+            if (m_sourceWhy.isEmpty()) m_sourceWhy = s.why;
+        }
     eye::Options o;
     o.start = start;
     o.levels = levels;
@@ -263,6 +288,7 @@ void EyeDiagram::analyse()
     };
     for (int i = 0; i < Graphs.size(); ++i) {
         m_results << one(i);
+        m_results.last().uiSource = source;
         if (!std::isfinite(m_ui) && m_results.last().ok()) {
             m_ui = m_results.last().ui;
             // The graphs before, whose UI could not be told: at this one's.
@@ -349,7 +375,10 @@ QList<EyeDiagram::Line> EyeDiagram::lines() const
             continue;
         }
         const QString unit = unitOf(g), s = QStringLiteral("s");
-        add(tr("UI %1%2").arg(engineering(r.ui, s), r.uiEstimated ? tr(", from the crossings") : QString()));
+        add(tr("UI %1%2").arg(engineering(r.ui, s), r.uiEstimated           ? tr(", from the crossings")
+                                                     : !r.uiSource.isEmpty() ? tr(", %1's Tbit").arg(r.uiSource)
+                                                                             : QString()));
+        if (r.uiEstimated && !m_sourceWhy.isEmpty()) add(tr("(not the source's: %1)").arg(m_sourceWhy));
         if (r.eyes.size() == 1) {
             const eye::Eye& e = r.eyes.first();
             add(tr("height %1").arg(engineering(e.height, unit)));

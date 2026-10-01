@@ -14,8 +14,11 @@
 
 #include "rectdiagram.h"
 #include "eyeanalysis.h"
+#include "prbssource.h"
 
 #include <QImage>
+
+#include <functional>
 
 /*!
  * \brief The eye diagram: every graph is a transient - a received data
@@ -61,6 +64,12 @@ public:
   /// \a value in engineering notation with \a unit: "92.51 ps".
   static QString engineering(double value, const QString& unit);
 
+  /// How a diagram finds the PRBS source a trace comes from, whose Tbit is
+  /// the UI when none is given (prbssource.cpp installs it for the
+  /// application's documents); without one, the crossings tell it.
+  using SourceFinder = std::function<qucs_s::prbs::Source(const EyeDiagram*, const QString& variable)>;
+  static void setSourceFinder(SourceFinder finder);
+
   void getAxisLimits(Graph*) override;
   /// (No right axis.)
   QList<Part> themeParts() const override;
@@ -88,8 +97,11 @@ private:
   void paintMarks(QPainter* painter) const;
   void analyse();
 
+  static SourceFinder& sourceFinder();
+
   QList<qucs_s::eye::Result> m_results;
   double m_ui;
+  QString m_sourceWhy;   // why a PRBS source there is gives no UI
   QImage m_image;   // the traces, as last drawn
   quint64 m_generation = 0, m_imageGeneration = ~quint64(0);
   QRgb m_imagePaper = 0;
