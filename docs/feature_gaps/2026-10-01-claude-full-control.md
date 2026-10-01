@@ -205,3 +205,14 @@ Each change was broken on purpose, one at a time, and its test run.
   action. The panel's key refusal was doubled by `refusedAction`'s: the test's action
   is now one of no owner shown on the panel, which only the new check sees. The
   canvas's points equalled its pixels at the test's zoom: the test zooms in first.
+
+## After the round: a crash
+
+Minutes after this round's DMG was installed, Qucs-S crashed in the user's hands. The
+panel names each of Claude's calls (`subjectOf`), and `set_settings`' name read its
+`values` through an iterator of an object already gone. No test had called it: the
+tests call tools directly, and the panel's labels are made only in the panel. It is
+fixed in `bb513bd`, with a test that calls the panel's label functions for every tool,
+with every argument and every wrong type. A sweep of the round's tools on the
+ASan/UBSan build, the whole tests and an argument fuzzer, found one fault more: numbers
+made whole unchecked. See `docs/bug_hunts/2026-10-01-access-tools.md`.
