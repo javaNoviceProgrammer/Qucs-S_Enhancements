@@ -8,6 +8,7 @@
  */
 #include <QtTest>
 #include <QElapsedTimer>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -44,6 +45,20 @@ QStringList childrenOf(QStandardItem* parent)
     QStringList names;
     for (int i = 0; parent && i < parent->rowCount(); ++i)
         names << parent->child(i, 0)->text();
+    return names;
+}
+
+// The files the panel shows - their rows and every row above them shown -
+// as their rows name them, in the panel's order.
+QStringList visibleFiles(ProjectView* view, const QModelIndex& parent = QModelIndex())
+{
+    QStringList names;
+    for (int row = 0; row < view->model()->rowCount(parent); ++row) {
+        const QModelIndex idx = view->model()->index(row, 0, parent);
+        if (view->isRowHidden(row, parent)) continue;
+        if (view->isFile(idx)) names << idx.data().toString();
+        else names << visibleFiles(view, idx);
+    }
     return names;
 }
 
@@ -413,6 +428,116 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));
         QVERIFY(QucsSettings.ContentPatterns.isEmpty());
         QVERIFY(!childrenOf(view->model()->item(ProjectView::Text, 0)).contains("readme.md"));
+    }
+
+    // Above the panel, the File Browser's filter: the files whose names
+    // hold what is typed, whatever its case - a folder's name finds what
+    // is in it -, in their categories and folders, open; the header says
+    // how many. A row it hides is no longer selected. It stays through a
+    // refresh, and cleared, every row is back, open as it was.
+    void aFilterByNameAsTheFileBrowsers()
+    {
+        PatternsGuard guard;
+        QucsSettings.ContentPatterns.clear();
+        QucsApp app(false);
+        MainGuard mainGuard(&app);
+        ProjectView* view = app.projectView();
+        view->setProjPath(project);
+        auto* box = app.findChild<QLineEdit*>("contentFilter");
+        QVERIFY(box != nullptr);
+        auto* browsers = app.findChild<QLineEdit*>("fbFilter");
+        QVERIFY(browsers != nullptr);
+        QCOMPARE(box->placeholderText(), browsers->placeholderText());
+        QCOMPARE(box->placeholderText(), QString("Filter by name"));
+        QVERIFY(box->isClearButtonEnabled());
+        QCOMPARE(box->actions().size(), browsers->actions().size());   // the magnifier
+        // On the Content tab, above the panel.
+        QWidget* page = nullptr;
+        for (auto* tabs : app.findChildren<QTabWidget*>())
+            for (int i = 0; i < tabs->count(); ++i)
+                if (tabs->tabText(i) == "Content") page = tabs->widget(i);
+        QVERIFY(page != nullptr && page->isAncestorOf(box) && page->isAncestorOf(view));
+        QVERIFY(page->layout()->indexOf(view) > 0);
+        const QModelIndex python = view->model()->index(ProjectView::Python, 0);
+        view->setExpanded(python, true);
+        const QString header = view->model()->headerData(0, Qt::Horizontal).toString();
+        QCOMPARE(header, QString("Content of categories"));
+        const QStringList all = visibleFiles(view);
+        QCOMPARE(all.size(), 11);
+
+        box->setText("log");
+        QCOMPARE(view->filterText(), QString("log"));
+        QCOMPARE(visibleFiles(view), QStringList({"logo.png", "run.log", "log.txt"}));
+        QVERIFY(view->isRowHidden(ProjectView::Schematics, QModelIndex()));
+        for (int c : {ProjectView::Images, ProjectView::Others, ProjectView::Scratch}) {
+            QVERIFY(!view->isRowHidden(c, QModelIndex()));
+            QVERIFY(view->isExpanded(view->model()->index(c, 0)));
+        }
+        QCOMPARE(view->model()->headerData(0, Qt::Horizontal).toString(), QString("Content of categories: 3 found"));
+        QVERIFY2(view->columnWidth(0) >= view->header()->sectionSizeHint(0),
+                 qPrintable(QString("%1 < %2").arg(view->columnWidth(0)).arg(view->header()->sectionSizeHint(0))));
+        box->setText("  LOG ");   // case and spaces aside
+        QCOMPARE(visibleFiles(view), QStringList({"logo.png", "run.log", "log.txt"}));
+        box->setText("readme");
+        QCOMPARE(visibleFiles(view), QStringList({"docs/README.TXT", "readme.md"}));
+        box->setText("docs");   // a folder's name
+        QCOMPARE(visibleFiles(view), QStringList({"docs/README.TXT"}));
+        view->setTreeView(true);
+        QCOMPARE(visibleFiles(view), QStringList({"README.TXT"}));
+        const QModelIndex text = view->model()->index(ProjectView::Text, 0);
+        QModelIndex docs;
+        for (int row = 0; row < view->model()->rowCount(text); ++row)
+            if (view->model()->index(row, 0, text).data().toString() == "docs") docs = view->model()->index(row, 0, text);
+        QVERIFY(docs.isValid() && !view->isFile(docs));
+        QVERIFY(view->isExpanded(docs));
+        view->setTreeView(false);
+        box->setText("Scratch");   // named within it under Scratch
+        QCOMPARE(visibleFiles(view), QStringList());
+        QCOMPARE(view->model()->headerData(0, Qt::Horizontal).toString(), QString("Content of categories: 0 found"));
+        for (int c = 0; c < ProjectView::CategoryCount; ++c) QVERIFY(view->isRowHidden(c, QModelIndex()));
+
+        // What it hides is not selected.
+        box->clear();
+        const QModelIndex others = view->model()->index(ProjectView::Others, 0);
+        const QModelIndex images = view->model()->index(ProjectView::Images, 0);
+        QModelIndex runLog, logo;
+        for (int row = 0; row < view->model()->rowCount(others); ++row)
+            if (view->model()->index(row, 0, others).data().toString() == "run.log") runLog = view->model()->index(row, 0, others);
+        logo = view->model()->index(0, 0, images);
+        QCOMPARE(logo.data().toString(), QString("logo.png"));
+        view->selectionModel()->select(runLog, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        view->selectionModel()->select(logo, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        QCOMPARE(view->selectedFileUrls().size(), 2);
+        box->setText("logo");
+        QCOMPARE(view->selectedFileUrls(), QList<QUrl>{QUrl::fromLocalFile(project + "/logo.png")});
+
+        // Through a refresh: what came is filtered too.
+        box->setText("log");
+        {
+            write("logbook.txt");
+            const QString added = project + "/logbook.txt";
+            const auto gone = qScopeGuard([&] { QFile::remove(added); });
+            view->refresh();
+            QCOMPARE(visibleFiles(view), QStringList({"logo.png", "logbook.txt", "run.log", "log.txt"}));
+            QCOMPARE(view->model()->headerData(0, Qt::Horizontal).toString(), QString("Content of categories: 4 found"));
+        }
+        view->refresh();
+
+        // Cleared: all of them, the categories open as they were.
+        box->clear();
+        QCOMPARE(view->filterText(), QString());
+        QCOMPARE(visibleFiles(view), all);
+        QCOMPARE(view->model()->headerData(0, Qt::Horizontal).toString(), header);
+        for (int c = 0; c < ProjectView::CategoryCount; ++c)
+            QCOMPARE(view->isExpanded(view->model()->index(c, 0)), c == ProjectView::Schematics || c == ProjectView::Python);
+        // A project opened while it filters: cleared, it shows as a project
+        // opened does - its schematics.
+        box->setText("log");
+        view->setProjPath(project);
+        QCOMPARE(visibleFiles(view), QStringList({"logo.png", "run.log", "log.txt"}));
+        box->clear();
+        for (int c = 0; c < ProjectView::CategoryCount; ++c)
+            QCOMPARE(view->isExpanded(view->model()->index(c, 0)), c == ProjectView::Schematics);
     }
 };
 

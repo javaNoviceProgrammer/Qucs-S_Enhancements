@@ -578,12 +578,26 @@ void QucsApp::initView()
   connect(Projects, &QListView::customContextMenuRequested, this, &QucsApp::slotProjectsContextMenu);
 
   // ----------------------------------------------------------
-  // "Content" Tab of the left QTabWidget
+  // "Content" Tab of the left QTabWidget: the project's files, under a
+  // filter by name as the File Browser's.
+  QWidget *ContentGroup = new QWidget();
+  QVBoxLayout *ContentGroupLayout = new QVBoxLayout(ContentGroup);
+  ContentGroupLayout->setContentsMargins(0, 4, 0, 0);
+  ContentGroupLayout->setSpacing(3);
+  QLineEdit *contentFilter = qucs_s::files::nameFilterEdit(ContentGroup);
+  contentFilter->setObjectName(QStringLiteral("contentFilter"));
+  QHBoxLayout *contentFilterRow = new QHBoxLayout;
+  contentFilterRow->setContentsMargins(4, 0, 4, 0);
+  contentFilterRow->addWidget(contentFilter);
+  ContentGroupLayout->addLayout(contentFilterRow);
+
   Content = new ProjectView(this);
   Content->setContextMenuPolicy(Qt::CustomContextMenu);
+  ContentGroupLayout->addWidget(Content);
+  connect(contentFilter, &QLineEdit::textChanged, Content, &ProjectView::setFilterText);
 
-  TabView->addTab(Content, tr("Content"));
-  TabView->setTabToolTip(TabView->indexOf(Content), tr("content of current project"));
+  TabView->addTab(ContentGroup, tr("Content"));
+  TabView->setTabToolTip(TabView->indexOf(ContentGroup), tr("content of current project"));
 
   connect(Content, SIGNAL(clicked(const QModelIndex &)),
           SLOT(slotSelectSubcircuit(const QModelIndex &)));

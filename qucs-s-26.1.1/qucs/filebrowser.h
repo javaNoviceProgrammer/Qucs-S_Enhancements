@@ -70,6 +70,10 @@ public:
     static QIcon iconFor(const Kind& kind);
 };
 
+/// A line that filters by name, the File Browser's and the Content panel's:
+/// "Filter by name", a magnifier before it, a button that clears it.
+QLineEdit* nameFilterEdit(QWidget* parent);
+
 } // namespace qucs_s::files
 
 /*!
