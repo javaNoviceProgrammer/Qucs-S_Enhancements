@@ -68,6 +68,28 @@ public:
   const qucs_s::textcodec::Encoding& encoding() const { return a_encoding; }
   /// Its file's lines end in CR LF (and are written back so).
   bool crlf() const { return a_crlf; }
+
+  /// A finding shown in the text (build_verilog_a's errors and warnings):
+  /// its line and column (1-based; column 0: the whole line), its message,
+  /// and whether it is an error (else a warning).
+  struct Diagnostic {
+    int line = 0;
+    int column = 0;
+    QString message;
+    bool error = true;
+  };
+  /// Shows \a list in the text until the next list (an empty one takes
+  /// them away): a wavy underline from the column to the line's end - red
+  /// for an error, amber for a warning -, a dot in the line numbers'
+  /// margin, and the message as the line's tooltip. They move with the
+  /// text as it is edited.
+  void setDiagnostics(const QList<Diagnostic>& list);
+  /// Those shown, at their lines now.
+  QList<Diagnostic> diagnostics() const;
+  /// The messages shown for the line at \a y (the margin's or the
+  /// viewport's coordinates, as the margin is level with the viewport),
+  /// one a line; empty for none.
+  QString diagnosticsAtY(int y) const;
   virtual double zoomBy (double zoom) override;
   virtual void showNoZoom () override;
   void  becomeCurrent (bool);
@@ -106,6 +128,11 @@ public:
   bool a_countsEdits = false;   // set up (and loaded): its changes are edits
   int language;   // language_type (syntax.h): its highlighting, comments, skeletons
   int a_chosenLanguage = -1;   // chosen for it alone (it has no suffix), -1: its file's
+  struct ShownDiagnostic {
+    QTextCursor at;   // where it is: moves with the text
+    Diagnostic diagnostic;
+  };
+  QList<ShownDiagnostic> a_diagnostics;   // setDiagnostics()'s
 
   bool loadSettings (void);
   bool saveSettings (void);
@@ -137,6 +164,8 @@ public slots:
 
 protected:
       void resizeEvent(QResizeEvent *event) override;
+      /// A line's diagnostics as its tooltip.
+      bool viewportEvent(QEvent *event) override;
       /// Room around the text beside the line numbers' (a subclass puts
       /// widgets of its own there: MarkdownDoc its bar and preview).
       virtual QMargins extraMargins() const { return {}; }
@@ -187,6 +216,8 @@ protected:
     {
         codeEditor->lineNumberAreaPaintEvent(event);
     }
+    // A line's diagnostics over its dot.
+    bool event(QEvent *event) override;
 
 private:
     TextDoc *codeEditor;

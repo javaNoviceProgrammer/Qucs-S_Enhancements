@@ -4566,6 +4566,179 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"path", folder + "/top.sch"}, {"unsaved", "discard"}})));
     }
 
+    // ---- what Claude still needs for full control (qucs-s-claude-access 2)
+
+    // A text tab read as it is in the window, unsaved edits and all, and
+    // edited as one undo step that keeps the user's typing; refused when
+    // the user typed since the revision given; all edits or none.
+    void textTabsAreReadAndEdited()
+    {
+        const QString folder = QucsSettings.qucsWorkspaceDir.absoluteFilePath("text1");
+        QVERIFY(QDir().mkpath(folder));
+        {
+            QFile f(folder + "/amp.va");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("module amp(p, n);\n  parameter real g = 2;\n  analog begin\n    I(p,n) <+ g*V(p,n);\n  end\nendmodule\n");
+        }
+        QVERIFY(!failed(call("open_document", {{"path", folder + "/amp.va"}})));
+        auto* tab = dynamic_cast<TextDoc*>(app->findDoc(folder + "/amp.va"));
+        QVERIFY(tab != nullptr);
+        QJsonObject r = call("get_text", {{"path", folder + "/amp.va"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r).toObject();
+        QCOMPARE(o.value("lines").toInt(), 7);   // (the empty line after the last newline)
+        QVERIFY(!o.value("unsaved").toBool());
+        QVERIFY2(o.value("text").toString().startsWith("1| module amp(p, n);\n2|   parameter real g = 2;"), qPrintable(o.value("text").toString()));
+        QCOMPARE(o.value("cursor").toObject().value("line").toInt(), 1);
+        r = call("get_text", {{"path", "amp.va"}, {"from_line", 3}, {"to_line", 4}});
+        QCOMPARE(json(r).toObject().value("text").toString(), QString("3|   analog begin\n4|     I(p,n) <+ g*V(p,n);"));
+        QCOMPARE(json(r).toObject().value("shown").toString(), QString("lines 3 to 4 of 7"));
+        QVERIFY(failed(call("get_text", {{"path", "amp.va"}, {"from_line", 9}})));
+        const double revision = o.value("revision").toDouble();
+
+        // The user types: unsaved, a new revision; Claude's edit at the old
+        // one is refused, and nothing changes.
+        QTextCursor typing(tab->document());
+        typing.movePosition(QTextCursor::End);
+        typing.insertText("// mine\n");
+        r = call("get_text", {{"path", "amp.va"}});
+        QVERIFY(json(r).toObject().value("unsaved").toBool());
+        const double now = json(r).toObject().value("revision").toDouble();
+        QVERIFY(now != revision);
+        r = call("edit_text", {{"path", "amp.va"}, {"revision", revision}, {"edits", QJsonArray{QJsonObject{{"find", "g = 2"}, {"replace", "g = 3"}}}}});
+        QVERIFY2(failed(r) && text(r).contains("was edited since"), qPrintable(text(r)));
+        QVERIFY(tab->toPlainText().contains("g = 2"));
+        // At the revision now: both edits kept, the user's and Claude's.
+        r = call("edit_text", {{"path", "amp.va"}, {"revision", now},
+                               {"edits", QJsonArray{QJsonObject{{"find", "g = 2"}, {"replace", "g = 3"}},
+                                                    QJsonObject{{"lines", QJsonArray{4, 4}}, {"text", "    I(p,n) <+ g*V(p,n) + 1e-12*ddt(V(p,n));"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("changed").toInt(), 2);
+        QVERIFY(tab->toPlainText().contains("g = 3") && tab->toPlainText().contains("ddt(V(p,n))") && tab->toPlainText().contains("// mine"));
+        QVERIFY(tab->getDocChanged());
+        // One undo step takes Claude's edits back - the user's stay.
+        tab->undo();
+        QVERIFY(tab->toPlainText().contains("g = 2") && !tab->toPlainText().contains("ddt") && tab->toPlainText().contains("// mine"));
+        tab->redo();
+        QVERIFY(tab->toPlainText().contains("g = 3") && tab->toPlainText().contains("ddt"));
+
+        // Lines: put before a line, taken away (no empty line left), and
+        // after the last.
+        const QString before = tab->toPlainText();
+        r = call("edit_text", {{"path", "amp.va"}, {"edits", QJsonArray{QJsonObject{{"lines", QJsonArray{1, 0}}, {"text", "`include \"disciplines.vams\""}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(tab->toPlainText().startsWith("`include \"disciplines.vams\"\nmodule amp"));
+        r = call("edit_text", {{"path", "amp.va"}, {"edits", QJsonArray{QJsonObject{{"lines", QJsonArray{1, 1}}, {"text", ""}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(tab->toPlainText(), before);
+        // Refused, and nothing changed: not there, there twice, a range
+        // that is not, an edit of neither kind - the first edit of a
+        // refused list neither.
+        const QString kept = tab->toPlainText();
+        QVERIFY(text(call("edit_text", {{"path", "amp.va"}, {"edits", QJsonArray{QJsonObject{{"find", "nowhere"}, {"replace", "x"}}}}})).contains("is not in the text"));
+        QVERIFY(text(call("edit_text", {{"path", "amp.va"}, {"edits", QJsonArray{QJsonObject{{"find", "(p,n)"}, {"replace", "(a,b)"}}}}})).contains("times"));
+        QVERIFY(failed(call("edit_text", {{"path", "amp.va"}, {"edits", QJsonArray{QJsonObject{{"lines", QJsonArray{20, 21}}, {"text", "x"}}}}})));
+        QVERIFY(failed(call("edit_text", {{"path", "amp.va"}, {"edits", QJsonArray{QJsonObject{{"text", "x"}}}}})));
+        r = call("edit_text", {{"path", "amp.va"}, {"edits", QJsonArray{QJsonObject{{"find", "g = 3"}, {"replace", "g = 4"}},
+                                                                        QJsonObject{{"find", "nowhere"}, {"replace", "x"}}}}});
+        QVERIFY2(failed(r) && text(r).contains("edit 2"), qPrintable(text(r)));
+        QCOMPARE(tab->toPlainText(), kept);
+        // 'all' replaces each.
+        r = call("edit_text", {{"path", "amp.va"}, {"edits", QJsonArray{QJsonObject{{"find", "(p,n)"}, {"replace", "(a,b)"}, {"all", true}}}}});
+        QVERIFY2(!failed(r) && !tab->toPlainText().contains("(p,n)") && tab->toPlainText().count("(a,b)") >= 3, qPrintable(text(r)));
+
+        // goto_line: in front, the cursor there.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("goto_line", {{"path", "amp.va"}, {"line", 3}, {"column", 3}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(app->getDoc(), static_cast<QucsDoc*>(tab));
+        QCOMPARE(tab->textCursor().blockNumber(), 2);
+        QCOMPARE(tab->textCursor().positionInBlock(), 2);
+        QCOMPARE(json(r).toObject().value("text").toString(), QString("  analog begin"));
+        QVERIFY(failed(call("goto_line", {{"path", "amp.va"}, {"line", 99}})));
+        // Not a text document, or not open.
+        QVERIFY(text(call("get_text")).contains("module amp"));   // (the one in front)
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(text(call("get_text")).contains("is no text document"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(text(call("get_text", {{"path", "nothere.va"}})).contains("open_document opens it"));
+        QVERIFY(control->readOnlyTools().contains("get_text") && control->readOnlyTools().contains("goto_line"));
+        QVERIFY(!control->readOnlyTools().contains("edit_text"));
+        tab->setDocChanged(false);
+        QVERIFY(!failed(call("close_document", {{"path", folder + "/amp.va"}, {"unsaved", "discard"}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A build's errors and warnings marked in the open tab - a wavy line,
+    // a dot in the margin, the message on the line -, moving with the text
+    // as it is edited, and given by get_text; a build without them takes
+    // them away.
+    void buildErrorsAreMarkedInTheTab()
+    {
+        const QString folder = QucsSettings.qucsWorkspaceDir.absoluteFilePath("text2");
+        QVERIFY(QDir().mkpath(folder));
+        {
+            QFile f(folder + "/bad.va");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("module bad(p, n);\n  analog begin\n    I(p,n) <+ V(p,n)\n    I(p,n) <+ nothing;\n  end\nendmodule\n");
+        }
+        const QString fake = dir.filePath("marking-openvaf.sh");
+        {
+            QFile f(fake);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(QByteArray("#!/bin/sh\n"
+                               "if grep -q nothing \"$1\"; then\n"
+                               "  echo \"error: unexpected token identifier; expected ';'\"\n"
+                               "  echo \"  --> $1:4:5\"\n"
+                               "  echo\n"
+                               "  echo \"warning: unused variable\"\n"
+                               "  echo \"  --> $1:2:3\"\n"
+                               "  echo\n"
+                               "  exit 65\n"
+                               "fi\n"
+                               "printf 'x' > \"${1%.va}.osdi\"\n"));
+            f.setPermissions(f.permissions() | QFileDevice::ExeOwner | QFileDevice::ExeUser);
+        }
+        const QString was = QucsSettings.OpenVAFExecutable;
+        const auto back = qScopeGuard([was] { QucsSettings.OpenVAFExecutable = was; });
+        QucsSettings.OpenVAFExecutable = fake;
+        QVERIFY(!failed(call("open_document", {{"path", folder + "/bad.va"}})));
+        auto* tab = dynamic_cast<TextDoc*>(app->findDoc(folder + "/bad.va"));
+        QVERIFY(tab != nullptr);
+        QJsonObject r = call("build_verilog_a", {{"file", folder + "/bad.va"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("marked").toString().contains("2 place"), qPrintable(text(r)));
+        QList<TextDoc::Diagnostic> marks = tab->diagnostics();
+        QCOMPARE(marks.size(), 2);
+        QCOMPARE(marks.at(0).line, 4);
+        QCOMPARE(marks.at(0).column, 5);
+        QVERIFY(marks.at(0).error && !marks.at(1).error);
+        // Drawn: a wavy line in the text, red for the error.
+        bool wavy = false;
+        for (const QTextEdit::ExtraSelection& e : tab->extraSelections())
+            wavy = wavy || (e.format.underlineStyle() == QTextCharFormat::WaveUnderline && e.cursor.blockNumber() == 3);
+        QVERIFY(wavy);
+        // The message on the line, as its tooltip, in the text and the margin.
+        const int y = int(tab->cursorRect(QTextCursor(tab->document()->findBlockByNumber(3))).center().y());
+        QVERIFY2(tab->diagnosticsAtY(y).contains("unexpected token"), qPrintable(tab->diagnosticsAtY(y)));
+        QVERIFY(tab->diagnosticsAtY(int(tab->cursorRect(QTextCursor(tab->document()->findBlockByNumber(0))).center().y())).isEmpty());
+        // get_text gives them.
+        r = call("get_text", {{"path", folder + "/bad.va"}});
+        const QJsonArray given = json(r).toObject().value("marks").toArray();
+        QCOMPARE(given.size(), 2);
+        QCOMPARE(given.at(0).toObject().value("severity").toString(), QString("error"));
+        // They move with the text: a line put before them.
+        QVERIFY(!failed(call("edit_text", {{"path", folder + "/bad.va"}, {"edits", QJsonArray{QJsonObject{{"lines", QJsonArray{1, 0}}, {"text", "// a note"}}}}})));
+        QCOMPARE(tab->diagnostics().at(0).line, 5);
+        // Fixed and built again (saved first): none left.
+        QVERIFY(!failed(call("edit_text", {{"path", folder + "/bad.va"}, {"edits", QJsonArray{QJsonObject{{"find", "<+ nothing;"}, {"replace", "<+ 0;"}},
+                                                                                                QJsonObject{{"find", "<+ V(p,n)\n"}, {"replace", "<+ V(p,n);\n"}}}}})));
+        r = call("build_verilog_a", {{"file", folder + "/bad.va"}, {"unsaved", "save"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("compiled").toBool(), qPrintable(text(r)));
+        QVERIFY(tab->diagnostics().isEmpty());
+        QVERIFY(!json(r).toObject().contains("marked"));
+        QVERIFY(!failed(call("close_document", {{"path", folder + "/bad.va"}, {"unsaved", "discard"}})));
+    }
+
     // ---- round 6: the gaps of one session (qucs-mcp-wishlist)
 
     // An ngspice .OPTIONS option with no value - a flag, written alone - is
