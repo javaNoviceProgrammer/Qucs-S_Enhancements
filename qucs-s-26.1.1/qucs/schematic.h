@@ -876,6 +876,7 @@ private:
   static void createNodeSet(QStringList&, int&, Conductor*, Node*);
   void throughAllNodes(bool, QStringList&, int&);
   void nameUnlabelledPortNets(QStringList&, int&);
+  void unifyNamedNets();
   void propagateNode(QStringList&, int&, Node*);
   void collectDigitalSignals(void);
   void beginNetlistDigital(QTextStream &);

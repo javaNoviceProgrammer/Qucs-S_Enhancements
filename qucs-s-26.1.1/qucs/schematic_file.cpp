@@ -35,6 +35,7 @@
 #include "schematic.h"
 
 #include <algorithm>
+#include <vector>
 #include <cmath>
 #include "diagrams/diagrams.h"
 #include "paintings/paintings.h"
@@ -1536,9 +1537,11 @@ void Schematic::nameUnlabelledPortNets(QStringList& Collect, int& countInit)
   // already; one that is not keeps the generated name.
   static const QRegularExpression plainName("^[A-Za-z_][A-Za-z0-9_]*$");
 
+  // Names as a simulator reads them: SPICE (and VHDL) without case - a
+  // port P1 beside a net labelled p1 was one node to ngspice.
   QSet<QString> taken;
   for (Node* pn : a_DocNodes)
-    if (!pn->Name.isEmpty()) taken.insert(pn->Name);
+    if (!pn->Name.isEmpty()) taken.insert(pn->Name.toLower());
 
   for (Component* pc : a_DocComps) {
     if (pc->Model != "Port") continue;
@@ -1549,12 +1552,16 @@ void Schematic::nameUnlabelledPortNets(QStringList& Collect, int& countInit)
     if (pn == nullptr || !pn->Name.isEmpty()) continue;
 
     if (!plainName.match(pc->Name).hasMatch()) continue;
+    // Not ground's name (a port called gnd made its pin the global node 0
+    // inside, whatever the parent wired to it), nor a generated one.
+    static const QRegularExpression generated("^_?net\\d+$", QRegularExpression::CaseInsensitiveOption);
+    if (pc->Name.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0 || generated.match(pc->Name).hasMatch()) continue;
     // VHDL names must not begin with '_', as elsewhere in the netlister
     const QString name = a_isAnalog ? pc->Name : "net" + pc->Name;
-    if (taken.contains(name)) continue;
+    if (taken.contains(name.toLower())) continue;
 
     pn->Name = name;
-    taken.insert(name);
+    taken.insert(name.toLower());
     if (a_isAnalog) createNodeSet(Collect, countInit, pn, pn);
     pn->State = 1;
     propagateNode(Collect, countInit, pn);
@@ -1743,9 +1750,12 @@ bool Schematic::throughAllComps(QTextStream *stream, int& countInit,
         if (!it.value().PortTypes.isEmpty())
         {
           i = 0;
-          // apply in/out signal types of subcircuit
+          // apply in/out signal types of subcircuit (two ports of one
+          // number give fewer types than the instance has pins: the
+          // rest keep theirs - indexing past them crashed)
           for (Port *pp : pc->Ports)
           {
+            if (i >= it.value().PortTypes.size()) break;
             pp->Type = it.value().PortTypes[i];
             pp->Connection->DType = pp->Type;
             i++;
@@ -1784,7 +1794,7 @@ bool Schematic::throughAllComps(QTextStream *stream, int& countInit,
         // save in/out signal types of subcircuit
         for (Port *pp : pc->Ports)
         {
-            //if(i>=d->a_PortTypes.count())break;
+            if (i >= d->a_PortTypes.size()) break;   // (see above)
             pp->Type = d->a_PortTypes[i];
             pp->Connection->DType = pp->Type;
             i++;
@@ -1925,6 +1935,57 @@ bool Schematic::throughAllComps(QTextStream *stream, int& countInit,
 // Follows the wire lines in order to determine the node names for
 // each component. Output into "stream", NodeSets are collected in
 // "Collect" and counted with "countInit".
+// ---------------------------------------------------
+// The nodes named so far (labels, the grounds' "gnd") joined as the
+// schematic joins them - by wires, and labels of one name across the
+// sheet - and each set of them named once: ground's name when a ground is
+// on it, else the first of its labels in order (as Check Schematic names
+// it, erc.cpp). Labels of the name dropped follow, wherever they are.
+void Schematic::unifyNamedNets()
+{
+  QHash<const Node*, int> index;
+  std::vector<int> up;
+  for (Node* pn : a_DocNodes) {
+    index.insert(pn, int(up.size()));
+    up.push_back(int(up.size()));
+  }
+  const auto find = [&up](int i) {
+    while (up[i] != i) i = up[i] = up[up[i]];
+    return i;
+  };
+  const auto join = [&](const Node* a, const Node* b) {
+    if (a == nullptr || b == nullptr || !index.contains(a) || !index.contains(b)) return;
+    up[find(index.value(a))] = find(index.value(b));
+  };
+  for (Wire* pw : a_DocWires) join(pw->Port1, pw->Port2);
+  QHash<QString, const Node*> byName;
+  for (Node* pn : a_DocNodes) {
+    if (pn->Name.isEmpty()) continue;
+    if (const Node* first = byName.value(pn->Name)) join(pn, first);
+    else byName.insert(pn->Name, pn);
+  }
+  // Each set's names; its name is ground's, else the least.
+  const QString ground = QStringLiteral("gnd");   // (a ground's node, analog or not)
+  QHash<int, QStringList> names;
+  for (Node* pn : a_DocNodes)
+    if (!pn->Name.isEmpty()) {
+      QStringList& list = names[find(index.value(pn))];
+      if (!list.contains(pn->Name)) list << pn->Name;
+    }
+  QHash<QString, QString> renamed;   // a name dropped -> the one kept
+  for (auto it = names.begin(); it != names.end(); ++it) {
+    QStringList& list = it.value();
+    if (list.size() < 2) continue;
+    std::sort(list.begin(), list.end());
+    const QString kept = list.contains(ground) ? ground : list.first();
+    for (const QString& n : std::as_const(list))
+      if (n != kept) renamed.insert(n, kept);
+  }
+  if (renamed.isEmpty()) return;
+  for (Node* pn : a_DocNodes)
+    if (renamed.contains(pn->Name)) pn->Name = renamed.value(pn->Name);
+}
+
 bool Schematic::giveNodeNames(QTextStream *stream, int& countInit,
                    QStringList& Collect, QPlainTextEdit *ErrText, int NumPorts)
 {
@@ -1954,6 +2015,11 @@ bool Schematic::giveNodeNames(QTextStream *stream, int& countInit,
     fprintf(stderr, "Error: Could not go throughAllComps\n");
     return false;
   }
+
+  // A net with two names - a label and a ground, two labels - is one
+  // net: it gets one of them before they go round its wires, or each
+  // part was netlisted on whichever reached its pin first (two nodes).
+  unifyNamedNets();
 
   // work on named nodes first in order to preserve the user given names
   throughAllNodes(true, Collect, countInit);

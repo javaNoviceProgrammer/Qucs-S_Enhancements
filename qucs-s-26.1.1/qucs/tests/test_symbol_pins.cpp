@@ -154,6 +154,37 @@ class TestSymbolPins : public QObject
         return QString();
     }
 
+    // The whole netlist of a schematic that places `subFile`.
+    QString netlistOf(const QString& name, const QString& subFile)
+    {
+        const QString path = write(name, parentOf(subFile));
+        if (path.isEmpty()) return QString();
+        auto* doc = new Schematic(nullptr, path);
+        if (!doc->load()) { delete doc; return QString(); }
+        const QString netlist = dir.filePath(name + ".cir");
+        Ngspice ngspice(doc);
+        ngspice.SaveNetlist(netlist, false);
+        delete doc;
+        QFile file(netlist);
+        if (!file.open(QIODevice::ReadOnly)) return QString();
+        return QString::fromUtf8(file.readAll());
+    }
+    static QString lineOf(const QString& netlist, const QString& start)
+    {
+        for (const QString& line : netlist.split('\n'))
+            if (line.startsWith(start)) return line.simplified();
+        return QString();
+    }
+    QStringList checked(const QString& path)
+    {
+        auto* doc = new Schematic(nullptr, path);
+        QStringList messages;
+        if (doc->load())
+            for (const auto& issue : qucs_s::erc::check(doc)) messages << issue.message;
+        delete doc;
+        return messages;
+    }
+
 private slots:
     void initTestCase()
     {
@@ -294,6 +325,79 @@ private slots:
         for (const auto& issue : qucs_s::erc::check(doc)) messages << issue.message;
         QVERIFY2(messages.filter("generated name").isEmpty(), qPrintable(messages.join(" | ")));
         delete doc;
+    }
+    // ---- ports whose names are not their own (bug hunt 2026-09-30) ---
+
+    // A9. A port named gnd lent the name to its net: inside, the pin was
+    // the global ground, whatever the parent wired to it. A port named as
+    // another net's label in another case was one node with that net to
+    // SPICE, which reads names without case. Neither name is lent now.
+    void aPortIsNotNamedAsGroundOrAsAnotherNet()
+    {
+        for (const QString& gnd : {QStringLiteral("gnd"), QStringLiteral("GND")}) {
+            const QString file = gnd + "port.sch";
+            QVERIFY(!write(file, subcircuit({"", "", ""}, {"P1", gnd, "P3"})).isEmpty());
+            const QString netlist = netlistOf(gnd + "porttop.sch", file);
+            const QStringList pins = lineOf(netlist, ".SUBCKT").split(' ');
+            QCOMPARE(pins.size(), 5);
+            QVERIFY2(pins.at(3).startsWith("_net"), qPrintable(lineOf(netlist, ".SUBCKT")));
+            QVERIFY2(lineOf(netlist, "R1 ").split(' ').at(2).startsWith("_net"), qPrintable(netlist));
+            QVERIFY2(!checked(dir.filePath(file)).filter("gnd is ground's name, so this pin gets a generated name").isEmpty(),
+                     qPrintable(checked(dir.filePath(file)).join(" | ")));
+        }
+        // The first net labelled p2, the second port named P2.
+        QVERIFY(!write("caseport.sch", subcircuit({"p2", "", ""})).isEmpty());
+        const QStringList pins = subcktLine("caseporttop.sch", "caseport.sch").split(' ');
+        QCOMPARE(pins.size(), 5);
+        QCOMPARE(pins.at(2), QStringLiteral("p2"));
+        QVERIFY2(pins.at(3).startsWith("_net"), qPrintable(pins.join(' ')));
+        QVERIFY(!checked(dir.filePath("caseport.sch")).filter("another net is labelled P2").isEmpty());
+    }
+
+    // A8. Two ports on one net (a pass-through), or a port on the
+    // subcircuit's own ground: the .SUBCKT line named the node twice, or
+    // gnd, and ngspice tied one and left the other open. Each port gets a
+    // node of its own, joined to its net by next to no resistance.
+    void eachPortIsANodeOfItsOwn()
+    {
+        const QString parts =
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n<Components>\n"
+            "  <Port P1 1 100 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+            "  <Port P2 1 100 200 -23 12 0 0 \"2\" 1 \"analog\" 0>\n"
+            "  <Port P3 1 400 100 4 -42 0 2 \"3\" 1 \"analog\" 0>\n"
+            "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        const QString end = "<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        // P2 wired to P1's net.
+        QVERIFY(!write("thru.sch", parts + "</Components>\n<Wires>\n  <100 100 220 100 \"\" 0 0 0 \"\">\n"
+                                           "  <100 200 100 100 \"\" 0 0 0 \"\">\n  <280 100 400 100 \"\" 0 0 0 \"\">\n</Wires>\n" + end)
+                     .isEmpty());
+        QString netlist = netlistOf("thrutop.sch", "thru.sch");
+        QCOMPARE(lineOf(netlist, ".SUBCKT"), QStringLiteral(".SUBCKT thru P1 _port2_1 P3"));
+        QCOMPARE(lineOf(netlist, "R_qucsport"), QStringLiteral("R_qucsport1 _port2_1 P1 1e-12"));
+        // P2 and P3 on the subcircuit's own ground.
+        QVERIFY(!write("onground.sch", parts + "  <GND * 1 100 200 0 0 0 0>\n  <GND * 1 400 100 0 0 0 0>\n</Components>\n"
+                                               "<Wires>\n  <100 100 220 100 \"\" 0 0 0 \"\">\n  <280 100 400 100 \"\" 0 0 0 \"\">\n"
+                                               "</Wires>\n" + end)
+                     .isEmpty());
+        netlist = netlistOf("ongroundtop.sch", "onground.sch");
+        QCOMPARE(lineOf(netlist, ".SUBCKT"), QStringLiteral(".SUBCKT onground P1 _port2_1 _port3_1"));
+        QVERIFY2(netlist.contains("R_qucsport1 _port2_1 0 1e-12\n") && netlist.contains("R_qucsport2 _port3_1 0 1e-12\n"),
+                 qPrintable(netlist));
+    }
+
+    // F1. Two ports of one number: the instance has a pin for each, the
+    // subcircuit's port types one for each number, and the netlister read
+    // past them - a crash. Netlisted now, and the check calls it an error.
+    void twoPortsOfOneNumber()
+    {
+        QString text = subcircuit({"", "", ""});
+        text.replace("  <Port P2 1 400 100 4 -42 0 2 \"2\"", "  <Port P2 1 400 100 4 -42 0 2 \"1\"");
+        QVERIFY(text.contains("0 2 \"1\" 1"));
+        QVERIFY(!write("samenumber.sch", text).isEmpty());
+        const QString netlist = netlistOf("samenumbertop.sch", "samenumber.sch");
+        QVERIFY2(lineOf(netlist, ".SUBCKT").startsWith(".SUBCKT samenumber "), qPrintable(netlist));
+        QVERIFY2(!checked(dir.filePath("samenumber.sch")).filter("P1 and P2 are all port 1").isEmpty(),
+                 qPrintable(checked(dir.filePath("samenumber.sch")).join(" | ")));
     }
 };
 
