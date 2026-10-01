@@ -544,8 +544,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   specs, and hidden text are set by name, so `set_schematic` is rarely
   needed. Diagrams have a title that moves with them. A marker can sit
   3 dB below 0 dB or the DC value, not only below the peak. `get_dataset`
-  measures a spectrum (`fft`), an eye (`eye`) and a Monte Carlo family's
-  `distribution`, gives a table across a sweep, and reads `.csv` and
+  measures a spectrum (`fft`), an eye (`eye`: the bit period told from the
+  crossings when not given, PAM4's three eyes with `levels` 4) and a Monte
+  Carlo family's `distribution`, gives a table across a sweep, and reads `.csv` and
   `.xlsx` results, and says when a dataset is stale: the last run failed
   after it, or the circuit changed since (the netlist a run would be
   given now is not the one it ran; where that netlist is not at hand - a
@@ -1221,6 +1222,38 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   with the share of values between them - for a Monte Carlo, the yield.
   Grid, notation, legend, zoom and the cursor readout are the Cartesian
   diagram's; the settings are in its *Properties* tab.
+- **A pseudo-random bit sequence source** (*sources → V(PRBS)*, for
+  ngspice): ngspice's `PRBS(v1 v2 tbit td tr tf order seed)` - the bits
+  of a maximal-length shift register of 2 to 31 stages (PRBS7, PRBS15,
+  PRBS31 as a pattern generator sends them) between *U1* and *U2*, a bit
+  each *Tbit*, from *Td* on, each edge *Tr* or *Tf* long (0: the time
+  step) - or, with *Coding* PAM4, the same register two bits a symbol,
+  Gray coded on four levels from U1 to U2 (order 13 is IEEE 802.3's
+  PRBS13Q). *Seed* left empty starts the register all ones. No DC value:
+  the operating point is U1, where the bits start. Needs an ngspice built
+  with the PRBS source (Ngspice-OpenVAF-Enhancements).
+- **Eye diagram** (*diagrams → Eye Diagram*), as a sampling oscilloscope
+  or Cadence ViVA shows one: each graph - a received data signal, NRZ or
+  PAM4 - cut into windows a few unit intervals (UI) long, starting a UI
+  apart, and laid over each other, the eye's centre in the middle. Drawn
+  as a density - how many traces pass each point, from blue to red, as
+  ngspice's `pyplot -eye` draws it - or as the traces themselves, fainter
+  the more there are. The UI is given or told from where the first graph
+  crosses its threshold (its crossings' times fitted against their UI's
+  number, so the fold does not drift); the settling at the start can be
+  left out (*From*). Beside it, what is measured on each graph, as
+  ngspice's `eye` command measures it: the UI, the eye's height (the
+  lowest 1 less the highest 0 at the centre) and width (a UI less the
+  crossings' spread), the jitter, rms and peak to peak, the levels and Q
+  - for PAM4 each of the three eyes, its thresholds halfway between the
+  four levels. A mask - a hexagon at each eye's centre, its width in UI
+  and its height - says how many UIs go through it, drawn red when any
+  does. The threshold, the centre, the height and width and the mask are
+  marked in the eye. The cursor readout gives the time into the window in
+  UI too. Claude's `add_diagram` and `edit_diagram` set it all by name
+  (`eye`), and `get_schematic` lists what was measured on each trace.
+  *examples/ngspice/NGspice features/PRBS_eye_diagram.sch* sends a
+  10 Gb/s PRBS7 with noise through an RC channel.
 - **Six number notations for a diagram's axes** (*Properties* of a
   diagram, *Number notation* and *Decimal places*): automatic (what
   "scientific" was: decimal, with an exponent for large and small

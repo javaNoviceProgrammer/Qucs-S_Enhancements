@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "dataset.h"
+#include "eyeanalysis.h"
 #include "spreadsheet.h"
 
 #include <QByteArrayView>
@@ -1502,70 +1503,56 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
                                                 "peak values, a line's accurate within its bin").arg(n)}};
     }
     if (w == QLatin1String("eye")) {
-        if (!(o.period > 0)) return cannot(tr("an eye needs the bit period ('bit_period', in the unit of x)"));
-        const double T = o.period;
-        const double start = c.x.first() + o.offset;
-        if (c.x.last() - start < 3 * T) return cannot(tr("fewer than 3 bits in the range"));
-        // A bit shorter than a sample is no eye - and 1e-300 s bits never
-        // ended (t + T == t) while the bits filled memory.
-        const double bits = (c.x.last() - start) / T;
-        if (!(bits <= double(c.x.size())))
-            return cannot(tr("%1 bits in the range, more than its %2 samples: the bit period is too short").arg(bits, 0, 'g', 3).arg(c.x.size()));
-        // The crossings of the middle, as phases of a bit (0 to 1).
-        const QList<Crossing> all = crossings(c, mid);
-        if (all.size() < 2) return cannot(tr("it does not cross %1 twice: no bits").arg(mid));
-        double sx = 0, sy = 0;
-        QVector<double> phases;
-        for (const Crossing& k : all) {
-            if (k.x < start) continue;
-            const double ph = std::fmod(k.x - start, T) / T;
-            phases << ph;
-            sx += std::cos(2 * kPi * ph);
-            sy += std::sin(2 * kPi * ph);
+        if (!std::isnan(o.period) && !(o.period > 0))
+            return cannot(tr("an eye's bit period ('bit_period', in the unit of x) is above 0"));
+        eye::Options eo;
+        eo.ui = o.period;   // NaN: told from the crossings
+        eo.start = c.x.first() + o.offset;
+        eo.levels = o.levels;
+        eo.threshold = o.level;
+        const eye::Result e = eye::analyse(c, eo);
+        if (!e.ok()) return cannot(e.error);
+        // The narrowest of the eyes (PAM4's three) is the signal's.
+        const eye::Eye* worst = &e.eyes.first();
+        for (const eye::Eye& one : e.eyes)
+            if (one.height < worst->height) worst = &one;
+        auto eyeJson = [&](const eye::Eye& one) {
+            QJsonObject j{{QStringLiteral("height"), rounded(one.height)},
+                          {QStringLiteral("width"), rounded(one.width)},
+                          {QStringLiteral("width, UI"), rounded(one.width / e.ui)},
+                          {QStringLiteral("width at BER 1e-12"), rounded(one.widthBer12)},
+                          {QStringLiteral("jitter, peak to peak"), rounded(one.jitterPp)},
+                          {QStringLiteral("jitter, rms"), rounded(one.jitterRms)},
+                          {QStringLiteral("threshold"), rounded(one.threshold)},
+                          {QStringLiteral("crossings"), one.crossings}};
+            if (std::isfinite(one.q)) j.insert(QStringLiteral("Q"), rounded(one.q));
+            return j;
+        };
+        QJsonObject r = eyeJson(*worst);
+        r.insert(QStringLiteral("value"), rounded(worst->height));
+        r.insert(QStringLiteral("unit interval"), rounded(e.ui));
+        if (e.uiEstimated) r.insert(QStringLiteral("unit interval from"), tr("the crossings (no bit_period given)"));
+        r.insert(QStringLiteral("crossing level"), rounded(worst->threshold));
+        if (e.levels.size() == 2) {
+            r.insert(QStringLiteral("levels"), QJsonObject{{QStringLiteral("high"), rounded(e.levels.at(1))}, {QStringLiteral("low"), rounded(e.levels.at(0))}});
+        } else {
+            QJsonArray levels, eyes;
+            for (double l : e.levels) levels << rounded(l);
+            for (const eye::Eye& one : e.eyes) eyes << eyeJson(one);
+            r.insert(QStringLiteral("levels"), levels);
+            r.insert(QStringLiteral("eyes"), eyes);
         }
-        if (phases.isEmpty()) return cannot(tr("no crossings after the offset"));
-        double crossing = std::atan2(sy, sx) / (2 * kPi);
-        if (crossing < 0) crossing += 1;
-        double lo = 0, hi = 0, squares = 0;
-        for (double ph : phases) {
-            double d = ph - crossing;
-            d -= std::round(d);
-            lo = std::min(lo, d);
-            hi = std::max(hi, d);
-            squares += d * d;
-        }
-        const double jitter = hi - lo, jitterRms = std::sqrt(squares / phases.size());
-        // Each bit's value at the centre, half a bit from the crossings.
-        const double centre = std::fmod(crossing + 0.5, 1.0);
-        QVector<double> highs, lows;
-        for (qint64 k = 0;; ++k) {
-            const double t = start + (centre + double(k)) * T;
-            if (t > c.x.last()) break;
-            const double y = valueAt(c, t);
-            if (std::isnan(y)) continue;
-            (y > mid ? highs : lows) << y;
-        }
-        if (highs.isEmpty() || lows.isEmpty()) return cannot(tr("the bits are all high or all low at their centres"));
-        const double minHigh = *std::min_element(highs.cbegin(), highs.cend());
-        const double maxLow = *std::max_element(lows.cbegin(), lows.cend());
-        double high = 0, low = 0;
-        for (double y : highs) high += y;
-        for (double y : lows) low += y;
-        high /= highs.size();
-        low /= lows.size();
-        QJsonObject r{{QStringLiteral("value"), rounded(minHigh - maxLow)},
-                      {QStringLiteral("height"), rounded(minHigh - maxLow)},
-                      {QStringLiteral("width"), rounded(std::max(0.0, 1 - jitter) * T)},
-                      {QStringLiteral("width, UI"), rounded(std::max(0.0, 1 - jitter))},
-                      {QStringLiteral("jitter, peak to peak"), rounded(jitter * T)},
-                      {QStringLiteral("jitter, rms"), rounded(jitterRms * T)},
-                      {QStringLiteral("crossing level"), rounded(mid)},
-                      {QStringLiteral("levels"), QJsonObject{{QStringLiteral("high"), rounded(high)}, {QStringLiteral("low"), rounded(low)}}},
-                      {QStringLiteral("bits"), int(highs.size() + lows.size())},
-                      {QStringLiteral("centre, UI"), rounded(centre)},
-                      {QStringLiteral("measured"), tr("folded at %1 from %2: the height is the lowest high less the highest low at the "
-                                                      "bits' centres, the width a bit less the crossings' spread").arg(T).arg(rounded(start))}};
-        if (minHigh <= maxLow) r.insert(QStringLiteral("note"), tr("the eye is closed at its centre"));
+        r.insert(QStringLiteral("bits"), e.symbols);
+        double phase = (e.centre - e.start) / e.ui;
+        r.insert(QStringLiteral("centre, UI"), rounded(phase - std::floor(phase)));
+        r.insert(QStringLiteral("measured"),
+                 e.levels.size() == 2
+                     ? tr("folded at %1 from %2: the height is the lowest high less the highest low at the bits' centres, "
+                          "the width a bit less the crossings' spread").arg(rounded(e.ui)).arg(rounded(e.start))
+                     : tr("folded at %1 from %2, four levels: each eye's height is the lowest of its upper level less the "
+                          "highest of its lower one at the symbols' centres, its width a symbol less its crossings' spread; "
+                          "height and width are the lowest eye's of the three").arg(rounded(e.ui)).arg(rounded(e.start)));
+        if (!e.notes.isEmpty()) r.insert(QStringLiteral("note"), e.notes.join(QStringLiteral("; ")));
         return r;
     }
     return cannot(tr("there is no measurement %1 (%2)").arg(what, measurements().join(QStringLiteral(", "))));

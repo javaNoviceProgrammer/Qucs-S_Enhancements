@@ -1281,7 +1281,7 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
     for (Diagram* diagram : *a_Diagrams) {
         // BUG: Obtaining the diagram type by name is marked as a bug elsewhere (to be solved separately).
         // TODO: Currently only rectangular diagrams are supported.
-        if (diagram->getSelected(xpos, ypos) && (diagram->Name == "Rect" || diagram->Name == "Histogram")) {
+        if (diagram->getSelected(xpos, ypos) && (diagram->Name == "Rect" || diagram->Name == "Histogram" || diagram->Name == "Eye")) {
             // Each axis by its variable, with the unit it tells (statusbar.h).
             const QPointF mouseClickPoint(xpos - diagram->cx, diagram->cy - ypos);
             text = qucs_s::status::readout(diagram, diagram->pointToValue(mouseClickPoint));

@@ -151,7 +151,7 @@ Stats statsOf(const Curve& c);
 QStringList measurements();
 
 struct MeasureOptions {
-    double level = qQNaN();       // crossings, period: the level (else the middle of min and max)
+    double level = qQNaN();       // crossings, period: the level (else the middle of min and max); eye: the threshold (else halfway between the levels)
     double tolerance = 0.02;      // settling: the band, a fraction of the step
     double low = 0.1, high = 0.9; // rise and fall: the fractions of the swing
     bool decibels = false;        // bandwidth, gain: the curve is in dB (3 dB below its peak, not 1/sqrt(2) of it)
@@ -159,8 +159,9 @@ struct MeasureOptions {
     int harmonics = 9;            // thd: the highest harmonic counted
     int periods = 1;              // thd: whole periods of the fundamental, ending where the curve ends
     QVector<double> phase;        // phase_margin, gain_margin: the phase in degrees at each sample (a complex curve's)
-    double period = qQNaN();      // eye: the bit period, in the unit of x (seconds)
-    double offset = 0;            // eye: where the first bit begins, after the curve's start
+    double period = qQNaN();      // eye: the bit period, in the unit of x (seconds); NaN: told from the crossings
+    double offset = 0;            // eye: where the eye begins, after the curve's start (the settling before it left out)
+    int levels = 2;               // eye: 2 (NRZ) or 4 (PAM4)
 };
 /// \a what measured on \a c - "rise_time", "fall_time", "overshoot",
 /// "settling_time", "period", "frequency", "duty_cycle", "crossings",
@@ -179,8 +180,9 @@ struct MeasureOptions {
 /// Monte Carlo's, one per run) - mean, standard deviation, median,
 /// percentiles, a histogram. fft: the spectrum of a transient, resampled
 /// evenly with a Hann window - its strongest lines. eye: an eye diagram of
-/// a transient folded at options.period - its height at the centre, its
-/// width, the crossings' jitter.
+/// a transient folded at options.period (or the unit interval its
+/// crossings tell) - its height at the centre, its width, the crossings'
+/// jitter (eyeanalysis.h); with options.levels 4, PAM4's three eyes.
 QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& options);
 
 /// \a v written with 7 significant digits (as the dataset has more than
