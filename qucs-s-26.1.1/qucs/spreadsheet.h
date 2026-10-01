@@ -164,6 +164,19 @@ bool readXlsx(const QByteArray& bytes, Workbook& book, QString* error = nullptr)
 /// written again (see Workbook), or a package of its own for one read
 /// from a CSV file.
 QByteArray writeXlsx(const Workbook& book);
+/// A worksheet written already: its name, the extent of its cells
+/// ("A1:C10") and its <sheetData> element - a table too large to go
+/// through a Sheet's cells (dataexport writes one so, row by row).
+struct SheetXml {
+    QString name;
+    QString dimension;
+    QByteArray sheetData;
+};
+/// A workbook of its own of \a tables, as writeXlsx() writes a fresh one.
+QByteArray xlsxOf(const QList<SheetXml>& tables);
+/// \a text for XML: & < > " as entities, control characters XML 1.0 has
+/// not left out.
+QString escapedXml(const QString& text);
 
 /// A file, by its suffix: .csv, .tsv, .txt as CSV (a tab for .tsv), .xlsx.
 bool readFile(const QString& path, Workbook& book, QString* error = nullptr);

@@ -109,12 +109,49 @@ QString withoutComment(QString text)
     return text.trimmed();
 }
 
-// A row of a table as read: its cells' text.
+// A row of a table as read: a row of numbers by its values, another by its
+// cells' text - a table of millions of values keeps no text of them.
 struct Row {
-    QStringList cells;
+    QStringList cells;       // not of numbers: its cells' text
+    QVector<double> values;  // of numbers: each cell's value, NaN for none
+    bool numbers = false;    // a row of numbers (rowOf)
     bool comment = false;
-    QString line;   // (text) the whole line, for a comment that names the columns
+    QString line;            // (a comment) the whole line, for one that names the columns
+    bool isEmpty() const { return !comment && !numbers && cells.isEmpty(); }
 };
+
+// A row of \a cells, trailing empty ones left out: a row of numbers when
+// they are numbers in half its cells with anything in them at least (a
+// column of text beside them - a label, a status - is no value there).
+Row rowOf(QStringList cells, bool decimalComma)
+{
+    Row r;
+    while (!cells.isEmpty() && cells.last().trimmed().isEmpty()) cells.removeLast();
+    if (cells.isEmpty()) return r;
+    QVector<double> values(cells.size(), NaN);
+    int numbers = 0, filled = 0;
+    for (qsizetype c = 0; c < cells.size(); ++c) {
+        if (number(cells.at(c), decimalComma, &values[c])) ++numbers;
+        else values[c] = NaN;
+        if (!cells.at(c).trimmed().isEmpty() && !isMissing(cells.at(c))) ++filled;
+    }
+    if (numbers > 0 && 2 * numbers >= filled) {
+        r.numbers = true;
+        r.values = std::move(values);
+    } else {
+        r.cells = std::move(cells);
+    }
+    return r;
+}
+
+// A comment's row: its line.
+Row commentRow(const QString& line)
+{
+    Row r;
+    r.comment = true;
+    r.line = line;
+    return r;
+}
 
 // The cells of \a line apart by \a delimiter (a space: by any spaces).
 QStringList split(const QString& line, QChar delimiter)
@@ -158,13 +195,58 @@ QList<Row> textRows(const QString& text, QChar* delimiter)
     }
     *delimiter = best;
     QList<Row> rows;
-    for (const QString& l : std::as_const(lines)) {
-        Row r;
-        r.line = l;
-        if (isCommentText(l)) r.comment = true;
-        else r.cells = split(l, best);
-        rows << r;
+    for (const QString& l : std::as_const(lines)) rows << (isCommentText(l) ? commentRow(l) : rowOf(split(l, best), best != QLatin1Char(',')));
+    return rows;
+}
+
+// The rows of CSV text (RFC 4180: a field in quotes may hold the delimiter,
+// quotes written twice and lines, as a spreadsheet reads it), each made a
+// Row as it is read - not a spreadsheet's cells first, hundreds of bytes
+// for each value.
+QList<Row> csvRows(const QString& text, QChar delimiter, bool decimalComma)
+{
+    QList<Row> rows;
+    QStringList cells;
+    QString field;
+    bool quoted = false, wasQuoted = false;
+    const auto endField = [&] {
+        cells << field;
+        field.clear();
+        wasQuoted = false;
+    };
+    const auto endRow = [&] {
+        endField();
+        while (!cells.isEmpty() && cells.last().trimmed().isEmpty()) cells.removeLast();
+        rows << (!cells.isEmpty() && isCommentText(cells.first()) ? commentRow(cells.join(QLatin1Char(' '))) : rowOf(cells, decimalComma));
+        cells.clear();
+    };
+    for (qsizetype i = 0; i < text.size(); ++i) {
+        const QChar c = text.at(i);
+        if (quoted) {
+            if (c == QLatin1Char('"')) {
+                if (i + 1 < text.size() && text.at(i + 1) == QLatin1Char('"')) {
+                    field += c;
+                    ++i;
+                } else {
+                    quoted = false;
+                }
+            } else {
+                field += c;
+            }
+        } else if (c == QLatin1Char('"') && field.isEmpty() && !wasQuoted) {
+            quoted = wasQuoted = true;
+        } else if (c == delimiter) {
+            endField();
+        } else if (c == QLatin1Char('\r')) {
+            if (i + 1 < text.size() && text.at(i + 1) == QLatin1Char('\n')) ++i;
+            endRow();
+        } else if (c == QLatin1Char('\n')) {
+            endRow();
+        } else {
+            field += c;
+        }
     }
+    if (!field.isEmpty() || wasQuoted || !cells.isEmpty()) endRow();
     return rows;
 }
 
@@ -175,46 +257,25 @@ QList<Row> sheetRows(const qucs_s::sheet::Sheet& sheet)
     QList<Row> rows;
     const int columns = sheet.columnCount();
     for (int r = 0; r < sheet.rowCount(); ++r) {
-        Row row;
+        QStringList cells;
         for (int c = 0; c < columns; ++c) {
             const sh::Cell& cell = sheet.at(r, c);
-            row.cells << ((cell.kind == sh::Cell::Kind::Number || cell.kind == sh::Cell::Kind::Date) && !cell.value.isEmpty()
-                              ? cell.value
-                              : cell.text);
+            cells << ((cell.kind == sh::Cell::Kind::Number || cell.kind == sh::Cell::Kind::Date) && !cell.value.isEmpty() ? cell.value
+                                                                                                                         : cell.text);
         }
-        while (!row.cells.isEmpty() && row.cells.last().trimmed().isEmpty()) row.cells.removeLast();
-        if (!row.cells.isEmpty() && isCommentText(row.cells.first())) {
-            row.comment = true;
-            row.line = row.cells.join(QLatin1Char(' '));
-        }
-        rows << row;
+        while (!cells.isEmpty() && cells.last().trimmed().isEmpty()) cells.removeLast();
+        rows << (!cells.isEmpty() && isCommentText(cells.first()) ? commentRow(cells.join(QLatin1Char(' '))) : rowOf(cells, false));
     }
     return rows;
 }
 
 // The table of \a rows: the columns under the first rows of numbers, named
 // by the line before them. False and why when there are no numbers.
-bool tableOf(QList<Row> rows, QChar delimiter, bool decimalComma, QList<Column>* columns, QStringList* notes, QString* error)
+bool tableOf(const QList<Row>& rows, QChar delimiter, QList<Column>* columns, QStringList* notes, QString* error)
 {
-    // Trailing empty cells do not count.
-    for (Row& r : rows)
-        while (!r.cells.isEmpty() && r.cells.last().trimmed().isEmpty()) r.cells.removeLast();
-    // A row of numbers: numbers in half its cells with anything in them at
-    // least (a column of text beside them - a label, a status - is no
-    // value there, and left out).
-    const auto dataRow = [&](const Row& r) {
-        if (r.comment || r.cells.isEmpty()) return false;
-        int numbers = 0, filled = 0;
-        for (const QString& c : r.cells) {
-            double v;
-            if (number(c, decimalComma, &v)) ++numbers;
-            if (!c.trimmed().isEmpty() && !isMissing(c)) ++filled;
-        }
-        return numbers > 0 && 2 * numbers >= filled;
-    };
     std::map<qsizetype, int> widths;
-    for (const Row& r : std::as_const(rows))
-        if (dataRow(r)) ++widths[r.cells.size()];
+    for (const Row& r : rows)
+        if (r.numbers) ++widths[r.values.size()];
     if (widths.empty()) {
         if (error != nullptr) *error = tr("It holds no rows of numbers.");
         return false;
@@ -228,13 +289,13 @@ bool tableOf(QList<Row> rows, QChar delimiter, bool decimalComma, QList<Column>*
         }
     qsizetype first = -1;
     for (qsizetype i = 0; i < rows.size() && first < 0; ++i)
-        if (dataRow(rows.at(i)) && rows.at(i).cells.size() == width) first = i;
+        if (rows.at(i).numbers && rows.at(i).values.size() == width) first = i;
     // The names: the line before the numbers, when it names as many.
     QStringList names;
     for (qsizetype i = first - 1; i >= 0; --i) {
         const Row& r = rows.at(i);
-        if (!r.comment && r.cells.isEmpty()) continue;
-        if (dataRow(r)) break;   // (numbers of another width: a count, not names)
+        if (r.isEmpty()) continue;
+        if (r.numbers) break;   // (numbers of another width: a count, not names)
         QStringList cells = r.cells;
         if (r.comment) {
             const QString text = withoutComment(r.line);
@@ -248,16 +309,12 @@ bool tableOf(QList<Row> rows, QChar delimiter, bool decimalComma, QList<Column>*
     int skipped = 0;
     for (qsizetype i = first; i < rows.size(); ++i) {
         const Row& r = rows.at(i);
-        if (r.comment || r.cells.isEmpty()) continue;
-        if (!dataRow(r)) {
+        if (r.comment || r.isEmpty()) continue;
+        if (!r.numbers) {
             ++skipped;
             continue;
         }
-        for (qsizetype c = 0; c < width; ++c) {
-            double v = NaN;
-            if (c < r.cells.size() && !number(r.cells.at(c), decimalComma, &v)) v = NaN;
-            cols[c].re << v;
-        }
+        for (qsizetype c = 0; c < width; ++c) cols[c].re << r.values.value(c, NaN);
         if (cols.first().re.size() > MaxValues) {
             if (error != nullptr) *error = tr("It has more than %1 rows.").arg(MaxValues);
             return false;
@@ -838,14 +895,19 @@ bool read(const QString& path, const Options& options, Data* data, QString* erro
     case Format::Npz:
         if (!readNpz(bytes, &columns, &data->notes, &why)) return fail(why);
         break;
-    case Format::Table:
+    case Format::Table: {
+        // (Read as rows here, not as a spreadsheet's cells: a CSV of 26 MB
+        // took 1 GB so.)
+        const QString text = qucs_s::textcodec::decode(bytes);
+        const QChar d = QFileInfo(path).suffix().toLower() == QLatin1String("tsv") ? QChar(u'\t') : qucs_s::sheet::detectDelimiter(text);
+        data->sheets << QString();
+        if (!options.sheet.isEmpty()) data->notes << tr("There is no sheet %1: the first is read.").arg(options.sheet);
+        if (!tableOf(csvRows(text, d, d != QLatin1Char(',')), d, &columns, &data->notes, &why)) return fail(why);
+        break;
+    }
     case Format::Workbook: {
         qucs_s::sheet::Workbook book;
-        if (data->format == Format::Workbook) {
-            if (!qucs_s::sheet::readXlsx(bytes, book, &why)) return fail(why.isEmpty() ? tr("The workbook cannot be read.") : why);
-        } else {
-            book = qucs_s::sheet::readCsv(bytes, QFileInfo(path).suffix().toLower() == QLatin1String("tsv") ? QChar(u'\t') : QChar());
-        }
+        if (!qucs_s::sheet::readXlsx(bytes, book, &why)) return fail(why.isEmpty() ? tr("The workbook cannot be read.") : why);
         if (book.sheets.isEmpty()) return fail(tr("It has no sheets."));
         int sheet = 0;
         for (int i = 0; i < book.sheets.size(); ++i) {
@@ -854,16 +916,13 @@ bool read(const QString& path, const Options& options, Data* data, QString* erro
         }
         if (!options.sheet.isEmpty() && data->sheets.value(sheet) != options.sheet)
             data->notes << tr("There is no sheet %1: the first is read.").arg(options.sheet);
-        const bool decimalComma = book.delimiter != QLatin1Char(',');
-        if (!tableOf(sheetRows(book.sheets.at(sheet)), book.delimiter, data->format == Format::Table && decimalComma, &columns,
-                     &data->notes, &why))
-            return fail(why);
+        if (!tableOf(sheetRows(book.sheets.at(sheet)), book.delimiter, &columns, &data->notes, &why)) return fail(why);
         break;
     }
     case Format::Text: {
         QChar delimiter;
         const QList<Row> rows = textRows(qucs_s::textcodec::decode(bytes), &delimiter);
-        if (!tableOf(rows, delimiter, delimiter != QLatin1Char(','), &columns, &data->notes, &why)) return fail(why);
+        if (!tableOf(rows, delimiter, &columns, &data->notes, &why)) return fail(why);
         break;
     }
     }

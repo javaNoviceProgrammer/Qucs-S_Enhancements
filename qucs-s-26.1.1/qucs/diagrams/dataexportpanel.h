@@ -67,6 +67,17 @@ public:
     QLabel* status() const { return a_status; }
     QPushButton* exportButton() const { return a_export; }
     QPushButton* tracesButton() const { return a_diagramTraces; }
+    /// The file Export... proposes: the dataset's name, beside the
+    /// schematic, with the format's suffix - name_export for an imported
+    /// one (bench.csv is where bench came from) or a dataset.
+    QString proposedFile() const;
+    /// An export that takes longer than this shows how far it is, with
+    /// Stop (a test makes it 0: at once).
+    void setProgressAfter(int milliseconds) { a_progressAfter = milliseconds; }
+
+signals:
+    /// A dataset was written beside the schematic: for the Data tab to list.
+    void datasetsChanged(const QString& select);
 
 protected:
     void showEvent(QShowEvent* event) override;
@@ -88,6 +99,7 @@ private:
     bool a_stale = true;       // the chosen dataset is still to be read
     bool a_chosenHere = false; // a dataset was chosen in this tab: the Data tab's is not followed
     bool a_filling = false;
+    int a_progressAfter = 250;
     QComboBox* a_dataset = nullptr;
     QTableWidget* a_list = nullptr;
     QPushButton* a_all = nullptr;
