@@ -13,6 +13,7 @@
 #include "qucscontrol.h"
 #include "qucscontrol_p.h"
 
+#include "mcpserver.h"
 #include "qucs.h"
 #include "schematic.h"
 
@@ -63,7 +64,14 @@ public:
             if (!args.isObject() || args.isArray()) return fail(QStringLiteral("%1's arguments are an object: qucs.call(\"%1\", {...})").arg(tool));
             arguments = QJsonObject::fromVariantMap(a_engine->fromScriptValue<QVariantMap>(args));
         }
-        const QJsonObject result = a_control->callNow(tool, arguments, 10 * 60 * 1000);
+        // Its own max_chars, as every tool takes it (and a batch's calls):
+        // its answer cut.
+        int most = 0;
+        if (const QJsonValue given = arguments.take(QStringLiteral("max_chars"));
+            !given.isUndefined() && !qucs_s::mcp::readMaxChars(given, &most))
+            return fail(QStringLiteral("%1: %2").arg(tool, qucs_s::mcp::maxCharsRefusal(given)));
+        QJsonObject result = a_control->callNow(tool, arguments, 10 * 60 * 1000);
+        if (most > 0) result = qucs_s::mcp::trimmedTo(result, most);
         QStringList texts;
         for (const QJsonValue& v : result.value(QLatin1String("content")).toArray())
             if (v.toObject().value(QLatin1String("type")).toString() == QLatin1String("text"))

@@ -3605,6 +3605,129 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // The tools (bug hunt 2026-09-30, C1-C9): the trace of a dataset beside
+    // the schematic's own names it (ngspice/run1:v, m:gain), and is taken
+    // back; a script's call takes max_chars; a document of Qucs-S is no
+    // data; a wide table's columns are cut; a default and a prefix are
+    // what SPICE reads; a trace of no data is hinted at from the imports'
+    // names alone.
+    void theToolsTakeBackWhatTheyGive()
+    {
+        const QString folder = QucsSettings.qucsWorkspaceDir.absoluteFilePath("tools");
+        QVERIFY(QDir().mkpath(folder));
+        const auto write = [&folder](const QString& name, const QByteArray& bytes) {
+            QFile f(folder + "/" + name);
+            if (f.open(QIODevice::WriteOnly)) f.write(bytes);
+        };
+        const QByteArray ac = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep frequency 2>\n1\n2\n</indep>\n<dep ac.v(in) frequency>\n1\n2\n</dep>\n";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        for (const char* port : {"in", "out"})
+            QVERIFY(!failed(call("add_component", {{"type", "Port"}, {"name", port}, {"x", 100}, {"y", port[0] == 'i' ? 100 : 200}})));
+        QVERIFY(!failed(call("save_document", {{"as", folder + "/p.sch"}, {"replace", true}})));
+        const auto traces = [](const QJsonObject& r) {
+            QStringList list;
+            for (const QJsonValue& v : json(r).toObject().value("variables").toArray()) list << v.toObject().value("trace").toString();
+            return list;
+        };
+
+        // C9: a run kept beside it - its traces name it; its own do not.
+        write("run1.dat.ngspice", ac);
+        write("p.dat.ngspice", ac);
+        QJsonObject r = call("get_dataset", {{"path", folder + "/run1.dat.ngspice"}});
+        QCOMPARE(traces(r), QStringList{"ngspice/run1:ac.v(in)"});
+        r = call("get_dataset", {{"path", folder + "/p.dat.ngspice"}});
+        QCOMPARE(traces(r), QStringList{"ngspice/ac.v(in)"});
+        // (A schematic's own when it is not open too: its Data Set says so.)
+        write("q.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <DataSet=qrun.dat>\n</Properties>\n");
+        write("qrun.dat.ngspice", ac);
+        r = call("get_dataset", {{"path", folder + "/qrun.dat.ngspice"}});
+        QCOMPARE(traces(r), QStringList{"ngspice/ac.v(in)"});
+        // Taken back: of the file, and of the schematic (to that dataset).
+        r = call("get_dataset", {{"path", folder + "/run1.dat.ngspice"}, {"variables", QJsonArray{"ngspice/run1:ac.v(in)"}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("variables").toArray().at(0).toObject().value("name") == "ac.v(in)", qPrintable(text(r)));
+        r = call("get_dataset", {{"variables", QJsonArray{"ngspice/run1:ac.v(in)"}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("dataset").toString().endsWith("run1.dat.ngspice"), qPrintable(text(r)));
+        // C3: an imported one.
+        write("m.csv", "f,gain\n1,2\n2,3\n");
+        r = call("import_data", {{"file", "m.csv"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("dataset").toString() == "m", qPrintable(text(r)));
+        r = call("get_dataset", {{"path", folder + "/m.dat"}});
+        QCOMPARE(traces(r), QStringList{"m:gain"});
+        r = call("get_dataset", {{"path", folder + "/m.dat"}, {"variables", QJsonArray{"m:gain"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("get_dataset", {{"variables", QJsonArray{"m:gain"}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("dataset").toString().endsWith("m.dat"), qPrintable(text(r)));
+        r = call("get_dataset", {{"variables", QJsonArray{"m:gain", "run1:ac.v(in)"}}});
+        QVERIFY2(failed(r) && text(r).contains("of 2 datasets"), qPrintable(text(r)));
+        r = call("get_dataset", {{"variables", QJsonArray{"nothere:x"}}});
+        QVERIFY2(failed(r) && text(r).contains("There is no dataset nothere"), qPrintable(text(r)));
+        // C4: a schematic is no data.
+        r = call("import_data", {{"file", folder + "/p.sch"}});
+        QVERIFY2(failed(r) && text(r).contains("p.sch is a schematic of Qucs-S, not data"), qPrintable(text(r)));
+        // C8: a wide table's columns cut, as its variables are.
+        QByteArray wide;
+        for (int c = 0; c < 150; ++c) wide += (c ? "," : "") + QByteArray("c") + QByteArray::number(c);
+        wide += '\n';
+        for (int row = 0; row < 3; ++row) {
+            for (int c = 0; c < 150; ++c) wide += (c ? "," : "") + QByteArray::number(row * c);
+            wide += '\n';
+        }
+        write("wide.csv", wide);
+        r = call("import_data", {{"file", "wide.csv"}});
+        QVERIFY2(!failed(r), qPrintable(text(r).left(300)));
+        QCOMPARE(json(r).toObject().value("columns").toArray().size(), 100);
+        QVERIFY2(json(r).toObject().value("columns left out").toString().contains("50 more columns (150 in all)"), qPrintable(text(r).right(400)));
+
+        // C1: a trace of no data is hinted at from the imports' names - not
+        // each read in full for every trace. (A dataset of 8 MB: 8 traces
+        // read it 8 times, 64 MB, before.)
+        QByteArray big = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep x 400000>\n";
+        for (int i = 0; i < 400000; ++i) big += QByteArray::number(i) + '\n';
+        big += "</indep>\n<dep y x>\n";
+        for (int i = 0; i < 400000; ++i) big += QByteArray::number(i * 0.25) + '\n';
+        big += "</dep>\n";
+        write("big.dat.source", big);
+        qucs_s::dataimport::Imported imported;
+        QString error;
+        QVERIFY2(qucs_s::dataimport::importFile(folder, folder + "/big.dat.source", {}, &imported, &error, nullptr, "bigimport"), qPrintable(error));
+        r = call("add_diagram", {{"traces", QJsonArray{"gain"}}});
+        QVERIFY2(!failed(r) && text(r).contains("the trace m:gain shows it"), qPrintable(text(r)));
+        QJsonArray none;
+        for (int i = 0; i < 8; ++i) none.append(QStringLiteral("q%1").arg(i));
+        QElapsedTimer clock;
+        clock.start();
+        r = call("add_diagram", {{"traces", none}});
+        const qint64 first = clock.restart();
+        r = call("get_schematic");
+        const qint64 then = clock.elapsed();
+        qInfo() << "8 traces of no data:" << first << "ms; a listing after:" << then << "ms";
+        QVERIFY2(!failed(r), qPrintable(text(r).left(200)));
+        QVERIFY2(first < 300 && then < 300, qPrintable(QStringLiteral("%1 ms, %2 ms").arg(first).arg(then)));
+
+        // C2: a script's call takes max_chars, as a batch's does.
+        if (control->scriptingBuilt()) {
+            r = call("run_script", {{"script", "const a = qucs.call('get_schematic', {max_chars: 300});\nreturn JSON.stringify(a).length"}});
+            QVERIFY2(!failed(r) && json(r).toObject().value("result").toInt() < 600, qPrintable(text(r)));
+            r = call("run_script", {{"script", "return qucs.call('get_schematic', {max_chars: 'many'})"}});
+            QVERIFY2(failed(r) && text(r).contains("max_chars is a whole number"), qPrintable(text(r)));
+        }
+
+        // C5: a default SPICE reads; C6: a prefix SPICE reads as a name.
+        for (const char* bad : {"Rs=-", "Rs=1k;", "Rs=1,5", "Rs={2*k", "Rs=4k7%"}) {
+            r = call("set_subcircuit_parameters", {{"parameters", QJsonArray{bad}}});
+            QVERIFY2(failed(r) && text(r).contains("no value SPICE reads"), qPrintable(QString(bad) + ": " + text(r)));
+        }
+        r = call("set_subcircuit_parameters", {{"parameters", QJsonArray{"Rs=4.7n", "k={2*Rs}", "m='Rs/2'", "t=temp", "z=-1e-3", "w=10kOhm"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        for (const char* bad : {"X;Y", "1X", "\xC3\xA9", "A B", ""}) {
+            r = call("make_symbol", {{"prefix", QString::fromUtf8(bad)}});
+            QVERIFY2(failed(r) && text(r).contains("'prefix' is a word SPICE reads as a name"), qPrintable(QString::fromUtf8(bad) + ": " + text(r)));
+        }
+        r = call("make_symbol", {{"prefix", "XA_1"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // ---- round 6: the gaps of one session (qucs-mcp-wishlist)
 
     // An ngspice .OPTIONS option with no value - a flag, written alone - is
@@ -7914,8 +8037,14 @@ private slots:
         for (const QJsonValue& c : json(call("get_dialog")).toObject().value("controls").toArray())
             if (c.toObject().value("kind").toString() == "tree") tree = c.toObject();
         QCOMPARE(tree.value("checked").toArray().at(r2), QJsonValue(false));
-        // A row that is not there, or a text where a box is: said.
-        QVERIFY(failed(call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", id}, {"value", QJsonArray{7, 0, true}}}}}})));
+        // A row that is not there, or a text where a box is: said - and
+        // what the tree has (bug hunt 2026-09-30, C7).
+        r = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", id}, {"value", QJsonArray{7, 0, true}}}}}});
+        QVERIFY2(failed(r) && text(r).contains("the tree has 2 rows (0 to 1)"), qPrintable(text(r)));
+        r = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", id}, {"value", QJsonArray{0, 99, true}}}}}});
+        QVERIFY2(failed(r) && text(r).contains("columns (0 to"), qPrintable(text(r)));
+        r = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", id}, {"value", QJsonArray{0}}}}}});
+        QVERIFY2(failed(r) && text(r).contains("a row is [row, column,"), qPrintable(text(r)));
         QVERIFY(!failed(call("set_dialog", {{"press", "Replace Checked"}})));
         QVERIFY(!failed(call("set_dialog", {{"press", "Close"}})));
         const QJsonObject summary = json(call("get_schematic")).toObject();
