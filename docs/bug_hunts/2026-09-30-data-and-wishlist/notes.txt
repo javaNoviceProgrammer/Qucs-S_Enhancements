@@ -40,3 +40,4 @@
 - Export tab proposes <dataset>.<suffix> in the folder: for an import of bench.csv beside it, that is bench.csv, the source (reading exportFile)
 - import_data of 5,000 columns: answer 112 KB, columns all 5,001 listed, not cut (traces/variables cut at 100) (h_wide.py)
 - get_dataset of a kept run run1.dat.ngspice gives traces 'ngspice/ac.v(in)' (no run1:) - they plot the current run (h_keptrace.py)
+- !!! CRASH: subcircuit with two ports numbered alike (P2 Num=1); get_netlist of a parent: SIGBUS in Schematic::throughAllComps, QString::operator= (PortTypes[i] past its end); check silent (h_portnum.py, crash-portnum.ips)
