@@ -1029,10 +1029,8 @@ QStringList dataSetsOfSchematics(const QString& folder)
     return names;
 }
 
-QString datasetNameFor(const QString& folder, const QString& source)
+QString datasetBaseFor(const QString& source)
 {
-    const QDir dir(folder);
-    const QStringList dataSets = dataSetsOfSchematics(folder);
     // The file's name: letters, digits and _ (a trace names it name:variable).
     QString base;
     for (const QChar c : QFileInfo(source).completeBaseName()) base += (c.isLetterOrNumber() && c.unicode() < 128) ? c : QLatin1Char('_');
@@ -1041,6 +1039,14 @@ QString datasetNameFor(const QString& folder, const QString& source)
     while (base.startsWith(QLatin1Char('_'))) base.remove(0, 1);
     while (base.endsWith(QLatin1Char('_'))) base.chop(1);
     if (base.isEmpty()) base = QStringLiteral("data");
+    return base;
+}
+
+QString datasetNameFor(const QString& folder, const QString& source)
+{
+    const QDir dir(folder);
+    const QStringList dataSets = dataSetsOfSchematics(folder);
+    const QString base = datasetBaseFor(source);
     const QString sourcePath = QFileInfo(source).absoluteFilePath();
     for (int n = 1;; ++n) {
         const QString name = n == 1 ? base : QStringLiteral("%1_%2").arg(base).arg(n);

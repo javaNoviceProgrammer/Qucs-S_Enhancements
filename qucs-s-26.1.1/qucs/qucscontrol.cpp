@@ -32,6 +32,7 @@
 #include "dataimport.h"
 #include "dataset.h"
 #include "erc.h"
+#include "ngoptimize.h"
 #include "mcpserver.h"
 #include "dialogs/simmessage.h"
 #include "ngstatistics.h"
@@ -82,6 +83,7 @@
 #include <QTextDocumentFragment>
 #include <QTextEdit>
 #include <QSet>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
 
@@ -144,7 +146,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "type": {"type": "string", "description": "Its model: R, C, L, GND, Vdc, Vac, Diode, _BJT, OpAmp, Sub, .TR, .AC, ... (list_component_types)"}, "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10)"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10)"}, "near": {"type": "object", "properties": {"part": {"type": "string"}, "side": {"type": "string", "enum": ["above", "below", "left", "right"]}, "gap": {"type": "integer", "minimum": 0}}, "description": "Instead of x, y: beside another part - {\"part\": \"U1\", \"side\": \"below\", \"gap\": 40}, the room between their symbols (40 unless given), centred on it across that side"},
    "name": {"type": "string", "description": "Its name; the next free one (R1, R2, ...) when not given"},
-   "properties": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Values by property name, as get_schematic and describe_component_type show them: {\"R\": \"4.7k\"}; the others stay at the type's defaults. A number with letters after it that are no scale and unit (1kk) is refused"},
+   "properties": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}, "description": "Values by property name, as get_schematic and describe_component_type show them: {\"R\": \"4.7k\"}; the others stay at the type's defaults. A number with letters after it that are no scale and unit (1kk) is refused. A property a block has any number of - .NGOPT's Knob and Target, NgSweep's Record and Vs, a Monte Carlo's Record and Spec, an optimization's Var and Goal - takes a list of its values: {\"Knob\": [\"dparam|Cp|20p|5p|100p\", \"dparam|Lp|100n|20n|500n\"]} (describe_component_type gives each one's fields)"},
    "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3"}, "mirror": {"type": "boolean", "description": "Mirrored about the x axis"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"R\": true, \"Temp\": false}"},
    "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": ["array", "object"], "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
@@ -157,7 +159,7 @@ const char* const kTools = R"JSON([
  "description": "Changes a component; whatever is not given stays as it is. You can change its properties (by name), its name, its position (x, y: where its center goes), its rotation (0-3 quarter turns from the type's own orientation, as get_schematic reports it), mirroring, whether it is active (an inactive part is left out of the simulation), and its text: 'shown' chooses which properties are written on the schematic ({\"Is\": false} hides one, with no need to rewrite its line with set_schematic), 'name_shown', and 'text_at' ([dx, dy] from its center, where its text begins, to move it off another part). An equation block's 'equations' are changed by name: each one given is set or added, {\"k\": null} removes k, and 'replace_equations' makes the list exactly those given; an .OPTIONS option without a value is a flag ('flags'). A Monte Carlo or corners block's 'records' and 'specs' replace its lists. 'rename' renames the part, and the traces, equations and markers that refer to it follow (i(V1), V1.It, @R1[i], R1's parameters in an equation), as rename_net does for a net. When the part is turned or moved, the circuit stays the same: its pins are wired again to the nets they were on, and other nets' wires under its new pin positions are moved out of the way. A change that cannot keep every net as it was is not made, and the error says why. A pin with nothing connected that lands on another part's pin joins that pin's net, and the result's 'note' says so. The answer lists an equation block's equations as they are afterwards. A ground is named by its ref (GND#2): it can be turned and moved, and the answer gives its ref, which may change.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "name": {"type": "string", "description": "The part: its name, or a ground by its ref (GND when there is one, GND#2 the second of several, as get_schematic gives it)"}, "rename": {"type": "string", "description": "Its new name; the traces, equations and markers that name it follow"},
-   "properties": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Values to change, by property name: {\"R\": \"10k\"}; the rest stay. A number with letters after it that are no scale and unit (1kk) is refused"},
+   "properties": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}, "description": "Values to change, by property name: {\"R\": \"10k\"}; the rest stay. A number with letters after it that are no scale and unit (1kk) is refused. A property a block has any number of (.NGOPT's Knob and Target, ...) takes a list: it replaces every one of that name"},
    "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "near": {"type": "object", "properties": {"part": {"type": "string"}, "side": {"type": "string", "enum": ["above", "below", "left", "right"]}, "gap": {"type": "integer", "minimum": 0}}, "description": "Instead of x, y: moved beside another part - {\"part\": \"U1\", \"side\": \"below\", \"gap\": 40}, the room between their symbols (40 unless given), centred on it across that side"}, "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3, as get_schematic gives it"},
    "mirror": {"type": "boolean", "description": "Mirrored about the x axis"}, "active": {"type": "boolean", "description": "false leaves it out of the simulation (inactive); true puts it back"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"Is\": false, \"Bf\": true}"},
@@ -288,11 +290,12 @@ const char* const kTools = R"JSON([
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, or [row, column, true or false] for a tree's check box}]"},
    "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id"}}}},
 {"name": "simulate",
- "description": "Simulates a schematic (the one in front unless 'path' names another; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them).",
+ "description": "Simulates a schematic (the one in front unless 'path' names another; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); it is stopped after"},
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For this run alone (an installed one); set_simulator changes the setting"},
    "keep_as": {"type": "string", "description": "A name of letters, digits, _ and -: the copy is <name>.dat.ngspice (or .xyce, ...) beside the schematic"},
    "compare": {"type": "object", "properties": {"with": {"type": "string"}, "measure": {"type": "array", "items": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "from": {"type": "number"}, "to": {"type": "number"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}}}}}, "description": "Before and after in one call: {\"with\": \"before\", \"measure\": [{\"variable\": \"ac.v(out)\", \"what\": \"bandwidth\"}, ...]} - each measured on this run and on the one kept as 'with' (keep_as), in a table of before, after and the change (and in %); 'what' is min, max, mean, rms, final, peak_to_peak or a get_dataset measurement, as tune's 'measure' takes it"},
+   "apply_optimum": {"type": "boolean", "description": "With an ngspice optimize block (.NGOPT): write the values it finds into the parameters and parts its knobs name (.PARAM Cp, R1's value), one undo step - the answer's 'optimum' says what went where; without it they are only reported"},
    "allow_commands": {"type": "boolean", "description": "Run the commands the schematic carries besides the simulator (a System command part, ngspice's shell, an Octave script): with the user's rights - only when the user has seen them (check_schematic lists them)"},
    "brief": {"type": "boolean", "description": "What came of the run only: no log lines, the errors, warnings, variables and traces without data cut to a few with how many more"},
    "operating_point": {"type": "boolean", "description": "Run the DC operating point alone, whatever analyses the schematic has, and return it: each node's voltage and branch current, and (ngspice) each device's quantities - gm, ic, vbe, gpi, gds, ... - with re = 1/gm, beta, ro"}}}},
@@ -334,11 +337,11 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given (a schematic or a data display - a .dpl not open is opened)"}, "document": {"type": "string", "enum": ["schematic", "data_display"], "description": "data_display: on the data display of the schematic 'path' names (its .dpl: opened, made when it has none) - the plots of a report apart from the circuit; schematic (the default): on the document 'path' names"}, "type": {"type": "string", "description": "rect (x-y, the default), polar, smith, admittance_smith, polar_smith, smith_polar, tab (a table), timing, truth, 3d, locus or histogram"}, "x": {"type": "integer", "description": "Its lower left corner (with 'y'); below everything, in a free spot, when not given"}, "y": {"type": "integer", "description": "Its lower left corner (with 'x')"},
    "width": {"type": "integer", "description": "240 by default"}, "height": {"type": "integer", "description": "160 by default"}, "title": {"type": "string", "description": "Drawn above it, and moved, selected and exported with it"},
-   "traces": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"variable": {"type": "string"}, "axis": {"type": "string"}, "color": {"type": "string"}, "auto_color": {"type": "boolean"}, "thickness": {"type": "integer"}, "style": {"type": "string"}, "marker": {"type": "string"}, "numbers": {"type": "string"}, "precision": {"type": "integer"}}}]}, "description": "Variables as get_dataset names them (tran.v(out); v(out) or out when that is one), or objects as add_trace takes them: {\"variable\": \"ac.v(out)\", \"axis\": \"right\", \"color\": \"#ff0000\"}"},
-   "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm: the values shown so)"},
-   "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm: the values shown so)"},
-   "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The right y axis (for traces with axis right): Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm: the values shown so)"},
-   "grid": {"type": "boolean", "description": "Grid lines drawn (true by default)"}, "legend": {"type": "string", "enum": ["off", "top_left", "top_right", "bottom_left", "bottom_right"], "description": "Where the legend goes, or off"},
+   "traces": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"variable": {"type": "string"}, "axis": {"type": "string"}, "color": {"type": "string"}, "auto_color": {"type": "boolean"}, "thickness": {"type": "integer"}, "style": {"type": "string"}, "marker": {"type": "string"}, "part": {"type": "string"}, "numbers": {"type": "string"}, "precision": {"type": "integer"}}}]}, "description": "Variables as get_dataset names them (tran.v(out); v(out) or out when that is one), or objects as add_trace takes them: {\"variable\": \"ac.v(out)\", \"axis\": \"right\", \"color\": \"#ff0000\", \"part\": \"db\"}"},
+   "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
+   "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
+   "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The right y axis (for traces with axis right): Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
+   "grid": {"type": "boolean", "description": "Grid lines drawn (true by default)"}, "legend": {"type": "string", "enum": ["off", "top_left", "top_right", "bottom_left", "bottom_right"], "description": "Where the legend goes, or off - the default, as for a diagram made in the window or written as .sch text without it; with several traces the answer says so"},
    "notation": {"type": "string", "enum": ["automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent"], "description": "Of the numbers on its axes and in markers without their own: automatic (2.5e-05), decimal, scientific (1.5e3), power_of_ten, engineering (SI prefixes: 1.5k, the default), engineering_exponent (250e-3)"},
    "decimals": {"type": "integer", "minimum": -1, "maximum": 15, "description": "Their places after the point; -1 as many as each needs"},
    "theme": {"type": "object", "properties": {"preset": {"type": "string", "enum": ["automatic", "light", "dark", "no_background", "default"]}, "background": {"type": "string"}, "plot_area": {"type": "string"}, "frame": {"type": "string"}, "grid": {"type": "string"}, "x_axis": {"type": "string"}, "y_axis": {"type": "string"}, "y2_axis": {"type": "string"}, "title": {"type": "string"}, "text": {"type": "string"}, "legend_background": {"type": "string"}, "legend_border": {"type": "string"}, "legend_text": {"type": "string"}}, "description": "The colours of its parts, each #rrggbb, #aarrggbb (see-through), a name (white, darkgray, ...) or auto (as Qucs-S draws it: no background on light paper, a white one on dark paper, the rest in colours that show on the background). background is under all of it, plot_area inside its frame; an axis' colour is that of its ticks, numbers and label; text is a table's. preset first sets them all - automatic, light, dark, no_background (the canvas shows through), default (the user's for new diagrams) - and the parts given then change that. A part the diagram does not have (a table's legend) is left out"}}}},
@@ -347,21 +350,22 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "diagram": {"type": "integer", "description": "Its number from get_schematic; may be left out when there is one"},
    "x": {"type": "integer", "description": "Its lower left corner's x"}, "y": {"type": "integer", "description": "Its lower left corner's y"}, "width": {"type": "integer", "description": "Its width"}, "height": {"type": "integer", "description": "Its height"}, "title": {"type": "string", "description": "\"\" takes it away"},
-   "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm: the values shown so); what is not given stays"},
-   "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm: the values shown so); what is not given stays"},
-   "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The right y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm: the values shown so); what is not given stays"},
+   "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
+   "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
+   "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The right y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
    "grid": {"type": "boolean", "description": "Grid lines drawn or not"}, "legend": {"type": "string", "enum": ["off", "top_left", "top_right", "bottom_left", "bottom_right"], "description": "Where the legend goes, or off"},
    "notation": {"type": "string", "enum": ["automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent"], "description": "Of the numbers on its axes and in markers without their own: automatic (2.5e-05), decimal, scientific (1.5e3), power_of_ten, engineering (SI prefixes: 1.5k, the default), engineering_exponent (250e-3)"},
    "decimals": {"type": "integer", "minimum": -1, "maximum": 15, "description": "Their places after the point; -1 as many as each needs"},
    "theme": {"type": "object", "properties": {"preset": {"type": "string", "enum": ["automatic", "light", "dark", "no_background", "default"]}, "background": {"type": "string"}, "plot_area": {"type": "string"}, "frame": {"type": "string"}, "grid": {"type": "string"}, "x_axis": {"type": "string"}, "y_axis": {"type": "string"}, "y2_axis": {"type": "string"}, "title": {"type": "string"}, "text": {"type": "string"}, "legend_background": {"type": "string"}, "legend_border": {"type": "string"}, "legend_text": {"type": "string"}}, "description": "The colours of its parts (what is not given stays), each #rrggbb, #aarrggbb (see-through), a name (white, darkgray, ...) or auto (as Qucs-S draws it: no background on light paper, a white one on dark paper, the rest in colours that show on the background). background is under all of it, plot_area inside its frame; an axis' colour is that of its ticks, numbers and label; text is a table's. preset first sets them all - automatic, light, dark, no_background (the canvas shows through), default (the user's for new diagrams) - and the parts given then change that. A part the diagram does not have (a table's legend) is left out"}}}},
 {"name": "add_trace",
- "description": "Adds a trace to a diagram. 'variable' is named as get_dataset names it (tran.v(out); v(out) or out when unambiguous; the simulator's prefix is added). You can set its color (#rrggbb, a name, or auto), thickness, style (solid, dash, dot, long_dash, stars, circles, arrows), the y axis it is drawn on (left or right), point markers (none, auto, circle, square, triangle, diamond, triangle_down, cross, plus) and auto_color (each swept curve its own color); in a table, precision and numbers (real_imaginary, magnitude_degrees, magnitude_radians). Returns its points, or why it shows nothing.",
+ "description": "Adds a trace to a diagram. 'variable' is named as get_dataset names it (tran.v(out); v(out) or out when unambiguous; the simulator's prefix is added). You can set its color (#rrggbb, a name, or auto), thickness, style (solid, dash, dot, long_dash, stars, circles, arrows), the y axis it is drawn on (left or right), point markers (none, auto, circle, square, triangle, diamond, triangle_down, cross, plus) and auto_color (each swept curve its own color); 'part' plots a part of each value - db, phase (degrees), magnitude, real or imaginary - so a complex S-parameter or an imported one shows in dB or as its phase with no equation (a Cartesian diagram or a table); in a table, precision and numbers (real_imaginary, magnitude_degrees, magnitude_radians). Returns its points, or why it shows nothing.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "diagram": {"type": "integer", "description": "The diagram's number from get_schematic; may be left out when there is one"}, "variable": {"type": "string", "description": "As get_dataset names it: tran.v(out) (v(out) or out when that is one); the simulator's prefix is added - not to name:variable of an imported dataset (import_data), which has none"},
    "color": {"type": "string", "description": "#rrggbb, a colour's name, or auto"}, "thickness": {"type": "integer", "minimum": 0, "maximum": 99, "description": "Line width in pixels, 0-99"},
    "style": {"type": "string", "enum": ["solid", "dash", "dot", "long_dash", "stars", "circles", "arrows"], "description": "How the curve is drawn"},
    "axis": {"type": "string", "enum": ["left", "right"], "description": "The y axis it is drawn against: left (the default) or right"},
    "marker": {"type": "string", "enum": ["none", "auto", "circle", "square", "triangle", "diamond", "triangle_down", "cross", "plus"], "description": "A mark at each point, or none"},
+   "part": {"type": "string", "enum": ["auto", "magnitude", "db", "phase", "real", "imaginary"], "description": "What of each value it plots: auto (a complex value's magnitude, a real one as it is - the default), magnitude, db (20 log10 of the magnitude), phase (degrees), real or imaginary - on a Cartesian diagram or a table; the legend and axis name it dB(...), phase(...)"},
    "auto_color": {"type": "boolean", "description": "Each curve of a sweep its own colour"}, "precision": {"type": "integer", "minimum": 0, "maximum": 16, "description": "A table's digits, 0-16"},
    "numbers": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"], "description": "How a table shows complex values"}},
    "required": ["variable"]}},
@@ -373,6 +377,7 @@ const char* const kTools = R"JSON([
    "style": {"type": "string", "enum": ["solid", "dash", "dot", "long_dash", "stars", "circles", "arrows"], "description": "How the curve is drawn"},
    "axis": {"type": "string", "enum": ["left", "right"], "description": "The y axis it is drawn against: left or right"},
    "marker": {"type": "string", "enum": ["none", "auto", "circle", "square", "triangle", "diamond", "triangle_down", "cross", "plus"], "description": "A mark at each point, or none"},
+   "part": {"type": "string", "enum": ["auto", "magnitude", "db", "phase", "real", "imaginary"], "description": "What of each value it plots: auto (a complex value's magnitude, a real one as it is - the default), magnitude, db (20 log10 of the magnitude), phase (degrees), real or imaginary - on a Cartesian diagram or a table; the legend and axis name it dB(...), phase(...)"},
    "auto_color": {"type": "boolean", "description": "Each curve of a sweep its own colour"}, "precision": {"type": "integer", "minimum": 0, "maximum": 16, "description": "A table's digits, 0-16"},
    "numbers": {"type": "string", "enum": ["real_imaginary", "magnitude_degrees", "magnitude_radians"], "description": "How a table shows complex values"}}}},
 {"name": "add_marker",
@@ -409,8 +414,10 @@ const char* const kTools = R"JSON([
  "description": "Renames a net - its labels change, and a net get_schematic calls net1, net2, ... gets a label - together with everything that names its voltage: the traces of the schematic's diagrams and of its data displays (open ones as an undoable change; the .dpl file of a closed one is rewritten) and its equations, so v(out) becomes v(out1) and out.v becomes out1.v. It is refused when another net already has the new name, since that would join the two. The dataset keeps the old name until the next simulation.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "from": {"type": "string", "description": "The net's name now: a label's, or net1, net2, ... as get_schematic calls it"}, "to": {"type": "string", "description": "Its new name, as the label dialog takes one (a letter, then letters, digits and single _): refused when another net has it, and for gnd, 0 and net1, net2 ..."}}, "required": ["from", "to"]}},
 {"name": "describe_component_type",
- "description": "Describes a library component type: what it is, its category, how its parts are named, its pins (their positions relative to its center, unrotated), and its properties in order - name, default value, unit, meaning, whether shown on the schematic and which simulators it applies to. It also gives the simulators the type works with, the netlist line it produces with its defaults for the simulator from the settings, and notes on common mistakes (a Vpulse is a single pulse; Vrect repeats), including properties hidden on the schematic that still go into the netlist and where (an OpAmp's Umax clips its output). With type \"Verilog-A\" it instead returns a new Verilog-A module to start from - a template OpenVAF compiles as it is - and how to write one (attributes before the declaration, desc, units, type=\"instance\", contributions, a DC path for every node).",
- "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "description": "As list_component_types gives it: R, Vpulse, .TR, ...; a Verilog-A module's name or file; \"Verilog-A\" for a template of a new one"}}, "required": ["type"]}},
+ "description": "Describes a library component type: what it is, its category, how its parts are named, its pins (their positions relative to its center at rotation 0, how a turn and a mirror move them, or - with 'rotation' and 'mirror' - where they are on a part placed so), its properties in order, and those it may have any number of (.NGOPT's Knob and Target: their fields and an example) - name, default value, unit, meaning, whether shown on the schematic and which simulators it applies to. It also gives the simulators the type works with, the netlist line it produces with its defaults for the simulator from the settings, and notes on common mistakes (a Vpulse is a single pulse; Vrect repeats), including properties hidden on the schematic that still go into the netlist and where (an OpAmp's Umax clips its output). With type \"Verilog-A\" it instead returns a new Verilog-A module to start from - a template OpenVAF compiles as it is - and how to write one (attributes before the declaration, desc, units, type=\"instance\", contributions, a DC path for every node).",
+ "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "description": "As list_component_types gives it: R, Vpulse, .TR, ...; a Verilog-A module's name or file; \"Verilog-A\" for a template of a new one"},
+   "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "The pins as a part turned so is placed (add_component's rotation: a quarter turn each)"},
+   "mirror": {"type": "boolean", "description": "The pins as a mirrored part's (mirrored first, then turned)"}}, "required": ["type"]}},
 {"name": "batch",
  "description": "Runs several of these tools in one call, in order - much faster than one call each: place and wire a circuit, set many properties, add a diagram and its traces at once. Each change is one step of Edit > Undo, as when called alone. It stops at the first call that fails unless 'keep_going' is set, and then reports how many changes the earlier calls made (undo with 'steps' takes them back); with 'atomic' those changes are undone at once, so it is all or nothing (files written, simulations run and documents opened stay). With 'preview' it holds only calls that change schematics or only look. Returns each call's result in order.",
  "inputSchema": {"type": "object", "properties": {
@@ -1043,6 +1050,43 @@ bool isRepeated(const Component* c, const QString& name)
     // properties in their places Symbol.)
     return false;
 }
+
+} // namespace
+
+QJsonArray qucs_s::control::repeatedProperties(const Component* c)
+{
+    struct Doc {
+        const char *name, *fields, *example;
+    };
+    QList<Doc> docs;
+    if (c->Model == QLatin1String(".NGOPT"))
+        docs = {{"Knob", QT_TRANSLATE_NOOP("QucsControl", "kind|name|initial|low|high - kind dparam (a .PARAM's or an equation's parameter), param (a device's: R1, @m1[w]) or mparam (a .model's: @dmod[is]); the search starts at the initial value"),
+                 "dparam|Cp|20p|5p|100p"},
+                {"Target", QT_TRANSLATE_NOOP("QucsControl", "analysis|expression|value|weight - the analysis (a simulation block's name, or an ngspice command), an expression of its results (an index picks a point: db(S_2_1[20])), the value it should have, and its weight (1 when left out)"),
+                 "SP1|db(S_2_1[20])|-0.0771|1"}};
+    else if (qucs_s::ngsweep::isSweep(c))
+        docs = {{"Record", QT_TRANSLATE_NOOP("QucsControl", "name|expression - a value recorded at each point of the sweep"), "gain|db(v(out))"},
+                {"Vs", QT_TRANSLATE_NOOP("QucsControl", "name|type|start|stop|points|list - an outer knob: lin or log from start to stop in points, or list (values apart by ;)"),
+                 "C1|list|||| 1n; 2n"}};
+    else if (qucs_s::ngstats::isStatistics(c))
+        docs = {{"Record", QT_TRANSLATE_NOOP("QucsControl", "name|expression - a value recorded for every sample or corner"), "gain|db(v(out))"},
+                {"Spec", QT_TRANSLATE_NOOP("QucsControl", "expression|min|max - a metric and its limits (one may be left empty); a sample passes within all"),
+                 "v(out)|0.49|0.51"}};
+    else if (c->Model == QLatin1String(".Opt"))
+        docs = {{"Var", QT_TRANSLATE_NOOP("QucsControl", "name|active|initial|min|max|type - active yes or no; type LIN_DOUBLE, LOG_DOUBLE, LIN_INT, LOG_INT or an E series (E12, E24, ...)"),
+                 "Rload|yes|1000|10|1e4|LOG_DOUBLE"},
+                {"Goal", QT_TRANSLATE_NOOP("QucsControl", "name|type|value - type MIN, MAX, LE, GE, EQ or MON"), "gain|GE|20"}};
+    QJsonArray list;
+    for (const Doc& d : std::as_const(docs))
+        list.append(QJsonObject{{QStringLiteral("name"), QString::fromLatin1(d.name)},
+                                {QStringLiteral("fields"), QucsControl::tr(d.fields)},
+                                {QStringLiteral("example"), QString::fromLatin1(d.example)},
+                                {QStringLiteral("give"), QStringLiteral("{\"%1\": [\"%2\", ...]}").arg(QLatin1String(d.name), QLatin1String(d.example))}});
+    return list;
+}
+
+namespace {
+
 
 // A property that comes more than once - NgSweep's Record and Vs, a Monte
 // Carlo's Record and Spec - is given as a list of its values: they replace
@@ -3361,6 +3405,7 @@ QString QucsControl::whoMade(quint64 by, quint64 caller) const
 {
     if (by == 0) return tr("the user");
     if (by == QucsDoc::kOnDisk) return tr("its file, changed on disk (by a command such as your Bash, another program or the user)");
+    if (by == QucsDoc::kSimulation) return tr("the simulation (an optimizer's result written into its knobs)");
     return by == caller ? tr("you") : tr("another conversation");
 }
 
@@ -3379,22 +3424,23 @@ QStringList QucsControl::changesSince(quint64 caller) const
             lines << tr("%1 has been opened (revision %2).").arg(titleOf(doc)).arg(doc->revision());
             continue;
         }
-        int byUser = 0, byOthers = 0, onDisk = 0;
+        int byUser = 0, byOthers = 0, onDisk = 0, bySimulation = 0;
         QDateTime last;
         for (const QucsDoc::Edit& e : doc->recentEdits()) {
             if (e.revision <= it->revision || e.by == caller) continue;
-            (e.by == 0 ? byUser : e.by == QucsDoc::kOnDisk ? onDisk : byOthers)++;
+            (e.by == 0 ? byUser : e.by == QucsDoc::kOnDisk ? onDisk : e.by == QucsDoc::kSimulation ? bySimulation : byOthers)++;
             last = e.at;
         }
-        if (byUser + byOthers + onDisk > 0) {
+        if (byUser + byOthers + onDisk + bySimulation > 0) {
             // (A file changed on disk: by whom is not known - a command of
             // yours, another program, the user.)
             QStringList whom;
             if (byUser > 0) whom << tr("the user");
             if (byOthers > 0) whom << tr("another conversation");
             if (onDisk > 0) whom << tr("its file, changed on disk (by a command such as your Bash, another program or the user) and loaded again");
+            if (bySimulation > 0) whom << tr("the simulation (an optimizer's result written into its knobs)");
             const QString who = whom.join(tr(" and "));
-            byOthers += onDisk;
+            byOthers += onDisk + bySimulation;
             // What changed, part by part (a schematic's), from how it was.
             QStringList what;
             auto* sch = dynamic_cast<Schematic*>(doc);
@@ -8666,6 +8712,8 @@ QJsonObject QucsControl::connectPins(const QJsonObject& args)
     // pin on its way would join that pin's net too.
     const auto check = [&] { return netChangesBeyond(before, netsOf(sch, nullptr, {a, b}), ends); };
     const QList<qucs_s::erc::Issue> wiringBefore = qucs_s::erc::wiring(sch);
+    QHash<const Component*, int> acrossBefore;   // (the parts' bodies the wires cross, before it)
+    for (Component* c : sch->a_DocComps) acrossBefore.insert(c, wiresAcross(sch, c));
     int preferred = 0, used = -1;
     const std::vector<std::vector<QPoint>> ways = !via.isEmpty() ? std::vector<std::vector<QPoint>>{wayThrough(a, via, b)}
                                                   : !side.isEmpty() ? waysAround(sch, a, b, side, &preferred)
@@ -8689,6 +8737,42 @@ QJsonObject QucsControl::connectPins(const QJsonObject& args)
     }
     if (const QStringList look = newWiringIssues(sch, wiringBefore); !look.isEmpty())
         text += QLatin1Char(' ') + tr("Look: %1.").arg(look.join(QStringLiteral("; ")));
+    // What "over no other pin or wire" leaves unsaid: a part's body the wire
+    // crosses, and a pin that faces away from the other end - the wire goes
+    // round its own part then.
+    QStringList crossed;
+    for (Component* c : sch->a_DocComps)
+        if (wiresAcross(sch, c) > acrossBefore.value(c, 0)) crossed << c->Name;
+    if (!crossed.isEmpty())
+        text += QLatin1Char(' ') + tr("It crosses the body of %1 (no pin of it): move it, or give 'side' or 'via'.").arg(crossed.join(QStringLiteral(", ")));
+    for (const auto& [here, there, otherName] : {std::tuple{a, b, to}, std::tuple{b, a, from}})
+        for (Component* c : sch->a_DocComps)
+            for (int i = 0; i < c->Ports.size(); ++i) {
+                const Port* p = c->Ports.at(i);
+                if (QPoint(c->cx + p->x, c->cy + p->y) != here) continue;
+                // The way it faces: out from the part's centre, along the
+                // longer of its offsets.
+                const QPoint out = std::abs(p->x) >= std::abs(p->y) ? QPoint((p->x > 0) - (p->x < 0), 0) : QPoint(0, (p->y > 0) - (p->y < 0));
+                const QPoint d = there - here;
+                if (out.isNull() || out.x() * d.x() + out.y() * d.y() >= 0) continue;
+                // The rotation that turns it to the other end: a quarter turn
+                // moves (x, y) to (y, -x).
+                int best = c->rotated, bestDot = INT_MIN;
+                QPoint o = out;
+                for (int k = 1; k <= 3; ++k) {
+                    o = QPoint(o.y(), -o.x());
+                    if (const int dot = o.x() * d.x() + o.y() * d.y(); dot > bestDot) {
+                        bestDot = dot;
+                        best = (c->rotated + k) % 4;
+                    }
+                }
+                static const char* const faces[] = {QT_TRANSLATE_NOOP("QucsControl", "right"), QT_TRANSLATE_NOOP("QucsControl", "down"),
+                                                    QT_TRANSLATE_NOOP("QucsControl", "left"), QT_TRANSLATE_NOOP("QucsControl", "up")};
+                const int way = out.x() > 0 ? 0 : out.y() > 0 ? 1 : out.x() < 0 ? 2 : 3;
+                text += QLatin1Char(' ') + tr("%1's pin %2 faces %3, away from %4: the wire goes round %1. At rotation %5 (now %6) "
+                                              "it faces %4.")
+                                               .arg(c->Name).arg(i + 1).arg(tr(faces[way]), otherName).arg(best).arg(c->rotated);
+            }
     return textResult(text);
 }
 
@@ -10145,6 +10229,120 @@ QJsonObject QucsControl::getDialog()
                                   {QStringLiteral("controls"), controls}});
 }
 
+QJsonArray QucsControl::optimumOf(Schematic* sch, const QString& output, bool apply)
+{
+    namespace ng = qucs_s::ngopt;
+    QList<Component*> blocks;   // (in the netlist's order)
+    for (Component* c : sch->a_DocComps)
+        if (c->Model == QLatin1String(".NGOPT") && c->isActive == COMP_IS_ACTIVE) blocks << c;
+    if (blocks.isEmpty() || ng::unsupported(output)) return {};
+    const QList<ng::Result> results = ng::parseResults(output);
+    // Where a knob is defined: a parameter of an equation block (.PARAM,
+    // .GLOBAL_PARAM, Eqn), or a part's value (R1) or property (@m1[w]).
+    const auto definition = [sch](const ng::Knob& k, QString* where, QString* why) -> Property* {
+        if (k.kind == ng::KnobKind::Param) {
+            for (Component* c : sch->a_DocComps) {
+                if (c->isActive != COMP_IS_ACTIVE || !isEquationKind(c)
+                    || (c->Model != QLatin1String("SpicePar") && c->Model != QLatin1String("SpGlobPar") && c->Model != QLatin1String("Eqn")))
+                    continue;
+                for (Property* p : c->Props)
+                    if (p->Name.compare(k.name, Qt::CaseInsensitive) == 0) {
+                        *where = c->Name + QLatin1Char('.') + p->Name;
+                        return p;
+                    }
+            }
+            *why = tr("no .PARAM or equation of the schematic defines %1").arg(k.name);
+            return nullptr;
+        }
+        if (k.kind == ng::KnobKind::Model) {
+            *why = tr("%1 is a .model's parameter: its model card holds it").arg(k.name);
+            return nullptr;
+        }
+        // A part (R1), or a part's property (@m1[w]).
+        static const QRegularExpression at(QStringLiteral("^@([^\\[]+)\\[([^\\]]+)\\]$"));
+        const QRegularExpressionMatch m = at.match(k.name.trimmed());
+        const QString part = m.hasMatch() ? m.captured(1) : k.name.trimmed();
+        for (Component* c : sch->a_DocComps) {
+            if (c->Name.compare(part, Qt::CaseInsensitive) != 0 || c->Props.isEmpty()) continue;
+            Property* p = nullptr;
+            if (!m.hasMatch()) p = c->Props.first();
+            else
+                for (Property* q : c->Props)
+                    if (q->Name.compare(m.captured(2), Qt::CaseInsensitive) == 0) p = q;
+            if (p == nullptr) break;
+            *where = c->Name + QLatin1Char('.') + p->Name;
+            return p;
+        }
+        *why = tr("no part of the schematic is %1").arg(k.name);
+        return nullptr;
+    };
+    QJsonArray list;
+    bool changing = false;
+    QSet<Component*> touched;
+    for (int i = 0; i < blocks.size(); ++i) {
+        QJsonObject o{{QStringLiteral("block"), blocks.at(i)->Name}};
+        if (i >= results.size()) {
+            o.insert(QStringLiteral("found"), tr("nothing: ngspice reported no optimum (see the last lines)"));
+            list.append(o);
+            continue;
+        }
+        const ng::Result& r = results.at(i);
+        const ng::Command command = ng::Command::read(blocks.at(i));
+        o.insert(QStringLiteral("summary"), r.summary);
+        if (r.interrupted) o.insert(QStringLiteral("interrupted"), true);
+        if (!r.notes.isEmpty()) o.insert(QStringLiteral("notes"), QJsonArray::fromStringList(r.notes));
+        QJsonObject found, applied, notApplied;
+        for (int k = 0; k < r.values.size(); ++k) {
+            const QString value = misc::num2str(r.values.at(k).second, -1, QString());
+            const ng::Knob knob = k < command.knobs.size() ? command.knobs.at(k) : ng::Knob{};
+            const QString name = knob.name.isEmpty() ? r.values.at(k).first : knob.name;
+            found.insert(name, value);
+            if (!apply || knob.name.isEmpty()) continue;
+            QString where, why;
+            Property* p = definition(knob, &where, &why);
+            if (p == nullptr) {
+                notApplied.insert(name, why);
+                continue;
+            }
+            if (!changing) {
+                prepare(sch);
+                changing = true;
+            }
+            p->Value = value;
+            for (Component* c : sch->a_DocComps)
+                if (c->Props.contains(p)) touched.insert(c);
+            applied.insert(name, where);
+        }
+        o.insert(QStringLiteral("found"), found);
+        if (apply) {
+            if (!applied.isEmpty()) o.insert(QStringLiteral("applied to"), applied);
+            if (!notApplied.isEmpty()) o.insert(QStringLiteral("not applied"), notApplied);
+        } else {
+            o.insert(QStringLiteral("applied"),
+                     tr("no: the knobs of %1 start from these now (Qucs-S wrote them in after the run), but the parameters keep "
+                        "their values, which a run without the optimizer uses. simulate with 'apply_optimum' writes them in (one "
+                        "undo step), or edit_component does.").arg(blocks.at(i)->Name));
+        }
+        list.append(o);
+    }
+    if (changing) {
+        for (Component* c : std::as_const(touched)) c->recreate();
+        finish(sch, {});
+        // The dataset is the optimum's, which the parameters now hold: the
+        // netlist kept for it is the one a run would be given now (else it
+        // read as of another circuit - stale).
+        const QString dataset = datasetFile(sch->getDocName(), sch->getDataSet(), spicecompat::simNgspice);
+        QTemporaryDir temporary;
+        const QString now = temporary.filePath(QStringLiteral("now.cir"));
+        misc::ErrorCapture capture;
+        SimulationRun netlister(sch, false);
+        if (QFileInfo(dataset).isFile() && netlister.writeNetlist(now))
+            if (QFile f(now); f.open(QIODevice::ReadOnly | QIODevice::Text))
+                misc::keepRunNetlist(dataset, QString::fromUtf8(f.readAll()), sch->getDocName());
+    }
+    return list;
+}
+
 QString QucsControl::commandsRefused(Schematic* sch, const QJsonObject& args) const
 {
     // A schematic opened from anywhere - a project's, a download - runs,
@@ -10792,10 +10990,11 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
         QHash<QString, int> by;
         QDateTime last;
         for (const QucsDoc::Edit& e : doc->recentEdits())
-            if (e.revision > revision) {
+            if (e.revision > revision && e.by != QucsDoc::kSimulation) {   // (the run's own: an optimizer's result, its answer's 'optimum')
                 by[whoMade(e.by, caller)]++;
                 last = e.at;
             }
+        if (by.isEmpty()) return;
         QStringList who;
         for (auto it = by.cbegin(); it != by.cend(); ++it) who << tr("%1 by %2").arg(it.value()).arg(it.key());
         result.insert(QStringLiteral("changed while it ran"),
@@ -10887,7 +11086,8 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
         app->slotSimulateWithSpice();
     });
     QTimer::singleShot(0, this, [this, done, timeout, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning, logBefore,
-                                 compare, brief, simulatorArg = args.value(QLatin1String("simulator"))] {
+                                 compare, brief, simulatorArg = args.value(QLatin1String("simulator")),
+                                 applyOptimum = args.value(QLatin1String("apply_optimum")).toBool()] {
         SimulationRun* run = console->currentRun();
         // Closed before it began (a call right behind this one): said -
         // not "did not start" with no reason, nor another run's log.
@@ -10909,7 +11109,7 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
         run->setQuiet(true);   // (its errors in the answer, not in a box)
         auto answered = std::make_shared<bool>(false);
         auto report = [this, done, answered, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning,
-                       compare, brief, simulatorArg](SimulationRun* r, bool timedOut) {
+                       compare, brief, simulatorArg, applyOptimum](SimulationRun* r, bool timedOut) {
             if (*answered) return;
             *answered = true;
             if (!timedOut) restore();
@@ -10996,6 +11196,11 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
             // Before and after, measurement by measurement.
             if (!compare.isEmpty() && doc && result.value(QStringLiteral("dataset written")).toBool())
                 result.insert(QStringLiteral("compared"), comparedRuns(doc, compare, simulatorArg));
+            // An ngspice optimize's result: what it found, and whether the
+            // parameters now hold it.
+            if (doc && !timedOut && simulator == spicecompat::simNgspice && !operatingPoint)
+                if (const QJsonArray optimum = optimumOf(doc, output, applyOptimum); !optimum.isEmpty())
+                    result.insert(QStringLiteral("optimum"), optimum);
             // Brief: what came of it, not the log and the long lists.
             if (brief) {
                 result.remove(QStringLiteral("last lines"));

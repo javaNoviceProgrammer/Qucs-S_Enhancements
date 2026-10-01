@@ -126,10 +126,15 @@ QString Graph::save()
 	      " "+QString::number(yAxisNo);
   // Auto colors and the point marker: fields of their own, which versions
   // before them do not read; written only when there is something to say.
-  if (autoColor || pointMarker != PointMarker::None)
+  // The part of the value shown a tenth (the two before it then written
+  // too, as they are).
+  const bool part = valuePart != ValuePart::Auto;
+  if (autoColor || pointMarker != PointMarker::None || part)
     s += autoColor ? " 1" : " 0";
-  if (pointMarker != PointMarker::None)
+  if (pointMarker != PointMarker::None || part)
     s += " " + QString::number(int(pointMarker));
+  if (part)
+    s += " " + QString::number(int(valuePart));
   s += ">";
 
   for (Marker *pm : Markers)
@@ -186,6 +191,9 @@ bool Graph::load(const QString& _s)
   const int marker = n.toInt(&ok);
   pointMarker = ok && marker > int(PointMarker::None) && marker <= int(PointMarker::Plus)
                     ? PointMarker(marker) : PointMarker::None;
+  n  = s.section(' ',9,9);    // the part of the value shown
+  const int part = n.toInt(&ok);
+  valuePart = ok && part > int(ValuePart::Auto) && part <= int(ValuePart::Imaginary) ? ValuePart(part) : ValuePart::Auto;
 
   return true;
 }
@@ -297,6 +305,7 @@ Graph* Graph::sameNewOne()
   pg->yAxisNo   = yAxisNo;
   pg->autoColor = autoColor;
   pg->pointMarker = pointMarker;
+  pg->valuePart = valuePart;
 
   for (Marker *pm : Markers)
     pg->Markers.append(pm->sameNewOne(pg));
@@ -321,6 +330,39 @@ const QList<QColor>& Graph::autoPalette()
       QColor(0xe3, 0x49, 0x48),   // red
   };
   return palette;
+}
+
+bool Graph::valuePartApplies(const QString& diagramName)
+{
+  static const QStringList cartesian = {"Rect", "Rect3D", "Tab", "Histogram"};
+  return cartesian.contains(diagramName);
+}
+
+QString Graph::withValuePart(const QString& name) const
+{
+  switch (valuePart) {
+  case ValuePart::Auto: break;
+  case ValuePart::Magnitude: return "mag(" + name + ")";
+  case ValuePart::Db: return "dB(" + name + ")";
+  case ValuePart::Phase: return "phase(" + name + ")";
+  case ValuePart::Real: return "re(" + name + ")";
+  case ValuePart::Imaginary: return "im(" + name + ")";
+  }
+  return name;
+}
+
+void Graph::takeValuePart(ValuePart part, double* re, double* im)
+{
+  const double r = *re, i = *im;
+  switch (part) {
+  case ValuePart::Auto: return;
+  case ValuePart::Magnitude: *re = std::hypot(r, i); break;
+  case ValuePart::Db: *re = 20.0 * std::log10(std::hypot(r, i)); break;   // (0: -inf, left out of the axis's range)
+  case ValuePart::Phase: *re = std::atan2(i, r) * 180.0 / M_PI; break;
+  case ValuePart::Real: break;
+  case ValuePart::Imaginary: *re = i; break;
+  }
+  *im = 0.0;
 }
 
 bool Graph::autoColorApplies(const QString& diagramName)

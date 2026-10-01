@@ -736,6 +736,14 @@ private:
         }
         QString name = m.captured(0);
         i += name.size();
+        // S[2,1]: what is in brackets is the name's, its comma too (a
+        // Touchstone's S-parameter, an index).
+        for (qsizetype open = name.count(QLatin1Char('[')) - name.count(QLatin1Char(']')); open > 0 && i < t.size();) {
+            const QChar ch = t.at(i++);
+            name += ch;
+            if (ch == QLatin1Char('[')) ++open;
+            else if (ch == QLatin1Char(']')) --open;
+        }
         if (i < t.size() && t.at(i) == QLatin1Char('(') && functionNames().contains(name.toLower())) {
             ++i;
             auto inner = sum();
