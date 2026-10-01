@@ -18,6 +18,7 @@
 #include "dataset.h"
 #include "main.h"
 #include "misc.h"
+#include "dataimport.h"
 #include "projectView.h"
 #include "qucs.h"
 #include "schematic.h"
@@ -2189,6 +2190,28 @@ bool copyText(const QString& from, const QString& to, const std::function<QStrin
     return true;
 }
 
+// A schematic's Data Set and Data Display, as Qucs-S has them (open) or its
+// file says (<DataSet=run.dat>); its own name's by default. Its datasets
+// are named after the Data Set, not after the file: amp.sch of Data Set
+// run.dat writes run.dat.ngspice, and amp.dat beside it may be another's.
+QString resultName(QucsDoc* open, const QString& file, bool display)
+{
+    const QString base = QFileInfo(file).completeBaseName();
+    QString name = base + (display ? QStringLiteral(".dpl") : QStringLiteral(".dat"));
+    if (open != nullptr) {
+        const QString own = display ? open->getDataDisplay() : open->getDataSet();
+        return own.isEmpty() ? name : own;
+    }
+    QFile f(file);
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QByteArray head = f.read(4096);
+        static const QRegularExpression set(QStringLiteral("<DataSet=([^>\\n]*)>")), shown(QStringLiteral("<DataDisplay=([^>\\n]*)>"));
+        const QRegularExpressionMatch m = (display ? shown : set).match(QString::fromUtf8(head));
+        if (m.hasMatch()) name = display ? QucsDoc::fileBeside(m.captured(1), name) : QucsDoc::dataSetBeside(m.captured(1), name);
+    }
+    return name;
+}
+
 // To the system's trash; else away (scratch files are made again).
 bool toTrash(const QString& path, bool* trashed)
 {
@@ -2295,6 +2318,11 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
     }
     if (const QString bad = badFileName(QFileInfo(to).fileName()); !bad.isEmpty()) return errorResult(tr("'to': %1.").arg(bad));
     if (sameFile(from, to)) return errorResult(tr("The copy would be the schematic itself."));
+    // Not the name of a dataset imported there (its Data Set would be it).
+    if (qucs_s::dataimport::Origin origin;
+        qucs_s::dataimport::originOf(QFileInfo(to).absoluteDir().filePath(QFileInfo(to).completeBaseName() + QStringLiteral(".dat")), &origin))
+        return errorResult(tr("%1.dat there is a dataset imported from %2, and a schematic %1 simulates into %1.dat: choose another name.")
+                               .arg(QFileInfo(to).completeBaseName(), QDir::toNativeSeparators(origin.source)));
     // A file there already: written over when 'replace' says so, or when
     // the user says yes, asked.
     if (QFileInfo::exists(to) && !args.value(QLatin1String("replace")).toBool()
@@ -2324,9 +2352,14 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
     }
     written << dst.fileName();
     if (args.value(QLatin1String("results")).toBool(true)) {
-        // Its datasets (each simulator's) and its data display.
+        // Its datasets (each simulator's) and its data display: those its
+        // Data Set and Data Display name (the copy's are named after it).
+        QString dataSet = resultName(open, from, false);
+        if (dataSet.endsWith(QLatin1String(".dat"), Qt::CaseInsensitive)) dataSet.chop(4);
         for (const QString& suffix : {QStringLiteral(".dat"), QStringLiteral(".dat.ngspice"), QStringLiteral(".dat.xyce"), QStringLiteral(".dat.spopus")}) {
-            const QString a = src.absoluteDir().filePath(base + suffix), b = dst.absoluteDir().filePath(newBase + suffix);
+            const QString a = src.absoluteDir().filePath(dataSet + suffix), b = dst.absoluteDir().filePath(newBase + suffix);
+            qucs_s::dataimport::Origin origin;
+            if (suffix == QLatin1String(".dat") && qucs_s::dataimport::originOf(a, &origin)) continue;   // (an import: no run's)
             if (!QFileInfo::exists(a)) continue;
             aboutToWrite(b);
             if (!misc::copyFileOver(a, b)) continue;
@@ -2338,7 +2371,7 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
             QDateTime at;
             if (const QString netlist = misc::runNetlistOf(a, &at); !netlist.isEmpty()) misc::keepRunNetlist(b, netlist, to, at);
         }
-        const QString dpl = src.absoluteDir().filePath(base + QStringLiteral(".dpl"));
+        const QString dpl = src.absoluteDir().filePath(resultName(open, from, true));
         if (QFileInfo::exists(dpl)) {
             const QString b = dst.absoluteDir().filePath(newBase + QStringLiteral(".dpl"));
             aboutToWrite(b);
@@ -2387,7 +2420,10 @@ QJsonObject QucsControl::cleanScratch(const QJsonObject& args)
         const QRegularExpressionMatch m = named.match(head);
         if (m.hasMatch() && sameFile(m.captured(1).trimmed(), docName)) {
             int files = 0;
-            for (const QString& file : QDir(scratch).entryList(QDir::Files | QDir::NoDotAndDotDot)) {
+            // (The run's own: its netlist and what the simulator wrote for
+            // it, spice4qucs.*, and the log - not what else is there.)
+            for (const QString& file : QDir(scratch).entryList({QStringLiteral("spice4qucs*"), QStringLiteral("log.txt")},
+                                                               QDir::Files | QDir::NoDotAndDotDot)) {
                 bool t = false;
                 if (toTrash(QDir(scratch).filePath(file), &t)) ++files;
                 trashed = trashed && t;
@@ -2403,13 +2439,21 @@ QJsonObject QucsControl::cleanScratch(const QJsonObject& args)
         }
     }
     if (args.value(QLatin1String("datasets")).toBool()) {
+        // Those of its Data Set (each simulator's), not of its file's name;
+        // never one imported (a run of the schematic does not make it).
         const QFileInfo info(docName);
+        QString dataSet = resultName(document(args, &error), docName, false);
+        if (dataSet.endsWith(QLatin1String(".dat"), Qt::CaseInsensitive)) dataSet.chop(4);
         for (const QString& suffix : {QStringLiteral(".dat"), QStringLiteral(".dat.ngspice"), QStringLiteral(".dat.xyce"), QStringLiteral(".dat.spopus")}) {
-            const QString f = info.absoluteDir().filePath(info.completeBaseName() + suffix);
+            const QString f = info.absoluteDir().filePath(dataSet + suffix);
+            qucs_s::dataimport::Origin origin;
+            if (!QFileInfo::exists(f) || qucs_s::dataimport::originOf(f, &origin)) continue;
             bool t = false;
-            if (QFileInfo::exists(f) && toTrash(f, &t)) {
+            const QString kept = misc::runNetlistFile(f);   // (named by where it is: while it is there)
+            if (toTrash(f, &t)) {
                 gone << QFileInfo(f).fileName();
                 trashed = trashed && t;
+                QFile::remove(kept);   // (the netlist kept for it: of nothing now)
             }
         }
     }
