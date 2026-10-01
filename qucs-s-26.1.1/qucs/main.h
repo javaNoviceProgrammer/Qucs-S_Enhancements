@@ -136,7 +136,7 @@ struct tQucsSettings {
   bool hasDarkTheme;
   bool fullTraceName;
   bool alwaysPrefixDataset;
-  bool ContentTreeView;   // Content panel: subdirectories as sub-trees (true) or "dir/name" rows (false)
+  bool ContentTreeView;   // Content panel: subdirectories as sub-trees (true, the default) or "dir/name" rows (false: Flat)
   bool ContentFolderIcons = false;   // Content panel: a folder icon on the sub-trees' folder rows
   bool ContentAutoRefresh = true;   // Content panel: look for files that came or went, every ...
   int ContentRefreshSeconds = 3;    // ... this many seconds
