@@ -140,6 +140,46 @@ private slots:
         QCOMPARE(d.columns, (QStringList{"Time", "Voltage", "I_out", "Voltage_2"}));
     }
 
+    // A CSV is read as rows, not as a spreadsheet's cells first (bug hunt
+    // 2026-09-30, B4: 26 MB took 1.15 GB): as a spreadsheet reads it all
+    // the same - fields in quotes holding the delimiter, a quote or a
+    // line; numbers in quotes; CR LF; a byte order mark; a comment after a
+    // delimiter; a table of many rows whole.
+    void aCsvIsReadAsRows()
+    {
+        di::Data d = read(write("quoted.csv", "\xEF\xBB\xBF# from the bench, \"run 2\"\r\n"
+                                              "\"t, s\",\"say \"\"v\"\"\",\"two\r\nlines\"\r\n"
+                                              "\"0\",1.5,2\r\n"
+                                              "1,\"2.5\",3\r\n"
+                                              "2,3.5,\r\n"));
+        QCOMPARE(names(d), (QStringList{"t_s", "say_v", "two_lines"}));
+        QCOMPARE(find(d, "t_s")->re, (QVector<double>{0, 1, 2}));
+        QCOMPARE(find(d, "say_v")->re, (QVector<double>{1.5, 2.5, 3.5}));
+        QVERIFY(std::isnan(find(d, "two_lines")->re.at(2)));
+        // Names in a comment, apart by the delimiter; a decimal comma with
+        // ;; a comment among the numbers passed by, not a line left out.
+        d = read(write("named.csv", "# f;gain\n1;2,5\n# paused\n2;3,5\n"));
+        QCOMPARE(names(d), (QStringList{"f", "gain"}));
+        QCOMPARE(find(d, "gain")->re, (QVector<double>{2.5, 3.5}));
+        QVERIFY2(d.notes.isEmpty(), qPrintable(d.notes.join(" | ")));
+        // Many rows: each value where it was.
+        const int rows = 200000;
+        QByteArray big = "a,b,c,d,e\n";
+        big.reserve(rows * 40);
+        for (int i = 0; i < rows; ++i)
+            big += QByteArray::number(i) + ',' + QByteArray::number(i * 0.5) + ',' + QByteArray::number(-i) + ",1e-3,"
+                   + QByteArray::number(i % 10) + '\n';
+        QElapsedTimer clock;
+        clock.start();
+        d = read(write("big.csv", big));
+        qInfo() << rows << "rows in" << clock.elapsed() << "ms";
+        QCOMPARE(names(d), (QStringList{"a", "b", "c", "d", "e"}));
+        QCOMPARE(find(d, "a")->re.size(), rows);
+        QCOMPARE(find(d, "b")->re.at(rows - 1), (rows - 1) * 0.5);
+        QCOMPARE(find(d, "c")->re.at(12345), -12345.0);
+        QCOMPARE(find(d, "e")->re.at(rows - 1), 9.0);
+    }
+
     // With ; between the columns, a decimal comma; TSV; a column of text
     // left out.
     void semicolonsTabsAndText()

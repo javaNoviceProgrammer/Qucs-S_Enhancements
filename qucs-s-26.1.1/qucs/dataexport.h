@@ -19,6 +19,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 /*!
  * The variables chosen of a dataset are written as a table - or tables:
  * one for each set of independent variables they are over (a transient's
@@ -98,15 +100,22 @@ struct Written {
     int arrays = 0;    ///< variables written (NumPy's arrays, a dataset's variables)
     QStringList notes; ///< what was left out, and why
 };
+/// How far a write is: \a done of \a total steps (a table's rows, an
+/// array's values), said every few thousand; false stops it.
+using Progress = std::function<bool(qint64 done, qint64 total)>;
+
 /// \a chosen of \a data as a file of \a options, its bytes in \a bytes;
 /// false and why in \a error: nothing chosen that the dataset has, tables
 /// of several sweeps for a format of one, more rows or columns than Excel
-/// takes.
+/// takes, \a progress said stop. A table is written row by row, never as
+/// a spreadsheet's cells: memory for the file, not hundreds of bytes for
+/// each value.
 bool encode(const dataset::Dataset& data, const QStringList& chosen, const Options& options, QByteArray* bytes,
-            Written* written = nullptr, QString* error = nullptr);
-/// encode() to \a path (written whole or not at all).
+            Written* written = nullptr, QString* error = nullptr, const Progress& progress = {});
+/// encode() to \a path, as it goes (written whole or not at all: a file
+/// there stays as it was when it fails or is stopped).
 bool write(const QString& path, const dataset::Dataset& data, const QStringList& chosen, const Options& options,
-           Written* written = nullptr, QString* error = nullptr);
+           Written* written = nullptr, QString* error = nullptr, const Progress& progress = {});
 
 } // namespace qucs_s::dataexport
 

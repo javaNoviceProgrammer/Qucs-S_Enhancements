@@ -25,12 +25,16 @@
 
 #include <QComboBox>
 #include <QLabel>
+#include <QLocale>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTabWidget>
+#include <QTimer>
 
 #include <cmath>
 #include <cstring>
+#include <tuple>
 
 namespace de = qucs_s::dataexport;
 namespace ds = qucs_s::dataset;
@@ -72,6 +76,14 @@ bool readNpy(const QByteArray& npy, QString* descr, QString* shape, QVector<doub
         values->append(v);
     }
     return header.endsWith('\n');
+}
+
+// A number as the exporter writes it (as short as it reads back).
+QString shortest(double v)
+{
+    if (std::isnan(v)) return QStringLiteral("NaN");
+    if (std::isinf(v)) return v > 0 ? QStringLiteral("inf") : QStringLiteral("-inf");
+    return QString::number(v, 'g', QLocale::FloatingPointShortest);
 }
 
 } // namespace
@@ -296,6 +308,131 @@ private slots:
         QVERIFY(found);
     }
 
+    // Written row by row (bug hunt 2026-09-30, B1): a table went through a
+    // spreadsheet's cells, hundreds of bytes for each value, 1.6 GB for a
+    // workbook of 500,000 rows. The same files as before - a sheet's own
+    // writers make them here from cells, as the exporter did - and how far
+    // it is said; stopped, nothing is written.
+    void aLargeTableIsWrittenAsItGoes()
+    {
+        const int n = 20000;
+        QByteArray text = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time " + QByteArray::number(n) + ">\n";
+        for (int i = 0; i < n; ++i) text += "  " + QByteArray::number(i * 1e-6) + '\n';
+        text += "</indep>\n<dep v(a,b) time>\n";   // (a name CSV quotes)
+        for (int i = 0; i < n; ++i) text += i == 5 ? QByteArray("  x\n") : "  " + QByteArray::number(std::sin(i * 0.01), 'g', 17) + '\n';
+        text += "</dep>\n<dep z time>\n";
+        for (int i = 0; i < n; ++i) text += "  " + QByteArray::number(i % 7) + (i % 3 ? "+j" : "-j") + QByteArray::number(i) + '\n';
+        text += "</dep>\n";
+        ds::Dataset big;
+        QVERIFY(big.read(write("big.dat", text)));
+        const ds::Variable *time = big.find("time"), *v = big.find("v(a,b)"), *z = big.find("z");
+        QVERIFY(time != nullptr && v != nullptr && z != nullptr && z->isComplex());
+        QVERIFY(std::isnan(v->re.at(5)));
+
+        // The table as cells, as the exporter made it.
+        const auto cells = [&](bool emptyForNaN) {
+            qucs_s::sheet::Sheet sheet;
+            sheet.name = QStringLiteral("time");
+            sheet.rows.resize(n + 1);
+            const QStringList names{"time", "v(a,b)", "real(z)", "imag(z)"};
+            sheet.rows[0].cells.resize(4);
+            for (int c = 0; c < 4; ++c) {
+                qucs_s::sheet::Cell& cell = sheet.rows[0].cells[c];
+                cell.kind = qucs_s::sheet::Cell::Kind::Text;
+                cell.text = cell.value = names.at(c);
+            }
+            for (int r = 0; r < n; ++r) {
+                sheet.rows[r + 1].cells.resize(4);
+                const double values[4] = {time->re.at(r), v->re.at(r), z->re.at(r), z->im.at(r)};
+                for (int c = 0; c < 4; ++c) {
+                    if (emptyForNaN && !std::isfinite(values[c])) continue;
+                    qucs_s::sheet::Cell& cell = sheet.rows[r + 1].cells[c];
+                    cell.kind = qucs_s::sheet::Cell::Kind::Number;
+                    cell.text = cell.value = shortest(values[c]);
+                }
+            }
+            return sheet;
+        };
+        QByteArray bytes;
+        QString error;
+        qucs_s::sheet::Workbook csv;
+        QVERIFY2(de::encode(big, {"v(a,b)", "z"}, {de::Format::Csv}, &bytes, nullptr, &error), qPrintable(error));
+        QCOMPARE(bytes, qucs_s::sheet::writeCsv(cells(false), csv));
+        csv.delimiter = QLatin1Char('\t');
+        QVERIFY(de::encode(big, {"v(a,b)", "z"}, {de::Format::Tsv}, &bytes, nullptr, &error));
+        QCOMPARE(bytes, qucs_s::sheet::writeCsv(cells(false), csv));
+        // A workbook: its parts as a fresh workbook of those cells has them.
+        qucs_s::sheet::Workbook book;
+        book.sheets << cells(true);
+        QVERIFY(de::encode(big, {"v(a,b)", "z"}, {de::Format::Xlsx}, &bytes, nullptr, &error));
+        const QList<qucs_s::zip::Entry> got = qucs_s::zip::read(bytes, &error), wanted = qucs_s::zip::read(qucs_s::sheet::writeXlsx(book));
+        QCOMPARE(got.size(), wanted.size());
+        for (int i = 0; i < got.size(); ++i) {
+            QCOMPARE(got.at(i).name, wanted.at(i).name);
+            QVERIFY2(got.at(i).data == wanted.at(i).data, qPrintable(got.at(i).name));
+        }
+        // A row of no value at all left out, and the sheet's extent ends
+        // at the last row with one.
+        ds::Dataset gaps;
+        QVERIFY(gaps.read(write("gaps.dat", "<Qucs Dataset " PACKAGE_VERSION ">\n<indep t 4>\n  0\n  1\n  x\n  x\n</indep>\n"
+                                            "<dep w t>\n  5\n  x\n  x\n  x\n</dep>\n")));
+        QVERIFY(de::encode(gaps, {"w"}, {de::Format::Xlsx}, &bytes, nullptr, &error));
+        qucs_s::sheet::Sheet few;
+        few.name = QStringLiteral("t");
+        few.rows.resize(5);
+        for (int r = 0; r < 5; ++r) few.rows[r].cells.resize(2);
+        few.rows[0].cells[0].kind = few.rows[0].cells[1].kind = qucs_s::sheet::Cell::Kind::Text;
+        few.rows[0].cells[0].text = few.rows[0].cells[0].value = QStringLiteral("t");
+        few.rows[0].cells[1].text = few.rows[0].cells[1].value = QStringLiteral("w");
+        for (const auto& [r, c, text] : {std::tuple{1, 0, "0"}, std::tuple{1, 1, "5"}, std::tuple{2, 0, "1"}}) {
+            few.rows[r].cells[c].kind = qucs_s::sheet::Cell::Kind::Number;
+            few.rows[r].cells[c].text = few.rows[r].cells[c].value = QString::fromLatin1(text);
+        }
+        qucs_s::sheet::Workbook fewBook;
+        fewBook.sheets << few;
+        const QList<qucs_s::zip::Entry> gotFew = qucs_s::zip::read(bytes, &error), wantedFew = qucs_s::zip::read(qucs_s::sheet::writeXlsx(fewBook));
+        QCOMPARE(gotFew.size(), wantedFew.size());
+        for (int i = 0; i < gotFew.size(); ++i) QVERIFY2(gotFew.at(i).data == wantedFew.at(i).data, qPrintable(gotFew.at(i).name));
+        // Text: the columns as wide as their widest number.
+        QVERIFY(de::encode(big, {"v(a,b)", "z"}, {de::Format::Text}, &bytes, nullptr, &error));
+        const QList<QByteArray> lines = bytes.split('\n');
+        QCOMPARE(lines.size(), n + 3);   // (two of the head, the last empty)
+        qsizetype widths[4] = {4, 6, 7, 7};
+        for (int r = 0; r < n; ++r) {
+            const double values[4] = {time->re.at(r), v->re.at(r), z->re.at(r), z->im.at(r)};
+            for (int c = 0; c < 4; ++c) widths[c] = std::max(widths[c], shortest(values[c]).size());
+        }
+        for (const int r : {0, 5, n - 1}) {
+            const double values[4] = {time->re.at(r), v->re.at(r), z->re.at(r), z->im.at(r)};
+            QString line = QStringLiteral(" ");
+            for (int c = 0; c < 4; ++c) line += QStringLiteral("  ") + shortest(values[c]).rightJustified(widths[c]);
+            QCOMPARE(QString::fromLatin1(lines.at(r + 2)), line);
+        }
+
+        // How far it is: every few thousand rows, to the end.
+        QList<QPair<qint64, qint64>> said;
+        const de::Progress tell = [&said](qint64 done, qint64 total) {
+            said.append({done, total});
+            return true;
+        };
+        QVERIFY(de::write(dir.filePath("big.csv"), big, {"v(a,b)"}, {de::Format::Csv}, nullptr, &error, tell));
+        QVERIFY(said.size() >= 4);
+        QCOMPARE(said.last().second, qint64(n));
+        for (int i = 1; i < said.size(); ++i) QVERIFY(said.at(i).first > said.at(i - 1).first);
+        // Stopped: nothing written, the file there as it was - each format.
+        const QByteArray before = "kept as it was\n";
+        for (de::Format f : de::formats()) {
+            const QString kept = write("kept." + de::suffixOf(f), before);
+            int asked = 0;
+            const de::Progress stop = [&asked](qint64, qint64) { return ++asked < 2; };
+            QVERIFY(!de::write(kept, big, {"v(a,b)", "z"}, {f}, nullptr, &error, stop));
+            QVERIFY2(error.contains("Cancelled"), qPrintable(de::formatName(f) + ": " + error));
+            QFile k(kept);
+            QVERIFY(k.open(QIODevice::ReadOnly));
+            QCOMPARE(k.readAll(), before);
+        }
+    }
+
     // A Qucs-S dataset: the variables as they are, with the independent
     // ones they are over, and no origin (it was not imported).
     void aDataset()
@@ -372,8 +509,24 @@ private slots:
         QFile f(csv);
         QVERIFY(f.open(QIODevice::ReadOnly));
         QCOMPARE(f.readAll(), QByteArray("time,tran.v(out)\n0,0\n0.001,0.5\n0.002,1\n"));
+        // The file's name says its format (bug hunt 2026-09-30, B2):
+        // out.xlsx a workbook with CSV chosen, said; a name of no format's
+        // gets the chosen one's suffix.
+        const QString named = dir.filePath("out/named.xlsx");
+        QVERIFY2(panel.exportTo(named, &error), qPrintable(error));
+        QVERIFY2(panel.status()->text().contains("(Excel workbook, as its name says.)"), qPrintable(panel.status()->text()));
+        QCOMPARE(panel.options().format, de::Format::Xlsx);
+        {
+            QFile x(named);
+            QVERIFY(x.open(QIODevice::ReadOnly));
+            QVERIFY(x.readAll().startsWith("PK"));
+        }
+        panel.formatBox()->setCurrentIndex(panel.formatBox()->findData(int(de::Format::Csv)));
+        QVERIFY2(panel.exportTo(dir.filePath("out/plain.v2"), &error), qPrintable(error));
+        QVERIFY(QFileInfo::exists(dir.filePath("out/plain.v2.csv")) && !QFileInfo::exists(dir.filePath("out/plain.v2")));
         QVERIFY(!panel.exportTo(folder + "/amp.dat.ngspice", &error));
         QVERIFY2(error.contains("is the dataset itself"), qPrintable(error));
+        QVERIFY(!QFileInfo::exists(folder + "/amp.dat.ngspice.csv"));
         // A dataset written beside it: listed, to plot and export in turn.
         panel.formatBox()->setCurrentIndex(panel.formatBox()->findData(int(de::Format::Dataset)));
         QVERIFY(panel.exportTo(folder + "/amp_export.dat", &error));
@@ -390,10 +543,71 @@ private slots:
         // Chosen here: the Data tab's is not followed any more.
         panel.follow(folder + "/amp.dat.ngspice");
         QCOMPARE(panel.dataset(), folder + "/bench.dat");
+        // Not onto the file an imported dataset came from (B5): the file
+        // proposed for one is another, and that one is refused.
+        panel.formatBox()->setCurrentIndex(panel.formatBox()->findData(int(de::Format::Csv)));
+        QCOMPARE(panel.proposedFile(), folder + "/bench_export.csv");
+        QVERIFY(!panel.exportTo(dir.filePath("bench.csv"), &error));
+        QVERIFY2(error.contains("is the file the dataset bench was imported from"), qPrintable(error));
+        QVERIFY(!panel.exportTo(dir.filePath("bench"), &error));   // (bench.csv, its suffix added)
+        {
+            QFile source(dir.filePath("bench.csv"));
+            QVERIFY(source.open(QIODevice::ReadOnly));
+            QCOMPARE(source.readAll(), QByteArray("time,vout\n0,1\n1,2\n"));
+        }
+        QVERIFY(panel.chooseDataset(folder + "/amp.dat.ngspice"));
+        QCOMPARE(panel.proposedFile(), folder + "/amp.csv");
 
         // A schematic not saved: nothing to export.
         DataExportPanel none{QString()};
         QVERIFY(!none.datasetBox()->isEnabled() && !none.exportButton()->isEnabled());
+    }
+
+    // An export that takes a while shows how far it is; Stop there stops
+    // it, and the file there stays as it was (bug hunt 2026-09-30, B1: it
+    // ran on, with nothing to see or stop).
+    void aLongExportCanBeStopped()
+    {
+        const QString folder = QFileInfo(dir.filePath("stop")).absoluteFilePath();
+        write("stop/amp.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n");
+        const int n = 60000;
+        QByteArray text = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time " + QByteArray::number(n) + ">\n";
+        for (int i = 0; i < n; ++i) text += QByteArray::number(i) + '\n';
+        text += "</indep>\n<dep v time>\n";
+        for (int i = 0; i < n; ++i) text += QByteArray::number(i * 0.5) + '\n';
+        text += "</dep>\n";
+        write("stop/amp.dat.ngspice", text);
+        DataExportPanel panel(folder);
+        panel.show();
+        QVERIFY(panel.chooseDataset(folder + "/amp.dat.ngspice"));
+        panel.choose({"v"});
+        panel.formatBox()->setCurrentIndex(panel.formatBox()->findData(int(de::Format::Text)));
+        panel.setProgressAfter(0);
+        bool shown = false;
+        QTimer stop;
+        stop.setInterval(0);
+        connect(&stop, &QTimer::timeout, &panel, [&] {
+            if (auto* p = panel.findChild<QProgressDialog*>(); p != nullptr && p->isVisible()) {
+                shown = true;
+                p->cancel();
+            }
+        });
+        stop.start();
+        const QString out = write("stop/out.txt", "before\n");
+        QString error;
+        QVERIFY(!panel.exportTo(out, &error));
+        stop.stop();
+        QVERIFY(shown);
+        QVERIFY2(error.contains("Cancelled"), qPrintable(error));
+        QCOMPARE(panel.status()->text(), error);
+        QFile f(out);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("before\n"));
+        QVERIFY(panel.findChild<QProgressDialog*>() == nullptr);   // (gone with it)
+        // Not stopped: written, the window gone.
+        stop.disconnect();
+        QVERIFY2(panel.exportTo(out, &error), qPrintable(error));
+        QVERIFY(panel.findChild<QProgressDialog*>() == nullptr);
     }
 
     // In the diagram's dialog: after Import; the Data tab's dataset shown,
@@ -431,6 +645,16 @@ private slots:
             QString error;
             dialog->findChild<DataImportPanel*>()->importFiles({write("measured.csv", "t,v\n0,1\n1,2\n")});
             QVERIFY(panel->datasetBox()->findText("measured.dat  (imported)") >= 0);
+            // A dataset the Export tab writes beside it: in the Data tab too
+            // (bug hunt 2026-09-30, B3).
+            QVERIFY(datasets->findData("copied") < 0);
+            const QString shown = datasets->currentData().toString();
+            QVERIFY(panel->chooseDataset(folder + "/other.dat"));
+            panel->formatBox()->setCurrentIndex(panel->formatBox()->findData(int(de::Format::Dataset)));
+            panel->choose({"y"});
+            QVERIFY2(panel->exportTo(folder + "/copied.dat", &error), qPrintable(error));
+            QVERIFY(datasets->findData("copied") >= 0);
+            QCOMPARE(datasets->currentData().toString(), shown);   // (the one chosen there stays)
             dialog->close();
             QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         }

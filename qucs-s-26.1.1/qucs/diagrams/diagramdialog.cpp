@@ -1039,6 +1039,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   // until one is chosen there.
   a_export = new DataExportPanel(importFolder, t);
   a_export->setTraces([this] { return traceFiles(); });
+  connect(a_export, &DataExportPanel::datasetsChanged, this, &DiagramDialog::slotDatasetsChanged);
   t->addTab(a_export, tr("Export"));
 
   connect(t, &QTabWidget::currentChanged, this, &DiagramDialog::slotChangeTab);
