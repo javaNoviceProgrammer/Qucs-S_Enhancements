@@ -2295,8 +2295,11 @@ QJsonObject QucsControl::newProject(const QJsonObject& args)
     if (args.value(QLatin1String("open")).toBool(true)) {
         QStringList unsaved;
         if (anyUnsaved(a_app, &unsaved))
-            result.insert(QStringLiteral("opened"), tr("not opened: %1 have unsaved changes (opening a project closes the documents) - "
-                                                       "save or close them, then open_project").arg(unsaved.join(QStringLiteral(", "))));
+            result.insert(QStringLiteral("opened"), (unsaved.size() == 1 ? tr("not opened: %1 has unsaved changes (opening a project closes the documents) - "
+                                                                              "save or close it, then open_project")
+                                                                           : tr("not opened: %1 have unsaved changes (opening a project closes the documents) - "
+                                                                              "save or close them, then open_project"))
+                                                        .arg(unsaved.join(QStringLiteral(", "))));
         else {
             a_app->openProject(path);
             result.insert(QStringLiteral("opened"), true);
@@ -2327,7 +2330,8 @@ QJsonObject QucsControl::openProject(const QJsonObject& args)
                                .arg(QDir::toNativeSeparators(path)));
     QStringList unsaved;
     if (anyUnsaved(a_app, &unsaved))
-        return errorResult(tr("Opening a project closes the documents, and %1 have unsaved changes: save or close them first.")
+        return errorResult((unsaved.size() == 1 ? tr("Opening a project closes the documents, and %1 has unsaved changes: save or close it first.")
+                                                : tr("Opening a project closes the documents, and %1 have unsaved changes: save or close them first."))
                                .arg(unsaved.join(QStringLiteral(", "))));
     a_app->openProject(path);
     if (QDir::cleanPath(QucsSettings.QucsWorkDir.absolutePath()) != QDir::cleanPath(path))

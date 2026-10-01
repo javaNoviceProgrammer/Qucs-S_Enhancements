@@ -347,7 +347,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   did, use any menu action and fill in and answer the dialog it opens (a
   file dialog too: one Claude opens is Qt's, which it fills in with a
   path, where the system's panel would wait for you; those you open stay
-  the system's), and run a simulation and read its outcome. **It reads the results as
+  the system's), and run a simulation and read its outcome. The rest of
+  the window is read and used the same way (`get_ui`, `set_ui`): a dock
+  or one of its panels - Content, Projects, Components, Problems, the
+  Tuner, the simulation console's log -, a toolbar, the status bar, the
+  documents' tabs - their fields, buttons, sliders and lists, and the
+  views of files and parts row by row (selected, opened with a double
+  click, a tree's folders opened). `context_menu` opens the right-click
+  menu you would get on a part, a diagram, a file, a project or a tab,
+  lists it and chooses from it. The Claude Code panel - its prompts,
+  permissions and settings - stays yours, and Claude reads the consoles
+  but types into them only with the `console` tool. **It reads the results as
   numbers, not only as pictures**: `get_dataset` gives a dataset's
   variables and, for those asked for, their statistics (min, max and
   where, mean, RMS), samples over a range, values at given times or

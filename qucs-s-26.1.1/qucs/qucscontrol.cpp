@@ -43,6 +43,14 @@
 #include "wirelabel.h"
 #include "workspace.h"
 
+#include <QAbstractItemView>
+#include <QAbstractSlider>
+#include <QHeaderView>
+#include <QListView>
+#include <QMouseEvent>
+#include <QScrollBar>
+#include <QTableView>
+#include <QTreeView>
 #include <QAbstractSpinBox>
 #include <QAction>
 #include <QApplication>
@@ -289,6 +297,19 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, or [row, column, true or false] for a tree's check box}]"},
    "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id"}}}},
+{"name": "get_ui",
+ "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), or the documents' tabs (tabs). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
+ "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "dock:<title> or a panel's name (dock:Content), toolbar:<title>, statusbar or tabs; none: the list"}}}},
+{"name": "set_ui",
+ "description": "Uses a part of the window as set_dialog answers a dialog - its dock is shown first. 'set' changes controls by their id or label from get_ui: a field takes text (a filter's: the panel filters), a list an item, a check box true or false, a slider a number, tabs a tab's title; a view's row (its text, its number in get_ui's rows, or a tree's path \"Schematics > amp.sch\") is selected, or with 'action' activated (a double click: a file opens), expanded or collapsed. 'press' presses a button. Area tabs: 'value' a tab's title brings that document to the front. Refused: the Claude Code panel, a secret field, and the consoles (Terminal, Python Shell, Octave), whose typing runs commands - the console tool types there.",
+ "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "As get_ui's"},
+   "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}, "action": {"type": "string", "enum": ["select", "activate", "expand", "collapse"]}}, "required": ["control", "value"]}, "description": "[{\"control\": id or label, \"value\": ..., \"action\": for a view's row: select (the default), activate, expand or collapse}]"},
+   "press": {"type": "string", "description": "A button pressed after, by its label or id"}}, "required": ["area"]}},
+{"name": "context_menu",
+ "description": "Opens the right-click menu the user would get on something, lists its entries (submenus as 'A > B', with whether each can be chosen and is checked), and with 'choose' chooses one - as the keyboard would. A dialog it opens goes on through get_dialog and set_dialog. 'on': {\"part\": \"R1\"}, {\"diagram\": 2} or {\"canvas\": [x, y]} on the schematic ('path'; the one in front), {\"project_item\": \"amp.sch\"} in the Content panel, {\"project\": \"amp_prj\"} in the Projects panel, {\"tab\": \"amp.sch\"} on a document's tab, or {\"file\": path} in the File Browser.",
+ "inputSchema": {"type": "object", "properties": {"on": {"type": "object", "properties": {"part": {"type": "string"}, "diagram": {"type": ["integer", "string"]}, "canvas": {"type": "array", "items": {"type": "number"}}, "project_item": {"type": "string"}, "project": {"type": "string"}, "tab": {"type": "string"}, "file": {"type": "string"}}, "description": "What is right-clicked: one of part, diagram, canvas, project_item, project, tab, file"},
+   "choose": {"type": "string", "description": "The entry chosen, by its path in the menu (\"Edit Properties\", \"Toggle hierarchy search view > Flat\") or its name alone; none: the menu is only read"},
+   "path": {"type": "string", "description": "The schematic, for part, diagram and canvas: its file or tab's title; the one in front when not given"}}, "required": ["on"]}},
 {"name": "simulate",
  "description": "Simulates a schematic (the one in front unless 'path' names another; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into. A run going - the user's too - is stopped by trigger_action \"Simulation > Stop Simulation\".",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); it is stopped after"},
@@ -594,6 +615,8 @@ const struct {
     {"redo", QT_TRANSLATE_NOOP("QucsControl", "redo in Qucs-S")},
     {"trigger_action", QT_TRANSLATE_NOOP("QucsControl", "use a menu action of Qucs-S")},
     {"set_dialog", QT_TRANSLATE_NOOP("QucsControl", "answer a dialog of Qucs-S")},
+    {"set_ui", QT_TRANSLATE_NOOP("QucsControl", "use a panel, toolbar or tab of Qucs-S")},
+    {"context_menu", QT_TRANSLATE_NOOP("QucsControl", "use a right-click menu of Qucs-S")},
     {"simulate", QT_TRANSLATE_NOOP("QucsControl", "run a simulation in Qucs-S")},
     {"add_diagram", QT_TRANSLATE_NOOP("QucsControl", "add a diagram in Qucs-S")},
     {"edit_diagram", QT_TRANSLATE_NOOP("QucsControl", "change a diagram in Qucs-S")},
@@ -636,7 +659,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
                                  "read_pdf", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
-                                 "get_text", "goto_line",
+                                 "get_text", "goto_line", "get_ui",
                                  "ngspice_commands"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
@@ -686,6 +709,9 @@ const struct {
     {"trigger_action", QT_TRANSLATE_NOOP("QucsControl", "Runs a menu action (\"Edit > Rotate\") as a click would; read any dialog it opens with get_dialog.")},
     {"get_dialog", QT_TRANSLATE_NOOP("QucsControl", "Reads the open dialog: its texts and controls, each with an id for set_dialog.")},
     {"set_dialog", QT_TRANSLATE_NOOP("QucsControl", "Fills in the open dialog and presses a button.")},
+    {"get_ui", QT_TRANSLATE_NOOP("QucsControl", "Reads a dock, panel, toolbar, the status bar or the tabs, as get_dialog a dialog.")},
+    {"set_ui", QT_TRANSLATE_NOOP("QucsControl", "Uses a dock, panel, toolbar or the tabs, as set_dialog a dialog.")},
+    {"context_menu", QT_TRANSLATE_NOOP("QucsControl", "Opens a right-click menu, lists it, and chooses an entry.")},
     {"simulate", QT_TRANSLATE_NOOP("QucsControl", "Runs a simulation and waits for it: whether it succeeded, errors with their netlist line and part, and the dataset's variables. 'operating_point' runs the DC bias only.")},
     {"get_netlist", QT_TRANSLATE_NOOP("QucsControl", "Returns the netlist a simulation would use now ('last' for the one it ran); 'map' ties each line to its part and each node to its pins.")},
     {"export_netlist", QT_TRANSLATE_NOOP("QucsControl", "Writes a schematic's SPICE or CDL netlist to a file.")},
@@ -762,6 +788,9 @@ const struct {
     {"trigger_action", "menu action run command"},
     {"get_dialog", "dialog read open window fields"},
     {"set_dialog", "dialog answer fill fields press button"},
+    {"get_ui", "dock panel toolbar status bar tabs widget read log tuner problems operating point content projects components filter"},
+    {"set_ui", "dock panel toolbar status bar tabs widget click button filter row select open expand slider tuner"},
+    {"context_menu", "right-click context menu popup entries choose canvas part diagram tab file project"},
     {"add_diagram", "diagram plot graph rectangular polar smith table notation number format scientific engineering"},
     {"edit_diagram", "diagram axes limits log scale grid legend title theme colour color background dark notation number format scientific engineering decimals"},
     {"add_trace", "trace curve plot variable diagram"},
@@ -3096,12 +3125,17 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
         flush();
         subject = parts.join(QStringLiteral(", "));
     }
-    else if (tool == QLatin1String("set_dialog")) {
+    else if (tool == QLatin1String("set_dialog") || tool == QLatin1String("set_ui")) {
         QStringList parts;
+        if (tool == QLatin1String("set_ui")) parts << s("area");
         for (const QJsonValue& v : a.value(QLatin1String("set")).toArray())
             parts << v.toObject().value(QLatin1String("control")).toString() + QLatin1Char('=') + propertyValue(v.toObject().value(QLatin1String("value")));
         if (!s("press").isEmpty()) parts << tr("press %1").arg(s("press"));
         subject = parts.join(QStringLiteral(", "));
+    } else if (tool == QLatin1String("context_menu")) {
+        const QJsonObject on = a.value(QLatin1String("on")).toObject();
+        const QString where = on.isEmpty() ? QString() : on.constBegin().key() + QLatin1Char(' ') + propertyValue(on.constBegin().value());
+        subject = s("choose").isEmpty() ? tr("the menu on %1").arg(where) : tr("%1 on %2").arg(s("choose"), where);
     } else if (tool == QLatin1String("zoom")) subject = s("to");
     else if (tool == QLatin1String("screenshot")) subject = s("area").isEmpty() ? s("path") : s("area");
     else if (tool == QLatin1String("get_schematic")) subject = s("path");
@@ -3212,7 +3246,9 @@ QString QucsControl::instructions() const
         "type's properties. rename_net renames a net together with the traces that show it. batch runs several tools in "
         "one call: use it for several changes at once (placing and wiring parts, setting properties, adding a diagram and "
         "its traces) instead of one call each.\n\n"
-        "Menus: list_actions and trigger_action; read a dialog it opens with get_dialog and answer it with set_dialog. "
+        "Menus: list_actions and trigger_action; read a dialog it opens with get_dialog and answer it with set_dialog. get_ui and "
+        "set_ui read and use the rest of the window as those do a dialog - a dock, a panel (Content, Projects, Problems, "
+        "Tuner), a toolbar, the status bar, the tabs - and context_menu a right-click menu. "
         "simulate runs the simulator and reports errors; get_netlist returns the netlist. get_dataset reads results as "
         "numbers and measures them (rise time, overshoot, value at a time, ...): use it rather than a screenshot to judge "
         "a simulation. Diagrams: add_diagram (on the schematic, or with document: \"data_display\" on its data display, "
@@ -3798,7 +3834,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     static const QSet<QString> whileADialogWaits{
         QStringLiteral("get_state"), QStringLiteral("get_schematic"), QStringLiteral("screenshot"),
         QStringLiteral("list_component_types"), QStringLiteral("list_actions"), QStringLiteral("get_dialog"),
-        QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"),
+        QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"), QStringLiteral("get_ui"),
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
         QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
@@ -3891,6 +3927,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("list_component_types")) return listComponentTypes(args);
     if (tool == QLatin1String("list_actions")) return listActions(args);
     if (tool == QLatin1String("get_dialog")) return getDialog();
+    if (tool == QLatin1String("get_ui")) return getUi(args);
     if (tool == QLatin1String("get_netlist")) {
         QJsonObject looking = args;
         looking.remove(QStringLiteral("save_as"));   // (export_netlist writes)
@@ -3943,6 +3980,8 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("batch")) runBatch(args, done);
     else if (tool == QLatin1String("trigger_action")) triggerAction(args, done);
     else if (tool == QLatin1String("set_dialog")) setDialog(args, done);
+    else if (tool == QLatin1String("set_ui")) setUi(args, done);
+    else if (tool == QLatin1String("context_menu")) contextMenu(args, done);
     else if (tool == QLatin1String("simulate")) simulate(args, done);
     else if (tool == QLatin1String("build_verilog_a")) buildVerilogA(args, done);
     else if (tool == QLatin1String("tune")) tune(args, done);
@@ -9675,31 +9714,6 @@ QJsonObject QucsControl::listComponentTypes(const QJsonObject& args)
 // ----------------------------------------------------------------------
 // Menus and dialogs
 
-namespace {
-
-// While Claude clicks - a menu action, a dialog's button -, the file
-// dialogs that click opens are Qt's own: get_dialog reads them and
-// set_dialog fills them in ("File name" or "Directory", then Open, Save
-// or Choose). The system's (macOS's panel) is drawn by the system, out
-// of reach, and waited for the user. Those the user opens stay the
-// system's. (A modal dialog's click returns when it is answered: the
-// setting holds until then.)
-class QtFileDialogs
-{
-public:
-    QtFileDialogs() : a_was(QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs))
-    {
-        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
-    }
-    ~QtFileDialogs() { QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, a_was); }
-    QtFileDialogs(const QtFileDialogs&) = delete;
-    QtFileDialogs& operator=(const QtFileDialogs&) = delete;
-
-private:
-    bool a_was;
-};
-
-} // namespace
 
 QList<QAction*> QucsControl::menuActions(QStringList* paths) const
 {
@@ -10106,21 +10120,31 @@ void reveal(QWidget* w, QWidget* dialog)
 
 } // namespace
 
-QList<QWidget*> QucsControl::dialogControls(QWidget* dialog) const
+QList<QWidget*> QucsControl::dialogControls(QWidget* dialog, bool ui) const
 {
     QList<QWidget*> controls;
-    for (QWidget* w : dialog->findChildren<QWidget*>()) {
-        if (!shown(w, dialog)) continue;
+    QList<QWidget*> all = dialog->findChildren<QWidget*>();
+    // A panel that is a control itself (the Problems list, a log).
+    if (ui) all.prepend(dialog);
+    for (QWidget* w : std::as_const(all)) {
+        if (w != dialog && !shown(w, dialog)) continue;
         // The line edit inside a combo box or a spin box is theirs.
         if (qobject_cast<QLineEdit*>(w) != nullptr
             && (qobject_cast<QComboBox*>(w->parentWidget()) != nullptr || qobject_cast<QAbstractSpinBox*>(w->parentWidget()) != nullptr))
             continue;
-        const bool control = qobject_cast<QLineEdit*>(w) != nullptr || qobject_cast<QPlainTextEdit*>(w) != nullptr
-                             || (qobject_cast<QTextEdit*>(w) != nullptr && !static_cast<QTextEdit*>(w)->isReadOnly())
-                             || qobject_cast<QComboBox*>(w) != nullptr || qobject_cast<QAbstractSpinBox*>(w) != nullptr
-                             || qobject_cast<QAbstractButton*>(w) != nullptr || qobject_cast<QTableWidget*>(w) != nullptr
-                             || qobject_cast<QListWidget*>(w) != nullptr || qobject_cast<QTabWidget*>(w) != nullptr
-                             || qobject_cast<QTreeWidget*>(w) != nullptr;
+        bool control = qobject_cast<QLineEdit*>(w) != nullptr || qobject_cast<QPlainTextEdit*>(w) != nullptr
+                       || (qobject_cast<QTextEdit*>(w) != nullptr && !static_cast<QTextEdit*>(w)->isReadOnly())
+                       || qobject_cast<QComboBox*>(w) != nullptr || qobject_cast<QAbstractSpinBox*>(w) != nullptr
+                       || qobject_cast<QAbstractButton*>(w) != nullptr || qobject_cast<QTableWidget*>(w) != nullptr
+                       || qobject_cast<QListWidget*>(w) != nullptr || qobject_cast<QTabWidget*>(w) != nullptr
+                       || qobject_cast<QTreeWidget*>(w) != nullptr;
+        // A part of the window: its views of files and parts, sliders, and
+        // logs too (not a scroll bar, a header, or a combo box's list).
+        if (ui && !control)
+            control = (qobject_cast<QAbstractItemView*>(w) != nullptr && qobject_cast<QHeaderView*>(w) == nullptr
+                       && qobject_cast<QComboBox*>(w->parentWidget() != nullptr ? w->parentWidget()->parentWidget() : nullptr) == nullptr)
+                      || (qobject_cast<QAbstractSlider*>(w) != nullptr && qobject_cast<QScrollBar*>(w) == nullptr)
+                      || qobject_cast<QTextEdit*>(w) != nullptr;
         if (!control) continue;
         if (auto* b = qobject_cast<QAbstractButton*>(w); b != nullptr && cleanText(b->text()).isEmpty() && b->toolTip().isEmpty())
             continue;   // (a tab bar's arrows, a combo box's button)
@@ -10197,7 +10221,33 @@ QString labelOf(QWidget* w, QWidget* dialog)
     if (auto* b = qobject_cast<QAbstractButton*>(w)) return cleanText(b->text()).isEmpty() ? b->toolTip() : cleanText(b->text());
     if (auto* e = qobject_cast<QLineEdit*>(w); e != nullptr && !e->placeholderText().isEmpty()) return e->placeholderText();
     if (!w->toolTip().isEmpty()) return w->toolTip();
+    if (!w->accessibleName().isEmpty()) return w->accessibleName();
     return w->objectName();
+}
+
+// A control of a part of the window by what it is, when nothing names it:
+// "log", "tree view".
+QString kindName(QWidget* w)
+{
+    if ((qobject_cast<QPlainTextEdit*>(w) != nullptr && static_cast<QPlainTextEdit*>(w)->isReadOnly())
+        || (qobject_cast<QTextEdit*>(w) != nullptr && static_cast<QTextEdit*>(w)->isReadOnly()))
+        return QStringLiteral("log");
+    if (qobject_cast<QTreeWidget*>(w) != nullptr) return QStringLiteral("tree");
+    if (qobject_cast<QTableWidget*>(w) != nullptr) return QStringLiteral("table");
+    if (qobject_cast<QListWidget*>(w) != nullptr || qobject_cast<QComboBox*>(w) != nullptr) return QStringLiteral("list");
+    if (qobject_cast<QTreeView*>(w) != nullptr) return QStringLiteral("tree view");
+    if (qobject_cast<QTableView*>(w) != nullptr) return QStringLiteral("table view");
+    if (qobject_cast<QAbstractItemView*>(w) != nullptr) return QStringLiteral("list view");
+    if (qobject_cast<QAbstractSlider*>(w) != nullptr) return QStringLiteral("slider");
+    return {};
+}
+
+// What a control is called where it is read and used: its label, else
+// (in a part of the window) what it is.
+QString shownLabel(QWidget* w, QWidget* root, bool ui)
+{
+    const QString label = labelOf(w, root);
+    return label.isEmpty() && ui ? kindName(w) : label;
 }
 
 } // namespace
@@ -10206,16 +10256,143 @@ QJsonObject QucsControl::getDialog()
 {
     QWidget* dialog = openDialog();
     if (dialog == nullptr) return textResult(tr("No dialog is open."));
+    QJsonObject o = describeControls(dialog, false);
+    o.insert(QStringLiteral("title"), dialog->windowTitle());
+    o.insert(QStringLiteral("modal"), dialog == QApplication::activeModalWidget());
+    return jsonResult(o);
+}
+
+namespace {
+
+// A view's rows as the user sees them, in order: a tree's children under
+// each expanded item, with their depth. At most \a most.
+void viewRows(const QAbstractItemView* view, const QModelIndex& parent, int depth, int most, QList<QModelIndex>* rows)
+{
+    const QAbstractItemModel* model = view->model();
+    if (model == nullptr) return;
+    const auto* tree = qobject_cast<const QTreeView*>(view);
+    for (int r = 0; r < model->rowCount(parent) && rows->size() < most; ++r) {
+        const QModelIndex index = model->index(r, 0, parent);
+        if (tree != nullptr && tree->isRowHidden(r, parent)) continue;
+        if (auto* list = qobject_cast<const QListView*>(view); list != nullptr && list->isRowHidden(r)) continue;
+        rows->append(index);
+        if (tree != nullptr && tree->isExpanded(index)) viewRows(view, index, depth + 1, most, rows);
+    }
+    Q_UNUSED(depth);
+}
+
+int depthOf(const QAbstractItemView* view, QModelIndex index)
+{
+    int depth = 0;
+    for (; index.parent().isValid() && index.parent() != view->rootIndex(); index = index.parent()) ++depth;
+    return depth;
+}
+
+// A view's row named by \a value: its number in viewRows()' order, a path
+// of names ("Schematics > amp.sch") from the top, or a name among the rows
+// shown (exactly, else the first that has it).
+QModelIndex viewRow(QAbstractItemView* view, const QJsonValue& value)
+{
+    QList<QModelIndex> rows;
+    viewRows(view, view->rootIndex(), 0, 5000, &rows);
+    if (value.isDouble()) {
+        const int n = value.toInt();
+        return n >= 0 && n < rows.size() ? rows.at(n) : QModelIndex();
+    }
+    const QString text = value.toString().trimmed();
+    if (text.contains(QLatin1String(" > "))) {
+        QModelIndex at = view->rootIndex();
+        for (const QString& part : text.split(QStringLiteral(" > "))) {
+            QModelIndex found;
+            for (int r = 0; r < view->model()->rowCount(at) && !found.isValid(); ++r) {
+                const QModelIndex child = view->model()->index(r, 0, at);
+                if (child.data().toString().trimmed().compare(part.trimmed(), Qt::CaseInsensitive) == 0) found = child;
+            }
+            if (!found.isValid()) return {};
+            at = found;
+        }
+        return at;
+    }
+    for (const QModelIndex& index : rows)
+        if (index.data().toString().trimmed().compare(text, Qt::CaseInsensitive) == 0) return index;
+    for (const QModelIndex& index : rows)
+        if (index.data().toString().contains(text, Qt::CaseInsensitive)) return index;
+    return {};
+}
+
+// A mouse click (and a double one) on \a w at \a at, as the user's.
+void clickOn(QWidget* w, const QPoint& at, Qt::MouseButton button, bool twice)
+{
+    const QPointF local(at), global(w->mapToGlobal(at));
+    const auto send = [&](QEvent::Type type, Qt::MouseButtons held) {
+        QMouseEvent e(type, local, global, button, held, Qt::NoModifier);
+        QApplication::sendEvent(w, &e);
+    };
+    send(QEvent::MouseButtonPress, button);
+    send(QEvent::MouseButtonRelease, Qt::NoButton);
+    if (twice) {
+        send(QEvent::MouseButtonDblClick, button);
+        send(QEvent::MouseButtonRelease, Qt::NoButton);
+    }
+}
+
+} // namespace
+
+bool QucsControl::canvasPoint(Schematic* sch, const QJsonObject& on, QPoint* point, QString* what, QString* error) const
+{
+    if (on.contains(QLatin1String("part"))) {
+        const QString name = on.value(QLatin1String("part")).toString().trimmed();
+        Component* c = componentOf(sch, name, error);
+        if (c == nullptr) {
+            if (error->isEmpty()) *error = tr("There is no component %1 in %2.").arg(name, titleOf(sch));
+            return false;
+        }
+        *point = QPoint(c->cx, c->cy);
+        *what = tr("part %1").arg(name);
+        return true;
+    }
+    if (on.contains(QLatin1String("diagram"))) {
+        Diagram* d = diagramOf(sch, on.value(QLatin1String("diagram")), error);
+        if (d == nullptr) return false;
+        *point = QPoint(d->cx + d->x2 / 2, d->cy - d->y2 / 2);
+        *what = tr("diagram %1").arg(on.value(QLatin1String("diagram")).toInt(1));
+        return true;
+    }
+    const QJsonArray xy = on.value(QLatin1String("canvas")).toArray();
+    if (xy.size() != 2 || !xy.at(0).isDouble() || !xy.at(1).isDouble()) {
+        *error = tr("'canvas' is [x, y], a point of the schematic (its coordinates, as get_schematic gives them).");
+        return false;
+    }
+    *point = QPoint(xy.at(0).toInt(), xy.at(1).toInt());
+    *what = tr("the canvas at %1, %2").arg(point->x()).arg(point->y());
+    return true;
+}
+
+QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
+{
     QJsonArray controls;
-    const QList<QWidget*> list = dialogControls(dialog);
+    const QList<QWidget*> list = dialogControls(dialog, ui);
     for (int i = 0; i < list.size(); ++i) {
         QWidget* w = list.at(i);
-        QJsonObject o{{QStringLiteral("id"), QStringLiteral("c%1").arg(i + 1)}, {QStringLiteral("label"), labelOf(w, dialog)}};
+        QJsonObject o{{QStringLiteral("id"), QStringLiteral("c%1").arg(i + 1)}, {QStringLiteral("label"), shownLabel(w, dialog, ui)}};
         if (const QString tab = tabOf(w, dialog); !tab.isEmpty()) o.insert(QStringLiteral("tab"), tab);
         if (!w->isEnabled()) o.insert(QStringLiteral("enabled"), false);
-        if (auto* e = qobject_cast<QLineEdit*>(w)) {
+        auto* edit = qobject_cast<QLineEdit*>(w);
+        if (edit != nullptr && edit->echoMode() != QLineEdit::Normal) {
+            // (What it holds is the user's: a password, a key.)
+            o.insert(QStringLiteral("kind"), QStringLiteral("secret field"));
+            o.insert(QStringLiteral("value"), QStringLiteral("(hidden)"));
+        } else if (edit != nullptr) {
             o.insert(QStringLiteral("kind"), QStringLiteral("field"));
-            o.insert(QStringLiteral("value"), e->text());
+            o.insert(QStringLiteral("value"), edit->text());
+        } else if (ui && ((qobject_cast<QPlainTextEdit*>(w) != nullptr && static_cast<QPlainTextEdit*>(w)->isReadOnly())
+                          || (qobject_cast<QTextEdit*>(w) != nullptr && static_cast<QTextEdit*>(w)->isReadOnly()))) {
+            // A log: its end, which is what is new.
+            const QString all = qobject_cast<QPlainTextEdit*>(w) != nullptr ? static_cast<QPlainTextEdit*>(w)->toPlainText()
+                                                                             : static_cast<QTextEdit*>(w)->toPlainText();
+            o.insert(QStringLiteral("kind"), QStringLiteral("log"));
+            o.insert(QStringLiteral("lines"), int(all.count(QLatin1Char('\n'))) + (all.isEmpty() ? 0 : 1));
+            o.insert(QStringLiteral("value"), all.size() > 4000 ? QStringLiteral("… ") + all.right(4000) : all);
         } else if (auto* p = qobject_cast<QPlainTextEdit*>(w)) {
             o.insert(QStringLiteral("kind"), QStringLiteral("text"));
             o.insert(QStringLiteral("value"), p->toPlainText().left(4000));
@@ -10295,6 +10472,44 @@ QJsonObject QucsControl::getDialog()
             QJsonArray items;
             for (int k = 0; k < lw->count() && k < 200; ++k) items.append(lw->item(k)->text());
             o.insert(QStringLiteral("items"), items);
+        } else if (auto* slider = qobject_cast<QAbstractSlider*>(w)) {
+            o.insert(QStringLiteral("kind"), QStringLiteral("slider"));
+            o.insert(QStringLiteral("value"), slider->value());
+            o.insert(QStringLiteral("minimum"), slider->minimum());
+            o.insert(QStringLiteral("maximum"), slider->maximum());
+        } else if (auto* view = qobject_cast<QAbstractItemView*>(w)) {
+            // A view of the files, the projects, the parts: its rows as
+            // shown, a tree's with their depth and whether open.
+            const bool isTree = qobject_cast<QTreeView*>(view) != nullptr;
+            o.insert(QStringLiteral("kind"), isTree ? QStringLiteral("tree view")
+                                                     : qobject_cast<QTableView*>(view) != nullptr ? QStringLiteral("table view")
+                                                                                                    : QStringLiteral("list view"));
+            QList<QModelIndex> shownRows;
+            viewRows(view, view->rootIndex(), 0, 200, &shownRows);
+            // The columns shown beside the name: none in a list, a tree's
+            // and a table's that are not hidden.
+            QList<int> columns;
+            const int columnCount = view->model() != nullptr ? std::min(view->model()->columnCount(view->rootIndex()), 8) : 0;
+            for (int k = 1; k < columnCount; ++k) {
+                if (auto* tv = qobject_cast<QTreeView*>(view); tv != nullptr && !tv->isColumnHidden(k)) columns << k;
+                if (auto* tb = qobject_cast<QTableView*>(view); tb != nullptr && !tb->isColumnHidden(k)) columns << k;
+            }
+            QJsonArray rows;
+            for (const QModelIndex& index : std::as_const(shownRows)) {
+                QJsonObject row{{QStringLiteral("text"), index.data().toString()}};
+                QJsonArray more;
+                for (int k : std::as_const(columns))
+                    if (const QString cell = index.sibling(index.row(), k).data().toString(); !cell.isEmpty()) more.append(cell);
+                if (!more.isEmpty()) row.insert(QStringLiteral("more"), more);
+                if (isTree) {
+                    if (const int depth = depthOf(view, index); depth > 0) row.insert(QStringLiteral("depth"), depth);
+                    if (view->model()->hasChildren(index)) row.insert(QStringLiteral("open"), static_cast<QTreeView*>(view)->isExpanded(index));
+                }
+                if (view->selectionModel() != nullptr && view->selectionModel()->isSelected(index)) row.insert(QStringLiteral("selected"), true);
+                rows.append(row);
+            }
+            o.insert(QStringLiteral("rows"), rows);
+            if (view->currentIndex().isValid()) o.insert(QStringLiteral("value"), view->currentIndex().data().toString());
         }
         controls.append(o);
     }
@@ -10304,12 +10519,10 @@ QJsonObject QucsControl::getDialog()
         if (!box->informativeText().isEmpty()) texts.append(box->informativeText());
     } else {
         for (QLabel* l : dialog->findChildren<QLabel*>())
-            if (l->isVisibleTo(dialog) && !l->text().trimmed().isEmpty() && l->buddy() == nullptr) texts.append(cleanText(l->text()));
+            if (l->isVisibleTo(dialog) && !l->text().trimmed().isEmpty() && l->buddy() == nullptr && texts.size() < 80)
+                texts.append(cleanText(l->text()));
     }
-    return jsonResult(QJsonObject{{QStringLiteral("title"), dialog->windowTitle()},
-                                  {QStringLiteral("modal"), dialog == QApplication::activeModalWidget()},
-                                  {QStringLiteral("texts"), texts},
-                                  {QStringLiteral("controls"), controls}});
+    return QJsonObject{{QStringLiteral("texts"), texts}, {QStringLiteral("controls"), controls}};
 }
 
 QJsonArray QucsControl::optimumOf(Schematic* sch, const QString& output, bool apply)
@@ -10462,7 +10675,12 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
         done(errorResult(tr("No dialog is open.")));
         return;
     }
-    const QList<QWidget*> list = dialogControls(dialog);
+    fillControls(dialog, args, done, false);
+}
+
+void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const Done& done, bool ui)
+{
+    const QList<QWidget*> list = dialogControls(dialog, ui);
     const auto find = [&](const QString& key) -> QWidget* {
         const QString k = key.trimmed();
         static const QRegularExpression id(QStringLiteral("^c(\\d+)$"));
@@ -10471,9 +10689,9 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
             return n >= 1 && n <= list.size() ? list.at(n - 1) : nullptr;
         }
         for (QWidget* w : list)
-            if (labelOf(w, dialog).compare(k, Qt::CaseInsensitive) == 0) return w;
+            if (shownLabel(w, dialog, ui).compare(k, Qt::CaseInsensitive) == 0) return w;
         for (QWidget* w : list)
-            if (labelOf(w, dialog).startsWith(k, Qt::CaseInsensitive)) return w;
+            if (shownLabel(w, dialog, ui).startsWith(k, Qt::CaseInsensitive)) return w;
         return nullptr;
     };
     QStringList problems, changed;
@@ -10490,9 +10708,72 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
         bool ok = true;
         QString why;   // (what it does take, when that is not plain)
         reveal(w, dialog);   // as the user would, on its tab
-        if (auto* e = qobject_cast<QLineEdit*>(w)) {
+        auto* view = ui ? qobject_cast<QAbstractItemView*>(w) : nullptr;
+        if (view != nullptr && (qobject_cast<QTableWidget*>(w) != nullptr || qobject_cast<QTreeWidget*>(w) != nullptr
+                                || qobject_cast<QListWidget*>(w) != nullptr) && !change.contains(QLatin1String("action")))
+            view = nullptr;   // (their own way, as in a dialog, unless an action is asked)
+        const QString action = ui ? change.value(QLatin1String("action")).toString(QStringLiteral("select")) : QString();
+        if (auto* secret = qobject_cast<QLineEdit*>(w); secret != nullptr && secret->echoMode() != QLineEdit::Normal) {
+            ok = false;
+            why = tr("it is a secret field (a password, a key): the user types it");
+        } else if (ui && ((qobject_cast<QPlainTextEdit*>(w) != nullptr && static_cast<QPlainTextEdit*>(w)->isReadOnly())
+                          || (qobject_cast<QTextEdit*>(w) != nullptr && static_cast<QTextEdit*>(w)->isReadOnly()))) {
+            ok = false;
+            why = tr("it is read-only");
+        } else if (view != nullptr) {
+            // A row: selected (a click), activated (a double click: it
+            // opens), or a tree's opened or closed.
+            const QModelIndex index = viewRow(view, value);
+            if (!index.isValid()) {
+                ok = false;
+                why = tr("no row %1 (get_ui lists the rows shown; a tree's hidden one by its path, \"Schematics > amp.sch\")").arg(text);
+            } else if (action == QLatin1String("expand") || action == QLatin1String("collapse")) {
+                auto* tree = qobject_cast<QTreeView*>(view);
+                if (tree == nullptr) {
+                    ok = false;
+                    why = tr("it is no tree");
+                } else {
+                    for (QModelIndex up = index.parent(); up.isValid(); up = up.parent()) tree->expand(up);
+                    tree->setExpanded(index, action == QLatin1String("expand"));
+                }
+            } else if (action == QLatin1String("select") || action == QLatin1String("activate")) {
+                if (auto* tree = qobject_cast<QTreeView*>(view))
+                    for (QModelIndex up = index.parent(); up.isValid(); up = up.parent()) tree->expand(up);
+                view->scrollTo(index);
+                const QRect at = view->visualRect(index);
+                if (at.isValid() && view->viewport()->rect().contains(at.center())) {
+                    const QtFileDialogs qt;
+                    clickOn(view->viewport(), at.center(), Qt::LeftButton, action == QLatin1String("activate"));
+                } else {
+                    // Not on screen (the window is hidden): as a click would.
+                    view->setCurrentIndex(index);
+                    if (action == QLatin1String("activate")) {
+                        const QtFileDialogs qt;
+                        emit view->doubleClicked(index);
+                        emit view->activated(index);
+                    } else {
+                        emit view->clicked(index);
+                    }
+                }
+            } else {
+                ok = false;
+                why = tr("'action' is select, activate, expand or collapse");
+            }
+        } else if (auto* slider = ui ? qobject_cast<QAbstractSlider*>(w) : nullptr) {
+            // As a drag would: pressed, moved, let go.
+            const int to = text.toInt(&ok);
+            if (ok && (to < slider->minimum() || to > slider->maximum())) {
+                ok = false;
+                why = tr("it goes from %1 to %2").arg(slider->minimum()).arg(slider->maximum());
+            } else if (ok) {
+                slider->setSliderDown(true);
+                slider->setValue(to);
+                slider->setSliderDown(false);
+            }
+        } else if (auto* e = qobject_cast<QLineEdit*>(w)) {
             e->setText(text);
             e->setModified(true);
+            if (ui) emit e->textEdited(text);   // (as typed: a panel's search goes by it)
         } else if (auto* p = qobject_cast<QPlainTextEdit*>(w)) {
             p->setPlainText(text);
         } else if (auto* t = qobject_cast<QTextEdit*>(w)) {
@@ -10568,9 +10849,9 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
             if (b->isCheckable() && b->isChecked() != want) b->click();
             else if (!b->isCheckable()) ok = false;
         }
-        if (ok) changed << labelOf(w, dialog);
-        else if (why.isEmpty()) problems << tr("%1 does not take %2").arg(labelOf(w, dialog), text);
-        else problems << tr("%1 does not take %2: %3").arg(labelOf(w, dialog), text, why);
+        if (ok) changed << shownLabel(w, dialog, ui);
+        else if (why.isEmpty()) problems << tr("%1 does not take %2").arg(shownLabel(w, dialog, ui), text);
+        else problems << tr("%1 does not take %2: %3").arg(shownLabel(w, dialog, ui), text, why);
     }
     const QString press = args.value(QLatin1String("press")).toString().trimmed();
     QAbstractButton* button = nullptr;
@@ -10592,15 +10873,16 @@ void QucsControl::setDialog(const QJsonObject& args, const Done& done)
     // Pressed from the event loop: it may close the dialog, or open another.
     QPointer<QAbstractButton> target(button);
     QPointer<QWidget> was(dialog);
-    const QString name = cleanText(button->text());
+    const QString name = cleanText(button->text()).isEmpty() ? button->toolTip() : cleanText(button->text());
     QTimer::singleShot(0, a_app, [target] {
         const QtFileDialogs qt;
         if (target && target->isEnabled()) target->click();
     });
-    QTimer::singleShot(500, this, [this, done, report, name, was] {
+    QTimer::singleShot(500, this, [this, done, report, name, was, ui] {
         QWidget* now = openDialog();
         QString after;
-        if (now == nullptr) after = tr("%1 pressed; no dialog is open now.").arg(name);
+        if (ui) after = now == nullptr ? tr("%1 pressed.").arg(name) : tr("%1 pressed; “%2” is open now (get_dialog reads it).").arg(name, now->windowTitle());
+        else if (now == nullptr) after = tr("%1 pressed; no dialog is open now.").arg(name);
         else if (now == was.data()) after = tr("%1 pressed; the dialog is still open.").arg(name);
         else after = tr("%1 pressed; “%2” is open now.").arg(name, now->windowTitle());
         done(textResult(report.isEmpty() ? after : report + QLatin1Char(' ') + after));

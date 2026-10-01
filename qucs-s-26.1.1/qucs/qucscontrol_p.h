@@ -16,6 +16,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QList>
+#include <QCoreApplication>
 #include <QString>
 
 #include <list>
@@ -161,6 +162,29 @@ QString renameComponentIn(const QString& text, const QString& from, const QStrin
 /// moved, turned, their properties changed (R2: R 47k → 67k), wires and
 /// labels, diagrams and their traces, paintings. At most \a most lines.
 QStringList describeChanges(const QString& before, const QString& after, int most = 20);
+
+// While Claude clicks - a menu action, a dialog's button -, the file
+// dialogs that click opens are Qt's own: get_dialog reads them and
+// set_dialog fills them in ("File name" or "Directory", then Open, Save
+// or Choose). The system's (macOS's panel) is drawn by the system, out
+// of reach, and waited for the user. Those the user opens stay the
+// system's. (A modal dialog's click returns when it is answered: the
+// setting holds until then.)
+class QtFileDialogs
+{
+public:
+    QtFileDialogs() : a_was(QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs))
+    {
+        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+    }
+    ~QtFileDialogs() { QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, a_was); }
+    QtFileDialogs(const QtFileDialogs&) = delete;
+    QtFileDialogs& operator=(const QtFileDialogs&) = delete;
+
+private:
+    bool a_was;
+};
+
 
 } // namespace qucs_s::control
 
