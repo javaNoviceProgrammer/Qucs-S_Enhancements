@@ -2187,6 +2187,8 @@ QJsonObject QucsControl::undoHistory(const QJsonObject& args)
         QJsonArray names;
         for (const auto& kept : a_fileSteps.at(k).before)
             names.append(QStringLiteral("%1%2").arg(QDir::toNativeSeparators(kept.first), kept.second ? QString() : tr(" (made by it)")));
+        for (const auto& [from, to] : a_fileSteps.at(k).moved)
+            names.append(tr("%1 (moved to %2)").arg(QDir::toNativeSeparators(from), QDir::toNativeSeparators(to)));
         files.append(QJsonObject{{QStringLiteral("tool"), a_fileSteps.at(k).tool},
                                  {QStringLiteral("at"), a_fileSteps.at(k).when.toString(Qt::ISODate)}, {QStringLiteral("files"), names}});
     }
@@ -2564,6 +2566,7 @@ QJsonObject QucsControl::renameFile(const QJsonObject& args)
         FileBrowser* browser = a_app->fileBrowserPanel();
         if (browser == nullptr) return errorResult(tr("Files cannot be renamed here."));
         if (const QString why = browser->renameEntry(path, to); !why.isEmpty()) return errorResult(why);
+        movedFile(path, target);
     } else {
         target = absolute(to);
         if (QFileInfo(target).isDir() && !sameFile(target, path)) target = QDir::cleanPath(QDir(target).filePath(info.fileName()));
@@ -2577,9 +2580,11 @@ QJsonObject QucsControl::renameFile(const QJsonObject& args)
             return errorResult(tr("%1 could not be moved to %2 (another disk? then copy it, and trash_file the first).")
                                    .arg(QDir::toNativeSeparators(path), QDir::toNativeSeparators(target)));
         a_app->documentsMoved({QDir::cleanPath(path)}, {target});
+        movedFile(path, target);
     }
     if (a_app->projectView() != nullptr) a_app->projectView()->refresh();
-    QJsonObject result{{QStringLiteral("renamed"), QDir::toNativeSeparators(path)}, {QStringLiteral("to"), QDir::toNativeSeparators(target)}};
+    QJsonObject result{{QStringLiteral("renamed"), QDir::toNativeSeparators(path)}, {QStringLiteral("to"), QDir::toNativeSeparators(target)},
+                       {QStringLiteral("undo"), tr("undo with 'files' renames it back")}};
     if (!open.isEmpty()) {
         QJsonArray followed;
         for (const QString& was : open) {
@@ -2630,8 +2635,14 @@ QJsonObject QucsControl::trashFile(const QJsonObject& args)
         return errorResult(tr("%1 could not be moved to the trash. Nothing was deleted.").arg(QDir::toNativeSeparators(path)));
     a_app->documentsTrashed(open);
     if (a_app->projectView() != nullptr) a_app->projectView()->refresh();
+    // Where it went, for undo's 'files' to take it back from (the system
+    // may not say: then the user takes it back).
+    if (!where.isEmpty()) movedFile(path, where);
     QJsonObject result{{QStringLiteral("trashed"), QDir::toNativeSeparators(path)},
-                       {QStringLiteral("note"), tr("In the trash, to take back from there; undo does not.")}};
+                       {QStringLiteral("note"), where.isEmpty() ? tr("In the trash, to take back from there (the system did not say where it went: "
+                                                                     "undo cannot).")
+                                                                : tr("In the trash: undo with 'files' takes it back from there (or Finder's Put "
+                                                                     "Back).")}};
     if (!where.isEmpty()) result.insert(QStringLiteral("in trash"), QDir::toNativeSeparators(where));
     if (!open.isEmpty()) result.insert(QStringLiteral("closed"), QJsonArray::fromStringList(open));
     return jsonResult(result);

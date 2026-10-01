@@ -200,6 +200,17 @@ public:
         Q_UNUSED(arguments);
         return false;
     }
+    /// Why this use of \a tool is asked about every time - also where
+    /// Claude acts on its own (auto), not where the user said to ask
+    /// nothing (bypassPermissions): a line typed into a console, which runs
+    /// with the user's rights outside Claude Code's own rules for commands.
+    /// Empty: as the other uses.
+    virtual QString askedEachTime(const QString& tool, const QJsonObject& arguments) const
+    {
+        Q_UNUSED(tool);
+        Q_UNUSED(arguments);
+        return {};
+    }
     /// How the conversation \a caller asks its user a question (MCP
     /// elicitation: a message and a JSON schema of the answer; \a done gets
     /// {action: accept|decline|cancel, content}) while a call of its runs;
