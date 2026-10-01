@@ -437,13 +437,12 @@ void QucsApp::restoreAutosaved(const QList<qucs_s::autosave::Entry> &entries)
     const int index = DocumentTab->currentIndex();
     if (e.untitled) {
       doc->setName(QString());
-      DocumentTab->setTabText(index, tr("untitled"));
     } else {
       doc->setName(e.original);
-      DocumentTab->setTabText(index, QFileInfo(e.original).fileName());
       if (auto *sch = qobject_cast<Schematic *>(DocumentTab->widget(index)))
         sch->setFileInfo(e.original);
     }
+    titleDocumentTab(DocumentTab->widget(index));
     doc->setDocChanged(true);
     setDocumentTabChanged(index, true);
   }
@@ -2783,11 +2782,10 @@ bool QucsApp::saveDocumentAs(QucsDoc *Doc, const QString &fileName)
   const QString wasNamed = Doc->getDocName();
   // As it was, for a save that fails: named after a file it could not
   // write, every save after failed too.
-  const QString wasTitled = pane->tabText(pane->indexOf(w));
   const QString wasDataSet = Doc->getDataSet(), wasDataDisplay = Doc->getDataDisplay(), wasScript = Doc->getScript();
   const QString wasDir = lastDirOpenSave;
   Doc->setName(s);
-  pane->setTabText(pane->indexOf(w), misc::properFileName(s));
+  titleDocumentTab(w);
   lastDirOpenSave = QFileInfo(s).absolutePath();  // remember last directory and file
 
   const int docIndex = allDocuments().indexOf(Doc);   // as autosaveAll() numbers it
@@ -2799,7 +2797,7 @@ bool QucsApp::saveDocumentAs(QucsDoc *Doc, const QString &fileName)
     Doc->setDataSet(wasDataSet);
     Doc->setDataDisplay(wasDataDisplay);
     Doc->setScript(wasScript);
-    pane->setTabText(pane->indexOf(w), wasTitled);
+    titleDocumentTab(w);
     lastDirOpenSave = wasDir;
     return false;
   }
@@ -2835,7 +2833,7 @@ void QucsApp::documentsMoved(const QStringList &from, const QStringList &to)
       else continue;
       doc->setName(now);
       QWidget *w = documentWidget(doc);
-      if (ContextMenuTabWidget *pane = paneOf(w)) pane->setTabText(pane->indexOf(w), misc::properFileName(now));
+      titleDocumentTab(w);
       if (claudeTabs != nullptr) claudeTabs->documentRenamed(was, now);
       break;
     }
@@ -3448,6 +3446,8 @@ QStringList QucsApp::applyImportedSettings(const QString &workspaceBefore, const
   const bool gitStatus = QucsSettingsFile().value(QStringLiteral("ClaudeCode/gitStatus"), true).toBool();
   if (gitStatus != ClaudeGitBar::isOn()) ClaudeGitBar::setOn(gitStatus);
   for (ClaudeCodePanel *panel : claudeTabs->panels()) panel->reloadSettings();
+  // The names of files, cut as the settings say.
+  titleFileNames();
 
   readProjects();
   slotUpdateTreeview();
@@ -3749,7 +3749,34 @@ int QucsApp::addDocumentTabTo(ContextMenuTabWidget* pane, QFrame* widget, const 
   tabBar->setTabButton(index, closeSide == QTabBar::LeftSide ? QTabBar::RightSide : QTabBar::LeftSide,
                        modifiedLabel);
 #endif
+  // (A document's: from its file, cut as the settings say.)
+  if (docIn(widget) != nullptr) titleDocumentTab(widget);
   return index;
+}
+
+void QucsApp::titleDocumentTab(QWidget *w)
+{
+  ContextMenuTabWidget *pane = paneOf(w);
+  QucsDoc *doc = docIn(w);
+  if (pane == nullptr || doc == nullptr) return;
+  const int index = pane->indexOf(w);
+  const QString file = doc->getDocName();
+  if (file.isEmpty()) {
+    pane->setTabText(index, tr("untitled"));
+    pane->setTabToolTip(index, QString());
+    return;
+  }
+  // (An & of the name is the name's, not a shortcut's mark: "R&D.sch".)
+  pane->setTabText(index, misc::shownFileName(file).replace(QLatin1Char('&'), QLatin1String("&&")));
+  pane->setTabToolTip(index, QDir::toNativeSeparators(QFileInfo(file).absoluteFilePath()));
+}
+
+void QucsApp::titleFileNames()
+{
+  for (ContextMenuTabWidget *pane : panes())
+    for (int i = 0; i < pane->count(); ++i) titleDocumentTab(pane->widget(i));
+  if (claudeTabs != nullptr)
+    for (ClaudeCodePanel *panel : claudeTabs->panels()) panel->refreshDocument();
 }
 
 // --------------------------------------------------------------
@@ -4055,11 +4082,13 @@ QWidget *QucsApp::getSchematicWidget(QucsDoc *Doc)
         int No = DocumentTab->currentIndex(); // remember current Tab
         if(Info.suffix() == "sch" || Info.suffix() == "dpl" ||
            Info.suffix() == "sym") {
+          // (As every document's tab: titled from its file, and - on a
+          // Mac - with the marker of unsaved changes.)
           d = new Schematic(this, Info.absoluteFilePath());
-          i = DocumentTab->addTab((Schematic *)d, QPixmap(":/bitmaps/empty.xpm"), Info.fileName());
+          i = addDocumentTab((Schematic *)d, Info.fileName());
         } else {
           d = new TextDoc(this, Info.absoluteFilePath());
-          i = DocumentTab->addTab((TextDoc *)d, QPixmap(":/bitmaps/empty.xpm"), Info.fileName());
+          i = addDocumentTab((TextDoc *)d, Info.fileName());
         }
         DocumentTab->setCurrentIndex(i); // temporarily switch to the newly created Tab
 
@@ -4738,10 +4767,12 @@ void QucsApp::slotSelectSubcircuit(const QModelIndex &idx)
   }
 
   QString note = idx.sibling(idx.row(), 1).data().toString();
-  int idx_pag = DocumentTab->currentIndex();
-  QString tab_titl = "";
-  if (idx_pag>=0) tab_titl = DocumentTab->tabText(idx_pag);
-  if (QFileInfo(filename).fileName() == tab_titl ) return; // Forbid to paste subcircuit into itself.
+  // Forbid to paste subcircuit into itself (its file's name, not its
+  // tab's: a long one is cut there).
+  if (QucsDoc *front = DocumentTab->count() > 0 ? getDoc() : nullptr;
+      front != nullptr && !front->getDocName().isEmpty()
+      && QFileInfo(filename).fileName() == QFileInfo(front->getDocName()).fileName())
+    return;
 
   // delete previously selected elements
   if(view->selElem != nullptr)  delete view->selElem;

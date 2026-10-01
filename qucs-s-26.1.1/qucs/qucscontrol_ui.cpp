@@ -130,6 +130,13 @@ QModelIndex rowNamed(const QAbstractItemView* view, const QString& name, int pat
 // ----------------------------------------------------------------------
 // The parts of the window
 
+bool QucsControl::tabIs(const QTabWidget* pane, int i, const QString& title) const
+{
+    if (QucsDoc* doc = QucsApp::docIn(pane->widget(i)))
+        return titleOf(doc).compare(title, Qt::CaseInsensitive) == 0 || shownTitleOf(doc).compare(title, Qt::CaseInsensitive) == 0;
+    return pane->tabText(i).compare(title, Qt::CaseInsensitive) == 0;
+}
+
 QJsonArray QucsControl::uiAreas() const
 {
     QJsonArray list;
@@ -261,25 +268,39 @@ QJsonObject QucsControl::getUi(const QJsonObject& args)
     if (area.compare(QLatin1String("tabs"), Qt::CaseInsensitive) == 0) {
         // Each pane's tabs: the documents, the one in front, which have
         // unsaved changes.
+        // (Each by its whole name: a long one is cut on its tab - said.)
+        const auto titled = [this](QWidget* w, const QTabWidget* pane) {
+            QucsDoc* doc = QucsApp::docIn(w);
+            return doc != nullptr ? titleOf(doc) : pane->tabText(pane->indexOf(w));
+        };
         QJsonArray controls;
+        QJsonObject cut;
         const QList<ContextMenuTabWidget*> panes = a_app->panes();
         for (int p = 0; p < panes.size(); ++p) {
             QJsonArray items, unsaved;
             for (int i = 0; i < panes.at(p)->count(); ++i) {
-                items.append(panes.at(p)->tabText(i));
-                if (QucsDoc* doc = QucsApp::docIn(panes.at(p)->widget(i)); doc != nullptr && doc->getDocChanged())
-                    unsaved.append(panes.at(p)->tabText(i));
+                QWidget* w = panes.at(p)->widget(i);
+                items.append(titled(w, panes.at(p)));
+                QucsDoc* doc = QucsApp::docIn(w);
+                if (doc != nullptr && doc->getDocChanged()) unsaved.append(titled(w, panes.at(p)));
+                if (doc != nullptr && !doc->getDocName().isEmpty() && shownTitleOf(doc) != titleOf(doc))
+                    cut.insert(titleOf(doc), shownTitleOf(doc));
             }
             QJsonObject o{{QStringLiteral("id"), QStringLiteral("c%1").arg(p + 1)},
                           {QStringLiteral("label"), panes.size() == 1 ? tr("documents") : tr("pane %1").arg(p + 1)},
                           {QStringLiteral("kind"), QStringLiteral("tabs")},
-                          {QStringLiteral("value"), panes.at(p)->tabText(panes.at(p)->currentIndex())},
+                          {QStringLiteral("value"), panes.at(p)->currentWidget() != nullptr ? titled(panes.at(p)->currentWidget(), panes.at(p)) : QString()},
                           {QStringLiteral("items"), items}};
             if (!unsaved.isEmpty()) o.insert(QStringLiteral("unsaved"), unsaved);
             if (panes.at(p) == a_app->DocumentTab) o.insert(QStringLiteral("active"), true);
             controls.append(o);
         }
-        return jsonResult(QJsonObject{{QStringLiteral("area"), QStringLiteral("tabs")}, {QStringLiteral("controls"), controls}});
+        QJsonObject result{{QStringLiteral("area"), QStringLiteral("tabs")}, {QStringLiteral("controls"), controls}};
+        if (!cut.isEmpty())
+            result.insert(QStringLiteral("shown cut"), QJsonObject{{QStringLiteral("names"), cut},
+                                                                   {QStringLiteral("note"), tr("These tabs show a long name cut (Application Settings > "
+                                                                                               "Appearance); either name finds them.")}});
+        return jsonResult(result);
     }
     QString name, error;
     QWidget* root = uiArea(area, &name, &error, false);
@@ -315,7 +336,7 @@ void QucsControl::setUi(const QJsonObject& args, const Done& done)
             for (int p = 0; p < panes.size() && !found; ++p) {
                 if (pane >= 0 && p != pane) continue;
                 for (int i = 0; i < panes.at(p)->count() && !found; ++i)
-                    if (panes.at(p)->tabText(i).compare(title, Qt::CaseInsensitive) == 0) {
+                    if (tabIs(panes.at(p), i, title)) {
                         a_app->showDocument(panes.at(p)->widget(i));
                         changed << title;
                         found = true;
@@ -413,7 +434,7 @@ void QucsControl::contextMenu(const QJsonObject& args, const Done& done)
         const QString title = on.value(QLatin1String("tab")).toString().trimmed();
         for (ContextMenuTabWidget* pane : a_app->panes())
             for (int i = 0; i < pane->count() && !open; ++i)
-                if (pane->tabText(i).compare(title, Qt::CaseInsensitive) == 0) {
+                if (tabIs(pane, i, title)) {
                     QPointer<ContextMenuTabWidget> target(pane);
                     const QPoint at = pane->tabBar()->tabRect(i).center();
                     open = [target, at] {

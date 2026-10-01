@@ -15,6 +15,7 @@
 
 #include "apptheme.h"
 #include "ink.h"
+#include "misc.h"
 #include "settings.h"
 
 #include <QAbstractTextDocumentLayout>
@@ -278,6 +279,13 @@ bool sameFile(const QString& a, const QString& b)
     const QString cb = QFileInfo(b).canonicalFilePath();
     if (!ca.isEmpty() && !cb.isEmpty()) return ca == cb;
     return QDir::cleanPath(QFileInfo(a).absoluteFilePath()) == QDir::cleanPath(QFileInfo(b).absoluteFilePath());
+}
+
+// A file's name on a button or in a menu: cut as the settings say (the
+// tooltip gives it whole), an & of it shown as one.
+QString shownName(const QString& file)
+{
+    return misc::shownFileName(file).replace(QLatin1Char('&'), QLatin1String("&&"));
 }
 
 // A push pin, in \a ink.
@@ -1480,7 +1488,7 @@ void ClaudeCodePanel::refreshDocument()
     if (pinned) {
         const QStringList open = a_schematics ? a_schematics() : QStringList();
         const bool isOpen = std::any_of(open.cbegin(), open.cend(), [this](const QString& f) { return sameFile(f, a_pinned); });
-        a_pin->setText(QFileInfo(a_pinned).fileName());
+        a_pin->setText(shownName(a_pinned));
         a_pin->setIcon(pinIcon(col.onAccent));
         a_pin->setEnabled(true);
         a_pin->setToolTip(tr("This conversation is pinned to %1%2: its prompts name it, and Qucs-S's tools act on it "
@@ -1494,7 +1502,7 @@ void ClaudeCodePanel::refreshDocument()
         a_attach->setEnabled(false);
         a_attach->setToolTip(tr("No document is open (or it has no file yet)"));
     } else {
-        a_attach->setText(QFileInfo(doc).fileName());
+        a_attach->setText(shownName(doc));
         a_attach->setEnabled(true);
         a_attach->setToolTip(tr("Tell Claude that %1 is open in Qucs-S").arg(QDir::toNativeSeparators(doc)));
     }
@@ -1550,16 +1558,18 @@ void ClaudeCodePanel::fillPinMenu()
         const bool twice = std::count_if(open.cbegin(), open.cend(), [&name](const QString& f) {
                                return QFileInfo(f).fileName() == name;
                            }) > 1;
+        const QString shown = shownName(file);
         QAction* a = a_pinMenu->addAction(
-            twice ? name + QStringLiteral("  —  ") + QDir::toNativeSeparators(QFileInfo(file).absolutePath()) : name, this,
-            [this, file] { pinDocument(file); });
+            twice ? shown + QStringLiteral("  —  ") + QDir::toNativeSeparators(QFileInfo(file).absolutePath()).replace(QLatin1Char('&'), QLatin1String("&&"))
+                  : shown,
+            this, [this, file] { pinDocument(file); });
         a->setCheckable(true);
         a->setChecked(sameFile(file, a_pinned));
         a->setToolTip(QDir::toNativeSeparators(file));
         listed = listed || a->isChecked();
     }
     if (!a_pinned.isEmpty() && !listed) {
-        QAction* a = a_pinMenu->addAction(tr("%1 (not open)").arg(QFileInfo(a_pinned).fileName()));
+        QAction* a = a_pinMenu->addAction(tr("%1 (not open)").arg(shownName(a_pinned)));
         a->setCheckable(true);
         a->setChecked(true);
         a->setToolTip(QDir::toNativeSeparators(a_pinned));

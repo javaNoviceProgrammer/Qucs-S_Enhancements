@@ -54,6 +54,14 @@ namespace misc {
   QFont canvasFont(QFont font);
   QString properAbsFileName(const QString&, Schematic* sch = nullptr);
   QString properFileName(const QString&);
+  /// A file's name as a tab or the Claude Code panel shows it: cut after
+  /// \a cap characters (as the reader counts them: an accented letter, an
+  /// emoji, one each), "…" for the rest, its extension whole -
+  /// "a_very_long_na….sch"; whole when it is not longer, or \a cap is 0.
+  /// \a path may be a path or a name alone.
+  QString shownFileName(const QString& path, int cap);
+  /// ... with the cap of the settings (Application Settings > Appearance).
+  QString shownFileName(const QString& path);
   /// The files of a project: every regular file below root, at any depth,
   /// as paths relative to root ("models/bjt.va"). Hidden directories,
   /// symbolic links to directories and folders other programs fill with

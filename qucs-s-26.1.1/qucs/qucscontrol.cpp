@@ -4108,10 +4108,11 @@ QString QucsControl::titleOf(QucsDoc* doc) const
     QWidget* w = QucsApp::documentWidget(doc);
     const QTabWidget* pane = a_app->paneOf(w);
     if (pane == nullptr) return QString();
+    // A file's whole name, whatever its tab shows of it (a long one cut).
+    if (!doc->getDocName().isEmpty()) return QFileInfo(doc->getDocName()).fileName();
     const QString title = cleanText(pane->tabText(pane->indexOf(w)));
     // Two without a file of one title (an untitled schematic and an
     // untitled text): the second "untitled (2)", each named apart.
-    if (!doc->getDocName().isEmpty()) return title;
     int before = 0;
     for (QucsDoc* other : a_app->allDocuments()) {
         if (other == doc) break;
@@ -4120,6 +4121,14 @@ QString QucsControl::titleOf(QucsDoc* doc) const
         if (other->getDocName().isEmpty() && op != nullptr && cleanText(op->tabText(op->indexOf(ow))) == title) ++before;
     }
     return before == 0 ? title : QStringLiteral("%1 (%2)").arg(title).arg(before + 1);
+}
+
+QString QucsControl::shownTitleOf(QucsDoc* doc) const
+{
+    QWidget* w = QucsApp::documentWidget(doc);
+    const QTabWidget* pane = a_app->paneOf(w);
+    // (An & of a file's name is written && on its tab.)
+    return pane == nullptr ? QString() : pane->tabText(pane->indexOf(w)).replace(QStringLiteral("&&"), QStringLiteral("&"));
 }
 
 QJsonObject QucsControl::withSelection(const QString& tool, const QJsonObject& args, QString* error) const
@@ -4217,6 +4226,9 @@ QucsDoc* QucsControl::document(const QJsonObject& args, QString* error) const
     const QString wanted = absolute(path);
     for (QucsDoc* doc : a_app->allDocuments())
         if ((!doc->getDocName().isEmpty() && sameFile(doc->getDocName(), wanted)) || titleOf(doc) == path) return doc;
+    // As its tab shows it, a long name cut ("a_very_long_na….sch").
+    for (QucsDoc* doc : a_app->allDocuments())
+        if (!doc->getDocName().isEmpty() && shownTitleOf(doc) == path) return doc;
     // A file's name alone (amp.sch), when one open document has it.
     if (!path.contains(QLatin1Char('/')) && !path.contains(QLatin1Char('\\'))) {
         QList<QucsDoc*> named;
@@ -10053,9 +10065,10 @@ private:
         a_front = QucsApp::documentWidget(doc);
         if (doc != nullptr) a_frontTitle = titled(QucsApp::documentWidget(doc));
     }
-    // A document's tab title (an untitled one's too).
+    // A document's title: its file's whole name, or its tab's (untitled).
     QString titled(QWidget* w) const
     {
+        if (QucsDoc* doc = QucsApp::docIn(w); doc != nullptr && !doc->getDocName().isEmpty()) return QFileInfo(doc->getDocName()).fileName();
         const QTabWidget* pane = a_app->paneOf(w);
         return pane != nullptr ? pane->tabText(pane->indexOf(w)).remove(QLatin1Char('&')).trimmed() : QString();
     }

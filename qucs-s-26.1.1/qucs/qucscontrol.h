@@ -31,6 +31,7 @@ class QucsDoc;
 class Schematic;
 class TextDoc;
 class QWidget;
+class QTabWidget;
 
 /*!
  * The Qucs-S window as tools for Claude (qucs_s::claude::ToolHost, an MCP
@@ -480,6 +481,12 @@ private:
     /// "R1.1", "R1.out", [x, y], {"x":..,"y":..}: a place in \a sch.
     bool pointOf(Schematic* sch, const QJsonValue& at, QPoint* point, QString* error) const;
     QString titleOf(QucsDoc* doc) const;
+    /// A document's tab as it shows it - a long file name cut (Application
+    /// Settings > Appearance) - or empty.
+    QString shownTitleOf(QucsDoc* doc) const;
+    /// Whether the tab \a i of \a pane is \a title: its document's whole
+    /// name, or what the tab shows (any case).
+    bool tabIs(const QTabWidget* pane, int i, const QString& title) const;
     QList<QAction*> menuActions(QStringList* paths) const;
     QWidget* openDialog() const;
     /// The controls of \a dialog that get_dialog tells of, in a fixed order.
