@@ -1,0 +1,41 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_data_export.cpp b/qucs-s-26.1.1/qucs/tests/test_data_export.cpp
+index 123e777..864ac44 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_data_export.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_data_export.cpp
+@@ -30,6 +30,8 @@
+ #include <QTabWidget>
+ 
+ #include <cmath>
++#include <sys/resource.h>
++#include <QElapsedTimer>
+ #include <cstring>
+ 
+ namespace de = qucs_s::dataexport;
+@@ -477,6 +479,27 @@ private slots:
+             QucsSettings.DefaultSimulator = simulator;
+         }
+     }
++    // (bug hunt 2026-09-30: time and memory of one format on a big dataset)
++    void huntBig()
++    {
++        const QString path = qEnvironmentVariable("HUNT_DATASET");
++        if (path.isEmpty()) QSKIP("HUNT_DATASET");
++        ds::Dataset big;
++        QElapsedTimer t;
++        t.start();
++        QVERIFY(big.read(path));
++        struct rusage ru;
++        getrusage(RUSAGE_SELF, &ru);
++        qInfo() << "read ms" << t.restart() << "rss MB" << ru.ru_maxrss / 1048576;
++        QStringList all;
++        for (const auto& v : big.variables()) if (!v.independent) all << v.name;
++        const de::Format f = de::Format(qEnvironmentVariableIntValue("HUNT_FORMAT"));
++        QByteArray bytes;
++        QString error;
++        const bool ok = de::encode(big, all, {f}, &bytes, nullptr, &error);
++        getrusage(RUSAGE_SELF, &ru);
++        qInfo() << de::formatName(f) << ok << error.left(100) << "bytes" << bytes.size() << "ms" << t.restart() << "max rss MB" << ru.ru_maxrss / 1048576;
++    }
+ };
+ 
+ QTEST_MAIN(TestDataExport)

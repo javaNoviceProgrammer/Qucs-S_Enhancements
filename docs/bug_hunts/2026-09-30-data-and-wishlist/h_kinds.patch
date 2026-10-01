@@ -1,0 +1,77 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_data_export.cpp b/qucs-s-26.1.1/qucs/tests/test_data_export.cpp
+index 123e777..e1f8f31 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_data_export.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_data_export.cpp
+@@ -18,6 +18,15 @@
+ #include "diagrams/diagramdialog.h"
+ #include "diagrams/graph.h"
+ #include "diagrams/rectdiagram.h"
++#include "diagrams/histogramdiagram.h"
++#include "diagrams/curvediagram.h"
++#include "diagrams/rect3ddiagram.h"
++#include "diagrams/truthdiagram.h"
++#include "diagrams/timingdiagram.h"
++#include "diagrams/tabdiagram.h"
++#include "diagrams/psdiagram.h"
++#include "diagrams/smithdiagram.h"
++#include "diagrams/polardiagram.h"
+ #include "extsimkernels/spicecompat.h"
+ #include "isolated_settings.h"
+ #include "main.h"
+@@ -30,6 +39,8 @@
+ #include <QTabWidget>
+ 
+ #include <cmath>
++#include <functional>
++#include <memory>
+ #include <cstring>
+ 
+ namespace de = qucs_s::dataexport;
+@@ -477,6 +488,47 @@ private slots:
+             QucsSettings.DefaultSimulator = simulator;
+         }
+     }
++    // (bug hunt 2026-09-30: the Export tab under every diagram kind, each button, each format)
++    void huntKinds()
++    {
++        if (qEnvironmentVariable("HUNT_KINDS").isEmpty()) QSKIP("HUNT_KINDS");
++        const QString folder = QFileInfo(dir.filePath("kinds")).absoluteFilePath();
++        write("kinds/rc.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n");
++        write("kinds/rc.dat.ngspice", kDataset);
++        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
++        const QList<std::function<Diagram*()>> kinds{
++            [] { return new RectDiagram; }, [] { return new PolarDiagram; }, [] { return new SmithDiagram; },
++            [] { return new SmithDiagram(0, 0, false); }, [] { return new PSDiagram; }, [] { return new PSDiagram(0, 0, false); },
++            [] { return new TabDiagram; }, [] { return new TimingDiagram; }, [] { return new TruthDiagram; },
++            [] { return new Rect3DDiagram; }, [] { return new CurveDiagram; }, [] { return new HistogramDiagram; }};
++        int n = 0, written = 0;
++        for (const auto& make : kinds) {
++            Schematic sch(nullptr, folder + "/rc.sch");
++            std::unique_ptr<Diagram> d(make());
++            d->Graphs.append(new Graph(d.get(), "ngspice/tran.v(out)"));
++            d->Graphs.append(new Graph(d.get(), "ngspice/ac.v(out)"));
++            d->Graphs.append(new Graph(d.get(), "nothere:x"));
++            d->Graphs.append(new Graph(d.get(), "ngspice/db(ac.v(out))"));
++            auto* dialog = new DiagramDialog(d.get(), &sch);
++            dialog->show();
++            auto* panel = dialog->findChild<DataExportPanel*>();
++            QVERIFY2(panel != nullptr, qPrintable(d->Name));
++            dialog->findChild<QTabWidget*>()->setCurrentWidget(panel);
++            panel->tracesButton()->click();
++            for (int f = 0; f < panel->formatBox()->count(); ++f) {
++                panel->formatBox()->setCurrentIndex(f);
++                for (int c = 0; c < panel->complexBox()->count(); ++c) {
++                    panel->complexBox()->setCurrentIndex(c);
++                    if (panel->exportButton()->isEnabled() && panel->exportTo(dir.filePath(QStringLiteral("k%1.%2").arg(n++).arg(f)))) ++written;
++                }
++            }
++            qInfo() << d->Name << "traces chosen" << panel->chosen() << "status" << panel->status()->text().left(120);
++            QMetaObject::invokeMethod(dialog, "slotOK");
++            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
++            qInfo() << d->Name << "graphs after OK" << d->Graphs.size();
++        }
++        qInfo() << "written" << written;
++    }
+ };
+ 
+ QTEST_MAIN(TestDataExport)

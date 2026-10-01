@@ -1,0 +1,94 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_data_export.cpp b/qucs-s-26.1.1/qucs/tests/test_data_export.cpp
+index 123e777..8b2be69 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_data_export.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_data_export.cpp
+@@ -477,6 +477,89 @@ private slots:
+             QucsSettings.DefaultSimulator = simulator;
+         }
+     }
++    // (bug hunt 2026-09-30: random datasets exported in every format and form, and read back)
++    void huntFuzz()
++    {
++        const QString folder = qEnvironmentVariable("HUNT_FUZZ");
++        if (folder.isEmpty()) QSKIP("HUNT_FUZZ");
++        int files = 0, exports = 0, refused = 0;
++        QStringList odd;
++        const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
++        for (const QString& name : QDir(folder).entryList({"*.dat"}, QDir::Files, QDir::Name)) {
++            ds::Dataset d;
++            if (!d.read(folder + "/" + name)) continue;
++            ++files;
++            QStringList all;
++            for (const auto& v : d.variables()) all << v.name;
++            QList<QStringList> choices{all};
++            for (int k = 0; k < 3 && !all.isEmpty(); ++k) choices << QStringList{all.at((k * 7 + name.size()) % all.size())};
++            for (const QStringList& chosen : choices)
++                for (de::Format f : de::formats())
++                    for (ds::Form form : {ds::Form::RealImaginary, ds::Form::MagnitudePhase, ds::Form::DbPhase}) {
++                        QByteArray bytes;
++                        QString error;
++                        de::Written w;
++                        if (!de::encode(d, chosen, {f, form}, &bytes, &w, &error)) { ++refused; continue; }
++                        ++exports;
++                        const QString tag = QStringLiteral("%1 %2 %3:").arg(name, de::suffixOf(f)).arg(int(form));
++                        if (f == de::Format::Csv && w.rows > 0) {
++                            const QString path = dir.filePath("fz.csv");
++                            QFile out(path);
++                            out.open(QIODevice::WriteOnly);
++                            out.write(bytes);
++                            out.close();
++                            di::Data back;
++                            QString why;
++                            if (!di::read(path, {QString(), di::rowX()}, &back, &why)) odd << tag + " CSV not read back: " + why;
++                            else if (back.variables.size() != w.columns + 1) {
++                                odd << tag + QStringLiteral(" CSV read back as %1 columns, written %2").arg(back.variables.size() - 1).arg(w.columns);
++                                QFile keep(folder + "/" + name + "." + QString::number(int(form)) + ".csv");
++                                keep.open(QIODevice::WriteOnly);
++                                keep.write(bytes);
++                                QStringList got;
++                                for (const auto& v : back.variables) got << v.name;
++                                odd << tag + " read: " + got.join(" | ") + " notes: " + back.notes.join(" ");
++                            }
++                        }
++                        if (f == de::Format::Xlsx) {
++                            qucs_s::sheet::Workbook book;
++                            QString why;
++                            if (!qucs_s::sheet::readXlsx(bytes, book, &why)) odd << tag + " workbook not read: " + why;
++                            else if (book.sheets.size() != w.tables) odd << tag + QStringLiteral(" %1 sheets, %2 tables").arg(book.sheets.size()).arg(w.tables);
++                        }
++                        if (f == de::Format::Npz) {
++                            const auto entries = qucs_s::zip::read(bytes);
++                            if (entries.size() != w.arrays) odd << tag + QStringLiteral(" %1 arrays in the archive, %2 written").arg(entries.size()).arg(w.arrays);
++                            for (const auto& e : entries) {
++                                QString descr, shape;
++                                QVector<double> values;
++                                if (!readNpy(e.data, &descr, &shape, &values)) { odd << tag + " bad npy " + e.name; continue; }
++                                qint64 n = 1;
++                                for (const QString& part : shape.split(',', Qt::SkipEmptyParts)) n *= part.trimmed().toLongLong();
++                                if (values.size() != n * (descr == "<c16" ? 2 : 1)) odd << tag + QStringLiteral(" %1: %2 values, shape (%3)").arg(e.name).arg(values.size()).arg(shape);
++                            }
++                        }
++                        if (f == de::Format::Dataset) {
++                            const QString path = dir.filePath("fz.dat");
++                            QFile out(path);
++                            out.open(QIODevice::WriteOnly);
++                            out.write(bytes);
++                            out.close();
++                            ds::Dataset back;
++                            if (!back.read(path)) { odd << tag + " dataset not read back"; continue; }
++                            for (const auto& v : back.variables()) {
++                                const ds::Variable* o = d.find(v.name);
++                                bool ok = o != nullptr && o->size() == v.size();
++                                for (int i = 0; ok && i < v.size(); ++i) ok = same(o->re.at(i), v.re.at(i)) && same(o->im.value(i), v.im.value(i));
++                                if (!ok) odd << tag + " dataset value differs: " + v.name;
++                            }
++                        }
++                    }
++        }
++        qInfo() << files << "datasets," << exports << "exports," << refused << "refused," << odd.size() << "odd";
++        odd.removeDuplicates();
++        for (const QString& o : odd.mid(0, 40)) qInfo().noquote() << o;
++    }
+ };
+ 
+ QTEST_MAIN(TestDataExport)
