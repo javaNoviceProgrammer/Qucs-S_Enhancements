@@ -196,7 +196,7 @@ bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
         return doc == nullptr || doc->getDocChanged();
     }
     if (tool == QLatin1String("copy_document")) return a.value(QLatin1String("replace")).toBool();
-    if (tool == QLatin1String("export_image") || tool == QLatin1String("export_netlist"))
+    if (tool == QLatin1String("export_image") || tool == QLatin1String("export_netlist") || tool == QLatin1String("export_data"))
         return exists(a.value(QLatin1String("save_as")).toString()) || exists(a.value(QLatin1String("file")).toString());
     if (tool == QLatin1String("get_netlist")) return exists(a.value(QLatin1String("save_as")).toString());
     if (tool == QLatin1String("save_document")) {
@@ -434,7 +434,7 @@ QJsonObject QucsControl::undoFiles(int steps)
 {
     if (a_fileSteps.isEmpty())
         return errorResult(tr("No file written by a tool is kept to put back (save_document, create_subcircuit, copy_document, "
-                              "import_netlist, import_data, export_netlist, export_image and rename_net's data display are)."));
+                              "import_netlist, import_data, export_data, export_netlist, export_image and rename_net's data display are)."));
     QStringList restored, removed, skipped, reload;
     QJsonArray undone;
     for (int n = 0; n < steps && !a_fileSteps.isEmpty(); ++n) {

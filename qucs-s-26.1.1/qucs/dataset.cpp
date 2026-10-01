@@ -163,6 +163,14 @@ bool Dataset::readTable(const QString& path, QString* error)
     return true;
 }
 
+bool Dataset::add(const Variable& v)
+{
+    if (v.name.isEmpty() || a_index.contains(v.name)) return false;
+    a_index.insert(v.name, int(a_variables.size()));
+    a_variables.append(v);
+    return true;
+}
+
 bool Dataset::read(const QString& path, QString* error)
 {
     if (isTable(path)) return readTable(path, error);

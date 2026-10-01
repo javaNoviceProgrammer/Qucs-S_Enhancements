@@ -3773,6 +3773,115 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // A diagram's curves written for another program (export_data), as the
+    // Export tab writes them: its traces, or some of them; a dataset's
+    // variables - names, trace names, expressions - in each form; the
+    // suffix gives the format; one dataset to a file; never the dataset
+    // read or the file an import came from; a file written over put back.
+    void curvesAreExported()
+    {
+        const QString folder = QucsSettings.qucsWorkspaceDir.absoluteFilePath("exports");
+        QVERIFY(QDir().mkpath(folder));
+        const auto write = [&folder](const QString& name, const QByteArray& bytes) {
+            QFile f(folder + "/" + name);
+            if (f.open(QIODevice::WriteOnly)) f.write(bytes);
+        };
+        const auto read = [&folder](const QString& name) {
+            QFile f(folder + "/" + name);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        const QByteArray run = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time 3>\n0\n1e-3\n2e-3\n</indep>\n<dep tran.v(out) time>\n0\n0.5\n1\n</dep>\n"
+                               "<dep tran.v(in) time>\n1\n1\n1\n</dep>\n<indep frequency 2>\n1000\n1e6\n</indep>\n"
+                               "<dep ac.v(out) frequency>\n1+j1\n0-j0.5\n</dep>\n<dep ac.v(in) frequency>\n1\n1\n</dep>\n";
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document", {{"as", folder + "/e.sch"}, {"replace", true}})));
+        write("e.dat.ngspice", run);
+        QJsonObject r = call("add_diagram", {{"traces", QJsonArray{"ngspice/tran.v(out)", "ngspice/tran.v(in)"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+
+        // Its traces, all: CSV unless said, a table over time.
+        r = call("export_data", {{"diagram", 1}, {"save_as", folder + "/curves"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r).toObject();
+        QVERIFY(o.value("file").toString().endsWith("curves.csv") && o.value("format").toString() == "CSV");
+        QCOMPARE(o.value("table").toObject().value("rows").toInt(), 3);
+        QCOMPARE(read("curves.csv"), QByteArray("time,tran.v(out),tran.v(in)\n0,0,1\n0.001,0.5,1\n0.002,1,1\n"));
+        // Some of them; the suffix gives the format.
+        r = call("export_data", {{"diagram", 1}, {"traces", QJsonArray{2}}, {"save_as", folder + "/in.xlsx"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("format").toString() == "Excel workbook", qPrintable(text(r)));
+        qucs_s::dataimport::Data back;
+        QString error;
+        QVERIFY2(qucs_s::dataimport::read(folder + "/in.xlsx", {}, &back, &error), qPrintable(error));
+        QCOMPARE(back.variables.size(), 2);
+        QCOMPARE(back.variables.at(1).name, QStringLiteral("tran.v(in)"));
+        r = call("export_data", {{"diagram", 1}, {"save_as", folder + "/x.xlsx"}, {"format", "csv"}});
+        QVERIFY2(failed(r) && text(r).contains("the one or the other"), qPrintable(text(r)));
+        QVERIFY(failed(call("export_data", {{"diagram", 1}, {"variables", QJsonArray{"tran.v(in)"}}, {"save_as", "y.csv"}})));
+        QVERIFY(failed(call("export_data", {{"save_as", "y.csv"}})));
+
+        // A dataset's variables: a complex one in dB and phase, an
+        // expression, one that may be two.
+        r = call("export_data", {{"variables", QJsonArray{"ac.v(out)"}}, {"complex", "db_phase"}, {"save_as", folder + "/ac.csv"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(read("ac.csv").startsWith("frequency,dB(ac.v(out)),phase(ac.v(out))\n1000,3.0102999566398"), read("ac.csv").constData());
+        r = call("export_data", {{"variables", QJsonArray{"db(ac.v(out)/ac.v(in))"}}, {"save_as", folder + "/gain.tsv"}});
+        QVERIFY2(!failed(r) && read("gain.tsv").startsWith("frequency\tdb(ac.v(out)/ac.v(in))\n1000\t3.0102999566398"), qPrintable(text(r)));
+        r = call("export_data", {{"variables", QJsonArray{"v(out)"}}, {"save_as", folder + "/v.csv"}});
+        QVERIFY2(failed(r) && text(r).contains("may be any of"), qPrintable(text(r)));
+        r = call("export_data", {{"variables", QJsonArray{"nothere"}}, {"save_as", folder + "/v.csv"}});
+        QVERIFY2(failed(r) && text(r).contains("has no variable nothere"), qPrintable(text(r)));
+        // A kept run: by its trace name, or by its name.
+        write("run1.dat.ngspice", run);
+        r = call("export_data", {{"variables", QJsonArray{"ngspice/run1:tran.v(out)"}}, {"save_as", folder + "/run1.csv"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("dataset").toString().endsWith("run1.dat.ngspice"), qPrintable(text(r)));
+        r = call("export_data", {{"dataset", "run1"}, {"variables", QJsonArray{"tran.v(out)"}}, {"save_as", folder + "/run1b"}, {"format", "npz"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("arrays").toArray() == (QJsonArray{"time", "tran.v(out)"})
+                     && json(r).toObject().value("dataset").toString().endsWith("run1.dat.ngspice"),
+                 qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(folder + "/run1b.npz"));
+        r = call("export_data", {{"dataset", "nosuch"}, {"variables", QJsonArray{"v"}}, {"save_as", "z.csv"}});
+        QVERIFY2(failed(r) && text(r).contains("There is no dataset nosuch"), qPrintable(text(r)));
+
+        // A run's and a measurement's traces in one diagram: one dataset to
+        // a file.
+        write("m.csv", "f,gain\n1,2\n2,3\n");
+        QVERIFY(!failed(call("import_data", {{"file", "m.csv"}})));
+        r = call("add_trace", {{"diagram", 1}, {"variable", "m:gain"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("export_data", {{"diagram", 1}, {"save_as", folder + "/mixed.csv"}});
+        QVERIFY2(failed(r) && text(r).contains("of 2 datasets") && text(r).contains("m.dat: traces 3 (m:gain)"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(folder + "/mixed.csv"));
+        r = call("export_data", {{"diagram", 1}, {"traces", QJsonArray{"m:gain"}}, {"save_as", folder + "/measured.csv"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(read("measured.csv"), QByteArray("f,gain\n1,2\n2,3\n"));
+        // Never the dataset read, nor the file an import came from.
+        r = call("export_data", {{"diagram", 1}, {"traces", QJsonArray{3}}, {"save_as", folder + "/m.dat"}});
+        QVERIFY2(failed(r) && text(r).contains("is the dataset itself"), qPrintable(text(r)));
+        r = call("export_data", {{"diagram", 1}, {"traces", QJsonArray{3}}, {"save_as", folder + "/m.csv"}});
+        QVERIFY2(failed(r) && text(r).contains("is the file the dataset m was imported from"), qPrintable(text(r)));
+        QCOMPARE(read("m.csv"), QByteArray("f,gain\n1,2\n2,3\n"));
+        // A trace of no data: said why.
+        QVERIFY(!failed(call("add_trace", {{"diagram", 1}, {"variable", "ngspice/run9:tran.v(out)"}})));
+        r = call("export_data", {{"diagram", 1}, {"traces", QJsonArray{4}}, {"save_as", folder + "/none.csv"}});
+        QVERIFY2(failed(r) && text(r).contains("shows no data") && text(r).contains("run9.dat.ngspice"), qPrintable(text(r)));
+
+        // Written over: said, and put back by undo with 'files'.
+        r = call("export_data", {{"diagram", 1}, {"traces", QJsonArray{1}}, {"save_as", folder + "/curves.csv"}});
+        QVERIFY2(!failed(r) && json(r).toObject().contains("written over"), qPrintable(text(r)));
+        QCOMPARE(read("curves.csv"), QByteArray("time,tran.v(out)\n0,0\n0.001,0.5\n0.002,1\n"));
+        QVERIFY(control->irreversible("export_data", {{"save_as", folder + "/curves.csv"}}));
+        QVERIFY(!control->irreversible("export_data", {{"save_as", folder + "/fresh.csv"}}));
+        r = call("undo", {{"files", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(read("curves.csv"), QByteArray("time,tran.v(out),tran.v(in)\n0,0,1\n0.001,0.5,1\n0.002,1,1\n"));
+        // A dataset beside it: to plot.
+        r = call("export_data", {{"diagram", 1}, {"traces", QJsonArray{1}}, {"save_as", folder + "/copy"}, {"format", "dataset"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("then").toString().contains("copy:variable"), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(folder + "/copy.dat"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // ---- round 6: the gaps of one session (qucs-mcp-wishlist)
 
     // An ngspice .OPTIONS option with no value - a flag, written alone - is

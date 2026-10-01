@@ -303,6 +303,7 @@ private:
     QJsonObject setSubcircuitParameters(const QJsonObject& args);
     QJsonObject importNetlist(const QJsonObject& args);
     QJsonObject importData(const QJsonObject& args);
+    QJsonObject exportData(const QJsonObject& args);
     QJsonObject findLibraryComponent(const QJsonObject& args);
     QJsonObject describePart(const QJsonObject& args);
     /// What a run of \a doc wrote: its dataset - written when it is newer than
@@ -363,6 +364,12 @@ private:
     /// The dataset get_dataset reads for \a args: a dataset file, or the
     /// one of a schematic or data display (open or not) for a simulator.
     QString datasetPath(const QJsonObject& args, QString* error) const;
+    /// The dataset beside \a args' document that \a wanted names when each
+    /// is name:variable of one dataset (m:gain imported, ngspice/run1:v(out)
+    /// kept); empty when they are not, and why in \a error when they are
+    /// but cannot be read (of two datasets, none of that name). \a tool is
+    /// the one that reads them.
+    QString datasetNamedBy(const QJsonObject& args, const QJsonArray& wanted, const QString& tool, QString* error) const;
     /// The open schematic whose simulations write the dataset \a file (the
     /// document \a args name first), or nullptr.
     Schematic* schematicOfDataset(const QString& file, const QJsonObject& args) const;
