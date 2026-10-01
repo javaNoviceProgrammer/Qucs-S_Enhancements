@@ -37,7 +37,7 @@ what is said of them comes from their netlists, not runs. Methods:
    No crash and no server that died, but for the one probe of F1. Nothing was written outside the scratch folder. Two probes
    (A7) wrote outside their own workspace on purpose, still inside the scratch folder.
 
-*Status:* found, not fixed (as asked: the hunt went on past each finding).
+*Status:* found during the hunt, not fixed then (as asked: the hunt went on past each finding). All 30 were fixed afterwards: F1, A1, A6, A8, A9, D1 and D4 in `a1f731a`; A2-A5, A7, D2 and D3 in `155f3d2`; B1-B5 in `003aac6`; C1-C9 in `5c89ca0`; D5 and E1 in `8f88220`. Each fix has a test (but D1, whose part is not built in this tree, and D4, a test's own fix), and each test was checked by breaking the fix it covers: 81 breaks, each caught (five after a test was made sharper) but one that changes nothing a reader sees (B4: a CR LF read as two line ends, and the empty line skipped). E1 is tested by reading and refusing only: no test runs a command.
 
 `~/QucsWorkspace` and `~/Library/Caches/qucs-s` were not written by these runs. During the hour,
 something else wrote `~/QucsWorkspace/pi_fit_S11_mag.csv` (19:53). No probe names it, and every
@@ -96,6 +96,8 @@ Release build). The window crashes the same way on Simulate or on any netlist of
 *Fix:* Check Schematic calls two ports of one number an error, and so does the netlister. The
 loop stops at the shorter of the two lists.
 
+**Fixed in `a1f731a`.** `Schematic::throughAllComps` stops at the ports the subcircuit has, in both of its loops, so no index runs past `PortTypes`. Check Schematic says why: "P1 and P2 are all port 2: each port needs a number of its own, or an instance's pins and the subcircuit's do not match". Test: `test_symbol_pins` `twoPortsOfOneNumber`.
+
 ## A. Wrong answers, or silent
 
 ### A1. A net with two names is netlisted as two nodes
@@ -139,6 +141,8 @@ one label, as `netsOf` does, and Check Schematic should say which label is dropp
 check should tell a net that is ground and labelled, and say what the netlist does with two
 labels.
 
+**Fixed in `a1f731a`.** `Schematic::unifyNamedNets` joins the nets as the check's `netsOf` does, after the ground and the labels name them: each net is one node, named gnd when it is ground, else by the first of its names in order. A label's name that the netlist drops is not printed. The check's note says which name the netlist keeps ("one net has 2 names, a and b: the netlist calls it a, and a plot or an equation of b finds nothing - keep one label"), and a label on a grounded net is a note of its own. Test: `test_erc` `aNetWithTwoNamesIsOneNode`.
+
 ### A2. `clean_scratch` with `datasets` trashes by the file's name
 
 `amp.sch` has its Data Set set to `run.dat`. Beside it is `amp.dat`, a dataset of that name (an
@@ -150,6 +154,8 @@ not the schematic's and left its own (`h_clean.py`). It looks for
 *Fix:* take the datasets from `getDataSet()`. A `.dat` with an import's origin is never a
 simulation's.
 
+**Fixed in `155f3d2`.** `clean_scratch` with `datasets` trashes the datasets of the schematic's Data Set (each simulator's), and the netlists kept for them; a `.dat` with an import's origin is never one. Test: `test_qucs_control` `theDataSetNamesTheResults`.
+
 ### A3. `copy_document` leaves a dataset behind when the Data Set is not the file's name
 
 The examples' templates keep their own Data Set: `AC_Passive_analysis.sch`, copied as `a.sch`, has
@@ -159,6 +165,8 @@ description says it copies "a schematic together with its datasets and data disp
 them by the file's name, as A2 does.
 
 *Fix:* the same: by `getDataSet()` (and `getDataDisplay()`).
+
+**Fixed in `155f3d2`.** `copy_document` copies the Data Set's datasets and the Data Display's `.dpl` (from the open document, or its file's `<DataSet=...>`), not an import of the file's name. Test: `theDataSetNamesTheResults`.
 
 ### A4. A data display reads the dataset of its own name
 
@@ -171,6 +179,8 @@ makes a `.dpl` the same way (upstream's behaviour), and the wishlist's `document
 "data_display"` inherits it.
 
 *Fix:* a data display made for a schematic takes its Data Set.
+
+**Fixed in `155f3d2`.** A data display made for a schematic (F4, `add_diagram` with `document: "data_display"`, `new_document`) takes the schematic's Data Set. Test: `theDataSetNamesTheResults`.
 
 ### A5. `keep_as` takes an imported dataset's name
 
@@ -192,6 +202,8 @@ with `name: "run"` was taken and wrote `run.dat` (`h_dsimport.py`), the file a Q
 importer's naming treats the Data Sets of the folder's schematics as taken, as it does their file
 names.
 
+**Fixed in `155f3d2`.** `keep_as`, `save_document` and `copy_document` refuse an imported dataset's name. `import_data` refuses a name that is a schematic's Data Set, and the importer's naming counts the folder's Data Sets as taken. Test: `theDataSetNamesTheResults`.
+
 ### A6. A net named GND: ground to the check, an ordinary node to SPICE OPUS
 
 Without a ground symbol, a net labelled `GND` is netlisted as node `GND`, under ngspice and SPICE
@@ -205,6 +217,8 @@ earlier probe, `h_gndsim.py`, seemed to show `GND` netlisted as 0. Its files `n_
 
 *Fix:* the check's ground by name should follow the simulator: any case for ngspice, `0` (and
 exactly `gnd`, which the netlist writes as 0) for the others.
+
+**Fixed in `a1f731a`.** The check's ground by name follows the simulator: 0 and gnd for every one, gnd in any case for ngspice alone. Tests: `test_erc` `aNetWithTwoNamesIsOneNode` (a GND label under ngspice and SPICE OPUS), `aNetNamedAsGroundIsNotPrinted`.
 
 ### A7. A Data Set or Data Display out of the schematic's folder
 
@@ -227,6 +241,8 @@ left an empty `out.dpl` out of the folder. With `amp.txt` it answered the same a
 *Fix:* a Data Set and a Data Display are names in the schematic's folder (no `/`, no `..`); a
 Data Set ends in `.dat` (the dialog can add it). A data display that cannot be made writes
 nothing.
+
+**Fixed in `155f3d2`.** A Data Set or Data Display is a name beside the schematic: folders and `..` are left out as it is read or set (the settings dialog shows it so), and a Data Set ends in `.dat`. A Data Display that is no `.dpl` is refused by the tools, and no file is made or opened for it. Test: `theDataSetNamesTheResults`.
 
 ### A8. Two ports on one net: the `.SUBCKT` line names a node twice
 
@@ -252,6 +268,8 @@ said.
 
 *Fix:* the netlister joins a second port on a net with a 0 V source (or `R 0`) from a node of its
 own, and Check Schematic notes two ports on one net.
+
+**Fixed in `a1f731a`.** Each port of a subcircuit is a node of its own on the `.SUBCKT` line: a port on ground or on another port's net gets `_port<n>_<k>`, joined to the net by a 1e-12 Ohm resistor (a 0 V source made a loop of sources when the instance grounds the pin too). Test: `test_symbol_pins` `eachPortIsANodeOfItsOwn`.
 
 ### A9. A port's net named after it: ground, or another net in another case
 
@@ -279,6 +297,8 @@ with the names ports give.
 `net<n>`, `_net<n>`), and compares names as the simulator does (without case for the SPICE ones).
 Check Schematic should note a port named gnd: the pin is ground inside under ngspice.
 
+**Fixed in `a1f731a`.** A port's net is named after it only when no other net has that name in any case, and never gnd in any case or a generated name; the check says why such a pin gets a generated name. Test: `test_symbol_pins` `aPortIsNotNamedAsGroundOrAsAnotherNet`.
+
 ## B. Data out and in: the Export tab, and the import
 
 ### B1. Memory and time
@@ -303,6 +323,8 @@ value. At Excel's own limit, a million rows of 20 columns, that is about 12 GB. 
 straight from the values, not through `Sheet`. Move a large export off the GUI thread, with a
 progress dialog.
 
+**Fixed in `003aac6`.** A table is written row by row: CSV, TSV and text straight to the file, a workbook's sheet XML from the values (`sheet::xlsxOf`). On 500,000 points of 4 variables, read into memory as the hunt measured: CSV 1025 MB to 198 MB, text 537 MB to 213 MB, a workbook 1826 MB to 477 MB. Written to a file, CSV and text take nothing over the dataset read. A large zip part is packed at zlib's own level: the workbook took 9.3 s, now 3.3 s, 1.4 % larger. An export that takes a while shows how far it is, with Stop; stopped or failed, the file there stays as it was. It still runs on the GUI thread. Tests: `test_data_export` `aLargeTableIsWrittenAsItGoes` (the files are the same as the spreadsheet's writers make), `aLongExportCanBeStopped`.
+
 ### B2. The file's name does not choose its format
 
 `DataExportPanel::exportFile` takes the format from the combo box, and adds its suffix only to a
@@ -312,11 +334,15 @@ name without one. Typed as `out.xlsx` with CSV chosen, the file is CSV text that
 *Fix:* a suffix of a known format chooses it (said in the status); an unknown one gets the
 chosen format's suffix added.
 
+**Fixed in `003aac6`.** A name that ends in a format's suffix chooses that format, and the status says so; a name of no format's gets the chosen one's suffix, and the dialog asks before replacing that file. Test: `test_data_export` `theExportTab`.
+
 ### B3. A dataset exported beside the schematic is not in the Data tab
 
 Exported as a Qucs-S dataset into the schematic's folder, the new `.dat` appears in the Export
 tab's own list (it refreshes itself), but the Data tab's list is built when the dialog opens, and
 the Export tab tells it nothing. (Reading; the Import tab emits `datasetsChanged` for this.)
+
+**Fixed in `003aac6`.** The Export tab says when it wrote a dataset beside the schematic (`datasetsChanged`), and the dialog lists it in the Data tab. Test: `test_data_export` `inTheDiagramsDialog`.
 
 ### B4. Importing a large CSV goes through the cells too
 
@@ -326,6 +352,8 @@ reads a CSV or TSV with `sheet::readCsv` (`dataimport.cpp`): a `Cell` of several
 value, as B1's export writes it. The Import tab does the same on the GUI thread.
 
 *Fix:* parse a table's numbers as a stream into the columns, without the workbook model.
+
+**Fixed in `003aac6`.** A CSV or TSV is read as rows, a row of numbers kept as numbers; text in columns too. 200,000 rows of 5 columns: 409 ms and 384 MB before, 159 ms and 107 MB now, read the same. Test: `test_data_import` `aCsvIsReadAsRows`.
 
 ### B5. For an imported dataset, the file proposed is its source
 
@@ -337,6 +365,8 @@ with fewer columns chosen, or another x, the original is gone. (Reading.)
 
 *Fix:* refuse an imported dataset's source as the target, as the dataset itself is refused, and
 propose another name (`bench_export.csv`).
+
+**Fixed in `003aac6`.** The file an imported dataset of the folder came from is refused as the target, and the file proposed for an imported dataset is `<name>_export`. Test: `test_data_export` `theExportTab`.
 
 ## C. The tools
 
@@ -358,6 +388,8 @@ Each was on the GUI thread.
 *Fix:* read only the variables' names (the `<dep name` lines) for the hint, and once per call,
 not per trace.
 
+**Fixed in `5c89ca0`.** The hint reads the imported datasets' variable names from their `<dep` lines alone, kept while the file is as it was. 8 traces beside an 8 MB import: 526 ms before, 3 ms now. Test: `test_qucs_control` `theToolsTakeBackWhatTheyGive`.
+
 ### C2. `run_script`'s `qucs.call` refuses `max_chars`
 
 The instructions say every tool takes `max_chars`; a direct call and a `batch`'s calls do. Inside
@@ -365,6 +397,8 @@ The instructions say every tool takes `max_chars`; a direct call and a `batch`'s
 max_chars: nothing was done". The same happens for the text `"300"` (`h_maxscript.py`).
 
 *Fix:* take it out of a script's calls as `batch` does (`readMaxChars`, `maxCharsRefusal`).
+
+**Fixed in `5c89ca0`.** `qucs.call` takes `max_chars` as a batch's calls do, and refuses one that is not a number. Test: `theToolsTakeBackWhatTheyGive`.
 
 ### C3. `get_dataset` refuses the trace name it gives
 
@@ -377,6 +411,8 @@ On the schematic, `variables: ["m:gain"]` says there is no dataset of `p.sch` ye
 *Fix:* `resolve` takes `name:variable` when the dataset is `name`'s, and `get_dataset` of a
 schematic follows `name:` to that dataset.
 
+**Fixed in `5c89ca0`.** `Dataset::resolve` takes `name:variable` when name is the dataset's own. `get_dataset` of a schematic whose variables are all of one other dataset (`m:gain`, `ngspice/run1:v(out)`) reads that dataset, and says so when there is none. Test: `theToolsTakeBackWhatTheyGive`.
+
 ### C4. `import_data` reads a schematic as data
 
 `import_data` with `file: "p.sch"` made `p_2.dat`, "text" with the columns B to F: the
@@ -384,6 +420,8 @@ schematic's coordinates. It noted "22 lines among the numbers that were not numb
 out" (`h_import.py`). The Import tab's file filter keeps a schematic out; the tool does not.
 
 *Fix:* refuse Qucs-S's own documents (`.sch`, `.dpl`, `.sym`) as data.
+
+**Fixed in `5c89ca0`.** The importer refuses `.sch`, `.dpl` and `.sym` ("p.sch is a schematic of Qucs-S, not data"), for the tool and the Import tab alike. Test: `theToolsTakeBackWhatTheyGive`.
 
 ### C5. `set_subcircuit_parameters` takes any default without a space
 
@@ -395,6 +433,8 @@ With an instance that sets its own value, ngspice ran; one that takes the defaul
 *Fix:* a default reads as a value (`units::read`), an expression in braces, or a parameter's
 name.
 
+**Fixed in `5c89ca0`.** A default is a number (a scale and unit letters after it), an expression in braces or quotes, or a name. Test: `theToolsTakeBackWhatTheyGive`.
+
 ### C6. `make_symbol` takes a prefix with `;`
 
 `prefix: "X;Y"` was taken: the next instance is `X;Y1`, netlisted as `X;Y1 _net0 _net1 sub`.
@@ -402,6 +442,8 @@ ngspice reads from the `;` as a comment. `é` and `1X` were taken too (`h_prefix
 the empty prefix were refused.
 
 *Fix:* a prefix is a SPICE word: letters, digits and `_`, beginning with a letter.
+
+**Fixed in `5c89ca0`.** A prefix is a letter, then letters, digits and `_`. Test: `theToolsTakeBackWhatTheyGive`.
 
 ### C7. `set_dialog` on a tree: what is out of range is not said
 
@@ -411,6 +453,8 @@ answer gives the value back, and the reason is left out (`h_treefuzz.py`, 60 rou
 
 *Fix:* "the tree has 1 row (0)", "a row is [row, column, checked or text]".
 
+**Fixed in `5c89ca0`.** A row out of range says how many rows the tree or table has ("the tree has 2 rows (0 to 1)"), a column its columns, and a value of the wrong form what a row is. Test: `test_qucs_control` `aDialogsTreeIsReadAndChecked`.
+
 ### C8. `import_data` lists every column
 
 A CSV of 5,000 columns and 3 rows imported fine, but the answer was 112 KB: `columns` held all
@@ -419,6 +463,8 @@ context takes it whole, for a list it needs only to choose x from.
 
 *Fix:* cut `columns` as the others are cut, saying how many were left out, or give it only when
 x was not found.
+
+**Fixed in `5c89ca0`.** `columns` is cut at 100, and `columns left out` says how many more there are. Test: `theToolsTakeBackWhatTheyGive`.
 
 ### C9. A kept run's trace names name the current run
 
@@ -431,6 +477,8 @@ but not the dataset's name when it is not the schematic's own (C3 is the same fo
 
 *Fix:* the trace of a dataset other than the schematic's own is `<prefix>/<name>:<variable>`.
 
+**Fixed in `5c89ca0`.** A dataset that is no schematic's Data Set (a kept run, an import) has its traces named `<prefix>/<name>:<variable>`; the schematic's own, open or not, keep `<prefix>/<variable>`. Test: `theToolsTakeBackWhatTheyGive`.
+
 ## D. Minor
 
 ### D1. Vac_SPICE counts as an AC source whatever its text
@@ -441,17 +489,23 @@ the warning is not given (`erc.cpp`, reading). The other sources (Vpulse, Vrect,
 ...) write `AC 0` and are rightly not counted; none of the 251 examples is warned by either new
 rule.
 
+**Fixed in `a1f731a`.** Vac_SPICE is counted by its text's AC word, as S4Q_V is. Not tested: the part is not built in this tree.
+
 ### D2. The kept netlists are never removed
 
 Each ngspice run, from the window too, keeps its netlist in the cache (`netlists/<dataset>-
 <key>.cir`), one for each dataset path ever simulated. `clean_scratch` does not remove them, nor
 does anything when a schematic or dataset is deleted.
 
+**Fixed in `155f3d2`.** A kept netlist records its dataset's path, and those of datasets that are gone (and of the stamp of before, with no path) are removed when another is kept. `clean_scratch` removes those of the datasets it trashes. Test: `theDataSetNamesTheResults`.
+
 ### D3. In the shared folder, `clean_scratch` trashes everything there
 
 With no project open, schematics share one scratch folder. When the last run there was this
 schematic's, `clean_scratch` trashes every file in the folder: what other schematics' runs left
 under other names too, not only the last run's files.
+
+**Fixed in `155f3d2`.** In the shared folder only the last run's own files go (`spice4qucs.*`, `log.txt`). Test: `test_qucs_control` `projectsAndCopiesAreTended`.
 
 ### D4. A test of `d62605f` grounds nothing
 
@@ -460,6 +514,8 @@ wire from 0, 90 to 100, 90. A pin on a wire's middle is not connected ("the grou
 connected to nothing"), so the cases "with a ground symbol" are those without one. The fix
 holds (the probes ran with one connected), but the test does not show it. The same fixture is
 in `aNamedGroundAndOneSwitchedOff`.
+
+**Fixed in `a1f731a`.** The fixture's ground symbol is at the wire's end, connected.
 
 ### D5. The SPICE file part's Preprocessor starts the wrong program (upstream)
 
@@ -471,6 +527,8 @@ is not on `PATH`; were it there, its arguments would be wrong. So the option has
 fixed, so no command of the file's own runs.
 
 *Fix:* `script.prepend(interpreter)`, and `cmd` the interpreter.
+
+**Fixed in `8f88220`.** `SpiceFile::preprocessorCommand` builds it: Perl, then the script (the one beside Qucs-S, else found on PATH with `perl -S`), then the file (and the output, for spiceprm). Test: `test_erc` `aSpiceFilesPreprocessorIsPerlRunningItsScript`, which builds the command and runs nothing.
 
 ## E. Security
 
@@ -499,6 +557,8 @@ touched a file there.
 `system`, `!`) line in ngspice text. `simulate` (and `tune`, which simulates again and again)
 refuses a schematic that has one unless asked (an argument, which the client's permission prompt
 then shows), and says what ran.
+
+**Fixed in `8f88220`.** `erc::commandsRun` lists what a run executes besides the simulator: an active command part's lines but its comments, a line of ngspice text that starts with `shell`, `system` or `!` (a custom simulation's, Nutmeg's, `.spiceinit`'s), and the Octave script of "run script after simulation". Check Schematic warns of each at its part. `simulate`, `tune` and `tune`'s knobs refuse a schematic with one before anything else, naming them, unless `allow_commands` is given. The runs then carry it, and the check's warnings in the answer say what ran. Not covered: a `.control` block in an included file, and code loaded by ngspice (`pre_osdi`, `codemodel`). The window's own Simulate is as before. Tests: `test_erc` `commandsARunExecutesAreSaid` and `test_qucs_control` `commandsAreNotRunUnasked`. These only read and refuse: the schematic has no analysis, so even a run asked for stops before anything runs.
 
 ## What was found right
 
