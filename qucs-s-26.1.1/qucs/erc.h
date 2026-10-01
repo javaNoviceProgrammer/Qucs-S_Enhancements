@@ -96,7 +96,7 @@ int errorCount(const QList<Issue>& issues);
 /// system, !) - a custom simulation's, Nutmeg's, .spiceinit's -, and the
 /// Octave script the Document Settings run after each simulation. Each
 /// said so ("CMD1 runs a command in a shell after each simulation: touch
-/// x"); check() warns of each.
+/// x"); check() warns of each when QucsSettings.CheckCommands is on.
 QStringList commandsRun(Schematic* doc);
 
 } // namespace qucs_s::erc

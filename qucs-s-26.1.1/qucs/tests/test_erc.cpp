@@ -23,6 +23,7 @@
 #include "main.h"
 #include "misc.h"
 #include "erc.h"
+#include "settings.h"
 #include "components/spicefile.h"
 #include "messagedock.h"
 #include "simulationconsole.h"
@@ -308,12 +309,29 @@ private slots:
     // it: ground, else the first label; the check says which is dropped.
     // A net named GND is ground to ngspice only (A6).
     // What a run executes besides the simulator (bug hunt 2026-09-30, E1):
-    // each said - a command part's lines but its comments, ngspice's shell
+    // each found - a command part's lines but its comments, ngspice's shell
     // in a custom simulation, the Octave script run after it; nothing of a
     // part turned off, of a command of comments alone, or of a word that
-    // only begins so. (Read here, never run.)
+    // only begins so. Check Schematic warns of them when the Simulator
+    // Settings say so - off by default; the setting kept in the settings
+    // file and set by its box in the dialog. (Read here, never run.)
     void commandsARunExecutesAreSaid()
     {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore()
+            {
+                QucsSettings = saved;
+                saveApplSettings();   // (the file too: the dialog wrote it)
+            }
+        } restore;
+        QVERIFY(!QucsSettings.CheckCommands);   // the default
+        // (And as a settings file without it is read.)
+        QVERIFY(!_settings::Get().itemDefault<bool>("CheckCommands"));
+        QucsSettings.CheckCommands = true;
+        _settings::Get().remove("CheckCommands");
+        QVERIFY(loadSettings());
+        QVERIFY(!QucsSettings.CheckCommands);
         const QString file = dir.filePath("commands.sch");
         write(file, "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <RunScript=1>\n  <Script=post.m>\n</Properties>\n<Components>\n"
                     "  <CMD CMD1 1 100 200 -30 20 0 0 \"# what it does\\necho qucs-test\\nls\" 1 \"no\" 1 \"no\" 0>\n"
@@ -328,7 +346,23 @@ private slots:
         QCOMPARE(said, (QStringList{"CMD1 runs a command in a shell after each simulation: echo qucs-test (and 1 more lines)",
                                     "CUSTOM1's ngspice text runs a command in a shell: SHELL echo qucs-test",
                                     "Octave runs the script post.m after each simulation (Document Settings: run script after simulation)"}));
-        // Check Schematic warns of each, at its part.
+        // Found, but not said while the setting is off.
+        const auto anyOf = [&said](const QList<Issue>& issues) {
+            return std::any_of(issues.cbegin(), issues.cend(), [&](const Issue& i) { return said.contains(i.message); });
+        };
+        QVERIFY(!anyOf(check(&doc)));
+        // On, in the dialog: kept, and Check Schematic warns of each, at its part.
+        {
+            SimSettingsDialog dialog;
+            auto* box = dialog.findChild<QCheckBox*>("cbCheckCommands");
+            QVERIFY(box != nullptr && !box->isChecked());
+            box->setChecked(true);
+            QVERIFY(QMetaObject::invokeMethod(&dialog, "slotApply"));
+        }
+        QVERIFY(QucsSettings.CheckCommands);
+        QucsSettings.CheckCommands = false;
+        QVERIFY(loadSettings());
+        QVERIFY(QucsSettings.CheckCommands);
         const QList<Issue> issues = check(&doc);
         for (const QString& s : said)
             QVERIFY2(std::any_of(issues.cbegin(), issues.cend(), [&](const Issue& i) { return i.severity == Severity::Warning && i.message == s; }),
@@ -486,6 +520,41 @@ private slots:
         QCOMPARE(listed(), QStringList{"E no ground: the circuit has no reference node"});
         QVERIFY(dock->problemsOfHierarchy());
         QTRY_VERIFY2(chip->text().startsWith("2 errors,"), qPrintable(chip->text()));
+
+        // The commands a run executes: warned of as the box says, checked
+        // again when it changes (bug hunt 2026-09-30, E1; off by default).
+        const QString withCommand = dir.filePath("with_command.sch");
+        write(withCommand, "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                           "  <CMD CMD1 1 100 200 -30 20 0 0 \"echo qucs-test\" 1 \"no\" 1 \"no\" 0>\n"
+                           "  <R R1 1 300 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                           "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        QVERIFY(app.gotoPage(withCommand, false, false));
+        const auto checkCommands = [&app](bool on) {
+            QTimer poke;
+            poke.setInterval(20);
+            bool seen = false;
+            QObject::connect(&poke, &QTimer::timeout, [&] {
+                auto* dialog = qobject_cast<SimSettingsDialog*>(QApplication::activeModalWidget());
+                if (dialog == nullptr) return;
+                poke.stop();
+                seen = true;
+                dialog->findChild<QCheckBox*>("cbCheckCommands")->setChecked(on);
+                QMetaObject::invokeMethod(dialog, "slotApply");
+            });
+            poke.start();
+            menuAction(&app, "Simulation", "Simulators Settings...")->trigger();
+            return seen;
+        };
+        const QString warning = "CMD1 runs a command in a shell after each simulation: echo qucs-test";
+        QTRY_VERIFY2(chip->toolTip().contains("R1: pin 1 is connected to nothing"), qPrintable(chip->toolTip()));   // (this one's)
+        QVERIFY(!QucsSettings.CheckCommands);
+        QTRY_VERIFY2(!chip->toolTip().contains(warning), qPrintable(chip->toolTip()));
+        const QString before = chip->text();
+        QVERIFY(checkCommands(true));
+        QTRY_VERIFY2(chip->toolTip().contains(warning), qPrintable(chip->toolTip()));
+        QVERIFY(chip->text() != before);
+        QVERIFY(checkCommands(false));
+        QTRY_VERIFY2(!chip->toolTip().contains(warning) && chip->text() == before, qPrintable(chip->text()));
     }
 
     void theChecksFindEachKindOfProblem()
