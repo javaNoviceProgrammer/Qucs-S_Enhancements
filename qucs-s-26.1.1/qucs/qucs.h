@@ -95,6 +95,19 @@ public:
   explicit QucsFileSystemModel(QObject *parent = nullptr)
       : QFileSystemModel(parent){};
   QVariant data(const QModelIndex &index, int role) const override;
+
+  /// What a row is as a project (ProjectStateRole): none (a file, "..", a
+  /// folder that is no project), a project, or the project open now.
+  enum ProjectState { NoProject = 0, ClosedProject, OpenProject };
+  static constexpr int ProjectStateRole = Qt::UserRole + 100;
+  /// The project open now, by its folder (empty: none). A row is it when it
+  /// is that folder - or leads to it, as a linked project does.
+  void setOpenProject(const QString &path);
+  QString openProject() const { return a_openProject; }
+
+private:
+  QString a_openProject;           // as given, cleaned
+  QString a_openProjectCanonical;  // the folder it is
 };
 
 class QucsSortFilterProxyModel : public QSortFilterProxyModel {
@@ -681,7 +694,7 @@ private:
   // ********** Properties ************************************************
   QStack<QString> HierarchyHistory; // keeps track of "go into subcircuit"
   QString QucsFileFilter;
-  QFileSystemModel *a_homeDirModel;
+  QucsFileSystemModel *a_homeDirModel;
   QucsSortFilterProxyModel *a_proxyModel;
   int ccCurIdx; // CompChooser current index (used during search)
   bool a_netlist2Console;

@@ -90,6 +90,25 @@ QModelIndex rowOf(QListView* view, const QString& name)
     return {};
 }
 
+// What is drawn at the right end of a row of the Projects panel (its last
+// 30 pixels, through the middle): a green dot, a grey one, or nothing.
+QString dotOf(QListView* view, const QModelIndex& index)
+{
+    const QImage image = view->viewport()->grab().toImage();
+    const qreal dpr = image.devicePixelRatio();
+    const QRect row = view->visualRect(index);
+    const QColor ground = image.pixelColor(int((row.right() - 40) * dpr), int(row.center().y() * dpr));
+    bool green = false, grey = false;
+    for (int x = row.right() - 30; x <= row.right(); ++x)
+        for (int y = row.center().y() - 2; y <= row.center().y() + 2; ++y) {
+            const QColor c = image.pixelColor(int(x * dpr), int(y * dpr));
+            if (c.green() > c.red() + 60 && c.green() > c.blue() + 40) green = true;
+            const int apart = std::abs(c.red() - ground.red()) + std::abs(c.green() - ground.green()) + std::abs(c.blue() - ground.blue());
+            if (apart > 60 && std::abs(c.red() - c.green()) < 16 && std::abs(c.green() - c.blue()) < 16) grey = true;
+        }
+    return green ? QStringLiteral("green") : grey ? QStringLiteral("grey") : QStringLiteral("none");
+}
+
 // Whether a row of the Projects panel has the project's icon.
 bool hasProjectIcon(const QModelIndex& index)
 {
@@ -421,6 +440,94 @@ private slots:
         QCOMPARE(app.ProjName, QStringLiteral("plain"));
         QCOMPARE(QucsSettings.QucsWorkDir.absolutePath(), QDir(plain).absolutePath());
         app.slotMenuProjClose();
+    }
+
+    // Which project is open, at a glance: a green dot at the right end of
+    // its row, a grey one on the other projects, none on a folder that is
+    // no project or on ".."; the tooltip says which. It follows Open and
+    // Close, and a linked project is the one open whether it was opened
+    // through the link or by the folder it leads to. A long name ends
+    // before the dot.
+    void theOpenProjectHasAGreenDot()
+    {
+        fresh("dots");
+        for (const char* name : {"amp_prj", "filter_prj", "notes"}) QVERIFY(QDir().mkpath(workspace + "/" + name));
+        const QString far = dir.filePath("dots/elsewhere/far_prj");
+        QVERIFY(QDir().mkpath(far));
+        QCOMPARE(linkProject(far, workspace).status, Result::Done);
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.switchWorkspace(workspace));
+        QListView* panel = app.projectsView();
+        QTRY_COMPARE(listed(panel), QStringList({"amp_prj", "far_prj", "filter_prj", "notes"}));
+        panel->resize(320, 240);
+        const auto state = [&](const char* name) {
+            return rowOf(panel, name).data(QucsFileSystemModel::ProjectStateRole).toInt();
+        };
+        const auto tip = [&](const char* name) { return rowOf(panel, name).data(Qt::ToolTipRole).toString(); };
+        for (const char* name : {"amp_prj", "far_prj", "filter_prj"}) {
+            QCOMPARE(state(name), int(QucsFileSystemModel::ClosedProject));
+            QCOMPARE(dotOf(panel, rowOf(panel, name)), QStringLiteral("grey"));
+            QVERIFY2(tip(name).startsWith("A project, not open"), qPrintable(tip(name)));
+        }
+        QCOMPARE(state("notes"), int(QucsFileSystemModel::NoProject));
+        QCOMPARE(dotOf(panel, rowOf(panel, "notes")), QStringLiteral("none"));
+        QVERIFY(!tip("notes").contains("project"));
+        QVERIFY2(tip("far_prj").contains("Linked from"), qPrintable(tip("far_prj")));   // as it was
+
+        app.openProject(workspace + "/amp_prj");
+        QCOMPARE(state("amp_prj"), int(QucsFileSystemModel::OpenProject));
+        QCOMPARE(dotOf(panel, rowOf(panel, "amp_prj")), QStringLiteral("green"));
+        QCOMPARE(tip("amp_prj"), QStringLiteral("The project open now"));
+        QCOMPARE(state("filter_prj"), int(QucsFileSystemModel::ClosedProject));
+        QCOMPARE(dotOf(panel, rowOf(panel, "filter_prj")), QStringLiteral("grey"));
+        // Chosen (highlighted), the dot is still there.
+        panel->setCurrentIndex(rowOf(panel, "amp_prj"));
+        QCOMPARE(dotOf(panel, rowOf(panel, "amp_prj")), QStringLiteral("green"));
+        panel->setCurrentIndex(rowOf(panel, "filter_prj"));
+        QCOMPARE(dotOf(panel, rowOf(panel, "filter_prj")), QStringLiteral("grey"));
+
+        app.slotMenuProjClose();
+        QCOMPARE(state("amp_prj"), int(QucsFileSystemModel::ClosedProject));
+        QCOMPARE(dotOf(panel, rowOf(panel, "amp_prj")), QStringLiteral("grey"));
+
+        // A linked project, opened by where it is.
+        app.openProject(far);
+        QCOMPARE(state("far_prj"), int(QucsFileSystemModel::OpenProject));
+        QCOMPARE(dotOf(panel, rowOf(panel, "far_prj")), QStringLiteral("green"));
+        QVERIFY2(tip("far_prj").startsWith("The project open now\nLinked from"), qPrintable(tip("far_prj")));
+        QCOMPARE(state("amp_prj"), int(QucsFileSystemModel::ClosedProject));
+        app.slotMenuProjClose();
+        app.openProject(workspace + "/far_prj");   // and through the link
+        QCOMPARE(state("far_prj"), int(QucsFileSystemModel::OpenProject));
+        app.slotMenuProjClose();
+
+        // ".." in a folder: none.
+        QVERIFY(QDir().mkpath(workspace + "/notes/inner_prj"));
+        emit panel->doubleClicked(rowOf(panel, "notes"));
+        QTRY_COMPARE(listed(panel), QStringList({"..", "inner_prj"}));
+        QCOMPARE(state(".."), int(QucsFileSystemModel::NoProject));
+        QCOMPARE(dotOf(panel, rowOf(panel, "..")), QStringLiteral("none"));
+        QCOMPARE(dotOf(panel, rowOf(panel, "inner_prj")), QStringLiteral("grey"));
+
+        // A long name is cut short before the dot.
+        const QString longName = QStringLiteral("a_project_with_a_name_much_too_long_for_the_panel_prj");
+        QVERIFY(QDir().mkpath(workspace + "/notes/" + longName));
+        QTRY_VERIFY(rowOf(panel, longName).isValid());
+        panel->resize(200, 240);
+        QCOMPARE(dotOf(panel, rowOf(panel, longName)), QStringLiteral("grey"));
+        // The name's last pixel is left of the dot's room.
+        const QImage image = panel->viewport()->grab().toImage();
+        const QRect row = panel->visualRect(rowOf(panel, longName));
+        const QColor ground = image.pixelColor(int((row.right() - 2) * image.devicePixelRatio()), int(row.top() * image.devicePixelRatio()) + 1);
+        int lastInk = -1;
+        for (int x = row.left(); x <= row.right() - 30; ++x)
+            for (int y = row.top() + 2; y < row.bottom() - 1; ++y) {
+                const QColor c = image.pixelColor(int(x * image.devicePixelRatio()), int(y * image.devicePixelRatio()));
+                if (std::abs(c.lightness() - ground.lightness()) > 80) lastInk = x;
+            }
+        const QRect dot = QRect(row.right() - 30, row.top(), 31, row.height());
+        QVERIFY2(lastInk > 0 && lastInk < dot.left(), qPrintable(QString("%1 %2").arg(lastInk).arg(dot.left())));
     }
 
     // Above the projects, the File Browser's filter: the projects and
