@@ -561,11 +561,30 @@ QString misc::runNetlistFile(const QString& dataset)
 }
 
 namespace {
-// What tells a dataset from the one written before: its time and size.
+// What tells a dataset from the one written before: its time and size -
+// and where it is, so a record of one that is gone can be told (and kept
+// records do not pile up for ever).
 QString datasetStamp(const QString& dataset)
 {
   const QFileInfo info(dataset);
-  return QStringLiteral("* dataset %1 %2").arg(info.lastModified().toMSecsSinceEpoch()).arg(info.size());
+  const QString where = info.canonicalFilePath().isEmpty() ? QDir::cleanPath(info.absoluteFilePath()) : info.canonicalFilePath();
+  return QStringLiteral("* dataset %1 %2 %3").arg(info.lastModified().toMSecsSinceEpoch()).arg(info.size()).arg(where);
+}
+
+// The kept netlists of datasets that are no more: away.
+void pruneRunNetlists(const QString& folder)
+{
+  for (const QFileInfo& record : QDir(folder).entryInfoList({QStringLiteral("*.cir")}, QDir::Files)) {
+    QFile f(record.absoluteFilePath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+    const QString stamp = QString::fromUtf8(f.readLine()).trimmed();
+    f.close();
+    // "* dataset <time> <size> <path>"; one of before the path was kept
+    // goes too (it never matches again).
+    const QString where = stamp.section(QLatin1Char(' '), 4);
+    if (!stamp.startsWith(QLatin1String("* dataset ")) || where.isEmpty() || !QFileInfo::exists(where))
+      QFile::remove(record.absoluteFilePath());
+  }
 }
 } // namespace
 
@@ -579,6 +598,7 @@ bool misc::keepRunNetlist(const QString& dataset, const QString& netlist, const 
     if (const QRegularExpressionMatch m = head.match(lines.first()); m.hasMatch()) lines.first() = m.captured(1) + schematic;
   const QString file = runNetlistFile(dataset);
   if (!QDir().mkpath(QFileInfo(file).absolutePath())) return false;
+  pruneRunNetlists(QFileInfo(file).absolutePath());
   QSaveFile out(file);
   if (!out.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
   out.write((datasetStamp(dataset) + QLatin1Char('\n') + lines.join(QLatin1Char('\n'))).toUtf8());

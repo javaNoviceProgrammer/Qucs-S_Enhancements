@@ -999,8 +999,8 @@ bool Schematic::loadProperties(QTextStream *stream)
       if(nstr.section(',',2,2).toInt(&ok) == 0) a_GridOn = false;
       else a_GridOn = true; }}
     }
-    else if(cstr == "DataSet") a_DataSet = nstr;
-    else if(cstr == "DataDisplay") a_DataDisplay = nstr;
+    else if(cstr == "DataSet") setDataSet(dataSetBeside(nstr, getDataSet()));   // (a name beside it, .dat)
+    else if(cstr == "DataDisplay") setDataDisplay(nstr);
     else if(cstr == "OpenDisplay")
     if(nstr.toInt(&ok) == 0) a_SimOpenDpl = false;
     else a_SimOpenDpl = true;

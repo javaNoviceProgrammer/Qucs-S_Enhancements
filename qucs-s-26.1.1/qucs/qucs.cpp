@@ -4259,6 +4259,10 @@ void QucsApp::slotChangePage(const QString& DocName, const QString& DataDisplay)
     else {
       if(file.open(QIODevice::ReadWrite)) {  // if document doesn't exist, create
         d->setDataDisplay(Info.fileName());
+        // A schematic's data display reads the schematic's dataset - the
+        // one its Data Set names, not the one of the display's own name.
+        if (auto *owner = dynamic_cast<Schematic *>(findDoc(DocName)); owner != nullptr && Name.endsWith(QLatin1String(".dpl")))
+          d->setDataSet(owner->getDataSet());
         slotUpdateTreeview();
       }
       else {

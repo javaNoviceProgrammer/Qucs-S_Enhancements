@@ -113,10 +113,14 @@ struct Imported {
 };
 /// Those in \a folder, by name.
 QList<Imported> importedIn(const QString& folder);
+/// The datasets the schematics of \a folder simulate into, by name (their
+/// Data Sets, run of <DataSet=run.dat>): a schematic's own name is not all
+/// - its Data Set may be another.
+QStringList dataSetsOfSchematics(const QString& folder);
 /// The name for a dataset of \a source in \a folder: its name made safe,
-/// with a number after it when a dataset, a simulation's (name.dat.ngspice)
-/// or a schematic there has it - unless it is the dataset imported from
-/// \a source itself, which is read again.
+/// with a number after it when a dataset, a simulation's (name.dat.ngspice),
+/// a schematic there or a schematic's Data Set has it - unless it is the
+/// dataset imported from \a source itself, which is read again.
 QString datasetNameFor(const QString& folder, const QString& source);
 /// Reads \a source and writes it into \a folder (datasetNameFor() names
 /// it, unless \a name is given); the dataset's name in \a imported. False

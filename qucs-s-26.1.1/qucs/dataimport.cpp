@@ -946,9 +946,27 @@ QList<Imported> importedIn(const QString& folder)
     return list;
 }
 
+QStringList dataSetsOfSchematics(const QString& folder)
+{
+    QStringList names;
+    const QDir dir(folder);
+    static const QRegularExpression set(QStringLiteral("<DataSet=([^>\\n]*)>"));
+    for (const QString& entry : dir.entryList({QStringLiteral("*.sch")}, QDir::Files)) {
+        QFile f(dir.filePath(entry));
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+        const QRegularExpressionMatch m = set.match(QString::fromUtf8(f.read(4096)));
+        if (!m.hasMatch()) continue;
+        QString name = QFileInfo(m.captured(1).trimmed()).fileName();
+        if (name.endsWith(QLatin1String(".dat"), Qt::CaseInsensitive)) name.chop(4);
+        if (!name.isEmpty() && !names.contains(name, Qt::CaseInsensitive)) names << name;
+    }
+    return names;
+}
+
 QString datasetNameFor(const QString& folder, const QString& source)
 {
     const QDir dir(folder);
+    const QStringList dataSets = dataSetsOfSchematics(folder);
     // The file's name: letters, digits and _ (a trace names it name:variable).
     QString base;
     for (const QChar c : QFileInfo(source).completeBaseName()) base += (c.isLetterOrNumber() && c.unicode() < 128) ? c : QLatin1Char('_');
@@ -974,6 +992,8 @@ QString datasetNameFor(const QString& folder, const QString& source)
                 break;
             }
         }
+        // A schematic's Data Set: its simulations write there.
+        if (dataSets.contains(name, Qt::CaseInsensitive)) taken = true;
         if (!taken) return name;
     }
 }

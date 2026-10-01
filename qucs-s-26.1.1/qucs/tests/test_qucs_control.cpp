@@ -3436,6 +3436,12 @@ private slots:
         const QString scratch = misc::scratchDirFor(ws + "/orig.sch");
         QCOMPARE(scratch, QucsSettings.S4Qworkdir);
         QDir().mkpath(scratch + "/other");
+        {
+            // (Another's file there: not its last run's - bug hunt
+            // 2026-09-30, D3.)
+            QFile f(scratch + "/another_run.txt");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+        }
         const auto netlist = [&](const QString& of) {
             QFile f(scratch + "/spice4qucs.cir");
             QVERIFY(f.open(QIODevice::WriteOnly));
@@ -3450,9 +3456,152 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(!QFileInfo::exists(scratch + "/spice4qucs.cir"));
         QVERIFY(QFileInfo(scratch + "/other").isDir() && QFileInfo(scratch).isDir());
+        QVERIFY(QFileInfo::exists(scratch + "/another_run.txt"));
         QVERIFY(QFileInfo::exists(ws + "/orig.dat.ngspice"));   // datasets only when asked
         QVERIFY(!failed(call("clean_scratch", {{"datasets", true}})));
         QVERIFY(!QFileInfo::exists(ws + "/orig.dat.ngspice"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A schematic's results are its Data Set's, not of its file's name (bug
+    // hunt 2026-09-30, A2-A5, A7, D2): clean_scratch and copy_document find
+    // them by it, and pass an import by; a data display made for it reads
+    // it; a simulation's names and an import's are kept apart; a Data Set
+    // or Data Display is a name beside the schematic; kept netlists of
+    // datasets that are gone go.
+    void theDataSetNamesTheResults()
+    {
+        const QString folder = QucsSettings.qucsWorkspaceDir.absoluteFilePath("datasets");
+        QVERIFY(QDir().mkpath(folder));
+        const auto write = [&folder](const QString& name, const QByteArray& bytes) {
+            QFile f(folder + "/" + name);
+            if (f.open(QIODevice::WriteOnly)) f.write(bytes);
+        };
+        const QByteArray run = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time 2>\n0\n1\n</indep>\n<dep v(out) time>\n0\n1\n</dep>\n";
+
+        // A7: names beside it ("run" a .dat), as a file has them too.
+        QCOMPARE(QucsDoc::fileBeside("../up.dat", "amp.dat"), QStringLiteral("up.dat"));
+        QCOMPARE(QucsDoc::fileBeside("..", "amp.dat"), QStringLiteral("amp.dat"));
+        QCOMPARE(QucsDoc::fileBeside("sub\\x.dpl", "amp.dpl"), QStringLiteral("x.dpl"));
+        QCOMPARE(QucsDoc::fileBeside("", "amp.dat"), QString());
+        QCOMPARE(QucsDoc::dataSetBeside("run", "amp.dat"), QStringLiteral("run.dat"));
+        QCOMPARE(QucsDoc::dataSetBeside("run.DAT", "amp.dat"), QStringLiteral("run.DAT"));
+        write("up.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <DataSet=../up>\n  <DataDisplay=../../out.dpl>\n</Properties>\n"
+                        "<Symbol>\n</Symbol>\n<Components>\n</Components>\n<Wires>\n</Wires>\n");
+        QJsonObject r = call("open_document", {{"path", folder + "/up.sch"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(front()->getDataSet(), QStringLiteral("up.dat"));
+        QCOMPARE(front()->getDataDisplay(), QStringLiteral("out.dpl"));
+        front()->setDataSet("../../elsewhere.dat");
+        QCOMPARE(front()->getDataSet(), QStringLiteral("elsewhere.dat"));
+        front()->setDataSet("..");
+        QCOMPARE(front()->getDataSet(), QStringLiteral("elsewhere.dat"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("add_component", {{"type", ".TR"}, {"x", 100}, {"y", 300}})));
+        QVERIFY(!failed(call("save_document", {{"as", folder + "/amp.sch"}, {"replace", true}})));
+        Schematic* amp = front();
+        // A Data Display that is no .dpl: refused, and no file of it made -
+        // nor one there opened (as text).
+        amp->setDataDisplay("amp.txt");
+        r = call("add_diagram", {{"document", "data_display"}, {"type", "rect"}});
+        QVERIFY2(failed(r) && text(r).contains("no data display (.dpl)"), qPrintable(text(r)));
+        r = call("new_document", {{"kind", "data_display"}});
+        QVERIFY2(failed(r) && text(r).contains("no data display (.dpl)"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(folder + "/amp.txt"));
+        write("amp.txt", "notes\n");
+        r = call("add_diagram", {{"document", "data_display"}, {"type", "rect"}});
+        QVERIFY2(failed(r) && text(r).contains("no data display (.dpl)"), qPrintable(text(r)));
+        QCOMPARE(front(), amp);
+        for (QucsDoc* d : app->allDocuments()) QVERIFY(!d->getDocName().endsWith("amp.txt"));   // (not opened)
+        amp->setDataDisplay("amp.dpl");
+        // A4: its Data Set another: the data display made for it reads it.
+        amp->setDataSet("run.dat");
+        QVERIFY(!failed(call("save_document")));
+        r = call("add_diagram", {{"document", "data_display"}, {"type", "rect"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(front()->getDocName().endsWith("amp.dpl"));
+        QCOMPARE(front()->getDataSet(), QStringLiteral("run.dat"));
+        QVERIFY(!failed(call("close_document", {{"path", folder + "/amp.dpl"}, {"unsaved", "discard"}})));
+        QCOMPARE(front(), amp);
+
+        // An import of the schematic's own name beside it, and its run.
+        write("bench.csv", "f,g\n1,2\n2,3\n");
+        qucs_s::dataimport::Imported imported;
+        QString error;
+        QVERIFY2(qucs_s::dataimport::importFile(folder, folder + "/bench.csv", {}, &imported, &error, nullptr, "amp"), qPrintable(error));
+        write("run.dat.ngspice", run);
+        QVERIFY(misc::keepRunNetlist(folder + "/run.dat.ngspice", "* Qucs " PACKAGE_VERSION "  x.sch\nR1 1 0 1k\n.end\n", folder + "/amp.sch"));
+        const QString kept = misc::runNetlistFile(folder + "/run.dat.ngspice");
+        QVERIFY(QFileInfo::exists(kept));
+        // A3: copied with its run (and that run's netlist), not with the import.
+        r = call("copy_document", {{"to", "amp2"}, {"replace", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(folder + "/amp2.dat.ngspice"));
+        QVERIFY(!QFileInfo::exists(folder + "/amp2.dat"));
+        QVERIFY(!misc::runNetlistOf(folder + "/amp2.dat.ngspice").isEmpty());
+        // A2: its run trashed, with the netlist kept for it; the import stays.
+        r = call("clean_scratch", {{"datasets", true}});
+        QVERIFY2(!failed(r) && text(r).contains("run.dat.ngspice") && !text(r).contains("amp.dat"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(folder + "/run.dat.ngspice"));
+        QVERIFY(QFileInfo::exists(folder + "/amp.dat"));
+        QVERIFY(!QFileInfo::exists(kept));
+        // Its Data Set the import (Document Settings took it): no run's,
+        // neither copied nor trashed; its Data Display copied by its name.
+        amp->setDataSet("amp.dat");
+        amp->setDataDisplay("view.dpl");
+        QFile::remove(folder + "/amp.dpl");   // (the one of its file's name: none)
+        write("view.dpl", "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <DataSet=amp.dat>\n  <DataDisplay=amp.sch>\n</Properties>\n");
+        r = call("copy_document", {{"to", "amp3"}, {"replace", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(folder + "/amp3.dat"));
+        QVERIFY(QFileInfo::exists(folder + "/amp3.dpl"));
+        r = call("clean_scratch", {{"datasets", true}});
+        QVERIFY2(!failed(r) && !text(r).contains("amp.dat"), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(folder + "/amp.dat"));
+        amp->setDataSet("run.dat");
+        amp->setDataDisplay("amp.dpl");
+
+        // D2: the kept netlists of datasets that are gone (and of the stamp
+        // of before, with no path) go when another is kept.
+        write("gone.dat.ngspice", run);
+        QVERIFY(misc::keepRunNetlist(folder + "/gone.dat.ngspice", "* Qucs " PACKAGE_VERSION "  x.sch\n.end\n"));
+        const QString goneKept = misc::runNetlistFile(folder + "/gone.dat.ngspice");
+        QVERIFY(QFile::remove(folder + "/gone.dat.ngspice"));
+        const QString oldKept = QFileInfo(goneKept).absolutePath() + "/old.dat.ngspice-0123456789ab.cir";
+        {
+            QFile f(oldKept);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("* dataset 1 2\n.end\n");
+        }
+        QVERIFY(QFileInfo::exists(goneKept));
+        write("again.dat.ngspice", run);
+        QVERIFY(misc::keepRunNetlist(folder + "/again.dat.ngspice", "* Qucs " PACKAGE_VERSION "  x.sch\n.end\n"));
+        QVERIFY(!QFileInfo::exists(goneKept));
+        QVERIFY(!QFileInfo::exists(oldKept));
+        QVERIFY(QFileInfo::exists(misc::runNetlistFile(folder + "/again.dat.ngspice")));
+        QVERIFY(QFileInfo::exists(misc::runNetlistFile(folder + "/amp2.dat.ngspice")));
+
+        // A5: keep_as, a new name and a copy's are not an import's...
+        r = call("simulate", {{"keep_as", "amp"}, {"timeout", 5}});
+        QVERIFY2(failed(r) && text(r).contains("imported from"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(folder + "/amp.dat.ngspice"));
+        write("measured.csv", "f,g\n1,2\n2,3\n");
+        r = call("import_data", {{"file", "measured.csv"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("dataset").toString() == "measured", qPrintable(text(r)));
+        r = call("save_document", {{"as", folder + "/measured.sch"}});
+        QVERIFY2(failed(r) && text(r).contains("imported from"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(folder + "/measured.sch"));
+        r = call("copy_document", {{"to", "measured"}});
+        QVERIFY2(failed(r) && text(r).contains("imported from"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(folder + "/measured.sch"));
+        // ... and an import's is not a schematic's Data Set.
+        r = call("import_data", {{"file", "measured.csv"}, {"name", "run"}});
+        QVERIFY2(failed(r) && text(r).contains("Data Set"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(folder + "/run.dat"));
+        QCOMPARE(qucs_s::dataimport::datasetNameFor(folder, folder + "/run.csv"), QStringLiteral("run_2"));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
