@@ -53,7 +53,8 @@ NESTED = {
     ("add_diagram", "traces"): ("addDiagram", "t"),
     ("batch", "calls"): ("next", "call"),
     ("delete", "traces"): ("remove", "t"),
-    ("set_dialog", "set"): ("setDialog", "change"),
+    ("set_dialog", "set"): ("fillControls", "change"),
+    ("set_ui", "set"): ("fillControls", "change"),
     ("tune", "knobs"): ("tuneKnobs", "knob"),
     ("tune", "targets"): ("tuneKnobs", "item"),
     ("tune", "hold"): ("readHolds", "item"),
@@ -61,6 +62,10 @@ NESTED = {
     ("set_subcircuit_parameters", "parameters"): ("changeParameters", "o"),
     ("edit_text", "edits"): ("editText", "e"),
 }
+
+# A nested item's key read for another tool sharing the reader: set_ui's
+# 'action' (a view's row), read by fillControls in set_ui's part only.
+NESTED_OTHERS = {("set_dialog", "set", "action")}
 
 
 def source():
@@ -272,6 +277,8 @@ def main():
                 nested |= keys_in(funcs, body, where[1], set())
             if not item_open:
                 for k in sorted(nested - item_props):
+                    if (tool, arg_name, k) in NESTED_OTHERS:
+                        continue
                     problems.append(f"{tool}: a '{arg_name}' item's '{k}' is read but not in the item schema")
             for k in sorted(item_props - nested):
                 problems.append(f"{tool}: a '{arg_name}' item's '{k}' is in the item schema but nothing reads it")

@@ -283,6 +283,21 @@ private:
     void runBatch(const QJsonObject& args, const Done& done);
     QJsonObject getDialog();
     void setDialog(const QJsonObject& args, const Done& done);
+    // A part of the window (qucscontrol_ui.cpp): docks, toolbars, the
+    // status bar, the documents' tabs; right-click menus.
+    QJsonObject getUi(const QJsonObject& args);
+    void setUi(const QJsonObject& args, const Done& done);
+    void contextMenu(const QJsonObject& args, const Done& done);
+    /// The part of the window \a area names, and what it is called; null
+    /// and why when there is none, or it is not Claude's (the Claude Code
+    /// panel). \a forChange: also not a console's (typing runs commands).
+    QWidget* uiArea(const QString& area, QString* name, QString* error, bool forChange) const;
+    /// The parts of the window get_ui reads.
+    QJsonArray uiAreas() const;
+    /// Where on \a sch's canvas context_menu's \a on points ('part',
+    /// 'diagram' or 'canvas'), in the schematic's coordinates, and what is
+    /// there; false and why.
+    bool canvasPoint(Schematic* sch, const QJsonObject& on, QPoint* point, QString* what, QString* error) const;
     // Simulation and its results.
     void simulate(const QJsonObject& args, const Done& done);
     void buildVerilogA(const QJsonObject& args, const Done& done);
@@ -415,7 +430,14 @@ private:
     QList<QAction*> menuActions(QStringList* paths) const;
     QWidget* openDialog() const;
     /// The controls of \a dialog that get_dialog tells of, in a fixed order.
-    QList<QWidget*> dialogControls(QWidget* dialog) const;
+    /// The controls of \a dialog get_dialog lists and set_dialog fills, in
+    /// order. \a ui (get_ui, set_ui: a part of the window): item views,
+    /// sliders and read-only texts (logs) too.
+    QList<QWidget*> dialogControls(QWidget* dialog, bool ui = false) const;
+    /// get_dialog's answer for \a root: its texts and controls.
+    QJsonObject describeControls(QWidget* root, bool ui) const;
+    /// set_dialog's work on \a root's controls ('set', then 'press').
+    void fillControls(QWidget* root, const QJsonObject& args, const Done& done, bool ui);
 
     QucsApp* a_app;
     QJsonArray a_tools;
