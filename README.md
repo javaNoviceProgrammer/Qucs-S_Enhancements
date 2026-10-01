@@ -478,7 +478,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `clean_scratch`, `rename_file` (a file or folder renamed or moved, the
   documents open from it following) and `trash_file` (to the system's
   trash, the documents open from it closing; asked about every time) tend
-  the files. `new_document` opens a schematic's data
+  the files. `get_text` and `edit_text` read and edit a text tab - a
+  netlist, a `.va`, a script - as it is in the window, the user's unsaved
+  edits kept: the edits are one step of the tab's undo, and refused when
+  the user typed since the revision Claude read. `goto_line` shows a line.
+  `build_verilog_a` marks its errors and warnings in the open `.va` tab as
+  the editor shows them to you: a wavy line, a dot in the line numbers'
+  margin, the message on the line. `new_document` opens a schematic's data
   display for a report's plots. Equation blocks, Monte Carlo records and
   specs, and hidden text are set by name, so `set_schematic` is rarely
   needed. Diagrams have a title that moves with them. A marker can sit

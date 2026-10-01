@@ -29,6 +29,7 @@ class QAction;
 class QucsApp;
 class QucsDoc;
 class Schematic;
+class TextDoc;
 class QWidget;
 
 /*!
@@ -300,6 +301,12 @@ private:
     QJsonObject copyDocument(const QJsonObject& args);
     QJsonObject cleanScratch(const QJsonObject& args);
     QJsonObject renameFile(const QJsonObject& args);
+    QJsonObject getText(const QJsonObject& args);
+    QJsonObject editText(const QJsonObject& args);
+    QJsonObject gotoLine(const QJsonObject& args);
+    /// The text document \a args names ('path'; the one in front unless
+    /// given), or null and why in \a error.
+    TextDoc* textDocument(const QJsonObject& args, QString* error) const;
     QJsonObject trashFile(const QJsonObject& args);
     QJsonObject makeSymbol(const QJsonObject& args);
     QJsonObject setSubcircuitParameters(const QJsonObject& args);
