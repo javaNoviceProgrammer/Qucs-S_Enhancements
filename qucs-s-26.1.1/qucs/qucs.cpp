@@ -1563,10 +1563,12 @@ void QucsApp::initCursorMenu()
   ContentViewMenu->setStatusTip(tr("How files in subdirectories of the project are listed"));
   auto *viewModes = new QActionGroup(this);
   viewModes->setExclusive(true);
-  ActionCMenuViewFlat = new QAction(tr("Folder in the name (\"models/bjt.va\")"), viewModes);
+  ActionCMenuViewFlat = new QAction(tr("Flat"), viewModes);
   ActionCMenuViewFlat->setCheckable(true);
+  ActionCMenuViewFlat->setStatusTip(tr("Files in subfolders listed with the folder in their name (\"models/bjt.va\")"));
   ActionCMenuViewTree = new QAction(tr("Sub-trees per folder"), viewModes);
   ActionCMenuViewTree->setCheckable(true);
+  ActionCMenuViewTree->setStatusTip(tr("A row for each subfolder, its files under it (the default)"));
   ContentViewMenu->addAction(ActionCMenuViewFlat);
   ContentViewMenu->addAction(ActionCMenuViewTree);
   connect(viewModes, SIGNAL(triggered(QAction*)), SLOT(slotCMenuContentView(QAction*)));

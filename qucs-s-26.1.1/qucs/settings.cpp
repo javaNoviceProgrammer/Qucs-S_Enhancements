@@ -81,7 +81,7 @@ void settingsManager::initDefaults()
     m_Defaults["GraphAntiAliasing"] = false;
     m_Defaults["TextAntiAliasing"] = false;
     m_Defaults["fullTraceName"] = false;
-    m_Defaults["ContentTreeView"] = false;
+    m_Defaults["ContentTreeView"] = true;   // sub-trees per folder
     m_Defaults["AnyFolderIsProject"] = false;
     m_Defaults["RestoreWorkspace"] = true;
     m_Defaults["RestoreProject"] = true;
