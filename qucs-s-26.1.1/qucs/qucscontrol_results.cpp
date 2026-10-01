@@ -2201,6 +2201,12 @@ QJsonObject QucsControl::importData(const QJsonObject& args)
                                       "Choose another name. Nothing was imported.")
                                        .arg(entry));
         }
+        // A schematic's Data Set of that name: its runs write there.
+        for (const QString& set : di::dataSetsOfSchematics(folder))
+            if (set.compare(name, Qt::CaseInsensitive) == 0)
+                return errorResult(tr("'name': %1.dat is the Data Set of a schematic here, which its simulations write. Choose "
+                                      "another name. Nothing was imported.")
+                                       .arg(set));
     }
     if (name.isEmpty()) {
         name = di::datasetNameFor(folder, source);

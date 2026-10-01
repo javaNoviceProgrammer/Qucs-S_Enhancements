@@ -22,6 +22,8 @@
 #include <QDateTime>
 #include <QList>
 
+#include <algorithm>
+
 class QucsApp;
 class QPrinter;
 class QPainter;
@@ -64,9 +66,30 @@ public:
   QString getDocName() const { return a_DocName; }
   void setDocName(const QString& value) { a_DocName = value; }
   QString getDataSet() const { return a_DataSet; }
-  void setDataSet(const QString& value) { a_DataSet = value; }
+  void setDataSet(const QString& value) { a_DataSet = fileBeside(value, a_DataSet); }
   QString getDataDisplay() const { return a_DataDisplay; }
-  void setDataDisplay(const QString& value) { a_DataDisplay = value; }
+  void setDataDisplay(const QString& value) { a_DataDisplay = fileBeside(value, a_DataDisplay); }
+  /// A Data Set's or Data Display's name: a file beside the document, its
+  /// folders left out - "../up.dat" had a run write out of the folder, as a
+  /// schematic from elsewhere chose. Nothing left (".."): \a kept; none
+  /// given: none.
+  static QString fileBeside(const QString& value, const QString& kept)
+  {
+      QString name = value.trimmed();
+      if (name.isEmpty()) return name;
+      const qsizetype slash = std::max(name.lastIndexOf(QLatin1Char('/')), name.lastIndexOf(QLatin1Char('\\')));
+      if (slash >= 0) name = name.mid(slash + 1);
+      return name.isEmpty() || name == QLatin1String(".") || name == QLatin1String("..") ? kept : name;
+  }
+  /// A schematic's Data Set: fileBeside(), ending in .dat ("run" is
+  /// run.dat) - a run adds the simulator's to it (run.dat.ngspice), and
+  /// the diagram's Data and Export tabs list *.dat*.
+  static QString dataSetBeside(const QString& value, const QString& kept)
+  {
+      QString name = fileBeside(value, kept);
+      if (!name.isEmpty() && !name.endsWith(QLatin1String(".dat"), Qt::CaseInsensitive)) name += QLatin1String(".dat");
+      return name;
+  }
   QString getScript() const { return a_Script; }
   void setScript(const QString& value) { a_Script = value; }
   QString getSimTime() const { return a_SimTime; }

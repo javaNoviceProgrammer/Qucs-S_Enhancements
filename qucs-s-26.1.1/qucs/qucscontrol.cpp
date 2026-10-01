@@ -4237,6 +4237,13 @@ bool QucsControl::toDataDisplay(QJsonObject* args, QString* error)
             return false;
         }
         schematicName = sch->getDocName();
+        // (A Data Display that is no .dpl - a text, a schematic - is not
+        // made: an empty file of it was left behind, and the call refused.)
+        if (!sch->getDataDisplay().isEmpty() && !sch->getDataDisplay().endsWith(QLatin1String(".dpl"), Qt::CaseInsensitive)) {
+            *error = tr("%1's Data Display is %2, which is no data display (.dpl): File > Document Settings names it.")
+                         .arg(titleOf(sch), sch->getDataDisplay());
+            return false;
+        }
         path = QFileInfo(schematicName).absoluteDir().filePath(sch->getDataDisplay().isEmpty()
                                                                ? QFileInfo(schematicName).completeBaseName() + QStringLiteral(".dpl")
                                                                : sch->getDataDisplay());
@@ -4301,6 +4308,9 @@ QJsonObject QucsControl::newDocument(const QJsonObject& args)
         if (sch->getDocName().endsWith(QLatin1String(".dpl"), Qt::CaseInsensitive)) return errorResult(tr("%1 is a data display.").arg(titleOf(sch)));
         const QString dpl = sch->getDataDisplay().isEmpty() ? QFileInfo(sch->getDocName()).completeBaseName() + QStringLiteral(".dpl")
                                                             : sch->getDataDisplay();
+        if (!dpl.endsWith(QLatin1String(".dpl"), Qt::CaseInsensitive))
+            return errorResult(tr("%1's Data Display is %2, which is no data display (.dpl): File > Document Settings names it.")
+                                   .arg(titleOf(sch), dpl));
         const bool existed = QFileInfo::exists(QFileInfo(sch->getDocName()).absoluteDir().filePath(dpl));
         QMetaObject::invokeMethod(a_app, "slotChangePage", Qt::DirectConnection, Q_ARG(QString, sch->getDocName()), Q_ARG(QString, dpl));
         QucsDoc* doc = a_app->getDoc();
@@ -4586,6 +4596,13 @@ QJsonObject QucsControl::saveDocument(const QJsonObject& args)
         for (QucsDoc* other : a_app->allDocuments())
             if (other != doc && !other->getDocName().isEmpty() && sameFile(other->getDocName(), target))
                 return errorResult(tr("%1 is open in another tab.").arg(QDir::toNativeSeparators(target)));
+        // Not the name of a dataset imported there: a schematic simulates
+        // into its own name's (its Data Set), beside the import or over it.
+        if (qucs_s::dataimport::Origin origin; kindOf(doc) == QLatin1String("schematic")
+            && !(doc->getDocName() == target || (!doc->getDocName().isEmpty() && sameFile(doc->getDocName(), target)))
+            && qucs_s::dataimport::originOf(QFileInfo(target).absoluteDir().filePath(QFileInfo(target).completeBaseName() + QStringLiteral(".dat")), &origin))
+            return errorResult(tr("%1.dat there is a dataset imported from %2, and a schematic %1 simulates into %1.dat: choose another name.")
+                                   .arg(QFileInfo(target).completeBaseName(), QDir::toNativeSeparators(origin.source)));
         if (!QFileInfo(QFileInfo(target).absolutePath()).isDir())
             return errorResult(tr("There is no folder %1.").arg(QDir::toNativeSeparators(QFileInfo(target).absolutePath())));
         // Another file there already: written over when 'replace' says so,
@@ -10575,6 +10592,18 @@ void QucsControl::simulate(const QJsonObject& args, const Done& doneGiven)
     if (sch->getDocName().isEmpty() && !saveInScratch(sch, &savedNote, &error)) {
         doneGiven(errorResult(error));
         return;
+    }
+    // Not the name of a dataset imported beside it: a trace of keepAs:x is
+    // the import's (no simulator's prefix), so the kept run could not be
+    // named, nor chosen in the Data tab.
+    if (!keepAs.isEmpty()) {
+        qucs_s::dataimport::Origin origin;
+        if (qucs_s::dataimport::originOf(QFileInfo(sch->getDocName()).absoluteDir().filePath(keepAs + QStringLiteral(".dat")), &origin)) {
+            doneGiven(errorResult(tr("'keep_as' %1 is the name of a dataset imported from %2: its traces are %1:variable, so the "
+                                     "kept run could not be named. Give it another name (run1, %1-run).")
+                                      .arg(keepAs, QDir::toNativeSeparators(origin.source))));
+            return;
+        }
     }
     // Not over another schematic's dataset: keep_as rc beside rc.sch
     // replaced its results with this run's, and its diagrams showed them.

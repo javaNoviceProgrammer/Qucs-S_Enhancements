@@ -277,6 +277,9 @@ void SettingsDialog::slotApply()
 {
     bool changed = false;
 
+    // (A name beside the schematic, ending in .dat: shown as it is taken.)
+    Input_DataSet->setText(QucsDoc::dataSetBeside(Input_DataSet->text(), Doc->getDataSet()));
+    Input_DataDisplay->setText(QucsDoc::fileBeside(Input_DataDisplay->text(), Doc->getDataDisplay()));
     if(Doc->getDataSet() != Input_DataSet->text())
     {
         Doc->setDataSet(Input_DataSet->text());
