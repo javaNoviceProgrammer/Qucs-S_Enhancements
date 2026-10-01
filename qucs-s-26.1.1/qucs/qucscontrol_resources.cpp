@@ -191,6 +191,10 @@ bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
 {
     const auto exists = [this](const QString& path) { return !path.trimmed().isEmpty() && QFileInfo::exists(absolute(path.trimmed())); };
     if (tool == QLatin1String("clean_scratch") || tool == QLatin1String("trash_file")) return true;
+    // A line typed into a console runs, with the user's rights: asked about
+    // each time (only reading it is not).
+    if (tool == QLatin1String("console"))
+        return !a.value(QLatin1String("input")).toString().isEmpty() || a.value(QLatin1String("interrupt")).toBool();
     // A script that names what cannot be undone.
     if (tool == QLatin1String("run_script")) {
         const QString script = a.value(QLatin1String("script")).toString();

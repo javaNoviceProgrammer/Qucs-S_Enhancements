@@ -297,6 +297,15 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, or [row, column, true or false] for a tree's check box}]"},
    "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id"}}}},
+{"name": "get_settings",
+ "description": "Reads the settings of Qucs-S, typed: 'scope' app (Application Settings), simulators (Simulators Settings), document (the settings of the document 'path' names, the one in front unless given) or cdl (CDL Settings). Each setting by its key - \"Tab/Label\" as the dialog shows it (\"Settings/Language\", \"Locations/Ngspice\") - with its type (text, bool, option, choice, number, integer, table), its value, and its choices or range. Nothing is shown or changed.",
+ "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"}}, "required": ["scope"]}},
+{"name": "set_settings",
+ "description": "Changes settings of Qucs-S by their keys (get_settings lists them): 'values' {\"Tab/Label\": new value} - or a label alone when it is one setting's. Done through the settings' own dialog, opened as its menu action opens it and applied with its own OK, so what Qucs-S does after it is done too, and its checks hold. Returns each change with what it 'was' (set_settings with it puts it back) and what it is 'now', read again; what was not done and why; what the dialog said. Claude Code's own settings are refused.",
+ "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings"}, "values": {"type": "object", "description": "{\"Tab/Label\": value}: text, true or false, a number, or one of its choices"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"}}, "required": ["scope", "values"]}},
+{"name": "console",
+ "description": "Types a line into a console dock of Qucs-S - octave (the Octave dock), python (the Python Shell) or terminal (the Terminal dock, a shell) - as the user would there, and returns what it printed once its prompt is back, or what came by 'wait' seconds (10 unless given; the run goes on, and 'interrupt': true stops it with Ctrl-C). What is typed runs with the user's rights, outside Claude Code's own rules for commands: each use is asked about, every time, with the line shown. Without 'input': the last 'lines' of what the console shows, nothing typed. The user sees it all in the dock.",
+ "inputSchema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["octave", "python", "terminal"], "description": "The console"}, "input": {"type": "string", "description": "One line, typed and entered"}, "wait": {"type": "integer", "description": "Seconds to wait for its prompt back (1 to 600; 10 unless given)"}, "interrupt": {"type": "boolean", "description": "Ctrl-C to what runs (python, terminal)"}, "lines": {"type": "integer", "description": "How many of the last lines to give (40 unless given)"}}, "required": ["kind"]}},
 {"name": "get_ui",
  "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), or the documents' tabs (tabs). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
  "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "dock:<title> or a panel's name (dock:Content), toolbar:<title>, statusbar or tabs; none: the list"}}}},
@@ -616,6 +625,8 @@ const struct {
     {"trigger_action", QT_TRANSLATE_NOOP("QucsControl", "use a menu action of Qucs-S")},
     {"set_dialog", QT_TRANSLATE_NOOP("QucsControl", "answer a dialog of Qucs-S")},
     {"set_ui", QT_TRANSLATE_NOOP("QucsControl", "use a panel, toolbar or tab of Qucs-S")},
+    {"console", QT_TRANSLATE_NOOP("QucsControl", "type into a console of Qucs-S - what is typed runs")},
+    {"set_settings", QT_TRANSLATE_NOOP("QucsControl", "change the settings of Qucs-S")},
     {"context_menu", QT_TRANSLATE_NOOP("QucsControl", "use a right-click menu of Qucs-S")},
     {"simulate", QT_TRANSLATE_NOOP("QucsControl", "run a simulation in Qucs-S")},
     {"add_diagram", QT_TRANSLATE_NOOP("QucsControl", "add a diagram in Qucs-S")},
@@ -659,7 +670,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
                                  "read_pdf", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
-                                 "get_text", "goto_line", "get_ui",
+                                 "get_text", "goto_line", "get_ui", "get_settings",
                                  "ngspice_commands"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
@@ -710,6 +721,9 @@ const struct {
     {"get_dialog", QT_TRANSLATE_NOOP("QucsControl", "Reads the open dialog: its texts and controls, each with an id for set_dialog.")},
     {"set_dialog", QT_TRANSLATE_NOOP("QucsControl", "Fills in the open dialog and presses a button.")},
     {"get_ui", QT_TRANSLATE_NOOP("QucsControl", "Reads a dock, panel, toolbar, the status bar or the tabs, as get_dialog a dialog.")},
+    {"console", QT_TRANSLATE_NOOP("QucsControl", "Types a line into the Octave, Python Shell or Terminal dock and returns what it printed.")},
+    {"get_settings", QT_TRANSLATE_NOOP("QucsControl", "Reads the settings (application, simulators, a document's, CDL) by typed keys.")},
+    {"set_settings", QT_TRANSLATE_NOOP("QucsControl", "Changes settings by their keys through their own dialog, each with its old value.")},
     {"set_ui", QT_TRANSLATE_NOOP("QucsControl", "Uses a dock, panel, toolbar or the tabs, as set_dialog a dialog.")},
     {"context_menu", QT_TRANSLATE_NOOP("QucsControl", "Opens a right-click menu, lists it, and chooses an entry.")},
     {"simulate", QT_TRANSLATE_NOOP("QucsControl", "Runs a simulation and waits for it: whether it succeeded, errors with their netlist line and part, and the dataset's variables. 'operating_point' runs the DC bias only.")},
@@ -788,6 +802,9 @@ const struct {
     {"trigger_action", "menu action run command"},
     {"get_dialog", "dialog read open window fields"},
     {"set_dialog", "dialog answer fill fields press button"},
+    {"get_settings", "settings preferences options configuration read application simulators document cdl grid language path"},
+    {"set_settings", "settings preferences options configuration change set application simulators document cdl grid language path"},
+    {"console", "octave python shell terminal console command type run repl interpreter"},
     {"get_ui", "dock panel toolbar status bar tabs widget read log tuner problems operating point content projects components filter"},
     {"set_ui", "dock panel toolbar status bar tabs widget click button filter row select open expand slider tuner"},
     {"context_menu", "right-click context menu popup entries choose canvas part diagram tab file project"},
@@ -3132,6 +3149,14 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
             parts << v.toObject().value(QLatin1String("control")).toString() + QLatin1Char('=') + propertyValue(v.toObject().value(QLatin1String("value")));
         if (!s("press").isEmpty()) parts << tr("press %1").arg(s("press"));
         subject = parts.join(QStringLiteral(", "));
+    } else if (tool == QLatin1String("set_settings") || tool == QLatin1String("get_settings")) {
+        QStringList parts{s("scope")};
+        for (auto it = a.value(QLatin1String("values")).toObject().constBegin(); it != a.value(QLatin1String("values")).toObject().constEnd(); ++it)
+            parts << it.key() + QLatin1Char('=') + propertyValue(it.value());
+        subject = parts.join(QStringLiteral(", "));
+    } else if (tool == QLatin1String("console")) {
+        subject = s("kind") + QStringLiteral(": ") + (a.value(QLatin1String("interrupt")).toBool() ? tr("interrupt (Ctrl-C)")
+                                                                                                 : s("input").isEmpty() ? tr("read") : s("input"));
     } else if (tool == QLatin1String("context_menu")) {
         const QJsonObject on = a.value(QLatin1String("on")).toObject();
         const QString where = on.isEmpty() ? QString() : on.constBegin().key() + QLatin1Char(' ') + propertyValue(on.constBegin().value());
@@ -3248,7 +3273,10 @@ QString QucsControl::instructions() const
         "its traces) instead of one call each.\n\n"
         "Menus: list_actions and trigger_action; read a dialog it opens with get_dialog and answer it with set_dialog. get_ui and "
         "set_ui read and use the rest of the window as those do a dialog - a dock, a panel (Content, Projects, Problems, "
-        "Tuner), a toolbar, the status bar, the tabs - and context_menu a right-click menu. "
+        "Tuner), a toolbar, the status bar, the tabs - and context_menu a right-click menu. console types a line into the Octave, Python Shell or Terminal dock and "
+        "returns what it printed - it runs, and the user is asked each time. get_settings and set_settings read and "
+        "change the settings (application, simulators, a document's, CDL) by typed keys, each change with its old "
+        "value. "
         "simulate runs the simulator and reports errors; get_netlist returns the netlist. get_dataset reads results as "
         "numbers and measures them (rise time, overshoot, value at a time, ...): use it rather than a screenshot to judge "
         "a simulation. Diagrams: add_diagram (on the schematic, or with document: \"data_display\" on its data display, "
@@ -3981,6 +4009,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     else if (tool == QLatin1String("trigger_action")) triggerAction(args, done);
     else if (tool == QLatin1String("set_dialog")) setDialog(args, done);
     else if (tool == QLatin1String("set_ui")) setUi(args, done);
+    else if (tool == QLatin1String("console")) console(args, done);
+    else if (tool == QLatin1String("get_settings")) getSettings(args, done);
+    else if (tool == QLatin1String("set_settings")) setSettings(args, done);
     else if (tool == QLatin1String("context_menu")) contextMenu(args, done);
     else if (tool == QLatin1String("simulate")) simulate(args, done);
     else if (tool == QLatin1String("build_verilog_a")) buildVerilogA(args, done);
@@ -10189,9 +10220,44 @@ QLabel* labelBeside(QWidget* w)
     return nullptr;
 }
 
+// The label just above \a w in a column of its layout - above it, or above
+// the row it is in (a field and its Browse button): Simulators Settings'
+// paths.
+QLabel* labelAbove(QWidget* w)
+{
+    QWidget* parent = w->parentWidget();
+    QLayout* holding = parent != nullptr ? layoutHolding(parent->layout(), w) : nullptr;
+    if (holding == nullptr) return nullptr;
+    // What stands in the column: \a w, or its row.
+    QLayout* column = holding;
+    QLayout* row = nullptr;
+    if (auto* box = qobject_cast<QBoxLayout*>(holding);
+        box != nullptr && (box->direction() == QBoxLayout::LeftToRight || box->direction() == QBoxLayout::RightToLeft)) {
+        row = holding;
+        column = nullptr;
+        const std::function<QLayout*(QLayout*)> parentOf = [&](QLayout* l) -> QLayout* {
+            for (int i = 0; l != nullptr && i < l->count(); ++i) {
+                if (QLayout* sub = l->itemAt(i)->layout()) {
+                    if (sub == row) return l;
+                    if (QLayout* found = parentOf(sub)) return found;
+                }
+            }
+            return nullptr;
+        };
+        column = parentOf(parent->layout());
+    }
+    auto* box = qobject_cast<QBoxLayout*>(column);
+    if (box == nullptr || (box->direction() != QBoxLayout::TopToBottom && box->direction() != QBoxLayout::BottomToTop)) return nullptr;
+    int index = -1;
+    for (int i = 0; i < box->count(); ++i)
+        if ((row != nullptr && box->itemAt(i)->layout() == row) || (row == nullptr && box->itemAt(i)->widget() == w)) index = i;
+    if (index <= 0) return nullptr;
+    return qobject_cast<QLabel*>(box->itemAt(index - 1)->widget());
+}
+
 // What a field is called: its label in a form, the label that names it as
-// its buddy, the label before it in its layout or just to its left, else
-// what it says of itself.
+// its buddy, the label before it in its layout or just to its left, the
+// label above it, else what it says of itself.
 QString labelOf(QWidget* w, QWidget* dialog)
 {
     for (QFormLayout* form : dialog->findChildren<QFormLayout*>())
@@ -10217,6 +10283,8 @@ QString labelOf(QWidget* w, QWidget* dialog)
             }
         }
         if (best != nullptr) return cleanText(best->text()).remove(QLatin1Char(':'));
+        if (QLabel* l = labelAbove(w); l != nullptr && !l->text().trimmed().isEmpty())
+            return cleanText(l->text()).remove(QLatin1Char(':'));
     }
     if (auto* b = qobject_cast<QAbstractButton*>(w)) return cleanText(b->text()).isEmpty() ? b->toolTip() : cleanText(b->text());
     if (auto* e = qobject_cast<QLineEdit*>(w); e != nullptr && !e->placeholderText().isEmpty()) return e->placeholderText();
@@ -10337,6 +10405,145 @@ void clickOn(QWidget* w, const QPoint& at, Qt::MouseButton button, bool twice)
 }
 
 } // namespace
+
+QJsonValue QucsControl::typedValue(QWidget* w) const
+{
+    if (auto* e = qobject_cast<QLineEdit*>(w)) return e->echoMode() == QLineEdit::Normal ? QJsonValue(e->text()) : QJsonValue(QStringLiteral("(hidden)"));
+    if (auto* b = qobject_cast<QAbstractButton*>(w)) return b->isChecked();
+    if (auto* c = qobject_cast<QComboBox*>(w)) return c->currentText();
+    if (auto* d = qobject_cast<QDoubleSpinBox*>(w)) return d->value();
+    if (auto* n = qobject_cast<QSpinBox*>(w)) return n->value();
+    if (auto* p = qobject_cast<QPlainTextEdit*>(w)) return p->toPlainText();
+    if (auto* t = qobject_cast<QTextEdit*>(w)) return t->toPlainText();
+    if (auto* table = qobject_cast<QTableWidget*>(w)) {
+        QJsonArray rows;
+        for (int r = 0; r < table->rowCount(); ++r) {
+            QJsonArray row;
+            for (int k = 0; k < table->columnCount(); ++k)
+                row.append(table->item(r, k) != nullptr ? table->item(r, k)->text() : QString());
+            rows.append(row);
+        }
+        return rows;
+    }
+    return {};
+}
+
+QJsonArray QucsControl::typedSettings(QWidget* dialog, QHash<QString, QWidget*>* byKey) const
+{
+    QJsonArray list;
+    QHash<QString, int> seen;
+    for (QWidget* w : dialogControls(dialog, false)) {
+        // Its settings, not its buttons and pages.
+        auto* button = qobject_cast<QAbstractButton*>(w);
+        if ((button != nullptr && !button->isCheckable()) || qobject_cast<QTabWidget*>(w) != nullptr) continue;
+        QString label = labelOf(w, dialog).trimmed();
+        if (label.endsWith(QLatin1Char(':'))) label.chop(1);
+        if (label.isEmpty()) continue;
+        const QString tab = tabOf(w, dialog);
+        QString key = tab.isEmpty() ? label : tab + QLatin1Char('/') + label;
+        if (const int n = ++seen[key]; n > 1) key += QStringLiteral(" (%1)").arg(n);
+        QJsonObject o{{QStringLiteral("key"), key}, {QStringLiteral("value"), typedValue(w)}};
+        if (qobject_cast<QCheckBox*>(w) != nullptr || qobject_cast<QRadioButton*>(w) != nullptr || button != nullptr) {
+            o.insert(QStringLiteral("type"), qobject_cast<QRadioButton*>(w) != nullptr ? QStringLiteral("option") : QStringLiteral("bool"));
+        } else if (auto* c = qobject_cast<QComboBox*>(w)) {
+            o.insert(QStringLiteral("type"), c->isEditable() ? QStringLiteral("text") : QStringLiteral("choice"));
+            QJsonArray items;
+            for (int k = 0; k < c->count() && k < 100; ++k) items.append(c->itemText(k));
+            o.insert(c->isEditable() ? QStringLiteral("suggestions") : QStringLiteral("choices"), items);
+        } else if (auto* d = qobject_cast<QDoubleSpinBox*>(w)) {
+            o.insert(QStringLiteral("type"), QStringLiteral("number"));
+            o.insert(QStringLiteral("minimum"), d->minimum());
+            o.insert(QStringLiteral("maximum"), d->maximum());
+        } else if (auto* n = qobject_cast<QSpinBox*>(w)) {
+            o.insert(QStringLiteral("type"), QStringLiteral("integer"));
+            o.insert(QStringLiteral("minimum"), n->minimum());
+            o.insert(QStringLiteral("maximum"), n->maximum());
+        } else if (qobject_cast<QTableWidget*>(w) != nullptr) {
+            o.insert(QStringLiteral("type"), QStringLiteral("table"));
+        } else {
+            o.insert(QStringLiteral("type"), QStringLiteral("text"));
+        }
+        if (!w->isEnabled()) o.insert(QStringLiteral("enabled"), false);
+        list.append(o);
+        if (byKey != nullptr) byKey->insert(key, w);
+    }
+    return list;
+}
+
+bool QucsControl::setTyped(QWidget* dialog, QWidget* w, const QJsonValue& value, QString* why)
+{
+    reveal(w, dialog);   // as the user would, on its tab
+    if (!w->isEnabled()) {
+        *why = tr("it cannot be changed now (it is greyed out)");
+        return false;
+    }
+    if (auto* e = qobject_cast<QLineEdit*>(w)) {
+        if (e->echoMode() != QLineEdit::Normal) {
+            *why = tr("it is a secret field: the user types it");
+            return false;
+        }
+        e->setText(propertyValue(value));
+        e->setModified(true);
+        return true;
+    }
+    if (auto* b = qobject_cast<QAbstractButton*>(w)) {
+        if (!value.isBool()) {
+            *why = tr("it takes true or false");
+            return false;
+        }
+        if (qobject_cast<QRadioButton*>(w) != nullptr && !value.toBool()) {
+            *why = tr("an option is left by choosing another");
+            return false;
+        }
+        if (b->isChecked() != value.toBool()) b->click();
+        return true;
+    }
+    if (auto* c = qobject_cast<QComboBox*>(w)) {
+        const QString text = propertyValue(value);
+        int index = c->findText(text, Qt::MatchFixedString);
+        if (index < 0 && !c->isEditable()) index = c->findText(text, Qt::MatchContains);
+        if (index >= 0) c->setCurrentIndex(index);
+        else if (c->isEditable()) c->setEditText(text);
+        else {
+            QStringList items;
+            for (int k = 0; k < c->count(); ++k) items << c->itemText(k);
+            *why = tr("it is one of: %1").arg(items.join(QStringLiteral(", ")));
+            return false;
+        }
+        return true;
+    }
+    if (auto* d = qobject_cast<QDoubleSpinBox*>(w)) {
+        bool ok = value.isDouble();
+        const double v = ok ? value.toDouble() : propertyValue(value).toDouble(&ok);
+        if (!ok || v < d->minimum() || v > d->maximum()) {
+            *why = tr("it is a number from %1 to %2").arg(d->minimum()).arg(d->maximum());
+            return false;
+        }
+        d->setValue(v);
+        return true;
+    }
+    if (auto* n = qobject_cast<QSpinBox*>(w)) {
+        bool ok = value.isDouble();
+        const int v = ok ? value.toInt() : propertyValue(value).toInt(&ok);
+        if (!ok || v < n->minimum() || v > n->maximum()) {
+            *why = tr("it is a whole number from %1 to %2").arg(n->minimum()).arg(n->maximum());
+            return false;
+        }
+        n->setValue(v);
+        return true;
+    }
+    if (auto* p = qobject_cast<QPlainTextEdit*>(w)) {
+        p->setPlainText(propertyValue(value));
+        return true;
+    }
+    if (auto* t = qobject_cast<QTextEdit*>(w)) {
+        t->setPlainText(propertyValue(value));
+        return true;
+    }
+    *why = qobject_cast<QTableWidget*>(w) != nullptr ? tr("it is a table: set_dialog sets its cells, the dialog open")
+                                                      : tr("it is not one to set");
+    return false;
+}
 
 bool QucsControl::canvasPoint(Schematic* sch, const QJsonObject& on, QPoint* point, QString* what, QString* error) const
 {
