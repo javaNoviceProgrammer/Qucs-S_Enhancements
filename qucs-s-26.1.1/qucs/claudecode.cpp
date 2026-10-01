@@ -1220,14 +1220,19 @@ void Session::handleControlRequest(const QJsonObject& m)
         // unsaved changes discarded) is asked about all the same, but where
         // Claude acts on its own.
         const bool lasting = a_host->irreversible(tool, forDocument(tool, p.input));
-        if (a_host->readOnlyTools().contains(tool) || (lasting ? autonomous : (a_toolsAllowed || editsFree))) {
+        // (One asked about every time: also where Claude acts on its own.)
+        const QString always = a_host->askedEachTime(tool, forDocument(tool, p.input));
+        const bool unasked = !always.isEmpty() ? a_mode == QLatin1String("bypassPermissions")
+                                            : (lasting ? autonomous : (a_toolsAllowed || editsFree));
+        if (a_host->readOnlyTools().contains(tool) || unasked) {
             allowRequest(id, p.input);
             return;
         }
         p.action = a_host->actionOf(tool);
         p.subject = a_host->subjectOf(tool, forDocument(tool, p.input));
-        p.canAllowTools = !lasting;
-        if (lasting) p.detail = tr("This cannot be undone: files are deleted or written over, or unsaved changes discarded.");
+        p.canAllowTools = !lasting && always.isEmpty();
+        if (!always.isEmpty()) p.detail = always;
+        else if (lasting) p.detail = tr("This cannot be undone: files are deleted or written over, or unsaved changes discarded.");
     }
     for (const QJsonValue& s : request.value(QLatin1String("permission_suggestions")).toArray()) {
         const QJsonObject suggestion = s.toObject();

@@ -41,18 +41,26 @@ QucsCommand::QucsCommand(const QString &id, const QString &category,
     : m_id(id), m_category(category), m_description(description),
       m_action(action), m_defaultKey(defaultKey), m_currentKey(defaultKey) {
   // Apply the shortcut to the action
-  if (m_action) {
-    m_action->setShortcut(m_currentKey);
-  }
+  apply();
 }
 
 void QucsCommand::setCurrentKeySequence(const QKeySequence &key) {
   m_currentKey = key;
 
   // Update the associated QAction
-  if (m_action) {
-    m_action->setShortcut(m_currentKey);
-  }
+  apply();
+}
+
+void QucsCommand::setAlsoByDefault(const QList<QKeySequence> &keys) {
+  m_alsoByDefault = keys;
+  apply();
+}
+
+void QucsCommand::apply() {
+  if (!m_action) return;
+  QList<QKeySequence> keys{m_currentKey};
+  if (!isModified()) keys += m_alsoByDefault;
+  m_action->setShortcuts(keys);
 }
 
 void QucsCommand::resetToDefault() { setCurrentKeySequence(m_defaultKey); }

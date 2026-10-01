@@ -88,6 +88,7 @@ public:
     QString resourceVersion(const QString& uri) const override;
     /// Files deleted or written over, unsaved changes discarded.
     bool irreversible(const QString& tool, const QJsonObject& arguments) const override;
+    QString askedEachTime(const QString& tool, const QJsonObject& arguments) const override;
     void setAsker(quint64 caller, Asker asker) override;
 
     /// The result of a call, the event loop run until it comes (for the
@@ -162,6 +163,7 @@ private:
         QDateTime when;
         QList<QPair<QString, std::optional<QByteArray>>> before;
         QHash<QString, QByteArray> after;   // (empty: not there after)
+        QList<QPair<QString, QString>> moved;   // (from, to): renamed, moved or trashed - put back by moving it
     };
     QList<FileStep> a_fileSteps;
     FileStep a_openStep;   // the call under way's
@@ -169,6 +171,9 @@ private:
     /// \a file is about to be written by the call under way: as it is, kept
     /// (once a call).
     void aboutToWrite(const QString& file);
+    /// \a from was moved to \a to (renamed, or to the trash) by the call
+    /// under way: undo's 'files' moves it back.
+    void movedFile(const QString& from, const QString& to);
     void openFileStep(const QString& tool);
     void closeFileStep();
     /// undo's 'files': the last \a steps calls' files put back.
@@ -317,7 +322,37 @@ private:
     /// there; false and why.
     bool canvasPoint(Schematic* sch, const QJsonObject& on, QPoint* point, QString* what, QString* error) const;
     // Simulation and its results.
-    void simulate(const QJsonObject& args, const Done& done);
+    void simulate(const QJsonObject& args, const Done& given);
+    // Simulations followed after their call has answered
+    // (qucscontrol_watch.cpp): one simulate began with 'background', or one
+    // that ran past its 'timeout' - each by its id, its outcome kept once it
+    // has ended.
+    struct SimRun {
+        int id = 0;
+        QString schematic;
+        QString simulator;
+        QDateTime began, ended;    // (ended: not valid while it runs)
+        QJsonObject result;        // simulate's answer, once it has ended
+        QPointer<QObject> process;   // its SimulationRun, or Qucsator's SimMessage
+        QString stoppedBy;         // stop_simulation, or its timeout
+    };
+    QList<SimRun> a_simRuns;
+    int a_simRunSerial = 0;
+    int beginSimRun(const QString& schematic, const QString& simulator);
+    void endSimRun(int id, const QJsonObject& result);
+    SimRun* simRun(int id);
+    /// A run's process stopped (its SimulationRun's stop, Qucsator's abort).
+    static void stopProcess(QObject* process);
+    QJsonObject simulationStatus(const QJsonObject& args);
+    void stopSimulation(const QJsonObject& args, const Done& done);
+    /// wait_for: done once the event has happened, or at its timeout.
+    void waitFor(const QJsonObject& args, const Done& done);
+    // Raw input (qucscontrol_input.cpp): a click, a drag, keys.
+    void sendInput(const QJsonObject& args, const Done& done);
+    /// Why Claude does not use \a action (File > Exit, ...); empty when it may.
+    QString refusedAction(QAction* action) const;
+    // The help this build has (qucscontrol_help.cpp).
+    QJsonObject readHelp(const QJsonObject& args);
     void buildVerilogA(const QJsonObject& args, const Done& done);
     void tune(const QJsonObject& args, const Done& done);
     /// tune with several knobs, for as many targets.

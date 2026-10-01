@@ -16,6 +16,7 @@
 #include "qucscontrol_p.h"
 
 #include "qucs.h"
+#include "projectView.h"
 #include "qucsdoc.h"
 #include "schematic.h"
 
@@ -187,10 +188,21 @@ QString QucsControl::resourceVersion(const QString& uri) const
     return QString::number(revisionOf(doc).first);
 }
 
+QString QucsControl::askedEachTime(const QString& tool, const QJsonObject& a) const
+{
+    if (tool == QLatin1String("console") && (!a.value(QLatin1String("input")).toString().isEmpty() || a.value(QLatin1String("interrupt")).toBool()))
+        return tr("What is typed into a console runs with your rights, outside Claude Code's own rules for commands: asked about each "
+                  "time.");
+    return {};
+}
+
 bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
 {
     const auto exists = [this](const QString& path) { return !path.trimmed().isEmpty() && QFileInfo::exists(absolute(path.trimmed())); };
     if (tool == QLatin1String("clean_scratch") || tool == QLatin1String("trash_file")) return true;
+    // Raw input, the last resort: what it clicks or types is anything the
+    // window does.
+    if (tool == QLatin1String("send_input")) return true;
     // A line typed into a console runs, with the user's rights: asked about
     // each time (only reading it is not).
     if (tool == QLatin1String("console"))
@@ -419,9 +431,15 @@ void QucsControl::aboutToWrite(const QString& file)
     a_openStep.before.append({path, held});
 }
 
+void QucsControl::movedFile(const QString& from, const QString& to)
+{
+    if (a_previewing > 0 || a_callDepth == 0 || from.isEmpty() || to.isEmpty()) return;
+    a_openStep.moved.append({QFileInfo(from).absoluteFilePath(), QFileInfo(to).absoluteFilePath()});
+}
+
 void QucsControl::openFileStep(const QString& tool)
 {
-    a_openStep = FileStep{tool, QDateTime::currentDateTime(), {}, {}};
+    a_openStep = FileStep{tool, QDateTime::currentDateTime(), {}, {}, {}};
 }
 
 void QucsControl::closeFileStep()
@@ -437,7 +455,7 @@ void QucsControl::closeFileStep()
         changed.append({file, before});
         step.after.insert(file, there ? QCryptographicHash::hash(now, QCryptographicHash::Sha1) : QByteArray());
     }
-    if (changed.isEmpty()) return;
+    if (changed.isEmpty() && step.moved.isEmpty()) return;
     step.before = changed;
     a_fileSteps.append(step);
     while (a_fileSteps.size() > 50) a_fileSteps.removeFirst();
@@ -447,12 +465,38 @@ QJsonObject QucsControl::undoFiles(int steps)
 {
     if (a_fileSteps.isEmpty())
         return errorResult(tr("No file written by a tool is kept to put back (save_document, create_subcircuit, copy_document, "
-                              "import_netlist, import_data, export_data, export_netlist, export_image and rename_net's data display are)."));
-    QStringList restored, removed, skipped, reload;
+                              "import_netlist, import_data, export_data, export_netlist, export_image, rename_net's data display, "
+                              "rename_file and trash_file are)."));
+    QStringList restored, removed, skipped, reload, movedBack;
     QJsonArray undone;
     for (int n = 0; n < steps && !a_fileSteps.isEmpty(); ++n) {
         const FileStep step = a_fileSteps.takeLast();
         QJsonArray files;
+        // Moved (renamed, to the trash): moved back, the last first - not
+        // over one there now, nor what is no longer where it went.
+        for (auto it = step.moved.crbegin(); it != step.moved.crend(); ++it) {
+            const auto& [from, to] = *it;
+            const QString shown = QDir::toNativeSeparators(from);
+            if (QFileInfo::exists(from) || QFileInfo(from).isSymLink()) {
+                skipped << tr("%1 (there is one there again)").arg(shown);
+                continue;
+            }
+            if (!QFileInfo::exists(to) && !QFileInfo(to).isSymLink()) {
+                skipped << tr("%1 (no longer at %2)").arg(shown, QDir::toNativeSeparators(to));
+                continue;
+            }
+            if (!QFileInfo(QFileInfo(from).absolutePath()).isDir() || !QDir().rename(to, from)) {
+                skipped << (step.tool == QLatin1String("trash_file")
+                                ? tr("%1 (it could not be taken out of the trash, at %2: Finder's Put Back puts it back)")
+                                      .arg(shown, QDir::toNativeSeparators(to))
+                                : tr("%1 (it could not be moved back from %2)").arg(shown, QDir::toNativeSeparators(to)));
+                continue;
+            }
+            // The documents open from it follow it back.
+            a_app->documentsMoved({to}, {from});
+            movedBack << tr("%1 (from %2)").arg(shown, QDir::toNativeSeparators(to));
+            files.append(shown);
+        }
         for (const auto& [file, before] : step.before) {
             // Not over what was done to it since (by hand, or another call).
             QFile f(file);
@@ -484,10 +528,15 @@ QJsonObject QucsControl::undoFiles(int steps)
     if (!reload.isEmpty()) a_app->reloadChangedFiles(reload);
     QJsonObject result{{QStringLiteral("undone"), undone}};
     if (!restored.isEmpty()) result.insert(QStringLiteral("put back"), QJsonArray::fromStringList(restored));
+    if (!movedBack.isEmpty()) {
+        result.insert(QStringLiteral("moved back"), QJsonArray::fromStringList(movedBack));
+        if (a_app->projectView() != nullptr) a_app->projectView()->refresh();
+    }
     if (!removed.isEmpty()) result.insert(QStringLiteral("removed (the call made them)"), QJsonArray::fromStringList(removed));
     if (!skipped.isEmpty()) result.insert(QStringLiteral("not put back"), QJsonArray::fromStringList(skipped));
     result.insert(QStringLiteral("note"), tr("Files are not redone. A document open on a file put back is loaded again, unless it has "
-                                            "unsaved changes. A schematic's own changes are undone with undo without 'files'."));
+                                            "unsaved changes; one trash_file closed is not opened again (open_document opens it). A "
+                                            "schematic's own changes are undone with undo without 'files'."));
     return jsonResult(result);
 }
 

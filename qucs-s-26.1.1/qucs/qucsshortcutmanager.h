@@ -125,13 +125,20 @@ public:
    */
   bool isModified() const { return m_currentKey != m_defaultKey; }
 
+  /// Other keys the action also takes while the command keeps its default
+  /// (macOS: forward Delete beside the Backspace key labelled "delete").
+  void setAlsoByDefault(const QList<QKeySequence> &keys);
+
 private:
+  /// The action's shortcuts: the current key, and those also by default.
+  void apply();
   QString m_id;              /// Unique identifier (e.g., "File.Open")
   QString m_category;        /// Category for grouping (e.g., "File")
   QString m_description;     /// User-visible description
   QPointer<QAction> m_action; /// Associated QAction (null once it is gone)
   QKeySequence m_defaultKey; /// Factory default
   QKeySequence m_currentKey; /// User-defined (or default)
+  QList<QKeySequence> m_alsoByDefault;
 };
 
 /**

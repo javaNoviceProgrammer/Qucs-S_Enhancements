@@ -75,6 +75,7 @@
 #include "paintings/portsymbol.h"
 #include "paintings/graphictext.h"
 #include "dialogs/simmessage.h"
+#include "qucsshortcutmanager.h"
 #include "textdoc.h"
 #include "projectView.h"
 #include "processconsole.h"
@@ -4079,10 +4080,13 @@ private slots:
         QVERIFY2(!o.contains("changed while it ran"), qPrintable(text(r)));
         QCOMPARE(parameter(), QStringLiteral("R=500"));
         // Applied: into SpicePar1's R, one undo step; the dataset not stale.
-        r = call("simulate", {{"timeout", 60}, {"apply_optimum", true}}, 90000);
+        // (A conversation's run: the optimum written in is its edit, though
+        // the user's edits while it ran are the user's.)
+        r = control->callNow("simulate", {{"timeout", 60}, {"apply_optimum", true}}, 90000, 9);
         optimum = json(r).toObject().value("optimum").toArray().at(0).toObject();
         QCOMPARE(optimum.value("applied to").toObject().value("R").toString(), QStringLiteral("SpicePar1.R"));
         QCOMPARE(parameter(), QStringLiteral("R=1k"));
+        QCOMPARE(app->getDoc()->recentEdits().last().by, quint64(9));
         r = call("get_dataset", {{"variables", QJsonArray{"ac.v(out)"}}, {"points", 1}});
         QVERIFY2(!failed(r) && !json(r).toObject().contains("stale"), qPrintable(text(r).left(600)));
         QVERIFY(!failed(call("undo")));
@@ -4994,6 +4998,10 @@ private slots:
         QVERIFY(control->irreversible("console", {{"kind", "python"}, {"input", "1+1"}}));
         QVERIFY(control->irreversible("console", {{"kind", "python"}, {"interrupt", true}}));
         QVERIFY(!control->irreversible("console", {{"kind", "python"}}));
+        // (Asked also where Claude acts on its own: it runs commands.)
+        QVERIFY(control->askedEachTime("console", {{"kind", "python"}, {"input", "1+1"}}).contains("outside Claude Code's own rules"));
+        QVERIFY(control->askedEachTime("console", {{"kind", "python"}}).isEmpty());
+        QVERIFY(control->askedEachTime("trash_file", {{"path", "x"}}).isEmpty());
         QVERIFY(!control->readOnlyTools().contains("console"));
         QVERIFY(control->subjectOf("console", {{"kind", "python"}, {"input", "print(42)"}}).contains("print(42)"));
         QVERIFY(text(call("console", {{"kind", "matlab"}, {"input", "1"}})).contains("octave, python or terminal"));
@@ -5099,6 +5107,419 @@ private slots:
         QVERIFY(failed(call("set_settings", {{"scope", "app"}})));
         QVERIFY(QApplication::activeModalWidget() == nullptr);
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // ---- claude-access v2, group 6: awareness and the last resort
+
+    // A simulator that takes its time (prints, waits, ends well), for the
+    // tests of runs followed while they go on.
+    QString slowSimulator(int seconds)
+    {
+        const QString slow = dir.filePath(QStringLiteral("slow-%1.sh").arg(seconds));
+        QFile f(slow);
+        if (!f.open(QIODevice::WriteOnly)) return {};
+        f.write(QStringLiteral("#!/bin/sh\necho \"slow ngspice\"\nsleep %1\necho \"done at last\"\nexit 0\n").arg(seconds).toUtf8());
+        f.close();
+        QFile::setPermissions(slow, QFile::permissions(slow) | QFileDevice::ExeOwner | QFileDevice::ExeUser);
+        return slow;
+    }
+
+    // simulate with 'background': answered at once with an id, which
+    // simulation_status, wait_for and stop_simulation follow; a run past its
+    // (foreground) timeout goes on, followed the same way; one in the
+    // background past its timeout is stopped.
+    void backgroundSimulationsAreFollowed()
+    {
+        const QString simulatorWas = QucsSettings.NgspiceExecutable;
+        const auto back = qScopeGuard([simulatorWas] { QucsSettings.NgspiceExecutable = simulatorWas; });
+        QucsSettings.NgspiceExecutable = slowSimulator(2);
+        const QString sch = QucsSettings.qucsWorkspaceDir.absoluteFilePath("access-background.sch");
+        QFile::remove(sch);
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"), sch));
+        QVERIFY(!failed(call("open_document", {{"path", sch}})));
+        QVERIFY(control->readOnlyTools().contains("simulation_status") && control->readOnlyTools().contains("wait_for"));
+        QVERIFY(!control->readOnlyTools().contains("stop_simulation"));
+
+        // Answered at once, while it runs.
+        QElapsedTimer clock;
+        clock.start();
+        QJsonObject r = call("simulate", {{"path", sch}, {"background", true}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("running").toBool(), qPrintable(text(r)));
+        QVERIFY2(clock.elapsed() < 1500, qPrintable(QString::number(clock.elapsed())));
+        const int id = json(r).toObject().value("id").toInt();
+        QVERIFY(id > 0);
+        QTRY_VERIFY(app->simulationConsole()->isRunning());
+        // Other calls go on meanwhile; the state names it.
+        r = call("get_state");
+        QVERIFY2(json(r).toObject().value("simulations followed").toArray().first().toObject().value("id").toInt() == id, qPrintable(text(r)));
+        r = call("simulation_status", {{"id", id}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("state").toString() == "running", qPrintable(text(r)));
+        r = call("simulation_status");
+        QVERIFY2(json(r).toObject().value("runs").toArray().first().toObject().value("id").toInt() == id, qPrintable(text(r)));
+        // Its end waited for: its outcome, as simulate gives it.
+        r = call("wait_for", {{"event", "simulation_finished"}, {"id", id}, {"timeout", 30}}, 40000);
+        QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("Simulation %1").arg(id)) && text(r).contains("ended")
+                     && text(r).contains("\"finished\":true") && text(r).contains("done at last"),
+                 qPrintable(text(r)));
+        // Told in a conversation's next answer, too.
+        r = control->callNow("simulation_status", {{"id", id}}, 30000, 5);
+        QVERIFY2(text(r).contains("ended at") && text(r).contains("has ended"), qPrintable(text(r)));
+        QVERIFY(failed(call("simulation_status", {{"id", id + 100}})));
+
+        // Stopped by its id: its outcome says so.
+        QucsSettings.NgspiceExecutable = slowSimulator(20);
+        r = call("simulate", {{"path", sch}, {"background", true}});
+        const int second = json(r).toObject().value("id").toInt();
+        QTRY_VERIFY(app->simulationConsole()->isRunning());
+        clock.restart();
+        r = call("stop_simulation", {{"id", second}}, 20000);
+        QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("Simulation %1 stopped").arg(second)) && text(r).contains("\"stopped\":true"),
+                 qPrintable(text(r)));
+        QVERIFY(clock.elapsed() < 10000);
+        QVERIFY(!app->simulationConsole()->isRunning());
+        r = call("simulation_status");
+        bool byStop = false;
+        for (const QJsonValue& v : json(r).toObject().value("runs").toArray())
+            byStop = byStop || (v.toObject().value("id").toInt() == second && v.toObject().value("stopped by").toString() == "stop_simulation");
+        QVERIFY2(byStop, qPrintable(text(r)));
+        r = call("stop_simulation", {{"id", second}});
+        QVERIFY2(!failed(r) && text(r).contains("had ended already"), qPrintable(text(r)));
+        r = call("stop_simulation");
+        QVERIFY2(failed(r) && text(r).contains("No simulation is running"), qPrintable(text(r)));
+
+        // Past its timeout, in the foreground: answered then, with an id it
+        // goes on under.
+        QucsSettings.NgspiceExecutable = slowSimulator(8);
+        clock.restart();
+        r = call("simulate", {{"path", sch}, {"timeout", 5}}, 20000);
+        QVERIFY2(!failed(r) && clock.elapsed() < 7500 && text(r).contains("\"finished\":false"), qPrintable(text(r)));
+        const QRegularExpressionMatch m = QRegularExpression("simulation_status \\{\\\\?\"id\\\\?\": (\\d+)\\}").match(text(r));
+        QVERIFY2(m.hasMatch(), qPrintable(text(r)));
+        const int adopted = m.captured(1).toInt();
+        QVERIFY(app->simulationConsole()->isRunning());
+        r = call("wait_for", {{"event", "simulation_finished"}, {"id", adopted}, {"timeout", 30}}, 40000);
+        QVERIFY2(!failed(r) && text(r).contains("\"finished\":true") && text(r).contains("done at last"), qPrintable(text(r)));
+
+        // The user's edit while a conversation's run goes: the user's.
+        QucsSettings.NgspiceExecutable = slowSimulator(2);
+        QucsDoc* doc = app->findDoc(sch);
+        QTimer::singleShot(700, app, [doc] { doc->edited(); });
+        r = control->callNow("simulate", {{"path", sch}}, 30000, 9);
+        QVERIFY2(json(r).toObject().value("changed while it ran").toString().contains("by the user"), qPrintable(text(r)));
+        QucsSettings.NgspiceExecutable = slowSimulator(20);
+
+        // In the background with a timeout: stopped at it.
+        QucsSettings.NgspiceExecutable = slowSimulator(20);
+        r = call("simulate", {{"path", sch}, {"background", true}, {"timeout", 5}});
+        const int limited = json(r).toObject().value("id").toInt();
+        QVERIFY2(text(r).contains("stopped after 5 s"), qPrintable(text(r)));
+        r = call("wait_for", {{"event", "simulation_finished"}, {"id", limited}, {"timeout", 20}}, 30000);
+        QVERIFY2(text(r).contains("stopped by its timeout of 5 s") && text(r).contains("\"stopped\":true"), qPrintable(text(r)));
+
+        // A run the user starts: waited for without an id.
+        QucsSettings.NgspiceExecutable = slowSimulator(2);
+        QTimer::singleShot(300, app, [this] { QMetaObject::invokeMethod(app, "slotSimulateWithSpice"); });
+        r = call("wait_for", {{"event", "simulation_finished"}, {"timeout", 30}}, 40000);
+        QVERIFY2(!failed(r) && json(r).toObject().value("happened").toBool() && json(r).toObject().value("succeeded").toBool()
+                     && json(r).toObject().value("last lines").toString().contains("done at last"),
+                 qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"path", sch}, {"unsaved", "discard"}})));
+    }
+
+    // wait_for: a dialog, a document's change, a file written - now, or
+    // when it comes; at its timeout, said so (no error). An edit the user
+    // makes while it waits is the user's.
+    void waitForWaitsForEvents()
+    {
+        QJsonObject r = call("wait_for", {{"event", "dialog"}, {"timeout", 1}}, 5000);
+        QVERIFY2(!failed(r) && !json(r).toObject().value("happened").toBool() && text(r).contains("wait_for again"), qPrintable(text(r)));
+        auto* box = new QDialog(app);
+        box->setWindowTitle("A question meanwhile");
+        const auto gone = qScopeGuard([box] { delete box; });
+        QTimer::singleShot(300, box, [box] { box->show(); });
+        r = call("wait_for", {{"event", "dialog"}, {"timeout", 10}}, 15000);
+        QVERIFY2(json(r).toObject().value("happened").toBool() && json(r).toObject().value("dialog").toString() == "A question meanwhile",
+                 qPrintable(text(r)));
+        box->hide();
+
+        // A document's change: the user's, while Claude waits.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        Schematic* sch = front();
+        const quint64 before = sch->revision();
+        QTimer::singleShot(300, sch, [sch] { sch->edited(); });
+        r = control->callNow("wait_for", {{"event", "document_changed"}, {"timeout", 10}}, 15000, 77);
+        QVERIFY2(json(r).toObject().value("happened").toBool() && json(r).toObject().value("by").toString() == "the user"
+                     && json(r).toObject().value("was").toDouble() == double(before),
+                 qPrintable(text(r)));
+        // Since a revision before: at once.
+        r = call("wait_for", {{"event", "document_changed"}, {"revision", double(before)}, {"timeout", 10}});
+        QVERIFY2(json(r).toObject().value("happened").toBool(), qPrintable(text(r)));
+        // Claude's own edit meanwhile is its own.
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // A file written - and left alone a moment.
+        const QString file = dir.filePath("written-later.txt");
+        QFile::remove(file);
+        QTimer::singleShot(300, app, [file] {
+            QFile f(file);
+            if (f.open(QIODevice::WriteOnly)) f.write("first\n");
+        });
+        QTimer::singleShot(500, app, [file] {
+            QFile f(file);
+            if (f.open(QIODevice::Append)) f.write("second\n");
+        });
+        r = call("wait_for", {{"event", "file_written"}, {"path", file}, {"timeout", 10}}, 15000);
+        QVERIFY2(json(r).toObject().value("happened").toBool() && json(r).toObject().value("made").toBool()
+                     && json(r).toObject().value("size").toInt() == 13,
+                 qPrintable(text(r)));
+
+        // Refused: an event it does not know, a file not named, in a batch.
+        QVERIFY(text(call("wait_for", {{"event", "anything"}})).contains("simulation_finished, dialog"));
+        QVERIFY(failed(call("wait_for", {{"event", "file_written"}})));
+        r = call("batch", {{"calls", QJsonArray{QJsonObject{{"tool", "wait_for"}, {"arguments", QJsonObject{{"event", "dialog"}}}}}}});
+        QVERIFY2(text(r).contains("not for a batch"), qPrintable(text(r)));
+    }
+
+    // trash_file and rename_file undone with undo's 'files': moved back -
+    // from the trash (here the test's, QUCS_TRASH_DIR), or to the old name,
+    // the documents open from it following; not over one there again.
+    void trashAndRenameAreUndone()
+    {
+        const QByteArray trashWas = qgetenv("QUCS_TRASH_DIR");
+        const auto restore = qScopeGuard([trashWas] {
+            if (trashWas.isEmpty()) qunsetenv("QUCS_TRASH_DIR");
+            else qputenv("QUCS_TRASH_DIR", trashWas);
+        });
+        const QString trash = dir.filePath("undo-trash");
+        qputenv("QUCS_TRASH_DIR", trash.toUtf8());
+        const QString folder = QucsSettings.qucsWorkspaceDir.absoluteFilePath("access6");
+        QVERIFY(QDir().mkpath(folder + "/sub"));
+        const auto put = [](const QString& path, const QByteArray& text) {
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(text) == text.size();
+        };
+        QVERIFY(put(folder + "/a.txt", "a\n") && put(folder + "/b.txt", "b\n") && put(folder + "/sub/c.txt", "c\n"));
+
+        // Renamed, and back.
+        QVERIFY(!failed(call("rename_file", {{"path", folder + "/a.txt"}, {"to", "a2.txt"}})));
+        QJsonObject r = call("undo", {{"files", true}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(folder + "/a.txt") && !QFileInfo::exists(folder + "/a2.txt"), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("moved back"), qPrintable(text(r)));
+        // An open schematic renamed: its tab follows it back.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("save_document", {{"as", folder + "/amp.sch"}, {"replace", true}})));
+        QVERIFY(!failed(call("rename_file", {{"path", folder + "/amp.sch"}, {"to", "amp2.sch"}})));
+        QVERIFY(app->findDoc(folder + "/amp2.sch") != nullptr);
+        r = call("undo", {{"files", true}});
+        QVERIFY2(QFileInfo::exists(folder + "/amp.sch") && app->findDoc(folder + "/amp.sch") != nullptr && app->findDoc(folder + "/amp2.sch") == nullptr,
+                 qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"path", folder + "/amp.sch"}, {"unsaved", "discard"}})));
+
+        // Trashed, and taken back: a file, a folder with what is in it.
+        QVERIFY(!failed(call("trash_file", {{"path", folder + "/b.txt"}})));
+        QVERIFY(QFileInfo::exists(trash + "/b.txt") && !QFileInfo::exists(folder + "/b.txt"));
+        r = call("undo_history");
+        QVERIFY2(text(r).contains("moved to"), qPrintable(text(r)));
+        r = call("undo", {{"files", true}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(folder + "/b.txt") && !QFileInfo::exists(trash + "/b.txt"), qPrintable(text(r)));
+        QVERIFY(!failed(call("trash_file", {{"path", folder + "/sub"}})));
+        QVERIFY(!QFileInfo::exists(folder + "/sub/c.txt"));
+        QVERIFY(!failed(call("undo", {{"files", true}})));
+        QVERIFY(QFileInfo::exists(folder + "/sub/c.txt"));
+        // Not over one there again: left in the trash, and said.
+        QVERIFY(!failed(call("trash_file", {{"path", folder + "/b.txt"}})));
+        QVERIFY(put(folder + "/b.txt", "new\n"));
+        r = call("undo", {{"files", true}});
+        QVERIFY2(text(r).contains("there is one there again") && QFileInfo::exists(trash + "/b.txt"), qPrintable(text(r)));
+        QFile kept(folder + "/b.txt");
+        QVERIFY(kept.open(QIODevice::ReadOnly) && kept.readAll() == "new\n");
+        QVERIFY(text(call("describe_tool", {{"name", "trash_file"}})).contains("undo with 'files' takes it back"));
+    }
+
+    // The open project in get_state; list_documents lists its files when
+    // no folder is named, the workspace's projects named still.
+    void theOpenProjectIsInTheState()
+    {
+        QJsonObject r = call("get_state");
+        QVERIFY2(json(r).toObject().contains("project") && json(r).toObject().value("project").isNull(), qPrintable(text(r)));
+        QVERIFY(!failed(call("new_project", {{"name", "state_demo"}})));
+        QVERIFY(!failed(call("open_project", {{"name", "state_demo"}})));
+        const auto closed = qScopeGuard([this] { app->slotMenuProjClose(); });
+        r = call("get_state");
+        const QJsonObject project = json(r).toObject().value("project").toObject();
+        QVERIFY2(project.value("name").toString() == "state_demo" && project.value("folder").toString().endsWith("state_demo_prj"), qPrintable(text(r)));
+        {
+            QFile f(QucsSettings.QucsWorkDir.absoluteFilePath("inside.cir"));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("* inside\n");
+        }
+        r = call("list_documents");
+        QVERIFY2(json(r).toObject().value("folder").toString().endsWith("state_demo_prj") && json(r).toObject().contains("project"),
+                 qPrintable(text(r)));
+        bool inside = false, listed = false;
+        for (const QJsonValue& v : json(r).toObject().value("files").toArray()) inside = inside || v.toObject().value("path").toString() == "inside.cir";
+        for (const QJsonValue& v : json(r).toObject().value("projects").toArray()) listed = listed || v.toObject().value("project").toString() == "state_demo";
+        QVERIFY2(inside && listed, qPrintable(text(r)));
+        // The workspace by its path.
+        r = call("list_documents", {{"folder", QucsSettings.qucsWorkspaceDir.absolutePath()}});
+        QVERIFY2(json(r).toObject().value("folder").toString() == QDir::toNativeSeparators(QDir::cleanPath(QucsSettings.qucsWorkspaceDir.absolutePath())),
+                 qPrintable(text(r)));
+        app->slotMenuProjClose();
+        r = call("get_state");
+        QVERIFY2(json(r).toObject().value("project").isNull(), qPrintable(text(r)));
+    }
+
+    // send_input: a click, a drag, a double click, keys - on the canvas in
+    // the schematic's coordinates, on a panel in its picture's pixels -,
+    // with a picture after; keys that are a refused action's, the consoles
+    // and the Claude Code panel refused, nothing sent.
+    void rawInputIsSent()
+    {
+        // (Edit > Delete's keys are keys: forward Delete everywhere, and on
+        // a Mac the Backspace labelled "delete" - a changed one alone, until
+        // set back.)
+        QAction* del = QucsShortcutManager::instance().command("Edit.Delete")->action();
+        QVERIFY(del->shortcuts().contains(QKeySequence(Qt::Key_Delete)));
+#ifdef __APPLE__
+        QVERIFY(del->shortcuts().contains(QKeySequence(Qt::Key_Backspace)));
+        QVERIFY(QucsShortcutManager::instance().setShortcut("Edit.Delete", QKeySequence("Ctrl+Alt+D")));
+        QCOMPARE(del->shortcuts(), QList<QKeySequence>{QKeySequence("Ctrl+Alt+D")});
+        QucsShortcutManager::instance().command("Edit.Delete")->resetToDefault();
+        QCOMPARE(del->shortcuts(), (QList<QKeySequence>{QKeySequence(Qt::Key_Backspace), QKeySequence(Qt::Key_Delete)}));
+#endif
+        QVERIFY(control->irreversible("send_input", {{"keys", "Delete"}}));
+        QVERIFY(control->subjectOf("send_input", {{"click", QJsonArray{100, 100}}, {"keys", "Delete"}}).contains("keys Delete"));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("add_component", {{"type", "C"}, {"name", "C1"}, {"x", 300}, {"y", 100}})));
+        // (Zoomed in: the schematic's points are not the canvas's pixels.)
+        QVERIFY(!failed(call("zoom", {{"to", "in"}})));
+        QVERIFY(sch->modelToViewport(QPoint(100, 100)) != QPoint(100, 100));
+        // A click selects; the picture comes after.
+        QJsonObject r = call("send_input", {{"click", QJsonArray{100, 100}}});
+        QVERIFY2(!failed(r) && sch->getComponentByName("R1")->isSelected && !sch->getComponentByName("C1")->isSelected, qPrintable(text(r)));
+        bool picture = false;
+        for (const QJsonValue& v : r.value("content").toArray()) picture = picture || v.toObject().value("type").toString() == "image";
+        QVERIFY2(picture && text(r).contains("the schematic from"), qPrintable(text(r)));
+        // A drag moves it.
+        r = call("send_input", {{"click", QJsonArray{100, 100}}, {"drag_to", QJsonArray{160, 200}}});
+        QVERIFY2(!failed(r) && sch->getComponentByName("R1")->cx == 160 && sch->getComponentByName("R1")->cy == 200, qPrintable(text(r)));
+        // Keys: an action's shortcut sets it off (Delete deletes what is selected).
+        r = call("send_input", {{"click", QJsonArray{300, 100}}, {"keys", "Delete"}});
+        QVERIFY2(!failed(r) && sch->getComponentByName("C1") == nullptr && sch->getComponentByName("R1") != nullptr, qPrintable(text(r)));
+        QVERIFY2(text(r).contains(": Delete"), qPrintable(text(r)));   // (the action it set off, named)
+        // A double click opens the part's dialog: said, and answered apart
+        // (here from a timer: its loop runs inside this call's).
+        bool dialogUp = false, refusedMeanwhile = false;
+        QTimer::singleShot(1500, app, [this, &dialogUp, &refusedMeanwhile] {
+            dialogUp = QApplication::activeModalWidget() != nullptr;
+            refusedMeanwhile = failed(call("send_input", {{"keys", "Escape"}}));   // (a dialog waits: its own tools)
+            if (QWidget* d = QApplication::activeModalWidget()) d->close();
+        });
+        r = call("send_input", {{"click", QJsonArray{160, 200}}, {"double", true}});
+        QVERIFY2(!failed(r) && text(r).contains("waits for an answer"), qPrintable(text(r)));
+        QVERIFY(dialogUp && refusedMeanwhile);
+        QTRY_VERIFY(QApplication::activeModalWidget() == nullptr);
+        // A right click: its menu read, and closed.
+        r = call("send_input", {{"click", QJsonArray{160, 200}}, {"button", "right"}});
+        QVERIFY2(!failed(r) && text(r).contains("A menu came up"), qPrintable(text(r)));
+        QVERIFY(QApplication::activePopupWidget() == nullptr);
+
+        // Refused, with nothing sent: quitting, the Claude Code panel's
+        // keys, the consoles, the panel itself.
+        const int parts = int(sch->a_DocComps.size());
+        // (Quit's key as the platform has it - none on the test's.)
+        const QList<QKeySequence> quitWas = app->fileQuit->shortcuts();
+        const auto quitBack = qScopeGuard([this, quitWas] { app->fileQuit->setShortcuts(quitWas); });
+        app->fileQuit->setShortcut(QKeySequence("Ctrl+Q"));
+        r = call("send_input", {{"keys", "Ctrl+Q"}});
+        QVERIFY2(failed(r) && text(r).contains("does not quit") && text(r).contains("Nothing was sent"), qPrintable(text(r)));
+        QDockWidget* claude = app->claudeDockWidget();
+        QVERIFY(claude != nullptr);
+        // (Its own action, or one of no owner shown on a widget of it.)
+        auto* allow = new QAction("Allow");
+        allow->setShortcut(QKeySequence("Ctrl+Alt+K"));
+        claude->widget()->addAction(allow);
+        const auto dropped = qScopeGuard([allow] { delete allow; });
+        bool pressedAllow = false;
+        connect(allow, &QAction::triggered, this, [&pressedAllow] { pressedAllow = true; });
+        r = call("send_input", {{"keys", "Ctrl+Alt+K"}});
+        QVERIFY2(failed(r) && text(r).contains("Claude Code panel") && !pressedAllow, qPrintable(text(r)));
+        r = call("trigger_action", {{"action", "View > Claude Code"}});
+        QVERIFY2(failed(r) && text(r).contains("Claude Code panel's"), qPrintable(text(r)));
+        r = call("send_input", {{"target", "dock:Terminal"}, {"text", "ls"}});
+        QVERIFY2(failed(r) && text(r).contains("console"), qPrintable(text(r)));
+        r = call("send_input", {{"target", "dock:" + claude->windowTitle()}, {"click", QJsonArray{10, 10}}});
+        QVERIFY2(failed(r) && text(r).contains("Claude Code panel"), qPrintable(text(r)));
+        QVERIFY(failed(call("send_input", {{"target", "tabs"}, {"keys", "Return"}})));
+        QVERIFY(failed(call("send_input", {})));
+        QCOMPARE(int(sch->a_DocComps.size()), parts);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // A panel: a click on its field (in the picture's pixels) and text
+        // typed there. (The area as get_ui names it: its pixels are its
+        // page's, as uiArea finds it.)
+        QWidget* root = nullptr;
+        for (QDockWidget* d : app->findChildren<QDockWidget*>()) {
+            auto* tabs = qobject_cast<QTabWidget*>(d->widget());
+            if (tabs == nullptr && d->widget() != nullptr) tabs = d->widget()->findChild<QTabWidget*>();
+            for (int i = 0; tabs != nullptr && i < tabs->count(); ++i)
+                if (tabs->tabText(i).remove('&').trimmed() == "Content") root = tabs->widget(i);
+        }
+        QVERIFY(root != nullptr);
+        QLineEdit* filter = nullptr;
+        for (QLineEdit* e : root->findChildren<QLineEdit*>())
+            if (e->placeholderText().contains("Filter by name")) filter = e;
+        QVERIFY(filter != nullptr);
+        // Where to click: get_ui says, the panel shown (here by set_ui).
+        QVERIFY(!failed(call("set_ui", {{"area", "dock:Content"}, {"set", QJsonArray{}}})));
+        QTRY_VERIFY(root->isVisible());
+        r = call("get_ui", {{"area", "dock:Content"}});
+        QJsonArray rect;
+        for (const QJsonValue& v : json(r).toObject().value("controls").toArray())
+            if (v.toObject().value("kind").toString() == "field" && v.toObject().value("label").toString().contains("Filter", Qt::CaseInsensitive))
+                rect = v.toObject().value("at").toArray();
+        QVERIFY2(rect.size() == 4, qPrintable(text(r)));
+        const QPoint at(rect.at(0).toInt() + rect.at(2).toInt() / 2, rect.at(1).toInt() + rect.at(3).toInt() / 2);
+        QVERIFY(filter->rect().contains(filter->mapFrom(root, at)));
+        r = call("send_input", {{"target", "dock:Content"}, {"click", QJsonArray{at.x(), at.y()}}, {"text", "zz"}});
+        QVERIFY2(!failed(r) && filter->text() == "zz", qPrintable(text(r) + " / " + filter->text()));
+        filter->clear();
+        r = call("send_input", {{"target", "dock:Content"}, {"click", QJsonArray{5000, 5}}});
+        QVERIFY2(failed(r) && text(r).contains("is outside"), qPrintable(text(r)));
+    }
+
+    // read_help: what this build's help has - the menu actions' own help,
+    // the component types, the examples - found by words; the online
+    // manual named.
+    void helpIsReadFromTheBuild()
+    {
+        QVERIFY(control->readOnlyTools().contains("read_help"));
+        const QString examplesWas = QucsSettings.ExamplesDir;
+        const auto back = qScopeGuard([examplesWas] { QucsSettings.ExamplesDir = examplesWas; });
+        QucsSettings.ExamplesDir = QStringLiteral(QUCS_EXAMPLES_DIR);
+        QJsonObject r = call("read_help");
+        const QJsonObject has = json(r).toObject().value("help in this build").toObject();
+        QVERIFY2(has.value("actions").toString().contains("menu actions") && has.value("examples").toString().contains("example schematics")
+                     && text(r).contains("qucs-s-help.readthedocs.io"),
+                 qPrintable(text(r)));
+        r = call("read_help", {{"topic", "delete"}});
+        bool deleteHelp = false;
+        for (const QJsonValue& v : json(r).toObject().value("actions").toArray())
+            deleteHelp = deleteHelp || (v.toObject().value("action").toString() == "Edit > Delete"
+                                        && v.toObject().value("help").toString().contains("Deletes the selected components"));
+        QVERIFY2(deleteHelp, qPrintable(text(r)));
+        r = call("read_help", {{"topic", "resonance"}});
+        bool example = false;
+        for (const QJsonValue& v : json(r).toObject().value("examples").toObject().value("files").toArray())
+            example = example || v.toString().endsWith("RCL_resonance.sch");
+        QVERIFY2(example, qPrintable(text(r)));
+        r = call("read_help", {{"topic", "resistor"}});
+        QVERIFY2(!json(r).toObject().value("components").toObject().value("types").toArray().isEmpty(), qPrintable(text(r)));
+        r = call("read_help", {{"topic", "zzqx nothing"}});
+        QVERIFY2(text(r).contains("Nothing in this build's help"), qPrintable(text(r)));
     }
 
     // ---- round 6: the gaps of one session (qucs-mcp-wishlist)
