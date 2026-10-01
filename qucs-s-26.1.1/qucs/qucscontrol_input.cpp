@@ -39,6 +39,7 @@
 #include <QTabWidget>
 #include <QTimer>
 
+#include <cmath>
 #include <memory>
 
 using namespace qucs_s::control;
@@ -88,6 +89,8 @@ bool xyOf(const QJsonValue& v, QPoint* p)
 {
     const QJsonArray a = v.toArray();
     if (a.size() != 2 || !a.at(0).isDouble() || !a.at(1).isDouble()) return false;
+    // (Within reach of an int: 1e308 rounded into one was undefined.)
+    if (!(std::abs(a.at(0).toDouble()) <= 1e7) || !(std::abs(a.at(1).toDouble()) <= 1e7)) return false;
     *p = QPoint(qRound(a.at(0).toDouble()), qRound(a.at(1).toDouble()));
     return true;
 }
@@ -131,7 +134,7 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     QPoint click, dragTo;
     const bool drag = args.contains(QLatin1String("drag_to"));
     if ((hasClick && !xyOf(args.value(QLatin1String("click")), &click)) || (drag && !xyOf(args.value(QLatin1String("drag_to")), &dragTo))) {
-        done(errorResult(tr("'click' and 'drag_to' are [x, y].")));
+        done(errorResult(tr("'click' and 'drag_to' are [x, y], each within 10,000,000 of 0.")));
         return;
     }
     if (drag && !hasClick) {

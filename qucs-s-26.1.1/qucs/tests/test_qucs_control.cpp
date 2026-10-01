@@ -5109,6 +5109,95 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // The panel says what a call of Claude's does, on what, and whether it
+    // is asked about, from its arguments as they come - before anything
+    // checks them (qucs_crash, 1 October: a set_settings call took the
+    // window down, its 'values' read through an iterator into an object
+    // already gone). Every tool: with no arguments, with each its schema
+    // has, and with each of them of every wrong type; pinned to a document
+    // too.
+    void theHostReadsAnyCallUnharmed()
+    {
+        // A value for a schema: its first choice, or one of its type - an
+        // object with each of its properties (with keys of its own when it
+        // names none: values, sides, equations).
+        std::function<QJsonValue(const QJsonObject&, int)> sample = [&sample](const QJsonObject& schema, int depth) -> QJsonValue {
+            if (schema.contains("enum")) return schema.value("enum").toArray().first();
+            if (schema.contains("anyOf")) return sample(schema.value("anyOf").toArray().first().toObject(), depth);
+            const QJsonValue type = schema.value("type");
+            const QString t = type.isArray() ? type.toArray().first().toString() : type.toString();
+            if (t == "string") return QStringLiteral("x");
+            if (t == "integer" || t == "number") return 2;
+            if (t == "boolean") return true;
+            if (t == "array") {
+                const QJsonValue item = depth < 4 ? sample(schema.value("items").toObject(), depth + 1) : QJsonValue(1);
+                return QJsonArray{item, item};
+            }
+            if (t == "object" || schema.contains("properties")) {
+                QJsonObject o;
+                const QJsonObject properties = schema.value("properties").toObject();
+                for (auto it = properties.constBegin(); it != properties.constEnd() && depth < 4; ++it)
+                    o.insert(it.key(), sample(it.value().toObject(), depth + 1));
+                if (properties.isEmpty()) {
+                    o.insert("Settings/Language", "English");
+                    o.insert("Grid/horizontal Grid", 20);
+                }
+                return o;
+            }
+            return QStringLiteral("x");
+        };
+        const QList<QJsonValue> wrong{QJsonValue(QJsonValue::Null), QJsonValue(7), QJsonValue(-1.5), QJsonValue("y"), QJsonValue(QJsonArray{1, "z", QJsonObject{}}),
+                                      QJsonValue(QJsonObject{{"k", QJsonArray{}}, {"tool", 3}})};
+        const QJsonArray tools = control->tools();
+        QVERIFY(tools.size() > 80);
+        int calls = 0;
+        for (const QJsonValue& t : tools) {
+            const QString tool = t.toObject().value("name").toString();
+            const QJsonObject schema = t.toObject().value("inputSchema").toObject();
+            QList<QJsonObject> inputs{QJsonObject{}, sample(schema, 0).toObject()};
+            for (const QJsonValue& v : wrong) {
+                QJsonObject o;
+                for (const QString& key : schema.value("properties").toObject().keys()) o.insert(key, v);
+                inputs << o;
+            }
+            QVERIFY2(!control->actionOf(tool).isEmpty() || control->readOnlyTools().contains(tool), qPrintable(tool));
+            for (const QJsonObject& input : std::as_const(inputs))
+                for (const QJsonObject& a : {input, control->forDocument(tool, input, "amp.sch")}) {
+                    control->subjectOf(tool, a);
+                    control->irreversible(tool, a);
+                    control->askedEachTime(tool, a);
+                    ++calls;
+                }
+        }
+        QVERIFY(calls > 1000);
+        // set_settings' subject: each value it sets.
+        const QString subject = control->subjectOf("set_settings", {{"scope", "app"},
+                                                                    {"values", QJsonObject{{"Settings/Language", "English"}, {"Grid/horizontal Grid", 20}}}});
+        QVERIFY2(subject.contains("Settings/Language=English") && subject.contains("Grid/horizontal Grid=20"), qPrintable(subject));
+    }
+
+    // A number made into a whole one is refused when it is no whole number
+    // in reach (UBSan, the access tools' fuzzer, 1 October: edit_text's
+    // 'revision' -1 made unsigned): a revision, a point.
+    void numbersOutOfReachAreRefused()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "text"}})));
+        for (const QJsonValue& revision : {QJsonValue(-1), QJsonValue(1e308), QJsonValue(1.5)}) {
+            QJsonObject r = call("edit_text", {{"revision", revision}, {"edits", QJsonArray{QJsonObject{{"lines", QJsonArray{1, 0}}, {"text", "x"}}}}});
+            QVERIFY2(failed(r) && text(r).contains("a whole number from 0"), qPrintable(text(r)));
+            // (1.5: refused before, as no whole number - the schema's integer.)
+            r = call("wait_for", {{"event", "document_changed"}, {"revision", revision}, {"timeout", 1}});
+            QVERIFY2(failed(r) && text(r).contains("whole number"), qPrintable(text(r)));
+        }
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        for (const QJsonArray& point : {QJsonArray{1e308, 1}, QJsonArray{1, -1e9}}) {
+            const QJsonObject r = call("send_input", {{"click", point}});
+            QVERIFY2(failed(r) && text(r).contains("within 10,000,000"), qPrintable(text(r)));
+        }
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // ---- claude-access v2, group 6: awareness and the last resort
 
     // A simulator that takes its time (prints, waits, ends well), for the
