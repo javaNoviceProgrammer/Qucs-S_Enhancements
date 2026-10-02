@@ -48,8 +48,11 @@ TruthDiagram::~TruthDiagram()
 // calculates the text in the tabular
 int TruthDiagram::calcDiagram()
 {
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
+  qDeleteAll(Arcs);
   Arcs.clear();
 
   x1 = 0;  // no scroll bar

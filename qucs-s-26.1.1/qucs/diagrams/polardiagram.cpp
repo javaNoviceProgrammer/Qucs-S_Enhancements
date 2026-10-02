@@ -77,8 +77,11 @@ void PolarDiagram::calcLimits()
 // --------------------------------------------------------------
 int PolarDiagram::calcDiagram()
 {
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
+  qDeleteAll(Arcs);
   Arcs.clear();
 
   // x line

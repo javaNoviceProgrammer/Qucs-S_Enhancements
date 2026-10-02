@@ -85,8 +85,11 @@ void SmithDiagram::calcLimits()
 // calculate the circles and arcs of the smith chart
 int SmithDiagram::calcDiagram()
 {
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
+  qDeleteAll(Arcs);
   Arcs.clear();
 
   x3 = x2 + 7;

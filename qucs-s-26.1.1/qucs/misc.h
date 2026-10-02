@@ -38,6 +38,12 @@ namespace misc {
   QString StringNum  (double, char form='g', int Precision=3);
   void    str2num    (const QString&, double&, QString&, double&);
   QString num2str    (double, int Precision = -1, QString unit="");
+  /// Asks the allocator to hand back to the system the memory freed but
+  /// kept, after a large simulation's data or a closed document: glibc's
+  /// does (malloc_trim). macOS's may decline: on macOS 26 its pressure
+  /// relief returned nothing, and the freed blocks stay with the process
+  /// for its next allocations (its footprint, not its memory in use).
+  void releaseFreedMemory();
   QColor ColorFromString(const QString& color);
   QString StringNiceNum(double);
   void    convert2Unicode(QString&);

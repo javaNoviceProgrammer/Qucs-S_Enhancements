@@ -76,6 +76,7 @@ private:
     bool a_keepConsole = false;      // the console shows the compilation
     bool a_quiet = false;            // no message box: a tool waits for the run (setQuiet())
     QString a_datasetError;          // why the dataset could not be written
+    bool a_noResults = false;        // ... because the simulator wrote no results
 
 public:
     explicit SimulationRun(Schematic* sch, bool netlist2Console, QObject* parent = nullptr);
@@ -100,6 +101,9 @@ public:
     /// Why the simulator's output could not be written as the dataset;
     /// empty when it was (or there was nothing to write).
     QString datasetError() const { return a_datasetError; }
+    /// Whether that is because the simulator wrote no results (its own
+    /// failure, as an exit code may tell first).
+    bool wroteNoResults() const { return a_noResults; }
     /// What goes wrong is not shown in a message box but kept (for Claude's
     /// tools, whose answer tells it, and which no box may wait on).
     void setQuiet(bool quiet) { a_quiet = quiet; }

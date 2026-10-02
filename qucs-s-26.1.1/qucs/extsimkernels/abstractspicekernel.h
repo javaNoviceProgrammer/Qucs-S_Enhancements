@@ -73,6 +73,7 @@ protected:
     QStringList a_output_files;
 
     bool a_DC_OP_only; // only calculate operating point to show DC bias
+    bool a_wroteNoResults = false;
     bool a_needsPrefix;
     QString a_extraParameters;   // .PARAM lines ahead of the schematic's own
     Schematic *a_schematic;
@@ -133,6 +134,9 @@ public:
     /// The simulator's output as the dataset \a qucs_dataset; why it could
     /// not be written (an empty text when it was, or nothing was to be).
     QString convertToQucsData(const QString &qucs_dataset);
+    /// Whether that was because the simulator wrote no results (its own
+    /// failure, told in its log - not a dataset Qucs-S could not write).
+    bool wroteNoResults() const { return a_wroteNoResults; }
     QString getOutput();
     /// The Scratch folder the netlist and the simulator's output files are in.
     QString workdir() const { return a_workdir; }

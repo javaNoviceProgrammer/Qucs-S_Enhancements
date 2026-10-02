@@ -823,8 +823,11 @@ void Rect3DDiagram::createAxis(Axis *Axis, bool Right,
 // --------------------------------------------------------------
 int Rect3DDiagram::calcDiagram()
 {
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
+  qDeleteAll(Arcs);
   Arcs.clear();
 
   double GridStep, corr, zD, zDstep, GridNum;

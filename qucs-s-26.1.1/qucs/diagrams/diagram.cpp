@@ -1128,17 +1128,23 @@ int Graph::loadDatFile(const QString &fileName) {
     if (!file.open(QIODevice::ReadOnly)) return 0;
 
     // *****************************************************************
-    // To strongly speed up the file read operation the whole file is
-    // read into the memory in one piece.
+    // The whole file at hand at once: mapped, not read - a 480 MB dataset
+    // was read whole into memory for every graph. Privately: the end marks
+    // the parse writes go to copies of their pages, never to the file. (It
+    // stays open while mapped.) Read when it cannot be mapped.
+    const qint64 fileSize = file.size();
+    if (fileSize <= 0) return 0;   // nothing to parse
     QByteArray FileContent;
-    FileContent = file.readAll();
-    file.close();
-    // An empty QByteArray hands out a shared read-only buffer; writing the
-    // terminator into it (below) would fault. Nothing to parse anyway.
-    if (FileContent.isEmpty()) return 0;
-    char *FileString = FileContent.data();
+    char *FileString = reinterpret_cast<char *>(file.map(0, fileSize, QFileDevice::MapPrivateOption));
+    if (FileString == nullptr) {
+        FileContent = file.readAll();
+        // An empty QByteArray hands out a shared read-only buffer; writing
+        // the terminator into it (below) would fault.
+        if (FileContent.size() != fileSize) return 0;
+        FileString = FileContent.data();
+    }
     if (!FileString) return 0;
-    char *const FileEnd = FileString + FileContent.size();  // the terminating NUL
+    char *const FileEnd = FileString + fileSize;  // (its last byte is made the terminating NUL below)
     char *pPos = FileEnd - 1;
     if (*pPos > ' ') if (*pPos != '>') return 0;
     *pPos = 0;

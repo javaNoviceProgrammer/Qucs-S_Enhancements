@@ -187,8 +187,11 @@ void RectDiagram::calcLimits()
 // --------------------------------------------------------------
 int RectDiagram::calcDiagram()
 {
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
+  qDeleteAll(Arcs);
   Arcs.clear();
 
   double GridStep, corr, zD, zDstep, GridNum;

@@ -663,8 +663,24 @@ QString Schematic::snapshot()
 QStringList Schematic::undoStates() const
 {
   QStringList states;
-  for (const QString* s : a_undoAction) states << (s != nullptr ? *s : QString());
+  for (const UndoState* s : a_undoAction) states << (s != nullptr ? s->text() : QString());
   return states;
+}
+
+QString Schematic::undoState(int index) const
+{
+  return index >= 0 && index < a_undoAction.size() && a_undoAction.at(index) != nullptr ? a_undoAction.at(index)->text() : QString();
+}
+
+UndoState::UndoState(const QString& text)
+    : m_op(text.size() > 0 ? text.at(0) : QChar(' ')), m_mark(text.size() > 1 ? text.at(1) : QChar(' ')),
+      m_packed(qCompress(QStringView(text).mid(std::min<qsizetype>(2, text.size())).toUtf8(), 1))
+{
+}
+
+QString UndoState::text() const
+{
+  return QString(m_op) + m_mark + QString::fromUtf8(qUncompress(m_packed));
 }
 
 void Schematic::restore(const QString& state)
@@ -684,7 +700,7 @@ QPair<QString, QString> Schematic::snapshotAll()
 Schematic::UndoStacks Schematic::undoStacks() const
 {
   UndoStacks stacks;
-  for (const QString* s : a_undoAction) stacks.action << *s;
+  for (const UndoState* s : a_undoAction) stacks.action << *s;   // (packed, shared)
   for (const QString* s : a_undoSymbol) stacks.symbol << *s;
   stacks.actionIdx = a_undoActionIdx;
   stacks.symbolIdx = a_undoSymbolIdx;
@@ -699,7 +715,7 @@ void Schematic::setUndoStacks(const UndoStacks& stacks)
   // the redo steps were lost.)
   qDeleteAll(a_undoAction);
   a_undoAction.clear();
-  for (const QString& s : stacks.action) a_undoAction.append(new QString(s));
+  for (const UndoState& s : stacks.action) a_undoAction.append(new UndoState(s));
   qDeleteAll(a_undoSymbol);
   a_undoSymbol.clear();
   for (const QString& s : stacks.symbol) a_undoSymbol.append(new QString(s));
@@ -708,9 +724,9 @@ void Schematic::setUndoStacks(const UndoStacks& stacks)
   a_keyboardMoveOpen = false;
   const bool symbol = a_symbolMode;
   const int idx = symbol ? a_undoSymbolIdx : a_undoActionIdx;
-  const auto& stack = symbol ? a_undoSymbol : a_undoAction;
+  const qsizetype count = symbol ? a_undoSymbol.size() : a_undoAction.size();
   emit signalUndoState(idx > 0);
-  emit signalRedoState(idx < stack.size() - 1);
+  emit signalRedoState(idx < count - 1);
 }
 
 bool Schematic::restoreAll(const QPair<QString, QString>& state)
@@ -1389,7 +1405,9 @@ bool Schematic::loadDocument()
 QString Schematic::createUndoString(char Op)
 {
   // Build element document.
-  QString s = "  \n";
+  QString s;
+  s.reserve(a_lastUndoSize + a_lastUndoSize / 16 + 1024);
+  s = QStringLiteral("  \n");
   s.replace(0,1,Op);
   for(auto* pc : a_DocComps)
     s += pc->save()+"\n";
@@ -1410,6 +1428,7 @@ QString Schematic::createUndoString(char Op)
     s += "<"+pp->save()+">\n";
   s += "</>\n";
 
+  a_lastUndoSize = s.size();
   return s;
 }
 

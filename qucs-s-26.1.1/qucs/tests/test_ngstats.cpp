@@ -534,6 +534,54 @@ private slots:
         QVERIFY(!read(netlist).contains("qucs-s: begin"));
     }
 
+    // More nodes than one ngspice command takes (1000 words; a write of
+    // them wrote nothing, "too many args"): saved before the corners, each
+    // corner's plot written whole, the saves cleared after. With records
+    // the plots keep all of ngspice's vectors: a record may name what a
+    // save leaves out.
+    void manyNodesAreSavedBeforeTheCorners()
+    {
+        const QString file = dir.filePath("many.sch");
+        QVERIFY(write(file, lowpass(file,
+            "  <.NGCORNERS NgCorners1 1 400 450 0 44 0 0 \"Analysis=AC1\" 1 \"Corners=\" 1 \"Nominal=yes\" 0 "
+            "\"Waveforms=yes\" 0 \"Samples=\" 0 \"Seed=\" 0 \"ModelStats=no\" 0 \"Record=g|maximum(db(v(out)))\" 1>\n")));
+        Schematic doc(nullptr, file);
+        QVERIFY(doc.loadDocument());
+        Component* c = find(&doc, "NgCorners1");
+        QVERIFY(c != nullptr);
+        Corners cr = Corners::read(c);
+        cr.records.clear();
+        cr.write(c);
+        QStringList nodes;
+        for (int k = 1; k <= 2000; ++k) nodes << QStringLiteral("v(n%1)").arg(k);
+        QStringList outputs;
+        QString why;
+        const QString block = controlBlock(c, &doc, nodes.join(' '), &outputs, &why);
+        QVERIFY2(!block.isEmpty(), qPrintable(why));
+        QStringList saved;
+        for (const QString& line : block.split('\n'))
+            if (line.startsWith("save ")) saved << line.mid(5);
+        QCOMPARE(saved.size(), 3);
+        QCOMPARE(saved.join(' '), nodes.join(' '));
+        QVERIFY2(block.indexOf("\nsave ") < block.indexOf("\ncorners "), qPrintable(block.left(300)));
+        QVERIFY2(block.contains("end\nwrite spice4qucs.ngcorners1.ngcwaves\nlet qucs_corners_more"), qPrintable(block.right(600)));
+        QVERIFY2(block.contains("setplot next\nwrite spice4qucs.ngcorners1.ngcwaves\nend\n"), qPrintable(block.right(600)));
+        QVERIFY2(block.contains("unset appendwrite\ndelete all\necho \"qucs-s: end NgCorners1\"\n"), qPrintable(block.right(400)));
+
+        cr.records = {{"g", "maximum(db(v(n1)))"}};
+        cr.write(c);
+        const QString recorded = controlBlock(c, &doc, nodes.join(' '), &outputs, &why);
+        QVERIFY2(!recorded.isEmpty(), qPrintable(why));
+        QVERIFY(!recorded.contains("\nsave "));
+        QVERIFY(!recorded.contains("delete all"));
+        QVERIFY(recorded.contains("end\nwrite spice4qucs.ngcorners1.ngcwaves\n"));
+
+        // A few: listed, as before.
+        const QString few = controlBlock(c, &doc, "v(in) v(out)", &outputs, &why);
+        QVERIFY(few.contains("write spice4qucs.ngcorners1.ngcwaves v(in) v(out)\n"));
+        QVERIFY(!few.contains("\nsave "));
+    }
+
     // The status log: ngspice's report of each, between its markers.
     void theSummary()
     {
