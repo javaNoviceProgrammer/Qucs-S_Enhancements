@@ -2,7 +2,8 @@
  * The Projects panel's menu: Switch Workspace, Import Project (a project
  * folder copied into the workspace), Link Project (a link to it in the
  * workspace, nothing copied, and it acts as a project there), Unlink
- * Project (the link of the row right-clicked goes) and Close Project.
+ * Project (the link of the row right-clicked goes), Open Project (the
+ * project right-clicked) and Close Project.
  * Deleting or unlinking a linked project removes the link, never the
  * project it leads to. And the workspace changed in the settings is the
  * one the panel lists.
@@ -308,9 +309,10 @@ private slots:
     }
 
     // The menu of the Projects panel, and the same actions in the Project
-    // menu - but Unlink Project, of the row right-clicked: chosen only on
-    // a linked project. Close Project only with a project open (the
-    // Project menu's own is as it was).
+    // menu - but Unlink Project and Open Project, of the row right-clicked:
+    // chosen only on a linked project, and on a project not open. Close
+    // Project only with a project open (the Project menu's own is as it
+    // was).
     void theMenu()
     {
         fresh("menu");
@@ -321,30 +323,46 @@ private slots:
         const QString link = app.bringProjectIn(source, true);
         QVERIFY(isLink(link));
         QVERIFY(QDir().mkpath(workspace + "/real_prj"));
-        QTRY_VERIFY(rowOf(app, "real_prj").x() >= 0 && rowOf(app, "amp_prj").x() >= 0);
+        QVERIFY(QDir().mkpath(workspace + "/plain"));   // a folder, no project
+        QTRY_VERIFY(rowOf(app, "real_prj").x() >= 0 && rowOf(app, "amp_prj").x() >= 0 && rowOf(app, "plain").x() >= 0);
 
         const auto onLink = projectsMenu(app, rowOf(app, "amp_prj"));
         QStringList shown;
         for (const auto& entry : onLink) shown << entry.first;
-        QCOMPARE(shown, QStringList({"projSwitchWorkspace", "projImport", "projLink", "projUnlink", "projClose"}));
+        QCOMPARE(shown, QStringList({"projSwitchWorkspace", "projImport", "projLink", "projUnlink", "projOpenRow", "projClose"}));
         QVERIFY(canChoose(onLink, "projUnlink"));
+        QVERIFY(canChoose(onLink, "projOpenRow"));
         QVERIFY(!canChoose(onLink, "projClose"));   // no project open
         QVERIFY(canChoose(onLink, "projLink"));
-        QVERIFY(!canChoose(projectsMenu(app, rowOf(app, "real_prj")), "projUnlink"));
+        const auto onReal = projectsMenu(app, rowOf(app, "real_prj"));
+        QVERIFY(!canChoose(onReal, "projUnlink"));
+        QVERIFY(canChoose(onReal, "projOpenRow"));
+        QVERIFY(!canChoose(projectsMenu(app, rowOf(app, "plain")), "projOpenRow"));
+        if (rowOf(app, "..").x() >= 0) QVERIFY(!canChoose(projectsMenu(app, rowOf(app, "..")), "projOpenRow"));
         const QRect below = app.projectsView()->viewport()->rect();
-        QVERIFY(!canChoose(projectsMenu(app, QPoint(5, below.bottom() - 2)), "projUnlink"));   // on no row
+        const auto onNothing = projectsMenu(app, QPoint(5, below.bottom() - 2));   // on no row
+        QVERIFY(!canChoose(onNothing, "projUnlink"));
+        QVERIFY(!canChoose(onNothing, "projOpenRow"));
         auto* close = app.findChild<QAction*>("projClose");
         QVERIFY(close != nullptr && close->isEnabled());   // the Project menu's, as it was
 
-        app.openProject(workspace + "/real_prj");
-        QCOMPARE(app.ProjName, QStringLiteral("real"));
+        // Chosen: the project right-clicked opens - not again once open.
+        projectsMenu(app, rowOf(app, "real_prj"), "projOpenRow");
+        QTRY_COMPARE(app.ProjName, QStringLiteral("real"));
+        QCOMPARE(QDir::cleanPath(QucsSettings.QucsWorkDir.absolutePath()), QDir::cleanPath(workspace + "/real_prj"));
         const auto open = projectsMenu(app, rowOf(app, "real_prj"));
         QVERIFY(canChoose(open, "projClose"));
         QVERIFY(!canChoose(open, "projUnlink"));
-        // Chosen: the project closes.
+        QVERIFY(!canChoose(open, "projOpenRow"));
+        QVERIFY(canChoose(projectsMenu(app, rowOf(app, "amp_prj")), "projOpenRow"));   // another one
+        // Close Project chosen: the open project closes.
         projectsMenu(app, rowOf(app, "amp_prj"), "projClose");
         QTRY_VERIFY(app.ProjName.isEmpty());
         QVERIFY(close->isEnabled());
+        // A linked project opened from its row.
+        projectsMenu(app, rowOf(app, "amp_prj"), "projOpenRow");
+        QTRY_COMPARE(app.ProjName, QStringLiteral("amp"));
+        app.slotMenuProjClose();
 
         for (const char* name : {"projSwitchWorkspace", "projImport", "projLink", "projClose"}) {
             auto* action = app.findChild<QAction*>(name);
@@ -355,6 +373,7 @@ private slots:
             QVERIFY2(inMenuBar, name);
         }
         QVERIFY(app.findChild<QAction*>("projUnlink") == nullptr);   // (the menu's own, gone with it)
+        QVERIFY(app.findChild<QAction*>("projOpenRow") == nullptr);
     }
 
     // Unlink Project on a linked project's row: asked, the link goes, the
