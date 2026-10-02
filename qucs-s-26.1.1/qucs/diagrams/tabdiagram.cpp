@@ -141,8 +141,11 @@ QRectF TabDiagram::textRect(const Text& text, const QFontMetricsF& metrics) cons
 // calculates the text in the tabular
 int TabDiagram::calcDiagram()
 {
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
+  qDeleteAll(Arcs);
   Arcs.clear();
 
   x1 = 0;  // no scroll bar

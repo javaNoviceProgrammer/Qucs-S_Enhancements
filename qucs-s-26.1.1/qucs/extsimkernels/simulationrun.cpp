@@ -36,6 +36,7 @@
 #include "settings.h"
 #include "misc.h"
 #include "simulationrun.h"
+#include <QTimer>
 #include "main.h"
 #include "schematic.h"
 #include "ngoptimize.h"
@@ -242,7 +243,13 @@ void SimulationRun::slotProcessOutput()
         if (!a_datasetError.isEmpty()) {
             addLogEntry(a_datasetError, QApplication::style()->standardIcon(QStyle::SP_MessageBoxCritical));
             a_hasError = true;
-            if (!a_quiet && !misc::ErrorCapture::active())
+            // (No results is the simulator's failure: in the log, as its
+            // errors are, not in a box besides.)
+            const AbstractSpiceKernel* kernel = QucsSettings.DefaultSimulator == spicecompat::simXyce
+                                                    ? static_cast<AbstractSpiceKernel*>(a_xyce)
+                                                    : static_cast<AbstractSpiceKernel*>(a_ngspice);
+            a_noResults = kernel != nullptr && kernel->wroteNoResults();
+            if (!a_quiet && !misc::ErrorCapture::active() && !a_noResults)
                 QMessageBox::warning(nullptr, tr("Simulate"), a_datasetError);
         }
     }
@@ -250,6 +257,9 @@ void SimulationRun::slotProcessOutput()
     // failed is not of the circuit as it is.)
     if (!a_schematic.isNull()) a_schematic->setLastRun(QDateTime::currentDateTime(), a_hasError || !a_wasSimulated);
     emit simulated(this);
+    // Once its results are read and shown: the memory of the conversion,
+    // offered back to the system.
+    QTimer::singleShot(0, [] { misc::releaseFreedMemory(); });
 }
 
 
@@ -817,7 +827,9 @@ bool SimulationRun::logContainsError(const QString &out)
         err_patterns<<"Error:"<<"ERROR"<<"Error "
                     <<"Syntax error:"<<"Expression err:"
                     <<"errors:"<<"simulation(s) aborted"
-                    <<"simulation aborted"<<"analysis aborted";
+                    <<"simulation aborted"<<"analysis aborted"
+                    // ("write: too many args.": vectors ngspice did not write)
+                    <<": too many args";
         break;
     case spicecompat::simXyce:
         err_patterns<<"Error:"<<"ERROR"<<"MSG_ERROR"

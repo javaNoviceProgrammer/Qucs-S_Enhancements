@@ -19,10 +19,15 @@
 #include "projectView.h"
 #include "qucsdoc.h"
 #include "schematic.h"
+#include "wire.h"
+#include "components/component.h"
+#include "diagrams/diagram.h"
+#include "paintings/painting.h"
 
 #include <QDir>
 #include <QFile>
 #include <QPointer>
+#include <QSet>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -52,6 +57,51 @@ QString uriOf(const char* kind, const QString& path)
 {
     return kPrefix + QLatin1String(kind) + QLatin1Char('/') + QString::fromLatin1(QUrl::toPercentEncoding(path));
 }
+
+// What is selected in a schematic, to select again once it is made again
+// from its text (as a preview puts it back): parts by name - an unnamed
+// one by its type and place - wires by their ends, diagrams and paintings
+// by their places in the lists. (A move previewed, then made, found
+// nothing selected.)
+struct Selected {
+    QSet<QString> parts, wires;
+    QSet<int> diagrams, paintings;
+
+    static QString partKey(const Component* c)
+    {
+        return c->Name.isEmpty() || c->Name == QLatin1String("*") ? QStringLiteral("%1@%2,%3").arg(c->Model).arg(c->cx).arg(c->cy) : c->Name;
+    }
+    static QString wireKey(const Wire* w) { return QStringLiteral("%1,%2,%3,%4").arg(w->x1).arg(w->y1).arg(w->x2).arg(w->y2); }
+
+    static Selected of(const Schematic* sch)
+    {
+        Selected s;
+        for (const Component* c : sch->a_DocComps)
+            if (c->isSelected) s.parts.insert(partKey(c));
+        for (const Wire* w : sch->a_DocWires)
+            if (w->isSelected) s.wires.insert(wireKey(w));
+        int i = 0;
+        for (const Diagram* d : sch->a_DocDiags) {
+            if (d->isSelected) s.diagrams.insert(i);
+            ++i;
+        }
+        i = 0;
+        for (const Painting* p : sch->a_DocPaints) {
+            if (p->isSelected) s.paintings.insert(i);
+            ++i;
+        }
+        return s;
+    }
+    void apply(Schematic* sch) const
+    {
+        for (Component* c : sch->a_DocComps) c->isSelected = parts.contains(partKey(c));
+        for (Wire* w : sch->a_DocWires) w->isSelected = wires.contains(wireKey(w));
+        int i = 0;
+        for (Diagram* d : sch->a_DocDiags) d->isSelected = diagrams.contains(i++);
+        i = 0;
+        for (Painting* p : sch->a_DocPaints) p->isSelected = paintings.contains(i++);
+    }
+};
 
 } // namespace
 
@@ -316,12 +366,13 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
         bool symbolMode;
         quint64 revision;
         QList<QucsDoc::Edit> edits;
+        Selected selected;
     };
     auto kept = std::make_shared<QList<Kept>>();
     for (QucsDoc* doc : a_app->allDocuments())
         if (auto* sch = dynamic_cast<Schematic*>(doc))
             kept->append(Kept{sch, sch->snapshotAll(), sch->undoStacks(), sch->getDocChanged(), sch->getSymbolMode(), sch->revision(),
-                              sch->recentEdits()});
+                              sch->recentEdits(), Selected::of(sch)});
     // What a subscriber reads meanwhile (a batch previewed runs over
     // several turns of the event loop): the revisions as they were.
     if (a_previewing == 0)
@@ -369,6 +420,8 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
                 if (!lines.isEmpty()) changes.append(QJsonObject{{QStringLiteral("document"), titleOf(k.sch)}, {QStringLiteral("changes"), lines}});
                 k.sch->restoreAll(k.state, false);
                 k.sch->setUndoStacks(k.marks);
+                k.selected.apply(k.sch);
+                k.sch->viewport()->update();
             }
             if (k.sch->getSymbolMode() != k.symbolMode) {
                 a_app->showDocument(k.sch);

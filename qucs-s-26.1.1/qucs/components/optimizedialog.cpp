@@ -856,6 +856,7 @@ void OptimizeDialog::slotApply()
 
   // if more properties than in ListView -> delete the rest
   if(pp != Comp->Props.end()) {
+    qDeleteAll(pp, Comp->Props.end());
     Comp->Props.erase(pp, Comp->Props.end());
     changed = true;
   }

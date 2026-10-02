@@ -5518,11 +5518,13 @@ private slots:
         QVERIFY2(json(r).toObject().value("opened").toString().contains("was not open"), qPrintable(text(r)));
         QVERIFY(failed(call("simulate", {{"path", dir.filePath("nothing-here.sch")}})));   // (no such file)
 
-        // A run the user starts: waited for without an id.
+        // A run the user starts: waited for without an id. (The stand-in
+        // writes nothing: no success - a simulator that ends well and
+        // writes no results has failed - and no box waits for a click.)
         QucsSettings.NgspiceExecutable = slowSimulator(2);
         QTimer::singleShot(300, app, [this] { QMetaObject::invokeMethod(app, "slotSimulateWithSpice"); });
         r = call("wait_for", {{"event", "simulation_finished"}, {"timeout", 30}}, 40000);
-        QVERIFY2(!failed(r) && json(r).toObject().value("happened").toBool() && json(r).toObject().value("succeeded").toBool()
+        QVERIFY2(!failed(r) && json(r).toObject().value("happened").toBool() && !json(r).toObject().value("succeeded").toBool()
                      && json(r).toObject().value("last lines").toString().contains("done at last"),
                  qPrintable(text(r)));
         QVERIFY(!failed(call("close_document", {{"path", sch}, {"unsaved", "discard"}})));
@@ -10561,6 +10563,172 @@ private slots:
         QVERIFY(QFileInfo::exists(qEnvironmentVariable("QUCS_TRASH_DIR") + "/second.dat"));
         QVERIFY(!failed(call("undo", {{"files", true}})));
         QVERIFY(qucs_s::dataimport::originOf(folder + "/second.dat", &origin));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // ---- The stress report of 1 October (docs/feature_gaps/2026-10-01-stress-test-bug-report.md)
+
+    // Select All with the grounds in it: every part moved, the grounds by
+    // their refs (it said "There is no component ." once per ground, and
+    // moved nothing); a long answer cut at twenty, with how many more;
+    // what is not there said once each, with how often.
+    void aSelectionWithItsGroundsMovesWhole()
+    {
+        QByteArray parts;
+        for (int k = 0; k < 30; ++k)
+            parts += QStringLiteral("  <R R%1 1 %2 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                                    "  <GND * 1 %2 90 0 0 0 0>\n")
+                         .arg(k + 1).arg(100 + 100 * k).toUtf8();
+        const QString file = writeFile("workspace/grounds.sch", schematicOf(parts));
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        QVERIFY(!failed(call("trigger_action", {{"action", "Edit > Select All"}})));
+        QJsonObject r = call("move", {{"selection", true}, {"dx", 10}, {"dy", 0}, {"preview", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject answer = json(r).toObject().value("its answer").toObject();
+        QVERIFY2(!json(r).toObject().value("it would fail").toBool(), qPrintable(text(r)));
+        const QJsonArray moved = answer.value("moved").toArray();
+        QCOMPARE(moved.size(), 21);
+        QCOMPARE(moved.last().toString(), QStringLiteral("and 40 more"));
+        QVERIFY2(moved.contains(QJsonValue("GND#1")) && moved.contains(QJsonValue("R1")), qPrintable(text(r)));
+        // (The grounds moved, each - not each deleted and added again.)
+        const QJsonArray would = json(r).toObject().value("would change").toArray().first().toObject().value("changes").toArray();
+        QVERIFY2(would.contains(QJsonValue("GND: moved from (100, 90) to (110, 90)")) && would.size() <= 61, qPrintable(text(r)));
+        QVERIFY2(!text(r).contains("GND added") && !text(r).contains("GND deleted"), qPrintable(text(r)));
+
+        r = call("move", {{"selection", true}, {"dx", 10}, {"dy", 0}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        int grounds = 0;
+        for (Component* c : front()->a_DocComps) {
+            if (c->Model == "GND") {
+                ++grounds;
+                QCOMPARE((c->cx - 10) % 100, 0);   // each moved with its resistor
+            }
+        }
+        QCOMPARE(grounds, 30);
+        QCOMPARE(front()->getComponentByName("R30")->cx, 3010);
+
+        // By name and ref, and many not there.
+        QJsonArray names{"R1", "GND#2", "GND"};
+        for (int k = 0; k < 25; ++k) names << "R999";
+        for (int k = 1; k <= 25; ++k) names << QStringLiteral("X%1").arg(k);
+        const QString said = text(call("select", {{"names", names}}));
+        QVERIFY2(said.startsWith("2 selected. Not found: There are 30 of GND: say which"), qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("R999 (×25)")), qPrintable(said));
+        QVERIFY2(said.contains("X18") && !said.contains("X19") && said.contains("and 7 more"), qPrintable(said));
+        r = call("move", {{"names", names}, {"dx", 10}, {"dy", 0}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains(QStringLiteral("There is no component R999. (×25)")) && text(r).contains("and 7 more"),
+                 qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // What changed between two states of a large schematic: only the lines
+    // that differ are read (every line of both took a second at 37,500
+    // parts), a line there twice and once after is one gone.
+    void theChangesOfALargeSchematicAreFoundQuickly()
+    {
+        QString before;
+        for (int k = 0; k < 40000; ++k)
+            before += QStringLiteral("  <R R%1 1 %2 %3 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n")
+                          .arg(k + 1).arg(100 * (k % 200)).arg(100 * (k / 200));
+        const QString ground = QStringLiteral("  <GND * 1 50 50 0 0 0 0>\n");
+        QString after = before;
+        before += ground + ground;
+        after += ground;
+        after.replace("<R R1500 1 9900 700 15 -26 0 1 \"1k\" 1", "<R R1500 1 9900 700 15 -26 0 1 \"2k\" 1");
+        after.remove(QRegularExpression("  <R R2 [^\n]*\n"));
+        after += QStringLiteral("  <R R99999 1 0 9000 15 -26 0 1 \"5k\" 1>\n");
+        const auto text = [](const QString& components) { return QString::fromUtf8(schematicOf(components.toUtf8())); };
+        QElapsedTimer t;
+        t.start();
+        const QStringList changes = qucs_s::control::describeChanges(text(before), text(after), 20);
+        const qint64 ms = t.elapsed();
+        const QString all = changes.join(" | ");
+        QVERIFY2(all.contains("R1500") && all.contains("2k"), qPrintable(all));
+        QVERIFY2(all.contains("R2") && all.contains("R99999"), qPrintable(all));
+        QVERIFY2(all.contains("GND deleted (it was at (50, 50))"), qPrintable(all));   // two, then one
+        QVERIFY2(!all.contains("R1499") && !all.contains("R3 ") && changes.size() <= 5, qPrintable(all));
+        QVERIFY2(ms < 3000, qPrintable(QString::number(ms)));
+        QVERIFY(qucs_s::control::describeChanges(text(before), text(before), 20).isEmpty());
+    }
+
+    // A circuit of more than a thousand nets, simulated by ngspice: its
+    // dataset holds them all (one write of all of them wrote nothing, and
+    // the run said it had worked), the answer lists forty with how many
+    // more and the count of all.
+    void aCircuitOfManyNetsIsSimulatedWhole()
+    {
+        const QString ngspice = QStandardPaths::findExecutable("ngspice");
+        if (ngspice.isEmpty()) QSKIP("no ngspice here");
+        const QString before = QucsSettings.NgspiceExecutable;
+        const auto restore = qScopeGuard([&] { QucsSettings.NgspiceExecutable = before; });
+        QucsSettings.NgspiceExecutable = ngspice;
+        // 1100 resistors from n0 (5 V) down to ground, in rows of 100, each
+        // net labelled at its pins.
+        const auto label = [](int x, int y, const QString& name) {
+            return QStringLiteral("  <%1 %2 %1 %2 \"%3\" %4 %5 0 \"\">\n").arg(x).arg(y).arg(name).arg(x + 10).arg(y - 20);
+        };
+        QString comps = QStringLiteral("  <Vdc V1 1 0 60 18 -26 0 1 \"5 V\" 1>\n  <GND * 1 0 90 0 0 0 0>\n"
+                                       "  <.TR TR1 1 0 -200 0 64 0 0 \"lin\" 1 \"0\" 1 \"1 us\" 1 \"11\" 0>\n");
+        QString wires = label(0, 30, "n0");
+        const int n = 1100;
+        for (int k = 1; k <= n; ++k) {
+            const int x = 100 * ((k - 1) % 100) + 100, y = 200 * ((k - 1) / 100);
+            comps += QStringLiteral("  <R R%1 1 %2 %3 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n")
+                         .arg(k).arg(x).arg(y + 60);
+            wires += label(x, y + 30, QStringLiteral("n%1").arg(k - 1));
+            if (k < n) wires += label(x, y + 90, QStringLiteral("n%1").arg(k));
+        }
+        comps += QStringLiteral("  <GND * 1 %1 %2 0 0 0 0>\n").arg(100 * ((n - 1) % 100) + 100).arg(200 * ((n - 1) / 100) + 90);
+        const QString file = writeFile("workspace/many_nets.sch", schematicOf(comps.toUtf8(), wires.toUtf8()));
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        const QJsonObject result = call("simulate", {{"timeout", 120}}, 150000);
+        const QJsonObject outcome = json(result).toObject();
+        QVERIFY2(outcome.value("succeeded").toBool() && outcome.value("dataset written").toBool(), qPrintable(text(result).left(3000)));
+        QVERIFY2(outcome.value("errors").toArray().isEmpty(), qPrintable(text(result).left(3000)));
+        const int count = outcome.value("variable count").toInt();
+        QVERIFY2(count >= n, qPrintable(QString::number(count)));
+        const QJsonArray listed = outcome.value("variables").toArray();
+        QCOMPARE(listed.size(), 41);
+        QCOMPARE(listed.last().toString(), QStringLiteral("... %1 more").arg(count - 40));
+        // Its values: 5 V down the chain in even steps.
+        const QJsonObject mid = json(call("get_dataset", {{"variables", QJsonArray{"tran.v(n550)"}}}))
+                                    .toObject().value("variables").toArray().first().toObject();
+        const double v = mid.value("max").toDouble(std::nan(""));
+        QVERIFY2(std::abs(v - 2.5) < 0.01, qPrintable(QJsonDocument(mid).toJson()));
+        // Brief: three, with how many more.
+        const QJsonObject brief = json(call("simulate", {{"timeout", 120}, {"brief", true}}, 150000)).toObject();
+        const QJsonArray few = brief.value("variables").toArray();
+        QVERIFY2(few.size() == 4 && few.last().toString() == QStringLiteral("... %1 more").arg(count - 3),
+                 qPrintable(QJsonDocument(brief).toJson()));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A simulator that fails by its exit code and writes nothing: the exit
+    // code first, as why, then that it wrote no results; the dataset from
+    // before stays.
+    void aFailedRunSaysWhyFirst()
+    {
+        const QString simulatorWas = QucsSettings.NgspiceExecutable;
+        const auto back = qScopeGuard([simulatorWas] { QucsSettings.NgspiceExecutable = simulatorWas; });
+        const QString failing = writeFile("failing-ngspice.sh", "#!/bin/sh\necho \"failing ngspice\"\nexit 3\n");
+        QFile::setPermissions(failing, QFile::permissions(failing) | QFileDevice::ExeOwner | QFileDevice::ExeUser);
+        QucsSettings.NgspiceExecutable = failing;
+        const QString file = writeFile("workspace/fails.sch", schematicOf(
+            "  <Vdc V1 1 100 60 18 -26 0 1 \"1 V\" 1>\n  <GND * 1 100 90 0 0 0 0>\n"
+            "  <.TR TR1 1 300 0 0 64 0 0 \"lin\" 1 \"0\" 1 \"1 us\" 1 \"11\" 0>\n",
+            "  <100 30 100 30 \"out\" 110 10 0 \"\">\n"));
+        const QByteArray before = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time 1>\n  0\n</indep>\n";
+        writeFile("workspace/fails.dat.ngspice", before);
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        const QJsonObject result = call("simulate", {{"timeout", 30}}, 40000);
+        const QJsonObject outcome = json(result).toObject();
+        QVERIFY2(!outcome.value("succeeded").toBool() && !outcome.value("dataset written").toBool(), qPrintable(text(result)));
+        const QJsonArray errors = outcome.value("errors").toArray();
+        QVERIFY2(errors.size() == 2 && errors.at(0).toObject().value("message").toString().contains("exit code 3")
+                     && errors.at(1).toObject().value("message").toString().contains("wrote no results"),
+                 qPrintable(text(result)));
+        QCOMPARE(readFile(dir.filePath("workspace/fails.dat.ngspice")), before);
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 

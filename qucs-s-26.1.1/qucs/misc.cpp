@@ -32,6 +32,11 @@
 #include "schematic.h"
 
 #include <cstdio>
+#if defined(Q_OS_MACOS)
+#include <malloc/malloc.h>
+#elif defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <QString>
 #include <QStringList>
 #include <QRegularExpression>
@@ -272,6 +277,15 @@ void misc::str2num(const QString& s_, double& Number, QString& Unit, double& Fac
 }
 
 // #########################################################################
+void misc::releaseFreedMemory()
+{
+#if defined(Q_OS_MACOS)
+    malloc_zone_pressure_relief(nullptr, 0);
+#elif defined(__GLIBC__)
+    malloc_trim(0);
+#endif
+}
+
 QString misc::num2str(double Num, int Precision, QString unit)
 {
   char c = 0;

@@ -28,7 +28,9 @@ int severityOf(const QString& line)
                        "|simulation\\(s\\) aborted|simulation aborted|analysis aborted|timestep too small"
                        "|cannot proceed|^no ground found|^no simulation found|^only dc simulation found"
                        "|singular matrix|gmin stepping failed|source stepping failed|transient op failed"
-                       "|failed to start simulator|simulator crashed|^netlist line no\\.\\s*\\d+"),
+                       "|failed to start simulator|simulator crashed|^netlist line no\\.\\s*\\d+"
+                       // Vectors ngspice did not write: "write: too many args."
+                       "|^[a-z_]+: too many args"),
         QRegularExpression::CaseInsensitiveOption);
     static const QRegularExpression warning(QStringLiteral("^(warning\\b|msg_warning)"),
                                             QRegularExpression::CaseInsensitiveOption);

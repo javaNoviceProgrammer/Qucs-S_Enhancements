@@ -184,10 +184,21 @@ bool Dataset::read(const QString& path, QString* error)
     };
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return fail(tr("%1 cannot be read.").arg(path));
-    const QByteArray all = file.readAll();
-    const char* p = all.constData();
-    const char* const end = p + all.size();
-    if (!all.trimmed().startsWith("<Qucs Dataset")) return fail(tr("%1 is not a Qucs dataset.").arg(path));
+    // Mapped, not read whole into memory (a 480 MB dataset was, beside
+    // its values); read when it cannot be mapped. (Open while mapped.)
+    const qint64 size = file.size();
+    QByteArray all;
+    const char* p = size > 0 ? reinterpret_cast<const char*>(file.map(0, size)) : nullptr;
+    if (p == nullptr) {
+        all = file.readAll();
+        p = all.constData();
+    }
+    const char* const end = p + (all.isNull() ? size : all.size());
+    {
+        const char* q = p;
+        while (q < end && isSpace(*q)) ++q;
+        if (end - q < 13 || std::memcmp(q, "<Qucs Dataset", 13) != 0) return fail(tr("%1 is not a Qucs dataset.").arg(path));
+    }
 
     int current = -1;   // the variable whose values come
     QSet<int> complexOnes;   // the variables a complex value was read for
@@ -206,11 +217,24 @@ bool Dataset::read(const QString& path, QString* error)
             const QStringList words = QString::fromUtf8(a + 1, int(b - a - 2)).split(QLatin1Char(' '), Qt::SkipEmptyParts);
             if (words.size() < 2) continue;
             Variable v;
+            // Room for the values made once, not grown a value at a time -
+            // no more than the rest of the file holds (each value takes two
+            // characters at least), whatever a header says.
+            const auto room = [left = double(end - p) / 2](double n, double most) {
+                return n > 0 ? qsizetype(std::min({n, left, most})) : 0;   // (NaN: none)
+            };
             if (words.first() == QLatin1String("indep")) {
                 v.independent = true;
-                v.re.reserve(std::clamp(words.value(2).toInt(), 0, 10000000));
+                v.re.reserve(room(words.value(2).toDouble(), 1e7));
             } else if (words.first() == QLatin1String("dep")) {
                 v.dependencies = words.mid(2);
+                // As many values as its independent variables make.
+                double count = 1;
+                for (const QString& d : std::as_const(v.dependencies)) {
+                    const auto it = a_index.constFind(d);
+                    count *= it == a_index.constEnd() ? 0 : double(a_variables.at(*it).re.size());
+                }
+                v.re.reserve(room(count, 1e8));
             } else {
                 continue;
             }

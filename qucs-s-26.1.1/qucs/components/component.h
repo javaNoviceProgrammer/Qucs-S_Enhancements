@@ -38,7 +38,9 @@ class QPen;
 class Component : public Element {
 public:
   Component();
-  virtual ~Component() {};
+  /// It owns its symbol, its ports, its texts and its properties: freed
+  /// with it.
+  virtual ~Component();
 
   virtual Component* newOne();
   virtual void recreate() {};
@@ -145,7 +147,12 @@ protected:
   bool getPen(const QString&, QPen&, int);
   bool getBrush(const QString&, QBrush&, int);
 
+  /// Becomes \a pc: its name, model, place - and its symbol, ports, texts
+  /// and properties, which \a pc gives up (this one's own are freed).
   void copyComponent(Component*);
+  /// Frees its symbol's drawing - lines, polylines, arcs, rectangles,
+  /// ellipses, images, texts - and its ports, before it is made again.
+  void clearSymbol();
   Schematic* containingSchematic;
 
   virtual void drawSymbol(QPainter* p);

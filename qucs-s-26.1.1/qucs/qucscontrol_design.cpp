@@ -1955,15 +1955,25 @@ QStringList describeChanges(const QString& before, const QString& after, int mos
     const QStringList a = sectionsOf(before), b = sectionsOf(after);
 
     // Components, by name (an unnamed one - a ground - by its type and place).
-    const auto parts = [](const QString& section) {
+    // Only the lines that differ: a part whose line is the same says nothing,
+    // and parsing every line of both, at 37,500 parts, took a second.
+    const QStringList linesWas = linesOf(a.at(0)), linesNow = linesOf(b.at(0));
+    QHash<QString, int> more;   // how many more times a line was there than is
+    for (const QString& l : linesWas) ++more[l];
+    for (const QString& l : linesNow) --more[l];
+    const auto parts = [&more](const QStringList& lines, int side) {
+        QHash<QString, int> left = more;
         QList<PartLine> list;
-        for (const QString& l : linesOf(section)) {
+        for (const QString& l : lines) {
+            int& k = left[l];
+            if (k * side <= 0) continue;   // (as many there as here)
+            k -= side;
             PartLine p;
             if (parsePart(l, &p)) list << p;
         }
         return list;
     };
-    const QList<PartLine> was = parts(a.at(0)), now = parts(b.at(0));
+    const QList<PartLine> was = parts(linesWas, 1), now = parts(linesNow, -1);
     const auto key = [](const PartLine& p) {
         return p.name == QLatin1String("*") ? QStringLiteral("%1@%2,%3").arg(p.model).arg(p.cx).arg(p.cy) : p.name;
     };
@@ -1999,6 +2009,36 @@ QStringList describeChanges(const QString& before, const QString& after, int mos
                 break;
             }
         }
+    }
+    // An unnamed part (a ground) moved: gone from one place and come to
+    // another, of one type - paired in their order (a selection moved with
+    // its grounds read as each deleted and added).
+    {
+        QHash<QString, QList<qsizetype>> come;   // the unnamed added, by type
+        for (qsizetype j = 0; j < added.size(); ++j)
+            if (const PartLine* p = byKeyNow.value(added.at(j)); p->name == QLatin1String("*")) come[p->model] << j;
+        QSet<qsizetype> paired;
+        QStringList gone;
+        for (const QString& k : std::as_const(removed)) {
+            const PartLine* old = byKeyWas.value(k);
+            const auto it = old->name == QLatin1String("*") ? come.find(old->model) : come.end();
+            if (it == come.end() || it->isEmpty()) {
+                gone << k;
+                continue;
+            }
+            const qsizetype j = it->takeFirst();
+            paired.insert(j);
+            const PartLine* fresh = byKeyNow.value(added.at(j));
+            QStringList what{tr("moved from %1 to %2").arg(where(old->cx, old->cy), where(fresh->cx, fresh->cy))};
+            if (old->rotation != fresh->rotation) what << tr("turned");
+            if (old->mirror != fresh->mirror) what << tr("mirrored");
+            changes << QStringLiteral("%1: %2").arg(old->model, what.join(QStringLiteral(", ")));
+        }
+        QStringList come2;
+        for (qsizetype j = 0; j < added.size(); ++j)
+            if (!paired.contains(j)) come2 << added.at(j);
+        removed = gone;
+        added = come2;
     }
     for (const QString& k : std::as_const(added)) {
         const PartLine* p = byKeyNow.value(k);

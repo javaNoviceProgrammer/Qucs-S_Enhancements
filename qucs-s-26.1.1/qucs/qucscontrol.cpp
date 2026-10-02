@@ -1831,6 +1831,95 @@ Component* componentOf(const Schematic* sch, const QString& ref, QString* error)
     return nullptr;
 }
 
+// The parts of a schematic by what refOf() tells them by, all at once: a
+// selection of 15,000 parts each looked for among all of them (and each
+// checked against those found) took seconds, a list squared.
+class PartIndex
+{
+public:
+    explicit PartIndex(const Schematic* sch) : m_sch(sch)
+    {
+        for (Component* c : sch->a_DocComps) {
+            if (!c->Name.isEmpty() && c->Name != QLatin1String("*")) {
+                if (!m_byName.contains(c->Name)) m_byName.insert(c->Name, c);   // (the first, as getComponentByName)
+            } else {
+                m_unnamed[c->Model.toLower()] << c;
+            }
+        }
+    }
+    /// The part \a ref tells: its name, or an unnamed one's type ("GND",
+    /// "GND#17"); null, and why in \a error (componentOf's words).
+    Component* find(const QString& ref, QString* error) const
+    {
+        const QString name = ref.trimmed();
+        if (Component* c = m_byName.value(name)) return c;
+        QString model = name;
+        int nth = 0;
+        if (const qsizetype hash = name.indexOf(QLatin1Char('#')); hash > 0) {
+            model = name.left(hash);
+            nth = name.mid(hash + 1).toInt();
+        }
+        const QList<Component*> same = m_unnamed.value(model.toLower());
+        if (nth > 0 && nth <= same.size()) return same.at(nth - 1);
+        if (nth == 0 && !name.contains(QLatin1Char('#')) && same.size() == 1) return same.first();
+        return componentOf(m_sch, ref, error);
+    }
+    /// Each part's ref, as refOf() gives it, all in one pass.
+    static QHash<const Component*, QString> refs(const Schematic* sch)
+    {
+        QHash<QString, int> unnamed;
+        for (const Component* c : sch->a_DocComps)
+            if (c->Name.isEmpty() || c->Name == QLatin1String("*")) ++unnamed[c->Model.toLower()];
+        QHash<QString, int> nth;
+        QHash<const Component*, QString> out;
+        for (const Component* c : sch->a_DocComps) {
+            if (!c->Name.isEmpty() && c->Name != QLatin1String("*")) {
+                out.insert(c, c->Name);
+                continue;
+            }
+            const QString key = c->Model.toLower();
+            const int k = ++nth[key];
+            out.insert(c, unnamed.value(key) > 1 ? QStringLiteral("%1#%2").arg(c->Model).arg(k) : c->Model);
+        }
+        return out;
+    }
+
+private:
+    const Schematic* m_sch;
+    QHash<QString, Component*> m_byName;
+    QHash<QString, QList<Component*>> m_unnamed;
+};
+
+// Messages said once each, with how often ("There is no component R9. (×252)"),
+// at most \a most of them and how many more: an answer of a 15,000-part
+// selection ran to 100 kB of one sentence.
+QStringList onceEach(const QStringList& messages, int most = 20)
+{
+    QStringList order;
+    QHash<QString, int> count;
+    for (const QString& m : messages)
+        if (count[m]++ == 0) order << m;
+    QStringList out;
+    for (const QString& m : order) {
+        if (out.size() == most) {
+            out << QCoreApplication::translate("QucsControl", "and %1 more").arg(order.size() - most);
+            break;
+        }
+        const int n = count.value(m);
+        out << (n > 1 ? QStringLiteral("%1 (\u00D7%2)").arg(m).arg(n) : m);
+    }
+    return out;
+}
+
+// At most \a most of a list, and how many more.
+QStringList atMost(const QStringList& list, int most = 20)
+{
+    if (list.size() <= most) return list;
+    QStringList out = list.mid(0, most);
+    out << QCoreApplication::translate("QucsControl", "and %1 more").arg(list.size() - most);
+    return out;
+}
+
 Nets netsOf(Schematic* sch, const Component* edited, const QList<QPoint>& probes = {})
 {
     std::vector<int> up;
@@ -4048,7 +4137,11 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
             return errorResult(tr("'save_as' names the file to write."));
         return getNetlist(args);
     }
-    if (tool == QLatin1String("get_dataset")) return getDataset(args);
+    if (tool == QLatin1String("get_dataset")) {
+        const QJsonObject read = getDataset(args);
+        misc::releaseFreedMemory();   // (a large dataset's values, offered back to the system)
+        return read;
+    }
     if (tool == QLatin1String("reload_data")) return reloadData(args);
     if (tool == QLatin1String("add_diagram")) return addDiagram(args);
     if (tool == QLatin1String("edit_diagram")) return editDiagram(args);
@@ -4148,9 +4241,13 @@ QJsonObject QucsControl::withSelection(const QString& tool, const QJsonObject& a
     error->clear();
     QJsonArray names, diagrams, paintings, wires;
     QRect bounds;
+    // Each part by its ref - a ground's name is empty: GND#17, which the
+    // tools take ("There is no component ." for every ground selected).
+    QHash<const Component*, QString> refs;
     for (Component* c : sch->a_DocComps)
         if (c->isSelected) {
-            names.append(c->Name);
+            if (refs.isEmpty()) refs = PartIndex::refs(sch);
+            names.append(refs.value(c));
             bounds |= c->boundingRect();
         }
     for (Wire* w : sch->a_DocWires)
@@ -6478,13 +6575,18 @@ QJsonObject QucsControl::moveGroup(const QJsonObject& args)
     Schematic* sch = schematic(args, &error, true);
     if (sch == nullptr) return errorResult(error);
     QList<Component*> group;
+    QSet<Component*> grouped;
     QStringList missing;
+    const PartIndex parts(sch);
     for (const QJsonValue& v : args.value(QLatin1String("names")).toArray()) {
-        Component* c = componentOf(sch, v.toString(), &error);
+        Component* c = parts.find(v.toString(), &error);
         if (c == nullptr) missing << error;
-        else if (!group.contains(c)) group << c;
+        else if (!grouped.contains(c)) {
+            grouped.insert(c);
+            group << c;
+        }
     }
-    if (!missing.isEmpty()) return errorResult(missing.join(QLatin1Char(' ')));
+    if (!missing.isEmpty()) return errorResult(onceEach(missing).join(QLatin1Char(' ')));
     QList<Diagram*> diagrams;
     for (const QJsonValue& v : args.value(QLatin1String("diagrams")).toArray()) {
         Diagram* d = diagramOf(sch, v, &error);
@@ -6582,14 +6684,16 @@ QJsonObject QucsControl::moveGroup(const QJsonObject& args)
     // made (a pin come down on a wire of another net, say).
     if (const QStringList changes = netChangesBeyond(before, netsOf(sch, nullptr), {}); !changes.isEmpty()) {
         sch->restore(state);
-        return errorResult(tr("Not moved: moved so, %1. Try another dx, dy.").arg(changes.join(QStringLiteral("; "))));
+        return errorResult(tr("Not moved: moved so, %1. Try another dx, dy.").arg(atMost(changes).join(QStringLiteral("; "))));
     }
     QList<QPoint> where;
     for (Component* c : std::as_const(group)) where << QPoint(c->cx, c->cy);
     finish(sch, where);
+    // (By their refs, made in one pass; at most 20 named, and how many.)
+    const QHash<const Component*, QString> refs = PartIndex::refs(sch);
     QStringList names;
-    for (Component* c : std::as_const(group)) names << refOf(sch, c);
-    QJsonObject result{{QStringLiteral("moved"), QJsonArray::fromStringList(names)},
+    for (Component* c : std::as_const(group)) names << refs.value(c, c->Name);
+    QJsonObject result{{QStringLiteral("moved"), QJsonArray::fromStringList(atMost(names))},
                        {QStringLiteral("by"), QJsonArray{dx, dy}},
                        {QStringLiteral("wires moved with them"), int(moving.size())},
                        {QStringLiteral("one step to undo"), true}};
@@ -6924,14 +7028,19 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
     if (sch == nullptr) return errorResult(error);
     if (sch->getDocName().isEmpty()) return errorResult(tr("%1 has no file yet: save it first (the subcircuit's file goes beside it).").arg(titleOf(sch)));
     QList<Component*> group;
+    QSet<Component*> grouped;
     QStringList missing;
+    const PartIndex parts(sch);
     for (const QJsonValue& v : args.value(QLatin1String("names")).toArray()) {
-        Component* c = componentOf(sch, v.toString(), &error);
+        Component* c = parts.find(v.toString(), &error);
         if (c == nullptr) missing << error;
         else if (c->isSimulation) return errorResult(tr("%1 is an analysis: a subcircuit holds the circuit, its analyses stay outside.").arg(c->Name));
-        else if (!group.contains(c)) group << c;
+        else if (!grouped.contains(c)) {
+            grouped.insert(c);
+            group << c;
+        }
     }
-    if (!missing.isEmpty()) return errorResult(missing.join(QLatin1Char(' ')));
+    if (!missing.isEmpty()) return errorResult(onceEach(missing).join(QLatin1Char(' ')));
     if (group.isEmpty()) return errorResult(tr("'names' are the components that go into the subcircuit."));
     // Grounds stay where they are: ground is one node everywhere, and the
     // parts inside on it get grounds of their own. Taken in, the circuit
@@ -7503,32 +7612,45 @@ QJsonObject QucsControl::remove(const QJsonObject& args)
         if (sch == nullptr) return errorResult(error);
     }
     QList<Conductor*> unlabelled;
-    for (const QJsonValue& v : args.value(QLatin1String("names")).toArray()) {
+    // (Each looked up in tables made once: by name among all, the parts
+    // of a 15,000-part selection took seconds.)
+    const QJsonArray names = args.value(QLatin1String("names")).toArray();
+    QSet<Element*> doomedSet(doomed.begin(), doomed.end());
+    QHash<QString, QList<Conductor*>> labelled;
+    QHash<const Component*, QString> refs;
+    std::optional<PartIndex> parts;
+    if (!names.isEmpty()) {
+        for (Wire* w : sch->a_DocWires)
+            if (w->hasLabel()) labelled[w->label()->Name] << w;
+        for (Node* n : sch->a_DocNodes)
+            if (n->hasLabel()) labelled[n->label()->Name] << n;
+        refs = PartIndex::refs(sch);
+        parts.emplace(sch);
+    }
+    for (const QJsonValue& v : names) {
         const QString name = v.toString().trimmed();
         const auto doom = [&](Component* c) {
-            if (doomed.contains(c)) return;
+            if (doomedSet.contains(c)) return;
+            doomedSet.insert(c);
             doomed << c;
-            done << refOf(sch, c);
+            done << refs.value(c, c->Name);
         };
-        if (Component* c = name.isEmpty() ? nullptr : sch->getComponentByName(name)) {
-            doom(c);
-            continue;
+        // A part by its name first.
+        if (!name.isEmpty() && !name.contains(QLatin1Char('#'))) {
+            QString unused;
+            Component* named = parts->find(name, &unused);
+            if (named != nullptr && named->Name == name) {
+                doom(named);
+                continue;
+            }
         }
-        bool label = false;
-        for (Wire* w : sch->a_DocWires)
-            if (w->hasLabel() && w->label()->Name == name) {
-                unlabelled << w;
-                label = true;
-            }
-        for (Node* n : sch->a_DocNodes)
-            if (n->hasLabel() && n->label()->Name == name) {
-                unlabelled << n;
-                label = true;
-            }
+        const QList<Conductor*> withLabel = labelled.value(name);
+        unlabelled << withLabel;
+        const bool label = !withLabel.isEmpty();
         // A ground by its ref (GND#2), when no label is named so.
         QString unknown;
         if (label) done << tr("the label %1").arg(name);
-        else if (Component* c = componentOf(sch, name, &unknown)) doom(c);
+        else if (Component* c = parts->find(name, &unknown)) doom(c);
         else if (!unnamedOf(sch, name.section(QLatin1Char('#'), 0, 0)).isEmpty()) return errorResult(unknown);
         else missing << name;
     }
@@ -7563,7 +7685,7 @@ QJsonObject QucsControl::remove(const QJsonObject& args)
         if (!diagrams.contains(d)) diagrams << d;
     }
     if (doomed.isEmpty() && unlabelled.isEmpty() && traces.isEmpty() && diagrams.isEmpty())
-        return errorResult(missing.isEmpty() ? tr("Nothing to delete.") : tr("Not found: %1.").arg(missing.join(QStringLiteral(", "))));
+        return errorResult(missing.isEmpty() ? tr("Nothing to delete.") : tr("Not found: %1.").arg(onceEach(missing).join(QStringLiteral(", "))));
     prepare(sch);
     for (const auto& [d, g] : std::as_const(traces)) {
         if (diagrams.contains(d)) continue;
@@ -7586,8 +7708,8 @@ QJsonObject QucsControl::remove(const QJsonObject& args)
     }
     if (recorded) sch->viewport()->update();
     else finish(sch);
-    QString text = tr("Deleted %1.").arg(done.join(QStringLiteral(", ")));
-    if (!missing.isEmpty()) text += QLatin1Char(' ') + tr("Not found: %1.").arg(missing.join(QStringLiteral(", ")));
+    QString text = tr("Deleted %1.").arg(atMost(done).join(QStringLiteral(", ")));
+    if (!missing.isEmpty()) text += QLatin1Char(' ') + tr("Not found: %1.").arg(onceEach(missing).join(QStringLiteral(", ")));
     if (!note.isEmpty()) text += QLatin1Char(' ') + note;
     return textResult(text);
 }
@@ -9245,8 +9367,9 @@ QJsonObject QucsControl::select(const QJsonObject& args)
     sch->deselectElements(nullptr);
     QStringList missing;
     int n = 0;
+    const PartIndex parts(sch);
     for (const QJsonValue& v : args.value(QLatin1String("names")).toArray()) {
-        if (Component* c = componentOf(sch, v.toString(), &error); c != nullptr && !c->isSelected) {
+        if (Component* c = parts.find(v.toString(), &error); c != nullptr && !c->isSelected) {
             c->isSelected = true;
             ++n;
         } else if (c == nullptr) {
@@ -9272,7 +9395,7 @@ QJsonObject QucsControl::select(const QJsonObject& args)
     }
     sch->viewport()->update();
     QString text = n == 0 ? tr("Nothing is selected.") : tr("%1 selected.").arg(n);
-    if (!missing.isEmpty()) text += QLatin1Char(' ') + tr("Not found: %1.").arg(missing.join(QStringLiteral(", ")));
+    if (!missing.isEmpty()) text += QLatin1Char(' ') + tr("Not found: %1.").arg(onceEach(missing).join(QStringLiteral(", ")));
     return textResult(text);
 }
 
@@ -9319,7 +9442,7 @@ QJsonObject QucsControl::undoRedo(const QJsonObject& args, bool redo)
     if (args.contains(QLatin1String("to"))) {
         if (schematicDoc == nullptr) return errorResult(tr("'to' is for a schematic's steps (undo_history lists them)."));
         const int to = args.value(QLatin1String("to")).toInt(-1), at = schematicDoc->undoIndex();
-        const int last = int(schematicDoc->undoStates().size()) - 1;
+        const int last = schematicDoc->undoCount() - 1;
         if (!args.value(QLatin1String("to")).isDouble() || to < 0 || to > last)
             return errorResult(tr("'to' is a step from 0 (as loaded) to %1, as undo_history lists them.").arg(last));
         if (to == at) return textResult(tr("It is at step %1 already.").arg(at));
@@ -9351,13 +9474,17 @@ QJsonObject QucsControl::undoRedo(const QJsonObject& args, bool redo)
     if (made == 0) return errorResult(redo ? tr("There is nothing to redo.") : tr("There is nothing to undo."));
     QString text = steps == 1 ? (redo ? tr("Redone.") : tr("Undone.")) : (redo ? tr("Redone %1 steps.").arg(made) : tr("Undone %1 steps.").arg(made));
     if (made < steps) text += QLatin1Char(' ') + (redo ? tr("There was no more to redo.") : tr("There was no more to undo."));
-    // What that did, part by part.
+    // What that did, part by part - after it, the state the undo stack
+    // keeps, not made again (half a second at 37,500 parts).
     if (schematicDoc != nullptr) {
-        const QStringList what = describeChanges(before, schematicDoc->snapshot(), 10);
+        const int at = schematicDoc->undoIndex();
+        const QString after = !schematicDoc->getSymbolMode() && at >= 0 && at < schematicDoc->undoCount() ? schematicDoc->undoState(at)
+                                                                                                          : schematicDoc->snapshot();
+        const QStringList what = describeChanges(before, after, 10);
         // (What it changed, as that - "Now:" read as how things are.)
         if (!what.isEmpty())
             text += QLatin1Char(' ') + (redo ? tr("The redo changed: %1.") : tr("The undo changed: %1.")).arg(what.join(QStringLiteral("; ")));
-        text += QLatin1Char(' ') + tr("(Step %1 of %2.)").arg(schematicDoc->undoIndex()).arg(schematicDoc->undoStates().size() - 1);
+        text += QLatin1Char(' ') + tr("(Step %1 of %2.)").arg(schematicDoc->undoIndex()).arg(schematicDoc->undoCount() - 1);
     }
     return textResult(text);
 }
@@ -11314,10 +11441,15 @@ QJsonObject QucsControl::datasetOfRun(Schematic* doc, int simulator, const QDate
         // What it holds (nothing, when the simulator made no output).
         qucs_s::dataset::Dataset data;
         QJsonArray names;
+        int count = 0;
         if (data.read(dataset.absoluteFilePath()))
             for (const auto& v : data.variables())
-                if (!v.independent && names.size() < 40) names.append(v.name);
+                if (!v.independent && ++count <= 40) names.append(v.name);
+        // The first 40 by name, and how many there are (a list cut at 40
+        // read as 40).
+        if (count > names.size()) names.append(tr("... %1 more").arg(count - names.size()));
         result.insert(QStringLiteral("variables"), names);
+        result.insert(QStringLiteral("variable count"), count);
         // A copy to compare with later runs: name.dat.ngspice.
         if (!keepAs.isEmpty()) {
             const QString suffix = dataset.fileName().mid(dataset.fileName().indexOf(QLatin1String(".dat")));
@@ -11977,11 +12109,12 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
                 result.insert(QStringLiteral("stopped"), r->wasStopped());
                 result.insert(QStringLiteral("exit code"), r->exitCode());
                 // (Stopped - by the user, stop_simulation, a timeout - is no
-                // crash: its exit code is the stop's.)
-                if (r->exitCode() != 0 && errors.isEmpty() && !r->wasStopped())
-                    errors.append(QJsonObject{{QStringLiteral("message"),
-                                               r->exitCode() < 0 ? tr("The simulator crashed or did not start.")
-                                                                 : tr("The simulator ended with exit code %1.").arg(r->exitCode())}});
+                // crash: its exit code is the stop's. An exit code comes
+                // before having written no results: it says why.)
+                if (r->exitCode() != 0 && (errors.isEmpty() || r->wroteNoResults()) && !r->wasStopped())
+                    errors.prepend(QJsonObject{{QStringLiteral("message"),
+                                                r->exitCode() < 0 ? tr("The simulator crashed or did not start.")
+                                                                  : tr("The simulator ended with exit code %1.").arg(r->exitCode())}});
                 if (r->wasStopped())
                     result.insert(QStringLiteral("note"), tr("Stopped before it ended: its dataset is the one from before the run, or "
                                                              "what the simulator wrote of it up to then."));
@@ -12016,8 +12149,12 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
                 for (const char* key : {"errors", "warnings", "variables", "traces without data"}) {
                     QJsonArray list = result.value(QLatin1String(key)).toArray();
                     const int keep = QLatin1String(key) == QLatin1String("errors") ? 5 : 3;
-                    if (list.size() <= keep) continue;
-                    const int more = int(list.size()) - keep;
+                    // (The variables by their count: their list is cut at 40.)
+                    const int total = QLatin1String(key) == QLatin1String("variables") && result.contains(QStringLiteral("variable count"))
+                                          ? result.value(QStringLiteral("variable count")).toInt()
+                                          : int(list.size());
+                    if (total <= keep) continue;
+                    const int more = total - keep;
                     while (list.size() > keep) list.removeLast();
                     list.append(tr("... %1 more").arg(more));
                     result.insert(QLatin1String(key), list);

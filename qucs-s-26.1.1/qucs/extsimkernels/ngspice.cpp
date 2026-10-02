@@ -310,6 +310,10 @@ void Ngspice::createNetlist(
         // track whether we want the dependent vars (e.g. equation variables)
         // to be included in the save node statement
         bool write_dep_vars = true;
+        // whether saves set for this analysis are cleared after it
+        bool clearSaves = false;
+        // whether equations read this analysis' plot (let lines after it)
+        bool equationsRead = false;
 
         // Duplicate .PARAM in .control section. They may be used in euqations
         for (Component* pc1 : a_schematic->a_DocComps) {
@@ -326,6 +330,9 @@ void Ngspice::createNetlist(
             else
                 nods.append(QStringLiteral("v(%1) ").arg(nod));
         }
+        // (The nodes' voltages and the probes' currents: what a save before
+        // the analysis can name - an equation's variable is made after it.)
+        const QString nodeVectors = nods;
 
         for (Component* pc1 : a_schematic->a_DocComps) {
             if ( !pc1->isSimulation ) continue;
@@ -465,6 +472,7 @@ void Ngspice::createNetlist(
                 if ( pc1->Model == "Eqn" || pc1->Model == "NutmegEq" )
                     spiceNetlist.append(pc1->getEquations(sim_name, dep_vars));
             }
+            equationsRead = !dep_vars.isEmpty();
             if (write_dep_vars) {
                 nods.append(' ' + dep_vars.join(' '));
             }
@@ -472,8 +480,13 @@ void Ngspice::createNetlist(
 
         if ( sim_typ == ".DC" ) {
             QString out = "spice4qucs." + sim_name + ".ngspice.dc.print";
-            spiceNetlist.append(QStringLiteral("print %1 > %2\n").arg(nods).arg(out));
-            outputs.append(out);
+            // Printed in commands ngspice takes whole, into one file. None
+            // with no node named: a print of nothing failed ("print: too
+            // few args."), the devices' values below being the results.
+            const QStringList chunks = spicecompat::vectorChunks(nods);
+            for (qsizetype k = 0; k < chunks.size(); ++k)
+                spiceNetlist.append(QStringLiteral("print %1 %2 %3\n").arg(chunks.at(k), k == 0 ? QStringLiteral(">") : QStringLiteral(">>"), out));
+            if (!chunks.isEmpty()) outputs.append(out);
             // The operating point of every device too - id, gm, vgs, ... -
             // for the dataset, beside the node values (convertToQucsData()).
             if (QucsSettings.DefaultSimulator == spicecompat::simNgspice)
@@ -507,7 +520,21 @@ void Ngspice::createNetlist(
                 else
                     filename = QStringLiteral("%1.%2.plot").arg(basenam).arg(sim_name);
                 filename.replace(' ', '_'); // Ngspice cannot understand spaces in filename
-                spiceNetlist.append(QStringLiteral("write %1 %2\n").arg(filename).arg(nods));
+                if (spicecompat::tooManyVectors(nods)) {
+                    // More than a command takes: its plot written whole
+                    // (with the equations' variables). The nodes saved
+                    // before the analysis, so it holds them alone, and the
+                    // saves cleared for the next one - unless equations
+                    // read the plot: what a save leaves out (a
+                    // subcircuit's inner node) they would not find.
+                    if (!equationsRead) {
+                        spiceNetlist.prepend(spicecompat::saveLines(nodeVectors));
+                        clearSaves = true;
+                    }
+                    spiceNetlist.append(QStringLiteral("write %1\n").arg(filename));
+                } else {
+                    spiceNetlist.append(QStringLiteral("write %1 %2\n").arg(filename).arg(nods));
+                }
                 outputs.append(filename);
             }
         }
@@ -528,6 +555,7 @@ void Ngspice::createNetlist(
         }
 
         spiceNetlist.append("destroy all\n");
+        if (clearSaves) spiceNetlist.append("delete all\n");
         spiceNetlist.append("reset\n");
         spiceNetlist.append(reapply);
         spiceNetlist.append("\n");

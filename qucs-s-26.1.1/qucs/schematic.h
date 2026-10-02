@@ -109,6 +109,32 @@ enum class FrameSize : int {
 };
 
 
+/// A step of a schematic's undo stack: the text createUndoString() made,
+/// kept compressed - a 37,500-part schematic's is 30 MB, compressed about
+/// 2, and twenty steps were kept. Its first two characters (what made it,
+/// and 'i' for the state saved) apart: read and set without unpacking it.
+class UndoState {
+public:
+  explicit UndoState(const QString& text);
+  /// Its first two characters: 0, what made it; 1, its mark.
+  QChar at(qsizetype i) const { return i == 0 ? m_op : m_mark; }
+  /// Sets one of its first two characters (as QString::replace(i, 1, c)).
+  void replace(qsizetype i, qsizetype, QChar c)
+  {
+    if (i == 0) m_op = c;
+    else if (i == 1) m_mark = c;
+  }
+  /// Its text, whole.
+  QString text() const;
+  /// What it keeps, in bytes (its text but the first two characters,
+  /// packed).
+  qsizetype bytes() const { return m_packed.size(); }
+
+private:
+  QChar m_op, m_mark;
+  QByteArray m_packed;   // the rest, as UTF-8, compressed
+};
+
 class Schematic : public Q3ScrollView, public QucsDoc {
   Q_OBJECT
 
@@ -424,7 +450,11 @@ private:
   QStringList a_loadNotes;        // takeLoadNotes()
   QStringList a_loadShortNotes;   // lines with fewer values than their type's properties (replaceContent())
   int a_undoActionIdx;
-  QVector<QString *> a_undoAction;
+  QVector<UndoState *> a_undoAction;
+  // The length of the last undo text made: the next made in one piece of
+  // about that size (grown a line at a time, its pieces of every size
+  // stayed with macOS's allocator, a 15,000-part schematic's 20 MB an edit).
+  qsizetype a_lastUndoSize = 0;
   bool a_keyboardMoveOpen = false;   // the top undo entry is an unfinished cursor-key move
   int a_undoSymbolIdx;
   QVector<QString *> a_undoSymbol;    // undo stack for circuit symbol
@@ -811,6 +841,10 @@ public:
   /// left, as snapshot() gives them, the oldest first; undoIndex() is the
   /// one it is at (undo goes to the one before).
   QStringList undoStates() const;
+  /// How many steps the undo stack has, and the text of one: without
+  /// unpacking all of them.
+  int undoCount() const { return int(a_undoAction.size()); }
+  QString undoState(int index) const;
   int undoIndex() const { return a_undoActionIdx; }
   /// Back to \a state (from snapshot()), as an undo goes back; nothing is
   /// recorded to undo. The elements are new ones: pointers to the old are
@@ -832,7 +866,8 @@ public:
   /// The undo stacks (the schematic's, the symbol's) as they are, with
   /// where each stands - their steps shared, not copied.
   struct UndoStacks {
-    QStringList action, symbol;
+    QList<UndoState> action;
+    QStringList symbol;
     int actionIdx = -1, symbolIdx = -1;
   };
   UndoStacks undoStacks() const;

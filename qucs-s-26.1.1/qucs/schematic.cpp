@@ -40,6 +40,7 @@
 #include "textdoc.h"
 
 #include "misc.h"
+#include <QTimer>
 #include "erc.h"
 #include "qucs_assert.h"
 
@@ -53,6 +54,11 @@ inline QRect includePoint(const QRect& rect, const QPoint& point) {
        ? rect
        : rect.united(QRect{point, point});
 }
+
+// A state of the undo stack this long (characters) is a large schematic's:
+// after it is made, or a step is rebuilt from it, the freed memory is
+// offered back to the system.
+constexpr qsizetype kLargeState = 4000000;
 
 Schematic::Schematic(QucsApp *App_, const QString &Name_) :
     QucsDoc(App_, Name_),
@@ -88,7 +94,7 @@ Schematic::Schematic(QucsApp *App_, const QString &Name_) :
     a_tmpViewY2(200),
     a_undoActionIdx(0),
     // The 'i' means state for being unchanged.
-    a_undoAction((QVector<QString*>() << new QString(" i\n</>\n</>\n</>\n</>\n"))),
+    a_undoAction((QVector<UndoState*>() << new UndoState(QStringLiteral(" i\n</>\n</>\n</>\n</>\n")))),
     a_undoSymbolIdx(0),
     // The 'i' means state for being unchanged.
     a_undoSymbol((QVector<QString*>() << new QString(" i\n</>\n</>\n</>\n</>\n"))),
@@ -580,7 +586,12 @@ void Schematic::setChanged(bool c, bool fillStack, char Op)
     }
     a_keyboardMoveOpen = (Op == 'k');
 
-    a_undoAction.append(new QString(createUndoString(Op)));
+    qsizetype stateSize = 0;
+    {
+        const QString state = createUndoString(Op);
+        stateSize = state.size();
+        a_undoAction.append(new UndoState(state));
+    }
     a_undoActionIdx++;
 
     emit signalUndoState(true);
@@ -592,6 +603,9 @@ void Schematic::setChanged(bool c, bool fillStack, char Op)
         a_undoAction.pop_front();
         a_undoActionIdx--;
     }
+    // A large schematic's text, made and packed: the memory it took offered
+    // back to the system (see misc::releaseFreedMemory()).
+    if (stateSize > kLargeState) misc::releaseFreedMemory();
     return;
 }
 
@@ -2124,15 +2138,14 @@ int Schematic::save()
     if (result >= 0) {
         setChanged(false);
 
-        QVector<QString *>::iterator it;
-        for (it = a_undoAction.begin(); it != a_undoAction.end(); it++) {
-            (*it)->replace(1, 1, ' '); //at(1) = ' '; state of being changed
+        for (UndoState* state : a_undoAction) {
+            state->replace(1, 1, ' '); //at(1) = ' '; state of being changed
         }
         //(1) = 'i';   // state of being unchanged
         a_undoAction.at(a_undoActionIdx)->replace(1, 1, 'i');
 
-        for (it = a_undoSymbol.begin(); it != a_undoSymbol.end(); it++) {
-            (*it)->replace(1, 1, ' '); //at(1) = ' '; state of being changed
+        for (QString* state : a_undoSymbol) {
+            state->replace(1, 1, ' '); //at(1) = ' '; state of being changed
         }
         //at(1) = 'i';   // state of being unchanged
         a_undoSymbol.at(a_undoSymbolIdx)->replace(1, 1, 'i');
@@ -2506,7 +2519,11 @@ bool Schematic::undo()
         return false;
     }
 
-    rebuild(a_undoAction.at(--a_undoActionIdx));
+    {
+        QString text = a_undoAction.at(--a_undoActionIdx)->text();
+        rebuild(&text);
+        if (text.size() > kLargeState) QTimer::singleShot(0, [] { misc::releaseFreedMemory(); });
+    }
     reloadGraphs(); // load recent simulation data
 
     emit signalUndoState(a_undoActionIdx != 0);
@@ -2557,7 +2574,11 @@ bool Schematic::redo()
         return false;
     }
 
-    rebuild(a_undoAction.at(++a_undoActionIdx));
+    {
+        QString text = a_undoAction.at(++a_undoActionIdx)->text();
+        rebuild(&text);
+        if (text.size() > kLargeState) QTimer::singleShot(0, [] { misc::releaseFreedMemory(); });
+    }
     reloadGraphs(); // load recent simulation data
 
     emit signalUndoState(a_undoActionIdx != 0);
