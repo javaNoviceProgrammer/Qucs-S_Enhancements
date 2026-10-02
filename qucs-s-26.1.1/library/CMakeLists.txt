@@ -26,6 +26,7 @@ JFETs.lib
 LEDs.lib
 LaserDiodes.lib
 Loudspeaker.lib
+MESFETs.lib
 MixerIC.lib
 Neon.lib
 MOSFETs.lib

@@ -51,6 +51,9 @@ QString folderFor(const QString& name);
 bool isLink(const QString& path);
 /// Where the link \a path points; empty for anything else.
 QString linkTarget(const QString& path);
+/// Whether \a path is a link that leads nowhere now: the folder it points
+/// to moved, deleted, or on a drive not mounted.
+bool isDanglingLink(const QString& path);
 
 /// Checks that the project directory \a source can come into \a workspace
 /// as \a name (its own name if empty): a directory whose name, and \a name,

@@ -15,6 +15,7 @@
 
 #include <QCoreApplication>
 #include <QFontMetricsF>
+#include <QHash>
 #include <QPainter>
 #include <QPolygonF>
 
@@ -174,6 +175,10 @@ QStringList wrapped(const QString& text, int width = 46)
 
 constexpr qreal kBoxGap = 18.0, kPad = 4.0, kSwatch = 10.0, kSwatchGap = 5.0;
 constexpr int kMaxSide = 3000;
+// Traces drawn as lines up to so many windows; more, each pixel as dark as
+// so many lines laid over it make it (a polyline each, 100,000 bits took 11
+// to 59 s a repaint).
+constexpr double kMostLines = 2000.0;
 constexpr qint64 kMaxPixels = 6000000;
 
 } // namespace
@@ -256,46 +261,81 @@ void EyeDiagram::analyse()
 {
     m_results.clear();
     m_sourceWhy.clear();
-    m_ui = std::isfinite(ui) && ui > 0.0 ? ui : eye::NaN;
-    // None given: the Tbit of the PRBS source a trace comes from, exact,
-    // before what the crossings tell.
-    QString source;
-    if (!std::isfinite(m_ui) && sourceFinder())
-        for (const Graph* g : Graphs) {
-            const qucs_s::prbs::Source s = sourceFinder()(this, g->Var);
+    m_levelsFrom.clear();
+    m_mixed = false;
+    const double given = std::isfinite(ui) && ui > 0.0 ? ui : eye::NaN;
+    // Each graph's PRBS source: none given, its Tbit is the graph's UI,
+    // exact, before what the crossings tell - each graph at its own source's
+    // (two sources of different bits in one diagram were both folded at the
+    // first one's) - and its coding the levels, when they are not set.
+    QList<qucs_s::prbs::Source> sources;
+    for (const Graph* g : Graphs) {
+        const qucs_s::prbs::Source s = sourceFinder() ? sourceFinder()(this, g->Var) : qucs_s::prbs::Source();
+        sources << s;
+        m_sourceWhy << s.why;
+    }
+    // A graph with no source of its own: the first source's UI - else what
+    // the crossings of the first graph that has an eye tell.
+    double other = given;
+    QString otherFrom;
+    if (!std::isfinite(other))
+        for (const qucs_s::prbs::Source& s : sources)
             if (s.found()) {
-                m_ui = s.ui;
-                source = s.name;
+                other = s.ui;
+                otherFrom = s.name;
                 break;
             }
-            if (m_sourceWhy.isEmpty()) m_sourceWhy = s.why;
-        }
     eye::Options o;
     o.start = start;
-    o.levels = levels;
     o.threshold = threshold;
     o.maskWidth = maskWidth;
     o.maskHeight = maskHeight;
     auto one = [&](int i) {
         const QList<qucs_s::dataset::Curve> curves = curvesOf(Graphs.at(i));
+        const qucs_s::prbs::Source& s = sources.at(i);
+        eye::Result r;
         if (curves.isEmpty() || curves.first().x.size() < 2) {
-            eye::Result r;
             r.error = tr("no data: simulate, or check the variable's name");
             return r;
         }
-        o.ui = m_ui;   // the first graph's, for the others
-        return eye::analyse(curves.first(), o);
+        const bool own = !std::isfinite(given) && s.found();
+        o.ui = own ? s.ui : other;
+        o.levels = levels == 2 || levels == 4 ? levels : s.found() ? s.levels : 2;
+        r = eye::analyse(curves.first(), o);
+        r.uiSource = std::isfinite(given) ? QString() : own ? s.name : otherFrom;
+        if (s.found() && !s.note.isEmpty()) r.notes.prepend(s.note);
+        if (s.found() && s.levels == 4 && o.levels == 2)
+            r.notes << tr("%1 is coded PAM4: 4 levels measure its three eyes").arg(s.name);
+        return r;
     };
     for (int i = 0; i < Graphs.size(); ++i) {
+        const qucs_s::prbs::Source& s = sources.at(i);
+        m_levelsFrom << (levels != 2 && levels != 4 && s.found() && s.levels == 4 ? s.name : QString());
         m_results << one(i);
-        m_results.last().uiSource = source;
-        if (!std::isfinite(m_ui) && m_results.last().ok()) {
-            m_ui = m_results.last().ui;
+        if (!std::isfinite(other) && m_results.last().ok()) {
+            other = m_results.last().ui;
             // The graphs before, whose UI could not be told: at this one's.
             for (int j = 0; j < i; ++j)
                 if (!m_results.at(j).ok()) m_results[j] = one(j);
         }
     }
+    // The UI across it: the first graph's that has an eye - or, with none,
+    // the one the others would have been folded at.
+    m_ui = other;
+    for (const eye::Result& r : std::as_const(m_results))
+        if (r.ok()) {
+            m_ui = r.ui;
+            break;
+        }
+    for (const eye::Result& r : std::as_const(m_results))
+        if (r.ok() && std::abs(r.ui - m_ui) > 1e-9 * m_ui) m_mixed = true;
+}
+
+double EyeDiagram::axisTime(int i, double seconds) const
+{
+    if (!m_mixed) return seconds;
+    const eye::Result& r = m_results.at(i);
+    return seconds / (r.ok() ? r.ui : m_ui);
 }
 
 int EyeDiagram::calcDiagram()
@@ -304,9 +344,10 @@ int EyeDiagram::calcDiagram()
     zAxis.numGraphs = 0;
     analyse();
     // Time across it: the windows, a few UIs long.
+    // (In UI when the graphs are folded at different ones.)
     if (xAxis.autoScale) {
         xAxis.min = 0.0;
-        xAxis.max = std::isfinite(m_ui) ? span * m_ui : 1.0;
+        xAxis.max = !std::isfinite(m_ui) ? 1.0 : m_mixed ? double(span) : span * m_ui;
     }
     ++m_generation;
     return RectDiagram::calcDiagram();
@@ -334,7 +375,7 @@ void EyeDiagram::loadExtraFields(const QStringList& fields)
     span = ok && s >= 1 && s <= MaxSpan ? s : 2;
     start = fieldValue(fields.value(2));
     const int l = fields.value(3).toInt(&ok);
-    levels = ok && l == 4 ? 4 : 2;
+    levels = ok && (l == 2 || l == 4) ? l : 0;
     threshold = fieldValue(fields.value(4));
     const int d = fields.value(5).toInt(&ok);
     drawn = ok && d == Traces ? Traces : Density;
@@ -351,8 +392,9 @@ void EyeDiagram::createAxisLabels()
     // its own.
     const QString x = xAxis.Label;
     if (xAxis.Label.isEmpty())
-        xAxis.Label = std::isfinite(m_ui) ? tr("time, %1 UI of %2").arg(span).arg(engineering(m_ui, QStringLiteral("s")))
-                                          : tr("time");
+        xAxis.Label = !std::isfinite(m_ui) ? tr("time")
+                      : m_mixed            ? tr("time in UI, %1 UI - each trace at its own").arg(span)
+                                           : tr("time, %1 UI of %2").arg(span).arg(engineering(m_ui, QStringLiteral("s")));
     Diagram::createAxisLabels();
     xAxis.Label = x;
 }
@@ -378,7 +420,11 @@ QList<EyeDiagram::Line> EyeDiagram::lines() const
         add(tr("UI %1%2").arg(engineering(r.ui, s), r.uiEstimated           ? tr(", from the crossings")
                                                      : !r.uiSource.isEmpty() ? tr(", %1's Tbit").arg(r.uiSource)
                                                                              : QString()));
-        if (r.uiEstimated && !m_sourceWhy.isEmpty()) add(tr("(not the source's: %1)").arg(m_sourceWhy));
+        // (Why not a source's: this graph's own, else the first one's.)
+        QString why = m_sourceWhy.value(i);
+        for (int k = 0; why.isEmpty() && k < m_sourceWhy.size(); ++k) why = m_sourceWhy.at(k);
+        if (r.uiEstimated && !why.isEmpty()) add(tr("(not the source's: %1)").arg(why));
+        if (!m_levelsFrom.value(i).isEmpty()) add(tr("PAM4, %1's Coding").arg(m_levelsFrom.at(i)));
         if (r.eyes.size() == 1) {
             const eye::Eye& e = r.eyes.first();
             add(tr("height %1").arg(engineering(e.height, unit)));
@@ -434,7 +480,6 @@ QImage EyeDiagram::render(const QSize& pixels) const
     if (!std::isfinite(m_ui) || !(xAxis.up != xAxis.low) || !(yAxis.up != yAxis.low)) return image;
     const int w = pixels.width(), h = pixels.height();
     const double ax = w / (xAxis.up - xAxis.low), ay = h / (yAxis.up - yAxis.low);
-    auto toPixel = [&](const QPointF& p) { return QPointF((p.x() - xAxis.low) * ax, h - (p.y() - yAxis.low) * ay); };
 
     QPainter painter(&image);
     painter.setRenderHint(QPainter::Antialiasing, true);
@@ -444,6 +489,9 @@ QImage EyeDiagram::render(const QSize& pixels) const
         const QList<qucs_s::dataset::Curve> curves = curvesOf(g);
         if (curves.isEmpty()) continue;
         const eye::Result r = m_results.value(i);
+        // Each at its own UI (in UI on the axis when they differ).
+        const double unit = r.ok() ? r.ui : m_ui;
+        auto toPixel = [&](const QPointF& p) { return QPointF((axisTime(i, p.x()) - xAxis.low) * ax, h - (p.y() - yAxis.low) * ay); };
         const double from = std::isfinite(start) ? start : curves.first().x.value(0);
         // The eye's centre in the middle - or, with no eye found, the
         // windows from the start.
@@ -453,23 +501,53 @@ QImage EyeDiagram::render(const QSize& pixels) const
             // Fainter the more there are, so that where many pass is darker.
             double windows = 0.0;
             for (const qucs_s::dataset::Curve& c : curves)
-                if (c.x.size() > 1) windows += std::max(0.0, (c.x.last() - std::max(from, c.x.first())) / m_ui) * span;
-            QColor pen = colour;
-            pen.setAlpha(int(std::clamp(255.0 * 4.0 / std::sqrt(std::max(1.0, windows)), 16.0, 255.0)));
-            painter.setPen(QPen(pen, std::max(1.0, double(g->Thick)) * w / std::max(1, x2)));
-            QPolygonF line;
+                if (c.x.size() > 1) windows += std::max(0.0, (c.x.last() - std::max(from, c.x.first())) / unit) * span;
+            const double alpha = std::clamp(4.0 / std::sqrt(std::max(1.0, windows)), 16.0 / 255.0, 1.0);
+            if (windows <= kMostLines) {
+                QColor pen = colour;
+                pen.setAlphaF(alpha);
+                painter.setPen(QPen(pen, std::max(1.0, double(g->Thick)) * w / std::max(1, x2)));
+                QPolygonF line;
+                for (const qucs_s::dataset::Curve& c : curves)
+                    eye::fold(c, from, unit, origin, span, [&](const QVector<QPointF>& points) {
+                        line.resize(0);
+                        for (const QPointF& p : points) line << toPixel(p);
+                        painter.drawPolyline(line);
+                    });
+                continue;
+            }
+            // Many: how many windows pass each pixel, and the pixel as
+            // opaque as that many lines of that alpha over each other.
+            QVector<float> passes(qsizetype(w) * h, 0.0f);
             for (const qucs_s::dataset::Curve& c : curves)
-                eye::fold(c, from, m_ui, origin, span, [&](const QVector<QPointF>& points) {
-                    line.resize(0);
-                    for (const QPointF& p : points) line << toPixel(p);
-                    painter.drawPolyline(line);
+                eye::fold(c, from, unit, origin, span, [&](const QVector<QPointF>& points) {
+                    qsizetype last = -1;
+                    for (int k = 1; k < points.size(); ++k) accumulate(passes, w, h, toPixel(points.at(k - 1)), toPixel(points.at(k)), last);
                 });
+            QImage layer(pixels, QImage::Format_ARGB32);
+            layer.fill(Qt::transparent);
+            QHash<int, QRgb> shade;   // (by how many: a pow each, once)
+            for (int y = 0; y < h; ++y) {
+                QRgb* row = reinterpret_cast<QRgb*>(layer.scanLine(y));
+                for (int x = 0; x < w; ++x) {
+                    const int n = int(passes.at(qsizetype(y) * w + x));
+                    if (n <= 0) continue;
+                    auto it = shade.constFind(n);
+                    if (it == shade.constEnd()) {
+                        QColor c = colour;
+                        c.setAlphaF(1.0 - std::pow(1.0 - alpha, n));
+                        it = shade.insert(n, c.rgba());
+                    }
+                    row[x] = *it;
+                }
+            }
+            painter.drawImage(0, 0, layer);
             continue;
         }
         // How many traces pass each pixel.
         QVector<float> hits(qsizetype(w) * h, 0.0f);
         for (const qucs_s::dataset::Curve& c : curves)
-            eye::fold(c, from, m_ui, origin, span, [&](const QVector<QPointF>& points) {
+            eye::fold(c, from, unit, origin, span, [&](const QVector<QPointF>& points) {
                 qsizetype last = -1;
                 for (int k = 1; k < points.size(); ++k) accumulate(hits, w, h, toPixel(points.at(k - 1)), toPixel(points.at(k)), last);
             });
@@ -534,7 +612,7 @@ void EyeDiagram::paintMarks(QPainter* painter) const
     // width, and the mask.
     if (m_results.isEmpty() || !m_results.first().ok() || !(xAxis.up != xAxis.low) || !(yAxis.up != yAxis.low)) return;
     const eye::Result& r = m_results.first();
-    auto X = [this](double v) { return (v - xAxis.low) / (xAxis.up - xAxis.low) * x2; };
+    auto X = [this](double v) { return (axisTime(0, v) - xAxis.low) / (xAxis.up - xAxis.low) * x2; };
     auto Y = [this](double v) { return (v - yAxis.low) / (yAxis.up - yAxis.low) * y2; };
     const double centre = span * r.ui / 2.0;
 

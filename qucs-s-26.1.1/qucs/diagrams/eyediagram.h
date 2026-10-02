@@ -44,10 +44,10 @@ public:
   enum Drawn { Density = 0, Traces = 1 };
   static constexpr int MaxSpan = 8;
 
-  double ui;                 ///< the unit interval; NaN: told from the first graph's crossings
+  double ui;                 ///< the unit interval; NaN: each graph's PRBS source's Tbit, else told from the crossings
   int span = 2;              ///< the UIs across it, 1 to MaxSpan
   double start;              ///< the eye from this time on (the settling before it left out); NaN: from the start
-  int levels = 2;            ///< 2: NRZ, 4: PAM4
+  int levels = 0;            ///< 2: NRZ, 4: PAM4; 0: as each graph's PRBS source is coded (2 without one)
   double threshold;          ///< NRZ's decision threshold; NaN: halfway between the levels
   int drawn = Density;
   bool measurements = true;  ///< what was measured beside it, and the height, width and threshold marked in it
@@ -57,8 +57,11 @@ public:
   /// The eye of each graph (its first curve), as last laid out.
   const QList<qucs_s::eye::Result>& results() const { return m_results; }
   /// The unit interval it is folded at: NaN when there is none (nothing
-  /// is drawn).
+  /// is drawn) - the first graph's, when the graphs' differ (each is
+  /// folded at its own source's Tbit, and the time across it is in UI).
   double foldedUi() const { return m_ui; }
+  /// Whether its graphs are folded at different unit intervals.
+  bool mixedUi() const { return m_mixed; }
   /// What is written beside it, a line each.
   QStringList measurementLines() const;
   /// \a value in engineering notation with \a unit: "92.51 ps".
@@ -99,9 +102,15 @@ private:
 
   static SourceFinder& sourceFinder();
 
+  /// \a seconds of graph \a i on the time axis: as they are, or in its UI
+  /// when the graphs' UIs differ.
+  double axisTime(int i, double seconds) const;
+
   QList<qucs_s::eye::Result> m_results;
   double m_ui;
-  QString m_sourceWhy;   // why a PRBS source there is gives no UI
+  bool m_mixed = false;
+  QStringList m_sourceWhy;   // each graph's: why a PRBS source there is gives no UI
+  QStringList m_levelsFrom;  // each graph's: the source whose coding gave its levels
   QImage m_image;   // the traces, as last drawn
   quint64 m_generation = 0, m_imageGeneration = ~quint64(0);
   QRgb m_imagePaper = 0;

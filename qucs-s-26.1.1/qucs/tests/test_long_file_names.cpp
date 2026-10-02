@@ -184,6 +184,14 @@ private slots:
             QString report;
             QVERIFY2(app.importSettingsFrom(json, false, &report), qPrintable(report));
             QCOMPARE(QucsSettings.FileNameCap, 9);
+            // (What the file has not goes back to its default - ngspice's
+            // path too: a machine without ngspice, CI's, said so in a box
+            // over the import, and at each window's start after it. The
+            // report says it now; the path back for the tests after.)
+            if (!QFileInfo::exists(QStandardPaths::findExecutable("ngspice")))
+                QVERIFY2(report.contains("No simulator was found"), qPrintable(report));
+            QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
+            _settings::Get().setItem<QString>("NgspiceExecutable", QucsSettings.NgspiceExecutable);
             i = tabOf(app, other, &pane);
             QVERIFY(i >= 0);
             QCOMPARE(pane->tabText(i), misc::shownFileName(other, 9));

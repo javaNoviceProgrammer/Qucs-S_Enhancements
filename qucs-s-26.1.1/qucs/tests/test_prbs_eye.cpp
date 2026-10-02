@@ -22,6 +22,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPainter>
 #include <QProcess>
 #include <QMouseEvent>
@@ -479,6 +480,169 @@ private slots:
                  qPrintable(lines.join("\n")));
     }
 
+    // The source as the run the data is of gave it: its Tbit and coding
+    // from that run's netlist (kept for the dataset) - the data is made of
+    // those bits, whatever the source says now, and what changed is said. A
+    // source not in that run is none; with a dataset written since another
+    // way, the source as it is. Coded PAM4: 4 levels.
+    void theSourceIsAsTheRunGaveIt()
+    {
+        const QString folder = dir.filePath("run");
+        QVERIFY(QDir().mkpath(folder));
+        auto load = [&](const QString& text) {
+            QFile f(folder + "/link.sch");
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(text.toUtf8());
+            f.close();
+            auto* sch = new Schematic(nullptr, folder + "/link.sch");
+            if (!sch->loadDocument()) qWarning() << "not loaded";
+            return std::unique_ptr<Schematic>(sch);
+        };
+        const QString text = linkSchematic("50 ps", "80 ps");
+        const std::unique_ptr<Schematic> sch = load(text);
+        const QString data = folder + "/link.dat.ngspice";
+        QCOMPARE(qucs_s::prbs::datasetOf(sch.get(), "ngspice/tran.v(rx)"), data);
+        QVERIFY(writeDataset(data, waveform(nrz(20), 10e-12, 2.5e-12), "tran.v(rx)"));
+        const QString head = QStringLiteral("* Qucs " PACKAGE_VERSION "  %1\n").arg(folder + "/link.sch");
+        QVERIFY(misc::keepRunNetlist(data, head + "V1 tx 0 PRBS(0 1 100p 0 0 0 7)\nV3 _net1 0 PAM4(0 1 80p 0 0 0 7)\n.end\n"));
+        qucs_s::prbs::Source s = qucs_s::prbs::sourceOf(sch.get(), "ngspice/tran.v(rx)", data);
+        QVERIFY2(s.found() && s.name == "V1" && s.ui == 100e-12 && s.levels == 2, qPrintable(s.name + s.why));
+        QVERIFY2(s.note.contains("V1's Tbit is 50 ps now, 100 ps in the run the data is of"), qPrintable(s.note));
+        s = qucs_s::prbs::sourceOf(sch.get(), "ngspice/tran.v(agg)", data);
+        QVERIFY2(s.found() && s.name == "V3" && s.ui == 80e-12 && s.levels == 4, qPrintable(s.name + s.why));
+        QVERIFY2(s.note.contains("V3's Coding is NRZ now, PAM4 in the run the data is of") && !s.note.contains("Tbit"), qPrintable(s.note));
+        // Without the dataset: as they are now.
+        s = qucs_s::prbs::sourceOf(sch.get(), "ngspice/tran.v(rx)");
+        QVERIFY(s.found() && s.ui == 50e-12 && s.note.isEmpty());
+        // Not in the run: none, and why.
+        QVERIFY(misc::keepRunNetlist(data, head + "V3 agg 0 PRBS(0 1 80p 0 0 0 7)\n.end\n"));
+        s = qucs_s::prbs::sourceOf(sch.get(), "ngspice/tran.v(rx)", data);
+        QVERIFY2(!s.found() && s.why.contains("V1 was not in the run the data is of"), qPrintable(s.why));
+        // The dataset written since, another way: the netlist is not its.
+        QVERIFY(writeDataset(data, waveform(nrz(30), 10e-12, 2.5e-12), "tran.v(rx)"));
+        s = qucs_s::prbs::sourceOf(sch.get(), "ngspice/tran.v(rx)", data);
+        QVERIFY2(s.found() && s.ui == 50e-12 && s.note.isEmpty(), qPrintable(s.why));
+        // Coded PAM4 now.
+        QString pam = text;
+        pam.replace(pam.lastIndexOf("\"NRZ\""), 5, "\"PAM4\"");   // (V3's)
+        const std::unique_ptr<Schematic> coded = load(pam);
+        s = qucs_s::prbs::sourceOf(coded.get(), "v(agg)");
+        QVERIFY(s.found() && s.levels == 4);
+        QCOMPARE(qucs_s::prbs::sourceOf(coded.get(), "v(rx)").levels, 2);
+    }
+
+    // In the application, two traces of two sources: each folded at its
+    // own source's Tbit (both were at the first one's), the time across it
+    // in UI; a source coded PAM4 measured on its four levels unless 2 are
+    // set (then said); and the Tbit of the run the data is of when the
+    // source has another now.
+    void eachTraceIsFoldedAtItsOwnSource()
+    {
+        const QString folder = dir.filePath("own");
+        QVERIFY(QDir().mkpath(folder));
+        // v(rx): bits of 50 ps; v(agg): PAM4 symbols of 80 ps - on one time base.
+        ds::Curve rx = waveform(nrz(160), 10e-12, 2.5e-12);
+        for (double& t : rx.x) t *= 0.5;
+        ds::Curve agg = waveform(pam4(100), 10e-12, 2.5e-12);
+        for (double& t : agg.x) t *= 0.8;
+        QVector<double> aggOnRx;
+        int j = 0;
+        for (double t : rx.x) {
+            while (j + 1 < agg.x.size() && agg.x.at(j + 1) < t) ++j;
+            const int k = std::min(j + 1, int(agg.x.size()) - 1);
+            const double f = agg.x.at(k) > agg.x.at(j) ? (t - agg.x.at(j)) / (agg.x.at(k) - agg.x.at(j)) : 0.0;
+            aggOnRx << agg.y.at(j) + std::clamp(f, 0.0, 1.0) * (agg.y.at(k) - agg.y.at(j));
+        }
+        {
+            QFile f(folder + "/link.dat");
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            QTextStream s(&f);
+            s << "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time " << rx.x.size() << ">\n";
+            for (double t : rx.x) s << QString::number(t, 'e', 12) << "\n";
+            s << "</indep>\n<dep v(rx) time>\n";
+            for (double v : rx.y) s << QString::number(v, 'e', 12) << "\n";
+            s << "</dep>\n<dep v(agg) time>\n";
+            for (double v : aggOnRx) s << QString::number(v, 'e', 12) << "\n";
+            s << "</dep>\n";
+        }
+        QString text = linkSchematic("50 ps", "80 ps");
+        text.replace(text.lastIndexOf("\"NRZ\""), 5, "\"PAM4\"");   // V3 PAM4
+        text.replace("<Diagrams>\n</Diagrams>", "<Diagrams>\n  " + eyeLine(" - 2 - 0 - 0 1 - -")
+                                                    + "\n\t<\"v(rx)\" #0050c8 1 3 0 0 0>\n\t<\"v(agg)\" #c80000 1 3 0 0 0>\n  </Eye>\n</Diagrams>");
+        {
+            QFile f(folder + "/link.sch");
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(text.toUtf8());
+        }
+        QVERIFY(app->gotoPage(folder + "/link.sch", false, false));
+        auto* sch = dynamic_cast<Schematic*>(app->findDoc(folder + "/link.sch"));
+        QVERIFY(sch != nullptr && !sch->a_DocDiags.empty());
+        sch->reloadGraphs();
+        auto* d = dynamic_cast<EyeDiagram*>(sch->a_DocDiags.front());
+        QVERIFY(d != nullptr);
+        QCOMPARE(d->levels, 0);
+        QCOMPARE(d->results().size(), 2);
+        const eye::Result& one = d->results().at(0);
+        const eye::Result& two = d->results().at(1);
+        QVERIFY2(one.ok() && one.ui == 50e-12 && one.uiSource == "V1" && one.levels.size() == 2, qPrintable(one.error));
+        QVERIFY2(two.ok() && two.ui == 80e-12 && two.uiSource == "V3" && two.levels.size() == 4, qPrintable(two.error));
+        QVERIFY2(two.eyes.size() == 3 && two.eyes.first().height > 0.2, qPrintable(QString::number(two.eyes.first().height)));
+        QVERIFY(d->mixedUi());
+        QCOMPARE(d->foldedUi(), 50e-12);
+        QCOMPARE(d->xAxis.max, 2.0);   // in UI
+        const QString lines = d->measurementLines().join("\n");
+        QVERIFY2(lines.contains("UI 50 ps, V1's Tbit") && lines.contains("UI 80 ps, V3's Tbit") && lines.contains("PAM4, V3's Coding"),
+                 qPrintable(lines));
+        // Drawn: the PAM4 eye (red) open in the middle of the frame - no
+        // trace through its middle eye's centre - as it is not when folded
+        // at V1's bits.
+        auto row = [&](double v) { return int(std::lround(d->y2 - (v - d->yAxis.low) / (d->yAxis.up - d->yAxis.low) * d->y2)); };
+        auto red = [&](const QImage& img, const QRect& area) {
+            int n = 0;
+            for (int y = area.top(); y <= area.bottom(); ++y)
+                for (int x = area.left(); x <= area.right(); ++x) {
+                    const QColor c = img.pixelColor(x, y);
+                    if (c.red() - c.blue() > 60 && c.red() - c.green() > 60) ++n;
+                }
+            return n;
+        };
+        const QRect centre(d->x2 / 2 - 5, row(0.56), 11, row(0.44) - row(0.56) + 1);
+        const QImage own = render(d, d->x2 + 10);
+        QVERIFY2(red(own, QRect(1, 1, d->x2 - 2, d->y2 - 2)) > 1000, "no red trace drawn");
+        QCOMPARE(red(own, centre), 0);
+        d->ui = 50e-12;
+        d->updateGraphData();
+        QVERIFY2(red(render(d, d->x2 + 10), centre) > 10, "folded at 50 ps, the PAM4 eye should be closed");
+        d->ui = eye::NaN;
+        d->updateGraphData();
+        // Two levels set: NRZ, and the coding said.
+        d->levels = 2;
+        d->updateGraphData();
+        QCOMPARE(d->results().at(1).levels.size(), 2);
+        QVERIFY2(d->results().at(1).notes.join(" ").contains("V3 is coded PAM4: 4 levels measure its three eyes"),
+                 qPrintable(d->results().at(1).notes.join(" ")));
+        QVERIFY(!d->measurementLines().join("\n").contains("PAM4, V3's Coding"));
+        d->levels = 0;
+
+        // V1's Tbit changed since the run: folded at the run's, and said.
+        QVERIFY(misc::keepRunNetlist(folder + "/link.dat", QStringLiteral("* Qucs " PACKAGE_VERSION "  %1\nV1 tx 0 PRBS(0 1 50p 0 0 0 7)\n"
+                                                                          "V3 _net1 0 PAM4(0 1 80p 0 0 0 7)\n.end\n").arg(folder + "/link.sch")));
+        sch->getComponentByName("V1")->getProperty("Tbit")->Value = "100 ps";
+        d->updateGraphData();
+        QCOMPARE(d->results().at(0).ui, 50e-12);
+        QVERIFY2(d->results().at(0).notes.join(" ").contains("V1's Tbit is 100 ps now, 50 ps in the run the data is of"),
+                 qPrintable(d->results().at(0).notes.join("\n")));
+        QVERIFY2(d->measurementLines().join(" ").simplified().contains("V1's Tbit is 100 ps now, 50 ps in the run the data is of"),
+                 qPrintable(d->measurementLines().join("\n")));
+        // A UI given: all at it, one UI across.
+        d->ui = 50e-12;
+        d->updateGraphData();
+        QVERIFY(!d->mixedUi());
+        QCOMPARE(d->results().at(1).ui, 50e-12);
+        QCOMPARE(d->xAxis.max, 100e-12);
+        d->ui = eye::NaN;
+        sch->setChanged(false);
+    }
+
     // Crossings leave a band about the level: ringing within it is none.
     void ringingIsNoCrossing()
     {
@@ -880,13 +1044,13 @@ private slots:
         QScopedPointer<EyeDiagram> plain(makeDiagram(eyeLine()));
         QVERIFY(std::isnan(plain->ui) && std::isnan(plain->start) && std::isnan(plain->maskWidth));
         QCOMPARE(plain->span, 2);
-        QCOMPARE(plain->levels, 2);
+        QCOMPARE(plain->levels, 0);   // (as the source is coded)
         QCOMPARE(plain->drawn, int(EyeDiagram::Density));
         QVERIFY(plain->measurements);
         QScopedPointer<EyeDiagram> junk(makeDiagram(eyeLine(" -5 99 x 3 y 7 z 2 0.1")));
         QVERIFY(std::isnan(junk->ui));
         QCOMPARE(junk->span, 2);
-        QCOMPARE(junk->levels, 2);
+        QCOMPARE(junk->levels, 0);
         QCOMPARE(junk->drawn, int(EyeDiagram::Density));
         QVERIFY(std::isnan(junk->maskWidth) && std::isnan(junk->maskHeight));   // a mask wider than a UI: none
     }
@@ -925,6 +1089,43 @@ private slots:
         QFile back(file);
         QVERIFY(back.open(QIODevice::ReadOnly));
         QVERIFY2(QString::fromUtf8(back.readAll()).contains(line.mid(0, line.size() - 1)), "the line survives");
+    }
+
+    // Many bits drawn as traces: as quickly as the density (a polyline a
+    // window, 100,000 bits took 11 to 59 s a repaint - and every zoom one),
+    // and the same picture: where many traces pass, darker.
+    void manyBitsAreDrawnAsTracesQuickly()
+    {
+        const QString file = dir.filePath("many.dat");
+        QVERIFY(writeDataset(file, waveform(nrz(100000), 15e-12, 5e-12, 0.0, gaussian(100000, 2e-12))));
+        QScopedPointer<EyeDiagram> d(makeDiagram(eyeLine(" 1e-10 2 - 2 - 0 1 - -")));
+        d->loadGraphData(file);
+        QVERIFY(d->results().first().ok());
+        QElapsedTimer t;
+        t.start();
+        const QImage density = render(d.data(), d->x2 + 10);
+        const qint64 densityMs = t.elapsed();
+        d->drawn = EyeDiagram::Traces;
+        d->updateGraphData();
+        t.restart();
+        const QImage traces = render(d.data(), d->x2 + 10);
+        const qint64 tracesMs = t.elapsed();
+        QVERIFY2(tracesMs < 3 * densityMs + 1000, qPrintable(QStringLiteral("traces %1 ms, density %2 ms").arg(tracesMs).arg(densityMs)));
+        // The trace's colour where the traces pass: the levels' lines dark,
+        // the eye's middle empty.
+        const QRect plot(1, 1, d->x2 - 2, d->y2 - 2);
+        int blue = 0;
+        for (int y = plot.top(); y <= plot.bottom(); ++y)
+            for (int x = plot.left(); x <= plot.right(); ++x) {
+                const QColor p = traces.pixelColor(x, y);
+                if (p.blue() - p.red() > 40 && p.blue() - p.green() > 20) ++blue;
+            }
+        QVERIFY2(blue > 2000, qPrintable(QString::number(blue)));
+        auto row = [&](double v) { return int(std::lround(d->y2 - (v - d->yAxis.low) / (d->yAxis.up - d->yAxis.low) * d->y2)); };
+        // (Beside the centre's dotted mark.)
+        const QColor level = traces.pixelColor(d->x2 / 2 + 20, row(1.0)), middle = traces.pixelColor(d->x2 / 2 + 20, row(0.5) - 15);
+        QVERIFY2(level.lightness() < 200 && middle.lightness() > 240,
+                 qPrintable(QStringLiteral("level %1, middle %2").arg(level.name(), middle.name())));
     }
 
     // Drawn: the density in colour, or the traces in the graph's; the
@@ -1123,9 +1324,11 @@ private slots:
         QCOMPARE(d->ui, 3.33333333333e-10);
 
         QVERIFY(threshold->isEnabled());
-        levels->setCurrentIndex(1);
+        QCOMPARE(levels->currentIndex(), 1);   // 2, as saved
+        levels->setCurrentIndex(2);
         QVERIFY(!threshold->isEnabled());
-        levels->setCurrentIndex(0);
+        levels->setCurrentIndex(0);   // as the source is coded
+        QVERIFY(threshold->isEnabled());
         ui->setText("50 ps");
         span->setValue(3);
         start->setText("2n");
@@ -1143,10 +1346,49 @@ private slots:
         QVERIFY(!d->measurements);
         QCOMPARE(d->maskWidth, 0.4);
         QCOMPARE(d->maskHeight, 0.25);
-        // Cleared: automatic again; a mask without its height, or wider
-        // than a UI, is none.
+        QCOMPARE(d->levels, 0);
+
+        // A value that cannot be taken is said, its field in focus, and
+        // nothing is applied (they were dropped without a word, the mask
+        // set before with them).
+        // (Each box told as it is shown, then closed.)
+        struct Boxes : QObject {
+            QString told;
+            bool eventFilter(QObject* o, QEvent* e) override
+            {
+                if (auto* box = qobject_cast<QMessageBox*>(o); box != nullptr && e->type() == QEvent::Show) {
+                    told = box->text();
+                    QTimer::singleShot(0, box, &QMessageBox::accept);
+                }
+                return false;
+            }
+        } boxes;
+        qApp->installEventFilter(&boxes);
+        const auto refused = [&](QLineEdit* field, const QString& text, const QString& said) {
+            const QString before = field->text();
+            field->setText(text);
+            boxes.told.clear();
+            QMetaObject::invokeMethod(dialog, "slotApply");
+            field->setText(before);
+            const QString told = boxes.told;
+            return told.contains(said) ? QString() : told.isEmpty() ? QStringLiteral("nothing said") : told;
+        };
+        QCOMPARE(refused(ui, "-1", "a bit's length above 0"), QString());
+        QCOMPARE(refused(ui, "1e400", "a bit's length above 0"), QString());
+        QCOMPARE(refused(start, "abc", "From is a time"), QString());
+        QCOMPARE(refused(threshold, "nan", "The threshold is a value"), QString());
+        QCOMPARE(refused(mask.at(0), "5", "at most 1"), QString());
+        QCOMPARE(refused(mask.at(0), "0", "at most 1"), QString());
+        QCOMPARE(refused(mask.at(1), "-1", "The mask's height is above 0"), QString());
+        QCOMPARE(refused(mask.at(1), "", "give both, or neither"), QString());
+        QCOMPARE(d->ui, 50e-12);
+        QCOMPARE(d->maskWidth, 0.4);
+        QCOMPARE(d->maskHeight, 0.25);
+        qApp->removeEventFilter(&boxes);
+        // Cleared: automatic again, and no mask.
         ui->setText("");
-        mask.at(0)->setText("1.5");
+        mask.at(0)->setText("");
+        mask.at(1)->setText("");
         QVERIFY(QMetaObject::invokeMethod(dialog, "slotApply"));
         QVERIFY(std::isnan(d->ui));
         QVERIFY(std::isnan(d->maskWidth) && std::isnan(d->maskHeight));

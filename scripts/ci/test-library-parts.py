@@ -88,9 +88,12 @@ class Server:
             os.makedirs(os.path.join(self.dir, sub), exist_ok=True)
         with open(os.path.join(self.dir, "settings", "qucs", "qucs_s.ini"), "w") as f:
             f.write("[General]\nNgspiceExecutable=%s\n" % self.ngspice)
+        # (The cache and the trash its own too: on macOS the cache is found
+        # without HOME, and the runs' scratch went into the user's.)
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QUCS_SETTINGS_DIR=os.path.join(self.dir, "settings"),
                    HOME=os.path.join(self.dir, "home"), QUCS_NO_SHELL_ENV="1", QUCS_CLAUDE="/nonexistent/claude",
-                   QUCS_LIBRARY_DIR=self.library)
+                   QUCS_LIBRARY_DIR=self.library, QUCS_CACHE_DIR=os.path.join(self.dir, "cache"),
+                   QUCS_TRASH_DIR=os.path.join(self.dir, "trash"))
         # An ngspice built to be carried about keeps its spinit (which
         # loads the XSPICE code models) in scripts/ beside it and finds it
         # by SPICE_LIB_DIR, which a login shell sets - not this one.

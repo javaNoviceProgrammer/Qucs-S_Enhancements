@@ -133,3 +133,18 @@ qucs_add_test(test_mcp_server)
 # (Its last case runs the program itself: qucs-s --mcp-server.)
 target_compile_definitions(test_mcp_server PRIVATE QUCS_BINARY="$<TARGET_FILE:${QUCS_NAME}>")
 add_dependencies(test_mcp_server ${QUCS_NAME})
+
+# Every argument a Claude tool reads is in its schema, and the other way
+# round: CI's first step, here too (a tool's dispatch changed into a block
+# once, and only CI saw that the check no longer found its handler).
+set(QUCS_TOOL_ARGUMENTS_CHECK "${CMAKE_SOURCE_DIR}/../scripts/ci/check-tool-arguments.py")
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND AND EXISTS "${QUCS_TOOL_ARGUMENTS_CHECK}")
+  add_test(NAME check_tool_arguments COMMAND Python3::Interpreter "${QUCS_TOOL_ARGUMENTS_CHECK}")
+endif()
+# And no list of one list written as QJsonArray{QJsonArray{...}}: a copy to
+# Apple's newer clang (CI's), a nesting to the others.
+set(QUCS_JSON_NESTING_CHECK "${CMAKE_SOURCE_DIR}/../scripts/ci/check-json-nesting.py")
+if(Python3_Interpreter_FOUND AND EXISTS "${QUCS_JSON_NESTING_CHECK}")
+  add_test(NAME check_json_nesting COMMAND Python3::Interpreter "${QUCS_JSON_NESTING_CHECK}")
+endif()

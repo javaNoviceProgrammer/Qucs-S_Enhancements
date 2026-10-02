@@ -1003,6 +1003,11 @@ void QucsApp::slotLocateProblem(int index) {
     for (Component *c : doc->a_DocComps)
       if (c->Name == issue.component && (chosen == nullptr || QPoint(c->cx, c->cy) == issue.where)) chosen = c;
     if (chosen != nullptr) chosen->isSelected = true;
+  } else if (!issue.ref.isEmpty()) {
+    // A part without a name (a ground): by its ref.
+    const QHash<const Component *, QString> refs = qucs_s::erc::refs(doc);
+    for (Component *c : doc->a_DocComps)
+      if (refs.value(c) == issue.ref) c->isSelected = true;
   }
   doc->centerOn(issue.where);
   doc->viewport()->update();

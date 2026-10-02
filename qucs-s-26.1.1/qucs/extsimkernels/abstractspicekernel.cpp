@@ -36,6 +36,7 @@
 
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QTemporaryFile>
 #include <QPlainTextEdit>
 #include <QSet>
 #include <algorithm>
@@ -1380,16 +1381,24 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
     if (QFileInfo(qucs_dataset).exists() && !QFileInfo(qucs_dataset).isWritable())
         return tr("Failed to create dataset file ") + QDir::toNativeSeparators(qucs_dataset) + ": " + tr("it is read-only") + "\n"
                + tr("Check write permission of the directory ") + QDir::toNativeSeparators(QFileInfo(qucs_dataset).path());
-    QSaveFile dataset(qucs_dataset);
-    dataset.setDirectWriteFallback(true);   // (a folder that takes no new file: written in place)
-    if (!dataset.open(QFile::WriteOnly))
-        return tr("Failed to create dataset file ") + QDir::toNativeSeparators(qucs_dataset) + ": " + dataset.errorString() + "\n"
-               + tr("Check write permission of the directory ") + QDir::toNativeSeparators(QFileInfo(qucs_dataset).path());
-    QTextStream ds_stream(&dataset);
+    // A folder that takes no new file, its dataset writable: into a
+    // temporary file, copied over the dataset when it is whole. (Written in
+    // place from the start, a run with no results left the dataset cut to
+    // its first line.)
+    QSaveFile beside(qucs_dataset);
+    QTemporaryFile elsewhere;
+    QFileDevice* dataset = &beside;
+    if (!beside.open(QFile::WriteOnly)) {
+        if (!QFileInfo(qucs_dataset).isFile() || !elsewhere.open())
+            return tr("Failed to create dataset file ") + QDir::toNativeSeparators(qucs_dataset) + ": " + beside.errorString() + "\n"
+                   + tr("Check write permission of the directory ") + QDir::toNativeSeparators(QFileInfo(qucs_dataset).path());
+        dataset = &elsewhere;
+    }
+    QTextStream ds_stream(dataset);
 
     ds_stream<<"<Qucs Dataset " PACKAGE_VERSION ">\n";
     ds_stream.flush();
-    const qint64 headerSize = dataset.size();
+    const qint64 headerSize = dataset->size();
 
     QString sim,indep;
     QStringList indep_vars;
@@ -1680,16 +1689,27 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
     // why is told. (ngspice writes nothing for a write of more vectors
     // than it takes, and ends as if all went well.)
     ds_stream.flush();
-    if (!a_output_files.isEmpty() && dataset.size() <= headerSize) {
-        dataset.cancelWriting();
+    if (!a_output_files.isEmpty() && dataset->size() <= headerSize) {
+        if (dataset == &beside) beside.cancelWriting();
         a_wroteNoResults = true;
         return tr("The simulator wrote no results: its output (%1) holds none. Look for an error in its log - "
                   "the dataset is the one from before.").arg(a_output_files.join(QStringLiteral(", ")));
     }
 
     // (Told by the caller: in a box, or in a tool's answer.)
-    if (!dataset.commit())
-        return tr("Failed to write dataset file ") + QDir::toNativeSeparators(qucs_dataset) + ": " + dataset.errorString();
+    if (dataset == &beside) {
+        if (!beside.commit())
+            return tr("Failed to write dataset file ") + QDir::toNativeSeparators(qucs_dataset) + ": " + beside.errorString();
+    } else {
+        QFile over(qucs_dataset);
+        if (!elsewhere.seek(0) || !over.open(QFile::WriteOnly | QFile::Truncate))
+            return tr("Failed to write dataset file ") + QDir::toNativeSeparators(qucs_dataset) + ": " + over.errorString();
+        while (!elsewhere.atEnd()) {
+            const QByteArray part = elsewhere.read(1 << 20);
+            if (part.isEmpty() || over.write(part) != part.size())
+                return tr("Failed to write dataset file ") + QDir::toNativeSeparators(qucs_dataset) + ": " + over.errorString();
+        }
+    }
     // The raw simulator output stays in the Scratch folder (it is removed
     // before the next run of the same netlist), so it can be looked at from
     // the Content panel.

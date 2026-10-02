@@ -2144,6 +2144,14 @@ Component *getComponentFromName(QString &Line, Schematic *p) {
                                                            "Unknown components will be replaced \n"
                                                            "by dummy subcircuit placeholders.").arg(cstr),
                                                QMessageBox::Yes | QMessageBox::No);
+            // A Verilog-A module beside it, not built yet: how to build it.
+            if (p != nullptr && !p->getDocName().isEmpty()) {
+                const QString va = QFileInfo(p->getDocName()).dir().filePath(cstr + QStringLiteral(".va"));
+                if (QFileInfo::exists(va))
+                    msg->setInformativeText(QObject::tr("%1 is the Verilog-A module of %2, not built yet: open it and "
+                                                        "choose Build Verilog-A module, then open this schematic again.")
+                                                .arg(cstr, QDir::toNativeSeparators(va)));
+            }
             int r = msg->exec();
             delete msg;
             if (r == QMessageBox::Yes) {

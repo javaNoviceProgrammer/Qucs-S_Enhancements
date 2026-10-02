@@ -147,6 +147,9 @@ protected slots:
     void reject();
 
 private:
+  /// Whether the values typed can be taken; one that cannot is said, and
+  /// its field given the focus.
+  bool valuesTaken();
   void SelectGraph(Graph*);
   void updateXVar();
   ///

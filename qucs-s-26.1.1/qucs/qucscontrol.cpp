@@ -378,8 +378,8 @@ const char* const kTools = R"JSON([
    "points": {"type": "integer", "minimum": 0, "maximum": 5000, "description": "Samples of each curve: 100 unless 'at' or 'measure' is given, then none"},
    "at": {"type": "array", "items": {"type": "number"}, "description": "x values at which each variable is given, interpolated: [1e-3, 2e-3]"},
    "measure": {"type": "array", "items": {"type": "string", "enum": ["rise_time", "fall_time", "overshoot", "settling_time", "period", "frequency", "duty_cycle", "crossings", "bandwidth", "thd", "gain", "phase_margin", "gain_margin", "distribution", "fft", "eye"]}, "description": "Measurements of each variable on its data over the range (the description says what each gives)"},
-   "bit_period": {"type": "number", "description": "eye: a bit's length (seconds); when not given, the Tbit of the V(PRBS) source the signal comes from (the nearest to its node), else told from the crossings"}, "offset": {"type": "number", "description": "eye: where the eye begins, after the range's start (the settling before it left out)"},
-   "levels": {"type": "integer", "enum": [2, 4], "description": "eye: 2 levels (NRZ, the default) or 4 (PAM4: its three eyes)"},
+   "bit_period": {"type": "number", "description": "eye: a bit's length (seconds); when not given, the Tbit of the V(PRBS) source the signal comes from (the nearest to its node) as the run the data is of gave it, else told from the crossings"}, "offset": {"type": "number", "description": "eye: where the eye begins, after the range's start (the settling before it left out)"},
+   "levels": {"type": "integer", "enum": [2, 4], "description": "eye: 2 levels (NRZ) or 4 (PAM4: its three eyes); not given, as the V(PRBS) source the signal comes from is coded (PAM4: 4), else 2"},
    "level": {"type": "number", "description": "crossings, period, frequency, duty_cycle: the level crossed (the middle of the swing by default); distribution: the share at or above it"}, "tolerance": {"type": "number", "description": "settling_time: how near the final value counts as settled, a fraction of the step, 0.02 by default"},
    "fundamental": {"type": "number", "description": "thd: the fundamental's frequency in Hz; the curve's own frequency unless given"},
    "harmonics": {"type": "integer", "minimum": 2, "maximum": 100, "description": "thd: the highest harmonic counted, 9 unless given"},
@@ -399,7 +399,7 @@ const char* const kTools = R"JSON([
    "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
    "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
    "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The right y axis (for traces with axis right): Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
-   "eye": {"type": "object", "properties": {"unit_interval": {"type": ["number", "string", "null"], "description": "A bit's (a PAM4 symbol's) length in seconds - 1e-10 or \"100p\"; null or absent: the Tbit of the V(PRBS) source the first trace comes from (the nearest to its node, never through ground), else told from its crossings"}, "span": {"type": "integer", "minimum": 1, "maximum": 8, "description": "UIs across it (2 by default: an eye in the middle, half one either side)"}, "from": {"type": ["number", "string", "null"], "description": "The eye from this time on, the settling before it left out (seconds); null: from the start"}, "levels": {"type": "integer", "enum": [2, 4], "description": "2 (NRZ) or 4 (PAM4: three eyes)"}, "threshold": {"type": ["number", "string", "null"], "description": "NRZ's decision threshold; null: halfway between the levels"}, "drawn": {"type": "string", "enum": ["density", "traces"], "description": "density (how many traces pass each point, in colour) or the traces"}, "measurements": {"type": "boolean", "description": "Height, width, jitter, levels, Q and the mask's hits beside it, the height and width marked in it"}, "mask": {"type": ["object", "null"], "properties": {"width": {"type": "number", "description": "In UI, above 0 and at most 1"}, "height": {"type": "number", "description": "In the signal's unit"}}, "description": "A hexagon at each eye's centre no trace should enter: how many UIs go through it is measured; null: none"}}, "description": "An eye diagram's own (type eye); what is not given stays. get_schematic lists them, and what was measured on each trace: unit interval, levels, each eye's height, width, jitter, Q and the mask's hits"},
+   "eye": {"type": "object", "properties": {"unit_interval": {"type": ["number", "string", "null"], "description": "A bit's (a PAM4 symbol's) length in seconds - 1e-10 or \"100p\"; null or absent: the Tbit of the V(PRBS) source each trace comes from (the nearest to its node, never through ground; as the run the data is of gave it) - traces of sources of different Tbits each at its own, the time across it then in UI - else told from the first trace's crossings"}, "span": {"type": "integer", "minimum": 1, "maximum": 8, "description": "UIs across it (2 by default: an eye in the middle, half one either side)"}, "from": {"type": ["number", "string", "null"], "description": "The eye from this time on, the settling before it left out (seconds); null: from the start"}, "levels": {"type": ["integer", "null"], "enum": [2, 4, null], "description": "2 (NRZ) or 4 (PAM4: three eyes); null: as each trace's V(PRBS) source is coded (PAM4: 4), else 2 - the default"}, "threshold": {"type": ["number", "string", "null"], "description": "NRZ's decision threshold; null: halfway between the levels"}, "drawn": {"type": "string", "enum": ["density", "traces"], "description": "density (how many traces pass each point, in colour) or the traces"}, "measurements": {"type": "boolean", "description": "Height, width, jitter, levels, Q and the mask's hits beside it, the height and width marked in it"}, "mask": {"type": ["object", "null"], "properties": {"width": {"type": "number", "description": "In UI, above 0 and at most 1"}, "height": {"type": "number", "description": "In the signal's unit"}}, "description": "A hexagon at each eye's centre no trace should enter: how many UIs go through it is measured; null: none"}}, "description": "An eye diagram's own (type eye); what is not given stays. get_schematic lists them, and what was measured on each trace: unit interval, levels, each eye's height, width, jitter, Q and the mask's hits"},
    "grid": {"type": "boolean", "description": "Grid lines drawn (true by default)"}, "legend": {"type": "string", "enum": ["off", "top_left", "top_right", "bottom_left", "bottom_right"], "description": "Where the legend goes, or off - the default, as for a diagram made in the window or written as .sch text without it; with several traces the answer says so"},
    "notation": {"type": "string", "enum": ["automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent"], "description": "Of the numbers on its axes and in markers without their own: automatic (2.5e-05), decimal, scientific (1.5e3), power_of_ten, engineering (SI prefixes: 1.5k, the default), engineering_exponent (250e-3)"},
    "decimals": {"type": "integer", "minimum": -1, "maximum": 15, "description": "Their places after the point; -1 as many as each needs"},
@@ -412,7 +412,7 @@ const char* const kTools = R"JSON([
    "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
    "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
    "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The right y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
-   "eye": {"type": "object", "properties": {"unit_interval": {"type": ["number", "string", "null"], "description": "A bit's (a PAM4 symbol's) length in seconds - 1e-10 or \"100p\"; null or absent: the Tbit of the V(PRBS) source the first trace comes from (the nearest to its node, never through ground), else told from its crossings"}, "span": {"type": "integer", "minimum": 1, "maximum": 8, "description": "UIs across it (2 by default: an eye in the middle, half one either side)"}, "from": {"type": ["number", "string", "null"], "description": "The eye from this time on, the settling before it left out (seconds); null: from the start"}, "levels": {"type": "integer", "enum": [2, 4], "description": "2 (NRZ) or 4 (PAM4: three eyes)"}, "threshold": {"type": ["number", "string", "null"], "description": "NRZ's decision threshold; null: halfway between the levels"}, "drawn": {"type": "string", "enum": ["density", "traces"], "description": "density (how many traces pass each point, in colour) or the traces"}, "measurements": {"type": "boolean", "description": "Height, width, jitter, levels, Q and the mask's hits beside it, the height and width marked in it"}, "mask": {"type": ["object", "null"], "properties": {"width": {"type": "number", "description": "In UI, above 0 and at most 1"}, "height": {"type": "number", "description": "In the signal's unit"}}, "description": "A hexagon at each eye's centre no trace should enter: how many UIs go through it is measured; null: none"}}, "description": "An eye diagram's own (type eye); what is not given stays. get_schematic lists them, and what was measured on each trace: unit interval, levels, each eye's height, width, jitter, Q and the mask's hits"},
+   "eye": {"type": "object", "properties": {"unit_interval": {"type": ["number", "string", "null"], "description": "A bit's (a PAM4 symbol's) length in seconds - 1e-10 or \"100p\"; null or absent: the Tbit of the V(PRBS) source each trace comes from (the nearest to its node, never through ground; as the run the data is of gave it) - traces of sources of different Tbits each at its own, the time across it then in UI - else told from the first trace's crossings"}, "span": {"type": "integer", "minimum": 1, "maximum": 8, "description": "UIs across it (2 by default: an eye in the middle, half one either side)"}, "from": {"type": ["number", "string", "null"], "description": "The eye from this time on, the settling before it left out (seconds); null: from the start"}, "levels": {"type": ["integer", "null"], "enum": [2, 4, null], "description": "2 (NRZ) or 4 (PAM4: three eyes); null: as each trace's V(PRBS) source is coded (PAM4: 4), else 2 - the default"}, "threshold": {"type": ["number", "string", "null"], "description": "NRZ's decision threshold; null: halfway between the levels"}, "drawn": {"type": "string", "enum": ["density", "traces"], "description": "density (how many traces pass each point, in colour) or the traces"}, "measurements": {"type": "boolean", "description": "Height, width, jitter, levels, Q and the mask's hits beside it, the height and width marked in it"}, "mask": {"type": ["object", "null"], "properties": {"width": {"type": "number", "description": "In UI, above 0 and at most 1"}, "height": {"type": "number", "description": "In the signal's unit"}}, "description": "A hexagon at each eye's centre no trace should enter: how many UIs go through it is measured; null: none"}}, "description": "An eye diagram's own (type eye); what is not given stays. get_schematic lists them, and what was measured on each trace: unit interval, levels, each eye's height, width, jitter, Q and the mask's hits"},
    "grid": {"type": "boolean", "description": "Grid lines drawn or not"}, "legend": {"type": "string", "enum": ["off", "top_left", "top_right", "bottom_left", "bottom_right"], "description": "Where the legend goes, or off"},
    "notation": {"type": "string", "enum": ["automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent"], "description": "Of the numbers on its axes and in markers without their own: automatic (2.5e-05), decimal, scientific (1.5e3), power_of_ten, engineering (SI prefixes: 1.5k, the default), engineering_exponent (250e-3)"},
    "decimals": {"type": "integer", "minimum": -1, "maximum": 15, "description": "Their places after the point; -1 as many as each needs"},
@@ -1794,7 +1794,16 @@ QList<Component*> unnamedOf(const Schematic* sch, const QString& model)
 
 QString refOf(const Schematic* sch, const Component* c)
 {
-    if (!c->Name.isEmpty() && c->Name != QLatin1String("*")) return c->Name;
+    if (!c->Name.isEmpty() && c->Name != QLatin1String("*")) {
+        // A name given twice (a hand-edited file): the second is R1#2, so
+        // that each can be told - a selection of both moved the first alone.
+        int k = 0;
+        for (const Component* o : sch->a_DocComps) {
+            if (o->Name == c->Name) ++k;
+            if (o == c) break;
+        }
+        return k > 1 ? QStringLiteral("%1#%2").arg(c->Name).arg(k) : c->Name;
+    }
     const QList<Component*> same = unnamedOf(sch, c->Model);
     return same.size() > 1 ? QStringLiteral("%1#%2").arg(c->Model).arg(same.indexOf(c) + 1) : c->Model;
 }
@@ -1812,6 +1821,17 @@ Component* componentOf(const Schematic* sch, const QString& ref, QString* error)
     QString model = name;
     int nth = 0;
     if (const qsizetype hash = name.indexOf(QLatin1Char('#')); hash > 0) {
+        // (Of a name given twice: R1#2 the second, R1 or R1#1 the first.)
+        QList<Component*> named;
+        for (Component* c : sch->a_DocComps)
+            if (c->Name == name.left(hash)) named << c;
+        if (named.size() > 1) {
+            bool number = false;
+            const int k = name.mid(hash + 1).toInt(&number);
+            if (number && k >= 1 && k <= named.size()) return named.at(k - 1);
+            *error = tr("There are %1 parts named %2, not %3: %2 (or %2#1) to %2#%1.").arg(named.size()).arg(name.left(hash), name);
+            return nullptr;
+        }
         model = name.left(hash);
         nth = std::max(name.mid(hash + 1).toInt(), -1);
         if (nth == 0) nth = -1;
@@ -1831,6 +1851,19 @@ Component* componentOf(const Schematic* sch, const QString& ref, QString* error)
     return nullptr;
 }
 
+// Whether what \a ref names before its # is that of several parts - an
+// unnamed type's (GND#9 of 3) or a name given twice (R1#3) - so that why it
+// was not found says more than "no such part".
+bool toldByNumber(const Schematic* sch, const QString& ref)
+{
+    const QString base = ref.trimmed().section(QLatin1Char('#'), 0, 0);
+    if (!unnamedOf(sch, base).isEmpty()) return true;
+    int named = 0;
+    for (const Component* c : sch->a_DocComps)
+        if (c->Name == base && ++named > 1) return true;
+    return false;
+}
+
 // The parts of a schematic by what refOf() tells them by, all at once: a
 // selection of 15,000 parts each looked for among all of them (and each
 // checked against those found) took seconds, a list squared.
@@ -1842,6 +1875,7 @@ public:
         for (Component* c : sch->a_DocComps) {
             if (!c->Name.isEmpty() && c->Name != QLatin1String("*")) {
                 if (!m_byName.contains(c->Name)) m_byName.insert(c->Name, c);   // (the first, as getComponentByName)
+                m_named[c->Name] << c;
             } else {
                 m_unnamed[c->Model.toLower()] << c;
             }
@@ -1858,35 +1892,23 @@ public:
         if (const qsizetype hash = name.indexOf(QLatin1Char('#')); hash > 0) {
             model = name.left(hash);
             nth = name.mid(hash + 1).toInt();
+            // (Of a name given twice: R1#2.)
+            const QList<Component*> named = m_named.value(model);
+            if (named.size() > 1 && nth >= 1 && nth <= named.size()) return named.at(nth - 1);
         }
         const QList<Component*> same = m_unnamed.value(model.toLower());
         if (nth > 0 && nth <= same.size()) return same.at(nth - 1);
         if (nth == 0 && !name.contains(QLatin1Char('#')) && same.size() == 1) return same.first();
         return componentOf(m_sch, ref, error);
     }
-    /// Each part's ref, as refOf() gives it, all in one pass.
-    static QHash<const Component*, QString> refs(const Schematic* sch)
-    {
-        QHash<QString, int> unnamed;
-        for (const Component* c : sch->a_DocComps)
-            if (c->Name.isEmpty() || c->Name == QLatin1String("*")) ++unnamed[c->Model.toLower()];
-        QHash<QString, int> nth;
-        QHash<const Component*, QString> out;
-        for (const Component* c : sch->a_DocComps) {
-            if (!c->Name.isEmpty() && c->Name != QLatin1String("*")) {
-                out.insert(c, c->Name);
-                continue;
-            }
-            const QString key = c->Model.toLower();
-            const int k = ++nth[key];
-            out.insert(c, unnamed.value(key) > 1 ? QStringLiteral("%1#%2").arg(c->Model).arg(k) : c->Model);
-        }
-        return out;
-    }
+    /// Each part's ref, as refOf() gives it, all in one pass (as Check
+    /// Schematic's findings name them).
+    static QHash<const Component*, QString> refs(const Schematic* sch) { return qucs_s::erc::refs(sch); }
 
 private:
     const Schematic* m_sch;
     QHash<QString, Component*> m_byName;
+    QHash<QString, QList<Component*>> m_named;
     QHash<QString, QList<Component*>> m_unnamed;
 };
 
@@ -1909,6 +1931,16 @@ QStringList onceEach(const QStringList& messages, int most = 20)
         out << (n > 1 ? QStringLiteral("%1 (\u00D7%2)").arg(m).arg(n) : m);
     }
     return out;
+}
+
+// "Not found: ..." of what was not found, each once - one period at its
+// end, though the last tells why in a sentence ("... GND#1 to GND#3." gave
+// two).
+QString notFound(const QStringList& missing)
+{
+    QString list = onceEach(missing).join(QStringLiteral(", "));
+    if (list.endsWith(QLatin1Char('.'))) list.chop(1);
+    return QCoreApplication::translate("QucsControl", "Not found: %1.").arg(list);
 }
 
 // At most \a most of a list, and how many more.
@@ -3106,6 +3138,7 @@ QJsonObject issueJson(const qucs_s::erc::Issue& i)
 {
     QJsonObject o{{QStringLiteral("message"), i.message}, {QStringLiteral("at"), QJsonArray{i.where.x(), i.where.y()}}};
     if (!i.component.isEmpty()) o.insert(QStringLiteral("component"), i.component);
+    if (!i.ref.isEmpty()) o.insert(QStringLiteral("ref"), i.ref);   // (what select, move and delete take: GND#2)
     return o;
 }
 
@@ -4137,11 +4170,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
             return errorResult(tr("'save_as' names the file to write."));
         return getNetlist(args);
     }
-    if (tool == QLatin1String("get_dataset")) {
-        const QJsonObject read = getDataset(args);
-        misc::releaseFreedMemory();   // (a large dataset's values, offered back to the system)
-        return read;
-    }
+    if (tool == QLatin1String("get_dataset")) return getDataset(args);
     if (tool == QLatin1String("reload_data")) return reloadData(args);
     if (tool == QLatin1String("add_diagram")) return addDiagram(args);
     if (tool == QLatin1String("edit_diagram")) return editDiagram(args);
@@ -4478,9 +4507,14 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
             d.insert(QStringLiteral("components"), int(sch->a_DocComps.size()));
             d.insert(QStringLiteral("wires"), int(sch->a_DocWires.size()));
             d.insert(QStringLiteral("showing its symbol"), sch->getSymbolMode());
+            // (Each by its ref, as select takes it: a ground's name is "".)
             QJsonArray selected;
+            QHash<const Component*, QString> refs;
             for (Component* c : sch->a_DocComps)
-                if (c->isSelected) selected.append(c->Name);
+                if (c->isSelected) {
+                    if (refs.isEmpty()) refs = PartIndex::refs(sch);
+                    selected.append(refs.value(c));
+                }
             if (!selected.isEmpty()) d.insert(QStringLiteral("selected"), selected);
         }
         docs.append(d);
@@ -4543,7 +4577,36 @@ QJsonObject QucsControl::openDocument(const QJsonObject& args)
     if (!QFileInfo(path).isFile()) return errorResult(tr("There is no file %1.").arg(QDir::toNativeSeparators(path)));
     bool wasOpen = false;
     for (QucsDoc* d : a_app->allDocuments()) wasOpen = wasOpen || (!d->getDocName().isEmpty() && sameFile(d->getDocName(), path));
-    if (!a_app->gotoPage(path, false, false)) return errorResult(tr("%1 could not be opened.").arg(QDir::toNativeSeparators(path)));
+    // Why it could not be opened, in the answer ("could not be opened." alone
+    // said nothing): what the loader reported - a part it does not know,
+    // and of a Verilog-A module beside it not built yet, how to build it.
+    QStringList said;
+    bool opened = false;
+    {
+        misc::ErrorCapture loading;
+        opened = a_app->gotoPage(path, false, false);
+        said = loading.errors();
+    }
+    if (!opened) {
+        QStringList hints;
+        const QString unknown = QObject::tr("Unknown component: %1").arg(QString());
+        for (const QString& e : std::as_const(said)) {
+            if (!e.startsWith(unknown)) continue;
+            const QString part = e.mid(unknown.size()).trimmed();
+            QString va = QFileInfo(path).dir().filePath(part + QStringLiteral(".va"));
+            if (!QFileInfo::exists(va) && !a_app->ProjName.isEmpty()) va = QucsSettings.QucsWorkDir.filePath(part + QStringLiteral(".va"));
+            hints << (QFileInfo::exists(va)
+                          ? tr("%1 is the Verilog-A module of %2, not built yet: build it (build_verilog_a with that file), then "
+                               "open this again").arg(part, QDir::toNativeSeparators(va))
+                          : tr("%1 is no part this Qucs-S knows (a newer version's, or of a library or module not here)").arg(part));
+        }
+        QString text = tr("%1 could not be opened").arg(QDir::toNativeSeparators(path));
+        if (!said.isEmpty()) text += QStringLiteral(": ") + onceEach(said).join(QStringLiteral("; "));
+        if (!text.endsWith(QLatin1Char('.'))) text += QLatin1Char('.');
+        if (!hints.isEmpty()) text += QLatin1Char(' ') + hints.join(QStringLiteral(". ")) + QLatin1Char('.');
+        return errorResult(text);
+    }
+    for (const QString& e : std::as_const(said)) misc::reportError(e);   // (after the answer, as before)
     QucsDoc* doc = a_app->getDoc();
     closeUntouched(doc);
     QString text = tr("%1 is open, in front (%2).").arg(QDir::toNativeSeparators(path), doc != nullptr ? kindOf(doc) : QString());
@@ -5225,6 +5288,14 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
         for (auto it = unnamed.cbegin(); it != unnamed.cend(); ++it)
             if (it.value().size() > 1)
                 for (int k = 0; k < it.value().size(); ++k) refs.insert(it.value().at(k), QStringLiteral("%1#%2").arg(it.key()).arg(k + 1));
+        // (And a name given twice: R1, then R1#2.)
+        QHash<QString, QList<const Component*>> named;
+        for (const Component* c : sch->a_DocComps)
+            if (!c->Name.isEmpty() && c->Name != QLatin1String("*")) named[c->Name] << c;
+        for (auto it = named.cbegin(); it != named.cend(); ++it)
+            if (it.value().size() > 1)
+                for (int k = 0; k < it.value().size(); ++k)
+                    refs.insert(it.value().at(k), k == 0 ? it.key() : QStringLiteral("%1#%2").arg(it.key()).arg(k + 1));
     }
     const auto refFor = [&refs](const Component* c) { return refs.value(c, c->Name.isEmpty() ? c->Model : c->Name); };
     const auto wanted = [&](Component* c) {
@@ -6001,7 +6072,7 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
     if (sch == nullptr) return errorResult(error);
     const QString name = args.value(QLatin1String("name")).toString().trimmed();
     Component* c = componentOf(sch, name, &error);
-    if (c == nullptr && unnamedOf(sch, name.section(QLatin1Char('#'), 0, 0)).isEmpty())
+    if (c == nullptr && !toldByNumber(sch, name))
         return errorResult(tr("There is no component %1 in %2.").arg(name, titleOf(sch)));
     if (c == nullptr) return errorResult(error);
     // Beside another part ("Rf below U1"): moved there, as x, y move it.
@@ -7651,7 +7722,7 @@ QJsonObject QucsControl::remove(const QJsonObject& args)
         QString unknown;
         if (label) done << tr("the label %1").arg(name);
         else if (Component* c = parts->find(name, &unknown)) doom(c);
-        else if (!unnamedOf(sch, name.section(QLatin1Char('#'), 0, 0)).isEmpty()) return errorResult(unknown);
+        else if (toldByNumber(sch, name)) return errorResult(unknown);
         else missing << name;
     }
     for (const QJsonValue& v : args.value(QLatin1String("wires")).toArray()) {
@@ -7685,7 +7756,7 @@ QJsonObject QucsControl::remove(const QJsonObject& args)
         if (!diagrams.contains(d)) diagrams << d;
     }
     if (doomed.isEmpty() && unlabelled.isEmpty() && traces.isEmpty() && diagrams.isEmpty())
-        return errorResult(missing.isEmpty() ? tr("Nothing to delete.") : tr("Not found: %1.").arg(onceEach(missing).join(QStringLiteral(", "))));
+        return errorResult(missing.isEmpty() ? tr("Nothing to delete.") : notFound(missing));
     prepare(sch);
     for (const auto& [d, g] : std::as_const(traces)) {
         if (diagrams.contains(d)) continue;
@@ -7709,7 +7780,7 @@ QJsonObject QucsControl::remove(const QJsonObject& args)
     if (recorded) sch->viewport()->update();
     else finish(sch);
     QString text = tr("Deleted %1.").arg(atMost(done).join(QStringLiteral(", ")));
-    if (!missing.isEmpty()) text += QLatin1Char(' ') + tr("Not found: %1.").arg(onceEach(missing).join(QStringLiteral(", ")));
+    if (!missing.isEmpty()) text += QLatin1Char(' ') + notFound(missing);
     if (!note.isEmpty()) text += QLatin1Char(' ') + note;
     return textResult(text);
 }
@@ -9374,7 +9445,7 @@ QJsonObject QucsControl::select(const QJsonObject& args)
             ++n;
         } else if (c == nullptr) {
             // (GND among several: which there are.)
-            missing << (unnamedOf(sch, v.toString().trimmed().section(QLatin1Char('#'), 0, 0)).isEmpty() ? v.toString() : error);
+            missing << (toldByNumber(sch, v.toString()) ? error : v.toString());
         }
     }
     for (const QJsonValue& v : args.value(QLatin1String("diagrams")).toArray()) {
@@ -9395,7 +9466,7 @@ QJsonObject QucsControl::select(const QJsonObject& args)
     }
     sch->viewport()->update();
     QString text = n == 0 ? tr("Nothing is selected.") : tr("%1 selected.").arg(n);
-    if (!missing.isEmpty()) text += QLatin1Char(' ') + tr("Not found: %1.").arg(onceEach(missing).join(QStringLiteral(", ")));
+    if (!missing.isEmpty()) text += QLatin1Char(' ') + notFound(missing);
     return textResult(text);
 }
 

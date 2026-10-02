@@ -545,8 +545,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   needed. Diagrams have a title that moves with them. A marker can sit
   3 dB below 0 dB or the DC value, not only below the peak. `get_dataset`
   measures a spectrum (`fft`), an eye (`eye`: the bit period, when not
-  given, the Tbit of the V(PRBS) source the signal comes from or told from
-  its crossings; PAM4's three eyes with `levels` 4) and a Monte
+  given, the Tbit of the V(PRBS) source the signal comes from - as the run
+  the data is of gave it - or told from its crossings; PAM4's three eyes
+  with `levels` 4, or without `levels` when the source is coded PAM4) and a Monte
   Carlo family's `distribution`, gives a table across a sweep, and reads `.csv` and
   `.xlsx` results, and says when a dataset is stale: the last run failed
   after it, or the circuit changed since (the netlist a run would be
@@ -1232,19 +1233,28 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Gray coded on four levels from U1 to U2 (order 13 is IEEE 802.3's
   PRBS13Q). *Seed* left empty starts the register all ones. No DC value:
   the operating point is U1, where the bits start. Needs an ngspice built
-  with the PRBS source (Ngspice-OpenVAF-Enhancements).
+  with the PRBS source (Ngspice-OpenVAF-Enhancements). *Check Schematic*
+  gives, as errors, the values ngspice refuses (a Tbit of 0, an Order
+  outside 2 to 31, a Seed whose register bits are all zero, an edge
+  longer than a bit) and warns of a Coding other than NRZ and PAM4.
 - **Eye diagram** (*diagrams → Eye Diagram*), as a sampling oscilloscope
   or Cadence ViVA shows one: each graph - a received data signal, NRZ or
   PAM4 - cut into windows a few unit intervals (UI) long, starting a UI
   apart, and laid over each other, the eye's centre in the middle. Drawn
   as a density - how many traces pass each point, from blue to red, as
   ngspice's `pyplot -eye` draws it - or as the traces themselves, fainter
-  the more there are. The UI is given; or, on a schematic (or its data
-  display), the *Tbit* of the V(PRBS) source the trace comes from - the
-  one nearest its node, never through ground, said beside it ("UI 100 ps,
-  V1's Tbit"); or, with none, told from where the first graph crosses its
-  threshold (its crossings' times fitted against their UI's number, so
-  the fold does not drift). The settling at the start can be left out
+  the more there are (many bits are drawn as quickly as the density). The
+  UI is given; or, on a schematic (or its data display), the *Tbit* of
+  the V(PRBS) source each trace comes from - the one nearest its node,
+  never through ground, said beside it ("UI 100 ps, V1's Tbit"), as the
+  run the data is of gave it (the run's netlist is kept): a Tbit changed
+  since is said, the data folded at the bits it was made of. Traces of
+  sources of different Tbits are each folded at their own, the time
+  across it then in UI. With no source, the UI is told from where the
+  first graph crosses its threshold (its crossings' times fitted against
+  their UI's number, so the fold does not drift). *Levels* "as the PRBS
+  source is coded" (the default) measures a trace of a PAM4 source on its
+  four levels, else two. The settling at the start can be left out
   (*From*). Beside it, what is measured on each graph, as
   ngspice's `eye` command measures it: the UI, the eye's height (the
   lowest 1 less the highest 0 at the centre) and width (a UI less the
@@ -1650,7 +1660,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     the workspace after asking; the project's files stay where they are,
     and *Link Project...* brings it back. The open project closes first
     (asking about unsaved changes), and documents opened through the link
-    close with it.
+    close with it - however their paths are spelled (through a link of
+    the workspace's, /tmp for /private/tmp).
+  - A linked project whose folder is gone (moved, deleted, on a drive not
+    mounted) is listed greyed, its old place as the tooltip, so that it
+    can be unlinked; linking a project of its name offers to replace it.
   - *Open Project*, on a project's row, opens that project as a
     double-click does (not the one open already).
   - *Close Project* closes the open project, as in the *Project* menu

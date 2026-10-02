@@ -58,6 +58,7 @@ bool inCircuit(const Component* c) { return c->isActive == COMP_IS_ACTIVE; }
 bool spiceSimulator(int simulator) { return (simulator & spicecompat::simSpice) != 0; }
 bool forSimulator(const Component* c, int simulator) { return (c->Simulator & simulator) == simulator; }
 
+
 // Whether a node has a name of its own (a label on it or on one of its
 // wires): a stub that ends there is a named net, not a loose end.
 bool named(const Node* n)
@@ -1019,6 +1020,7 @@ void twoNamesNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 struct Edges {
     enum { None, Unknown, Known } kind = Unknown;   // None: no edges (a flat pulse)
     double step = 0, time = 0;
+    double shortest = 0;   // the shortest edge that takes time (0: none) - a pulse's 1 ns fall, its rise 0
 };
 
 // The steepest segment of a PWL list, "0 0 10n 5 (...)": its pairs of time
@@ -1035,16 +1037,18 @@ Edges pwlEdges(QString text)
     }
     Edges e;
     e.kind = Edges::None;
-    double steepest = 0;
+    double steepest = 0, shortest = 0;
     for (int i = 2; i + 1 < numbers.size(); i += 2) {
         const double dv = std::abs(numbers.at(i + 1) - numbers.at(i - 1)), dt = numbers.at(i) - numbers.at(i - 2);
         if (dv == 0 || dt < 0) continue;
+        if (dt > 0 && (shortest == 0 || dt < shortest)) shortest = dt;
         const double slope = dt == 0 ? std::numeric_limits<double>::infinity() : dv / dt;
         if (e.kind == Edges::None || slope > steepest) {
             e = Edges{Edges::Known, dv, dt};
             steepest = slope;
         }
     }
+    e.shortest = shortest;
     return e;
 }
 
@@ -1063,7 +1067,8 @@ Edges edgesOf(const Component* v)
     const auto edge = [](double step, double rise, double fall) {
         if (step == 0) return Edges{Edges::None, 0, 0};
         if (rise < 0 || fall < 0) return Edges{};
-        return Edges{Edges::Known, step, std::min(rise, fall)};
+        const double shortest = rise > 0 && fall > 0 ? std::min(rise, fall) : std::max(rise, fall);
+        return Edges{Edges::Known, step, std::min(rise, fall), shortest};
     };
     double u1, u2, rise, fall;
     if (v->Model == QLatin1String("Vpulse"))
@@ -1171,9 +1176,10 @@ void stepNotes(Schematic* doc, QList<Issue>& out)
     double edge = std::numeric_limits<double>::infinity();
     for (const Component* v : doc->a_DocComps) {
         if (!inCircuit(v) || !voltageSource(v) || !edgy().contains(v->Model)) continue;
-        // Edges of no rise time are the step itself: nothing to compare.
-        if (const Edges e = edgesOf(v); e.kind == Edges::Known && e.time > 0 && e.time < edge) {
-            edge = e.time;
+        // Edges of no rise time are the step itself: nothing to compare -
+        // but its other edges (a pulse's fall of 1 ns, its rise 0).
+        if (const Edges e = edgesOf(v); e.kind == Edges::Known && e.shortest > 0 && e.shortest < edge) {
+            edge = e.shortest;
             fastest = v;
         }
     }
@@ -1197,20 +1203,55 @@ void stepNotes(Schematic* doc, QList<Issue>& out)
             continue;
         if ((stop - start) / (edge / 5) > 1e6) continue;
         const double step = (stop - start) / (points - 1);
-        QString why;
+        QString why, cure;
         if (number(t, "MaxStep", &most) && most > 0) {
             if (most * 5 <= edge * (1 + 1e-9)) continue;
             why = tr("its MaxStep is %1").arg(shown(most));
+            // (With MaxStep, ngspice's step is at most it alone: more
+            // Points do not shorten it.)
+            cure = tr("A MaxStep of %1 or less resolves them").arg(shown(edge / 5));
         } else {
             const double longest = std::min(step, (stop - start) / 50);
             if (longest * 5 <= edge * (1 + 1e-9)) continue;
             why = tr("its step is %1 (%2 to %3 in %4 points)").arg(shown(longest), shown(start), shown(stop)).arg(points);
+            cure = tr("A MaxStep of %1 or less (or more Points) resolves them").arg(shown(edge / 5));
         }
         out << Issue{Severity::Warning,
                      tr("%1's time step is long for %2's edges of %3: %4, and an edge crossed in so few steps comes out "
-                        "coarse - delays and rise times off by 10% or more. A MaxStep of %5 or less (or more Points) "
-                        "resolves them")
-                         .arg(t->Name, fastest->Name, shown(edge), why, shown(edge / 5)),
+                        "coarse - delays and rise times off by 10% or more. %5")
+                         .arg(t->Name, fastest->Name, shown(edge), why, cure),
+                     QPoint(t->cx, t->cy), t->Name};
+    }
+}
+
+// A transient's integration method other than the trapezoidal rule is
+// Qucsator's: ngspice integrates by its own (the trapezoidal rule) unless
+// a .OPTIONS part says method=gear - the sawtooth example asked for Gear,
+// ran trapezoidal, and stopped ("Timestep too small").
+void methodNotes(Schematic* doc, QList<Issue>& out)
+{
+    if (QucsSettings.DefaultSimulator != spicecompat::simNgspice) return;
+    const auto value = [](const Component* c, const char* name) {
+        for (const Property* p : c->Props)
+            if (p->Name == QLatin1String(name)) return p->Value.trimmed();
+        return QString();
+    };
+    bool optioned = false;
+    for (const Component* c : doc->a_DocComps)
+        if (inCircuit(c) && c->Model == QLatin1String("SpiceOptions"))
+            for (const Property* p : c->Props)
+                if (p->Value.simplified().remove(QLatin1Char(' ')).startsWith(QLatin1String("method="), Qt::CaseInsensitive)
+                    || p->Name.compare(QLatin1String("method"), Qt::CaseInsensitive) == 0)
+                    optioned = true;
+    if (optioned) return;
+    for (const Component* t : doc->a_DocComps) {
+        if (!inCircuit(t) || t->Model != QLatin1String(".TR")) continue;
+        const QString method = value(t, "IntegrationMethod");
+        if (method.isEmpty() || method == QLatin1String("Trapezoidal")) continue;
+        out << Issue{Severity::Warning,
+                     tr("%1's integration method %2 is Qucsator's: ngspice integrates by the trapezoidal rule. A "
+                        ".OPTIONS part with method=gear (its only other) makes it Gear")
+                         .arg(t->Name, method),
                      QPoint(t->cx, t->cy), t->Name};
     }
 }
@@ -1409,6 +1450,7 @@ QList<Issue> notes(Schematic* doc)
         twoNamesNotes(doc, nets, out);
         edgeNotes(doc, nets, out);
         stepNotes(doc, out);
+        methodNotes(doc, out);
         biasNotes(doc, nets, out);
         loadNotes(doc, nets, out);
     }
@@ -1484,10 +1526,169 @@ void commandIssues(Schematic* doc, QList<Issue>& out)
 
 } // namespace
 
+namespace {
+
+// A V(PRBS)'s values that ngspice refuses (errors: "prbs order 40 is not a
+// register length between 2 and 31"), and those it takes without a word
+// though they are not what was meant (warnings). A parameter or an
+// expression is left to the run.
+void prbsIssues(const Component* c, QList<Issue>& errors, QList<Issue>& warnings)
+{
+    const auto text = [c](const char* name) {
+        for (const Property* p : c->Props)
+            if (p->Name == QLatin1String(name)) return p->Value.trimmed();
+        return QString();
+    };
+    // A number, or nothing known (empty: ngspice's default).
+    const auto number = [&](const char* name, double* out) {
+        const qucs_s::units::Reading r = qucs_s::units::read(text(name));
+        *out = r.value;
+        return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value);
+    };
+    const QPoint at(c->cx, c->cy);
+    const auto error = [&](const QString& what) { errors << Issue{Severity::Error, c->Name + QStringLiteral(": ") + what, at, c->Name}; };
+    const auto warning = [&](const QString& what) { warnings << Issue{Severity::Warning, c->Name + QStringLiteral(": ") + what, at, c->Name}; };
+    const auto shown = [](double t) { return qucs_s::units::engineering(t, QStringLiteral("s")); };
+    double tbit = 0, td = 0, order = 0, seed = 0, edge = 0;
+    const bool bits = number("Tbit", &tbit);
+    if (bits && !(tbit > 0)) error(tr("its Tbit is %1 - a bit time is above 0 (ngspice refuses it)").arg(text("Tbit")));
+    if (number("Td", &td) && td < 0) error(tr("its delay Td is %1 - a delay is 0 or more (ngspice refuses it)").arg(text("Td")));
+    const bool ordered = number("Order", &order);
+    const bool registerLength = ordered && order == std::floor(order) && order >= 2 && order <= 31;
+    if (ordered && !registerLength)
+        error(tr("its Order is %1 - the register's length, a whole number from 2 to 31 (ngspice refuses it)").arg(text("Order")));
+    if (!text("Seed").isEmpty() && number("Seed", &seed)) {
+        const bool whole = seed == std::floor(seed) && seed > 0 && seed < 9.007e15;
+        if (!whole)
+            error(tr("its Seed is %1 - the register's first contents, a whole number above 0, or empty for all ones (ngspice refuses it)")
+                      .arg(text("Seed")));
+        else if (registerLength && (qint64(seed) & ((qint64(1) << qint64(order)) - 1)) == 0)
+            error(tr("its Seed %1 leaves the register's %2 bits all zero - their contents would never change (ngspice refuses it)")
+                      .arg(text("Seed")).arg(int(order)));
+    }
+    for (const char* name : {"Tr", "Tf"}) {
+        if (!number(name, &edge)) continue;
+        if (bits && tbit > 0 && edge > tbit)
+            error(tr("its %1 of %2 is longer than its Tbit of %3 - an edge is a bit at most (ngspice refuses it)")
+                      .arg(QLatin1String(name), shown(edge), shown(tbit)));
+        else if (edge < 0)
+            warning(tr("its %1 is %2, below 0 - taken without a word, as no %3").arg(QLatin1String(name), text(name),
+                                                                                     QLatin1String(name) == QLatin1String("Tr") ? tr("rise time")
+                                                                                                                                : tr("fall time")));
+    }
+    const QString coding = text("Coding");
+    if (!coding.isEmpty() && coding.compare(QLatin1String("NRZ"), Qt::CaseInsensitive) != 0
+        && coding.compare(QLatin1String("PAM4"), Qt::CaseInsensitive) != 0)
+        warning(tr("its Coding is %1, neither NRZ nor PAM4 - netlisted as NRZ").arg(coding));
+}
+
+// A transient's values ngspice refuses (a MaxStep below 0: "TMAX is
+// invalid"), or reads otherwise than written (Points of 2001.5: a step of
+// (Stop - Start)/2000.5).
+void transientIssues(const Component* c, QList<Issue>& errors, QList<Issue>& warnings)
+{
+    const QPoint at(c->cx, c->cy);
+    for (const Property* p : c->Props) {
+        const qucs_s::units::Reading r = qucs_s::units::read(p->Value);
+        if (r.kind != qucs_s::units::Reading::Number || !std::isfinite(r.value)) continue;
+        if (p->Name == QLatin1String("MaxStep") && r.value < 0)
+            errors << Issue{Severity::Error,
+                            tr("%1: its MaxStep is %2 - the longest step, 0 or more (0: ngspice's own; ngspice refuses it)")
+                                .arg(c->Name, p->Value.trimmed()),
+                            at, c->Name};
+        if (p->Name == QLatin1String("Points") && (r.value != std::floor(r.value) || r.value < 2))
+            warnings << Issue{Severity::Warning,
+                              tr("%1: its Points are %2 - a count of points, a whole number from 2 on (the step is (Stop - "
+                                 "Start)/(Points - 1))").arg(c->Name, p->Value.trimmed()),
+                              at, c->Name};
+    }
+}
+
+// A parameter sweep over a DC analysis is ngspice's own dc sweep, which
+// sweeps a voltage or current source, a resistor or the temperature: of
+// anything else - a .param above all - "dc simulation(s) aborted", and no
+// result, with nothing said before.
+void dcSweepIssues(Schematic* doc, int simulator, QList<Issue>& errors)
+{
+    if (simulator != spicecompat::simNgspice && simulator != spicecompat::simSpiceOpus) return;
+    const auto value = [](const Component* c, const char* name) {
+        for (const Property* p : c->Props)
+            if (p->Name == QLatin1String(name)) return p->Value.trimmed();
+        return QString();
+    };
+    for (const Component* sw : doc->a_DocComps) {
+        if (!inCircuit(sw) || sw->Model != QLatin1String(".SW")) continue;
+        // (Its analysis by name, as the netlist reads it: a DC one.)
+        const QString sim = value(sw, "Sim");
+        const Component* analysis = doc->getComponentByName(sim);
+        const bool dc = analysis != nullptr ? analysis->Model == QLatin1String(".DC") : sim.startsWith(QLatin1String("dc"), Qt::CaseInsensitive);
+        if (!dc) continue;
+        const QString param = value(sw, "Param");
+        if (param.isEmpty() || param.compare(QLatin1String("temp"), Qt::CaseInsensitive) == 0
+            || param.compare(QLatin1String("temper"), Qt::CaseInsensitive) == 0)
+            continue;
+        const Component* swept = doc->getComponentByName(param);
+        if (swept != nullptr && (swept->SpiceModel == QLatin1String("V") || swept->SpiceModel == QLatin1String("I")
+                                 || swept->SpiceModel == QLatin1String("R")))
+            continue;
+        const QString what = swept != nullptr ? tr("%1 (no source or resistor)").arg(param) : tr("%1 (a parameter)").arg(param);
+        errors << Issue{Severity::Error,
+                        tr("%1 sweeps %2 over the DC analysis %3: ngspice's dc sweeps a voltage or current source, a "
+                           "resistor or the temperature - the run aborts (\"dc simulation(s) aborted\"). Sweep the source "
+                           "or resistor it sets, or sweep it at the operating point with an NgSweep (Analysis op)")
+                            .arg(sw->Name, what, sim),
+                        QPoint(sw->cx, sw->cy), sw->Name};
+    }
+}
+
+// A pulse's edge below 0: taken without a word, as no edge time (the time
+// step).
+void negativeEdgeIssues(const Component* c, QList<Issue>& warnings)
+{
+    for (const Property* p : c->Props) {
+        if (p->Name != QLatin1String("Tr") && p->Name != QLatin1String("Tf")) continue;
+        const qucs_s::units::Reading r = qucs_s::units::read(p->Value);
+        if (r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) && r.value < 0)
+            warnings << Issue{Severity::Warning,
+                              tr("%1: its %2 is %3, below 0 - taken without a word, as no %4")
+                                  .arg(c->Name, p->Name, p->Value.trimmed(), p->Name == QLatin1String("Tr") ? tr("rise time") : tr("fall time")),
+                              QPoint(c->cx, c->cy), c->Name};
+    }
+}
+
+} // namespace
+
+QHash<const Component*, QString> refs(const Schematic* doc)
+{
+    const auto unnamed = [](const Component* c) { return c->Name.isEmpty() || c->Name == QLatin1String("*"); };
+    QHash<QString, int> count;
+    for (const Component* c : doc->a_DocComps)
+        if (unnamed(c)) ++count[c->Model.toLower()];
+    QHash<QString, int> nth, again;
+    QHash<const Component*, QString> out;
+    for (const Component* c : doc->a_DocComps) {
+        if (!unnamed(c)) {
+            const int k = ++again[c->Name];
+            out.insert(c, k > 1 ? QStringLiteral("%1#%2").arg(c->Name).arg(k) : c->Name);
+            continue;
+        }
+        const QString key = c->Model.toLower();
+        const int k = ++nth[key];
+        out.insert(c, count.value(key) > 1 ? QStringLiteral("%1#%2").arg(c->Model).arg(k) : c->Model);
+    }
+    return out;
+}
+
 QList<Issue> check(Schematic* doc)
 {
     QList<Issue> errors, warnings;
     if (doc == nullptr) return errors;
+    // (Made when an issue needs one: a pass over all the parts.)
+    QHash<const Component*, QString> refsOf;
+    const auto refFor = [&](const Component* c) {
+        if (refsOf.isEmpty()) refsOf = refs(doc);
+        return refsOf.value(c);
+    };
 
     bool ground = false, port = false, simulation = false;
     // A circuit with a digital simulation block goes to the digital
@@ -1529,13 +1730,21 @@ QList<Issue> check(Schematic* doc)
         if (isGround(c)) ground = true;
         if (isPort(c)) port = true;
         if (isSimulation(c)) simulation = true;
+        if (c->Model == QLatin1String("vPRBS")) prbsIssues(c, errors, warnings);
+        if (c->Model == QLatin1String(".TR")) transientIssues(c, errors, warnings);
+        if (spiceSimulator(simulator)
+            && (c->Model == QLatin1String("Vpulse") || c->Model == QLatin1String("Ipulse") || c->Model == QLatin1String("Vrect")
+                || c->Model == QLatin1String("Irect")))
+            negativeEdgeIssues(c, warnings);
 
         // Two components of one name: the netlist would merge them.
         if (!c->Name.isEmpty() && !isGround(c)) {
             if (const Component* first = byName.value(c->Name)) {
-                errors << Issue{Severity::Error,
-                                tr("%1: the name is used twice (also at %2, %3)").arg(c->Name).arg(first->cx).arg(first->cy),
-                                QPoint(c->cx, c->cy), c->Name};
+                Issue twice{Severity::Error,
+                            tr("%1: the name is used twice (also at %2, %3)").arg(c->Name).arg(first->cx).arg(first->cy),
+                            QPoint(c->cx, c->cy), c->Name};
+                twice.ref = refFor(c);
+                errors << twice;
             } else {
                 byName.insert(c->Name, c);
                 // A SPICE simulator reads names without regard to case:
@@ -1696,10 +1905,14 @@ QList<Issue> check(Schematic* doc)
                 const QPoint where = n != nullptr ? QPoint(n->x(), n->y()) : QPoint(c->cx + p->x, c->cy + p->y);
                 const QString what = isGround(c) ? tr("the ground at %1, %2 is connected to nothing").arg(where.x()).arg(where.y())
                                                  : tr("%1: pin %2 is connected to nothing").arg(c->Name).arg(pin);
-                warnings << Issue{Severity::Warning, what, where, c->Name};
+                Issue alone{Severity::Warning, what, where, c->Name};
+                if (const QString ref = refFor(c); ref != c->Name) alone.ref = ref;
+                warnings << alone;
             }
         }
     }
+
+    dcSweepIssues(doc, simulator, errors);
 
     // A subcircuit port on a net without a label lends its own name to
     // that net, so the pin of the subcircuit is called after the port. A
