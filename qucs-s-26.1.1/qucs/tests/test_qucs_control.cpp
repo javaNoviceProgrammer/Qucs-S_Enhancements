@@ -10401,13 +10401,12 @@ private slots:
 
     // 4: a Verilog-A module ngspice was not given: where Qucs-S looked
     // (no project: beside the schematic), and where the module is if it
-    // can see it - said with ngspice's error.
+    // can see it - said with ngspice's error, an older ngspice's too.
     void aModuleNotLoadedIsExplained()
     {
         const QString ngspice = QStandardPaths::findExecutable("ngspice");
-        if (ngspice.isEmpty()) QSKIP("no ngspice here");
         const QString before = QucsSettings.NgspiceExecutable;
-        QucsSettings.NgspiceExecutable = ngspice;
+        const auto back = qScopeGuard([before] { QucsSettings.NgspiceExecutable = before; });
         const QString folder = dir.filePath("va_loose");
         QVERIFY(QDir().mkpath(folder));
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
@@ -10429,7 +10428,32 @@ private slots:
                 if (e.toObject().contains("hint")) return e.toObject().value("hint").toString();
             return QStringLiteral("(no hint) ") + QJsonDocument(run.value("errors").toArray()).toJson();
         };
+        // ngspice 42 (Ubuntu 24.04's) does not name the model: "could not
+        // find a valid modelname" after the device's line. A stand-in
+        // says it as that ngspice does.
+        const QString older = dir.filePath("ngspice-42.sh");
+        {
+            QFile f(older);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("#!/bin/sh\n"
+                    "n=$(grep -n -i '^nx1 ' spice4qucs.cir | cut -d: -f1)\n"
+                    "echo '** ngspice-42 : Circuit level simulation program'\n"
+                    "echo \"Netlist line no. $n:\"\n"
+                    "echo 'could not find a valid modelname'\n"
+                    "echo 'Error: circuit not parsed.'\n"
+                    "exit 1\n");
+        }
+        QFile::setPermissions(older, QFile::permissions(older) | QFileDevice::ExeOwner | QFileDevice::ExeUser);
+        QucsSettings.NgspiceExecutable = older;
         QString said = hint();
+        QVERIFY2(said.contains("no .va or .osdi it can see defines a module zzamp (amp_model's type)") && said.contains("no project is open"),
+                 qPrintable(said));
+        if (ngspice.isEmpty()) {
+            QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+            QSKIP("no ngspice here");
+        }
+        QucsSettings.NgspiceExecutable = ngspice;
+        said = hint();
         QVERIFY2(said.contains("no .va or .osdi it can see defines a module zzamp") && said.contains("no project is open")
                      && said.contains(QDir::toNativeSeparators(QFileInfo(folder).absoluteFilePath()).section('/', -1)),
                  qPrintable(said));
@@ -10444,7 +10468,6 @@ private slots:
         said = hint();
         QucsSettings.qucsWorkspaceDir.setPath(workspace);
         QVERIFY2(said.contains("zzamp is a Verilog-A module, defined in models/zzamp.va - not loaded"), qPrintable(said));
-        QucsSettings.NgspiceExecutable = before;
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
