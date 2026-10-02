@@ -1535,7 +1535,11 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
         eo.levels = o.levels;
         eo.threshold = o.level;
         const eye::Result e = eye::analyse(c, eo);
-        if (!e.ok()) return cannot(e.error);
+        // (Four levels the source's coding gave: said, and how to measure two.)
+        if (!e.ok() && !o.levelsFrom.isEmpty())
+            return cannot(tr("%1 - 4 levels as %2 is coded PAM4%3; levels 2 measures it as NRZ")
+                              .arg(e.error, o.levelsFrom, o.sourceNote.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(o.sourceNote)));
+        if (!e.ok()) return cannot(o.sourceNote.isEmpty() ? e.error : QStringLiteral("%1 (%2)").arg(e.error, o.sourceNote));
         // The narrowest of the eyes (PAM4's three) is the signal's.
         const eye::Eye* worst = &e.eyes.first();
         for (const eye::Eye& one : e.eyes)
@@ -1557,6 +1561,7 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
         r.insert(QStringLiteral("unit interval"), rounded(e.ui));
         if (e.uiEstimated) r.insert(QStringLiteral("unit interval from"), tr("the crossings (no bit_period given)"));
         else if (!o.periodFrom.isEmpty()) r.insert(QStringLiteral("unit interval from"), tr("%1's Tbit (no bit_period given)").arg(o.periodFrom));
+        if (!o.levelsFrom.isEmpty()) r.insert(QStringLiteral("levels from"), tr("%1's Coding, PAM4 (no levels given)").arg(o.levelsFrom));
         r.insert(QStringLiteral("crossing level"), rounded(worst->threshold));
         if (e.levels.size() == 2) {
             r.insert(QStringLiteral("levels"), QJsonObject{{QStringLiteral("high"), rounded(e.levels.at(1))}, {QStringLiteral("low"), rounded(e.levels.at(0))}});
@@ -1577,7 +1582,9 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
                      : tr("folded at %1 from %2, four levels: each eye's height is the lowest of its upper level less the "
                           "highest of its lower one at the symbols' centres, its width a symbol less its crossings' spread; "
                           "height and width are the lowest eye's of the three").arg(rounded(e.ui)).arg(rounded(e.start)));
-        if (!e.notes.isEmpty()) r.insert(QStringLiteral("note"), e.notes.join(QStringLiteral("; ")));
+        QStringList notes = e.notes;
+        if (!o.sourceNote.isEmpty()) notes.prepend(o.sourceNote);
+        if (!notes.isEmpty()) r.insert(QStringLiteral("note"), notes.join(QStringLiteral("; ")));
         return r;
     }
     return cannot(tr("there is no measurement %1 (%2)").arg(what, measurements().join(QStringLiteral(", "))));

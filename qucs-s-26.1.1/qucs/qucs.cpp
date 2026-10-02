@@ -927,8 +927,10 @@ void QucsApp::initView()
     a_homeDirModel = new QucsFileSystemModel(this);
     a_proxyModel = new QucsSortFilterProxyModel();
     //a_proxyModel->setDynamicSortFilter(true);
-    // show all directories (project and non-project)
-    a_homeDirModel->setFilter(QDir::NoDot | QDir::AllDirs);
+    // show all directories (project and non-project) - and a link that
+    // leads nowhere (System), listed so that it can be unlinked (the proxy
+    // leaves out the system's other files)
+    a_homeDirModel->setFilter(QDir::NoDot | QDir::AllDirs | QDir::System);
 
     // ............................................
     QString path = QucsSettings.qucsWorkspaceDir.absolutePath();
@@ -1134,7 +1136,7 @@ int QucsApp::fillComboBox(bool setAll) {
     return idx == -1 ? 0 : idx;
 }
 
-void QucsApp::fillSimulatorsComboBox() {
+bool QucsApp::fillSimulatorsComboBox(bool tellWhenNone) {
 
     simulatorsCombobox->clear();
     //simulatorsCombobox->addItem(spicecompat::getDefaultSimulatorName(spicecompat::simNotSpecified), 0);
@@ -1164,20 +1166,28 @@ void QucsApp::fillSimulatorsComboBox() {
         idx = idx < 0 ? 0 : idx;
         simulatorsCombobox->setCurrentIndex(idx);
         QucsSettings.DefaultSimulator = simulatorsCombobox->itemData(idx).toInt();
+        a_noSimulatorTold = false;
     } else {
         QucsSettings.DefaultSimulator = spicecompat::simNotSpecified;
-        QMessageBox::critical(this,tr("Error"),
-                              tr("No simulation backend found! Simulaiton not possible.\n"
-                                 "This may happen by the following reasons:\n\n"
-                                 "1. You are using portable version and have moved installation directory.\n"
-                                 "2. The simulators were removed from system or the paths configured wrong.\n\n"
-                                 "Please configure simulator paths in Simulation->Simulator settings menu.\n"));
+        // Said once, until one is found again: every Apply of the settings
+        // and every import said it again (an import of the settings on a
+        // machine without a simulator waited on this box).
+        if (tellWhenNone && !a_noSimulatorTold) {
+            a_noSimulatorTold = true;
+            QMessageBox::critical(this,tr("Error"),
+                                  tr("No simulation backend found! Simulation not possible.\n"
+                                     "This may happen by the following reasons:\n\n"
+                                     "1. You are using portable version and have moved installation directory.\n"
+                                     "2. The simulators were removed from system or the paths configured wrong.\n\n"
+                                     "Please configure simulator paths in Simulation->Simulator settings menu.\n"));
+        }
     }
 
     simulate->setEnabled(anySimulatorsFound);
     simulatorsCombobox->setEnabled(anySimulatorsFound);
     if (a_status != nullptr)
       a_status->scheduleRefresh();
+    return anySimulatorsFound;
 }
 
 
@@ -1892,9 +1902,9 @@ void QucsApp::readProjects()
 
     if (path == homepath) {
         // in Qucs Home, disallow further up in the dirs tree
-        a_homeDirModel->setFilter(QDir::NoDotAndDotDot | QDir::AllDirs);
+        a_homeDirModel->setFilter(QDir::NoDotAndDotDot | QDir::AllDirs | QDir::System);
     } else {
-        a_homeDirModel->setFilter(QDir::NoDot | QDir::AllDirs);
+        a_homeDirModel->setFilter(QDir::NoDot | QDir::AllDirs | QDir::System);
     }
 
     // set the root path
@@ -2061,6 +2071,14 @@ void QucsApp::slotButtonProjOpen()
 void QucsApp::slotListProjOpen(const QModelIndex &idx)
 {
     QString dName = idx.data().toString();
+    // A link that leads nowhere now: nothing to open (as a folder, it
+    // showed nothing at all).
+    if (qucs_s::workspace::isDanglingLink(QucsSettings.projsDir.filePath(dName))) {
+        statusBar()->showMessage(tr("%1 is linked from %2, which is not there now: Unlink Project (right-click) removes the link.")
+                                     .arg(dName, QDir::toNativeSeparators(qucs_s::workspace::linkTarget(QucsSettings.projsDir.filePath(dName)))),
+                                 8000);
+        return;
+    }
     if (qucs_s::workspace::isProjectFolder(QucsSettings.projsDir.filePath(dName))) { // it's a Qucs project
         openProject(QucsSettings.projsDir.filePath(dName));
     } else { // it's a normal directory
@@ -2231,10 +2249,37 @@ bool QucsApp::deleteProject(const QString& PathGiven)
     }
   }
   documentsTrashed(open);
+  a_proxyModel->refilter();   // (its row gone at once)
   return true;
 }
 
 // ----------------------------------------------------------
+namespace {
+
+// A path with the folder it is in as the system spells it (its links and
+// case resolved), its last name as given: a link is itself, wherever it is
+// reached from (/tmp/ws/x_prj and /private/tmp/ws/x_prj are one).
+QString placeOf(const QString &path)
+{
+  const QFileInfo info(QDir::cleanPath(QFileInfo(path).absoluteFilePath()));
+  const QString folder = QDir(info.absolutePath()).canonicalPath();
+  return QDir::cleanPath((folder.isEmpty() ? info.absolutePath() : folder) + QLatin1Char('/') + info.fileName());
+}
+
+// Whether \a file is reached through \a place (a placeOf()): it is in it,
+// or in a folder of it.
+bool reachedThrough(const QString &file, const QString &place, Qt::CaseSensitivity cs)
+{
+  for (QString up = QFileInfo(QDir::cleanPath(QFileInfo(file).absoluteFilePath())).absolutePath();;) {
+    if (placeOf(up).compare(place, cs) == 0) return true;
+    const QString parent = QFileInfo(up).absolutePath();
+    if (parent == up) return false;
+    up = parent;
+  }
+}
+
+} // namespace
+
 bool QucsApp::unlinkProject(const QString &PathGiven)
 {
   slotHideEdit();
@@ -2251,16 +2296,19 @@ bool QucsApp::unlinkProject(const QString &PathGiven)
   // Open through the link, the project closes first (and its documents,
   // asked about). Documents open through it otherwise: their paths lead
   // nowhere once it goes - they close, unless one has unsaved changes.
-  const bool isOpen = !ProjName.isEmpty() && QDir::cleanPath(QucsSettings.QucsWorkDir.absolutePath()) == Path;
+  // (Through the link however it is spelled: the workspace by a link of
+  // its own, /tmp for /private/tmp, another case.)
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
   const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
 #else
   const Qt::CaseSensitivity cs = Qt::CaseSensitive;
 #endif
+  const QString place = placeOf(Path);
+  const bool isOpen = !ProjName.isEmpty() && placeOf(QucsSettings.QucsWorkDir.absolutePath()).compare(place, cs) == 0;
   QStringList through, unsaved;
   if (!isOpen)
     for (QucsDoc *doc : allDocuments())
-      if (!doc->getDocName().isEmpty() && QDir::cleanPath(doc->getDocName()).startsWith(Path + QLatin1Char('/'), cs))
+      if (!doc->getDocName().isEmpty() && reachedThrough(doc->getDocName(), place, cs))
         (doc->getDocChanged() ? unsaved : through) << doc->getDocName();
   const auto names = [](const QStringList &paths) {
     QStringList list;
@@ -2295,6 +2343,7 @@ bool QucsApp::unlinkProject(const QString &PathGiven)
     QMessageBox::warning(this, tr("Unlink Project"), error);
     return false;
   }
+  a_proxyModel->refilter();   // (its row gone at once)
   statusBar()->showMessage(tr("%1 was unlinked; the project is still at %2.").arg(folder, target), 5000);
   return true;
 }
@@ -2326,7 +2375,9 @@ void QucsApp::slotProjectsContextMenu(const QPoint &pos)
   QAction *open = menu.addAction(tr("&Open Project"));
   open->setObjectName(QStringLiteral("projOpenRow"));
   open->setStatusTip(tr("Opens the project right-clicked"));
-  const bool isOpenOne = !ProjName.isEmpty() && QDir::cleanPath(QucsSettings.QucsWorkDir.absolutePath()) == QDir::cleanPath(path);
+  // (The same folder, however either is spelled: through a link, /tmp for
+  // /private/tmp, another case.)
+  const bool isOpenOne = !ProjName.isEmpty() && misc::isSameFile(QucsSettings.QucsWorkDir.absolutePath(), path);
   open->setEnabled(!path.isEmpty() && QFileInfo(path).isDir() && qucs_s::workspace::isProjectFolder(path) && !isOpenOne);
   connect(open, &QAction::triggered, this, [this, path] { openProject(path); });
   // The Project menu's Close Project: here, with no project open, nothing
@@ -2411,6 +2462,23 @@ QString QucsApp::bringProjectIn(const QString &sourceGiven, bool link)
   };
   const QString title = link ? tr("Link Project") : tr("Import Project");
   qucs_s::workspace::Result r = bring(QString());
+  // A link of that name that leads nowhere now: replaced, when the user
+  // says so (its name stayed taken, the link listed nowhere).
+  if (r.status == qucs_s::workspace::Result::Exists && qucs_s::workspace::isDanglingLink(r.path)) {
+    QMessageBox box(QMessageBox::Question, title,
+                    tr("The workspace has a link %1 to\n%2\nwhich is not there now.\n\nReplace the link with the project coming in?")
+                        .arg(QDir(r.path).dirName(), QDir::toNativeSeparators(qucs_s::workspace::linkTarget(r.path))),
+                    QMessageBox::Yes | QMessageBox::No, this);
+    box.setObjectName(QStringLiteral("replaceDanglingLink"));
+    if (box.exec() == QMessageBox::Yes) {
+      QString error;
+      if (!qucs_s::workspace::removeLink(r.path, &error)) {
+        QMessageBox::warning(this, title, error);
+        return QString();
+      }
+      r = bring(QString());
+    }
+  }
   // The workspace has a project of that name: another name, or nothing.
   while (r.status == qucs_s::workspace::Result::Exists) {
     QString name = qucs_s::workspace::freeName(workspace, QDir(source).dirName());
@@ -3516,8 +3584,10 @@ QStringList QucsApp::applyImportedSettings(const QString &workspaceBefore, const
   claudeTabs->setDefaultDirectory(home);
   fileBrowser->setHomePath(home);
 
-  // The simulators, the folders searched for subcircuits.
-  fillSimulatorsComboBox();
+  // The simulators, the folders searched for subcircuits. (None found:
+  // said in the report, not in a box over it.)
+  if (!fillSimulatorsComboBox(false))
+    notes << tr("No simulator was found at the paths these settings give: Simulation > Simulator Settings sets them.");
   simConsole->applyHostSetting();
   updatePathList(QStringList(qucsPathList));
 
@@ -6132,7 +6202,11 @@ QVariant QucsFileSystemModel::data( const QModelIndex& index, int role ) const
         // What its dot says, and where a linked project is from.
         QStringList lines;
         if (state != NoProject) lines << (state == OpenProject ? tr("The project open now") : tr("A project, not open"));
-        if (qucs_s::workspace::isLink(path))
+        if (qucs_s::workspace::isDanglingLink(path))
+            lines << tr("Linked from %1, which is not there now (moved, deleted, or on a drive not mounted).\n"
+                        "Unlink Project (right-click) removes the link.")
+                         .arg(QDir::toNativeSeparators(qucs_s::workspace::linkTarget(path)));
+        else if (qucs_s::workspace::isLink(path))
             lines << tr("Linked from %1").arg(QDir::toNativeSeparators(qucs_s::workspace::linkTarget(path)));
         if (!lines.isEmpty()) return lines.join(QLatin1Char('\n'));
         return QFileSystemModel::data(index, role);
@@ -6143,6 +6217,9 @@ QVariant QucsFileSystemModel::data( const QModelIndex& index, int role ) const
             return QIcon(":bitmaps/hicolor/128x128/apps/qucs.png");
         }
     }
+    // A link that leads nowhere now: greyed.
+    if (role == Qt::ForegroundRole && qucs_s::workspace::isDanglingLink(filePath(index)))
+        return QApplication::palette().brush(QPalette::Disabled, QPalette::Text);
     // A project linked into the workspace (Link Project): in italics (and
     // where it is as the tooltip, above).
     if (role == Qt::FontRole) {
@@ -6155,6 +6232,16 @@ QVariant QucsFileSystemModel::data( const QModelIndex& index, int role ) const
     }
     // return default system icon
     return QFileSystemModel::data(index, role);
+}
+
+void QucsSortFilterProxyModel::refilter()
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+  beginFilterChange();
+  endFilterChange(QSortFilterProxyModel::Direction::Rows);
+#else
+  invalidateFilter();
+#endif
 }
 
 void QucsSortFilterProxyModel::setNameFilter(const QString &text)
@@ -6172,9 +6259,16 @@ void QucsSortFilterProxyModel::setNameFilter(const QString &text)
 
 bool QucsSortFilterProxyModel::filterAcceptsRow(int row, const QModelIndex &parent) const
 {
-  if (a_nameFilter.isEmpty()) return true;
   const auto *model = qobject_cast<const QFileSystemModel *>(sourceModel());
   if (model == nullptr) return true;
+  // Folders, and a link that leads nowhere now (to be unlinked) - not the
+  // system's other files (a FIFO, a socket) that listing it brings.
+  const QModelIndex index = model->index(row, 0, parent);
+  if (!model->isDir(index) && !qucs_s::workspace::isDanglingLink(model->filePath(index))) return false;
+  // (Gone since the model read it - and no link, which a link that leads
+  // nowhere is: not there.)
+  if (const QFileInfo there(model->filePath(index)); !there.exists() && !there.isSymLink()) return false;
+  if (a_nameFilter.isEmpty()) return true;
   // Only the folder shown is filtered: those on the way to it hold it.
   if (parent != model->index(model->rootPath())) return true;
   const QString name = model->fileName(model->index(row, 0, parent));

@@ -136,6 +136,11 @@ QString linkTarget(const QString& path)
     return linkLike(info) ? info.symLinkTarget() : QString();
 }
 
+bool isDanglingLink(const QString& path)
+{
+    return isLink(path) && !QFileInfo::exists(clean(path));   // (exists() follows it)
+}
+
 Result check(const QString& sourceGiven, const QString& workspaceGiven, const QString& name)
 {
     const QString source = clean(sourceGiven);
@@ -182,7 +187,11 @@ Result check(const QString& sourceGiven, const QString& workspaceGiven, const QS
     r.path = QDir(workspace).absoluteFilePath(wanted);
     if (QFileInfo::exists(r.path) || isLink(r.path)) {
         r.status = Result::Exists;
-        r.message = tr("The workspace has a %1 already.").arg(wanted);
+        r.message = isDanglingLink(r.path)
+                        ? tr("The workspace has a %1 already: a link to %2, which is not there now (moved, deleted, or on "
+                             "a drive not mounted). Unlink Project, in the Projects panel's menu, removes it.")
+                              .arg(wanted, shown(linkTarget(r.path)))
+                        : tr("The workspace has a %1 already.").arg(wanted);
         return r;
     }
     r.status = Result::Done;

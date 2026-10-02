@@ -12,6 +12,7 @@
 #include "prbssource.h"
 
 #include "main.h"
+#include "misc.h"
 #include "node.h"
 #include "qucs.h"
 #include "schematic.h"
@@ -45,6 +46,75 @@ bool isPrbs(const Component* c)
     return c->Model == QLatin1String("vPRBS") && c->isActive == COMP_IS_ACTIVE;
 }
 
+QString valueOf(const Component* c, const char* name)
+{
+    for (const Property* p : c->Props)
+        if (p->Name == QLatin1String(name)) return p->Value.trimmed();
+    return QString();
+}
+
+double secondsOf(const QString& text)
+{
+    const qucs_s::units::Reading r = qucs_s::units::read(text);
+    return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) && r.value > 0.0 ? r.value
+                                                                                                 : std::numeric_limits<double>::quiet_NaN();
+}
+
+QString shown(double seconds)
+{
+    return EyeDiagram::engineering(seconds, QStringLiteral("s"));
+}
+
+// A source's bits: its Tbit and levels, and what changed since the run.
+struct Bits {
+    double ui = std::numeric_limits<double>::quiet_NaN();
+    int levels = 2;
+    QString note, why;
+};
+
+// \a c's bits as \a run (a netlist; empty: none kept) gave them - its line,
+// "V1 rx 0 PRBS(0 1 100p 0 15p 15p 7)" - else as they are now.
+Bits bitsOf(const Component* c, const QString& run)
+{
+    Bits b;
+    const QString tbit = valueOf(c, "Tbit");
+    const double now = secondsOf(tbit);
+    const int levelsNow = valueOf(c, "Coding").compare(QLatin1String("PAM4"), Qt::CaseInsensitive) == 0 ? 4 : 2;
+    if (!run.isEmpty()) {
+        // (Its name in the netlist: V1, or a V before one that has none.)
+        const QString ref = c->Name.startsWith(QLatin1Char('V'), Qt::CaseInsensitive) ? c->Name : QStringLiteral("V") + c->Name;
+        const QRegularExpression line(QStringLiteral(R"(^\s*%1\s+\S+\s+\S+\s+(PRBS|PAM4)\s*\(([^)]*)\))")
+                                          .arg(QRegularExpression::escape(ref)),
+                                      QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch m = line.match(run);
+        if (!m.hasMatch()) {
+            b.why = tr("%1 was not in the run the data is of: simulate again").arg(c->Name);
+            return b;
+        }
+        const double then = secondsOf(m.captured(2).split(QRegularExpression(QStringLiteral(R"(\s+)")), Qt::SkipEmptyParts).value(2));
+        if (std::isfinite(then)) {
+            b.ui = then;
+            b.levels = m.captured(1).compare(QLatin1String("PAM4"), Qt::CaseInsensitive) == 0 ? 4 : 2;
+            QStringList changed;
+            if (std::isfinite(now) && std::abs(now - then) > 1e-9 * then)
+                changed << tr("%1's Tbit is %2 now, %3 in the run the data is of").arg(c->Name, shown(now), shown(then));
+            if (levelsNow != b.levels)
+                changed << tr("%1's Coding is %2 now, %3 in the run the data is of")
+                               .arg(c->Name, levelsNow == 4 ? QStringLiteral("PAM4") : QStringLiteral("NRZ"),
+                                    b.levels == 4 ? QStringLiteral("PAM4") : QStringLiteral("NRZ"));
+            if (!changed.isEmpty()) b.note = changed.join(QStringLiteral("; ")) + tr(": simulate again to see it");
+            return b;
+        }
+    }
+    if (!std::isfinite(now)) {
+        b.why = tr("%1's Tbit is %2, no number").arg(c->Name, tbit.isEmpty() ? tr("empty") : tbit);
+        return b;
+    }
+    b.ui = now;
+    b.levels = levelsNow;
+    return b;
+}
+
 } // namespace
 
 QString nodeOf(const QString& variable)
@@ -64,7 +134,15 @@ QString nodeOf(const QString& variable)
     return QString();
 }
 
-Source sourceOf(const Schematic* sch, const QString& variable)
+QString datasetOf(const Schematic* sch, const QString& variable)
+{
+    if (sch == nullptr || sch->getDocName().isEmpty() || sch->getDataSet().isEmpty()) return QString();
+    const qsizetype slash = variable.indexOf(QLatin1Char('/'));
+    const QString ending = slash > 0 ? QLatin1Char('.') + variable.left(slash) : QString();
+    return QFileInfo(sch->getDocName()).absolutePath() + QLatin1Char('/') + sch->getDataSet() + ending;
+}
+
+Source sourceOf(const Schematic* sch, const QString& variable, const QString& dataset)
 {
     Source none;
     if (sch == nullptr) return none;
@@ -142,34 +220,38 @@ Source sourceOf(const Schematic* sch, const QString& variable)
             for (const Component* c : on.value(net))
                 if (c->Model == QLatin1String("vPRBS") && !found.contains(c)) found << c;
         if (!found.isEmpty()) {
-            QStringList names, unread;
-            QList<double> uis;
+            // (The run's netlist, when one is kept for the dataset as it is.)
+            const QString run = dataset.isEmpty() ? QString() : misc::runNetlistOf(dataset);
+            QStringList names, unread, notes;
+            QList<Bits> bits;
             for (const Component* c : found) {
-                QString tbit;
-                for (const Property* p : c->Props)
-                    if (p->Name == QLatin1String("Tbit")) tbit = p->Value.trimmed();
-                const qucs_s::units::Reading r = qucs_s::units::read(tbit);
-                if (r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) && r.value > 0.0) {
-                    names << c->Name;
-                    uis << r.value;
-                } else {
-                    unread << tr("%1's Tbit is %2, no number").arg(c->Name, tbit.isEmpty() ? tr("empty") : tbit);
+                const Bits b = bitsOf(c, run);
+                if (!b.why.isEmpty()) {
+                    unread << b.why;
+                    continue;
                 }
+                names << c->Name;
+                bits << b;
+                if (!b.note.isEmpty()) notes << b.note;
             }
             if (!unread.isEmpty()) {
                 none.why = unread.join(QStringLiteral("; "));
                 return none;
             }
-            for (double ui : uis)
-                if (std::abs(ui - uis.first()) > 1e-12 * uis.first()) {
+            for (const Bits& b : bits)
+                if (std::abs(b.ui - bits.first().ui) > 1e-12 * bits.first().ui || b.levels != bits.first().levels) {
                     QStringList each;
-                    for (int i = 0; i < names.size(); ++i) each << QStringLiteral("%1 %2 s").arg(names.at(i)).arg(uis.at(i), 0, 'g', 6);
-                    none.why = tr("as near, %1: bits of different lengths").arg(each.join(QStringLiteral(", ")));
+                    for (int i = 0; i < names.size(); ++i)
+                        each << QStringLiteral("%1 %2 s%3").arg(names.at(i)).arg(bits.at(i).ui, 0, 'g', 6)
+                                    .arg(bits.at(i).levels == 4 ? QStringLiteral(" PAM4") : QString());
+                    none.why = tr("as near, %1: bits of different lengths or codings").arg(each.join(QStringLiteral(", ")));
                     return none;
                 }
             Source s;
             s.name = names.join(QStringLiteral(" and "));
-            s.ui = uis.first();
+            s.ui = bits.first().ui;
+            s.levels = bits.first().levels;
+            s.note = notes.join(QStringLiteral("; "));
             return s;
         }
         QList<int> next;
@@ -211,7 +293,7 @@ void installForEyeDiagrams()
                         circuit = s;
             owner = circuit;
         }
-        return sourceOf(owner, variable);
+        return sourceOf(owner, variable, datasetOf(owner, variable));
     });
 }
 

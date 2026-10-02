@@ -463,6 +463,30 @@ private slots:
         // (No file of QSaveFile's left beside it.)
         for (const QString& f : QDir(work).entryList(QDir::Files))
             QVERIFY2(f == "out.dat" || f.startsWith("spice4qucs."), qPrintable(f));
+
+        // A folder that takes no new file, the dataset in it writable: no
+        // results leave the dataset as it was (it was cut to its first
+        // line, written in place), and results are written over it.
+        const QString locked = dir.filePath("locked");
+        QVERIFY(QDir().mkpath(locked));
+        QVERIFY(write("locked/out.dat", old));
+        QVERIFY(QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        const auto unlock = qScopeGuard([&locked] {
+            QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        });
+        QVERIFY(write("convert/spice4qucs.ac.plot", ""));
+        error = kernel.convertToQucsData(locked + "/out.dat");
+        QVERIFY2(error.contains(QStringLiteral("wrote no results")), qPrintable(error));
+        QCOMPARE(read("locked/out.dat"), old);
+        QVERIFY(write("convert/spice4qucs.ac.plot", acPlot()));
+        error = kernel.convertToQucsData(locked + "/out.dat");
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(read("locked/out.dat").contains("v(out)"));
+        QVERIFY(read("locked/out.dat").startsWith("<Qucs Dataset "));
+        QCOMPARE(QDir(locked).entryList(QDir::Files), QStringList{"out.dat"});
+        // (And no dataset there yet: none can be made, as before.)
+        error = kernel.convertToQucsData(locked + "/new.dat");
+        QVERIFY2(error.contains(QStringLiteral("Check write permission")), qPrintable(error));
     }
 
     // "write: too many args." is an error of the run, in the log and in

@@ -339,8 +339,9 @@ QString readout(const Diagram* diagram, const MappedPoint& p)
     // An eye: the time into its window (in UI too), and the signal.
     if (const auto* eyeDiagram = dynamic_cast<const EyeDiagram*>(diagram)) {
         const QString yName = left.size() == 1 ? bare(left.constFirst()->Var) : QStringLiteral("y");
-        QString x = QStringLiteral("t ") + number(p.x, QStringLiteral("s"));
-        if (eyeDiagram->foldedUi() > 0.0)
+        // (In UI alone when its graphs are folded at different ones.)
+        QString x = eyeDiagram->mixedUi() ? QStringLiteral("t %1 UI").arg(p.x, 0, 'f', 2) : QStringLiteral("t ") + number(p.x, QStringLiteral("s"));
+        if (!eyeDiagram->mixedUi() && eyeDiagram->foldedUi() > 0.0)
             x += QStringLiteral(" (%1 UI)").arg(p.x / eyeDiagram->foldedUi(), 0, 'f', 2);
         return x + QStringLiteral("  \u00B7  ") + yName + QStringLiteral(" ") + number(p.y1, axisUnit(diagram->yAxis, left));
     }

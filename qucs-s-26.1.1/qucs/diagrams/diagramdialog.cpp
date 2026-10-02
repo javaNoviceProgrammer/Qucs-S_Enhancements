@@ -38,6 +38,7 @@
 
 #include <assert.h>
 #include <cmath>
+#include <functional>
 
 #include <QCheckBox>
 #include <QColorDialog>
@@ -49,6 +50,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPushButton>
@@ -723,9 +725,11 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       el->addWidget(EyeStart, r++, 1);
       el->addWidget(new QLabel(tr("Levels:")), r, 0);
       EyeLevels = new QComboBox();
+      EyeLevels->addItem(tr("as the PRBS source is coded"));
       EyeLevels->addItem(tr("2 (NRZ)"));
       EyeLevels->addItem(tr("4 (PAM4)"));
-      EyeLevels->setCurrentIndex(eyeDiagram->levels == 4 ? 1 : 0);
+      EyeLevels->setCurrentIndex(eyeDiagram->levels == 4 ? 2 : eyeDiagram->levels == 2 ? 1 : 0);
+      EyeLevels->setToolTip(tr("As coded: 4 for a graph whose V(PRBS) source is coded PAM4, else 2"));
       el->addWidget(EyeLevels, r++, 1);
       el->addWidget(new QLabel(tr("Threshold:")), r, 0);
       EyeThreshold = valueEdit(eyeDiagram->threshold, "", tr("halfway between the levels"));
@@ -733,7 +737,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
                                   "between its levels"));
       EyeThreshold->setEnabled(eyeDiagram->levels != 4);
       connect(EyeLevels, &QComboBox::currentIndexChanged, EyeThreshold,
-              [this](int index) { EyeThreshold->setEnabled(index == 0); });
+              [this](int index) { EyeThreshold->setEnabled(index != 2); });
       el->addWidget(EyeThreshold, r++, 1);
       el->addWidget(new QLabel(tr("Drawn as:")), r, 0);
       EyeDrawn = new QComboBox();
@@ -1784,8 +1788,47 @@ void DiagramDialog::slotNewGraph() {
  * \see slotApply(), slotCancel()
  */
 void DiagramDialog::slotOK() {
+  if (!valuesTaken()) return;   // (left open, the field to correct in focus)
   slotApply();
   slotCancel();
+}
+
+// Whether the values typed can be taken: one that cannot is said, and its
+// field given the focus (an eye diagram's: they were dropped without a
+// word, and a mask set before went with them).
+bool DiagramDialog::valuesTaken() {
+  auto *eyeDiagram = dynamic_cast<EyeDiagram *>(Diag);
+  if (eyeDiagram == nullptr || EyeUi == nullptr) return true;
+  struct Check {
+    QLineEdit *edit;
+    std::function<bool(double)> fits;
+    QString what;
+  };
+  const QList<Check> checks = {
+      {EyeUi, [](double v) { return v > 0; }, tr("The unit interval is a bit's length above 0 (100 ps, 1n), or empty: the PRBS source's Tbit or the crossings.")},
+      {EyeStart, [](double) { return true; }, tr("From is a time (2 ns), or empty: from the start.")},
+      {EyeThreshold, [](double) { return true; }, tr("The threshold is a value of the signal (0.5, 450m), or empty: halfway between the levels.")},
+      {EyeMaskWidth, [](double v) { return v > 0 && v <= 1; }, tr("The mask's width is in UI, above 0 and at most 1 (0.5), or empty: no mask.")},
+      {EyeMaskHeight, [](double v) { return v > 0; }, tr("The mask's height is above 0, in the signal's unit (0.2), or empty: no mask.")},
+  };
+  for (const Check &c : checks) {
+    const QString text = c.edit->text().trimmed();
+    if (text.isEmpty() || c.edit->text() == c.edit->property("qucsShown").toString()) continue;
+    const qucs_s::units::Reading r = qucs_s::units::read(text);
+    if (r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) && c.fits(r.value)) continue;
+    QMessageBox::warning(this, tr("Eye Diagram"), tr("%1 cannot be taken. %2").arg(text, c.what));
+    c.edit->setFocus();
+    c.edit->selectAll();
+    return false;
+  }
+  // A mask: both, or neither.
+  if (EyeMaskWidth->text().trimmed().isEmpty() != EyeMaskHeight->text().trimmed().isEmpty()) {
+    QLineEdit *empty = EyeMaskWidth->text().trimmed().isEmpty() ? EyeMaskWidth : EyeMaskHeight;
+    QMessageBox::warning(this, tr("Eye Diagram"), tr("A mask has a width and a height: give both, or neither for no mask."));
+    empty->setFocus();
+    return false;
+  }
+  return true;
 }
 
 /*!
@@ -1796,6 +1839,7 @@ void DiagramDialog::slotOK() {
  * \see slotOK(), slotCancel()
  */
 void DiagramDialog::slotApply() {
+  if (!valuesTaken()) return;
   if (Diag->Name.at(0) != 'T') { // not tabular or timing
     if (titleEdit && Diag->title != titleEdit->text().trimmed()) {
       Diag->title = titleEdit->text().trimmed();
@@ -1869,7 +1913,7 @@ void DiagramDialog::slotApply() {
       double maskWidth = valueOf(EyeMaskWidth, eyeDiagram->maskWidth);
       double maskHeight = valueOf(EyeMaskHeight, eyeDiagram->maskHeight);
       if (!(maskWidth > 0 && maskWidth <= 1) || !(maskHeight > 0)) maskWidth = maskHeight = std::nan("");
-      const int levels = EyeLevels->currentIndex() == 1 ? 4 : 2;
+      const int levels = EyeLevels->currentIndex() == 2 ? 4 : EyeLevels->currentIndex() == 1 ? 2 : 0;
       if (!same(eyeDiagram->ui, ui) || eyeDiagram->span != EyeSpan->value() || !same(eyeDiagram->start, start)
           || eyeDiagram->levels != levels || !same(eyeDiagram->threshold, threshold)
           || eyeDiagram->drawn != EyeDrawn->currentIndex() || eyeDiagram->measurements != EyeMeasure->isChecked()

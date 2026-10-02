@@ -2202,12 +2202,17 @@ QJsonObject QucsControl::undoHistory(const QJsonObject& args)
     QString error;
     Schematic* sch = schematic(args, &error, false);
     if (sch == nullptr) return errorResult(error);
-    const QStringList states = sch->undoStates();
+    // (The states of the steps told, each unpacked once - not all kept.)
     const int at = sch->undoIndex();
+    const int total = sch->undoCount();
     const int count = std::clamp(args.value(QLatin1String("steps")).toInt(10), 1, 200);
     QJsonArray steps;
-    for (int k = std::max(1, at - count + 1); k < states.size() && k <= at + 5; ++k) {
-        const QStringList what = describeChanges(states.at(k - 1), states.at(k), 8);
+    QString previous;
+    for (int k = std::max(1, at - count + 1); k < total && k <= at + 5; ++k) {
+        if (previous.isNull()) previous = sch->undoState(k - 1);
+        const QString state = sch->undoState(k);
+        const QStringList what = describeChanges(previous, state, 8);
+        previous = state;
         steps.append(QJsonObject{{QStringLiteral("step"), k},
                                  {QStringLiteral("done"), k <= at},
                                  {QStringLiteral("change"), what.isEmpty() ? tr("nothing seen (a symbol's change, or what the schematic's text does not keep)")
@@ -2218,7 +2223,7 @@ QJsonObject QucsControl::undoHistory(const QJsonObject& args)
                        {QStringLiteral("steps"), steps},
                        {QStringLiteral("how"), tr("undo with 'to': n makes it as it was after step n (0: as loaded); a step not done yet is redone so")}};
     if (at > count) result.insert(QStringLiteral("earlier"), tr("%1 steps before these (steps gives more)").arg(at - count));
-    if (states.size() - 1 >= QucsSettings.maxUndo)
+    if (qint64(total) - 1 >= qint64(QucsSettings.maxUndo))
         result.insert(QStringLiteral("note"), tr("Only the last %1 steps are kept (Application Settings > Maximum undo operations).").arg(QucsSettings.maxUndo));
     // The files the tools wrote, the last first: undo with 'files' puts
     // them back.

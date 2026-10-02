@@ -122,6 +122,10 @@ public:
   /// above it are never left out (they hold it).
   void setNameFilter(const QString &text);
   QString nameFilter() const { return a_nameFilter; }
+  /// The rows looked at again: one whose file is gone (a link unlinked,
+  /// a project deleted) goes at once - the model's watcher took a second
+  /// or three, the row's entries off meanwhile.
+  void refilter();
 
 protected:
   bool lessThan(const QModelIndex &left,
@@ -741,7 +745,10 @@ private:
   void printCurrentDocument(bool);
   void updatePortNumber(QucsDoc *, int);
   int fillComboBox(bool);
-  void fillSimulatorsComboBox();
+  /// The simulators found, in the toolbar's list. With none, a box says so
+  /// - once, until one is found again, and only when \a tellWhenNone (an
+  /// import says it in its report); returns whether any was found.
+  bool fillSimulatorsComboBox(bool tellWhenNone = true);
   void switchSchematicDoc(bool);
   void switchEditMode(bool);
   void changeSchematicSymbolMode(Schematic *);
@@ -839,6 +846,7 @@ private:
   QShortcut *cursorUp, *cursorLeft, *cursorRight, *cursorDown;
 
   StatusPanel *a_status = nullptr;   // the status bar's hint and chips
+  bool a_noSimulatorTold = false;    // "No simulation backend found" said, none found since
 
   /* **************************************************
    *****  The following methods are located in  *****

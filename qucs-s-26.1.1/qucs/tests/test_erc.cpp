@@ -1065,9 +1065,113 @@ private slots:
         QVERIFY2(got.size() == 1 && got.first().contains("long for V2's edges of 200 ps"), qPrintable(got.join(" | ")));
         QVERIFY(stepped(vpulse("5 V", "1 ns"), "2001", "0", QString(tran).replace("<.TR TR1 1 ", "<.TR TR1 0 ")).isEmpty());
         QVERIFY(stepped(vpulse("5 V", "1 ns"), "2001", "0", QString(tran).replace("\"lin\" 1", "\"list\" 1")).isEmpty());
+        // An edge of no time and one that takes time: the one to resolve (a
+        // rise of 0 hid a fall of 1 ns); a PWL's shortest edge, not its
+        // steepest (a jump).
+        const QString riseFall = part("Vpulse", "V1", 0, "\"0 V\" 1 \"5 V\" 1 \"1 us\" 1 \"6 us\" 1 \"0\" 0 \"1 ns\" 0");
+        got = stepped(riseFall, "2001", "0");
+        QVERIFY2(got.size() == 1 && got.first().contains("long for V1's edges of 1 ns"), qPrintable(got.join(" | ")));
+        got = stepped(part("vPWL", "V1", 0, "\"0 0 1u 0 1u 5 2u 5 2.001u 0\" 1 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0"),
+                      "2001", "0");
+        QVERIFY2(got.size() == 1 && got.first().contains("long for V1's edges of 1 ns"), qPrintable(got.join(" | ")));
+        // With MaxStep, more Points do not shorten the step: not offered.
+        got = stepped(vpulse("5 V", "1 ns"), "100001", "1 ns");
+        QVERIFY2(got.size() == 1 && got.first().endsWith("A MaxStep of 200 ps or less resolves them"), qPrintable(got.join(" | ")));
         QucsSettings.DefaultSimulator = spicecompat::simXyce;
         QVERIFY(stepped(vpulse("5 V", "1 ns"), "2001", "0").isEmpty());
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+
+        // A transient's MaxStep below 0 (ngspice: "TMAX is invalid"), its
+        // Points no whole number; a pulse's edge below 0 (as none).
+        const auto transient = [&](const QString& points, const QString& maxStep) {
+            QString t = tran;
+            t.replace("\"2001\" 0", "\"" + points + "\" 0").replace("\"yes\" 0 \"0\" 0>", "\"yes\" 0 \"" + maxStep + "\" 0>");
+            return findings(vpulse("5 V", "1 us") + gnd(0) + R("R1", 100, "1k") + gnd(100) + t, top(0, "a") + top(100, "a"));
+        };
+        got = transient("2001", "-1 ns");
+        QVERIFY2(has(got, "E TR1: its MaxStep is -1 ns - the longest step, 0 or more"), qPrintable(got.join(" | ")));
+        got = transient("2001.5", "0");
+        QVERIFY2(has(got, "W TR1: its Points are 2001.5 - a count of points, a whole number"), qPrintable(got.join(" | ")));
+        got = transient("2001", "0");
+        QVERIFY2(got.filter("TR1:").isEmpty(), qPrintable(got.join(" | ")));
+        got = findings(part("Vpulse", "V1", 0, "\"0 V\" 1 \"5 V\" 1 \"1 us\" 1 \"6 us\" 1 \"-1 ns\" 0 \"1 ns\" 0") + gnd(0) + R("R1", 100, "1k")
+                           + gnd(100) + tran,
+                       top(0, "a") + top(100, "a"));
+        QVERIFY2(has(got, "W V1: its Tr is -1 ns, below 0 - taken without a word, as no rise time"), qPrintable(got.join(" | ")));
+
+        // A parameter swept over a DC analysis: ngspice's dc sweeps a
+        // source, a resistor or the temperature, and aborts with nothing
+        // said before - an error now. A source, a resistor, the
+        // temperature: none; nor for Xyce, or over another analysis.
+        const auto swept = [&](const QString& param, const QString& over = QStringLiteral("DC1")) {
+            return findings(Vdc("V1", 0, "5 V") + gnd(0) + R("R1", 100, "1k") + gnd(100) + dc
+                                + QStringLiteral("  <.SW SW1 1 260 340 0 61 0 0 \"%1\" 1 \"lin\" 1 \"%2\" 1 \"1k\" 1 \"3k\" 1 \"3\" 1>\n")
+                                      .arg(over, param),
+                            top(0, "a") + top(100, "a"))
+                .filter("SW1 sweeps");
+        };
+        got = swept("rv");
+        QVERIFY2(got.size() == 1 && got.first().startsWith("E SW1 sweeps rv (a parameter) over the DC analysis DC1: ngspice's dc sweeps")
+                     && got.first().contains("NgSweep (Analysis op)"),
+                 qPrintable(got.join(" | ")));
+        for (const char* fine : {"R1", "V1", "temp", "TEMP"}) QVERIFY2(swept(fine).isEmpty(), fine);
+        QVERIFY(swept("rv", "TR1").isEmpty());
+        QucsSettings.DefaultSimulator = spicecompat::simXyce;
+        QVERIFY(swept("rv").isEmpty());
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+
+        // A transient's integration method other than the trapezoidal rule
+        // is Qucsator's: said for ngspice (the sawtooth example asked for
+        // Gear, ran trapezoidal and stopped), not with a .OPTIONS part's
+        // method=gear, nor for Trapezoidal.
+        const QString gear = QString(tran).replace("\"Trapezoidal\" 0", "\"Gear\" 0");
+        const QString options = "  <SpiceOptions SpiceOptions1 1 300 410 -38 16 0 0 \"DEVICE\" 0 \"method=gear\" 1>\n";
+        const auto method = [&](const QString& extra) {
+            return findings(Vdc("V1", 0, "5 V") + gnd(0) + R("R1", 100, "1k") + gnd(100) + extra, top(0, "a") + top(100, "a"))
+                .filter("integration method");
+        };
+        got = method(gear);
+        QVERIFY2(got == QStringList{"N TR1's integration method Gear is Qucsator's: ngspice integrates by the trapezoidal rule. A "
+                                    ".OPTIONS part with method=gear (its only other) makes it Gear"},
+                 qPrintable(got.join(" | ")));
+        QVERIFY(method(gear + options).isEmpty());
+        QVERIFY(method(tran).isEmpty());
+
+        // The V(PRBS) source's values ngspice refuses: errors, each as
+        // ngspice has it; what it takes without a word: warnings. A
+        // parameter is left to the run.
+        const auto prbsWith = [&](const QString& tbit, const QString& td, const QString& tr, const QString& tf, const QString& order,
+                                  const QString& seed, const QString& coding) {
+            return findings(part("vPRBS", "V1", 0, QStringLiteral("\"0 V\" 1 \"1 V\" 1 \"%1\" 1 \"%2\" 0 \"%3\" 0 \"%4\" 0 \"%5\" 1 \"%6\" 0 \"%7\" 0")
+                                                      .arg(tbit, td, tr, tf, order, seed, coding))
+                                + gnd(0) + R("R1", 100, "1k") + gnd(100) + shortRun,
+                            top(0, "a") + top(100, "a"))
+                .filter("V1: ");
+        };
+        QVERIFY2(prbsWith("1 ns", "0", "50 ps", "50 ps", "7", "", "NRZ").isEmpty(), qPrintable(prbsWith("1 ns", "0", "50 ps", "50 ps", "7", "", "NRZ").join(" | ")));
+        QVERIFY(prbsWith("1 ns", "0", "1 ns", "1 ns", "31", "2147483647", "PAM4").isEmpty());   // (an edge a bit long; the largest seed)
+        QVERIFY(prbsWith("tb", "td", "tr", "tr", "n", "s", "NRZ").isEmpty());
+        const QList<QPair<QStringList, QString>> refused = {
+            {{"0", "0", "0", "0", "7", "", "NRZ"}, "E V1: its Tbit is 0 - a bit time is above 0"},
+            {{"-1 ns", "0", "0", "0", "7", "", "NRZ"}, "E V1: its Tbit is -1 ns - a bit time is above 0"},
+            {{"1 ns", "-1 ns", "0", "0", "7", "", "NRZ"}, "E V1: its delay Td is -1 ns"},
+            {{"1 ns", "0", "0", "0", "1", "", "NRZ"}, "E V1: its Order is 1 - the register's length, a whole number from 2 to 31"},
+            {{"1 ns", "0", "0", "0", "32", "", "NRZ"}, "E V1: its Order is 32"},
+            {{"1 ns", "0", "0", "0", "7.5", "", "NRZ"}, "E V1: its Order is 7.5"},
+            {{"1 ns", "0", "0", "0", "7", "0", "NRZ"}, "E V1: its Seed is 0 - the register's first contents"},
+            {{"1 ns", "0", "0", "0", "7", "1.5", "NRZ"}, "E V1: its Seed is 1.5"},
+            {{"1 ns", "0", "0", "0", "7", "128", "NRZ"}, "E V1: its Seed 128 leaves the register's 7 bits all zero"},
+            {{"1 ns", "0", "1.5 ns", "0", "7", "", "NRZ"}, "E V1: its Tr of 1.5 ns is longer than its Tbit of 1 ns"},
+            {{"1 ns", "0", "0", "1.5 ns", "7", "", "NRZ"}, "E V1: its Tf of 1.5 ns is longer than its Tbit of 1 ns"},
+            {{"1 ns", "0", "-1 ps", "0", "7", "", "NRZ"}, "W V1: its Tr is -1 ps, below 0 - taken without a word, as no rise time"},
+            {{"1 ns", "0", "0", "0", "7", "", "pam8"}, "W V1: its Coding is pam8, neither NRZ nor PAM4 - netlisted as NRZ"},
+        };
+        for (const auto& [values, said] : refused) {
+            got = prbsWith(values.at(0), values.at(1), values.at(2), values.at(3), values.at(4), values.at(5), values.at(6));
+            QVERIFY2(has(got, said), qPrintable(said + " | got: " + got.join(" | ")));
+            if (said.startsWith("E")) QVERIFY2(got.filter("ngspice refuses it").size() == 1, qPrintable(got.join(" | ")));
+        }
+        QVERIFY(prbsWith("1 ns", "0", "0", "0", "7", "200", "NRZ").isEmpty());   // (its low 7 bits not all zero)
         // (The note of the capacitor across a pulse above is no other.)
         got = across(vpulse("5 V", "1 ns"), "1 nF");
         QCOMPARE(got.size(), 1);
