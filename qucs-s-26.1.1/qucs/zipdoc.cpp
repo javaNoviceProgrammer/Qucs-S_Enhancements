@@ -13,6 +13,7 @@
 #include "links.h"
 #include "main.h"
 #include "misc.h"
+#include "namefilter.h"
 #include "qucs.h"
 
 #include <QAction>
@@ -190,6 +191,7 @@ ZipDoc::ZipDoc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
     a_filter->setPlaceholderText(tr("Filter by name"));
     a_filter->setClearButtonEnabled(true);
     a_filter->setMaximumWidth(220);
+    qucs_s::files::explainNameFilter(a_filter);
     connect(a_filter, &QLineEdit::textChanged, this, &ZipDoc::setFilter);
     bar->addWidget(a_filter);
     all->addLayout(bar);
@@ -767,8 +769,9 @@ void ZipDoc::rebuild()
     const QLocale locale;
     static const QIcon folderIcon = QFileIconProvider().icon(QFileIconProvider::Folder);
     static const QIcon fileIcon = QFileIconProvider().icon(QFileIconProvider::File);
-    const QString filter = a_filterText.trimmed();
-    const auto shown = [&filter](const QString& name) { return filter.isEmpty() || name.contains(filter, Qt::CaseInsensitive); };
+    // An entry's path, or the name at its end (^notes finds docs/notes.txt).
+    const qucs_s::files::NameFilter filter(a_filterText.trimmed());
+    const auto shown = [&filter](const QString& name) { return filter.matchesPath(name); };
 
     struct Totals {
         qint64 size = 0, packed = 0;

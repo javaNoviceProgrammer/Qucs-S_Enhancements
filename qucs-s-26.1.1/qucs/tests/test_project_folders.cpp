@@ -6,6 +6,7 @@
  * opens as the project. user_lib and hidden folders never are projects.
  */
 #include <QtTest>
+#include <QAction>
 #include <QCheckBox>
 #include <QInputDialog>
 #include <QLineEdit>
@@ -525,8 +526,9 @@ private slots:
     }
 
     // Above the projects, the File Browser's filter: the projects and
-    // folders whose names hold what is typed, whatever its case - ".."
-    // always, to go back up. The project chosen stays chosen while it is
+    // folders whose names hold what is typed, or in which it finds a match
+    // as a regular expression, whatever its case - ".." always, to go back
+    // up. The project chosen stays chosen while it is
     // listed; one it leaves out is no longer the one Open and Delete act
     // on. It stays as the panel goes into a folder and as folders come;
     // cleared, all of them again.
@@ -585,6 +587,20 @@ private slots:
         box->setText("nothing like it");
         QCOMPARE(listed(panel), QStringList());
         QCOMPARE(shownFolder(), top);
+        // A regular expression.
+        box->setText("^amp");
+        QCOMPARE(listed(panel), QStringList({"amp_prj", "Amplifiers"}));
+        box->setText("_PRJ$");
+        QCOMPARE(listed(panel), QStringList({"amp_prj", "filter_prj"}));
+        box->setText("^(notes|filter)");
+        QCOMPARE(listed(panel), QStringList({"filter_prj", "notes"}));
+        QAction* warning = box->findChild<QAction*>("nameFilterNoRegex");
+        QVERIFY(warning != nullptr && !warning->isVisible());
+        box->setText("amp(");   // no regular expression: the text as typed
+        QCOMPARE(listed(panel), QStringList());
+        QVERIFY(warning->isVisible());
+        box->clear();
+        QVERIFY(!warning->isVisible());
 
         // As folders come.
         box->setText("amp");

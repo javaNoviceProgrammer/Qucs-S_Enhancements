@@ -7,6 +7,7 @@
  * from the defaults are saved.
  */
 #include <QtTest>
+#include <QAction>
 #include <QElapsedTimer>
 #include <QHeaderView>
 #include <QLabel>
@@ -431,8 +432,10 @@ private slots:
     }
 
     // Above the panel, the File Browser's filter: the files whose names
-    // hold what is typed, whatever its case - a folder's name finds what
-    // is in it -, in their categories and folders, open; the header says
+    // hold what is typed, or in which it finds a match as a regular
+    // expression, whatever its case - a folder's name finds what is in
+    // it, ^ the start of the path or of the file's name -, in their
+    // categories and folders, open; the header says
     // how many. A row it hides is no longer selected. It stays through a
     // refresh, and cleared, every row is back, open as it was.
     void aFilterByNameAsTheFileBrowsers()
@@ -491,6 +494,21 @@ private slots:
         QVERIFY(docs.isValid() && !view->isFile(docs));
         QVERIFY(view->isExpanded(docs));
         view->setTreeView(false);
+        // A regular expression: on the row's name, or the file's own.
+        box->setText("^log");
+        QCOMPARE(visibleFiles(view), QStringList({"logo.png", "log.txt"}));
+        box->setText("^README\\.");
+        QCOMPARE(visibleFiles(view), QStringList({"docs/README.TXT", "readme.md"}));
+        box->setText("^docs/");
+        QCOMPARE(visibleFiles(view), QStringList({"docs/README.TXT"}));
+        box->setText("\\.(py|pdf)$");
+        QCOMPARE(visibleFiles(view), QStringList({"analyse.py", "sheet.pdf"}));
+        QCOMPARE(view->model()->headerData(0, Qt::Horizontal).toString(), QString("Content of categories: 2 found"));
+        QAction* warning = box->findChild<QAction*>("nameFilterNoRegex");
+        QVERIFY(warning != nullptr && !warning->isVisible());
+        box->setText("log(");   // no regular expression: the text as typed
+        QCOMPARE(visibleFiles(view), QStringList());
+        QVERIFY(warning->isVisible());
         box->setText("Scratch");   // named within it under Scratch
         QCOMPARE(visibleFiles(view), QStringList());
         QCOMPARE(view->model()->headerData(0, Qt::Horizontal).toString(), QString("Content of categories: 0 found"));
