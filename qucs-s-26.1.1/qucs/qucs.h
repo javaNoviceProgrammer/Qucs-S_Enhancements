@@ -51,6 +51,7 @@ class SimulationConsole;
 class ProcessConsole;
 class ClaudeCodeTabs;
 class FileBrowser;
+class ZipDoc;
 class StatusPanel;
 
 class QLabel;
@@ -153,6 +154,11 @@ public:
   /// Loads a document into a tab. With \a checkDataNames the user is asked to
   /// rename dataset/display files that do not match the schematic's name.
   bool gotoPage(const QString &, bool reloadPage = false, bool checkDataNames = true);
+  /// A new ZIP archive in a tab, with nothing in it yet and no file (the
+  /// File Browser's New Zip…): files and folders dropped in or added, it
+  /// is saved where Save As says - offering \a folder and a name free
+  /// there (Archive.zip, Archive 2.zip, ...).
+  ZipDoc *newArchive(const QString &folder);
   /// Saves a document (the current one by default) to its file; Save As
   /// for one without.
   bool saveFile(QucsDoc *Doc = 0);

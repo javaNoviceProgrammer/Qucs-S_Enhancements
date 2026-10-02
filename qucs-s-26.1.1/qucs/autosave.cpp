@@ -25,6 +25,7 @@
 
 #include "qucsdoc.h"
 #include "schematic.h"
+#include "zipdoc.h"
 #include "textdoc.h"
 
 namespace qucs_s::autosave {
@@ -53,6 +54,8 @@ QString suffixFor(const QucsDoc* doc)
 {
     if (!doc->getDocName().isEmpty())
         return QFileInfo(doc->getDocName()).suffix();
+    // (An untitled archive, New Zip…'s, read back as one: its suffix opens it.)
+    if (dynamic_cast<const ZipDoc*>(doc) != nullptr) return QStringLiteral("zip");
     return dynamic_cast<const Schematic*>(doc) ? QStringLiteral("sch") : QStringLiteral("txt");
 }
 

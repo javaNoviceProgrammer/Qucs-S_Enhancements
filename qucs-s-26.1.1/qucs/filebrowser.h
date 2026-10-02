@@ -215,6 +215,8 @@ public slots:
 signals:
     /// A file was double-clicked (or opened from its menu).
     void openRequested(const QString& path);
+    /// "New Zip…": a new, empty archive asked for, to be saved in \a folder.
+    void newArchiveRequested(const QString& folder);
     /// Entries moved or renamed: \a from[i] is \a to[i] now (a folder with
     /// all in it).
     void moved(const QStringList& from, const QStringList& to);
