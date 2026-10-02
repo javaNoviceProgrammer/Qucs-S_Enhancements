@@ -160,7 +160,7 @@ const char* const kTools = R"JSON([
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"R\": true, \"Temp\": false}"},
    "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": ["array", "object"], "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
    "flags": {"type": "array", "items": {"type": "string"}, "description": "An ngspice .OPTIONS block's (SpiceOptions) options with no value, each written alone: [\"noinit\", \"keepopinfo\"] - as {\"noinit\": true} in 'equations'"},
-   "replace_equations": {"type": "boolean", "description": "The equations become those given alone (else each given is set or added)"},
+   "replace_equations": {"type": "boolean", "description": "The equations become exactly the 'equations' and 'flags' given with it (else each given is set or added); alone it is refused"},
    "records": {"type": "array", "items": {}, "description": "An ngspice Monte Carlo's or corners' values recorded for each sample: [{\"name\": \"gain\", \"expression\": \"db(v(out))\"}] or \"gain|db(v(out))\" - the list it records"},
    "specs": {"type": "array", "items": {}, "description": "Their limits: [{\"expression\": \"gain\", \"min\": \"19\", \"max\": \"21\"}] (one limit may be left out) or \"gain|19|21\" - a sample passes within all"}},
    "required": ["type", "x", "y"]}},
@@ -174,7 +174,7 @@ const char* const kTools = R"JSON([
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"Is\": false, \"Bf\": true}"},
    "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": ["array", "object"], "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
    "flags": {"type": "array", "items": {"type": "string"}, "description": "An ngspice .OPTIONS block's (SpiceOptions) options with no value, each written alone: [\"noinit\", \"keepopinfo\"] - as {\"noinit\": true} in 'equations'"},
-   "replace_equations": {"type": "boolean", "description": "The equations become those given alone (else each given is set or added)"},
+   "replace_equations": {"type": "boolean", "description": "The equations become exactly the 'equations' and 'flags' given with it (else each given is set or added); alone it is refused"},
    "records": {"type": "array", "items": {}, "description": "An ngspice Monte Carlo's or corners' values recorded for each sample: [{\"name\": \"gain\", \"expression\": \"db(v(out))\"}] or \"gain|db(v(out))\" - the list it records"},
    "specs": {"type": "array", "items": {}, "description": "Their limits: [{\"expression\": \"gain\", \"min\": \"19\", \"max\": \"21\"}] (one limit may be left out) or \"gain|19|21\" - a sample passes within all"}}, "required": ["name"]}},
 {"name": "diff",
@@ -195,7 +195,7 @@ const char* const kTools = R"JSON([
    "rename": {"type": "string", "description": "The new part's name (the old one's unless given)"},
    "shown": {"type": "object", "description": "Which properties are shown on the schematic: {\"C\": true}"}, "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"},
    "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"},
-   "replace_equations": {"type": "boolean", "description": "Taken as add_component takes it: the new part's equations are those given in any case"},
+   "replace_equations": {"type": "boolean", "description": "Taken as add_component takes it: the new part's equations are those given in any case; with no 'equations' or 'flags' it is refused"},
    "records": {"type": "array", "items": {}, "description": "A Monte Carlo's or corners' values recorded for each sample, as add_component takes them"},
    "specs": {"type": "array", "items": {}, "description": "Their limits, as add_component takes them"}},
    "required": ["name", "type"]}},
@@ -1624,15 +1624,32 @@ bool specsOf(const QJsonValue& v, QList<qucs_s::ngstats::Spec>* out, QString* er
     return true;
 }
 
-// 'equations' (with 'replace_equations'), 'records' and 'specs' on a
-// component (a \a fresh one: being placed): checked, and applied unless
-// \a check. False and why when they do not read or the component takes none.
+// Whether a call gives a component's lists - 'equations', 'flags',
+// 'records', 'specs' -, which setListsOf() applies: one place says which,
+// so that a caller's test of whether to apply them and setListsOf() agree
+// ('flags' alone was once checked and never applied).
+bool givesLists(const QJsonObject& args)
+{
+    for (const char* key : {"equations", "flags", "records", "specs"})
+        if (args.contains(QLatin1String(key))) return true;
+    return false;
+}
+
+// 'equations' and 'flags' (with 'replace_equations'), 'records' and
+// 'specs' on a component (a \a fresh one: being placed): checked, and
+// applied unless \a check. False and why when they do not read or the
+// component takes none.
 bool setListsOf(Component* c, const QJsonObject& args, QString* error, bool check, bool fresh = false)
 {
     const bool flags = args.contains(QLatin1String("flags"));
     const bool eq = args.contains(QLatin1String("equations")) || flags, rec = args.contains(QLatin1String("records")),
                spec = args.contains(QLatin1String("specs"));
-    if (!eq && !rec && !spec) return true;
+    // What it replaces the list with is given beside it, or it does nothing.
+    if (args.contains(QLatin1String("replace_equations")) && !eq) {
+        *error = tr("'replace_equations' goes with 'equations' or 'flags': it makes the block's list exactly those given.");
+        return false;
+    }
+    if (!givesLists(args)) return true;
     if (flags && !isEquationKind(c)) {
         *error = tr("%1 (%2) has no flags: 'flags' are the options with no value of an ngspice .OPTIONS block (SpiceOptions).")
                      .arg(c->Name, c->Model);
@@ -6118,8 +6135,7 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
     prepare(sch);
     const QString before = sch->snapshot();
     const QList<qucs_s::erc::Issue> wiringBefore = qucs_s::erc::wiring(sch);
-    if (!props.isEmpty() || args.contains(QLatin1String("equations")) || args.contains(QLatin1String("records"))
-        || args.contains(QLatin1String("specs"))) {
+    if (!props.isEmpty() || givesLists(args)) {
         setProperties(c, props, &error);
         setListsOf(c, args, &error, false);
         sch->recreateComponent(c);
