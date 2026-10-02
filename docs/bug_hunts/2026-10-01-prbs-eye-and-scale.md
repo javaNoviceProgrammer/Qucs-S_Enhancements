@@ -90,6 +90,8 @@ decide "no results" before opening the dataset (the outputs are on disk then), o
 dataset in place only once the first variable is ready to be written. Turning the direct-write
 fallback off is another way: the folder already gets the "check write permission" error.
 
+**Fixed in `e1723e1`.** The dataset is opened only when the run's results are whole: in a folder that takes no new file (the dataset itself writable), they are written into a temporary file and copied over the dataset then, so a run with no results leaves it as it was. Test: `test_scale_and_memory` `anEmptyOutputIsAnError` (a folder of mode 555: no results, then results, then no dataset yet); writing in place again is caught.
+
 ### A2. CI's "Claude's tools take what they read" fails
 
 `scripts/ci/check-tool-arguments.py` reports `get_dataset: no handler found in call()`:
@@ -99,6 +101,8 @@ the checker looks for `return getDataset(args);`. CI's Linux job stops at this s
 
 *Fix:* release the memory inside `getDataset` (or a wrapper the checker knows), keeping
 the dispatch a single `return`.
+
+**Fixed in `e1723e1`.** `getDataset` offers the freed memory back on its way out (a scope guard), and the dispatch is one `return` again. The check runs in ctest too (`check_tool_arguments`), so the local suite catches what only CI did.
 
 ## B. Bugs
 
@@ -114,6 +118,8 @@ for a folder the user cannot see (`p6`).
 *Fix:* list a broken link (in grey, its target as the tooltip, "missing"), so that Unlink
 reaches it; or have Link Project offer to replace a broken link of that name.
 
+**Fixed in `e1723e1`.** The panel lists a link that leads nowhere: the model reads with `QDir::System` (a broken link is one) and the filter leaves the system's other files out. It is greyed, its tooltip where it led and that Unlink Project removes it; a double-click says so rather than listing nothing. Import and Link Project offer to replace such a link of the name, and `workspace::check` says why the name is taken. Test: `test_workspace_projects` `aLinkThatLeadsNowhere` (a FIFO beside it stays unlisted).
+
 ### B2. `get_state` names a selected ground `""`
 
 `qucscontrol.cpp:4482` lists the selected parts by `c->Name`: a selected ground is `""`,
@@ -121,6 +127,8 @@ not its ref `GND#2` that `select`, `move` and `delete` take. This is the naming 
 stress report's bug 2, in a place its fix did not reach (`p13`, `p34`).
 
 *Fix:* `PartIndex::refs(sch)` there too.
+
+**Fixed in `e1723e1`.** `get_state` names each selected part by its ref. Test: `test_qucs_control` `twoPartsOfOneNameAreToldApart`.
 
 ### B3. The eye folds old data at a Tbit changed since the run
 
@@ -136,6 +144,8 @@ Deleting V1 likewise leaves "V1's Tbit" shown until a reload, then "the crossing
 *Fix:* the run's netlist is kept beside its dataset (`misc::keepRunNetlist`): take the
 Tbit from the `PRBS(...)` line of that netlist, or fall back to the crossings (and say
 why) when the source's line differs from the run's.
+
+**Fixed in `e1723e1`.** The source's Tbit and Coding are those of its line in the run's netlist (`misc::runNetlistOf`, kept for the dataset as it is); the source's values now count only without one. A Tbit or Coding changed since is said - "V1's Tbit is 200 ps now, 100 ps in the run the data is of: simulate again to see it" - in the diagram and in `get_dataset`; a source not in that run is none, and why. A deleted source's cached "V1's Tbit" is now true of the data until the next reload. Tests: `test_prbs_eye` `theSourceIsAsTheRunGaveIt`, `eachTraceIsFoldedAtItsOwnSource`; `test_qucs_control` `resultsAreMeasuredAsTablesSpectraAndEyes`.
 
 ### B4. An eye drawn as traces: seconds to a minute per repaint
 
@@ -157,6 +167,8 @@ traces draws every window as an antialiased, translucent polyline.
 *Fix:* draw traces as density does - accumulate into a coverage buffer, without
 antialiasing above a few thousand windows - or cap the windows drawn and say so.
 
+**Fixed in `e1723e1`.** Up to 2,000 windows the traces are drawn as lines, as before; more, each pixel is as opaque as that many lines of the traces' alpha laid over it (1 - (1 - a)^n, the passes counted as the density counts them). Test: `test_prbs_eye` `manyBitsAreDrawnAsTracesQuickly`, 100,000 bits: no slower than three densities and a second (drawn as lines, 4.1 s against the density's 0.22 s on the test's diagram).
+
 ### B5. Open Project chosen on the open project
 
 `slotProjectsContextMenu` compares the row's path with the open project's by
@@ -169,6 +181,8 @@ and for case on macOS.
 *Fix:* compare canonical paths (`QFileInfo::canonicalFilePath`), as `openProject` does
 for the workspace and home folders.
 
+**Fixed in `e1723e1`.** The open project's row is told by the folder itself (`misc::isSameFile`), not its spelling. Unlink Project had the same fault: the open project and the documents through the link are found by the link's place with the folder it is in resolved (`placeOf`), so a workspace reached through a link, /tmp or another case finds them; a document of the project's own folder, not through the link, stays open. Test: `test_workspace_projects` `theSameFolderSpelledAnotherWay`.
+
 ### B6. Two parts of one name in a selection
 
 A hand-edited file with two parts named R1 (Check Schematic says "R1: the name is used
@@ -179,6 +193,8 @@ names, and both resolve to the first. This was so before the stress fix, which k
 
 *Fix:* pass the selected parts themselves (or their index in `a_DocComps`) from
 `withSelection` to the handlers, not their names.
+
+**Fixed in `e1723e1`.** A name given twice is told apart by a ref as grounds are: the first R1, the second R1#2 - in `get_schematic`, a selection, `select`, `move`, `delete`, `edit_component` and pins (R1#2.1); R1#3 of two is refused with the range. The refs are made in one place (`erc::refs`), which Check Schematic and the tools share. Test: `twoPartsOfOneNameAreToldApart`.
 
 ### B7. A PAM4 source's trace measured as NRZ
 
@@ -191,6 +207,8 @@ same data gives its four levels and three eyes.
 *Fix:* with no levels given, take 4 from a source coded PAM4 (and say so, as for the
 Tbit).
 
+**Fixed in `e1723e1`.** The eye diagram's Levels default is "as the PRBS source is coded": a trace of a PAM4 source is measured on its four levels ("PAM4, V3's Coding" beside it); 2 or 4 set stay so, and 2 on a PAM4 source is said. `get_dataset` without `levels` does the same ("levels from"; data without four levels gets an error that says why four were tried). A diagram saved with 2 keeps it; `edit_diagram`'s `levels: null` is "as coded". Tests: `eachTraceIsFoldedAtItsOwnSource`, `resultsAreMeasuredAsTablesSpectraAndEyes`, `theSettingsAreSavedAndLoaded`, `theDialogEditsIt`.
+
 ### B8. One eye diagram over two PRBS sources
 
 Traces from V1 (Tbit 100 ps) and V2 (200 ps) in one eye diagram are both folded at 100
@@ -199,6 +217,8 @@ the same two variables gives each its own source's Tbit, so the two disagree.
 
 *Fix:* each trace its own unit interval (the diagram draws one grid in UI: fold each
 trace at its own), or say that trace 2's source has another Tbit.
+
+**Fixed in `e1723e1`.** Each trace is folded at its own source's Tbit; a trace with none at the first source's, or at what the crossings tell, as before. When the traces' UIs differ, the time across it is in UI ("time in UI, 2 UI - each trace at its own"), the marks and the cursor readout with it. Test: `eachTraceIsFoldedAtItsOwnSource` (the PAM4 eye open in the frame's middle, closed when folded at V1's bits).
 
 ## C. CI
 
@@ -214,6 +234,13 @@ one-element brace list of the same type may be taken as a copy rather than a nes
 depending on the compiler, so on CI's toolchain `via` is likely `[600, 300]`. The Linux
 job failed its unit tests on `d19221d` too. The runs failed back to `14687a6` at least.
 
+**Fixed in `e1723e1`.** Three causes, each reproduced or read from CI's log:
+- `via` is built by append. A new check, `scripts/ci/check-json-nesting.py` (a CI step and a ctest), refuses a list of one list written as a braced copy anywhere in the sources.
+- `test_long_file_names` waited on a box. CI's runner has no ngspice; an import of settings puts what its file lacks back to the default (ngspice's path too) and refilled the simulators, which said "No simulation backend found" in a modal box - over the import, then at each window's start. Reproduced here with ngspice off the PATH. The box is said once until a simulator is found again, never over an import (its report says it), and the test puts its simulator back after the import.
+- `test_workspace_projects` timed out too (missed in the hunt's reading): it waited in `unlinkingAProject`, a menu opened and nothing after. Not reproduced here; the likely cause is its menu helper pressing Return on an entry that could not be chosen there (the row not found for a moment), which leaves a menu open. It closes such a menu now and says so, and the test waits for the row first.
+
+Every test that isolates its settings now has a watchdog (`tests/isolated_settings.h`): a dialog or a menu open over a minute is logged with its words and closed, so a hang fails with its reason, not at ctest's timeout. Both suites pass with ngspice off the PATH.
+
 ## D. Examples and analyses (before the day)
 
 - **D1. A DC sweep of a parameter aborts, with no warning.** A `.SW` over `.DC` of a
@@ -228,6 +255,12 @@ job failed its unit tests on `d19221d` too. The runs failed back to `14687a6` at
   says only "could not be opened."
 - **D4.** `General Electronics/Waveform Generation/sawtooth-2.sch`: "Timestep too small"
   with this ngspice 46, before the day too.
+
+**Fixed in `e1723e1`.**
+- D1: Check Schematic gives an error for a `.SW` over a DC analysis whose Param is no source, resistor or temperature (ngspice, SPICE OPUS), naming what does it: an NgSweep with Analysis op. Test: `test_erc`.
+- D2: `library/MESFETs.lib` again: MESFETCL1, the Curtice level 1 equations of the earlier library's XSPICE code model (Mike Brinson's `curtice1`, from an older Qucs-S tree, GPL) as ngspice B sources - this Qucs-S has no code-model compiler. Two changes, in its description: the gate current continuous at vbi (it jumped to vbi/rf there), and 1 kOhm across each lead inductance, damping a resonance at GHz that the AC example's transient rang on. The three examples simulate; the drain current matches the equation to seven digits; the library job's results list it as passing.
+- D3: `open_document` says why: "could not be opened: Unknown component: tunnel. tunnel is the Verilog-A module of .../tunnel.va, not built yet: build it (build_verilog_a with that file), then open this again"; the window's question says the same. Test: `test_qucs_control` `whyADocumentCouldNotBeOpened`.
+- D4: the example's `.TR` asks for Gear, which ngspice never got: the integration method is Qucsator's. The example has a `.OPTIONS` part with method=gear now (Gear runs it; the trapezoidal rule, and Gear of order 1, stop), and Check Schematic notes a `.TR` method other than the trapezoidal rule under ngspice (three other examples get the note).
 
 ## N. Minor
 
@@ -255,6 +288,14 @@ job failed its unit tests on `d19221d` too. The runs failed back to `14687a6` at
   - `diff {steps: 1}` unpacks every kept undo step (0.4 s at 10,000 parts);
   - after Unlink Project the panel lists the removed link for one to three seconds, its
     entries off.
+
+**Fixed in `e1723e1`.**
+- N1: Check Schematic gives an error for each V(PRBS) value ngspice refuses, checked against ngspice 46: a Tbit of 0 or less, a Td below 0, an Order not a whole number from 2 to 31, a Seed not a whole number above 0 or with its low Order bits all zero, a Tr or Tf longer than the Tbit; a warning for a Tr or Tf below 0 (taken as 0: the same waveform) and a Coding neither NRZ nor PAM4.
+- N2: the step note takes a source's shortest edge that takes time (a rise of 0 hid a fall of 1 ns; a PWL's shortest, not its steepest). A MaxStep below 0 is an error ("TMAX is invalid"), Points not a whole number a warning, a pulse's edge below 0 a warning.
+- N3: with MaxStep set, the note offers only a shorter MaxStep.
+- N4: the eye diagram's dialog refuses a value it cannot take, says why, and puts the focus in its field; nothing is applied, the mask set before stays; a mask needs both values.
+- N5: a finding about a part its name does not tell carries its `ref` (GND#2, R1#2), and a click on it in the Problems tab selects that part.
+- Messages: `open_document`'s reason (D3); one period after "Not found: ..."; `diff` by steps and `undo_history` unpack only the states they compare; after Unlink Project or Delete Project the row goes at once (the panel's filter drops a row whose file is gone).
 
 ## What was found right
 
@@ -303,11 +344,16 @@ job failed its unit tests on `d19221d` too. The runs failed back to `14687a6` at
 **Outside the scratch folder.** The smoke suite (`smoke-test.sh simulate`, 21:33) wrote 17
 `spice4qucs.*` files into `~/Library/Caches/qucs-s/qucs-s`, though HOME, settings and
 trash were isolated. The command line's work folder is the cache, which macOS finds
-without HOME, and `QUCS_CACHE_DIR` was not set for that run. They were left there.
+without HOME, and `QUCS_CACHE_DIR` was not set for that run. They were left there, and removed on 2 October by name, each dated 21:33 (a `log.txt` and a `spice4qucs.sw1.plot` of 29 September left as they were).
 
 The system's Trash changed at 21:05, during the hunt. It cannot be listed, every run had
 its own trash (`QUCS_TRASH_DIR`), and the user's own Qucs-S was running then.
 `~/QucsWorkspace` changed only by that Qucs-S (`opamp741_prj`).
+
+**Found while fixing (2 October).** Outside their folders, the tests also wrote:
+- their documents' autosaves and an import's settings backups into `~/Library/Application Support/<the test>`. `useIsolatedSettings` now points both into the test's own folder.
+- the library job's runs (`scripts/ci/test-library-parts.py`) into the real cache: it sets `QUCS_CACHE_DIR` and `QUCS_TRASH_DIR` now.
+- `test_autosave` crashes a copy of itself on purpose (the crash handler's test), and macOS keeps a report of it in `~/Library/Logs/DiagnosticReports` and a count in `CrashReporter`. Left as it is.
 
 ## How to run it again
 
