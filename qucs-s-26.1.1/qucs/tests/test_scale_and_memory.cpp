@@ -30,8 +30,12 @@
 #if defined(__SANITIZE_ADDRESS__)
 #define QUCS_TEST_ASAN 1
 #endif
-#if defined(QUCS_TEST_ASAN)
+#if defined(QUCS_TEST_ASAN) && __has_include(<sanitizer/allocator_interface.h>)
 #include <sanitizer/allocator_interface.h>
+#elif defined(QUCS_TEST_ASAN)
+// GCC installs no allocator_interface.h; its libasan has the function.
+#include <cstddef>
+extern "C" size_t __sanitizer_get_current_allocated_bytes();
 #elif defined(__APPLE__)
 #include <malloc/malloc.h>
 #elif defined(__GLIBC__)
