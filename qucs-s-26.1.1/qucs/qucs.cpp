@@ -2303,9 +2303,12 @@ bool QucsApp::unlinkProject(const QString &PathGiven)
 // The Projects panel's menu.
 void QucsApp::slotProjectsContextMenu(const QPoint &pos)
 {
-  // The row right-clicked: a linked project there can be unlinked.
+  // The row right-clicked: a project there can be opened, a linked one
+  // unlinked. (".." goes back up a folder: no project.)
   const QModelIndex row = Projects->indexAt(pos);
-  const QString path = row.isValid() ? QucsSettings.projsDir.filePath(row.data().toString()) : QString();
+  const QString path = row.isValid() && row.data().toString() != QLatin1String("..")
+                           ? QucsSettings.projsDir.filePath(row.data().toString())
+                           : QString();
 
   QMenu menu(Projects);
   menu.addAction(projSwitchWorkspace);
@@ -2318,6 +2321,14 @@ void QucsApp::slotProjectsContextMenu(const QPoint &pos)
   unlink->setEnabled(!path.isEmpty() && qucs_s::workspace::isLink(path));
   connect(unlink, &QAction::triggered, this, [this, path] { unlinkProject(path); });
   menu.addSeparator();
+  // Open Project: the project right-clicked, as a double-click opens it -
+  // not the one open already. (The Project menu's asks for a folder.)
+  QAction *open = menu.addAction(tr("&Open Project"));
+  open->setObjectName(QStringLiteral("projOpenRow"));
+  open->setStatusTip(tr("Opens the project right-clicked"));
+  const bool isOpenOne = !ProjName.isEmpty() && QDir::cleanPath(QucsSettings.QucsWorkDir.absolutePath()) == QDir::cleanPath(path);
+  open->setEnabled(!path.isEmpty() && QFileInfo(path).isDir() && qucs_s::workspace::isProjectFolder(path) && !isOpenOne);
+  connect(open, &QAction::triggered, this, [this, path] { openProject(path); });
   // The Project menu's Close Project: here, with no project open, nothing
   // to close (there it closes the documents all the same).
   const bool closeEnabled = projClose->isEnabled();
