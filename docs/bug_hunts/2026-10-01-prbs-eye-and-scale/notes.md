@@ -1,0 +1,61 @@
+# hunt notes 20:59
+- [P1 minor] check_schematic does not check V(PRBS) values ngspice refuses (Order 1/40/"seven", Tbit 0/-1n, Tr 5n > Tbit 1n, Seed 0); ngspice refuses each at the run with a clear message plus "no such parameter on this device". Coding "pam8" silently NRZ (no check, no note).
+- eye analysis/diagram: flat, one edge, 1-2 points, NaNs, backwards time, duplicate times, 2M points (0.3 s), bad bit_period/levels/offset/level, edit_diagram unit_interval/span/mask/drawn: all handled with clear errors. OK.
+- many nets (1000) with Eqn (1002 vars), .SW over TR (1001), AC (1000): all simulate whole. OK.
+- [D1 pre-existing] .SW over a DC analysis sweeping a SpicePar parameter: netlist "dc rv 1000 3000 1000"; ngspice "dc simulation(s) aborted" + "Error during 'write': no writable vector found." (small or large).
+- [minor] open_document of a schematic with an unknown part line: "could not be opened." with no reason (which line/part).
+- [B1] dangling link (linked project's target gone/unmounted): not listed in Projects panel (QFileSystemModel hides broken symlinks) -> cannot be unlinked/deleted from the panel or by context_menu ("gone_prj is not in the Projects panel"); yet check() (Import/Link) says "The workspace has a gone_prj already." since isLink(path). Folder 'sub' (plain): menu entries right (Unlink/Open/Close off).
+- no-results rule over 88 safe ngspice examples: none fails with "wrote no results". 19 not succeeded: 11 no analysis (subcircuits, symbols), 2 XSPICE MIF errors (env: this ngspice finds no spinit), sawtooth-2 timestep too small, 3 MESFET tests + tunn.sch below.
+- [D2] testACMESFETCL1/testDCIdsVgs/testDCMESFETCL1.sch use <Lib ... "MESFETs" "MESFETCL1">: no MESFETs library shipped in library/.
+- [D3] OpenVAF/Tunnel_Ngspice_prj/tunn.sch cannot be opened (tool: "could not be opened." with no reason), not even with its project open: its part 'tunnel' is a Verilog-A module not built/loaded. Same before today's changes.
+- [D4] General Electronics/Waveform Generation/sawtooth-2.sch: 'Timestep too small' with this ngspice-46, before and now.
+- [A1 REGRESSION 1b64aaa] dataset folder takes no new file (dir 555, dataset 644): QSaveFile direct-write fallback; a run with no results -> cancelWriting() leaves the dataset truncated to its 22-byte header, while the error says "the dataset is the one from before". Reproduced: p9 (silent stand-in simulator, exit 0).
+- eye diagram file fields (UI -1/nan/1e400/word, span 0/100/-3, from nan/-1, levels 0/3, threshold nan, drawn 7, mask 5/-1/nan, too few/many fields): all load, drawn, defaults. 'from' -1 kept (harmless).
+- [N1 minor, new code] step note: Vpulse Tr 0, Tf 1 ns -> no note (edge time = min(rise, fall) = 0 counts as 'the step itself'), though the 1 ns fall is crossed in 1/10 step.
+- [N2 minor] Points "2001.5" taken as is ("in 2001.5 points"); negative MaxStep (-1 ns) and negative Tr (-1 ns) not flagged by check_schematic (netlisted as given).
+- step note: Start 5 us .. 6 us uses (stop-start)/50 = 20 ns as ngspice does; expressions skipped; two TRs each judged. OK.
+- fuzz-sch on ASan, seed 1001, 160 mutants (320 runs) incl. eye-diagram seeds: clean.
+- ASan server: MUTX coils 5/1/3/2, EDD branches 4/1/3, RFEDD ports 4/1/3, Sub file gaining a port, Lib part, 6 undo + 6 redo, replace, save/close/reopen: no sanitizer report.
+- preview between real edits: undo undoes the real one (OK); selection kept after preview delete (OK); refs GND#0/999/-1/'GND#'/'#1'/'R1#2' refused with the range; gnd#1 case-insensitive.
+- [B2] get_state "selected" lists parts by c->Name: a selected ground is "" (qucscontrol.cpp:4482), not its ref GND#2 (bug 2's naming, missed here).
+- [cosmetic] select's "Not found: There are 3 of GND ... GND#1 to GND#3.." ends in two periods (message's own '.' + tr("Not found: %1.")).
+- [perf minor] diff {steps:1} unpacks all kept undo states (0.43 s at 10k parts, 20 steps); undo_history 20 steps 1.9 s, +51 MB peak. OK otherwise.
+- dataset as a symlink: QSaveFile writes the target, the link stays. OK.
+- [A2 REGRESSION 1b64aaa, CI] scripts/ci/check-tool-arguments.py: "get_dataset: no handler found in call()" (dispatch now a block calling getDataset then releaseFreedMemory). CI's Linux job stops at "Claude's tools take what they read" on 6b2df9f (passed on d19221d).
+- [C1 pre-existing CI] CI red on every run today (since 14687a6 at least): macOS unit tests - test_qucs_control pinsAreGivenTurnedAndConnectSaysWhy ('It crosses the body of R9' missing: "connect: via[0] is a list, not the number 600") and test_long_file_names timeout (300 s); Linux unit tests failed on d19221d.
+  (C1 cause by reading: QJsonArray{QJsonArray{600, 300}} - a one-element brace list of the same type may be a copy, not a nesting, by compiler: the test's 'via' differs on CI's toolchain.)
+- [B3] eye UI from a V(PRBS) Tbit changed since the run: the cached measurement stays (100 ps) until a reload; reload_data (or reopening) folds the old data at the new Tbit (200 ps): height 2e-13, jitter 100 ps, "unit interval from: V1's Tbit", no word that the dataset predates the change; get_dataset's eye the same. The run's netlist is kept (misc::keepRunNetlist), so the Tbit it ran with is known.
+- unlink of the open project with unsaved changes via context_menu: question -> Yes -> 'Save the modified files' told -> nothing unlinked while it waits. OK.
+- smoke-test hostile (21 damaged datasets) on ASan: all pass.
+- delete GND#1,GND#3 / duplicate refs / move GND#4,GND#1: the parts meant. OK.
+- 30 document closes after a 10k-part load: 0.06 s now and before (releaseFreedMemory costs nothing seen).
+- [B4 perf, new code d19221d] Eye diagram 'drawn: traces' over 100,000 bits (2M points): one repaint (screenshot) 11.4 s at span 2, 58.8 s at span 8 (the window frozen as long, at every repaint); 'density' (cached QImage) 0.39/0.88 s.
+- freeing audit: only the Tuner keeps Property* (dialogs/tuner.h currentProps) and it rebinds by name on signalDocumentRebuilt / drops on componentDeleted; no implicit component copies; Sweep/Corners/Optimize write() qDeleteAll the old Props. OK.
+- PRBS/eye lookup on 10k parts: edits 0.43 s with and without an eye diagram. OK.
+- p23 tool fuzzer (select/move/delete/undo/redo/undo_history/diff/edit_diagram eye/get_dataset eye/edit_component PRBS/add_component, previews) on ASan, seed 101, 240 s: 15358 calls, 6801 refused, no sanitizer report, server alive.
+- p23 seed 202, 180 s: 15824 calls, clean.
+- DC OP of 1000 labelled nodes (print in two chunks, > then >>): all 1000 node values right (n0 5 V ... n999 5 mV). OK.
+- [N3 minor wording, new] step note with MaxStep set: "A MaxStep of X or less (or more Points) resolves them" - with MaxStep given, ngspice's step limit is MaxStep alone; more Points does not help.
+- [B5 new code 7d91ad7] Projects panel Open Project on the open project's row is enabled when the workspace path and the open project's path are spelled differently (workspace given as /tmp/... - a symlink to /private/tmp - project opened by its real path): isOpenOne compares QDir::cleanPath, not the folder. Choosing it reopens the open project (all documents closed, asked to save).
+- [N4 minor] eye diagram Properties dialog: invalid Unit interval (-1, 1e400), From (abc), Threshold (nan), Mask width (5, 0), Mask height (-1, 1e400) are taken without a word and dropped: an earlier valid mask (0.3 UI x 0.2) silently removed, the UI back to automatic. (edit_diagram refuses the same values.)
+- smoke simulate suite on ASan (48 ok) + fuzz-simout seed 7, 150 mutants: clean.
+- saved mark through edit/save/edit/undo/undo/redo/redo: unsaved False/True as it should. rebuild() reads its copy only. OK.
+- TR + DC of 1000 nets in one netlist, real run: 1000 tran variables, 1000 op nodes, values right. OK.
+- [minor] after Unlink Project the Projects panel lists the removed link for ~1-3 s (file watcher), every project entry of its menu disabled.
+- Open Project (menu) while a background run of the open project's document: the document closed, the run's outcome 'closed while it was simulated: its results were discarded'. No crash.
+- .FFT with 1000 nets: linearize/fft lines of 1001 words, yet ngspice takes them (no LOTS limit there): spectrum of 1025 points, 1000 variables. OK.
+- [B6 pre-existing, in the code bug 2 touched] two parts of one name (hand-edited; check_schematic says "R1: the name is used twice"): Select All + move / delete {selection} act on the first R1 only - the second (2k) left where it was / not deleted, the answer "moved: R1, GND", "Deleted R1, GND". withSelection turns the selection into names (refs), both resolve to the first.
+- names with '#' refused by add_component (no clash with refs). OK.
+- real PAM4 PRBS7 through RC, get_dataset eye levels 4: 4 levels 0.008/0.34/0.66/0.99, three eyes. OK.
+- [B7 new code] the eye takes the UI from the V(PRBS) source ("unit interval from: V1's Tbit") but not its Coding: a PAM4 source's trace is measured as NRZ by default - the eye diagram (levels 2) and get_dataset without 'levels' - one eye, levels 0.16/0.83, Q 2.03, nothing said of PAM4.
+- capacitor note across V(PRBS) (NRZ, PAM4, U2 a parameter, no Tr): right figures / no figure / time step. OK.
+- monkey seeds 5101/5102 x 3000 steps on the release build: clean.
+  (B4 more: 1st paint 10.9 s, 2nd 15.0 s, then cached 0.02 s; every zoom in/out repaints: 18.4 s / 14.9 s.)
+- PRBS_eye_diagram.sch (20001 points now): no note, simulates, eye UI 100 ps from V1's Tbit, height 0.34, Q 2.8; drawn in 0.08 s. OK.
+- [hygiene, mine] smoke-test.sh simulate (21:33) wrote 17 spice4qucs.* files into the real ~/Library/Caches/qucs-s/qucs-s although HOME, settings and trash were isolated: the CLI's work folder is the cache, found without HOME on macOS; QUCS_CACHE_DIR was not set. Not deleted. ~/.Trash mtime 21:05:00: cannot be listed; all my processes had QUCS_TRASH_DIR; the user's own Qucs-S was running then.
+- [B8 new code] eye diagram with two traces from two V(PRBS) sources (V1 100 ps, V2 200 ps): both folded at 100 ps, trace 2's measurement labelled "unit interval from: V1's Tbit" though it comes from V2 (200 ps).
+  (B8: get_dataset's eye per variable is right - v(b) 200 ps from V2, v(a) 100 ps from V1; only the diagram uses the first trace's.)
+- [N5 minor] check_schematic's findings about a ground give 'at' only, no 'ref' (GND#1) that select/move/delete take (get_schematic gives the ref).
+- AnyFolderIsProject on: Open Project on plain (yes), x_prj (yes), user_lib (no), .hidden not listed; chosen, 'plain' opens. OK.
+  (B3 more: V1 deleted -> the cached eye still says 'V1's Tbit' until a reload, then 'the crossings'.)
+- p23 seed 303 on the release build, 300 s: 44524 calls (19521 refused), server alive. Hunt ended 21:57.
