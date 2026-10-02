@@ -311,6 +311,12 @@ public:
   /// into the workspace, removes the link only. Refused while a document
   /// open from it has unsaved changes; the others close.
   bool deleteProject(const QString &path);
+  /// Removes the link \a path of a project linked into the workspace (Link
+  /// Project) after asking; the project's files stay where they are. Open
+  /// through it, the project closes first (asking about unsaved changes:
+  /// false when that is refused); documents open through it otherwise
+  /// close, refused while one has unsaved changes.
+  bool unlinkProject(const QString &path);
   /// The workspace becomes \a dir (made if missing): the Projects panel
   /// lists it, the open project and documents are closed (asking about
   /// unsaved changes first - false when that is refused), and the setting

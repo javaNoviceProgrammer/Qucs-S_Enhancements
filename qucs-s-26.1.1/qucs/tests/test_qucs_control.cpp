@@ -5028,6 +5028,17 @@ private slots:
         app->slotMenuProjClose();
         r = call("context_menu", {{"on", QJsonObject{{"project", "menus_prj"}}}});
         QVERIFY2(!failed(r) && text(r).contains("Switch Workspace"), qPrintable(text(r)));
+        // Unlink Project and Close Project there too, neither to be chosen
+        // here: menus_prj is no link, and no project is open.
+        const auto cannot = [&](const QJsonObject& menu) {
+            QStringList off;
+            for (const QJsonValue& e : json(menu).toObject().value("menu").toArray())
+                if (!e.toObject().value("enabled").toBool(true)) off << e.toObject().value("entry").toString();
+            return off;
+        };
+        QVERIFY2(cannot(r).contains("Unlink Project") && cannot(r).contains("Close Project"), qPrintable(text(r)));
+        r = call("context_menu", {{"on", QJsonObject{{"project", "menus_prj"}}}, {"choose", "Unlink Project"}});
+        QVERIFY2(failed(r) && text(r).contains("cannot be chosen now"), qPrintable(text(r)));
         bool fileDialog = false;
         QJsonObject cancelled;
         QTimer::singleShot(800, this, [&] {
@@ -5043,6 +5054,8 @@ private slots:
         // The Content panel's, of a file in the open project, and the File
         // Browser's.
         QVERIFY(!failed(call("open_project", {{"name", "menus_prj"}})));
+        r = call("context_menu", {{"on", QJsonObject{{"project", "menus_prj"}}}});
+        QVERIFY2(!failed(r) && text(r).contains("Close Project") && !cannot(r).contains("Close Project"), qPrintable(text(r)));
         const QString project = QucsSettings.QucsWorkDir.absolutePath();
         {
             QFile f(project + "/notes.txt");
