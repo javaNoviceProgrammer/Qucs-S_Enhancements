@@ -866,13 +866,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   first, in natural order (R2 before R10). Back, forward, up, and places
   (the workspace, the open project, the examples, home, the volumes); the
   path as buttons, or typed (Ctrl+Shift+G); a filter by name (text or a
-  regular expression, as the Content panel's), and *Show
-  Only Qucs-S Files*. A double-click opens a file as the Content panel
-  does; its menu opens it with the system, shows it in the file manager,
-  copies its path, renames it in place, makes a folder or moves it to the
-  trash (documents open from it close; not while one has unsaved
-  changes). The folder, the view and the options are kept for the next
-  start.
+  regular expression, as the Content panel's), and *Show Only Qucs-S
+  Files*. A double-click opens a file as the Content panel does; its menu
+  opens it with the system, shows it in the file manager, copies its
+  path, renames it in place, makes a folder or a new ZIP archive (*New
+  Zip…*, below) or moves it to the trash (documents open from it close;
+  not while one has unsaved changes). The folder, the view and the
+  options are kept for the next start.
   **Drag and drop**: select one or several entries (⌘/Ctrl-click,
   Shift-click) and drag them.
   - **Where they go:** onto a folder's row, into that folder. Beside the
@@ -976,7 +976,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   land as files. Every change is a step to undo; *Save* writes the
   archive, the files not changed copied as they were packed. Nothing in
   an archive is run (what Qucs-S does not open is only extracted), and
-  nothing is extracted outside the folder chosen.
+  nothing is extracted outside the folder chosen. **A new archive**: the
+  File Browser's *New Zip…* (its right-click menus and its ⋯ menu) opens
+  an empty one, *untitled.zip*; files and folders dropped on it or added
+  go in, and *Save* asks where, offering the folder the menu was of and
+  a name free there (`Archive.zip`, `Archive 2.zip`).
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

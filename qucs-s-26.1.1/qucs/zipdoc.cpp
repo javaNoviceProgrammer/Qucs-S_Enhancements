@@ -257,6 +257,29 @@ void ZipDoc::setName(const QString& name)
     a_DocName = name;
 }
 
+void ZipDoc::startNew(const QString& suggested)
+{
+    a_DocName.clear();
+    a_suggested = suggested;
+    QString why;
+    setFromArchive(QByteArray(), &why);
+    a_undo->clear();
+    a_undo->setClean();
+    setDocChanged(false);
+    updateStatus();
+}
+
+QString ZipDoc::shownName() const
+{
+    return a_DocName.isEmpty() ? tr("the new archive") : QFileInfo(a_DocName).fileName();
+}
+
+QString ZipDoc::folder() const
+{
+    const QString file = a_DocName.isEmpty() ? a_suggested : a_DocName;
+    return file.isEmpty() ? QDir::homePath() : QFileInfo(file).absolutePath();
+}
+
 // ---------------------------------------------------------------------
 bool ZipDoc::setFromArchive(const QByteArray& bytes, QString* error)
 {
@@ -734,7 +757,7 @@ void ZipDoc::copyChanged(const QString& path)
         const QString name = a_opened.value(path);
         QStatusBar* bar = a_App != nullptr ? a_App->statusBar() : nullptr;
         if (!names().contains(name)) {
-            if (bar != nullptr) bar->showMessage(tr("%1 is no longer in %2.").arg(baseOf(name), QFileInfo(a_DocName).fileName()), 6000);
+            if (bar != nullptr) bar->showMessage(tr("%1 is no longer in %2.").arg(baseOf(name), shownName()), 6000);
             return;
         }
         bool ok = false;
@@ -742,7 +765,7 @@ void ZipDoc::copyChanged(const QString& path)
         replaceContents(name, bytes);
         if (bar != nullptr)
             bar->showMessage(tr("%1 changed: it is in %2 again - save the archive to keep it.")
-                                 .arg(baseOf(name), QFileInfo(a_DocName).fileName()),
+                                 .arg(baseOf(name), shownName()),
                              8000);
     });
 }
@@ -892,7 +915,8 @@ void ZipDoc::updateStatus()
     QString text = (files == 1 ? tr("1 file") : tr("%1 files").arg(locale.toString(files))) + QStringLiteral(", ")
                    + (folders == 1 ? tr("1 folder") : tr("%1 folders").arg(locale.toString(folders))) + QStringLiteral(" · ")
                    + locale.formattedDataSize(size);
-    if (!changed && size > 0)
+    if (a_entries.isEmpty()) text = tr("Nothing in it yet: drop files and folders here, or Add Files… and Add Folder…");
+    else if (!changed && size > 0)
         text += QStringLiteral(" · ") + tr("packed %1 (%2% saved)").arg(locale.formattedDataSize(packed)).arg(std::max<qint64>(0, (size - packed) * 100 / size));
     if (getDocChanged()) text += QStringLiteral(" · ") + tr("changed: save to write the archive");
     a_status->setText(text);
@@ -1020,16 +1044,14 @@ void ZipDoc::addAsked(const QStringList& paths, const QString& folder)
 
 void ZipDoc::addFilesAsked()
 {
-    const QStringList files = QFileDialog::getOpenFileNames(this, tr("Add Files to %1").arg(QFileInfo(a_DocName).fileName()),
-                                                            QFileInfo(a_DocName).absolutePath());
+    const QStringList files = QFileDialog::getOpenFileNames(this, tr("Add Files to %1").arg(shownName()), folder());
     if (!files.isEmpty()) addAsked(files, targetFolder());
 }
 
 void ZipDoc::addFolderAsked()
 {
-    const QString folder = QFileDialog::getExistingDirectory(this, tr("Add a Folder to %1").arg(QFileInfo(a_DocName).fileName()),
-                                                             QFileInfo(a_DocName).absolutePath());
-    if (!folder.isEmpty()) addAsked({folder}, targetFolder());
+    const QString chosen = QFileDialog::getExistingDirectory(this, tr("Add a Folder to %1").arg(shownName()), folder());
+    if (!chosen.isEmpty()) addAsked({chosen}, targetFolder());
 }
 
 void ZipDoc::newFolderAsked()
@@ -1060,9 +1082,8 @@ void ZipDoc::extractAsked()
 
 void ZipDoc::extractInto(const QStringList& chosen)
 {
-    const QString archiveName = QFileInfo(a_DocName).fileName();
     const QString dir = QFileDialog::getExistingDirectory(
-        this, chosen.isEmpty() ? tr("Extract All of %1 to").arg(archiveName) : tr("Extract to"), QFileInfo(a_DocName).absolutePath());
+        this, chosen.isEmpty() ? tr("Extract All of %1 to").arg(shownName()) : tr("Extract to"), folder());
     if (dir.isEmpty()) return;
     QStringList there;
     for (const Entry& e : a_entries) {
