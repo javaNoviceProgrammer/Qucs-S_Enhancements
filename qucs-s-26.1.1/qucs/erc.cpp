@@ -92,8 +92,11 @@ struct Nets {
 bool groundName(Schematic* doc, const QString& name)
 {
     if (name == QLatin1String("0") || name == QLatin1String("gnd")) return true;
-    return QucsSettings.DefaultSimulator == spicecompat::simNgspice && !doc->isDigitalCircuit()
-           && name.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0;
+    // The name first: whether the circuit is digital looks at every part,
+    // and asked for every net's name it made a check of 37,500 parts take
+    // minutes.
+    return name.compare(QLatin1String("gnd"), Qt::CaseInsensitive) == 0
+           && QucsSettings.DefaultSimulator == spicecompat::simNgspice && !doc->isDigitalCircuit();
 }
 
 bool namesWithoutCase(Schematic* doc)
@@ -1069,6 +1072,17 @@ Edges edgesOf(const Component* v)
     if (v->Model == QLatin1String("Vrect"))
         return value("U", &u2) && value("U0", &u1) && value("Tr", &rise) && value("Tf", &fall) ? edge(std::abs(u2 - u1), rise, fall)
                                                                                                 : Edges{};
+    if (v->Model == QLatin1String("vPRBS")) {
+        // Its edges left empty are ngspice's default, the time step.
+        const auto time = [&](const char* name, double* out) {
+            *out = 0;
+            for (const Property* p : v->Props)
+                if (p->Name == QLatin1String(name) && p->Value.trimmed().isEmpty()) return true;
+            return value(name, out);
+        };
+        return value("U1", &u1) && value("U2", &u2) && time("Tr", &rise) && time("Tf", &fall) ? edge(std::abs(u2 - u1), rise, fall)
+                                                                                               : Edges{};
+    }
     // The SPICE ones: their text, continuation lines and all.
     QStringList lines;
     for (const Property* p : v->Props) lines << p->Value;
@@ -1093,14 +1107,21 @@ Edges edgesOf(const Component* v)
     return Edges{Edges::None, 0, 0};
 }
 
+// The sources edgesOf() reads.
+const QStringList& edgy()
+{
+    static const QStringList models{QStringLiteral("Vpulse"), QStringLiteral("Vrect"), QStringLiteral("vPWL"), QStringLiteral("S4Q_V"),
+                                    QStringLiteral("vPRBS")};
+    return models;
+}
+
 // A capacitor straight across a source with edges (a pulse, a PWL, and the
 // SPICE source's PULSE and PWL): nothing limits the current at the edges -
 // C dV/dt, worked out from the values when they are numbers.
 void edgeNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 {
-    static const QStringList edgy{QStringLiteral("Vpulse"), QStringLiteral("Vrect"), QStringLiteral("vPWL"), QStringLiteral("S4Q_V")};
     for (const Component* v : doc->a_DocComps) {
-        if (!inCircuit(v) || !voltageSource(v) || !edgy.contains(v->Model)) continue;
+        if (!inCircuit(v) || !voltageSource(v) || !edgy().contains(v->Model)) continue;
         const int a = netOfPin(nets, v, 0), b = netOfPin(nets, v, 1);
         if (a < 0 || b < 0 || a == b) continue;
         const Edges edges = edgesOf(v);
@@ -1132,6 +1153,65 @@ void edgeNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
                              .arg(c->Name, v->Name, how),
                          QPoint(c->cx, c->cy), c->Name};
         }
+    }
+}
+
+// A transient whose step is long against the sources' fastest edge.
+// ngspice's steps are at most (Stop - Start)/(Points - 1) - or (Stop -
+// Start)/50 when that is less - and MaxStep when it is set; an edge crossed
+// in fewer than five of them comes out coarse: a chain of inverters driven
+// by 0.5 ns edges, run in 0.5 ns steps, had its delay 12% too long. Not
+// when steps that short would be more than a million over the run: such an
+// edge is a step to it (a relay switched in 1 ns, run for 20 ms - and
+// ngspice breaks at a pulse's corners).
+void stepNotes(Schematic* doc, QList<Issue>& out)
+{
+    if (QucsSettings.DefaultSimulator != spicecompat::simNgspice) return;
+    const Component* fastest = nullptr;
+    double edge = std::numeric_limits<double>::infinity();
+    for (const Component* v : doc->a_DocComps) {
+        if (!inCircuit(v) || !voltageSource(v) || !edgy().contains(v->Model)) continue;
+        // Edges of no rise time are the step itself: nothing to compare.
+        if (const Edges e = edgesOf(v); e.kind == Edges::Known && e.time > 0 && e.time < edge) {
+            edge = e.time;
+            fastest = v;
+        }
+    }
+    if (fastest == nullptr) return;
+    const auto number = [](const Component* c, const char* name, double* out) {
+        for (const Property* p : c->Props)
+            if (p->Name == QLatin1String(name)) {
+                const qucs_s::units::Reading r = qucs_s::units::read(p->Value);
+                *out = r.value;
+                return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value);
+            }
+        return false;
+    };
+    const auto shown = [](double t) { return qucs_s::units::engineering(t, QStringLiteral("s")); };
+    // Five steps an edge, rounding aside: 0.1 ns times 5 is a little over 0.5 ns.
+    for (const Component* t : doc->a_DocComps) {
+        if (!inCircuit(t) || t->Model != QLatin1String(".TR") || t->Props.isEmpty() || t->Props.at(0)->Value != QLatin1String("lin"))
+            continue;
+        double start, stop, points, most = 0;
+        if (!number(t, "Start", &start) || !number(t, "Stop", &stop) || !number(t, "Points", &points) || points < 2 || stop <= start)
+            continue;
+        if ((stop - start) / (edge / 5) > 1e6) continue;
+        const double step = (stop - start) / (points - 1);
+        QString why;
+        if (number(t, "MaxStep", &most) && most > 0) {
+            if (most * 5 <= edge * (1 + 1e-9)) continue;
+            why = tr("its MaxStep is %1").arg(shown(most));
+        } else {
+            const double longest = std::min(step, (stop - start) / 50);
+            if (longest * 5 <= edge * (1 + 1e-9)) continue;
+            why = tr("its step is %1 (%2 to %3 in %4 points)").arg(shown(longest), shown(start), shown(stop)).arg(points);
+        }
+        out << Issue{Severity::Warning,
+                     tr("%1's time step is long for %2's edges of %3: %4, and an edge crossed in so few steps comes out "
+                        "coarse - delays and rise times off by 10% or more. A MaxStep of %5 or less (or more Points) "
+                        "resolves them")
+                         .arg(t->Name, fastest->Name, shown(edge), why, shown(edge / 5)),
+                     QPoint(t->cx, t->cy), t->Name};
     }
 }
 
@@ -1328,6 +1408,7 @@ QList<Issue> notes(Schematic* doc)
         valueIssues(doc, nullptr, &out);
         twoNamesNotes(doc, nets, out);
         edgeNotes(doc, nets, out);
+        stepNotes(doc, out);
         biasNotes(doc, nets, out);
         loadNotes(doc, nets, out);
     }

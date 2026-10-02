@@ -517,3 +517,24 @@ int spicecompat::strToMsopenModel(const QString &model)
   models<<"Kirschning"<<"Hammerstad"<<"Alexopoulos";
   return models.indexOf(model);
 }
+
+bool spicecompat::tooManyVectors(const QString& vectors)
+{
+    return vectorChunks(vectors).size() > 1;
+}
+
+QStringList spicecompat::vectorChunks(const QString& vectors)
+{
+    const QStringList all = vectors.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    QStringList chunks;
+    for (qsizetype k = 0; k < all.size(); k += ngspiceMostVectors)
+        chunks << all.mid(k, ngspiceMostVectors).join(QLatin1Char(' '));
+    return chunks;
+}
+
+QString spicecompat::saveLines(const QString& vectors)
+{
+    QString lines;
+    for (const QString& chunk : vectorChunks(vectors)) lines += QStringLiteral("save %1\n").arg(chunk);
+    return lines;
+}

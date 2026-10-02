@@ -133,8 +133,12 @@ void TimingDiagram::paintDiagram(QPainter *painter) {
 // ------------------------------------------------------------
 int TimingDiagram::calcDiagram()
 {
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
+  qDeleteAll(Arcs);   // (none drawn here: as every diagram, all made again)
+  Arcs.clear();
 
   y1 = 0;  // no scroll bar
   x3 = x2;

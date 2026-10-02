@@ -2982,6 +2982,7 @@ void QucsApp::closeFile(int index)
     DocumentTab->removeTab(index);
     view->forgetDocumentElements();
     delete Doc;
+    misc::releaseFreedMemory();   // (its parts' memory, offered back to the system)
     // Saved or discarded on purpose: the autosave copy is obsolete.
     if (closingName.isEmpty())
       qucs_s::autosave::removeUntitled(docIndex, closingSchematic);

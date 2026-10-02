@@ -198,7 +198,7 @@ void VHDL_File::createSymbol()
   // remove remaining properties if necessary
   y=Props.count()-1;
   for(i=No; i<y; i++) {
-    Props.removeLast();
+    delete Props.takeLast();
   }
 }
 

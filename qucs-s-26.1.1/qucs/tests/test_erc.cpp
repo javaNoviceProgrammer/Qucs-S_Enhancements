@@ -1018,6 +1018,60 @@ private slots:
         got = across(part("vPWL", "V1", 0, "\"0 0 1u 0 1.01u 5 3u 5\" 1 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0"), "1 nF");
         QVERIFY2(got.size() == 1 && got.first().contains("C dV/dt is 0.5 A here (1 nF, a step of 5 V in 10 ns)"), qPrintable(got.join(" | ")));
 
+        // A transient's step long for the sources' edges (the stress report:
+        // 0.5 ns steps over 0.5 ns edges, delays 12% off): an edge crossed
+        // in fewer than five steps. ngspice's step is (Stop - Start)/(Points
+        // - 1), or (Stop - Start)/50 when less, or MaxStep when that is set;
+        // the fastest source is named; edges of no rise time are the step
+        // itself, nothing to compare; nor edges a million steps would not
+        // resolve over the run (a step to it); for ngspice only.
+        const auto stepped = [&](const QString& sources, const QString& points, const QString& maxStep,
+                                 const QString& simulation = QString()) {
+            QString t = tran;
+            t.replace("\"2001\" 0", "\"" + points + "\" 0").replace("\"yes\" 0 \"0\" 0>", "\"yes\" 0 \"" + maxStep + "\" 0>");
+            return findings(sources + gnd(0) + R("R1", 100, "1k") + gnd(100) + (simulation.isNull() ? t : simulation),
+                            top(0, "a") + top(100, "a"))
+                .filter("time step");
+        };
+        got = stepped(vpulse("5 V", "1 ns"), "2001", "0");
+        QVERIFY2(got == QStringList{"N TR1's time step is long for V1's edges of 1 ns: its step is 10 ns (0 s to 20 us in 2001 "
+                                    "points), and an edge crossed in so few steps comes out coarse - delays and rise times off by "
+                                    "10% or more. A MaxStep of 200 ps or less (or more Points) resolves them"},
+                 qPrintable(got.join(" | ")));
+        QVERIFY2(stepped(vpulse("5 V", "1 ns"), "100001", "0").isEmpty(), "five steps an edge (200 ps)");
+        QVERIFY2(stepped(vpulse("5 V", "1 ns"), "80001", "0").size() == 1, "four (250 ps)");
+        QVERIFY2(stepped(vpulse("5 V", "1 ns"), "2001", "0.2 ns").isEmpty(), "MaxStep 200 ps");
+        got = stepped(vpulse("5 V", "1 ns"), "100001", "1 ns");
+        QVERIFY2(got.size() == 1 && got.first().contains(": its MaxStep is 1 ns, and"), qPrintable(got.join(" | ")));
+        got = stepped(vpulse("5 V", "1 us"), "11", "0");   // 2 us apart, but ngspice's steps 400 ns at most
+        QVERIFY2(got.size() == 1 && got.first().contains("edges of 1 us: its step is 400 ns (0 s to 20 us in 11 points)"),
+                 qPrintable(got.join(" | ")));
+        QVERIFY(stepped(vpulse("5 V", "0"), "2001", "0").isEmpty());
+        QVERIFY2(stepped(vpulse("5 V", "99 ps"), "2001", "0").isEmpty(), "20 us in 19.8 ps steps: more than a million");
+        QVERIFY2(stepped(vpulse("5 V", "101 ps"), "2001", "0").size() == 1, "fewer than a million");
+        QVERIFY(stepped(vpulse("5 V", "Trise"), "2001", "0").isEmpty());
+        QVERIFY(stepped(vpulse("0 V", "1 ns"), "2001", "0").isEmpty());   // no edges
+        const QString prbs = part("vPRBS", "V1", 0, "\"0 V\" 1 \"1 V\" 1 \"1 ns\" 1 \"0\" 0 \"50 ps\" 0 \"50 ps\" 0 \"7\" 1 \"\" 0 \"NRZ\" 0");
+        const QString shortRun = QString(tran).replace("\"20 us\"", "\"100 ns\"");
+        got = stepped(prbs, "2001", "0", shortRun);
+        QVERIFY2(got.size() == 1 && got.first().contains("long for V1's edges of 50 ps: its step is 50 ps")
+                     && got.first().contains("MaxStep of 10 ps"),
+                 qPrintable(got.join(" | ")));
+        QVERIFY(stepped(part("vPRBS", "V1", 0, "\"0 V\" 1 \"1 V\" 1 \"1 ns\" 1 \"\" 0 \"\" 0 \"\" 0 \"7\" 1 \"\" 0 \"NRZ\" 0"), "2001", "0",
+                        shortRun)
+                    .isEmpty());   // edges of the step
+        const QString second = part("Vpulse", "V2", 200, "\"0 V\" 1 \"1 V\" 1 \"1 us\" 1 \"6 us\" 1 \"0.2 ns\" 0 \"0.2 ns\" 0") + gnd(200);
+        got = findings(vpulse("5 V", "1 ns") + gnd(0) + second + tran, top(0, "a") + top(200, "b")).filter("time step");
+        QVERIFY2(got.size() == 1 && got.first().contains("long for V2's edges of 200 ps"), qPrintable(got.join(" | ")));
+        QVERIFY(stepped(vpulse("5 V", "1 ns"), "2001", "0", QString(tran).replace("<.TR TR1 1 ", "<.TR TR1 0 ")).isEmpty());
+        QVERIFY(stepped(vpulse("5 V", "1 ns"), "2001", "0", QString(tran).replace("\"lin\" 1", "\"list\" 1")).isEmpty());
+        QucsSettings.DefaultSimulator = spicecompat::simXyce;
+        QVERIFY(stepped(vpulse("5 V", "1 ns"), "2001", "0").isEmpty());
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        // (The note of the capacitor across a pulse above is no other.)
+        got = across(vpulse("5 V", "1 ns"), "1 nF");
+        QCOMPARE(got.size(), 1);
+
         // (A8, A9.) In a subcircuit a port names its net as a label does:
         // VEE at -5 V is as meant, VCC at -5 V the wrong way round. The
         // other sign of "+15 V" is "-15 V". V1's + on ground, its - on r.

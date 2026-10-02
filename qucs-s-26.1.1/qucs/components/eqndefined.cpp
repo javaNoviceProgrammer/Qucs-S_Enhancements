@@ -284,8 +284,8 @@ void EqnDefined::createSymbol()
     }
   } else {
     for(i = Num; i < NumProps; i++) {
-      Props.removeLast();
-      Props.removeLast();
+      delete Props.takeLast();
+      delete Props.takeLast();
     }
   }
 

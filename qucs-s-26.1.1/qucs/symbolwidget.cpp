@@ -68,6 +68,13 @@ SymbolWidget::SymbolWidget(QWidget *parent) : QWidget(parent)
 
 SymbolWidget::~SymbolWidget()
 {
+  qDeleteAll(Lines);
+  qDeleteAll(Arcs);
+  qDeleteAll(Rects);
+  qDeleteAll(Ellipses);
+  qDeleteAll(Images);
+  qDeleteAll(Polylines);
+  qDeleteAll(Texts);
 }
 
 void SymbolWidget::enableDragNDrop()
@@ -201,14 +208,19 @@ void SymbolWidget::paintEvent(QPaintEvent*)
  */
 int SymbolWidget::createStandardSymbol(const QString& Lib_, const QString& Comp_)
 {
+  qDeleteAll(Arcs);
   Arcs.clear();
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Rects);
   Rects.clear();
+  qDeleteAll(Ellipses);
   Ellipses.clear();
   qDeleteAll(Images);
   Images.clear();
   qDeleteAll(Polylines);
   Polylines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
   PortNames.clear();
   LibraryPath = Lib_;
@@ -489,14 +501,19 @@ int SymbolWidget::setSymbol( QString& SymbolString,
 
   if (SymbolString.isEmpty()) return -1; // should not happen...
 
+  qDeleteAll(Arcs);
   Arcs.clear();
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Rects);
   Rects.clear();
+  qDeleteAll(Ellipses);
   Ellipses.clear();
   qDeleteAll(Images);
   Images.clear();
   qDeleteAll(Polylines);
   Polylines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
   PortNames.clear();
   LibraryPath = Lib_;
@@ -554,14 +571,19 @@ int SymbolWidget::loadSymFile(const QString &file)
     symfile.close();
   } else return -1;
 
+  qDeleteAll(Arcs);
   Arcs.clear();
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Rects);
   Rects.clear();
+  qDeleteAll(Ellipses);
   Ellipses.clear();
   qDeleteAll(Images);
   Images.clear();
   qDeleteAll(Polylines);
   Polylines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
   PortNames.clear();
   Warning.clear();

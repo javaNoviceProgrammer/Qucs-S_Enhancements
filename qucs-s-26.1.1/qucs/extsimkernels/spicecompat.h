@@ -28,6 +28,20 @@ namespace spicecompat {
      QString togglingPWL(const QStringList& durations, const QString& firstLevel, const QString& otherLevel,
                          double maxTransition, bool repeat);
 
+     /// ngspice reads at most 1000 words of a command (LOTS): a write or a
+     /// print of more vectors writes nothing ("too many args") - and the
+     /// run seemed to succeed, with an empty dataset. So many at most to one
+     /// command.
+     inline constexpr int ngspiceMostVectors = 900;
+     /// Whether \a vectors (separated by spaces) are too many for one command.
+     bool tooManyVectors(const QString& vectors);
+     /// \a vectors in commands of at most ngspiceMostVectors each: "save v(a)
+     /// v(b) ...", "print ... > file" then "print ... >> file".
+     QStringList vectorChunks(const QString& vectors);
+     /// "save" lines for \a vectors, before an analysis: its plot then holds
+     /// them alone, and a bare "write" writes them all.
+     QString saveLines(const QString& vectors);
+
      enum Simulator : int {
          simNotSpecified = 0b00000000,
          simNgspice      = 0b00000001,

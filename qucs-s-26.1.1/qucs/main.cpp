@@ -523,6 +523,9 @@ void createIcons() {
         scene->render(&painter, image.rect(), rScene);
 
         image.save("./bitmaps_generated/" + QString(File) + ".png");
+        painter.end();
+        delete scene;
+        delete e;
 
         fprintf(stdout, "[%s] %s\n", category.toLatin1().data(), File);
       }

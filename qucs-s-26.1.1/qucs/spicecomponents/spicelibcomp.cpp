@@ -113,6 +113,7 @@ void SpiceLibComp::createSymbol()
   } else {
     QStringList pins;
     No = spicecompat::getPins(LibName,Props.at(1)->Value,pins);
+    qDeleteAll(Ports);
     Ports.clear();
     remakeSymbol(No,pins);  // no symbol was found -> create standard symbol
   }

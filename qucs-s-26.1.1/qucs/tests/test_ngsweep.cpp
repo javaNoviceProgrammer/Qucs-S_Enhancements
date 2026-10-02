@@ -497,6 +497,57 @@ private slots:
         QVERIFY(why.contains("nothing to record"));
     }
 
+    // More nodes than one ngspice command takes (1000 words; a write of
+    // them wrote nothing, "too many args"): saved before the sweep, each
+    // run's plot written whole, the saves cleared after. With records the
+    // runs' plots keep all of ngspice's vectors: a record may name what a
+    // save leaves out (a subcircuit's inner node).
+    void manyNodesAreSavedBeforeTheSweep()
+    {
+        Sweep s = acSweep();
+        s.outer << Knob{"C1", "list", "", "", "", "100n; 200n"};
+        auto doc = load("many", s);
+        QVERIFY(doc != nullptr);
+        Component* c = find(doc.get(), "NgSweep1");
+        QStringList nodes;
+        for (int k = 1; k <= 1200; ++k) nodes << QStringLiteral("v(n%1)").arg(k);
+        QStringList outputs;
+        QString why;
+        const QString block = controlBlock(c, doc.get(), nodes.join(' '), &outputs, &why);
+        QVERIFY2(!block.isEmpty(), qPrintable(why));
+        const QStringList lines = block.split('\n');
+        QStringList saves;
+        for (const QString& line : lines)
+            if (line.startsWith("save ")) saves << line;
+        QCOMPARE(saves.size(), 2);
+        QCOMPARE(saves.at(0).split(' ').size(), 1 + spicecompat::ngspiceMostVectors);
+        QCOMPARE((saves.at(0).mid(5) + ' ' + saves.at(1).mid(5)), nodes.join(' '));
+        QVERIFY2(block.indexOf("save ") < block.indexOf("\nsweep "), qPrintable(block.left(200)));
+        // The sweep records 256 of them at most, as before.
+        QVERIFY(lines.filter(QRegularExpression("^sweep ")).first().split(' ').size() < 300);
+        QVERIFY2(block.contains("write spice4qucs.ngsweep1.ngswaves\n"), qPrintable(block.right(400)));
+        QVERIFY(!block.contains("ngswaves v("));
+        QVERIFY2(block.contains("unset appendwrite\ndelete all\necho \"qucs-s: end NgSweep1\"\n"), qPrintable(block.right(400)));
+        for (const QString& line : lines) QVERIFY2(line.split(' ').size() < 1000, qPrintable(line.left(80)));
+
+        // With a record: no saves, the plots whole.
+        s.records << qucs_s::ngstats::Record{"peak", "maximum(vdb(n1))"};
+        s.write(c);
+        const QString recorded = controlBlock(c, doc.get(), nodes.join(' '), &outputs, &why);
+        QVERIFY2(!recorded.isEmpty(), qPrintable(why));
+        QVERIFY(!recorded.contains("\nsave "));
+        QVERIFY(!recorded.contains("delete all"));
+        QVERIFY(recorded.contains("write spice4qucs.ngsweep1.ngswaves\n"));
+
+        // At the limit: one write, as before.
+        nodes = nodes.mid(0, spicecompat::ngspiceMostVectors);
+        s.records.clear();
+        s.write(c);
+        const QString few = controlBlock(c, doc.get(), nodes.join(' '), &outputs, &why);
+        QVERIFY(!few.contains("\nsave "));
+        QVERIFY(few.contains("write spice4qucs.ngsweep1.ngswaves " + nodes.join(' ') + "\n"));
+    }
+
     // The dataset: the knobs' values, every run's waveforms as a family
     // against the scale and the knobs, the recorded values against the
     // knobs; with outer knobs the values' curves found by their names.

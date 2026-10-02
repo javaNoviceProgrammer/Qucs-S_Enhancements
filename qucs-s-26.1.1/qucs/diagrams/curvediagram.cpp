@@ -121,8 +121,11 @@ void CurveDiagram::calcLimits()
 // --------------------------------------------------------------
 int CurveDiagram::calcDiagram()
 {
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
+  qDeleteAll(Arcs);
   Arcs.clear();
 
   double GridStep, corr, zD, zDstep, GridNum;

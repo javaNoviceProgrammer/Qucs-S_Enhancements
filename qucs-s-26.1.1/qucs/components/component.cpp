@@ -15,6 +15,7 @@
  *                                                                         *
  ***************************************************************************/
 #include <cmath>
+#include <utility>
 
 #include "component.h"
 #include "libcomp.h"
@@ -178,6 +179,32 @@ Component::Component() {
 
 
     containingSchematic = nullptr;
+}
+
+Component::~Component()
+{
+    clearSymbol();
+    qDeleteAll(Props);
+}
+
+void Component::clearSymbol()
+{
+    qDeleteAll(Lines);
+    Lines.clear();
+    qDeleteAll(Polylines);
+    Polylines.clear();
+    qDeleteAll(Arcs);
+    Arcs.clear();
+    qDeleteAll(Rects);
+    Rects.clear();
+    qDeleteAll(Ellipses);
+    Ellipses.clear();
+    qDeleteAll(Images);
+    Images.clear();
+    qDeleteAll(Texts);
+    Texts.clear();
+    qDeleteAll(Ports);
+    Ports.clear();
 }
 
 // -------------------------------------------------------
@@ -1162,11 +1189,19 @@ bool Component::load(const QString &_s) {
     if (s.length() < 2 || !s.startsWith('<') || !s.endsWith('>')) return false;
     s = s.mid(1, s.length() - 2);   // cut off start and end character
 
+    // Each field split out once: QString::section() splits the whole line
+    // at every call, and a MOSFET's line has some 50 properties - loading
+    // (and each undo, which loads the schematic again) took seconds at
+    // 15,000 parts.
+    const qsizetype firstQuote = s.indexOf(QLatin1Char('"'));
+    const QStringList head = (firstQuote < 0 ? s : s.left(firstQuote)).split(QLatin1Char(' '));
+    const QStringList quoted = s.split(QLatin1Char('"'));
+
     QString n;
-    Name = s.section(' ', 1, 1);    // Name
+    Name = head.value(1);    // Name
     if (Name == "*") Name = "";
 
-    n = s.section(' ', 2, 2);      // isActive
+    n = head.value(2);      // isActive
     tmp = n.toInt(&ok);
     if (!ok) return false;
     isActive = tmp & 3;
@@ -1176,29 +1211,29 @@ bool Component::load(const QString &_s) {
     else
         showName = true;
 
-    n = s.section(' ', 3, 3);    // cx
+    n = head.value(3);    // cx
     cx = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
-    n = s.section(' ', 4, 4);    // cy
+    n = head.value(4);    // cy
     cy = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
-    n = s.section(' ', 5, 5);    // tx
+    n = head.value(5);    // tx
     ttx = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
-    n = s.section(' ', 6, 6);    // ty
+    n = head.value(6);    // ty
     tty = misc::clampCoordinate(n.toInt(&ok));
     if (!ok) return false;
 
     if (Model.at(0) != '.') {  // is simulation component (dc, ac, ...) ?
 
-        n = s.section(' ', 7, 7);    // mirroredX
+        n = head.value(7);    // mirroredX
         if (n.toInt(&ok) == 1) mirrorX();
         if (!ok) return false;
 
-        n = s.section(' ', 8, 8);    // rotated
+        n = head.value(8);    // rotated
         tmp = n.toInt(&ok);
         if (!ok) return false;
         tmp = ((tmp % 4) + 4) % 4;   // a quarter-turn count, not a loop bound
@@ -1235,7 +1270,7 @@ bool Component::load(const QString &_s) {
     unsigned int z = 0;
     for (auto p1 = Props.begin(); p1 != Props.end(); ++p1) {
         z++;
-        n = s.section('"', z, z);    // property value
+        n = quoted.value(int(z));    // property value
         n.replace("\\n", "\n");
         n.replace("''", "\"");
         z++;
@@ -1244,7 +1279,8 @@ bool Component::load(const QString &_s) {
         // not all properties have to be mentioned (backward compatible)
         if (z > counts) {
             if ((*p1)->Description.isEmpty()){
-              Props.erase(p1++);   // remove if allocated in vain
+              delete *p1;   // remove if allocated in vain
+              p1 = Props.erase(p1);
             }
 
             if (Model == "Diode") {
@@ -1324,7 +1360,7 @@ bool Component::load(const QString &_s) {
         }
         (*p1)->Value = n;
 
-        n = s.section('"', z, z);    // display: " 1 " or " 0 ", if the
+        n = quoted.value(int(z));    // display: " 1 " or " 0 ", if the
         (*p1)->display = n.trimmed().startsWith('1');   // quotes balance
     }
 
@@ -1734,15 +1770,19 @@ void Component::copyComponent(Component *pc) {
     tx = pc->tx;
     ty = pc->ty;
 
-    Props = pc->Props;
-    Ports = pc->Ports;
-    Lines = pc->Lines;
-    Arcs = pc->Arcs;
-    Rects = pc->Rects;
-    Ellipses = pc->Ellipses;
-    Polylines = pc->Polylines;
-    Images = pc->Images;
-    Texts = pc->Texts;
+    // Its symbol and properties: taken over, \a pc keeping none (it frees
+    // what it still has), this one's own freed.
+    clearSymbol();
+    qDeleteAll(Props);
+    Props = std::exchange(pc->Props, {});
+    Ports = std::exchange(pc->Ports, {});
+    Lines = std::exchange(pc->Lines, {});
+    Arcs = std::exchange(pc->Arcs, {});
+    Rects = std::exchange(pc->Rects, {});
+    Ellipses = std::exchange(pc->Ellipses, {});
+    Polylines = std::exchange(pc->Polylines, {});
+    Images = std::exchange(pc->Images, {});
+    Texts = std::exchange(pc->Texts, {});
 }
 
 
@@ -1780,15 +1820,7 @@ QString Component::getSpiceSubstrateLine()
 // ********                                                       ********
 // ***********************************************************************
 void MultiViewComponent::recreate() {
-    qDeleteAll(Images);
-    Images.clear();
-    Polylines.clear();
-    Ellipses.clear();
-    Texts.clear();
-    Ports.clear();
-    Lines.clear();
-    Rects.clear();
-    Arcs.clear();
+    clearSymbol();   // (the old symbol freed: cleared, a MOSFET's leaked at every edit)
     createSymbol();
 
     bool mmir = mirroredX;

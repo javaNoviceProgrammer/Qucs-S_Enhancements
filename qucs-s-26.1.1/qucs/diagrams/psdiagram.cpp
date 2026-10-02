@@ -97,8 +97,11 @@ void PSDiagram::calcLimits()
 // --------------------------------------------------------------
 int PSDiagram::calcDiagram()
 {
+  qDeleteAll(Lines);
   Lines.clear();
+  qDeleteAll(Texts);
   Texts.clear();
+  qDeleteAll(Arcs);
   Arcs.clear();
 
   x3 = x2 + 7;

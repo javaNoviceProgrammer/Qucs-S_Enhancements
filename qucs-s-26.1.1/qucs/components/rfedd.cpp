@@ -138,7 +138,7 @@ void RFedd::createSymbol()
     }
   } else { // number of ports was decreased, remove properties
     for(i = No * No; i < NumProps; i++) {
-      Props.removeLast();
+      delete Props.takeLast();
     }
     for(i = 0; i < No * No; i++) {
       tmp=QString::number((i)/No+1)+QString::number((i)%No+1);

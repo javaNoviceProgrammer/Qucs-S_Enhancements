@@ -21,6 +21,7 @@
 #include <cmath>
 
 #include "components/component.h"
+#include "extsimkernels/spicecompat.h"
 #include "ngoptimize.h"
 #include "schematic.h"
 #include "valuereading.h"
@@ -555,6 +556,13 @@ QString controlBlock(const Component* component, const Schematic* schematic, con
     // A transient on its step, so every run has the same points and they
     // make one family.
     if (firstWord(analysis) == QLatin1String("tran")) s += QStringLiteral("option interp\n");
+    // More vectors than a write takes (ngspice's 1000 words): each run's
+    // plot written whole - the nodes saved before the sweep, so it holds
+    // them alone, unless records read the runs (what a save leaves out, a
+    // subcircuit's inner node, they would not find).
+    const bool many = sweep.waveforms && waveformAnalysis(analysis) && spicecompat::tooManyVectors(nodes);
+    const bool saved = many && sweep.records.isEmpty();
+    if (saved) s += spicecompat::saveLines(nodes);
     s += line + QLatin1Char('\n');
     // The sweep's plot is the current one: the values against the knobs.
     const QString file = valuesFile(component->Name);
@@ -564,19 +572,21 @@ QString controlBlock(const Component* component, const Schematic* schematic, con
     const QString vectors = nodes.simplified();
     if (sweep.waveforms && waveformAnalysis(analysis) && !vectors.isEmpty()) {
         const QString waves = waveformsFile(component->Name);
+        const QString written = many ? QString() : QLatin1Char(' ') + vectors;   // (none: the whole plot)
         s += QStringLiteral("repeat %1\nsetplot previous\nend\n").arg(runs);
-        s += QStringLiteral("write %1 %2\n").arg(waves, vectors);
+        s += QStringLiteral("write %1%2\n").arg(waves, written);
         if (runs > 1)
             s += QStringLiteral("set appendwrite\n"
                                 "repeat %1\n"
                                 "setplot next\n"
-                                "write %2 %3\n"
+                                "write %2%3\n"
                                 "end\n"
                                 "unset appendwrite\n")
                      .arg(runs - 1)
-                     .arg(waves, vectors);
+                     .arg(waves, written);
         *outputs << waves;
     }
+    if (saved) s += QStringLiteral("delete all\n");   // (the saves, for what comes next)
     s += QStringLiteral("echo \"qucs-s: end %1\"\n").arg(component->Name);
     return s;
 }

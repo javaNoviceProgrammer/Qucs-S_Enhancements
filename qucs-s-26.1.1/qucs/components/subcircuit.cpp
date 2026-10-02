@@ -84,6 +84,7 @@ void Subcircuit::createSymbol() {
     if (No < 0)
       No = 0;
 
+    qDeleteAll(Ports);
     Ports.clear();
     remakeSymbol(No); // no symbol was found -> create standard symbol
   }

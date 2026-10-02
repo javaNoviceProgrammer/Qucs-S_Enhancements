@@ -23,6 +23,7 @@
 #include <cmath>
 
 #include "components/component.h"
+#include "extsimkernels/spicecompat.h"
 #include "ngoptimize.h"
 #include "schematic.h"
 #include "valuereading.h"
@@ -618,6 +619,13 @@ QString controlBlock(const Component* component, const Schematic* schematic, con
     // points and they make one family.
     if (firstWord(analysis) == QLatin1String("tran")) s += QStringLiteral("option interp\n");
     if (statistics) s += QStringLiteral("option osdimc\n");
+    // More vectors than a write takes (ngspice's 1000 words): each corner's
+    // plot written whole - the nodes saved before the corners, so it holds
+    // them alone, unless records read the corners (what a save leaves out,
+    // a subcircuit's inner node, they would not find).
+    const bool many = corners && cr.waveforms && !cr.monteCarlo() && waveformAnalysis(analysis) && spicecompat::tooManyVectors(nodes);
+    const bool saved = many && cr.records.isEmpty();
+    if (saved) s += spicecompat::saveLines(nodes);
     s += line + QLatin1Char('\n');
     if (!corners) {
         const QString file = monteCarloFile(component->Name);
@@ -629,24 +637,25 @@ QString controlBlock(const Component* component, const Schematic* schematic, con
         *outputs << file;
         // Each corner's own analysis plot comes before the corners plot,
         // in the corners' order.
-        const QString vectors = nodes.simplified();
-        if (cr.waveforms && !cr.monteCarlo() && waveformAnalysis(analysis) && !vectors.isEmpty()) {
+        const QString vectors = many ? QString() : QLatin1Char(' ') + nodes.simplified();   // (none: the whole plot)
+        if (cr.waveforms && !cr.monteCarlo() && waveformAnalysis(analysis) && !nodes.simplified().isEmpty()) {
             const QString waves = waveformsFile(component->Name);
             s += QStringLiteral("repeat $corners_n\nsetplot previous\nend\n");
-            s += QStringLiteral("write %1 %2\n").arg(waves, vectors);
+            s += QStringLiteral("write %1%2\n").arg(waves, vectors);
             // At the top level: ngspice reads the count of a repeat inside
             // an if before the if runs. With one corner it repeats 0 times.
             s += QStringLiteral("let qucs_corners_more = $corners_n - 1\n"
                                 "set appendwrite\n"
                                 "repeat $&qucs_corners_more\n"
                                 "setplot next\n"
-                                "write %1 %2\n"
+                                "write %1%2\n"
                                 "end\n"
                                 "unset appendwrite\n")
                      .arg(waves, vectors);
             *outputs << waves;
         }
     }
+    if (saved) s += QStringLiteral("delete all\n");   // (the saves, for what comes next)
     if (statistics) s += QStringLiteral("option noosdimc\n");
     s += QStringLiteral("echo \"qucs-s: end %1\"\n").arg(component->Name);
     return s;
