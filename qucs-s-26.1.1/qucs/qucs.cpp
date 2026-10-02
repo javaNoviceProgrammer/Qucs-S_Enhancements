@@ -2141,20 +2141,7 @@ bool QucsApp::deleteProject(const QString& PathGiven)
 
   // A linked project (Link Project): the link goes, never the project it
   // leads to - removing the folder recursively would empty the original.
-  if (qucs_s::workspace::isLink(Path)) {
-    if (QMessageBox::question(this, tr("Remove Link"),
-            tr("%1 is linked into the workspace from\n%2\n\nRemove the link? "
-               "The project's files stay where they are.")
-                .arg(QDir(Path).dirName(), QDir::toNativeSeparators(qucs_s::workspace::linkTarget(Path))),
-            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
-      return false;
-    QString error;
-    if (!qucs_s::workspace::removeLink(Path, &error)) {
-      QMessageBox::warning(this, tr("Remove Link"), error);
-      return false;
-    }
-    return true;
-  }
+  if (qucs_s::workspace::isLink(Path)) return unlinkProject(Path);
 
   // The documents open from it: closed with it - unless one has unsaved
   // changes, which would be lost.
@@ -2248,15 +2235,96 @@ bool QucsApp::deleteProject(const QString& PathGiven)
 }
 
 // ----------------------------------------------------------
+bool QucsApp::unlinkProject(const QString &PathGiven)
+{
+  slotHideEdit();
+  // (Read through a slash at its end, a link is the folder it leads to.)
+  const QString Path = QDir::cleanPath(PathGiven);
+  const QString folder = QDir(Path).dirName();
+  if (PathGiven.isEmpty() || !qucs_s::workspace::isLink(Path)) {
+    QMessageBox::information(this, tr("Unlink Project"),
+        tr("%1 is not linked into the workspace: only a project brought in with Link Project can be unlinked.").arg(folder));
+    return false;
+  }
+  const QString target = QDir::toNativeSeparators(qucs_s::workspace::linkTarget(Path));
+
+  // Open through the link, the project closes first (and its documents,
+  // asked about). Documents open through it otherwise: their paths lead
+  // nowhere once it goes - they close, unless one has unsaved changes.
+  const bool isOpen = !ProjName.isEmpty() && QDir::cleanPath(QucsSettings.QucsWorkDir.absolutePath()) == Path;
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+  const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+  const Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+  QStringList through, unsaved;
+  if (!isOpen)
+    for (QucsDoc *doc : allDocuments())
+      if (!doc->getDocName().isEmpty() && QDir::cleanPath(doc->getDocName()).startsWith(Path + QLatin1Char('/'), cs))
+        (doc->getDocChanged() ? unsaved : through) << doc->getDocName();
+  const auto names = [](const QStringList &paths) {
+    QStringList list;
+    for (const QString &p : paths) list << QFileInfo(p).fileName();
+    return list.join(QStringLiteral(", "));
+  };
+  if (!unsaved.isEmpty()) {
+    QMessageBox::information(this, tr("Unlink Project"),
+        tr("%1 is open from it with unsaved changes: save or close it before the project is unlinked.").arg(names(unsaved)));
+    return false;
+  }
+
+  QMessageBox box(QMessageBox::Question, tr("Unlink Project"),
+                  tr("%1 is linked into the workspace from\n%2\n\nRemove the link? The project's files stay where they are.")
+                      .arg(folder, target),
+                  QMessageBox::Yes | QMessageBox::No, this);
+  box.setObjectName(QStringLiteral("unlinkProject"));
+  QStringList notes;
+  if (isOpen) notes << tr("It is the open project: it closes first.");
+  if (!through.isEmpty()) notes << tr("Documents open from it close: %1.").arg(names(through));
+  notes << tr("Link Project brings it back.");
+  box.setInformativeText(notes.join(QStringLiteral("\n\n")));
+  if (box.exec() != QMessageBox::Yes) return false;
+
+  if (isOpen) {
+    slotMenuProjClose();
+    if (!ProjName.isEmpty()) return false;   // (a document's changes were kept: not closed)
+  }
+  documentsTrashed(through);
+  QString error;
+  if (!qucs_s::workspace::removeLink(Path, &error)) {
+    QMessageBox::warning(this, tr("Unlink Project"), error);
+    return false;
+  }
+  statusBar()->showMessage(tr("%1 was unlinked; the project is still at %2.").arg(folder, target), 5000);
+  return true;
+}
+
+// ----------------------------------------------------------
 // The Projects panel's menu.
 void QucsApp::slotProjectsContextMenu(const QPoint &pos)
 {
+  // The row right-clicked: a linked project there can be unlinked.
+  const QModelIndex row = Projects->indexAt(pos);
+  const QString path = row.isValid() ? QucsSettings.projsDir.filePath(row.data().toString()) : QString();
+
   QMenu menu(Projects);
   menu.addAction(projSwitchWorkspace);
   menu.addSeparator();
   menu.addAction(projImport);
   menu.addAction(projLink);
+  QAction *unlink = menu.addAction(tr("&Unlink Project"));
+  unlink->setObjectName(QStringLiteral("projUnlink"));
+  unlink->setStatusTip(tr("Removes a linked project's link from the workspace; its files stay where they are"));
+  unlink->setEnabled(!path.isEmpty() && qucs_s::workspace::isLink(path));
+  connect(unlink, &QAction::triggered, this, [this, path] { unlinkProject(path); });
+  menu.addSeparator();
+  // The Project menu's Close Project: here, with no project open, nothing
+  // to close (there it closes the documents all the same).
+  const bool closeEnabled = projClose->isEnabled();
+  projClose->setEnabled(closeEnabled && !ProjName.isEmpty());
+  menu.addAction(projClose);
   menu.exec(Projects->viewport()->mapToGlobal(pos));
+  projClose->setEnabled(closeEnabled);
 }
 
 void QucsApp::slotSwitchWorkspace()

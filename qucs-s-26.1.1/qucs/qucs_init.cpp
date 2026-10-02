@@ -477,6 +477,7 @@ void QucsApp::initActions() {
   connect(projDel, SIGNAL(triggered()), SLOT(slotMenuProjDel()));
 
   projClose = new QAction(tr("&Close Project"), this);
+  projClose->setObjectName("projClose");
   projClose->setShortcut(tr("Ctrl+Shift+W"));
   projClose->setStatusTip(tr("Closes the current project"));
   projClose->setWhatsThis(tr("Close Project\n\nCloses the current project"));

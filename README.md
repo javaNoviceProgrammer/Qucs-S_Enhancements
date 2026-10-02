@@ -1630,7 +1630,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   (`share/mime/packages/qucs-s.xml`, telling a Qucs `.sch` from another
   program's by its first line) do the same.
 - **Workspace, import and link from the Projects panel**: right-click
-  the *Projects* panel (or use the *Project* menu):
+  the *Projects* panel (or use the *Project* menu, which has all but
+  *Unlink Project*, an action on the row right-clicked):
   - *Switch Workspace...* chooses another folder as the workspace; the
     panel lists its projects, and the choice is kept (the same as
     *Application Settings → Locations*, which now also updates the
@@ -1644,6 +1645,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     *Delete* on a linked project removes the link only — the project
     itself is not touched. (A symbolic link; on Windows a junction when
     symbolic links need Developer Mode.)
+  - *Unlink Project*, on a linked project's row, removes its link from
+    the workspace after asking; the project's files stay where they are,
+    and *Link Project...* brings it back. The open project closes first
+    (asking about unsaved changes), and documents opened through the link
+    close with it.
+  - *Close Project* closes the open project, as in the *Project* menu
+    (in the panel's menu only while a project is open).
   When the workspace already has a project of that name, you are asked
   for another one.
 - **Any folder can be a project**: by default a project is a folder

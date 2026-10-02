@@ -1,9 +1,11 @@
 /*
  * The Projects panel's menu: Switch Workspace, Import Project (a project
  * folder copied into the workspace), Link Project (a link to it in the
- * workspace, nothing copied, and it acts as a project there). Deleting a
- * linked project removes the link, never the project it leads to. And
- * the workspace changed in the settings is the one the panel lists.
+ * workspace, nothing copied, and it acts as a project there), Unlink
+ * Project (the link of the row right-clicked goes) and Close Project.
+ * Deleting or unlinking a linked project removes the link, never the
+ * project it leads to. And the workspace changed in the settings is the
+ * one the panel lists.
  */
 #include <QtTest>
 #include <QDialog>
@@ -25,6 +27,7 @@
 #include "settings.h"
 #include "workspace.h"
 #include "dialogs/qucssettingsdialog.h"
+#include "dialogs/savedialog.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
 
@@ -70,8 +73,58 @@ bool clickYes(QWidget* w)
 {
     auto* box = qobject_cast<QMessageBox*>(w);
     if (box == nullptr) return false;
-    box->button(QMessageBox::Yes)->click();
+    // (A box with no Yes - a message where a question was meant - closed:
+    // the test fails on what came of it, rather than crashing.)
+    if (QAbstractButton* yes = box->button(QMessageBox::Yes)) yes->click();
+    else box->accept();
     return true;
+}
+
+// The Projects panel's menu, right-clicked at \a pos: each entry's object
+// name and whether it can be chosen. With \a choose, that entry is chosen
+// as the keyboard would (what it asks is up to the caller).
+QList<QPair<QString, bool>> projectsMenu(QucsApp& app, const QPoint& pos, const QString& choose = QString())
+{
+    QList<QPair<QString, bool>> shown;
+    // The menu is a popup, not modal: look for it while it is open.
+    QTimer::singleShot(50, [&] {
+        for (QWidget* w : QApplication::topLevelWidgets())
+            if (auto* menu = qobject_cast<QMenu*>(w); menu && menu->isVisible()) {
+                QAction* chosen = nullptr;
+                for (QAction* a : menu->actions()) {
+                    if (a->isSeparator()) continue;
+                    shown << qMakePair(a->objectName(), a->isEnabled());
+                    if (!choose.isEmpty() && a->objectName() == choose) chosen = a;
+                }
+                if (chosen == nullptr) {
+                    menu->close();
+                } else {
+                    menu->setActiveAction(chosen);
+                    QTest::keyClick(menu, Qt::Key_Return);
+                }
+                return;
+            }
+    });
+    emit app.projectsView()->customContextMenuRequested(pos);
+    return shown;
+}
+
+bool canChoose(const QList<QPair<QString, bool>>& menu, const QString& name)
+{
+    for (const auto& [entry, enabled] : menu)
+        if (entry == name) return enabled;
+    return false;
+}
+
+// Where the Projects panel shows \a folder (once it has read its folder).
+QPoint rowOf(QucsApp& app, const QString& folder)
+{
+    QListView* view = app.projectsView();
+    for (int r = 0; r < view->model()->rowCount(view->rootIndex()); ++r) {
+        const QModelIndex index = view->model()->index(r, 0, view->rootIndex());
+        if (index.data().toString() == folder) return view->visualRect(index).center();
+    }
+    return QPoint(-1, -1);
 }
 
 } // namespace
@@ -254,25 +307,46 @@ private slots:
         QVERIFY(QFileInfo::exists(source + "/amp.sch"));
     }
 
-    // The menu of the Projects panel, and the same actions in the Project menu.
+    // The menu of the Projects panel, and the same actions in the Project
+    // menu - but Unlink Project, of the row right-clicked: chosen only on
+    // a linked project. Close Project only with a project open (the
+    // Project menu's own is as it was).
     void theMenu()
     {
+        fresh("menu");
         QucsApp app(false);
         MainGuard guard(&app);
+        QVERIFY(app.switchWorkspace(workspace));
         QCOMPARE(app.projectsView()->contextMenuPolicy(), Qt::CustomContextMenu);
+        const QString link = app.bringProjectIn(source, true);
+        QVERIFY(isLink(link));
+        QVERIFY(QDir().mkpath(workspace + "/real_prj"));
+        QTRY_VERIFY(rowOf(app, "real_prj").x() >= 0 && rowOf(app, "amp_prj").x() >= 0);
+
+        const auto onLink = projectsMenu(app, rowOf(app, "amp_prj"));
         QStringList shown;
-        // The menu is a popup, not modal: look for it while it is open.
-        QTimer::singleShot(50, [&] {
-            for (QWidget* w : QApplication::topLevelWidgets())
-                if (auto* menu = qobject_cast<QMenu*>(w); menu && menu->isVisible()) {
-                    for (QAction* a : menu->actions())
-                        if (!a->isSeparator()) shown << a->objectName();
-                    menu->close();
-                }
-        });
-        emit app.projectsView()->customContextMenuRequested(QPoint(5, 5));
-        QCOMPARE(shown, QStringList({"projSwitchWorkspace", "projImport", "projLink"}));
-        for (const char* name : {"projSwitchWorkspace", "projImport", "projLink"}) {
+        for (const auto& entry : onLink) shown << entry.first;
+        QCOMPARE(shown, QStringList({"projSwitchWorkspace", "projImport", "projLink", "projUnlink", "projClose"}));
+        QVERIFY(canChoose(onLink, "projUnlink"));
+        QVERIFY(!canChoose(onLink, "projClose"));   // no project open
+        QVERIFY(canChoose(onLink, "projLink"));
+        QVERIFY(!canChoose(projectsMenu(app, rowOf(app, "real_prj")), "projUnlink"));
+        const QRect below = app.projectsView()->viewport()->rect();
+        QVERIFY(!canChoose(projectsMenu(app, QPoint(5, below.bottom() - 2)), "projUnlink"));   // on no row
+        auto* close = app.findChild<QAction*>("projClose");
+        QVERIFY(close != nullptr && close->isEnabled());   // the Project menu's, as it was
+
+        app.openProject(workspace + "/real_prj");
+        QCOMPARE(app.ProjName, QStringLiteral("real"));
+        const auto open = projectsMenu(app, rowOf(app, "real_prj"));
+        QVERIFY(canChoose(open, "projClose"));
+        QVERIFY(!canChoose(open, "projUnlink"));
+        // Chosen: the project closes.
+        projectsMenu(app, rowOf(app, "amp_prj"), "projClose");
+        QTRY_VERIFY(app.ProjName.isEmpty());
+        QVERIFY(close->isEnabled());
+
+        for (const char* name : {"projSwitchWorkspace", "projImport", "projLink", "projClose"}) {
             auto* action = app.findChild<QAction*>(name);
             QVERIFY(action != nullptr);
             bool inMenuBar = false;
@@ -280,6 +354,140 @@ private slots:
                 if (top->menu() != nullptr && top->menu()->actions().contains(action)) inMenuBar = true;
             QVERIFY2(inMenuBar, name);
         }
+        QVERIFY(app.findChild<QAction*>("projUnlink") == nullptr);   // (the menu's own, gone with it)
+    }
+
+    // Unlink Project on a linked project's row: asked, the link goes, the
+    // project stays where it is; No leaves it. A folder that is no link is
+    // not unlinked.
+    void unlinkingAProject()
+    {
+        fresh("unlink-menu");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.switchWorkspace(workspace));
+        const QString link = app.bringProjectIn(source, true);
+        QVERIFY(isLink(link));
+        QTRY_VERIFY(rowOf(app, "amp_prj").x() >= 0);
+
+        QString question, details;
+        const auto answer = [&](QMessageBox::StandardButton button) {
+            return [&, button](QWidget* w) {
+                auto* box = qobject_cast<QMessageBox*>(w);
+                if (box == nullptr) return false;
+                question = box->text();
+                details = box->informativeText();
+                box->button(button)->click();
+                return true;
+            };
+        };
+        answering([&] { projectsMenu(app, rowOf(app, "amp_prj"), "projUnlink"); }, answer(QMessageBox::No));
+        QVERIFY2(question.contains("Remove the link") && question.contains("stay where they are")
+                     && question.contains(QDir::toNativeSeparators(QFileInfo(source).canonicalFilePath())),
+                 qPrintable(question));
+        QVERIFY2(details.contains("Link Project brings it back") && !details.contains("open project"), qPrintable(details));
+        QVERIFY(isLink(link));
+
+        answering([&] { projectsMenu(app, rowOf(app, "amp_prj"), "projUnlink"); }, answer(QMessageBox::Yes));
+        QVERIFY(!QFileInfo::exists(link) && !isLink(link));
+        QCOMPARE(read(source + "/amp.sch"), kSchematic);
+        QCOMPARE(read(source + "/sub/lib.sch"), kSchematic);
+        QTRY_VERIFY(rowOf(app, "amp_prj").x() < 0);   // gone from the panel
+
+        // A real project: no link to remove, nothing removed.
+        QVERIFY(QDir().mkpath(workspace + "/real_prj"));
+        QString said;
+        bool unlinked = true;
+        answering([&] { unlinked = app.unlinkProject(workspace + "/real_prj"); },
+                  [&](QWidget* w) {
+                      auto* box = qobject_cast<QMessageBox*>(w);
+                      if (box == nullptr) return false;
+                      said = box->text();
+                      box->accept();
+                      return true;
+                  });
+        QVERIFY(!unlinked);
+        QVERIFY2(said.contains("is not linked into the workspace"), qPrintable(said));
+        QVERIFY(QFileInfo(workspace + "/real_prj").isDir());
+    }
+
+    // The open project unlinked: it closes first - not when a document's
+    // unsaved changes are kept - then the link goes. Documents open through
+    // a link close with it; one with unsaved changes stops it.
+    void unlinkingAnOpenProject()
+    {
+        fresh("unlink-open");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.switchWorkspace(workspace));
+        const QString link = app.bringProjectIn(source, true);
+        QVERIFY(isLink(link));
+        app.openProject(link);
+        QCOMPARE(app.ProjName, QStringLiteral("amp"));
+        QVERIFY(app.gotoPage(link + "/amp.sch"));
+        app.currentSchematic()->setDocChanged(true);
+
+        // Yes, then the changes kept (the save dialog cancelled): not closed,
+        // not unlinked.
+        QString details;
+        int asked = 0;
+        bool unlinked = true;
+        answering([&] { unlinked = app.unlinkProject(link); },
+                  [&](QWidget* w) {
+                      if (auto* box = qobject_cast<QMessageBox*>(w)) {
+                          details = box->informativeText();
+                          ++asked;
+                          return !clickYes(w);
+                      }
+                      if (auto* save = qobject_cast<SaveDialog*>(w)) {
+                          ++asked;
+                          static_cast<QDialog*>(save)->reject();   // (its Cancel: closing aborted)
+                          return true;
+                      }
+                      return false;
+                  });
+        QVERIFY(!unlinked);
+        QCOMPARE(asked, 2);
+        QVERIFY2(details.contains("It is the open project: it closes first."), qPrintable(details));
+        QCOMPARE(app.ProjName, QStringLiteral("amp"));
+        QVERIFY(isLink(link));
+
+        for (QucsDoc* doc : app.allDocuments()) doc->setDocChanged(false);
+        answering([&] { unlinked = app.unlinkProject(link); }, clickYes);
+        QVERIFY(unlinked);
+        QVERIFY(app.ProjName.isEmpty());
+        QVERIFY(!isLink(link) && !QFileInfo::exists(link));
+        QCOMPARE(read(source + "/amp.sch"), kSchematic);
+
+        // Linked again, a document opened through it but not the project.
+        const QString again = app.bringProjectIn(source, true);
+        QCOMPARE(again, link);
+        QVERIFY(app.gotoPage(link + "/sub/lib.sch"));
+        app.currentSchematic()->setDocChanged(true);
+        QString said;
+        answering([&] { unlinked = app.unlinkProject(link); },
+                  [&](QWidget* w) {
+                      auto* box = qobject_cast<QMessageBox*>(w);
+                      if (box == nullptr) return false;
+                      said = box->text();
+                      box->accept();
+                      return true;
+                  });
+        QVERIFY(!unlinked);
+        QVERIFY2(said.contains("lib.sch is open from it with unsaved changes"), qPrintable(said));
+        QVERIFY(isLink(link));
+        app.currentSchematic()->setDocChanged(false);
+        details.clear();
+        answering([&] { unlinked = app.unlinkProject(link + "/"); },   // (as a folder dialog gives it)
+                  [&](QWidget* w) {
+                      if (auto* box = qobject_cast<QMessageBox*>(w)) details = box->informativeText();
+                      return clickYes(w);
+                  });
+        QVERIFY(unlinked);
+        QVERIFY2(details.contains("Documents open from it close: lib.sch."), qPrintable(details));
+        for (QucsDoc* doc : app.allDocuments()) QVERIFY2(!doc->getDocName().startsWith(link), qPrintable(doc->getDocName()));
+        QVERIFY(!isLink(link));
+        QCOMPARE(read(source + "/sub/lib.sch"), kSchematic);
     }
 
     void switchingTheWorkspace()
