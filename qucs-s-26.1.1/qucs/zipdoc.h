@@ -61,6 +61,14 @@ public:
     ZipDoc(QucsApp* app, const QString& name);
     ~ZipDoc() override;
 
+    /// An archive with nothing in it yet, and no file: files and folders
+    /// are dropped in or added, and Save puts it where Save As says -
+    /// offering \a suggested (the File Browser's New Zip…: a free name in
+    /// its folder).
+    void startNew(const QString& suggested);
+    /// Where Save As offers to put it while it has no file; empty once it has.
+    QString suggestedFile() const { return a_DocName.isEmpty() ? a_suggested : QString(); }
+
     // QucsDoc
     void setName(const QString& name) override;
     bool load() override;
@@ -165,9 +173,14 @@ private:
     /// The selected files extracted into a folder of their own and dragged.
     void dragOut();
     void copyChanged(const QString& path);
+    /// Its file's name, or "the new archive" while it has none.
+    QString shownName() const;
+    /// The folder of its file, or of the one Save As offers.
+    QString folder() const;
 
     QList<Entry> a_entries;
     QString a_comment;
+    QString a_suggested;   // startNew()'s
     QTreeView* a_view = nullptr;
     QStandardItemModel* a_model = nullptr;
     QLineEdit* a_filter = nullptr;

@@ -812,6 +812,7 @@ void QucsApp::initView()
     editText->setHidden(true); // disable text edit of component property
     openFileFromProjectView(QFileInfo(path), QString());
   });
+  connect(fileBrowser, &FileBrowser::newArchiveRequested, this, [this](const QString &folder) { newArchive(folder); });
   connect(fileBrowser, &FileBrowser::moved, this, &QucsApp::documentsMoved);
   fileBrowser->setOpenDocumentsProvider([this] {
     QList<FileBrowser::OpenDocument> open;
@@ -2599,6 +2600,25 @@ void QucsApp::slotTextNew()
   statusBar()->clearMessage();
 }
 
+ZipDoc *QucsApp::newArchive(const QString &folder)
+{
+  slotHideEdit(); // disable text edit of component property
+  const QDir dir(folder.isEmpty() ? QDir::homePath() : folder);
+  // A name free there, and not offered to another new archive already.
+  QStringList offered;
+  for (QucsDoc *doc : allDocuments())
+    if (auto *zip = dynamic_cast<ZipDoc *>(doc)) offered << zip->suggestedFile();
+  QString file = dir.absoluteFilePath(tr("Archive") + QStringLiteral(".zip"));
+  for (int n = 2; QFileInfo::exists(file) || offered.contains(file); ++n)
+    file = dir.absoluteFilePath(tr("Archive %1").arg(n) + QStringLiteral(".zip"));
+  auto *zip = new ZipDoc(this, QString());
+  zip->startNew(file);
+  const int i = addDocumentTab(zip);
+  DocumentTab->setCurrentIndex(i);
+  titleDocumentTab(zip);
+  return zip;
+}
+
 // --------------------------------------------------------------
 // Changes to the document "Name". If already open then it goes to it
 // directly, otherwise it loads it.
@@ -2808,7 +2828,10 @@ bool QucsApp::saveAs()
     QString file_ext;
     s = Doc->getDocName();
     Info.setFile(s);
-    if(s.isEmpty()) {   // which is default directory ?
+    auto *newZip = qobject_cast<ZipDoc *>(w);
+    if (s.isEmpty() && newZip != nullptr && !newZip->suggestedFile().isEmpty()) {
+      s = newZip->suggestedFile();   // (New Zip…: a free name in its folder)
+    } else if(s.isEmpty()) {   // which is default directory ?
       if(ProjName.isEmpty()) {
         if(lastDirOpenSave.isEmpty())  s = QDir::homePath();
         else  s = lastDirOpenSave;
@@ -3916,7 +3939,7 @@ void QucsApp::titleDocumentTab(QWidget *w)
   const int index = pane->indexOf(w);
   const QString file = doc->getDocName();
   if (file.isEmpty()) {
-    pane->setTabText(index, tr("untitled"));
+    pane->setTabText(index, isArchiveDocument(w) ? tr("untitled.zip") : tr("untitled"));
     pane->setTabToolTip(index, QString());
     return;
   }

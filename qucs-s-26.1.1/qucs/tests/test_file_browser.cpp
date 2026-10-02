@@ -479,6 +479,33 @@ private slots:
             if (a->text() == "Copy Path") a->trigger();
         delete menu;
         QCOMPARE(QApplication::clipboard()->text(), QDir::toNativeSeparators(root + "/amp.sch"));
+
+        // New Zip…, in every menu: a new archive asked for, to go in the
+        // folder the menu is of - a file's, the folder's, the one shown.
+        QSignalSpy asked(&fb, &FileBrowser::newArchiveRequested);
+        const auto choose = [](QMenu* m, const QString& text) {
+            int found = 0;
+            for (QAction* a : m->actions())
+                if (a->text() == text) {
+                    a->trigger();
+                    ++found;
+                }
+            return found;
+        };
+        for (const QString& on : {root + "/amp.sch", root + "/models", QString()}) {
+            QMenu* m = fb.contextMenuFor(on);
+            QCOMPARE(choose(m, "New Zip…"), 1);
+            delete m;
+        }
+        auto* options = fb.findChild<QMenu*>("fbOptions");
+        QVERIFY(options != nullptr);
+        QCOMPARE(choose(options, "New Zip…"), 1);
+        QCOMPARE(asked.count(), 4);
+        QCOMPARE(asked.at(0).first().toString(), root);
+        QCOMPARE(asked.at(1).first().toString(), root + "/models");
+        QCOMPARE(asked.at(2).first().toString(), fb.location());
+        QCOMPARE(asked.at(3).first().toString(), fb.location());
+        QCOMPARE(fb.location(), root);
         QVERIFY(!fb.fileModel()->isReadOnly());   // (a name is edited in place)
     }
 

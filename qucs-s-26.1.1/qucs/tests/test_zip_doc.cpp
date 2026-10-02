@@ -9,20 +9,25 @@
  */
 #include <QtTest>
 #include <QAction>
+#include <QFileDialog>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMimeData>
 #include <QRandomGenerator>
 #include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
 #include <QUndoStack>
 #include <QtEndian>
 
+#include "autosave.h"
 #include "config.h"
+#include "filebrowser.h"
 #include "main.h"
 #include "misc.h"
 #include "module.h"
@@ -469,6 +474,119 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(doc->names().contains("docs/readme.md"), 3000);
         QCOMPARE(doc->contents("docs/readme.md"), QByteArray("# Read me\n"));
         doc->setDocChanged(false);
+        app.closeAllFiles();
+    }
+
+    // The File Browser's New Zip…: a tab "untitled.zip" with nothing in
+    // it, which says what to do; files and folders dropped on it are
+    // added; File > Save asks where, offering a name free in the folder
+    // the menu was of, and writes a new archive, read back as one.
+    // Autosaved before that, its copy is an archive too.
+    void aNewArchiveIsMadeAndSaved()
+    {
+        const QString folder = QFileInfo(dir.filePath("new-zip")).absoluteFilePath();
+        QVERIFY(write(folder + "/Archive.zip", sampleArchive()));   // (taken: the next name is offered)
+        QVERIFY(write(folder + "/notes.txt", "notes\n"));
+        QVERIFY(write(folder + "/parts/r1.sch", kSchematic));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 700);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        auto* browser = app.findChild<FileBrowser*>();
+        QVERIFY(browser != nullptr);
+        QMenu* menu = browser->contextMenuFor(folder + "/notes.txt");
+        for (QAction* a : menu->actions())
+            if (a->text() == "New Zip…") a->trigger();
+        delete menu;
+        ZipDoc* doc = current(app);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->getDocName().isEmpty());
+        QCOMPARE(doc->suggestedFile(), folder + "/Archive 2.zip");
+        QCOMPARE(app.DocumentTab->tabText(app.DocumentTab->currentIndex()), QString("untitled.zip"));
+        QVERIFY(doc->names().isEmpty());
+        QVERIFY(!doc->getDocChanged());
+        QVERIFY2(doc->statusLabel()->text().startsWith("Nothing in it yet: drop files and folders here"),
+                 qPrintable(doc->statusLabel()->text()));
+        // Another offers another name.
+        ZipDoc* other = app.newArchive(folder);
+        QVERIFY(other != nullptr && other != doc);
+        QCOMPARE(other->suggestedFile(), folder + "/Archive 3.zip");
+        app.showDocument(doc);
+        QCOMPARE(current(app), doc);
+        // Add Files… starts in that folder, named for the new archive.
+        QString title, startsIn;
+        QTimer::singleShot(200, &app, [&] {
+            if (auto* d = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+                title = d->windowTitle();
+                startsIn = d->directory().absolutePath();
+                d->reject();
+            }
+        });
+        doc->addFilesAsked();
+        QCOMPARE(title, QString("Add Files to the new archive"));
+        QCOMPARE(QFileInfo(startsIn).canonicalFilePath(), QFileInfo(folder).canonicalFilePath());
+        QVERIFY(doc->names().isEmpty());
+
+        // Dragged from the File Browser - what its view's drag carries - and
+        // dropped on it (no row under them): at the top.
+        browser->setView(FileBrowser::View::List);
+        browser->setLocation(folder);
+        QTRY_VERIFY_WITH_TIMEOUT(browser->indexOf(folder + "/notes.txt").isValid() && browser->indexOf(folder + "/parts").isValid(), 10000);
+        std::unique_ptr<QMimeData> mime(browser->currentView()->model()->mimeData(
+            {browser->indexOf(folder + "/notes.txt"), browser->indexOf(folder + "/parts")}));
+        QVERIFY(mime != nullptr && mime->urls().size() == 2);
+        QWidget* viewport = doc->view()->viewport();
+        QDragEnterEvent enter(QPoint(30, 30), Qt::CopyAction, mime.get(), Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(viewport, &enter);
+        QVERIFY(enter.isAccepted());
+        QDropEvent drop(QPoint(30, 30), Qt::CopyAction, mime.get(), Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(viewport, &drop);
+        QVERIFY(drop.isAccepted());
+        QTRY_VERIFY_WITH_TIMEOUT(doc->names().contains("notes.txt") && doc->names().contains("parts/r1.sch"), 3000);
+        QVERIFY(doc->getDocChanged());
+        QVERIFY2(doc->statusLabel()->text().startsWith("2 files, 1 folder") && doc->statusLabel()->text().contains("changed"),
+                 qPrintable(doc->statusLabel()->text()));
+
+        // Autosaved: a .zip, which recovery opens as an archive.
+        const QString copy = qucs_s::autosave::write(doc, int(app.allDocuments().indexOf(doc)));
+        QVERIFY2(copy.endsWith(".zip"), qPrintable(copy));
+        QFile copied(copy);
+        QVERIFY(copied.open(QIODevice::ReadOnly));
+        QString why;
+        QStringList inCopy;
+        for (const auto& item : qucs_s::zip::list(copied.readAll(), &why)) inCopy << item.name;
+        QVERIFY2(inCopy.contains("notes.txt") && inCopy.contains("parts/r1.sch"), qPrintable(why + inCopy.join(", ")));
+
+        // Saved: File > Save asks where, the free name offered.
+        QString offered;
+        QTimer answer;
+        answer.setInterval(50);
+        connect(&answer, &QTimer::timeout, &app, [&] {
+            if (auto* d = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+                answer.stop();
+                offered = d->selectedFiles().value(0);
+                static_cast<QDialog*>(d)->accept();   // (QFileDialog's own, through QDialog's public one)
+            }
+        });
+        answer.start();
+        QVERIFY(app.saveFile(doc));
+        QCOMPARE(offered, folder + "/Archive 2.zip");
+        QCOMPARE(doc->getDocName(), folder + "/Archive 2.zip");
+        QCOMPARE(app.DocumentTab->tabText(app.DocumentTab->currentIndex()), QString("Archive 2.zip"));
+        QVERIFY(!doc->getDocChanged());
+        QVERIFY(doc->suggestedFile().isEmpty());
+        QFile saved(folder + "/Archive 2.zip");
+        QVERIFY(saved.open(QIODevice::ReadOnly));
+        const QByteArray bytes = saved.readAll();
+        QStringList inArchive;
+        const QList<qucs_s::zip::Item> items = qucs_s::zip::list(bytes, &why);
+        for (const auto& item : items) inArchive << item.name;
+        QVERIFY2(inArchive.contains("notes.txt") && inArchive.contains("parts/r1.sch"), qPrintable(why + inArchive.join(", ")));
+        bool ok = false;
+        for (const auto& item : items)
+            if (item.name == "notes.txt") QCOMPARE(qucs_s::zip::extract(bytes, item, &why, &ok), QByteArray("notes\n"));
+        QVERIFY(ok);
         app.closeAllFiles();
     }
 };

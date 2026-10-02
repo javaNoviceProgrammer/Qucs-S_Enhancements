@@ -1188,6 +1188,7 @@ void FileBrowser::buildToolbar()
         const QString made = createFolder(a_location);
         if (!made.isEmpty()) rename(made);
     });
+    menu->addAction(tr("New Zip…"), this, [this] { emit newArchiveRequested(a_location); });
     menu->addSeparator();
     menu->addAction(revealLabel(false), this, [this] { QDesktopServices::openUrl(QUrl::fromLocalFile(a_location)); });
     menu->addAction(tr("Copy the Folder's Path"), this, [this] {
@@ -2317,6 +2318,7 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
             const QString made = createFolder(a_location);
             if (!made.isEmpty()) rename(made);
         });
+        menu->addAction(tr("New Zip…"), this, [this] { emit newArchiveRequested(a_location); });
         menu->addSeparator();
         menu->addAction(revealLabel(false), this, [this] { QDesktopServices::openUrl(QUrl::fromLocalFile(a_location)); });
         menu->addAction(tr("Copy Path"), this, [this] { QApplication::clipboard()->setText(QDir::toNativeSeparators(a_location)); });
@@ -2335,6 +2337,7 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
             if (!inView(made)) go(path, true);
             rename(made);
         });
+        menu->addAction(tr("New Zip…"), this, [this, path] { emit newArchiveRequested(path); });
     } else {
         QAction* open = menu->addAction(tr("Open"), this, [this, path] { emit openRequested(path); });
         menu->setDefaultAction(open);
@@ -2346,6 +2349,8 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
                 setView(a_fileView);
                 go(path, true);
             });
+        // A new archive beside it.
+        menu->addAction(tr("New Zip…"), this, [this, info] { emit newArchiveRequested(info.absolutePath()); });
     }
     menu->addSeparator();
     menu->addAction(revealLabel(true), this, [path] { revealItem(path); });
