@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "filebrowser.h"
+#include "namefilter.h"
 
 #include "apptheme.h"
 #include "ink.h"
@@ -74,6 +75,7 @@
 using qucs_s::files::IconProvider;
 using qucs_s::files::Kind;
 using qucs_s::files::kindOf;
+using qucs_s::files::NameFilter;
 
 namespace {
 
@@ -614,6 +616,7 @@ QLineEdit* nameFilterEdit(QWidget* parent)
     edit->setClearButtonEnabled(true);
     edit->addAction(glyphIcon(Glyph::Search), QLineEdit::LeadingPosition);
     edit->setAttribute(Qt::WA_MacShowFocusRect, false);
+    explainNameFilter(edit);
     return edit;
 }
 
@@ -715,8 +718,9 @@ static int naturalCompare(const QCollator& collator, QStringView a, QStringView 
 
 // The file system as the browser shows it: folders first, then names in
 // natural order (or by the column sorted on); files filtered by the name
-// typed and, if asked, to those of Qucs-S; in the flat views folders by
-// the name too - never those on the way to the folder shown.
+// typed (a NameFilter's: text or a regular expression) and, if asked, to
+// those of Qucs-S; in the flat views folders by the name too - never
+// those on the way to the folder shown.
 class SortProxy : public QSortFilterProxyModel
 {
 public:
@@ -726,11 +730,11 @@ public:
     }
     void configure(const QString& text, bool qucsOnly, bool flat, const QString& location)
     {
-        if (text == a_text && qucsOnly == a_qucsOnly && flat == a_flat && location == a_location) return;
+        if (text == a_filter.text() && qucsOnly == a_qucsOnly && flat == a_flat && location == a_location) return;
 #if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
         beginFilterChange();
 #endif
-        a_text = text;
+        a_filter = NameFilter(text);
         a_qucsOnly = qucsOnly;
         a_flat = flat;
         a_location = location;
@@ -752,10 +756,10 @@ protected:
             // On the way to the folder shown, or it: always.
             if (a_location == path || a_location.startsWith(path.endsWith(QLatin1Char('/')) ? path : path + QLatin1Char('/')))
                 return true;
-            return !a_flat || a_text.isEmpty() || name.contains(a_text, Qt::CaseInsensitive);
+            return !a_flat || a_filter.matches(name);
         }
         if (a_qucsOnly && !kindOf(fs->fileInfo(index)).qucs) return false;
-        return a_text.isEmpty() || name.contains(a_text, Qt::CaseInsensitive);
+        return a_filter.matches(name);
     }
     bool lessThan(const QModelIndex& left, const QModelIndex& right) const override
     {
@@ -781,7 +785,7 @@ protected:
 
 private:
     QCollator a_collator;
-    QString a_text;
+    NameFilter a_filter;
     bool a_qucsOnly = false;
     bool a_flat = true;
     QString a_location;
@@ -1755,11 +1759,11 @@ void FileBrowser::setQucsFilesOnly(bool on)
 void FileBrowser::fillRecent()
 {
     a_recentModel->clear();
-    const QString text = a_filter->text().trimmed();
+    const NameFilter filter(a_filter->text().trimmed());
     for (const QString& file : std::as_const(a_recentFiles)) {
         const QFileInfo info(file);
         if (!info.isFile()) continue;
-        if (!text.isEmpty() && !info.fileName().contains(text, Qt::CaseInsensitive)) continue;
+        if (!filter.matches(info.fileName())) continue;
         auto* item = new QStandardItem(IconProvider::iconFor(kindOf(info)), info.fileName());
         item->setData(QDir::cleanPath(info.absoluteFilePath()), Qt::UserRole);
         item->setData(shownPath(info.absolutePath()), Qt::UserRole + 1);

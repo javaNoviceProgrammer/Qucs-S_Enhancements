@@ -8,6 +8,7 @@
  * copy, followed: saved, it is in the archive again; nothing run.
  */
 #include <QtTest>
+#include <QAction>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -203,6 +204,19 @@ private slots:
         QCOMPARE(shown(doc), QStringList({"docs/", "amp.sch", "docs/logo.png", "docs/notes.txt", "tool.exe"}));
         doc->setFilter("NOTES");
         QCOMPARE(shown(doc), QStringList({"docs/notes.txt"}));
+        // A regular expression: on the entry's path, or the name at its end.
+        doc->setFilter("^notes\\.");
+        QCOMPARE(shown(doc), QStringList({"docs/notes.txt"}));
+        doc->setFilter("\\.(SCH|exe)$");
+        QCOMPARE(shown(doc), QStringList({"amp.sch", "tool.exe"}));
+        doc->setFilter("^docs/$");
+        QCOMPARE(shown(doc), QStringList({"docs/"}));
+        QAction* warning = doc->filterEdit()->findChild<QAction*>("nameFilterNoRegex");
+        QVERIFY(warning != nullptr && !warning->isVisible());
+        doc->setFilter("notes(");   // no regular expression: the text as typed
+        QCOMPARE(shown(doc), QStringList());
+        QVERIFY(warning->isVisible());
+        doc->setFilter("^notes");
         doc->setTreeMode(true);
         QCOMPARE(shown(doc), QStringList({"docs"}));
         QCOMPARE(shown(doc, rowNamed(doc, "docs/")), QStringList({"notes.txt"}));

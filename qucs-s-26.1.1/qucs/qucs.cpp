@@ -6250,9 +6250,11 @@ void QucsSortFilterProxyModel::setNameFilter(const QString &text)
 #if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
   beginFilterChange();
   a_nameFilter = text;
+  a_nameMatcher = qucs_s::files::NameFilter(text);
   endFilterChange(QSortFilterProxyModel::Direction::Rows);
 #else
   a_nameFilter = text;
+  a_nameMatcher = qucs_s::files::NameFilter(text);
   invalidateFilter();
 #endif
 }
@@ -6272,7 +6274,7 @@ bool QucsSortFilterProxyModel::filterAcceptsRow(int row, const QModelIndex &pare
   // Only the folder shown is filtered: those on the way to it hold it.
   if (parent != model->index(model->rootPath())) return true;
   const QString name = model->fileName(model->index(row, 0, parent));
-  return name == QLatin1String("..") || name.contains(a_nameFilter, Qt::CaseInsensitive);
+  return name == QLatin1String("..") || a_nameMatcher.matches(name);
 }
 
 // function below is adapted from https://stackoverflow.com/questions/10789284/qfilesystemmodel-sorting-dirsfirst

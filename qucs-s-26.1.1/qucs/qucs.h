@@ -20,6 +20,7 @@
 
 #include "dialogs/qucsshortcutdialog.h"
 #include "qucsshortcutmanager.h"
+#include "namefilter.h"
 #include <QFileSystemModel>
 #include <QHash>
 #include <QMainWindow>
@@ -117,9 +118,11 @@ public:
   explicit QucsSortFilterProxyModel(QObject *parent = nullptr)
       : QSortFilterProxyModel(parent){};
 
-  /// Lists only the entries of the folder shown whose names hold \a text,
-  /// without regard to case - ".." always; empty: all of them. The folders
-  /// above it are never left out (they hold it).
+  /// Lists only the entries of the folder shown whose names \a text finds
+  /// - names that hold it, or in which it finds a match as a regular
+  /// expression (qucs_s::files::NameFilter), without regard to case -
+  /// ".." always; empty: all of them. The folders above it are never left
+  /// out (they hold it).
   void setNameFilter(const QString &text);
   QString nameFilter() const { return a_nameFilter; }
   /// The rows looked at again: one whose file is gone (a link unlinked,
@@ -134,6 +137,7 @@ protected:
 
 private:
   QString a_nameFilter;
+  qucs_s::files::NameFilter a_nameMatcher;   // a_nameFilter's
 };
 
 class QucsApp : public QMainWindow {

@@ -9,6 +9,7 @@
  * dock that opens a schematic and follows the recent documents.
  */
 #include <QtTest>
+#include <QAction>
 #include <QApplication>
 #include <QClipboard>
 #include <QColumnView>
@@ -28,6 +29,7 @@
 #include "extsimkernels/spicecompat.h"
 #include "filebrowser.h"
 #include "isolated_settings.h"
+#include "namefilter.h"
 #include "main.h"
 #include "misc.h"
 #include "module.h"
@@ -326,9 +328,9 @@ private slots:
     }
 
     // The name typed filters the entries - in the flat views the folders
-    // too, in the Tree only the files; "only Qucs-S files" leaves the
-    // schematics, datasets, netlists, sources and S-parameters, and the
-    // folders.
+    // too, in the Tree only the files -, as text or as a regular
+    // expression; "only Qucs-S files" leaves the schematics, datasets,
+    // netlists, sources and S-parameters, and the folders.
     void theEntriesAreFiltered()
     {
         FileBrowser fb;
@@ -342,6 +344,30 @@ private slots:
         fb.setView(FileBrowser::View::Tree);
         QTRY_COMPARE(fb.shownNames(), QStringList({"models", "scratch", "amp.dat", "amp.dat.ngspice", "amp.dpl", "amp.sch", "opamp.sym"}));
         fb.setView(FileBrowser::View::List);
+        // A regular expression, whatever the case: the folders too.
+        fb.setFilterText("^amp\\.");
+        QTRY_COMPARE(fb.shownNames(), QStringList({"amp.dat", "amp.dat.ngspice", "amp.dpl", "amp.sch"}));
+        fb.setFilterText("^r\\d+\\.sch$");
+        QTRY_COMPARE(fb.shownNames(), QStringList({"R2.sch", "R10.sch"}));
+        fb.setFilterText("\\.(va|cir)$|^mod");
+        QTRY_COMPARE(fb.shownNames(), QStringList({"models", "bjt.va", "netlist.cir"}));
+        fb.setView(FileBrowser::View::Tree);
+        QTRY_COMPARE(fb.shownNames(), QStringList({"models", "scratch", "bjt.va", "netlist.cir"}));
+        fb.setView(FileBrowser::View::List);
+        // No regular expression: the text as typed, and the box says why.
+        QAction* warning = fb.filterEdit()->findChild<QAction*>("nameFilterNoRegex");
+        QVERIFY(warning != nullptr);
+        QVERIFY(!warning->isVisible());
+        QVERIFY(fb.filterEdit()->toolTip().contains("regular expression"));
+        fb.setFilterText("*.sch");
+        QTRY_COMPARE(fb.shownNames(), QStringList());
+        QVERIFY(warning->isVisible());
+        QVERIFY2(warning->toolTip().startsWith("Not a regular expression (") && warning->toolTip().contains("at character 1"),
+                 qPrintable(warning->toolTip()));
+        QCOMPARE(fb.filterEdit()->toolTip(), warning->toolTip());
+        fb.setFilterText("amp\\.sch");
+        QTRY_COMPARE(fb.shownNames(), QStringList({"amp.sch"}));
+        QVERIFY(!warning->isVisible());
         fb.setFilterText(QString());
         fb.setQucsFilesOnly(true);
         QTRY_VERIFY(!fb.shownNames().contains("notes.txt"));
@@ -351,6 +377,45 @@ private slots:
         for (const char* hidden : {"plot.png", "mystery.xyz"}) QVERIFY2(!names.contains(hidden), hidden);
         fb.setQucsFilesOnly(false);
         QTRY_VERIFY(fb.shownNames().contains("notes.txt"));
+    }
+
+    // What a "Filter by name" box finds: a name that holds the text, or in
+    // which the text finds a match as a regular expression, whatever the
+    // case; a text that is no regular expression is only the text. A
+    // path: it, or the name at its end.
+    void aNameIsFoundByTextOrRegularExpression()
+    {
+        using qucs_s::files::NameFilter;
+        QVERIFY(NameFilter().isEmpty() && NameFilter().matches("anything") && NameFilter().matchesPath("a/b"));
+        QVERIFY(NameFilter("AMP").matches("opamp.sym"));
+        QVERIFY(NameFilter("^amp").matches("Amp.sch"));
+        QVERIFY(!NameFilter("^amp").matches("opamp.sym"));
+        QVERIFY(NameFilter("\\.sch$").matches("amp.SCH"));
+        QVERIFY(!NameFilter("\\.sch$").matches("amp.sch.bak"));
+        QVERIFY(NameFilter("amp|filter").matches("filter_prj"));
+        QVERIFY(NameFilter("r\\d{2}").matches("R10.sch") && !NameFilter("r\\d{2}").matches("R2.sch"));
+        QVERIFY(NameFilter("^ÄRGER").matches("ärger.sch"));   // (a case beyond ASCII)
+        // Text a regular expression reads otherwise: found as typed too.
+        QVERIFY(NameFilter("file(1)").matches("file(1).sch"));
+        QVERIFY(NameFilter("a.c").matches("a.c") && NameFilter("a.c").matches("abc"));
+        QVERIFY(NameFilter("[draft]").matches("amp [draft].sch"));
+        // No regular expression: only the text, and why.
+        const NameFilter glob("*.sch");
+        QVERIFY(!glob.error().isEmpty());
+        QVERIFY2(glob.error().endsWith("at character 1"), qPrintable(glob.error()));
+        QVERIFY(!glob.matches("amp.sch"));
+        QVERIFY(glob.matches("all*.sch.txt"));
+        QVERIFY(!NameFilter("amp(").matches("amp.sch") && NameFilter("amp(").matches("amp(2).sch"));
+        QVERIFY2(NameFilter("amp(").error().endsWith("at character 4"), qPrintable(NameFilter("amp(").error()));
+        QVERIFY2(NameFilter("x{3,1}").error().endsWith("at character 5"), qPrintable(NameFilter("x{3,1}").error()));
+        QVERIFY(NameFilter("^amp").error().isEmpty() && NameFilter().error().isEmpty());
+        // A path: it, or its last name (a folder's ends in '/').
+        QVERIFY(NameFilter("^amp").matchesPath("models/amp.sch"));
+        QVERIFY(NameFilter("^models/").matchesPath("models/amp.sch"));
+        QVERIFY(NameFilter("^docs$").matchesPath("docs/"));
+        QVERIFY(NameFilter("^docs$").matchesPath("a/docs/"));
+        QVERIFY(!NameFilter("^models$").matchesPath("models/amp.sch"));
+        QVERIFY(!NameFilter("^x").matchesPath("models/amp.sch"));
     }
 
     // The Recent view: the documents opened last that are still there; a
@@ -370,6 +435,8 @@ private slots:
         QCOMPARE(opened.first().first().toString(), root + "/bjt.va");
         fb.setFilterText("amp");
         QCOMPARE(fb.shownNames(), QStringList({"amp.sch"}));
+        fb.setFilterText("\\.VA$");
+        QCOMPARE(fb.shownNames(), QStringList({"bjt.va"}));
         fb.setFilterText(QString());
         fb.setLocation(root + "/models");
         QCOMPARE(fb.view(), FileBrowser::View::List);

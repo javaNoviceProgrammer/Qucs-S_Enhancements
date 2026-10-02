@@ -100,16 +100,20 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the system's viewer). Files in *Scratch* stay under *Scratch*.
 - **Content panel filter**: above the panel, the File Browser's *Filter
   by name* box. It shows only the files whose names hold what is typed,
-  whatever its case - the name as the row has it, so a folder's name
-  (`docs`) finds the files in it -, in their categories and folders,
-  opened; the header says how many it found. A row it hides is no longer
-  selected, so no menu or drag takes it along. It stays as the panel
-  refreshes; cleared, every row is back and the categories are open as
-  they were. The **Projects panel** has the same box, under its New,
-  Open and Delete buttons: the projects and folders whose names hold
-  what is typed (`..` always, to go back up). The project chosen stays
-  chosen while it is listed; one it leaves out is no longer the one Open
-  and Delete act on. It stays as you go into a folder.
+  or in which it finds a match as a regular expression (`^amp`,
+  `\.sch$`, `amp|filter`, `r\d+`), whatever its case - the name as the
+  row has it, so a folder's name (`docs`) finds the files in it, or the
+  file's own (`^amp` finds `models/amp.sch`) -, in their categories and
+  folders, opened; the header says how many it found. Text that is no
+  regular expression (`*.sch`) is taken as typed, and a warning in the
+  box says why. A row it hides is no longer selected, so no menu or drag
+  takes it along. It stays as the panel refreshes; cleared, every row is
+  back and the categories are open as they were. The **Projects panel**
+  has the same box, under its New, Open and Delete buttons: the projects
+  and folders whose names hold what is typed or match it (`..` always,
+  to go back up). The project chosen stays chosen while it is listed;
+  one it leaves out is no longer the one Open and Delete act on. It
+  stays as you go into a folder.
 - **Which project is open, at a glance**: in the Projects panel a green
   dot at the right end of the open project's row, a grey one on the
   other projects, none on a folder that is no project; the tooltip says
@@ -861,7 +865,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   colour on a page, drawn for the light or dark theme, and folders come
   first, in natural order (R2 before R10). Back, forward, up, and places
   (the workspace, the open project, the examples, home, the volumes); the
-  path as buttons, or typed (Ctrl+Shift+G); a filter by name, and *Show
+  path as buttons, or typed (Ctrl+Shift+G); a filter by name (text or a
+  regular expression, as the Content panel's), and *Show
   Only Qucs-S Files*. A double-click opens a file as the Content panel
   does; its menu opens it with the system, shows it in the file manager,
   copies its path, renames it in place, makes a folder or moves it to the
@@ -961,7 +966,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
 - **ZIP archives, viewed and edited** (as Eclipse's zip editor): a `.zip`
   opens in a tab of its own — its files and folders in a tree (or a list
   of paths), each with its size, packed size, ratio, time, packing and
-  CRC-32, filtered by name (*Edit → Find*). *Open* (a double-click) opens
+  CRC-32, filtered by name - text or a regular expression, on the path
+  or the name at its end (*Edit → Find*). *Open* (a double-click) opens
   a file in Qucs-S as a copy: saved there, it is in the archive again.
   *Add Files…*, *Add Folder…*, files dropped on a row or pasted from a
   file manager go into the folder selected (a name there already asked
