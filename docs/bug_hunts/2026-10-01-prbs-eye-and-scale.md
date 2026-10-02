@@ -241,6 +241,12 @@ job failed its unit tests on `d19221d` too. The runs failed back to `14687a6` at
 
 Every test that isolates its settings now has a watchdog (`tests/isolated_settings.h`): a dialog or a menu open over a minute is logged with its words and closed, so a hang fails with its reason, not at ctest's timeout. Both suites pass with ngspice off the PATH.
 
+**After the push (2 October).** CI's run on `d4ff98e`: macOS's unit tests and the Windows build pass, both timeouts gone. The Linux job (GCC, ASan and UBSan, Ubuntu 24.04's ngspice 42) still failed, for two causes the hunt had not read:
+- `test_scale_and_memory.cpp` included `<sanitizer/allocator_interface.h>`, which only clang installs: since `1b64aaa` the job stopped at the build.
+- Before that, `test_qucs_control`'s `aModuleNotLoadedIsExplained`. ngspice 42 says "could not find a valid modelname", without the model's name, and the hint for a Verilog-A module not loaded waited for "Unable to find definition of model X", as the ngspice here (46) says it. Users of that ngspice got no hint.
+
+**Fixed in `85e9b7e`.** The function is declared where the header is missing (GCC's libasan has it); the model is the word of the device's netlist line that has a `.model` card, and the test runs a stand-in that answers as ngspice 42 does, with an ngspice here or not. Not run on Linux here (no container or GCC on this machine): CI's next run tells.
+
 ## D. Examples and analyses (before the day)
 
 - **D1. A DC sweep of a parameter aborts, with no warning.** A `.SW` over `.DC` of a
