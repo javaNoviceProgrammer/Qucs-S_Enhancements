@@ -483,6 +483,7 @@ void ProjectView::setFilterText(const QString& text)
     collectExpanded(QModelIndex(), m_openUnfiltered);
   }
   m_filter = filter;
+  m_matcher = qucs_s::files::NameFilter(filter);
   applyFilter();
   if (m_filter.isEmpty()) {
     collapseAll();
@@ -509,7 +510,7 @@ int ProjectView::filterRows(const QModelIndex& parent)
       // folder under Scratch.
       QString name = filePath(idx);
       if (categoryOf(idx) == Scratch) name = name.section('/', 1);
-      shown = m_filter.isEmpty() || name.contains(m_filter, Qt::CaseInsensitive);
+      shown = m_matcher.matchesPath(name);
       found += shown ? 1 : 0;
       // What is hidden is not acted on: no menu or drag takes it along.
       if (!shown && selectionModel() != nullptr)

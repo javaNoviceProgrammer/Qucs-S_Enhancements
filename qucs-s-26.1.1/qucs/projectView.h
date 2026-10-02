@@ -30,6 +30,8 @@
 #include <QStandardItem>
 #include <QUrl>
 
+#include "namefilter.h"
+
 
 class QStandardItemModel;
 class QTimer;
@@ -110,9 +112,12 @@ public:
   static bool treeView();
   void setTreeView(bool on);
 
-  /// Shows only the files whose names hold \a text, without regard to
-  /// case - the name as the row shows it, so that a folder's name finds
-  /// the files in it - and the categories and folders they are in, open.
+  /// Shows only the files whose names \a text finds - that hold it, or
+  /// in which it finds a match as a regular expression, without regard to
+  /// case (qucs_s::files::NameFilter): the name as the row shows it, so
+  /// that a folder's name finds the files in it, or the file's own (^amp
+  /// finds models/amp.sch) - and the categories and folders they are in,
+  /// open.
   /// Empty: every row again, those that were open before open again. It
   /// stays through refresh(). The header says how many files it found.
   void setFilterText(const QString& text);
@@ -171,6 +176,7 @@ private:
   bool m_folderIcons = false;   // QucsSettings.ContentFolderIcons the listing was built with
   QStringList m_patterns;       // the categories (names, patterns) the listing was built with
   QString m_filter;             // setFilterText()'s
+  qucs_s::files::NameFilter m_matcher;   // m_filter's
   QStringList m_openUnfiltered; // rowKey()s of the rows open before the filter
   QString m_header;             // the first column's header, unfiltered
 
