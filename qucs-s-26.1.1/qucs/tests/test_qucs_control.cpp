@@ -5913,6 +5913,121 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // A schematic as it is saved, but for where its view is scrolled to
+    // (the <View=...> line): what an edit and its undo change.
+    static QString circuitOf(Schematic* sch)
+    {
+        static const QRegularExpression view(QStringLiteral("^\\s*<View=[^>]*>\\n"), QRegularExpression::MultilineOption);
+        return sch->documentText().remove(view);
+    }
+
+    // qucs-s-edit-component-flags-bug: edit_component with 'flags' alone
+    // answered as done and changed nothing (its gate to the lists named
+    // equations, records and specs). Alone on a block with an option and
+    // on one with none, beside equations; one step to undo. And
+    // 'replace_equations' with nothing given to replace with is refused.
+    void flagsAloneAreSet()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_component", {{"type", "SpiceOptions"}, {"name", "OPT1"}, {"x", 100}, {"y", 100},
+                                               {"equations", QJsonArray{"temp=27"}}})));
+        const QString before = circuitOf(sch);
+        QJsonObject r = call("edit_component", {{"name", "OPT1"}, {"flags", QJsonArray{"noinit"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("equations").toArray(), (QJsonArray{"temp=27", "noinit"}));
+        QString netlist = text(call("get_netlist"));
+        QVERIFY2(netlist.contains(".OPTION temp = 27") && netlist.contains(".OPTION noinit"), qPrintable(netlist));
+        // One step to undo.
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(circuitOf(sch), before);
+        netlist = text(call("get_netlist"));
+        QVERIFY2(!netlist.contains("noinit"), qPrintable(netlist));
+        // On a block with no option of its own.
+        QVERIFY(!failed(call("add_component", {{"type", "SpiceOptions"}, {"name", "OPT2"}, {"x", 300}, {"y", 100}})));
+        r = call("edit_component", {{"name", "OPT2"}, {"flags", QJsonArray{"keepopinfo"}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("equations").toArray().contains("keepopinfo"), qPrintable(text(r)));
+        QVERIFY(sch->getComponentByName("OPT2")->getExpression(spicecompat::SPICEDefault).contains(".OPTION keepopinfo\n"));
+        // Beside equations: both.
+        r = call("edit_component", {{"name", "OPT1"}, {"flags", QJsonArray{"noinit"}}, {"equations", QJsonArray{"reltol=1e-4"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("equations").toArray(), (QJsonArray{"temp=27", "reltol=1e-4", "noinit"}));
+        // 'replace_equations' replaces with what is given: alone, nothing -
+        // refused, the block as it was.
+        const QString now = circuitOf(sch);
+        for (const bool replace : {true, false}) {
+            r = call("edit_component", {{"name", "OPT1"}, {"replace_equations", replace}});
+            QVERIFY2(failed(r) && text(r).contains("'equations' or 'flags'"), qPrintable(text(r)));
+            QCOMPARE(circuitOf(sch), now);
+        }
+        QVERIFY(failed(call("add_component", {{"type", "SpiceOptions"}, {"name", "OPT3"}, {"x", 500}, {"y", 100},
+                                              {"replace_equations", true}})));
+        // With flags alone: the block is those flags.
+        r = call("edit_component", {{"name", "OPT1"}, {"flags", QJsonArray{"noinit"}}, {"replace_equations", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("equations").toArray(), (QJsonArray{"noinit"}));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Each argument edit_component takes, given alone, changes the part -
+    // one step to undo - or is refused, the schematic as it was: none is
+    // read and then left unused, as 'flags' was. The arguments are the
+    // tool's own (describe_tool): one added later is to be given a value
+    // here.
+    void eachArgumentAloneChangesThePart()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("add_component", {{"type", "C"}, {"name", "C1"}, {"x", 300}, {"y", 100}})));
+        QVERIFY(!failed(call("add_component", {{"type", "SpiceOptions"}, {"name", "OPT1"}, {"x", 100}, {"y", 300},
+                                               {"equations", QJsonArray{"temp=27"}}})));
+        const QJsonArray records{"gain|db(v(out))"}, specs{"gain|19|21"};
+        QJsonObject r = call("add_component", {{"type", ".NGMONTECARLO"}, {"name", "MC1"}, {"x", 400}, {"y", 300},
+                                               {"records", records}, {"specs", specs}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QHash<QString, QJsonObject> alone{
+            {"rename", {{"name", "R1"}, {"rename", "R7"}}},
+            {"properties", {{"name", "R1"}, {"properties", QJsonObject{{"R", "2.2k"}}}}},
+            {"x", {{"name", "R1"}, {"x", 160}}},
+            {"y", {{"name", "R1"}, {"y", 160}}},
+            {"near", {{"name", "R1"}, {"near", QJsonObject{{"part", "C1"}, {"side", "below"}}}}},
+            {"rotation", {{"name", "R1"}, {"rotation", 1}}},
+            {"mirror", {{"name", "R1"}, {"mirror", true}}},
+            {"active", {{"name", "R1"}, {"active", false}}},
+            {"shown", {{"name", "R1"}, {"shown", QJsonObject{{"R", false}}}}},
+            {"name_shown", {{"name", "R1"}, {"name_shown", false}}},
+            {"text_at", {{"name", "R1"}, {"text_at", QJsonArray{30, -40}}}},
+            {"equations", {{"name", "OPT1"}, {"equations", QJsonArray{"reltol=1e-4"}}}},
+            {"flags", {{"name", "OPT1"}, {"flags", QJsonArray{"noinit"}}}},
+            {"replace_equations", {{"name", "OPT1"}, {"replace_equations", true}}},
+            {"records", {{"name", "MC1"}, {"records", QJsonArray{"vpk|max(v(out))"}}}},
+            {"specs", {{"name", "MC1"}, {"specs", QJsonArray{"gain|18|22"}}}},
+        };
+        const QJsonObject schema =
+            json(call("describe_tool", {{"name", "edit_component"}})).toObject().value("inputSchema").toObject().value("properties").toObject();
+        QVERIFY(schema.size() > 10);
+        for (const QString& arg : alone.keys()) QVERIFY2(schema.contains(arg), qPrintable(arg + " is no argument of edit_component now"));
+        QStringList refused;
+        for (auto it = schema.begin(); it != schema.end(); ++it) {
+            const QString arg = it.key();
+            if (arg == "path" || arg == "name" || arg == "preview") continue;   // (which part; a preview changes nothing)
+            QVERIFY2(alone.contains(arg), qPrintable("edit_component takes '" + arg + "': give it a value in this test"));
+            const QString was = circuitOf(sch);
+            r = call("edit_component", alone.value(arg));
+            if (failed(r)) {
+                QVERIFY2(circuitOf(sch) == was, qPrintable(arg + ": refused, and changed"));
+                refused << arg;
+                continue;
+            }
+            QVERIFY2(circuitOf(sch) != was, qPrintable(arg + " alone was answered as done and changed nothing: " + text(r)));
+            QVERIFY(!failed(call("undo")));
+            QVERIFY2(circuitOf(sch) == was, qPrintable(arg + ": not one step to undo"));
+        }
+        QCOMPARE(refused, QStringList{"replace_equations"});
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // A symbol's port shows its instances a label beside the pin in place of
     // its name (the net's, which the netlist keeps), or nothing: set with
     // edit_painting, saved after the name in quotes, read back by the
