@@ -11598,23 +11598,33 @@ namespace {
 // card names a type no built-in device has - a Verilog-A module whose
 // compiled library was not loaded: where Qucs-S looked for it (the open
 // project, the schematic's folder) and where it is, if anywhere it can
-// see. Empty for another error, or a module it did load.
-QString osdiHint(const QString& message, const QStringList& netlist, const QString& schematic, const QString& project)
+// see. Empty for another error, or a module it did load. Older ngspice
+// (42) says "could not find a valid modelname" without the name: it is
+// a word of the device's netlist line.
+QString osdiHint(const QString& message, const QString& netlistLine, const QStringList& netlist, const QString& schematic,
+                 const QString& project)
 {
     static const QRegularExpression unfound(QStringLiteral("unable to find definition of model\\s+([^\\s:]+)"),
                                             QRegularExpression::CaseInsensitiveOption);
-    const QRegularExpressionMatch m = unfound.match(message);
-    if (!m.hasMatch()) return {};
-    const QString model = m.captured(1);
+    static const QRegularExpression unnamed(QStringLiteral("could not find a valid modelname"), QRegularExpression::CaseInsensitiveOption);
+    QStringList models;
+    if (const QRegularExpressionMatch m = unfound.match(message); m.hasMatch()) models << m.captured(1);
+    else if (unnamed.match(message).hasMatch())
+        for (const QString& word : netlistLine.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts).mid(1))
+            if (!word.contains(QLatin1Char('='))) models << word;
     // Its card: .model amp_model amp (gain=10).
-    const QRegularExpression card(QStringLiteral("^\\s*\\.model\\s+%1\\s+([A-Za-z_][\\w$]*)").arg(QRegularExpression::escape(model)),
-                                  QRegularExpression::CaseInsensitiveOption);
-    QString type;
-    for (const QString& line : netlist)
-        if (const QRegularExpressionMatch c = card.match(line); c.hasMatch()) {
-            type = c.captured(1);
-            break;
-        }
+    QString model, type;
+    for (const QString& name : std::as_const(models)) {
+        const QRegularExpression card(QStringLiteral("^\\s*\\.model\\s+%1\\s+([A-Za-z_][\\w$]*)").arg(QRegularExpression::escape(name)),
+                                      QRegularExpression::CaseInsensitiveOption);
+        for (const QString& line : netlist)
+            if (const QRegularExpressionMatch c = card.match(line); c.hasMatch()) {
+                model = name;
+                type = c.captured(1);
+                break;
+            }
+        if (!type.isEmpty()) break;
+    }
     static const QSet<QString> builtIn{"r", "c", "l", "d", "npn", "pnp", "njf", "pjf", "nmos", "pmos", "nmf", "pmf", "sw", "csw",
                                        "ltra", "urc", "vdmos", "hfet", "tra", "txl", "cpl", "isource", "vsource", "res", "cap", "ind"};
     if (type.isEmpty() || builtIn.contains(type.toLower())) return {};
@@ -12142,7 +12152,8 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
             for (const QJsonValue& p : qucs_s::simlog::toJson(qucs_s::simlog::problems(output, netlist, parts))) {
                 QJsonObject o = p.toObject();
                 if (doc && simulator == spicecompat::simNgspice)
-                    if (const QString hint = osdiHint(o.value(QStringLiteral("message")).toString(), netlist, doc->getDocName(),
+                    if (const QString hint = osdiHint(o.value(QStringLiteral("message")).toString(),
+                                                      o.value(QStringLiteral("netlist line")).toString(), netlist, doc->getDocName(),
                                                       a_app->ProjName.isEmpty() ? QString() : QucsSettings.QucsWorkDir.absolutePath());
                         !hint.isEmpty())
                         o.insert(QStringLiteral("hint"), hint);
