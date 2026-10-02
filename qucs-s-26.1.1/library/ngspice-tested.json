@@ -1,10 +1,10 @@
 {
-  "tested": "2026-09-30",
+  "tested": "2026-10-02",
   "ngspice": "46",
   "how": "each part alone, each pin to ground through 1 MOhm, its operating point: placed, netlisted, converged; then, for an op-amp, a transistor, a FET or a diode, a bench of its kind with its numbers in a range",
-  "passed": 4049,
+  "passed": 4050,
   "untested": 77,
-  "of": 4234,
+  "of": 4235,
   "benches": {"passed": 1796, "of": 1808},
   "parts": {
     "555_timer/555_XSPICE": {"passes": true, "pins": 8},
@@ -1698,6 +1698,7 @@
     "Loudspeaker/SPK_simp": {"passes": true, "pins": 2},
     "Loudspeaker/Tc120td5": {"passes": true, "pins": 2},
     "Loudspeaker/Tc120tdx": {"passes": true, "pins": 2},
+    "MESFETs/MESFETCL1": {"passes": true, "pins": 3},
     "MOSFETs/BSS123": {"passes": true, "pins": 3, "bench": {"passes": true, "bench": "nfet: 10 V through 1 kOhm, |Vgs| 10 V", "measured": {"Id mA": 9.8241}}},
     "MOSFETs/BSS123W": {"passes": true, "pins": 3, "bench": {"passes": true, "bench": "nfet: 10 V through 1 kOhm, |Vgs| 10 V", "measured": {"Id mA": 9.9958}}},
     "MOSFETs/BSS84": {"passes": true, "pins": 3, "bench": {"passes": true, "bench": "pfet: 10 V through 1 kOhm, |Vgs| 10 V", "measured": {"Id mA": 9.7414}}},

@@ -47,6 +47,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QTextStream>
 
@@ -385,9 +386,9 @@ bool applyEye(EyeDiagram* d, const QJsonValue& value, QString* error)
     }
     int levels = d->levels;
     if (o.contains(QLatin1String("levels"))) {
-        const double l = o.value(QLatin1String("levels")).toDouble(NaN);
-        if (l != 2 && l != 4) {
-            *error = tr("'levels' is 2 (NRZ) or 4 (PAM4).");
+        const double l = o.value(QLatin1String("levels")).isNull() ? 0 : o.value(QLatin1String("levels")).toDouble(NaN);
+        if (l != 0 && l != 2 && l != 4) {
+            *error = tr("'levels' is 2 (NRZ) or 4 (PAM4), or null: as each trace's V(PRBS) source is coded.");
             return false;
         }
         levels = int(l);
@@ -438,11 +439,14 @@ bool applyEye(EyeDiagram* d, const QJsonValue& value, QString* error)
 // An eye diagram's settings, and what was measured on each trace.
 QJsonObject eyeJson(const EyeDiagram* d)
 {
+    // (Levels as each trace's source is coded: not listed, as an automatic
+    // unit interval is not - what was measured gives them.)
     QJsonObject o{{QStringLiteral("span"), d->span},
-                  {QStringLiteral("levels"), d->levels},
                   {QStringLiteral("drawn"), QString::fromLatin1(kEyeDrawn[d->drawn == EyeDiagram::Traces ? 1 : 0])},
                   {QStringLiteral("measurements"), d->measurements}};
+    if (d->levels == 2 || d->levels == 4) o.insert(QStringLiteral("levels"), d->levels);
     if (std::isfinite(d->ui)) o.insert(QStringLiteral("unit_interval"), d->ui);
+    if (d->mixedUi()) o.insert(QStringLiteral("time across it"), QStringLiteral("in UI: each trace folded at its own source's Tbit"));
     if (std::isfinite(d->start)) o.insert(QStringLiteral("from"), d->start);
     if (std::isfinite(d->threshold)) o.insert(QStringLiteral("threshold"), d->threshold);
     if (std::isfinite(d->maskWidth))
@@ -842,6 +846,8 @@ struct ReadOptions {
     ds::Form form = ds::Form::MagnitudePhase;
     QString prefix;   // the simulator's, for the name of a trace
     QString dataset;  // a dataset not the schematic's own (imported, a run kept): its name, for a trace (name:variable)
+    QString file;     // the dataset read: an eye's PRBS source as its run gave it (its netlist kept)
+    bool levelsGiven = false;   // an eye's levels given: not the source's coding
     QHash<QString, QString> definitions;   // the equations' variables (lower case): what they are defined as
     const Schematic* circuit = nullptr;    // the schematic of the dataset: an eye's PRBS source
 };
@@ -1038,11 +1044,19 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
     ds::MeasureOptions measureOptions = o.measureOptions;
     measureOptions.decibels = o.decibels.value_or(ds::isDecibels(ds::unitOf(v.name, definitionOf(o, v.name))));
     // An eye without a bit period: the Tbit of the PRBS source the signal
-    // comes from, before what its crossings tell.
-    if (std::isnan(measureOptions.period) && o.measure.contains(QStringLiteral("eye")) && o.circuit != nullptr)
-        if (const qucs_s::prbs::Source s = qucs_s::prbs::sourceOf(o.circuit, v.name); s.found()) {
-            measureOptions.period = s.ui;
-            measureOptions.periodFrom = s.name;
+    // comes from, before what its crossings tell - as the run the data is
+    // of gave it - and without levels, its coding's (PAM4: 4).
+    if ((std::isnan(measureOptions.period) || !o.levelsGiven) && o.measure.contains(QStringLiteral("eye")) && o.circuit != nullptr)
+        if (const qucs_s::prbs::Source s = qucs_s::prbs::sourceOf(o.circuit, v.name, o.file); s.found()) {
+            if (std::isnan(measureOptions.period)) {
+                measureOptions.period = s.ui;
+                measureOptions.periodFrom = s.name;
+            }
+            if (!o.levelsGiven && s.levels == 4) {
+                measureOptions.levels = 4;
+                measureOptions.levelsFrom = s.name;
+            }
+            measureOptions.sourceNote = s.note;
         }
     const QString xName = v.dependencies.value(0, QStringLiteral("index"));
     out.insert(QStringLiteral("x"), xName);
@@ -2067,6 +2081,9 @@ QString QucsControl::datasetNamedBy(const QJsonObject& args, const QJsonArray& w
 
 QJsonObject QucsControl::getDataset(const QJsonObject& args)
 {
+    // A large dataset's values, offered back to the system once they are
+    // freed (after every local below, the answer made).
+    const auto release = qScopeGuard([] { misc::releaseFreedMemory(); });
     QString error;
     // Its variables named name:variable, as the traces of a dataset beside
     // the schematic's own are (m:gain imported, ngspice/run1:v(out) kept):
@@ -2100,6 +2117,7 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
         o.definitions = definitionsIn(definer);
         o.circuit = definer;
     }
+    o.file = file;
     // A dataset not of a schematic's Data Set - imported, a run keep_as
     // kept - is named in a trace: ngspice/v(out) is the schematic's own.
     if (!importedName.isEmpty()) {
@@ -2197,6 +2215,7 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
         const double l = args.value(QLatin1String("levels")).toDouble(NaN);
         if (l != 2 && l != 4) return errorResult(tr("'levels' is 2 (NRZ) or 4 (PAM4)."));
         o.measureOptions.levels = int(l);
+        o.levelsGiven = true;
     }
     const QString form = args.value(QLatin1String("form")).toString();
     if (form == QLatin1String("db_phase")) o.form = ds::Form::DbPhase;

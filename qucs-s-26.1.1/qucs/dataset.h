@@ -161,6 +161,8 @@ struct MeasureOptions {
     QVector<double> phase;        // phase_margin, gain_margin: the phase in degrees at each sample (a complex curve's)
     double period = qQNaN();      // eye: the bit period, in the unit of x (seconds); NaN: told from the crossings
     QString periodFrom;           // eye: the PRBS source whose Tbit the period is ("V1"), to say so
+    QString levelsFrom;           // eye: the PRBS source coded PAM4 that gave 4 levels, to say so
+    QString sourceNote;           // eye: what changed in the source since the run the data is of
     double offset = 0;            // eye: where the eye begins, after the curve's start (the settling before it left out)
     int levels = 2;               // eye: 2 (NRZ) or 4 (PAM4)
 };

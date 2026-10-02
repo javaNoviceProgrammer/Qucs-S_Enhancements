@@ -34,6 +34,7 @@
   <OpAmp OP2 1 470 150 0 -59 1 0 "1e5" 1 "15 V" 0>
   <OpAmp OP1 1 140 130 -26 -80 1 0 "1e5" 1 "15 V" 0>
   <OpAmp OP3 1 910 170 -26 42 0 0 "1e7" 1 "15 V" 0>
+  <SpiceOptions SpiceOptions1 1 300 410 -38 16 0 0 "DEVICE" 0 "method=gear" 1>
 </Components>
 <Wires>
   <180 130 210 130 "" 0 0 0 "">

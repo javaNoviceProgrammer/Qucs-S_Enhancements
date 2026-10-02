@@ -3217,6 +3217,28 @@ private slots:
             const QJsonObject sent = json(r).toObject().value("variables").toArray().first().toObject().value("measurements").toObject().value("eye").toObject();
             QVERIFY2(sent.value("unit interval").toDouble() == 40e-6 && sent.value("unit interval from").toString().startsWith("V1's Tbit"),
                      qPrintable(text(r)));
+            QVERIFY2(!sent.contains("levels from") && !sent.contains("note"), qPrintable(text(r)));
+            // The Tbit of the run the data is of (its netlist kept), though
+            // V1 has another now - and said.
+            QVERIFY(misc::keepRunNetlist(dir.filePath("workspace/signals.dat.ngspice"),
+                                         "* Qucs " PACKAGE_VERSION "  signals.sch\nV1 data 0 PRBS(0 1 40u 0 4u 4u 7)\n.end\n"));
+            QVERIFY(!failed(call("edit_component", {{"name", "V1"}, {"properties", QJsonObject{{"Tbit", "80 us"}}}})));
+            r = call("get_dataset", {{"variables", QJsonArray{"tran.v(data)"}}, {"measure", QJsonArray{"eye"}}});
+            const QJsonObject ran = json(r).toObject().value("variables").toArray().first().toObject().value("measurements").toObject().value("eye").toObject();
+            QVERIFY2(ran.value("unit interval").toDouble() == 40e-6 && ran.value("note").toString().contains("V1's Tbit is 80 µs now, 40 µs in the run the data is of"),
+                     qPrintable(text(r)));
+            // Coded PAM4 in the run: four levels, said - not when levels are given.
+            QVERIFY(misc::keepRunNetlist(dir.filePath("workspace/signals.dat.ngspice"),
+                                         "* Qucs " PACKAGE_VERSION "  signals.sch\nV1 data 0 PAM4(0 1 40u 0 4u 4u 7)\n.end\n"));
+            r = call("get_dataset", {{"variables", QJsonArray{"tran.v(data)"}}, {"measure", QJsonArray{"eye"}}});
+            const QJsonObject coded = json(r).toObject().value("variables").toArray().first().toObject().value("measurements").toObject().value("eye").toObject();
+            // (The data is NRZ: no four levels - and why four were tried.)
+            QVERIFY2(coded.value("error").toString().contains("4 levels as V1 is coded PAM4")
+                         && coded.value("error").toString().endsWith("levels 2 measures it as NRZ"), qPrintable(text(r)));
+            r = call("get_dataset", {{"variables", QJsonArray{"tran.v(data)"}}, {"measure", QJsonArray{"eye"}}, {"levels", 2}});
+            const QJsonObject two = json(r).toObject().value("variables").toArray().first().toObject().value("measurements").toObject().value("eye").toObject();
+            QVERIFY2(!two.contains("levels from") && two.value("levels").isObject(), qPrintable(text(r)));
+            QVERIFY(!failed(call("undo")));
             QVERIFY(!failed(call("undo")));
         }
         r = call("get_dataset", {{"variables", QJsonArray{"tran.v(data)"}}, {"measure", QJsonArray{"eye"}}, {"levels", 3}});
@@ -4209,7 +4231,12 @@ private slots:
         QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R9"}, {"x", 600}, {"y", 300}})));
         QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R7"}, {"x", 600}, {"y", 200}, {"rotation", 1}})));
         QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R8"}, {"x", 600}, {"y", 400}, {"rotation", 1}})));
-        r = call("connect", {{"from", "R7.1"}, {"to", "R8.2"}, {"via", QJsonArray{QJsonArray{600, 300}}}});
+        // (Built by append: QJsonArray{QJsonArray{600, 300}} is [600, 300]
+        // to Apple's newer clang, CI's - "via[0] is a list, not the number
+        // 600" there, and CI red.)
+        QJsonArray body;
+        body.append(QJsonArray{600, 300});
+        r = call("connect", {{"from", "R7.1"}, {"to", "R8.2"}, {"via", body}});
         QVERIFY2(text(r).contains("It crosses the body of R9"), qPrintable(text(r)));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
@@ -8962,6 +8989,22 @@ private slots:
         QVERIFY(!failed(call("edit_component", {{"name", "R2"}, {"rotation", 1}})));
         r = call("undo");
         QVERIFY2(text(r).contains("The undo changed:") && !text(r).contains("Now:"), qPrintable(text(r)));
+        // diff by steps and undo_history read the states they need, each
+        // unpacked once (all of them were, every call): each step its own.
+        QCOMPARE(json(call("diff", {{"steps", 1}})).toObject().value("changes").toArray(),
+                 (QJsonArray{"a wire drawn (130,100-170,100)"}));
+        QCOMPARE(json(call("diff", {{"steps", 2}})).toObject().value("changes").toArray(),
+                 (QJsonArray{"R2 added (R, R=1 kOhm) at (200, 100)", "a wire drawn (130,100-170,100)"}));
+        QStringList told;
+        for (const QJsonValue& v : json(call("undo_history")).toObject().value("steps").toArray())
+            told << QStringLiteral("%1 %2 %3").arg(v.toObject().value("step").toInt()).arg(v.toObject().value("done").toBool() ? "true" : "false").arg(v.toObject().value("change").toString());
+        QCOMPARE(told, (QStringList{"1 true R1 added (R, R=1 kOhm) at (100, 100)", "2 true R2 added (R, R=1 kOhm) at (200, 100)",
+                                    "3 true a wire drawn (130,100-170,100)",
+                                    "4 false R2: turned; 2 wires drawn (170,100-170,130; 170,130-200,130)"}));
+        told.clear();
+        for (const QJsonValue& v : json(call("undo_history", {{"steps", 1}})).toObject().value("steps").toArray())
+            told << QString::number(v.toObject().value("step").toInt());
+        QCOMPARE(told, (QStringList{"3", "4"}));
         const int was = QucsSettings.DefaultSimulator;
         QucsSettings.DefaultSimulator = spicecompat::simQucsator;
         r = call("add_analysis", {{"kind", "ac"}, {"plot", QJsonArray{"db(v(out))"}}});
@@ -10635,6 +10678,97 @@ private slots:
         QVERIFY(failed(r));
         QVERIFY2(text(r).contains(QStringLiteral("There is no component R999. (×25)")) && text(r).contains("and 7 more"),
                  qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A schematic that cannot be opened says why ("could not be opened."
+    // alone said nothing): a part it does not know - and, a Verilog-A
+    // module beside it not built yet (the OpenVAF tunnel example), how to
+    // build it.
+    void whyADocumentCouldNotBeOpened()
+    {
+        const QString va = QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/OpenVAF/Tunnel_Ngspice_prj/");
+        writeFile("workspace/tunnel/tunnel.va", [&] {
+            QFile f(va + "tunnel.va");
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        }());
+        const QString tunn = writeFile("workspace/tunnel/tunn.sch", [&] {
+            QFile f(va + "tunn.sch");
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        }());
+        QJsonObject r = call("open_document", {{"path", tunn}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("could not be opened: Unknown component: tunnel")
+                     && text(r).contains("tunnel is the Verilog-A module of") && text(r).contains("tunnel.va, not built yet: build it"),
+                 qPrintable(text(r)));
+        const QString odd = writeFile("workspace/odd.sch", schematicOf("  <NoSuchPart X1 1 100 100 0 0 0 0>\n"));
+        r = call("open_document", {{"path", odd}});
+        QVERIFY2(failed(r) && text(r).contains("Unknown component: NoSuchPart")
+                     && text(r).contains("NoSuchPart is no part this Qucs-S knows"),
+                 qPrintable(text(r)));
+        // (Opened, a loader's warning comes after the answer, as before.)
+        QVERIFY(!failed(call("open_document", {{"path", writeFile("workspace/fine.sch", schematicOf(""))}})));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Two parts of one name (a hand-edited file): the second is R1#2, so a
+    // selection of both moves and deletes both (it acted on the first
+    // alone). get_state names a selected ground by its ref (it said ""),
+    // and Check Schematic's findings give the ref of the part they mean.
+    void twoPartsOfOneNameAreToldApart()
+    {
+        const QByteArray parts =
+            "  <R R1 1 100 60 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+            "  <R R1 1 300 60 15 -26 0 1 \"2k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+            "  <GND * 1 100 90 0 0 0 0>\n"
+            "  <GND * 1 700 300 0 0 0 0>\n";
+        const QString file = writeFile("workspace/twice.sch", schematicOf(parts));
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+
+        const QJsonObject checked = json(call("check_schematic")).toObject();
+        bool twice = false, alone = false;
+        for (const QJsonValue& v : checked.value("errors").toArray())
+            if (v.toObject().value("message").toString().contains("used twice"))
+                twice = v.toObject().value("ref").toString() == "R1#2";
+        for (const QJsonValue& v : checked.value("warnings").toArray())
+            if (v.toObject().value("message").toString().contains("the ground at 700, 300"))
+                alone = v.toObject().value("ref").toString() == "GND#2";
+        QVERIFY2(twice && alone, qPrintable(QJsonDocument(checked).toJson()));
+        QString refs;
+        for (const QJsonValue& v : json(call("get_schematic")).toObject().value("components").toArray())
+            refs += v.toObject().value("ref").toString() + " ";
+        QVERIFY2(refs.contains("R1 R1#2 GND#1 GND#2"), qPrintable(refs));
+
+        QVERIFY(!failed(call("trigger_action", {{"action", "Edit > Select All"}})));
+        QJsonArray selected;
+        for (const QJsonValue& d : json(call("get_state")).toObject().value("documents").toArray())
+            if (d.toObject().value("in front").toBool()) selected = d.toObject().value("selected").toArray();
+        QCOMPARE(selected, (QJsonArray{"R1", "R1#2", "GND#1", "GND#2"}));
+
+        QJsonObject r = call("move", {{"selection", true}, {"dx", 10}, {"dy", 0}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("moved").toArray().contains(QJsonValue("R1#2")), qPrintable(text(r)));
+        QList<int> xs;
+        for (Component* c : front()->a_DocComps)
+            if (c->Name == "R1") xs << c->cx;
+        QCOMPARE(xs, (QList<int>{110, 310}));
+
+        // By its ref, each tool: the second R1 edited, a third refused.
+        QVERIFY(!failed(call("edit_component", {{"name", "R1#2"}, {"properties", QJsonObject{{"R", "3k"}}}})));
+        QStringList values;
+        for (Component* c : front()->a_DocComps)
+            if (c->Name == "R1") values << c->getProperty("R")->Value;
+        QCOMPARE(values, (QStringList{"1k", "3k"}));
+        r = call("select", {{"names", QJsonArray{"R1#3"}}});
+        QVERIFY2(text(r).contains("There are 2 parts named R1, not R1#3"), qPrintable(text(r)));
+        r = call("select", {{"names", QJsonArray{"GND#9"}}});   // (one period at its end, not two)
+        QVERIFY2(text(r).endsWith("GND#1 to GND#2."), qPrintable(text(r)));
+
+        QVERIFY(!failed(call("trigger_action", {{"action", "Edit > Select All"}})));
+        r = call("delete", {{"selection", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("R1#2"), qPrintable(text(r)));
+        QCOMPARE(int(front()->a_DocComps.size()), 0);
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 

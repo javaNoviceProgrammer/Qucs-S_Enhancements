@@ -44,6 +44,12 @@ jobs:
       - name: Claude's tools take what they read
         run: python3 scripts/ci/check-tool-arguments.py
 
+      # No list of one list written as QJsonArray{QJsonArray{...}}: a copy
+      # to Apple's newer clang, a nesting to the others (see
+      # scripts/ci/check-json-nesting.py).
+      - name: Lists of one list are nested on every compiler
+        run: python3 scripts/ci/check-json-nesting.py
+
       - name: Install build dependencies
         run: |
           sudo apt-get update

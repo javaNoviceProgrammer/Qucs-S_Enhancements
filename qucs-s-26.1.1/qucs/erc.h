@@ -12,12 +12,14 @@
 #ifndef ERC_H
 #define ERC_H
 
+#include <QHash>
 #include <QList>
 #include <QPoint>
 #include <QString>
 
 #include <functional>
 
+class Component;
 class Schematic;
 
 /*!
@@ -42,9 +44,20 @@ struct Issue {
     QPoint where;       ///< model coordinates of the place to show
     QString component;  ///< the component's name, when one is meant
     QString file = QString();   ///< the schematic file the issue is in (its document name)
+    /// The part meant as the tools tell it, when its name does not: a
+    /// ground's GND#2, the second of a name given twice R1#2.
+    QString ref = QString();
     bool operator==(const Issue& o) const
-    { return severity == o.severity && message == o.message && where == o.where && component == o.component && file == o.file; }
+    {
+        return severity == o.severity && message == o.message && where == o.where && component == o.component && file == o.file
+            && ref == o.ref;
+    }
 };
+
+/// Each part as the tools tell it, in one pass: its name; an unnamed one's
+/// type (GND), or its number among several of its type (GND#2); the second
+/// of a name given twice R1#2 (the first R1).
+QHash<const Component*, QString> refs(const Schematic* doc);
 
 /// The issues of \a doc, errors first, in the order they were found;
 /// each carries the document's name as its file.
