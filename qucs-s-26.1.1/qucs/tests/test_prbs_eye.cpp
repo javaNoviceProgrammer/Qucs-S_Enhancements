@@ -42,6 +42,7 @@
 #include "main.h"
 #include "prbssource.h"
 #include "misc.h"
+#include "extsimkernels/ngspice.h"
 #include "module.h"
 #include "qucs.h"
 #include "schematic.h"
@@ -528,6 +529,69 @@ private slots:
         s = qucs_s::prbs::sourceOf(coded.get(), "v(agg)");
         QVERIFY(s.found() && s.levels == 4);
         QCOMPARE(qucs_s::prbs::sourceOf(coded.get(), "v(rx)").levels, 2);
+    }
+
+    // The run's netlist is SPICE's: "100P" in it is 100 ps (SPICE's P is
+    // pico), not 100 peta-seconds as Qucs reads a P - which said "Tbit is
+    // 50 ps now, ... in the run" of a run with the Tbit it has, and folded
+    // the eye at that. The netlist as the netlister writes it, kept for
+    // the dataset: the Tbit as now, nothing said; SPICE's other spellings.
+    void theRunsNumbersAreReadAsSpiceReadsThem()
+    {
+        const QString folder = dir.filePath("spice-numbers");
+        QVERIFY(QDir().mkpath(folder + "/work"));
+        {
+            QFile f(folder + "/link.sch");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(linkSchematic("50 ps", "80 ps").toUtf8());
+        }
+        Schematic sch(nullptr, folder + "/link.sch");
+        QVERIFY(sch.loadDocument());
+        const QString data = folder + "/link.dat.ngspice";
+        QVERIFY(writeDataset(data, waveform(nrz(20), 10e-12, 2.5e-12), "tran.v(rx)"));
+        Ngspice kernel(&sch);
+        kernel.setWorkdir(folder + "/work");
+        kernel.SaveNetlist(folder + "/work/net.cir", false);
+        QFile written(folder + "/work/net.cir");
+        QVERIFY(written.open(QIODevice::ReadOnly));
+        const QString netlist = QString::fromUtf8(written.readAll());
+        QVERIFY2(netlist.contains("PRBS(0 1 50P "), qPrintable(netlist));   // (as the netlister writes it)
+        QVERIFY(misc::keepRunNetlist(data, netlist));
+        qucs_s::prbs::Source s = qucs_s::prbs::sourceOf(&sch, "ngspice/tran.v(rx)", data);
+        const auto near = [](double a, double b) { return std::abs(a - b) <= 1e-9 * std::abs(b); };
+        QVERIFY2(s.found() && s.name == "V1" && near(s.ui, 50e-12), qPrintable(QString::number(s.ui) + " " + s.why));
+        QVERIFY2(s.note.isEmpty(), qPrintable(s.note));
+        s = qucs_s::prbs::sourceOf(&sch, "ngspice/tran.v(agg)", data);
+        QVERIFY2(s.found() && s.name == "V3" && near(s.ui, 80e-12) && s.note.isEmpty(), qPrintable(QString::number(s.ui) + s.note));
+        // SPICE's spellings: a scale factor of any case, a unit after it;
+        // an M is milli (Qucs's reading, converted for SPICE, took it for
+        // mega).
+        const QString head = QStringLiteral("* Qucs " PACKAGE_VERSION "  %1\n").arg(folder + "/link.sch");
+        for (const QString& tbit : {"100P", "0.1N", "100PS", "100p", "1E-10", "1E-7M"}) {
+            QVERIFY(misc::keepRunNetlist(data, head + "V1 tx 0 PRBS(0 1 " + tbit + " 0 15P 15P 7)\n.end\n"));
+            s = qucs_s::prbs::sourceOf(&sch, "ngspice/tran.v(rx)", data);
+            QVERIFY2(s.found() && near(s.ui, 100e-12), qPrintable(tbit + ": " + QString::number(s.ui) + " " + s.why));
+            QVERIFY2(s.note.contains("V1's Tbit is 50 ps now, 100 ps in the run the data is of"), qPrintable(tbit + ": " + s.note));
+        }
+        // A Tbit written as SPICE writes it (50P): what ngspice is given,
+        // as the run's and with no run.
+        {
+            QFile f(folder + "/link.sch");
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(linkSchematic("50P", "80 ps").toUtf8());
+        }
+        Schematic spiceStyle(nullptr, folder + "/link.sch");
+        QVERIFY(spiceStyle.loadDocument());
+        s = qucs_s::prbs::sourceOf(&spiceStyle, "ngspice/tran.v(rx)");
+        QVERIFY2(s.found() && near(s.ui, 50e-12), qPrintable(QString::number(s.ui) + " " + s.why));
+        Ngspice again(&spiceStyle);
+        again.setWorkdir(folder + "/work");
+        again.SaveNetlist(folder + "/work/net.cir", false);
+        QFile rewritten(folder + "/work/net.cir");
+        QVERIFY(rewritten.open(QIODevice::ReadOnly));
+        QVERIFY(misc::keepRunNetlist(data, QString::fromUtf8(rewritten.readAll())));
+        s = qucs_s::prbs::sourceOf(&spiceStyle, "ngspice/tran.v(rx)", data);
+        QVERIFY2(s.found() && near(s.ui, 50e-12) && s.note.isEmpty(), qPrintable(QString::number(s.ui) + " " + s.note));
     }
 
     // In the application, two traces of two sources: each folded at its
