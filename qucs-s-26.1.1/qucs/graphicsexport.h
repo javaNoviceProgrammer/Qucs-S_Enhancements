@@ -115,7 +115,7 @@ bool isCircuitPart(const Component* component);
 /// components that are parts of it (isCircuitPart()), the wires, the labels
 /// and the paintings, not the diagrams nor the blocks of the netlist alone -
 /// and the selection there was comes back after: an export of the selection
-/// (Options::selectionOnly) draws the circuit, as Copy Schematic as Image
+/// (Options::selectionOnly) draws the circuit, as Copy Circuit as Image
 /// does.
 class CircuitAsSelection
 {

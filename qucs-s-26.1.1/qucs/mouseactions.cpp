@@ -750,7 +750,7 @@ void MouseActions::fillContextMenu(Schematic *Doc, float fX, float fY)
             ComponentMenu->addAction(QucsMain->onGrid);
         ComponentMenu->addAction(QucsMain->editCopy);
         ComponentMenu->addAction(QucsMain->editCopyImage);
-        ComponentMenu->addAction(QucsMain->editCopySchematicImage);
+        ComponentMenu->addAction(QucsMain->editCopyCircuitImage);
         if (!QucsMain->editPaste->isChecked())
             ComponentMenu->addAction(QucsMain->editPaste);
         break;

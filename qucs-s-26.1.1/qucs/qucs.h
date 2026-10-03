@@ -703,7 +703,7 @@ public:
   QAction *exportDiagramAsImage;   // a diagram's context menu: the diagram alone
   QAction *exportGraphics;         // the canvas' context menu: the export dialog
   QAction *editCopyImage;          // the selection, or everything, on the clipboard as a picture
-  QAction *editCopySchematicImage; // the circuit alone (no diagrams, no netlist blocks) as a picture
+  QAction *editCopyCircuitImage; // the circuit alone (no diagrams, no netlist blocks) as a picture
 
   QAction *activeAction; // pointer to the action selected by the user
   bool TuningMode;
@@ -1003,7 +1003,7 @@ public slots:
   void slotSaveDiagramToGraphicsFile();
   void slotSaveSchematicToGraphicsFile(bool diagram = false);
   void slotEditCopyImage();
-  void slotEditCopySchematicImage();
+  void slotEditCopyCircuitImage();
 
 private slots:
   void slotCursorLeft(bool left = true);

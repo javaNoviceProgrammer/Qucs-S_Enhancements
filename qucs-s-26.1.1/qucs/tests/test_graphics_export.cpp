@@ -785,11 +785,11 @@ private slots:
             const CircuitAsSelection circuit(&example);
             Options alone = whole;
             alone.selectionOnly = true;
-            QVERIFY(image(&example, alone).save(grabDir + "/copy-schematic-as-image.png"));
+            QVERIFY(image(&example, alone).save(grabDir + "/copy-circuit-as-image.png"));
         }
     }
 
-    // Edit > Copy Schematic as Image (and the canvas's menu): that picture
+    // Edit > Copy Circuit as Image (and the canvas's menu): that picture
     // on the clipboard, whatever is selected, the selection kept.
     void theWindowCopiesTheCircuit()
     {
@@ -813,8 +813,9 @@ private slots:
             options.scale = 2.0;
             expected = pixelSize(sch, options);
         }
+        QCOMPARE(app.editCopyCircuitImage->text(), QStringLiteral("Copy Circuit as Image"));
         QGuiApplication::clipboard()->clear();
-        app.editCopySchematicImage->trigger();
+        app.editCopyCircuitImage->trigger();
         const QMimeData* data = QGuiApplication::clipboard()->mimeData();
         QVERIFY(data != nullptr && data->hasImage());
         QCOMPARE(qvariant_cast<QImage>(data->imageData()).size(), expected);
@@ -822,7 +823,7 @@ private slots:
         QVERIFY(diagram->isSelected);   // the selection kept
         bool inEditMenu = false;
         for (QAction* a : app.menuBar()->actions())
-            if (a->menu() != nullptr && a->menu()->actions().contains(app.editCopySchematicImage)) inEditMenu = true;
+            if (a->menu() != nullptr && a->menu()->actions().contains(app.editCopyCircuitImage)) inEditMenu = true;
         QVERIFY(inEditMenu);
         // The canvas's menu, after Copy as Image: on the empty canvas and on
         // a part. (The menu as a right click fills it.)
@@ -831,7 +832,7 @@ private slots:
             const QList<QAction*> menu = app.view->ComponentMenu->actions();
             const qsizetype copyImage = menu.indexOf(app.editCopyImage);
             QVERIFY(copyImage >= 0);
-            QCOMPARE(menu.value(copyImage + 1), app.editCopySchematicImage);
+            QCOMPARE(menu.value(copyImage + 1), app.editCopyCircuitImage);
         }
         sch->setDocChanged(false);
         QVERIFY(app.closeAllFiles());
