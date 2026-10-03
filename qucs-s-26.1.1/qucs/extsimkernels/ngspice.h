@@ -45,7 +45,6 @@ private:
     QStringList a_sweeps;
 
     bool checkNodeNames(QStringList &incompat);
-    bool findMathFuncInc(QString &mathf_inc);
     QString getParentSWPscript(Component *pc_swp, QString sim, bool before, bool &hasDblSWP);
     QString getParentSWPCntVar(Component *pc_swp, QString sim);
     void cleanSpiceinit();
@@ -54,6 +53,10 @@ private:
     QStringList besideSchematic(const QStringList& patterns) const;
 
 public:
+    /// Where ngspice_mathfunc.inc is in this installation
+    /// (share/qucs-s/xspice_cmlib/include), in \a mathf_inc; false when it
+    /// is not there.
+    static bool findMathFuncInc(QString &mathf_inc);
     explicit Ngspice(Schematic* schematic, QObject *parent = 0);
     /// The .spiceinit blocks of \a sch and its subcircuits (each once).
     static QString collectSpiceinit(Schematic* sch);

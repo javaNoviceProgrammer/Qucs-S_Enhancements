@@ -181,6 +181,11 @@ struct tQucsSettings {
   // Schematic warns of each, and Claude's simulate and tune refuse a
   // schematic with one unless asked (erc::commandsRun). Off by default.
   bool CheckCommands = false;
+  // An ngspice netlist includes ngspice_mathfunc.inc, when the installation
+  // has it (share/qucs-s/xspice_cmlib/include): limexp, step and stp, which
+  // expressions written for Qucsator use and ngspice has not. On by
+  // default; Simulator Settings > Netlist.
+  bool NgspiceMathFuncs = true;
   // The application's colours: the system's (0), dark (1) or light (2) -
   // qucs_s::apptheme::Theme.
   int Theme = 0;

@@ -210,6 +210,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   own) gets nothing written into it: its Scratch folder is in the cache
   directory instead. Headless runs (`-n`, `--run`) keep using the
   simulator work directory from the settings, flat.
+- **What an ngspice netlist includes** (*Simulation → Simulators Settings
+  → Netlist*): *Include ngspice_mathfunc.inc (limexp, step, stp)*, on by
+  default. On, each ngspice netlist begins with an `.INCLUDE` of that
+  file of the installation (`share/qucs-s/xspice_cmlib/include`): it
+  defines `limexp(x)`, `step(x)` and `stp(x)`, functions of expressions
+  written for Qucsator, which ngspice has not. Off, the line is left out:
+  the netlist names no file of the installation, and an expression that
+  uses them fails under ngspice. The tab shows the file, or that this
+  installation has none (the line is then left out either way).
 - **Text editor defaults and file types**: `.cir`, `.ckt` and `.sp` files
   open in the built-in text editor like `.va` and the other Qucs text
   documents; plain-text formats (`.txt`, `.py`, `.md`, `.json`, `.csv`,
