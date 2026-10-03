@@ -155,7 +155,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "type": {"type": "string", "description": "Its model: R, C, L, GND, Vdc, Vac, Diode, _BJT, OpAmp, Sub, .TR, .AC, ... (list_component_types)"}, "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10)"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10)"}, "near": {"type": "object", "properties": {"part": {"type": "string"}, "side": {"type": "string", "enum": ["above", "below", "left", "right"]}, "gap": {"type": "integer", "minimum": 0}}, "description": "Instead of x, y: beside another part - {\"part\": \"U1\", \"side\": \"below\", \"gap\": 40}, the room between their symbols (40 unless given), centred on it across that side"},
    "name": {"type": "string", "description": "Its name; the next free one (R1, R2, ...) when not given"},
-   "properties": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}, "description": "Values by property name, as get_schematic and describe_component_type show them: {\"R\": \"4.7k\"}; the others stay at the type's defaults. A number with letters after it that are no scale and unit (1kk) is refused. A property a block has any number of - .NGOPT's Knob and Target, NgSweep's Record and Vs, a Monte Carlo's Record and Spec, an optimization's Var and Goal - takes a list of its values: {\"Knob\": [\"dparam|Cp|20p|5p|100p\", \"dparam|Lp|100n|20n|500n\"]} (describe_component_type gives each one's fields)"},
+   "properties": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}, "description": "Values by property name, as get_schematic and describe_component_type show them: {\"R\": \"4.7k\"}; the others stay at the type's defaults. A number with letters after it that are no scale and unit (1kk) is refused. A property a block has any number of - .NGOPT's Knob, Target and Constraint, NgSweep's Record and Vs, a Monte Carlo's Record and Spec, an optimization's Var and Goal - takes a list of its values: {\"Knob\": [\"dparam|Cp|20p|5p|100p\", \"dparam|Lp|100n|20n|500n\"]} (describe_component_type gives each one's fields)"},
    "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3"}, "mirror": {"type": "boolean", "description": "Mirrored about the x axis"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"R\": true, \"Temp\": false}"},
    "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": ["array", "object"], "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
@@ -168,7 +168,7 @@ const char* const kTools = R"JSON([
  "description": "Changes a component; whatever is not given stays as it is. You can change its properties (by name), its name, its position (x, y: where its center goes), its rotation (0-3 quarter turns from the type's own orientation, as get_schematic reports it), mirroring, whether it is active (an inactive part is left out of the simulation), and its text: 'shown' chooses which properties are written on the schematic ({\"Is\": false} hides one, with no need to rewrite its line with set_schematic), 'name_shown', and 'text_at' ([dx, dy] from its center, where its text begins, to move it off another part). An equation block's 'equations' are changed by name: each one given is set or added, {\"k\": null} removes k, and 'replace_equations' makes the list exactly those given; an .OPTIONS option without a value is a flag ('flags'). A Monte Carlo or corners block's 'records' and 'specs' replace its lists. 'rename' renames the part, and the traces, equations and markers that refer to it follow (i(V1), V1.It, @R1[i], R1's parameters in an equation), as rename_net does for a net. When the part is turned or moved, the circuit stays the same: its pins are wired again to the nets they were on, and other nets' wires under its new pin positions are moved out of the way. A change that cannot keep every net as it was is not made, and the error says why. A pin with nothing connected that lands on another part's pin joins that pin's net, and the result's 'note' says so. The answer lists an equation block's equations as they are afterwards. A ground is named by its ref (GND#2): it can be turned and moved, and the answer gives its ref, which may change.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "name": {"type": "string", "description": "The part: its name, or a ground by its ref (GND when there is one, GND#2 the second of several, as get_schematic gives it)"}, "rename": {"type": "string", "description": "Its new name; the traces, equations and markers that name it follow"},
-   "properties": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}, "description": "Values to change, by property name: {\"R\": \"10k\"}; the rest stay. A number with letters after it that are no scale and unit (1kk) is refused. A property a block has any number of (.NGOPT's Knob and Target, ...) takes a list: it replaces every one of that name"},
+   "properties": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}, "description": "Values to change, by property name: {\"R\": \"10k\"}; the rest stay. A number with letters after it that are no scale and unit (1kk) is refused. A property a block has any number of (.NGOPT's Knob, Target and Constraint, ...) takes a list: it replaces every one of that name"},
    "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "near": {"type": "object", "properties": {"part": {"type": "string"}, "side": {"type": "string", "enum": ["above", "below", "left", "right"]}, "gap": {"type": "integer", "minimum": 0}}, "description": "Instead of x, y: moved beside another part - {\"part\": \"U1\", \"side\": \"below\", \"gap\": 40}, the room between their symbols (40 unless given), centred on it across that side"}, "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3, as get_schematic gives it"},
    "mirror": {"type": "boolean", "description": "Mirrored about the x axis"}, "active": {"type": "boolean", "description": "false leaves it out of the simulation (inactive); true puts it back"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"Is\": false, \"Bf\": true}"},
@@ -352,7 +352,7 @@ const char* const kTools = R"JSON([
    "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "For this run alone (an installed one); set_simulator changes the setting"},
    "keep_as": {"type": "string", "description": "A name of letters, digits, _ and -: the copy is <name>.dat.ngspice (or .xyce, ...) beside the schematic"},
    "compare": {"type": "object", "properties": {"with": {"type": "string"}, "measure": {"type": "array", "items": {"type": "object", "properties": {"variable": {"type": "string"}, "what": {"type": "string"}, "field": {"type": "string"}, "from": {"type": "number"}, "to": {"type": "number"}, "level": {"type": "number"}, "tolerance": {"type": "number"}, "fundamental": {"type": "number"}, "harmonics": {"type": "integer"}, "periods": {"type": "number"}, "decibels": {"type": "boolean"}, "form": {"type": "string"}}}}}, "description": "Before and after in one call: {\"with\": \"before\", \"measure\": [{\"variable\": \"ac.v(out)\", \"what\": \"bandwidth\"}, ...]} - each measured on this run and on the one kept as 'with' (keep_as), in a table of before, after and the change (and in %); 'what' is min, max, mean, rms, final, peak_to_peak or a get_dataset measurement, as tune's 'measure' takes it"},
-   "apply_optimum": {"type": "boolean", "description": "With an ngspice optimize block (.NGOPT): write the values it finds into the parameters and parts its knobs name (.PARAM Cp, R1's value), one undo step - the answer's 'optimum' says what went where; without it they are only reported"},
+   "apply_optimum": {"type": "boolean", "description": "With an ngspice optimize block (.NGOPT): write the values it finds into the parameters and parts its knobs name (.PARAM Cp, R1's value), one undo step - the answer's 'optimum' says what went where, and its 'status' why the search stopped (converged, completed, maxiter, interrupted, unchanged; nosolve and infeasible are not written in); without it they are only reported"},
    "allow_commands": {"type": "boolean", "description": "Run the commands the schematic carries besides the simulator (a System command part, ngspice's shell, an Octave script): with the user's rights - only when the user has seen them (check_schematic lists them)"},
    "brief": {"type": "boolean", "description": "What came of the run only: no log lines, the errors, warnings, variables and traces without data cut to a few with how many more"},
    "operating_point": {"type": "boolean", "description": "Run the DC operating point alone, whatever analyses the schematic has, and return it: each node's voltage and branch current, and (ngspice) each device's quantities - gm, ic, vbe, gpi, gds, ... - with re = 1/gm, beta, ro"}}}},
@@ -474,7 +474,7 @@ const char* const kTools = R"JSON([
  "description": "Renames a net - its labels change, and a net get_schematic calls net1, net2, ... gets a label - together with everything that names its voltage: the traces of the schematic's diagrams and of its data displays (open ones as an undoable change; the .dpl file of a closed one is rewritten) and its equations, so v(out) becomes v(out1) and out.v becomes out1.v. It is refused when another net already has the new name, since that would join the two. The dataset keeps the old name until the next simulation.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "from": {"type": "string", "description": "The net's name now: a label's, or net1, net2, ... as get_schematic calls it"}, "to": {"type": "string", "description": "Its new name, as the label dialog takes one (a letter, then letters, digits and single _): refused when another net has it, and for gnd, 0 and net1, net2 ..."}}, "required": ["from", "to"]}},
 {"name": "describe_component_type",
- "description": "Describes a library component type: what it is, its category, how its parts are named, its pins (their positions relative to its center at rotation 0, how a turn and a mirror move them, or - with 'rotation' and 'mirror' - where they are on a part placed so), its properties in order, and those it may have any number of (.NGOPT's Knob and Target: their fields and an example) - name, default value, unit, meaning, whether shown on the schematic and which simulators it applies to. It also gives the simulators the type works with, the netlist line it produces with its defaults for the simulator from the settings, and notes on common mistakes (a Vpulse is a single pulse; Vrect repeats), including properties hidden on the schematic that still go into the netlist and where (an OpAmp's Umax clips its output). With type \"Verilog-A\" it instead returns a new Verilog-A module to start from - a template OpenVAF compiles as it is - and how to write one (attributes before the declaration, desc, units, type=\"instance\", contributions, a DC path for every node).",
+ "description": "Describes a library component type: what it is, its category, how its parts are named, its pins (their positions relative to its center at rotation 0, how a turn and a mirror move them, or - with 'rotation' and 'mirror' - where they are on a part placed so), its properties in order, and those it may have any number of (.NGOPT's Knob, Target and Constraint: their fields and an example) - name, default value, unit, meaning, whether shown on the schematic and which simulators it applies to. It also gives the simulators the type works with, the netlist line it produces with its defaults for the simulator from the settings, and notes on common mistakes (a Vpulse is a single pulse; Vrect repeats), including properties hidden on the schematic that still go into the netlist and where (an OpAmp's Umax clips its output). With type \"Verilog-A\" it instead returns a new Verilog-A module to start from - a template OpenVAF compiles as it is - and how to write one (attributes before the declaration, desc, units, type=\"instance\", contributions, a DC path for every node).",
  "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "description": "As list_component_types gives it: R, Vpulse, .TR, ...; a Verilog-A module's name or file; \"Verilog-A\" for a template of a new one"},
    "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "The pins as a part turned so is placed (add_component's rotation: a quarter turn each)"},
    "mirror": {"type": "boolean", "description": "The pins as a mirrored part's (mirrored first, then turned)"}}, "required": ["type"]}},
@@ -1164,13 +1164,14 @@ QString noSuchProperty(const Component* c, const QString& names)
 }
 
 // Whether \a name is a property \a c may have any number of: NgSweep's
-// Record and Vs, a Monte Carlo's or corners' Record and Spec, NgOpt's Knob
-// and Target, an optimization's Var and Goal.
+// Record and Vs, a Monte Carlo's or corners' Record and Spec, NgOpt's Knob,
+// Target and Constraint, an optimization's Var and Goal.
 bool isRepeated(const Component* c, const QString& name)
 {
     if (qucs_s::ngsweep::isSweep(c)) return name == QLatin1String("Record") || name == QLatin1String("Vs");
     if (qucs_s::ngstats::isStatistics(c)) return name == QLatin1String("Record") || name == QLatin1String("Spec");
-    if (c->Model == QLatin1String(".NGOPT")) return name == QLatin1String("Knob") || name == QLatin1String("Target");
+    if (c->Model == QLatin1String(".NGOPT"))
+        return name == QLatin1String("Knob") || name == QLatin1String("Target") || name == QLatin1String("Constraint");
     if (c->Model == QLatin1String(".Opt")) return name == QLatin1String("Var") || name == QLatin1String("Goal");
     // (Not any name that comes twice: a parameter sweep of a list calls two
     // properties in their places Symbol.)
@@ -1178,6 +1179,12 @@ bool isRepeated(const Component* c, const QString& name)
 }
 
 } // namespace
+
+QString qucs_s::control::propertyNote(const Component* c, const QString& name)
+{
+    if (c->Model == QLatin1String(".NGOPT")) return qucs_s::ngopt::propertyNote(name);
+    return {};
+}
 
 QJsonArray qucs_s::control::repeatedProperties(const Component* c)
 {
@@ -1189,7 +1196,9 @@ QJsonArray qucs_s::control::repeatedProperties(const Component* c)
         docs = {{"Knob", QT_TRANSLATE_NOOP("QucsControl", "kind|name|initial|low|high - kind dparam (a .PARAM's or an equation's parameter), param (a device's: R1, @m1[w]) or mparam (a .model's: @dmod[is]); the search starts at the initial value"),
                  "dparam|Cp|20p|5p|100p"},
                 {"Target", QT_TRANSLATE_NOOP("QucsControl", "analysis|expression|value|weight - the analysis (a simulation block's name, or an ngspice command), an expression of its results (an index picks a point: db(S_2_1[20])), the value it should have, and its weight (1 when left out)"),
-                 "SP1|db(S_2_1[20])|-0.0771|1"}};
+                 "SP1|db(S_2_1[20])|-0.0771|1"},
+                {"Constraint", QT_TRANSLATE_NOOP("QucsControl", "analysis|expression|min|max - an expression of an analysis' results held at or above min and at or below max (one may be left empty) while Minimize is minimized or the Targets fitted, by any Method; the analysis empty: Minimize's (the first Target's). simulate's 'optimum' gives each constraint at the end - its value, active or its slack, and the multiplier (what a unit of the bound costs) - and status infeasible when one cannot be met; CTol is how near counts as met"),
+                 "OP1|v(out)|0.9|"}};
     else if (qucs_s::ngsweep::isSweep(c))
         docs = {{"Record", QT_TRANSLATE_NOOP("QucsControl", "name|expression - a value recorded at each point of the sweep"), "gain|db(v(out))"},
                 {"Vs", QT_TRANSLATE_NOOP("QucsControl", "name|type|start|stop|points|list - an outer knob: lin or log from start to stop in points, or list (values apart by ;)"),
@@ -6113,10 +6122,11 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
         return errorResult(tr("There is a component named %1 already.").arg(rename));
     if (const QString bad = rename.isEmpty() || rename == name ? QString() : badPartName(rename); !bad.isEmpty())
         return errorResult(bad + QLatin1Char('.'));
-    // Check the properties before anything changes.
+    // Check the properties before anything changes (one a block may have
+    // any number of, none yet too: its first constraint).
     const QJsonObject props = args.value(QLatin1String("properties")).toObject();
     for (auto it = props.begin(); it != props.end(); ++it)
-        if (c->getProperty(it.key()) == nullptr) return errorResult(noSuchProperty(c, it.key()));
+        if (c->getProperty(it.key()) == nullptr && !isRepeated(c, it.key())) return errorResult(noSuchProperty(c, it.key()));
     if (const QStringList typos = numberTypos(name, c->Model, props); !typos.isEmpty())
         return errorResult(tr("Not changed: %1.").arg(typos.join(QStringLiteral("; "))));
     // A library part made one that is one component (a varactor's Diode):
@@ -11145,15 +11155,26 @@ QJsonArray QucsControl::optimumOf(Schematic* sch, const QString& output, bool ap
         const ng::Result& r = results.at(i);
         const ng::Command command = ng::Command::read(blocks.at(i));
         o.insert(QStringLiteral("summary"), r.summary);
+        if (!r.status.isEmpty()) o.insert(QStringLiteral("status"), r.status);
         if (r.interrupted) o.insert(QStringLiteral("interrupted"), true);
+        if (!r.search.isEmpty()) o.insert(QStringLiteral("search"), QJsonArray::fromStringList(r.search));
+        if (!r.constraints.isEmpty()) o.insert(QStringLiteral("constraints"), QJsonArray::fromStringList(r.constraints));
         if (!r.notes.isEmpty()) o.insert(QStringLiteral("notes"), QJsonArray::fromStringList(r.notes));
+        // Not written in: values of no solution (the initial ones), or
+        // those that miss a constraint.
+        QString refused;
+        if (r.status == QLatin1String("nosolve"))
+            refused = tr("no: no evaluation solved, so these are no optimum; check the knobs' ranges");
+        else if (r.status == QLatin1String("infeasible"))
+            refused = tr("no: a constraint was not met (see 'constraints'); loosen it or widen the knobs' ranges, or "
+                         "edit_component writes these values in");
         QJsonObject found, applied, notApplied;
         for (int k = 0; k < r.values.size(); ++k) {
             const QString value = misc::num2str(r.values.at(k).second, -1, QString());
             const ng::Knob knob = k < command.knobs.size() ? command.knobs.at(k) : ng::Knob{};
             const QString name = knob.name.isEmpty() ? r.values.at(k).first : knob.name;
             found.insert(name, value);
-            if (!apply || knob.name.isEmpty()) continue;
+            if (!apply || knob.name.isEmpty() || !refused.isEmpty()) continue;
             QString where, why;
             Property* p = definition(knob, &where, &why);
             if (p == nullptr) {
@@ -11170,7 +11191,9 @@ QJsonArray QucsControl::optimumOf(Schematic* sch, const QString& output, bool ap
             applied.insert(name, where);
         }
         o.insert(QStringLiteral("found"), found);
-        if (apply) {
+        if (apply && !refused.isEmpty()) {
+            o.insert(QStringLiteral("applied"), refused);
+        } else if (apply) {
             if (!applied.isEmpty()) o.insert(QStringLiteral("applied to"), applied);
             if (!notApplied.isEmpty()) o.insert(QStringLiteral("not applied"), notApplied);
         } else {

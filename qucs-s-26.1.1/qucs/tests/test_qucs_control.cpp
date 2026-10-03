@@ -4138,11 +4138,31 @@ private slots:
         r = call("edit_component", {{"name", "NgOpt1"}, {"properties", QJsonObject{{"Knob", QJsonArray{1}}}}});
         QVERIFY2(failed(r) && text(r).contains("a text"), qPrintable(text(r)));
         // Described: each with its fields, an example and how to give it.
-        const QJsonArray repeated = json(call("describe_component_type", {{"type", ".NGOPT"}})).toObject().value("repeated properties").toArray();
-        QCOMPARE(repeated.size(), 2);
+        const QJsonObject described = json(call("describe_component_type", {{"type", ".NGOPT"}})).toObject();
+        const QJsonArray repeated = described.value("repeated properties").toArray();
+        QCOMPARE(repeated.size(), 3);
         QCOMPARE(repeated.at(0).toObject().value("name").toString(), QStringLiteral("Knob"));
         QVERIFY(repeated.at(0).toObject().value("fields").toString().startsWith("kind|name|initial|low|high"));
         QCOMPARE(repeated.at(1).toObject().value("example").toString(), QStringLiteral("SP1|db(S_2_1[20])|-0.0771|1"));
+        QCOMPARE(repeated.at(2).toObject().value("name").toString(), QStringLiteral("Constraint"));
+        QVERIFY(repeated.at(2).toObject().value("fields").toString().startsWith("analysis|expression|min|max"));
+        // Each property said: the methods, by name and what each is for.
+        QJsonObject notes;
+        for (const QJsonValue& v : described.value("properties").toArray())
+            notes.insert(v.toObject().value("name").toString(), v.toObject().value("description"));
+        const QString method = notes.value("Method").toString();
+        for (const char* id : {"de - ", "pso - ", "sa - ", "cmaes - ", "bayes - ", "nm - ", "tr - ", "lm - "})
+            QVERIFY2(method.contains(QLatin1String(id)), qPrintable(id + (": " + method)));
+        QVERIFY2(method.contains("Gaussian-process") && method.contains("2 to 50"), qPrintable(method));
+        for (const char* name : {"MaxIter", "Tol", "Size", "Seed", "Verbose", "Analysis", "Minimize", "Polish", "Starts", "CTol"})
+            QVERIFY2(!notes.value(name).toString().isEmpty(), name);
+        // A constraint, given as a list, and the new options by name.
+        r = call("edit_component", {{"name", "NgOpt1"}, {"properties", QJsonObject{{"Constraint", QJsonArray{"AC1|db(v(out)[0])|-3.2|"}},
+                                                                                  {"Method", "cmaes"}, {"Polish", "yes"}, {"Starts", "2"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(props().value("Constraint").toArray(), QJsonArray{"AC1|db(v(out)[0])|-3.2|"});
+        QCOMPARE(props().value("Polish").toString(), QStringLiteral("yes"));
+        QCOMPARE(props().value("Target").toArray().size(), 2);
         QVERIFY(json(call("describe_component_type", {{"type", "R"}})).toObject().value("repeated properties").isUndefined());
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
@@ -4188,6 +4208,7 @@ private slots:
         QJsonObject optimum = o.value("optimum").toArray().at(0).toObject();
         QCOMPARE(optimum.value("block").toString(), QStringLiteral("NgOpt1"));
         QVERIFY2(optimum.value("summary").toString().startsWith("converged"), qPrintable(text(r)));
+        QCOMPARE(optimum.value("status").toString(), QStringLiteral("converged"));
         QVERIFY2(std::abs(qucs_s::units::read(optimum.value("found").toObject().value("R").toString()).value - 1000) < 1, qPrintable(text(r)));
         QVERIFY2(optimum.value("applied").toString().startsWith("no:"), qPrintable(text(r)));
         QVERIFY2(!o.contains("changed while it ran"), qPrintable(text(r)));
@@ -4203,6 +4224,35 @@ private slots:
         r = call("get_dataset", {{"variables", QJsonArray{"ac.v(out)"}}, {"points", 1}});
         QVERIFY2(!failed(r) && !json(r).toObject().contains("stale"), qPrintable(text(r).left(600)));
         QVERIFY(!failed(call("undo")));
+        QCOMPARE(parameter(), QStringLiteral("R=500"));
+
+        // A constraint no value of R meets (above 0 dB, from an RC low-pass):
+        // reported as such, and not written in.
+        QVERIFY(!failed(call("edit_component", {{"name", "NgOpt1"}, {"properties", QJsonObject{{"Constraint", QJsonArray{"AC1|db(v(out)[0])|0.5|"}},
+                                                                                              {"Starts", "1"}}}})));
+        r = control->callNow("simulate", {{"timeout", 60}, {"apply_optimum", true}}, 90000, 9);
+        optimum = json(r).toObject().value("optimum").toArray().at(0).toObject();
+        if (optimum.value("summary").toString().startsWith("converged") && !optimum.contains("constraints")) {
+            // (An ngspice before constraints: its optimize refused nothing of
+            // the line, which names one, but it read none.)
+            QucsSettings.NgspiceExecutable = before;
+            QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+            QSKIP("no ngspice with optimize's constraints");
+        }
+        QCOMPARE(optimum.value("status").toString(), QStringLiteral("infeasible"));
+        QVERIFY2(optimum.value("summary").toString().startsWith("INFEASIBLE"), qPrintable(text(r)));
+        QVERIFY2(optimum.value("constraints").toArray().at(0).toString().contains("VIOLATED"), qPrintable(text(r)));
+        QVERIFY2(optimum.value("search").toArray().at(0).toString().contains(" won (cost"), qPrintable(text(r)));   // of the two starts
+        QVERIFY2(optimum.value("applied").toString().startsWith("no: a constraint was not met"), qPrintable(text(r)));
+        QVERIFY(!optimum.contains("applied to"));
+        QCOMPARE(parameter(), QStringLiteral("R=500"));
+        // A target of no vector: no evaluation solves - nothing written in.
+        QVERIFY(!failed(call("edit_component", {{"name", "NgOpt1"}, {"properties", QJsonObject{{"Constraint", QJsonArray{}},
+                                                                                              {"Starts", ""}, {"Target", QJsonArray{"AC1|db(v(nosuch)[0])|-3|1"}}}}})));
+        r = control->callNow("simulate", {{"timeout", 60}, {"apply_optimum", true}}, 90000, 9);
+        optimum = json(r).toObject().value("optimum").toArray().at(0).toObject();
+        QCOMPARE(optimum.value("status").toString(), QStringLiteral("nosolve"));
+        QVERIFY2(optimum.value("applied").toString().startsWith("no: no evaluation solved"), qPrintable(text(r)));
         QCOMPARE(parameter(), QStringLiteral("R=500"));
         QucsSettings.NgspiceExecutable = before;
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
@@ -9467,6 +9517,17 @@ private slots:
         QVERIFY2(text(r).contains("  stb*") && text(r).contains("  rfstab*") && !text(r).contains("  ac:"), qPrintable(text(r)));
         r = call("ngspice_commands", {{"search", "touchstone"}});
         QVERIFY2(text(r).contains("wrsnp") && !text(r).contains("codemodel"), qPrintable(text(r)));
+        // optimize: every method, its options and results; found by them.
+        r = call("ngspice_commands", {{"command", "optimize"}});
+        for (const char* part : {"-method de|pso|sa|cmaes|bayes|nm|tr|lm|nsga2", "cmaes, CMA-ES", "bayes, Bayesian optimization",
+                                 "tr, a trust region", "nsga2 (a Pareto front", "-polish: ", "-starts k: ", "-constrain <expr>",
+                                 "-ctol", "-center: design centering", "optimize_status", "INFEASIBLE", "Constraints and CTol",
+                                 "-method cmaes -starts 3", "-method bayes -maxiter 40 -polish"})
+            QVERIFY2(text(r).contains(QLatin1String(part)), qPrintable(part + ("\n" + text(r))));
+        r = call("ngspice_commands", {{"search", "bayesian"}});
+        QVERIFY2(text(r).contains("  optimize*"), qPrintable(text(r)));
+        r = call("ngspice_commands", {{"category", "statistics"}});
+        QVERIFY2(text(r).contains("[-method de|pso|sa|cmaes|bayes|nm|tr|lm|nsga2]"), qPrintable(text(r)));
         r = call("ngspice_commands", {{"category", "rf"}});
         QVERIFY2(text(r).contains("  sp dec|oct|lin") && !text(r).contains("  tran"), qPrintable(text(r)));
         QVERIFY(failed(call("ngspice_commands", {{"category", "sprockets"}})));
