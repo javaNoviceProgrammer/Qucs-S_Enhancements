@@ -1459,14 +1459,28 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   expression to minimize after an analysis, or targets to fit by least
   squares, each after its own analysis (a simulation component of the
   schematic, or an ngspice command such as `ac lin 1 1meg 1meg`). The
-  method is differential evolution, particle swarm, simulated
-  annealing, Nelder-Mead or Levenberg-Marquardt, with iterations,
-  tolerance, population and seed. The dialog shows the command it
-  writes. Press Simulate: ngspice optimizes first, in one process, and
-  the schematic's simulations then run at the optimum; the status log
-  has ngspice's verdict and the values found become the knobs' initial
-  values. Example: *NGspice features → LC_lowpass_ngopt* fits the
-  low-pass to a Butterworth response in 39 evaluations.
+  method is global - differential evolution, particle swarm, simulated
+  annealing, CMA-ES (knobs over decades or correlated, 2 to 50 of them)
+  or Bayesian optimization (a Gaussian-process model: tens of
+  simulations for a slow circuit) - or local: Nelder-Mead, a trust
+  region (it runs along a bound rather than stopping at it) or
+  Levenberg-Marquardt; with iterations, tolerance, population and seed.
+  *Polish* finishes a global method's best point with a local one;
+  *More starts* runs the search again from Latin-hypercube points of
+  the ranges. The *Constraints* tab holds expressions within limits
+  while the objective is minimized or the targets fitted (`v(out)` at
+  least 0.9 V while the supply current is minimized). The dialog shows
+  the command it writes. Press Simulate: ngspice optimizes first, in
+  one process, and the schematic's simulations then run at the optimum;
+  the status log has ngspice's verdict - why the search stopped, each
+  constraint at the end, the start that won - and the values found
+  become the knobs' initial values. Claude knows every method:
+  `describe_component_type .NGOPT` says what each is for,
+  `ngspice_commands optimize` gives the command in full, and
+  `simulate`'s answer has the optimum, its status and its constraints
+  (`apply_optimum` writes it in, except one that solved nothing or
+  missed a constraint). Example: *NGspice features → LC_lowpass_ngopt*
+  fits the low-pass to a Butterworth response in 39 evaluations.
 - **NgMonteCarlo and NgCorners: ngspice's own statistical loops as
   components**: for the same ngspice builds, which have the `montecarlo`
   and `corners` commands. *simulations → ngspice Monte Carlo* runs an

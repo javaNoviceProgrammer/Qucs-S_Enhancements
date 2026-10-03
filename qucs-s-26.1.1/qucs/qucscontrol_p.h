@@ -34,11 +34,14 @@ class QRegularExpression;
 namespace qucs_s::control {
 
 QString tr(const char* text);
-/// The properties \a c has any number of (.NGOPT's Knob and Target,
-/// NgSweep's Record and Vs, a Monte Carlo's Record and Spec, an
-/// optimization's Var and Goal): each one's fields and an example, as
+/// The properties \a c has any number of (.NGOPT's Knob, Target and
+/// Constraint, NgSweep's Record and Vs, a Monte Carlo's Record and Spec,
+/// an optimization's Var and Goal): each one's fields and an example, as
 /// describe_component_type gives them; empty for any other type.
 QJsonArray repeatedProperties(const Component* c);
+/// What a property of \a c saved with its name, not a description, holds
+/// (.NGOPT's Method, Polish, ...); empty when there is nothing to say.
+QString propertyNote(const Component* c, const QString& name);
 QJsonObject textResult(const QString& text, bool error = false);
 /// \a value as JSON text: indented, or on one line (\a compact) - numbers
 /// by the hundred read better so, and cost less.

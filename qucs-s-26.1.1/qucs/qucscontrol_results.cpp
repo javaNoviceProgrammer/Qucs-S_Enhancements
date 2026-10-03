@@ -3830,6 +3830,7 @@ QJsonObject QucsControl::describeComponentType(const QJsonObject& args)
                       {QStringLiteral("default"), p->Value},
                       {QStringLiteral("shown"), p->display}};
         if (!p->Description.isEmpty()) o.insert(QStringLiteral("description"), p->Description);
+        else if (const QString note = propertyNote(c.get(), p->Name); !note.isEmpty()) o.insert(QStringLiteral("description"), note);
         const QString unit = unitOf(p);
         if (!unit.isEmpty()) o.insert(QStringLiteral("unit"), unit);
         if (p->type == Property::Type::File) o.insert(QStringLiteral("kind"), QStringLiteral("file"));
