@@ -3149,7 +3149,12 @@ void QucsApp::closeFile(int index)
     }
 
     const int docIndex = allDocuments().indexOf(Doc);   // as autosaveAll() numbers it
-    DocumentTab->removeTab(index);
+    // The pane it is in, kept: as its tab goes, the focus can move to a
+    // document in another pane, and make that pane the active one.
+    ContextMenuTabWidget *pane = DocumentTab;
+    // The maximized pane's last document: the panels come back.
+    if (pane->count() == 1 && pane == a_maximizedPane) setDocumentMaximized(false);
+    pane->removeTab(index);
     view->forgetDocumentElements();
     delete Doc;
     misc::releaseFreedMemory();   // (its parts' memory, offered back to the system)
@@ -3159,9 +3164,9 @@ void QucsApp::closeFile(int index)
     else
       qucs_s::autosave::remove(closingName);
 
-    if(DocumentTab->count() < 1) { // if no document left ...
+    if(pane->count() < 1) {        // if no document left ...
       if (panes().size() > 1) {    // ... the pane goes, a neighbour takes over
-        removePane(DocumentTab);
+        removePane(pane);
       } else {                     // ... create an untitled
         Schematic *d = new Schematic(this, "");
         addDocumentTab(d);
@@ -3211,6 +3216,9 @@ bool QucsApp::closeAllFiles(int exceptTab)
   for (ContextMenuTabWidget *pane : all)
     if (pane != stay && pane->count() == 0)
       removePane(pane);
+  // The maximized pane emptied (Close All): the panels come back. With a
+  // document kept (Close all but this), it stays maximized.
+  if (stay == a_maximizedPane && stay->count() == 0) setDocumentMaximized(false);
   setActivePane(stay);
 
   switchEditMode(true);   // set schematic edit mode
@@ -6404,6 +6412,7 @@ void ContextMenuTabWidget::showContextMenu(const QPoint& point)
     APPEND_MENU(ActionCxMenuCloseAll, slotCxMenuCloseAll, "Close all")
     menu.addSeparator();
     APPEND_MENU(ActionCxMenuMoveToPane, slotCxMenuMoveToNextPane, "Move to next pane")
+    if (QAction *maximize = App->maximizeDocumentAction()) menu.addAction(maximize);
     menu.addSeparator();
     APPEND_MENU(ActionCxMenuCopyPath, slotCxMenuCopyPath, "Copy full path")
     APPEND_MENU(ActionCxMenuOpenFolder, slotCxMenuOpenFolder, "Open containing folder")
