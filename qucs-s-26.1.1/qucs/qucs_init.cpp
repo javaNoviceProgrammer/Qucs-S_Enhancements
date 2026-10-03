@@ -422,6 +422,16 @@ void QucsApp::initActions() {
          "selected, into the clipboard as a picture: an image, an SVG and a PDF,\n"
          "for another program to paste"));
 
+  editCopySchematicImage = new QAction(tr("Copy Schematic as Image"), this);
+  connect(editCopySchematicImage, &QAction::triggered, this, &QucsApp::slotEditCopySchematicImage);
+  editCopySchematicImage->setStatusTip(
+      tr("Copies the circuit alone into the clipboard as a picture: no diagrams, simulations, equations or other "
+         "blocks of the netlist"));
+  editCopySchematicImage->setWhatsThis(
+      tr("Copy Schematic as Image\n\nCopies the circuit into the clipboard as a picture - its parts, wires,\n"
+         "labels and drawings - leaving out the diagrams and the blocks that are only\n"
+         "in the netlist (simulations, equations, .PARAM, .OPTIONS, .INCLUDE, models)"));
+
   // cursor left/right/up/down to move marker on a graph
   cursorLeft = new QShortcut(QKeySequence(Qt::Key_Left), this);
   connect(cursorLeft, SIGNAL(activated()), SLOT(slotCursorLeft()));
@@ -1082,6 +1092,7 @@ void QucsApp::initMenuBar() {
   editMenu->addAction(editCut);
   editMenu->addAction(editCopy);
   editMenu->addAction(editCopyImage);
+  editMenu->addAction(editCopySchematicImage);
   editMenu->addAction(editPaste);
   editMenu->addAction(editDelete);
   editMenu->addSeparator();
@@ -1659,6 +1670,8 @@ void QucsApp::setDefaultShortcut() {
                       QKeySequence::Copy);
 
   mgr.registerCommand("Edit.CopyImage", "Edit", "Copy as Image", editCopyImage,
+                      QKeySequence());
+  mgr.registerCommand("Edit.CopySchematicImage", "Edit", "Copy Schematic as Image", editCopySchematicImage,
                       QKeySequence());
 
   mgr.registerCommand("Edit.Paste", "Edit", "Paste", editPaste,
