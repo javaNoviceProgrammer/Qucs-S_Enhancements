@@ -398,6 +398,9 @@ void BinaryReader::close()
 bool BinaryReader::read(qint64 offset, void* into, qint64 bytes) const
 {
     if (offset < 0 || bytes < 0 || offset > a_size || bytes > a_size - offset) return false;
+    // A block of no values: nothing to copy, into an empty vector's null
+    // data() (which memcpy may not be given, even for no bytes).
+    if (bytes == 0) return true;
     if (a_map != nullptr) {
         std::memcpy(into, a_map + offset, size_t(bytes));
         return true;
