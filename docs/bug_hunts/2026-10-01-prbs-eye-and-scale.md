@@ -147,6 +147,8 @@ why) when the source's line differs from the run's.
 
 **Fixed in `e1723e1`.** The source's Tbit and Coding are those of its line in the run's netlist (`misc::runNetlistOf`, kept for the dataset as it is); the source's values now count only without one. A Tbit or Coding changed since is said - "V1's Tbit is 200 ps now, 100 ps in the run the data is of: simulate again to see it" - in the diagram and in `get_dataset`; a source not in that run is none, and why. A deleted source's cached "V1's Tbit" is now true of the data until the next reload. Tests: `test_prbs_eye` `theSourceIsAsTheRunGaveIt`, `eachTraceIsFoldedAtItsOwnSource`; `test_qucs_control` `resultsAreMeasuredAsTablesSpectraAndEyes`.
 
+**Found after the fix (3 October).** B3's fix read the run's line the Qucs way. The netlister writes 100 ps as `100P`, and Qucs's reading knows no uppercase P: 100 s. Each eye of a run kept so said "V1's Tbit is 100 ps now, 100 s in the run the data is of: simulate again", and the automatic unit interval was 100 s. B3's test wrote the line by hand in lower case (`100p`), which both readings take for pico. **Fixed in `ec06017`.** The line is read as ngspice reads it (`units::spiceNumber`: SPICE's scale factors of any case, M milli), and the source's own Tbit as the netlist gives it to ngspice (its `spiceValue`), so a Tbit written `100P` is 100 ps too. The test (`theRunsNumbersAreReadAsSpiceReadsThem`) keeps the netlist the netlister writes.
+
 ### B4. An eye drawn as traces: seconds to a minute per repaint
 
 Over 100,000 bits (2 million points), `drawn: traces` takes the following per repaint
