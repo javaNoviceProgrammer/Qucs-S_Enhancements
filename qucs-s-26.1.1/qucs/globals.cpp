@@ -178,6 +178,7 @@ bool loadSettings()
     QucsSettings.Theme = qucs_s::apptheme::bounded(_settings::Get().item<int>("Theme"));
     QucsSettings.RequireGround = _settings::Get().item<bool>("RequireGround");
     QucsSettings.CheckCommands = _settings::Get().item<bool>("CheckCommands");
+    QucsSettings.NgspiceMathFuncs = _settings::Get().item<bool>("NgspiceMathFuncs");
     QucsSettings.LockToolbars = _settings::Get().item<bool>("LockToolbars");
     QucsSettings.RecentProjects = _settings::Get().item<QString>("RecentProjects").split("*", Qt::SkipEmptyParts);
     QucsSettings.RecentDocs = _settings::Get().item<QString>("RecentDocs").split("*", Qt::SkipEmptyParts);
@@ -305,6 +306,7 @@ bool saveApplSettings()
     qs.setItem<int>("Theme",QucsSettings.Theme);
     qs.setItem<bool>("RequireGround",QucsSettings.RequireGround);
     qs.setItem<bool>("CheckCommands",QucsSettings.CheckCommands);
+    qs.setItem<bool>("NgspiceMathFuncs",QucsSettings.NgspiceMathFuncs);
     qs.setItem<bool>("LockToolbars",QucsSettings.LockToolbars);
 
     // Copy the list of directory paths in which Qucs should

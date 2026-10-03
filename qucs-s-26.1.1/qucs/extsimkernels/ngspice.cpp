@@ -215,9 +215,10 @@ void Ngspice::createNetlist(
 
     stream << "* Qucs " << PACKAGE_VERSION << "  " << a_schematic->getDocName() << "\n";
 
-    // include math. functions for inter-simulator compat.
+    // include math. functions for inter-simulator compat. - unless the
+    // user leaves them out (Simulator Settings > Netlist)
     QString mathf_inc;
-    bool found = findMathFuncInc(mathf_inc);
+    bool found = QucsSettings.NgspiceMathFuncs && findMathFuncInc(mathf_inc);
     // Let to simulate schematic without mathfunc.inc file
     if (found && QucsSettings.DefaultSimulator != spicecompat::simSpiceOpus)
         stream<<QStringLiteral(".INCLUDE \"%1\"\n").arg(mathf_inc);
@@ -652,7 +653,7 @@ void Ngspice::slotSimulate()
     a_output.clear();
 
     QString mathf_inc; // drain
-    if (!findMathFuncInc(mathf_inc)) {
+    if (QucsSettings.NgspiceMathFuncs && !findMathFuncInc(mathf_inc)) {
         a_output.append("[Warning!] " + mathf_inc + " file not found!\n");
     }
 
