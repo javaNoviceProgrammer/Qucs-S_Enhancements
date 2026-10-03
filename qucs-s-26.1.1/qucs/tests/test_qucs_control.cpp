@@ -5238,6 +5238,15 @@ private slots:
         QVERIFY(QApplication::activeModalWidget() == nullptr);
         r = call("set_settings", {{"scope", "simulators"}, {"values", QJsonObject{{"Simulators/Warn of commands a simulation runs besides the simulator", false}}}}, 20000);
         QVERIFY2(!failed(r) && !QucsSettings.CheckCommands, qPrintable(text(r)));
+        // The Netlist tab's: whether an ngspice netlist includes
+        // ngspice_mathfunc.inc.
+        const QString mathFuncs = "Netlist/Include ngspice_mathfunc.inc (limexp, step, stp)";
+        QVERIFY2(sims.contains(mathFuncs) && sims.value(mathFuncs).value("type") == "bool", qPrintable(QStringList(sims.keys()).join(" | ")));
+        QVERIFY(QucsSettings.NgspiceMathFuncs);
+        r = call("set_settings", {{"scope", "simulators"}, {"values", QJsonObject{{mathFuncs, false}}}}, 20000);
+        QVERIFY2(!failed(r) && !QucsSettings.NgspiceMathFuncs, qPrintable(text(r)));
+        r = call("set_settings", {{"scope", "simulators"}, {"values", QJsonObject{{mathFuncs, true}}}}, 20000);
+        QVERIFY2(!failed(r) && QucsSettings.NgspiceMathFuncs, qPrintable(text(r)));
         // A document's own.
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
         r = call("set_settings", {{"scope", "document"}, {"values", QJsonObject{{"Grid/horizontal Grid", "20"}}}}, 20000);

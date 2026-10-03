@@ -21,6 +21,7 @@
 #endif
 
 #include "simsettingsdialog.h"
+#include "ngspice.h"
 #include "main.h"
 #include "settings.h"
 
@@ -184,6 +185,38 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
     consoleLayout->addWidget(consoleNote);
     consoleLayout->addStretch(1);
 
+    // Tab 3: what goes into the netlist.
+    QWidget *netlistTab = new QWidget(tabs);
+    QVBoxLayout *netlistLayout = new QVBoxLayout(netlistTab);
+    tabs->addTab(netlistTab, tr("Netlist"));
+    QGroupBox *gbNgspice = new QGroupBox(tr("ngspice netlist"), netlistTab);
+    QVBoxLayout *ngspiceLayout = new QVBoxLayout;
+    a_cbMathFuncs = new QCheckBox(tr("Include ngspice_mathfunc.inc (limexp, step, stp)"), gbNgspice);
+    a_cbMathFuncs->setObjectName(QStringLiteral("cbNgspiceMathFuncs"));
+    a_cbMathFuncs->setChecked(QucsSettings.NgspiceMathFuncs);
+    ngspiceLayout->addWidget(a_cbMathFuncs);
+    QLabel *mathFuncsNote = new QLabel(
+        tr("On, each ngspice netlist begins with an .INCLUDE of this file of the installation. It defines limexp(x), step(x) "
+           "and stp(x): functions of expressions written for Qucsator, which ngspice has not. Off, the line is left out: the "
+           "netlist names no file of the installation, and an expression that uses them fails under ngspice. (Never for "
+           "SPICE OPUS.)"), gbNgspice);
+    mathFuncsNote->setWordWrap(true);
+    ngspiceLayout->addWidget(mathFuncsNote);
+    QString mathFuncs;
+    const bool mathFuncsThere = Ngspice::findMathFuncInc(mathFuncs);
+    QLabel *mathFuncsFile = new QLabel(gbNgspice);
+    mathFuncsFile->setObjectName(QStringLiteral("lblNgspiceMathFuncsFile"));
+    mathFuncsFile->setText(mathFuncsThere
+                               ? fontMetrics().elidedText(QDir::toNativeSeparators(mathFuncs), Qt::ElideMiddle, 400)
+                               : tr("Not in this installation: the line is left out either way."));
+    mathFuncsFile->setToolTip(QDir::toNativeSeparators(mathFuncs));
+    mathFuncsFile->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    ngspiceLayout->addWidget(mathFuncsFile);
+    a_cbMathFuncs->setToolTip(mathFuncsNote->text());
+    gbNgspice->setLayout(ngspiceLayout);
+    netlistLayout->addWidget(gbNgspice);
+    netlistLayout->addStretch(1);
+
     QHBoxLayout *h3 = new QHBoxLayout;
     h3->addWidget(a_btnOK);
     h3->addWidget(a_btnCancel);
@@ -210,6 +243,7 @@ void SimSettingsDialog::slotApply()
     qs.setItem<QString>("SpopusParams", a_edtSpopusSimParam->text());
     QucsSettings.RequireGround = a_cbRequireGround->isChecked();
     QucsSettings.CheckCommands = a_cbCheckCommands->isChecked();
+    QucsSettings.NgspiceMathFuncs = a_cbMathFuncs->isChecked();
     QucsSettings.SimulationConsoleHost = a_rbConsoleLegacy->isChecked() ? tQucsSettings::SimConsoleLegacyWindow
                                        : a_rbConsoleWindow->isChecked() ? tQucsSettings::SimConsoleWindow
                                                                         : tQucsSettings::SimConsoleDock;

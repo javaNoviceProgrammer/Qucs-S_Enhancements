@@ -66,6 +66,9 @@ private:
     // What a simulation runs besides the simulator is looked for
     // (QucsSettings.CheckCommands).
     QCheckBox *a_cbCheckCommands;
+    // An ngspice netlist includes ngspice_mathfunc.inc
+    // (QucsSettings.NgspiceMathFuncs).
+    QCheckBox *a_cbMathFuncs;
 
 public:
     explicit SimSettingsDialog(QWidget *parent = 0);
