@@ -649,10 +649,11 @@ void SimulationRun::reportNgOptimizations(const QString& out)
             continue;
         }
         // The values found become the knobs' initial values, as the
-        // Optimization component's do: the next run starts from them.
+        // Optimization component's do: the next run starts from them
+        // (not when no evaluation solved: they are the initial ones).
         const Result& r = results.at(i);
         Command command = Command::read(c);
-        if (r.values.size() == command.knobs.size()) {
+        if (r.values.size() == command.knobs.size() && r.status != QLatin1String("nosolve")) {
             bool mine = false;
             for (int k = 0; k < command.knobs.size(); ++k) {
                 const QString value = misc::num2str(r.values.at(k).second, -1, QString());
@@ -666,8 +667,10 @@ void SimulationRun::reportNgOptimizations(const QString& out)
             }
         }
         QString text = QStringLiteral("%1: %2").arg(names.at(i), r.summary);
+        for (const QString& step : r.search) text += QStringLiteral("\n") + step;
+        for (const QString& constraint : r.constraints) text += QStringLiteral("\n") + tr("constraint %1").arg(constraint);
         for (const QString& note : r.notes) text += QStringLiteral("\n") + note;
-        const bool doubtful = r.interrupted || !r.notes.isEmpty();
+        const bool doubtful = !r.settled() || !r.notes.isEmpty();
         addLogEntry(text, doubtful ? style->standardIcon(QStyle::SP_MessageBoxWarning)
                                    : QIcon(":/bitmaps/svg/ok_apply.svg"));
     }

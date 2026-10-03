@@ -34,6 +34,13 @@ Component* NgOpt_Sim::newOne()
   return new NgOpt_Sim();
 }
 
+bool NgOpt_Sim::load(const QString& s)
+{
+  if (!SimulationComponent::load(s)) return false;
+  qucs_s::ngopt::Command::read(this).write(this);
+  return true;
+}
+
 Element* NgOpt_Sim::info(QString& Name, char* &BitmapFile, bool getNewOne)
 {
   Name = QObject::tr("ngspice optimize");

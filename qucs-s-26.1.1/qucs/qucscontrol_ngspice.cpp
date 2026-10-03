@@ -190,7 +190,7 @@ const struct Command {
     {"writemc", "statistics", "[name=]<expression> ...", "Adds values the script computed to the row .option savemc wrote for the last run.", Enhanced},
     {"writecorner", "statistics", "[name=]<expression> ...", "writemc for the corner file (.option savecorner).", Enhanced},
     {"writecr", "statistics", "[name=]<expression> ...", "Short for writecorner.", Enhanced},
-    {"optimize", "statistics", "(-param|-mparam|-dparam) name init lo hi ... -analysis <cmd> (-minimize <expr> | -target <expr> <val> [<w>] ...) [-method nm|lm] [-maxiter N] [-tol T] [-verbose]", "Optimizer (Nelder-Mead or Levenberg-Marquardt) of device, model or .param values within bounds, to minimize an expression or meet targets.", Enhanced},
+    {"optimize", "statistics", "(-param|-mparam|-dparam) name init lo hi ... -analysis <cmd> (-minimize <expr> | -target <expr> <val> [<w>] ... [-analysis <cmd> -target ...] | (-minimize|-maximize) <expr> ... -method nsga2 | -center (-spec <expr> [-min lo] [-max hi])... [-samples N] [-lhs]) [-constrain <expr> [-min lo] [-max hi] ...] [-ctol T] [-method de|pso|sa|cmaes|bayes|nm|tr|lm|nsga2] [-swarmsize N] [-seed s] [-maxiter N] [-tol T] [-polish] [-starts k] [-verbose]", "Optimizer of device, model or .param values within bounds - global (de, pso, sa, cmaes, bayes), local (nm, tr, lm) or a Pareto front (nsga2) - to minimize an expression or fit targets, under constraints; or design centering for yield.", Enhanced},
     // Post-layout and reliability.
     {"reduce", "reliability", "fmax [factor f] [file fname] [name subckt] [keep node ...]", "Reduces an R/C parasitic network (TICER) to an equivalent .subckt, valid up to fmax.", Enhanced},
     {"aging", "reliability", "t_target [rate opvar] [param ageparam] [dynamic tstop [tstep]] [verbose]", "Ages every aging-capable device to a lifetime (HCI, NBTI, TDDB) for fresh-against-aged runs.", Enhanced},
@@ -280,7 +280,7 @@ const struct {
     {"fourier", "A Fourier block (.FOURIER) of a transient writes it, and the THD reaches the dataset."},
     {"fft", "An FFT block (.FFT) writes linearize and fft after its transient."},
     {"sp", "An S-parameter block (.SP) writes it (its Noise property the final 1); the ac power sources (Pac) are the ports."},
-    {"optimize", "An ngspice optimize block (.NGOPT) writes it, ahead of the simulations, which then show the optimum."},
+    {"optimize", "An ngspice optimize block (.NGOPT) writes it, ahead of the simulations, which then show the optimum: its Method (de, pso, sa, cmaes, bayes, nm, tr or lm), MaxIter, Tol, Size, Seed, Polish, Starts, Minimize after Analysis or its Targets, its Constraints and CTol (describe_component_type .NGOPT says each); simulate's 'optimum' gives what it found, its status and constraints, and apply_optimum writes it in. nsga2 and -center are for a Nutmeg script."},
     {"sweep", "An ngspice sweep block (.NGSWEEP) writes it, and its values and plots reach the dataset."},
     {"montecarlo", "An ngspice Monte Carlo block (.NGMONTECARLO) writes it: add_component takes its 'specs' and 'records'."},
     {"corners", "An ngspice corners block (.NGCORNERS) writes it."},
@@ -302,6 +302,47 @@ const struct {
     {"source", "The circuit is the schematic's netlist: sourcing another replaces it for the rest of the run."},
     {"edit", "Needs an editor at the ngspice prompt: nothing for Qucs-S's run."},
     {"help", "For the ngspice prompt; ngspice_commands answers here."},
+};
+
+// More than a line says of a command: its options in full, for 'command'
+// (and 'search').
+const struct {
+    const char* name;
+    const char* text;
+} kDetails[] = {
+    {"optimize",
+     "Methods (-method): de differential evolution, pso particle swarm and sa simulated annealing (global, derivative-free; "
+     "sa one evaluation a step, -maxiter its cooling levels); cmaes, CMA-ES (global: a Gaussian search that learns the scale "
+     "and correlation of the knobs from each generation's ranking - knobs over decades, correlated knobs, 2 to 50 of them; "
+     "population 4 + 3 ln(knobs)); bayes, Bayesian optimization (global: a Gaussian-process surrogate, Matern 5/2, chooses "
+     "each evaluation by expected improvement - tens of evaluations for a slow deck where the population methods spend "
+     "thousands, up to about a dozen knobs; -maxiter is its evaluation budget, at most 2000); nm, Nelder-Mead (local; the "
+     "default for -minimize); tr, a trust region on a quadratic model (local, one evaluation a step, the bounds inside its "
+     "steps: it runs along a bound instead of sticking to it); lm, Levenberg-Marquardt (local least squares; the default for "
+     "-target, which it needs); nsga2 (a Pareto front of 2 to 8 objectives, each -minimize or -maximize, after one "
+     "analysis; prints the front and makes vectors pareto1..pareto<m>; no -polish, -starts or -constrain).\n"
+     "-swarmsize: the population of pso, de (10 + 4 a knob), cmaes and nsga2. -seed makes a run repeat. -maxiter: "
+     "iterations or generations (100), -tol: the convergence tolerance (1e-6).\n"
+     "-polish: a global method's best point finished by a local one (tr for -minimize, lm for -target). -starts k: k more "
+     "runs from Latin-hypercube points, each with a share of -maxiter (cmaes doubling its population each time); the "
+     "winner is reported and polished.\n"
+     "-constrain <expr> -min lo and/or -max hi (any number, up to 32; the expression one token, measured after the "
+     "-analysis before it): an augmented Lagrangian around any method but nsga2 - minimize i(v1) subject to v(out) >= "
+     "0.9. -ctol: met within this, relative to max(1, |bound|) (1e-4). The report gives each constraint's value, active "
+     "with its multiplier (what a unit of the bound costs) or its slack, VIOLATED, and INFEASIBLE when one cannot be met.\n"
+     "-center: design centering - maximizes the worst-case Cpk (and so the yield) of the -spec limits over -samples Monte "
+     "Carlo samples (100; -lhs for Latin hypercube) of the deck's random .params, after one analysis; not with "
+     "-minimize, -target or -constrain.\n"
+     "Knobs: -param an instance or its parameter (alter: R1, @m1[w]), -mparam a model's (altermod: @dmod[is]), -dparam a "
+     ".param (alterparam). -analysis and -minimize take every word up to the next -flag; a -target or -constrain "
+     "expression is one token (v(out)-v(in)); each reads its expression's last value, so pick a point with a one-point "
+     "analysis or an index.\n"
+     "The report's last line says why it stopped: converged, cooling schedule or run complete, stopped at -maxiter -- NOT "
+     "converged, NO SOLUTION, unchanged -- nothing was optimised, INTERRUPTED, INFEASIBLE; then NOTEs (a knob on a bound, "
+     "evaluations that did not solve) and each knob's value. Published: optimize_<knob>, optimize_status (converged, "
+     "completed, maxiter, nosolve, unchanged, interrupted, infeasible), optimize_converged, optimize_cost, optimize_evals, "
+     "optimize_feasible (with constraints); dcenter_yield and dcenter_cpk (with -center). The circuit is left at the "
+     "optimum."},
 };
 
 // Examples: the lines of a .control block (a Nutmeg script's SpiceCode in
@@ -341,7 +382,7 @@ const struct {
     {"osdi", "pre_osdi bsim4.osdi\n* reloaded after a rebuild\npre_osdi -f bsim4.osdi"},
     {"snp", "pre_snp filter.s2p\npre_osdi filter.osdi"},
     {"montecarlo", "* netlist: .param rr=agauss(1k, 50, 3), R1 in out {rr}, C1 out 0 159n\nmontecarlo 200 -seed 7 -analysis 'ac lin 1 1k 1k' -spec 'vdb(out)' -min -3.1 -max -2.9"},
-    {"optimize", "* R1 of an RC low-pass for -3 dB at 10 kHz\noptimize -param r1 1k 100 10k -analysis 'ac lin 1 10k 10k' -target 'vdb(out)' -3 -method nm"},
+    {"optimize", "* R1 of an RC low-pass for -3 dB at 10 kHz\noptimize -param r1 1k 100 10k -analysis 'ac lin 1 10k 10k' -target 'vdb(out)' -3 -method nm\n* the least supply current that keeps v(out) at 0.9 V or more, by CMA-ES from four starts\noptimize -dparam rb 10k 1k 1meg -analysis op -minimize abs(i(vdd)) -constrain v(out) -min 0.9 -method cmaes -starts 3 -seed 1\n* a slow deck: 40 simulations of Bayesian optimization, polished\noptimize -dparam w 10u 1u 100u -dparam l 1u 0.2u 5u -analysis 'ac lin 1 1meg 1meg' -minimize 0-vdb(out) -method bayes -maxiter 40 -polish"},
     {"sweep", "sweep r1 1k 10k 1k -analysis 'op' -output 'v(out)'"},
     {"stop", "stop when v(out) > 0.9\ntran 1u 1m\nprint v(out)\nresume"},
     {"savestate", "tran 1n 1u\nsavestate ckpt.st\n* later, even in another process, with a .tran line in the netlist (its tstop the new end):\nloadstate ckpt.st"},
@@ -529,6 +570,7 @@ QString detailOf(const Installed& ng, const Command& c)
     s += tr("Syntax: %1\n").arg(syntax);
     s += text(c.summary) + QLatin1Char('\n');
     if (const QString said = ng.help.value(QLatin1String(c.name)); !said.isEmpty()) s += tr("This ngspice's help: %1\n").arg(said);
+    if (const QString more = entryOf(kDetails, c.name); !more.isEmpty()) s += more + QLatin1Char('\n');
     if (const QString q = entryOf(kInQucs, c.name); !q.isEmpty()) s += tr("In Qucs-S: %1\n").arg(q);
     if (QString e = entryOf(kExamples, c.name); !e.isEmpty())
         s += tr("Example:\n%1\n").arg(QStringLiteral("  ") + e.replace(QLatin1Char('\n'), QStringLiteral("\n  ")));
@@ -619,7 +661,7 @@ QJsonObject QucsControl::ngspiceCommands(const QJsonObject& args)
 
     // Commands by what they do: every word somewhere in one's name, syntax,
     // summary, category's id (its title names what only some have),
-    // Qucs-S note or help line; failing that, the most words.
+    // details, Qucs-S note or help line; failing that, the most words.
     if (!search.isEmpty()) {
         const QStringList words = search.toLower().split(QRegularExpression(QStringLiteral("[\\s,;]+")), Qt::SkipEmptyParts);
         QList<std::pair<int, QString>> found;
@@ -630,7 +672,8 @@ QJsonObject QucsControl::ngspiceCommands(const QJsonObject& args)
         };
         for (const Command& c : kCommands)
             consider(QStringList{QLatin1String(c.name), text(c.syntax), text(c.summary), QLatin1String(c.category),
-                                 entryOf(kInQucs, c.name), ng.help.value(QLatin1String(c.name))}.join(QLatin1Char(' ')).toLower(),
+                                 entryOf(kDetails, c.name), entryOf(kInQucs, c.name), ng.help.value(QLatin1String(c.name))}
+                         .join(QLatin1Char(' ')).toLower(),
                      lineOf(ng, c, false) + QStringLiteral(" [%1]").arg(QLatin1String(c.category)));
         for (auto it = ng.help.cbegin(); it != ng.help.cend(); ++it)
             if (commandNamed(it.key()) == nullptr) consider(it.value().toLower(), tr("  %1 (this ngspice's): %2").arg(it.key(), it.value()));

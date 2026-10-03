@@ -41,6 +41,7 @@ namespace {
 
 enum KnobColumn { KnobKindColumn, KnobNameColumn, KnobInitColumn, KnobLoColumn, KnobHiColumn };
 enum TargetColumn { TargetAnalysisColumn, TargetExpressionColumn, TargetValueColumn, TargetWeightColumn };
+enum ConstraintColumn { ConstraintAnalysisColumn, ConstraintExpressionColumn, ConstraintMinColumn, ConstraintMaxColumn };
 
 QString cell(const QTableWidget* table, int row, int column)
 {
@@ -91,8 +92,19 @@ NgOptDialog::NgOptDialog(Component* component, Schematic* schematic)
     form->addRow(tr("Population:"), a_size);
     a_seed = new QLineEdit(c.seed);
     a_seed->setValidator(new QIntValidator(0, 2147483647, this));
-    a_seed->setPlaceholderText(tr("none: a new search every run"));
+    a_seed->setPlaceholderText(tr("none: ngspice's fixed stream (a run repeats)"));
     form->addRow(tr("Seed:"), a_seed);
+    a_starts = new QLineEdit(c.starts);
+    a_starts->setValidator(new QIntValidator(1, 1000, this));
+    a_starts->setPlaceholderText(tr("none: from the initial values only"));
+    a_starts->setToolTip(tr("The search runs again from as many Latin-hypercube points of the ranges, each with a "
+                            "share of the iterations; the best is polished"));
+    form->addRow(tr("More starts:"), a_starts);
+    a_polish = new QCheckBox(tr("Polish the best point with a local method"));
+    a_polish->setToolTip(tr("A global method's best point finished by the trust region (an expression) or "
+                            "Levenberg-Marquardt (targets), for a local method's precision"));
+    a_polish->setChecked(c.polish);
+    form->addRow(QString(), a_polish);
     a_verbose = new QCheckBox(tr("Print every iteration in the simulation console"));
     a_verbose->setChecked(c.verbose);
     form->addRow(QString(), a_verbose);
@@ -183,6 +195,37 @@ NgOptDialog::NgOptDialog(Component* component, Schematic* schematic)
     connect(addTargetButton, &QPushButton::clicked, this, [this] { addTarget(); });
     connect(removeTargetButton, &QPushButton::clicked, this, &NgOptDialog::removeTarget);
 
+    // ... the constraints ..............................................
+    auto* constraintPage = new QWidget;
+    auto* constraintLayout = new QVBoxLayout(constraintPage);
+    a_constraints = new QTableWidget(0, 4);
+    a_constraints->setHorizontalHeaderLabels({tr("Analysis"), tr("Expression"), tr("Min"), tr("Max")});
+    a_constraints->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    a_constraints->verticalHeader()->hide();
+    constraintLayout->addWidget(a_constraints);
+    auto* constraintButtons = new QHBoxLayout;
+    auto* addConstraintButton = new QPushButton(tr("Add"));
+    auto* removeConstraintButton = new QPushButton(tr("Remove"));
+    constraintButtons->addWidget(addConstraintButton);
+    constraintButtons->addWidget(removeConstraintButton);
+    constraintButtons->addStretch();
+    constraintButtons->addWidget(new QLabel(tr("Met within:")));
+    a_ctol = new QLineEdit(c.ctol);
+    a_ctol->setPlaceholderText(tr("1e-4 of the bound"));
+    a_ctol->setMaximumWidth(140);
+    constraintButtons->addWidget(a_ctol);
+    constraintLayout->addLayout(constraintButtons);
+    auto* constraintNote = new QLabel(
+        tr("Each expression stays at or above its Min and at or below its Max (one may be empty) while the objective "
+           "is minimized or the targets fitted: <tt>v(out)</tt> at least 0.9 while the current is minimized. Its last "
+           "value after its analysis counts; an empty analysis is the objective's (the first target's). ngspice reports "
+           "each constraint at the optimum, and INFEASIBLE when one cannot be met."));
+    constraintNote->setWordWrap(true);
+    constraintLayout->addWidget(constraintNote);
+    tabs->addTab(constraintPage, tr("Constraints"));
+    connect(addConstraintButton, &QPushButton::clicked, this, [this] { addConstraint(); });
+    connect(removeConstraintButton, &QPushButton::clicked, this, &NgOptDialog::removeConstraint);
+
     // ... the command and the buttons ..................................
     auto* all = new QVBoxLayout(this);
     all->addWidget(tabs);
@@ -208,17 +251,20 @@ NgOptDialog::NgOptDialog(Component* component, Schematic* schematic)
 
     for (const Knob& k : c.knobs) addKnob(k);
     for (const Target& t : c.targets) addTarget(t);
+    for (const Constraint& k : c.constraints) addConstraint(k);
     const bool fit = c.leastSquares() && (!c.targets.isEmpty() || c.analysis.isEmpty());
     (fit ? a_fitMode : a_minimizeMode)->setChecked(true);
 
-    for (QLineEdit* e : {a_name, a_maxIter, a_tol, a_size, a_seed, a_minimize})
+    for (QLineEdit* e : {a_name, a_maxIter, a_tol, a_size, a_seed, a_starts, a_minimize, a_ctol})
         connect(e, &QLineEdit::textChanged, this, &NgOptDialog::updateForm);
     connect(a_method, &QComboBox::currentIndexChanged, this, &NgOptDialog::updateForm);
     connect(a_analysis, &QComboBox::currentTextChanged, this, &NgOptDialog::updateForm);
     connect(a_verbose, &QCheckBox::toggled, this, &NgOptDialog::updateForm);
+    connect(a_polish, &QCheckBox::toggled, this, &NgOptDialog::updateForm);
     connect(a_minimizeMode, &QRadioButton::toggled, this, &NgOptDialog::updateForm);
     connect(a_knobs, &QTableWidget::itemChanged, this, &NgOptDialog::updateForm);
     connect(a_targets, &QTableWidget::itemChanged, this, &NgOptDialog::updateForm);
+    connect(a_constraints, &QTableWidget::itemChanged, this, &NgOptDialog::updateForm);
     updateForm();
     resize(720, 560);
 }
@@ -328,6 +374,30 @@ void NgOptDialog::removeTarget()
     updateForm();
 }
 
+void NgOptDialog::addConstraint(const Constraint& constraint)
+{
+    const QSignalBlocker block(a_constraints);
+    const int row = a_constraints->rowCount();
+    a_constraints->insertRow(row);
+    QComboBox* box = analysisBox(constraint.analysis);
+    box->setToolTip(tr("A simulation component of the schematic, or an ngspice analysis command; empty: the "
+                       "objective's"));
+    connect(box, &QComboBox::currentTextChanged, this, &NgOptDialog::updateForm);
+    a_constraints->setCellWidget(row, ConstraintAnalysisColumn, box);
+    a_constraints->setItem(row, ConstraintExpressionColumn, new QTableWidgetItem(constraint.expression));
+    a_constraints->setItem(row, ConstraintMinColumn, new QTableWidgetItem(constraint.min));
+    a_constraints->setItem(row, ConstraintMaxColumn, new QTableWidgetItem(constraint.max));
+    if (a_preview != nullptr) updateForm();
+}
+
+void NgOptDialog::removeConstraint()
+{
+    const int row = a_constraints->currentRow();
+    if (row < 0) return;
+    a_constraints->removeRow(row);
+    updateForm();
+}
+
 Command NgOptDialog::command() const
 {
     Command c;
@@ -336,6 +406,9 @@ Command NgOptDialog::command() const
     c.tol = a_tol->text().trimmed();
     c.size = a_size->text().trimmed();
     c.seed = a_seed->text().trimmed();
+    c.starts = a_starts->text().trimmed();
+    c.polish = a_polish->isChecked() && isGlobal(c.method);   // (a local method polishes itself)
+    c.ctol = a_ctol->text().trimmed();
     c.verbose = a_verbose->isChecked();
     for (int r = 0; r < a_knobs->rowCount(); ++r) {
         Knob k;
@@ -356,6 +429,15 @@ Command NgOptDialog::command() const
         t.weight = cell(a_targets, r, TargetWeightColumn);
         if (!t.expression.isEmpty()) c.targets << t;
     }
+    for (int r = 0; r < a_constraints->rowCount(); ++r) {
+        Constraint k;
+        if (auto* box = qobject_cast<QComboBox*>(a_constraints->cellWidget(r, ConstraintAnalysisColumn)))
+            k.analysis = box->currentText().trimmed();
+        k.expression = cell(a_constraints, r, ConstraintExpressionColumn);
+        k.min = cell(a_constraints, r, ConstraintMinColumn);
+        k.max = cell(a_constraints, r, ConstraintMaxColumn);
+        if (!k.expression.isEmpty()) c.constraints << k;
+    }
     c.analysis = a_analysis->currentText().trimmed();
     // Fitting: no expression to minimize (the targets are kept either way).
     if (a_minimizeMode->isChecked()) c.minimize = a_minimize->text().trimmed();
@@ -374,20 +456,13 @@ QString NgOptDialog::preview() const
 void NgOptDialog::updateForm()
 {
     const QString method = a_method->currentData().toString();
-    static const QHash<QString, const char*> notes = {
-        {"de", QT_TR_NOOP("A population of candidates built from differences of its members; finds the global "
-                          "minimum of rugged objectives.")},
-        {"pso", QT_TR_NOOP("A swarm pulled toward its members' and its own best points; global.")},
-        {"sa", QT_TR_NOOP("A single walker that accepts uphill steps while hot; global, one simulation a step.")},
-        {"nm", QT_TR_NOOP("A downhill simplex from the initial values; fast on smooth objectives, finds the "
-                          "nearest minimum.")},
-        {"lm", QT_TR_NOOP("Gradient least squares: the fastest for fitting targets on smooth responses; "
-                          "needs targets.")},
-    };
-    a_methodNote->setText(tr(notes.value(method, "")));
-    const bool population = method == QLatin1String("de") || method == QLatin1String("pso");
-    a_size->setEnabled(population);
-    a_seed->setEnabled(method != QLatin1String("nm") && method != QLatin1String("lm"));
+    a_methodNote->setText(methodNote(method));
+    a_size->setEnabled(takesPopulation(method));
+    a_size->setPlaceholderText(method == QLatin1String("cmaes") ? tr("automatic: 4 + 3 ln(parameters)")
+                                                                : tr("automatic: 10 + 4 per parameter"));
+    // (Starts are drawn at random too; a local method has nothing to polish.)
+    a_seed->setEnabled(isGlobal(method) || !a_starts->text().trimmed().isEmpty());
+    a_polish->setEnabled(isGlobal(method));
     a_objective->setCurrentIndex(a_minimizeMode->isChecked() ? 0 : 1);
     a_preview->setPlainText(preview());
 }

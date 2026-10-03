@@ -52,10 +52,16 @@ public:
     QLineEdit* maxIterEdit() const { return a_maxIter; }
     QLineEdit* sizeEdit() const { return a_size; }
     QLineEdit* seedEdit() const { return a_seed; }
+    QLineEdit* startsEdit() const { return a_starts; }
+    QCheckBox* polishCheck() const { return a_polish; }
+    QTableWidget* constraintTable() const { return a_constraints; }
+    QLineEdit* ctolEdit() const { return a_ctol; }
+    QLabel* methodNoteLabel() const { return a_methodNote; }
 
 public slots:
     void addKnob(const qucs_s::ngopt::Knob& knob = qucs_s::ngopt::Knob());
     void addTarget(const qucs_s::ngopt::Target& target = qucs_s::ngopt::Target());
+    void addConstraint(const qucs_s::ngopt::Constraint& constraint = qucs_s::ngopt::Constraint());
     /// A .param knob for every number an equation or .PARAM component
     /// defines that is not a knob yet, over a decade each way.
     void addEquationVariables();
@@ -66,6 +72,7 @@ private slots:
     void slotCancel();
     void removeKnob();
     void removeTarget();
+    void removeConstraint();
     void updateForm();
 
 private:
@@ -84,6 +91,8 @@ private:
     QLineEdit* a_tol = nullptr;
     QLineEdit* a_size = nullptr;
     QLineEdit* a_seed = nullptr;
+    QLineEdit* a_starts = nullptr;
+    QCheckBox* a_polish = nullptr;
     QCheckBox* a_verbose = nullptr;
     QTableWidget* a_knobs = nullptr;
     QRadioButton* a_minimizeMode = nullptr;
@@ -92,6 +101,8 @@ private:
     QComboBox* a_analysis = nullptr;
     QLineEdit* a_minimize = nullptr;
     QTableWidget* a_targets = nullptr;
+    QTableWidget* a_constraints = nullptr;
+    QLineEdit* a_ctol = nullptr;
     QPlainTextEdit* a_preview = nullptr;
 };
 

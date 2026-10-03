@@ -28,6 +28,9 @@ public:
   NgOpt_Sim();
   Component* newOne() override;
   static Element* info(QString&, char* &, bool getNewOne=false);
+  /// Saved by the properties' names: one saved before a property was
+  /// added (Polish, Starts, CTol) comes back with it, as a new one has it.
+  bool load(const QString&) override;
 
 protected:
   QString spice_netlist(spicecompat::SpiceDialect dialect = spicecompat::SPICEDefault) override;

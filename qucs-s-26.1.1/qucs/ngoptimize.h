@@ -9,8 +9,9 @@
  *            -analysis <command ...>
  *            ( -minimize <expression>
  *              | -target <expr> <value> [<weight>] ... [-analysis ... -target ...] )
- *            [-method nm|lm|pso|de|sa] [-swarmsize N] [-seed s]
- *            [-maxiter N] [-tol T] [-verbose]
+ *            [-constrain <expr> [-min <lo>] [-max <hi>] ...] [-ctol T]
+ *            [-method de|pso|sa|cmaes|bayes|nm|tr|lm] [-swarmsize N] [-seed s]
+ *            [-maxiter N] [-tol T] [-polish] [-starts k] [-verbose]
  *
  * This file is part of Qucs-S.
  *
@@ -66,19 +67,37 @@ struct Target {
     QString toString() const;
 };
 
+/// "Constraint=AC1|vdb(out)|-3|": an expression, evaluated on the results
+/// of an analysis, held at or above a minimum and at or below a maximum
+/// (one may be left out) while the objective is minimized or the targets
+/// fitted - an augmented Lagrangian around the method.
+struct Constraint {
+    QString analysis;     ///< empty: the objective's (the first target's when fitting)
+    QString expression;
+    QString min;          ///< empty: no lower bound
+    QString max;          ///< empty: no upper bound
+
+    static bool parse(const QString& value, Constraint* constraint);
+    QString toString() const;
+};
+
 /// Everything the component stores. With an expression to minimize the
 /// search minimizes it after one analysis; without, it fits the targets.
 struct Command {
-    QString method = QStringLiteral("de");   ///< nm, lm, pso, de, sa
+    QString method = QStringLiteral("de");   ///< one of methods(); empty: ngspice's default
     QString maxIter;       ///< empty: ngspice's default
     QString tol;
-    QString size;          ///< the population of pso and de
+    QString size;          ///< the population of pso, de and cmaes
     QString seed;
     bool verbose = false;
     QString analysis;      ///< of the expression to minimize
     QString minimize;
+    bool polish = false;   ///< a global method's best point finished by a local one
+    QString starts;        ///< more starts from Latin-hypercube points; empty: none
+    QString ctol;          ///< how near its bound a constraint is met; empty: ngspice's 1e-4
     QList<Knob> knobs;
     QList<Target> targets;
+    QList<Constraint> constraints;
 
     bool leastSquares() const { return minimize.trimmed().isEmpty(); }
 
@@ -88,8 +107,18 @@ struct Command {
     void write(Component* component) const;
 };
 
-/// The methods, with what the dialog calls them.
+/// The methods, with what the dialog calls them: de, pso, sa, cmaes,
+/// bayes (global), nm, tr, lm (local).
 QList<QPair<QString, QString>> methods();
+/// What a method does and when to choose it; empty for one that is not.
+QString methodNote(const QString& method);
+/// It searches the whole box (polished by a local method on request).
+bool isGlobal(const QString& method);
+/// It takes a population (Size): pso, de, cmaes.
+bool takesPopulation(const QString& method);
+/// What a property of the component holds, for Claude's description of
+/// it (the properties are saved with their names, not a description).
+QString propertyNote(const QString& name);
 
 /// The analysis a stage runs: the command of the simulation component of
 /// that name in the schematic ("AC1": "ac dec 20 100k 10meg") - switched
@@ -99,7 +128,9 @@ QString analysisCommand(const Schematic* schematic, const QString& analysis);
 
 /// The optimize line of \a command; false and why in \a error when it
 /// cannot be written: no knob, a value that is not a number, nothing to
-/// minimize or fit, more than eight analyses, lm without targets.
+/// minimize or fit, more than eight analyses, lm without targets, a
+/// method ngspice has not, a constraint without a bound or after another
+/// analysis than an expression to minimize.
 bool commandLine(const Command& command, const Schematic* schematic, QString* line, QString* error = nullptr);
 
 /// ngspice leaves the circuit at the optimum; a reset (the netlist does
@@ -113,10 +144,21 @@ QString reapplyLines(const Command& command, int index);
 
 /// What one optimize printed at its end.
 struct Result {
+    /// Why the search stopped, as ngspice's optimize_status says it:
+    /// converged, completed (sa's cooling schedule ran out), maxiter (not
+    /// converged), nosolve (no evaluation solved), unchanged (the objective
+    /// never moved), interrupted (the best point so far), infeasible (a
+    /// constraint was not met).
+    QString status;
     bool interrupted = false;   ///< stopped by the user: the best point so far
     QString summary;            ///< "converged, objective = 1.2e-13 after 29 evaluations"
     QStringList notes;          ///< "the objective was ... at every one of the evaluations", ...
+    QStringList constraints;    ///< "i(v1) <= -9e-06 -- -9.90197e-06, slack 9.02e-07", ...
+    QStringList search;         ///< "start 3 of 3 won (cost 2.1e-12)", "polish converged -- cost ...", ...
     QList<QPair<QString, double>> values;   ///< the knobs, in the order given
+
+    /// The search ended on its own criterion or schedule.
+    bool settled() const { return status == QLatin1String("converged") || status == QLatin1String("completed"); }
 };
 
 /// The results in ngspice's output, one for each optimize, in order.
