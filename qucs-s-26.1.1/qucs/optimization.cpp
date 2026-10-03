@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "optimization.h"
+#include "datasetfile.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -405,6 +406,20 @@ bool readValue(const QString& text, double* re, double* im)
 QHash<QString, QVector<double>> readDataset(const QString& file, QString* error)
 {
     QHash<QString, QVector<double>> table;
+    // A binary one (datasetfile.h): its blocks, the same way.
+    if (qucs_s::datasetfile::isBinary(file)) {
+        qucs_s::datasetfile::BinaryReader data;
+        if (!data.open(file, error)) return table;
+        for (const qucs_s::datasetfile::Block& b : data.blocks()) {
+            QVector<double> re, im;
+            if (!data.values(b, &re, &im)) continue;
+            if (std::any_of(im.cbegin(), im.cend(), [](double i) { return i != 0; }))
+                for (qsizetype i = 0; i < re.size(); ++i) re[i] = std::hypot(re.at(i), im.at(i));
+            table.insert(b.name(), re);
+        }
+        if (table.isEmpty() && error != nullptr) *error = tr("%1 holds no results").arg(file);
+        return table;
+    }
     QFile f(file);
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (error != nullptr) *error = tr("cannot read %1").arg(file);

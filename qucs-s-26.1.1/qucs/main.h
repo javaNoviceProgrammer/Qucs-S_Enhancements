@@ -186,6 +186,10 @@ struct tQucsSettings {
   // expressions written for Qucsator use and ngspice has not. On by
   // default; Simulator Settings > Netlist.
   bool NgspiceMathFuncs = true;
+  // An ngspice or Xyce run whose results are larger than DatasetTextLimitMB
+  // keeps them binary (datasetfile.h): smaller, every digit, quick to read.
+  bool DatasetBinary = true;
+  int DatasetTextLimitMB = 10;
   // The application's colours: the system's (0), dark (1) or light (2) -
   // qucs_s::apptheme::Theme.
   int Theme = 0;

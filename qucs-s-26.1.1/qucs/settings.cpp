@@ -103,6 +103,8 @@ void settingsManager::initDefaults()
     m_Defaults["RequireGround"] = true;
     m_Defaults["CheckCommands"] = false;   // tQucsSettings::CheckCommands
     m_Defaults["NgspiceMathFuncs"] = true;   // tQucsSettings::NgspiceMathFuncs
+    m_Defaults["DatasetBinary"] = true;      // tQucsSettings::DatasetBinary
+    m_Defaults["DatasetTextLimitMB"] = 10;   // tQucsSettings::DatasetTextLimitMB
     m_Defaults["Theme"] = 0;   // qucs_s::apptheme::System
     m_Defaults["LockToolbars"] = false;
     m_Defaults["NgspiceCompatMode"] = spicecompat::NgspDefault;

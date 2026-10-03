@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "dataset.h"
+#include "datasetfile.h"
 #include "eyeanalysis.h"
 #include "spreadsheet.h"
 
@@ -47,28 +48,7 @@ bool isSpace(char c)
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
-// "+1.5e-3", "+1.5e-3+j2e-4", "-j2e-4": the real and imaginary parts.
-bool readValue(QByteArrayView text, double* re, double* im, bool* complex)
-{
-    *im = 0;
-    bool ok = false;
-    const qsizetype j = text.indexOf('j');
-    *complex = j >= 0;
-    if (j < 0) {
-        *re = text.toDouble(&ok);
-        return ok;
-    }
-    if (j == 0) return false;
-    const char sign = text.at(j - 1);
-    if (sign != '+' && sign != '-') return false;
-    const QByteArrayView rePart = text.first(j - 1);
-    *re = rePart.isEmpty() ? 0 : rePart.toDouble(&ok);
-    if (!rePart.isEmpty() && !ok) return false;
-    const double i = text.sliced(j + 1).toDouble(&ok);
-    if (!ok) return false;
-    *im = sign == '-' ? -i : i;
-    return true;
-}
+using qucs_s::datasetfile::readValue;
 
 } // namespace
 
@@ -182,6 +162,29 @@ bool Dataset::read(const QString& path, QString* error)
         if (error != nullptr) *error = why;
         return false;
     };
+    // A binary one (a large run's, datasetfile.h): its blocks' values
+    // copied out, as they are.
+    if (qucs_s::datasetfile::isBinary(path)) {
+        qucs_s::datasetfile::BinaryReader file;
+        if (!file.open(path, error)) return false;
+        for (const qucs_s::datasetfile::Block& b : file.blocks()) {
+            Variable v;
+            v.name = b.name();
+            v.independent = b.independent();
+            v.dependencies = b.dependencies();
+            if (!file.values(b, &v.re, &v.im)) return fail(tr("The values of %1 in %2 cannot be read.").arg(v.name, path));
+            // Complex in the file, real in fact: read as real, with its sign.
+            if (v.isComplex() && std::all_of(v.im.cbegin(), v.im.cend(), [](double i) { return i == 0; })) {
+                v.im.clear();
+                v.writtenComplex = true;
+            }
+            // A name twice: the last one read is the one found.
+            a_index.insert(v.name, int(a_variables.size()));
+            a_variables.append(v);
+        }
+        if (a_variables.isEmpty()) return fail(tr("%1 holds no variables.").arg(path));
+        return true;
+    }
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return fail(tr("%1 cannot be read.").arg(path));
     // Mapped, not read whole into memory (a 480 MB dataset was, beside

@@ -217,6 +217,42 @@ SimSettingsDialog::SimSettingsDialog(QWidget *parent) :
     netlistLayout->addWidget(gbNgspice);
     netlistLayout->addStretch(1);
 
+    // Tab 4: how a run's results are kept.
+    QWidget *resultsTab = new QWidget(tabs);
+    QVBoxLayout *resultsLayout = new QVBoxLayout(resultsTab);
+    tabs->addTab(resultsTab, tr("Results"));
+    QGroupBox *gbDataset = new QGroupBox(tr("Datasets of ngspice and Xyce"), resultsTab);
+    QVBoxLayout *datasetLayout = new QVBoxLayout;
+    a_cbDatasetBinary = new QCheckBox(tr("Keep large results binary"), gbDataset);
+    a_cbDatasetBinary->setObjectName(QStringLiteral("cbDatasetBinary"));
+    a_cbDatasetBinary->setChecked(QucsSettings.DatasetBinary);
+    datasetLayout->addWidget(a_cbDatasetBinary);
+    QHBoxLayout *limitRow = new QHBoxLayout;
+    QLabel *limitLabel = new QLabel(tr("Binary above:"), gbDataset);
+    a_sbDatasetTextLimit = new QSpinBox(gbDataset);
+    a_sbDatasetTextLimit->setObjectName(QStringLiteral("sbDatasetTextLimit"));
+    a_sbDatasetTextLimit->setRange(0, 1000000);
+    a_sbDatasetTextLimit->setSuffix(tr(" MB"));
+    a_sbDatasetTextLimit->setValue(QucsSettings.DatasetTextLimitMB);
+    a_sbDatasetTextLimit->setToolTip(tr("The size of the simulator's output above which its dataset is binary (0: every run's)"));
+    limitLabel->setBuddy(a_sbDatasetTextLimit);
+    limitRow->addWidget(limitLabel);
+    limitRow->addWidget(a_sbDatasetTextLimit);
+    limitRow->addStretch(1);
+    datasetLayout->addLayout(limitRow);
+    QLabel *binaryNote = new QLabel(
+        tr("A run whose simulator output is larger keeps its dataset binary: the simulator's numbers as they are, every "
+           "digit, in less than half the room of text, written in about the time it takes to copy them, and a variable read "
+           "without the others - and the simulator's raw file is not kept beside it. Smaller runs, and every run with this "
+           "off, are text, as before. A schematic that runs an Octave script after the simulation keeps text, which the "
+           "script reads. The Content panel's menu has Save as Text… for a binary dataset."), gbDataset);
+    binaryNote->setWordWrap(true);
+    datasetLayout->addWidget(binaryNote);
+    a_cbDatasetBinary->setToolTip(binaryNote->text());
+    gbDataset->setLayout(datasetLayout);
+    resultsLayout->addWidget(gbDataset);
+    resultsLayout->addStretch(1);
+
     QHBoxLayout *h3 = new QHBoxLayout;
     h3->addWidget(a_btnOK);
     h3->addWidget(a_btnCancel);
@@ -244,6 +280,8 @@ void SimSettingsDialog::slotApply()
     QucsSettings.RequireGround = a_cbRequireGround->isChecked();
     QucsSettings.CheckCommands = a_cbCheckCommands->isChecked();
     QucsSettings.NgspiceMathFuncs = a_cbMathFuncs->isChecked();
+    QucsSettings.DatasetBinary = a_cbDatasetBinary->isChecked();
+    QucsSettings.DatasetTextLimitMB = a_sbDatasetTextLimit->value();
     QucsSettings.SimulationConsoleHost = a_rbConsoleLegacy->isChecked() ? tQucsSettings::SimConsoleLegacyWindow
                                        : a_rbConsoleWindow->isChecked() ? tQucsSettings::SimConsoleWindow
                                                                         : tQucsSettings::SimConsoleDock;

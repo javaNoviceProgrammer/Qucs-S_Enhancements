@@ -211,6 +211,9 @@ public:
   bool isDocumentMaximized() const;
   /// View > Panes > Maximize Document, also in a tab's menu.
   QAction *maximizeDocumentAction() const { return maximizeDocument; }
+  /// The binary dataset \a path (datasetfile.h) written out as text, where
+  /// a file dialog says (into \a target without one); false when it is not.
+  bool saveDatasetAsText(const QString &path, const QString &target = QString());
   /// Gives every open schematic the paper of the settings and the theme
   /// (misc::paperColor()), and the inline text editor with it.
   void applyPaper();
@@ -510,6 +513,8 @@ public slots:
   void slotVerilogABuildError(QProcess::ProcessError error);
 
   void slotCMenuOpen();
+  /// "Save as Text…" on a binary dataset of the Content panel.
+  void slotCMenuSaveAsText();
   void slotCMenuCopy();
   void slotCMenuRename();
   void slotCMenuDelete();
@@ -657,7 +662,7 @@ public:
   // corresponding actions
   QAction *ActionCMenuOpen, *ActionCMenuCopy, *ActionCMenuRename,
       *ActionCMenuDelete, *ActionCMenuInsert, *ActionCMenuBuildAllVerilogA,
-      *ActionCMenuCompileVerilogA,
+      *ActionCMenuCompileVerilogA, *ActionCMenuSaveAsText,
       *ActionCMenuViewFlat, *ActionCMenuViewTree, *ActionCMenuRefresh;
 
   // "Build All" for Verilog-A: the files still to compile with OpenVAF,
@@ -675,6 +680,8 @@ public:
   void buildVerilogA(const QStringList &files, const QString &title, const QString &heading);
   // The .va files the Content panel's menu was opened on.
   QStringList a_contentMenuVaFiles;
+  // The binary dataset it was opened on (Save as Text), or empty.
+  QString a_contentMenuDataset;
 
   QAction *fileNew, *textNew, *symNew, *fileOpen, *fileSave,
       *fileSaveAs, *fileSaveAll, *fileClose, *fileCloseOthers,
