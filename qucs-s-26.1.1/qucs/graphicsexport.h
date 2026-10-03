@@ -27,6 +27,8 @@
 
 class QMimeData;
 class Schematic;
+class Component;
+class Element;
 
 namespace qucs_s::graphicsexport {
 
@@ -102,6 +104,34 @@ bool write(Schematic* schematic, const QString& fileName, Format format,
 /// The drawing for the clipboard: an image (at \a options' scale), an SVG
 /// (text as outlines) and a PDF. The caller owns it.
 QMimeData* mimeData(Schematic* schematic, const Options& options);
+
+/// Whether \a component is a part of the circuit drawn, not a block of the
+/// netlist alone: a simulation, an equation (Equation, NutmegEq, .PARAM,
+/// .OPTIONS, .IC, ...) or anything else with no pins (.INCLUDE, .LIB, a
+/// model, a substrate, a Monte Carlo).
+bool isCircuitPart(const Component* component);
+
+/// While it lives, the selection of \a schematic is its circuit - the
+/// components that are parts of it (isCircuitPart()), the wires, the labels
+/// and the paintings, not the diagrams nor the blocks of the netlist alone -
+/// and the selection there was comes back after: an export of the selection
+/// (Options::selectionOnly) draws the circuit, as Copy Schematic as Image
+/// does.
+class CircuitAsSelection
+{
+public:
+    explicit CircuitAsSelection(Schematic* schematic);
+    ~CircuitAsSelection();
+    CircuitAsSelection(const CircuitAsSelection&) = delete;
+    CircuitAsSelection& operator=(const CircuitAsSelection&) = delete;
+    /// Whether the schematic has no circuit to draw.
+    bool empty() const { return a_circuit == 0; }
+
+private:
+    Schematic* a_schematic;
+    QList<Element*> a_selected;   // what was selected before
+    int a_circuit = 0;
+};
 
 } // namespace qucs_s::graphicsexport
 

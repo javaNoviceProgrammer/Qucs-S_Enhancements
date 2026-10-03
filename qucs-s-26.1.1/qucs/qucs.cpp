@@ -5770,24 +5770,33 @@ void QucsApp::slotSaveSchematicToGraphicsFile(bool diagram)
 // The selection - everything when nothing is selected - into the clipboard
 // as a picture, drawn as the export dialog last had it (colours,
 // background), the image at twice the size of the schematic.
+namespace {
+// A picture for the clipboard: twice the schematic's resolution, the colours
+// and paper the Export dialog last had.
+qucs_s::graphicsexport::Options clipboardOptions()
+{
+  using namespace qucs_s::graphicsexport;
+  Options options;
+  options.scale = 2.0;
+  QucsSettingsFile settings;
+  settings.beginGroup(QStringLiteral("Export"));
+  const int colours = settings.value(QStringLiteral("Colours"), 0).toInt();
+  if (colours >= int(Colours::Colour) && colours <= int(Colours::Monochrome))
+    options.colours = Colours(colours);
+  options.transparent = settings.value(QStringLiteral("Transparent"), false).toBool();
+  settings.endGroup();
+  return options;
+}
+} // namespace
+
 void QucsApp::slotEditCopyImage()
 {
   Schematic *doc = currentSchematic();
   if (doc == nullptr)
     return;
   using namespace qucs_s::graphicsexport;
-  Options options;
+  Options options = clipboardOptions();
   options.selectionOnly = !area(doc, true).isEmpty();
-  options.scale = 2.0;
-  {
-    QucsSettingsFile settings;
-    settings.beginGroup(QStringLiteral("Export"));
-    const int colours = settings.value(QStringLiteral("Colours"), 0).toInt();
-    if (colours >= int(Colours::Colour) && colours <= int(Colours::Monochrome))
-      options.colours = Colours(colours);
-    options.transparent = settings.value(QStringLiteral("Transparent"), false).toBool();
-    settings.endGroup();
-  }
   if (area(doc, options.selectionOnly).isEmpty()) {
     statusBar()->showMessage(tr("Nothing to copy: the document is empty"), 3000);
     return;
@@ -5797,6 +5806,29 @@ void QucsApp::slotEditCopyImage()
                                ? tr("The selection is in the clipboard as a picture")
                                : tr("The document is in the clipboard as a picture"),
                            3000);
+}
+
+// The circuit alone - drawn as a selection of it, the selection there was
+// given back after - whatever is selected.
+void QucsApp::slotEditCopySchematicImage()
+{
+  Schematic *doc = currentSchematic();
+  if (doc == nullptr)
+    return;
+  using namespace qucs_s::graphicsexport;
+  Options options = clipboardOptions();
+  options.selectionOnly = true;
+  QMimeData *data = nullptr;
+  {
+    const CircuitAsSelection circuit(doc);
+    if (!circuit.empty() && !area(doc, true).isEmpty()) data = mimeData(doc, options);
+  }
+  if (data == nullptr) {
+    statusBar()->showMessage(tr("Nothing to copy: the document has no circuit"), 3000);
+    return;
+  }
+  QGuiApplication::clipboard()->setMimeData(data);
+  statusBar()->showMessage(tr("The circuit is in the clipboard as a picture, without diagrams or netlist blocks"), 3000);
 }
 
 

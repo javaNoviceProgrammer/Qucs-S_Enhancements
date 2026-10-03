@@ -15,6 +15,14 @@
 
 #include "graphicsexport.h"
 #include "schematic.h"
+#include "components/component.h"
+#include "diagrams/diagram.h"
+#include "diagrams/graph.h"
+#include "diagrams/marker.h"
+#include "node.h"
+#include "paintings/painting.h"
+#include "wire.h"
+#include "wirelabel.h"
 
 #include <QBuffer>
 #include <QCoreApplication>
@@ -545,6 +553,71 @@ QMimeData* mimeData(Schematic* schematic, const Options& options)
     data->setData(QStringLiteral("image/svg+xml"), svg(schematic, outlines));
     data->setData(QStringLiteral("application/pdf"), pdf(schematic, options));
     return data;
+}
+
+bool isCircuitPart(const Component* component)
+{
+    return component != nullptr && !component->isSimulation && !component->isEquation && !component->Ports.isEmpty();
+}
+
+namespace {
+// Every element of the schematic whose selection is drawn or measured, \a f
+// called on each. (Not a graph: a selected one is drawn as any other.)
+template <typename F> void forEachSelectable(Schematic* schematic, F f)
+{
+    for (Component* c : *schematic->a_Components) f(static_cast<Element*>(c));
+    for (Wire* w : *schematic->a_Wires) {
+        f(static_cast<Element*>(w));
+        if (w->label() != nullptr) f(static_cast<Element*>(w->label()));
+    }
+    for (Node* n : *schematic->a_Nodes) {
+        f(static_cast<Element*>(n));
+        if (n->label() != nullptr) f(static_cast<Element*>(n->label()));
+    }
+    for (Painting* p : *schematic->a_Paintings) f(static_cast<Element*>(p));
+    for (Diagram* d : *schematic->a_Diagrams) {
+        f(static_cast<Element*>(d));
+        for (Graph* g : d->Graphs)
+            for (Marker* m : g->Markers) f(static_cast<Element*>(m));
+    }
+}
+} // namespace
+
+CircuitAsSelection::CircuitAsSelection(Schematic* schematic) : a_schematic(schematic)
+{
+    if (schematic == nullptr) return;
+    forEachSelectable(schematic, [this](Element* e) {
+        if (e->isSelected) a_selected.append(e);
+        e->isSelected = false;
+    });
+    // The circuit: its parts, the wires and their labels, the nodes' labels,
+    // the paintings. (A node is drawn with what it joins.)
+    for (Component* c : *schematic->a_Components)
+        if (isCircuitPart(c)) {
+            c->isSelected = true;
+            ++a_circuit;
+        }
+    for (Wire* w : *schematic->a_Wires) {
+        w->isSelected = true;
+        ++a_circuit;
+        if (w->label() != nullptr) w->label()->isSelected = true;
+    }
+    for (Node* n : *schematic->a_Nodes)
+        if (n->label() != nullptr) {
+            n->label()->isSelected = true;
+            ++a_circuit;
+        }
+    for (Painting* p : *schematic->a_Paintings) {
+        p->isSelected = true;
+        ++a_circuit;
+    }
+}
+
+CircuitAsSelection::~CircuitAsSelection()
+{
+    if (a_schematic == nullptr) return;
+    forEachSelectable(a_schematic, [](Element* e) { e->isSelected = false; });
+    for (Element* e : std::as_const(a_selected)) e->isSelected = true;
 }
 
 } // namespace qucs_s::graphicsexport
