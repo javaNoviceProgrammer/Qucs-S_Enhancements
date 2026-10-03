@@ -53,11 +53,25 @@ QString valueOf(const Component* c, const char* name)
     return QString();
 }
 
+// A time of a property, as the netlist gives it to ngspice (spiceValue):
+// the bits are ngspice's. "100 ps" and "100p" are 100 ps either way, and so
+// is "100P", which Qucs's own reading takes for 100 s.
 double secondsOf(const QString& text)
 {
     const qucs_s::units::Reading r = qucs_s::units::read(text);
-    return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) && r.value > 0.0 ? r.value
-                                                                                                 : std::numeric_limits<double>::quiet_NaN();
+    if (r.kind != qucs_s::units::Reading::Number) return std::numeric_limits<double>::quiet_NaN();
+    const double v = std::isfinite(r.spiceValue) && r.spiceValue > 0.0 ? r.spiceValue : r.value;
+    return std::isfinite(v) && v > 0.0 ? v : std::numeric_limits<double>::quiet_NaN();
+}
+
+// A time of the run's netlist, read as ngspice reads it: its scale
+// factors are SPICE's, of any case - the netlister writes 100 ps as 100P,
+// P pico (Qucs's reading took it for no prefix: 100 s).
+double spiceSecondsOf(const QString& text)
+{
+    bool ok = false;
+    const double v = qucs_s::units::spiceNumber(text, &ok);
+    return ok && std::isfinite(v) && v > 0.0 ? v : std::numeric_limits<double>::quiet_NaN();
 }
 
 QString shown(double seconds)
@@ -91,7 +105,7 @@ Bits bitsOf(const Component* c, const QString& run)
             b.why = tr("%1 was not in the run the data is of: simulate again").arg(c->Name);
             return b;
         }
-        const double then = secondsOf(m.captured(2).split(QRegularExpression(QStringLiteral(R"(\s+)")), Qt::SkipEmptyParts).value(2));
+        const double then = spiceSecondsOf(m.captured(2).split(QRegularExpression(QStringLiteral(R"(\s+)")), Qt::SkipEmptyParts).value(2));
         if (std::isfinite(then)) {
             b.ui = then;
             b.levels = m.captured(1).compare(QLatin1String("PAM4"), Qt::CaseInsensitive) == 0 ? 4 : 2;
