@@ -5810,7 +5810,7 @@ void QucsApp::slotEditCopyImage()
 
 // The circuit alone - drawn as a selection of it, the selection there was
 // given back after - whatever is selected.
-void QucsApp::slotEditCopySchematicImage()
+void QucsApp::slotEditCopyCircuitImage()
 {
   Schematic *doc = currentSchematic();
   if (doc == nullptr)
