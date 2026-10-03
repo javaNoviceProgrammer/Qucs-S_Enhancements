@@ -44,11 +44,25 @@ class QPlainTextEdit;
  *        and responsible for simulator execution. Ngspice and Xyce classes
  *        inherit this class.
  */
+namespace qucs_s::datasetfile {
+class BinaryWriter;
+}
+
 class AbstractSpiceKernel : public QObject
 {
     Q_OBJECT
 
+public:
+    /// How a dataset is written: as the settings say (binary above their
+    /// limit: QucsSettings.DatasetBinary, DatasetTextLimitMB), as text, or
+    /// binary.
+    enum class DatasetFormat { Settings, Text, Binary };
+
 private:
+    DatasetFormat a_datasetFormat = DatasetFormat::Settings;
+    bool convertPlainRaw(const QString& rawPath, const QString& prefix, bool isCustomPrefix,
+                         qucs_s::datasetfile::BinaryWriter& out);
+
     enum outType {xyceSTD, spiceRaw, spiceRawSwp, xyceSTDswp, spicePrn, Unknown};
 
     void normalizeVarsNames(QStringList &var_list, const QString &dataset_prefix, bool isCustom = false);
@@ -137,6 +151,12 @@ public:
     /// Whether that was because the simulator wrote no results (its own
     /// failure, told in its log - not a dataset Qucs-S could not write).
     bool wroteNoResults() const { return a_wroteNoResults; }
+    void setDatasetFormat(DatasetFormat format) { a_datasetFormat = format; }
+    /// Whether the dataset of the simulator's outputs there are now is
+    /// written binary (datasetfile.h): as setDatasetFormat() says, or the
+    /// settings - text for a schematic that runs an Octave script after
+    /// the simulation, which reads it.
+    bool writesBinaryDataset() const;
     QString getOutput();
     /// The Scratch folder the netlist and the simulator's output files are in.
     QString workdir() const { return a_workdir; }

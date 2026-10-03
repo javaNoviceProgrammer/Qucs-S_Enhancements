@@ -30,6 +30,7 @@
 #include <QComboBox>
 #include <QMenu>
 #include <QMessageBox>
+#include <QSaveFile>
 #include <QFileDialog>
 #include <QStatusBar>
 #include <QShortcut>
@@ -53,6 +54,7 @@
 
 #include "main.h"
 #include "qucs.h"
+#include "datasetfile.h"
 #include "systemopen.h"
 #include "workspace.h"
 #include "ink.h"
@@ -1564,6 +1566,9 @@ void QucsApp::initCursorMenu()
   // A Verilog-A file: OpenVAF on it (on the .va files selected with it).
   APPEND_MENU(ActionCMenuCompileVerilogA, slotCMenuCompileVerilogA, "Compile")
   ActionCMenuCompileVerilogA->setStatusTip(tr("Compile the Verilog-A file with OpenVAF"));
+  // A binary dataset (a large run's): written out as text.
+  APPEND_MENU(ActionCMenuSaveAsText, slotCMenuSaveAsText, "Save as Text…")
+  ActionCMenuSaveAsText->setStatusTip(tr("Writes the binary dataset out as text, a Qucs dataset other programs read"));
   APPEND_MENU(ActionCMenuCopy, slotCMenuCopy, "Duplicate")
   APPEND_MENU(ActionCMenuRename, slotCMenuRename, "Rename")
   APPEND_MENU(ActionCMenuDelete, slotCMenuDelete, "Delete")
@@ -1669,6 +1674,10 @@ void QucsApp::slotShowContentMenu(const QPoint& pos)
                                           ? tr("Compile %1 Files").arg(a_contentMenuVaFiles.size())
                                           : tr("Compile"));
 
+    const QString clickedPath = project.filePath(clicked);
+    a_contentMenuDataset = !multipleSelected && qucs_s::datasetfile::isBinary(clickedPath) ? clickedPath : QString();
+    ActionCMenuSaveAsText->setVisible(!a_contentMenuDataset.isEmpty());
+
     // Disable Duplicate and Rename when multiple files are selected
     ActionCMenuCopy->setEnabled(!multipleSelected);
     ActionCMenuRename->setEnabled(!multipleSelected);
@@ -1704,6 +1713,38 @@ QString QucsApp::fileType (const QString& Ext)
   else if (ProjectView::imageSuffixes().contains(Ext))
     Type = tr("image");
   return Type;
+}
+
+void QucsApp::slotCMenuSaveAsText()
+{
+  if (!a_contentMenuDataset.isEmpty()) saveDatasetAsText(a_contentMenuDataset);
+}
+
+bool QucsApp::saveDatasetAsText(const QString &path, const QString &target)
+{
+  QString to = target;
+  if (to.isEmpty())
+    to = QFileDialog::getSaveFileName(this, tr("Save Dataset as Text"), path + QStringLiteral(".txt"),
+                                      tr("Qucs dataset as text (*.txt *.dat);;All files (*)"));
+  if (to.isEmpty()) return false;
+  const auto fail = [this, &to](const QString &why) {
+    QMessageBox::critical(this, tr("Save Dataset as Text"),
+                          tr("%1 could not be written: %2").arg(QDir::toNativeSeparators(to), why));
+    return false;
+  };
+  if (QFileInfo(to).absoluteFilePath() == QFileInfo(path).absoluteFilePath())
+    return fail(tr("it is the binary dataset itself."));
+  QSaveFile out(to);
+  if (!out.open(QIODevice::WriteOnly)) return fail(out.errorString());
+  QString why;
+  if (!qucs_s::datasetfile::writeText(path, &out, &why)) {
+    out.cancelWriting();
+    return fail(why);
+  }
+  if (!out.commit()) return fail(out.errorString());
+  statusBar()->showMessage(tr("%1 written as text: %2").arg(QFileInfo(path).fileName(), QDir::toNativeSeparators(to)), 5000);
+  slotUpdateTreeview();
+  return true;
 }
 
 void QucsApp::slotCMenuOpen()
@@ -4732,6 +4773,20 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
   // Octave scripts, netlists, SPICE files.
   if (textDocumentSuffixes().contains(extName)) {
     openTextOrSchematicTab(absolutePath);
+    return;
+  }
+
+  // A binary dataset (a large run's): no text to edit - offered as text.
+  if (qucs_s::datasetfile::isBinary(absolutePath)) {
+    QMessageBox box(QMessageBox::Information, tr("Binary Dataset"),
+                    tr("%1 is a binary dataset: the simulator's numbers, every digit, which the diagrams and "
+                       "Claude's tools read. Save it as text - a Qucs dataset - to read it with other programs?")
+                        .arg(Info.fileName()),
+                    QMessageBox::Cancel, this);
+    QPushButton *save = box.addButton(tr("Save as Text…"), QMessageBox::AcceptRole);
+    box.setDefaultButton(save);
+    box.exec();
+    if (box.clickedButton() == save) saveDatasetAsText(absolutePath);
     return;
   }
 

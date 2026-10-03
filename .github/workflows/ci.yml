@@ -113,6 +113,13 @@ jobs:
       - name: Fuzz · mutated simulator output
         run: python3 scripts/ci/fuzz-simout.py build/qucs/tests/simout_harness smoke-out/simulate/work smoke-out/fuzz-simout --count 150 --seed 1 --timeout 120
 
+      # The same into binary datasets (datasetfile.h): a raw file's header
+      # read, its values taken whole when it is a plain one.
+      - name: Fuzz · mutated simulator output into binary datasets
+        env:
+          QUCS_DATASET_FORMAT: binary
+        run: python3 scripts/ci/fuzz-simout.py build/qucs/tests/simout_harness smoke-out/simulate/work smoke-out/fuzz-simout-binary --count 100 --seed 2 --timeout 120
+
       - name: Upload smoke-test logs and renders
         if: always()
         uses: actions/upload-artifact@v4
@@ -123,6 +130,7 @@ jobs:
             smoke-out/**/*.png
             smoke-out/fuzz/findings/**
             smoke-out/fuzz-simout/findings/**
+            smoke-out/fuzz-simout-binary/findings/**
           retention-days: 14
           if-no-files-found: ignore
 

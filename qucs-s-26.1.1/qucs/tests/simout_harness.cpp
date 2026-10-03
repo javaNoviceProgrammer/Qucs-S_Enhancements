@@ -9,6 +9,8 @@
  * spice4qucs.* from <workdir> and writes the Qucs dataset. The files may be
  * damaged in any way; the harness must exit normally (any exit code below
  * 128 and no sanitizer report). Used by scripts/ci/fuzz-simout.py.
+ * QUCS_DATASET_FORMAT=binary (or text) writes the dataset so, whatever its
+ * size (a binary one takes a plain raw file whole, and removes it).
  */
 #include <QApplication>
 #include <QDir>
@@ -69,10 +71,13 @@ int main(int argc, char** argv)
     // Once without the "<simulation>." dataset prefix (the CLI default) and
     // once with it (the GUI setting most examples need), since the prefix
     // is applied by rewriting the variable names the parsers produced.
+    const QByteArray format = qgetenv("QUCS_DATASET_FORMAT");
     for (bool prefix : {false, true}) {
         QucsSettings.alwaysPrefixDataset = prefix;
         Harness kernel(&sch);
         kernel.setWorkdir(workdir);
+        if (format == "binary") kernel.setDatasetFormat(AbstractSpiceKernel::DatasetFormat::Binary);
+        if (format == "text") kernel.setDatasetFormat(AbstractSpiceKernel::DatasetFormat::Text);
         // Netlisting fills in the list of output files the parsers will
         // look for; the netlist itself is not needed.
         kernel.SaveNetlist(QDir(workdir).filePath("harness.cir"), false);

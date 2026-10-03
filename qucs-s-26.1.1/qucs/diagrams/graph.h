@@ -82,6 +82,10 @@ struct Axis;
  *
  * also stores markers.
  */
+namespace qucs_s::datasetfile {
+class BinaryReader;
+}
+
 class Graph : public Element {
 public:
   Graph(const Diagram*, const QString& _Line="");
@@ -129,6 +133,9 @@ public:
 
   int loadDatFile(const QString& filename);
   int loadIndepVarData(const QString&, char* datfilecontent, DataX* where);
+  // The same of a binary dataset (datasetfile.h), from its blocks.
+  int loadBinaryDatFile(const QString& path, QString variable, bool hasExplIndep, const QString& explIndep);
+  int loadIndepVarData(const QString&, const qucs_s::datasetfile::BinaryReader& data, DataX* where);
 
   void    paint(QPainter* painter);
   void    paintLines(QPainter* painter);
