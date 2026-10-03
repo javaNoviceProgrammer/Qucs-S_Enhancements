@@ -17,6 +17,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMimeData>
+#include <QGuiApplication>
+#include <QMenuBar>
+#include <QClipboard>
 #include <QPainter>
 #include <QProcess>
 #include <QRegularExpression>
@@ -37,6 +40,13 @@
 #include "graphicsexport.h"
 #include "exportdevices.h"
 #include "components/component.h"
+#include "diagrams/diagram.h"
+#include "diagrams/marker.h"
+#include "qucs.h"
+#include "wire.h"
+#include "node.h"
+#include "mouseactions.h"
+#include "wirelabel.h"
 #include "dialogs/exportdialog.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -71,6 +81,36 @@ QString fixture()
            "  <Text 100 260 14 #008000 0 \"Gain & loss: 50% #1\">\n"
            "  <Text 700 100 12 #000000 90 \"Rotated\">\n"
            "</Paintings>\n";
+}
+
+// A circuit (a resistor, ground, wires, a wire's label, a text beside it)
+// and, well apart from it, what is not the circuit: a transient and an AC
+// simulation, an equation, a substrate, and a diagram.
+QString mixedFixture(bool withCircuit = true)
+{
+    QString s = "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n<Components>\n";
+    if (withCircuit)
+        s += "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+             "  <GND * 1 300 200 0 0 0 0>\n";
+    s += "  <.TR TR1 1 1200 100 0 75 0 0 \"lin\" 1 \"0\" 1 \"1 us\" 1 \"201\" 0 \"Trapezoidal\" 0 \"2\" 0 \"1 ns\" 0 "
+         "\"1e-16\" 0 \"150\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"26.85\" 0 \"1e-3\" 0 \"1e-6\" 0 \"1\" 0 \"CroutLU\" 0 "
+         "\"no\" 0 \"yes\" 0 \"0\" 0>\n"
+         "  <.AC AC1 1 1400 100 0 45 0 0 \"lin\" 1 \"1 MHz\" 1 \"16 MHz\" 1 \"101\" 1 \"no\" 0>\n"
+         "  <Eqn Eqn1 1 1200 300 -31 17 0 0 \"Gain_dB=dB(out.v/in.v)\" 1 \"yes\" 0>\n"
+         "  <SUBST Subst1 1 1400 300 -30 24 0 0 \"9.8\" 1 \"1 mm\" 1 \"35 um\" 1 \"1e-3\" 1 \"0.022e-6\" 1 \"0.15e-6\" 1>\n"
+         "</Components>\n<Wires>\n";
+    if (withCircuit)
+        s += "  <100 100 220 100 \"in\" 120 70 0 \"\">\n"
+             "  <280 100 300 100 \"\" 0 0 0 \"\">\n"
+             "  <300 100 300 200 \"\" 0 0 0 \"\">\n"
+             "  <300 200 300 200 \"gndnet\" 360 240 0 \"\">\n";   // a node's label
+    s += "</Wires>\n<Diagrams>\n"
+         "  <Rect 1200 700 240 160 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 \"\" \"\" \"\">\n"
+         "\t<\"ngspice/tran.v(out)\" #0000ff 1 3 0 0 0>\n\t  <Mkr 0.5 1300 640 3 0 0>\n  </Rect>\n"
+         "</Diagrams>\n<Paintings>\n";
+    if (withCircuit) s += "  <Text 100 260 14 #008000 0 \"Divider\">\n";
+    s += "</Paintings>\n";
+    return s;
 }
 
 // The box of what is drawn: pixels neither white nor transparent.
@@ -616,6 +656,186 @@ private slots:
         QVERIFY(data->data("image/svg+xml").startsWith("<?xml"));
         QVERIFY(!data->data("image/svg+xml").contains("<text"));
         QVERIFY(data->data("application/pdf").startsWith("%PDF-"));
+    }
+
+    // ---- the circuit alone -----------------------------------------
+
+    // The parts of a circuit, and what is a block of the netlist alone.
+    void whatIsACircuitPart()
+    {
+        QFile file(path("mixed.sch"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(mixedFixture().toUtf8());
+        file.close();
+        Schematic mixed(nullptr, path("mixed.sch"));
+        QVERIFY(mixed.load());
+        QStringList parts, blocks;
+        for (Component* c : *mixed.a_Components) (isCircuitPart(c) ? parts : blocks) << c->Model;
+        parts.sort();
+        blocks.sort();
+        QCOMPARE(parts, (QStringList{"GND", "R"}));
+        QCOMPARE(blocks, (QStringList{".AC", ".TR", "Eqn", "SUBST"}));
+        QVERIFY(!isCircuitPart(nullptr));
+        // A simulation or an equation is none even with a pin (as a block of
+        // the netlist one day might have).
+        for (Component* c : *mixed.a_Components) {
+            if (c->Model != QLatin1String(".TR") && c->Model != QLatin1String("Eqn")) continue;
+            c->Ports.append(new Port(0, 0));
+            QVERIFY2(!isCircuitPart(c), qPrintable(c->Model));
+            delete c->Ports.takeLast();
+        }
+    }
+
+    // While the circuit is the selection: its area, its picture - the
+    // simulations, the equation, the substrate and the diagram left out -
+    // and the selection there was back after.
+    void theCircuitAloneIsDrawn()
+    {
+        QFile file(path("mixed.sch"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(mixedFixture().toUtf8());
+        file.close();
+        Schematic mixed(nullptr, path("mixed.sch"));
+        QVERIFY(mixed.load());
+        Component* tr = nullptr;
+        Component* r = nullptr;
+        for (Component* c : *mixed.a_Components) {
+            if (c->Name == QLatin1String("TR1")) tr = c;
+            if (c->Name == QLatin1String("R1")) r = c;
+        }
+        QVERIFY(tr != nullptr && r != nullptr && !mixed.a_Diagrams->empty());
+        Diagram* diagram = mixed.a_Diagrams->front();
+        QVERIFY(!diagram->Graphs.isEmpty() && !diagram->Graphs.first()->Markers.isEmpty());
+        Marker* marker = diagram->Graphs.first()->Markers.first();
+        // The selection the user has: the diagram, its marker, the transient.
+        diagram->isSelected = true;
+        marker->isSelected = true;
+        tr->isSelected = true;
+        const QRect everything = area(&mixed, false);
+        Options options;
+        options.selectionOnly = true;
+        options.scale = 1.0;
+        QRect circuitArea;
+        QByteArray svgText;
+        QImage picture;
+        {
+            const CircuitAsSelection circuit(&mixed);
+            QVERIFY(!circuit.empty());
+            QVERIFY(r->isSelected && !tr->isSelected && !diagram->isSelected && !marker->isSelected);
+            // What is selected: the circuit's parts, its 3 wires, the labels
+            // of a wire and of a node, its text.
+            const Schematic::Selection s = mixed.currentSelection();
+            QCOMPARE(int(s.components.size()), 2);
+            QCOMPARE(int(s.wires.size()), 3);   // (the node's label is a wire of no length when saved)
+            QCOMPARE(int(s.labels.size()), 2);
+            QCOMPARE(int(s.paintings.size()), 1);
+            QVERIFY(s.diagrams.empty() && s.markers.empty());
+            circuitArea = area(&mixed, true);
+            options.textAsOutlines = false;
+            svgText = svg(&mixed, options);
+            picture = image(&mixed, options);
+        }
+        // The circuit's area: the resistor, the wires, the text - not the
+        // blocks and the diagram, from x 1200 on.
+        QVERIFY(circuitArea.contains(r->boundingRect()));
+        QVERIFY(circuitArea.contains(QRect(100, 100, 200, 100)));
+        WireLabel* label = nullptr;   // the wire's "in"
+        for (auto* w : *mixed.a_Wires)
+            if (w->label() != nullptr) label = w->label();
+        QVERIFY(label != nullptr);
+        QVERIFY2(circuitArea.contains(label->boundingRect()), qPrintable(describe(label->boundingRect())));
+        WireLabel* nodeLabel = nullptr;   // the node's "gndnet", beyond the rest
+        for (auto* n : *mixed.a_Nodes)
+            if (n->label() != nullptr) nodeLabel = n->label();
+        QVERIFY(nodeLabel != nullptr);
+        QVERIFY2(circuitArea.contains(nodeLabel->boundingRect()), qPrintable(describe(nodeLabel->boundingRect())));
+        QVERIFY(svgText.contains("gndnet"));
+        QVERIFY2(circuitArea.right() < 1100, qPrintable(describe(circuitArea)));
+        QVERIFY(everything.right() > 1300);
+        QCOMPARE(picture.size(), circuitArea.size());
+        QVERIFY(!inkBox(picture).isEmpty());
+        QVERIFY2(svgText.contains("R1") && svgText.contains("Divider"), svgText.left(400).constData());
+        for (const char* left : {"TR1", "AC1", "Gain_dB", "Subst1"}) QVERIFY2(!svgText.contains(left), left);
+        // The selection as it was.
+        QVERIFY(diagram->isSelected && tr->isSelected && marker->isSelected);
+        QVERIFY(!r->isSelected);
+        for (auto* w : *mixed.a_Wires) QVERIFY(!w->isSelected);
+        for (auto* p : *mixed.a_Paintings) QVERIFY(!p->isSelected);
+        diagram->isSelected = tr->isSelected = marker->isSelected = false;
+
+        // Nothing but blocks and a diagram: no circuit.
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(mixedFixture(false).toUtf8());
+        file.close();
+        Schematic blocks(nullptr, path("mixed.sch"));
+        QVERIFY(blocks.load());
+        const CircuitAsSelection none(&blocks);
+        QVERIFY(none.empty());
+        QVERIFY(area(&blocks, true).isEmpty());
+
+        // For a look at it: QUCS_TEST_GRAB=<dir> saves an example's whole
+        // drawing and its circuit alone.
+        const QString grabDir = qEnvironmentVariable("QUCS_TEST_GRAB");
+        if (!grabDir.isEmpty()) {
+            Schematic example(nullptr, QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"));
+            QVERIFY(example.load());
+            Options whole;
+            whole.scale = 1.0;
+            QVERIFY(image(&example, whole).save(grabDir + "/copy-as-image.png"));
+            const CircuitAsSelection circuit(&example);
+            Options alone = whole;
+            alone.selectionOnly = true;
+            QVERIFY(image(&example, alone).save(grabDir + "/copy-schematic-as-image.png"));
+        }
+    }
+
+    // Edit > Copy Schematic as Image (and the canvas's menu): that picture
+    // on the clipboard, whatever is selected, the selection kept.
+    void theWindowCopiesTheCircuit()
+    {
+        QFile file(path("window.sch"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(mixedFixture().toUtf8());
+        file.close();
+        QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
+        QucsApp app(false);
+        QucsMain = &app;
+        QVERIFY(app.gotoPage(path("window.sch"), false, false));
+        Schematic* sch = app.currentSchematic();
+        QVERIFY(sch != nullptr);
+        Diagram* diagram = sch->a_Diagrams->front();
+        diagram->isSelected = true;
+        QSize expected;
+        {
+            const CircuitAsSelection circuit(sch);
+            Options options;
+            options.selectionOnly = true;
+            options.scale = 2.0;
+            expected = pixelSize(sch, options);
+        }
+        QGuiApplication::clipboard()->clear();
+        app.editCopySchematicImage->trigger();
+        const QMimeData* data = QGuiApplication::clipboard()->mimeData();
+        QVERIFY(data != nullptr && data->hasImage());
+        QCOMPARE(qvariant_cast<QImage>(data->imageData()).size(), expected);
+        QVERIFY(data->data("application/pdf").startsWith("%PDF-"));
+        QVERIFY(diagram->isSelected);   // the selection kept
+        bool inEditMenu = false;
+        for (QAction* a : app.menuBar()->actions())
+            if (a->menu() != nullptr && a->menu()->actions().contains(app.editCopySchematicImage)) inEditMenu = true;
+        QVERIFY(inEditMenu);
+        // The canvas's menu, after Copy as Image: on the empty canvas and on
+        // a part. (The menu as a right click fills it.)
+        for (const QPoint at : {QPoint(700, 500), QPoint(250, 100)}) {
+            app.view->fillContextMenu(sch, at.x(), at.y());
+            const QList<QAction*> menu = app.view->ComponentMenu->actions();
+            const qsizetype copyImage = menu.indexOf(app.editCopyImage);
+            QVERIFY(copyImage >= 0);
+            QCOMPARE(menu.value(copyImage + 1), app.editCopySchematicImage);
+        }
+        sch->setDocChanged(false);
+        QVERIFY(app.closeAllFiles());
+        QucsMain = nullptr;
     }
 
     // ---- the dialog --------------------------------------------------
