@@ -6,7 +6,10 @@
  */
 #include <QtTest>
 #include <QTemporaryDir>
+#include <QAbstractButton>
 #include <QAction>
+#include <QDockWidget>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPointer>
 #include <QMenu>
@@ -14,6 +17,9 @@
 #include <QSplitter>
 #include <QStandardPaths>
 #include <QTabBar>
+#include <QTimer>
+#include <QToolBar>
+#include <QToolButton>
 
 #include "config.h"
 #include "qucs.h"
@@ -48,6 +54,55 @@ QMenu* menuTitled(QMainWindow* window, const QString& top, const QString& title)
             if (sub->menu() != nullptr && sub->menu()->title() == title) return sub->menu();
     }
     return nullptr;
+}
+
+// The panels docked in the window and shown.
+QList<QDockWidget*> dockedAndShown(QMainWindow* window)
+{
+    QList<QDockWidget*> out;
+    for (QDockWidget* dock : window->findChildren<QDockWidget*>())
+        if (window->dockWidgetArea(dock) != Qt::NoDockWidgetArea && !dock->isFloating() && !dock->isHidden())
+            out << dock;
+    return out;
+}
+
+// Sizes the same but for a pixel or two (a layout's rounding).
+bool nearly(const QList<int>& a, const QList<int>& b)
+{
+    if (a.size() != b.size()) return false;
+    for (int i = 0; i < a.size(); ++i)
+        if (qAbs(a.at(i) - b.at(i)) > 2) return false;
+    return true;
+}
+
+// Waits until the panels' sizes hold still (a panel lays out its contents
+// a moment after it is shown; slower under the sanitizers).
+void settle(QMainWindow* window)
+{
+    auto sizes = [window] {
+        QList<QSize> out;
+        for (QDockWidget* dock : window->findChildren<QDockWidget*>()) out << dock->size();
+        return out;
+    };
+    window->layout()->invalidate();   // (its contents' minimum grew meanwhile)
+    window->layout()->activate();
+    QList<QSize> last = sizes();
+    for (int i = 0; i < 40; ++i) {
+        QTest::qWait(100);
+        const QList<QSize> now = sizes();
+        if (now == last) return;
+        last = now;
+    }
+}
+
+QString sizesOf(const QList<int>& a, const QList<int>& b)
+{
+    auto text = [](const QList<int>& l) {
+        QStringList t;
+        for (int v : l) t << QString::number(v);
+        return t.join(',');
+    };
+    return text(a) + " vs " + text(b);
 }
 } // namespace
 
@@ -205,6 +260,36 @@ private slots:
         QVERIFY(app.closeAllFiles());
     }
 
+    // As above, in a window with the focus in the document, closed by its
+    // tab's button. The focus moved to the other pane's document as the
+    // tab went, made that pane the active one, and the close then looked
+    // there for a pane left empty: the empty one stayed, with no tab.
+    void aPaneGoesWithItsLastDocumentHavingTheFocus()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        app.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&app));
+        ContextMenuTabWidget* left = app.activePane();
+        QVERIFY(app.gotoPage(schA, false, false));
+        app.slotSplitPaneRight();
+        ContextMenuTabWidget* right = app.activePane();
+        QVERIFY(app.gotoPage(schB, false, false));
+        left->currentWidget()->setFocus();
+        QTRY_COMPARE(app.activePane(), left);
+        QAbstractButton* close = nullptr;
+        for (auto side : {QTabBar::LeftSide, QTabBar::RightSide})
+            if (auto* b = qobject_cast<QAbstractButton*>(left->tabBar()->tabButton(0, side))) close = b;
+        QVERIFY(close != nullptr);
+        QTest::mouseClick(close, Qt::LeftButton);
+        QCOMPARE(app.panes().size(), 1);
+        QCOMPARE(app.activePane(), right);
+        QCOMPARE(tabTitles(right), QStringList{"b.sch"});
+        QVERIFY(app.closeAllFiles());
+    }
+
     void aDocumentMovesToTheNextPane()
     {
         QucsApp app(false);
@@ -343,7 +428,7 @@ private slots:
         for (QAction* a : panes->actions())
             if (!a->isSeparator()) texts << a->text();
         QCOMPARE(texts, (QStringList{"Split &Right", "Split &Down", "&Close Pane",
-                                     "&Move Document to Next Pane", "&Next Pane"}));
+                                     "&Move Document to Next Pane", "&Next Pane", "Ma&ximize Document"}));
         QAction* closePane = panes->actions().at(2);
         QAction* splitRight = panes->actions().at(0);
         QVERIFY(!closePane->isEnabled());                // one pane
@@ -355,6 +440,265 @@ private slots:
         closePane->trigger();
         QCOMPARE(app.panes().size(), 1);
         QVERIFY(!closePane->isEnabled());
+        QVERIFY(app.closeAllFiles());
+    }
+
+    // A double-click on a tab: its pane fills the window, the other panes
+    // and the docked panels hidden, the toolbars and the status bar left;
+    // a second one puts it all back, the panes at their sizes, the panels
+    // where they were, the one in front of a tab group in front again.
+    void aDoubleClickedTabFillsTheWindow()
+    {
+        QTest::failOnWarning(QRegularExpression("Invariant violated"));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1200, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        ContextMenuTabWidget* left = app.activePane();
+        QVERIFY(app.gotoPage(schA, false, false));
+        app.slotSplitPaneRight();
+        ContextMenuTabWidget* right = app.activePane();
+        QVERIFY(app.gotoPage(schB, false, false));
+        app.slotSplitPaneDown();
+        ContextMenuTabWidget* below = app.activePane();
+        QVERIFY(app.gotoPage(schC, false, false));
+        auto* area = qobject_cast<QSplitter*>(app.centralWidget());
+        auto* top = qobject_cast<QSplitter*>(area->widget(0));
+        QVERIFY(area != nullptr && top != nullptr);
+        area->setSizes({420, 180});
+        top->setSizes({300, 500});
+        // Panels on three sides; two of them in one tab group, the second
+        // in front. (On the right one of fixed contents: the Claude Code
+        // panel's grows as it learns of the project's git, which can come
+        // while the document is maximized.)
+        app.terminalDockWidget()->show();
+        app.pythonDockWidget()->show();
+        app.tabifyDockWidget(app.terminalDockWidget(), app.pythonDockWidget());
+        app.pythonDockWidget()->raise();
+        app.claudeDockWidget()->hide();
+        auto* side = new QDockWidget("Side Panel", &app);
+        side->setObjectName("SidePanel");
+        side->setWidget(new QLabel("fixed", side));
+        app.addDockWidget(Qt::RightDockWidgetArea, side);
+        side->show();
+        settle(&app);
+        const QList<QDockWidget*> shown = dockedAndShown(&app);
+        QVERIFY2(shown.size() >= 4, qPrintable(QString::number(shown.size())));
+        QHash<QDockWidget*, QSize> dockSizes;
+        for (QDockWidget* dock : shown) dockSizes[dock] = dock->size();
+        QList<QToolBar*> bars;
+        for (QToolBar* bar : app.toolbars())
+            if (!bar->isHidden()) bars << bar;
+        QVERIFY(!bars.isEmpty());
+        const QList<int> rows = area->sizes(), columns = top->sizes();
+        const int widthBefore = right->width();
+        QVERIFY(!app.isDocumentMaximized());
+        QVERIFY(!app.maximizeDocumentAction()->isChecked());
+
+        QTest::mouseDClick(right->tabBar(), Qt::LeftButton, Qt::NoModifier, right->tabBar()->tabRect(0).center());
+        QVERIFY(app.isDocumentMaximized());
+        QCOMPARE(app.activePane(), right);
+        QVERIFY(app.maximizeDocumentAction()->isChecked());
+        QVERIFY(dockedAndShown(&app).isEmpty());
+        QVERIFY(!left->isVisibleTo(&app));
+        QVERIFY(!below->isVisibleTo(&app));
+        QVERIFY(right->isVisibleTo(&app));
+        for (QToolBar* bar : bars) QVERIFY2(!bar->isHidden(), qPrintable(bar->windowTitle()));
+        QVERIFY(!app.statusBar()->isHidden());
+        QVERIFY(!app.menuBar()->isHidden());
+        // It fills the window, and the way back is in sight.
+        QTRY_VERIFY(right->width() > widthBefore + 300);
+        QTRY_VERIFY(right->width() >= app.centralWidget()->width() - 4);
+        auto* button = qobject_cast<QToolButton*>(right->cornerWidget(Qt::TopRightCorner));
+        QVERIFY(button != nullptr);
+        QCOMPARE(button->objectName(), QStringLiteral("restorePanels"));
+        QVERIFY(button->isVisibleTo(&app));
+        QVERIFY2(button->toolTip().contains(app.maximizeDocumentAction()->shortcut().toString(QKeySequence::NativeText)),
+                 qPrintable(button->toolTip()));
+        QVERIFY(app.statusBar()->currentMessage().contains("Restore Panels"));
+        // For a look at it: QUCS_TEST_GRAB=<dir>.
+        const QString grabDir = qEnvironmentVariable("QUCS_TEST_GRAB");
+        if (!grabDir.isEmpty()) {
+            QTest::qWait(150);
+            app.grab().save(grabDir + "/document-maximized.png");
+        }
+        // Another tab of the pane in front: still maximized.
+        QVERIFY(app.gotoPage(textD, false, false));
+        QCOMPARE(app.paneOf(QucsApp::documentWidget(app.findDoc(textD))), right);
+        QVERIFY(app.isDocumentMaximized());
+
+        QTest::mouseDClick(right->tabBar(), Qt::LeftButton, Qt::NoModifier, right->tabBar()->tabRect(0).center());
+        QVERIFY(!app.isDocumentMaximized());
+        QVERIFY(!app.maximizeDocumentAction()->isChecked());
+        QCOMPARE(app.activePane(), right);
+        QTRY_VERIFY(right->cornerWidget(Qt::TopRightCorner) == nullptr);
+        QVERIFY(left->isVisibleTo(&app) && below->isVisibleTo(&app) && right->isVisibleTo(&app));
+        QCOMPARE(dockedAndShown(&app).size(), shown.size());
+        for (QDockWidget* dock : shown) QVERIFY2(!dock->isHidden(), qPrintable(dock->windowTitle()));
+        QTRY_VERIFY2(nearly(area->sizes(), rows), qPrintable(sizesOf(area->sizes(), rows)));
+        QTRY_VERIFY2(nearly(top->sizes(), columns), qPrintable(sizesOf(top->sizes(), columns)));
+        for (QDockWidget* dock : shown)
+            QTRY_VERIFY2(nearly({dock->width(), dock->height()}, {dockSizes[dock].width(), dockSizes[dock].height()}),
+                         qPrintable(dock->windowTitle() + ": " + sizesOf({dock->width(), dock->height()},
+                                                                         {dockSizes[dock].width(), dockSizes[dock].height()})));
+        // The tab group as it was: Python in front.
+        QTRY_VERIFY(!app.pythonDockWidget()->visibleRegion().isEmpty());
+        QVERIFY(app.terminalDockWidget()->visibleRegion().isEmpty());
+        if (!grabDir.isEmpty()) {
+            QTest::qWait(150);
+            app.grab().save(grabDir + "/document-restored.png");
+        }
+        QVERIFY(app.closeAllFiles());
+    }
+
+    // View > Panes > Maximize Document, and the button in the pane's corner;
+    // a panel that came up in the meantime (as a simulation's console does)
+    // stays when the others come back, and a toolbar hidden then stays hidden.
+    void theMenuAndTheButtonTurnItOnAndOff()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1100, 760);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(schA, false, false));
+        auto* mainDock = app.findChild<QDockWidget*>(QStringLiteral("MainDock"));
+        QVERIFY(mainDock != nullptr);
+        mainDock->show();
+        // The terminal in a tab group with the Python shell, which is in
+        // front; the terminal hidden.
+        app.pythonDockWidget()->show();
+        app.terminalDockWidget()->show();
+        app.tabifyDockWidget(app.pythonDockWidget(), app.terminalDockWidget());
+        app.terminalDockWidget()->hide();
+        app.pythonDockWidget()->raise();
+        QMenu* panes = menuTitled(&app, "&View", "&Panes");
+        QVERIFY(panes != nullptr && panes->actions().contains(app.maximizeDocumentAction()));
+
+        app.maximizeDocumentAction()->trigger();
+        QVERIFY(app.isDocumentMaximized());
+        QVERIFY(mainDock->isHidden());
+        app.terminalDockWidget()->show();             // came up in the meantime
+        QToolBar* bar = app.toolbars().constFirst();
+        QVERIFY(!bar->isHidden());
+        bar->hide();
+        auto* button = qobject_cast<QToolButton*>(app.activePane()->cornerWidget(Qt::TopRightCorner));
+        QVERIFY(button != nullptr);
+        QTest::mouseClick(button, Qt::LeftButton);
+        QVERIFY(!app.isDocumentMaximized());
+        QVERIFY(!mainDock->isHidden());
+        QVERIFY(!app.terminalDockWidget()->isHidden());
+        QVERIFY(!app.pythonDockWidget()->isHidden());
+        // The terminal, which came up last, in front of its group.
+        QTRY_VERIFY(!app.terminalDockWidget()->visibleRegion().isEmpty());
+        QVERIFY(app.pythonDockWidget()->visibleRegion().isEmpty());
+        QVERIFY(bar->isHidden());
+        bar->show();
+
+        // The menu's action turns it off too, and a call does nothing more
+        // a second time.
+        app.maximizeDocumentAction()->trigger();
+        app.setDocumentMaximized(true);
+        QVERIFY(app.isDocumentMaximized());
+        QVERIFY(mainDock->isHidden() && app.terminalDockWidget()->isHidden() && app.pythonDockWidget()->isHidden());
+        app.maximizeDocumentAction()->trigger();
+        QVERIFY(!app.isDocumentMaximized());
+        app.setDocumentMaximized(false);
+        QVERIFY(!mainDock->isHidden() && !app.terminalDockWidget()->isHidden());
+
+        // In the tab's menu, checked while maximized.
+        app.setDocumentMaximized(true);
+        QStringList texts;
+        bool checked = false;
+        QTimer::singleShot(0, this, [&] {
+            if (auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget())) {
+                for (QAction* a : menu->actions())
+                    if (!a->isSeparator()) texts << a->text();
+                checked = menu->actions().contains(app.maximizeDocumentAction()) && app.maximizeDocumentAction()->isChecked();
+                menu->close();
+            }
+        });
+        app.activePane()->showContextMenu(app.activePane()->tabBar()->tabRect(0).center());
+        QVERIFY2(texts.contains("Ma&ximize Document"), qPrintable(texts.join(" | ")));
+        QVERIFY(checked);
+        app.setDocumentMaximized(false);
+        QVERIFY(app.closeAllFiles());
+    }
+
+    // What changes the panes shows them all again first: a split, a pane
+    // closed, a document moved, a hidden pane made the active one (a
+    // document in it brought to the front). So does closing the maximized
+    // pane's last document, which would leave nothing in it.
+    void paneChangesBringTheLayoutBack()
+    {
+        // (A document opened in a pane just shown again fitted itself to
+        // no size: renderModel()'s checks said so.)
+        QTest::failOnWarning(QRegularExpression("Invariant violated"));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1100, 760);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        ContextMenuTabWidget* left = app.activePane();
+        QVERIFY(app.gotoPage(schA, false, false));
+        app.slotSplitPaneRight();
+        ContextMenuTabWidget* right = app.activePane();
+        QVERIFY(app.gotoPage(schB, false, false));
+
+        // A split.
+        app.setActivePane(left);
+        app.setDocumentMaximized(true);
+        QVERIFY(!right->isVisibleTo(&app));
+        app.slotSplitPaneDown();
+        QVERIFY(!app.isDocumentMaximized());
+        QCOMPARE(app.panes().size(), 3);
+        for (ContextMenuTabWidget* pane : app.panes()) QVERIFY(pane->isVisibleTo(&app));
+        // A pane closed (the new one, its placeholder only).
+        app.setDocumentMaximized(true);
+        app.slotClosePane();
+        QVERIFY(!app.isDocumentMaximized());
+        QCOMPARE(app.panes().size(), 2);
+        QVERIFY(left->isVisibleTo(&app) && right->isVisibleTo(&app));
+        // A document in a hidden pane brought to the front.
+        app.setActivePane(left);
+        app.setDocumentMaximized(true);
+        app.showDocument(QucsApp::documentWidget(app.findDoc(schB)));
+        QVERIFY(!app.isDocumentMaximized());
+        QCOMPARE(app.activePane(), right);
+        QVERIFY(left->isVisibleTo(&app));
+        // A document moved to the next pane.
+        app.setActivePane(left);
+        QVERIFY(left->width() > 100 && left->height() > 100);   // sized at once
+        QVERIFY(app.gotoPage(schC, false, false));
+        app.setDocumentMaximized(true);
+        app.slotMoveDocumentToNextPane();
+        QVERIFY(!app.isDocumentMaximized());
+        QCOMPARE(app.paneOf(QucsApp::documentWidget(app.findDoc(schC))), right);
+        QVERIFY(left->isVisibleTo(&app) && right->isVisibleTo(&app));
+        // The maximized pane's last document closed: the pane goes, and the
+        // other comes back.
+        app.setActivePane(left);
+        QCOMPARE(left->count(), 1);
+        app.setDocumentMaximized(true);
+        app.slotFileClose(0);
+        QVERIFY(!app.isDocumentMaximized());
+        QCOMPARE(app.panes().size(), 1);
+        QVERIFY(right->isVisibleTo(&app));
+        QVERIFY(QPointer<ContextMenuTabWidget>(right)->cornerWidget(Qt::TopRightCorner) == nullptr);
+        // One pane: its last document closed, an untitled takes its place,
+        // and the panels are back.
+        auto* mainDock = app.findChild<QDockWidget*>(QStringLiteral("MainDock"));
+        mainDock->show();
+        QVERIFY(app.closeAllFiles());
+        QVERIFY(app.gotoPage(schA, false, false));
+        QCOMPARE(app.activePane()->count(), 1);
+        app.setDocumentMaximized(true);
+        QVERIFY(mainDock->isHidden());
+        app.slotFileClose(0);
+        QVERIFY(!app.isDocumentMaximized());
+        QVERIFY(!mainDock->isHidden());
+        QCOMPARE(app.activePane()->count(), 1);
         QVERIFY(app.closeAllFiles());
     }
 

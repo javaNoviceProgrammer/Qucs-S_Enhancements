@@ -17,15 +17,22 @@
 #include "textdoc.h"
 #include "misc.h"
 #include "statusbar.h"
+#include "workspacesession.h"
 
 #include <QApplication>
+#include <QDockWidget>
 #include <QEvent>
 #include <QFrame>
 #include <QLabel>
 #include <QSplitter>
 #include <QTabBar>
 #include <QAbstractButton>
+#include <QScopeGuard>
+#include <QSignalBlocker>
+#include <QStatusBar>
 #include <QStyle>
+#include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 /*!
@@ -93,6 +100,13 @@ ContextMenuTabWidget *QucsApp::createPane()
   // The UI follows the current document - of the active pane.
   connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int) {
     if (tabs == DocumentTab) slotChangeView();
+  });
+  // A double-click on a tab maximizes its pane, or puts the panels back.
+  connect(tabs->tabBar(), &QTabBar::tabBarDoubleClicked, this, [this, tabs](int index) {
+    if (index < 0) return;
+    const bool on = !isDocumentMaximized();
+    setActivePane(tabs);
+    setDocumentMaximized(on);
   });
   // Every tab has a close button; the pane it is in becomes active first,
   // as closeFile() works on the active pane.
@@ -190,6 +204,9 @@ void QucsApp::applySyntaxSettings()
 
 void QucsApp::setActivePane(ContextMenuTabWidget *pane)
 {
+  // A pane hidden by the maximized one is shown again, with the panels
+  // (as a split, a pane closed or a document moved to another do).
+  if (pane != nullptr && isDocumentMaximized() && pane != a_maximizedPane) setDocumentMaximized(false);
   if (pane == nullptr || pane == DocumentTab) return;
   ContextMenuTabWidget *old = DocumentTab;
   DocumentTab = pane;
@@ -467,4 +484,95 @@ void QucsApp::slotNextPane()
   ContextMenuTabWidget *next = all.at((all.indexOf(DocumentTab) + 1) % all.size());
   setActivePane(next);
   if (QWidget *w = next->currentWidget()) w->setFocus();
+}
+
+// ---------------------------------------------------------------------
+bool QucsApp::isDocumentMaximized() const { return a_documentMaximized; }
+
+void QucsApp::setDocumentMaximized(bool on)
+{
+  if (on && (DocumentTab == nullptr || a_paneArea == nullptr)) on = false;
+  const auto check = qScopeGuard([this] {   // View > Panes > Maximize Document
+    if (maximizeDocument == nullptr) return;
+    const QSignalBlocker quiet(maximizeDocument);
+    maximizeDocument->setChecked(a_documentMaximized);
+  });
+  if (on == a_documentMaximized) return;
+  if (on) {
+    a_documentMaximized = true;
+    a_maximizedPane = DocumentTab;
+    // What turning it off puts back (the splitters keep the hidden panes'
+    // sizes themselves; the workspace kept meanwhile takes them from here).
+    a_layoutBeforeMaximized = saveState(qucs_s::session::kWindowStateVersion);
+    a_rowSizesBeforeMaximized = a_paneArea->sizes();
+    a_columnSizesBeforeMaximized.clear();
+    for (int r = 0; r < a_paneArea->count(); ++r) {
+      auto *row = qobject_cast<QSplitter *>(a_paneArea->widget(r));
+      a_columnSizesBeforeMaximized << (row != nullptr ? row->sizes() : QList<int>());
+    }
+    // The docked panels (a floating one is outside the window), the other
+    // panes, and a row without the pane.
+    for (QDockWidget *dock : findChildren<QDockWidget *>())
+      if (dockWidgetArea(dock) != Qt::NoDockWidgetArea && !dock->isFloating() && !dock->isHidden())
+        dock->hide();
+    QSplitter *keep = rowOf(DocumentTab);
+    for (int r = 0; r < a_paneArea->count(); ++r)
+      if (a_paneArea->widget(r) != keep) a_paneArea->widget(r)->hide();
+    for (ContextMenuTabWidget *pane : panes())
+      if (pane != DocumentTab) frameOf(pane)->hide();
+    // The way back, in sight.
+    auto *button = new QToolButton(DocumentTab);
+    button->setObjectName("restorePanels");
+    button->setAutoRaise(true);
+    button->setText(tr("Restore Panels"));
+    const QString keys = maximizeDocument != nullptr
+        ? maximizeDocument->shortcut().toString(QKeySequence::NativeText) : QString();
+    button->setToolTip(keys.isEmpty()
+        ? tr("Shows the panels and the other panes again (or double-click a tab)")
+        : tr("Shows the panels and the other panes again (or double-click a tab, or %1)").arg(keys));
+    connect(button, &QToolButton::clicked, this, [this] { setDocumentMaximized(false); });
+    DocumentTab->setCornerWidget(button, Qt::TopRightCorner);
+    button->show();
+    a_restorePanelsButton = button;
+    if (QWidget *w = DocumentTab->currentWidget()) w->setFocus(Qt::OtherFocusReason);
+    statusBar()->showMessage(tr("The document fills the window: double-click a tab, or Restore Panels, "
+                                "to bring the panels back."), 5000);
+  } else {
+    a_documentMaximized = false;
+    ContextMenuTabWidget *pane = a_maximizedPane;
+    a_maximizedPane = nullptr;
+    if (a_restorePanelsButton != nullptr) {
+      if (pane != nullptr && pane->cornerWidget(Qt::TopRightCorner) == a_restorePanelsButton)
+        pane->setCornerWidget(nullptr, Qt::TopRightCorner);
+      a_restorePanelsButton->hide();
+      a_restorePanelsButton->deleteLater();   // (its click may be what got here)
+    }
+    // The panels as they were; those that came up in the meantime (a
+    // simulation's console, the Problems tab) stay, in front, and a toolbar
+    // shown or hidden in the meantime stays so.
+    QList<QDockWidget *> cameUp;
+    for (QDockWidget *dock : findChildren<QDockWidget *>())
+      if (dockWidgetArea(dock) != Qt::NoDockWidgetArea && !dock->isFloating() && !dock->isHidden())
+        cameUp << dock;
+    QList<QPair<QToolBar *, bool>> bars;
+    for (QToolBar *bar : findChildren<QToolBar *>())
+      if (toolBarArea(bar) != Qt::NoToolBarArea) bars << qMakePair(bar, !bar->isHidden());
+    restoreState(a_layoutBeforeMaximized, qucs_s::session::kWindowStateVersion);
+    for (QDockWidget *dock : cameUp) {
+      dock->show();
+      dock->raise();
+    }
+    for (const auto &[bar, shown] : bars)
+      if (bar->isHidden() == shown) bar->setVisible(shown);
+    // The panes, at their sizes.
+    for (int r = 0; r < a_paneArea->count(); ++r) a_paneArea->widget(r)->show();
+    for (ContextMenuTabWidget *p : panes()) frameOf(p)->show();
+  }
+  // Laid out at once, not at the next event: a hidden pane had no size,
+  // and a document opened in it right after this (by Claude, say) would
+  // fit itself to none.
+  if (layout() != nullptr) layout()->activate();
+  QEvent request(QEvent::LayoutRequest);
+  QCoreApplication::sendEvent(a_paneArea, &request);
+  for (int r = 0; r < a_paneArea->count(); ++r) QCoreApplication::sendEvent(a_paneArea->widget(r), &request);
 }

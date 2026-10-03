@@ -169,6 +169,84 @@ private slots:
         app.closeAllFiles();
     }
 
+    // The window closed with a document maximized (a tab double-clicked):
+    // kept are the panels and the panes' split from before, so the next
+    // window does not open with them all hidden.
+    void aMaximizedDocumentKeepsTheLayoutFromBefore()
+    {
+        Restored restored;
+        QucsApp::setWorkspaceKept(true);
+        QByteArray before;
+        QList<int> columns;
+        {
+            QucsApp app(false);
+            MainGuard main(&app);
+            app.resize(1200, 800);
+            app.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&app));
+            QVERIFY(app.gotoPage(project + "/a.sch", false, false));
+            QVERIFY(QMetaObject::invokeMethod(&app, "slotSplitPaneRight"));
+            QVERIFY(app.gotoPage(project + "/b.sch", false, false));
+            auto* row = qobject_cast<QSplitter*>(qobject_cast<QSplitter*>(app.centralWidget())->widget(0));
+            QVERIFY(row != nullptr);
+            row->setSizes({300, 600});
+            app.findChild<QDockWidget*>(QStringLiteral("MainDock"))->show();
+            app.terminalDockWidget()->show();
+            QTest::qWait(50);
+            columns = row->sizes();
+            before = app.saveState(session::kWindowStateVersion);
+            app.setDocumentMaximized(true);
+            QVERIFY(app.findChild<QDockWidget*>(QStringLiteral("MainDock"))->isHidden());
+            QTRY_COMPARE(row->sizes().value(0), 0);   // laid out: the other pane hidden
+            QCloseEvent close;
+            QApplication::sendEvent(&app, &close);
+            QVERIFY(close.isAccepted());
+        }
+        QCOMPARE(session::savedWindowState(), before);
+        const session::Workspace was = session::saved();
+        QCOMPARE(was.panes.size(), 2);
+        QCOMPARE(was.columnSizes.value(0), columns);
+
+        QucsApp app(false);
+        MainGuard main(&app);
+        app.resize(1200, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.restoreWorkspace().isEmpty());
+        QVERIFY(!app.isDocumentMaximized());
+        QCOMPARE(app.panes().size(), 2);
+        for (ContextMenuTabWidget* pane : app.panes()) QVERIFY(pane->isVisibleTo(&app));
+        QVERIFY(!app.findChild<QDockWidget*>(QStringLiteral("MainDock"))->isHidden());
+        QVERIFY(!app.terminalDockWidget()->isHidden());
+        // A workspace restored while a document is maximized (its panels
+        // only): all shown first, then as kept - the terminal, hidden before
+        // maximizing, as the workspace has it.
+        app.terminalDockWidget()->hide();
+        app.setDocumentMaximized(true);
+        QucsSettings.RestoreProject = QucsSettings.RestoreDocuments = false;
+        app.restoreWorkspace();
+        QucsSettings.RestoreProject = QucsSettings.RestoreDocuments = true;
+        QVERIFY(!app.isDocumentMaximized());
+        QVERIFY(app.activePane()->cornerWidget(Qt::TopRightCorner) == nullptr);
+        QVERIFY(!app.findChild<QDockWidget*>(QStringLiteral("MainDock"))->isHidden());
+        QVERIFY(!app.terminalDockWidget()->isHidden());
+        // Close all but this, maximized: it stays so, the hidden pane gone,
+        // and the sizes kept are the one pane's.
+        app.setDocumentMaximized(true);
+        QVERIFY(app.closeAllFiles(app.activePane()->currentIndex()));
+        QVERIFY(app.isDocumentMaximized());
+        QCOMPARE(app.panes().size(), 1);
+        app.saveWorkspace();
+        const session::Workspace one = session::saved();
+        QCOMPARE(one.columnSizes.size(), 1);
+        QCOMPARE(one.columnSizes.value(0).size(), 1);
+        QVERIFY(one.columnSizes.value(0).value(0) > 0);
+        // Close All: nothing is left to fill the window, the panels are back.
+        QVERIFY(app.closeAllFiles());
+        QVERIFY(!app.isDocumentMaximized());
+        QVERIFY(!app.findChild<QDockWidget*>(QStringLiteral("MainDock"))->isHidden());
+    }
+
     // Each part as the settings say: the project alone; the documents
     // alone; nothing with the whole off - and nothing kept then.
     void theSettingsSayWhatComesBack()
