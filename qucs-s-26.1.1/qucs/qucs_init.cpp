@@ -422,13 +422,13 @@ void QucsApp::initActions() {
          "selected, into the clipboard as a picture: an image, an SVG and a PDF,\n"
          "for another program to paste"));
 
-  editCopySchematicImage = new QAction(tr("Copy Schematic as Image"), this);
-  connect(editCopySchematicImage, &QAction::triggered, this, &QucsApp::slotEditCopySchematicImage);
-  editCopySchematicImage->setStatusTip(
+  editCopyCircuitImage = new QAction(tr("Copy Circuit as Image"), this);
+  connect(editCopyCircuitImage, &QAction::triggered, this, &QucsApp::slotEditCopyCircuitImage);
+  editCopyCircuitImage->setStatusTip(
       tr("Copies the circuit alone into the clipboard as a picture: no diagrams, simulations, equations or other "
          "blocks of the netlist"));
-  editCopySchematicImage->setWhatsThis(
-      tr("Copy Schematic as Image\n\nCopies the circuit into the clipboard as a picture - its parts, wires,\n"
+  editCopyCircuitImage->setWhatsThis(
+      tr("Copy Circuit as Image\n\nCopies the circuit into the clipboard as a picture - its parts, wires,\n"
          "labels and drawings - leaving out the diagrams and the blocks that are only\n"
          "in the netlist (simulations, equations, .PARAM, .OPTIONS, .INCLUDE, models)"));
 
@@ -1092,7 +1092,7 @@ void QucsApp::initMenuBar() {
   editMenu->addAction(editCut);
   editMenu->addAction(editCopy);
   editMenu->addAction(editCopyImage);
-  editMenu->addAction(editCopySchematicImage);
+  editMenu->addAction(editCopyCircuitImage);
   editMenu->addAction(editPaste);
   editMenu->addAction(editDelete);
   editMenu->addSeparator();
@@ -1671,7 +1671,7 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("Edit.CopyImage", "Edit", "Copy as Image", editCopyImage,
                       QKeySequence());
-  mgr.registerCommand("Edit.CopySchematicImage", "Edit", "Copy Schematic as Image", editCopySchematicImage,
+  mgr.registerCommand("Edit.CopyCircuitImage", "Edit", "Copy Circuit as Image", editCopyCircuitImage,
                       QKeySequence());
 
   mgr.registerCommand("Edit.Paste", "Edit", "Paste", editPaste,

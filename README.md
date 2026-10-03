@@ -1771,7 +1771,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Copy to Clipboard* in the dialog, and *Edit → Copy as Image* (also in
   the context menu), put the selection — or everything — on the
   clipboard as an image, an SVG and a PDF, for another program to paste.
-  *Edit → Copy Schematic as Image* (also in the context menu) puts the
+  *Edit → Copy Circuit as Image* (also in the context menu) puts the
   circuit alone there, whatever is selected: its parts, wires, labels and
   drawings, cropped to them — not the diagrams, nor the blocks that are
   only in the netlist (simulations, equations, `.PARAM`, `.OPTIONS`,
