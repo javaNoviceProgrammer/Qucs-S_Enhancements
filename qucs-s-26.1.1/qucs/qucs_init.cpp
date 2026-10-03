@@ -989,6 +989,11 @@ void QucsApp::initActions() {
   nextPaneAction = new QAction(tr("&Next Pane"), this);
   nextPaneAction->setStatusTip(tr("Makes the next pane the active one"));
   connect(nextPaneAction, SIGNAL(triggered()), SLOT(slotNextPane()));
+  maximizeDocument = new QAction(tr("Ma&ximize Document"), this);
+  maximizeDocument->setCheckable(true);
+  maximizeDocument->setStatusTip(tr("Hides the panels and the other panes, so that the document fills the window "
+                                    "(or double-click a tab)"));
+  connect(maximizeDocument, &QAction::toggled, this, &QucsApp::setDocumentMaximized);
   updatePaneActions();
 
   helpIndex = new QAction(tr("Help Index..."), this);
@@ -1247,6 +1252,8 @@ void QucsApp::initMenuBar() {
   panesMenu->addSeparator();
   panesMenu->addAction(moveDocumentToNextPane);
   panesMenu->addAction(nextPaneAction);
+  panesMenu->addSeparator();
+  panesMenu->addAction(maximizeDocument);
 
   // View > Theme: every theme, the one in use checked; a choice is shown
   // at once and kept in the settings (Application Settings > Appearance).
@@ -1925,6 +1932,8 @@ void QucsApp::setDefaultShortcut() {
                       QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Backslash));
   mgr.registerCommand("View.NextPane", "View", "Next Pane", nextPaneAction,
                       QKeySequence(Qt::CTRL | Qt::Key_QuoteLeft));
+  mgr.registerCommand("View.MaximizeDocument", "View", "Maximize Document", maximizeDocument,
+                      QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F12));
 
   //
   // HELP

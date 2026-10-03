@@ -69,7 +69,19 @@ session::Workspace QucsApp::currentWorkspace() const
     w.panes << p;
   }
   w.activePane = std::max<qsizetype>(0, all.indexOf(DocumentTab));
-  if (a_paneArea != nullptr) {
+  // The document maximized, the other panes are hidden: their sizes from
+  // before - unless the panes are others now (Close all but this takes the
+  // hidden ones away).
+  QList<int> columnCounts;
+  if (a_paneArea != nullptr)
+    for (int r = 0; r < a_paneArea->count(); ++r)
+      if (auto *row = qobject_cast<QSplitter *>(a_paneArea->widget(r))) columnCounts << row->count();
+  QList<int> countsBefore;
+  for (const QList<int> &columns : a_columnSizesBeforeMaximized) countsBefore << columns.size();
+  if (isDocumentMaximized() && columnCounts == countsBefore) {
+    w.rowSizes = a_rowSizesBeforeMaximized;
+    w.columnSizes = a_columnSizesBeforeMaximized;
+  } else if (a_paneArea != nullptr) {
     w.rowSizes = a_paneArea->sizes();
     for (int r = 0; r < a_paneArea->count(); ++r)
       if (auto *row = qobject_cast<QSplitter *>(a_paneArea->widget(r))) w.columnSizes << row->sizes();
@@ -84,7 +96,9 @@ void QucsApp::saveWorkspace()
   // (What the tests and the MCP server open is no one's workspace; with
   // the option off, nothing is kept.)
   if (!kept() || !QucsSettings.RestoreWorkspace) return;
-  session::save(currentWorkspace(), saveState(session::kWindowStateVersion));
+  // The document maximized, its panels are kept as they were before.
+  session::save(currentWorkspace(), isDocumentMaximized() ? a_layoutBeforeMaximized
+                                                          : saveState(session::kWindowStateVersion));
 }
 
 int QucsApp::openWorkspaceDocuments(const session::Workspace &workspace, const QSet<QString> &skip,
@@ -175,6 +189,7 @@ int QucsApp::openWorkspaceDocuments(const session::Workspace &workspace, const Q
 
 QStringList QucsApp::restoreWorkspace(bool projectGiven, const QSet<QString> &skip, bool askFirst)
 {
+  setDocumentMaximized(false);   // (the panels and panes are restored as kept)
   QStringList skipped;
   if (!QucsSettings.RestoreWorkspace) return skipped;
   const session::Workspace workspace = session::saved();

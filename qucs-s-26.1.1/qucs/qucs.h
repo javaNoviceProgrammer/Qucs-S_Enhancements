@@ -24,6 +24,7 @@
 #include <QFileSystemModel>
 #include <QHash>
 #include <QMainWindow>
+#include <QPointer>
 #include <QProcess>
 #include <QSortFilterProxyModel>
 #include <QStack>
@@ -69,6 +70,7 @@ class QMouseEvent;
 class QCloseEvent;
 class QMenu;
 class QToolBar;
+class QToolButton;
 class QSettings;
 class QListWidgetItem;
 class QTreeWidget;
@@ -199,6 +201,16 @@ public:
   void activatePaneOf(QWidget *widget);
   /// Puts an open document in front: its pane active, its tab current.
   void showDocument(QWidget *document);
+  /// The document view maximized: the active pane fills the window, the
+  /// other panes and the docked panels hidden; the menus, toolbars and
+  /// status bar stay, as do floating panels (a tab double-clicked, View >
+  /// Panes > Maximize Document). Turned off, the panels come back as they
+  /// were, with any that came up in the meantime (a simulation's console),
+  /// and the panes at their sizes.
+  void setDocumentMaximized(bool on);
+  bool isDocumentMaximized() const;
+  /// View > Panes > Maximize Document, also in a tab's menu.
+  QAction *maximizeDocumentAction() const { return maximizeDocument; }
   /// Gives every open schematic the paper of the settings and the theme
   /// (misc::paperColor()), and the inline text editor with it.
   void applyPaper();
@@ -745,6 +757,15 @@ private:
   QSplitter *rowOf(ContextMenuTabWidget *pane) const;
   PaneWidget *frameOf(ContextMenuTabWidget *pane) const;
   FindReplaceDialog *a_findReplace = nullptr;
+  // While the document view is maximized: its pane, what turning it off
+  // puts back (the docks and toolbars, saveState()), and the panes' sizes
+  // from before for a workspace kept meanwhile.
+  bool a_documentMaximized = false;
+  QPointer<ContextMenuTabWidget> a_maximizedPane;
+  QByteArray a_layoutBeforeMaximized;
+  QList<int> a_rowSizesBeforeMaximized;
+  QList<QList<int>> a_columnSizesBeforeMaximized;
+  QPointer<QToolButton> a_restorePanelsButton;   // in the pane's tab corner
   void updatePaneActions();
   void slotFocusChanged(QWidget *old, QWidget *now);
   int addDocumentTab(QFrame *widget, const QString &title = QString());
@@ -827,7 +848,7 @@ private:
 
   QAction *helpAboutApp, *helpAboutQt, *viewBrowseDock, *viewOctaveDock;
   QAction *splitPaneRight = nullptr, *splitPaneDown = nullptr, *closePaneAction = nullptr,
-          *moveDocumentToNextPane = nullptr, *nextPaneAction = nullptr;
+          *moveDocumentToNextPane = nullptr, *nextPaneAction = nullptr, *maximizeDocument = nullptr;
 
   // menus contain the items of their menubar
   enum { MaxRecentFiles = 8, MaxRecentProjects = 8 };

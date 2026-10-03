@@ -1000,6 +1000,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Next Pane* (Ctrl+`) and *Close Pane* (its documents go to a
   neighbour); a pane whose last document is closed goes by itself. Save
   All, Close All and Find span every pane.
+- **A document filling the window**: double-click a tab, and its pane
+  fills the window: the other panes and the docked panels are hidden,
+  while the menus, toolbars, status bar and floating panels stay.
+  Double-click a tab again, or *Restore Panels* in the tab bar's corner,
+  and they come back as they were, at their sizes; a panel that came up
+  in the meantime (a simulation's console, the Problems tab) stays too.
+  Also *View → Panes → Maximize Document* (Ctrl+Shift+F12) and a tab's
+  context menu. Splitting, moving a document to another pane, or going
+  to a hidden pane brings everything back; so does closing the pane's
+  last document. Quitting while maximized keeps the layout from before.
 - **The workspace as it was, at the next start** (*Application Settings →
   Workspace*): when Qucs-S closes it keeps what is open, and opens it
   again at the next start - the project; the documents, each in the
