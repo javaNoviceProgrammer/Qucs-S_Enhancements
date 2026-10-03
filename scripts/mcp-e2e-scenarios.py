@@ -19,6 +19,8 @@ user's workspace or caches, and a run does not meet the files of the last
 (save_document refused to write over them). The simulator is the first
 ngspice on PATH. s7 copies a project (QUCS_E2E_PROJECT,
 ~/QucsWorkspace/project1_prj by default) and is skipped when there is none.
+QUCS_E2E_DATASET_LIMIT_MB=<n> keeps every run's dataset of more than n MB
+binary (0: every one) - binary datasets end to end.
 """
 import json, subprocess, os, sys, time, math, shutil, glob
 
@@ -39,6 +41,7 @@ def own_library(app):
 SOURCE_LIBRARY = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'qucs-s-26.1.1', 'library')
 LIBRARY = os.environ.get('QUCS_LIBRARY_DIR') or (None if own_library(APP) else SOURCE_LIBRARY)
 PROJECT = os.environ.get('QUCS_E2E_PROJECT', os.path.expanduser('~/QucsWorkspace/project1_prj'))
+DATASET_LIMIT = os.environ.get('QUCS_E2E_DATASET_LIMIT_MB')
 for d in (WS, SETTINGS, HOME):
     os.makedirs(d, exist_ok=True)
 
@@ -53,6 +56,9 @@ class Server:
         self.send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
         st = self.call('get_state', {})
         assert os.path.realpath(st['workspace']) == os.path.realpath(WS), st
+        if DATASET_LIMIT is not None:
+            self.call('set_settings', {'scope': 'simulators', 'values': {'Results/Keep large results binary': True,
+                                                                         'Results/Binary above': int(DATASET_LIMIT)}})
     def send(self, o):
         self.p.stdin.write(json.dumps(o) + '\n'); self.p.stdin.flush()
     def rpc(self, method, params):

@@ -13,6 +13,7 @@
  * traces; a component type described; the netlist.
  */
 #include <QtTest>
+#include <QSaveFile>
 #include <QElapsedTimer>
 #include <QAction>
 #include <QApplication>
@@ -65,6 +66,8 @@
 #include "module.h"
 #include "node.h"
 #include "qucs.h"
+#include "dataset.h"
+#include "datasetfile.h"
 #include "qucscontrol.h"
 #include "schematic.h"
 #include "simulationconsole.h"
@@ -2538,6 +2541,28 @@ private slots:
         QVERIFY2(std::abs(std::abs(largest) - 0.25) < 1e-3, qPrintable(QJsonDocument(other).toJson()));
         QVERIFY(failed(call("get_dataset", {{"path", file}, {"variables", QJsonArray{"v(out)/"}}})));
         QVERIFY(text(call("get_dataset", {{"path", file}, {"variables", QJsonArray{"tran.v(out)"}}, {"compare", "run9"}})).contains("run1"));
+        // The same with the other run binary (a large run's, datasetfile.h),
+        // then this one too: the same answer.
+        const auto toBinary = [](const QString& path) {
+            qucs_s::dataset::Dataset d;
+            if (!d.read(path)) return false;
+            QSaveFile f(path);
+            if (!f.open(QIODevice::WriteOnly)) return false;
+            qucs_s::datasetfile::BinaryWriter w(&f);
+            for (const qucs_s::dataset::Variable& v : d.variables()) {
+                w.begin(v.independent ? QStringLiteral("indep %1 %2").arg(v.name).arg(v.size())
+                                      : QStringLiteral("dep %1 %2").arg(v.name, v.dependencies.join(' ')));
+                for (int i = 0; i < v.size(); ++i) w.real(v.re.at(i));
+                w.end();
+            }
+            return w.finish(nullptr) && f.commit() && qucs_s::datasetfile::isBinary(path);
+        };
+        for (const QString& name : {QStringLiteral("run1.dat.ngspice"), QStringLiteral("amp.dat.ngspice")}) {
+            QVERIFY(toBinary(dir.filePath("workspace/" + name)));
+            const QJsonObject again = call("get_dataset", {{"path", file}, {"variables", QJsonArray{"v(out)-v(in)", "tran.v(out)"}}, {"compare", "run1"}});
+            QVERIFY2(!failed(again), qPrintable(text(again)));
+            QCOMPARE(json(again).toObject().value("variables"), json(r).toObject().value("variables"));
+        }
         // The traps told: equation names beside node names; a text's subscripts.
         QVERIFY(text(call("describe_component_type", {{"type", "NutmegEq"}})).contains("clash"));
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
@@ -5247,6 +5272,15 @@ private slots:
         QVERIFY2(!failed(r) && !QucsSettings.NgspiceMathFuncs, qPrintable(text(r)));
         r = call("set_settings", {{"scope", "simulators"}, {"values", QJsonObject{{mathFuncs, true}}}}, 20000);
         QVERIFY2(!failed(r) && QucsSettings.NgspiceMathFuncs, qPrintable(text(r)));
+        // The Results tab's: large runs kept binary, from a size on.
+        const QString binary = "Results/Keep large results binary", above = "Results/Binary above";
+        QVERIFY2(sims.contains(binary) && sims.value(binary).value("type") == "bool", qPrintable(QStringList(sims.keys()).join(" | ")));
+        QVERIFY2(sims.contains(above) && sims.value(above).value("value").toInt() == 10, qPrintable(QStringList(sims.keys()).join(" | ")));
+        QVERIFY(QucsSettings.DatasetBinary);
+        r = call("set_settings", {{"scope", "simulators"}, {"values", QJsonObject{{above, 25}, {binary, false}}}}, 20000);
+        QVERIFY2(!failed(r) && !QucsSettings.DatasetBinary && QucsSettings.DatasetTextLimitMB == 25, qPrintable(text(r)));
+        r = call("set_settings", {{"scope", "simulators"}, {"values", QJsonObject{{binary, true}, {above, 10}}}}, 20000);
+        QVERIFY2(!failed(r) && QucsSettings.DatasetBinary && QucsSettings.DatasetTextLimitMB == 10, qPrintable(text(r)));
         // A document's own.
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
         r = call("set_settings", {{"scope", "document"}, {"values", QJsonObject{{"Grid/horizontal Grid", "20"}}}}, 20000);

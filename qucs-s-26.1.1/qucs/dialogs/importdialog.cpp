@@ -24,6 +24,9 @@
 #include <QMessageBox>
 #include <QGridLayout>
 #include <QDebug>
+#include <QDir>
+
+#include "datasetfile.h"
 #include <QListView>
 
 #include "importdialog.h"
@@ -43,6 +46,7 @@ ImportDialog::ImportDialog(QWidget *parent)
   QGridLayout *file = new QGridLayout();
   file->addWidget(new QLabel(tr("Input File:")),0, 0);
   ImportEdit = new QLineEdit();
+  ImportEdit->setObjectName("importFile");
   file->addWidget(ImportEdit, 0, 1);
   connect(ImportEdit,SIGNAL(textChanged(QString)),this,SLOT(slotValidateInput()));
   QPushButton *BrowseButt = new QPushButton(tr("Browse"));
@@ -51,6 +55,7 @@ ImportDialog::ImportDialog(QWidget *parent)
 
   file->addWidget(new QLabel(tr("Input Format:")), 1, 0);
   InType = new QComboBox();
+  InType->setObjectName("inputType");
   InType->addItem(tr("SPICE netlist"));
   InType->addItem(tr("VCD dataset"));
   InType->addItem(tr("CSV"));
@@ -65,6 +70,7 @@ ImportDialog::ImportDialog(QWidget *parent)
 
   file->addWidget(new QLabel(tr("Output File:")), 2, 0);
   OutputEdit = new QLineEdit();
+  OutputEdit->setObjectName("outputFile");
   file->addWidget(OutputEdit, 2, 1);
   QPushButton *SaveBrowseButt = new QPushButton(tr("Browse"));
   file->addWidget(SaveBrowseButt, 2, 2);
@@ -86,6 +92,7 @@ ImportDialog::ImportDialog(QWidget *parent)
   OutputLabel->setEnabled(false);
   file->addWidget(OutputLabel, 4, 0);
   OutputData = new QComboBox;
+  OutputData->setObjectName("outputData");
   OutputData->setEnabled(false);
   file->addWidget(OutputData, 4, 1);
 
@@ -101,6 +108,7 @@ ImportDialog::ImportDialog(QWidget *parent)
   
   QVBoxLayout *vMess = new QVBoxLayout();
   MsgText = new QPlainTextEdit();
+  MsgText->setObjectName("messages");
   vMess->addWidget(MsgText);
   MsgText->setReadOnly(true);
   MsgText->setWordWrapMode(QTextOption::NoWrap);
@@ -265,7 +273,24 @@ void ImportDialog::slotImport()
     break;
   }
 
-  CommandLine << "-i" << ImportEdit->text()
+  // A binary dataset (a large run's), which the converter cannot read:
+  // written out as text for it first.
+  QString input = ImportEdit->text();
+  a_textCopy.reset();
+  if (InType->currentIndex() == 3 && qucs_s::datasetfile::isBinary(input)) {
+    a_textCopy = std::make_unique<QTemporaryFile>(QDir::temp().filePath(QStringLiteral("qucs-dataset-XXXXXX.dat")));
+    QString why;
+    if (!a_textCopy->open() || !qucs_s::datasetfile::writeText(input, a_textCopy.get(), &why) || !a_textCopy->flush()) {
+      MsgText->appendPlainText(tr("ERROR: %1 cannot be written as text for the converter: %2")
+                                   .arg(QDir::toNativeSeparators(input), why.isEmpty() ? a_textCopy->errorString() : why));
+      a_textCopy.reset();
+      ImportButt->setDisabled(false);
+      AbortButt->setDisabled(true);
+      return;
+    }
+    input = a_textCopy->fileName();
+  }
+  CommandLine << "-i" << input
               << "-o" << QucsSettings.QucsWorkDir.filePath(OutputEdit->text());
 
   Process.blockSignals(false);
@@ -443,6 +468,10 @@ bool ImportDialog::getDataVarsFromDatafile(const QString &filename)
 
   QTextStream ts(&f);
   QStringList vars;
+  if (qucs_s::datasetfile::isBinary(filename)) {   // (from its index)
+    OutputData->addItems(qucs_s::datasetfile::dependentNames(filename));
+    return true;
+  }
   while(!ts.atEnd()) {
     QString line = ts.readLine();
     line = line.trimmed();

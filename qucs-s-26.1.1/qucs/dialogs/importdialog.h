@@ -20,6 +20,8 @@
 
 #include <QDialog>
 #include <QProcess>
+#include <QTemporaryFile>
+#include <memory>
 #include <QGridLayout>
 #include <QLabel>
 
@@ -62,6 +64,8 @@ private:
 
   QLabel *OutputLabel, *LibLabel;
   QProcess Process;
+  // A binary dataset given to the converter: as text, while it runs.
+  std::unique_ptr<QTemporaryFile> a_textCopy;
   QPlainTextEdit *MsgText;
   QLineEdit *ImportEdit, *OutputEdit, *LibName;
   QPushButton *ImportButt, *CancelButt, *AbortButt;

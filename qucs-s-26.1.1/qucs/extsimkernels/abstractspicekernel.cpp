@@ -26,6 +26,7 @@
 #include "oppoint.h"
 #include "ngstatistics.h"
 #include "ngsweep.h"
+#include "datasetfile.h"
 #include "misc.h"
 #include "main.h"
 #include "../paintings/id_text.h"
@@ -41,6 +42,7 @@
 #include <QSet>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 /*!
   \file abstractspicekernel.cpp
@@ -1394,11 +1396,19 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
                    + tr("Check write permission of the directory ") + QDir::toNativeSeparators(QFileInfo(qucs_dataset).path());
         dataset = &elsewhere;
     }
-    QTextStream ds_stream(dataset);
-
-    ds_stream<<"<Qucs Dataset " PACKAGE_VERSION ">\n";
-    ds_stream.flush();
-    const qint64 headerSize = dataset->size();
+    // Text, or binary for a large run (datasetfile.h): the same blocks, the
+    // values as doubles - smaller, every digit, and a block read alone.
+    namespace df = qucs_s::datasetfile;
+    std::unique_ptr<df::Writer> out;
+    df::BinaryWriter* binary = nullptr;
+    if (writesBinaryDataset()) {
+        auto b = std::make_unique<df::BinaryWriter>(dataset);
+        binary = b.get();
+        out = std::move(b);
+    } else {
+        out = std::make_unique<df::TextWriter>(dataset);
+    }
+    QStringList taken;   // raw files taken whole into the binary dataset
 
     QString sim,indep;
     QStringList indep_vars;
@@ -1407,13 +1417,13 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
         // NgMonteCarlo, NgCorners: results of their own shape (families
         // over the sample or the corner), under the component's name.
         if (qucs_s::ngstats::isResultFile(ngspice_output_filename)) {
-            ds_stream << qucs_s::ngstats::datasetBlocks(a_workdir, ngspice_output_filename);
+            out->blocks(qucs_s::ngstats::datasetBlocks(a_workdir, ngspice_output_filename));
             continue;
         }
         // NgSweep: every point's waveforms as families, the recorded
         // values against the swept parameters.
         if (qucs_s::ngsweep::isResultFile(ngspice_output_filename)) {
-            ds_stream << qucs_s::ngsweep::datasetBlocks(a_workdir, ngspice_output_filename, a_schematic);
+            out->blocks(qucs_s::ngsweep::datasetBlocks(a_workdir, ngspice_output_filename, a_schematic));
             continue;
         }
         QList< QList<double> > sim_points;
@@ -1498,6 +1508,12 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
 
             parseSTEPOutput(full_outfile,sim_points,var_list,isComplex, extra_vars, extra_vars_dims);
         } else {
+            // A plain binary raw file of a large run: block by block into
+            // the binary dataset, not a value at a time through the rows.
+            if (binary != nullptr && convertPlainRaw(full_outfile, dataset_prefix, isCustomPrefix, *binary)) {
+                taken << full_outfile;
+                continue;
+            }
             int OutType = checkRawOutupt(full_outfile,swp_var_val);
             bool hasSwp = false;
             switch (OutType) {
@@ -1552,34 +1568,34 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
             if (hasDblParSweep) indep_cnt =  sim_points.count()/(swp_var_val.count()*swp_var2_val.count());
             else indep_cnt = sim_points.count()/swp_var_val.count();
             if (!indep.isEmpty()) {
-                ds_stream<<QStringLiteral("<indep %1 %2>\n").arg(indep).arg(indep_cnt); // output indep var: TODO: parameter sweep
+                out->begin(QStringLiteral("indep %1 %2").arg(indep).arg(indep_cnt)); // output indep var: TODO: parameter sweep
                 for (int i=0;i<indep_cnt;i++) {
-                    ds_stream<<QString::number(sim_points.at(i).at(0),'e',12)<<"\n";
+                    out->real(sim_points.at(i).at(0));
                 }
-                ds_stream<<"</indep>\n";
+                out->end();
             }
 
-            ds_stream<<QStringLiteral("<indep %1 %2>\n").arg(swp_var).arg(swp_var_val.count());
+            out->begin(QStringLiteral("indep %1 %2").arg(swp_var).arg(swp_var_val.count()));
             for (const QString& val : swp_var_val) {
-                ds_stream<<val<<"\n";
+                out->text(val.toUtf8());
             }
-            ds_stream<<"</indep>\n";
+            out->end();
             if (indep.isEmpty()) indep = swp_var;
             else indep += " " + swp_var;
             if (hasDblParSweep) {
-                ds_stream<<QStringLiteral("<indep %1 %2>\n").arg(swp_var2).arg(swp_var2_val.count());
+                out->begin(QStringLiteral("indep %1 %2").arg(swp_var2).arg(swp_var2_val.count()));
                 for (const QString& val : swp_var2_val) {
-                    ds_stream<<val<<"\n";
+                    out->text(val.toUtf8());
                 }
-                ds_stream<<"</indep>\n";
+                out->end();
                 indep += " " + swp_var2;
             }
         } else if (!indep.isEmpty()) {
-            ds_stream<<QStringLiteral("<indep %1 %2>\n").arg(indep).arg(sim_points.count()); // output indep var: TODO: parameter sweep
+            out->begin(QStringLiteral("indep %1 %2").arg(indep).arg(sim_points.count())); // output indep var: TODO: parameter sweep
             for (auto& sim_point : sim_points) {
-                ds_stream<<QString::number(sim_point.at(0),'e',12)<<"\n";
+                out->real(sim_point.at(0));
             }
-            ds_stream<<"</indep>\n";
+            out->end();
         }
 
         for(int i = 1 ; i < var_list.count(); i++) { // output dep var
@@ -1596,7 +1612,7 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
                   : sim_points.count();
 
             if (indep.isEmpty()) {
-              ds_stream<<QStringLiteral("<indep %1 %2>\n").arg(var_list.at(i)).arg(sim_points.count());
+              out->begin(QStringLiteral("indep %1 %2").arg(var_list.at(i)).arg(sim_points.count()));
             } else {
               if (is_extra_var && !var.endsWith("_steps")) { // XSPICE digital node
                 // requires another X-variable; not time
@@ -1610,22 +1626,22 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
                 }
                 if (var_list.contains(var2)) {
                   // it is digtial variable
-                  ds_stream<<QStringLiteral("<dep %1 %2>\n").arg(var).arg(var2);
+                  out->begin(QStringLiteral("dep %1 %2").arg(var).arg(var2));
                 } else {
                   // it is scalar
                   if (hasParSweep) {
-                    ds_stream<<QStringLiteral("<dep %1 %2>\n").arg(var).arg(swp_var);
+                    out->begin(QStringLiteral("dep %1 %2").arg(var).arg(swp_var));
                   } else {
-                    ds_stream<<QStringLiteral("<indep %1 %2>\n").arg(var).arg(var_length);
+                    out->begin(QStringLiteral("indep %1 %2").arg(var).arg(var_length));
                     is_scalar = true;
                   }
                 }
               } else if (is_extra_var && var.endsWith("_steps") && // indep XSPICE digital var
                          !var.contains("(") && !var.contains(")")) {
                 extra_indep = true;
-                ds_stream<<QStringLiteral("<indep %1 %2>\n").arg(var).arg(var_length);
+                out->begin(QStringLiteral("indep %1 %2").arg(var).arg(var_length));
               } else {
-                ds_stream<<QStringLiteral("<dep %1 %2>\n").arg(var_list.at(i)).arg(indep);
+                out->begin(QStringLiteral("dep %1 %2").arg(var_list.at(i)).arg(indep));
               }
             }
 
@@ -1647,24 +1663,13 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
                   }
                 }
                 if (isComplex) {
-                    double re=sim_point.at(2*(i-1)+1);
-                    double im = sim_point.at(2*i);
-                    QString s;
-                    s += QString::number(re,'e',12);
-                    if (im<0) s += "-j";
-                    else s += "+j";
-                    s += QString::number(fabs(im),'e',12) + "\n";
-                    ds_stream<<s;
+                    out->complex(sim_point.at(2*(i-1)+1), sim_point.at(2*i));
                 } else {
-                    ds_stream<<QString::number(sim_point.at(i),'e',12)<<"\n";
+                    out->real(sim_point.at(i));
                 }
                 count++;
             }
-            if (indep.isEmpty() || extra_indep || is_scalar) {
-              ds_stream<<"</indep>\n";
-            } else {
-              ds_stream<<"</dep>\n";
-            }
+            out->end();
         }
     }
 
@@ -1678,9 +1683,11 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
             if (!f.open(QIODevice::ReadOnly)) continue;
             for (const qucs_s::oppoint::Device& d : qucs_s::oppoint::parseShow(QString::fromUtf8(f.readAll())))
                 for (const qucs_s::oppoint::Parameter& p : d.parameters)
-                    if (qucs_s::oppoint::isOperatingQuantity(d.type, p.name) && std::isfinite(p.value))
-                        ds_stream << QStringLiteral("<indep @%1[%2] 1>\n%3\n</indep>\n")
-                                         .arg(d.name, p.name, QString::number(p.value, 'e', 12));
+                    if (qucs_s::oppoint::isOperatingQuantity(d.type, p.name) && std::isfinite(p.value)) {
+                        out->begin(QStringLiteral("indep @%1[%2] 1").arg(d.name, p.name));
+                        out->real(p.value);
+                        out->end();
+                    }
         }
     }
 
@@ -1688,12 +1695,15 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
     // a run that worked - the one before stays (stale: the run failed), and
     // why is told. (ngspice writes nothing for a write of more vectors
     // than it takes, and ends as if all went well.)
-    ds_stream.flush();
-    if (!a_output_files.isEmpty() && dataset->size() <= headerSize) {
+    if (!a_output_files.isEmpty() && out->empty()) {
         if (dataset == &beside) beside.cancelWriting();
         a_wroteNoResults = true;
         return tr("The simulator wrote no results: its output (%1) holds none. Look for an error in its log - "
                   "the dataset is the one from before.").arg(a_output_files.join(QStringLiteral(", ")));
+    }
+    if (QString why; !out->finish(&why)) {
+        if (dataset == &beside) beside.cancelWriting();
+        return tr("Failed to write dataset file ") + QDir::toNativeSeparators(qucs_dataset) + ": " + why;
     }
 
     // (Told by the caller: in a box, or in a tool's answer.)
@@ -1712,8 +1722,46 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
     }
     // The raw simulator output stays in the Scratch folder (it is removed
     // before the next run of the same netlist), so it can be looked at from
-    // the Content panel.
+    // the Content panel - but for a raw file taken whole into a binary
+    // dataset, which has every value of it: not twice on the disk.
+    for (const QString& raw : std::as_const(taken)) QFile::remove(raw);
     return {};
+}
+
+bool AbstractSpiceKernel::writesBinaryDataset() const
+{
+    if (a_datasetFormat != DatasetFormat::Settings) return a_datasetFormat == DatasetFormat::Binary;
+    if (!QucsSettings.DatasetBinary) return false;
+    // A script run after the simulation (Octave's) reads the dataset: text.
+    if (a_schematic != nullptr
+        && (a_schematic->getSimRunScript()
+            || (a_schematic->getSimOpenDpl() && (a_schematic->getDataDisplay().endsWith(QLatin1String(".m"))
+                                                 || a_schematic->getDataDisplay().endsWith(QLatin1String(".oct"))))))
+        return false;
+    qint64 bytes = 0;
+    for (const QString& file : a_output_files) bytes += QFileInfo(QDir(a_workdir).filePath(file)).size();
+    return bytes > qint64(QucsSettings.DatasetTextLimitMB) * 1024 * 1024;
+}
+
+// A plain binary raw file (one whole plot, no XSPICE digital node) as its
+// blocks of a binary dataset: named as the rows' way names them, the values
+// copied a few points at a time - none held whole, none written as text.
+bool AbstractSpiceKernel::convertPlainRaw(const QString& rawPath, const QString& prefix, bool isCustomPrefix,
+                                          qucs_s::datasetfile::BinaryWriter& out)
+{
+    namespace df = qucs_s::datasetfile;
+    df::RawHeader header;
+    if (!df::readRawHeader(rawPath, &header) || !df::isPlainBinaryRaw(header, QFileInfo(rawPath).size())) return false;
+    QStringList names = header.variables;
+    normalizeVarsNames(names, prefix, isCustomPrefix);
+    const QString indep = names.first();
+    if (indep.isEmpty()) return false;
+    QList<qint64> offsets;
+    offsets << out.reserve(QStringLiteral("indep %1 %2").arg(indep).arg(header.points), header.points, false);
+    for (qsizetype i = 1; i < names.size(); ++i)
+        offsets << out.reserve(QStringLiteral("dep %1 %2").arg(names.at(i), indep), header.points, header.complex);
+    df::transposeRaw(rawPath, header, out, offsets);   // (a failure is the writer's, told by its finish())
+    return true;
 }
 
 /*!

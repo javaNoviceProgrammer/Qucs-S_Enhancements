@@ -52,6 +52,7 @@
 
 #include "rect3ddiagram.h"
 #include "misc.h"
+#include "datasetfile.h"
 #include "ink.h"
 
 #include <QTextStream>
@@ -1125,6 +1126,11 @@ int Graph::loadDatFile(const QString &fileName) {
     }
 
 
+    // A binary dataset (a large run's): from its blocks, the one asked for
+    // and those it is over - not the whole file.
+    if (qucs_s::datasetfile::isBinary(file.fileName()))
+        return loadBinaryDatFile(file.fileName(), Variable, hasExplIndep, ExplIndep);
+
     if (!file.open(QIODevice::ReadOnly)) return 0;
 
     // *****************************************************************
@@ -1408,6 +1414,116 @@ int Graph::loadDatFile(const QString &fileName) {
 
     lastLoaded = QDateTime::currentDateTime();
     return 2;
+}
+
+// The graph's data from a binary dataset: as the text's way above takes it,
+// block by block - the variable's first block, the variables it is over
+// (each its first independent block, or a dependent one over one variable),
+// as many values as they make, the part of each value shown.
+int Graph::loadBinaryDatFile(const QString &path, QString variable, bool hasExplIndep, const QString &explIndep)
+{
+    namespace df = qucs_s::datasetfile;
+    df::BinaryReader data;
+    if (!data.open(path)) return 0;
+    int at = data.find(variable, true);
+    // A name alone (ac.gain) that the dataset has as a voltage, v(gain).
+    static const QRegularExpression plain(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)([A-Za-z_][A-Za-z0-9_]*)$"));
+    if (at < 0)
+        if (const QRegularExpressionMatch m = plain.match(variable); m.hasMatch())
+            at = data.find(m.captured(1) + QStringLiteral("v(") + m.captured(2) + QLatin1Char(')'), true);
+    if (at < 0) return 0;   // data not found
+    const df::Block &block = data.blocks().at(at);
+
+    int counting = 0;
+    if (block.independent()) {   // over its own index
+        if (block.count <= 0 || block.count > INT_MAX) return 0;
+        counting = int(block.count);
+        double *p = new (std::nothrow) double[counting];
+        if (!p) return 0;
+        mutable_axes().push_back(new DataX("number", p, counting));
+        countY = 1;
+        for (int z = 1; z <= counting; z++) *(p++) = double(z);
+    } else {
+        for (const QString &over : block.dependencies())
+            mutable_axes().push_back(new DataX(hasExplIndep ? explIndep : over));
+        if (numAxes() == 0) {
+            clearData();
+            return 0;
+        }
+        countY = 1;
+        DataX const *pD;
+        for (int ii = numAxes(); (pD = axis(--ii));) {
+            counting = loadIndepVarData(pD->Var, data, mutable_axis(ii));
+            if (counting <= 0 || countY > INT_MAX / counting) {
+                clearData();
+                return 0;
+            }
+            countY *= counting;
+        }
+        countY /= counting;
+    }
+
+    // countY x counting values, one per point of every sweep dimension.
+    const long long total = static_cast<long long>(counting) * countY;
+    if (total <= 0 || total > block.count || total > INT_MAX / 2) {
+        clearData();
+        return 0;
+    }
+    counting = static_cast<int>(total);
+    double *p = new (std::nothrow) double[2 * static_cast<size_t>(counting)];
+    if (!p) {
+        clearData();
+        return 0;
+    }
+    cPointsY = p;
+    if (!data.pairs(block, p, counting)) {
+        clearData();
+        return 0;
+    }
+    for (int z = 0; z < counting; ++z) {
+        double x = p[2 * z], y = p[2 * z + 1];
+        // The part of the value shown (dB, the phase, ...), as read.
+        if (valuePart != Graph::ValuePart::Auto) Graph::takeValuePart(valuePart, &x, &y);
+        p[2 * z] = x;
+        p[2 * z + 1] = y;
+    }
+    // (Not the axis's min() and max() the text's way calls: they move only
+    // outwards of the infinities they begin at, never.)
+    lastLoaded = QDateTime::currentDateTime();
+    return 2;
+}
+
+int Graph::loadIndepVarData(const QString &Variable, const qucs_s::datasetfile::BinaryReader &data, DataX *pD)
+{
+    namespace df = qucs_s::datasetfile;
+    if (pD->Points) {
+        delete[] pD->Points;
+        pD->Points = nullptr;
+    }
+    pD->count = 0;
+    const int at = data.find(Variable, true);
+    if (at < 0) return -1;   // data not found
+    const df::Block &block = data.blocks().at(at);
+    qint64 n = block.count;
+    if (!block.independent()) {   // a dependent variable can be used too...
+        const QStringList over = block.dependencies();
+        if (over.size() != 1) return -1;   // ...over one variable only, as many values as it has
+        n = -1;
+        for (const df::Block &b : data.blocks())
+            if (b.independent() && b.name() == over.first()) {
+                n = b.count;
+                break;
+            }
+    }
+    if (n <= 0 || n > block.count || n > INT_MAX) return -1;
+    QVector<double> re;   // (a complex x: its real part)
+    if (!data.values(block, &re, nullptr)) return -1;
+    double *p = new (std::nothrow) double[n];
+    if (!p) return -1;
+    std::copy(re.cbegin(), re.cbegin() + n, p);
+    pD->Points = p;
+    pD->count = int(n);
+    return int(n);
 }
 
 /*!

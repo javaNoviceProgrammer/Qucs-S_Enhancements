@@ -219,6 +219,25 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the netlist names no file of the installation, and an expression that
   uses them fails under ngspice. The tab shows the file, or that this
   installation has none (the line is then left out either way).
+- **Binary datasets for large runs** (*Simulation → Simulators Settings →
+  Results*): an ngspice or Xyce run whose output is larger than 10 MB (the
+  limit is the tab's) keeps its dataset binary, `name.dat.ngspice` as
+  before: the same blocks as text, the values the simulator's own doubles,
+  every digit, and an index at its end, so a diagram or a tool reads one
+  variable without the rest. A plain raw file goes straight into it, as
+  many whole variables at a time as 64 MB holds, and is then not kept in
+  the Scratch folder beside it. For a run of 12,503 vectors of 11,715
+  points, a 1.17 GB raw file: written in 0.7 s instead of 45 s, peak memory
+  114 MB instead of 2.5 GB, 1.2 GB on the disk instead of 4.5 GB, the last
+  vector's graph in 11 ms instead of 1.2 s. Smaller runs stay text, which
+  now keeps every digit too (the shortest text that reads back the same
+  double, not 13 digits); so does a schematic that runs an Octave script
+  after the simulation, which reads it. *Save as Text…* in the Content
+  panel's menu writes a binary dataset out as a text one (as does opening
+  one there, or Claude's `export_data` to a Qucs dataset), and *Convert
+  Data File* gives the converter the text. Diagrams, data displays,
+  Claude's tools (`get_dataset`, `keep_as` and `compare`, `export_data`)
+  and the optimizer read both.
 - **Text editor defaults and file types**: `.cir`, `.ckt` and `.sp` files
   open in the built-in text editor like `.va` and the other Qucs text
   documents; plain-text formats (`.txt`, `.py`, `.md`, `.json`, `.csv`,
