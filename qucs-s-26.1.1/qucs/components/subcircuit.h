@@ -29,6 +29,9 @@ public:
   static Element* info(QString&, char* &, bool getNewOne=false);
 
   QString getSubcircuitFile();
+  /// getSubcircuitFile() of a subcircuit named \a name (its File) in a
+  /// schematic in \a folder (its file's folder; empty: in none).
+  static QString subcircuitFileOf(const QString& name, const QString& folder);
 
   /// A parameter of its symbol (its .ID line): its name, its default and
   /// whether an instance shows it.

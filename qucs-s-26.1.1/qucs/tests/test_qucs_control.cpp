@@ -5430,6 +5430,77 @@ private slots:
     // part placed from one; a library file - SPICE, or Qucs-S's with its
     // folder of models - brought in; Create Library's subcircuits ticked
     // and unticked in its dialog.
+    // A library device with Verilog-A placed in a project's schematic:
+    // save_document links its source into the project and says so; the
+    // link opened, edit_text refuses it; the device taken away and saved,
+    // the link goes - said too; a save that changes nothing says nothing.
+    void libraryVerilogAIsLinkedIntoTheProject()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        if (!app->ProjName.isEmpty()) QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+        const QString shelf = dir.filePath("vashelf");
+        QVERIFY(QDir().mkpath(shelf));
+        const QStringList paths = QucsSettings.LibraryPaths;
+        QucsSettings.LibraryPaths = {shelf};
+        const auto restore = qScopeGuard([&] { QucsSettings.LibraryPaths = paths; });
+        QJsonObject r = call("new_project", {{"name", "vasrc"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString src = QucsSettings.QucsWorkDir.absolutePath();
+        const auto put = [](const QString& path, const QByteArray& bytes) {
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size();
+        };
+        QVERIFY(put(src + "/good.va", "`include \"disciplines.vams\"\nmodule good(p, n);\n  inout p, n;\n  electrical p, n;\n"
+                                      "  analog I(p, n) <+ V(p, n) / 1k;\nendmodule\n"));
+        QVERIFY(put(src + "/cell.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                                       "  <Port P1 1 220 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+                                       "  <Port P2 1 280 100 4 12 1 2 \"2\" 1 \"analog\" 0>\n"
+                                       "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                                       "  <SpiceModel SpiceModel1 1 120 300 -27 16 0 0 \".model m1 good\" 1 \"\" 0>\n"
+                                       "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n"));
+        QVERIFY(!failed(call("open_project", {{"name", "vasrc"}})));
+        r = call("create_library", {{"name", "LinkLib"}, {"destination", shelf}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("models").toArray().contains("LinkLib/good.va"), qPrintable(text(r)));
+        const QJsonObject place = json(r).toObject().value("parts").toArray().at(0).toObject().value("place").toObject();
+
+        QVERIFY(!failed(call("new_project", {{"name", "vause"}})));
+        const QString use = QucsSettings.QucsWorkDir.absolutePath();
+        QVERIFY(!failed(call("new_document", {})));
+        r = call("add_component", {{"type", place.value("type")}, {"name", "X1"}, {"x", 300}, {"y", 200},
+                                   {"properties", place.value("properties")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("save_document", {{"as", use + "/top.sch"}});
+        QVERIFY2(!failed(r) && text(r).contains("linked into the project from its library") && text(r).contains("LinkLib/good.va"),
+                 qPrintable(text(r)));
+        QVERIFY(QFileInfo(use + "/LinkLib/good.va").isSymLink());
+        QVERIFY(!failed(call("open_document", {{"path", "LinkLib/good.va"}})));
+        r = call("edit_text", {{"path", "LinkLib/good.va"}, {"edits", QJsonArray{QJsonObject{{"find", "module"}, {"replace", "MODULE"}}}}});
+        QVERIFY2(failed(r) && text(r).contains("library LinkLib") && text(r).contains("Nothing was changed"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"path", "LinkLib/good.va"}})));
+        QVERIFY(!failed(call("delete", {{"path", "top.sch"}, {"names", QJsonArray{"X1"}}})));
+        r = call("save_document", {{"path", "top.sch"}});
+        QVERIFY2(!failed(r) && text(r).contains("taken away") && text(r).contains("LinkLib/good.va"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(use + "/LinkLib"));
+        r = call("save_document", {{"path", "top.sch"}});
+        QVERIFY2(!failed(r) && !text(r).contains("Library Verilog-A"), qPrintable(text(r)));
+        // A file of the project's in the link's place: said, left as it is.
+        QVERIFY(QDir().mkpath(use + "/LinkLib"));
+        QVERIFY(put(use + "/LinkLib/good.va", "// mine\n"));
+        QVERIFY(!failed(call("add_component", {{"path", "top.sch"}, {"type", place.value("type")}, {"name", "X1"}, {"x", 300},
+                                               {"y", 200}, {"properties", place.value("properties")}})));
+        r = call("save_document", {{"path", "top.sch"}});
+        QVERIFY2(!failed(r) && text(r).contains("not linked, a file of the project's in the way: LinkLib/good.va"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo(use + "/LinkLib/good.va").isSymLink());
+        // A text document's save says nothing of libraries.
+        QVERIFY(put(use + "/notes.txt", "notes\n"));
+        QVERIFY(!failed(call("open_document", {{"path", "notes.txt"}})));
+        r = call("save_document", {{"path", "notes.txt"}});
+        QVERIFY2(!failed(r) && !text(r).contains("Library Verilog-A"), qPrintable(text(r)));
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+    }
+
     void librariesAreMadeListedAndBroughtIn()
     {
         for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
