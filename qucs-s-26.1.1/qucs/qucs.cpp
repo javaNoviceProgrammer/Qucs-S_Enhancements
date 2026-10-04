@@ -796,6 +796,8 @@ void QucsApp::initView()
 
   connect(libTreeWidget, SIGNAL(itemPressed (QTreeWidgetItem*, int)),
            SLOT(slotSelectLibComponent (QTreeWidgetItem*)));
+  // (A library of the library search paths: its parts read when opened.)
+  connect(libTreeWidget, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem *item) { readLibraryParts(item); });
 
   // ----------------------------------------------------------
   // "File Browser" Tab of the left QTabWidget: the file system from the
@@ -954,6 +956,46 @@ void QucsApp::initView()
   readProjects(); // reads all projects and inserts them into the ListBox
 }
 
+namespace {
+
+// A library of the library search paths whose parts are not read yet: its
+// path without .lib.
+const int kUnreadLibrary = Qt::UserRole + 1;
+
+// A library's name as its first line says it (<Qucs Library 0.0.19
+// "Name">), else its file's - a SPICE library's, as the parser names it.
+QString libraryTitle(const QString& file)
+{
+    QFile f(file);
+    if (f.open(QIODevice::ReadOnly)) {
+        static const QRegularExpression header(QStringLiteral("<Qucs Library \\S+ \"([^\"]*)\">"));
+        const QRegularExpressionMatch m = header.match(QString::fromUtf8(f.read(1024)));
+        if (m.hasMatch() && !m.captured(1).trimmed().isEmpty()) return m.captured(1).trimmed();
+    }
+    return QFileInfo(file).baseName();
+}
+
+// The parts of a library under its item: each its name, the schematic
+// that places it, its definition and its library.
+void addLibraryParts(QTreeWidgetItem* library, const ComponentLibrary& parsed, const QString& libPath)
+{
+    for (const ComponentLibraryItem& part : parsed.components) {
+        const QString placed = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n  ") + part.modelString
+                               + QStringLiteral("\n</Components>\n");
+        new QTreeWidgetItem(library, QStringList{part.name, placed, part.definition, libPath});
+    }
+}
+
+// A library that cannot be read: greyed, and why.
+void markUnreadable(QTreeWidgetItem* library, const QString& file, const QString& why)
+{
+    library->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
+    library->setForeground(0, QApplication::palette().color(QPalette::Disabled, QPalette::Text));
+    library->setToolTip(0, QStringLiteral("%1\n%2").arg(QDir::toNativeSeparators(file), why));
+}
+
+} // namespace
+
 // Put all available libraries into ComboBox.
 void QucsApp::fillLibrariesTreeView ()
 {
@@ -981,6 +1023,42 @@ void QucsApp::fillLibrariesTreeView ()
 
     QString UserLibDirPath = QucsSettings.qucsWorkspaceDir.canonicalPath () + "/user_lib/";
     populateLibTreeFromDir(UserLibDirPath, topitems);
+
+    // The library search paths (Settings > Locations): a section each,
+    // named after its folder, its libraries' parts read when one is opened
+    // or searched - a large folder does not slow the start. A folder shown
+    // already (or listed twice) is not shown again.
+    QStringList listed{QFileInfo(QucsSettings.LibDir).canonicalFilePath(), QFileInfo(UserLibDirPath).canonicalFilePath()};
+    if (!ProjName.isEmpty()) listed << QucsSettings.QucsWorkDir.canonicalPath();
+    QStringList names;
+    for (const QString& path : std::as_const(QucsSettings.LibraryPaths)) {
+        const QFileInfo folder(QDir::cleanPath(path));
+        const QString canonical = folder.canonicalFilePath();
+        if (!canonical.isEmpty() && listed.contains(canonical)) continue;
+        if (!canonical.isEmpty()) listed << canonical;
+        QString name = folder.fileName().isEmpty() ? QDir::toNativeSeparators(folder.filePath()) : folder.fileName();
+        if (names.contains(name)) name += QStringLiteral(" (%1)").arg(QFileInfo(folder.absolutePath()).fileName());
+        names << name;
+        newitem = new QTreeWidgetItem((QTreeWidget*)0, QStringList(name));
+        newitem->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
+        newitem->setFont(0, sectionFont);
+        newitem->setToolTip(0, QDir::toNativeSeparators(folder.absoluteFilePath()));
+        topitems.append(newitem);
+        if (!folder.isDir()) {
+            newitem->setText(0, tr("%1 (not found)").arg(name));
+            newitem->setForeground(0, QApplication::palette().color(QPalette::Disabled, QPalette::Text));
+            continue;
+        }
+        const QDir dir(folder.absoluteFilePath());
+        for (const QString& file : dir.entryList(QStringList("*.lib"), QDir::Files, QDir::Name)) {
+            const QString filePath = dir.absoluteFilePath(file);
+            QTreeWidgetItem* library = new QTreeWidgetItem((QTreeWidget*)0, QStringList{libraryTitle(filePath), filePath});
+            library->setData(0, kUnreadLibrary, filePath.left(filePath.size() - 4));
+            library->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
+            library->setToolTip(0, QDir::toNativeSeparators(filePath));
+            topitems.append(library);
+        }
+    }
 
     // make the user libraries section header
     newitem = new QTreeWidgetItem((QTreeWidget*)0, QStringList("Project Libraries"));
@@ -1013,50 +1091,45 @@ bool QucsApp::populateLibTreeFromDir(const QString &LibDirPath, QList<QTreeWidge
 
         int result = parseComponentLibrary (libPath , parsedlibrary, QUCS_COMP_LIB_FULL, relpath);
         QStringList nameAndFileName;
-        nameAndFileName.append (parsedlibrary.name);
+        nameAndFileName.append (parsedlibrary.name.isEmpty() ? QFileInfo(*it).baseName() : parsedlibrary.name);
         nameAndFileName.append (LibDirPath + *it);
 
         QTreeWidgetItem* newlibitem = new QTreeWidgetItem((QTreeWidget*)nullptr, nameAndFileName);
-
-        switch (result)
-        {
-            case QUCS_COMP_LIB_IO_ERROR:
-            {
-                QString filename = getLibAbsPath(libPath);
-                QMessageBox::critical(nullptr, tr ("Error"), tr("Cannot open \"%1\".").arg (filename));
-                return false;
-            }
-            case QUCS_COMP_LIB_CORRUPT:
-                QMessageBox::critical(nullptr, tr("Error"), tr("Library is corrupt."));
-                return false;
-            default:
-                break;
-        }
-
-        for (int i = 0; i < parsedlibrary.components.count (); i++)
-        {
-            QStringList compNameAndDefinition;
-
-            compNameAndDefinition.append (parsedlibrary.components[i].name);
-
-            QString s = "<Qucs Schematic " PACKAGE_VERSION ">\n";
-
-            s +=  "<Components>\n  " +
-                  parsedlibrary.components[i].modelString + "\n" +
-                  "</Components>\n";
-
-            compNameAndDefinition.append (s);
-            compNameAndDefinition.append(parsedlibrary.components[i].definition);
-            compNameAndDefinition.append(libPath);
-
-            QTreeWidgetItem* newcompitem = new QTreeWidgetItem(newlibitem, compNameAndDefinition);
-
-            // Silence warning from the compiler about unused variable newcompitem
-            // we pass the pointer to the parent item in the constructor
-            Q_UNUSED( newcompitem )
-        }
-
         topitems.append (newlibitem);
+
+        // One that cannot be read is marked, and the others listed (a box
+        // for it stopped the listing at it).
+        if (result == QUCS_COMP_LIB_IO_ERROR) {
+            markUnreadable(newlibitem, getLibAbsPath(libPath), tr("It cannot be opened."));
+            continue;
+        }
+        if (result == QUCS_COMP_LIB_CORRUPT) {
+            markUnreadable(newlibitem, getLibAbsPath(libPath), tr("It is not a library Qucs-S reads."));
+            continue;
+        }
+        addLibraryParts(newlibitem, parsedlibrary, libPath);
+    }
+    return true;
+}
+
+bool QucsApp::readLibraryParts(QTreeWidgetItem *library)
+{
+    if (library == nullptr) return false;
+    const QString libPath = library->data(0, kUnreadLibrary).toString();
+    if (libPath.isEmpty()) return true;   // read already, or read with its section
+    library->setData(0, kUnreadLibrary, QVariant());
+    ComponentLibrary parsed;
+    const int result = parseComponentLibrary(libPath, parsed, QUCS_COMP_LIB_FULL, false);
+    const QString file = libPath + QStringLiteral(".lib");
+    if (result != QUCS_COMP_LIB_OK) {
+        markUnreadable(library, file, result == QUCS_COMP_LIB_IO_ERROR ? tr("It cannot be opened.") : tr("It is not a library Qucs-S reads."));
+        return false;
+    }
+    if (!parsed.name.isEmpty()) library->setText(0, parsed.name);
+    addLibraryParts(library, parsed, libPath);
+    if (parsed.components.isEmpty()) {
+        library->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
+        library->setToolTip(0, tr("%1\nIt has no parts.").arg(QDir::toNativeSeparators(file)));
     }
     return true;
 }
@@ -3662,6 +3735,7 @@ QStringList QucsApp::applyImportedSettings(const QString &workspaceBefore, const
     notes << tr("No simulator was found at the paths these settings give: Simulation > Simulator Settings sets them.");
   simConsole->applyHostSetting();
   updatePathList(QStringList(qucsPathList));
+  fillLibrariesTreeView();   // (the library search paths, as imported)
 
   // The shortcuts: the defaults, and those the settings change.
   QucsShortcutManager &shortcuts = QucsShortcutManager::instance();
@@ -6136,6 +6210,8 @@ void QucsApp::slotSearchLibComponent(const QString &comp)
         return;
     }
 
+    // (Every library's parts, those of the library search paths too.)
+    for (int i = 0; i < libTreeWidget->topLevelItemCount(); i++) readLibraryParts(libTreeWidget->topLevelItem(i));
     QTreeWidgetItemIterator top_itm(libTreeWidget);
     while (*top_itm) {
         bool found = false;

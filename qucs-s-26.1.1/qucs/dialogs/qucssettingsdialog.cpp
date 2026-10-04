@@ -723,30 +723,8 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
 
     // the pathsTableWidget displays the path list
     // It includes a second column for buttons to remove entries
-    pathsTableWidget = new QTableWidget(pathsGroup);
-    pathsTableWidget->setColumnCount(2);
-    pathsTableWidget->horizontalHeader()->setStretchLastSection(false);
-    pathsTableWidget->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    pathsTableWidget->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
-    pathsTableWidget->setColumnWidth(1, 36);
-
-
-    QTableWidgetItem *pitem1 = new QTableWidgetItem();
-
-    QTableWidgetItem *pitem2 = new QTableWidgetItem();
-    pathsTableWidget->setHorizontalHeaderItem(1, pitem2);
-    pitem2->setText(tr(""));
-
-    pathsTableWidget->setHorizontalHeaderItem(0, pitem1);
-
-    pitem1->setText(tr("Subcircuit Search Path List"));
-
-    // avoid drawing header text in bold when some data is selected
-    pathsTableWidget->horizontalHeader()->setSectionsClickable(false);
-
-    pathsTableWidget->verticalHeader()->hide();
-    // allow multiple items to be selected
-    pathsTableWidget->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    pathsTableWidget = newPathTable(pathsGroup, tr("Subcircuit Search Path List"), QStringLiteral("subcircuitPaths"),
+                                    tr("Subcircuit search paths"));
     pathsGrid->addWidget(pathsTableWidget, 0, 0, 3, 2);
 
     QPushButton *AddPathButt = new QPushButton(tr("Add Path"));
@@ -765,9 +743,36 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
 
     locationsGrid->addWidget(pathsGroup, 1, 0, 1, 3);
 
+    // The folders of component libraries besides the installed ones and
+    // user_lib: each a section of the Libraries panel.
+    QGroupBox *libraryPathsGroup = new QGroupBox(tr("Library Search Paths"), locationsTab);
+    QGridLayout *libraryPathsGrid = new QGridLayout(libraryPathsGroup);
+    libraryPathsTableWidget = newPathTable(libraryPathsGroup, tr("Library Search Path List"), QStringLiteral("libraryPaths"),
+                                           tr("Library search paths"));
+    libraryPathsGrid->addWidget(libraryPathsTableWidget, 0, 0, 3, 2);
+    QPushButton *addLibraryPathButt = new QPushButton(tr("Add Path"));
+    libraryPathsGrid->addWidget(addLibraryPathButt, 0, 2);
+    connect(addLibraryPathButt, &QPushButton::clicked, this, &QucsSettingsDialog::slotAddLibraryPath);
+    QPushButton *addLibraryPathSubButt = new QPushButton(tr("Add Path With SubFolders"));
+    libraryPathsGrid->addWidget(addLibraryPathSubButt, 1, 2);
+    connect(addLibraryPathSubButt, &QPushButton::clicked, this, &QucsSettingsDialog::slotAddLibraryPathWithSubFolders);
+    QPushButton *clearLibraryPathsButt = new QPushButton(tr("Clear All Paths"));
+    libraryPathsGrid->addWidget(clearLibraryPathsButt, 2, 2);
+    connect(clearLibraryPathsButt, &QPushButton::clicked, this, &QucsSettingsDialog::slotClearAllLibraryPaths);
+    QLabel *libraryPathsNote = new QLabel(
+        tr("The libraries (.lib) of each folder are a section of the Libraries panel, after the user libraries; a "
+           "library a placed part names is looked for in them when it is not where it was. Create Library can "
+           "save into one."),
+        libraryPathsGroup);
+    libraryPathsNote->setWordWrap(true);
+    libraryPathsGrid->addWidget(libraryPathsNote, 3, 0, 1, 3);
+    locationsGrid->addWidget(libraryPathsGroup, 2, 0, 1, 3);
+
     // create a copy of the current global path list
     currentPaths = QStringList(qucsPathList);
     makePathTable();
+    currentLibraryPaths = QucsSettings.LibraryPaths;
+    makePathTable(libraryPathsTableWidget, &currentLibraryPaths);
 
     t->addTab(locationsTab, tr("Locations"));
 
@@ -1144,6 +1149,12 @@ void QucsSettingsDialog::slotApply()
     const bool projectsChanged = QucsSettings.AnyFolderIsProject != anyFolderIsProject->isChecked();
     QucsSettings.AnyFolderIsProject = anyFolderIsProject->isChecked();
 
+    // The search paths, before they are saved (the subcircuits' were
+    // saved only when Qucs-S closed).
+    const bool librariesChanged = QucsSettings.LibraryPaths != currentLibraryPaths;
+    QucsSettings.LibraryPaths = currentLibraryPaths;
+    QucsMain->updatePathList(currentPaths);
+
     saveApplSettings();  // also sets the small and large font
     App->applySyntaxSettings();   // the text documents in the formats set
     if (projectsChanged) App->applyProjectSettings();
@@ -1166,10 +1177,8 @@ void QucsSettingsDialog::slotApply()
         App->repaint();
     }
 
-    // update the schenatic filelist hash
-    QucsMain->updatePathList(currentPaths);
-    //QucsMain->updateSchNameHash();
-    //QucsMain->updateSpiceNameHash();
+    // The Libraries panel with the library search paths as they are now.
+    if (librariesChanged) App->fillLibrariesTreeView();
 
 }
 
@@ -1437,35 +1446,40 @@ void QucsSettingsDialog::slotPythonBrowse()
     pythonEdit->setText(d);
 }
 
-void QucsSettingsDialog::slotAddPath()
+QTableWidget *QucsSettingsDialog::newPathTable(QWidget *parent, const QString &header, const QString &name,
+                                               const QString &accessible)
+{
+    // A second column for the buttons that remove a path.
+    auto *table = new QTableWidget(parent);
+    table->setObjectName(name);
+    table->setAccessibleName(accessible);   // (Claude's key for it)
+    table->setProperty("paths", true);      // (a list of folders: set_settings gives it whole)
+    table->setColumnCount(2);
+    table->horizontalHeader()->setStretchLastSection(false);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+    table->setColumnWidth(1, 36);
+    table->setHorizontalHeaderItem(0, new QTableWidgetItem(header));
+    table->setHorizontalHeaderItem(1, new QTableWidgetItem(QString()));
+    // avoid drawing header text in bold when some data is selected
+    table->horizontalHeader()->setSectionsClickable(false);
+    table->verticalHeader()->hide();
+    // allow multiple items to be selected
+    table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    return table;
+}
+
+QStringList QucsSettingsDialog::chooseFolders(bool subfolders)
 {
   QString d = QFileDialog::getExistingDirectory
     (this, tr("Select a directory"),
      QucsSettings.QucsWorkDir.canonicalPath(),
      QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
 
-  if(!d.isEmpty())
-    {
-        currentPaths.append(d);
-        // reconstruct the table again
-        makePathTable();
-    }
-    else
-    {
-        // user cancelled
-    }
-}
-
-void QucsSettingsDialog::slotAddPathWithSubFolders()
-{
-  QString d = QFileDialog::getExistingDirectory
-      (this, tr("Select a directory"),
-       QucsSettings.QucsWorkDir.canonicalPath(),
-       QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-
   if(d.isEmpty()){
-    return;
+    return {};   // user cancelled
   }
+  if (!subfolders) return {d};
 
   // Collect all subdirectories first
   QStringList newPaths;
@@ -1559,16 +1573,75 @@ void QucsSettingsDialog::slotAddPathWithSubFolders()
   layout->addWidget(buttons);
 
   if (confirmDialog.exec() != QDialog::Accepted)
-    return;
+    return {};
 
-  // Only append the checked paths
+  // Only the checked paths
+  QStringList chosen;
   for (int i = 0; i < pathList->count(); i++){
     if (pathList->item(i)->checkState() == Qt::Checked){
-      currentPaths.append(pathList->item(i)->text());
+      chosen.append(pathList->item(i)->text());
     }
   }
+  return chosen;
+}
 
+bool QucsSettingsDialog::confirmClearAll(int count)
+{
+  // Dialog for user confirmation
+  return count > 0
+         && QMessageBox::question(this, tr("Clear All Paths"),
+                                  tr("Are you sure you want to remove all %1 search paths?").arg(count),
+                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+                == QMessageBox::Yes;
+}
+
+void QucsSettingsDialog::slotAddPath()
+{
+  for (const QString &path : chooseFolders(false))
+    if (!currentPaths.contains(path)) currentPaths.append(path);
   makePathTable();
+}
+
+void QucsSettingsDialog::slotAddPathWithSubFolders()
+{
+  for (const QString &path : chooseFolders(true))
+    if (!currentPaths.contains(path)) currentPaths.append(path);
+  makePathTable();
+}
+
+void QucsSettingsDialog::slotAddLibraryPath()
+{
+  for (const QString &path : chooseFolders(false))
+    if (!currentLibraryPaths.contains(path)) currentLibraryPaths.append(path);
+  makePathTable(libraryPathsTableWidget, &currentLibraryPaths);
+}
+
+void QucsSettingsDialog::slotAddLibraryPathWithSubFolders()
+{
+  for (const QString &path : chooseFolders(true))
+    if (!currentLibraryPaths.contains(path)) currentLibraryPaths.append(path);
+  makePathTable(libraryPathsTableWidget, &currentLibraryPaths);
+}
+
+void QucsSettingsDialog::slotClearAllLibraryPaths()
+{
+  if (!confirmClearAll(int(currentLibraryPaths.size()))) return;
+  currentLibraryPaths.clear();
+  makePathTable(libraryPathsTableWidget, &currentLibraryPaths);
+}
+
+void QucsSettingsDialog::setPathList(const QString &table, const QStringList &paths)
+{
+  QStringList unique;
+  for (const QString &path : paths)
+    if (!path.trimmed().isEmpty() && !unique.contains(path.trimmed())) unique << path.trimmed();
+  if (table == QLatin1String("libraryPaths")) {
+    currentLibraryPaths = unique;
+    makePathTable(libraryPathsTableWidget, &currentLibraryPaths);
+  } else if (table == QLatin1String("subcircuitPaths")) {
+    currentPaths = unique;
+    makePathTable();
+  }
 }
 
 // makePathTable()
@@ -1577,49 +1650,40 @@ void QucsSettingsDialog::slotAddPathWithSubFolders()
 // in the locations tab
 void QucsSettingsDialog::makePathTable()
 {
-  pathsTableWidget->clearContents();
-  pathsTableWidget->setRowCount(0);
+  makePathTable(pathsTableWidget, &currentPaths);
+}
 
-  for (const QString& pathstr : std::as_const(currentPaths))
+void QucsSettingsDialog::makePathTable(QTableWidget *table, QStringList *paths)
+{
+  table->clearContents();
+  table->setRowCount(0);
+
+  for (const QString& pathstr : std::as_const(*paths))
   {
-    int row = pathsTableWidget->rowCount();
-    pathsTableWidget->setRowCount(row + 1);
+    int row = table->rowCount();
+    table->setRowCount(row + 1);
 
     QTableWidgetItem *path = new QTableWidgetItem(pathstr);
     path->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
-    pathsTableWidget->setItem(row, 0, path);
+    table->setItem(row, 0, path);
 
     // Button for removing the path
-    QPushButton *removeButt = new QPushButton(tr("✕"), pathsTableWidget);
+    QPushButton *removeButt = new QPushButton(tr("✕"), table);
     removeButt->setToolTip(tr("Remove this path"));
     removeButt->setStyleSheet("color: red;");
 
-    connect(removeButt, &QPushButton::clicked, [this, pathstr]() {
-      currentPaths.removeAll(pathstr);
-      makePathTable();
+    connect(removeButt, &QPushButton::clicked, [this, table, paths, pathstr]() {
+      paths->removeAll(pathstr);
+      makePathTable(table, paths);
     });
-    pathsTableWidget->setCellWidget(row, 1, removeButt);
+    table->setCellWidget(row, 1, removeButt);
   }
 }
 
 void QucsSettingsDialog::slotClearAllPaths()
 {
-
-  if (currentPaths.isEmpty())
-    return;
-
-  // Dialog for user confirmation
-  int ret = QMessageBox::question(
-      this,
-      tr("Clear All Paths"),
-      tr("Are you sure you want to remove all %1 search paths?").arg(currentPaths.size()),
-      QMessageBox::Yes | QMessageBox::No,
-      QMessageBox::No);
-
-  if (ret == QMessageBox::Yes)
-  {
-    // Removes every entry from the search
-    currentPaths.clear();
-    makePathTable();
-  }
+  if (!confirmClearAll(int(currentPaths.size()))) return;
+  // Removes every entry from the search
+  currentPaths.clear();
+  makePathTable();
 }

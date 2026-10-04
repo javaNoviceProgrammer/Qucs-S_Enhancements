@@ -197,6 +197,12 @@ struct tQucsSettings {
   // (View > Toolbars > Lock Toolbars).
   bool LockToolbars = false;
 
+  // Folders of component libraries besides the installed ones and the
+  // workspace's user_lib (Settings > Locations > Library Search Paths):
+  // each a section of the Libraries panel, and searched for a library a
+  // placed part names that is not where it was.
+  QStringList LibraryPaths;
+
   bool firstRun;
 };
 
