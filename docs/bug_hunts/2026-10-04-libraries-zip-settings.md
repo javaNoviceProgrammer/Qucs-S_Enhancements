@@ -40,8 +40,8 @@ folder. Methods:
 
 | | Finding | Since |
 |---|---|---|
-| **A1** | A project's library record can make the sync delete any file of the project | `15c7514` |
-| **A2** | `export_netlist` onto a linked library source overwrites the library's own file, outside the project | `15c7514` |
+| **A1** | A project's library record can make the sync delete any file of the project (fixed in `403ff80`) | `15c7514` |
+| **A2** | `export_netlist` onto a linked library source overwrites the library's own file, outside the project (fixed in `403ff80`) | `15c7514` |
 | **A3** | ZIP names without the UTF-8 flag are garbled, and saving makes it permanent | before (the ZIP tab) |
 | **A4** | A ZIP entry repeated under one name: the later one is never extracted; deleting one deletes both | before (the ZIP tab) |
 | **A5** | An archive of 65,535 entries or more is written so it cannot be read back, or loses entries | before; `299cd70` |
@@ -77,6 +77,34 @@ A record comes with a project: a ZIP, a clone, a shared folder. Opening it is en
 inside it (`QDir::cleanPath`, then a prefix check against the folder plus `/`); remove only
 what is a link to, or a copy of, the record's `original`.
 
+**Fixed in `403ff80`.** A record's file is taken away only when it is in the record's folder as the
+folders really are (`pathIn` in `projectlibraries.cpp`):
+- a path that leads out by `..` (`./../../victim.txt`, `x/../../../keep/notes.txt`) does
+  not count;
+- nor does one through a folder in it that is a link elsewhere (`out/far.txt`, with `out`
+  a link out of the project).
+
+A copy, or a copied include, is taken away only while it is still the copy Qucs-S made:
+- The record now keeps each copy's SHA-256, written with the record.
+- A record from before has no sums. Its copy goes only when it has its original's bytes,
+  and the original must be another file than the copy.
+
+So a file of the user's that a record names stays, edited or not.
+
+The same check guards what the sync writes:
+- `Libraries/` itself a link: nothing is read, written or taken away through it, and the
+  report gives it as a conflict.
+- A library's folder in it that is a link: nothing is written through it.
+- A folder on a source's or an include's way that is a link elsewhere: nothing is written
+  or removed there.
+
+Tests (`test_project_libraries`):
+- `aRecordTakesAwayNothingOutsideItsFolder`: the hunt's paths in `Libraries/` and in a
+  folder of before; the copies kept and taken away; a copy's sum in its record.
+- `nothingIsWrittenThroughAFolderLeadingElsewhere`: `Libraries/` a link, a library's folder
+  a link, an include's folder a link, and a source in a library's subfolder whose folder in
+  the project is a link, the record claiming the user's file there, for links and copies.
+
 ### A2. `export_netlist` onto a linked library source writes through the link
 
 `export_netlist {save_as: "Libraries/VaRes/vres.va", replace: true}` (`p2b`) followed the
@@ -87,6 +115,59 @@ same path is refused ("could not be saved").
 *Fix:* the tools that write a file the user names refuse a path inside `Libraries/` (or
 any symbolic link), as `save_document` does, or replace the link rather than writing
 through it.
+
+**Fixed in `403ff80`.** One check, `projectlibraries::notToWrite(path)`, says when a file is a library's
+Verilog-A a project keeps:
+- a link, which would write the library's own file;
+- or a copy, which is renewed, so what is written is lost.
+
+It tells the file by the file itself, so it works however the path is spelled: through
+another link to the project, in another case, `./`, or a link to nothing (where writing
+would make the file where the library was).
+
+Who checks:
+- Every tool write goes through `QucsControl::aboutToWrite`. It now answers with that
+  refusal, and each of its callers stops on it: `export_netlist`, `save_document`,
+  `export_image` (and a pdf_tex's PDF), `copy_document` and its results, `import_netlist`'s
+  subcircuits, `import_data`, the dataset to the trash, and a data display's renamed
+  traces.
+- In the window, every save dialog asks again while the file chosen is one
+  (`misc::saveFileName`). Save As checks the name with its suffix added. The Export
+  dialog and Import Data check their typed names.
+- `TextDoc::save` already refused such a file.
+
+The answer: "…/Libraries/WriteLib/good.va is the Verilog-A of the library WriteLib, linked
+into the project from …: written, the library's own file would change, which every
+project using it shares. Write to another file - the library's Verilog-A is changed in the
+library."
+
+Tests:
+- `test_project_libraries` `aKeptFileIsNotToWrite`: a link, the same through another
+  spelling, a link to nothing, a copy; the library's own file, a new file and the record
+  not refused; the dialogs' message.
+- `test_qucs_control` `aLibrarysLinkIsNotWrittenThrough`: `export_netlist` (SPICE and CDL)
+  and `save_document as` refused; the library's file unchanged; a file elsewhere written.
+- `test_graphics_export` `theDialogsDiagramAndItsFolder`: the Export dialog onto a kept
+  file and onto one as a pdf_tex's PDF.
+
+Each part of both fixes was broken on purpose: 21 breaks, 20 caught. The one not caught
+is `pathIn`'s guard for its folder vanishing while it looks, which only a race reaches;
+without it, that case loops forever.
+
+Tests that at first missed a break:
+- The stale copy was a different size from its original, so the size test hid the byte
+  comparison. It is now the same size.
+- `save_document as` for a text document was also refused by `TextDoc::save`'s own,
+  similar message. The test now asks for the new message.
+
+Checks that could never make a difference were left out: `..` and drive checks in
+`pathIn` (the system resolves them; its result is always under the folder), a file's own
+type test before a copy's sum (`removeItem` decides), and a shortcut for new files in
+`notToWrite`.
+
+`export_data` cannot reach a link: it adds its format's suffix to `good.va`. Full suite
+88/88; under AddressSanitizer 88/88 (`test_claude_code` timed out waiting for a turn
+under load and passed alone), with no report; the end-to-end scenarios 90/90.
 
 ### A3. ZIP names without the UTF-8 flag
 
