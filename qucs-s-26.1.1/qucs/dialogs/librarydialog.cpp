@@ -120,6 +120,7 @@ LibraryDialog::LibraryDialog(QWidget *parent)
   selectSubcktLayout->addWidget(Group);
 
   subcirFileList = new QListWidget();
+  subcirFileList->setAccessibleName(tr("Subcircuits"));   // (its name to Claude: each ticked or not)
   subcirListLayout = new QVBoxLayout();
   Group->setLayout(subcirListLayout);
 
@@ -588,6 +589,7 @@ void LibraryDialog::slotSave()
         delete Doc;
         ErrText->appendPlainText(tr("Error: Cannot load subcircuit \"%1\".").
           arg(SelectedNames[i]));
+        Success = false;   // (it said "Successfully created" and kept the half-written library)
         break;
     }
     Doc->setDocName(NameEdit->text() + "_" + SelectedNames[i]);
@@ -770,6 +772,41 @@ void LibraryDialog::slotSave()
   }
 
   ErrText->appendPlainText(tr("Successfully created library."));
+}
+
+// ---------------------------------------------------------------
+bool LibraryDialog::create(const Request &request, QString *log, QString *error)
+{
+  const auto fail = [error](const QString &why) {
+    if (error != nullptr) *error = why;
+    return false;
+  };
+  static const QRegularExpression whole(QStringLiteral("^\\w+$"));   // (as the name field takes it)
+  if (!whole.match(request.name).hasMatch())
+    return fail(tr("a library's name is letters, digits and _ (%1 is not)").arg(request.name));
+  if (request.subcircuits.isEmpty()) return fail(tr("no subcircuit to put in it"));
+  if (!QDir().mkpath(request.folder))
+    return fail(tr("the folder %1 cannot be made").arg(QDir::toNativeSeparators(request.folder)));
+  LibDir = QDir(request.folder);
+  LibFile.setFileName(LibDir.absoluteFilePath(request.name) + ".lib");
+  if (LibFile.exists() && !request.replace)
+    return fail(tr("%1 is there already ('replace' writes over it)").arg(QDir::toNativeSeparators(LibFile.fileName())));
+  NameEdit->setText(request.name);
+  SelectedNames = request.subcircuits;
+  Descriptions.clear();
+  for (const QString &sub : request.subcircuits) {
+    const QString bare = QFileInfo(sub).completeBaseName();
+    Descriptions.append(request.descriptions.value(sub, request.descriptions.value(bare)));
+  }
+  checkAnalogLib->setChecked(request.analogOnly);
+  const bool embed = QucsSettings.EmbedVerilogAInLibraries;
+  QucsSettings.EmbedVerilogAInLibraries = request.embedVerilogA;
+  slotSave();
+  QucsSettings.EmbedVerilogAInLibraries = embed;
+  if (log != nullptr) *log = ErrText->toPlainText();
+  if (!QFileInfo::exists(LibFile.fileName()))   // (a library not made is removed)
+    return fail(tr("the library was not made (its messages say why)"));
+  return true;
 }
 
 // ---------------------------------------------------------------

@@ -291,12 +291,12 @@ const char* const kTools = R"JSON([
    "path": {"type": "string", "description": "The document to use it on, brought to the front first; the one in front when not given"}},
   "required": ["action"]}},
 {"name": "get_dialog",
- "description": "Reads the Qucs-S dialog waiting for an answer (or another open window of Qucs-S): its title, texts and controls - fields, lists, check boxes, tabs, tables, trees (a search's results: rows, and whether each is checked), buttons - each with its label, value and an id for set_dialog.",
+ "description": "Reads the Qucs-S dialog waiting for an answer (or another open window of Qucs-S): its title, texts and controls - fields, lists (and whether each item is ticked, when they have check boxes: 'checked'), check boxes, tabs, tables, trees (a search's results: rows, and whether each is checked), buttons - each with its label, value and an id for set_dialog.",
  "inputSchema": {"type": "object", "properties": {}}},
 {"name": "set_dialog",
- "description": "Fills in the open dialog and presses a button. 'set' changes controls, each by its id or label from get_dialog: a field takes text, a list an item, a check box true or false, a spin box a number, tabs a tab's title, a table [row, column, text], and a tree [row, column, true or false] to check a row or not (or [row, column, text]). 'press' names the button to press afterwards (OK, Cancel, Apply, ... or its id).",
+ "description": "Fills in the open dialog and presses a button. 'set' changes controls, each by its id or label from get_dialog: a field takes text, a list an item (or [item or row, true or false] to tick it or not), a check box true or false, a spin box a number, tabs a tab's title, a table [row, column, text], and a tree [row, column, true or false] to check a row or not (or [row, column, text]). 'press' names the button to press afterwards (OK, Cancel, Apply, ... or its id).",
  "inputSchema": {"type": "object", "properties": {
-   "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, or [row, column, true or false] for a tree's check box}]"},
+   "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, [row, column, true or false] for a tree's check box, or [item or row, true or false] for a list's}]"},
    "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id"}}}},
 {"name": "get_settings",
  "description": "Reads the settings of Qucs-S, typed: 'scope' app (Application Settings), simulators (Simulators Settings), document (the settings of the document 'path' names, the one in front unless given) or cdl (CDL Settings). Each setting by its key - \"Tab/Label\" as the dialog shows it (\"Settings/Language\", \"Locations/Ngspice\") - with its type (text, bool, option, choice, number, integer, table, folders - a list of folders, such as \"Locations/Library search paths\"), its value, and its choices or range. Nothing is shown or changed.",
@@ -561,10 +561,31 @@ const char* const kTools = R"JSON([
  "description": "What a library part is, in one call: its pins in order, each with its name, the side of the symbol it is on and its role (input, output, supply); its supply pins; what its model is - one component placed as that component, a macromodel of controlled sources, a transistor-level subcircuit - with the count of its elements; how the test of every library part under ngspice found it; its description; and 'place' for add_component. find_library_component finds the part.",
  "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "The library, as find_library_component gives it: OpAmps"}, "part": {"type": "string", "description": "The part in it: uA741"}}, "required": ["library", "part"]}},
 {"name": "find_library_component",
- "description": "Searches the component libraries - Qucs-S's own, the project's, the user's (user_lib) and those of the library search paths (get_settings app, Locations/Library search paths) - and the SPICE model files (.model cards in .lib, .mod, .inc and .cir files) of the project and the workspace for a part by what it is and by its values. 'search' matches words in its name or description (2N3904, NPN 40V); 'type' is npn, pnp, nmos, pmos, njf, pjf, diode or a Qucs model (_BJT, _MOSFET, Diode, ...); 'near' gives parameter values ({\"Bf\": 200}, nearest first on a logarithmic scale); 'library' limits it to one library. Returns each part with its library, description, the values asked about and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp ('placed as' names the component it becomes when its model is one component with the library's values - a Diode, a _BJT); a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value. Each library part says how it fared under ngspice ('ngspice'): tested - it netlists and its operating point converges, each pin to ground through 1 MOhm (a smoke test, not of what it does) - or failing, and why; 'tested' lists only those that pass.",
+ "description": "Searches the component libraries - Qucs-S's own, the project's, the user's (user_lib) and those of the library search paths (get_settings app, Locations/Library search paths) - and the SPICE model files (.model cards in .lib, .mod, .inc and .cir files) of the project and the workspace for a part by what it is and by its values. 'search' matches words in its name or description (2N3904, NPN 40V); 'type' is npn, pnp, nmos, pmos, njf, pjf, diode or a Qucs model (_BJT, _MOSFET, Diode, ...); 'near' gives parameter values ({\"Bf\": 200}, nearest first on a logarithmic scale); 'library' limits it to one library. Returns each part with its library, description, the values asked about and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp ('placed as' names the component it becomes when its model is one component with the library's values - a Diode, a _BJT); a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value. A library of your own: create_library; one from elsewhere: import_library; every library: list_libraries. Each library part says how it fared under ngspice ('ngspice'): tested - it netlists and its operating point converges, each pin to ground through 1 MOhm (a smoke test, not of what it does) - or failing, and why; 'tested' lists only those that pass.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string", "description": "Words in its name or description: 2N3904, NPN 40V"}, "type": {"type": "string", "description": "npn, pnp, nmos, pmos, njf, pjf, diode, or a Qucs model (_BJT, _MOSFET, Diode, ...)"}, "near": {"type": "object", "description": "Parameter values, nearest first on a logarithmic scale: {\"Bf\": 200}"},
    "library": {"type": "string", "description": "Only this library, by name"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Parts at most, 15 by default"},
    "tested": {"type": "boolean", "description": "Only the library parts the test of every part under ngspice found working (each result's 'ngspice' says how it fared)"}}}},
+{"name": "list_libraries",
+ "description": "Lists the component libraries as the Libraries panel shows them, by section: installed (Qucs-S's own), user (the workspace's user_lib), each folder of the library search paths, and the open project's - each library with its file, its kind (qucs: a Qucs-S library; spice: a SPICE library of subcircuits) and how many parts it has; one that cannot be read, and one hidden with this simulator, say so. 'library' (a name or a file) gives one library's parts instead, each with its description and 'place': the add_component that places it (a Qucs-S library's part as type Lib with Lib and Comp, a SPICE library's as SpLib with File and Device). create_library makes a library, import_library brings one in, and set_settings (scope app, \"Locations/Library search paths\") adds a folder of them.",
+ "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "One library, by its name (OpAmps) or its file: its parts"}}}},
+{"name": "create_library",
+ "description": "Makes a component library of the open project's subcircuits, as Project > Create Library does: NAME.lib, with each subcircuit's Qucs and SPICE models and its symbol, and beside it a folder NAME/ of the files its models need (SPICE libraries, and the Verilog-A sources of the modules its .model cards name unless 'embed_verilog_a' is false). 'destination' is user_lib (the default: the user libraries), project, or a folder of the library search paths. It is in the Libraries panel at once; the answer gives each part's add_component ('place') and the messages of making it. A library of that name there is refused unless 'replace', which moves the old one to the trash first. Without 'subcircuits', every subcircuit of the project (a schematic with ports; create_subcircuit makes one).",
+ "inputSchema": {"type": "object", "properties": {
+   "name": {"type": "string", "description": "The library's name: letters, digits and _ (MyAmps); its file is NAME.lib"},
+   "subcircuits": {"type": "array", "items": {"type": "string"}, "description": "The project's subcircuits to put in it, by name (amp or amp.sch); all of them when not given"},
+   "destination": {"type": "string", "description": "user_lib (the default), project, or a folder of the library search paths"},
+   "descriptions": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Each part's description, by subcircuit name: {\"amp\": \"A x10 amplifier\"}"},
+   "digital_models": {"type": "boolean", "description": "Verilog and VHDL models too, for a digital simulation (off: analog only, the default)"},
+   "embed_verilog_a": {"type": "boolean", "description": "Copy the Verilog-A sources its models use into its folder (the setting's choice when not given, on unless changed)"},
+   "replace": {"type": "boolean", "description": "Write over a library of that name there, the old one moved to the trash"}},
+  "required": ["name"]}},
+{"name": "import_library",
+ "description": "Brings a library file into Qucs-S: a Qucs-S library (made by Create Library or create_library - another computer's, a colleague's) or a SPICE library of subcircuits (a .lib with .subckt), copied with its folder of models (NAME/ beside NAME.lib) into user_lib (the default), the project, or a folder of the library search paths. It is in the Libraries panel at once; the answer gives its kind, the files written and each part's add_component ('place'). One there already is refused unless 'replace', which moves it (and its folder) to the trash first. A folder of libraries is used where it is instead: set_settings (scope app, \"Locations/Library search paths\") adds it.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The library file (a .lib): a path, or a name in the open project's folder (else the workspace's)"},
+   "destination": {"type": "string", "description": "user_lib (the default), project, or a folder of the library search paths"},
+   "replace": {"type": "boolean", "description": "Replace a library of that name there, the old one (and its folder) moved to the trash"}},
+  "required": ["path"]}},
 {"name": "new_project",
  "description": "Creates a project in the workspace (a NAME_prj folder with its Scratch folder, like Project > New Project; a plain folder when any folder is a project) and opens it unless 'open' is false. Opening closes the documents, so it is not opened while one has unsaved changes. Relative paths are then resolved against the open project.",
  "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "The project's name: a folder NAME_prj in the workspace"}, "open": {"type": "boolean", "description": "Open it after (the default); refused while a document has unsaved changes"}}, "required": ["name"]}},
@@ -695,6 +716,8 @@ const struct {
     {"import_netlist", QT_TRANSLATE_NOOP("QucsControl", "make a schematic of a netlist in Qucs-S")},
     {"import_data", QT_TRANSLATE_NOOP("QucsControl", "import a data file as a dataset in Qucs-S")},
     {"export_data", QT_TRANSLATE_NOOP("QucsControl", "write curves of Qucs-S to a file")},
+    {"create_library", QT_TRANSLATE_NOOP("QucsControl", "make a component library in Qucs-S")},
+    {"import_library", QT_TRANSLATE_NOOP("QucsControl", "bring a component library into Qucs-S")},
 };
 
 // Tools that only look (or move the view): used without asking.
@@ -703,7 +726,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
                                  "read_pdf", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
                                  "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
-                                 "ngspice_commands"};
+                                 "ngspice_commands", "list_libraries"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
 // changed or taken away - a simulation writes its dataset anew, which it
@@ -881,6 +904,9 @@ const struct {
     {"import_data", "import csv tsv excel xlsx spreadsheet workbook measurement measured data file table columns npy npz numpy touchstone s2p plot dataset"},
     {"export_data", "export save write csv tsv excel xlsx spreadsheet workbook text columns numpy npz matlab python curves traces diagram plot graph data dataset variables file"},
     {"find_library_component", "library part search by values model"},
+    {"list_libraries", "libraries list library panel sections installed user_lib search path project parts lib"},
+    {"create_library", "create make export library lib subcircuits share user_lib"},
+    {"import_library", "import add install bring library lib file vendor colleague spice subckt copy user_lib"},
     {"describe_part", "library part pins order names supply model macromodel transistor tested bench roles input output"},
     {"read_pdf", "datasheet pdf text read"},
     {"get_text", "text document tab read cir va verilog-a netlist script lines unsaved"},
@@ -3446,6 +3472,11 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
     } else if (tool == QLatin1String("read_pdf")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
     else if (tool == QLatin1String("find_library_component")) subject = (s("type") + QLatin1Char(' ') + s("search")).trimmed();
     else if (tool == QLatin1String("describe_part")) subject = s("library") + QLatin1Char('/') + s("part");
+    else if (tool == QLatin1String("list_libraries")) subject = s("library");
+    else if (tool == QLatin1String("create_library") || tool == QLatin1String("import_library"))
+        subject = (tool == QLatin1String("create_library") ? s("name") : s("path")) + QStringLiteral(" → ")
+                  + (s("destination").isEmpty() ? QStringLiteral("user_lib") : s("destination"))
+                  + (a.value(QLatin1String("replace")).toBool() ? tr(", replacing") : QString());
     else if (tool == QLatin1String("tune"))
         subject = s("component") + (s("property").isEmpty() ? QString() : QLatin1Char('.') + s("property"))
                   + (a.value(QLatin1String("target")).isDouble() ? tr(" to %1").arg(a.value(QLatin1String("target")).toDouble()) : QString());
@@ -3506,7 +3537,9 @@ QString QucsControl::instructions() const
         "value, simulating and measuring until a measurement reaches its target - one call instead of three per "
         "iteration. build_verilog_a compiles a .va file now and reports errors with their lines; describe_component_type "
         "lists a Verilog-A module's parameters. find_library_component finds a part by its values (an NPN with Bf near "
-        "200), describe_part a library part's pins, model and tested status; read_pdf reads a datasheet's text; "
+        "200), describe_part a library part's pins, model and tested status; list_libraries lists the libraries as the Libraries "
+        "panel does, create_library makes one of the project's subcircuits and import_library brings a library file in; "
+        "read_pdf reads a datasheet's text; "
         "get_text and edit_text read and edit a text tab (a netlist, a .va) with the user's unsaved edits, goto_line "
         "shows a line of it; "
         "import_netlist builds a schematic from a SPICE netlist; import_data brings a data file (CSV, a workbook, NumPy, "
@@ -4096,7 +4129,8 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
         QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
-        QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help")};
+        QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help"),
+        QStringLiteral("list_libraries")};
     if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool))
         return errorResult(tr("“%1” is open in Qucs-S and waits for an answer: %2 waits until it is closed (get_dialog "
                               "reads it, set_dialog answers it - or ask the user to).")
@@ -4234,6 +4268,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("export_data")) return exportData(args);
     if (tool == QLatin1String("find_library_component")) return findLibraryComponent(args);
     if (tool == QLatin1String("describe_part")) return describePart(args);
+    if (tool == QLatin1String("list_libraries")) return listLibraries(args);
+    if (tool == QLatin1String("create_library")) return createLibrary(args);
+    if (tool == QLatin1String("import_library")) return importLibrary(args);
     if (tool == QLatin1String("simulation_status")) return simulationStatus(args);
     if (tool == QLatin1String("read_help")) return readHelp(args);
     async = true;
@@ -11070,9 +11107,18 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
         } else if (auto* lw = qobject_cast<QListWidget*>(w)) {
             o.insert(QStringLiteral("kind"), QStringLiteral("list"));
             o.insert(QStringLiteral("value"), lw->currentItem() != nullptr ? lw->currentItem()->text() : QString());
-            QJsonArray items;
-            for (int k = 0; k < lw->count() && k < 200; ++k) items.append(lw->item(k)->text());
+            // Each item, and whether it is ticked when it has a check box
+            // (Create Library's subcircuits: which go into the library).
+            QJsonArray items, checked;
+            bool checkable = false;
+            for (int k = 0; k < lw->count() && k < 200; ++k) {
+                items.append(lw->item(k)->text());
+                const bool box = lw->item(k)->flags() & Qt::ItemIsUserCheckable;
+                checkable = checkable || box;
+                checked.append(box ? QJsonValue(lw->item(k)->checkState() == Qt::Checked) : QJsonValue(QJsonValue::Null));
+            }
             o.insert(QStringLiteral("items"), items);
+            if (checkable) o.insert(QStringLiteral("checked"), checked);
         } else if (auto* slider = qobject_cast<QAbstractSlider*>(w)) {
             o.insert(QStringLiteral("kind"), QStringLiteral("slider"));
             o.insert(QStringLiteral("value"), slider->value());
@@ -11454,9 +11500,29 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
             }
             if (ok) tree->setCurrentItem(item, k);
         } else if (auto* lw = qobject_cast<QListWidget*>(w)) {
-            const QList<QListWidgetItem*> items = lw->findItems(text, Qt::MatchFixedString);
-            if (items.isEmpty()) ok = false;
-            else lw->setCurrentItem(items.first());
+            // [item or row, true/false] ticks an item or not; an item alone
+            // chooses it.
+            const QJsonArray tick = value.toArray();
+            if (value.isArray() && tick.size() == 2 && tick.at(1).isBool()) {
+                QListWidgetItem* item = nullptr;
+                if (tick.at(0).isDouble()) item = lw->item(tick.at(0).toInt(-1));
+                else if (const QList<QListWidgetItem*> found = lw->findItems(tick.at(0).toString(), Qt::MatchFixedString); !found.isEmpty())
+                    item = found.first();
+                if (item == nullptr) {
+                    ok = false;
+                    why = rowsSaid(lw->count(), tr("list"));
+                } else if (!(item->flags() & Qt::ItemIsUserCheckable)) {
+                    ok = false;
+                    why = tr("%1 has no check box").arg(item->text());
+                } else {
+                    item->setCheckState(tick.at(1).toBool() ? Qt::Checked : Qt::Unchecked);
+                    lw->setCurrentItem(item);
+                }
+            } else {
+                const QList<QListWidgetItem*> items = lw->findItems(text, Qt::MatchFixedString);
+                if (items.isEmpty()) ok = false;
+                else lw->setCurrentItem(items.first());
+            }
         } else if (auto* b = qobject_cast<QAbstractButton*>(w)) {
             // A check box as a click would set it (its signals go).
             const bool want = value.isBool() ? value.toBool() : text.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0;

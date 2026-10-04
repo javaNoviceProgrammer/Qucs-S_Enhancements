@@ -235,6 +235,59 @@ private slots:
                  QStringList({"System Libraries", "Basic", "User Libraries", "Bad", "Mine", "Project Libraries"}));
     }
 
+    // A library copied in by anyone (the Finder, Claude Code's own tools)
+    // shows without a restart, and one taken away goes; the libraries open
+    // stay open and a search stays searched. A file that is no library
+    // changes nothing.
+    void thePanelFollowsTheFolders()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QucsSettings.LibraryPaths = {otherTeam};
+        app.fillLibrariesTreeView();
+        QTreeWidget* tree = app.librariesTree();
+        topItem(tree, "Other")->setExpanded(true);
+        QCOMPARE(topItem(tree, "Other")->childCount(), 1);
+        write(otherTeam + "/Fresh.lib", library("Fresh", "New"));
+        QTRY_VERIFY_WITH_TIMEOUT(topItem(app.librariesTree(), "Fresh") != nullptr, 5000);
+        QVERIFY(topItem(app.librariesTree(), "Other")->isExpanded());   // (as it was)
+        // A search typed stays applied.
+        auto* search = app.findChild<QLineEdit*>();
+        for (QLineEdit* e : app.findChildren<QLineEdit*>())
+            if (e->placeholderText() == "Search Lib Components") search = e;
+        QVERIFY(search != nullptr && search->placeholderText() == "Search Lib Components");
+        search->setText("New");
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotSearchLibComponent", Q_ARG(QString, "New")));
+        QVERIFY(topItem(app.librariesTree(), "Other")->isHidden());
+        QVERIFY(QFile::remove(otherTeam + "/Fresh.lib"));
+        write(otherTeam + "/Later.lib", library("Later", "New2"));
+        QTRY_VERIFY_WITH_TIMEOUT(topItem(app.librariesTree(), "Later") != nullptr, 5000);
+        QVERIFY(topItem(app.librariesTree(), "Fresh") == nullptr);
+        QVERIFY(topItem(app.librariesTree(), "Other")->isHidden() && !topItem(app.librariesTree(), "Later")->isHidden());
+        search->clear();
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotSearchLibComponent", Q_ARG(QString, QString())));
+        QFile::remove(otherTeam + "/Later.lib");
+        QTRY_VERIFY_WITH_TIMEOUT(topItem(app.librariesTree(), "Later") == nullptr, 5000);
+        // Not a library: the panel is not filled anew (an item kept is the
+        // same item).
+        QTreeWidgetItem* before = topItem(app.librariesTree(), "Other");
+        write(otherTeam + "/notes.txt", "not a library\n");
+        QTest::qWait(1000);
+        QCOMPARE(topItem(app.librariesTree(), "Other"), before);
+        QFile::remove(otherTeam + "/notes.txt");
+        QucsSettings.LibraryPaths.clear();
+
+        // A workspace with no user_lib yet: the first library made in one
+        // shows too.
+        const QString fresh = dir.filePath("fresh-workspace");
+        QVERIFY(QDir().mkpath(fresh));
+        QucsSettings.qucsWorkspaceDir.setPath(fresh);
+        app.fillLibrariesTreeView();
+        write(fresh + "/user_lib/First.lib", library("First", "One"));
+        QTRY_VERIFY_WITH_TIMEOUT(topItem(app.librariesTree(), "First") != nullptr, 5000);
+        QucsSettings.qucsWorkspaceDir.setPath(workspace);
+    }
+
     // Set in Settings > Locations: kept at once (the subcircuit paths
     // too, which were saved only when Qucs-S closed), and the panel shows
     // them.
