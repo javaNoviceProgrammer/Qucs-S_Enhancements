@@ -211,7 +211,23 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   which now searches the project's libraries too). An imported settings
   file keeps only the folders that are on this computer. The subcircuit
   search paths are now saved when the settings are applied, not only when
-  Qucs-S closes.
+  Qucs-S closes. The panel follows its folders: a library copied in,
+  made, renamed or taken away - by the Finder, a script or Claude Code's
+  own tools - shows without a restart, the libraries open and a search
+  typed kept.
+- **Claude makes and brings in libraries**: `create_library` makes a
+  library of the open project's subcircuits, as *Create Library* does -
+  those chosen, each with a description, into `user_lib`, the project or a
+  folder of the library search paths, Verilog-A embedded or not, a library
+  of that name replaced only when asked (the old one to the trash), never
+  of a schematic with unsaved changes - and answers with each part's
+  `add_component`. `import_library` brings a library file in - a Qucs-S
+  library with its folder of models, or a SPICE library of subcircuits -
+  into the same places. `list_libraries` lists the libraries as the panel
+  shows them, by section, or one library's parts with how to place each.
+  The *Create Library* dialog itself is open to Claude too: `get_dialog`
+  reads its subcircuits ticked or not, and `set_dialog` ticks or unticks
+  one (`[item, true or false]`, in any dialog's list).
 - **A Scratch folder per project, a subfolder per schematic**: the
   temporary files of a simulation (netlist, the raw simulator output such
   as `spice4qucs.ac1.plot`, log) go to `Scratch/<schematic>/` inside the

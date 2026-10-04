@@ -64,6 +64,24 @@ public:
 
   void fillSchematicList(QStringList);
 
+  /// A library made as Create creates it, without its pages (Claude's
+  /// create_library): \a name, of the \a subcircuits (names as
+  /// fillSchematicList was given them), into \a folder; each subcircuit's
+  /// description by its name; analog only, or with Verilog and VHDL models;
+  /// Verilog-A embedded or not; a library of that name there replaced only
+  /// when \a replace. False and why in \a error (nothing written, or the
+  /// failed library removed); what it said in \a log.
+  struct Request {
+    QString name;
+    QStringList subcircuits;
+    QString folder;
+    QHash<QString, QString> descriptions;
+    bool analogOnly = true;
+    bool embedVerilogA = true;
+    bool replace = false;
+  };
+  bool create(const Request &request, QString *log, QString *error);
+
 private slots:
   void slotCreateNext();
   void slotSave();

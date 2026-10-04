@@ -384,6 +384,11 @@ private:
     QJsonObject exportData(const QJsonObject& args);
     QJsonObject findLibraryComponent(const QJsonObject& args);
     QJsonObject describePart(const QJsonObject& args);
+    // The libraries (qucscontrol_libraries.cpp): the panel's, one made of
+    // the project's subcircuits, one brought in.
+    QJsonObject listLibraries(const QJsonObject& args);
+    QJsonObject createLibrary(const QJsonObject& args);
+    QJsonObject importLibrary(const QJsonObject& args);
     /// What a run of \a doc wrote: its dataset - written when it is newer than
     /// \a before (its time before the run; invalid when there was none) -
     /// its variables, the copy \a keepAs, and the traces left blank.

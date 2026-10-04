@@ -131,7 +131,7 @@ QString optimizingNgspice(const QString& dir)
     p.setProcessChannelMode(QProcess::MergedChannels);
     p.start(exe, {"-b", deck});
     if (!p.waitForFinished(20000)) return QString();
-    return QString::fromUtf8(p.readAll()).contains("parameter optimizer") ? exe : QString();
+    return QString::fromUtf8(p.readAll()).contains("optimize (-param|-mparam|-dparam)") ? exe : QString();
 }
 
 // \a ngspice if its optimize has the methods of the 2026-09-29 proposal

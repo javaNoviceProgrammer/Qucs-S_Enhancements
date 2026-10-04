@@ -802,6 +802,13 @@ private:
   bool populateLibTreeFromDir(const QString &LibDirPath,
                               QList<QTreeWidgetItem *> &topitems,
                               bool relpath = false);
+  // The folders of libraries the panel shows, watched: a library copied
+  // in, made, renamed or taken away by anyone (Claude Code's own tools, the
+  // Finder) shows without a restart.
+  QFileSystemWatcher *a_libraryWatcher = nullptr;
+  QTimer *a_libraryRefresh = nullptr;
+  QString a_librarySignature;   // their .lib files as they were last shown
+  QString librarySignature() const;
   void saveSettings();
   QWidget *getSchematicWidget(QucsDoc *Doc);
   /// After an import wrote the store: the settings read again and put on

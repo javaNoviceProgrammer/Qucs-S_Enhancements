@@ -996,10 +996,32 @@ void markUnreadable(QTreeWidgetItem* library, const QString& file, const QString
 
 } // namespace
 
+// The .lib files of the folders the panel shows besides the installed
+// ones - user_lib, the project's, the library search paths - each its
+// name, size and time: what a refresh compares.
+QString QucsApp::librarySignature() const
+{
+    QStringList folders{QucsSettings.qucsWorkspaceDir.filePath(QStringLiteral("user_lib"))};
+    if (!ProjName.isEmpty()) folders << QucsSettings.QucsWorkDir.absolutePath();
+    folders << QucsSettings.LibraryPaths;
+    QStringList lines;
+    for (const QString &folder : std::as_const(folders)) {
+        lines << folder;
+        for (const QFileInfo &f : QDir(folder).entryInfoList(QStringList("*.lib"), QDir::Files, QDir::Name))
+            lines << QStringLiteral("%1|%2|%3").arg(f.fileName()).arg(f.size()).arg(f.lastModified().toMSecsSinceEpoch());
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
 // Put all available libraries into ComboBox.
 void QucsApp::fillLibrariesTreeView ()
 {
     QList<QTreeWidgetItem *> topitems;
+
+    // What the user had open, and searched for: kept.
+    QSet<QString> opened;
+    for (int i = 0; i < libTreeWidget->topLevelItemCount(); ++i)
+        if (libTreeWidget->topLevelItem(i)->isExpanded()) opened << libTreeWidget->topLevelItem(i)->text(1);
 
     libTreeWidget->clear();
 
@@ -1070,6 +1092,32 @@ void QucsApp::fillLibrariesTreeView ()
     }
 
     libTreeWidget->insertTopLevelItems(0, topitems);
+    for (QTreeWidgetItem *item : std::as_const(topitems))
+        if (!item->text(1).isEmpty() && opened.contains(item->text(1))) item->setExpanded(true);
+    if (LibCompSearch != nullptr && !LibCompSearch->text().isEmpty()) slotSearchLibComponent(LibCompSearch->text());
+
+    // Watched from now: user_lib (the workspace, while there is none yet),
+    // the project's folder, the library search paths.
+    if (a_libraryWatcher == nullptr) {
+        a_libraryWatcher = new QFileSystemWatcher(this);
+        a_libraryRefresh = new QTimer(this);
+        a_libraryRefresh->setSingleShot(true);
+        a_libraryRefresh->setInterval(300);
+        connect(a_libraryWatcher, &QFileSystemWatcher::directoryChanged, this, [this] { a_libraryRefresh->start(); });
+        connect(a_libraryRefresh, &QTimer::timeout, this, [this] {
+            if (librarySignature() != a_librarySignature) fillLibrariesTreeView();
+        });
+    }
+    QStringList watch;
+    const QString userLib = QucsSettings.qucsWorkspaceDir.filePath(QStringLiteral("user_lib"));
+    watch << (QFileInfo(userLib).isDir() ? userLib : QucsSettings.qucsWorkspaceDir.absolutePath());
+    if (!ProjName.isEmpty()) watch << QucsSettings.QucsWorkDir.absolutePath();
+    watch << QucsSettings.LibraryPaths;
+    watch.removeIf([](const QString &folder) { return !QFileInfo(folder).isDir(); });
+    watch.removeDuplicates();
+    if (!a_libraryWatcher->directories().isEmpty()) a_libraryWatcher->removePaths(a_libraryWatcher->directories());
+    if (!watch.isEmpty()) a_libraryWatcher->addPaths(watch);
+    a_librarySignature = librarySignature();
 }
 
 
