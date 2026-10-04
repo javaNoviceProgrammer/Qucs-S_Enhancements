@@ -182,13 +182,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   embedded: each runs on one platform only. A circuit that uses the
   library — in any project, or none, with the library in `user_lib`, the
   project or a folder of the library search paths — has the source
-  compiled with OpenVAF beside it before its first simulation, and again
-  when the source is newer, and loads the model. When the library's
-  folder cannot be written (a team's share mounted read-only), or the
-  model beside the source was built on another platform (a Linux `.osdi`
-  on a Mac, an x86-64 one for an Arm ngspice, judged by the ngspice
-  program itself) — which is then kept for the computers it runs on, not
-  replaced — the model is compiled into Qucs-S's cache instead
+  compiled with OpenVAF before its first simulation, and again when the
+  source is newer, and loads the model: in a project beside the source's
+  link there (see below), with no project open beside the source. When
+  the library's folder cannot be written (a team's share mounted
+  read-only), or the model beside the source was built on another
+  platform (a Linux `.osdi` on a Mac, an x86-64 one for an Arm ngspice,
+  judged by the ngspice program itself) — which is then kept for the
+  computers it runs on, not replaced — the model is compiled into
+  Qucs-S's cache instead
   (`osdi/NAME-<hash>/NAME.osdi`, a folder for each source) and loaded
   from there; Claude's `build_verilog_a` does the same and says so. Only
   the files the library lists are used, from the folder beside the very
@@ -200,6 +202,38 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   by default) turns it off: the library then holds the subcircuits and
   their symbols only, as before. Share the library as `NAME.lib` with its
   folder; older versions of Qucs-S read it and ignore the Verilog-A files.
+- **A library device's Verilog-A in the project**: when a schematic of the
+  open project uses a device of a library that brings Verilog-A (one on
+  the library search paths, in `user_lib`, anywhere but the project
+  itself), the project gets a folder named after the library with a
+  symbolic link to each of those sources — `VaLib/good.va` → the
+  library's `good.va`. The *Content* panel lists it with the project's
+  Verilog-A, its note naming the library and its tool tip the original;
+  opened, it is read-only, a note at the top saying whose it is (the
+  library is shared by every project that uses it: it is changed there).
+  The model is compiled beside the link — `VaLib/good.osdi`, in the
+  project — and loaded from there, so nothing is ever written into the
+  library's folder. Kept up to date when a schematic is saved, when the
+  project opens and before an ngspice simulation compiles its Verilog-A,
+  counting the project's saved schematics (not those in *Scratch*), those
+  open with unsaved changes and the subcircuits outside the project they
+  place; when no schematic uses the device any more, the link and its
+  model are taken away, and the folder when Qucs-S made it and nothing
+  else is in it. Only what Qucs-S put there - a record in the folder,
+  `.qucs-library.json`, says what - is ever replaced or taken away: a file
+  of yours in its place is left as it is. A link that leads nowhere (the
+  library moved, the project opened on another computer) is made again to
+  where the library is found; one whose library is not found here at all
+  keeps what it has. Two libraries of one name get `VaLib` and `VaLib_2`;
+  the project's own library is not linked (its files are the project's).
+  On Windows, where a symbolic link needs Developer Mode, the source is
+  copied instead, with the files it includes, and copied again when the
+  original changes. The `.osdi` files are built for one platform: leave
+  `*/*.osdi` out of version control. Claude's `save_document` says what
+  was linked or taken away, and `edit_text` refuses a link. Also fixed:
+  after *Create Library*, the next netlist built left out the model of a
+  library part the new library's subcircuits used - the first simulation
+  then compiled no Verilog-A for it.
 - **Library search paths**: *Application Settings → Locations → Library
   Search Paths* lists folders of component libraries besides the installed
   ones and the workspace's `user_lib` - a team's share, a git checkout of

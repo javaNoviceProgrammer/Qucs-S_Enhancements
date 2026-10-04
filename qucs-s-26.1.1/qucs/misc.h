@@ -59,6 +59,9 @@ namespace misc {
   /// differed.
   QFont canvasFont(QFont font);
   QString properAbsFileName(const QString&, Schematic* sch = nullptr);
+  /// properAbsFileName() for a schematic in \a folder (its file's folder;
+  /// empty: no schematic) - for a schematic read as text, not loaded.
+  QString properAbsFileNameIn(const QString& filename, const QString& folder);
   /// The folders of component libraries, each once, in the order a placed
   /// part's library is looked for by its name: the installed libraries,
   /// the open project's folder (\a project), the workspace's user_lib, the

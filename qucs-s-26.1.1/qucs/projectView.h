@@ -187,9 +187,9 @@ private:
   /// filterRows() from the top, and the header said so.
   void applyFilter();
 
-  /// Adds a file row (path relative to the project, optional note) under
+  /// Adds a file row (path relative to the project, optional note and tool tip) under
   /// its category, inside the folder rows of its directory in tree view.
-  void appendFile(int category, const QString& path, const QString& note = QString());
+  void appendFile(int category, const QString& path, const QString& note = QString(), const QString& tip = QString());
   /// The folder row for a directory under a category (created on demand).
   QStandardItem* folderItem(QStandardItem* category, const QString& dir);
   /// "cat:<row>[/<dir>]" for a category or folder row: what the expanded

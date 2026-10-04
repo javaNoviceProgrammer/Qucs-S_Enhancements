@@ -28,6 +28,7 @@
 #include "qucs.h"
 #include "simulationconsole.h"
 #include "workspace.h"
+#include "projectlibraries.h"
 
 #include <QString>
 #include <QStringList>
@@ -35,6 +36,7 @@
 #include <QDir>
 #include <QStandardItemModel>
 #include <QHash>
+#include <QSet>
 #include <QTimer>
 #include <QFutureWatcher>
 #include <QLocale>
@@ -382,7 +384,7 @@ QStandardItem* ProjectView::folderItem(QStandardItem* category, const QString& d
   return parent;
 }
 
-void ProjectView::appendFile(int category, const QString& path, const QString& note)
+void ProjectView::appendFile(int category, const QString& path, const QString& note, const QString& tip)
 {
   QStandardItem* cat = m_model->item(rowOf(category), 0);
   if (cat == nullptr) return;
@@ -398,6 +400,7 @@ void ProjectView::appendFile(int category, const QString& path, const QString& n
   }
   auto* name = new QStandardItem(shown);
   name->setData(path, FilePathRole);
+  if (!tip.isEmpty()) name->setToolTip(tip);
   // Every row has both cells, the note one empty when there is nothing to
   // say: a row short of a cell in a two-column model leaves the
   // accessibility layer with a table it cannot make sense of (Qt asks for
@@ -442,6 +445,12 @@ ProjectView::refresh()
     for (const int category : order) taken.insert(category, matchers(category));
     const QDir workPath(m_projPath);
     const QString scratchPrefix = QString::fromLatin1(misc::ScratchFolder) + QLatin1Char('/');
+    // The folders of library Verilog-A Qucs-S keeps (projectlibraries.h):
+    // their links say whose they are.
+    QSet<QString> libraryFolders;
+    for (const QFileInfo& dir : workPath.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks))
+      if (QFileInfo::exists(QDir(dir.absoluteFilePath()).absoluteFilePath(QLatin1String(qucs_s::projectlibraries::RecordName))))
+        libraryFolders.insert(dir.fileName());
     for (const QString& fileName : files) {
       const QFileInfo info(workPath.filePath(fileName));
       if (fileName.startsWith(scratchPrefix)) {   // temporary files, of whatever type
@@ -457,7 +466,16 @@ ProjectView::refresh()
           if (n < 0) continue;
           appendFile(Schematics, fileName, n > 0 ? QString::number(n) + tr("-port") : QString());
         } else {
-          appendFile(category, fileName);
+          qucs_s::projectlibraries::Entry entry;
+          if (libraryFolders.contains(fileName.section(QLatin1Char('/'), 0, 0)))
+            entry = qucs_s::projectlibraries::entryOf(info.filePath());
+          if (entry.isEmpty())
+            appendFile(category, fileName);
+          else
+            appendFile(category, fileName, tr("library %1").arg(entry.library),
+                       tr("The Verilog-A of a device of the library %1 a schematic of the project uses, linked from "
+                          "%2: opened read-only. Qucs-S takes it away when no schematic uses the device.")
+                           .arg(entry.library, QDir::toNativeSeparators(entry.original)));
         }
         break;
       }

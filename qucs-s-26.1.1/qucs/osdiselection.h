@@ -66,7 +66,7 @@ bool sourceDefines(const QString& vaFile, const QString& module);
 
 /// The files a Verilog-A source brings in with `include "FILE" - and
 /// the files those bring in - that are there: taken against the folder of
-/// the file that names them.
+/// the file that names them (where a link leads, for a link).
 QStringList sourceIncludes(const QString& vaFile);
 
 /// Where the library of the Verilog-A source goes.
@@ -81,7 +81,8 @@ enum class Into {
 /// folder shared read-only) or NAME.osdi there was built for another
 /// platform than \a simulator's (builtForAnotherPlatform()), kept for the
 /// computers it was built for. Then a folder of its own in \a cacheDir,
-/// osdi/NAME-<hash of the source's path>/NAME.osdi. Without \a cacheDir,
+/// osdi/NAME-<hash of the source's path>/NAME.osdi (a link's: of where the
+/// link is, not the file it leads to). Without \a cacheDir,
 /// beside it. \a into, when given, says which.
 QString buildTarget(const QString& vaFile, const QString& cacheDir, const QString& simulator = QString(),
                     Into* into = nullptr);

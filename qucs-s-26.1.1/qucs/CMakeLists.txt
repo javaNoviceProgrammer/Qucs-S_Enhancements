@@ -186,7 +186,7 @@ SET(QUCS_SRCS
   embeddedimage.cpp componentsearch.cpp findbar.cpp biaslabels.cpp ink.cpp levelofdetail.cpp valuereading.cpp
   systemopen.cpp oppoint.cpp workspace.cpp vamodule.cpp optimization.cpp ngoptimize.cpp
   ngstatistics.cpp ngsweep.cpp
-  exportdevices.cpp graphicsexport.cpp osdiselection.cpp numberformat.cpp
+  exportdevices.cpp graphicsexport.cpp osdiselection.cpp projectlibraries.cpp numberformat.cpp
 )
 
 SET(QUCS_HDRS
@@ -213,6 +213,7 @@ ngsweep.h
 exportdevices.h
 graphicsexport.h
 osdiselection.h
+projectlibraries.h
 numberformat.h
 conductor.h
 healer.h

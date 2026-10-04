@@ -409,7 +409,10 @@ QStringList sourceIncludes(const QString& vaFile)
     QSet<QString> seen{pending.first()};
     while (!pending.isEmpty() && seen.size() < 500) {
         const QString file = pending.takeFirst();
-        const QDir folder = QFileInfo(file).absoluteDir();
+        // Through a link (a library's source linked into a project), from
+        // where the file is, as OpenVAF takes it.
+        const QFileInfo info(file);
+        const QDir folder = info.isSymLink() ? QFileInfo(info.symLinkTarget()).absoluteDir() : info.absoluteDir();
         for (const QString& name : readSource(file).includes) {
             const QFileInfo included(folder.absoluteFilePath(name));
             // "disciplines.vams" and the like come with OpenVAF.
@@ -430,10 +433,12 @@ QString besideLibrary(const QFileInfo& source)
     return source.absoluteDir().absoluteFilePath(source.completeBaseName() + QStringLiteral(".osdi"));
 }
 
-// Its folder in the cache: one for each source, by where it is.
+// Its folder in the cache: one for each source, by where it is - a link
+// by where the link is (a library's source linked into a project is the
+// project's: its model is not the one compiled for the library's file).
 QString cachedLibrary(const QFileInfo& source, const QString& cacheDir)
 {
-    const QString real = source.canonicalFilePath();
+    const QString real = source.isSymLink() ? QString() : source.canonicalFilePath();
     const QByteArray key = QCryptographicHash::hash((real.isEmpty() ? source.absoluteFilePath() : real).toUtf8(),
                                                     QCryptographicHash::Sha1).toHex().left(10);
     const QString name = source.completeBaseName();
