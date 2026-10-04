@@ -19,6 +19,7 @@
 #include "main.h"
 #include "misc.h"
 #include "node.h"
+#include "projectlibraries.h"
 #include "schematic.h"
 #include "extsimkernels/qucs2spice.h"
 #include "extsimkernels/spicecompat.h"
@@ -28,7 +29,9 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QDateTime>
 #include <QHash>
+#include <QSet>
 
 #include <functional>
 #include <QDebug>
@@ -332,13 +335,75 @@ int LibComp::loadSymbol()
 // -------------------------------------------------------
 QString LibComp::libraryFile() const
 {
-  return libraryFileOf(Props.first()->Value, containingSchematic != nullptr ? containingSchematic->getFileInfo().dir().path() : QString());
+  return libraryFileOf(Props.first()->Value, containingSchematic != nullptr ? containingSchematic->getFileInfo().dir().path() : QString(),
+                       Props.at(1)->Value);
 }
 
-QString LibComp::libraryFileOf(const QString& lib, const QString& folder)
+QStringList LibComp::librariesNamed(const QString& lib, const QString& folder)
 {
-  const QDir Directory(QucsSettings.LibDir);
-  return misc::properAbsFileNameIn(Directory.absoluteFilePath(lib + ".lib"), folder);
+  return misc::properAbsFileNamesIn(QDir(QucsSettings.LibDir).absoluteFilePath(lib + ".lib"), folder);
+}
+
+QString LibComp::libraryFileOf(const QString& lib, const QString& folder, const QString& comp, const QString& project)
+{
+  const QString file = QDir(QucsSettings.LibDir).absoluteFilePath(lib + ".lib");
+  if (comp.isEmpty()) return misc::properAbsFileNameIn(file, folder);
+  // (Not the first file of the name: a project's library of it with no
+  // such part, made after the part was placed from a search path's, took
+  // the part - its pins and its Verilog-A gone.)
+  const auto having = [&comp](const QString& library) { return hasComponent(library, comp); };
+  // The library at its path - a path it names, the installed one of a
+  // name - when that has it: the one meant.
+  if (const QString at = QFileInfo(file).canonicalFilePath(); !at.isEmpty() && having(at)) return at;
+  // Else the one the project linked the Verilog-A of from, of those of its name that have it.
+  QStringList linked;
+  const QString name = QFileInfo(file).completeBaseName();
+  linked << qucs_s::projectlibraries::linkedFolders(project.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : project, name);
+  if (!folder.isEmpty()) linked << qucs_s::projectlibraries::linkedFolders(folder, name);   // (a project's schematic netlisted with none open)
+  if (!linked.isEmpty()) {
+    const QString found = misc::properAbsFileNameWhere(file, folder, [&](const QString& library) {
+      return linked.contains(qucs_s::projectlibraries::folderOf(library)) && having(library);
+    });
+    if (!found.isEmpty()) return found;
+  }
+  const QString found = misc::properAbsFileNameWhere(file, folder, having);
+  return found.isEmpty() ? file : found;   // (none has it: not loaded)
+}
+
+QStringList LibComp::librariesNamedLike(const QString& libraryFile)
+{
+  const QFileInfo info(libraryFile);
+  QStringList others = librariesNamed(info.completeBaseName(), QucsSettings.QucsWorkDir.absolutePath());
+  others.removeAll(info.canonicalFilePath());
+  return others;
+}
+
+bool LibComp::hasComponent(const QString& libraryFile, const QString& comp)
+{
+  struct Read {
+    QDateTime modified;
+    qint64 size = -1;
+    QSet<QString> components;
+  };
+  static QHash<QString, Read> known;
+  const QFileInfo info(libraryFile);
+  if (!info.isFile()) return false;
+  const QString key = info.absoluteFilePath();
+  auto it = known.find(key);
+  if (it == known.end() || it->modified != info.lastModified() || it->size != info.size()) {
+    Read read{info.lastModified(), info.size(), {}};
+    QFile f(key);
+    if (f.open(QIODevice::ReadOnly)) {
+      QTextStream stream(&f);
+      const QString text = stream.readAll();   // (read as loadSectionOf() reads it: a byte order mark left out)
+      // As loadSectionOf() finds one: "\n<Component NAME>", in a Qucs library.
+      if (text.startsWith(QLatin1String("<Qucs Library ")))
+        for (qsizetype at = text.indexOf(QLatin1String("\n<Component ")); at >= 0; at = text.indexOf(QLatin1String("\n<Component "), at + 1))
+          if (const qsizetype close = text.indexOf(QLatin1Char('>'), at); close > 0) read.components.insert(text.mid(at + 12, close - at - 12));
+    }
+    it = known.insert(key, read);
+  }
+  return it->components.contains(comp);
 }
 
 QString LibComp::referenceTo(const QString& libraryFile)

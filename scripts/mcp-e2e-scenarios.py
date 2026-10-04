@@ -629,7 +629,8 @@ def s12_verilog_a_library_read_only(s):
     read-only (a team's share): build_verilog_a compiles it into the cache; its part, placed in a project's schematic
     by its library's name and saved, has the source linked into the project (Libraries/VaRes/vres.va, a relative link),
     compiled there before the simulation - its `include of a file of the library's folder found - and simulated with it,
-    nothing written into the library's folder; the part taken away and saved, the link, its model and Libraries/ go. Needs OpenVAF (QUCS_OPENVAF, else openvaf-r or openvaf on PATH): skipped without"""
+    nothing written into the library's folder; a library of the name made in the project, without the part, does not take
+    it (reopened, it still simulates); the part taken away and saved, the link, its model and Libraries/ go. Needs OpenVAF (QUCS_OPENVAF, else openvaf-r or openvaf on PATH): skipped without"""
     openvaf = os.environ.get('QUCS_OPENVAF') or shutil.which('openvaf-r') or shutil.which('openvaf')
     if not openvaf:
         print('  skipped: no OpenVAF'); return
@@ -684,6 +685,26 @@ def s12_verilog_a_library_read_only(s):
               and near(op.get('v(out)', 0), 2 / 3, 1e-3) and os.path.isfile(proj + '/Libraries/VaRes/vres.osdi')
               and sorted(os.listdir(lib)) == ['vres.va', 'vres_params.vams'],
               (sim.get('errors'), op, os.listdir(proj + '/Libraries/VaRes') if os.path.isdir(proj + '/Libraries/VaRes') else None, os.listdir(lib)))
+        # The project gets a library of the same name without the part (the review's case): reopened, the part is
+        # still the search path's - its pins, its link and model kept - and simulates.
+        open(proj + '/rc.sch', 'w').write(
+            '<Qucs Schematic 26.1.5>\n<Components>\n'
+            '  <Port P1 1 220 100 -23 12 0 0 "1" 1 "analog" 0>\n  <Port P2 1 280 100 4 12 1 2 "2" 1 "analog" 0>\n'
+            '  <R R1 1 250 100 -26 15 0 0 "1 kOhm" 1 "26.85" 0 "0.0" 0 "0.0" 0 "26.85" 0 "european" 0>\n'
+            '</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n')
+        shadow = s.call('create_library', {'name': 'VaRes', 'subcircuits': ['rc'], 'destination': 'project'})
+        check('s12', 'create_library: the project\'s own VaRes, without the part - the search path\'s of the name said (also_named)',
+              os.path.isfile(proj + '/VaRes.lib') and [os.path.realpath(p) for p in shadow.get('also_named', [])]
+              == [os.path.realpath(team + '/VaRes.lib')], shadow)
+        s.call('close_document', {'path': 's12_top.sch'})
+        s.call('open_document', {'path': proj + '/s12_top.sch'})
+        sim = s.call('simulate', {'path': 's12_top.sch', 'brief': True})
+        op = s.call('get_dataset', {'path': 's12_top.sch', 'operating_point': True})['operating point']['nodes']
+        pins = [c for c in s.call('get_schematic', {'path': 's12_top.sch', 'components': ['X1']})['components']]
+        check('s12', 'reopened beside it: the part still the search path\'s (2 pins), its link and model kept, v(out) = 2/3 V',
+              sim.get('succeeded') and near(op.get('v(out)', 0), 2 / 3, 1e-3) and len(pins) == 1 and len(pins[0].get('pins', [])) == 2
+              and os.path.islink(link) and os.path.isfile(proj + '/Libraries/VaRes/vres.osdi'), (sim.get('errors'), op, pins))
+        os.remove(proj + '/VaRes.lib')
         s.call('delete', {'path': 's12_top.sch', 'names': ['X1']})
         saved = s.call('save_document', {'path': 's12_top.sch'})
         check('s12', 'the part taken away and saved: the link, its model and Libraries/ go, said', not os.path.lexists(link)

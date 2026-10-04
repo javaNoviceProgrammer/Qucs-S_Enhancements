@@ -59,3 +59,6 @@ Full suite 88/88, under AddressSanitizer 88/88, the end-to-end scenarios 88/88.
 ## Not done
 
 - A real symbolic link on Windows with Developer Mode: copies there, as before.
+
+Re-tested after 1dc30d4: [round 2](2026-10-04-search-path-library-verilog-a-round2.md) - a library of the same name
+without the part no longer takes it.

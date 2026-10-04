@@ -22,6 +22,7 @@
  * \Declaration of some miscellaneous function
  */
 
+#include <functional>
 #include <QDateTime>
 #include <QPushButton>
 
@@ -62,6 +63,15 @@ namespace misc {
   /// properAbsFileName() for a schematic in \a folder (its file's folder;
   /// empty: no schematic) - for a schematic read as text, not loaded.
   QString properAbsFileNameIn(const QString& filename, const QString& folder);
+  /// Every file properAbsFileNameIn() could take for \a filename, in the
+  /// order it looks, each once (their real paths) - an absolute path that
+  /// is there first, then the files of its name: those of one name that a
+  /// library part chooses from (LibComp::libraryFileOf()).
+  QStringList properAbsFileNamesIn(const QString& filename, const QString& folder);
+  /// Of properAbsFileNamesIn(), the first \a wanted takes - looked at in
+  /// that order, no further; empty when it takes none.
+  QString properAbsFileNameWhere(const QString& filename, const QString& folder,
+                                 const std::function<bool(const QString&)>& wanted);
   /// The folders of component libraries, each once, in the order a placed
   /// part's library is looked for by its name: the installed libraries,
   /// the open project's folder (\a project), the workspace's user_lib, the

@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <tuple>
+#include <utility>
 
 namespace qucs_s::projectlibraries {
 
@@ -72,12 +73,14 @@ struct Walk {
 void addLibraryPart(const QString& libraryFile, const QString& lib, const QString& comp, Walk& w)
 {
     const QFileInfo info(libraryFile);
-    if (!info.isFile()) {
+    // Not found here - or no library of its name has the part: not loaded,
+    // its library is not known either.
+    if (!info.isFile() || !LibComp::hasComponent(info.absoluteFilePath(), comp)) {
         const QString name = QFileInfo(lib).fileName();
         if (!name.isEmpty() && !w.unresolved->contains(name)) *w.unresolved << name;
         return;
     }
-    const QString folder = real(info.absoluteDir().absoluteFilePath(info.completeBaseName()));
+    const QString folder = folderOf(info.absoluteFilePath());
     if (inside(folder, w.project)) return;   // the project's own library: its files are the project's
     const QString key = info.absoluteFilePath() + QLatin1Char('\n') + comp;
     auto it = w.attached.constFind(key);
@@ -124,11 +127,12 @@ void walkFile(const QString& file, Walk& w)
     const QString text = QString::fromUtf8(f.readAll());
     const QString folder = QFileInfo(file).absolutePath();
     // (A schematic of thousands of one subcircuit: its file looked for once.)
-    const auto where = [&](QChar kind, const QString& name) {
-        const QString key = kind + folder + QLatin1Char('\n') + name;
+    const auto where = [&](QChar kind, const QString& name, const QString& comp = QString()) {
+        const QString key = kind + folder + QLatin1Char('\n') + name + QLatin1Char('\n') + comp;
         auto it = w.found.constFind(key);
         if (it == w.found.constEnd()) {
-            QString path = kind == QLatin1Char('L') ? LibComp::libraryFileOf(name, folder) : Subcircuit::subcircuitFileOf(name, folder);
+            QString path = kind == QLatin1Char('L') ? LibComp::libraryFileOf(name, folder, comp, w.project)
+                                                    : Subcircuit::subcircuitFileOf(name, folder);
             // A subcircuit of the project's, or not there: none to follow.
             if (kind == QLatin1Char('S') && (!QFileInfo(path).isFile() || inside(real(path), w.project))) path.clear();
             it = w.found.insert(key, path);
@@ -143,7 +147,7 @@ void walkFile(const QString& file, Walk& w)
         else if (!components) continue;
         else if (line.startsWith(QLatin1String("<Lib "))) {
             const QStringList values = quotedValues(line);
-            if (values.size() >= 2) addLibraryPart(where(QLatin1Char('L'), values.at(0)), values.at(0), values.at(1), w);
+            if (values.size() >= 2) addLibraryPart(where(QLatin1Char('L'), values.at(0), values.at(1)), values.at(0), values.at(1), w);
         } else if (line.startsWith(QLatin1String("<Sub "))) {
             // One of the project's is looked at on its own.
             const QStringList values = quotedValues(line);
@@ -158,7 +162,10 @@ void walk(Schematic* sch, Walk& w)
 {
     for (Component* c : sch->a_DocComps) {
         if (auto* part = dynamic_cast<LibComp*>(c)) {
-            if (part->Props.size() >= 2) addLibraryPart(part->libraryFile(), part->Props.at(0)->Value, part->Props.at(1)->Value, w);
+            if (part->Props.size() >= 2) {
+                const QString lib = part->Props.at(0)->Value, comp = part->Props.at(1)->Value;
+                addLibraryPart(LibComp::libraryFileOf(lib, sch->getFileInfo().dir().path(), comp, w.project), lib, comp, w);
+            }
         } else if (c->Model == QLatin1String("Sub")) {
             const QString file = static_cast<Subcircuit*>(c)->getSubcircuitFile();
             if (!file.isEmpty() && QFileInfo(file).isFile() && !inside(real(file), w.project)) walkFile(file, w);
@@ -202,8 +209,28 @@ bool readRecord(const QString& file, Record* out)
     return !r.library.isEmpty();
 }
 
+// readRecord(), each file read again only when it changed - or this wrote
+// it: on a disk whose times are coarse (HFS+, FAT) a record written again
+// within the second has the time it had.
+QHash<QString, std::pair<QDateTime, Record>> recordsRead;
+
+bool readRecordOnce(const QString& file, Record* out)
+{
+    const QFileInfo info(file);
+    if (!info.isFile()) return false;
+    auto it = recordsRead.constFind(file);
+    if (it == recordsRead.constEnd() || it->first != info.lastModified()) {
+        Record r;
+        readRecord(file, &r);
+        it = recordsRead.insert(file, {info.lastModified(), r});
+    }
+    *out = it->second;
+    return !out->library.isEmpty();
+}
+
 void writeRecord(const QString& file, const Record& r)
 {
+    recordsRead.remove(file);
     QJsonArray files;
     for (const Item& item : r.items)
         files.append(QJsonObject{{QStringLiteral("path"), item.path}, {QStringLiteral("original"), item.original},
@@ -488,6 +515,26 @@ Report sync(const QString& projectDir, const QList<Schematic*>& open, Mode mode)
         QDir().rmdir(root);
     }
     return report;
+}
+
+QStringList linkedFolders(const QString& projectDir, const QString& library)
+{
+    if (projectDir.isEmpty() || library.isEmpty()) return {};
+    const QString root = QDir(projectDir).absoluteFilePath(QLatin1String(FolderName));
+    QStringList folders;
+    for (const QFileInfo& dir : QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks)) {
+        Record r;
+        if (readRecordOnce(QDir(dir.absoluteFilePath()).absoluteFilePath(QLatin1String(RecordName)), &r) && r.library == library
+            && !folders.contains(r.folder))
+            folders << r.folder;
+    }
+    return folders;
+}
+
+QString folderOf(const QString& libraryFile)
+{
+    const QFileInfo info(libraryFile);
+    return real(info.absoluteDir().absoluteFilePath(info.completeBaseName()));
 }
 
 void setLinkMaker(bool (*make)(const QString& target, const QString& link))

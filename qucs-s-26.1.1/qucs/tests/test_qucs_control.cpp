@@ -5584,6 +5584,16 @@ private slots:
         // Into the project.
         r = call("create_library", {{"name", "LocalAmps"}, {"subcircuits", QJsonArray{"buf.sch"}}, {"destination", "project"}});
         QVERIFY2(!failed(r) && QFileInfo::exists(project + "/LocalAmps.lib"), qPrintable(text(r)));
+        QVERIFY(!json(r).toObject().contains("also_named"));
+        // With the name of another library there is: said, which - a part
+        // placed by the name is taken from the first of them that has it.
+        r = call("create_library", {{"name", "TestAmps"}, {"subcircuits", QJsonArray{"buf.sch"}}, {"destination", "project"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("also_named").toArray(),
+                 QJsonArray{QDir::toNativeSeparators(QFileInfo(userLib + "/TestAmps.lib").canonicalFilePath())});
+        QVERIFY2(json(r).toObject().value("warning").toString().contains("Another library is named TestAmps too"), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("Note: another library is named TestAmps too"), qPrintable(text(r)));   // (Create Library's own message)
+        QVERIFY(QFile::remove(project + "/TestAmps.lib"));
         // With Verilog and VHDL models; and one that cannot be made: no
         // "Successfully created", no library left half written.
         r = call("create_library", {{"name", "DigiAmps"}, {"subcircuits", QJsonArray{"amp"}}, {"digital_models", true}});
@@ -5738,6 +5748,17 @@ private slots:
         QVERIFY(QFileInfo::exists(project + "/Shared.lib") && QFileInfo::exists(project + "/Shared/amp.va"));
         QCOMPARE(json(r).toObject().value("written").toArray().size(), 2);
         QCOMPARE(json(r).toObject().value("kind").toString(), QStringLiteral("qucs"));
+        QVERIFY(!json(r).toObject().contains("also_named"));
+        // One of a name another library has: said which.
+        QDir().mkpath(elsewhere + "/twin");
+        QVERIFY(QFile::copy(userLib + "/TestAmps.lib", elsewhere + "/twin/TestAmps.lib"));
+        r = call("import_library", {{"path", elsewhere + "/twin/TestAmps.lib"}, {"destination", "project"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("also_named").toArray(),
+                 QJsonArray{QDir::toNativeSeparators(QFileInfo(userLib + "/TestAmps.lib").canonicalFilePath())});
+        QVERIFY2(json(r).toObject().value("warning").toString().contains("A part placed by that name is taken from the first"),
+                 qPrintable(text(r)));
+        QVERIFY(QFile::remove(project + "/TestAmps.lib"));
         r = call("import_library", {{"path", elsewhere + "/Models.lib"}});
         QVERIFY2(failed(r) && text(r).contains("neither a Qucs-S library"), qPrintable(text(r)));
         r = call("import_library", {{"path", elsewhere + "/Shared/amp.va"}});
@@ -5750,6 +5771,7 @@ private slots:
         QucsSettings.LibraryPaths = {team};
         r = call("import_library", {{"path", elsewhere + "/Vendor.lib"}, {"destination", team}});
         QVERIFY2(!failed(r) && QFileInfo::exists(team + "/Vendor.lib"), qPrintable(text(r)));
+        QVERIFY(!json(r).toObject().contains("also_named"));   // (a SPICE library's parts name its file)
         QucsSettings.LibraryPaths = pathsWere;
         QCOMPARE(control->subjectOf("create_library", {{"name", "Amps"}, {"destination", "project"}, {"replace", true}}),
                  QStringLiteral("Amps → project, replacing"));
