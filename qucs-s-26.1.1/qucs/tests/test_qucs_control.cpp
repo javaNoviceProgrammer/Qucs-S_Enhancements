@@ -13,6 +13,7 @@
  * traces; a component type described; the netlist.
  */
 #include <QtTest>
+#include <QDirIterator>
 #include <QSaveFile>
 #include <QElapsedTimer>
 #include <QAction>
@@ -66,6 +67,7 @@
 #include "module.h"
 #include "node.h"
 #include "qucs.h"
+#include "qucslib_common.h"
 #include "dataset.h"
 #include "datasetfile.h"
 #include "qucscontrol.h"
@@ -4185,7 +4187,7 @@ private slots:
             p.setProcessChannelMode(QProcess::MergedChannels);
             p.start(ngspice, {"-b", deck.fileName()});
             QVERIFY(p.waitForFinished(20000));
-            if (!QString::fromUtf8(p.readAll()).contains("parameter optimizer")) QSKIP("no ngspice with the optimize command");
+            if (!QString::fromUtf8(p.readAll()).contains("optimize (-param|-mparam|-dparam)")) QSKIP("no ngspice with the optimize command");
         }
         const QString before = QucsSettings.NgspiceExecutable;
         QucsSettings.NgspiceExecutable = ngspice;
@@ -5337,6 +5339,276 @@ private slots:
         QucsSettings.LibraryPaths = before;
         r = call("find_library_component", {{"search", "Bufferino"}});
         QVERIFY2(json(r).toObject().value("found").toArray().isEmpty(), qPrintable(text(r)));
+    }
+
+    // Libraries, by Claude: made of the project's subcircuits (those
+    // chosen, with descriptions, where asked, replaced only when asked, not
+    // of a file with unsaved changes), listed as the panel shows them, a
+    // part placed from one; a library file - SPICE, or Qucs-S's with its
+    // folder of models - brought in; Create Library's subcircuits ticked
+    // and unticked in its dialog.
+    void librariesAreMadeListedAndBroughtIn()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        QVERIFY(control->readOnlyTools().contains("list_libraries"));
+        QVERIFY(!control->readOnlyTools().contains("create_library") && !control->readOnlyTools().contains("import_library"));
+        if (!app->ProjName.isEmpty()) QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+        QJsonObject none = call("create_library", {{"name", "NoProject"}});
+        QVERIFY2(failed(none) && text(none).contains("No project is open"), qPrintable(text(none)));
+        QJsonObject r = call("new_project", {{"name", "libtest"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString project = QucsSettings.QucsWorkDir.absolutePath();
+        const QString userLib = QucsSettings.qucsWorkspaceDir.filePath("user_lib");
+        for (const char* name : {"amp", "buf"}) {
+            QFile f(project + "/" + name + ".sch");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                    "  <Port P1 1 220 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+                    "  <Port P2 1 280 100 4 12 1 2 \"2\" 1 \"analog\" 0>\n"
+                    "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                    "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        }
+        QVERIFY(!failed(call("open_project", {{"name", "libtest"}})));
+
+        // Made: amp alone, with its description, in user_lib.
+        QVERIFY(failed(call("create_library", {})));
+        r = call("create_library", {{"name", "Test Amps"}});
+        QVERIFY2(failed(r) && text(r).contains("letters, digits and _"), qPrintable(text(r)));
+        r = call("create_library", {{"name", "TestAmps"}, {"subcircuits", QJsonArray{"nosuch"}}});
+        QVERIFY2(failed(r) && text(r).contains("amp.sch") && text(r).contains("buf.sch"), qPrintable(text(r)));
+        r = call("create_library", {{"name", "TestAmps"}, {"destination", dir.filePath("nowhere")}});
+        QVERIFY2(failed(r) && text(r).contains("not a folder of the library search paths"), qPrintable(text(r)));
+        r = call("create_library", {{"name", "TestAmps"}, {"subcircuits", QJsonArray{"amp"}},
+                                    {"descriptions", QJsonObject{{"amp", "A test amplifier"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject made = json(r).toObject();
+        QCOMPARE(made.value("file").toString(), QDir::toNativeSeparators(userLib + "/TestAmps.lib"));
+        QCOMPARE(made.value("parts").toArray().size(), 1);
+        const QJsonObject part = made.value("parts").toArray().at(0).toObject();
+        QCOMPARE(part.value("part").toString(), QStringLiteral("amp"));
+        QCOMPARE(part.value("description").toString(), QStringLiteral("A test amplifier"));
+        QVERIFY(made.value("messages").toArray().last().toString().contains("Successfully created library"));
+        bool shown = false;
+        for (int i = 0; i < app->librariesTree()->topLevelItemCount(); ++i)
+            shown = shown || app->librariesTree()->topLevelItem(i)->text(0) == "TestAmps";
+        QVERIFY(shown);   // in the panel at once
+        // Not again unless replaced; replaced, the old one in the trash.
+        r = call("create_library", {{"name", "TestAmps"}});
+        QVERIFY2(failed(r) && text(r).contains("is there already"), qPrintable(text(r)));
+        const auto inTrash = [](const QString& name) {
+            int n = 0;
+            for (QDirIterator it(qEnvironmentVariable("QUCS_TRASH_DIR"), QDir::Files, QDirIterator::Subdirectories); it.hasNext();)
+                n += QFileInfo(it.next()).fileName() == name ? 1 : 0;
+            return n;
+        };
+        const int trashedBefore = inTrash("TestAmps.lib");
+        r = call("create_library", {{"name", "TestAmps"}, {"replace", true}});
+        QVERIFY2(!failed(r) && text(r).contains("in the trash"), qPrintable(text(r)));
+        QCOMPARE(inTrash("TestAmps.lib"), trashedBefore + 1);
+        QCOMPARE(json(r).toObject().value("parts").toArray().size(), 2);   // all the project's: amp and buf
+        // Into the project.
+        r = call("create_library", {{"name", "LocalAmps"}, {"subcircuits", QJsonArray{"buf.sch"}}, {"destination", "project"}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(project + "/LocalAmps.lib"), qPrintable(text(r)));
+        // With Verilog and VHDL models; and one that cannot be made: no
+        // "Successfully created", no library left half written.
+        r = call("create_library", {{"name", "DigiAmps"}, {"subcircuits", QJsonArray{"amp"}}, {"digital_models", true}});
+        QVERIFY2(!failed(r) && text(r).contains("Creating Verilog netlist"), qPrintable(text(r)));
+        r = call("create_library", {{"name", "AnalogAmps"}, {"subcircuits", QJsonArray{"amp"}}});
+        QVERIFY2(!failed(r) && !text(r).contains("Creating Verilog netlist"), qPrintable(text(r)));
+        {
+            QFile bad(project + "/bad.sch");
+            QVERIFY(bad.open(QIODevice::WriteOnly));
+            bad.write("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                      "  <Port P1 1 220 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+                      "  <NoSuchPart X1 1 250 100 0 0 0 0 \"1\" 1>\n"
+                      "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        }
+        r = call("create_library", {{"name", "BadLib"}, {"subcircuits", QJsonArray{"bad"}}});
+        QVERIFY2(failed(r) && text(r).contains("Cannot load subcircuit") && !text(r).contains("Successfully"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(userLib + "/BadLib.lib"));
+        QFile::remove(project + "/bad.sch");
+        // A subcircuit whose model is a module of a Verilog-A source of the
+        // project: the source embedded in its folder, or not when asked.
+        {
+            QFile va(project + "/good.va");
+            QVERIFY(va.open(QIODevice::WriteOnly));
+            va.write("`include \"disciplines.vams\"\nmodule good(p, n);\nendmodule\n");
+            QFile osdi(project + "/good.osdi");
+            QVERIFY(osdi.open(QIODevice::WriteOnly));
+            osdi.write(QByteArray(65, '\0') + "good" + QByteArray(1, '\0'));
+            QFile sub(project + "/vasub.sch");
+            QVERIFY(sub.open(QIODevice::WriteOnly));
+            sub.write("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                      "  <Port P1 1 220 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+                      "  <Port P2 1 280 100 4 12 1 2 \"2\" 1 \"analog\" 0>\n"
+                      "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                      "  <SpiceModel SpiceModel1 1 120 300 -27 16 0 0 \".model m1 good\" 1 \"\" 0>\n"
+                      "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        }
+        r = call("create_library", {{"name", "VaLib"}, {"subcircuits", QJsonArray{"vasub"}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("models").toArray().contains(QDir::toNativeSeparators("VaLib/good.va")),
+                 qPrintable(text(r)));
+        r = call("create_library", {{"name", "VaLibBare"}, {"subcircuits", QJsonArray{"vasub"}}, {"embed_verilog_a", false}});
+        QVERIFY2(!failed(r) && !json(r).toObject().contains("models"), qPrintable(text(r)));
+        for (const char* f : {"/good.va", "/good.osdi", "/vasub.sch"}) QFile::remove(project + f);
+
+        // Not of a file with unsaved changes.
+        QVERIFY(!failed(call("open_document", {{"path", "buf.sch"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", 400}, {"y", 400}})));
+        r = call("create_library", {{"name", "Unsaved"}, {"subcircuits", QJsonArray{"buf"}}});
+        QVERIFY2(failed(r) && text(r).contains("unsaved changes"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // Listed as the panel shows them; one's parts, placed as it says.
+        r = call("list_libraries");
+        QVERIFY2(!failed(r), qPrintable(text(r).left(400)));
+        QStringList sections;
+        QJsonArray userLibraries;
+        for (const QJsonValue& v : json(r).toObject().value("sections").toArray()) {
+            sections << v.toObject().value("section").toString();
+            if (v.toObject().value("section") == "user") userLibraries = v.toObject().value("libraries").toArray();
+        }
+        QCOMPARE(sections.first(), QStringLiteral("installed"));
+        QVERIFY2(sections.contains("user") && sections.last() == "project", qPrintable(sections.join(' ')));
+        bool listed = false;
+        for (const QJsonValue& v : userLibraries)
+            listed = listed || (v.toObject().value("name") == "TestAmps" && v.toObject().value("parts").toInt() == 2
+                                && v.toObject().value("kind") == "qucs");
+        QVERIFY2(listed, qPrintable(QJsonDocument(userLibraries).toJson()));
+        // A folder of the search paths not there, user_lib listed again (not
+        // twice), a file that is no library; installed libraries by name,
+        // those this simulator does not show said so.
+        {
+            QFile empty(userLib + "/Empty.lib");
+            QVERIFY(empty.open(QIODevice::WriteOnly));
+            empty.write("* nothing here\n");
+        }
+        const QStringList pathsWere = QucsSettings.LibraryPaths;
+        const QString libDirWas = QucsSettings.LibDir;
+        const QString source = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
+        QucsSettings.LibDir = source + "/";
+        QucsSettings.LibraryPaths = {dir.filePath("no-such-libs"), userLib};
+        r = call("list_libraries");
+        QJsonArray searched;
+        QStringList hidden, kinds;
+        for (const QJsonValue& v : json(r).toObject().value("sections").toArray()) {
+            const QJsonObject section = v.toObject();
+            if (section.value("section") == "search path") searched.append(section);
+            for (const QJsonValue& l : section.value("libraries").toArray()) {
+                if (section.value("section") == "installed" && l.toObject().contains("hidden"))
+                    hidden << QFileInfo(l.toObject().value("file").toString()).fileName();
+                if (section.value("section") == "user" && l.toObject().value("name") == "Empty")
+                    kinds << l.toObject().value("unreadable").toString();
+            }
+        }
+        QCOMPARE(searched.size(), 1);
+        QVERIFY(searched.at(0).toObject().value("missing").toBool());
+        QCOMPARE(kinds, QStringList({"not a library Qucs-S reads"}));
+        QStringList blacklisted = getBlacklistedLibraries(QucsSettings.LibDir);
+        blacklisted.removeIf([&source](const QString& f) { return !QFileInfo::exists(source + "/" + f); });
+        hidden.sort();
+        blacklisted.sort();
+        QCOMPARE(hidden, blacklisted);
+        QVERIFY(!hidden.isEmpty());
+        r = call("list_libraries", {{"library", "Ideal"}});
+        QCOMPARE(json(r).toObject().value("parts").toArray().at(0).toObject().value("place").toObject().value("properties")
+                     .toObject().value("Lib").toString(), QStringLiteral("Ideal"));   // installed: by its name
+        QucsSettings.LibDir = libDirWas;
+        QucsSettings.LibraryPaths = pathsWere;
+        QFile::remove(userLib + "/Empty.lib");
+
+        r = call("list_libraries", {{"library", "TestAmps"}});
+        const QJsonArray parts = json(r).toObject().value("parts").toArray();
+        QVERIFY2(parts.size() == 2, qPrintable(text(r)));
+        QVERIFY(failed(call("list_libraries", {{"library", "NoSuchLibrary"}})));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const QJsonObject place = parts.at(0).toObject().value("place").toObject();
+        r = call("add_component", {{"type", place.value("type")}, {"name", "A1"}, {"x", 200}, {"y", 200}, {"properties", place.value("properties")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(call("get_schematic", {{"components", QJsonArray{"A1"}}})).toObject().value("components").toArray()
+                     .at(0).toObject().value("pins").toArray().size(), 2);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // Brought in: a SPICE library, and a Qucs-S library with its folder.
+        const QString elsewhere = dir.filePath("elsewhere-libs");
+        QDir().mkpath(elsewhere + "/Shared");
+        {
+            QFile spice(elsewhere + "/Vendor.lib");
+            QVERIFY(spice.open(QIODevice::WriteOnly));
+            spice.write("* a vendor's\n.subckt vbuf in out\nR1 in out 10\n.ends\n");
+            QFile models(elsewhere + "/Models.lib");
+            QVERIFY(models.open(QIODevice::WriteOnly));
+            models.write("* cards only\n.model QX NPN(BF=100)\n");
+            QVERIFY(QFile::copy(userLib + "/TestAmps.lib", elsewhere + "/Shared.lib"));
+            QFile va(elsewhere + "/Shared/amp.va");
+            QVERIFY(va.open(QIODevice::WriteOnly));
+            va.write("module amp(p, n); endmodule\n");
+        }
+        r = call("import_library", {{"path", elsewhere + "/Vendor.lib"}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(userLib + "/Vendor.lib"), qPrintable(text(r)));
+        bool vendorShown = false;
+        for (int i = 0; i < app->librariesTree()->topLevelItemCount(); ++i)
+            vendorShown = vendorShown || app->librariesTree()->topLevelItem(i)->text(0) == "Vendor";
+        QVERIFY(vendorShown);   // in the panel at once
+        QCOMPARE(json(r).toObject().value("kind").toString(), QStringLiteral("spice"));
+        const QJsonObject spicePart = json(r).toObject().value("parts").toArray().at(0).toObject();
+        QCOMPARE(spicePart.value("part").toString(), QStringLiteral("vbuf"));
+        QCOMPARE(spicePart.value("place").toObject().value("type").toString(), QStringLiteral("SpLib"));
+        r = call("import_library", {{"path", elsewhere + "/Vendor.lib"}});
+        QVERIFY2(failed(r) && text(r).contains("is there already"), qPrintable(text(r)));
+        r = call("import_library", {{"path", elsewhere + "/Vendor.lib"}, {"replace", true}});
+        QVERIFY2(!failed(r) && text(r).contains("in the trash"), qPrintable(text(r)));
+        r = call("import_library", {{"path", elsewhere + "/Shared.lib"}, {"destination", "project"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(project + "/Shared.lib") && QFileInfo::exists(project + "/Shared/amp.va"));
+        QCOMPARE(json(r).toObject().value("written").toArray().size(), 2);
+        QCOMPARE(json(r).toObject().value("kind").toString(), QStringLiteral("qucs"));
+        r = call("import_library", {{"path", elsewhere + "/Models.lib"}});
+        QVERIFY2(failed(r) && text(r).contains("neither a Qucs-S library"), qPrintable(text(r)));
+        r = call("import_library", {{"path", elsewhere + "/Shared/amp.va"}});
+        QVERIFY2(failed(r) && text(r).contains("is not a library"), qPrintable(text(r)));
+        QVERIFY(failed(call("import_library", {{"path", elsewhere + "/nothing.lib"}})));
+        r = call("import_library", {{"path", userLib + "/Vendor.lib"}});
+        QVERIFY2(failed(r) && text(r).contains("in the Libraries panel as it is"), qPrintable(text(r)));
+        const QString team = dir.filePath("team-import");
+        QDir().mkpath(team);
+        QucsSettings.LibraryPaths = {team};
+        r = call("import_library", {{"path", elsewhere + "/Vendor.lib"}, {"destination", team}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(team + "/Vendor.lib"), qPrintable(text(r)));
+        QucsSettings.LibraryPaths = pathsWere;
+        QCOMPARE(control->subjectOf("create_library", {{"name", "Amps"}, {"destination", "project"}, {"replace", true}}),
+                 QStringLiteral("Amps → project, replacing"));
+        QCOMPARE(control->subjectOf("import_library", {{"path", "/x/Vendor.lib"}}), QStringLiteral("/x/Vendor.lib → user_lib"));
+
+        // Create Library's dialog: its subcircuits, each ticked, unticked.
+        QJsonObject seen, unticked, after, wrong, closed, looked;
+        QTimer::singleShot(800, this, [&] {
+            seen = json(call("get_dialog")).toObject();
+            looked = call("list_libraries");   // (it only looks: while the dialog waits too)
+            unticked = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "Subcircuits"}, {"value", QJsonArray{"buf.sch", false}}}}}});
+            after = json(call("get_dialog")).toObject();
+            wrong = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "Subcircuits"}, {"value", QJsonArray{7, true}}}}}});
+            closed = call("set_dialog", {{"press", "Cancel"}});
+        });
+        r = call("trigger_action", {{"action", "Project > Create Library..."}}, 20000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(!closed.isEmpty(), 10000);
+        QJsonObject list;
+        for (const QJsonValue& v : seen.value("controls").toArray())
+            if (v.toObject().value("label") == "Subcircuits") list = v.toObject();
+        QCOMPARE(list.value("items").toArray(), (QJsonArray{"amp.sch", "buf.sch"}));
+        QCOMPARE(list.value("checked").toArray(), (QJsonArray{true, true}));
+        QVERIFY2(!failed(unticked), qPrintable(text(unticked)));
+        for (const QJsonValue& v : after.value("controls").toArray())
+            if (v.toObject().value("label") == "Subcircuits") QCOMPARE(v.toObject().value("checked").toArray(), (QJsonArray{true, false}));
+        QVERIFY2(failed(wrong) && text(wrong).contains("2 rows"), qPrintable(text(wrong)));
+        QVERIFY2(!failed(closed), qPrintable(text(closed)));
+        QVERIFY2(!failed(looked), qPrintable(text(looked).left(300)));
+
+        QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+        r = call("import_library", {{"path", elsewhere + "/Vendor.lib"}, {"destination", "project"}});
+        QVERIFY2(failed(r) && text(r).contains("No project is open"), qPrintable(text(r)));
     }
 
     void settingsAreReadAndSetByKeys()

@@ -7,7 +7,7 @@ answers along the way. Written by the reviewer of the tools (rounds 4 to 8,
 docs/feature_gaps/); s8 is round 8's: the 741 bench, from wiring by pin name
 to a subcircuit, checked and simulated at each step.
 
-    scripts/mcp-e2e-scenarios.py [s1 s2 ... s10]
+    scripts/mcp-e2e-scenarios.py [s1 s2 ... s11]
 
 QUCS names the qucs-s binary (the installed app by default). A packaged
 app is tested with its own library (share/qucs-s/library beside its
@@ -548,8 +548,83 @@ def s10_csv_plot(s):
     s.call('save_document', {'path': 's10.sch'})
 
 # ---------------------------------------------------------------------------
+def _pin(described, wanted, fallback):
+    """The number of a library part's pin by its name, as describe_part gives the pins."""
+    for i, p in enumerate(described.get('pins', []), 1):
+        if str(p.get('name', '')).lower() == wanted: return str(p.get('pin', i))
+    return fallback
+
+@scenario
+def s11_libraries(s):
+    """libraries by the tools: a subcircuit made a library (create_library), listed and described, its part placed and
+    simulated; the library taken away and brought back (import_library) into a folder of the library search paths, the
+    placed part found there by its name and simulated again; a SPICE library of subcircuits brought in and its part
+    simulated"""
+    s.call('new_project', {'name': 's11'})
+    proj = WS + '/s11_prj'
+    build_divider(s, proj + '/s11.sch')   # (the capacitor outside: mid a port too)
+    s.call('create_subcircuit', {'path': 's11.sch', 'names': ['R1', 'R2'], 'save_as': 'div.sch'})
+    s.call('open_document', {'path': 'div.sch'})
+    s.call('make_symbol', {'path': 'div.sch'})
+    s.call('save_document', {'path': 'div.sch'})
+    made = s.call('create_library', {'name': 'S11Divs', 'subcircuits': ['div'], 'descriptions': {'div': 'A divider by two'}})
+    check('s11', 'create_library: S11Divs.lib in user_lib, its part div with its description',
+          os.path.isfile(WS + '/user_lib/S11Divs.lib') and [p['part'] for p in made['parts']] == ['div']
+          and made['parts'][0].get('description') == 'A divider by two', made)
+    listed = s.call('list_libraries', {'library': 'S11Divs'})
+    described = s.call('describe_part', {'library': 'S11Divs', 'part': 'div'})
+    check('s11', 'list_libraries and describe_part know it: two pins', listed['section'] == 'user' and len(described.get('pins', [])) == 2,
+          (listed.get('section'), described.get('pins')))
+    vin, mid = _pin(described, 'vin', '1'), _pin(described, 'mid', '2')
+    place = made['parts'][0]['place']
+    s.call('new_document', {})
+    s.call('batch', {'calls': [
+        {'tool': 'add_component', 'arguments': {'type': 'Vdc', 'name': 'V1', 'x': 100, 'y': 200, 'properties': {'U': '5 V'}}},
+        {'tool': 'add_component', 'arguments': {'type': place['type'], 'name': 'X1', 'x': 300, 'y': 200, 'properties': place['properties']}},
+        {'tool': 'add_component', 'arguments': {'type': '.DC', 'name': 'DC1', 'x': 120, 'y': 400}},
+        {'tool': 'connect', 'arguments': {'from': 'V1.1', 'to': 'X1.' + vin}},
+        {'tool': 'connect', 'arguments': {'from': 'V1.2', 'to': 'ground'}},
+        {'tool': 'set_label', 'arguments': {'at': 'X1.' + mid, 'name': 'mid'}},
+        {'tool': 'save_document', 'arguments': {'as': proj + '/s11_top.sch'}}], 'atomic': True})
+    measure = lambda: s.call('get_dataset', {'path': 's11_top.sch', 'operating_point': True})['operating point']['nodes'].get('v(mid)')
+    sim = s.call('simulate', {'path': 's11_top.sch', 'brief': True})
+    check('s11', 'its part simulated: v(mid) = 2.5 V', sim.get('succeeded') and near(measure() or 0, 2.5, 1e-3), sim.get('errors'))
+    # Taken away, and brought back elsewhere: a folder of the search paths.
+    os.makedirs(ROOT + '/elsewhere', exist_ok=True)
+    os.makedirs(ROOT + '/teamlibs', exist_ok=True)
+    shutil.copy(WS + '/user_lib/S11Divs.lib', ROOT + '/elsewhere/S11Divs.lib')
+    s.call('trash_file', {'path': WS + '/user_lib/S11Divs.lib'})
+    s.call('set_settings', {'scope': 'app', 'values': {'Locations/Library search paths': [ROOT + '/teamlibs']}})
+    imp = s.call('import_library', {'path': ROOT + '/elsewhere/S11Divs.lib', 'destination': ROOT + '/teamlibs'})
+    sections = [x['section'] for x in s.call('list_libraries', {})['sections']]
+    check('s11', 'import_library: in the search path folder, a section of its own', os.path.isfile(ROOT + '/teamlibs/S11Divs.lib')
+          and imp['kind'] == 'qucs' and 'search path' in sections, (imp, sections))
+    s.call('close_document', {'path': 's11_top.sch'})
+    s.call('open_document', {'path': 's11_top.sch'})
+    sim = s.call('simulate', {'path': 's11_top.sch', 'brief': True})
+    check('s11', 'the placed part found there by its name: v(mid) = 2.5 V again', sim.get('succeeded') and near(measure() or 0, 2.5, 1e-3),
+          sim.get('errors'))
+    # A SPICE library of subcircuits.
+    open(ROOT + '/elsewhere/Halves.lib', 'w').write('* halves\n.subckt half in out\nR1 in out 1k\nR2 out 0 1k\n.ends\n')
+    spice = s.call('import_library', {'path': ROOT + '/elsewhere/Halves.lib'})
+    sp = spice['parts'][0]['place']
+    s.call('new_document', {})
+    s.call('batch', {'calls': [
+        {'tool': 'add_component', 'arguments': {'type': 'Vdc', 'name': 'V1', 'x': 100, 'y': 200, 'properties': {'U': '4 V'}}},
+        {'tool': 'add_component', 'arguments': {'type': sp['type'], 'name': 'H1', 'x': 300, 'y': 200, 'properties': sp['properties']}},
+        {'tool': 'add_component', 'arguments': {'type': '.DC', 'name': 'DC1', 'x': 120, 'y': 400}},
+        {'tool': 'connect', 'arguments': {'from': 'V1.1', 'to': 'H1.1'}},
+        {'tool': 'connect', 'arguments': {'from': 'V1.2', 'to': 'ground'}},
+        {'tool': 'set_label', 'arguments': {'at': 'H1.2', 'name': 'o'}},
+        {'tool': 'save_document', 'arguments': {'as': proj + '/s11_spice.sch'}}], 'atomic': True})
+    sim = s.call('simulate', {'path': 's11_spice.sch', 'brief': True})
+    op = s.call('get_dataset', {'path': 's11_spice.sch', 'operating_point': True})['operating point']['nodes']
+    check('s11', 'a SPICE library brought in (spice, in user_lib), its subcircuit simulated: v(o) = 2 V', spice['kind'] == 'spice'
+          and os.path.isfile(WS + '/user_lib/Halves.lib') and sim.get('succeeded') and near(op.get('v(o)', 0), 2.0, 1e-3), (spice.get('kind'), op))
+
+# ---------------------------------------------------------------------------
 if __name__ == '__main__':
-    which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10']
+    which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11']
     print('files in', ROOT, '- library:', os.path.abspath(LIBRARY) if LIBRARY else own_library(APP) + " (the app's own)")
     for name, fn in list(globals().items()):
         if name.split('_')[0] in which and name[:1] == 's' and '_' in name and callable(fn): fn()
