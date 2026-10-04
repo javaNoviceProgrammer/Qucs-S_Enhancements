@@ -799,7 +799,6 @@ private:
   void updateRecentProjectsList(QString pathToProj);
   void updateRecentProjectsList();
   void successExportMessages(bool ok);
-  void fillLibrariesTreeView(void);
   bool populateLibTreeFromDir(const QString &LibDirPath,
                               QList<QTreeWidgetItem *> &topitems,
                               bool relpath = false);
@@ -813,6 +812,15 @@ private:
 
 public:
   void readProjects();
+  /// The Libraries panel filled anew: the installed libraries, the user's
+  /// (user_lib), each folder of the library search paths, the project's.
+  void fillLibrariesTreeView(void);
+  /// The parts of \a library, a library of the library search paths, read
+  /// and put under it (once: when it is opened or searched); false when it
+  /// cannot be read (it is greyed, and its tool tip says why).
+  bool readLibraryParts(QTreeWidgetItem *library);
+  /// The Libraries panel's tree (the tests read it).
+  QTreeWidget *librariesTree() const { return libTreeWidget; }
   /// Which folders are projects changed (QucsSettings.AnyFolderIsProject):
   /// the Projects panel sorts and marks them anew, the file browser too.
   void applyProjectSettings();

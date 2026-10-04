@@ -1550,9 +1550,10 @@ QJsonObject QucsControl::describePart(const QJsonObject& args)
     const QString part = args.value(QLatin1String("part")).toString().trimmed();
     if (wantedLibrary.isEmpty() || part.isEmpty())
         return errorResult(tr("Say which part: 'library' and 'part', as find_library_component gives them (OpAmps, uA741)."));
-    // Its block in its library: the installed ones, then the user's.
+    // Its block in its library: the installed ones, the project's, the
+    // user's, those of the library search paths.
     QString library, body;
-    for (const QString& dirName : {QucsSettings.LibDir, QucsSettings.qucsWorkspaceDir.filePath(QStringLiteral("user_lib"))}) {
+    for (const QString& dirName : misc::libraryFolders()) {
         for (const QFileInfo& fi : QDir(dirName).entryInfoList({QStringLiteral("*.lib")}, QDir::Files, QDir::Name)) {
             if (fi.completeBaseName().compare(wantedLibrary, Qt::CaseInsensitive) != 0) continue;
             QFile f(fi.filePath());
@@ -1701,8 +1702,9 @@ QJsonObject QucsControl::findLibraryComponent(const QJsonObject& args)
         return true;
     };
 
-    // Qucs libraries: the installed ones and the user's (user_lib).
-    QStringList libraryDirs{QucsSettings.LibDir, QucsSettings.qucsWorkspaceDir.filePath(QStringLiteral("user_lib"))};
+    // Qucs libraries: the installed ones, the project's, the user's
+    // (user_lib), those of the library search paths.
+    const QStringList libraryDirs = misc::libraryFolders();
     for (const QString& dirName : std::as_const(libraryDirs)) {
         const QDir dir(dirName);
         for (const QFileInfo& fi : dir.entryInfoList({QStringLiteral("*.lib")}, QDir::Files, QDir::Name)) {

@@ -59,6 +59,11 @@ namespace misc {
   /// differed.
   QFont canvasFont(QFont font);
   QString properAbsFileName(const QString&, Schematic* sch = nullptr);
+  /// The folders of component libraries, each once, in the order a placed
+  /// part's library is looked for by its name: the installed libraries,
+  /// the open project's folder (\a project), the workspace's user_lib, the
+  /// library search paths (QucsSettings.LibraryPaths). Those that exist.
+  QStringList libraryFolders(bool project = true);
   QString properFileName(const QString&);
   /// A file's name as a tab or the Claude Code panel shows it: cut after
   /// \a cap characters (as the reader counts them: an accented letter, an

@@ -5276,6 +5276,69 @@ private slots:
     // set through their own dialog and its OK, each change told with what
     // it was and what it is now, read again; a key that is not, a value it
     // does not take, Claude Code's own: said, not done.
+    // The library search paths: read and set by Claude as a list of
+    // folders (the subcircuit paths too, which it could not see); a part
+    // of a library there found, described and placed with its pins.
+    void librarySearchPathsForClaude()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        const QString team = dir.filePath("team-libraries");
+        {
+            QDir().mkpath(team);
+            QFile f(team + "/TeamAmps.lib");
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+            f.write("<Qucs Library 2.1.0 \"TeamAmps\">\n\n<Component Bufferino>\n  <Description>\nA unity buffer of the team\n"
+                    "  </Description>\n  <Model>\n.Def:TeamAmps_Bufferino _net0 _net1\nVCVS:SRC1 _net0 _net1 gnd gnd G=\"1\" T=\"0\"\n"
+                    ".Def:End\n  </Model>\n  <Spice>\n.SUBCKT TeamAmps_Bufferino 0 _net0 _net1\nESRC1 _net1 0 _net0 0 1\n.ENDS\n"
+                    "  </Spice>\n  <Symbol>\n    <.ID 10 14 BUF>\n    <.PortSym -30 0 1 0>\n    <.PortSym 30 0 2 180>\n"
+                    "    <Line -30 0 60 0 #000080 2 1>\n  </Symbol>\n</Component>\n");
+        }
+        const QStringList before = QucsSettings.LibraryPaths;
+        QJsonObject r = call("get_settings", {{"scope", "app"}});
+        QHash<QString, QJsonObject> settings;
+        for (const QJsonValue& v : json(r).toObject().value("settings").toArray()) settings.insert(v.toObject().value("key").toString(), v.toObject());
+        const QString key = "Locations/Library search paths";
+        QVERIFY2(settings.contains(key) && settings.value(key).value("type") == "folders", qPrintable(QStringList(settings.keys()).join(" | ")));
+        QCOMPARE(settings.value(key).value("value"), QJsonValue(QJsonArray()));
+        QVERIFY(settings.contains("Locations/Subcircuit search paths"));
+        QCOMPARE(settings.value("Locations/Subcircuit search paths").value("type").toString(), QStringLiteral("folders"));
+
+        r = call("set_settings", {{"scope", "app"}, {"values", QJsonObject{{key, QJsonArray{team}}}}}, 20000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject change = json(r).toObject().value("changed").toArray().first().toObject();
+        QCOMPARE(change.value("was"), QJsonValue(QJsonArray()));
+        QCOMPARE(change.value("now"), QJsonValue(QJsonArray{team}));
+        QCOMPARE(QucsSettings.LibraryPaths, QStringList({team}));
+        // A folder that is not there, or a name that is no path: refused.
+        r = call("set_settings", {{"scope", "app"}, {"values", QJsonObject{{key, QJsonArray{team, dir.filePath("nowhere")}}}}}, 20000);
+        QVERIFY2(failed(r) && text(r).contains("is not a folder here"), qPrintable(text(r)));
+        r = call("set_settings", {{"scope", "app"}, {"values", QJsonObject{{key, QJsonArray{1}}}}}, 20000);
+        QVERIFY2(failed(r) && text(r).contains("a list of folders"), qPrintable(text(r)));
+        QCOMPARE(QucsSettings.LibraryPaths, QStringList({team}));
+
+        // Its part found, described and placed: with its two pins.
+        r = call("find_library_component", {{"search", "Bufferino"}});
+        const QJsonArray found = json(r).toObject().value("found").toArray();
+        QVERIFY2(found.size() == 1 && found.at(0).toObject().value("library").toString() == "TeamAmps", qPrintable(text(r)));
+        r = call("describe_part", {{"library", "TeamAmps"}, {"part", "Bufferino"}});
+        QVERIFY2(!failed(r) && text(r).contains("A unity buffer of the team"), qPrintable(text(r)));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const QJsonObject place = found.at(0).toObject().value("place").toObject();
+        r = call("add_component", {{"type", place.value("type")}, {"name", "B1"}, {"x", 200}, {"y", 200}, {"properties", place.value("properties")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray placed = json(call("get_schematic", {{"components", QJsonArray{"B1"}}})).toObject().value("components").toArray();
+        QCOMPARE(placed.at(0).toObject().value("pins").toArray().size(), 2);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // Put back, as 'was' says.
+        r = call("set_settings", {{"scope", "app"}, {"values", QJsonObject{{key, change.value("was")}}}}, 20000);
+        QVERIFY2(!failed(r) && QucsSettings.LibraryPaths.isEmpty(), qPrintable(text(r)));
+        QucsSettings.LibraryPaths = before;
+        r = call("find_library_component", {{"search", "Bufferino"}});
+        QVERIFY2(json(r).toObject().value("found").toArray().isEmpty(), qPrintable(text(r)));
+    }
+
     void settingsAreReadAndSetByKeys()
     {
         for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);

@@ -224,11 +224,15 @@ private slots:
             {"Paths/1/path", path("lib1")},
             {"Paths/2/path", "/nowhere/lib"},
             {"Paths/3/path", path("lib2")},
+            {"LibraryPaths/size", 2},                           // the folders of libraries too
+            {"LibraryPaths/1/path", "/gone/team-libraries"},
+            {"LibraryPaths/2/path", path("lib2")},
         }));
         settingsio::Import import;
         QString error;
         QVERIFY2(settingsio::read(path("paths.json"), import, &error), qPrintable(error));
-        QCOMPARE(import.kept.size(), 3);
+        QCOMPARE(import.kept.size(), 4);
+        QVERIFY(import.kept.join('\n').contains("LibraryPaths: " + QDir::toNativeSeparators("/gone/team-libraries") + " is not on this computer, left out"));
         QVERIFY(import.kept.join('\n').contains("XyceExecutable: " + QDir::toNativeSeparators("/nowhere/Xyce")));
         QVERIFY(import.kept.join('\n').contains("SpiceOpusExecutable"));
         QVERIFY(import.kept.join('\n').contains("left out"));
@@ -244,6 +248,9 @@ private slots:
         QCOMPARE(store.value("Paths/1/path").toString(), path("lib1"));
         QCOMPARE(store.value("Paths/2/path").toString(), path("lib2"));
         QVERIFY(!store.contains("Paths/3/path"));
+        QCOMPARE(store.value("LibraryPaths/size").toInt(), 1);
+        QCOMPARE(store.value("LibraryPaths/1/path").toString(), path("lib2"));
+        QVERIFY(!store.contains("LibraryPaths/2/path"));
     }
 
     void claudeIsNotAllowedEverythingByAFile()
