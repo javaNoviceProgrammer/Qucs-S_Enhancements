@@ -26,6 +26,7 @@
 #include "qucsdoc.h"
 #include "qucslib_common.h"
 #include "dialogs/librarydialog.h"
+#include "components/libcomp.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -101,7 +102,8 @@ QJsonObject placement(const QString& kind, const QString& file, const QString& p
     if (kind == QLatin1String("spice"))
         return QJsonObject{{QStringLiteral("type"), QStringLiteral("SpLib")},
                            {QStringLiteral("properties"), QJsonObject{{QStringLiteral("File"), file}, {QStringLiteral("Device"), part}}}};
-    const QString lib = installed ? QFileInfo(file).completeBaseName() : file.left(file.size() - 4);
+    // By its name when that finds it, else by its path (LibComp::referenceTo()).
+    const QString lib = installed ? QFileInfo(file).completeBaseName() : LibComp::referenceTo(file);
     return QJsonObject{{QStringLiteral("type"), QStringLiteral("Lib")},
                        {QStringLiteral("properties"), QJsonObject{{QStringLiteral("Lib"), lib}, {QStringLiteral("Comp"), part}}}};
 }

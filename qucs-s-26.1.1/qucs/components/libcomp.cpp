@@ -341,6 +341,18 @@ QString LibComp::libraryFileOf(const QString& lib, const QString& folder)
   return misc::properAbsFileNameIn(Directory.absoluteFilePath(lib + ".lib"), folder);
 }
 
+QString LibComp::referenceTo(const QString& libraryFile)
+{
+  const QFileInfo info(libraryFile);
+  QString path = info.absoluteFilePath();
+  path.chop(4);   // ".lib"
+  // (A name with a dot: the libraries panel's parser names it shorter.)
+  const QString name = info.completeBaseName();
+  if (name.isEmpty() || name.contains(QLatin1Char('.'))) return path;
+  const QString real = info.canonicalFilePath();
+  return !real.isEmpty() && QFileInfo(libraryFileOf(name, QString())).canonicalFilePath() == real ? name : path;
+}
+
 QString LibComp::getSubcircuitFile()
 {
   QString FileName = libraryFile();

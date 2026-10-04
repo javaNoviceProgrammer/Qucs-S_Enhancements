@@ -447,10 +447,11 @@ ProjectView::refresh()
     const QString scratchPrefix = QString::fromLatin1(misc::ScratchFolder) + QLatin1Char('/');
     // The folders of library Verilog-A Qucs-S keeps (projectlibraries.h):
     // their links say whose they are.
-    QSet<QString> libraryFolders;
-    for (const QFileInfo& dir : workPath.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks))
+    QSet<QString> libraryFolders;   // Libraries/<library>
+    const QString librariesFolder = QLatin1String(qucs_s::projectlibraries::FolderName);
+    for (const QFileInfo& dir : QDir(workPath.filePath(librariesFolder)).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks))
       if (QFileInfo::exists(QDir(dir.absoluteFilePath()).absoluteFilePath(QLatin1String(qucs_s::projectlibraries::RecordName))))
-        libraryFolders.insert(dir.fileName());
+        libraryFolders.insert(librariesFolder + QLatin1Char('/') + dir.fileName());
     for (const QString& fileName : files) {
       const QFileInfo info(workPath.filePath(fileName));
       if (fileName.startsWith(scratchPrefix)) {   // temporary files, of whatever type
@@ -467,7 +468,7 @@ ProjectView::refresh()
           appendFile(Schematics, fileName, n > 0 ? QString::number(n) + tr("-port") : QString());
         } else {
           qucs_s::projectlibraries::Entry entry;
-          if (libraryFolders.contains(fileName.section(QLatin1Char('/'), 0, 0)))
+          if (libraryFolders.contains(fileName.section(QLatin1Char('/'), 0, 1)))
             entry = qucs_s::projectlibraries::entryOf(info.filePath());
           if (entry.isEmpty())
             appendFile(category, fileName);

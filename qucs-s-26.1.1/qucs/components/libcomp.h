@@ -40,6 +40,13 @@ public:
   /// libraryFile() of a part whose Lib is \a lib in a schematic in \a folder
   /// (its file's folder; empty: in none) - for a schematic read as text.
   static QString libraryFileOf(const QString& lib, const QString& folder);
+  /// What a part's Lib holds to name the library \a libraryFile: its name
+  /// when the name finds this very library (libraryFileOf() with no
+  /// schematic) - a schematic that goes to another computer, or a library
+  /// that moves, still finds it -, else its path without ".lib" (another
+  /// library of its name is found first: installed, the project's,
+  /// user_lib's, an earlier search path's).
+  static QString referenceTo(const QString& libraryFile);
   /// The library's folder: libraryFile() without ".lib".
   QString getSubcircuitFile();
   QString getSpiceLibrary();

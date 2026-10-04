@@ -5463,6 +5463,8 @@ private slots:
         r = call("create_library", {{"name", "LinkLib"}, {"destination", shelf}});
         QVERIFY2(!failed(r) && json(r).toObject().value("models").toArray().contains("LinkLib/good.va"), qPrintable(text(r)));
         const QJsonObject place = json(r).toObject().value("parts").toArray().at(0).toObject().value("place").toObject();
+        // Placed by its library's name: that finds it (on the search paths).
+        QCOMPARE(place.value("properties").toObject().value("Lib").toString(), QStringLiteral("LinkLib"));
 
         QVERIFY(!failed(call("new_project", {{"name", "vause"}})));
         const QString use = QucsSettings.QucsWorkDir.absolutePath();
@@ -5471,27 +5473,45 @@ private slots:
                                    {"properties", place.value("properties")}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         r = call("save_document", {{"as", use + "/top.sch"}});
-        QVERIFY2(!failed(r) && text(r).contains("linked into the project from its library") && text(r).contains("LinkLib/good.va"),
+        QVERIFY2(!failed(r) && text(r).contains("linked into the project from its library") && text(r).contains("Libraries/LinkLib/good.va"),
                  qPrintable(text(r)));
-        QVERIFY(QFileInfo(use + "/LinkLib/good.va").isSymLink());
-        QVERIFY(!failed(call("open_document", {{"path", "LinkLib/good.va"}})));
-        r = call("edit_text", {{"path", "LinkLib/good.va"}, {"edits", QJsonArray{QJsonObject{{"find", "module"}, {"replace", "MODULE"}}}}});
+        QVERIFY(QFileInfo(use + "/Libraries/LinkLib/good.va").isSymLink());
+        QVERIFY(!failed(call("open_document", {{"path", "Libraries/LinkLib/good.va"}})));
+        r = call("edit_text", {{"path", "Libraries/LinkLib/good.va"}, {"edits", QJsonArray{QJsonObject{{"find", "module"}, {"replace", "MODULE"}}}}});
         QVERIFY2(failed(r) && text(r).contains("library LinkLib") && text(r).contains("Nothing was changed"), qPrintable(text(r)));
-        QVERIFY(!failed(call("close_document", {{"path", "LinkLib/good.va"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "Libraries/LinkLib/good.va"}})));
+        const QString link = use + "/Libraries/LinkLib/good.va";
+        // Taken away in the tab, not saved: the saved schematic uses it - kept.
+        QVERIFY(!failed(call("delete", {{"path", "top.sch"}, {"names", QJsonArray{"X1"}}})));
+        QVERIFY(!app->syncProjectLibraries().changed());
+        QVERIFY(QFileInfo(link).isSymLink());
+        // Saved: taken away. Undone: back at the next sync (a simulation's),
+        // the tab's part counted.
+        r = call("save_document", {{"path", "top.sch"}});
+        QVERIFY2(!failed(r) && text(r).contains("taken away") && text(r).contains("Libraries/LinkLib/good.va"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(use + "/Libraries"));
+        QVERIFY(!failed(call("undo", {{"path", "top.sch"}})));
+        QCOMPARE(app->syncProjectLibraries().made, QStringList{"Libraries/LinkLib/good.va"});
+        r = call("save_document", {{"path", "top.sch"}});
+        QVERIFY2(!failed(r) && !text(r).contains("Library Verilog-A"), qPrintable(text(r)));   // linked already
+        // Taken away and closed without saving: the saved schematic uses it - kept.
+        QVERIFY(!failed(call("delete", {{"path", "top.sch"}, {"names", QJsonArray{"X1"}}})));
+        QVERIFY(!failed(call("close_document", {{"path", "top.sch"}, {"unsaved", "discard"}})));
+        QVERIFY(!app->syncProjectLibraries().changed());
+        QVERIFY(QFileInfo(link).isSymLink());
+        QVERIFY(!failed(call("open_document", {{"path", "top.sch"}})));
         QVERIFY(!failed(call("delete", {{"path", "top.sch"}, {"names", QJsonArray{"X1"}}})));
         r = call("save_document", {{"path", "top.sch"}});
-        QVERIFY2(!failed(r) && text(r).contains("taken away") && text(r).contains("LinkLib/good.va"), qPrintable(text(r)));
-        QVERIFY(!QFileInfo::exists(use + "/LinkLib"));
-        r = call("save_document", {{"path", "top.sch"}});
-        QVERIFY2(!failed(r) && !text(r).contains("Library Verilog-A"), qPrintable(text(r)));
+        QVERIFY2(!failed(r) && text(r).contains("taken away"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(use + "/Libraries"));
         // A file of the project's in the link's place: said, left as it is.
-        QVERIFY(QDir().mkpath(use + "/LinkLib"));
-        QVERIFY(put(use + "/LinkLib/good.va", "// mine\n"));
+        QVERIFY(QDir().mkpath(use + "/Libraries/LinkLib"));
+        QVERIFY(put(use + "/Libraries/LinkLib/good.va", "// mine\n"));
         QVERIFY(!failed(call("add_component", {{"path", "top.sch"}, {"type", place.value("type")}, {"name", "X1"}, {"x", 300},
                                                {"y", 200}, {"properties", place.value("properties")}})));
         r = call("save_document", {{"path", "top.sch"}});
-        QVERIFY2(!failed(r) && text(r).contains("not linked, a file of the project's in the way: LinkLib/good.va"), qPrintable(text(r)));
-        QVERIFY(!QFileInfo(use + "/LinkLib/good.va").isSymLink());
+        QVERIFY2(!failed(r) && text(r).contains("not linked, a file of the project's in the way: Libraries/LinkLib/good.va"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo(use + "/Libraries/LinkLib/good.va").isSymLink());
         // A text document's save says nothing of libraries.
         QVERIFY(put(use + "/notes.txt", "notes\n"));
         QVERIFY(!failed(call("open_document", {{"path", "notes.txt"}})));

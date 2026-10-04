@@ -210,8 +210,10 @@ private slots:
         teamLib->setExpanded(true);
         QCOMPARE(teamLib->childCount(), 1);
         QCOMPARE(teamLib->child(0)->text(0), QStringLiteral("Amp"));
-        QCOMPARE(teamLib->child(0)->text(3), team + "/TeamLib");   // placed with its path
-        QVERIFY(teamLib->child(0)->text(1).contains("\"" + team + "/TeamLib\""));
+        QCOMPARE(teamLib->child(0)->text(3), team + "/TeamLib");
+        // Placed by its name: that finds it (a schematic on another computer finds it in its search paths).
+        QVERIFY2(teamLib->child(0)->text(1).contains("\"TeamLib\" 0") && !teamLib->child(0)->text(1).contains(team),
+                 qPrintable(teamLib->child(0)->text(1)));
         QTreeWidgetItem* broken = topItem(tree, "Broken");
         QVERIFY(!app.readLibraryParts(broken));
         QVERIFY2(broken->toolTip(0).contains("It cannot be opened."), qPrintable(broken->toolTip(0)));
