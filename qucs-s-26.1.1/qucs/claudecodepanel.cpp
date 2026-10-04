@@ -3488,7 +3488,7 @@ void ClaudeCodePanel::exportConversationAs(ExportFormat format)
     QucsSettingsFile settings;
     QString dir = settings.value(kExportDir).toString();
     if (dir.isEmpty() || !QFileInfo(dir).isDir()) dir = workingDirectory();
-    QString path = QFileDialog::getSaveFileName(this, tr("Export the Conversation"),
+    QString path = misc::saveFileName(this, tr("Export the Conversation"),
                                                 QDir(dir).filePath(fileNameFor(exportTitle()) + suffix), filter);
     if (path.isEmpty()) return;
     if (QFileInfo(path).suffix().isEmpty()) path += suffix;

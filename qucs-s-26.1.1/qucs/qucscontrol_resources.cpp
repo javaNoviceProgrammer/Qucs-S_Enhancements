@@ -17,6 +17,7 @@
 
 #include "qucs.h"
 #include "projectView.h"
+#include "projectlibraries.h"
 #include "qucsdoc.h"
 #include "schematic.h"
 #include "wire.h"
@@ -473,15 +474,17 @@ QJsonObject QucsControl::preview(const QString& tool, const QJsonObject& args, c
     return conclude(answer);
 }
 
-void QucsControl::aboutToWrite(const QString& file)
+QString QucsControl::aboutToWrite(const QString& file)
 {
-    if (a_previewing > 0 || a_callDepth == 0 || file.isEmpty()) return;
+    if (const QString why = qucs_s::projectlibraries::notToWrite(file); !why.isEmpty()) return why;
+    if (a_previewing > 0 || a_callDepth == 0 || file.isEmpty()) return {};
     const QString path = QFileInfo(file).absoluteFilePath();
     for (const auto& kept : std::as_const(a_openStep.before))
-        if (kept.first == path) return;   // (as it was when the call began)
+        if (kept.first == path) return {};   // (as it was when the call began)
     std::optional<QByteArray> held;
     if (QFile f(path); f.exists() && f.open(QIODevice::ReadOnly)) held = f.readAll();
     a_openStep.before.append({path, held});
+    return {};
 }
 
 void QucsControl::movedFile(const QString& from, const QString& to)

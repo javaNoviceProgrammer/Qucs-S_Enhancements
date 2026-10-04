@@ -19,6 +19,7 @@
 #include <QMimeData>
 #include <QGuiApplication>
 #include <QMenuBar>
+#include <QMessageBox>
 #include <QClipboard>
 #include <QPainter>
 #include <QProcess>
@@ -928,6 +929,37 @@ private slots:
         });
         lost.accept();
         QVERIFY(lost.result() != QDialog::Accepted);
+
+        // A library's Verilog-A kept in a project, named as the file (or
+        // the PDF of a pdf_tex): not written through - said, the dialog
+        // stays (the 4 October hunt's A2, in the window).
+        const QString kept = path("proj/Libraries/X/"), shelf = path("shelf/");
+        QVERIFY(QDir().mkpath(kept) && QDir().mkpath(shelf));
+        for (const QString& name : {QStringLiteral("fig.png"), QStringLiteral("tex.pdf")}) {
+            QFile original(shelf + name);
+            QVERIFY(original.open(QIODevice::WriteOnly));
+            original.write("the library's");
+            original.close();
+            QVERIFY(QFile::link(shelf + name, kept + name));
+        }
+        QFile record(kept + ".qucs-library.json");
+        QVERIFY(record.open(QIODevice::WriteOnly));
+        record.write(("{\"library\": \"X\", \"folder\": \"" + shelf + "\", \"created\": true, \"files\": ["
+                      "{\"path\": \"fig.png\", \"original\": \"" + shelf + "fig.png\", \"kind\": \"link\"}, "
+                      "{\"path\": \"tex.pdf\", \"original\": \"" + shelf + "tex.pdf\", \"kind\": \"link\"}]}").toUtf8());
+        record.close();
+        for (const QString& name : {QStringLiteral("fig.png"), QStringLiteral("tex.pdf_tex")}) {
+            ExportDialog onto(QSize(400, 300), QSize(), kept + name);
+            QString said;
+            QTimer::singleShot(0, [&said] {
+                if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                    said = box->text();
+                    box->close();
+                }
+            });
+            onto.accept();
+            QVERIFY2(onto.result() != QDialog::Accepted && said.contains("library X, linked into the project"), qPrintable(name + ": " + said));
+        }
     }
 };
 

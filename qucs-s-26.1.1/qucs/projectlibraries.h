@@ -76,8 +76,13 @@ struct Report {
 /// it (NAME.osdi), the record, the folder when Qucs-S made it and nothing
 /// else is in it, and Libraries/ so. Only what Qucs-S put there, as the
 /// records say: a file of the user's is never written over or taken away.
-/// A library a part names that is not found here - or none of that name
-/// has the part - keeps what it has. The
+/// A record's file is one in its folder - not by "..", an absolute path or
+/// a link to a folder elsewhere - and a copy is taken away only while it
+/// is the copy Qucs-S made (the record has its sum): a record edited by
+/// hand, or come with a project from elsewhere, takes nothing else away.
+/// Nothing is written through a folder that leads elsewhere, Libraries/
+/// itself a link included. A library a part names that is not found here -
+/// or none of that name has the part - keeps what it has. The
 /// folders made in the project's folder itself before Libraries/ are moved.
 Report sync(const QString& projectDir, const QList<Schematic*>& open = {}, Mode mode = defaultMode());
 
@@ -103,6 +108,13 @@ struct Entry {
     bool isEmpty() const { return library.isEmpty(); }
 };
 Entry entryOf(const QString& path);
+
+/// Why \a path must not be written, for a message: it is a library's
+/// Verilog-A that a project keeps (sync()) - a link, which would write the
+/// library's own file, shared by every project using it; or a copy, kept
+/// in step with it, what is written lost. Told by the file itself, however
+/// its path is spelled. Empty when it may be written.
+QString notToWrite(const QString& path);
 
 } // namespace qucs_s::projectlibraries
 

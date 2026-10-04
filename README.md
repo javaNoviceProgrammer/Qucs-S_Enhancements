@@ -232,7 +232,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   stay), then the library's folder, then `Libraries/` when Qucs-S made it
   and it holds nothing else. Only what Qucs-S put there - a record in the
   folder, `.qucs-library.json`, says what - is ever replaced or taken
-  away: a file of yours in its place is left as it is. A link that leads
+  away: a file of yours in its place is left as it is. A record names
+  files in its own folder only: a path that leads out of it (`../`, or a
+  folder in it that is a link elsewhere) takes nothing away, and a copy
+  goes only while it is still the copy Qucs-S made (the record keeps its
+  SHA-256) - so a record edited by hand, or one that came with a project
+  from elsewhere, cannot take away your files. Nothing is written through
+  a `Libraries/` (or a library's folder in it) that is a link elsewhere.
+  The link is never written through either: Claude's tools that write a
+  file (`export_netlist`, `save_document` with `as`, `export_image`...)
+  and every save dialog refuse a library's Verilog-A the project keeps,
+  saying the library's own file would change. A link that leads
   nowhere (the library moved, the project opened on another computer) is
   made again to where the library is found; one whose library is not
   found here at all keeps what it has. Where no link can be made (a disk

@@ -24,6 +24,7 @@
 
 #include <functional>
 #include <QDateTime>
+#include <QFileDialog>
 #include <QPushButton>
 
 #define Q_UINT32 uint32_t
@@ -163,6 +164,15 @@ namespace misc {
   /// name, then renamed over it. Nothing is done (true) when they are
   /// the same file. \a error, when given, is set to why it failed.
   bool    copyFileOver(const QString& source, const QString& target, QString* error = nullptr);
+  /// QFileDialog::getSaveFileName, asked again while the file chosen is
+  /// one not to write: a library's Verilog-A a project keeps - written
+  /// through its link, the library's own file would change
+  /// (projectlibraries::notToWrite(), said in a message).
+  QString saveFileName(QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
+                       QString* selectedFilter = nullptr, QFileDialog::Options options = {});
+  /// When \a file is one not to write (projectlibraries::notToWrite()):
+  /// says why, in a message box titled \a title, and is true.
+  bool    refusesToWrite(QWidget* parent, const QString& title, const QString& file);
   bool    VHDL_Time(QString&, const QString&);
   bool    VHDL_Delay(QString&, const QString&);
   bool    Verilog_Time(QString&, const QString&);
