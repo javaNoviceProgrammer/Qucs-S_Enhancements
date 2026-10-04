@@ -190,6 +190,28 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   by default) turns it off: the library then holds the subcircuits and
   their symbols only, as before. Share the library as `NAME.lib` with its
   folder; older versions of Qucs-S read it and ignore the Verilog-A files.
+- **Library search paths**: *Application Settings → Locations → Library
+  Search Paths* lists folders of component libraries besides the installed
+  ones and the workspace's `user_lib` - a team's share, a git checkout of
+  libraries, a vendor's folder - with *Add Path*, *Add Path With
+  SubFolders* and *Clear All Paths*, as the subcircuit search paths have.
+  Each folder is a section of the *Libraries* panel, after the user
+  libraries, named after the folder (its path in the tool tip); its
+  libraries' parts are read when one is opened or searched, so a large
+  folder does not slow the start, and one that cannot be read is greyed
+  with the reason instead of a message box that stopped the listing (in
+  the other sections too). A placed part keeps its library's path; on
+  another computer, or with the folder moved, its library is found by
+  name in the search paths, and *Check Schematic* names them when it is
+  not. *Create Library* saves into `user_lib` (as before), the project or
+  one of the folders (*Save in*). Claude reads and sets the list
+  (`get_settings`/`set_settings`, *Locations/Library search paths*, a list
+  of folders - the subcircuit search paths too, which it could not see),
+  and finds, describes and places their parts (`find_library_component`,
+  which now searches the project's libraries too). An imported settings
+  file keeps only the folders that are on this computer. The subcircuit
+  search paths are now saved when the settings are applied, not only when
+  Qucs-S closes.
 - **A Scratch folder per project, a subfolder per schematic**: the
   temporary files of a simulation (netlist, the raw simulator output such
   as `spice4qucs.ac1.plot`, log) go to `Scratch/<schematic>/` inside the

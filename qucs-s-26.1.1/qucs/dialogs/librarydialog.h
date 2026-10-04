@@ -38,6 +38,7 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QStackedWidget>
+#include <QComboBox>
 
 class QLabel;
 class QLineEdit;
@@ -97,6 +98,7 @@ private:
   QLabel *checkedCktName;
   QLabel *libSaveName;
   QLineEdit *NameEdit;
+  QComboBox *Destination;   // where the library goes: user_lib, the project, a library search path
   QPlainTextEdit *ErrText;
   QTextEdit *textDescr;
   QGroupBox *Group;

@@ -45,6 +45,7 @@
 
 #include "librarydialog.h"
 #include "main.h"
+#include "qucs.h"
 #include "misc.h"
 #include "osdiselection.h"
 #include "painting.h"
@@ -88,6 +89,31 @@ LibraryDialog::LibraryDialog(QWidget *parent)
   NameEdit = new QLineEdit();
   h1->addWidget(NameEdit);
   NameEdit->setValidator(Validator);
+
+  // Where it goes: the user libraries (user_lib), the project, or a folder
+  // of the library search paths - each a section of the Libraries panel.
+  QHBoxLayout *hDestination = new QHBoxLayout();
+  selectSubcktLayout->addLayout(hDestination);
+  QLabel *destinationLabel = new QLabel(tr("Save in:"));
+  hDestination->addWidget(destinationLabel);
+  Destination = new QComboBox();
+  Destination->setObjectName(QStringLiteral("destination"));
+  destinationLabel->setBuddy(Destination);
+  hDestination->addWidget(Destination, 1);
+  QStringList offered;
+  const auto offer = [this, &offered](const QString &text, const QString &folder) {
+    const QString key = QFileInfo(folder).exists() ? QFileInfo(folder).canonicalFilePath() : QDir::cleanPath(folder);
+    if (offered.contains(key)) return;
+    offered << key;
+    Destination->addItem(text, folder);
+    Destination->setItemData(Destination->count() - 1, QDir::toNativeSeparators(folder), Qt::ToolTipRole);
+  };
+  const QString userLib = QucsSettings.qucsWorkspaceDir.filePath(QStringLiteral("user_lib"));
+  offer(tr("User libraries (user_lib)"), userLib);
+  if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty())
+    offer(tr("The project %1").arg(QucsMain->ProjName), QucsSettings.QucsWorkDir.absolutePath());
+  for (const QString &folder : std::as_const(QucsSettings.LibraryPaths))
+    if (QFileInfo(folder).isDir()) offer(QDir::toNativeSeparators(QDir::cleanPath(folder)), QDir::cleanPath(folder));
 
   // ...........................................................
   Group = new QGroupBox(tr("Choose subcircuits:"));
@@ -260,15 +286,14 @@ void LibraryDialog::slotCreateNext()
     return;
   }
 
-  LibDir = QDir(QucsSettings.qucsWorkspaceDir);
-  if(!LibDir.cd("user_lib")) { // user library directory exists ?
-    if(!LibDir.mkdir("user_lib")) { // no, then create it
-      QMessageBox::warning(this, tr("Warning"),
-                   tr("Cannot create user library directory !"));
-      return;
-    }
-    LibDir.cd("user_lib");
+  // The folder chosen (user_lib made when it is not there yet).
+  const QString destination = Destination->currentData().toString();
+  if (!QDir().mkpath(destination)) {
+    QMessageBox::warning(this, tr("Warning"),
+                 tr("Cannot create the folder %1.").arg(QDir::toNativeSeparators(destination)));
+    return;
   }
+  LibDir = QDir(destination);
 
   /*LibFile.setFileName(QucsSettings.LibDir + NameEdit->text() + ".lib");
   if(LibFile.exists()) {

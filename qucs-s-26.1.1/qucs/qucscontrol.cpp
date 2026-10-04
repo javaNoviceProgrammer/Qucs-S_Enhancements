@@ -299,11 +299,11 @@ const char* const kTools = R"JSON([
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, or [row, column, true or false] for a tree's check box}]"},
    "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id"}}}},
 {"name": "get_settings",
- "description": "Reads the settings of Qucs-S, typed: 'scope' app (Application Settings), simulators (Simulators Settings), document (the settings of the document 'path' names, the one in front unless given) or cdl (CDL Settings). Each setting by its key - \"Tab/Label\" as the dialog shows it (\"Settings/Language\", \"Locations/Ngspice\") - with its type (text, bool, option, choice, number, integer, table), its value, and its choices or range. Nothing is shown or changed.",
+ "description": "Reads the settings of Qucs-S, typed: 'scope' app (Application Settings), simulators (Simulators Settings), document (the settings of the document 'path' names, the one in front unless given) or cdl (CDL Settings). Each setting by its key - \"Tab/Label\" as the dialog shows it (\"Settings/Language\", \"Locations/Ngspice\") - with its type (text, bool, option, choice, number, integer, table, folders - a list of folders, such as \"Locations/Library search paths\"), its value, and its choices or range. Nothing is shown or changed.",
  "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"}}, "required": ["scope"]}},
 {"name": "set_settings",
  "description": "Changes settings of Qucs-S by their keys (get_settings lists them): 'values' {\"Tab/Label\": new value} - or a label alone when it is one setting's. Done through the settings' own dialog, opened as its menu action opens it and applied with its own OK, so what Qucs-S does after it is done too, and its checks hold. Returns each change with what it 'was' (set_settings with it puts it back) and what it is 'now', read again; what was not done and why; what the dialog said. Claude Code's own settings are refused.",
- "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings"}, "values": {"type": "object", "description": "{\"Tab/Label\": value}: text, true or false, a number, or one of its choices"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"}}, "required": ["scope", "values"]}},
+ "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings"}, "values": {"type": "object", "description": "{\"Tab/Label\": value}: text, true or false, a number, one of its choices, or for folders the whole list of full paths ([] for none)"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"}}, "required": ["scope", "values"]}},
 {"name": "console",
  "description": "Types a line into a console dock of Qucs-S - octave (the Octave dock), python (the Python Shell) or terminal (the Terminal dock, a shell) - as the user would there, and returns what it printed once its prompt is back, or what came by 'wait' seconds (10 unless given; the run goes on, and 'interrupt': true stops it with Ctrl-C). What is typed runs with the user's rights, outside Claude Code's own rules for commands: each use is asked about, every time, with the line shown. Without 'input': the last 'lines' of what the console shows, nothing typed. The user sees it all in the dock.",
  "inputSchema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["octave", "python", "terminal"], "description": "The console"}, "input": {"type": "string", "description": "One line, typed and entered"}, "wait": {"type": "integer", "description": "Seconds to wait for its prompt back (1 to 600; 10 unless given)"}, "interrupt": {"type": "boolean", "description": "Ctrl-C to what runs (python, terminal)"}, "lines": {"type": "integer", "description": "How many of the last lines to give (40 unless given)"}}, "required": ["kind"]}},
@@ -561,7 +561,7 @@ const char* const kTools = R"JSON([
  "description": "What a library part is, in one call: its pins in order, each with its name, the side of the symbol it is on and its role (input, output, supply); its supply pins; what its model is - one component placed as that component, a macromodel of controlled sources, a transistor-level subcircuit - with the count of its elements; how the test of every library part under ngspice found it; its description; and 'place' for add_component. find_library_component finds the part.",
  "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "The library, as find_library_component gives it: OpAmps"}, "part": {"type": "string", "description": "The part in it: uA741"}}, "required": ["library", "part"]}},
 {"name": "find_library_component",
- "description": "Searches the component libraries - Qucs-S's own and the user's (user_lib) - and the SPICE model files (.model cards in .lib, .mod, .inc and .cir files) of the project and the workspace for a part by what it is and by its values. 'search' matches words in its name or description (2N3904, NPN 40V); 'type' is npn, pnp, nmos, pmos, njf, pjf, diode or a Qucs model (_BJT, _MOSFET, Diode, ...); 'near' gives parameter values ({\"Bf\": 200}, nearest first on a logarithmic scale); 'library' limits it to one library. Returns each part with its library, description, the values asked about and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp ('placed as' names the component it becomes when its model is one component with the library's values - a Diode, a _BJT); a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value. Each library part says how it fared under ngspice ('ngspice'): tested - it netlists and its operating point converges, each pin to ground through 1 MOhm (a smoke test, not of what it does) - or failing, and why; 'tested' lists only those that pass.",
+ "description": "Searches the component libraries - Qucs-S's own, the project's, the user's (user_lib) and those of the library search paths (get_settings app, Locations/Library search paths) - and the SPICE model files (.model cards in .lib, .mod, .inc and .cir files) of the project and the workspace for a part by what it is and by its values. 'search' matches words in its name or description (2N3904, NPN 40V); 'type' is npn, pnp, nmos, pmos, njf, pjf, diode or a Qucs model (_BJT, _MOSFET, Diode, ...); 'near' gives parameter values ({\"Bf\": 200}, nearest first on a logarithmic scale); 'library' limits it to one library. Returns each part with its library, description, the values asked about and how to place it: a Qucs library part is add_component with type Lib and its Lib and Comp ('placed as' names the component it becomes when its model is one component with the library's values - a Diode, a _BJT); a SPICE model comes with its .model card. A plain resistor, capacitor or inductor is add_component R, C or L with its value. Each library part says how it fared under ngspice ('ngspice'): tested - it netlists and its operating point converges, each pin to ground through 1 MOhm (a smoke test, not of what it does) - or failing, and why; 'tested' lists only those that pass.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string", "description": "Words in its name or description: 2N3904, NPN 40V"}, "type": {"type": "string", "description": "npn, pnp, nmos, pmos, njf, pjf, diode, or a Qucs model (_BJT, _MOSFET, Diode, ...)"}, "near": {"type": "object", "description": "Parameter values, nearest first on a logarithmic scale: {\"Bf\": 200}"},
    "library": {"type": "string", "description": "Only this library, by name"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Parts at most, 15 by default"},
    "tested": {"type": "boolean", "description": "Only the library parts the test of every part under ngspice found working (each result's 'ngspice' says how it fared)"}}}},
@@ -10772,6 +10772,13 @@ QJsonValue QucsControl::typedValue(QWidget* w) const
     if (auto* n = qobject_cast<QSpinBox*>(w)) return n->value();
     if (auto* p = qobject_cast<QPlainTextEdit*>(w)) return p->toPlainText();
     if (auto* t = qobject_cast<QTextEdit*>(w)) return t->toPlainText();
+    if (auto* table = qobject_cast<QTableWidget*>(w); table != nullptr && table->property("paths").toBool()) {
+        // A list of folders (the search paths): each row's.
+        QJsonArray folders;
+        for (int r = 0; r < table->rowCount(); ++r)
+            if (table->item(r, 0) != nullptr) folders.append(table->item(r, 0)->text());
+        return folders;
+    }
     if (auto* table = qobject_cast<QTableWidget*>(w)) {
         QJsonArray rows;
         for (int r = 0; r < table->rowCount(); ++r) {
@@ -10815,6 +10822,8 @@ QJsonArray QucsControl::typedSettings(QWidget* dialog, QHash<QString, QWidget*>*
             o.insert(QStringLiteral("type"), QStringLiteral("integer"));
             o.insert(QStringLiteral("minimum"), n->minimum());
             o.insert(QStringLiteral("maximum"), n->maximum());
+        } else if (qobject_cast<QTableWidget*>(w) != nullptr && w->property("paths").toBool()) {
+            o.insert(QStringLiteral("type"), QStringLiteral("folders"));
         } else if (qobject_cast<QTableWidget*>(w) != nullptr) {
             o.insert(QStringLiteral("type"), QStringLiteral("table"));
         } else {
@@ -10895,6 +10904,28 @@ bool QucsControl::setTyped(QWidget* dialog, QWidget* w, const QJsonValue& value,
     }
     if (auto* t = qobject_cast<QTextEdit*>(w)) {
         t->setPlainText(propertyValue(value));
+        return true;
+    }
+    if (qobject_cast<QTableWidget*>(w) != nullptr && w->property("paths").toBool()) {
+        // The whole list: folders that are there, each a full path.
+        QStringList folders;
+        const QJsonArray given = value.isArray() ? value.toArray() : QJsonArray{value};
+        for (const QJsonValue& v : given) {
+            const QString folder = v.toString().trimmed();
+            if (!v.isString() || folder.isEmpty()) {
+                *why = tr("it is a list of folders, each a full path: [\"/path/to/libs\"] ([] for none)");
+                return false;
+            }
+            if (!QFileInfo(folder).isAbsolute() || !QFileInfo(folder).isDir()) {
+                *why = tr("%1 is not a folder here (each is a full path to one that exists)").arg(folder);
+                return false;
+            }
+            folders << QDir::cleanPath(folder);
+        }
+        if (!QMetaObject::invokeMethod(dialog, "setPathList", Q_ARG(QString, w->objectName()), Q_ARG(QStringList, folders))) {
+            *why = tr("this dialog does not take a list of folders");
+            return false;
+        }
         return true;
     }
     *why = qobject_cast<QTableWidget*>(w) != nullptr ? tr("it is a table: set_dialog sets its cells, the dialog open")

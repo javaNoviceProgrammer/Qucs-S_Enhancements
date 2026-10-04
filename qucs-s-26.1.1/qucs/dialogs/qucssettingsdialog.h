@@ -135,6 +135,11 @@ private slots:
     /// @see makePathTable(), ClearAllPathsButt
     ///
     void slotClearAllPaths();
+    /// The same three for the library search paths: a folder, a folder and
+    /// those in it, none.
+    void slotAddLibraryPath();
+    void slotAddLibraryPathWithSubFolders();
+    void slotClearAllLibraryPaths();
     /// Forgets the workspace kept for the next start, at once.
     void slotForgetWorkspace();
 
@@ -250,6 +255,8 @@ public:
 
     /// @brief Table displaying the subcircuit search path list.
     QTableWidget *pathsTableWidget;
+    /// The library search paths: a folder a row.
+    QTableWidget *libraryPathsTableWidget;
     QStandardItemModel *model;
 
     /// @brief The Source Code Editor tab: how each language is highlighted.
@@ -273,13 +280,29 @@ public:
     /// @brief Validator based on Expr
     QRegularExpressionValidator *Validator;
 
+public:
+    /// A list of search paths given whole, as Claude's set_settings gives
+    /// it: \a table names the table (subcircuitPaths, libraryPaths).
+    Q_INVOKABLE void setPathList(const QString &table, const QStringList &paths);
+
 private:
     QStringList currentPaths;
+    QStringList currentLibraryPaths;
 
 
 private:
     /// @brief Reconstructs the subcircuit search path table from @c currentPaths.
     void makePathTable();
+    /// A table of search paths, its rows \a paths, each with a button
+    /// that removes it.
+    void makePathTable(QTableWidget *table, QStringList *paths);
+    /// A search path table under \a header, named \a name for Claude.
+    QTableWidget *newPathTable(QWidget *parent, const QString &header, const QString &name, const QString &accessible);
+    /// Folders chosen: one, or (\a subfolders) one and those in it that
+    /// the user keeps ticked; none when cancelled.
+    QStringList chooseFolders(bool subfolders);
+    /// The user agrees to remove all \a count paths.
+    bool confirmClearAll(int count);
     /// What is kept for the next start, in words, and the Forget It button
     /// enabled when anything is.
     void showKeptWorkspace();

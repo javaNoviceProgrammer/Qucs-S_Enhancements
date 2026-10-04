@@ -199,6 +199,14 @@ bool loadSettings()
         qucsPathList.append(apath);
     }
     settings.endArray();
+    QucsSettings.LibraryPaths.clear();
+    const int nlibraries = settings.beginReadArray("LibraryPaths");
+    for (int i = 0; i < nlibraries; ++i) {
+        settings.setArrayIndex(i);
+        const QString path = settings.value("path").toString();
+        if (!path.isEmpty()) QucsSettings.LibraryPaths.append(path);
+    }
+    settings.endArray();
 
     QucsSettings.numRecentDocs = 0;
 
@@ -324,6 +332,13 @@ bool saveApplSettings()
          i++;
      }
      settings.endArray();
+    settings.remove("LibraryPaths");
+    settings.beginWriteArray("LibraryPaths");
+    for (int k = 0; k < QucsSettings.LibraryPaths.size(); ++k) {
+        settings.setArrayIndex(k);
+        settings.setValue("path", QucsSettings.LibraryPaths.at(k));
+    }
+    settings.endArray();
 
   return true;
 }

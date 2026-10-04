@@ -1805,8 +1805,9 @@ QList<Issue> check(Schematic* doc)
         // - which alone was told, never why (a library not found).
         if (c->Model == QLatin1String("Lib") && c->Ports.isEmpty() && c->Props.size() >= 2)
             errors << Issue{Severity::Error,
-                            tr("%1: the library part %2 of %3 could not be loaded (not in the libraries of %4, nor the "
-                               "project's user_lib): it has no pins, and what was wired to them is on nothing")
+                            tr("%1: the library part %2 of %3 could not be loaded (not in the libraries of %4, the project or "
+                               "its user_lib, nor a folder of the library search paths): it has no pins, and what was wired to "
+                               "them is on nothing")
                                 .arg(c->Name, c->Props.at(1)->Value, c->Props.at(0)->Value, QDir::toNativeSeparators(QucsSettings.LibDir)),
                             QPoint(c->cx, c->cy), c->Name};
         // A subcircuit: its file given, found (a file, not a folder), and
@@ -1845,8 +1846,12 @@ QList<Issue> check(Schematic* doc)
             else if (!QFileInfo::exists(misc::properAbsFileName(library, doc)))
                 errors << Issue{Severity::Error,
                                 tr("%1: its SPICE library %2 is not found (beside the schematic, in the project or its "
-                                   "user_lib, nor in the library of Qucs-S)%3")
-                                    .arg(c->Name, library, noPins),
+                                   "user_lib%4, nor in the library of Qucs-S)%3")
+                                    .arg(c->Name, library, noPins,
+                                         // (A .lib is looked for in the library search paths too.)
+                                         library.endsWith(QLatin1String(".lib"), Qt::CaseInsensitive) && !QucsSettings.LibraryPaths.isEmpty()
+                                             ? tr(", in a folder of the library search paths")
+                                             : QString()),
                                 QPoint(c->cx, c->cy), c->Name};
             else if (c->Ports.isEmpty())
                 errors << Issue{Severity::Error,

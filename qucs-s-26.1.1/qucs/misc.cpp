@@ -430,12 +430,36 @@ QString misc::properAbsFileName(const QString& filename, Schematic* sch)
     if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
   }
 
+  // A library in a folder of the library search paths (Settings >
+  // Locations): placed from there, on another computer, or moved.
+  if (fName.endsWith(QLatin1String(".lib"), Qt::CaseInsensitive))
+    for (const QString& path : std::as_const(QucsSettings.LibraryPaths)) {
+      fileInfo.setFile(QDir(path).filePath(fName));
+      if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
+    }
+
   for (const QString& path : qucsPathList) {
     fileInfo.setFile(QDir(path).filePath(fName));
     if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
   }
 
   return filename;
+}
+
+QStringList misc::libraryFolders(bool project)
+{
+  // (As a placed part's library is found by its name: properAbsFileName.)
+  QStringList candidates{QucsSettings.LibDir};
+  if (project && QucsMain != nullptr && !QucsMain->ProjName.isEmpty()) candidates << QucsSettings.QucsWorkDir.absolutePath();
+  candidates << QucsSettings.qucsWorkspaceDir.filePath(QStringLiteral("user_lib")) << QucsSettings.LibraryPaths;
+  QStringList folders, seen;
+  for (const QString& c : std::as_const(candidates)) {
+    const QString canonical = QFileInfo(c).canonicalFilePath();
+    if (canonical.isEmpty() || !QFileInfo(canonical).isDir() || seen.contains(canonical)) continue;
+    seen << canonical;
+    folders << canonical;
+  }
+  return folders;
 }
 
 // #########################################################################

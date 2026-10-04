@@ -320,25 +320,27 @@ bool fromJson(const QJsonObject& doc, Import& out, QString* error)
     }
     out.count = int(wanted.size() + left.size());
 
-    // The folders searched for subcircuits: those on this computer, in
-    // their order.
-    static const QRegularExpression pathEntry(QStringLiteral("^Paths/(\\d+)/path$"));
-    if (wanted.contains(QStringLiteral("Paths/size"))) {
-        const int size = wanted.value(QStringLiteral("Paths/size")).toInt();
+    // The folders searched for subcircuits (Paths) and for libraries
+    // (LibraryPaths): those on this computer, in their order.
+    static const QRegularExpression pathEntry(QStringLiteral("^(Paths|LibraryPaths)/(\\d+)/path$"));
+    for (const QString& list : {QStringLiteral("Paths"), QStringLiteral("LibraryPaths")}) {
+        if (!wanted.contains(list + QStringLiteral("/size"))) continue;
+        const int size = wanted.value(list + QStringLiteral("/size")).toInt();
         QStringList folders;
         for (int i = 1; i <= size; ++i) {
-            const QString folder = wanted.value(QStringLiteral("Paths/%1/path").arg(i)).toString();
+            const QString folder = wanted.value(QStringLiteral("%1/%2/path").arg(list).arg(i)).toString();
             if (folder.isEmpty()) continue;
             if (here(folder)) folders << folder;
-            else out.kept << tr("Paths: %1 is not on this computer, left out").arg(QDir::toNativeSeparators(folder));
+            else out.kept << tr("%1: %2 is not on this computer, left out").arg(list, QDir::toNativeSeparators(folder));
         }
         for (auto it = wanted.begin(); it != wanted.end();) {
-            if (pathEntry.match(it.key()).hasMatch()) it = wanted.erase(it);
+            const QRegularExpressionMatch m = pathEntry.match(it.key());
+            if (m.hasMatch() && m.captured(1) == list) it = wanted.erase(it);
             else ++it;
         }
-        wanted.insert(QStringLiteral("Paths/size"), int(folders.size()));
+        wanted.insert(list + QStringLiteral("/size"), int(folders.size()));
         for (int i = 0; i < folders.size(); ++i)
-            wanted.insert(QStringLiteral("Paths/%1/path").arg(i + 1), folders.at(i));
+            wanted.insert(QStringLiteral("%1/%2/path").arg(list).arg(i + 1), folders.at(i));
     }
 
     // Programs and folders of the computer it was made on: taken when
