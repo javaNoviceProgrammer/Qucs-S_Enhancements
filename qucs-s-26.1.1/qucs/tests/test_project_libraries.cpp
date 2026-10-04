@@ -79,10 +79,12 @@ void setBuilt(const QString& path, const QDateTime& when)
 QByteArray usesLibraries(const QStringList& libs)
 {
     QByteArray parts;
-    int n = 1;
-    for (const QString& lib : libs)
-        parts += "  <Lib X" + QByteArray::number(n++) + " 1 " + QByteArray::number(100 * n) + " 100 20 -20 0 0 \""
+    int n = 0;
+    for (const QString& lib : libs) {
+        ++n;   // (X1 at x 200, X2 at 300...: n read once in each line - GCC had X2 first)
+        parts += "  <Lib X" + QByteArray::number(n) + " 1 " + QByteArray::number(100 * (n + 1)) + " 100 20 -20 0 0 \""
                  + lib.toUtf8() + "\" 0 \"sub\" 0>\n";
+    }
     return "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n" + parts +
            "  <GND * 1 70 100 0 0 0 0>\n"
            "  <.DC DC1 1 500 200 0 40 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 "
@@ -94,10 +96,12 @@ QByteArray usesLibrary(const QString& lib) { return usesLibraries({lib}); }
 QByteArray usesParts(const QString& lib, const QStringList& comps)
 {
     QByteArray parts;
-    int n = 1;
-    for (const QString& comp : comps)
-        parts += "  <Lib X" + QByteArray::number(n) + " 1 " + QByteArray::number(100 * ++n) + " 100 20 -20 0 0 \""
+    int n = 0;
+    for (const QString& comp : comps) {
+        ++n;
+        parts += "  <Lib X" + QByteArray::number(n) + " 1 " + QByteArray::number(100 * (n + 1)) + " 100 20 -20 0 0 \""
                  + lib.toUtf8() + "\" 0 \"" + comp.toUtf8() + "\" 0>\n";
+    }
     return "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n" + parts +
            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
 }
