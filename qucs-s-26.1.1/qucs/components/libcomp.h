@@ -31,6 +31,13 @@ public:
   Component* newOne();
 
   bool createSubNetlist(QTextStream *, QStringList&, int type=1);
+  /// Its library: the file its Lib names - in the installed library, else
+  /// found as misc::properAbsFileName() finds it for the schematic it is in
+  /// (beside it, the project, user_lib, the library search paths). The
+  /// part's model and the files of the library's folder (getSubcircuitFile())
+  /// come from that one file.
+  QString libraryFile() const;
+  /// The library's folder: libraryFile() without ".lib".
   QString getSubcircuitFile();
   QString getSpiceLibrary();
   /// The .va files attached to the component in its library (Create

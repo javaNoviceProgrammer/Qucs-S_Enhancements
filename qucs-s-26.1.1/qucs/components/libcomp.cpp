@@ -101,8 +101,7 @@ void LibComp::createSymbol()
 int LibComp::loadSection(const QString& Name, QString& Section,
              QStringList *Includes, QStringList *Attach)
 {
-  QDir Directory(QucsSettings.LibDir);
-  QFile file(misc::properAbsFileName(Directory.absoluteFilePath(Props.at(0)->Value + ".lib"), containingSchematic));
+  QFile file(libraryFile());
   if(!file.open(QIODevice::ReadOnly))
     return -1;
 
@@ -324,10 +323,15 @@ int LibComp::loadSymbol()
 }
 
 // -------------------------------------------------------
+QString LibComp::libraryFile() const
+{
+  const QDir Directory(QucsSettings.LibDir);
+  return misc::properAbsFileName(Directory.absoluteFilePath(Props.first()->Value + ".lib"), containingSchematic);
+}
+
 QString LibComp::getSubcircuitFile()
 {
-  QDir Directory(QucsSettings.LibDir);
-  QString FileName = misc::properAbsFileName(Directory.absoluteFilePath(Props.first()->Value) + ".lib");
+  QString FileName = libraryFile();
   FileName.chop(4);
   return FileName;
 }

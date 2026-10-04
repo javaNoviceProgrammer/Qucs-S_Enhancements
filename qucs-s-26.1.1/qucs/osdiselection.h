@@ -69,24 +69,50 @@ bool sourceDefines(const QString& vaFile, const QString& module);
 /// the file that names them.
 QStringList sourceIncludes(const QString& vaFile);
 
+/// Where the library of the Verilog-A source goes.
+enum class Into {
+    Beside,              ///< NAME.osdi beside it, as OpenVAF writes it
+    CacheReadOnly,       ///< the cache: its folder (or NAME.osdi) cannot be written
+    CacheKeepsForeign,   ///< the cache: NAME.osdi beside it is another platform's, kept
+};
+
+/// Where the library of the Verilog-A source \a vaFile is compiled to:
+/// NAME.osdi beside it - unless that folder cannot be written (a library
+/// folder shared read-only) or NAME.osdi there was built for another
+/// platform than \a simulator's (builtForAnotherPlatform()), kept for the
+/// computers it was built for. Then a folder of its own in \a cacheDir,
+/// osdi/NAME-<hash of the source's path>/NAME.osdi. Without \a cacheDir,
+/// beside it. \a into, when given, says which.
+QString buildTarget(const QString& vaFile, const QString& cacheDir, const QString& simulator = QString(),
+                    Into* into = nullptr);
+
+/// The library of the Verilog-A source to load: NAME.osdi beside it or
+/// the one compiled into \a cacheDir for it (buildTarget()) - the first
+/// \a simulator loads that is newer than the source and what it includes,
+/// else the first it loads, else NAME.osdi beside it (another platform's).
+/// Empty when there is none.
+QString modelOf(const QString& vaFile, const QString& cacheDir, const QString& simulator = QString());
+
 /// A Verilog-A source of the project to compile before a simulation.
 struct Build {
     QString source;        ///< the .va
-    QString library;       ///< what OpenVAF writes: NAME.osdi beside it
+    QString library;       ///< what OpenVAF writes: buildTarget()
+    Into into = Into::Beside;
+    QString built;         ///< the library it has (modelOf()); empty when missing
     QStringList modules;   ///< the modules the netlist uses that it defines
     bool missing = false;  ///< no library has them yet (else: older than its source,
     bool foreign = false;  ///< or built for another platform: builtForAnotherPlatform())
 };
 
 /// The sources of \a vaFiles to compile for a netlist that uses \a types:
-/// one defining a module used whose library (NAME.osdi beside it) is older
-/// than it or than a file it includes, or was built for another platform
-/// (a library brought from elsewhere); or, when none of \a osdiFiles
-/// defines the module, whose library is not there yet.
-/// \a simulator is the program that will load the libraries
-/// (builtForAnotherPlatform()).
+/// one defining a module used whose library (modelOf()) is older than it
+/// or than a file it includes, or was built for another platform (a
+/// library brought from elsewhere); or, when none of \a osdiFiles defines
+/// the module, whose library is not there yet. \a simulator is the program
+/// that will load the libraries (builtForAnotherPlatform()); \a cacheDir
+/// where a library goes that cannot go beside its source (buildTarget()).
 QList<Build> builds(const QStringList& vaFiles, const QStringList& osdiFiles, const QSet<QString>& types,
-                    const QString& simulator = QString());
+                    const QString& simulator = QString(), const QString& cacheDir = QString());
 
 } // namespace qucs_s::osdi
 
