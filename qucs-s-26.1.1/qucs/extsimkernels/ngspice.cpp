@@ -117,32 +117,61 @@ bool containsFile(const QStringList& files, const QString& file)
 } // namespace
 
 /*!
+ * \brief Ngspice::verilogAFiles The Verilog-A sources (.va) and libraries
+ *        (.osdi) a simulation of the schematic may use: of the project -
+ *        its folder and subfolders, as the Content panel lists them -,
+ *        those beside the schematic (with no project open, the only ones),
+ *        and those the libraries of the circuit's components bring (the
+ *        sources Create Library embeds, and what they were compiled to).
+ */
+void Ngspice::verilogAFiles(QStringList* sources, QStringList* libraries) const
+{
+    if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty()) {
+        const QDir project(QucsSettings.QucsWorkDir);
+        for (const QString& file : misc::projectFiles(project, {"*.va"}))
+            *sources << project.absoluteFilePath(file);
+        for (const QString& file : misc::projectFiles(project, {"*.osdi"}))
+            *libraries << project.absoluteFilePath(file);
+    }
+    for (const QString& file : besideSchematic({"*.va"}))
+        if (!containsFile(*sources, file)) *sources << file;
+    for (const QString& file : besideSchematic({"*.osdi"}))
+        if (!containsFile(*libraries, file)) *libraries << file;
+    for (const QString& file : collectVerilogAFiles(a_schematic)) {
+        if (!QFileInfo(file).isFile()) continue;
+        if (file.endsWith(QLatin1String(".va"), Qt::CaseInsensitive) && !sources->contains(file)) *sources << file;
+        else if (file.endsWith(QLatin1String(".osdi"), Qt::CaseInsensitive) && !libraries->contains(file)) *libraries << file;
+    }
+}
+
+/*!
  * \brief Ngspice::osdiLoads The pre_osdi lines of the OSDI libraries
- *        (compiled Verilog-A) the netlist needs: of the project's - its
- *        folder and subfolders, as the Content panel lists them -, those
- *        beside the schematic (with no project open, the only ones), and of
- *        the libraries whose components the circuit uses (compiled
- *        from the sources Create Library embeds), those that define a
- *        module a .model card of \a netlist, or of a file it includes,
- *        names; one library for each module. One built for another
- *        platform is left out, and said.
+ *        (compiled Verilog-A) the netlist needs, of verilogAFiles() - for a
+ *        source, what osdi::modelOf() says: the library compiled into the
+ *        cache for it in place of the one beside it when that one is
+ *        another platform's or its folder could not be written to -, those
+ *        that define a module a .model card of \a netlist, or of a file it
+ *        includes, names; one library for each module. One built for
+ *        another platform is left out, and said.
  */
 QString Ngspice::osdiLoads(const QString& netlist) const
 {
-    QStringList files;
-    if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty())
-        for (const QString& file : misc::projectFiles(QucsSettings.QucsWorkDir, {"*.osdi"}))
-            files << QucsSettings.QucsWorkDir.absoluteFilePath(file);
-    for (const QString& file : besideSchematic({"*.osdi"}))
-        if (!containsFile(files, file)) files << file;
-    for (const QString& file : collectVerilogAFiles(a_schematic))
-        if (file.endsWith(QLatin1String(".osdi"), Qt::CaseInsensitive) && QFileInfo(file).isFile()
-            && !files.contains(file))
-            files << file;
+    QStringList sources, files;
+    verilogAFiles(&sources, &files);
+    const QString simulator = programFile(a_simulator_cmd);
+    const QString cache = misc::cacheDir();
+    for (const QString& source : std::as_const(sources)) {
+        const QString model = qucs_s::osdi::modelOf(source, cache, simulator);
+        const QFileInfo va(source);
+        const QString beside = va.absoluteDir().absoluteFilePath(va.completeBaseName() + QStringLiteral(".osdi"));
+        if (model.isEmpty() || model == beside) continue;
+        files.erase(std::remove_if(files.begin(), files.end(), [&](const QString& f) { return containsFile({beside}, f); }),
+                    files.end());
+        if (!files.contains(model)) files << model;
+    }
     if (files.isEmpty())
         return QString();
     QStringList notes, loadable;
-    const QString simulator = programFile(a_simulator_cmd);
     for (const QString& file : std::as_const(files)) {
         if (qucs_s::osdi::builtForAnotherPlatform(file, simulator))
             notes << QStringLiteral("%1 was built for another platform: not loaded").arg(QDir::toNativeSeparators(file));
@@ -161,26 +190,7 @@ QString Ngspice::osdiLoads(const QString& netlist) const
 QList<qucs_s::osdi::Build> Ngspice::verilogABuilds()
 {
     QStringList sources, libraries;
-    if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty()) {
-        const QDir project(QucsSettings.QucsWorkDir);
-        for (const QString& file : misc::projectFiles(project, {"*.va"}))
-            sources << project.absoluteFilePath(file);
-        for (const QString& file : misc::projectFiles(project, {"*.osdi"}))
-            libraries << project.absoluteFilePath(file);
-    }
-    // Those beside the schematic too - with no project open, the only ones.
-    for (const QString& file : besideSchematic({"*.va"}))
-        if (!containsFile(sources, file)) sources << file;
-    for (const QString& file : besideSchematic({"*.osdi"}))
-        if (!containsFile(libraries, file)) libraries << file;
-    // The sources the libraries of the circuit's components embed: their
-    // models are compiled here, beside them, before the first simulation,
-    // and again when out of date or built on another platform.
-    for (const QString& file : collectVerilogAFiles(a_schematic)) {
-        if (!QFileInfo(file).isFile()) continue;
-        if (file.endsWith(QLatin1String(".va"), Qt::CaseInsensitive) && !sources.contains(file)) sources << file;
-        else if (file.endsWith(QLatin1String(".osdi"), Qt::CaseInsensitive) && !libraries.contains(file)) libraries << file;
-    }
+    verilogAFiles(&sources, &libraries);
     if (sources.isEmpty())
         return {};
     // The netlist the simulation will write, for the modules it uses.
@@ -194,7 +204,7 @@ QList<qucs_s::osdi::Build> Ngspice::verilogABuilds()
     a_output = output;
     const QString base = QFileInfo(a_schematic->getDocName()).absolutePath();
     return qucs_s::osdi::builds(sources, libraries, qucs_s::osdi::usedModelTypes(netlist, base),
-                                programFile(a_simulator_cmd));
+                                programFile(a_simulator_cmd), misc::cacheDir());
 }
 
 /*!

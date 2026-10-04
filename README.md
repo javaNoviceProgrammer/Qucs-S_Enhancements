@@ -180,11 +180,21 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the files they `` `include `` (from the project, and from libraries whose
   components the subcircuits use). Compiled models (`.osdi`) are not
   embedded: each runs on one platform only. A circuit that uses the
-  library — in any project, or none — has the source compiled with OpenVAF
-  beside it before its first simulation, and again when the source is
-  newer or the model was built on another platform (a Linux `.osdi` on a
-  Mac, an x86-64 one for an Arm ngspice, judged by the ngspice program
-  itself), and loads the model. A module the project has only compiled,
+  library — in any project, or none, with the library in `user_lib`, the
+  project or a folder of the library search paths — has the source
+  compiled with OpenVAF beside it before its first simulation, and again
+  when the source is newer, and loads the model. When the library's
+  folder cannot be written (a team's share mounted read-only), or the
+  model beside the source was built on another platform (a Linux `.osdi`
+  on a Mac, an x86-64 one for an Arm ngspice, judged by the ngspice
+  program itself) — which is then kept for the computers it runs on, not
+  replaced — the model is compiled into Qucs-S's cache instead
+  (`osdi/NAME-<hash>/NAME.osdi`, a folder for each source) and loaded
+  from there; Claude's `build_verilog_a` does the same and says so. Only
+  the files the library lists are used, from the folder beside the very
+  `.lib` the part's model is read from — one beside the schematic before
+  one of its name on the search paths (the model came from one and the
+  Verilog-A from the other). A module the project has only compiled,
   with no source, gets a warning when the library is made. *Application
   Settings → Settings → Embed Verilog-A files in exported libraries* (on
   by default) turns it off: the library then holds the subcircuits and

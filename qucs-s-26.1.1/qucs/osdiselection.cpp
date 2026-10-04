@@ -11,6 +11,7 @@
 #include "osdiselection.h"
 #include "vamodule.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -422,8 +423,72 @@ QStringList sourceIncludes(const QString& vaFile)
     return found;
 }
 
+namespace {
+
+QString besideLibrary(const QFileInfo& source)
+{
+    return source.absoluteDir().absoluteFilePath(source.completeBaseName() + QStringLiteral(".osdi"));
+}
+
+// Its folder in the cache: one for each source, by where it is.
+QString cachedLibrary(const QFileInfo& source, const QString& cacheDir)
+{
+    const QString real = source.canonicalFilePath();
+    const QByteArray key = QCryptographicHash::hash((real.isEmpty() ? source.absoluteFilePath() : real).toUtf8(),
+                                                    QCryptographicHash::Sha1).toHex().left(10);
+    const QString name = source.completeBaseName();
+    return QDir(cacheDir).absoluteFilePath(QStringLiteral("osdi/%1-%2/%1.osdi").arg(name, QString::fromLatin1(key)));
+}
+
+// Built after the source and the files it includes.
+bool current(const QString& library, const QString& vaFile)
+{
+    QDateTime newest = QFileInfo(vaFile).lastModified();
+    for (const QString& included : sourceIncludes(vaFile))
+        newest = std::max(newest, QFileInfo(included).lastModified());
+    return QFileInfo(library).lastModified() >= newest;
+}
+
+} // namespace
+
+QString buildTarget(const QString& vaFile, const QString& cacheDir, const QString& simulator, Into* into)
+{
+    const QFileInfo source(vaFile);
+    const QString beside = besideLibrary(source);
+    const QFileInfo there(beside);
+    Into where = Into::Beside;
+    if (!cacheDir.isEmpty()) {
+        if (!QFileInfo(source.absolutePath()).isWritable() || (there.exists() && !there.isWritable()))
+            where = Into::CacheReadOnly;
+        else if (there.isFile() && builtForAnotherPlatform(beside, simulator))
+            where = Into::CacheKeepsForeign;
+    }
+    if (into)
+        *into = where;
+    return where == Into::Beside ? beside : cachedLibrary(source, cacheDir);
+}
+
+QString modelOf(const QString& vaFile, const QString& cacheDir, const QString& simulator)
+{
+    const QFileInfo source(vaFile);
+    const QString beside = besideLibrary(source);
+    QStringList candidates{beside};
+    if (!cacheDir.isEmpty())
+        candidates << cachedLibrary(source, cacheDir);
+    QStringList loadable;
+    for (const QString& file : std::as_const(candidates))
+        if (QFileInfo(file).isFile() && !builtForAnotherPlatform(file, simulator))
+            loadable << file;
+    for (const QString& file : std::as_const(loadable))
+        if (current(file, vaFile))
+            return file;
+    if (!loadable.isEmpty())
+        return loadable.first();
+    return QFileInfo(beside).isFile() ? beside : QString();
+}
+
 QList<Build> builds(const QStringList& vaFiles, const QStringList& osdiFiles, const QSet<QString>& types,
-                    const QString& simulator)
+                    const QString& simulator, const QString& cacheDir)
 {
     QList<Build> out;
     for (const QString& va : vaFiles) {
@@ -433,22 +498,17 @@ QList<Build> builds(const QStringList& vaFiles, const QStringList& osdiFiles, co
                 build.modules << module;
         if (build.modules.isEmpty())
             continue;
-        const QFileInfo source(va);
-        build.source = source.absoluteFilePath();
-        build.library = source.absoluteDir().absoluteFilePath(source.completeBaseName() + QStringLiteral(".osdi"));
-        const QFileInfo library(build.library);
-        if (library.isFile() && builtForAnotherPlatform(build.library, simulator)) {
-            build.foreign = true;
-            out << build;
-            continue;
-        }
-        if (library.isFile()) {
-            // Older than the source, or than a file it includes.
-            QDateTime newest = source.lastModified();
-            for (const QString& included : sourceIncludes(va))
-                newest = std::max(newest, QFileInfo(included).lastModified());
-            if (library.lastModified() < newest)
+        build.source = QFileInfo(va).absoluteFilePath();
+        build.library = buildTarget(va, cacheDir, simulator, &build.into);
+        const QString model = modelOf(va, cacheDir, simulator);
+        if (!model.isEmpty()) {
+            build.built = model;
+            if (builtForAnotherPlatform(model, simulator)) {
+                build.foreign = true;
                 out << build;
+            } else if (!current(model, va)) {
+                out << build;   // older than the source, or than a file it includes
+            }
             continue;
         }
         // No library of its own: built when no other has the modules.

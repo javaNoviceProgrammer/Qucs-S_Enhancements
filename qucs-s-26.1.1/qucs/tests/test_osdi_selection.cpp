@@ -14,6 +14,7 @@
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QProgressBar>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
@@ -70,6 +71,26 @@ void write(const QString& path, const QByteArray& bytes)
 QByteArray foreignLibrary(const QByteArray& strings)
 {
     return QByteArray("\xca\xfe\xba\xbe") + " not a library here" + '\0' + strings + '\0';
+}
+
+// The first bytes of a library built for another platform than this
+// one: an x86-64 ELF one on macOS and Windows, an Arm Mach-O one on Linux.
+QByteArray foreignHeader()
+{
+    QByteArray h(64, '\0');
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+    h[0] = 0x7f; h[1] = 'E'; h[2] = 'L'; h[3] = 'F';
+    h[4] = 2;    // 64-bit
+    h[5] = 1;    // little-endian
+    h[18] = 62;  // x86-64
+#else
+    const quint32 magic = 0xfeedfacfu, arm64 = 0x0100000cu;
+    for (int i = 0; i < 4; ++i) {
+        h[i] = char((magic >> (8 * i)) & 0xff);
+        h[4 + i] = char((arm64 >> (8 * i)) & 0xff);
+    }
+#endif
+    return h;
 }
 
 void setBuilt(const QString& path, const QDateTime& when)
@@ -517,6 +538,143 @@ private slots:
 
         QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
         QucsSettings.NgspiceExecutable = savedNgspice;
+    }
+
+    // A source in a folder that cannot be written (a library folder shared
+    // read-only): OpenVAF is told to write into the cache (-o), the run
+    // loads the library from there and says so; nothing goes beside it.
+    void aSourceInAFolderThatCannotBeWrittenIsCompiledIntoTheCache()
+    {
+        Module::registerModules();   // a QucsApp's destructor unregisters them
+        const QString calls = dir.filePath("ro-openvaf-calls.log");
+        const QString record = dir.filePath("ro-ngspice-got.cir");
+        const QString openvaf = dir.filePath("ro-fake-openvaf.sh");
+        write(openvaf, QStringLiteral(
+            "#!/bin/sh\n"
+            "echo \"$*\" >> \"%1\"\n"
+            "out=\"${1%.va}.osdi\"\n"
+            "if [ \"$2\" = \"-o\" ]; then out=\"$3\"; fi\n"
+            "printf '\\000%s\\000' \"$(basename \"${1%.va}\")\" > \"$out\" || exit 65\n").arg(calls).toUtf8());
+        const QString ngspice = dir.filePath("ro-fake-ngspice.sh");
+        write(ngspice, QStringLiteral(
+            "#!/bin/sh\n"
+            "for a in \"$@\"; do case \"$a\" in *.cir) cp \"$a\" \"%1\";; esac; done\n"
+            "echo \"fake ngspice\"\n").arg(record).toUtf8());
+        for (const QString& script : {openvaf, ngspice})
+            QVERIFY(QFile::setPermissions(script, QFile::permissions(script) | QFile::ExeOwner));
+
+        const QString vaProject = workspace + "/ro_prj";
+        const QString shared = vaProject + "/shared";
+        write(shared + "/cell.va", "module cell(a, b); endmodule\n");
+        QByteArray uses(circuit);
+        uses.replace("\"models/devices.lib\"", "\"\"");
+        uses.replace(".model m1 PSP103 (level=103)", ".model m1 cell");
+        uses.replace("</Components>", "  <.DC DC1 1 500 200 0 40 0 0 \"26.85\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 "
+                                      "\"no\" 0 \"150\" 0 \"no\" 0 \"none\" 0 \"CroutLU\" 0 \"no\" 0>\n</Components>");
+        write(vaProject + "/uses.sch", uses);
+        const QFileDevice::Permissions folder = QFile::permissions(shared);
+        QVERIFY(QFile::setPermissions(shared, folder & ~(QFileDevice::WriteOwner | QFileDevice::WriteGroup
+                                                        | QFileDevice::WriteOther | QFileDevice::WriteUser)));
+        const auto restore = qScopeGuard([&] { QFile::setPermissions(shared, folder); });
+        if (QFileInfo(shared).isWritable()) QSKIP("Folders that cannot be written can be here (root).");
+
+        const QString savedNgspice = QucsSettings.NgspiceExecutable;
+        QucsSettings.NgspiceExecutable = ngspice;
+        QucsSettings.OpenVAFExecutable = openvaf;
+        const auto settings = qScopeGuard([&] {
+            QucsSettings.NgspiceExecutable = savedNgspice;
+            QucsSettings.OpenVAFExecutable.clear();
+        });
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.openProject(vaProject);
+        QCOMPARE(app.ProjName, QString("ro"));
+
+        QPlainTextEdit console;
+        QListWidget log;
+        QProgressBar progress;
+        const auto simulate = [&](const QString& file) {
+            Schematic sch(nullptr, file);
+            if (!sch.load()) return false;
+            SimulationRun run(&sch, false);
+            run.attach(&console, &log, &progress);
+            QSignalSpy done(&run, &SimulationRun::simulated);
+            run.start();
+            return (done.size() > 0 || done.wait(30000)) && !run.hasError();
+        };
+        const auto lines = [&](const QString& path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()).split('\n', Qt::SkipEmptyParts)
+                                               : QStringList();
+        };
+
+        QVERIFY(simulate(vaProject + "/uses.sch"));
+        const QStringList called = lines(calls);
+        QCOMPARE(called.size(), 1);
+        const QString into = shared + "/cell.va -o " + QDir(misc::cacheDir()).absoluteFilePath("osdi/cell-");
+        QVERIFY2(called.first().startsWith(into), qPrintable(called.first()));
+        const QString cached = called.first().section(QStringLiteral(" -o "), 1);
+        QVERIFY(cached.endsWith("/cell.osdi"));
+        QVERIFY(QFileInfo(cached).isFile());
+        QVERIFY(!QFileInfo::exists(shared + "/cell.osdi"));
+        QVERIFY2(lines(record).contains("pre_osdi '" + cached + "'"), qPrintable(lines(record).join('\n')));
+        QVERIFY2(console.toPlainText().contains(" -o " + QDir::toNativeSeparators(cached)), qPrintable(console.toPlainText()));
+        bool said = false;
+        for (int i = 0; i < log.count(); ++i)
+            said = said || log.item(i)->text().contains("cannot be written: compiled into " + QDir::toNativeSeparators(cached));
+        QVERIFY(said);
+
+        // Built and unchanged: nothing to compile, loaded from the cache.
+        QFile::remove(record);
+        QVERIFY(simulate(vaProject + "/uses.sch"));
+        QCOMPARE(lines(calls).size(), 1);
+        QVERIFY(lines(record).contains("pre_osdi '" + cached + "'"));
+
+        const auto logSays = [&](const QString& words) {
+            for (int i = 0; i < log.count(); ++i)
+                if (log.item(i)->text().contains(words)) return true;
+            return false;
+        };
+        const QString beside = shared + "/cell.osdi";
+        // An older library beside it (from before the folder was shared
+        // read-only), none in the cache, no OpenVAF: that one loaded, and
+        // said to be older - not the cache's, there is none.
+        QVERIFY(QFile::setPermissions(shared, folder));
+        write(beside, QByteArray(1, '\0') + "cell" + QByteArray(1, '\0'));
+        setBuilt(beside, QDateTime::currentDateTime().addSecs(-120));
+        QVERIFY(QFile::setPermissions(shared, folder & ~(QFileDevice::WriteOwner | QFileDevice::WriteGroup
+                                                        | QFileDevice::WriteOther | QFileDevice::WriteUser)));
+        QVERIFY(QFile::remove(cached));
+        QucsSettings.OpenVAFExecutable.clear();
+        log.clear();
+        QVERIFY(simulate(vaProject + "/uses.sch"));
+        QVERIFY(logSays(QDir::toNativeSeparators(beside) + " is older than " + QDir::toNativeSeparators(shared + "/cell.va")));
+        QVERIFY(lines(record).contains("pre_osdi '" + beside + "'"));
+
+        // Another platform's beside it, the folder writable: kept, this
+        // platform's compiled into the cache - and said.
+        QVERIFY(QFile::setPermissions(shared, folder));
+        const QByteArray theirs = foreignHeader() + '\0' + "cell" + '\0';
+        write(beside, theirs);
+        QucsSettings.OpenVAFExecutable = openvaf;
+        log.clear();
+        QVERIFY(simulate(vaProject + "/uses.sch"));
+        QCOMPARE(lines(calls).size(), 2);
+        QCOMPARE(lines(calls).last(), shared + "/cell.va -o " + cached);
+        QVERIFY(logSays(QDir::toNativeSeparators(beside) + " is kept for the platform it was built for: compiled into "
+                        + QDir::toNativeSeparators(cached)));
+        QVERIFY(lines(record).contains("pre_osdi '" + cached + "'"));
+        QFile kept(beside);
+        QVERIFY(kept.open(QIODevice::ReadOnly));
+        QCOMPARE(kept.readAll(), theirs);
+        kept.close();
+        // That one alone, no OpenVAF: it is said to be another platform's.
+        QVERIFY(QFile::remove(cached));
+        QucsSettings.OpenVAFExecutable.clear();
+        log.clear();
+        QVERIFY(simulate(vaProject + "/uses.sch"));
+        QVERIFY(logSays(QDir::toNativeSeparators(beside) + " was built for another platform"));
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
     }
 
     void theCheckFindsAModuleNowhereInTheProject()

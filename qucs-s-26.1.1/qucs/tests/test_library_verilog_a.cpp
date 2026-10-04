@@ -12,6 +12,7 @@
 #include <QCheckBox>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
@@ -23,6 +24,7 @@
 #include "osdiselection.h"
 #include "schematic.h"
 #include "settings.h"
+#include "components/libcomp.h"
 #include "dialogs/librarydialog.h"
 #include "dialogs/qucssettingsdialog.h"
 #include "extsimkernels/ngspice.h"
@@ -48,6 +50,33 @@ QString read(const QString& path)
 {
     QFile f(path);
     return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+}
+
+QByteArray bytes(const QString& path)
+{
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
+void setBuilt(const QString& path, const QDateTime& when)
+{
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::ReadWrite));
+    QVERIFY(f.setFileTime(when, QFileDevice::FileModificationTime));
+}
+
+constexpr QFileDevice::Permissions kReadOnlyFolder =
+    QFileDevice::ReadOwner | QFileDevice::ExeOwner | QFileDevice::ReadGroup | QFileDevice::ExeGroup
+    | QFileDevice::ReadOther | QFileDevice::ExeOther;
+constexpr QFileDevice::Permissions kFolder = kReadOnlyFolder | QFileDevice::WriteOwner;
+
+// A schematic with one part of the library \a lib (its Lib: a path, or a name).
+QByteArray usesLibrary(const QString& lib)
+{
+    return "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+           "  <Lib X1 1 100 100 20 -20 0 0 \"" + lib.toUtf8() + "\" 0 \"sub\" 0>\n"
+           "  <GND * 1 70 100 0 0 0 0>\n  <GND * 1 130 100 0 0 0 0>\n"
+           "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
 }
 
 // A stand-in library: the name between two NULs, after \a header.
@@ -132,7 +161,7 @@ class TestLibraryVerilogA : public QObject
     Q_OBJECT
 
     QTemporaryDir dir;
-    QString workspace, project, userLib;
+    QString workspace, project, userLib, team;
 
     // Tools > Create Library with the subcircuit \a schematic, no
     // descriptions; the dialog's messages.
@@ -159,6 +188,22 @@ class TestLibraryVerilogA : public QObject
         kernel.setWorkdir(dir.filePath("kernel"));
         kernel.SaveNetlist(dir.filePath("kernel/net.cir"), false);
         return read(dir.filePath("kernel/net.cir"));
+    }
+
+    // What a simulation of \a file compiles first.
+    QList<qucs_s::osdi::Build> buildsFor(const QString& file)
+    {
+        Schematic sch(nullptr, file);
+        if (!sch.load()) return {};
+        Ngspice kernel(&sch);
+        kernel.setWorkdir(dir.filePath("kernel"));
+        return kernel.verilogABuilds();
+    }
+
+    // Where the cache keeps a library compiled for a source.
+    QString inCache(const QString& name) const
+    {
+        return QDir(misc::cacheDir()).absoluteFilePath("osdi/" + name + "-");
     }
 
 private slots:
@@ -318,31 +363,21 @@ private slots:
         QucsApp app(false);
         MainGuard guard(&app);
         app.ProjName.clear();
-        const QString use = write(dir.filePath("elsewhere/use.sch"),
-            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
-            "  <Lib X1 1 100 100 20 -20 0 0 \"" + userLib.toUtf8() + "/VaLib\" 0 \"sub\" 0>\n"
-            "  <GND * 1 70 100 0 0 0 0>\n  <GND * 1 130 100 0 0 0 0>\n"
-            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        const QString use = write(dir.filePath("elsewhere/use.sch"), usesLibrary(userLib + "/VaLib"));
         QucsSettings.QucsWorkDir.setPath(dir.filePath("elsewhere"));
         // The library found through its canonical path (/private/var for
         // /var on macOS).
         const QString model = QFileInfo(userLib + "/VaLib").canonicalFilePath() + "/good.osdi";
-        const auto buildsFor = [&]() {
-            Schematic sch(nullptr, use);
-            if (!sch.load()) return QList<qucs_s::osdi::Build>();
-            Ngspice kernel(&sch);
-            kernel.setWorkdir(dir.filePath("kernel"));
-            return kernel.verilogABuilds();
-        };
 
         // Not compiled yet: compiled, beside the source, before it runs.
         QString netlist = netlistOf(use);
         QVERIFY2(!netlist.contains("pre_osdi"), qPrintable(netlist));
         QVERIFY2(netlist.contains(".model m1 good"), qPrintable(netlist));
-        QList<qucs_s::osdi::Build> builds = buildsFor();
+        QList<qucs_s::osdi::Build> builds = buildsFor(use);
         QCOMPARE(builds.size(), 1);
         QCOMPARE(QFileInfo(builds.first().source).fileName(), QString("good.va"));
         QCOMPARE(builds.first().library, model);
+        QVERIFY(builds.first().into == qucs_s::osdi::Into::Beside);
         QVERIFY(builds.first().missing);
         QVERIFY(!builds.first().foreign);
 
@@ -350,18 +385,238 @@ private slots:
         write(model, osdi("good", nativeHeader()));
         netlist = netlistOf(use);
         QVERIFY2(netlist.contains("pre_osdi '" + model + "'"), qPrintable(netlist));
-        QVERIFY(buildsFor().isEmpty());   // the model is newer than its source
+        QVERIFY(buildsFor(use).isEmpty());   // the model is newer than its source
 
-        // The model as it came from another platform.
+        // The model as it came from another platform: not handed to
+        // ngspice, and kept for the computers it was built for - this
+        // platform's is compiled into the cache and loaded from there.
         write(model, osdi("good", foreignHeader()));
         netlist = netlistOf(use);
         QVERIFY2(!netlist.contains("pre_osdi"), qPrintable(netlist));
         QVERIFY2(netlist.contains("* OSDI: ") && netlist.contains("built for another platform"), qPrintable(netlist));
-        builds = buildsFor();
+        builds = buildsFor(use);
         QCOMPARE(builds.size(), 1);
-        QCOMPARE(builds.first().library, model);
         QVERIFY(builds.first().foreign);
         QVERIFY(!builds.first().missing);
+        QCOMPARE(builds.first().built, model);
+        QVERIFY(builds.first().into == qucs_s::osdi::Into::CacheKeepsForeign);
+        const QString cached = builds.first().library;
+        QVERIFY2(cached.startsWith(inCache("good")) && cached.endsWith("/good.osdi"), qPrintable(cached));
+        write(cached, osdi("good", nativeHeader()));
+        netlist = netlistOf(use);
+        QVERIFY2(netlist.contains("pre_osdi '" + cached + "'"), qPrintable(netlist));
+        QVERIFY2(!netlist.contains("built for another platform"), qPrintable(netlist));
+        QVERIFY(buildsFor(use).isEmpty());
+        QCOMPARE(bytes(model), osdi("good", foreignHeader()));   // kept
+        QFile::remove(cached);
+    }
+
+    // Where a source's library goes, and which is loaded: beside it; in
+    // the cache - a folder for each source - when the library there is
+    // another platform's (kept) or cannot be written; the one beside it
+    // before the cache's, a current one before an older, this platform's
+    // before another's.
+    void whereTheModelGoesAndWhichIsLoaded()
+    {
+        using namespace qucs_s::osdi;
+        const QString cache = dir.filePath("unit-cache");
+        const QString base = dir.filePath("unit");
+        const QString va = write(base + "/res.va", "module res(a); endmodule\n");
+        const QString beside = base + "/res.osdi";
+        const QDateTime now = QDateTime::currentDateTime();
+        Into into = Into::CacheReadOnly;
+        QCOMPARE(buildTarget(va, cache, QString(), &into), beside);
+        QVERIFY(into == Into::Beside);
+        QCOMPARE(modelOf(va, cache), QString());
+
+        // Another platform's beside it: kept; this platform's into the cache.
+        write(beside, osdi("res", foreignHeader()));
+        const QString cached = buildTarget(va, cache, QString(), &into);
+        QVERIFY(into == Into::CacheKeepsForeign);
+        QVERIFY2(cached.startsWith(cache + "/osdi/res-") && cached.endsWith("/res.osdi"), qPrintable(cached));
+        QCOMPARE(QFileInfo(cached).dir().dirName().size(), qsizetype(QString("res-").size() + 10));
+        QCOMPARE(buildTarget(va, QString(), QString(), &into), beside);   // no cache: beside, as before
+        QVERIFY(into == Into::Beside);
+        QCOMPARE(modelOf(va, cache), beside);   // what there is (said, not loaded)
+        write(cached, osdi("res", nativeHeader()));
+        QCOMPARE(modelOf(va, cache), cached);
+        QCOMPARE(modelOf(va, QString()), beside);
+
+        // This platform's beside it, current: before the cache's.
+        write(beside, osdi("res", nativeHeader()));
+        QCOMPARE(buildTarget(va, cache, QString(), &into), beside);
+        QVERIFY(into == Into::Beside);
+        QCOMPARE(modelOf(va, cache), beside);
+        // Older than the source: the cache's, current.
+        setBuilt(beside, now.addSecs(-60));
+        setBuilt(va, now.addSecs(-30));
+        QCOMPARE(modelOf(va, cache), cached);
+        // Both older: the one beside it.
+        setBuilt(cached, now.addSecs(-60));
+        QCOMPARE(modelOf(va, cache), beside);
+
+        // What builds() makes of it: the one beside it is older, built again there.
+        QList<Build> list = builds({va}, {}, {"res"}, QString(), cache);
+        QCOMPARE(list.size(), 1);
+        QCOMPARE(list.first().library, beside);
+        QCOMPARE(list.first().built, beside);
+        QVERIFY(!list.first().missing && !list.first().foreign);
+        // The cache's current: nothing to build.
+        setBuilt(cached, now);
+        QVERIFY(builds({va}, {}, {"res"}, QString(), cache).isEmpty());
+    }
+
+    // A folder that cannot be written - a team's library share mounted
+    // read-only - or a library there that cannot: the cache. A folder in
+    // the cache for each source: one of the same name elsewhere has its
+    // own, the same source by another path (a link) the same.
+    void aFolderThatCannotBeWrittenCompilesIntoTheCache()
+    {
+        using namespace qucs_s::osdi;
+        const QString cache = dir.filePath("ro-cache");
+        const QString base = dir.filePath("ro");
+        const QString va = write(base + "/res.va", "module res(a); endmodule\n");
+        const QString beside = write(base + "/res.osdi", osdi("res", nativeHeader()));
+        setBuilt(beside, QDateTime::currentDateTime().addSecs(-60));   // older than its source
+        Into into = Into::Beside;
+
+        QVERIFY(QFile::setPermissions(beside, QFileDevice::ReadOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther));
+        const auto restore = qScopeGuard([&] {
+            QFile::setPermissions(base, kFolder);
+            QFile::setPermissions(beside, kFolder & ~(QFileDevice::ExeOwner | QFileDevice::ExeGroup | QFileDevice::ExeOther));
+        });
+        if (QFileInfo(beside).isWritable()) QSKIP("Files that cannot be written can be here (root).");
+        const QString cached = buildTarget(va, cache, QString(), &into);
+        QVERIFY(into == Into::CacheReadOnly);
+        QVERIFY2(cached.startsWith(cache + "/osdi/res-"), qPrintable(cached));
+        QVERIFY(QFile::setPermissions(beside, kFolder));
+        QCOMPARE(buildTarget(va, cache, QString(), &into), beside);
+        QVERIFY(into == Into::Beside);
+
+        QVERIFY(QFile::setPermissions(base, kReadOnlyFolder));
+        QCOMPARE(buildTarget(va, cache, QString(), &into), cached);
+        QVERIFY(into == Into::CacheReadOnly);
+        // Older beside it, none in the cache: built, into the cache.
+        QList<Build> list = builds({va}, {}, {"res"}, QString(), cache);
+        QCOMPARE(list.size(), 1);
+        QCOMPARE(list.first().library, cached);
+        QVERIFY(list.first().into == Into::CacheReadOnly);
+        QCOMPARE(list.first().built, beside);
+        QVERIFY(!list.first().missing);
+
+        // The same source by a link to its folder: the same folder in the cache.
+        QVERIFY(QFile::link(base, dir.filePath("ro-link")));
+        QCOMPARE(buildTarget(dir.filePath("ro-link/res.va"), cache), cached);
+        // Another of its name: a folder of its own.
+        const QString other = write(dir.filePath("ro2/res.va"), "module res(a); endmodule\n");
+        QVERIFY(QFile::setPermissions(dir.filePath("ro2"), kReadOnlyFolder));
+        const QString otherCached = buildTarget(other, cache);
+        QFile::setPermissions(dir.filePath("ro2"), kFolder);
+        QVERIFY2(otherCached.startsWith(cache + "/osdi/res-") && otherCached != cached, qPrintable(otherCached));
+    }
+
+    // A library in a folder of the library search paths, placed by its
+    // name alone (as on another computer, or with the folder moved): its
+    // source compiled beside it and its model loaded from there; the
+    // folder read-only, compiled into the cache and loaded from there -
+    // and again when the source changes.
+    void aLibraryOnASearchPathBringsItsVerilogA()
+    {
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        team = dir.filePath("team");
+        {
+            LibraryDialog dialog(&app);
+            dialog.fillSchematicList({"sub.sch"});
+            LibraryDialog::Request request;
+            request.name = "TeamLib";
+            request.subcircuits = {"sub.sch"};
+            request.folder = team;
+            QString log, error;
+            QVERIFY2(dialog.create(request, &log, &error), qPrintable(error + "\n" + log));
+            QVERIFY2(log.contains("Embedding Verilog-A: good.va"), qPrintable(log));
+        }
+        const QStringList paths = QucsSettings.LibraryPaths;
+        QucsSettings.LibraryPaths = {team};
+        const auto restorePaths = qScopeGuard([&] { QucsSettings.LibraryPaths = paths; });
+        app.ProjName.clear();
+        QucsSettings.QucsWorkDir.setPath(dir.filePath("elsewhere"));
+        const QString use = write(dir.filePath("elsewhere/team.sch"), usesLibrary("TeamLib"));
+        const QString folder = QFileInfo(team + "/TeamLib").canonicalFilePath();
+        const QString model = folder + "/good.osdi";
+
+        QList<qucs_s::osdi::Build> builds = buildsFor(use);
+        QCOMPARE(builds.size(), 1);
+        QCOMPARE(builds.first().source, folder + "/good.va");
+        QCOMPARE(builds.first().library, model);
+        QVERIFY(builds.first().into == qucs_s::osdi::Into::Beside);
+        QVERIFY(builds.first().missing);
+        write(model, osdi("good", nativeHeader()));
+        QString netlist = netlistOf(use);
+        QVERIFY2(netlist.contains("pre_osdi '" + model + "'"), qPrintable(netlist));
+        QVERIFY(buildsFor(use).isEmpty());
+
+        // Read-only, and no model: compiled into the cache, loaded from there.
+        QFile::remove(model);
+        QVERIFY(QFile::setPermissions(folder, kReadOnlyFolder));
+        const auto restore = qScopeGuard([&] { QFile::setPermissions(folder, kFolder); });
+        if (QFileInfo(folder).isWritable()) QSKIP("Folders that cannot be written can be here (root).");
+        builds = buildsFor(use);
+        QCOMPARE(builds.size(), 1);
+        QVERIFY(builds.first().into == qucs_s::osdi::Into::CacheReadOnly);
+        QVERIFY(builds.first().missing);
+        const QString cached = builds.first().library;
+        QVERIFY2(cached.startsWith(inCache("good")) && cached.endsWith("/good.osdi"), qPrintable(cached));
+        write(cached, osdi("good", nativeHeader()));   // as OpenVAF -o writes it
+        netlist = netlistOf(use);
+        QVERIFY2(netlist.contains("pre_osdi '" + cached + "'"), qPrintable(netlist));
+        QVERIFY(buildsFor(use).isEmpty());
+        QVERIFY(!QFileInfo::exists(model));
+        // The source changed (by someone who may write the folder): again.
+        setBuilt(folder + "/good.va", QDateTime::currentDateTime().addSecs(60));
+        builds = buildsFor(use);
+        QCOMPARE(builds.size(), 1);
+        QCOMPARE(builds.first().library, cached);
+        QVERIFY(!builds.first().missing);
+        QFile::remove(cached);
+    }
+
+    // A part's model and the files of its library's folder come from one
+    // library: one beside the schematic before one of its name on the
+    // search paths - the Verilog-A came from the search path's, the model
+    // from the one beside it.
+    void thePartsModelAndItsFilesComeFromOneLibrary()
+    {
+        QVERIFY(!team.isEmpty());   // aLibraryOnASearchPathBringsItsVerilogA made it
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName.clear();
+        const QStringList paths = QucsSettings.LibraryPaths;
+        QucsSettings.LibraryPaths = {team};
+        const auto restorePaths = qScopeGuard([&] { QucsSettings.LibraryPaths = paths; });
+        QucsSettings.QucsWorkDir.setPath(dir.filePath("elsewhere"));
+        const QString loose = dir.filePath("loose");
+        QVERIFY(QDir().mkpath(loose + "/TeamLib"));
+        write(loose + "/TeamLib.lib", read(team + "/TeamLib.lib").replace(".model m1 good", ".model m1loose good").toUtf8());
+        write(loose + "/TeamLib/good.va", "// this copy's\nmodule good(p, n);\nendmodule\n");
+        const QString use = write(loose + "/use.sch", usesLibrary("TeamLib"));
+
+        Schematic sch(nullptr, use);
+        QVERIFY(sch.load());
+        const QString here = QFileInfo(loose).canonicalFilePath();
+        LibComp* part = nullptr;
+        for (Component* c : sch.a_DocComps)
+            if (c->Name == "X1") part = dynamic_cast<LibComp*>(c);
+        QVERIFY(part != nullptr);
+        QCOMPARE(part->libraryFile(), here + "/TeamLib.lib");
+        QCOMPARE(part->getSubcircuitFile(), here + "/TeamLib");
+        const QStringList files = AbstractSpiceKernel::collectVerilogAFiles(&sch);
+        QVERIFY2(files == QStringList{here + "/TeamLib/good.va"}, qPrintable(files.join('\n')));
+        const QString netlist = netlistOf(use);   // the model: that copy's too
+        QVERIFY2(netlist.contains(".model m1loose good"), qPrintable(netlist));
     }
 
     // The setting: Application Settings > Settings, kept.
