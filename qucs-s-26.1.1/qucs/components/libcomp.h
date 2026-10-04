@@ -31,15 +31,32 @@ public:
   Component* newOne();
 
   bool createSubNetlist(QTextStream *, QStringList&, int type=1);
-  /// Its library: the file its Lib names - in the installed library, else
-  /// found as misc::properAbsFileName() finds it for the schematic it is in
-  /// (beside it, the project, user_lib, the library search paths). The
-  /// part's model and the files of the library's folder (getSubcircuitFile())
-  /// come from that one file.
+  /// Its library: libraryFileOf() its Lib and Comp, for the schematic it
+  /// is in. The part's model and the files of the library's folder
+  /// (getSubcircuitFile()) come from that one file.
   QString libraryFile() const;
-  /// libraryFile() of a part whose Lib is \a lib in a schematic in \a folder
-  /// (its file's folder; empty: in none) - for a schematic read as text.
-  static QString libraryFileOf(const QString& lib, const QString& folder);
+  /// The library of a part whose Lib is \a lib in a schematic in \a folder
+  /// (its file's folder; empty: in none) that has the component \a comp:
+  /// the file at its path (a path it names; the installed library of a
+  /// name); else, of the libraries of its name where misc::properAbsFileName()
+  /// looks (librariesNamed()), the one the project \a project (none: the
+  /// open one) or the schematic's folder linked its Verilog-A from
+  /// (projectlibraries::linkedFolders()) - a library of the name found
+  /// earlier, made later, does not take the part -, else the first. No
+  /// \a comp: the first there is.
+  static QString libraryFileOf(const QString& lib, const QString& folder, const QString& comp = QString(),
+                               const QString& project = QString());
+  /// Every library a part whose Lib is \a lib in a schematic in \a folder
+  /// names, in the order libraryFileOf() takes them; their real paths.
+  static QStringList librariesNamed(const QString& lib, const QString& folder);
+  /// The other libraries of the name of \a libraryFile a part placed by
+  /// that name finds (librariesNamed() for a schematic of the open project),
+  /// in that order - a part of a name two of them have is taken from the
+  /// first. Said when a library is made or brought in.
+  static QStringList librariesNamedLike(const QString& libraryFile);
+  /// Whether the library \a libraryFile has a component \a comp (its
+  /// components read once while the file is unchanged).
+  static bool hasComponent(const QString& libraryFile, const QString& comp);
   /// What a part's Lib holds to name the library \a libraryFile: its name
   /// when the name finds this very library (libraryFileOf() with no
   /// schematic) - a schematic that goes to another computer, or a library

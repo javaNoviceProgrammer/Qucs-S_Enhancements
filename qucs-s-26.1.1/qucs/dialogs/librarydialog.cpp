@@ -50,6 +50,7 @@
 #include "osdiselection.h"
 #include "projectlibraries.h"
 #include "painting.h"
+#include "components/libcomp.h"
 #include "extsimkernels/abstractspicekernel.h"
 #include "extsimkernels/spicecompat.h"
 
@@ -788,6 +789,15 @@ void LibraryDialog::slotSave()
   }
 
   ErrText->appendPlainText(tr("Successfully created library."));
+  // Another library of its name: a part placed by the name could be either's.
+  if (const QStringList others = LibComp::librariesNamedLike(LibFile.fileName()); !others.isEmpty()) {
+    QStringList shown;
+    for (const QString& other : others) shown << QDir::toNativeSeparators(other);
+    ErrText->appendPlainText(tr("Note: another library is named %1 too: %2. A part placed by that name is taken from the first of "
+                                "them that has it - installed, beside the schematic, the project's, user_lib's, the library search "
+                                "paths' in their order; the Libraries panel places this one's parts by their path where the name "
+                                "finds another.").arg(NameEdit->text(), shown.join(QStringLiteral(", "))));
+  }
 }
 
 // ---------------------------------------------------------------

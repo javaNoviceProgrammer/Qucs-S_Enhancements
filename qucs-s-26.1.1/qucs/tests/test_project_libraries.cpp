@@ -20,6 +20,7 @@
 #include <QTemporaryDir>
 
 #include "config.h"
+#include "erc.h"
 #include "main.h"
 #include "misc.h"
 #include "module.h"
@@ -101,6 +102,28 @@ QByteArray usesParts(const QString& lib, const QStringList& comps)
            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
 }
 QByteArray plain() { return usesLibraries({}); }
+// A library NAME of one part, \a comp: a resistor of two pins.
+QByteArray libraryOf(const QString& name, const QString& comp)
+{
+    return "<Qucs Library " PACKAGE_VERSION " \"" + name.toUtf8() + "\">\n\n<Component " + comp.toUtf8() + ">\n"
+           "  <Description>\nA resistor\n  </Description>\n  <Model>\n.Def:" + name.toUtf8() + "_" + comp.toUtf8() +
+           " _net0 _net1\nR:R1 _net0 _net1 R=\"1k\"\n.Def:End\n  </Model>\n  <Symbol>\n    <.PortSym -30 0 1 0 P1>\n"
+           "    <.PortSym 30 0 2 180 P2>\n    <Line -30 0 60 0 #000080 2 1>\n  </Symbol>\n</Component>\n";
+}
+QString native(const QString& path) { return QDir::toNativeSeparators(path); }
+// What the check says of the schematic, a line each.
+QString issuesOf(Schematic& sch)
+{
+    QStringList lines;
+    for (const erc::Issue& i : erc::check(&sch)) lines << i.message;
+    return lines.join('\n');
+}
+LibComp* partNamed(Schematic& sch, const QString& name)
+{
+    for (Component* c : sch.a_DocComps)
+        if (c->Name == name) return dynamic_cast<LibComp*>(c);
+    return nullptr;
+}
 
 // A file row of the Content panel, by its path relative to the project.
 QModelIndex rowOf(QStandardItemModel* model, const QString& path, const QModelIndex& parent = QModelIndex())
@@ -795,6 +818,214 @@ private slots:
         QFile::remove(team + "/Dotted.Lib.lib");
         // An installed library's, as before.
         QVERIFY(!LibComp::referenceTo(QucsSettings.LibDir + "/nosuch.lib").isEmpty());
+    }
+
+    // A library of the name made later that has no such part - the
+    // project's own VaLib.lib -: the part stays the search path's, which
+    // has it, its pins and its linked source with it. No library of the
+    // name has the part: the check says which there are, and the link stays
+    // (the part is not loaded, its library not known). The project's own
+    // getting the part too: still the one the source was linked from.
+    void aLibraryOfTheNameWithoutThePartDoesNotTakeIt()
+    {
+        const QString p = project("p23");
+        write(p + "/use.sch", usesLibrary("VaLib"));
+        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
+        write(p + "/Libraries/VaLib/good.osdi", "a model");
+        write(p + "/VaLib.lib", libraryOf("VaLib", "rc"));
+        QCOMPARE(LibComp::libraryFileOf("VaLib", p, "sub"), real(team + "/VaLib.lib"));
+        QCOMPARE(LibComp::libraryFileOf("VaLib", p, "rc"), real(p + "/VaLib.lib"));
+        QCOMPARE(LibComp::libraryFileOf("VaLib", p), real(p + "/VaLib.lib"));   // (no part: the first there is)
+        QCOMPARE(LibComp::librariesNamed("VaLib", p), (QStringList{real(p + "/VaLib.lib"), real(team + "/VaLib.lib")}));
+        // Named by a path whose library has no such part: the one of its name that has it.
+        write(dir.filePath("elsewhere/VaLib.lib"), libraryOf("VaLib", "rc"));
+        QCOMPARE(LibComp::libraryFileOf(dir.filePath("elsewhere/VaLib"), p, "sub"), real(team + "/VaLib.lib"));
+        QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
+        QVERIFY(QFileInfo::exists(p + "/Libraries/VaLib/good.osdi"));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        {
+            Schematic sch(nullptr, p + "/use.sch");
+            QVERIFY(sch.load());
+            LibComp* part = partNamed(sch, "X1");
+            QVERIFY(part != nullptr);
+            QCOMPARE(part->Ports.size(), 2);
+            QCOMPARE(part->libraryFile(), real(team + "/VaLib.lib"));
+            QVERIFY2(!issuesOf(sch).contains("VaLib"), qPrintable(issuesOf(sch)));   // (one of them has it)
+        }
+        // None has the part: which there are; the link kept - and named by
+        // the path of one without it.
+        write(p + "/use.sch", usesParts("VaLib", {"nosuch"}));
+        QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
+        write(p + "/use.sch", usesParts(QFileInfo(p + "/VaLib").absoluteFilePath(), {"nosuch"}));
+        QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
+        write(p + "/use.sch", usesParts("VaLib", {"nosuch"}));
+        {
+            Schematic sch(nullptr, p + "/use.sch");
+            QVERIFY(sch.load());
+            const QString issues = issuesOf(sch);
+            QVERIFY2(issues.contains("X1: the library part nosuch of VaLib could not be loaded (the libraries VaLib there are - "
+                                     + native(real(p + "/VaLib.lib")) + ", " + native(real(team + "/VaLib.lib"))
+                                     + " - have no part nosuch): it has no pins"),
+                     qPrintable(issues));
+            QucsSettings.LibraryPaths.clear();
+            const auto restore = qScopeGuard([&] { QucsSettings.LibraryPaths = {team}; });
+            QVERIFY2(issuesOf(sch).contains("(the library VaLib there is, " + native(real(p + "/VaLib.lib")) + ", has no part nosuch)"),
+                     qPrintable(issuesOf(sch)));
+        }
+        // One of a later Qucs-S's that has it: said so.
+        write(p + "/Later.lib", QByteArray(libraryOf("Later", "sub")).replace(PACKAGE_VERSION, "99.0.0"));
+        write(p + "/use.sch", usesParts("Later", {"sub"}));
+        {
+            Schematic sch(nullptr, p + "/use.sch");
+            QVERIFY(sch.load());
+            QVERIFY2(issuesOf(sch).contains("X1: the library part sub of Later could not be loaded (it is in " + native(real(p + "/Later.lib"))
+                                            + ", which it could not be read from: a library of a later Qucs-S, or damaged)"),
+                     qPrintable(issuesOf(sch)));
+        }
+        write(p + "/use.sch", usesParts("Nowhere", {"sub"}));
+        {
+            Schematic sch(nullptr, p + "/use.sch");
+            QVERIFY(sch.load());
+            QVERIFY2(issuesOf(sch).contains("X1: the library part sub of Nowhere could not be loaded (not in the libraries of"),
+                     qPrintable(issuesOf(sch)));
+        }
+        // One saved as UTF-16, with its byte order mark (a Windows editor's
+        // "Unicode"): has it, as it loads it.
+        const QString marked = QString::fromUtf8(libraryOf("Marked", "sub"));
+        write(p + "/Marked.lib", QByteArray("\xFF\xFE", 2)
+                                     + QByteArray(reinterpret_cast<const char*>(marked.utf16()), marked.size() * 2));
+        QVERIFY(LibComp::hasComponent(p + "/Marked.lib", "sub"));
+        write(p + "/marked.sch", usesParts("Marked", {"sub"}));
+        {
+            Schematic sch(nullptr, p + "/marked.sch");
+            QVERIFY(sch.load());
+            QCOMPARE(partNamed(sch, "X1")->description(), QString("A resistor"));
+            QCOMPARE(partNamed(sch, "X1")->Ports.size(), 2);
+        }
+        QVERIFY(QFile::remove(p + "/marked.sch"));
+        // A file of the name that is no Qucs library, a line of it like the
+        // part's: not one that has it.
+        write(p + "/VaLib.lib", "* VaLib: SPICE models\n<Component sub>\n.subckt sub a b\nR1 a b 1k\n.ends\n");
+        QVERIFY(!LibComp::hasComponent(p + "/VaLib.lib", "sub"));
+        QCOMPARE(LibComp::libraryFileOf("VaLib", p, "sub"), real(team + "/VaLib.lib"));
+        // The project's own gets the part too: the one linked from keeps it;
+        // the record gone, the first.
+        QVERIFY(QFile::remove(p + "/VaLib.lib"));
+        QVERIFY(QFile::copy(team + "/VaLib.lib", p + "/VaLib.lib"));
+        write(p + "/use.sch", usesLibrary("VaLib"));
+        QCOMPARE(LibComp::libraryFileOf("VaLib", p, "sub"), real(team + "/VaLib.lib"));
+        QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
+        QVERIFY(QDir(p + "/Libraries").removeRecursively());
+        QCOMPARE(LibComp::libraryFileOf("VaLib", p, "sub"), real(p + "/VaLib.lib"));
+        // Two parts of one name in a schematic, each found in its own library.
+        const QString q = project("p26");
+        write(q + "/VaLib.lib", libraryOf("VaLib", "rc"));
+        write(q + "/use.sch", usesParts("VaLib", {"rc", "sub"}));
+        QCOMPARE(projectlibraries::sync(q, {}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
+    }
+
+    // Two libraries of the name with the part - another search path's put
+    // first -: the part stays the one the project linked the source of
+    // from (its record), and the check says which is used and which not; by
+    // its path, no question. A project with no record of it: the first.
+    void theLibraryItWasLinkedFromKeepsThePart()
+    {
+        const QString p = project("p24");
+        write(p + "/use.sch", usesLibrary("VaLib"));
+        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
+        QucsSettings.LibraryPaths = {other, team};
+        const auto restore = qScopeGuard([&] { QucsSettings.LibraryPaths = {team}; });
+        QCOMPARE(projectlibraries::linkedFolders(p, "VaLib"), QStringList{real(team + "/VaLib")});
+        QVERIFY(projectlibraries::linkedFolders(p, "TwoLib").isEmpty());
+        QCOMPARE(LibComp::libraryFileOf("VaLib", p, "sub", p), real(team + "/VaLib.lib"));
+        QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
+        QCOMPARE(real(QFileInfo(p + "/Libraries/VaLib/good.va").symLinkTarget()), real(team + "/VaLib/good.va"));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        {
+            Schematic sch(nullptr, p + "/use.sch");
+            QVERIFY(sch.load());
+            QCOMPARE(partNamed(sch, "X1")->libraryFile(), real(team + "/VaLib.lib"));   // (its folder's record: no project open)
+            QVERIFY2(issuesOf(sch).contains("X1: more than one library VaLib has a part sub: " + native(real(team + "/VaLib.lib"))
+                                            + " is used (the project's Verilog-A of it is linked from there), not "
+                                            + native(real(other + "/VaLib.lib"))),
+                     qPrintable(issuesOf(sch)));
+        }
+        write(p + "/path.sch", usesLibrary(QFileInfo(other + "/VaLib").absoluteFilePath()));
+        {
+            Schematic sch(nullptr, p + "/path.sch");
+            QVERIFY(sch.load());
+            QCOMPARE(partNamed(sch, "X1")->libraryFile(), real(other + "/VaLib.lib"));
+            QVERIFY2(!issuesOf(sch).contains("more than one library"), qPrintable(issuesOf(sch)));
+        }
+        QVERIFY(QFile::remove(p + "/path.sch"));
+        // A schematic in a folder of the project, and one open there: the
+        // project's record too.
+        write(p + "/models/deep.sch", usesLibrary("VaLib"));
+        QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
+        {
+            Schematic deep(nullptr, p + "/models/deep.sch");
+            QVERIFY(deep.load());
+            write(p + "/models/deep.sch", plain());
+            QVERIFY(!projectlibraries::sync(p, {&deep}, Mode::Link).changed());
+        }
+        // The record changed by another program: read again. Written again
+        // by Qucs-S within the second, on a disk whose times are coarse: too.
+        const QString record = p + "/Libraries/VaLib/" + projectlibraries::RecordName;
+        const QByteArray was = bytes(record);
+        write(record, QByteArray(was).replace(real(team + "/VaLib").toUtf8(), real(other + "/VaLib").toUtf8()));
+        setBuilt(record, QDateTime::currentDateTime().addSecs(60));
+        QCOMPARE(projectlibraries::linkedFolders(p, "VaLib"), QStringList{real(other + "/VaLib")});
+        write(record, was);
+        setBuilt(record, QDateTime::currentDateTime().addSecs(120));
+        QCOMPARE(projectlibraries::linkedFolders(p, "VaLib"), QStringList{real(team + "/VaLib")});
+        const QDateTime before = QFileInfo(record).lastModified();
+        QucsSettings.LibraryPaths = {other};
+        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});   // other's now
+        setBuilt(record, before);
+        QCOMPARE(projectlibraries::linkedFolders(p, "VaLib"), QStringList{real(other + "/VaLib")});
+        QucsSettings.LibraryPaths = {other, team};
+        const QString q = project("p25");
+        write(q + "/use.sch", usesLibrary("VaLib"));
+        QCOMPARE(LibComp::libraryFileOf("VaLib", q, "sub", q), real(other + "/VaLib.lib"));
+        QCOMPARE(projectlibraries::sync(q, {}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
+        QCOMPARE(real(QFileInfo(q + "/Libraries/VaLib/good.va").symLinkTarget()), real(other + "/VaLib/good.va"));
+        {
+            Schematic sch(nullptr, q + "/use.sch");
+            QVERIFY(sch.load());
+            QVERIFY2(issuesOf(sch).contains(native(real(other + "/VaLib.lib")) + " is used (found first), not "
+                                            + native(real(team + "/VaLib.lib"))),
+                     qPrintable(issuesOf(sch)));
+        }
+    }
+
+    // A library made with the name of another one there is: said.
+    void aLibraryMadeWithAnotherOnesNameSaysSo()
+    {
+        Module::registerModules();   // (an earlier test's app unregistered them)
+        const auto modules = qScopeGuard([] { Module::registerModules(); });   // (and this one's)
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.openProject(source);
+        const auto made = [&](const QString& name) {
+            LibraryDialog dialog(&app);
+            dialog.fillSchematicList({"sub.sch"});
+            LibraryDialog::Request request;
+            request.name = name;
+            request.subcircuits = {"sub.sch"};
+            request.folder = dir.filePath("third");
+            QString log, error;
+            return dialog.create(request, &log, &error) ? log : QStringLiteral("not made: ") + error + "\n" + log;
+        };
+        QString log = made("VaLib");
+        QVERIFY2(log.contains("Note: another library is named VaLib too: " + native(real(team + "/VaLib.lib")) + "."), qPrintable(log));
+        log = made("Unique");
+        QVERIFY2(log.contains("Successfully created library") && !log.contains("another library is named"), qPrintable(log));
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
     }
 
     // OpenVAF given a link's file and told where to write; nothing more for

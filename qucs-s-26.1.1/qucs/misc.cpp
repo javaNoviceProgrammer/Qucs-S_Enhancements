@@ -384,30 +384,35 @@ QString misc::properAbsFileName(const QString& filename, Schematic* sch)
   return properAbsFileNameIn(filename, sch != nullptr ? sch->getFileInfo().dir().path() : QString());
 }
 
-QString misc::properAbsFileNameIn(const QString& filename, const QString& folder)
+namespace {
+// The places properAbsFileNameIn() looks for \a filename, in its order:
+// each file there given to \a take (its real path) until \a take says it
+// is the one (true) - past an absolute path that is there, it not taken,
+// to the files of its name.
+template <typename Take>
+bool lookFor(const QString& filename, const QString& folder, Take take)
 {
   QString fName = filename;
   QFileInfo fileInfo(fName);
+  const auto there = [&](const QString& path) {
+    fileInfo.setFile(path);
+    return fileInfo.exists() && take(fileInfo.canonicalFilePath());
+  };
 
   if ( fileInfo.isAbsolute() ) {
-    if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
+    if ( fileInfo.exists() && take(fileInfo.canonicalFilePath()) ) return true;
     fName = fileInfo.fileName();
   }
 
-  if ( !folder.isEmpty() ) {
-    fileInfo.setFile(QDir(folder).filePath(fName));
-    if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
-  }
+  if ( !folder.isEmpty() && there(QDir(folder).filePath(fName)) ) return true;
 
   // A path relative to the project directory (the Content panel refers to
   // files in subdirectories that way), then the bare name in the usual places.
-  fileInfo.setFile(QucsSettings.QucsWorkDir.filePath(fName));
-  if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
+  if ( there(QucsSettings.QucsWorkDir.filePath(fName)) ) return true;
 
   fName = fileInfo.fileName();
 
-  fileInfo.setFile(QucsSettings.QucsWorkDir.filePath(fName));
-  if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
+  if ( there(QucsSettings.QucsWorkDir.filePath(fName)) ) return true;
 
   // A library of the author's own, named by where it was on their machine
   // (/users/russo/.qucs/user_lib/LT1057.lib), shipped in a user_lib folder
@@ -418,10 +423,8 @@ QString misc::properAbsFileNameIn(const QString& filename, const QString& folder
   if (!folder.isEmpty()) userLibs << QDir(folder).filePath(QStringLiteral("user_lib"));
   userLibs << QucsSettings.QucsWorkDir.filePath(QStringLiteral("user_lib"))
            << QucsSettings.qucsWorkspaceDir.filePath(QStringLiteral("user_lib"));
-  for (const QString& path : std::as_const(userLibs)) {
-    fileInfo.setFile(QDir(path).filePath(fName));
-    if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
-  }
+  for (const QString& path : std::as_const(userLibs))
+    if ( there(QDir(path).filePath(fName)) ) return true;
 
   // A file of the shipped library, named by where that was on the
   // author's machine (C:/QUCS-S 24.3.0/share/qucs-s/library/XyceDigital.lib):
@@ -430,25 +433,52 @@ QString misc::properAbsFileNameIn(const QString& filename, const QString& folder
   QString inLibrary = filename;
   inLibrary.replace(QLatin1Char('\\'), QLatin1Char('/'));
   const qsizetype at = inLibrary.lastIndexOf(QStringLiteral("/library/"), -1, Qt::CaseInsensitive);
-  if (at >= 0 && !QucsSettings.LibDir.isEmpty()) {
-    fileInfo.setFile(QDir(QucsSettings.LibDir).filePath(inLibrary.mid(at + 9)));
-    if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
-  }
+  if (at >= 0 && !QucsSettings.LibDir.isEmpty() && there(QDir(QucsSettings.LibDir).filePath(inLibrary.mid(at + 9))))
+    return true;
 
   // A library in a folder of the library search paths (Settings >
   // Locations): placed from there, on another computer, or moved.
   if (fName.endsWith(QLatin1String(".lib"), Qt::CaseInsensitive))
-    for (const QString& path : std::as_const(QucsSettings.LibraryPaths)) {
-      fileInfo.setFile(QDir(path).filePath(fName));
-      if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
-    }
+    for (const QString& path : std::as_const(QucsSettings.LibraryPaths))
+      if ( there(QDir(path).filePath(fName)) ) return true;
 
-  for (const QString& path : qucsPathList) {
-    fileInfo.setFile(QDir(path).filePath(fName));
-    if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
-  }
+  for (const QString& path : qucsPathList)
+    if ( there(QDir(path).filePath(fName)) ) return true;
 
-  return filename;
+  return false;
+}
+} // namespace
+
+QString misc::properAbsFileNameIn(const QString& filename, const QString& folder)
+{
+  QString found;
+  lookFor(filename, folder, [&](const QString& path) {
+    found = path;
+    return true;
+  });
+  return found.isEmpty() ? filename : found;
+}
+
+QString misc::properAbsFileNameWhere(const QString& filename, const QString& folder,
+                                    const std::function<bool(const QString&)>& wanted)
+{
+  QString found;
+  lookFor(filename, folder, [&](const QString& path) {
+    if (!wanted(path)) return false;
+    found = path;
+    return true;
+  });
+  return found;
+}
+
+QStringList misc::properAbsFileNamesIn(const QString& filename, const QString& folder)
+{
+  QStringList found;
+  lookFor(filename, folder, [&](const QString& path) {
+    if (!path.isEmpty() && !found.contains(path)) found << path;
+    return false;
+  });
+  return found;
 }
 
 QStringList misc::libraryFolders(bool project)

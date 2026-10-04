@@ -265,7 +265,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   search paths, and Claude's `create_library`, `list_libraries` and
   `import_library`); a part placed by a path that is not there (another
   computer, the folder moved) finds its library by name in the search
-  paths, and *Check Schematic* names them when it is not. *Create
+  paths, and *Check Schematic* names them when it is not. A part takes
+  the first library of its name that has the part: one of the name
+  without it - the project's own `mylib.lib`, made after a search path's
+  `mylib` part was placed - no longer takes it, its pins and its
+  Verilog-A gone. Of two that have it, the part keeps the one the project
+  linked its Verilog-A from (the record in `Libraries/<library>/`), and
+  *Check Schematic* warns which is used and which not; when none has it,
+  it says which libraries of the name there are. *Create Library* and
+  Claude's `create_library` and `import_library` say when another library
+  has the new one's name. *Create
   Library* saves into `user_lib` (as before), the project or
   one of the folders (*Save in*). Claude reads and sets the list
   (`get_settings`/`set_settings`, *Locations/Library search paths*, a list
