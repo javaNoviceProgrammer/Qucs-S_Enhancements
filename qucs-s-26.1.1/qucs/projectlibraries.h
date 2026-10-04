@@ -76,9 +76,20 @@ struct Report {
 /// it (NAME.osdi), the record, the folder when Qucs-S made it and nothing
 /// else is in it, and Libraries/ so. Only what Qucs-S put there, as the
 /// records say: a file of the user's is never written over or taken away.
-/// A library a part names that is not found here keeps what it has. The
+/// A library a part names that is not found here - or none of that name
+/// has the part - keeps what it has. The
 /// folders made in the project's folder itself before Libraries/ are moved.
 Report sync(const QString& projectDir, const QList<Schematic*>& open = {}, Mode mode = defaultMode());
+
+/// The folders of the libraries named \a library (a .lib's base name) the
+/// project \a projectDir has the Verilog-A of in Libraries/ - its records
+/// say where each was linked from -, real paths. Of two libraries of one
+/// name that have a part, the part takes the one of these
+/// (LibComp::libraryFileOf()).
+QStringList linkedFolders(const QString& projectDir, const QString& library);
+/// The folder of the library \a libraryFile as a record names it: NAME/
+/// beside NAME.lib, its real path.
+QString folderOf(const QString& libraryFile);
 
 /// For the tests: how a symbolic link is made (QFile::link; none: that) -
 /// one that fails stands for a disk that has no links.

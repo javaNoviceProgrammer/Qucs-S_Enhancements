@@ -42,6 +42,7 @@
 #include <map>
 #include <memory>
 #include <numeric>
+#include <utility>
 #include <vector>
 
 namespace qucs_s::erc {
@@ -1696,6 +1697,8 @@ QList<Issue> check(Schematic* doc)
     const int simulator = doc->isDigitalCircuit() ? int(spicecompat::simNotSpecified) : QucsSettings.DefaultSimulator;
     QHash<QString, const Component*> byName;
     QHash<QString, const Component*> byNameWithoutCase;   // "r r1": SpiceModel and name, lower case
+    // The libraries a library part's Lib names, with its Comp and without: each looked for once.
+    QHash<QString, std::pair<QStringList, QStringList>> librariesOfPart;
     const bool caseless = spiceSimulator(simulator) && simulator != spicecompat::simNotSpecified;
     // The Verilog-A libraries and sources of the open project and those
     // beside the schematic (with no project, the only ones), read when a
@@ -1803,13 +1806,58 @@ QList<Issue> check(Schematic* doc)
         // A library part or a subcircuit that could not be loaded: drawn as
         // a box without pins, so the wires that met its pins end on nothing
         // - which alone was told, never why (a library not found).
-        if (c->Model == QLatin1String("Lib") && c->Ports.isEmpty() && c->Props.size() >= 2)
-            errors << Issue{Severity::Error,
-                            tr("%1: the library part %2 of %3 could not be loaded (not in the libraries of %4, the project or "
-                               "its user_lib, nor a folder of the library search paths): it has no pins, and what was wired to "
-                               "them is on nothing")
-                                .arg(c->Name, c->Props.at(1)->Value, c->Props.at(0)->Value, QDir::toNativeSeparators(QucsSettings.LibDir)),
-                            QPoint(c->cx, c->cy), c->Name};
+        // The libraries of its name, with the part and without: which there
+        // are when it is not loaded, which is used when two have it.
+        if (c->Model == QLatin1String("Lib") && c->Props.size() >= 2) {
+            const QString lib = c->Props.at(0)->Value, comp = c->Props.at(1)->Value;
+            const QString key = lib + QLatin1Char('\n') + comp;
+            if (!librariesOfPart.contains(key)) {
+                QStringList with, without;
+                for (const QString& library : LibComp::librariesNamed(lib, doc->getFileInfo().dir().path()))
+                    (LibComp::hasComponent(library, comp) ? with : without) << library;
+                librariesOfPart.insert(key, {with, without});
+            }
+            const auto& [with, without] = librariesOfPart.value(key);
+            const auto shown = [](const QStringList& files) {
+                QStringList native;
+                for (const QString& f : files) native << QDir::toNativeSeparators(f);
+                return native.join(QStringLiteral(", "));
+            };
+            const QString name = QFileInfo(lib).fileName();
+            const auto* part = dynamic_cast<const LibComp*>(c);
+            if (c->Ports.isEmpty()) {
+                QString why;
+                if (with.isEmpty() && without.isEmpty())
+                    why = tr("not in the libraries of %1, the project or its user_lib, nor a folder of the library search paths")
+                              .arg(QDir::toNativeSeparators(QucsSettings.LibDir));
+                else if (with.isEmpty())
+                    why = without.size() == 1 ? tr("the library %1 there is, %2, has no part %3").arg(name, shown(without), comp)
+                                              : tr("the libraries %1 there are - %2 - have no part %3").arg(name, shown(without), comp);
+                else
+                    why = tr("it is in %1, which it could not be read from: a library of a later Qucs-S, or damaged")
+                              .arg(shown({part != nullptr ? part->libraryFile() : with.first()}));
+                errors << Issue{Severity::Error,
+                                tr("%1: the library part %2 of %3 could not be loaded (%4): it has no pins, and what was wired to "
+                                   "them is on nothing")
+                                    .arg(c->Name, comp, lib, why),
+                                QPoint(c->cx, c->cy), c->Name};
+            } else if (part != nullptr && with.size() > 1
+                       && !(QFileInfo(lib).isAbsolute() && QFileInfo::exists(lib + QStringLiteral(".lib")))) {
+                // Named by its name, and two libraries of it have the part:
+                // which is used is said (a path in Lib chooses).
+                const QString used = part->libraryFile();
+                QStringList others = with;
+                others.removeAll(used);
+                warnings << Issue{Severity::Warning,
+                                  tr("%1: more than one library %2 has a part %3: %4 is used%5, not %6 - a path in the part's Lib "
+                                     "names the one meant")
+                                      .arg(c->Name, name, comp, QDir::toNativeSeparators(used),
+                                           used == with.first() ? tr(" (found first)")
+                                                                : tr(" (the project's Verilog-A of it is linked from there)"),
+                                           shown(others)),
+                                  QPoint(c->cx, c->cy), c->Name};
+            }
+        }
         // A subcircuit: its file given, found (a file, not a folder), and
         // not this schematic itself - a subcircuit that holds itself nests
         // in the netlist until ngspice gives up.

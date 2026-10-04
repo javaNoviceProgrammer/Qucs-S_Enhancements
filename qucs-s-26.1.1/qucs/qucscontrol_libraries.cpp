@@ -165,6 +165,24 @@ bool copyFolder(const QString& from, const QString& to, QStringList* written)
     return true;
 }
 
+// The other libraries of the name of \a file, when there are: "also_named",
+// and what that means for a part placed by the name.
+void addNamedLike(QJsonObject& result, const QString& file)
+{
+    const QStringList others = LibComp::librariesNamedLike(file);
+    if (others.isEmpty()) return;
+    QJsonArray named;
+    for (const QString& other : others) named.append(QDir::toNativeSeparators(other));
+    result.insert(QStringLiteral("also_named"), named);
+    result.insert(QStringLiteral("warning"),
+                  QucsControl::tr("Another library is named %1 too (also_named). A part placed by that name is taken from the first "
+                                  "of them that has it - installed, beside the schematic, the project's, user_lib's, the library "
+                                  "search paths' in their order - so a part of a name both have may be the other's: each part's "
+                                  "'place' here names this library by its path where the name finds another. A name of its own "
+                                  "avoids it.")
+                      .arg(QFileInfo(file).completeBaseName()));
+}
+
 } // namespace
 
 QJsonObject QucsControl::listLibraries(const QJsonObject& args)
@@ -308,6 +326,7 @@ QJsonObject QucsControl::createLibrary(const QJsonObject& args)
     }
     result.insert(QStringLiteral("note"), tr("It is in the Libraries panel; each part's 'place' is its add_component.%1")
                                               .arg(trashed.isEmpty() && !replacing ? QString() : tr(" The library it replaced is in the trash.")));
+    addNamedLike(result, file);
     return jsonResult(result);
 }
 
@@ -354,12 +373,13 @@ QJsonObject QucsControl::importLibrary(const QJsonObject& args)
     a_app->fillLibrariesTreeView();
     QJsonArray files;
     for (const QString& f : std::as_const(written)) files.append(QDir::toNativeSeparators(f));
-    return jsonResult(QJsonObject{
-        {QStringLiteral("library"), lib.name},
-        {QStringLiteral("kind"), lib.kind},
-        {QStringLiteral("file"), QDir::toNativeSeparators(target)},
-        {QStringLiteral("written"), files},
-        {QStringLiteral("parts"), partsOf(target, lib.kind, false)},
-        {QStringLiteral("note"), tr("It is in the Libraries panel; each part's 'place' is its add_component.%1")
-                                     .arg(replace ? tr(" What it replaced is in the trash.") : QString())}});
+    QJsonObject result{{QStringLiteral("library"), lib.name},
+                       {QStringLiteral("kind"), lib.kind},
+                       {QStringLiteral("file"), QDir::toNativeSeparators(target)},
+                       {QStringLiteral("written"), files},
+                       {QStringLiteral("parts"), partsOf(target, lib.kind, false)},
+                       {QStringLiteral("note"), tr("It is in the Libraries panel; each part's 'place' is its add_component.%1")
+                                                    .arg(replace ? tr(" What it replaced is in the trash.") : QString())}};
+    if (lib.kind == QLatin1String("qucs")) addNamedLike(result, target);
+    return jsonResult(result);
 }
