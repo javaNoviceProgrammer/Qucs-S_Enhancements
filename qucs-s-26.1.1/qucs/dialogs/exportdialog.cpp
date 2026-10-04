@@ -15,6 +15,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "exportdialog.h"
+#include "misc.h"
 #include "settings.h"
 
 #include <QCheckBox>
@@ -238,6 +239,9 @@ void ExportDialog::accept()
                              tr("The folder %1 does not exist.").arg(QDir::toNativeSeparators(folder)));
         return;
     }
+    // A library's Verilog-A the project keeps: not written through.
+    if (misc::refusesToWrite(this, windowTitle(), name)) return;
+    if (format() == Format::PdfTex && misc::refusesToWrite(this, windowTitle(), pdfOf(name))) return;
     store();
     QDialog::accept();
 }
@@ -245,7 +249,7 @@ void ExportDialog::accept()
 void ExportDialog::browse()
 {
     QString filter = nameFilter(format());
-    QString name = QFileDialog::getSaveFileName(this, tr("Export to File"), fileName(), nameFilters(),
+    QString name = misc::saveFileName(this, tr("Export to File"), fileName(), nameFilters(),
                                                 &filter, QFileDialog::DontConfirmOverwrite);
     if (name.isEmpty())
         return;

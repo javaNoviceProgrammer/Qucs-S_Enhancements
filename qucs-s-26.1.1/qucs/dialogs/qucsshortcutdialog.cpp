@@ -26,6 +26,7 @@
 
 #include "qucsshortcutdialog.h"
 #include "qucsshortcutmanager.h"
+#include "misc.h"
 
 #include <QDebug>
 #include <QFileDialog>
@@ -339,7 +340,7 @@ void QucsShortcutDialog::slotImport() {
 // ----------------------------------------------------------------------------
 void QucsShortcutDialog::slotExport() {
   QString filename =
-      QFileDialog::getSaveFileName(this, tr("Export Shortcut Map"), ".",
+      misc::saveFileName(this, tr("Export Shortcut Map"), ".",
                                    "JSON Files (*.json);;All Files (*)");
 
   if (filename.isEmpty()) {

@@ -5424,6 +5424,76 @@ private slots:
         QVERIFY2(json(r).toObject().value("found").toArray().isEmpty(), qPrintable(text(r)));
     }
 
+    // A library's Verilog-A linked into a project is not written through
+    // by the tools that write a file named to them (the 4 October hunt's
+    // A2: export_netlist with replace wrote the netlist into the library's
+    // own file): refused, saying why; the library's file and the link as
+    // they were; a file elsewhere written as before.
+    void aLibrarysLinkIsNotWrittenThrough()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        if (!app->ProjName.isEmpty()) QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+        const QString shelf = dir.filePath("writeshelf");
+        QVERIFY(QDir().mkpath(shelf));
+        const QStringList paths = QucsSettings.LibraryPaths;
+        QucsSettings.LibraryPaths = {shelf};
+        const auto restore = qScopeGuard([&] { QucsSettings.LibraryPaths = paths; });
+        QJsonObject r = call("new_project", {{"name", "writesrc"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString src = QucsSettings.QucsWorkDir.absolutePath();
+        const auto put = [](const QString& path, const QByteArray& bytes) {
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size();
+        };
+        const auto read = [](const QString& path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        QVERIFY(put(src + "/good.va", "`include \"disciplines.vams\"\nmodule good(p, n);\n  inout p, n;\n  electrical p, n;\n"
+                                      "  analog I(p, n) <+ V(p, n) / 1k;\nendmodule\n"));
+        QVERIFY(put(src + "/cell.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                                       "  <Port P1 1 220 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+                                       "  <Port P2 1 280 100 4 12 1 2 \"2\" 1 \"analog\" 0>\n"
+                                       "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                                       "  <SpiceModel SpiceModel1 1 120 300 -27 16 0 0 \".model m1 good\" 1 \"\" 0>\n"
+                                       "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n"));
+        QVERIFY(!failed(call("open_project", {{"name", "writesrc"}})));
+        r = call("create_library", {{"name", "WriteLib"}, {"destination", shelf}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject place = json(r).toObject().value("parts").toArray().at(0).toObject().value("place").toObject();
+        QVERIFY(!failed(call("new_project", {{"name", "writeuse"}})));
+        const QString use = QucsSettings.QucsWorkDir.absolutePath();
+        QVERIFY(!failed(call("new_document", {})));
+        QVERIFY(!failed(call("add_component", {{"type", place.value("type")}, {"name", "X1"}, {"x", 300}, {"y", 200},
+                                               {"properties", place.value("properties")}})));
+        QVERIFY(!failed(call("save_document", {{"as", use + "/top.sch"}})));
+        const QString link = use + "/Libraries/WriteLib/good.va", original = shelf + "/WriteLib/good.va";
+        QVERIFY(QFileInfo(link).isSymLink());
+        const QByteArray was = read(original);
+        QVERIFY(!was.isEmpty());
+        const auto refused = [&](const QJsonObject& answer) {
+            return failed(answer) && text(answer).contains("library WriteLib, linked into the project from")
+                   && text(answer).contains("the library's own file would change");
+        };
+        r = call("export_netlist", {{"path", "top.sch"}, {"save_as", "Libraries/WriteLib/good.va"}, {"replace", true}});
+        QVERIFY2(refused(r), qPrintable(text(r)));
+        r = call("export_netlist", {{"path", "top.sch"}, {"format", "cdl"}, {"save_as", link}, {"replace", true}});
+        QVERIFY2(refused(r), qPrintable(text(r)));
+        // (A schematic is not saved as a .va at all: a text document is.)
+        QVERIFY(put(use + "/notes.txt", "notes\n"));
+        QVERIFY(!failed(call("open_document", {{"path", "notes.txt"}})));
+        r = call("save_document", {{"path", "notes.txt"}, {"as", link}, {"replace", true}});
+        QVERIFY2(refused(r), qPrintable(text(r)));
+        QCOMPARE(read(original), was);
+        QVERIFY(QFileInfo(link).isSymLink());
+        // A file elsewhere: written.
+        r = call("export_netlist", {{"path", "top.sch"}, {"save_as", "top.cir"}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(use + "/top.cir"), qPrintable(text(r)));
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+    }
+
     // Libraries, by Claude: made of the project's subcircuits (those
     // chosen, with descriptions, where asked, replaced only when asked, not
     // of a file with unsaved changes), listed as the panel shows them, a

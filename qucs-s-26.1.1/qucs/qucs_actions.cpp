@@ -1735,7 +1735,7 @@ void QucsApp::slotExportGraphAsCsv() {
      tr("CSV file")+" (*.csv);;" + tr("Any File")+" (*)",
      this, 0, tr("Enter an Output File Name"));
      */
-  QString s = QFileDialog::getSaveFileName(
+  QString s = misc::saveFileName(
       this, tr("Enter an Output File Name"),
       lastDir.isEmpty() ? QStringLiteral(".") : lastDir,
       tr("CSV file") + " (*.csv);;" + tr("Any File") + " (*)");

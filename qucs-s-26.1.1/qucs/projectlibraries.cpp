@@ -17,6 +17,7 @@
 #include "components/libcomp.h"
 #include "components/subcircuit.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -55,6 +56,24 @@ QString real(const QString& path)
 bool inside(const QString& path, const QString& folder)
 {
     return path == folder || path.startsWith(folder + QLatin1Char('/'));
+}
+
+// \a relative as a path in the folder \a dir, when it is one there: not
+// out of it by ".." or through a link to a folder elsewhere - the folders
+// on its way that are there, as they really are (the system resolves the
+// "..": a/../../x is ../x cleaned). Empty otherwise: what a record names -
+// edited by hand, or come with a project from elsewhere - is never taken
+// away or written outside it. (Always under \a dir: /x is its x.)
+QString pathIn(const QString& dir, const QString& relative)
+{
+    const QString clean = QDir::cleanPath(QDir::fromNativeSeparators(relative));
+    const QString top = QFileInfo(dir).canonicalFilePath();
+    if (top.isEmpty()) return {};
+    for (QString at = QFileInfo(top + QLatin1Char('/') + clean).absolutePath();; at = QFileInfo(at).absolutePath()) {
+        if (const QFileInfo info(at); info.exists())
+            return inside(info.canonicalFilePath(), top) ? QDir::cleanPath(dir + QLatin1Char('/') + clean) : QString();
+        if (!inside(at, top)) return {};   // (the folder itself gone meanwhile)
+    }
 }
 
 // ---- what the schematics use -------------------------------------------
@@ -179,6 +198,7 @@ struct Item {
     QString path;       // relative to the folder
     QString original;   // the library's file
     QString kind;       // link, copy, or include (a copy of a file a copied source includes)
+    QString sum;        // a copy's: SHA-256 of it as Qucs-S made it (none in a record of before)
 };
 
 struct Record {
@@ -200,8 +220,9 @@ bool readRecord(const QString& file, Record* out)
     for (const QJsonValue& v : o.value(QLatin1String("files")).toArray()) {
         const QJsonObject i = v.toObject();
         const Item item{i.value(QLatin1String("path")).toString(), i.value(QLatin1String("original")).toString(),
-                        i.value(QLatin1String("kind")).toString()};
-        // (Inside the folder only: a record edited by hand takes nothing elsewhere away.)
+                        i.value(QLatin1String("kind")).toString(), i.value(QLatin1String("sum")).toString()};
+        // (Inside the folder only, as far as its path reads; what is taken
+        // away or written is one pathIn() finds in the folder as it is.)
         if (!item.path.isEmpty() && !item.path.startsWith(QLatin1String("..")) && !QDir::isAbsolutePath(item.path))
             r.items << item;
     }
@@ -228,13 +249,39 @@ bool readRecordOnce(const QString& file, Record* out)
     return !out->library.isEmpty();
 }
 
+// SHA-256 of the file \a path, in hex; none when it cannot be read.
+QString sumOf(const QString& path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return {};
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (!hash.addData(&f)) return {};
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+// \a path is still the copy Qucs-S made of \a item: the sum the record has
+// of it; in a record of before sums, the same bytes as its original (another
+// file). A file of the user's under its name - or one a record that is not
+// Qucs-S's names - is not.
+bool stillOurCopy(const QString& path, const Item& item)
+{
+    if (!item.sum.isEmpty()) return sumOf(path) == item.sum;
+    const QFileInfo original(item.original);
+    if (!original.isFile() || misc::isSameFile(item.original, path) || original.size() != QFileInfo(path).size()) return false;
+    return sumOf(item.original) == sumOf(path);
+}
+
 void writeRecord(const QString& file, const Record& r)
 {
     recordsRead.remove(file);
+    const QDir dir = QFileInfo(file).absoluteDir();
     QJsonArray files;
-    for (const Item& item : r.items)
-        files.append(QJsonObject{{QStringLiteral("path"), item.path}, {QStringLiteral("original"), item.original},
-                                 {QStringLiteral("kind"), item.kind}});
+    for (const Item& item : r.items) {
+        QJsonObject o{{QStringLiteral("path"), item.path}, {QStringLiteral("original"), item.original},
+                      {QStringLiteral("kind"), item.kind}};
+        if (item.kind != QLatin1String("link")) o.insert(QStringLiteral("sum"), sumOf(dir.absoluteFilePath(item.path)));
+        files.append(o);
+    }
     const QJsonObject o{{QStringLiteral("library"), r.library}, {QStringLiteral("folder"), r.folder},
                         {QStringLiteral("created"), r.created}, {QStringLiteral("files"), files},
                         {QStringLiteral("about"), QStringLiteral("Kept by Qucs-S: the Verilog-A of this library's devices "
@@ -327,6 +374,12 @@ Report sync(const QString& projectDir, const QList<Schematic*>& open, Mode mode)
     // made before there was one, in the project's folder itself (moved).
     const QString root = project.absoluteFilePath(QLatin1String(FolderName));
     const QString marker = QDir(root).absoluteFilePath(QLatin1String(MarkerName));
+    // Libraries/ a link (come with a project from elsewhere): what is there
+    // is not the project's - nothing read, written or taken away through it.
+    if (QFileInfo(root).isSymLink()) {
+        report.conflicts << QString::fromLatin1(FolderName);
+        return report;
+    }
     const auto recordsIn = [](const QString& folder) {
         QMap<QString, Record> records;   // by the folder's name
         for (const QFileInfo& dir : QDir(folder).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks)) {
@@ -382,7 +435,9 @@ Report sync(const QString& projectDir, const QList<Schematic*>& open, Mode mode)
     // a part names its library and it is not found here.
     const auto shown = [&](const QString& path) { return QDir::fromNativeSeparators(project.relativeFilePath(path)); };
     const auto takeAway = [&](const QString& dir, const Item& item) {
-        const QString path = QDir(dir).absoluteFilePath(item.path);
+        const QString path = pathIn(dir, item.path);
+        if (path.isEmpty()) return;   // (not in its folder)
+        if (item.kind != QLatin1String("link") && !stillOurCopy(path, item)) return;   // the user's, or changed: kept
         if (removeItem(path, item.kind)) {
             if (item.kind != QLatin1String("include")) {
                 removeModel(path);
@@ -424,6 +479,11 @@ Report sync(const QString& projectDir, const QList<Schematic*>& open, Mode mode)
         const bool known = found.contains(name);
         Record r = found.value(name);
         if (!known) r.created = !QFileInfo::exists(dir);
+        // Its folder a link (to a folder elsewhere): not written through.
+        if (QFileInfo(dir).isSymLink()) {
+            report.conflicts << shown(dir);
+            continue;
+        }
         r.library = nameOf.value(folder);
         r.folder = folder;
         QHash<QString, Item> had;
@@ -436,7 +496,12 @@ Report sync(const QString& projectDir, const QList<Schematic*>& open, Mode mode)
             if (u.folder != folder) continue;
             QString relative = QDir(folder).relativeFilePath(u.source);
             if (relative.startsWith(QLatin1String(".."))) relative = QFileInfo(u.source).fileName();
-            const QString path = QDir(dir).absoluteFilePath(relative);
+            QDir().mkpath(dir);
+            const QString path = pathIn(dir, relative);
+            if (path.isEmpty()) {   // a folder on its way leads elsewhere
+                report.conflicts << shown(QDir(dir).absoluteFilePath(relative));
+                continue;
+            }
             const bool ours = had.contains(relative);
             const QFileInfo there(path);
             QDir().mkpath(there.absolutePath());
@@ -447,7 +512,7 @@ Report sync(const QString& projectDir, const QList<Schematic*>& open, Mode mode)
             bool copy = mode == Mode::Copy;
             if (!copy) {
                 if (there.isSymLink() && real(there.symLinkTarget()) == u.source) {
-                    keep(Item{relative, u.source, QStringLiteral("link")});   // as it should be
+                    keep(Item{relative, u.source, QStringLiteral("link"), {}});   // as it should be
                     continue;
                 }
                 if ((there.exists() || there.isSymLink()) && !ours) {
@@ -475,7 +540,7 @@ Report sync(const QString& projectDir, const QList<Schematic*>& open, Mode mode)
                 if (!copy) {
                     if (makeLink(target, path)) {
                         report.made << shown(path);
-                        keep(Item{relative, u.source, QStringLiteral("link")});
+                        keep(Item{relative, u.source, QStringLiteral("link"), {}});
                         continue;
                     }
                     copy = true;   // a disk with no symbolic links (exFAT, some network shares): a copy
@@ -487,16 +552,17 @@ Report sync(const QString& projectDir, const QList<Schematic*>& open, Mode mode)
                 continue;
             }
             if (made) report.made << shown(path);
-            keep(Item{relative, u.source, QStringLiteral("copy")});
+            keep(Item{relative, u.source, QStringLiteral("copy"), {}});
             // The files it includes, at their places beside it, so that its
             // `include lines find them (those of the library's folder).
             for (const QString& included : osdi::sourceIncludes(u.source)) {
                 const QString original = real(included);
                 const QString at = QDir(folder).relativeFilePath(original);
                 if (at.startsWith(QLatin1String(".."))) continue;
+                const QString to = pathIn(dir, at);
                 bool copied = false;
-                if (copyFresh(original, QDir(dir).absoluteFilePath(at), had.contains(at), &copied))
-                    keep(Item{at, original, QStringLiteral("include")});
+                if (!to.isEmpty() && copyFresh(original, to, had.contains(at), &copied))
+                    keep(Item{at, original, QStringLiteral("include"), {}});
             }
         }
         for (const Item& item : std::as_const(r.items))
@@ -558,6 +624,42 @@ Entry entryOf(const QString& path)
                 // Still Qucs-S's: a link, or a copy that is no link.
                 if ((item.kind == QLatin1String("link")) != info.isSymLink()) return {};
                 return {r.library, item.original};
+            }
+            return {};
+        }
+        if (!dir.cdUp()) break;
+    }
+    return {};
+}
+
+QString notToWrite(const QString& path)
+{
+    if (path.isEmpty()) return {};
+    const QFileInfo info(path);
+    // A link that leads nowhere (the library moved) has no file to tell it
+    // by: the same link, its folder as it really is, its name in any case.
+    const auto place = [](const QFileInfo& f) { return QFileInfo(f.absolutePath()).canonicalFilePath(); };
+    QDir dir = info.absoluteDir();
+    for (int up = 0; up < 8; ++up) {
+        const QString record = dir.absoluteFilePath(QLatin1String(RecordName));
+        if (QFileInfo::exists(record)) {
+            Record r;
+            if (!readRecord(record, &r)) return {};
+            for (const Item& item : std::as_const(r.items)) {
+                const QFileInfo at(dir.absoluteFilePath(item.path));
+                const bool same = misc::isSameFile(at.absoluteFilePath(), info.absoluteFilePath())
+                                  || (at.isSymLink() && info.isSymLink() && place(at) == place(info)
+                                      && at.fileName().compare(info.fileName(), Qt::CaseInsensitive) == 0
+                                      && at.symLinkTarget() == info.symLinkTarget());
+                if (!same) continue;
+                if (item.kind == QLatin1String("link"))
+                    return QObject::tr("%1 is the Verilog-A of the library %2, linked into the project from %3: written, "
+                                       "the library's own file would change, which every project using it shares. Write "
+                                       "to another file - the library's Verilog-A is changed in the library.")
+                        .arg(QDir::toNativeSeparators(info.absoluteFilePath()), r.library, QDir::toNativeSeparators(item.original));
+                return QObject::tr("%1 is a copy of the library %2's Verilog-A (%3) that Qucs-S keeps in the project: what "
+                                   "is written there is lost when it is renewed. Write to another file.")
+                    .arg(QDir::toNativeSeparators(info.absoluteFilePath()), r.library, QDir::toNativeSeparators(item.original));
             }
             return {};
         }

@@ -170,8 +170,11 @@ private:
     FileStep a_openStep;   // the call under way's
     int a_callDepth = 0;   // (a call inside another - import_netlist's save - is part of it)
     /// \a file is about to be written by the call under way: as it is, kept
-    /// (once a call).
-    void aboutToWrite(const QString& file);
+    /// (once a call). Or why it must not be - a library's Verilog-A the
+    /// project keeps (projectlibraries::notToWrite()): written through its
+    /// link, the library's own file would change -, nothing kept then; the
+    /// call is refused with it.
+    [[nodiscard]] QString aboutToWrite(const QString& file);
     /// \a from was moved to \a to (renamed, or to the trash) by the call
     /// under way: undo's 'files' moves it back.
     void movedFile(const QString& from, const QString& to);

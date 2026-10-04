@@ -3540,7 +3540,8 @@ QString QucsControl::instructions() const
         "200), describe_part a library part's pins, model and tested status; list_libraries lists the libraries as the Libraries "
         "panel does, create_library makes one of the project's subcircuits and import_library brings a library file in; "
         "the Verilog-A of a library device a schematic of the project uses is linked into the project, in Libraries/<its "
-        "library>/ (read-only - change it in the library -, compiled there), and taken away with its model when no "
+        "library>/ (read-only - change it in the library -, compiled there; no tool writes a file onto it, which would "
+        "write the library's own file), and taken away with its model when no "
         "schematic uses the device; a part named by its library's name is taken from the first library of that name that "
         "has the part (of two that have it, the one the project linked its Verilog-A from: check_schematic warns which); "
         "read_pdf reads a datasheet's text; "
@@ -5139,7 +5140,7 @@ QJsonObject QucsControl::saveDocument(const QJsonObject& args)
             && !confirmed(tr("%1 exists. Write %2 over it?").arg(QDir::toNativeSeparators(target), titleOf(doc))))
             return errorResult(tr("%1 exists: 'replace' writes over it (the user was not asked, or said no).").arg(QDir::toNativeSeparators(target)));
         const QList<Instance> instances = instancesOf(a_app, doc, target, [this](QucsDoc* d) { return titleOf(d); });
-        aboutToWrite(target);
+        if (const QString no = aboutToWrite(target); !no.isEmpty()) return errorResult(no);
         if (!a_app->saveDocumentAs(doc, target)) return errorResult(tr("%1 could not be saved.").arg(QDir::toNativeSeparators(target)));
         const QString refreshed = refreshedInstances(instances);
         return textResult(tr("Saved as %1.").arg(QDir::toNativeSeparators(target)) + (refreshed.isEmpty() ? QString() : QLatin1Char(' ') + refreshed)
@@ -5147,7 +5148,7 @@ QJsonObject QucsControl::saveDocument(const QJsonObject& args)
     }
     if (doc->getDocName().isEmpty()) return errorResult(tr("%1 has no file yet: give 'as'.").arg(titleOf(doc)));
     const QList<Instance> instances = instancesOf(a_app, doc, doc->getDocName(), [this](QucsDoc* d) { return titleOf(d); });
-    aboutToWrite(doc->getDocName());
+    if (const QString no = aboutToWrite(doc->getDocName()); !no.isEmpty()) return errorResult(no);
     if (!a_app->saveFile(doc)) return errorResult(tr("%1 could not be saved.").arg(QDir::toNativeSeparators(doc->getDocName())));
     const QString refreshed = refreshedInstances(instances);
     return textResult(tr("Saved %1.").arg(QDir::toNativeSeparators(doc->getDocName())) + (refreshed.isEmpty() ? QString() : QLatin1Char(' ') + refreshed)
@@ -7417,7 +7418,7 @@ QJsonObject QucsControl::createSubcircuit(const QJsonObject& args)
         if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) out.write(*held);
     };
     {
-        aboutToWrite(file);
+        if (const QString no = aboutToWrite(file); !no.isEmpty()) return errorResult(no);
         QFile out(file);
         if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) return errorResult(tr("%1 could not be written.").arg(QDir::toNativeSeparators(file)));
         out.write(text.toUtf8());
@@ -9429,7 +9430,7 @@ void QucsControl::renameEverywhere(Schematic* sch, const std::function<QString(c
         line.replace(QLatin1Char('"') + var + QLatin1Char('"'), QLatin1Char('"') + renamed + QLatin1Char('"'));
         ++count;
     }
-    if (count > 0) aboutToWrite(dpl);
+    if (count > 0 && !aboutToWrite(dpl).isEmpty()) return;   // (a file not to write: left)
     if (count > 0 && file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         file.write(lines.join(QLatin1Char('\n')).toUtf8());
         *rewritten = tr("%1 (not open) was rewritten: %2 traces renamed.").arg(QFileInfo(dpl).fileName()).arg(count);
@@ -10036,6 +10037,10 @@ QJsonObject QucsControl::exportImage(const QJsonObject& args)
         if (diagram == nullptr) return errorResult(error);
     }
     options.selectionOnly = diagram != nullptr || args.value(QLatin1String("selection")).toBool();
+    if (const QString no = aboutToWrite(file); !no.isEmpty()) return errorResult(no);
+    if (*format == gx::Format::PdfTex) {
+        if (const QString no = aboutToWrite(gx::pdfOf(file)); !no.isEmpty()) return errorResult(no);
+    }
     QList<Element*> selected;
     const auto keep = [&selected](Element* e) {
         if (e->isSelected) selected << e;
@@ -10054,8 +10059,6 @@ QJsonObject QucsControl::exportImage(const QJsonObject& args)
         diagram->isSelected = true;
     }
     const QRect area = gx::area(sch, options.selectionOnly);
-    aboutToWrite(file);
-    if (*format == gx::Format::PdfTex) aboutToWrite(gx::pdfOf(file));
     const bool written = !area.isEmpty() && gx::write(sch, file, *format, options, &error);
     if (diagram != nullptr) {
         sch->deselectElements(nullptr);

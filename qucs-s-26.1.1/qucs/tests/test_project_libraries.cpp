@@ -10,6 +10,8 @@
  * panel; made when the project opens and before a simulation compiles.
  */
 #include <QtTest>
+#include <QCryptographicHash>
+#include <QMessageBox>
 #include <QLabel>
 #include <QListWidget>
 #include <QPlainTextEdit>
@@ -755,6 +757,230 @@ private slots:
         QVERIFY(!QFileInfo::exists(p + "/VaLib"));
         QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
         QVERIFY(QFileInfo(p + "/Lost/good.va").isSymLink());   // its library not found here: kept
+    }
+
+    // A record edited by hand, or come with a project from elsewhere,
+    // names files out of its folder - by ".." anywhere in the path, an
+    // absolute path, a folder that is a link to one elsewhere: none is taken
+    // away, in Libraries/ or in a folder of before (the 4 October hunt's
+    // A1: ./../../victim.txt took the project's file away). In its folder,
+    // a copy is taken away only while it is the copy Qucs-S made: the
+    // record's sum, or - a record of before sums - its original's bytes.
+    void aRecordTakesAwayNothingOutsideItsFolder()
+    {
+        const QString p = project("p40");
+        const QString outside = dir.filePath("outside40");
+        write(p + "/use.sch", plain());
+        write(p + "/victim.txt", "the user's");
+        write(p + "/victim.osdi", "theirs too");
+        write(p + "/keep/notes.txt", "notes");
+        write(p + "/docs/thesis.tex", "thesis");
+        write(outside + "/far.txt", "far");
+        QVERIFY(QFile::link(outside + "/far.txt", outside + "/farlink"));
+        QVERIFY(QDir().mkpath(p + "/Libraries/Evil"));
+        QVERIFY(QFile::link(outside, p + "/Libraries/Evil/out"));   // a folder in it leading elsewhere
+        const auto item = [](const QString& path, const QString& kind, const QString& original = "/nowhere/Evil/x.va") {
+            return QStringLiteral("{\"path\": \"%1\", \"original\": \"%2\", \"kind\": \"%3\"}").arg(path, original, kind);
+        };
+        const auto record = [](const QString& library, const QStringList& items) {
+            return QStringLiteral("{\"library\": \"%1\", \"folder\": \"/nowhere/%1\", \"created\": true, \"files\": [%2]}")
+                .arg(library, items.join(", ")).toUtf8();
+        };
+        write(p + "/Libraries/Evil/" + projectlibraries::RecordName,
+              record("Evil", {item("./../../victim.txt", "copy"), item("x/../../../keep/notes.txt", "copy"),
+                              item("../../docs/thesis.tex", "include"), item(p + "/docs/thesis.tex", "copy"),
+                              item("out/far.txt", "copy"), item("out/farlink", "link"), item("C:/far.txt", "copy"),
+                              item(".", "copy"), item("", "copy")}));
+        // A folder of before (the project's own): the same.
+        QVERIFY(QDir().mkpath(p + "/OldLib"));
+        write(p + "/OldLib/" + projectlibraries::RecordName,
+              record("OldLib", {item("./../docs/thesis.tex", "copy"), item("sub/../../docs/thesis.tex", "copy"),
+                                item("../victim.txt", "copy")}));
+        projectlibraries::sync(p, {}, Mode::Link);
+        QCOMPARE(bytes(p + "/victim.txt"), QByteArray("the user's"));
+        QCOMPARE(bytes(p + "/victim.osdi"), QByteArray("theirs too"));
+        QCOMPARE(bytes(p + "/keep/notes.txt"), QByteArray("notes"));
+        QCOMPARE(bytes(p + "/docs/thesis.tex"), QByteArray("thesis"));
+        QCOMPARE(bytes(outside + "/far.txt"), QByteArray("far"));
+        QVERIFY(QFileInfo(outside + "/farlink").isSymLink());
+        QVERIFY(QFileInfo(p + "/Libraries/Evil/out").isSymLink());   // (not Qucs-S's)
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/Evil/" + projectlibraries::RecordName));
+        QVERIFY(!QFileInfo::exists(p + "/OldLib"));   // (emptied: Qucs-S made it, as its record says)
+
+        // In its folder: the copies it made, and only those.
+        const auto sum = [](const QByteArray& b) {
+            return QString::fromLatin1(QCryptographicHash::hash(b, QCryptographicHash::Sha256).toHex());
+        };
+        const QString c = p + "/Libraries/Copies/";
+        write(outside + "/old.va", "// old\n");
+        write(outside + "/stale.va", "// version two\n");
+        write(c + "made.va", "// made\n");
+        write(c + "edited.va", "// edited by the user\n");
+        write(c + "old.va", "// old\n");
+        write(c + "stale.va", "// version one\n");   // (its size the same)
+        write(c + "self.va", "// itself\n");
+        write(c + "orphan.va", "// no original\n");
+        write(c + "made.osdi", "its model");
+        write(c + "edited.osdi", "its model");
+        const auto summed = [&](const QString& path, const QByteArray& made) {
+            return item(path, "copy").chopped(1) + QStringLiteral(", \"sum\": \"%1\"}").arg(sum(made));
+        };
+        write(c + projectlibraries::RecordName,
+              record("Copies", {summed("made.va", "// made\n"), summed("edited.va", "// as made\n"),
+                                item("old.va", "copy", outside + "/old.va"), item("stale.va", "copy", outside + "/stale.va"),
+                                item("self.va", "copy", c + "self.va"), item("orphan.va", "copy", "/nowhere/orphan.va")}));
+        const projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
+        QCOMPARE(r.removed, (QStringList{"Libraries/Copies/made.va", "Libraries/Copies/old.va"}));
+        QVERIFY(!QFileInfo::exists(c + "made.osdi"));
+        QCOMPARE(bytes(c + "edited.va"), QByteArray("// edited by the user\n"));
+        QCOMPARE(bytes(c + "edited.osdi"), QByteArray("its model"));
+        QCOMPARE(bytes(c + "stale.va"), QByteArray("// version one\n"));
+        QCOMPARE(bytes(c + "self.va"), QByteArray("// itself\n"));
+        QCOMPARE(bytes(c + "orphan.va"), QByteArray("// no original\n"));
+        QCOMPARE(bytes(outside + "/old.va"), QByteArray("// old\n"));
+
+        // A copy Qucs-S makes has its sum in the record.
+        const QString q = project("p40b");
+        write(q + "/use.sch", usesLibrary("VaLib"));
+        projectlibraries::sync(q, {}, Mode::Copy);
+        const QByteArray kept = bytes(q + "/Libraries/VaLib/" + projectlibraries::RecordName);
+        QVERIFY2(kept.contains(sum(bytes(team + "/VaLib/good.va")).toUtf8()) && kept.contains(sum(bytes(team + "/VaLib/inc/common.vams")).toUtf8()),
+                 kept.constData());
+    }
+
+    // Nothing is written through a folder that leads elsewhere: Libraries/
+    // a link (what is there is not the project's: nothing read, written or
+    // taken away), a library's folder in it a link, a folder in that one.
+    void nothingIsWrittenThroughAFolderLeadingElsewhere()
+    {
+        const auto sum = [](const QByteArray& b) {
+            return QString::fromLatin1(QCryptographicHash::hash(b, QCryptographicHash::Sha256).toHex());
+        };
+        // Libraries/ a link: to the Libraries/ of another project.
+        const QString theirs = dir.filePath("outside41");
+        write(theirs + "/X/x.va", "// theirs\n");
+        write(theirs + "/X/" + projectlibraries::RecordName,
+              "{\"library\": \"X\", \"folder\": \"/nowhere/X\", \"created\": true, \"files\": [{\"path\": \"x.va\", "
+              "\"original\": \"/nowhere/X/x.va\", \"kind\": \"copy\", \"sum\": \"" + sum("// theirs\n").toUtf8() + "\"}]}");
+        const QString p = project("p41");
+        QVERIFY(QFile::link(theirs, p + "/Libraries"));
+        write(p + "/use.sch", usesLibrary("VaLib"));
+        projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
+        QCOMPARE(r.conflicts, QStringList{"Libraries"});
+        QVERIFY(r.made.isEmpty() && r.removed.isEmpty());
+        QCOMPARE(bytes(theirs + "/X/x.va"), QByteArray("// theirs\n"));
+        QVERIFY(!QFileInfo::exists(theirs + "/VaLib"));
+
+        // A library's folder a link.
+        const QString elsewhere = dir.filePath("outside42");
+        QVERIFY(QDir().mkpath(elsewhere));
+        const QString p2 = project("p42");
+        QVERIFY(QDir().mkpath(p2 + "/Libraries"));
+        QVERIFY(QFile::link(elsewhere, p2 + "/Libraries/VaLib"));
+        write(p2 + "/use.sch", usesLibrary("VaLib"));
+        r = projectlibraries::sync(p2, {}, Mode::Link);
+        QVERIFY2(r.conflicts.contains("Libraries/VaLib") && r.made.isEmpty(), qPrintable(r.conflicts.join(',')));
+        QVERIFY(QDir(elsewhere).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot).isEmpty());
+
+        // A folder in it a link (copies: the include goes there) - and the
+        // record says the file there is Qucs-S's: neither written nor taken away.
+        const QString far = dir.filePath("outside43");
+        write(far + "/common.vams", "// the user's\n");
+        const QString p3 = project("p43");
+        QVERIFY(QDir().mkpath(p3 + "/Libraries/VaLib"));
+        QVERIFY(QFile::link(far, p3 + "/Libraries/VaLib/inc"));
+        write(p3 + "/Libraries/VaLib/" + projectlibraries::RecordName,
+              "{\"library\": \"VaLib\", \"folder\": \"" + real(team + "/VaLib").toUtf8() + "\", \"created\": true, \"files\": ["
+              "{\"path\": \"inc/common.vams\", \"original\": \"" + real(team + "/VaLib/inc/common.vams").toUtf8() + "\", \"kind\": \"include\"}]}");
+        write(p3 + "/use.sch", usesLibrary("VaLib"));
+        r = projectlibraries::sync(p3, {}, Mode::Copy);
+        QCOMPARE(r.made, QStringList{"Libraries/VaLib/good.va"});
+        QCOMPARE(bytes(far + "/common.vams"), QByteArray("// the user's\n"));
+        QCOMPARE(QDir(far).entryList(QDir::Files), QStringList{"common.vams"});
+        write(p3 + "/use.sch", plain());
+        projectlibraries::sync(p3, {}, Mode::Copy);
+        QCOMPARE(bytes(far + "/common.vams"), QByteArray("// the user's\n"));
+
+        // A library whose source is in a folder of its own (va/good.va), that
+        // folder in the project a link elsewhere, a file of the user's there
+        // the record says is Qucs-S's: neither written over nor linked.
+        const QString shelf = dir.filePath("subshelf");
+        write(shelf + "/SubLib.lib", bytes(team + "/VaLib.lib").replace("VaLib", "SubLib")
+                                         .replace("<SpiceAttach \"good.va\">", "<SpiceAttach \"va/good.va\">"));
+        write(shelf + "/SubLib/va/good.va", bytes(team + "/VaLib/good.va"));
+        write(shelf + "/SubLib/va/inc/common.vams", bytes(team + "/VaLib/inc/common.vams"));
+        QucsSettings.LibraryPaths = {team, shelf};
+        const auto restore = qScopeGuard([&] { QucsSettings.LibraryPaths = {team}; });
+        const QString beyond = dir.filePath("outside45");
+        write(beyond + "/good.va", "// the user's own\n");
+        const QString p4 = project("p45");
+        QVERIFY(QDir().mkpath(p4 + "/Libraries/SubLib"));
+        QVERIFY(QFile::link(beyond, p4 + "/Libraries/SubLib/va"));
+        write(p4 + "/Libraries/SubLib/" + projectlibraries::RecordName,
+              "{\"library\": \"SubLib\", \"folder\": \"" + real(shelf + "/SubLib").toUtf8() + "\", \"created\": true, \"files\": ["
+              "{\"path\": \"va/good.va\", \"original\": \"" + real(shelf + "/SubLib/va/good.va").toUtf8() + "\", \"kind\": \"link\"}]}");
+        write(p4 + "/use.sch", usesLibrary("SubLib"));
+        for (const Mode mode : {Mode::Link, Mode::Copy}) {
+            r = projectlibraries::sync(p4, {}, mode);
+            QVERIFY2(r.conflicts == QStringList{"Libraries/SubLib/va/good.va"} && r.made.isEmpty(),
+                     qPrintable(r.conflicts.join(',') + " | " + r.made.join(',')));
+            QCOMPARE(bytes(beyond + "/good.va"), QByteArray("// the user's own\n"));
+            QVERIFY(!QFileInfo(beyond + "/good.va").isSymLink());
+            QCOMPARE(QDir(beyond).entryList(QDir::AllEntries | QDir::NoDotAndDotDot), QStringList{"good.va"});
+        }
+    }
+
+    // A library's Verilog-A the project keeps is not to be written - its
+    // link would write the library's own file (the hunt's A2) - told by the
+    // file however its path is spelled; the library's own file, a new file
+    // beside it, the record: not refused. A copy: said as a copy. In the
+    // window: the save dialogs say it (misc::refusesToWrite()).
+    void aKeptFileIsNotToWrite()
+    {
+        const QString p = project("p44");
+        write(p + "/use.sch", usesLibrary("VaLib"));
+        projectlibraries::sync(p, {}, Mode::Link);
+        const QString link = p + "/Libraries/VaLib/good.va";
+        QVERIFY(QFileInfo(link).isSymLink());
+        const QString why = projectlibraries::notToWrite(link);
+        QVERIFY2(why.contains("library VaLib") && why.contains("linked into the project") && why.contains(native(real(team + "/VaLib/good.va"))),
+                 qPrintable(why));
+        QVERIFY(!projectlibraries::notToWrite(p + "/Libraries/VaLib/./good.va").isEmpty());
+        const QString alias = dir.filePath("alias44");
+        QVERIFY(QFile::link(p, alias));
+        QVERIFY(!projectlibraries::notToWrite(alias + "/Libraries/VaLib/good.va").isEmpty());
+        if (QFileInfo::exists(p + "/Libraries/VaLib/GOOD.VA"))   // (a disk that ignores case)
+            QVERIFY(!projectlibraries::notToWrite(p + "/Libraries/VaLib/GOOD.VA").isEmpty());
+        QVERIFY(projectlibraries::notToWrite(team + "/VaLib/good.va").isEmpty());
+        QVERIFY(projectlibraries::notToWrite(p + "/Libraries/VaLib/new.txt").isEmpty());
+        QVERIFY(projectlibraries::notToWrite(p + "/Libraries/VaLib/" + projectlibraries::RecordName).isEmpty());
+        QVERIFY(projectlibraries::notToWrite(p + "/use.sch").isEmpty());
+        QVERIFY(projectlibraries::notToWrite(QString()).isEmpty());
+        // A link that leads nowhere (the library moved): writing would make
+        // the file where the library was - refused too.
+        QVERIFY(QFile::remove(link));
+        QVERIFY(QFile::link("/nowhere/VaLib/good.va", link));
+        QVERIFY(!projectlibraries::notToWrite(link).isEmpty());
+        if (QFileInfo::exists(p + "/Libraries/VaLib/GOOD.VA") || QFileInfo(p + "/Libraries/VaLib/GOOD.VA").isSymLink())
+            QVERIFY(!projectlibraries::notToWrite(p + "/Libraries/VaLib/GOOD.VA").isEmpty());
+        // A copy.
+        const QString q = project("p44b");
+        write(q + "/use.sch", usesLibrary("VaLib"));
+        projectlibraries::sync(q, {}, Mode::Copy);
+        const QString copy = projectlibraries::notToWrite(q + "/Libraries/VaLib/good.va");
+        QVERIFY2(copy.contains("a copy of the library VaLib's Verilog-A"), qPrintable(copy));
+        QVERIFY(!projectlibraries::notToWrite(q + "/Libraries/VaLib/inc/common.vams").isEmpty());
+        // The save dialogs' check: said in a message box.
+        QString said;
+        QTimer::singleShot(0, [&] {
+            if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                said = box->text();
+                box->close();
+            }
+        });
+        QVERIFY(misc::refusesToWrite(nullptr, "Save netlist", alias + "/Libraries/VaLib/good.va"));
+        QVERIFY2(said.contains("library VaLib"), qPrintable(said));
+        QVERIFY(!misc::refusesToWrite(nullptr, "Save netlist", p + "/netlist.cir"));
     }
 
     // Two parts of one library, each with its own source: one taken away

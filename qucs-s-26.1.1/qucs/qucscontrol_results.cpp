@@ -2425,7 +2425,7 @@ QJsonObject QucsControl::importData(const QJsonObject& args)
         }
     }
     if (remove) {
-        aboutToWrite(chosen->path);
+        if (const QString no = aboutToWrite(chosen->path); !no.isEmpty()) return errorResult(no);
         const bool trashed = misc::moveToTrash(chosen->path);
         if (!trashed && !QFile::remove(chosen->path))
             return errorResult(tr("%1 could not be removed.").arg(QDir::toNativeSeparators(chosen->path)));
@@ -2542,7 +2542,7 @@ QJsonObject QucsControl::importData(const QJsonObject& args)
                                           : tr("%1 is %2: this one is %3.").arg(base, by, name);
         }
     }
-    aboutToWrite(QDir(folder).filePath(name + QStringLiteral(".dat")));
+    if (const QString no = aboutToWrite(QDir(folder).filePath(name + QStringLiteral(".dat"))); !no.isEmpty()) return errorResult(no);
     di::Imported imported;
     if (!di::importRead(folder, source, data, options, &imported, &error, name))
         return errorResult(tr("%1 Nothing was imported.").arg(error));
@@ -2757,7 +2757,7 @@ QJsonObject QucsControl::exportData(const QJsonObject& args)
 
     const QList<de::Table> tables = de::tablesOf(data, chosen);
     const bool replacing = QFileInfo::exists(target);
-    aboutToWrite(target);
+    if (const QString no = aboutToWrite(target); !no.isEmpty()) return errorResult(no);
     de::Written w;
     if (!de::write(target, data, chosen, options, &w, &error)) return errorResult(error);
 
@@ -2820,7 +2820,7 @@ QJsonObject QucsControl::getNetlist(const QJsonObject& args)
         if (QFileInfo(target).isFile() && !args.value(QLatin1String("replace")).toBool() && isQucsDocument(target))
             return errorResult(tr("%1 is a document of Qucs-S, not a netlist: 'replace': true writes the netlist over it.")
                                    .arg(QDir::toNativeSeparators(target)));
-        aboutToWrite(target);
+        if (const QString no = aboutToWrite(target); !no.isEmpty()) return errorResult(no);
         QFile out(target);
         if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
             return errorResult(tr("%1 cannot be written: %2").arg(QDir::toNativeSeparators(target), out.errorString()));
