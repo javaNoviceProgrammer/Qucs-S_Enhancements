@@ -24,6 +24,12 @@ class Schematic;
 
 namespace qucs_s::projectlibraries {
 
+/// Where in the project: Libraries/<library>/ - apart from the project's
+/// own libraries (NAME.lib and its folder NAME/).
+inline constexpr char FolderName[] = "Libraries";
+/// The mark of a Libraries/ folder Qucs-S made: taken away when it holds
+/// nothing else (one of the user's is never).
+inline constexpr char MarkerName[] = ".qucs-libraries";
 /// The record of what Qucs-S put into a library's folder in a project,
 /// a file in that folder.
 inline constexpr char RecordName[] = ".qucs-library.json";
@@ -59,17 +65,24 @@ struct Report {
 };
 
 /// Brings the project's library folders up to date with usedSources():
-/// for each library a schematic uses a device of, <project>/<library>/
+/// for each library a schematic uses a device of, Libraries/<library>/
 /// (another name when that one is taken by another library: _2, _3...)
 /// with a link to - or a copy of - each source at its path in the
-/// library's folder, a link that leads elsewhere (the library moved, or
-/// another computer) made again; what no schematic uses any more is taken
-/// away: the link or copy, the model compiled beside it (NAME.osdi), the
-/// record, and the folder when Qucs-S made it and nothing else is in it.
-/// Only what Qucs-S put there, as the folder's record says: a file of the
-/// user's is never written over or taken away. A library a part names
-/// that is not found here keeps what it has.
+/// library's folder. A link is relative (it holds when the project and the
+/// library move together, or are another user's in the same places), made
+/// again when it leads elsewhere (the library moved, another computer), a
+/// copy where no link can be made (a disk without them). What no schematic
+/// uses any more is taken away: the link or copy, the model compiled beside
+/// it (NAME.osdi), the record, the folder when Qucs-S made it and nothing
+/// else is in it, and Libraries/ so. Only what Qucs-S put there, as the
+/// records say: a file of the user's is never written over or taken away.
+/// A library a part names that is not found here keeps what it has. The
+/// folders made in the project's folder itself before Libraries/ are moved.
 Report sync(const QString& projectDir, const QList<Schematic*>& open = {}, Mode mode = defaultMode());
+
+/// For the tests: how a symbolic link is made (QFile::link; none: that) -
+/// one that fails stands for a disk that has no links.
+void setLinkMaker(bool (*make)(const QString& target, const QString& link));
 
 /// The library's source \a path is a link to or a copy of (sync() put it
 /// there): the library's name and the original file. Empty when it is none.

@@ -87,6 +87,14 @@ enum class Into {
 QString buildTarget(const QString& vaFile, const QString& cacheDir, const QString& simulator = QString(),
                     Into* into = nullptr);
 
+/// What OpenVAF is given to compile \a vaFile into \a library (none:
+/// NAME.osdi beside \a vaFile): the source - for a link (a library's source
+/// linked into a project), the file it leads to, so that its `include
+/// lines are found beside that file whatever an OpenVAF does with links -,
+/// then "-o library" when that is not where OpenVAF writes by itself
+/// (beside the file it compiles).
+QStringList compileArguments(const QString& vaFile, const QString& library = QString());
+
 /// The library of the Verilog-A source to load: NAME.osdi beside it or
 /// the one compiled into \a cacheDir for it (buildTarget()) - the first
 /// \a simulator loads that is newer than the source and what it includes,

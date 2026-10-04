@@ -34,6 +34,11 @@
 #include "extsimkernels/simulationrun.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
+#include "components/libcomp.h"
+
+#ifndef Q_OS_WIN
+#include <unistd.h>
+#endif
 
 using namespace qucs_s;
 using projectlibraries::Mode;
@@ -84,6 +89,17 @@ QByteArray usesLibraries(const QStringList& libs)
            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
 }
 QByteArray usesLibrary(const QString& lib) { return usesLibraries({lib}); }
+// Parts of the components \a comps of the library \a lib.
+QByteArray usesParts(const QString& lib, const QStringList& comps)
+{
+    QByteArray parts;
+    int n = 1;
+    for (const QString& comp : comps)
+        parts += "  <Lib X" + QByteArray::number(n) + " 1 " + QByteArray::number(100 * ++n) + " 100 20 -20 0 0 \""
+                 + lib.toUtf8() + "\" 0 \"" + comp.toUtf8() + "\" 0>\n";
+    return "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n" + parts +
+           "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+}
 QByteArray plain() { return usesLibraries({}); }
 
 // A file row of the Content panel, by its path relative to the project.
@@ -153,6 +169,14 @@ private slots:
         write(source + "/good.va", "`include \"disciplines.vams\"\n`include \"inc/common.vams\"\n"
                                    "module good(p, n);\nendmodule\n");
         write(source + "/inc/common.vams", "// shared\n");
+        write(source + "/better.va", "`include \"disciplines.vams\"\nmodule better(p, n);\nendmodule\n");
+        write(source + "/sub2.sch",
+              "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+              "  <Port P1 1 220 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+              "  <Port P2 1 280 100 4 12 1 2 \"2\" 1 \"analog\" 0>\n"
+              "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+              "  <SpiceModel SpiceModel1 1 120 300 -27 16 0 0 \".model m2 better\" 1 \"\" 0>\n"
+              "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
         write(source + "/sub.sch",
               "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
               "  <Port P1 1 220 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
@@ -165,6 +189,17 @@ private slots:
         app.ProjName = "src";
         makeLibrary(app, team);
         makeLibrary(app, other);   // another library of the name, elsewhere
+        {
+            // TwoLib: sub (good.va) and sub2 (better.va).
+            LibraryDialog dialog(&app);
+            dialog.fillSchematicList({"sub.sch", "sub2.sch"});
+            LibraryDialog::Request request;
+            request.name = "TwoLib";
+            request.subcircuits = {"sub.sch", "sub2.sch"};
+            request.folder = team;
+            QString log, error;
+            QVERIFY2(dialog.create(request, &log, &error), qPrintable(error + "\n" + log));
+        }
         app.ProjName.clear();
         QucsSettings.LibraryPaths = {team};
         Module::registerModules();   // (a QucsApp's destructor unregisters them)
@@ -180,23 +215,23 @@ private slots:
         write(p + "/plain.sch", plain());
         const QStringList teamFiles = QDir(team + "/VaLib").entryList(QDir::Files | QDir::Hidden);
         const projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
-        QCOMPARE(r.made, QStringList{"VaLib/good.va"});
+        QCOMPARE(r.made, QStringList{"Libraries/VaLib/good.va"});
         QVERIFY(r.removed.isEmpty() && r.conflicts.isEmpty());
-        const QFileInfo link(p + "/VaLib/good.va");
+        const QFileInfo link(p + "/Libraries/VaLib/good.va");
         QVERIFY(link.isSymLink());
         QCOMPARE(real(link.symLinkTarget()), real(team + "/VaLib/good.va"));
-        QVERIFY(QFileInfo::exists(p + "/VaLib/" + projectlibraries::RecordName));
-        QVERIFY(!QFileInfo::exists(p + "/VaLib/inc"));   // its includes: OpenVAF finds them beside the original
-        const projectlibraries::Entry e = projectlibraries::entryOf(p + "/VaLib/good.va");
+        QVERIFY(QFileInfo::exists(p + "/Libraries/VaLib/" + projectlibraries::RecordName));
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib/inc"));   // its includes: OpenVAF finds them beside the original
+        const projectlibraries::Entry e = projectlibraries::entryOf(p + "/Libraries/VaLib/good.va");
         QCOMPARE(e.library, QString("VaLib"));
         QCOMPARE(real(e.original), real(team + "/VaLib/good.va"));
         QVERIFY(projectlibraries::entryOf(p + "/use.sch").isEmpty());
-        QVERIFY(projectlibraries::entryOf(p + "/VaLib/" + projectlibraries::RecordName).isEmpty());
+        QVERIFY(projectlibraries::entryOf(p + "/Libraries/VaLib/" + projectlibraries::RecordName).isEmpty());
         // Again: as it is.
         QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
         QCOMPARE(QDir(team + "/VaLib").entryList(QDir::Files | QDir::Hidden), teamFiles);
         // The project lists it as one of its sources.
-        QVERIFY(misc::projectFiles(QDir(p), {"*.va"}).contains("VaLib/good.va"));
+        QVERIFY(misc::projectFiles(QDir(p), {"*.va"}).contains("Libraries/VaLib/good.va"));
     }
 
     // Kept while a schematic uses it; then taken away with the model
@@ -205,17 +240,17 @@ private slots:
     {
         const QString p = project("p1");
         write(p + "/also.sch", usesLibrary("VaLib"));
-        write(p + "/VaLib/good.osdi", "a model");
+        write(p + "/Libraries/VaLib/good.osdi", "a model");
         write(p + "/use.sch", plain());
         projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
         QVERIFY(!r.changed());   // also.sch uses it
-        QVERIFY(QFileInfo(p + "/VaLib/good.va").isSymLink());
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
         QFile::remove(p + "/also.sch");
         r = projectlibraries::sync(p, {}, Mode::Link);
-        QCOMPARE(r.removed, QStringList{"VaLib/good.va"});
-        QVERIFY(!QFileInfo(p + "/VaLib/good.va").isSymLink() && !QFileInfo::exists(p + "/VaLib/good.va"));
-        QVERIFY(!QFileInfo::exists(p + "/VaLib/good.osdi"));
-        QVERIFY(!QFileInfo::exists(p + "/VaLib"));
+        QCOMPARE(r.removed, QStringList{"Libraries/VaLib/good.va"});
+        QVERIFY(!QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink() && !QFileInfo::exists(p + "/Libraries/VaLib/good.va"));
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib/good.osdi"));
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib"));
         QVERIFY(QFileInfo::exists(team + "/VaLib/good.va"));   // the original, of course
         QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
     }
@@ -226,42 +261,42 @@ private slots:
     void theUsersFilesAreNeverTouched()
     {
         const QString p = project("p2");
-        write(p + "/VaLib/notes.txt", "mine");
-        write(p + "/VaLib/good.va", "// my own good.va\n");
+        write(p + "/Libraries/VaLib/notes.txt", "mine");
+        write(p + "/Libraries/VaLib/good.va", "// my own good.va\n");
         write(p + "/use.sch", usesLibrary("VaLib"));
         projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
-        QCOMPARE(r.conflicts, QStringList{"VaLib/good.va"});
+        QCOMPARE(r.conflicts, QStringList{"Libraries/VaLib/good.va"});
         QVERIFY(r.made.isEmpty());
-        QCOMPARE(bytes(p + "/VaLib/good.va"), QByteArray("// my own good.va\n"));
+        QCOMPARE(bytes(p + "/Libraries/VaLib/good.va"), QByteArray("// my own good.va\n"));
         r = projectlibraries::sync(p, {}, Mode::Copy);   // (where copies are made: the same)
-        QCOMPARE(r.conflicts, QStringList{"VaLib/good.va"});
-        QCOMPARE(bytes(p + "/VaLib/good.va"), QByteArray("// my own good.va\n"));
-        QVERIFY(projectlibraries::entryOf(p + "/VaLib/good.va").isEmpty());
+        QCOMPARE(r.conflicts, QStringList{"Libraries/VaLib/good.va"});
+        QCOMPARE(bytes(p + "/Libraries/VaLib/good.va"), QByteArray("// my own good.va\n"));
+        QVERIFY(projectlibraries::entryOf(p + "/Libraries/VaLib/good.va").isEmpty());
         write(p + "/use.sch", plain());
         projectlibraries::sync(p, {}, Mode::Link);
-        QCOMPARE(bytes(p + "/VaLib/good.va"), QByteArray("// my own good.va\n"));
+        QCOMPARE(bytes(p + "/Libraries/VaLib/good.va"), QByteArray("// my own good.va\n"));
         // Out of the way: linked; taken away again - the folder was the user's.
-        QFile::remove(p + "/VaLib/good.va");
+        QFile::remove(p + "/Libraries/VaLib/good.va");
         write(p + "/use.sch", usesLibrary("VaLib"));
         r = projectlibraries::sync(p, {}, Mode::Link);
-        QCOMPARE(r.made, QStringList{"VaLib/good.va"});
+        QCOMPARE(r.made, QStringList{"Libraries/VaLib/good.va"});
         // A link of the user's, beside it: theirs.
-        QVERIFY(QFile::link(team + "/VaLib.lib", p + "/VaLib/mine.lib"));
+        QVERIFY(QFile::link(team + "/VaLib.lib", p + "/Libraries/VaLib/mine.lib"));
         write(p + "/use.sch", plain());
         r = projectlibraries::sync(p, {}, Mode::Link);
-        QCOMPARE(r.removed, QStringList{"VaLib/good.va"});
-        QVERIFY(QFileInfo::exists(p + "/VaLib/notes.txt"));
-        QVERIFY(QFileInfo(p + "/VaLib/mine.lib").isSymLink());
-        QVERIFY(!QFileInfo::exists(p + "/VaLib/" + projectlibraries::RecordName));
+        QCOMPARE(r.removed, QStringList{"Libraries/VaLib/good.va"});
+        QVERIFY(QFileInfo::exists(p + "/Libraries/VaLib/notes.txt"));
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/mine.lib").isSymLink());
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib/" + projectlibraries::RecordName));
         // A link it had made, replaced by a file of the user's: theirs now.
         write(p + "/use.sch", usesLibrary("VaLib"));
         projectlibraries::sync(p, {}, Mode::Link);
-        QFile::remove(p + "/VaLib/good.va");
-        write(p + "/VaLib/good.va", "// edited\n");
-        QVERIFY(projectlibraries::entryOf(p + "/VaLib/good.va").isEmpty());   // (opened as the user's, editable)
+        QFile::remove(p + "/Libraries/VaLib/good.va");
+        write(p + "/Libraries/VaLib/good.va", "// edited\n");
+        QVERIFY(projectlibraries::entryOf(p + "/Libraries/VaLib/good.va").isEmpty());   // (opened as the user's, editable)
         write(p + "/use.sch", plain());
         projectlibraries::sync(p, {}, Mode::Link);
-        QCOMPARE(bytes(p + "/VaLib/good.va"), QByteArray("// edited\n"));
+        QCOMPARE(bytes(p + "/Libraries/VaLib/good.va"), QByteArray("// edited\n"));
     }
 
     // A library a part names that is not found here (another computer):
@@ -270,14 +305,14 @@ private slots:
     {
         const QString p = project("p3");
         write(p + "/use.sch", usesLibrary("VaLib"));
-        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"VaLib/good.va"});
-        write(p + "/VaLib/good.osdi", "a model");
+        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
+        write(p + "/Libraries/VaLib/good.osdi", "a model");
         QucsSettings.LibraryPaths.clear();
         const auto restore = qScopeGuard([&] { QucsSettings.LibraryPaths = {team}; });
         const projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
         QVERIFY(!r.changed());
-        QVERIFY(QFileInfo(p + "/VaLib/good.va").isSymLink());
-        QVERIFY(QFileInfo::exists(p + "/VaLib/good.osdi"));
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
+        QVERIFY(QFileInfo::exists(p + "/Libraries/VaLib/good.osdi"));
     }
 
     // The library moved (or the project went to another computer, which
@@ -297,15 +332,15 @@ private slots:
         write(p + "/use.sch", usesLibrary("VaLib"));
         QucsSettings.LibraryPaths = {a};
         projectlibraries::sync(p, {}, Mode::Link);
-        QCOMPARE(real(QFileInfo(p + "/VaLib/good.va").symLinkTarget()), real(a + "/VaLib/good.va"));
-        write(p + "/VaLib/good.osdi", "compiled from teamA's");
+        QCOMPARE(real(QFileInfo(p + "/Libraries/VaLib/good.va").symLinkTarget()), real(a + "/VaLib/good.va"));
+        write(p + "/Libraries/VaLib/good.osdi", "compiled from teamA's");
         QucsSettings.LibraryPaths = {b};
         QVERIFY(QDir(a).removeRecursively());   // (a link that leads nowhere now)
         const projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
-        QCOMPARE(r.made, QStringList{"VaLib/good.va"});
-        QCOMPARE(real(QFileInfo(p + "/VaLib/good.va").symLinkTarget()), real(b + "/VaLib/good.va"));
-        QVERIFY(!QFileInfo::exists(p + "/VaLib/good.osdi"));
-        QVERIFY(!QFileInfo::exists(p + "/VaLib_2"));   // the same library's folder
+        QCOMPARE(r.made, QStringList{"Libraries/VaLib/good.va"});
+        QCOMPARE(real(QFileInfo(p + "/Libraries/VaLib/good.va").symLinkTarget()), real(b + "/VaLib/good.va"));
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib/good.osdi"));
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib_2"));   // the same library's folder
     }
 
     // What counts: a subcircuit outside the project placing a device; not
@@ -318,7 +353,7 @@ private slots:
         write(p + "/top.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
                               "  <Sub SUB1 1 260 130 26 -20 0 1 \"" + outside.toUtf8() + "\" 0>\n"
                               "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
-        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"VaLib/good.va"});
+        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
 
         const QString q = project("p6");
         write(q + "/Scratch/copy.sch", usesLibrary("VaLib"));
@@ -331,8 +366,8 @@ private slots:
         Schematic sch(nullptr, file);
         QVERIFY(sch.load());
         write(file, plain());   // saved without it; in memory with it
-        QCOMPARE(projectlibraries::sync(o, {&sch}, Mode::Link).made, QStringList{"VaLib/good.va"});
-        QCOMPARE(projectlibraries::sync(o, {}, Mode::Link).removed, QStringList{"VaLib/good.va"});
+        QCOMPARE(projectlibraries::sync(o, {&sch}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
+        QCOMPARE(projectlibraries::sync(o, {}, Mode::Link).removed, QStringList{"Libraries/VaLib/good.va"});
         // One open placing a subcircuit outside the project that places one.
         const QString file2 = write(o + "/new2.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
                                     "  <Sub SUB1 1 260 130 26 -20 0 1 \"" + outside.toUtf8() + "\" 0>\n"
@@ -340,8 +375,8 @@ private slots:
         Schematic sch2(nullptr, file2);
         QVERIFY(sch2.load());
         write(file2, plain());
-        QCOMPARE(projectlibraries::sync(o, {&sch2}, Mode::Link).made, QStringList{"VaLib/good.va"});
-        QCOMPARE(projectlibraries::sync(o, {}, Mode::Link).removed, QStringList{"VaLib/good.va"});
+        QCOMPARE(projectlibraries::sync(o, {&sch2}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
+        QCOMPARE(projectlibraries::sync(o, {}, Mode::Link).removed, QStringList{"Libraries/VaLib/good.va"});
         // A part whose library is not found: kept as unresolved, no folder.
         QList<projectlibraries::Use> uses;
         QStringList unresolved;
@@ -352,8 +387,8 @@ private slots:
     }
 
     // The project's own library (NAME.lib and its folder in the project):
-    // its files are the project's already - nothing linked; and a library
-    // of that name from elsewhere takes another folder.
+    // its files are the project's already - nothing linked; a library of
+    // that name from elsewhere goes into Libraries/, apart from it.
     void aLibraryInTheProjectIsNotLinked()
     {
         const QString p = project("p8");
@@ -363,8 +398,12 @@ private slots:
         write(p + "/use.sch", usesLibrary("VaLib"));   // beside the schematic: the project's
         QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
         QVERIFY(!QFileInfo(p + "/VaLib/good.va").isSymLink());
+        QVERIFY(!QFileInfo::exists(p + "/Libraries"));
+        // One of that name from elsewhere: in Libraries/, apart from the project's own.
         write(p + "/use.sch", usesLibrary(team + "/VaLib"));
-        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"VaLib_2/good.va"});
+        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
+        QCOMPARE(bytes(p + "/VaLib/good.va"), bytes(team + "/VaLib/good.va"));
+        QVERIFY(!QFileInfo(p + "/VaLib/good.va").isSymLink());
     }
 
     // Two libraries of one name, from two folders: a folder each, the
@@ -376,9 +415,9 @@ private slots:
         projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
         QStringList made = r.made;
         made.sort();
-        QCOMPARE(made, (QStringList{"VaLib/good.va", "VaLib_2/good.va"}));
-        const QStringList targets{real(QFileInfo(p + "/VaLib/good.va").symLinkTarget()),
-                                  real(QFileInfo(p + "/VaLib_2/good.va").symLinkTarget())};
+        QCOMPARE(made, (QStringList{"Libraries/VaLib/good.va", "Libraries/VaLib_2/good.va"}));
+        const QStringList targets{real(QFileInfo(p + "/Libraries/VaLib/good.va").symLinkTarget()),
+                                  real(QFileInfo(p + "/Libraries/VaLib_2/good.va").symLinkTarget())};
         QVERIFY(targets.contains(real(team + "/VaLib/good.va")) && targets.contains(real(other + "/VaLib/good.va")));
         QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
         // One of them no longer used: its folder goes, the other's stays.
@@ -396,12 +435,12 @@ private slots:
         const QString p = project("p10");
         write(p + "/use.sch", usesLibrary("VaLib"));
         projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Copy);
-        QVERIFY2(r.made == QStringList{"VaLib/good.va"}, qPrintable(r.made.join(',') + " | " + r.conflicts.join(',')));
-        QVERIFY(!QFileInfo(p + "/VaLib/good.va").isSymLink());
-        QCOMPARE(bytes(p + "/VaLib/good.va"), bytes(team + "/VaLib/good.va"));
-        QCOMPARE(bytes(p + "/VaLib/inc/common.vams"), bytes(team + "/VaLib/inc/common.vams"));
-        QCOMPARE(projectlibraries::entryOf(p + "/VaLib/good.va").library, QString("VaLib"));
-        QCOMPARE(projectlibraries::entryOf(p + "/VaLib/inc/common.vams").library, QString("VaLib"));
+        QVERIFY2(r.made == QStringList{"Libraries/VaLib/good.va"}, qPrintable(r.made.join(',') + " | " + r.conflicts.join(',')));
+        QVERIFY(!QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
+        QCOMPARE(bytes(p + "/Libraries/VaLib/good.va"), bytes(team + "/VaLib/good.va"));
+        QCOMPARE(bytes(p + "/Libraries/VaLib/inc/common.vams"), bytes(team + "/VaLib/inc/common.vams"));
+        QCOMPARE(projectlibraries::entryOf(p + "/Libraries/VaLib/good.va").library, QString("VaLib"));
+        QCOMPARE(projectlibraries::entryOf(p + "/Libraries/VaLib/inc/common.vams").library, QString("VaLib"));
         QVERIFY(!projectlibraries::sync(p, {}, Mode::Copy).changed());
         // The original changed: renewed.
         const QByteArray was = bytes(team + "/VaLib/good.va");
@@ -409,26 +448,26 @@ private slots:
         write(team + "/VaLib/good.va", was + "// changed\n");
         setBuilt(team + "/VaLib/good.va", QDateTime::currentDateTime().addSecs(60));
         r = projectlibraries::sync(p, {}, Mode::Copy);
-        QCOMPARE(r.made, QStringList{"VaLib/good.va"});
-        QCOMPARE(bytes(p + "/VaLib/good.va"), was + "// changed\n");
+        QCOMPARE(r.made, QStringList{"Libraries/VaLib/good.va"});
+        QCOMPARE(bytes(p + "/Libraries/VaLib/good.va"), was + "// changed\n");
         // Links now: the copy and its include replaced, the include taken away.
         r = projectlibraries::sync(p, {}, Mode::Link);
-        QCOMPARE(r.made, QStringList{"VaLib/good.va"});
-        QVERIFY(QFileInfo(p + "/VaLib/good.va").isSymLink());
-        QVERIFY(!QFileInfo::exists(p + "/VaLib/inc"));
+        QCOMPARE(r.made, QStringList{"Libraries/VaLib/good.va"});
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib/inc"));
         // Copies again - a file it includes from outside the library's folder
         // is not copied (nothing goes outside the project's folder of it).
         write(team + "/outside.vams", "// beside the library\n");
         write(team + "/VaLib/good.va", was + "`include \"../outside.vams\"\n");
         setBuilt(team + "/VaLib/good.va", QDateTime::currentDateTime().addSecs(90));
         projectlibraries::sync(p, {}, Mode::Copy);
-        QVERIFY(QFileInfo::exists(p + "/VaLib/inc/common.vams"));
+        QVERIFY(QFileInfo::exists(p + "/Libraries/VaLib/inc/common.vams"));
         QVERIFY(!QFileInfo::exists(p + "/outside.vams") && !QFileInfo::exists(workspace + "/outside.vams"));
-        QVERIFY(bytes(p + "/VaLib/good.va").contains("outside.vams"));
+        QVERIFY(bytes(p + "/Libraries/VaLib/good.va").contains("outside.vams"));
         write(p + "/use.sch", plain());
         r = projectlibraries::sync(p, {}, Mode::Copy);
-        QCOMPARE(r.removed, QStringList{"VaLib/good.va"});
-        QVERIFY(!QFileInfo::exists(p + "/VaLib"));
+        QCOMPARE(r.removed, QStringList{"Libraries/VaLib/good.va"});
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib"));
     }
 
     // The model is compiled beside the link and loaded from there - not
@@ -441,7 +480,7 @@ private slots:
         QucsApp app(false);
         MainGuard guard(&app);
         app.openProject(p);   // links what it uses
-        QCOMPARE(app.lastLibrarySync().made, QStringList{"VaLib/good.va"});
+        QCOMPARE(app.lastLibrarySync().made, QStringList{"Libraries/VaLib/good.va"});
         const auto buildsOf = [&](const QString& file) {
             Schematic sch(nullptr, file);
             if (!sch.load()) return QList<osdi::Build>();
@@ -460,22 +499,22 @@ private slots:
         QFile::setPermissions(shared, perms);
         if (into == osdi::Into::CacheReadOnly) {   // (not as root)
             write(libraryModel, QByteArray(64, '\0') + "good" + QByteArray(1, '\0'));
-            QVERIFY(osdi::modelOf(p + "/VaLib/good.va", misc::cacheDir()).isEmpty());
+            QVERIFY(osdi::modelOf(p + "/Libraries/VaLib/good.va", misc::cacheDir()).isEmpty());
         }
         QList<osdi::Build> builds = buildsOf(p + "/use.sch");
         QCOMPARE(builds.size(), 1);   // the link alone, not the library's source too
-        QCOMPARE(builds.first().source, QFileInfo(p + "/VaLib/good.va").absoluteFilePath());
-        QCOMPARE(builds.first().library, QFileInfo(p + "/VaLib/good.osdi").absoluteFilePath());
+        QCOMPARE(builds.first().source, QFileInfo(p + "/Libraries/VaLib/good.va").absoluteFilePath());
+        QCOMPARE(builds.first().library, QFileInfo(p + "/Libraries/VaLib/good.osdi").absoluteFilePath());
         QVERIFY(builds.first().into == osdi::Into::Beside);
         // Compiled (as OpenVAF does): loaded from there.
-        write(p + "/VaLib/good.osdi", QByteArray(64, '\0') + "good" + QByteArray(1, '\0'));
+        write(p + "/Libraries/VaLib/good.osdi", QByteArray(64, '\0') + "good" + QByteArray(1, '\0'));
         Schematic sch(nullptr, p + "/use.sch");
         QVERIFY(sch.load());
         Ngspice kernel(&sch);
         kernel.setWorkdir(dir.filePath("kernel"));
         kernel.SaveNetlist(dir.filePath("kernel/p11.cir"), false);
         const QString netlist = QString::fromUtf8(bytes(dir.filePath("kernel/p11.cir")));
-        QVERIFY2(netlist.contains("pre_osdi '" + QFileInfo(p + "/VaLib/good.osdi").absoluteFilePath() + "'"), qPrintable(netlist));
+        QVERIFY2(netlist.contains("pre_osdi '" + QFileInfo(p + "/Libraries/VaLib/good.osdi").absoluteFilePath() + "'"), qPrintable(netlist));
         QVERIFY(buildsOf(p + "/use.sch").isEmpty());
         QVERIFY(!QFileInfo::exists(team + "/VaLib/good.osdi"));
         // One in the library's folder (compiled there before, with no project),
@@ -484,7 +523,7 @@ private slots:
         setBuilt(team + "/VaLib/good.osdi", QDateTime::currentDateTime().addSecs(30));
         kernel.SaveNetlist(dir.filePath("kernel/p11b.cir"), false);
         const QString again = QString::fromUtf8(bytes(dir.filePath("kernel/p11b.cir")));
-        QVERIFY2(again.contains("pre_osdi '" + QFileInfo(p + "/VaLib/good.osdi").absoluteFilePath() + "'")
+        QVERIFY2(again.contains("pre_osdi '" + QFileInfo(p + "/Libraries/VaLib/good.osdi").absoluteFilePath() + "'")
                      && !again.contains(real(team) + "/VaLib/good.osdi"), qPrintable(again));
         QFile::remove(team + "/VaLib/good.osdi");
         // A file the original includes changed: compiled again.
@@ -495,10 +534,10 @@ private slots:
         // no model of it anywhere, not too).
         if (into == osdi::Into::CacheReadOnly) QFile::remove(libraryModel);
         projectlibraries::sync(p, {}, Mode::Copy);
-        QFile::remove(p + "/VaLib/good.osdi");
+        QFile::remove(p + "/Libraries/VaLib/good.osdi");
         builds = buildsOf(p + "/use.sch");
         QCOMPARE(builds.size(), 1);
-        QCOMPARE(builds.first().source, QFileInfo(p + "/VaLib/good.va").absoluteFilePath());
+        QCOMPARE(builds.first().source, QFileInfo(p + "/Libraries/VaLib/good.va").absoluteFilePath());
         QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
     }
 
@@ -511,7 +550,7 @@ private slots:
         projectlibraries::sync(p, {}, Mode::Link);
         QucsApp app(false);
         MainGuard guard(&app);
-        TextDoc doc(&app, p + "/VaLib/good.va");
+        TextDoc doc(&app, p + "/Libraries/VaLib/good.va");
         QVERIFY(doc.load());
         QVERIFY(doc.isReadOnly());
         QCOMPARE(doc.libraryOrigin(), QString("VaLib"));
@@ -561,11 +600,11 @@ private slots:
         QucsApp app(false);
         MainGuard guard(&app);
         app.openProject(p);
-        QCOMPARE(app.lastLibrarySync().made, QStringList{"VaLib/good.va"});
-        QVERIFY2(app.statusBar()->currentMessage().contains("Library Verilog-A linked from its library: VaLib/good.va"),
+        QCOMPARE(app.lastLibrarySync().made, QStringList{"Libraries/VaLib/good.va"});
+        QVERIFY2(app.statusBar()->currentMessage().contains("Library Verilog-A linked from its library: Libraries/VaLib/good.va"),
                  qPrintable(app.statusBar()->currentMessage()));
         ProjectView* view = app.projectView();
-        const QModelIndex row = rowOf(view->model(), "VaLib/good.va");
+        const QModelIndex row = rowOf(view->model(), "Libraries/VaLib/good.va");
         QVERIFY(row.isValid());
         QCOMPARE(row.sibling(row.row(), 1).data().toString(), QString("library VaLib"));
         QVERIFY(row.data(Qt::ToolTipRole).toString().contains(QDir::toNativeSeparators(real(team + "/VaLib/good.va"))));
@@ -578,19 +617,199 @@ private slots:
         QVERIFY(app.gotoPage(p + "/use.sch"));
         write(p + "/use.sch", plain());
         QVERIFY(!app.syncProjectLibraries().changed());
-        QVERIFY(QFileInfo(p + "/VaLib/good.va").isSymLink());
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
         for (QucsDoc* doc : app.allDocuments()) doc->setDocChanged(false);
         QVERIFY(app.closeAllFiles());
-        QCOMPARE(app.syncProjectLibraries().removed, QStringList{"VaLib/good.va"});
+        QCOMPARE(app.syncProjectLibraries().removed, QStringList{"Libraries/VaLib/good.va"});
         write(p + "/use.sch", usesLibrary("VaLib"));
-        QCOMPARE(app.syncProjectLibraries().made, QStringList{"VaLib/good.va"});
+        QCOMPARE(app.syncProjectLibraries().made, QStringList{"Libraries/VaLib/good.va"});
         QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
         write(p + "/use.sch", plain());
         app.openProject(p);
-        QCOMPARE(app.lastLibrarySync().removed, QStringList{"VaLib/good.va"});
+        QCOMPARE(app.lastLibrarySync().removed, QStringList{"Libraries/VaLib/good.va"});
         QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
         // No project: nothing done.
         QVERIFY(!app.syncProjectLibraries().changed());
+    }
+
+    // In Libraries/, which Qucs-S made: taken away with the last folder in it.
+    void librariesIsTakenAwayWhenEmpty()
+    {
+        const QString p = project("p16");
+        write(p + "/use.sch", usesLibrary("VaLib"));
+        projectlibraries::sync(p, {}, Mode::Link);
+        QVERIFY(QFileInfo::exists(p + "/Libraries/" + projectlibraries::MarkerName));
+        write(p + "/use.sch", plain());
+        projectlibraries::sync(p, {}, Mode::Link);
+        QVERIFY(!QFileInfo::exists(p + "/Libraries"));
+        // The user's own Libraries/ folder (no mark): stays, even empty.
+        QVERIFY(QDir().mkpath(p + "/Libraries"));
+        write(p + "/use.sch", usesLibrary("VaLib"));
+        projectlibraries::sync(p, {}, Mode::Link);
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
+        write(p + "/use.sch", plain());
+        projectlibraries::sync(p, {}, Mode::Link);
+        QVERIFY(QFileInfo(p + "/Libraries").isDir());
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib"));
+    }
+
+    // Links are relative: the project and the library moved together (a
+    // tree of both cloned or moved, another user's home in the same
+    // places), the link still leads to the file - before Qucs-S looks again.
+    void aLinkHoldsWhenTheTreeMoves()
+    {
+        const QString tree = dir.filePath("tree");
+        QVERIFY(QDir().mkpath(tree + "/libs/VaLib/inc"));
+        QVERIFY(QFile::copy(team + "/VaLib.lib", tree + "/libs/VaLib.lib"));
+        QVERIFY(QFile::copy(team + "/VaLib/good.va", tree + "/libs/VaLib/good.va"));
+        const QString p = tree + "/work/p17_prj";
+        write(p + "/use.sch", usesLibrary(tree + "/libs/VaLib"));
+        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
+#ifndef Q_OS_WIN
+        char target[4096] = {0};
+        const ssize_t n = ::readlink(QFile::encodeName(p + "/Libraries/VaLib/good.va").constData(), target, sizeof(target) - 1);
+        QVERIFY(n > 0);
+        QCOMPARE(QString::fromLocal8Bit(target, int(n)), QString("../../../../libs/VaLib/good.va"));
+#endif
+        QVERIFY(QDir(dir.path()).rename("tree", "tree-moved"));
+        const QFileInfo moved(dir.filePath("tree-moved/work/p17_prj/Libraries/VaLib/good.va"));
+        QVERIFY(moved.exists());
+        QCOMPARE(moved.canonicalFilePath(), real(dir.filePath("tree-moved/libs/VaLib/good.va")));
+    }
+
+    // A disk without symbolic links (exFAT, some network shares): a copy,
+    // with what it includes; kept as it is while links cannot be made (not
+    // made again each time); a link in its place once they can.
+    void aCopyWhereNoLinkCanBeMade()
+    {
+        projectlibraries::setLinkMaker([](const QString&, const QString&) { return false; });
+        const auto restore = qScopeGuard([] { projectlibraries::setLinkMaker(nullptr); });
+        const QString p = project("p18");
+        write(p + "/use.sch", usesLibrary("VaLib"));
+        projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
+        QCOMPARE(r.made, QStringList{"Libraries/VaLib/good.va"});
+        QVERIFY(!QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
+        QCOMPARE(bytes(p + "/Libraries/VaLib/good.va"), bytes(team + "/VaLib/good.va"));
+        QVERIFY(QFileInfo::exists(p + "/Libraries/VaLib/inc/common.vams"));
+        QCOMPARE(projectlibraries::entryOf(p + "/Libraries/VaLib/good.va").library, QString("VaLib"));
+        write(p + "/Libraries/VaLib/good.osdi", "its model");
+        QVERIFY(!projectlibraries::sync(p, {}, Mode::Link).changed());
+        QVERIFY(QFileInfo::exists(p + "/Libraries/VaLib/good.osdi"));   // (not compiled again)
+        projectlibraries::setLinkMaker(nullptr);
+        r = projectlibraries::sync(p, {}, Mode::Link);
+        QCOMPARE(r.made, QStringList{"Libraries/VaLib/good.va"});
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib/inc"));
+    }
+
+    // The folders made in the project's folder itself, before Libraries/:
+    // moved there - what they held taken away, made again in Libraries/;
+    // one of a library not found here kept as it is.
+    void theFoldersOfBeforeAreMoved()
+    {
+        const QString p = project("p19");
+        write(p + "/use.sch", usesLibrary("VaLib"));
+        QVERIFY(QDir().mkpath(p + "/VaLib"));
+        QVERIFY(QFile::link(real(team + "/VaLib/good.va"), p + "/VaLib/good.va"));
+        write(p + "/VaLib/good.osdi", "its model");
+        const auto record = [&](const QString& library, const QString& original) {
+            return QByteArray("{\"library\": \"") + library.toUtf8() + "\", \"folder\": \"" + QFileInfo(original).absolutePath().toUtf8()
+                   + "\", \"created\": true, \"files\": [{\"path\": \"good.va\", \"original\": \"" + original.toUtf8()
+                   + "\", \"kind\": \"link\"}]}";
+        };
+        write(p + "/VaLib/" + projectlibraries::RecordName, record("VaLib", real(team + "/VaLib/good.va")));
+        QVERIFY(QDir().mkpath(p + "/Lost"));
+        QVERIFY(QFile::link("/nowhere/Lost/good.va", p + "/Lost/good.va"));
+        write(p + "/Lost/" + projectlibraries::RecordName, record("Lost", "/nowhere/Lost/good.va"));
+        write(p + "/lost.sch", usesLibrary("/nowhere/Lost"));
+        const projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
+        QCOMPARE(r.removed, QStringList{"VaLib/good.va"});
+        QCOMPARE(r.made, QStringList{"Libraries/VaLib/good.va"});
+        QVERIFY(!QFileInfo::exists(p + "/VaLib"));
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
+        QVERIFY(QFileInfo(p + "/Lost/good.va").isSymLink());   // its library not found here: kept
+    }
+
+    // Two parts of one library, each with its own source: one taken away
+    // takes its own link and model, not the other's.
+    void twoPartsWithTheirOwnSources()
+    {
+        const QString p = project("p20");
+        write(p + "/use.sch", usesParts("TwoLib", {"sub", "sub2"}));
+        projectlibraries::Report r = projectlibraries::sync(p, {}, Mode::Link);
+        QStringList made = r.made;
+        made.sort();
+        QCOMPARE(made, (QStringList{"Libraries/TwoLib/better.va", "Libraries/TwoLib/good.va"}));
+        write(p + "/Libraries/TwoLib/better.osdi", "a model");
+        write(p + "/Libraries/TwoLib/good.osdi", "a model");
+        write(p + "/use.sch", usesParts("TwoLib", {"sub"}));
+        r = projectlibraries::sync(p, {}, Mode::Link);
+        QCOMPARE(r.removed, QStringList{"Libraries/TwoLib/better.va"});
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/TwoLib/better.osdi"));
+        QVERIFY(QFileInfo(p + "/Libraries/TwoLib/good.va").isSymLink());
+        QVERIFY(QFileInfo::exists(p + "/Libraries/TwoLib/good.osdi"));
+    }
+
+    // A part that names its library by a path not on this computer (placed
+    // on another one): the library found by its name, its source linked.
+    void aPartFromAnotherComputerFindsItsLibrary()
+    {
+        const QString p = project("p21");
+        write(p + "/use.sch", usesLibrary("/Users/someone/Desktop/VaLib"));
+        QCOMPARE(projectlibraries::sync(p, {}, Mode::Link).made, QStringList{"Libraries/VaLib/good.va"});
+        QCOMPARE(real(QFileInfo(p + "/Libraries/VaLib/good.va").symLinkTarget()), real(team + "/VaLib/good.va"));
+    }
+
+    // A part names its library by its name when that finds it - a schematic
+    // that goes to another computer finds it in its search paths -, else by
+    // its path: the Libraries panel's parts and Claude's placements.
+    void aPartNamesItsLibraryByNameWhenThatFindsIt()
+    {
+        QCOMPARE(LibComp::referenceTo(team + "/VaLib.lib"), QString("VaLib"));
+        QCOMPARE(LibComp::referenceTo(other + "/VaLib.lib"), QFileInfo(other + "/VaLib").absoluteFilePath());   // the name finds team's
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.fillLibrariesTreeView();
+        QTreeWidget* tree = app.librariesTree();
+        QTreeWidgetItem* found = nullptr;   // (the panel's libraries: top-level, after their section's row)
+        for (int i = 0; i < tree->topLevelItemCount() && found == nullptr; ++i)
+            if (real(tree->topLevelItem(i)->text(1)) == real(team + "/VaLib.lib")) found = tree->topLevelItem(i);
+        QVERIFY(found != nullptr);
+        QVERIFY(app.readLibraryParts(found));
+        QVERIFY(found->childCount() > 0);
+        const QString placed = found->child(0)->text(1);
+        QVERIFY2(placed.contains("\"VaLib\" 0 \"sub\"") && !placed.contains(team), qPrintable(placed));
+        // user_lib's too.
+        QVERIFY(QDir().mkpath(workspace + "/user_lib"));
+        QVERIFY(QFile::copy(team + "/TwoLib.lib", workspace + "/user_lib/UserOnly.lib"));
+        app.fillLibrariesTreeView();
+        QTreeWidgetItem* user = nullptr;
+        for (int i = 0; i < tree->topLevelItemCount() && user == nullptr; ++i)
+            if (tree->topLevelItem(i)->text(1).endsWith("/user_lib/UserOnly.lib")) user = tree->topLevelItem(i);
+        QVERIFY(user != nullptr && user->childCount() > 0);
+        QVERIFY2(user->child(0)->text(1).contains("\"UserOnly\" 0"), qPrintable(user->child(0)->text(1)));
+        QFile::remove(workspace + "/user_lib/UserOnly.lib");
+        // A name with a dot: the panel's parser names it shorter - by its path.
+        QVERIFY(QFile::copy(team + "/VaLib.lib", team + "/Dotted.Lib.lib"));
+        QCOMPARE(LibComp::referenceTo(team + "/Dotted.Lib.lib"), QFileInfo(team + "/Dotted.Lib").absoluteFilePath());
+        QFile::remove(team + "/Dotted.Lib.lib");
+        // An installed library's, as before.
+        QVERIFY(!LibComp::referenceTo(QucsSettings.LibDir + "/nosuch.lib").isEmpty());
+    }
+
+    // OpenVAF given a link's file and told where to write; nothing more for
+    // a source beside its model.
+    void whatOpenVafIsGiven()
+    {
+        const QString p = project("p22");
+        write(p + "/use.sch", usesLibrary("VaLib"));
+        projectlibraries::sync(p, {}, Mode::Link);
+        const QString link = p + "/Libraries/VaLib/good.va";
+        QCOMPARE(osdi::compileArguments(link),
+                 (QStringList{real(team + "/VaLib/good.va"), "-o", QFileInfo(p + "/Libraries/VaLib/good.osdi").absoluteFilePath()}));
+        QCOMPARE(osdi::compileArguments(source + "/good.va"), QStringList{QFileInfo(source + "/good.va").absoluteFilePath()});
+        QCOMPARE(osdi::compileArguments(source + "/good.va", dir.filePath("cache/good.osdi")),
+                 (QStringList{QFileInfo(source + "/good.va").absoluteFilePath(), "-o", dir.filePath("cache/good.osdi")}));
     }
 
     // Create Library of a subcircuit that places a device of a library the
@@ -607,7 +826,7 @@ private slots:
         QucsApp app(false);
         MainGuard guard(&app);
         app.openProject(p);
-        QVERIFY(QFileInfo(p + "/VaLib/good.va").isSymLink());
+        QVERIFY(QFileInfo(p + "/Libraries/VaLib/good.va").isSymLink());
         LibraryDialog dialog(&app);
         dialog.fillSchematicList({"wrap.sch"});
         LibraryDialog::Request request;
@@ -672,7 +891,7 @@ private slots:
         QVERIFY(sch.load());
         write(file, plain());   // the part placed, not saved
         app.openProject(p);
-        QVERIFY(!QFileInfo::exists(p + "/VaLib"));
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib"));
         QPlainTextEdit console;
         QListWidget log;
         QProgressBar progress;
@@ -684,20 +903,23 @@ private slots:
             QVERIFY(done.size() > 0 || done.wait(30000));
             QVERIFY2(!run.hasError(), qPrintable(console.toPlainText()));
         }
-        const QString link = QFileInfo(p + "/VaLib/good.va").absoluteFilePath();
+        const QString link = QFileInfo(p + "/Libraries/VaLib/good.va").absoluteFilePath();
         QVERIFY(QFileInfo(link).isSymLink());
         QStringList said;
         for (int i = 0; i < log.count(); ++i) said << log.item(i)->text();
-        QVERIFY2(QString::fromUtf8(bytes(calls)).trimmed() == link,
+        // OpenVAF given the file the link leads to (its `include lines found
+        // beside it, whatever an OpenVAF does with links), writing beside the link.
+        const QString expected = real(team + "/VaLib/good.va") + " -o " + QFileInfo(p + "/Libraries/VaLib/good.osdi").absoluteFilePath();
+        QVERIFY2(QString::fromUtf8(bytes(calls)).trimmed() == expected,
                  qPrintable(QString::fromUtf8(bytes(calls)) + "\n" + console.toPlainText() + "\n" + said.join('\n')
                             + "\n" + QString::fromUtf8(bytes(record))));
-        QVERIFY(QFileInfo::exists(p + "/VaLib/good.osdi"));
+        QVERIFY(QFileInfo::exists(p + "/Libraries/VaLib/good.osdi"));
         QVERIFY(!QFileInfo::exists(team + "/VaLib/good.osdi"));
         const QString netlist = QString::fromUtf8(bytes(record));
-        QVERIFY2(netlist.contains("pre_osdi '" + QFileInfo(p + "/VaLib/good.osdi").absoluteFilePath() + "'"), qPrintable(netlist));
+        QVERIFY2(netlist.contains("pre_osdi '" + QFileInfo(p + "/Libraries/VaLib/good.osdi").absoluteFilePath() + "'"), qPrintable(netlist));
         // The schematic gone (closed without saving): taken away at the next.
-        QCOMPARE(app.syncProjectLibraries().removed, QStringList{"VaLib/good.va"});
-        QVERIFY(!QFileInfo::exists(p + "/VaLib"));
+        QCOMPARE(app.syncProjectLibraries().removed, QStringList{"Libraries/VaLib/good.va"});
+        QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib"));
         QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
     }
 };

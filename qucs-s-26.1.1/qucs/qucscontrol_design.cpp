@@ -159,11 +159,8 @@ void QucsControl::buildVerilogA(const QJsonObject& args, const Done& done)
     // loads it from.
     qucs_s::osdi::Into into = qucs_s::osdi::Into::Beside;
     const QString osdi = qucs_s::osdi::buildTarget(file, misc::cacheDir(), QString(), &into);
-    QStringList arguments{file};
-    if (into != qucs_s::osdi::Into::Beside) {
-        QDir().mkpath(QFileInfo(osdi).absolutePath());
-        arguments << QStringLiteral("-o") << osdi;
-    }
+    const QStringList arguments = qucs_s::osdi::compileArguments(file, osdi);   // (a link: the file it leads to)
+    if (into != qucs_s::osdi::Into::Beside) QDir().mkpath(QFileInfo(osdi).absolutePath());
     const QDateTime started = QDateTime::currentDateTime().addSecs(-1);
     auto answered = std::make_shared<bool>(false);
     QPointer<QProcess> guard(process);
