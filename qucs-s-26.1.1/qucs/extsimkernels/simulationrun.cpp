@@ -392,11 +392,11 @@ bool SimulationRun::startBuilds()
                         : build.foreign
                             ? tr("%1 was built for another platform; with OpenVAF set (Application "
                                  "Settings > Locations > OpenVAF Path) %2 is compiled here before a simulation")
-                                  .arg(QDir::toNativeSeparators(build.library),
+                                  .arg(QDir::toNativeSeparators(build.built),
                                        QDir::toNativeSeparators(build.source))
                             : tr("%1 is older than %2; with OpenVAF set (Application Settings > "
                                  "Locations > OpenVAF Path) it is compiled before a simulation")
-                                  .arg(QDir::toNativeSeparators(build.library),
+                                  .arg(QDir::toNativeSeparators(build.built),
                                        QDir::toNativeSeparators(build.source)),
                         style->standardIcon(QStyle::SP_MessageBoxWarning));
         a_builds.clear();
@@ -425,8 +425,17 @@ void SimulationRun::compileNext()
     }
     const qucs_s::osdi::Build build = a_builds.takeFirst();
     const QString openVAF = QucsSettings.OpenVAFExecutable.trimmed();
+    using qucs_s::osdi::Into;
+    // Beside the source - or, when its folder cannot be written or holds
+    // another platform's library, into the cache, where the simulation
+    // loads it from.
+    QStringList arguments{build.source};
+    if (build.into != Into::Beside) {
+        QDir().mkpath(QFileInfo(build.library).absolutePath());
+        arguments << QStringLiteral("-o") << build.library;
+    }
     if (a_console != nullptr)
-        a_console->insertPlainText(QStringLiteral("%1 %2\n").arg(openVAF, QDir::toNativeSeparators(build.source)));
+        a_console->insertPlainText(QStringLiteral("%1 %2\n").arg(openVAF, QDir::toNativeSeparators(arguments.join(QLatin1Char(' ')))));
     addLogEntry(build.missing   ? tr("Compiling %1 (%2 has no library yet)")
                                       .arg(QDir::toNativeSeparators(build.source), build.modules.join(QStringLiteral(", ")))
                 : build.foreign ? tr("Compiling %1 (%2 was built for another platform)")
@@ -436,6 +445,17 @@ void SimulationRun::compileNext()
                                       .arg(QDir::toNativeSeparators(build.source),
                                            QFileInfo(build.library).fileName()),
                 QApplication::style()->standardIcon(QStyle::SP_MessageBoxInformation));
+    if (build.into != Into::Beside) {
+        const QFileInfo source(build.source);
+        addLogEntry(build.into == Into::CacheReadOnly
+                        ? tr("%1 cannot be written: compiled into %2")
+                              .arg(QDir::toNativeSeparators(source.absolutePath()), QDir::toNativeSeparators(build.library))
+                        : tr("%1 is kept for the platform it was built for: compiled into %2")
+                              .arg(QDir::toNativeSeparators(source.absoluteDir().absoluteFilePath(source.completeBaseName()
+                                                                                                  + QStringLiteral(".osdi"))),
+                                   QDir::toNativeSeparators(build.library)),
+                    QApplication::style()->standardIcon(QStyle::SP_MessageBoxInformation));
+    }
     a_compiler = new QProcess(this);
     a_compiler->setProcessChannelMode(QProcess::MergedChannels);
     a_compiler->setWorkingDirectory(QFileInfo(build.source).absolutePath());
@@ -443,7 +463,7 @@ void SimulationRun::compileNext()
     connect(a_compiler, &QProcess::finished, this, &SimulationRun::slotCompiled);
     connect(a_compiler, &QProcess::errorOccurred, this, &SimulationRun::slotCompilerError);
     a_compiler->setProperty("source", build.source);
-    a_compiler->start(openVAF, {build.source});
+    a_compiler->start(openVAF, arguments);
 }
 
 void SimulationRun::slotCompilerOutput()

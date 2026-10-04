@@ -217,7 +217,8 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     embedVerilogA->setObjectName(QStringLiteral("embedVerilogA"));
     embedVerilogA->setToolTip(tr("Tools > Create Library copies the Verilog-A sources (.va) its subcircuits "
                                  "use, and the files they include, into the library's folder. Where the "
-                                 "library is used, OpenVAF compiles them before the first simulation: a "
+                                 "library is used, OpenVAF compiles them before the first simulation - beside "
+                                 "them, or into Qucs-S's cache when the library's folder cannot be written: a "
                                  "compiled model (.osdi) runs on one platform only, so it is not embedded.\n"
                                  "Off: the library holds the subcircuits and their symbols only."));
     appSettingsGrid->addWidget(embedVerilogA, 15, 1);

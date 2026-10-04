@@ -32,6 +32,7 @@
 #include "extsimkernels/spicecompat.h"
 #include "main.h"
 #include "misc.h"
+#include "osdiselection.h"
 #include "module.h"
 #include "node.h"
 #include "oppoint.h"
@@ -3594,10 +3595,8 @@ static QJsonObject describeVerilogAModule(const QString& type, const QList<QucsD
         const QString beside = osdi.left(osdi.size() - 5) + QStringLiteral(".va");
         if (QFileInfo::exists(beside)) source = beside;
     }
-    if (osdi.isEmpty() && !source.isEmpty()) {
-        const QString beside = source.left(source.size() - 3) + QStringLiteral(".osdi");
-        if (QFileInfo::exists(beside)) osdi = beside;
-    }
+    if (osdi.isEmpty() && !source.isEmpty())
+        osdi = qucs_s::osdi::modelOf(source, misc::cacheDir());   // beside it, or compiled into the cache
     va::VerilogModule fromSource, fromLibrary;
     bool haveSource = false, haveLibrary = false;
     if (!source.isEmpty()) {

@@ -18,6 +18,7 @@
 #include "dataset.h"
 #include "main.h"
 #include "misc.h"
+#include "osdiselection.h"
 #include "dataimport.h"
 #include "filebrowser.h"
 #include "projectView.h"
@@ -153,11 +154,20 @@ void QucsControl::buildVerilogA(const QJsonObject& args, const Done& done)
     auto* process = new QProcess(this);
     process->setProcessChannelMode(QProcess::MergedChannels);
     process->setWorkingDirectory(QFileInfo(file).absolutePath());
-    const QString osdi = file.left(file.size() - 3) + QStringLiteral(".osdi");
+    // Beside it - or, when its folder cannot be written or the library
+    // there is another platform's, into the cache, where a simulation
+    // loads it from.
+    qucs_s::osdi::Into into = qucs_s::osdi::Into::Beside;
+    const QString osdi = qucs_s::osdi::buildTarget(file, misc::cacheDir(), QString(), &into);
+    QStringList arguments{file};
+    if (into != qucs_s::osdi::Into::Beside) {
+        QDir().mkpath(QFileInfo(osdi).absolutePath());
+        arguments << QStringLiteral("-o") << osdi;
+    }
     const QDateTime started = QDateTime::currentDateTime().addSecs(-1);
     auto answered = std::make_shared<bool>(false);
     QPointer<QProcess> guard(process);
-    const auto report = [this, done, answered, guard, file, osdi, started](bool timedOut) {
+    const auto report = [this, done, answered, guard, file, osdi, into, started](bool timedOut) {
         if (*answered) return;
         *answered = true;
         const QString output = guard ? QString::fromLocal8Bit(guard->readAll()) : QString();
@@ -176,6 +186,14 @@ void QucsControl::buildVerilogA(const QJsonObject& args, const Done& done)
             result.insert(QStringLiteral("note"), code < 0 ? tr("OpenVAF crashed or did not start.") : tr("OpenVAF ended with exit code %1.").arg(code));
         if (compiled) {
             result.insert(QStringLiteral("osdi"), QDir::toNativeSeparators(osdi));
+            if (into != qucs_s::osdi::Into::Beside)
+                result.insert(QStringLiteral("into the cache"),
+                              into == qucs_s::osdi::Into::CacheReadOnly
+                                  ? tr("%1 cannot be written: the library is in the cache, where a simulation loads it from.")
+                                        .arg(QDir::toNativeSeparators(QFileInfo(file).absolutePath()))
+                                  : tr("%1 beside it was built for another platform and is kept: this platform's is in the "
+                                       "cache, where a simulation loads it from.")
+                                        .arg(QFileInfo(file).completeBaseName() + QStringLiteral(".osdi")));
             // What it holds: its modules, each with its parameters counted.
             QStringList names;
             if (qucs_s::vamodule::osdiModules(osdi, &names)) {
@@ -223,7 +241,7 @@ void QucsControl::buildVerilogA(const QJsonObject& args, const Done& done)
             report(true);
         }
     });
-    process->start(openVAF, {file});
+    process->start(openVAF, arguments);
 }
 
 // ----------------------------------------------------------------------

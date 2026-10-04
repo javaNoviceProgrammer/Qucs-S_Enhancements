@@ -49,6 +49,7 @@ private:
     QString getParentSWPCntVar(Component *pc_swp, QString sim);
     void cleanSpiceinit();
     void createSpiceinit(const QString &initial_spiceinit);
+    void verilogAFiles(QStringList* sources, QStringList* libraries) const;
     QString osdiLoads(const QString& netlist) const;
     QStringList besideSchematic(const QStringList& patterns) const;
 
@@ -63,10 +64,11 @@ public:
     void SaveNetlist(QString filename, bool netlist2Console);
     void setSimulatorCmd(QString cmd);
     void setSimulatorParameters(QString parameters);
-    /// The Verilog-A sources of the open project to compile before this
-    /// schematic is simulated: those that define a module its netlist uses
-    /// and whose library is missing or older (osdi::builds()). None
-    /// without a project.
+    /// The Verilog-A sources to compile before this schematic is simulated
+    /// - the project's, those beside it, those its components' libraries
+    /// bring: those that define a module its netlist uses and whose library
+    /// is missing, older or another platform's (osdi::builds()), each with
+    /// where it goes (beside it, or the cache: osdi::buildTarget()).
     QList<qucs_s::osdi::Build> verilogABuilds();
     /// The NgOpt components whose optimize the last netlist runs, in
     /// order: their results come in this order in the output.

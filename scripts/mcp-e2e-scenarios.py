@@ -7,7 +7,7 @@ answers along the way. Written by the reviewer of the tools (rounds 4 to 8,
 docs/feature_gaps/); s8 is round 8's: the 741 bench, from wiring by pin name
 to a subcircuit, checked and simulated at each step.
 
-    scripts/mcp-e2e-scenarios.py [s1 s2 ... s11]
+    scripts/mcp-e2e-scenarios.py [s1 s2 ... s12]
 
 QUCS names the qucs-s binary (the installed app by default). A packaged
 app is tested with its own library (share/qucs-s/library beside its
@@ -20,7 +20,8 @@ user's workspace or caches, and a run does not meet the files of the last
 ngspice on PATH. s7 copies a project (QUCS_E2E_PROJECT,
 ~/QucsWorkspace/project1_prj by default) and is skipped when there is none.
 QUCS_E2E_DATASET_LIMIT_MB=<n> keeps every run's dataset of more than n MB
-binary (0: every one) - binary datasets end to end.
+binary (0: every one) - binary datasets end to end. s12 needs OpenVAF
+(QUCS_OPENVAF, else openvaf-r or openvaf on PATH) and is skipped without.
 """
 import json, subprocess, os, sys, time, math, shutil, glob
 
@@ -622,9 +623,67 @@ def s11_libraries(s):
     check('s11', 'a SPICE library brought in (spice, in user_lib), its subcircuit simulated: v(o) = 2 V', spice['kind'] == 'spice'
           and os.path.isfile(WS + '/user_lib/Halves.lib') and sim.get('succeeded') and near(op.get('v(o)', 0), 2.0, 1e-3), (spice.get('kind'), op))
 
+@scenario
+def s12_verilog_a_library_read_only(s):
+    """a library whose subcircuit has a Verilog-A model, made into a folder of the library search paths; the folder
+    read-only (a team's share): the model compiled into the cache - by build_verilog_a, and before a simulation - and
+    the part, placed by its library's name, simulated with it; nothing written into the folder. Needs OpenVAF
+    (QUCS_OPENVAF, else openvaf-r or openvaf on PATH): skipped without"""
+    openvaf = os.environ.get('QUCS_OPENVAF') or shutil.which('openvaf-r') or shutil.which('openvaf')
+    if not openvaf:
+        print('  skipped: no OpenVAF'); return
+    team = ROOT + '/teamva'
+    os.makedirs(team, exist_ok=True)
+    s.call('set_settings', {'scope': 'app', 'values': {'Locations/OpenVAF Path': openvaf, 'Locations/Library search paths': [team]}})
+    s.call('new_project', {'name': 's12'})
+    proj = WS + '/s12_prj'
+    open(proj + '/vres.va', 'w').write('`include "disciplines.vams"\nmodule vres(p, n);\n  inout p, n;\n  electrical p, n;\n'
+                                       '  parameter real r = 1k from (0:inf);\n  analog I(p, n) <+ V(p, n) / r;\nendmodule\n')
+    # The subcircuit: the Verilog-A resistor, 2k, between its two ports (nodes a and b).
+    open(proj + '/vres.sch', 'w').write(
+        '<Qucs Schematic 26.1.5>\n<Components>\n'
+        '  <Port P1 1 220 100 -23 12 0 0 "1" 1 "analog" 0>\n  <Port P2 1 280 100 4 12 1 2 "2" 1 "analog" 0>\n'
+        '  <SpiceModel SpiceModel1 1 120 300 -27 16 0 0 ".model m1 vres r=2k" 1 "N1 a b m1" 0 "" 0 "" 0 "" 0>\n'
+        '</Components>\n<Wires>\n  <220 100 220 100 "a" 250 70 0 "">\n  <280 100 280 100 "b" 310 70 0 "">\n</Wires>\n'
+        '<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n')
+    s.call('open_project', {'name': 's12'})
+    made = s.call('create_library', {'name': 'VaRes', 'subcircuits': ['vres'], 'destination': team})
+    lib = team + '/VaRes'
+    check('s12', 'create_library: VaRes in the search path folder, the Verilog-A source in its folder',
+          os.path.isfile(lib + '/vres.va') and made.get('models') == ['VaRes/vres.va'], made)
+    cache = os.path.realpath(os.environ.get('QUCS_CACHE_DIR') or WS + '/spice4qucs')
+    os.chmod(lib, 0o555)
+    try:
+        built = s.call('build_verilog_a', {'file': lib + '/vres.va'})
+        osdi = os.path.realpath(built.get('osdi', '')) if built.get('osdi') else ''
+        check('s12', 'build_verilog_a: the folder read-only, compiled into the cache (said)', built.get('compiled')
+              and osdi.startswith(cache + '/osdi/vres-') and 'into the cache' in built and sorted(os.listdir(lib)) == ['vres.va'], built)
+        if osdi: os.remove(osdi)   # the simulation compiles it again
+        place = s.call('describe_part', {'library': 'VaRes', 'part': 'vres'})['place']
+        s.call('new_document', {})
+        s.call('batch', {'calls': [
+            {'tool': 'add_component', 'arguments': {'type': 'Vdc', 'name': 'V1', 'x': 100, 'y': 200, 'properties': {'U': '1 V'}}},
+            {'tool': 'add_component', 'arguments': {'type': 'R', 'name': 'R2', 'x': 220, 'y': 100, 'properties': {'R': '1k'}}},
+            {'tool': 'add_component', 'arguments': {'type': place['type'], 'name': 'X1', 'x': 340, 'y': 200, 'properties': place['properties']}},
+            {'tool': 'add_component', 'arguments': {'type': '.DC', 'name': 'DC1', 'x': 120, 'y': 400}},
+            {'tool': 'connect', 'arguments': {'from': 'V1.1', 'to': 'R2.1'}},
+            {'tool': 'connect', 'arguments': {'from': 'R2.2', 'to': 'X1.1'}},
+            {'tool': 'connect', 'arguments': {'from': 'X1.2', 'to': 'ground'}},
+            {'tool': 'connect', 'arguments': {'from': 'V1.2', 'to': 'ground'}},
+            {'tool': 'set_label', 'arguments': {'at': 'R2.2', 'name': 'out'}},
+            {'tool': 'save_document', 'arguments': {'as': proj + '/s12_top.sch'}}], 'atomic': True})
+        sim = s.call('simulate', {'path': 's12_top.sch', 'brief': True})
+        op = s.call('get_dataset', {'path': 's12_top.sch', 'operating_point': True})['operating point']['nodes']
+        compiled = glob.glob(cache + '/osdi/vres-*/vres.osdi')
+        check('s12', 'the part placed by its name ("%s") and simulated: compiled into the cache first, v(out) = 2/3 V'
+              % place['properties'].get('Lib'), sim.get('succeeded') and near(op.get('v(out)', 0), 2 / 3, 1e-3) and compiled
+              and sorted(os.listdir(lib)) == ['vres.va'], (sim.get('errors'), op, compiled, os.listdir(lib)))
+    finally:
+        os.chmod(lib, 0o755)
+
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
-    which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11']
+    which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12']
     print('files in', ROOT, '- library:', os.path.abspath(LIBRARY) if LIBRARY else own_library(APP) + " (the app's own)")
     for name, fn in list(globals().items()):
         if name.split('_')[0] in which and name[:1] == 's' and '_' in name and callable(fn): fn()

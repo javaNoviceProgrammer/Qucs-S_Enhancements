@@ -2986,6 +2986,89 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // build_verilog_a on a source whose folder cannot be written (a
+    // library folder shared read-only): into the cache, where a simulation
+    // loads it from - and said; describe_component_type finds it there.
+    // Writable again: beside it, as before.
+    void aSourceWhoseFolderCannotBeWrittenIsBuiltIntoTheCache()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("A shell script stands in for OpenVAF.");
+#endif
+        const QString shared = dir.filePath("workspace/shared");
+        const QString va = shared + "/rocell.va";
+        QVERIFY(QDir().mkpath(shared));
+        {
+            QFile f(va);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("`include \"disciplines.vams\"\nmodule rocell(p, n);\n  inout p, n;\n  electrical p, n;\n"
+                    "  parameter real r = 1e3;\n  analog I(p,n) <+ V(p,n)/r;\nendmodule\n");
+        }
+        const QString fake = dir.filePath("fake-openvaf-out.sh");
+        {
+            QFile f(fake);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("#!/bin/sh\nout=\"${1%.va}.osdi\"\nif [ \"$2\" = \"-o\" ]; then out=\"$3\"; fi\n"
+                    "echo \"Finished building $1\"\nprintf 'x' > \"$out\" || exit 65\n");
+            f.setPermissions(f.permissions() | QFileDevice::ExeOwner | QFileDevice::ExeUser);
+        }
+        const QString before = QucsSettings.OpenVAFExecutable;
+        QucsSettings.OpenVAFExecutable = fake;
+        const QFileDevice::Permissions writable = QFile::permissions(shared);
+        const auto restore = qScopeGuard([&] {
+            QFile::setPermissions(shared, writable);
+            QucsSettings.OpenVAFExecutable = before;
+        });
+        QVERIFY(QFile::setPermissions(shared, writable & ~(QFileDevice::WriteOwner | QFileDevice::WriteUser
+                                                          | QFileDevice::WriteGroup | QFileDevice::WriteOther)));
+        if (QFileInfo(shared).isWritable()) QSKIP("Folders that cannot be written can be here (root).");
+
+        QJsonObject r = call("build_verilog_a", {{"file", va}});
+        QJsonObject o = json(r).toObject();
+        QVERIFY2(o.value("compiled").toBool(), qPrintable(text(r)));
+        const QString osdi = QDir::fromNativeSeparators(o.value("osdi").toString());
+        QVERIFY2(osdi.startsWith(QDir(misc::cacheDir()).absoluteFilePath("osdi/rocell-")) && osdi.endsWith("/rocell.osdi"),
+                 qPrintable(text(r)));
+        QVERIFY(QFileInfo(osdi).isFile());
+        QVERIFY(!QFileInfo::exists(shared + "/rocell.osdi"));
+        QVERIFY2(o.value("into the cache").toString().contains("cannot be written"), qPrintable(text(r)));
+        // Described: its library found in the cache (the fake is none it
+        // can read, and that is said).
+        r = call("describe_component_type", {{"type", "rocell"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        o = json(r).toObject();
+        QVERIFY2(o.value("compiled").toString().startsWith(QDir::toNativeSeparators(osdi) + " could not be read"), qPrintable(text(r)));
+
+        QVERIFY(QFile::setPermissions(shared, writable));
+        r = call("build_verilog_a", {{"file", va}});
+        o = json(r).toObject();
+        QVERIFY2(o.value("compiled").toBool(), qPrintable(text(r)));
+        QCOMPARE(QDir::fromNativeSeparators(o.value("osdi").toString()), va.left(va.size() - 3) + ".osdi");
+        QVERIFY(!o.contains("into the cache"));
+        // Another platform's library beside it (an x86-64 ELF one here, an
+        // Arm Mach-O one on Linux): kept, this platform's into the cache.
+        QByteArray theirs(64, '\0');
+#if defined(Q_OS_MACOS)
+        theirs[0] = 0x7f; theirs[1] = 'E'; theirs[2] = 'L'; theirs[3] = 'F'; theirs[4] = 2; theirs[5] = 1; theirs[18] = 62;
+#else
+        theirs[0] = char(0xcf); theirs[1] = char(0xfa); theirs[2] = char(0xed); theirs[3] = char(0xfe);
+        theirs[4] = 0x0c; theirs[7] = 0x01;
+#endif
+        {
+            QFile f(va.left(va.size() - 3) + ".osdi");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(theirs);
+        }
+        r = call("build_verilog_a", {{"file", va}});
+        o = json(r).toObject();
+        QVERIFY2(o.value("compiled").toBool(), qPrintable(text(r)));
+        QCOMPARE(QDir::fromNativeSeparators(o.value("osdi").toString()), osdi);
+        QVERIFY2(o.value("into the cache").toString().contains("built for another platform and is kept"), qPrintable(text(r)));
+        QFile kept(va.left(va.size() - 3) + ".osdi");
+        QVERIFY(kept.open(QIODevice::ReadOnly));
+        QCOMPARE(kept.readAll(), theirs);
+    }
+
     // tune: the value that makes a number come out right, in a few runs;
     // one step to undo.
     void aPartIsTunedToATarget()
