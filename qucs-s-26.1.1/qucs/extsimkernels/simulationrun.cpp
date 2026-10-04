@@ -432,11 +432,10 @@ void SimulationRun::compileNext()
     // Beside the source - or, when its folder cannot be written or holds
     // another platform's library, into the cache, where the simulation
     // loads it from.
-    QStringList arguments{build.source};
-    if (build.into != Into::Beside) {
-        QDir().mkpath(QFileInfo(build.library).absolutePath());
-        arguments << QStringLiteral("-o") << build.library;
-    }
+    // (A library's source linked into the project: the file it leads to,
+    // compiled beside the link.)
+    const QStringList arguments = qucs_s::osdi::compileArguments(build.source, build.library);
+    if (build.into != Into::Beside) QDir().mkpath(QFileInfo(build.library).absolutePath());
     if (a_console != nullptr)
         a_console->insertPlainText(QStringLiteral("%1 %2\n").arg(openVAF, QDir::toNativeSeparators(arguments.join(QLatin1Char(' ')))));
     addLogEntry(build.missing   ? tr("Compiling %1 (%2 has no library yet)")

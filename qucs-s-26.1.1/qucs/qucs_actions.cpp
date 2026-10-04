@@ -54,6 +54,7 @@
 #include "dialogs/searchdialog.h"
 #include "main.h"
 #include "misc.h"
+#include "osdiselection.h"
 #include "messagedock.h"
 #include "erc.h"
 #include <QSet>
@@ -2091,9 +2092,9 @@ void QucsApp::buildWithOpenVAF() {
 
   QString openVAF = QucsSettings.OpenVAFExecutable;
 
-  // admsXml emits C++
-  QStringList Arguments;
-  Arguments << vaModule;
+  // (A library's source linked into the project: the file it leads to,
+  // compiled beside the link.)
+  const QStringList Arguments = qucs_s::osdi::compileArguments(vaModule);
 
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   env.insert("PATH", env.value("PATH"));
@@ -2233,7 +2234,10 @@ void QucsApp::startNextVerilogABuild() {
 
   const QString vaFile = a_vaBuildQueue.takeFirst();
   const QString openVAF = QucsSettings.OpenVAFExecutable.trimmed();
-  messageDock->admsOutput->appendPlainText(QStringLiteral("\n%1 %2").arg(openVAF, vaFile));
+  // (A library's source linked into the project: the file it leads to,
+  // compiled beside the link.)
+  const QStringList arguments = qucs_s::osdi::compileArguments(vaFile);
+  messageDock->admsOutput->appendPlainText(QStringLiteral("\n%1 %2").arg(openVAF, arguments.join(QLatin1Char(' '))));
 
   a_vaBuilder = new QProcess(this);
   a_vaBuilder->setProcessChannelMode(QProcess::MergedChannels);
@@ -2241,7 +2245,7 @@ void QucsApp::startNextVerilogABuild() {
   connect(a_vaBuilder, &QProcess::readyRead, this, &QucsApp::slotVerilogABuildOutput);
   connect(a_vaBuilder, &QProcess::finished, this, &QucsApp::slotVerilogABuildFinished);
   connect(a_vaBuilder, &QProcess::errorOccurred, this, &QucsApp::slotVerilogABuildError);
-  a_vaBuilder->start(openVAF, {vaFile});
+  a_vaBuilder->start(openVAF, arguments);
 }
 
 void QucsApp::slotVerilogABuildOutput() {

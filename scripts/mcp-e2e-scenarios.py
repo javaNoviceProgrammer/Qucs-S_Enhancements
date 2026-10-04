@@ -627,9 +627,9 @@ def s11_libraries(s):
 def s12_verilog_a_library_read_only(s):
     """a library whose subcircuit has a Verilog-A model, made into a folder of the library search paths, the folder
     read-only (a team's share): build_verilog_a compiles it into the cache; its part, placed in a project's schematic
-    by its library's name and saved, has the source linked into the project (VaRes/vres.va), compiled there before the
-    simulation and simulated with it - nothing written into the library's folder; the part taken away and saved, the
-    link and its model go. Needs OpenVAF (QUCS_OPENVAF, else openvaf-r or openvaf on PATH): skipped without"""
+    by its library's name and saved, has the source linked into the project (Libraries/VaRes/vres.va, a relative link),
+    compiled there before the simulation - its `include of a file of the library's folder found - and simulated with it,
+    nothing written into the library's folder; the part taken away and saved, the link, its model and Libraries/ go. Needs OpenVAF (QUCS_OPENVAF, else openvaf-r or openvaf on PATH): skipped without"""
     openvaf = os.environ.get('QUCS_OPENVAF') or shutil.which('openvaf-r') or shutil.which('openvaf')
     if not openvaf:
         print('  skipped: no OpenVAF'); return
@@ -638,8 +638,9 @@ def s12_verilog_a_library_read_only(s):
     s.call('set_settings', {'scope': 'app', 'values': {'Locations/OpenVAF Path': openvaf, 'Locations/Library search paths': [team]}})
     s.call('new_project', {'name': 's12'})
     proj = WS + '/s12_prj'
-    open(proj + '/vres.va', 'w').write('`include "disciplines.vams"\nmodule vres(p, n);\n  inout p, n;\n  electrical p, n;\n'
-                                       '  parameter real r = 1k from (0:inf);\n  analog I(p, n) <+ V(p, n) / r;\nendmodule\n')
+    open(proj + '/vres_params.vams', 'w').write('`define VRES_DEFAULT 1k\n')
+    open(proj + '/vres.va', 'w').write('`include "disciplines.vams"\n`include "vres_params.vams"\nmodule vres(p, n);\n  inout p, n;\n'
+                                       '  electrical p, n;\n  parameter real r = `VRES_DEFAULT from (0:inf);\n  analog I(p, n) <+ V(p, n) / r;\nendmodule\n')
     # The subcircuit: the Verilog-A resistor, 2k, between its two ports (nodes a and b).
     open(proj + '/vres.sch', 'w').write(
         '<Qucs Schematic 26.1.5>\n<Components>\n'
@@ -650,15 +651,15 @@ def s12_verilog_a_library_read_only(s):
     s.call('open_project', {'name': 's12'})
     made = s.call('create_library', {'name': 'VaRes', 'subcircuits': ['vres'], 'destination': team})
     lib = team + '/VaRes'
-    check('s12', 'create_library: VaRes in the search path folder, the Verilog-A source in its folder',
-          os.path.isfile(lib + '/vres.va') and made.get('models') == ['VaRes/vres.va'], made)
+    check('s12', 'create_library: VaRes in the search path folder, the Verilog-A source and its include in its folder',
+          os.path.isfile(lib + '/vres.va') and sorted(made.get('models', [])) == ['VaRes/vres.va', 'VaRes/vres_params.vams'], made)
     cache = os.path.realpath(os.environ.get('QUCS_CACHE_DIR') or WS + '/spice4qucs')
     os.chmod(lib, 0o555)
     try:
         built = s.call('build_verilog_a', {'file': lib + '/vres.va'})
         osdi = os.path.realpath(built.get('osdi', '')) if built.get('osdi') else ''
         check('s12', 'build_verilog_a: the folder read-only, compiled into the cache (said)', built.get('compiled')
-              and osdi.startswith(cache + '/osdi/vres-') and 'into the cache' in built and sorted(os.listdir(lib)) == ['vres.va'], built)
+              and osdi.startswith(cache + '/osdi/vres-') and 'into the cache' in built and sorted(os.listdir(lib)) == ['vres.va', 'vres_params.vams'], built)
         place = s.call('describe_part', {'library': 'VaRes', 'part': 'vres'})['place']
         s.call('new_document', {})
         s.call('batch', {'calls': [
@@ -672,19 +673,21 @@ def s12_verilog_a_library_read_only(s):
             {'tool': 'connect', 'arguments': {'from': 'V1.2', 'to': 'ground'}},
             {'tool': 'set_label', 'arguments': {'at': 'R2.2', 'name': 'out'}}], 'atomic': True})
         saved = s.call('save_document', {'as': proj + '/s12_top.sch'})
-        link = proj + '/VaRes/vres.va'
-        check('s12', 'saved: the part\'s Verilog-A linked into the project, said', os.path.islink(link)
-              and os.path.realpath(link) == os.path.realpath(lib + '/vres.va') and 'VaRes/vres.va' in str(saved), saved)
+        link = proj + '/Libraries/VaRes/vres.va'
+        check('s12', 'saved: the part\'s Verilog-A linked into the project (Libraries/VaRes, relative), said', os.path.islink(link)
+              and not os.readlink(link).startswith('/') and os.path.realpath(link) == os.path.realpath(lib + '/vres.va')
+              and 'Libraries/VaRes/vres.va' in str(saved), saved)
         sim = s.call('simulate', {'path': 's12_top.sch', 'brief': True})
         op = s.call('get_dataset', {'path': 's12_top.sch', 'operating_point': True})['operating point']['nodes']
-        check('s12', 'the part placed by its name ("%s") and simulated: compiled beside the link first, v(out) = 2/3 V'
-              % place['properties'].get('Lib'), sim.get('succeeded') and near(op.get('v(out)', 0), 2 / 3, 1e-3)
-              and os.path.isfile(proj + '/VaRes/vres.osdi') and sorted(os.listdir(lib)) == ['vres.va'],
-              (sim.get('errors'), op, os.listdir(proj + '/VaRes') if os.path.isdir(proj + '/VaRes') else None, os.listdir(lib)))
+        check('s12', 'the part placed by its name ("%s") and simulated: compiled beside the link first, its include found, v(out) = 2/3 V'
+              % place['properties'].get('Lib'), sim.get('succeeded') and place['properties'].get('Lib') == 'VaRes'
+              and near(op.get('v(out)', 0), 2 / 3, 1e-3) and os.path.isfile(proj + '/Libraries/VaRes/vres.osdi')
+              and sorted(os.listdir(lib)) == ['vres.va', 'vres_params.vams'],
+              (sim.get('errors'), op, os.listdir(proj + '/Libraries/VaRes') if os.path.isdir(proj + '/Libraries/VaRes') else None, os.listdir(lib)))
         s.call('delete', {'path': 's12_top.sch', 'names': ['X1']})
         saved = s.call('save_document', {'path': 's12_top.sch'})
-        check('s12', 'the part taken away and saved: the link and its model go, said', not os.path.lexists(link)
-              and not os.path.exists(proj + '/VaRes') and 'taken away' in str(saved), (saved, os.listdir(proj)))
+        check('s12', 'the part taken away and saved: the link, its model and Libraries/ go, said', not os.path.lexists(link)
+              and not os.path.exists(proj + '/Libraries') and 'taken away' in str(saved), (saved, os.listdir(proj)))
     finally:
         os.chmod(lib, 0o755)
 

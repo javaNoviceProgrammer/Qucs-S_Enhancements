@@ -205,35 +205,49 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
 - **A library device's Verilog-A in the project**: when a schematic of the
   open project uses a device of a library that brings Verilog-A (one on
   the library search paths, in `user_lib`, anywhere but the project
-  itself), the project gets a folder named after the library with a
-  symbolic link to each of those sources — `VaLib/good.va` → the
-  library's `good.va`. The *Content* panel lists it with the project's
-  Verilog-A, its note naming the library and its tool tip the original;
-  opened, it is read-only, a note at the top saying whose it is (the
-  library is shared by every project that uses it: it is changed there).
-  The model is compiled beside the link — `VaLib/good.osdi`, in the
-  project — and loaded from there, so nothing is ever written into the
-  library's folder. Kept up to date when a schematic is saved, when the
-  project opens and before an ngspice simulation compiles its Verilog-A,
-  counting the project's saved schematics (not those in *Scratch*), those
-  open with unsaved changes and the subcircuits outside the project they
-  place; when no schematic uses the device any more, the link and its
-  model are taken away, and the folder when Qucs-S made it and nothing
-  else is in it. Only what Qucs-S put there - a record in the folder,
-  `.qucs-library.json`, says what - is ever replaced or taken away: a file
-  of yours in its place is left as it is. A link that leads nowhere (the
-  library moved, the project opened on another computer) is made again to
-  where the library is found; one whose library is not found here at all
-  keeps what it has. Two libraries of one name get `VaLib` and `VaLib_2`;
-  the project's own library is not linked (its files are the project's).
-  On Windows, where a symbolic link needs Developer Mode, the source is
-  copied instead, with the files it includes, and copied again when the
-  original changes. The `.osdi` files are built for one platform: leave
-  `*/*.osdi` out of version control. Claude's `save_document` says what
-  was linked or taken away, and `edit_text` refuses a link. Also fixed:
-  after *Create Library*, the next netlist built left out the model of a
-  library part the new library's subcircuits used - the first simulation
-  then compiled no Verilog-A for it.
+  itself), the project gets `Libraries/<library>/` with a symbolic link
+  to each of those sources — `Libraries/VaLib/good.va` → the library's
+  `good.va` —, apart from the project's own libraries (`NAME.lib` and its
+  folder `NAME/`). The link is relative, so it holds when the project and
+  the library move together (a repository of both cloned, another user's
+  home with the same layout). The *Content* panel lists it with the
+  project's Verilog-A, its note naming the library and its tool tip the
+  original; opened, it is read-only, a note at the top saying whose it is
+  (the library is shared by every project that uses it: it is changed
+  there). The model is compiled beside the link —
+  `Libraries/VaLib/good.osdi`, in the project — and loaded from there, so
+  nothing is ever written into the library's folder; OpenVAF is given the
+  file the link leads to (and told where to write), so the files it
+  `` `include ``s are found beside the original whatever an OpenVAF does
+  with links - before a simulation, by Claude's `build_verilog_a`, by
+  *Build All* and *Compile*. Kept up to date when a schematic is saved,
+  when the project opens and before an ngspice simulation compiles its
+  Verilog-A, counting the project's saved schematics (not those in
+  *Scratch*), those open with unsaved changes and the subcircuits outside
+  the project they place: a part taken away and not saved, or its
+  schematic closed without saving, keeps its link (the saved schematic
+  uses it); one taken away and saved loses it - and undone, gets it back
+  at the next simulation. When no schematic uses a device any more, its
+  link and model are taken away (another part's of the same library
+  stay), then the library's folder, then `Libraries/` when Qucs-S made it
+  and it holds nothing else. Only what Qucs-S put there - a record in the
+  folder, `.qucs-library.json`, says what - is ever replaced or taken
+  away: a file of yours in its place is left as it is. A link that leads
+  nowhere (the library moved, the project opened on another computer) is
+  made again to where the library is found; one whose library is not
+  found here at all keeps what it has. Where no link can be made (a disk
+  without symbolic links, as exFAT; Windows, where one needs Developer
+  Mode) the source is copied instead, with the files it includes, copied
+  again when the original changes, and replaced by a link once one can be
+  made. Two libraries of one name get `Libraries/VaLib` and
+  `Libraries/VaLib_2`. The folders an earlier build made in the project's
+  folder itself are moved into `Libraries/`. The `.osdi` files are built
+  for one platform: leave `Libraries/*/*.osdi` out of version control.
+  Claude's `save_document` says what was linked or taken away, and
+  `edit_text` refuses a link. Also fixed: after *Create Library*, the next
+  netlist built left out the model of a library part the new library's
+  subcircuits used - the first simulation then compiled no Verilog-A for
+  it.
 - **Library search paths**: *Application Settings → Locations → Library
   Search Paths* lists folders of component libraries besides the installed
   ones and the workspace's `user_lib` - a team's share, a git checkout of
@@ -244,10 +258,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   libraries' parts are read when one is opened or searched, so a large
   folder does not slow the start, and one that cannot be read is greyed
   with the reason instead of a message box that stopped the listing (in
-  the other sections too). A placed part keeps its library's path; on
-  another computer, or with the folder moved, its library is found by
-  name in the search paths, and *Check Schematic* names them when it is
-  not. *Create Library* saves into `user_lib` (as before), the project or
+  the other sections too). A placed part names its library by its name
+  when that finds it - not shadowed by an installed library, the
+  project's, `user_lib`'s or an earlier search path's of the same name -,
+  else by its path (the *Libraries* panel's parts of `user_lib` and the
+  search paths, and Claude's `create_library`, `list_libraries` and
+  `import_library`); a part placed by a path that is not there (another
+  computer, the folder moved) finds its library by name in the search
+  paths, and *Check Schematic* names them when it is not. *Create
+  Library* saves into `user_lib` (as before), the project or
   one of the folders (*Save in*). Claude reads and sets the list
   (`get_settings`/`set_settings`, *Locations/Library search paths*, a list
   of folders - the subcircuit search paths too, which it could not see),

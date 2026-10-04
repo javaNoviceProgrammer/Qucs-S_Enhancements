@@ -89,6 +89,7 @@
 #include "components/vhdlfile.h"
 #include "components/verilogfile.h"
 #include "components/subcircuit.h"
+#include "components/libcomp.h"
 #include "dialogs/pinorderdialog.h"
 #include "dialogs/savedialog.h"
 #include "dialogs/newprojdialog.h"
@@ -1137,7 +1138,10 @@ bool QucsApp::populateLibTreeFromDir(const QString &LibDirPath, QList<QTreeWidge
 
         ComponentLibrary parsedlibrary;
 
-        int result = parseComponentLibrary (libPath , parsedlibrary, QUCS_COMP_LIB_FULL, relpath);
+        // Its parts name it by its name when that finds it (a schematic moved
+        // to another computer finds it in its search paths), else by its path.
+        const bool byName = relpath || LibComp::referenceTo(libPath + QStringLiteral(".lib")) != libPath;
+        int result = parseComponentLibrary (libPath , parsedlibrary, QUCS_COMP_LIB_FULL, byName);
         QStringList nameAndFileName;
         nameAndFileName.append (parsedlibrary.name.isEmpty() ? QFileInfo(*it).baseName() : parsedlibrary.name);
         nameAndFileName.append (LibDirPath + *it);
@@ -1167,8 +1171,9 @@ bool QucsApp::readLibraryParts(QTreeWidgetItem *library)
     if (libPath.isEmpty()) return true;   // read already, or read with its section
     library->setData(0, kUnreadLibrary, QVariant());
     ComponentLibrary parsed;
-    const int result = parseComponentLibrary(libPath, parsed, QUCS_COMP_LIB_FULL, false);
     const QString file = libPath + QStringLiteral(".lib");
+    // (By its name when that finds it: populateLibTreeFromDir().)
+    const int result = parseComponentLibrary(libPath, parsed, QUCS_COMP_LIB_FULL, LibComp::referenceTo(file) != libPath);
     if (result != QUCS_COMP_LIB_OK) {
         markUnreadable(library, file, result == QUCS_COMP_LIB_IO_ERROR ? tr("It cannot be opened.") : tr("It is not a library Qucs-S reads."));
         return false;

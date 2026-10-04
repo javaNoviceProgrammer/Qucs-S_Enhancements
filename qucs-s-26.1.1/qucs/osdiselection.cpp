@@ -473,6 +473,18 @@ QString buildTarget(const QString& vaFile, const QString& cacheDir, const QStrin
     return where == Into::Beside ? beside : cachedLibrary(source, cacheDir);
 }
 
+QStringList compileArguments(const QString& vaFile, const QString& library)
+{
+    const QFileInfo info(vaFile);
+    const QString target = library.isEmpty() ? besideLibrary(info) : QFileInfo(library).absoluteFilePath();
+    QString input = info.absoluteFilePath();
+    if (info.isSymLink() && !info.canonicalFilePath().isEmpty()) input = info.canonicalFilePath();
+    QStringList arguments{input};
+    if (QDir::cleanPath(target) != QDir::cleanPath(besideLibrary(QFileInfo(input))))
+        arguments << QStringLiteral("-o") << target;
+    return arguments;
+}
+
 QString modelOf(const QString& vaFile, const QString& cacheDir, const QString& simulator)
 {
     const QFileInfo source(vaFile);

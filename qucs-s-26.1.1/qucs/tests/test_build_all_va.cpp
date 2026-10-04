@@ -673,6 +673,53 @@ private slots:
         for (QMenu* menu : app.findChildren<QMenu*>()) menu->hide();
     }
 
+    // A library's source linked into the project (projectlibraries.h):
+    // Build All and Build give OpenVAF the file the link leads to - its
+    // `include lines found beside it, whatever an OpenVAF does with links -
+    // and have it write beside the link, in the project.
+    void aLinkedSourceIsCompiledFromItsFile()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("Symbolic links and a shell script stand in.");
+#endif
+        const QString calls = dir.filePath("linked-calls.log");
+        QucsSettings.OpenVAFExecutable = write(dir.filePath("fake-openvaf-out.sh"),
+            "#!/bin/sh\n"
+            "echo \"$*\" >> \"" + calls + "\"\n"
+            "out=\"${1%.va}.osdi\"\n"
+            "if [ \"$2\" = \"-o\" ]; then out=\"$3\"; fi\n"
+            "echo \"compiled $1\"\n"
+            "printf '\\000linked\\000' > \"$out\"\n", true);
+        QVERIFY(QDir().mkpath(dir.filePath("elsewhere")));
+        const QString original = write(dir.filePath("elsewhere/linked.va"), "module linked(p, n);\nendmodule\n");
+        const QString linkProject = dir.filePath("linkva_prj");
+        QVERIFY(QDir().mkpath(linkProject + "/lib"));
+        const QString link = linkProject + "/lib/linked.va";
+        QVERIFY(QFile::link(original, link));
+        const QString expected = QFileInfo(original).canonicalFilePath() + " -o " + linkProject + "/lib/linked.osdi";
+        QucsSettings.QucsWorkDir.setPath(linkProject);
+        QucsApp app(false);
+        MainGuard guard(&app);
+        const auto lines = [&] {
+            QFile f(calls);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()).trimmed().split('\n') : QStringList();
+        };
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotCMenuBuildAllVerilogA"));
+        QTRY_VERIFY_WITH_TIMEOUT(app.messages()->admsOutput->toPlainText().contains("Done:"), 15000);
+        QCOMPARE(lines(), QStringList{expected});
+        QVERIFY(QFileInfo::exists(linkProject + "/lib/linked.osdi"));
+        QVERIFY(!QFileInfo::exists(dir.filePath("elsewhere/linked.osdi")));
+        // Build, the link open in front.
+        QFile::remove(linkProject + "/lib/linked.osdi");
+        QFile::remove(calls);
+        QVERIFY(app.gotoPage(link));
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotBuildModule"));
+        QCOMPARE(lines(), QStringList{expected});
+        QVERIFY(QFileInfo::exists(linkProject + "/lib/linked.osdi"));
+        QVERIFY(!QFileInfo::exists(dir.filePath("elsewhere/linked.osdi")));
+        QucsSettings.QucsWorkDir.setPath(project);
+    }
+
     // A .va file open with changes: saved first when asked, then compiled.
     void compileSavesTheOpenFileFirst()
     {
