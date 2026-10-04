@@ -786,7 +786,7 @@ void SimulationRun::saveNetlist()
 
     if (!a_netlist2Console)
     {
-        filename = QFileDialog::getSaveFileName(
+        filename = misc::saveFileName(
                 nullptr,
                 tr("Save netlist"),
                 inf.path() + QDir::separator() + "netlist.cir",

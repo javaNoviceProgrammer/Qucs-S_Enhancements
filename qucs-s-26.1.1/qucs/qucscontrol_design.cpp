@@ -2453,7 +2453,7 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
     const auto rename = [&](const QString& text) {
         return withResultsNamed(text, newBase + QStringLiteral(".dat"), newBase + QStringLiteral(".dpl"));
     };
-    aboutToWrite(to);
+    if (const QString no = aboutToWrite(to); !no.isEmpty()) return errorResult(no);
     if (open != nullptr) {
         const QString temp = to + QStringLiteral(".part");
         if (!open->writeTo(temp) || !copyText(temp, to, rename, &error)) {
@@ -2475,7 +2475,7 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
             qucs_s::dataimport::Origin origin;
             if (suffix == QLatin1String(".dat") && qucs_s::dataimport::originOf(a, &origin)) continue;   // (an import: no run's)
             if (!QFileInfo::exists(a)) continue;
-            aboutToWrite(b);
+            if (!aboutToWrite(b).isEmpty()) continue;   // (said by the copy's own check)
             if (!misc::copyFileOver(a, b)) continue;
             written << QFileInfo(b).fileName();
             // The netlist its run was given, the copy's now: get_dataset
@@ -2488,8 +2488,7 @@ QJsonObject QucsControl::copyDocument(const QJsonObject& args)
         const QString dpl = src.absoluteDir().filePath(resultName(open, from, true));
         if (QFileInfo::exists(dpl)) {
             const QString b = dst.absoluteDir().filePath(newBase + QStringLiteral(".dpl"));
-            aboutToWrite(b);
-            if (copyText(dpl, b, [&](const QString& text) { return withResultsNamed(text, newBase + QStringLiteral(".dat"), newBase + QStringLiteral(".sch")); }, &error))
+            if (aboutToWrite(b).isEmpty() && copyText(dpl, b, [&](const QString& text) { return withResultsNamed(text, newBase + QStringLiteral(".dat"), newBase + QStringLiteral(".sch")); }, &error))
                 written << QFileInfo(b).fileName();
         }
     }
@@ -3424,7 +3423,7 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
             QFile there(subcircuitFile);
             if (!there.exists() || (there.open(QIODevice::ReadOnly) && there.readAll() == content)) break;
         }
-        aboutToWrite(subcircuitFile);
+        if (const QString no = aboutToWrite(subcircuitFile); !no.isEmpty()) return errorResult(no);
         QFile f(subcircuitFile);
         if (f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
             f.write(content);

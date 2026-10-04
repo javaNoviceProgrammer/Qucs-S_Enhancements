@@ -30,6 +30,7 @@
 #include "main.h"
 #include "qucs.h"
 #include "schematic.h"
+#include "projectlibraries.h"
 
 #include <cstdio>
 #if defined(Q_OS_MACOS)
@@ -775,6 +776,25 @@ bool misc::isSameFile(const QString& a, const QString& b)
   quint64 deviceA = 0, indexA = 0, deviceB = 0, indexB = 0;
   if (!fileIdentity(a, deviceA, indexA) || !fileIdentity(b, deviceB, indexB)) return false;
   return deviceA == deviceB && indexA == indexB;
+}
+
+QString misc::saveFileName(QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
+                           QString* selectedFilter, QFileDialog::Options options)
+{
+  QString at = dir;
+  for (;;) {
+    const QString file = QFileDialog::getSaveFileName(parent, caption, at, filter, selectedFilter, options);
+    if (file.isEmpty() || !refusesToWrite(parent, caption, file)) return file;
+    at = QFileInfo(file).absolutePath();
+  }
+}
+
+bool misc::refusesToWrite(QWidget* parent, const QString& title, const QString& file)
+{
+  const QString why = qucs_s::projectlibraries::notToWrite(file);
+  if (why.isEmpty()) return false;
+  QMessageBox::warning(parent, title, why);
+  return true;
 }
 
 bool misc::moveToTrash(const QString& path, QString* where)

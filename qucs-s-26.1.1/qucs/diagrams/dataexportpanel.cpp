@@ -452,7 +452,7 @@ QString DataExportPanel::proposedFile() const
 void DataExportPanel::exportFile()
 {
     const de::Format f = options().format;
-    const QString path = QFileDialog::getSaveFileName(this, tr("Export Data"), proposedFile(), de::filterOf(f));
+    const QString path = misc::saveFileName(this, tr("Export Data"), proposedFile(), de::filterOf(f));
     if (path.isEmpty()) return;
     // A suffix to be added (a name of no format's): its file asked about
     // as the dialog asks about the one named.

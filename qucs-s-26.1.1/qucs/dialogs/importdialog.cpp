@@ -30,6 +30,7 @@
 #include <QListView>
 
 #include "importdialog.h"
+#include "misc.h"
 #include "main.h"
 #include "qucs.h"
 
@@ -173,7 +174,7 @@ void ImportDialog::slotBrowse()
 
 void ImportDialog::slotSaveBrowse()
 {
-    QString s = QFileDialog::getSaveFileName(
+    QString s = misc::saveFileName(
        this, tr("Enter a Data File Name"),
        lastImportDir.isEmpty() ? QStringLiteral(".") : lastImportDir,
        tr("All known")+
@@ -193,6 +194,8 @@ void ImportDialog::slotImport()
 {
   MsgText->clear();
   if (OutputEdit->text().isEmpty())
+    return;
+  if (misc::refusesToWrite(this, windowTitle(), QucsSettings.QucsWorkDir.filePath(OutputEdit->text())))
     return;
 
   ImportButt->setDisabled(true);

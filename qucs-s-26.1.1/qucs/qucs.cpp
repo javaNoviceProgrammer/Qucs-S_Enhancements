@@ -1850,7 +1850,7 @@ bool QucsApp::saveDatasetAsText(const QString &path, const QString &target)
 {
   QString to = target;
   if (to.isEmpty())
-    to = QFileDialog::getSaveFileName(this, tr("Save Dataset as Text"), path + QStringLiteral(".txt"),
+    to = misc::saveFileName(this, tr("Save Dataset as Text"), path + QStringLiteral(".txt"),
                                       tr("Qucs dataset as text (*.txt *.dat);;All files (*)"));
   if (to.isEmpty()) return false;
   const auto fail = [this, &to](const QString &why) {
@@ -3092,7 +3092,7 @@ bool QucsApp::saveAs()
       }
     }
 
-    s = QFileDialog::getSaveFileName(this, tr("Enter a Document Name"),
+    s = misc::saveFileName(this, tr("Enter a Document Name"),
                                      s, Filter, &selfilter);
     if(s.isEmpty())  return false;
     Info.setFile(s);               // try to guess the best extension ...
@@ -3126,6 +3126,8 @@ bool QucsApp::saveAs()
     }
 
     Info.setFile(s);
+    // (Its suffix added: a library's Verilog-A the project keeps, asked again.)
+    if (misc::refusesToWrite(this, tr("Enter a Document Name"), s)) continue;
     if(QFile::exists(s)) {
       n = QMessageBox::warning(this, tr("Warning"),
       tr("The file '")+Info.fileName()+tr("' already exists!\n")+
@@ -3660,7 +3662,7 @@ void QucsApp::slotExportSettings()
   slotHideEdit();
   const QString title = tr("Export Settings");
   const QString folder = lastDir.isEmpty() ? QDir::homePath() : lastDir;
-  QString path = QFileDialog::getSaveFileName(this, title, QDir(folder).filePath(QStringLiteral("qucs-s-settings.json")),
+  QString path = misc::saveFileName(this, title, QDir(folder).filePath(QStringLiteral("qucs-s-settings.json")),
                                               tr("Qucs-S settings (*.json);;All files (*)"));
   if (path.isEmpty()) return;
   if (QFileInfo(path).suffix().isEmpty()) path += QStringLiteral(".json");
@@ -5497,7 +5499,7 @@ void QucsApp::slotSymbolSaveAs()
       (info.path().isEmpty() ? QucsSettings.QucsWorkDir.path() : info.path())
       + QDir::separator() + info.completeBaseName() + ".sym";
 
-  const QString file = QFileDialog::getSaveFileName(this, tr("Save Symbol As"), suggestion,
+  const QString file = misc::saveFileName(this, tr("Save Symbol As"), suggestion,
                                                     tr("Symbol files") + " (*.sym)");
   if (file.isEmpty()) return;
 
@@ -6162,7 +6164,7 @@ void QucsApp::slotSaveCdlNetlist()
         else
         {
             QFileInfo inf(schematic->getDocName());
-            QString filename = QFileDialog::getSaveFileName(
+            QString filename = misc::saveFileName(
                     this,
                     tr("Save CDL netlist"),
                     inf.path() + QDir::separator() + "netlist.cdl",
@@ -6251,7 +6253,7 @@ void QucsApp::slotBuildVAModule()
     if (Schematic *Sch = currentSchematic()) {
 
         QFileInfo inf(Sch->getDocName());
-        QString filename = QFileDialog::getSaveFileName(this,tr("Save Verilog-A module"),
+        QString filename = misc::saveFileName(this,tr("Save Verilog-A module"),
                                                         inf.path()+QDir::separator()+"testmodule.va",
                                                         "Verilog-A (*.va)");
         if (filename.isEmpty()) return;
