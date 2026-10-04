@@ -48,6 +48,7 @@
 #include "qucs.h"
 #include "misc.h"
 #include "osdiselection.h"
+#include "projectlibraries.h"
 #include "painting.h"
 #include "extsimkernels/abstractspicekernel.h"
 #include "extsimkernels/spicecompat.h"
@@ -433,9 +434,18 @@ int LibraryDialog::embedVerilogA(Schematic *doc, const QString &spice, const QSt
     sources << project.absoluteFilePath(file);
   for (const QString &file : misc::projectFiles(project, {"*.osdi"}))
     libraries << project.absoluteFilePath(file);
+  // A library's source the project has a link to (or a copy of) once.
+  QSet<QString> linked;
+  for (const QString &source : std::as_const(sources)) {
+    linked.insert(QFileInfo(source).canonicalFilePath());
+    if (const auto entry = qucs_s::projectlibraries::entryOf(source); !entry.isEmpty())
+      linked.insert(QFileInfo(entry.original).canonicalFilePath());
+  }
+  linked.remove(QString());
   for (const QString &file : AbstractSpiceKernel::collectVerilogAFiles(doc)) {
     if (!QFileInfo(file).isFile()) continue;
-    if (file.endsWith(".va", Qt::CaseInsensitive) && !sources.contains(file)) sources << file;
+    if (file.endsWith(".va", Qt::CaseInsensitive) && !sources.contains(file)
+        && !linked.contains(QFileInfo(file).canonicalFilePath())) sources << file;
     else if (file.endsWith(".osdi", Qt::CaseInsensitive) && !libraries.contains(file)) libraries << file;
   }
 
@@ -476,8 +486,10 @@ int LibraryDialog::embedVerilogA(Schematic *doc, const QString &spice, const QSt
     if (copied) QFile::remove(folder.absoluteFilePath(QFileInfo(name).completeBaseName() + ".osdi"));
     if (!attached.contains(name)) attached << name;
     embedded << name;
-    // The files it includes, where it finds them: beside it, or below.
-    const QDir sourceFolder = QFileInfo(va).absoluteDir();
+    // The files it includes, where it finds them: beside it, or below
+    // (beside the file a link leads to, for a library's linked source).
+    const QFileInfo vaInfo(va);
+    const QDir sourceFolder = vaInfo.isSymLink() ? QFileInfo(vaInfo.symLinkTarget()).absoluteDir() : vaInfo.absoluteDir();
     for (const QString &included : qucs_s::osdi::sourceIncludes(va)) {
       const QString relative = sourceFolder.relativeFilePath(included);
       if (relative.startsWith("..")) {
@@ -670,6 +682,10 @@ void LibraryDialog::slotSave()
                  << "\">\n";
         }
         delete kern;
+        // The subcircuits written into the SPICE netlist: forgotten. Kept, the
+        // next netlist built - a simulation's, the Verilog-A it compiles -
+        // took the library's parts for written and left their model out.
+        FileList.clear();
         QucsSettings.DefaultSimulator = sim;
     //}
 

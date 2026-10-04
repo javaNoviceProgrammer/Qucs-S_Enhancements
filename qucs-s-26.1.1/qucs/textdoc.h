@@ -90,6 +90,11 @@ public:
   /// viewport's coordinates, as the margin is level with the viewport),
   /// one a line; empty for none.
   QString diagnosticsAtY(int y) const;
+  /// The library whose Verilog-A this file is, linked (or copied) into
+  /// the project (projectlibraries.h); empty for any other file. Such a
+  /// file is shown read-only, with a note at the top saying whose it is,
+  /// and is not saved: it is changed in its library.
+  QString libraryOrigin() const { return a_libraryName; }
   virtual double zoomBy (double zoom) override;
   virtual void showNoZoom () override;
   void  becomeCurrent (bool);
@@ -189,6 +194,11 @@ private:
   /// without, UTF-8 for this writing alone.
   bool encodedText(QByteArray* bytes, bool ask);
   LineNumberArea *lineNumberArea = nullptr;
+  QString a_libraryName;                  // libraryOrigin()
+  class QLabel *a_libraryNote = nullptr;  // its note, at the top right
+  /// Read-only, with its note, when its file is a library's (libraryOrigin()).
+  void showLibraryOrigin();
+  void placeLibraryNote();
 
 private slots:
   void highlightCurrentLine();

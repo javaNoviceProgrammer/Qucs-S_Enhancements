@@ -114,6 +114,10 @@ QJsonObject QucsControl::editText(const QJsonObject& args)
     QString error;
     TextDoc* text = textDocument(args, &error);
     if (text == nullptr) return errorResult(error);
+    if (const QString library = text->libraryOrigin(); !library.isEmpty())
+        return errorResult(tr("%1 is the Verilog-A of a device of the library %2, linked into the project read-only: it is "
+                              "changed in the library, which every project using it shares (its tooltip in the Content "
+                              "panel names the file). Nothing was changed.").arg(titleOf(text), library));
     if (text->isReadOnly()) return errorResult(tr("%1 is read-only.").arg(titleOf(text)));
     if (args.contains(QLatin1String("revision"))) {
         // (A whole number from 0, as get_text gives it - -1 or 1e308 made

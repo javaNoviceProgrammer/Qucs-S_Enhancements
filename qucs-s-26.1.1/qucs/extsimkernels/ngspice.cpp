@@ -22,6 +22,7 @@
 #include <functional>
 #include <QStandardPaths>
 #include "osdiselection.h"
+#include "projectlibraries.h"
 #include "ngoptimize.h"
 #include "ngstatistics.h"
 #include "ngsweep.h"
@@ -137,8 +138,21 @@ void Ngspice::verilogAFiles(QStringList* sources, QStringList* libraries) const
         if (!containsFile(*sources, file)) *sources << file;
     for (const QString& file : besideSchematic({"*.osdi"}))
         if (!containsFile(*libraries, file)) *libraries << file;
+    // A library's source the project has a link to (or a copy of: Windows)
+    // is the project's: compiled beside that, not where the library is -
+    // nor is a model there, compiled from it before, loaded.
+    QSet<QString> linked;
+    for (const QString& source : std::as_const(*sources)) {
+        linked.insert(QFileInfo(source).canonicalFilePath());
+        if (const auto entry = qucs_s::projectlibraries::entryOf(source); !entry.isEmpty())
+            linked.insert(QFileInfo(entry.original).canonicalFilePath());
+    }
+    linked.remove(QString());
     for (const QString& file : collectVerilogAFiles(a_schematic)) {
-        if (!QFileInfo(file).isFile()) continue;
+        const QFileInfo info(file);
+        if (!info.isFile()) continue;
+        const QString source = info.absoluteDir().absoluteFilePath(info.completeBaseName() + QStringLiteral(".va"));
+        if (linked.contains(QFileInfo(source).canonicalFilePath())) continue;
         if (file.endsWith(QLatin1String(".va"), Qt::CaseInsensitive) && !sources->contains(file)) *sources << file;
         else if (file.endsWith(QLatin1String(".osdi"), Qt::CaseInsensitive) && !libraries->contains(file)) *libraries << file;
     }

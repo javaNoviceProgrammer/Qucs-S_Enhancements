@@ -3539,6 +3539,9 @@ QString QucsControl::instructions() const
         "lists a Verilog-A module's parameters. find_library_component finds a part by its values (an NPN with Bf near "
         "200), describe_part a library part's pins, model and tested status; list_libraries lists the libraries as the Libraries "
         "panel does, create_library makes one of the project's subcircuits and import_library brings a library file in; "
+        "the Verilog-A of a library device a schematic of the project uses is linked into the project, in a folder named "
+        "after its library (read-only - change it in the library -, compiled there), and taken away with its model when no "
+        "schematic uses the device; "
         "read_pdf reads a datasheet's text; "
         "get_text and edit_text read and edit a text tab (a netlist, a .va) with the user's unsaved edits, goto_line "
         "shows a line of it; "
@@ -5138,14 +5141,31 @@ QJsonObject QucsControl::saveDocument(const QJsonObject& args)
         aboutToWrite(target);
         if (!a_app->saveDocumentAs(doc, target)) return errorResult(tr("%1 could not be saved.").arg(QDir::toNativeSeparators(target)));
         const QString refreshed = refreshedInstances(instances);
-        return textResult(tr("Saved as %1.").arg(QDir::toNativeSeparators(target)) + (refreshed.isEmpty() ? QString() : QLatin1Char(' ') + refreshed));
+        return textResult(tr("Saved as %1.").arg(QDir::toNativeSeparators(target)) + (refreshed.isEmpty() ? QString() : QLatin1Char(' ') + refreshed)
+                          + librariesLinked(doc));
     }
     if (doc->getDocName().isEmpty()) return errorResult(tr("%1 has no file yet: give 'as'.").arg(titleOf(doc)));
     const QList<Instance> instances = instancesOf(a_app, doc, doc->getDocName(), [this](QucsDoc* d) { return titleOf(d); });
     aboutToWrite(doc->getDocName());
     if (!a_app->saveFile(doc)) return errorResult(tr("%1 could not be saved.").arg(QDir::toNativeSeparators(doc->getDocName())));
     const QString refreshed = refreshedInstances(instances);
-    return textResult(tr("Saved %1.").arg(QDir::toNativeSeparators(doc->getDocName())) + (refreshed.isEmpty() ? QString() : QLatin1Char(' ') + refreshed));
+    return textResult(tr("Saved %1.").arg(QDir::toNativeSeparators(doc->getDocName())) + (refreshed.isEmpty() ? QString() : QLatin1Char(' ') + refreshed)
+                      + librariesLinked(doc));
+}
+
+QString QucsControl::librariesLinked(QucsDoc* saved) const
+{
+    // A schematic's save brought the project's library folders up to date.
+    if (kindOf(saved) != QLatin1String("schematic")) return {};
+    const qucs_s::projectlibraries::Report& sync = a_app->lastLibrarySync();
+    QStringList said;
+    if (!sync.made.isEmpty())
+        said << tr("linked into the project from its library (read-only; compiled there): %1").arg(sync.made.join(QStringLiteral(", ")));
+    if (!sync.removed.isEmpty())
+        said << tr("taken away, with its model - no schematic of the project uses it now: %1").arg(sync.removed.join(QStringLiteral(", ")));
+    if (!sync.conflicts.isEmpty())
+        said << tr("not linked, a file of the project's in the way: %1").arg(sync.conflicts.join(QStringLiteral(", ")));
+    return said.isEmpty() ? QString() : tr(" Library Verilog-A %1.").arg(said.join(QStringLiteral("; ")));
 }
 
 QJsonObject QucsControl::closeDocument(const QJsonObject& args)

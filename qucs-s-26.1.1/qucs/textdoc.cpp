@@ -19,6 +19,8 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 # include <config.h>
 #endif
 #include <QAction>
+#include <QDir>
+#include <QLabel>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMessageBox>
@@ -38,6 +40,7 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 #include "qucs.h"
 #include "textdoc.h"
 #include "syntax.h"
+#include "projectlibraries.h"
 #include "apptheme.h"
 #include "components/vhdlfile.h"
 #include "components/verilogfile.h"
@@ -258,6 +261,7 @@ void TextDoc::setName (const QString& Name_)
 {
   a_DocName = Name_;
   setLanguage (a_DocName);
+  if (a_countsEdits) showLibraryOrigin();   // (saved as another file: that one's; load() does it first)
 
   QFileInfo Info (a_DocName);
 
@@ -353,6 +357,7 @@ void TextDoc::search(const QString &str, bool CaseSensitive, bool wordOnly, bool
 void TextDoc::replace(const QString &str, const QString &str2, bool needConfirmed,
                       bool CaseSensitive, bool wordOnly, bool backward)
 {
+  if (isReadOnly()) return;   // (a library's Verilog-A: libraryOrigin())
   bool finded = baseSearch(str, CaseSensitive, wordOnly, backward);
   int i;
 
@@ -456,7 +461,42 @@ bool TextDoc::load ()
   a_textRevision = document()->revision();
   a_countsEdits = true;
   edited();
+  showLibraryOrigin();
   return true;
+}
+
+void TextDoc::showLibraryOrigin()
+{
+  const qucs_s::projectlibraries::Entry entry = qucs_s::projectlibraries::entryOf(a_DocName);
+  const bool was = !a_libraryName.isEmpty();
+  a_libraryName = entry.library;
+  if (entry.isEmpty()) {
+    if (was) setReadOnly(false);
+    if (a_libraryNote != nullptr) a_libraryNote->hide();
+    return;
+  }
+  setReadOnly(true);
+  if (a_libraryNote == nullptr) {
+    a_libraryNote = new QLabel(viewport());
+    a_libraryNote->setObjectName(QStringLiteral("libraryOrigin"));
+    a_libraryNote->setAutoFillBackground(true);
+    a_libraryNote->setBackgroundRole(QPalette::ToolTipBase);
+    a_libraryNote->setForegroundRole(QPalette::ToolTipText);
+    a_libraryNote->setMargin(4);
+  }
+  a_libraryNote->setText(tr("Library %1 - read-only").arg(entry.library));
+  a_libraryNote->setToolTip(tr("The Verilog-A of a device of the library %1, which a schematic of the project uses: "
+                               "%2. Qucs-S keeps it here while one does; change it in the library.")
+                                .arg(entry.library, QDir::toNativeSeparators(entry.original)));
+  a_libraryNote->adjustSize();
+  placeLibraryNote();
+  a_libraryNote->show();
+}
+
+void TextDoc::placeLibraryNote()
+{
+  if (a_libraryNote != nullptr)
+    a_libraryNote->move(qMax(0, viewport()->width() - a_libraryNote->width() - 8), 4);
 }
 
 /*!
@@ -513,6 +553,14 @@ bool TextDoc::writeTo(const QString& path)
 
 int TextDoc::save ()
 {
+  // A library's Verilog-A linked into the project: changed in its library,
+  // which other projects use too - never through the link.
+  if (const auto entry = qucs_s::projectlibraries::entryOf(a_DocName); !entry.isEmpty()) {
+    misc::reportError(tr("%1 is the Verilog-A of the library %2, linked into the project, and is not saved here: change "
+                         "it in the library (%3), which every project using it shares.")
+                          .arg(QFileInfo(a_DocName).fileName(), entry.library, QDir::toNativeSeparators(entry.original)));
+    return -1;
+  }
   // First the text as bytes: a save the user calls off writes nothing.
   QByteArray bytes;
   if (!encodedText(&bytes, true))
@@ -590,6 +638,7 @@ bool TextDoc::loadSimulationTime(QString& Time)
  */
 void TextDoc::commentSelected ()
 {
+  if (isReadOnly()) return;
   QTextCursor cursor = this->textCursor();
 
   if(!cursor.hasSelection())
@@ -975,6 +1024,7 @@ void TextDoc::updateLineNumberArea(const QRect &rect, int dy)
 void TextDoc::resizeEvent(QResizeEvent *e)
 {
     QPlainTextEdit::resizeEvent(e);
+    placeLibraryNote();
 
     const QMargins extra = extraMargins();
     QRect cr = contentsRect();

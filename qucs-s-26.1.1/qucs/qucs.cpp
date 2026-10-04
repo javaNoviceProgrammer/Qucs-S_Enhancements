@@ -2199,6 +2199,39 @@ void QucsApp::openProject(const QString& PathGiven)
     // show name in title of main window
   setWindowTitle( tr("Project: ") + ProjName + " (" +  parentDir.absolutePath() + ") - " + windowTitle);
   fillLibrariesTreeView();
+  syncProjectLibraries();   // (links that lead nowhere here made again)
+}
+
+qucs_s::projectlibraries::Report QucsApp::syncProjectLibraries(Schematic *also)
+{
+  a_librarySync = {};
+  if (ProjName.isEmpty()) return a_librarySync;
+  const QString project = QucsSettings.QucsWorkDir.absolutePath();
+  const QString real = QDir(project).canonicalPath();
+  // The schematics open in the project - untitled ones too -, their
+  // unsaved changes counted: a part placed and not yet saved keeps its
+  // library's link, one taken away and not saved too.
+  QList<Schematic *> open;
+  const auto inProject = [&](Schematic *sch) {
+    const QString name = sch->getDocName();
+    const QString where = QFileInfo(name).canonicalFilePath();
+    return name.isEmpty() || (!real.isEmpty() && where.startsWith(real + QLatin1Char('/')));
+  };
+  for (QucsDoc *doc : allDocuments())
+    if (auto *sch = dynamic_cast<Schematic *>(doc); sch != nullptr && inProject(sch)) open << sch;
+  if (also != nullptr && !open.contains(also) && inProject(also)) open << also;
+  a_librarySync = qucs_s::projectlibraries::sync(project, open);
+  if (a_librarySync.changed()) {
+    Content->refresh();
+    QStringList said;
+    if (!a_librarySync.made.isEmpty())
+      said << tr("linked from its library: %1", "", int(a_librarySync.made.size())).arg(a_librarySync.made.join(QStringLiteral(", ")));
+    if (!a_librarySync.removed.isEmpty())
+      said << tr("no schematic uses it now, taken away: %1", "", int(a_librarySync.removed.size()))
+                  .arg(a_librarySync.removed.join(QStringLiteral(", ")));
+    statusBar()->showMessage(tr("Library Verilog-A %1").arg(said.join(QStringLiteral("; "))), 10000);
+  }
+  return a_librarySync;
 }
 
 // ----------------------------------------------------------
@@ -2944,6 +2977,7 @@ bool QucsApp::saveFile(QucsDoc *Doc)
   int Result = Doc->save();
   if(Result < 0)  return false;
   qucs_s::autosave::remove(Doc->getDocName());
+  if (dynamic_cast<Schematic *>(Doc) != nullptr) syncProjectLibraries();
 
   // It's assumed that *.sym files contain *only* a symbol
   // definition. We don't want these files to be subject
@@ -3140,6 +3174,7 @@ bool QucsApp::saveDocumentAs(QucsDoc *Doc, const QString &fileName)
   if (wasNamed.isEmpty())
     qucs_s::autosave::removeUntitled(docIndex, schematicIn(w) != nullptr);   // it was untitled before
   qucs_s::autosave::remove(s);
+  if (dynamic_cast<Schematic *>(Doc) != nullptr) syncProjectLibraries();
 
   // It's assumed that *.sym files contain *only* a symbol
   // definition. We don't want these files to be subject

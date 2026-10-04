@@ -19,6 +19,7 @@
 #include "main.h"
 #include "misc.h"
 #include "node.h"
+#include "schematic.h"
 #include "extsimkernels/qucs2spice.h"
 #include "extsimkernels/spicecompat.h"
 
@@ -101,7 +102,13 @@ void LibComp::createSymbol()
 int LibComp::loadSection(const QString& Name, QString& Section,
              QStringList *Includes, QStringList *Attach)
 {
-  QFile file(libraryFile());
+  return loadSectionOf(libraryFile(), Props.at(1)->Value, Name, Section, Includes, Attach);
+}
+
+int LibComp::loadSectionOf(const QString& libraryFile, const QString& comp, const QString& Name, QString& Section,
+                           QStringList *Includes, QStringList *Attach)
+{
+  QFile file(libraryFile);
   if(!file.open(QIODevice::ReadOnly))
     return -1;
 
@@ -137,7 +144,7 @@ int LibComp::loadSection(const QString& Name, QString& Section,
   }
 
   // search component
-  Line = "\n<Component " + Props.at(1)->Value + ">";
+  Line = "\n<Component " + comp + ">";
   Start = Section.indexOf(Line);
   if(Start < 0)  return -4;  // component not found
   Start = Section.indexOf('\n', Start);
@@ -325,8 +332,13 @@ int LibComp::loadSymbol()
 // -------------------------------------------------------
 QString LibComp::libraryFile() const
 {
+  return libraryFileOf(Props.first()->Value, containingSchematic != nullptr ? containingSchematic->getFileInfo().dir().path() : QString());
+}
+
+QString LibComp::libraryFileOf(const QString& lib, const QString& folder)
+{
   const QDir Directory(QucsSettings.LibDir);
-  return misc::properAbsFileName(Directory.absoluteFilePath(Props.first()->Value + ".lib"), containingSchematic);
+  return misc::properAbsFileNameIn(Directory.absoluteFilePath(lib + ".lib"), folder);
 }
 
 QString LibComp::getSubcircuitFile()
@@ -477,11 +489,18 @@ QString LibComp::cdl_netlist()
 
 QStringList LibComp::getVerilogAFiles()
 {
+  return verilogAFilesOf(libraryFile(), Props.at(1)->Value);
+}
+
+QStringList LibComp::verilogAFilesOf(const QString& libraryFile, const QString& comp)
+{
   QString content;
   QStringList includes, attach;
-  if (loadSection("Spice", content, &includes, &attach) < 0)
+  if (loadSectionOf(libraryFile, comp, "Spice", content, &includes, &attach) < 0)
     return {};
-  const QDir folder(getSubcircuitFile());
+  QString library = libraryFile;
+  library.chop(4);   // its folder: the file without ".lib"
+  const QDir folder(library);
   QStringList files;
   for (const QString &file : std::as_const(attach)) {
     if (file.endsWith(".osdi", Qt::CaseInsensitive)) {

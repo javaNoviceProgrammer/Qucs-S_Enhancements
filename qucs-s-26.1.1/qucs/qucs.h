@@ -21,6 +21,7 @@
 #include "dialogs/qucsshortcutdialog.h"
 #include "qucsshortcutmanager.h"
 #include "namefilter.h"
+#include "projectlibraries.h"
 #include <QFileSystemModel>
 #include <QHash>
 #include <QMainWindow>
@@ -808,6 +809,7 @@ private:
   QFileSystemWatcher *a_libraryWatcher = nullptr;
   QTimer *a_libraryRefresh = nullptr;
   QString a_librarySignature;   // their .lib files as they were last shown
+  qucs_s::projectlibraries::Report a_librarySync;   // lastLibrarySync()
   QString librarySignature() const;
   void saveSettings();
   QWidget *getSchematicWidget(QucsDoc *Doc);
@@ -828,6 +830,16 @@ public:
   bool readLibraryParts(QTreeWidgetItem *library);
   /// The Libraries panel's tree (the tests read it).
   QTreeWidget *librariesTree() const { return libTreeWidget; }
+  /// The open project's folders of library Verilog-A brought up to date
+  /// (projectlibraries::sync()) with its saved schematics and those open -
+  /// \a also too, a schematic being simulated that no tab has: a link to
+  /// the source of each library device one uses, those no one uses taken
+  /// away. The Content panel shows it, the status bar says what changed.
+  /// After a schematic is saved, when the project opens, before an ngspice
+  /// simulation compiles its Verilog-A. Nothing without a project.
+  qucs_s::projectlibraries::Report syncProjectLibraries(Schematic *also = nullptr);
+  /// What the last syncProjectLibraries() did.
+  const qucs_s::projectlibraries::Report &lastLibrarySync() const { return a_librarySync; }
   /// Which folders are projects changed (QucsSettings.AnyFolderIsProject):
   /// the Projects panel sorts and marks them anew, the file browser too.
   void applyProjectSettings();

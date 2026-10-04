@@ -378,6 +378,9 @@ void SimulationRun::stop()
 
 bool SimulationRun::startBuilds()
 {
+    // The project's links to the Verilog-A of the library devices its
+    // schematics use - this one's, unsaved, too: compiled beside them.
+    if (QucsMain != nullptr) QucsMain->syncProjectLibraries(a_schematic.data());
     a_builds = a_ngspice->verilogABuilds();
     if (a_builds.isEmpty()) return false;
     const QStyle *style = QApplication::style();

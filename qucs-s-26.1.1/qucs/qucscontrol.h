@@ -246,6 +246,8 @@ private:
     QJsonObject openDocument(const QJsonObject& args);
     QJsonObject newDocument(const QJsonObject& args);
     QJsonObject showDocument(const QJsonObject& args);
+    /// What a schematic's save did to the project's library folders (QucsApp::syncProjectLibraries()), as a sentence; empty for none.
+    QString librariesLinked(QucsDoc* saved) const;
     QJsonObject saveDocument(const QJsonObject& args);
     QJsonObject closeDocument(const QJsonObject& args);
     // A schematic.

@@ -37,6 +37,9 @@ public:
   /// part's model and the files of the library's folder (getSubcircuitFile())
   /// come from that one file.
   QString libraryFile() const;
+  /// libraryFile() of a part whose Lib is \a lib in a schematic in \a folder
+  /// (its file's folder; empty: in none) - for a schematic read as text.
+  static QString libraryFileOf(const QString& lib, const QString& folder);
   /// The library's folder: libraryFile() without ".lib".
   QString getSubcircuitFile();
   QString getSpiceLibrary();
@@ -45,6 +48,8 @@ public:
   /// compiled from each where there is one (OpenVAF puts it beside the
   /// source).
   QStringList getVerilogAFiles() override;
+  /// getVerilogAFiles() of the component \a comp of the library \a libraryFile.
+  static QStringList verilogAFilesOf(const QString& libraryFile, const QString& comp);
   /// The part's model when it is one component line (a varactor's
   /// <Diode ...> with the library's values, a MOSFET's <_MOSFET ...>): the
   /// library panel places that component, not a Lib - whose netlist would
@@ -74,6 +79,9 @@ private:
   /// another's place takes the pins by name.
   void namePinsFromModel();
   int  loadSection(const QString&, QString&, QStringList* i=0, QStringList *Attach=0);
+  /// loadSection() of the component \a comp of the library \a libraryFile.
+  static int loadSectionOf(const QString& libraryFile, const QString& comp, const QString& Name, QString& Section,
+                           QStringList* Includes, QStringList* Attach);
   QString createType();
 };
 

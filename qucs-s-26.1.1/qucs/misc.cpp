@@ -381,6 +381,11 @@ void misc::convert2ASCII(QString& Text)
 // Converts a path to an absolute path
 QString misc::properAbsFileName(const QString& filename, Schematic* sch)
 {
+  return properAbsFileNameIn(filename, sch != nullptr ? sch->getFileInfo().dir().path() : QString());
+}
+
+QString misc::properAbsFileNameIn(const QString& filename, const QString& folder)
+{
   QString fName = filename;
   QFileInfo fileInfo(fName);
 
@@ -389,8 +394,8 @@ QString misc::properAbsFileName(const QString& filename, Schematic* sch)
     fName = fileInfo.fileName();
   }
 
-  if ( sch != nullptr ) {
-    fileInfo.setFile(sch->getFileInfo().dir().filePath(fName));
+  if ( !folder.isEmpty() ) {
+    fileInfo.setFile(QDir(folder).filePath(fName));
     if ( fileInfo.exists() ) return fileInfo.canonicalFilePath();
   }
 
@@ -410,7 +415,7 @@ QString misc::properAbsFileName(const QString& filename, Schematic* sch)
   // workspace's user_lib. (Not found, an SpLib part had no pins, and the
   // labels on them nothing to hold them.)
   QStringList userLibs;
-  if (sch != nullptr) userLibs << sch->getFileInfo().dir().filePath(QStringLiteral("user_lib"));
+  if (!folder.isEmpty()) userLibs << QDir(folder).filePath(QStringLiteral("user_lib"));
   userLibs << QucsSettings.QucsWorkDir.filePath(QStringLiteral("user_lib"))
            << QucsSettings.qucsWorkspaceDir.filePath(QStringLiteral("user_lib"));
   for (const QString& path : std::as_const(userLibs)) {
