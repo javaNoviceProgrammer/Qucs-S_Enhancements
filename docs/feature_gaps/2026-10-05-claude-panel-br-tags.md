@@ -402,3 +402,70 @@ is not seen as one by the walk. It stays where Qt puts it, in its item's paragra
 
 Last round's "a mark can show as `<p></p>`" after a tab-indented fence in a list item
 no longer happens: such a mark is taken out as text.
+
+## The re-check of `5181da6`
+
+The reviewer checked `5181da6` in the window, on the build installed a minute after
+the commit, and with test programs rebuilt against it. The degenerate tables kept
+their end, and a list item's `<div>` sat under its bullet. The 1,419 replies were as
+before. On their fuzzer's seeds, losses went from 62 to 16 of 20,000, and with the
+newer fragments from 50 to 10. Three things were left; all reproduced.
+
+| Re-check | Now |
+|---|---|
+| **1. A backtick pair across table rows turns `<…>` in code into `&lt;…>` (LOW-MEDIUM, a regression against plain Qt).** Row 3's stray backtick was paired with row 4's, so the `<name>` md4c reads as code in row 4 was escaped and showed `&lt;name>`. Code across rows lost the end. | **In a table, a row is read on its own, as md4c reads it.** The walk keeps where the table's row ends, its header's too. Inline code ends there, and so does a tag over lines or a comment in the balancer. The console table shows `<name>`, and every case keeps its end. md4c reads a code span or a comment across a cell's `\|` whole, so the row, not the cell, is the limit. |
+| **2. Text right after an HTML block, with no blank line, joins it (cosmetic).** "para", `<div>x</div>`, "next line" read "para / xnext line". In a quote or list item that text was drawn at the margin. | **A line of its own.** Qt puts a line after one that ends with a block's closing tag (`</div>`, `</p>`, `</summary>`, `<hr>`) into that block; a browser draws it below. Such a line now starts with a mark, so it is a block of its own: "para / x / next line". Two `<div>`s on two lines are two lines; `<details>`' summary and body are apart. In a quote or list item, the end mark now goes at the block's last line, after text too, so those lines are in the quote or under the bullet. |
+| **3. The remaining fuzz losses: tables with a header of only `\|`, followed by `>`, `<hr` or a backtick across rows.** | The backtick ones are item 1. The rest came from four more differences with md4c, now followed:<ul><li>A line with fewer quote marks continues the quote's paragraph lazily, so it starts no table.</li><li>A quote or list mark ends a table. The check had looked past the marks, so it never saw them.</li><li>A tag is one only as CommonMark has it: `<b "x">`, `<b/x>`, `<p "">` and `<a href=x?y=z>` are text to md4c, while the `</b>` after them counted. md4c takes `</d/>` for a tag, which Qt counts twice, so it is text.</li><li>An HTML block in a list item ends with the item. It had run on into the next item, where a separator came after `- ` and the item lost its list.</li></ul> |
+
+With all the reviewer's fragments, 6 of 20,000 texts lose the closing paragraph; 6
+without the three newer ones (14 and 9 on `5181da6`). What remains is the known md4c
+fence quirk and indented code in containers. On the property test's seeds, nothing
+new: 0, or 1 to 2 of 20,000 on three seeds, all of those kinds. The 1,419 replies and
+the 79 files are unchanged: nothing lost, nothing changed where Qt was right, no mark
+left, no warnings.
+
+### Tests
+
+- **`aRepliesHtmlIsReadWhole`:** the reviewer's table (`<name>` kept as code), code
+  and a comment across rows, md4c's tag grammar (`<b "x">`, `</d/>`, valid
+  attributes kept), and the next list item's code after an item's HTML block. It also
+  has twelve shrunk cases, each kept to its end: the reviewer's tables, `<details/p>`,
+  `<p "">`, a lazy quote line, a table ended by a quote, a list item or a rule, and a
+  tag across rows.
+- **`anHtmlBlockIsABlockOfItsOwn`:**
+  - a line after `</div>` apart, two `<div>`s apart, `<details>`' summary and body
+    apart;
+  - a `- ` line in a top-level HTML block kept whole, and a quote's `> >` line kept;
+  - no block of spaces left;
+  - the lines after a quote's and an item's HTML block set in;
+  - a `<ul>` and a `<div>` inside a paragraph as Qt had them;
+  - a quoted line that md4c reads as no tag, in its quote.
+
+Each part was broken on purpose: 81 breaks, 80 caught. The one not caught is the
+table check's look at its first character, a constant factor, as before. The first
+run had 82 breaks and five not caught, besides that one. Three got tests:
+- the strict tag pattern for a lone tag on its line, which keeps `> <b "x">` in its
+  quote;
+- a list item's HTML block ending with the item, without which code in the next item
+  was escaped;
+- no split before mere spaces, without which Qt kept a block of spaces.
+
+One was taken out: a space before an end mark that would follow a backslash. Once
+blocks end with their list item, it saved nothing, and it left a visible space in 105
+of 60,000 random texts.
+
+Full suite 88/88. Under AddressSanitizer 87 of 88 passed together: `test_ngopt`'s
+optimizer run did not finish its log in time while four tests ran at once, and passed
+alone. No sanitizer report. The end-to-end scenarios: 97 checks, none failed.
+
+### Not done
+
+As before:
+- indented code inside a list item or a quote;
+- md4c's reading of a fence its quote or item closed, followed by another fence line;
+- slow unclosed openers by the thousand;
+- a list that starts with an HTML block;
+- an HTML block in a nested list.
+
+The separators follow only lines that end with a block's closing tag. Text after
+`</div>` on the same line still joins it, as in Qt.
