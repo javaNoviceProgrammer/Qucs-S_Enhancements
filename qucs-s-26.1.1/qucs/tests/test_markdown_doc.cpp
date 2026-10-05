@@ -167,18 +167,27 @@ private slots:
         QVERIFY(!doc.toPlainText().contains("frac"));
     }
 
-    // A Markdown file with HTML void elements written open - a <br> in a
-    // table's cell, an <hr>, an <img> - is rendered whole: Qt's importer
-    // dropped everything after the first (the review of 5 October).
-    void anOpenVoidTagKeepsTheRest()
+    // A Markdown file with HTML Qt's importer saw opened and never closed -
+    // a <br> in a table's cell, an <hr>, an <img>, a placeholder <name>, a
+    // vector<int>, a lone <b> - is rendered whole: the importer dropped
+    // everything after the first (the review of 5 October, its re-check).
+    void anUnclosedTagKeepsTheRest()
     {
         QTextDocument doc;
         qucs_s::math::MathObject::install(&doc);
         qucs_s::markdown::render(&doc, "| A | B |\n|---|---|\n| one<br>two | `x` |\n| row2 | y |\n\nAfter the table:\n\n"
-                                       "- **Bold item** with text\n- plain item and `code`\n\nA rule<HR>and <img src=\"a.png\"> more, `<br>` as code.\n",
+                                       "- **Bold item** with text\n- plain item and `code`\n\nA rule<HR>and <img src=\"a.png\"> more, `<br>` as code.\n\n"
+                                       "1. The dataset is <name>.dat.ngspice beside the schematic.\n2. still here?\n\nA vector<int> and a lone <b>.\n\nTHE END\n",
                                  QFont(), {});
         const QString text = doc.toPlainText();
-        for (const char* kept : {"one", "two", "row2", "After the table:", "Bold item with text", "plain item and code", "more, <br> as code."})
+        // The rule between the paragraph's parts, its block empty.
+        bool ruleBetween = false;
+        for (QTextBlock b = doc.begin(); b.isValid(); b = b.next())
+            if (b.blockFormat().hasProperty(QTextFormat::BlockTrailingHorizontalRulerWidth))
+                ruleBetween = b.text().isEmpty() && b.previous().text() == "A rule" && b.next().text().startsWith("and");
+        QVERIFY(ruleBetween);
+        for (const char* kept : {"one", "two", "row2", "After the table:", "Bold item with text", "plain item and code", "more, <br> as code.",
+                                 "The dataset is <name>.dat.ngspice beside the schematic.", "still here?", "A vector<int> and a lone <b>.", "THE END"})
             QVERIFY2(text.contains(QString::fromUtf8(kept)), qPrintable(QString(kept) + "\n---\n" + text));
     }
 

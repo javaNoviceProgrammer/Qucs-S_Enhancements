@@ -19,6 +19,9 @@
 #include <QAbstractTextDocumentLayout>
 #include <QPainterPath>
 #include <QRegularExpression>
+#include <QSet>
+#include <QTextBlock>
+#include <QTextCursor>
 #include <QTextDocument>
 
 #include <functional>
@@ -2523,24 +2526,135 @@ QList<Span> findMath(const QString& md)
 
 namespace qucs_s::markdown {
 
-QString voidElementsClosed(const QString& md)
+namespace {
+
+// Whether \a name (in lower case) is an HTML void element: br, hr, img...
+bool isVoid(const QString& name)
 {
-    // Each void element written open (<br>, <img src="x.png">): the place
-    // of its '>', where a '/' goes.
-    static const QRegularExpression tag(QStringLiteral("\\G<(?:area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)(?=[\\s/>])[^<>]*>"),
-                                        QRegularExpression::CaseInsensitiveOption);
-    QList<qsizetype> open;
+    static const QSet<QString> names{QStringLiteral("area"), QStringLiteral("base"), QStringLiteral("br"), QStringLiteral("col"),
+                                     QStringLiteral("embed"), QStringLiteral("hr"), QStringLiteral("img"), QStringLiteral("input"),
+                                     QStringLiteral("link"), QStringLiteral("meta"), QStringLiteral("source"), QStringLiteral("track"),
+                                     QStringLiteral("wbr")};
+    return names.contains(name);
+}
+
+// The elements of HTML (Qt's importer draws them, or leaves their text);
+// a tag of another name - <name>, <T>, <int> - is none, and text.
+bool isElement(const QString& name)
+{
+    static const QSet<QString> names{
+        QStringLiteral("a"), QStringLiteral("abbr"), QStringLiteral("address"), QStringLiteral("article"), QStringLiteral("aside"),
+        QStringLiteral("audio"), QStringLiteral("b"), QStringLiteral("bdi"), QStringLiteral("bdo"), QStringLiteral("big"),
+        QStringLiteral("blockquote"), QStringLiteral("body"), QStringLiteral("button"), QStringLiteral("canvas"), QStringLiteral("caption"),
+        QStringLiteral("center"), QStringLiteral("cite"), QStringLiteral("code"), QStringLiteral("colgroup"), QStringLiteral("data"),
+        QStringLiteral("dd"), QStringLiteral("del"), QStringLiteral("details"), QStringLiteral("dfn"), QStringLiteral("dialog"),
+        QStringLiteral("div"), QStringLiteral("dl"), QStringLiteral("dt"), QStringLiteral("em"), QStringLiteral("fieldset"),
+        QStringLiteral("figcaption"), QStringLiteral("figure"), QStringLiteral("font"), QStringLiteral("footer"), QStringLiteral("form"),
+        QStringLiteral("h1"), QStringLiteral("h2"), QStringLiteral("h3"), QStringLiteral("h4"), QStringLiteral("h5"), QStringLiteral("h6"),
+        QStringLiteral("head"), QStringLiteral("header"), QStringLiteral("html"), QStringLiteral("i"), QStringLiteral("iframe"),
+        QStringLiteral("ins"), QStringLiteral("kbd"), QStringLiteral("label"), QStringLiteral("legend"), QStringLiteral("li"),
+        QStringLiteral("main"), QStringLiteral("mark"), QStringLiteral("menu"), QStringLiteral("nav"), QStringLiteral("nobr"),
+        QStringLiteral("noscript"), QStringLiteral("object"), QStringLiteral("ol"), QStringLiteral("optgroup"), QStringLiteral("option"),
+        QStringLiteral("output"), QStringLiteral("p"), QStringLiteral("picture"), QStringLiteral("pre"), QStringLiteral("q"),
+        QStringLiteral("rp"), QStringLiteral("rt"), QStringLiteral("ruby"), QStringLiteral("s"), QStringLiteral("samp"),
+        QStringLiteral("script"), QStringLiteral("section"), QStringLiteral("select"), QStringLiteral("small"), QStringLiteral("span"),
+        QStringLiteral("strike"), QStringLiteral("strong"), QStringLiteral("style"), QStringLiteral("sub"), QStringLiteral("summary"),
+        QStringLiteral("sup"), QStringLiteral("svg"), QStringLiteral("table"), QStringLiteral("tbody"), QStringLiteral("td"),
+        QStringLiteral("template"), QStringLiteral("textarea"), QStringLiteral("tfoot"), QStringLiteral("th"), QStringLiteral("thead"),
+        QStringLiteral("time"), QStringLiteral("title"), QStringLiteral("tr"), QStringLiteral("tt"), QStringLiteral("u"),
+        QStringLiteral("ul"), QStringLiteral("var"), QStringLiteral("video")};
+    return names.contains(name) || isVoid(name);
+}
+
+} // namespace
+
+QString htmlBalanced(const QString& md)
+{
+    // The tags outside code: <name attributes>, </name>, <name/>. (Not an
+    // autolink, <https://...> or <me@example.org>, nor a comment: a name
+    // is followed by a space, '/' or '>'.)
+    static const QRegularExpression tagAt(QStringLiteral("\\G<(/?)([A-Za-z][A-Za-z0-9-]*)(?=[\\s/>])[^<>]*>"));
+    struct Tag {
+        qsizetype at, end;
+        QString name;   // in lower case
+        bool closing, selfClosed;
+        qsizetype paragraph;
+    };
+    // Which paragraph a place is in: they are apart by blank lines.
+    QList<qsizetype> blanks;
+    static const QRegularExpression blankLine(QStringLiteral("\\n[ \\t]*\\r?\\n"));
+    for (auto it = blankLine.globalMatch(md); it.hasNext();) blanks << it.next().capturedStart();
+    const auto paragraphOf = [&blanks](qsizetype at) { return std::upper_bound(blanks.cbegin(), blanks.cend(), at) - blanks.cbegin(); };
+    QList<Tag> tags;
     math::outsideCode(md, [&](qsizetype i) -> qsizetype {
         if (md.at(i) != QLatin1Char('<')) return -1;
-        const QRegularExpressionMatch m = tag.match(md, i);
+        const QRegularExpressionMatch m = tagAt.match(md, i);
         if (!m.hasMatch()) return -1;
-        const qsizetype end = m.capturedEnd() - 1;   // its '>'
-        if (md.at(end - 1) != QLatin1Char('/')) open << end;
+        tags << Tag{i, m.capturedEnd(), m.captured(2).toLower(), !m.captured(1).isEmpty(), md.at(m.capturedEnd() - 2) == QLatin1Char('/'),
+                    paragraphOf(i)};
         return m.capturedEnd();
     });
+    // Qt's importer counts open tags and drops the text after one never
+    // closed (or a closing one with nothing open): such a tag is text (its
+    // '<' escaped) unless an element closes in its paragraph; a void
+    // element written open is closed.
+    QList<qsizetype> escapes, closes;   // a '\' before the '<'; a '/' before the '>'
+    QList<qsizetype> open;              // elements open in the paragraph (indices)
+    qsizetype paragraph = -1;
+    const auto leftOpen = [&] {
+        for (const qsizetype k : std::as_const(open)) escapes << tags.at(k).at;
+        open.clear();
+    };
+    for (qsizetype k = 0; k < tags.size(); ++k) {
+        const Tag& t = tags.at(k);
+        if (t.paragraph != paragraph) {
+            leftOpen();
+            paragraph = t.paragraph;
+        }
+        if (!isElement(t.name)) {
+            escapes << t.at;   // <name>, <T>, QList<Span>'s <Span> is one
+            continue;
+        }
+        if (t.selfClosed) continue;
+        if (isVoid(t.name)) {
+            if (t.closing) escapes << t.at;   // (</br>: a closing tag with nothing open)
+            else closes << t.end - 1;
+            continue;
+        }
+        if (!t.closing) {
+            open << k;
+            continue;
+        }
+        qsizetype found = -1;
+        for (qsizetype j = open.size(); j-- > 0 && found < 0;)
+            if (tags.at(open.at(j)).name == t.name) found = j;
+        if (found < 0) {
+            escapes << t.at;   // it closes nothing
+            continue;
+        }
+        for (qsizetype j = found + 1; j < open.size(); ++j) escapes << tags.at(open.at(j)).at;   // (left open within it)
+        open.resize(found);
+    }
+    leftOpen();
+    QList<std::pair<qsizetype, QChar>> edits;
+    for (const qsizetype at : std::as_const(escapes)) edits << std::pair{at, QLatin1Char('\\')};
+    for (const qsizetype at : std::as_const(closes)) edits << std::pair{at, QLatin1Char('/')};
+    std::sort(edits.begin(), edits.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
     QString out = md;
-    for (qsizetype k = open.size(); k-- > 0;) out.insert(open.at(k), QLatin1Char('/'));
+    for (const auto& [at, c] : std::as_const(edits)) out.insert(at, c);
     return out;
+}
+
+void rulesApart(QTextDocument* document)
+{
+    for (QTextBlock b = document->begin(); b.isValid(); b = b.next()) {
+        QTextBlockFormat f = b.blockFormat();
+        if (!f.hasProperty(QTextFormat::BlockTrailingHorizontalRulerWidth) || b.text().isEmpty()) continue;
+        f.clearProperty(QTextFormat::BlockTrailingHorizontalRulerWidth);
+        QTextCursor c(b);
+        c.insertBlock(f, b.charFormat());
+        b = b.next();   // (the text, after the rule's block, now empty)
+    }
 }
 
 } // namespace qucs_s::markdown
