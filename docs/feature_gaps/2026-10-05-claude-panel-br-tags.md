@@ -127,3 +127,73 @@ four were not caught:
 Full suite 88/88. Under AddressSanitizer 88/88, with no report:
 `tuneHoldsAndCompares` once found the simulator not starting while four tests ran at
 once, and passed alone. The end-to-end scenarios: 97 checks, none failed.
+
+## The re-check of `9e587d3`
+
+The reviewer re-checked `9e587d3` in the Markdown viewer, and on `htmlBalanced()`
+itself compiled into a small program. The placeholders (`<name>.dat`, `QList<Span>`,
+`array<array<int,2>,3>`, `Use <Ctrl>+<S>`), stray closing tags, closed elements,
+autolinks, code and the `<hr>` were right. Four items were left.
+
+| Re-check | Now |
+|---|---|
+| **1. A comment with anything tag-like in it blanks the rest (MEDIUM)**: `<!-- a comment with <b> inside -->`, `text <!-- c <b> --> more`, a comment over several lines; plain Qt does the same. READMEs comment out badges (`<!-- <img …> -->`), and the viewer opens any `.md`. | **Comments are taken out** before Qt reads the Markdown - they draw nothing. One never closed is text (`&lt;!--`); at a line's start it had made the rest of the document one comment. |
+| **2. A tag opened in one list item and closed in the next moves text between them (LOW).** | **Each block on its own.** A tag is now matched in its own block: a paragraph, a list item, a heading, a quote's line, a table's cell. An element closed only in another block is taken out with its closing tag, its text kept: "item one opened", "item two closed". |
+| **3. The same across table cells (LOW).** | The same: "col x" and "y col". |
+| **4. `<details>` over blank lines shows its tags as text (cosmetic).** | **Taken out, the text kept**, by the same rule: `<summary>` and the body are drawn, and the tags no longer show. |
+
+### What a random test found beyond the four
+
+A property test (in `aRepliesHtmlIsReadWhole`) builds random text from tags, comments,
+backticks, fences, quotes, list marks, headings, pipes and escapes. Each text must keep
+a paragraph that follows it. On the first try 341 of 3,000 lost it. The failures,
+shrunk to their smallest form, came from seven things the function did not yet know
+about Markdown:
+- **HTML blocks** (CommonMark): a line that starts with `<pre>`, a comment, a block
+  element's tag (`<hr>`, `<p>`, `<details>`), or a whole tag on its own after a blank
+  line, starts raw HTML. In it a backslash is no escape, there is no code, and Qt counts
+  every `<` - `x < y` and `<x` too. Text is now written `&lt;`, which reads as text in
+  Markdown and in HTML alike, and a lone `<` in such a block is text too. A tag escaped
+  can end a line's being an HTML block, so the function runs again until nothing
+  changes (each run only removes tags, so it stops).
+- **`<code>` and `<pre>`** keep their tags HTML to Qt. They were walked past as code,
+  as GitHub shows them for the math. For HTML they are walked through now (`outsideCode`
+  takes which reading it is).
+- **Quotes and list items**: an HTML block or a fence may start after their marks, and
+  ends with the quote or the item.
+- **Inline code** ends in its paragraph. A paragraph ends at a blank line, a heading's
+  line, or a line that starts another block (a fence, a quote, a list item, an HTML
+  block). It closes on a run of backticks exactly as long.
+- **A backtick fence**'s line holds no other backtick.
+- **A backslash at a line's end** is a line break, and no longer hides the next line's
+  start.
+- **A comment that starts in an HTML block and ends past it** made the walk read its
+  end twice. Two edits overlapped, and the text came out garbled (`<hr/>F IT`). The
+  walk now goes on from the comment's end.
+
+On 200,000 random texts, plain Qt loses the closing paragraph for 151,692. With
+`htmlBalanced()` it loses it for 8. Those mix quote or list marks with fences or
+indented code in ways no reply writes, for example `>     <pre>` followed by `</pre>`.
+The property test runs 3,000 such texts, all kept, and each shrunk case above is a
+check of its own.
+
+### Tests
+
+- **`test_claude_code`**, `aRepliesHtmlIsReadWhole`:
+  - each of the re-check's forms: the comments, the list items and cells, `<details>`
+    over blank lines, a heading's line and a quote's;
+  - the shrunk cases, each followed by a paragraph that must be kept;
+  - a comment past an HTML block's end, taken out once;
+  - a fence inside the paragraph that inline code is looked for in, left as code;
+  - `<code>` and `<pre>` with tags in them;
+  - the property test.
+- **`test_markdown_doc`**, `anUnclosedTagKeepsTheRest`: a README's commented-out badge
+  `<!-- <img src="badge.svg"> -->`, then "THE END", rendered.
+
+Each part was broken on purpose. This re-check's 30 breaks were all caught; one was
+caught only after a test was added for it: a fence ending inline code's paragraph,
+whose break garbled code without losing text. Of the previous round's breaks, the 13
+that still apply were caught again.
+
+Full suite 88/88; under AddressSanitizer 88/88, with no report. The end-to-end
+scenarios: 97 checks, none failed.

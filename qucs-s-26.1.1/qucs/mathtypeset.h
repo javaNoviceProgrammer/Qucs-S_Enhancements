@@ -101,15 +101,19 @@ class QTextDocument;
 namespace qucs_s::markdown {
 
 /// \a markdown with its HTML as Qt's Markdown importer reads it whole,
-/// outside code. The importer counts open tags and drops all the text
-/// after one never closed - or after a closing tag with nothing open -
-/// but inline code: a <br> in a table's cell, a placeholder such as
-/// <name>.dat or QList<Span>, a lone <b>, lost the rest of a reply. A void
-/// element written open (<br>, <img src="x.png">, any case) is closed
-/// (<br/>); a tag of no HTML element (<name>, <T>), an element not closed
-/// in its paragraph, and a closing tag that closes nothing, are text (their
-/// '<' escaped). Elements closed (<b>x</b>, <kbd>, <details>), autolinks
-/// and comments stay. For each setMarkdown() of a reply or a Markdown file.
+/// outside code. The importer counts open tags across the document and
+/// drops all the text after one never closed - or after a closing tag with
+/// nothing open - but inline code: a <br> in a table's cell, a placeholder
+/// such as <name>.dat or QList<Span>, a lone <b>, a comment with a tag in
+/// it, lost the rest of a reply or a README. A void element written open
+/// (<br>, <img src="x.png">, any case) is closed (<br/>); a tag of no HTML
+/// element (<name>, <T>), an element not closed, and a closing tag that
+/// closes nothing, are text (their '<' escaped); an element closed in
+/// another block - a list's next item, a cell beside it, <details> over
+/// blank lines - is taken out with its closing tag (Qt moved text between
+/// the blocks); a comment is taken out. Elements closed in their block
+/// (<b>x</b>, <kbd>, <details>) and autolinks stay. For each setMarkdown()
+/// of a reply or a Markdown file.
 QString htmlBalanced(const QString& markdown);
 
 /// An <hr> inside a paragraph: Qt puts the text after it into the rule's

@@ -2366,11 +2366,139 @@ void MathObject::drawObject(QPainter* painter, const QRectF& rect, QTextDocument
 // ----------------------------------------------------------------------
 namespace {
 
+// The end of the HTML block (CommonMark) whose line starts with the '<' at
+// \a k, or -1 when none starts there: <pre>, <script>, <style> or
+// <textarea> to the line of its closing tag; a comment to the line of its
+// "-->"; a block element's tag (<div>, <hr>, <details>...), or - after a
+// blank line - a whole tag alone on its line, to a blank line. What is in
+// one is HTML: no code, no escape. (One not closed is none: the tag is
+// made text.)
+qsizetype htmlBlockEnd(const QString& md, qsizetype k, bool afterBlank)
+{
+    static const QRegularExpression raw(QStringLiteral("\\G<(pre|script|style|textarea)(?=[\\s>]|$)"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression block(
+        QStringLiteral("\\G</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|"
+                       "div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|"
+                       "link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|"
+                       "tfoot|th|thead|title|tr|track|ul)(?=[\\s>]|/>|$)"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression whole(
+        QStringLiteral("\\G(?:<[A-Za-z][A-Za-z0-9-]*(?:\\s[^<>]*)?/?>|</[A-Za-z][A-Za-z0-9-]*\\s*>)[ \\t]*(?=\\r?\\n|$)"));
+    static const QRegularExpression blankLine(QStringLiteral("\\n[ \\t]*\\r?\\n"));
+    const qsizetype n = md.size();
+    const auto lineEnd = [&md, n](qsizetype from) {
+        const qsizetype end = md.indexOf(QLatin1Char('\n'), from);
+        return end < 0 ? n : end + 1;
+    };
+    if (const QRegularExpressionMatch m = raw.match(md, k); m.hasMatch()) {
+        const qsizetype close = md.indexOf(QStringLiteral("</%1>").arg(m.captured(1)), m.capturedEnd(), Qt::CaseInsensitive);
+        return close < 0 ? -1 : lineEnd(close);
+    }
+    if (QStringView(md).mid(k, 4) == QLatin1String("<!--")) {
+        const qsizetype close = md.indexOf(QLatin1String("-->"), k + 4);
+        return close < 0 ? -1 : lineEnd(close);
+    }
+    if (block.match(md, k).hasMatch() || (afterBlank && whole.match(md, k).hasMatch())) {
+        const QRegularExpressionMatch m = blankLine.match(md, k);
+        return m.hasMatch() ? m.capturedStart() + 1 : n;
+    }
+    return -1;
+}
+
+// Where the quote whose line starts at \a from ends: the start of the
+// first line after it that has no '>' (a fence or an HTML block in it
+// ends there).
+qsizetype quoteEnd(const QString& md, qsizetype from)
+{
+    const qsizetype n = md.size();
+    for (qsizetype line = md.indexOf(QLatin1Char('\n'), from); line >= 0; line = md.indexOf(QLatin1Char('\n'), line + 1)) {
+        qsizetype k = line + 1;
+        while (k < n && k - line - 1 < 3 && md.at(k) == QLatin1Char(' ')) ++k;
+        if (k >= n || md.at(k) != QLatin1Char('>')) return line + 1;
+    }
+    return n;
+}
+
+// Where what starts at \a k in the line at \a line - after the marks of a
+// quote or of a list's item - ends with them (a fence, an HTML block): at
+// the quote's end, or at the first line after it indented less than the
+// item's content and not blank; the end of the text when no marks.
+qsizetype containerEnd(const QString& md, qsizetype line, qsizetype k)
+{
+    const qsizetype n = md.size();
+    const QStringView marks = QStringView(md).mid(line, k - line);
+    if (marks.contains(QLatin1Char('>'))) return quoteEnd(md, line);
+    if (marks.trimmed().isEmpty()) return n;
+    const qsizetype indent = k - line;
+    for (qsizetype at = md.indexOf(QLatin1Char('\n'), line); at >= 0; at = md.indexOf(QLatin1Char('\n'), at + 1)) {
+        qsizetype p = at + 1;
+        while (p < n && md.at(p) == QLatin1Char(' ')) ++p;
+        const bool blank = p >= n || md.at(p) == QLatin1Char('\n') || md.at(p) == QLatin1Char('\r');
+        if (!blank && p - at - 1 < indent) return at + 1;
+    }
+    return n;
+}
+
+// The marks of a quote and of a list's item a line starts with: where its
+// content does.
+qsizetype contentAt(const QString& md, qsizetype line)
+{
+    static const QRegularExpression marks(QStringLiteral("\\G[ ]{0,3}(?:(?:>[ ]?|(?:[-*+]|\\d{1,9}[.)])[ ]+)[ ]{0,3})*"));
+    const QRegularExpressionMatch m = marks.match(md, line);
+    return m.hasMatch() ? m.capturedEnd() : line;
+}
+
+// Whether a fence starts at \a k: ``` or ~~~, and a backtick fence's line
+// has no other backtick (else it is inline code, or text).
+bool fenceAt(const QString& md, qsizetype k)
+{
+    const qsizetype n = md.size();
+    if (k + 2 >= n || (md.mid(k, 3) != QLatin1String("```") && md.mid(k, 3) != QLatin1String("~~~"))) return false;
+    if (md.at(k) != QLatin1Char('`')) return true;
+    const qsizetype eol = md.indexOf(QLatin1Char('\n'), k);
+    return !QStringView(md).mid(k + 3, (eol < 0 ? n : eol) - k - 3).contains(QLatin1Char('`'));
+}
+
+// Whether the line whose content starts with the '<' at \a k starts an HTML
+// block that may break into a paragraph - one of <pre>, <script>,
+// <style>, <textarea>, a comment, a block element's tag - closed or not.
+bool startsHtmlBlock(const QString& md, qsizetype k)
+{
+    static const QRegularExpression raw(QStringLiteral("\\G<(?:pre|script|style|textarea)(?=[\\s>]|$)"), QRegularExpression::CaseInsensitiveOption);
+    return raw.match(md, k).hasMatch() || QStringView(md).mid(k, 4) == QLatin1String("<!--") || htmlBlockEnd(md, k, false) > 0;
+}
+
+// Where the paragraph the place \a at is in ends: at a blank line, or at a
+// line that starts another block - a quote, a heading, a fence, a list's
+// item, an HTML block that may break into a paragraph.
+qsizetype paragraphEnd(const QString& md, qsizetype at)
+{
+    const qsizetype n = md.size();
+    static const QRegularExpression starts(QStringLiteral("\\G[ ]{0,3}(?:>|#{1,6}(?:[ \\t]|$)|[-*+][ \\t]|1[.)][ \\t])"));
+    static const QRegularExpression heading(QStringLiteral("\\G#{1,6}(?:[ \\t]|$)"));
+    // (A heading is its line.)
+    const qsizetype lineStart = at == 0 ? 0 : md.lastIndexOf(QLatin1Char('\n'), at - 1) + 1;
+    if (heading.match(md, contentAt(md, lineStart)).hasMatch()) {
+        const qsizetype eol = md.indexOf(QLatin1Char('\n'), at);
+        return eol < 0 ? n : eol;
+    }
+    for (qsizetype line = md.indexOf(QLatin1Char('\n'), at); line >= 0; line = md.indexOf(QLatin1Char('\n'), line + 1)) {
+        qsizetype p = line + 1;
+        while (p < n && (md.at(p) == QLatin1Char(' ') || md.at(p) == QLatin1Char('\t'))) ++p;
+        if (p >= n || md.at(p) == QLatin1Char('\n') || md.at(p) == QLatin1Char('\r')) return line;
+        if (starts.match(md, line + 1).hasMatch() || (p - line - 1 < 4 && fenceAt(md, p))) return line;
+        if (md.at(p) == QLatin1Char('<') && p - line - 1 < 4 && startsHtmlBlock(md, p)) return line;
+    }
+    return n;
+}
+
 // Walks the Markdown \a md past its code - fenced and indented blocks,
-// inline code, <code> and <pre> - and past what a backslash escapes.
-// \a at is called at each other position, and returns where to go on from
-// (past what it took there), or -1 to go on with the next character.
-void outsideCode(const QString& md, const std::function<qsizetype(qsizetype)>& at)
+// inline code, and with \a htmlCode <code> and <pre> too (as GitHub shows
+// them; to Qt's importer what is in them is HTML still) - and past what a
+// backslash escapes. \a at is called at each other position - with
+// whether it is in an HTML block - and returns where to go on from (past
+// what it took there), or -1 to go on with the next character.
+void outsideCode(const QString& md, bool htmlCode, const std::function<qsizetype(qsizetype, bool)>& at)
 {
     const qsizetype n = md.size();
     qsizetype i = 0;
@@ -2381,6 +2509,7 @@ void outsideCode(const QString& md, const std::function<qsizetype(qsizetype)>& a
     bool afterBlank = true, inIndentedCode = false, inList = false;
     while (i < n) {
         const QChar c = md.at(i);
+        const bool afterBlankLine = afterBlank;
         if (lineStart) {
             qsizetype eol = md.indexOf(QLatin1Char('\n'), i);
             if (eol < 0) eol = n;
@@ -2403,23 +2532,46 @@ void outsideCode(const QString& md, const std::function<qsizetype(qsizetype)>& a
             }
             afterBlank = blank;
         }
-        // A fenced code block: to its fence.
+        // An HTML block, read as Qt's importer reads it: each place in it,
+        // there being no code and no escape in it. (It may start in a quote
+        // or a list's item: after their marks.)
+        if (!htmlCode && lineStart) {
+            const qsizetype k = contentAt(md, i);
+            qsizetype end = k < n && md.at(k) == QLatin1Char('<') ? htmlBlockEnd(md, k, afterBlankLine) : -1;
+            if (end > 0) end = std::min(end, containerEnd(md, i, k));
+            if (end > 0) {
+                qsizetype p = i;
+                while (p < end) {
+                    const qsizetype to = at(p, true);
+                    p = to > p ? to : p + 1;
+                }
+                // (On from what it took: a comment past the block's end.
+                // Indented code may follow, as after a blank line.)
+                i = std::max(end, p);
+                lineStart = i == 0 || md.at(i - 1) == QLatin1Char('\n');
+                afterBlank = true;
+                continue;
+            }
+        }
+        // A fenced code block (in a quote or a list's item too): to its
+        // closing fence, or to the quote's end. (A backtick fence's line
+        // holds no other backtick: else it is inline code, or text.)
         if (lineStart) {
-            qsizetype k = i;
-            while (k < n && k - i < 4 && md.at(k) == QLatin1Char(' ')) ++k;
-            if (k + 2 < n && (md.mid(k, 3) == QLatin1String("```") || md.mid(k, 3) == QLatin1String("~~~"))) {
+            const qsizetype k = contentAt(md, i);
+            const qsizetype eol = md.indexOf(QLatin1Char('\n'), k);
+            if (fenceAt(md, k)) {
                 const QString fence = md.mid(k, 3);
-                qsizetype close = md.indexOf(QLatin1Char('\n'), k);
-                while (close >= 0) {
-                    qsizetype line = close + 1;
-                    while (line < n && md.at(line) == QLatin1Char(' ')) ++line;
-                    if (md.mid(line, 3) == fence) {
-                        close = md.indexOf(QLatin1Char('\n'), line);
+                const qsizetype limit = containerEnd(md, i, k);
+                qsizetype close = limit;
+                for (qsizetype line = eol < 0 ? n : eol + 1; line < limit;) {
+                    const qsizetype next = md.indexOf(QLatin1Char('\n'), line);
+                    if (md.mid(contentAt(md, line), 3) == fence) {
+                        close = next < 0 ? n : next + 1;
                         break;
                     }
-                    close = md.indexOf(QLatin1Char('\n'), close + 1);
+                    line = next < 0 ? n : next + 1;
                 }
-                i = close < 0 ? n : close + 1;
+                i = close;
                 lineStart = true;
                 afterBlank = false;
                 continue;
@@ -2427,7 +2579,7 @@ void outsideCode(const QString& md, const std::function<qsizetype(qsizetype)>& a
         }
         lineStart = c == QLatin1Char('\n');
         // HTML code: <code>...</code> and <pre>...</pre>, as GitHub leaves them.
-        if (c == QLatin1Char('<') && i + 4 < n) {
+        if (htmlCode && c == QLatin1Char('<') && i + 4 < n) {
             static const QRegularExpression open(QStringLiteral("\\G<(code|pre)(?=[\\s>])[^>]*>"), QRegularExpression::CaseInsensitiveOption);
             const QRegularExpressionMatch m = open.match(md, i);
             if (m.hasMatch()) {
@@ -2438,22 +2590,33 @@ void outsideCode(const QString& md, const std::function<qsizetype(qsizetype)>& a
                 }
             }
         }
-        // Inline code: to the run of backticks as long.
+        // Inline code: to the next run of backticks as long, in the same
+        // paragraph (else the backticks are text).
         if (c == QLatin1Char('`')) {
             qsizetype run = 0;
             while (i + run < n && md.at(i + run) == QLatin1Char('`')) ++run;
-            const QString ticks(run, QLatin1Char('`'));
-            qsizetype close = md.indexOf(ticks, i + run);
-            while (close >= 0 && close + run < n && md.at(close + run) == QLatin1Char('`'))
-                close = md.indexOf(ticks, close + run + 1);
+            const qsizetype limit = paragraphEnd(md, i);
+            qsizetype close = -1;
+            for (qsizetype k = i + run; k < limit && close < 0;) {
+                if (md.at(k) != QLatin1Char('`')) {
+                    ++k;
+                    continue;
+                }
+                qsizetype length = 0;
+                while (k + length < n && md.at(k + length) == QLatin1Char('`')) ++length;
+                if (length == run) close = k;
+                k += length;
+            }
             i = close < 0 ? i + run : close + run;
             continue;
         }
-        if (const qsizetype to = at(i); to > i) {
+        if (const qsizetype to = at(i, false); to > i) {
             i = to;
             continue;
         }
-        i += c == QLatin1Char('\\') && i + 1 < n ? 2 : 1;   // (an escape: \$ is a dollar, \<br> no tag)
+        // (An escape: \$ is a dollar, \<br> no tag; a backslash at a line's
+        // end is a line break, and the line after it starts as any does.)
+        i += c == QLatin1Char('\\') && i + 1 < n && md.at(i + 1) != QLatin1Char('\n') ? 2 : 1;
     }
 }
 
@@ -2468,7 +2631,7 @@ QList<Span> findMath(const QString& md)
         for (qsizetype k = at - 1; k >= 0 && md.at(k) == QLatin1Char('\\'); --k) ++backslashes;
         return backslashes % 2 == 1;
     };
-    outsideCode(md, [&](qsizetype i) -> qsizetype {
+    outsideCode(md, true, [&](qsizetype i, bool) -> qsizetype {
         const QChar c = md.at(i);
         if (c == QLatin1Char('\\') && i + 1 < n) {
             const QChar next = md.at(i + 1);
@@ -2568,48 +2731,110 @@ bool isElement(const QString& name)
 
 } // namespace
 
+namespace {
+
+QString htmlBalancedOnce(const QString& md);
+
+} // namespace
+
 QString htmlBalanced(const QString& md)
 {
+    // Again till nothing changes: a tag made text can make a line no HTML
+    // block any more (a lone <p> it began with), and what follows it is
+    // Markdown then - its escapes and code count again. (Each round only
+    // takes tags away: it ends.)
+    QString out = htmlBalancedOnce(md);
+    for (int round = 0; round < 8; ++round) {
+        const QString again = htmlBalancedOnce(out);
+        if (again == out) break;
+        out = again;
+    }
+    return out;
+}
+
+namespace {
+
+QString htmlBalancedOnce(const QString& md)
+{
     // The tags outside code: <name attributes>, </name>, <name/>. (Not an
-    // autolink, <https://...> or <me@example.org>, nor a comment: a name
-    // is followed by a space, '/' or '>'.)
+    // autolink, <https://...> or <me@example.org>: a name is followed by a
+    // space, '/' or '>'.)
     static const QRegularExpression tagAt(QStringLiteral("\\G<(/?)([A-Za-z][A-Za-z0-9-]*)(?=[\\s/>])[^<>]*>"));
+    static const QRegularExpression itemAt(QStringLiteral("\\G(?:[-*+]|\\d{1,9}[.)])(?:[ \\t]|$)"));
     struct Tag {
         qsizetype at, end;
         QString name;   // in lower case
         bool closing, selfClosed;
-        qsizetype paragraph;
+        int block;
     };
-    // Which paragraph a place is in: they are apart by blank lines.
-    QList<qsizetype> blanks;
-    static const QRegularExpression blankLine(QStringLiteral("\\n[ \\t]*\\r?\\n"));
-    for (auto it = blankLine.globalMatch(md); it.hasNext();) blanks << it.next().capturedStart();
-    const auto paragraphOf = [&blanks](qsizetype at) { return std::upper_bound(blanks.cbegin(), blanks.cend(), at) - blanks.cbegin(); };
+    // What the text is cut into by Qt's importer, which counts tags across
+    // them all: paragraphs, list items, headings, quotes, a table's cells.
+    // A tag is matched in its own; a comment is taken out (Qt miscounted
+    // on a tag in one, and it draws nothing).
+    int block = 0;
     QList<Tag> tags;
-    math::outsideCode(md, [&](qsizetype i) -> qsizetype {
-        if (md.at(i) != QLatin1Char('<')) return -1;
+    QList<std::pair<qsizetype, qsizetype>> comments;   // where, how long
+    QList<qsizetype> literal;   // a '<' that is text: a comment not closed, one of no tag in an HTML block
+    const qsizetype n = md.size();
+    math::outsideCode(md, false, [&](qsizetype i, bool raw) -> qsizetype {
+        const QChar c = md.at(i);
+        if (c == QLatin1Char('|')) {
+            ++block;
+            return -1;
+        }
+        if (c == QLatin1Char('\n')) {
+            // The next line a block of its own: blank, a list's item, a
+            // heading, a quote - or after a heading.
+            qsizetype k = i + 1;
+            while (k < n && (md.at(k) == QLatin1Char(' ') || md.at(k) == QLatin1Char('\t'))) ++k;
+            qsizetype line = i == 0 ? 0 : md.lastIndexOf(QLatin1Char('\n'), i - 1) + 1;   // (from -1: from the end)
+            while (line < i && (md.at(line) == QLatin1Char(' ') || md.at(line) == QLatin1Char('\t'))) ++line;
+            if (k >= n || md.at(k) == QLatin1Char('\n') || md.at(k) == QLatin1Char('\r') || md.at(k) == QLatin1Char('#')
+                || md.at(k) == QLatin1Char('>') || itemAt.match(md, k).hasMatch() || md.at(line) == QLatin1Char('#'))
+                ++block;
+            return -1;
+        }
+        if (c != QLatin1Char('<')) return -1;
+        if (QStringView(md).mid(i, 4) == QLatin1String("<!--")) {
+            const qsizetype close = md.indexOf(QLatin1String("-->"), i + 4);
+            if (close < 0) {
+                literal << i;   // (at a line's start it took the rest for a comment)
+                return i + 4;
+            }
+            comments << std::pair{i, close + 3 - i};
+            return close + 3;
+        }
         const QRegularExpressionMatch m = tagAt.match(md, i);
-        if (!m.hasMatch()) return -1;
-        tags << Tag{i, m.capturedEnd(), m.captured(2).toLower(), !m.captured(1).isEmpty(), md.at(m.capturedEnd() - 2) == QLatin1Char('/'),
-                    paragraphOf(i)};
+        if (!m.hasMatch()) {
+            // (In an HTML block Qt counts each '<' as a tag's: x < y, <x.)
+            if (raw) literal << i;
+            return -1;
+        }
+        tags << Tag{i, m.capturedEnd(), m.captured(2).toLower(), !m.captured(1).isEmpty(), md.at(m.capturedEnd() - 2) == QLatin1Char('/'), block};
         return m.capturedEnd();
     });
     // Qt's importer counts open tags and drops the text after one never
     // closed (or a closing one with nothing open): such a tag is text (its
-    // '<' escaped) unless an element closes in its paragraph; a void
-    // element written open is closed.
-    QList<qsizetype> escapes, closes;   // a '\' before the '<'; a '/' before the '>'
-    QList<qsizetype> open;              // elements open in the paragraph (indices)
-    qsizetype paragraph = -1;
-    const auto leftOpen = [&] {
-        for (const qsizetype k : std::as_const(open)) escapes << tags.at(k).at;
+    // '<' written &lt;, which an HTML block - a line that starts with a tag
+    // such as <hr> or <details> - reads as text too, where a backslash is
+    // one) - a tag of no element, an element left open, a closing
+    // tag that closes nothing. An element closed in another block of the
+    // text (a list's next item, a cell beside it, <details> over blank
+    // lines) is taken out, with its closing tag: Qt moved text between the
+    // blocks. A void element written open is closed.
+    QList<qsizetype> escapes = literal, closes;   // a '<' written &lt;; a '/' before the '>'
+    QList<qsizetype> open, pending;                    // elements open in the block; left open in one before (indices)
+    QList<qsizetype> dropped;                          // tags taken out (indices)
+    int current = -1;
+    const auto blockEnds = [&] {
+        pending << open;
         open.clear();
     };
     for (qsizetype k = 0; k < tags.size(); ++k) {
         const Tag& t = tags.at(k);
-        if (t.paragraph != paragraph) {
-            leftOpen();
-            paragraph = t.paragraph;
+        if (t.block != current) {
+            blockEnds();
+            current = t.block;
         }
         if (!isElement(t.name)) {
             escapes << t.at;   // <name>, <T>, QList<Span>'s <Span> is one
@@ -2628,22 +2853,41 @@ QString htmlBalanced(const QString& md)
         qsizetype found = -1;
         for (qsizetype j = open.size(); j-- > 0 && found < 0;)
             if (tags.at(open.at(j)).name == t.name) found = j;
-        if (found < 0) {
-            escapes << t.at;   // it closes nothing
+        if (found >= 0) {
+            for (qsizetype j = found + 1; j < open.size(); ++j) escapes << tags.at(open.at(j)).at;   // (left open within it)
+            open.resize(found);
             continue;
         }
-        for (qsizetype j = found + 1; j < open.size(); ++j) escapes << tags.at(open.at(j)).at;   // (left open within it)
-        open.resize(found);
+        // Opened in a block before: both taken out.
+        qsizetype before = -1;
+        for (qsizetype j = pending.size(); j-- > 0 && before < 0;)
+            if (tags.at(pending.at(j)).name == t.name) before = j;
+        if (before >= 0) {
+            dropped << pending.at(before) << k;
+            pending.removeAt(before);
+            continue;
+        }
+        escapes << t.at;   // it closes nothing
     }
-    leftOpen();
-    QList<std::pair<qsizetype, QChar>> edits;
-    for (const qsizetype at : std::as_const(escapes)) edits << std::pair{at, QLatin1Char('\\')};
-    for (const qsizetype at : std::as_const(closes)) edits << std::pair{at, QLatin1Char('/')};
-    std::sort(edits.begin(), edits.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    blockEnds();
+    for (const qsizetype k : std::as_const(pending)) escapes << tags.at(k).at;
+    // The edits, from the end: (where, how much is taken out, what is put in).
+    struct Edit {
+        qsizetype at, length;
+        QString put;
+    };
+    QList<Edit> edits;
+    for (const qsizetype at : std::as_const(escapes)) edits << Edit{at, 1, QStringLiteral("&lt;")};
+    for (const qsizetype at : std::as_const(closes)) edits << Edit{at, 0, QStringLiteral("/")};
+    for (const qsizetype k : std::as_const(dropped)) edits << Edit{tags.at(k).at, tags.at(k).end - tags.at(k).at, QString()};
+    for (const auto& [at, length] : std::as_const(comments)) edits << Edit{at, length, QString()};
+    std::sort(edits.begin(), edits.end(), [](const Edit& a, const Edit& b) { return a.at > b.at; });
     QString out = md;
-    for (const auto& [at, c] : std::as_const(edits)) out.insert(at, c);
+    for (const Edit& e : std::as_const(edits)) out.replace(e.at, e.length, e.put);
     return out;
 }
+
+} // namespace
 
 void rulesApart(QTextDocument* document)
 {
