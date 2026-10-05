@@ -713,8 +713,74 @@ def s12_verilog_a_library_read_only(s):
         os.chmod(lib, 0o755)
 
 # ---------------------------------------------------------------------------
+@scenario
+def s13_control_check(s):
+    """the check of 3 October (Qucs-S_control_check_2026-10-03.md), its RC low-pass: add_analysis with properties;
+    R1 changed in its Properties dialog by set_dialog, and then by send_input into the dialog - each simulated, the
+    bandwidth following; a -3dB marker on the trace drawn in dB at the bandwidth get_dataset measures; Diagram
+    Properties' tables read, a variable activated taking a trace; the Frame tab read and set by get_settings and
+    set_settings"""
+    s.call('new_document', {})
+    s.call('batch', {'calls': [
+        {'tool': 'add_component', 'arguments': {'type': 'Vac', 'name': 'V1', 'x': 100, 'y': 200, 'properties': {'U': '1 V'}}},
+        {'tool': 'add_component', 'arguments': {'type': 'R', 'name': 'R1', 'x': 200, 'y': 100, 'properties': {'R': '1k'}}},
+        {'tool': 'add_component', 'arguments': {'type': 'C', 'name': 'C1', 'x': 300, 'y': 200, 'properties': {'C': '159n'}}},
+        {'tool': 'connect', 'arguments': {'from': 'V1.1', 'to': 'R1.1'}}, {'tool': 'connect', 'arguments': {'from': 'R1.2', 'to': 'C1.1'}},
+        {'tool': 'connect', 'arguments': {'from': 'V1.2', 'to': 'ground'}}, {'tool': 'connect', 'arguments': {'from': 'C1.2', 'to': 'ground'}},
+        {'tool': 'set_label', 'arguments': {'at': 'R1.2', 'name': 'out'}}]})
+    ac = s.call('add_analysis', {'kind': 'ac', 'properties': {'Start': '10 Hz', 'Stop': '100 kHz', 'Points': '201'}})
+    props = {p['name']: p['value'] for p in ac['analysis']['properties']}
+    check('s13', 'add_analysis takes properties: AC from 10 Hz to 100 kHz, 201 points', (props.get('Start'), props.get('Stop'), props.get('Points'))
+          == ('10 Hz', '100 kHz', '201'), props)
+    s.call('save_document', {'as': WS + '/s13.sch'})
+    def bandwidth():
+        sim = s.call('simulate', {'path': 's13.sch', 'brief': True})
+        ds = s.call('get_dataset', {'path': 's13.sch', 'variables': ['ac.v(out)'], 'measure': ['bandwidth']})
+        return sim.get('succeeded'), ds['variables'][0]['measurements']['bandwidth']['value']
+    rc = lambda r: 1 / (2 * math.pi * r * 159e-9)
+    ok, bw = bandwidth()
+    check('s13', 'simulated: the bandwidth 1/(2 pi RC), 1001 Hz, within 1 %', ok and near(bw, rc(1e3), 0.01), bw)
+    # R1 in its Properties dialog: set_dialog by the field's label, then OK.
+    s.call('context_menu', {'path': 's13.sch', 'on': {'part': 'R1'}, 'choose': 'Edit Properties'})
+    d = s.call('get_dialog', {})
+    labels = [c['label'] for c in d['controls']]
+    said = s.call('set_dialog', {'set': [{'control': 'R (Value)', 'value': '2k'}], 'press': 'OK'})
+    ok, bw2 = bandwidth()
+    check('s13', 'set_dialog: R (Value) 2k applied on OK, said by name - the bandwidth halved', 'R (Value)' in labels
+          and str(said).startswith('Set: R (Value).') and ok and near(bw2, rc(2e3), 0.01), (said, bw2))
+    # ... and by send_input: clicked, typed, Return, OK.
+    s.call('context_menu', {'path': 's13.sch', 'on': {'part': 'R1'}, 'choose': 'Edit Properties'})
+    at = {c['label']: c.get('at') for c in s.call('get_dialog', {})['controls']}
+    field = at['R (Value)']
+    s.call('send_input', {'target': 'dialog', 'click': [field[0] + 5, field[1] + field[3] // 2], 'keys': 'Ctrl+A', 'text': '1k'})
+    s.call('send_input', {'target': 'dialog', 'keys': 'Return'})
+    s.call('set_dialog', {'press': 'OK'})
+    ok, bw3 = bandwidth()
+    check('s13', 'send_input into the dialog: 1k typed, Return, OK - the bandwidth back', ok and near(bw3, rc(1e3), 0.01), bw3)
+    # The -3dB marker on the trace in dB, where get_dataset measures the bandwidth.
+    dg = s.call('add_diagram', {'path': 's13.sch', 'traces': [{'variable': 'ac.v(out)', 'part': 'db'}], 'x_axis': {'log': True}})
+    m = s.call('add_marker', {'path': 's13.sch', 'diagram': dg['diagram'], 'at': '-3dB'})
+    check('s13', 'add_marker -3dB on the dB trace: crossing at the bandwidth within 1 %', near(m['found']['crossing'], bw3, 0.01)
+          and m['found']['measured on'].startswith('dB'), m.get('found'))
+    # Diagram Properties: the tables' texts; a variable activated takes a trace.
+    s.call('context_menu', {'path': 's13.sch', 'on': {'diagram': dg['diagram']}, 'choose': 'Edit Properties'})
+    tables = {c['label']: c for c in s.call('get_dialog', {})['controls'] if c['kind'] == 'table'}
+    variables = tables.get('diagramVariables', {}).get('rows', [])
+    s.call('set_dialog', {'set': [{'control': 'diagramVariables', 'value': 'ac.v(out)', 'action': 'activate'}], 'press': 'OK'})
+    traces = s.call('get_schematic', {'path': 's13.sch'})['diagrams'][dg['diagram'] - 1]['traces']
+    check('s13', 'Diagram Properties: its variables read as text; one activated, a second trace', ['ac.v(out)', 'dep', 'frequency'] in variables
+          and len(traces) == 2, (variables, len(traces)))
+    # The Frame tab.
+    keys = [e['key'] for e in s.call('get_settings', {'path': 's13.sch', 'scope': 'document'})['settings']]
+    s.call('set_settings', {'path': 's13.sch', 'scope': 'document', 'values': {'Frame/Size': 'DIN A4 landscape', 'Frame/Title': 'RC low-pass'}})
+    after = {e['key']: e['value'] for e in s.call('get_settings', {'path': 's13.sch', 'scope': 'document'})['settings']}
+    check('s13', 'the Frame tab: its five keys read, Size and Title set', all(k in keys for k in ('Frame/Size', 'Frame/Title', 'Frame/Drawn by', 'Frame/Date', 'Frame/Revision'))
+          and after.get('Frame/Title') == 'RC low-pass' and after.get('Frame/Size') == 'DIN A4 landscape', keys)
+    s.call('save_document', {'path': 's13.sch'})
+
+# ---------------------------------------------------------------------------
 if __name__ == '__main__':
-    which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12']
+    which = sys.argv[1:] or ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13']
     print('files in', ROOT, '- library:', os.path.abspath(LIBRARY) if LIBRARY else own_library(APP) + " (the app's own)")
     for name, fn in list(globals().items()):
         if name.split('_')[0] in which and name[:1] == 's' and '_' in name and callable(fn): fn()

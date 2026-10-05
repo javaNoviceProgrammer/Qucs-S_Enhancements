@@ -170,7 +170,18 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     QPointer<Schematic> sch;
     QPointer<QWidget> root;      // what the picture shows, what the points are in
     QString where;
-    if (target.compare(QLatin1String("canvas"), Qt::CaseInsensitive) == 0) {
+    const bool intoDialog = target.compare(QLatin1String("dialog"), Qt::CaseInsensitive) == 0;
+    if (intoDialog) {
+        // The dialog that waits for an answer: its picture's pixels (get_dialog
+        // gives each control's 'at'); keys go to its field with the focus,
+        // never to the window's actions, which wait while it is open.
+        root = openDialog();
+        if (!root) {
+            done(errorResult(tr("No dialog is open: 'target' dialog is for one that waits for an answer (get_dialog reads it).")));
+            return;
+        }
+        where = tr("the dialog “%1”").arg(root->windowTitle());
+    } else if (target.compare(QLatin1String("canvas"), Qt::CaseInsensitive) == 0) {
         QString error;
         sch = schematic(args, &error, false);
         if (!sch) {
@@ -278,6 +289,11 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     QStringList sets;   // what each key sets off
     for (int i = 0; i < sequence.count(); ++i) {
         Key k{sequence[i], nullptr, nullptr, QKeySequence(sequence[i]).toString(QKeySequence::NativeText)};
+        if (intoDialog) {   // (pressed in the dialog: no action of the window)
+            sets << tr("%1: pressed").arg(k.name);
+            pressed << k;
+            continue;
+        }
         for (QAction* a : std::as_const(actions)) {
             if (!a->shortcuts().contains(QKeySequence(sequence[i]))) continue;
             if (!live(a->parent(), a->shortcutContext()) && !claudes(a)) continue;
@@ -395,9 +411,11 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                                              : QString(),
                                     sets.isEmpty() ? QString() : (hasClick ? QStringLiteral("; ") : QString()) + tr("keys %1").arg(sets.join(QStringLiteral(", "))),
                                     typed.isEmpty() ? QString() : (hasClick || !sets.isEmpty() ? QStringLiteral("; ") : QString()) + tr("typed \"%1\"").arg(typed.left(80)));
-    connect(watch, &QTimer::timeout, this, [this, watch, run, done, root, canvas, where, report] {
+    connect(watch, &QTimer::timeout, this, [this, watch, run, done, root, canvas, where, report, intoDialog] {
         if (run->answered) return;
         QJsonObject o{{QStringLiteral("on"), where}, {QStringLiteral("given"), report}};
+        // (The dialog answered: closed - its picture no longer shown.)
+        const bool closed = intoDialog && (!root || !root->isVisible());
         QWidget* dialog = openDialog();
         const bool opened = dialog != nullptr && dialog != run->dialogBefore;
         auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
@@ -418,10 +436,11 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                                                    .arg(dialog->windowTitle().isEmpty() ? QString::fromLatin1(dialog->metaObject()->className()) : dialog->windowTitle()));
         if (run->keysSkipped) o.insert(QStringLiteral("keys"), tr("not sent: the click opened a dialog first"));
         if (!run->given && !opened && menu == nullptr) o.insert(QStringLiteral("note"), tr("Not all of it was given within 10 s."));
+        if (closed) o.insert(QStringLiteral("dialog"), tr("closed: it was answered"));
         if (const QString said = a_app->statusBar()->currentMessage(); !said.isEmpty()) o.insert(QStringLiteral("status bar"), said);
         QJsonArray content{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
                                        {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))}}};
-        if (root) {
+        if (root && !closed) {
             content.append(picture(grabbed(root)));
             QString how = tr("The picture: %1 as it is now, %2 x %3 pixels").arg(where).arg(root->width()).arg(root->height());
             if (canvas) {

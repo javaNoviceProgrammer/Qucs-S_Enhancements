@@ -13,6 +13,8 @@
  * traces; a component type described; the netlist.
  */
 #include <QtTest>
+#include <QListWidget>
+#include <QTreeWidget>
 #include <QDirIterator>
 #include <QSaveFile>
 #include <QElapsedTimer>
@@ -11725,6 +11727,305 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // The control check of 3 October, items 1, 5 and 6. Edit Component
+    // Properties' values set through set_dialog - its field, by its id or
+    // its label "R (Value)", or the table's cell - are applied on OK: the
+    // field is the cell's editor, given to the cell as Return or leaving it
+    // gives it (they were shown, and the old value written back). A cell
+    // with a check box takes true or false, and the answer names each
+    // control. send_input with 'target' dialog clicks and types into it.
+    void aPropertyDialogsValuesAreApplied()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 200},
+                                               {"properties", QJsonObject{{"R", "1k"}}}})));
+        Schematic* sch = front();
+        const auto property = [&](int n) { return sch->getComponentByName("R1")->Props.at(n); };
+        // The dialog opened from R1's menu, \a with called while it waits.
+        const auto whileOpen = [&](const std::function<QJsonObject()>& with) {
+            QJsonObject answered;
+            QTimer::singleShot(800, this, [&] { answered = with(); });
+            const QJsonObject r = call("context_menu", {{"on", QJsonObject{{"part", "R1"}}}, {"choose", "Edit Properties"}}, 20000);
+            if (failed(r)) return r;
+            for (int i = 0; i < 400 && answered.isEmpty(); ++i) QTest::qWait(25);
+            return answered;
+        };
+        const auto idOf = [&](const QJsonObject& dialog, const QString& label) {
+            for (const QJsonValue& v : dialog.value("controls").toArray())
+                if (v.toObject().value("label").toString() == label) return v.toObject().value("id").toString();
+            return QString();
+        };
+        QJsonObject seen;
+        QJsonObject r = whileOpen([&] {
+            seen = json(call("get_dialog")).toObject();
+            const QString id = idOf(seen, "R (Value)");
+            return call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", id}, {"value", "2.2k"}}}}, {"press", "OK"}});
+        });
+        QVERIFY2(!idOf(seen, "R (Value)").isEmpty() && !idOf(seen, "Tc1 (Value)").isEmpty(), QJsonDocument(seen).toJson().constData());
+        QVERIFY2(text(r).startsWith("Set: R (Value). OK pressed"), qPrintable(text(r)));
+        QCOMPARE(property(0)->Value, QString("2.2k"));
+        // By its label.
+        r = whileOpen([&] { return call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "R"}, {"value", "2.7k"}}}}, {"press", "OK"}}); });
+        QCOMPARE(property(0)->Value, QString("2.7k"));
+        // The table's cell, and a cell's check box (Show).
+        QString table;
+        for (const QJsonValue& v : seen.value("controls").toArray())
+            if (v.toObject().value("kind").toString() == "table") table = v.toObject().value("id").toString();
+        QVERIFY(!table.isEmpty());
+        const bool shown = property(0)->display;
+        r = whileOpen([&] {
+            return call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", table}, {"value", QJsonArray{0, 1, "3.3k"}}},
+                                                          QJsonObject{{"control", table}, {"value", QJsonArray{0, 2, !shown}}}}},
+                                       {"press", "OK"}});
+        });
+        QVERIFY2(text(r).contains(table + "'s cell 0, 1 (R Value)") && text(r).contains(table + "'s cell 0, 2 (R Show)"), qPrintable(text(r)));
+        QCOMPARE(property(0)->Value, QString("3.3k"));
+        QCOMPARE(property(0)->display, !shown);
+        // A check box takes true or false; a text, said - and nothing else changes.
+        r = whileOpen([&] {
+            return call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", table}, {"value", QJsonArray{0, 2, "yes"}}}}}, {"press", "Cancel"}});
+        });
+        QVERIFY2(text(r).contains(table + " does not take") && text(r).contains("is a check box: true or false"), qPrintable(text(r)));
+        QCOMPARE(property(0)->display, !shown);
+        // Typed into the field through send_input: a click on it (get_dialog's
+        // 'at'), the text, Return - then OK. And clicked OK after typing, as
+        // the user does.
+        QJsonObject typed, returned;
+        r = whileOpen([&] {
+            const QJsonObject dialog = json(call("get_dialog")).toObject();
+            QJsonArray at, ok;
+            for (const QJsonValue& v : dialog.value("controls").toArray()) {
+                if (v.toObject().value("label").toString() == "R (Value)") at = v.toObject().value("at").toArray();
+                if (v.toObject().value("label").toString() == "OK") ok = v.toObject().value("at").toArray();
+            }
+            if (at.size() != 4) return QJsonObject{{"isError", true}, {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "no 'at'"}}}}};
+            typed = call("send_input", {{"target", "dialog"}, {"click", QJsonArray{at.at(0).toInt() + 5, at.at(1).toInt() + at.at(3).toInt() / 2}},
+                                        {"keys", "Ctrl+A"}, {"text", "4.7k"}});
+            returned = call("send_input", {{"target", "dialog"}, {"keys", "Return"}});
+            return call("set_dialog", {{"press", "OK"}});
+        });
+        QVERIFY2(!failed(typed) && text(typed).contains("typed \\\"4.7k\\\"") && text(typed).contains("the dialog"), qPrintable(text(typed)));
+        QVERIFY2(!failed(returned), qPrintable(text(returned)));
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(property(0)->Value, QString("4.7k"));
+        r = whileOpen([&] {
+            const QJsonObject dialog = json(call("get_dialog")).toObject();
+            QJsonArray at, ok;
+            for (const QJsonValue& v : dialog.value("controls").toArray()) {
+                if (v.toObject().value("label").toString() == "R (Value)") at = v.toObject().value("at").toArray();
+                if (v.toObject().value("label").toString() == "OK") ok = v.toObject().value("at").toArray();
+            }
+            call("send_input", {{"target", "dialog"}, {"click", QJsonArray{at.at(0).toInt() + 5, at.at(1).toInt() + at.at(3).toInt() / 2}},
+                                {"keys", "Ctrl+A"}, {"text", "6.8k"}});
+            return call("send_input", {{"target", "dialog"}, {"click", QJsonArray{ok.at(0).toInt() + ok.at(2).toInt() / 2, ok.at(1).toInt() + ok.at(3).toInt() / 2}}});
+        });
+        QVERIFY2(text(r).contains("closed: it was answered"), qPrintable(text(r)));
+        QCOMPARE(property(0)->Value, QString("6.8k"));
+        // No dialog: said. While one waits, the canvas is not reached.
+        r = call("send_input", {{"target", "dialog"}, {"keys", "Escape"}});
+        QVERIFY2(failed(r) && text(r).contains("No dialog is open"), qPrintable(text(r)));
+        r = whileOpen([&] {
+            const QJsonObject canvas = call("send_input", {{"keys", "Escape"}});
+            const QJsonObject cancel = call("set_dialog", {{"press", "Cancel"}});
+            return failed(canvas) && text(canvas).contains("waits for an answer") ? cancel : canvas;
+        });
+        QVERIFY2(!failed(r) && text(r).contains("Cancel pressed"), qPrintable(text(r)));
+        sch->setDocChanged(false);
+    }
+
+    // Items 2 and 3: on a trace drawn in dB ('part' db) -3dB is 3 dB below
+    // its peak (it was refused: the variable is no dB, its values below 0);
+    // a phase is said to be none to measure so. Diagram Properties' tables
+    // are read as their texts (they came back as rows of false: the cells
+    // kept the flag of a check box they do not show), and a variable
+    // activated there - a double click - takes a trace.
+    void aDbTracesMarkerAndTheDiagramDialogsTables()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("save_document", {{"as", "rc1k"}})));
+        {
+            // A first-order low pass of 1 kHz: v(out) = 1 / (1 + j f/1k).
+            QFile f(dir.filePath("workspace/rc1k.dat.ngspice"));
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+            QTextStream d(&f);
+            d << "<Qucs Dataset 26.1.5>\n<indep frequency 201>\n";
+            for (int i = 0; i <= 200; ++i) d << QString::number(std::pow(10.0, 1 + i / 50.0), 'e', 12) << "\n";
+            d << "</indep>\n<dep ac.v(out) frequency>\n";
+            for (int i = 0; i <= 200; ++i) {
+                const double x = std::pow(10.0, 1 + i / 50.0) / 1000.0, m = 1 + x * x;
+                d << QString::number(1 / m, 'e', 12) << (x / m > 0 ? "-j" : "+j") << QString::number(x / m, 'e', 12) << "\n";
+            }
+            d << "</dep>\n";
+        }
+        QJsonObject r = call("add_diagram", {{"traces", QJsonArray{QJsonObject{{"variable", "ac.v(out)"}, {"part", "db"}}}}, {"x_axis", QJsonObject{{"log", true}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("add_marker", {{"at", "-3dB"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject found = json(r).toObject().value("found").toObject();
+        QVERIFY2(std::abs(found.value("crossing").toDouble() - 1000.0) < 20 && std::abs(found.value("level").toDouble() + 3.0) < 0.01
+                     && found.value("measured on").toString().startsWith("dB"),
+                 QJsonDocument(found).toJson().constData());
+        QVERIFY(!failed(call("add_diagram", {{"traces", QJsonArray{QJsonObject{{"variable", "ac.v(out)"}, {"part", "phase"}}}}})));
+        r = call("add_marker", {{"diagram", 2}, {"at", "-3dB"}});
+        QVERIFY2(failed(r) && text(r).contains("shows its phase") && text(r).contains("'part' magnitude or db"), qPrintable(text(r)));
+        // A magnitude: below its peak over sqrt(2), as before.
+        QVERIFY(!failed(call("add_diagram", {{"traces", QJsonArray{QJsonObject{{"variable", "ac.v(out)"}, {"part", "magnitude"}}}}})));
+        r = call("add_marker", {{"diagram", 3}, {"at", "-3dB"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("found").toObject().value("measured on").toString().startsWith("a magnitude"), qPrintable(text(r)));
+
+        // Diagram Properties: its tables' texts; a variable activated.
+        QJsonObject seen, chose, after, ok;
+        QTimer::singleShot(800, this, [&] {
+            seen = json(call("get_dialog")).toObject();
+            QString variables;
+            for (const QJsonValue& v : seen.value("controls").toArray())
+                if (v.toObject().value("label").toString() == "diagramVariables") variables = v.toObject().value("id").toString();
+            chose = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", variables}, {"value", "ac.v(out)"}, {"action", "activate"}}}}});
+            after = json(call("get_dialog")).toObject();
+            ok = call("set_dialog", {{"press", "OK"}});
+        });
+        r = call("context_menu", {{"on", QJsonObject{{"diagram", 1}}}, {"choose", "Edit Properties"}}, 20000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(!ok.isEmpty(), 10000);
+        const auto rowsOf = [](const QJsonObject& dialog, const QString& label) {
+            for (const QJsonValue& v : dialog.value("controls").toArray())
+                if (v.toObject().value("label").toString() == label && v.toObject().value("kind").toString() == "table")
+                    return v.toObject().value("rows").toArray();
+            return QJsonArray();
+        };
+        const QJsonArray variables = rowsOf(seen, "diagramVariables"), graphs = rowsOf(seen, "Data from simulator");
+        QVERIFY2(variables.contains(QJsonArray{"ac.v(out)", "dep", "frequency"}) && variables.contains(QJsonArray{"frequency", "indep", "201"}),
+                 QJsonDocument(variables).toJson().constData());
+        QVERIFY2(graphs.size() == 1 && graphs.at(0).toArray().at(0) == QJsonValue("dB(ngspice/ac.v(out))"), QJsonDocument(graphs).toJson().constData());
+        QVERIFY2(!failed(chose) && text(chose).contains("Set: diagramVariables"), qPrintable(text(chose)));
+        QVERIFY2(rowsOf(after, "Data from simulator").size() == 2, QJsonDocument(rowsOf(after, "Data from simulator")).toJson().constData());
+        QVERIFY2(!failed(ok), qPrintable(text(ok)));
+        QCOMPARE(front()->a_Diagrams->front()->Graphs.size(), 2);
+        // A cell that is not one to edit: said, with what chooses a row.
+        QJsonObject edited;
+        QTimer::singleShot(800, this, [&] {
+            QString variables;
+            for (const QJsonValue& v : json(call("get_dialog")).toObject().value("controls").toArray())
+                if (v.toObject().value("label").toString() == "diagramVariables") variables = v.toObject().value("id").toString();
+            edited = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", variables}, {"value", QJsonArray{0, 0, "x"}}}}}, {"press", "Cancel"}});
+        });
+        QVERIFY(!failed(call("context_menu", {{"on", QJsonObject{{"diagram", 1}}}, {"choose", "Edit Properties"}}, 20000)));
+        QTRY_VERIFY_WITH_TIMEOUT(!edited.isEmpty(), 10000);
+        QVERIFY2(text(edited).contains("is not one to edit") && text(edited).contains("'action'"), qPrintable(text(edited)));
+        front()->setDocChanged(false);
+    }
+
+    // Items 4 and 7: the Document Settings' Frame tab is read and set by
+    // get_settings and set_settings (its controls had no names, and were
+    // left out); add_analysis takes 'properties' as add_component does.
+    void theFrameAndAnAnalysissPropertiesAreSet()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("get_settings", {{"scope", "document"}});
+        QHash<QString, QJsonObject> keys;
+        for (const QJsonValue& v : json(r).toObject().value("settings").toArray()) keys.insert(v.toObject().value("key").toString(), v.toObject());
+        for (const char* key : {"Frame/Size", "Frame/Title", "Frame/Drawn by", "Frame/Date", "Frame/Revision"})
+            QVERIFY2(keys.contains(key), qPrintable(QStringList(keys.keys()).join(" | ")));
+        QCOMPARE(keys.value("Frame/Size").value("type").toString(), QString("choice"));
+        r = call("set_settings", {{"scope", "document"}, {"values", QJsonObject{{"Frame/Size", "DIN A4 landscape"}, {"Frame/Title", "RC low-pass"},
+                                                                                {"Frame/Drawn by", "Claude"}, {"Frame/Revision", "B"}}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("changed").toArray().size() == 4, qPrintable(text(r)));
+        QCOMPARE(front()->getFrame_Text0(), QString("RC low-pass"));
+        QCOMPARE(front()->getFrame_Text1(), QString("Claude"));
+        QCOMPARE(front()->getFrame_Text3(), QString("B"));
+        QVERIFY(int(front()->getShowFrame()) != 0);
+
+        r = call("add_analysis", {{"kind", "ac"}, {"properties", QJsonObject{{"Start", "10 Hz"}, {"Stop", "100 kHz"}, {"Points", "201"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Component* ac = front()->getComponentByName("AC1");
+        QVERIFY(ac != nullptr);
+        QCOMPARE(ac->getProperty("Start")->Value, QString("10 Hz"));
+        QCOMPARE(ac->getProperty("Stop")->Value, QString("100 kHz"));
+        QCOMPARE(ac->getProperty("Points")->Value, QString("201"));
+        QCOMPARE(ac->getProperty("Type")->Value, QString("log"));   // (kind's, not given)
+        r = call("add_analysis", {{"kind", "tran"}, {"stop", "2 ms"}, {"properties", QJsonObject{{"MaxStep", "1 us"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(front()->getComponentByName("TR1")->getProperty("MaxStep")->Value, QString("1 us"));
+        QCOMPARE(front()->getComponentByName("TR1")->getProperty("Stop")->Value, QString("2 ms"));
+        const int parts = int(front()->a_DocComps.size());
+        r = call("add_analysis", {{"kind", "ac"}, {"from", "1 Hz"}, {"properties", QJsonObject{{"Start", "10 Hz"}}}});
+        QVERIFY2(failed(r) && text(r).contains("'from' and 'properties' Start say the same"), qPrintable(text(r)));
+        r = call("add_analysis", {{"kind", "tran"}, {"properties", QJsonObject{{"Nosuch", "1"}}}});
+        QVERIFY2(failed(r) && text(r).contains("no property Nosuch"), qPrintable(text(r)));
+        QCOMPARE(int(front()->a_DocComps.size()), parts);
+        front()->setDocChanged(false);
+    }
+    // Item 3's cause in any dialog: an item of a table, list or tree that
+    // has no check state is read as its text, not as an unticked box
+    // (new items have the flag); one with a state, as ticked or not. And a
+    // button in a table's cell keeps its own name, while the field beside
+    // it is named by its row and column: a subcircuit's File.
+    void itemsWithoutCheckBoxesAreReadAsText()
+    {
+        QDialog dialog(app);
+        dialog.setWindowTitle("Items");
+        auto* layout = new QVBoxLayout(&dialog);
+        auto* tree = new QTreeWidget(&dialog);
+        tree->setObjectName("plainTree");
+        new QTreeWidgetItem(tree, QStringList{"first"});
+        auto* boxed = new QTreeWidgetItem(tree, QStringList{"second"});
+        boxed->setCheckState(0, Qt::Checked);
+        auto* list = new QListWidget(&dialog);
+        list->setObjectName("plainList");
+        list->addItem("alpha");
+        list->addItem("beta");
+        layout->addWidget(tree);
+        layout->addWidget(list);
+        QJsonObject seen;
+        QTimer::singleShot(300, this, [&] {
+            seen = json(call("get_dialog")).toObject();
+            dialog.reject();
+        });
+        dialog.exec();
+        QJsonObject treeSeen, listSeen;
+        for (const QJsonValue& v : seen.value("controls").toArray()) {
+            if (v.toObject().value("label").toString() == "plainTree") treeSeen = v.toObject();
+            if (v.toObject().value("label").toString() == "plainList") listSeen = v.toObject();
+        }
+        QVERIFY2(treeSeen.value("checked").toArray() == QJsonArray({QJsonValue(QJsonValue::Null), true}), QJsonDocument(treeSeen).toJson().constData());
+        QVERIFY2(listSeen.value("items").toArray() == QJsonArray({"alpha", "beta"}) && !listSeen.contains("checked"), QJsonDocument(listSeen).toJson().constData());
+
+        // A subcircuit's File: the field in the cell "File (Value)", set and
+        // applied; the cell's button its own "...".
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Sub"}, {"name", "SUB1"}, {"x", 200}, {"y", 200}})));
+        const QString amp = dir.filePath("workspace/amp.sch");
+        {
+            QFile f(amp);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+            f.write("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                    "  <Port P1 1 220 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+                    "  <Port P2 1 280 100 4 12 1 2 \"2\" 1 \"analog\" 0>\n"
+                    "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                    "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        }
+        QJsonObject sub, set;
+        QTimer::singleShot(800, this, [&] {
+            sub = json(call("get_dialog")).toObject();
+            set = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "File"}, {"value", amp}}}}, {"press", "OK"}});
+        });
+        QVERIFY(!failed(call("context_menu", {{"on", QJsonObject{{"part", "SUB1"}}}, {"choose", "Edit Properties"}}, 20000)));
+        QTRY_VERIFY_WITH_TIMEOUT(!set.isEmpty(), 10000);
+        QStringList labels;
+        for (const QJsonValue& v : sub.value("controls").toArray()) labels << v.toObject().value("label").toString();
+        QVERIFY2(labels.contains("File (Value)") && labels.contains("...") && labels.count("File (Value)") == 1, qPrintable(labels.join(" | ")));
+        QVERIFY2(text(set).startsWith("Set: File (Value)."), qPrintable(text(set)));
+        QCOMPARE(front()->getComponentByName("SUB1")->Props.at(0)->Value, amp);
+        front()->setDocChanged(false);
+    }
 };
 
 QTEST_MAIN(TestQucsControl)

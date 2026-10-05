@@ -3290,10 +3290,21 @@ bool markerPlace(Schematic* sch, const Graph* g, const QJsonValue& at, double* x
     }
     double level = NaN;
     if (w == QLatin1String("-3db") || w == QLatin1String("3db")) {
+        // In dB: drawn so (the trace's part db - its values are dB as read),
+        // or a variable in dB shown as it is.
+        using Part = Graph::ValuePart;
+        const Part part = g->valuePart;
+        if (part == Part::Phase || part == Part::Real || part == Part::Imaginary) {
+            *error = tr("Trace %1 shows its %2: 3 dB below its peak is of a magnitude or of dB - its 'part' magnitude or db "
+                        "(edit_trace), or another trace of %3 so.")
+                         .arg(g->withValuePart(g->Var), part == Part::Phase ? tr("phase") : part == Part::Real ? tr("real part") : tr("imaginary part"), g->Var);
+            return false;
+        }
         const QString unit = ds::unitOf(g->Var, definitionsIn(sch).value(ds::bareName(ds::withoutSimulator(g->Var)).toLower()));
-        const bool decibels = ds::isDecibels(unit);
+        const bool decibels = part == Part::Db || ds::isDecibels(unit);
         if (!decibels && s.min < 0) {
-            *error = tr("%1 goes below 0 and is not known to be in dB: where 3 dB below its peak is cannot be told.").arg(g->Var);
+            *error = tr("%1 goes below 0 and is not known to be in dB: where 3 dB below its peak is cannot be told (a trace "
+                        "with 'part' db draws it in dB).").arg(g->Var);
             return false;
         }
         // Below what: the peak, the value at the start, or a level given.
