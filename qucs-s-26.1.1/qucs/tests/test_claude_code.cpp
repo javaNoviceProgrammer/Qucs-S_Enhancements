@@ -1799,7 +1799,7 @@ private slots:
             {"a<!-- c unclosed <b>x", "a&lt;!-- c unclosed &lt;b>x"}, {"a<!-- c unclosed", "a&lt;!-- c unclosed"},
             // (In <code> and <pre> the tags are HTML still, to Qt.)
             {"<code>a<br>b</code>", "<code>a<br/>b</code>"}, {"<pre>\n<hr> <x>\n</pre>", "<pre>\n<hr/> &lt;x>\n</pre>"}, {"`<!-- <b> -->` stays", "`<!-- <b> -->` stays"},
-            {"\n# <b>x\ny</b>\n", "\n# x\ny\n"}};
+            {"\n# <b>x\ny</b>\n", "\n# x\ny\n"}, {"a <b>\n<div>x</b></div>", "a \n<div>x</div>"}};
         for (const auto& [in, out] : outs) QCOMPARE(htmlBalanced(in), out);
         // What Qt counts as a tag besides: a "/>" in an HTML block that ends
         // no tag (each is a tag closed to it), and a '<' or '>' in a tag's value
@@ -2050,7 +2050,7 @@ private slots:
         // item, a table, a quote.
         for (const char* md : {"-       <hr>x", "# H\n    <div>x</div>", "```\nx\n```\n    <div>y</div>", "- \n    <div></div>",
                                "| a |\n|---|\n    <div>x</div>", "<div>\n>      <hr>", "-\n  <div\n>~~~</div\n>",
-                               "1.\n   <div \"\"></div \"\"\"\"\n>\\"}) {
+                               "1.\n   <div \"\"></div \"\"\"\"\n>\\", " <script><pre></pre>\n    <div></script>", ">\t> \n    <div>\n</div>"}) {
             QTextDocument doc;
             qucs_s::markdown::setMarkdown(&doc, QString::fromUtf8(md));
             QVERIFY2(!doc.toPlainText().contains("<p>") && !doc.toPlainText().contains("</p>"), qPrintable(doc.toPlainText()));
@@ -2145,10 +2145,34 @@ private slots:
                               "> a quote <i>x</i>\n\n<div>\nblock <b>x</b>\n</div>\n\n";
         const QString lines = "a line of `code` and <b>x</b>, <!-- a comment --> and a <? in one long paragraph\n";
         const QString tags = "a <T> b QList<Span> <br> c ";   // (an edit at each)
-        for (const QString& unit : {mixed, lines, tags}) {
-            const QString small = unit.repeated(int(25000 / unit.size())), large = small.repeated(4);
+        // (The re-check of 72afb34: each unclosed comment, <pre>, looked for
+        // its closer to the text's end; PCRE a tag's '>' - none, or one at
+        // the end -, a <code>'s, a link's <destination>'s.)
+        const QString comments = "<!-- x\n", pres = "<pre>\n", quoted = "<b title=\"x ", alone = "<b title=\"x\n\n";
+        const QList<std::pair<QString, QString>> units{{mixed, ""},    {lines, ""},    {tags, ""},          {comments, ""},
+                                                       {pres, ""},     {quoted, ""},   {quoted, ">"},       {alone, ""},
+                                                       {"<code x ", ""}, {"[l](<a ", ""}};
+        for (const auto& [unit, tail] : units) {
+            const QString small = unit.repeated(int(25000 / unit.size())) + tail, large = unit.repeated(4 * int(25000 / unit.size())) + tail;
             const qint64 a = best(small), b = best(large);
             qInfo("%lld, then %lld characters: %.2f ms, %.2f ms", qlonglong(small.size()), qlonglong(large.size()), a / 1e6, b / 1e6);
+            QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
+        }
+        // (An HTML block's tags, for its marks: looked over to a '>' - none.)
+        {
+            const auto marked = [](const QString& md) {
+                qint64 t = std::numeric_limits<qint64>::max();
+                for (int k = 0; k < 5; ++k) {
+                    QElapsedTimer clock;
+                    clock.start();
+                    QTextDocument doc;
+                    qucs_s::markdown::setMarkdown(&doc, md);
+                    t = std::min(t, clock.nsecsElapsed());
+                }
+                return t;
+            };
+            const qint64 a = marked("<div>\n" + quoted.repeated(2000)), b = marked("<div>\n" + quoted.repeated(8000));
+            qInfo("an HTML block: %.2f ms, then %.2f ms", a / 1e6, b / 1e6);
             QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
         }
         const QString lone = QString("a <name> b ") + QChar(0xD800) + " c $x" + QChar(0xDC00) + "$\n\nEND";
@@ -2157,6 +2181,74 @@ private slots:
         const QList<qucs_s::math::Span> spans = qucs_s::math::findMath(lone);
         QCOMPARE(spans.size(), 1);
         QCOMPARE(spans.first().tex, QString("x") + fffd);
+    }
+
+    // Code in a quote or a list's item is read as md4c reads it (the re-check
+    // of 72afb34). A fence its quote or item ended: md4c looks at the next
+    // line as at the fence's closing, and reads what follows the run of
+    // backticks as a line - "```<n>" an HTML block, "`<p" one too. Indented
+    // code: four columns past the quote's or the item's content, or an
+    // item's first line five past its marker; an item begun empty ends at a
+    // blank line. A '<' that is text within an element Qt reads as HTML with
+    // it (<b>a < b</b> showed "a"); a link's <destination> is no tag.
+    void codeInAQuoteOrAListIsReadAsMd4cReadsIt()
+    {
+        using qucs_s::markdown::htmlBalanced;
+        // The re-check's four, then what the fuzzers found on the way: each
+        // keeps the end.
+        for (const char* md : {"1. ```\n```<n>", ">```\n```<r>", ">```\n`<p", "1.     e\n<b><br>\n#<b</b>", "1. > \n\n    <name>",
+                               "1.\n\n    e\n<br><details>\n>/</details>>", "- >```\n><b>", "1.\n>\n    e\n<br><details>\nv\n>/</details>>",
+                               "1. 1. \n\n    <span>", "- 1. \n\n    </i>", "> - ```\n> ```<n>", ">> ```\n> <b>", ">```\n``\n<b>"}) {
+            QTextDocument doc;
+            qucs_s::markdown::setMarkdown(&doc, QString::fromUtf8(md) + "\n\nEND OF IT\n");
+            QVERIFY2(doc.toPlainText().contains("END OF IT"), qPrintable(QString(md) + " -> " + htmlBalanced(QString::fromUtf8(md))));
+        }
+        const QList<std::pair<QString, QString>> read{
+            // (After a fence its container ended: the rest of the line.)
+            {"1. ```\n```<n>", "1. ```\n```&lt;n>"}, {">```\n`<p", ">```\n`&lt;p"}, {">```\n``\n<b>", ">```\n``\n&lt;b>"},
+            {"> - ```\n> ```<n>", "> - ```\n> ```&lt;n>"}, {"- >```\n><b>", "- >```\n>&lt;b>"},
+            // (#x is no heading: the paragraph goes on.)
+            {"1.     e\n<b><br>\n#<b</b>", "1.     e\n<b><br/>\n#&lt;b</b>"}, {"a <b>\n#x</b>", "a <b>\n#x</b>"},
+            // (Indented past an item's content less than four: a paragraph.)
+            {"- a\n  - b\n\n      c <b>", "- a\n  - b\n\n      c &lt;b>"}, {"1.  a\n    - b\n\n        c <b>", "1.  a\n    - b\n\n        c &lt;b>"},
+            {"1. 1. \n\n    <span>", "1. 1. \n\n    &lt;span>"},
+            // (Text within an element; inline code, an autolink are not.)
+            {"<b>a < b</b> c", "<b>a &lt; b</b> c"}, {"<b>a \\< b</b> c", "<b>a \\&lt; b</b> c"}, {"<b>x<3</b>", "<b>x&lt;3</b>"},
+            // (A short run and nothing after it: a blank line - no code to
+            // the next line's backticks.)
+            {">```\n``\nx <b>``", ">```\n``\nx &lt;b>``"}};
+        for (const auto& [in, out] : read) QCOMPARE(htmlBalanced(in), out);
+        for (const char* same : {"> ```\n> ```\n```<n>", "- >```\n  ><b>", "-     x <name>", "1.     <b>", "- a\n\n      code <b>",
+                                 ">     code <b>", "> a\n>\n>     code <b>", "- a\n\n  b\n\n      c <b>", "1.\n\n    e <b>",
+                                 "<b>`x<y`</b>", "<b>a <https://a.b/c> <me@a.bc></b>", "x < y <b>z</b> <", "see [l](<a b>) x",
+                                 "see [l]( <a b> \"t\") x", "[l]: <a b>\n\n[l]", "<b>[l](<a b>) x</b>", "#x <b>\ny</b>",
+                                 "1. > - x\n\n       code <b>", "x\n\n<a\nhref=\"x\">\n`<b>` y</a>", "- ---\n    <b>", "* * *\n    <b>", "> ***\n>     <b>",
+                                 ">```\n``~~~\nx <b>\n\ny"})
+            QCOMPARE(htmlBalanced(same), QString(same));
+        // Shown: code as code, text within an element, links as links.
+        const auto shown = [](const QString& md) {
+            QTextDocument doc;
+            qucs_s::markdown::setMarkdown(&doc, md);
+            return doc.toPlainText();
+        };
+        QCOMPARE(shown("-     x <name>"), QString("x <name>"));
+        QCOMPARE(shown("> a\n>\n>     code <b>"), QString("a\ncode <b>"));
+        QCOMPARE(shown("<b>a < b</b> c"), QString("a < b c"));
+        QCOMPARE(shown("<b>a \\< b</b> c"), QString("a < b c"));
+        QCOMPARE(shown("see [l](<a b>) x"), QString("see l x"));
+        QCOMPARE(shown("[l]: <a b>\n\n[l]"), QString("l"));
+        // An HTML block's marks lose nothing: an empty block in a table's cell
+        // taken out with the next cell took both cells' text; an end mark in
+        // a <script> left open hid what followed it.
+        for (const char* md : {" <pre><script></script>\n</div>| a | b |\n|---|---|\n</pre><hr>",
+                               "\n  <div><script>| a | b |\n|---|---|\n\n    <div>---\n</script></a></div>"}) {
+            const QString in = QString::fromUtf8(md) + "\n\nEND OF IT\n";
+            QTextDocument marked, plain;
+            qucs_s::markdown::setMarkdown(&marked, in);
+            plain.setMarkdown(htmlBalanced(in), QTextDocument::MarkdownDialectGitHub);
+            static const QRegularExpression space(QStringLiteral("[\\s\\x{2028}\\x{2029}\\x{FFFC}]"));
+            QCOMPARE(marked.toPlainText().remove(space), plain.toPlainText().remove(space));
+        }
     }
 
     // Whatever Claude writes between dollars - TeX cut short, braces out of
