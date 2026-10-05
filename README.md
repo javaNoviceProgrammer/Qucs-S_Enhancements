@@ -1086,7 +1086,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   replace, save), and the text rendered: GitHub's Markdown (headings,
   lists, task lists, tables, code on a shade, links, images beside the
   file, inline HTML such as `<br>` and `<kbd>`; a `<name>` that is no
-  HTML shown as written) and TeX math between dollars, typeset. A bar at the top chooses
+  HTML shown as written; comments left out) and TeX math between dollars,
+  typeset. A bar at the top chooses
   *Edit* (the text), *Split* (the text and the rendering side by side, a
   handle sharing the width; the rendering scrolls with the text) or
   *Preview* (the rendering alone); the choice is kept for the next file.

@@ -177,7 +177,8 @@ private slots:
         qucs_s::math::MathObject::install(&doc);
         qucs_s::markdown::render(&doc, "| A | B |\n|---|---|\n| one<br>two | `x` |\n| row2 | y |\n\nAfter the table:\n\n"
                                        "- **Bold item** with text\n- plain item and `code`\n\nA rule<HR>and <img src=\"a.png\"> more, `<br>` as code.\n\n"
-                                       "1. The dataset is <name>.dat.ngspice beside the schematic.\n2. still here?\n\nA vector<int> and a lone <b>.\n\nTHE END\n",
+                                       "1. The dataset is <name>.dat.ngspice beside the schematic.\n2. still here?\n\nA vector<int> and a lone <b>.\n\n"
+                                       "<!-- <img src=\"badge.svg\"> a README's badge, commented out -->\n\nTHE END\n",
                                  QFont(), {});
         const QString text = doc.toPlainText();
         // The rule between the paragraph's parts, its block empty.

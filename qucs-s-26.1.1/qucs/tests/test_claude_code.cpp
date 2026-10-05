@@ -1774,31 +1774,112 @@ private slots:
         // Text: no element; an element not closed (in its paragraph); a
         // closing tag with nothing open; one left open inside another.
         const QList<std::pair<QString, QString>> text{
-            {"a<p>b", "a\\<p>b"}, {"a<li>item", "a\\<li>item"}, {"a<span>x", "a\\<span>x"}, {"a<u>x", "a\\<u>x"},
-            {"a<b>unclosed bold", "a\\<b>unclosed bold"}, {"vector<int> x", "vector\\<int> x"}, {"a <T> b", "a \\<T> b"},
-            {"a<x>b", "a\\<x>b"}, {"The dataset is <name>.dat.ngspice", "The dataset is \\<name>.dat.ngspice"},
-            {"QList<Span> x", "QList\\<Span> x"}, {"a <T> b </T> c", "a \\<T> b \\</T> c"}, {"a</b>b", "a\\</b>b"},
-            {"a<b>x</i>y", "a\\<b>x\\</i>y"}, {"a<b><i>x</b>", "a<b>\\<i>x</b>"}, {"<b>x\n\ny</b>", "\\<b>x\n\ny\\</b>"},
-            {"a</br>b", "a\\</br>b"}, {"<brx> <break>", "\\<brx> \\<break>"}, {"a<name/>b", "a\\<name/>b"},
-            {"`<br>` then <br> and <sch>", "`<br>` then <br/> and \\<sch>"}, {"- item <br>\n\n    <name>\n", "- item <br/>\n\n    \\<name>\n"}};
+            {"a<p>b", "a&lt;p>b"}, {"a<li>item", "a&lt;li>item"}, {"a<span>x", "a&lt;span>x"}, {"a<u>x", "a&lt;u>x"},
+            {"a<b>unclosed bold", "a&lt;b>unclosed bold"}, {"vector<int> x", "vector&lt;int> x"}, {"a <T> b", "a &lt;T> b"},
+            {"a<x>b", "a&lt;x>b"}, {"The dataset is <name>.dat.ngspice", "The dataset is &lt;name>.dat.ngspice"},
+            {"QList<Span> x", "QList&lt;Span> x"}, {"a <T> b </T> c", "a &lt;T> b &lt;/T> c"}, {"a</b>b", "a&lt;/b>b"},
+            {"a<b>x</i>y", "a&lt;b>x&lt;/i>y"}, {"a<b><i>x</b>", "a<b>&lt;i>x</b>"},
+            {"a</br>b", "a&lt;/br>b"}, {"<brx> <break>", "&lt;brx> &lt;break>"}, {"a<name/>b", "a&lt;name/>b"},
+            {"`<br>` then <br> and <sch>", "`<br>` then <br/> and &lt;sch>"}, {"- item <br>\n\n    <name>\n", "- item <br/>\n\n    &lt;name>\n"}};
         for (const auto& [in, out] : text) QCOMPARE(htmlBalanced(in), out);
+        // An element closed in another block - a paragraph, a list's item, a
+        // cell beside it, <details> over blank lines - is taken out with its
+        // closing tag (Qt moved the text between them); a comment, whatever is
+        // in it, is taken out (a tag in it lost the rest), an unclosed one is
+        // text.
+        const QList<std::pair<QString, QString>> outs{
+            {"<b>x\n\ny</b>", "x\n\ny"}, {"- item one <b>opened\n- item two</b> closed", "- item one opened\n- item two closed"},
+            {"| col <b>x | y</b> col |", "| col x | y col |"}, {"# A <b>title\nthen</b> text", "# A title\nthen text"},
+            {"> quoted <i>a\n> b</i>", "> quoted a\n> b"},
+            {"<details>\n<summary>S</summary>\n\nbody\n\n</details>", "\n<summary>S</summary>\n\nbody\n\n"},
+            {"<!-- a comment with <b> inside -->\nNext", "\nNext"}, {"text <!-- note <name> here --> more", "text  more"},
+            {"a<!--\nmulti <img src=x>\n\nline\n-->b", "ab"}, {"a<!-- c -->b", "ab"},
+            {"a<!-- c unclosed <b>x", "a&lt;!-- c unclosed &lt;b>x"}, {"a<!-- c unclosed", "a&lt;!-- c unclosed"},
+            // (In <code> and <pre> the tags are HTML still, to Qt.)
+            {"<code>a<br>b</code>", "<code>a<br/>b</code>"}, {"<pre>\n<hr> <x>\n</pre>", "<pre>\n<hr/> &lt;x>\n</pre>"}, {"`<!-- <b> -->` stays", "`<!-- <b> -->` stays"},
+            {"\n# <b>x\ny</b>\n", "\n# x\ny\n"}};
+        for (const auto& [in, out] : outs) QCOMPARE(htmlBalanced(in), out);
         // As written: closed elements (across a line, a cell, a list's items),
         // void ones closed already, autolinks, comments, code, escapes, '<' as
         // text.
         for (const char* same : {"a<br/>b", "a<br />b", "<b>bold</b> <sup>2</sup> <kbd>F9</kbd>", "x < y and y > z", "a <3 b",
                                  "<details>x</details>", "<details>\n<summary>S</summary>\nbody\n</details>", "<b>x\ny</b>", "a<b/>b",
                                  "a<b><i>x</i></b>z", "a<B>x</b>y", "a<b class=\"x\">y</b>z", "<https://example.com> <me@x.org>",
-                                 "a<!-- c -->b", "a<!-- c unclosed", "`<br>` and ``a <name> b``", "```\n<br> <name>\n```\n",
-                                 "~~~\n<img src=x> QList<Span>\n~~~", "Code:\n\n    <br> <T>\n", "\\<br> is written so",
-                                 "<code>a<br>b</code>", "<pre>\n<hr> <x>\n</pre>"})
+                                 "`<br>` and ``a <name> b``", "```\n<br> <name>\n```\n",
+                                 "~~~\n<img src=x> QList<Span>\n~~~", "Code:\n\n    <br> <T>\n", "&lt;br> is written so",
+                                 })
             QCOMPARE(htmlBalanced(same), QString(same));
         // Each of the re-check's cases, then a paragraph: kept.
         for (const char* md : {"a<br>b", "a<BR>b", "a<hr>b", "a<wbr>b", "a<img src=\"x.png\">b", "a<p>b", "a<li>item", "a<span>x", "a<u>x",
                                "a<b>unclosed bold", "vector<int> x", "a <T> b", "a<x>b", "a</b>b", "1. The dataset is <name>.dat.ngspice beside the schematic.\n2. still here?",
-                               "| A | B |\n|---|---|\n| QList<Span> | y |", "| A | B |\n|---|---|\n| one<br>two | `x` |\n| row2 | y |"}) {
+                               "| A | B |\n|---|---|\n| QList<Span> | y |", "| A | B |\n|---|---|\n| one<br>two | `x` |\n| row2 | y |",
+                               "<!-- a comment with <b> inside -->", "<!-- note <name> here -->", "text <!-- c <b> --> more",
+                               "<!--\nmulti <img src=x>\nline\n-->", "a<!-- c unclosed <b>x", "<code>a<br>b</code>", "<pre>\n<hr> <x>\n</pre>"}) {
             QTextDocument doc;
             doc.setMarkdown(htmlBalanced(QString::fromUtf8(md) + "\n\nNEXT paragraph **bold**\n"), QTextDocument::MarkdownDialectGitHub);
             QVERIFY2(doc.toPlainText().contains("NEXT paragraph bold"), qPrintable(QString(md) + " -> " + doc.toPlainText()));
+        }
+
+        // Each found so by the random replies below, before it held: an HTML
+        // block (a line that starts with a block tag) - where a backslash is
+        // no escape and each '<' counts -, in a quote or a list's item, ended
+        // by the quote's or the item's end; tags in <code> and <pre>; inline
+        // code no further than its paragraph, a heading's line, or a run of
+        // backticks as long; a backtick fence's line with no other backtick;
+        // a comment past an HTML block's end; a backslash at a line's end.
+        for (const char* md : {"<hr><sup>", "<hr></details>", "`<T>\n\n`", "`</span>```", "<pre><code></pre>", "<pre></pre><details>",
+                               "<!--<pre>", "<code><name></code>", "```<details>`", "```x```<p>", "<hr>\\<hr>", "> <hr>\\<details>",
+                               "<p><pre>\\</pre>", "<p><code>`</code>`", "- <pre></pre>\\<br>", "> ```\n</details>```", "> <i>\n`</i>`",
+                               "- ```\n</span>", "1. ```\n</b>", "- ~~~\n\n</x>", "`\n<p>`", "`\n<pre>`", "`\n<!--`\\<hr>", "<hr><x",
+                               "<hr><!--\n\n<!---->", "\\\n<hr>\\</x>", "# `\n<name>`", "# ```<p>\n*```", "x```\n```</span>```",
+                               "<pre></pre>\n    <b>\n</b>", "*\n    ```\n<br>", "<img src=\"a\">\n~~~<name>"}) {
+            QTextDocument doc;
+            doc.setMarkdown(htmlBalanced(QString::fromUtf8(md) + "\n\nEND OF IT\n"), QTextDocument::MarkdownDialectGitHub);
+            QVERIFY2(doc.toPlainText().contains("END OF IT"), qPrintable(QString(md) + " -> " + htmlBalanced(QString::fromUtf8(md))));
+        }
+        // (A comment past an HTML block's end is taken out once: nothing of
+        // what follows it is.)
+        QCOMPARE(htmlBalanced("<hr><!--\n\n<!---->\n\nAfter."), QString("<hr/>\n\nAfter."));
+        // (A fence ends the paragraph inline code is looked for in: what is in
+        // the fence is code, left as it is.)
+        QCOMPARE(htmlBalanced("`a\n~~~\n`<b>\n~~~\n"), QString("`a\n~~~\n`<b>\n~~~\n"));
+
+        // Whatever a reply holds of these, a paragraph after it is read.
+        {
+            const char* const tokens[] = {"<b>", "</b>", "<i>", "</i>", "<br>", "<name>", "</x>", "<!--", "-->", "|", "\n", "\n\n",
+                                          "- ", "# ", "> ", "`", "```", "\\", "x", " ", "<", ">", "<details>", "</details>", "<hr>",
+                                          "*", "1. ", "<img src=\"a\">", "<p>", "<code>", "</code>", "<pre>", "</pre>", "<T>", "</br>",
+                                          "<span>", "</span>", "$", "<sup>", "<br/>", "<b/>", "~~~", "    "};
+            std::mt19937 rng(20261005);
+            int lost = 0;
+            QString first;
+            for (int round = 0; round < 3000; ++round) {
+                QString md;
+                const int count = 1 + int(rng() % 24);
+                for (int k = 0; k < count; ++k) md += QString::fromUtf8(tokens[rng() % std::size(tokens)]);
+                QTextDocument doc;
+                doc.setMarkdown(htmlBalanced(md + "\n\nEND OF IT\n"), QTextDocument::MarkdownDialectGitHub);
+                if (!doc.toPlainText().contains("END OF IT")) {
+                    if (first.isEmpty()) first = md;
+                    ++lost;
+                }
+            }
+            QVERIFY2(lost == 0, qPrintable(QString::number(lost) + " lost; the first: " + first));
+        }
+
+        // Across a list's items and a table's cells: each keeps its own text.
+        {
+            QTextDocument doc;
+            doc.setMarkdown(htmlBalanced("- item one <b>opened\n- item two</b> closed\n\n| col <b>x | y</b> col |\n|---|---|\n"),
+                            QTextDocument::MarkdownDialectGitHub);
+            const QStringList blocks = [&] {
+                QStringList b;
+                for (QTextBlock it = doc.begin(); it.isValid(); it = it.next()) b << it.text();
+                return b;
+            }();
+            QVERIFY2(blocks.contains("item one opened") && blocks.contains("item two closed") && blocks.contains("col x")
+                         && blocks.contains("y col"),
+                     qPrintable(blocks.join(" | ")));
         }
 
         ClaudeCodePanel panel;
