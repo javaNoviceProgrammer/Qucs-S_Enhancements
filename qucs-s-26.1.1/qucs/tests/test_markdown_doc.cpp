@@ -169,8 +169,10 @@ private slots:
 
     // A Markdown file with HTML Qt's importer saw opened and never closed -
     // a <br> in a table's cell, an <hr>, an <img>, a placeholder <name>, a
-    // vector<int>, a lone <b> - is rendered whole: the importer dropped
-    // everything after the first (the review of 5 October, its re-check).
+    // vector<int>, a lone <b>, a "/>" in an HTML block, a tag in CDATA, an
+    // alt="a>b" - is rendered whole: the importer dropped everything after
+    // the first (the review of 5 October, its re-checks). An HTML block is a
+    // block of its own: centred badges after a heading were in it.
     void anUnclosedTagKeepsTheRest()
     {
         QTextDocument doc;
@@ -178,7 +180,10 @@ private slots:
         qucs_s::markdown::render(&doc, "| A | B |\n|---|---|\n| one<br>two | `x` |\n| row2 | y |\n\nAfter the table:\n\n"
                                        "- **Bold item** with text\n- plain item and `code`\n\nA rule<HR>and <img src=\"a.png\"> more, `<br>` as code.\n\n"
                                        "1. The dataset is <name>.dat.ngspice beside the schematic.\n2. still here?\n\nA vector<int> and a lone <b>.\n\n"
-                                       "<!-- <img src=\"badge.svg\"> a README's badge, commented out -->\n\nTHE END\n",
+                                       "<!-- <img src=\"badge.svg\"> a README's badge, commented out -->\n\n"
+                                       "<div>a</div>/>\n\nAfter a stray close.\n\n<![CDATA[\nx <b>\n]]>\n\n"
+                                       "After CDATA, <img alt=\"a>b\" src=\"n.png\"> inline.\n\n## Badges\n\n<p align=\"center\">\n<img src=\"b.png\"/>\n</p>\n\n"
+                                       "THE END\n",
                                  QFont(), {});
         const QString text = doc.toPlainText();
         // The rule between the paragraph's parts, its block empty.
@@ -188,8 +193,13 @@ private slots:
                 ruleBetween = b.text().isEmpty() && b.previous().text() == "A rule" && b.next().text().startsWith("and");
         QVERIFY(ruleBetween);
         for (const char* kept : {"one", "two", "row2", "After the table:", "Bold item with text", "plain item and code", "more, <br> as code.",
-                                 "The dataset is <name>.dat.ngspice beside the schematic.", "still here?", "A vector<int> and a lone <b>.", "THE END"})
+                                 "The dataset is <name>.dat.ngspice beside the schematic.", "still here?", "A vector<int> and a lone <b>.",
+                                 "After a stray close.", "After CDATA,", "inline.", "THE END"})
             QVERIFY2(text.contains(QString::fromUtf8(kept)), qPrintable(QString(kept) + "\n---\n" + text));
+        const QTextBlock badges = blockWith(&doc, "Badges");
+        QCOMPARE(badges.text(), QString("Badges"));
+        QVERIFY(badges.next().text().startsWith(QChar::ObjectReplacementCharacter));
+        QVERIFY(badges.next().blockFormat().alignment() & Qt::AlignHCenter);
     }
 
     // A .md file opens in a Markdown document: a text document (highlighted

@@ -197,3 +197,129 @@ that still apply were caught again.
 
 Full suite 88/88; under AddressSanitizer 88/88, with no report. The end-to-end
 scenarios: 97 checks, none failed.
+
+## The re-check of `ccc1dd9`
+
+The reviewer re-checked `ccc1dd9` four ways: in the viewer, on `htmlBalanced()`
+compiled alone, on all 1,419 Claude replies in the workspace's transcripts, and with a
+fuzzer of their own. The four items of the last re-check were fixed. None of the replies
+lost text, and none of those that were already fine changed. Three items were left; all
+three reproduced on `ccc1dd9` as written.
+
+| Re-check | Now |
+|---|---|
+| **1. `htmlBalanced()` is quadratic (MEDIUM, performance).** Each `QRegularExpression::match(md, offset)` checks the whole string for valid UTF-16, at every line and tag: 134,000 characters with tags took 1,661 ms, and a 100 kB README froze the viewer for a second. | **Linear.** The text is checked once: a lone surrogate, which is no UTF-16, becomes U+FFFD, as Qt's importer reads it anyway (`validUtf16()`, in `htmlBalanced` and `findMath`). Every match then skips the check (`matchAt()`). Three more costs that grew with the square were found and removed: the edits made one at a time (each `replace` moved the rest), inline code looked for to its paragraph's end from each backtick, and a comment's end looked for the same way. A table check, new this round (below), also needed care: PCRE looks far ahead for the `-` its pattern needs, so the line's first character is checked first. 134,000 characters with tags now take 12.0 ms, as long as Qt's own `setMarkdown` (11.7 ms); 122,000 of prose take 6.7 ms (726 ms before); the reviewer's 268,000 take 23 ms (6,756 ms before). The 1,419 replies render in 67 ms, the slowest in 0.6 ms. |
+| **2. A `/>` that ends no tag, in an HTML block, loses the rest (LOW).** `<div>a</div>/>`, `<hr>x/>`, `<div/>/>`; a lone `<hr>`, closed to `<hr/>`, starts such a block itself. | **Written `/&gt;`.** In an HTML block Qt counts every `/>` as a tag closed, so a `/>` there that ends no tag is text. Each of the reviewer's cases keeps the rest. |
+| **3. A `<details>`' summary joins the paragraph before it (cosmetic).** "AFTER-ASum line". | **Wider than `<details>`, and fixed for all.** Qt's importer puts any HTML block into the block before it, plain Qt as well: "para", then `<div>x</div>`, read "parax"; a `<h2>` joined the heading before it; a README's centred badges joined its title. `qucs_s::markdown::setMarkdown()` now does what the three callers did, and more. It balances the HTML, then starts each HTML block with a paragraph holding one noncharacter (U+FDD2), which Qt merges into the block before. After `setMarkdown` it takes each mark out. Text after the mark in its block becomes a block of its own, and a block left empty goes. "AFTER-A", "Sum line" and "body" are three blocks; the badges are centred under the title; a `<pre>` keeps its first line. Where Qt already had the HTML in a block of its own - at the start, after a quote, code or a table - it is as it was. A list item's first HTML block stays in its item, as in Qt. A block indented four spaces or more is not marked: md4c may read it as code, where the mark would show. `rulesApart()` became part of `setMarkdown()`. |
+
+### What else the fuzzers found
+
+The reviewer's fuzzer now also puts `<![CDATA[`, `<?x?>` and `<!DOCTYPE html>` in its
+fragments. With those, `ccc1dd9` lost the closing paragraph for 699 of 20,000 texts.
+These were fixed along the way:
+- **Comments' likes.** A processing instruction, a CDATA section and a declaration
+  draw nothing in Qt, and a tag in one lost the rest. They are taken out as comments
+  are, and they start an HTML block at a line's start, as in CommonMark.
+- **Quoted values.** `<img src="a>b">` and `<a title="x/>y">` lost the rest: a tag's
+  pattern ended at the first `>`, and Qt counts the `<x` and `/>` inside quotes. A value
+  in quotes is part of its tag now, and a `<` or `>` in it is written `&lt;` or `&gt;`.
+- **`</br/>`**, counted by Qt as two tags closed, is text.
+- **A regression of `ccc1dd9`.** An inline comment over a blank line (`a <!-- b`, blank
+  line, `c --> d`) was taken out whole, deleting text that Qt and GitHub both show. A
+  comment is now one only within its paragraph or HTML block; otherwise it is text,
+  as Qt shows it.
+- **Another.** A `<pre>` over blank lines, or with a `|` in it, lost its tags and was
+  read as Markdown: blank lines and pipes counted as block boundaries inside an HTML
+  block. They no longer do.
+- **md4c's reading**, which Qt uses and which differs from CommonMark in places, now
+  followed:
+  - In a paragraph, a line that starts an HTML block ends the paragraph however far it
+    is indented.
+  - After a table's dashes, every line is a row until a blank line, a quote, a list
+    item, indented code or a rule; a `<div>` line or a fence is a row too.
+  - A whole tag alone on its line starts an HTML block after any line that is not a
+    paragraph's, a heading's too.
+  - A fence closes on a run as long or longer, with nothing after it.
+  - Indented code starts after any line that is not a paragraph's: a heading, a fence's
+    end, a rule, an empty quote line. Before, `# H` followed by `    <div>x` had its
+    `<div>` escaped inside the code.
+
+With the reviewer's full fragments, 32 of 20,000 texts lose the closing paragraph
+(699 on `ccc1dd9`). Without the three new ones, 29 (282). The property test, now with
+these fragments and through `setMarkdown`, keeps every text of 20,000 on its own seed
+and on two others. On two more seeds, 1 and 2 of 20,000 are lost. Every one of those
+is indented code inside a list item or a quote (a mark followed by five spaces), which
+the walk reads as text; see "Not done".
+
+The repository's 79 Markdown files: plain Qt loses the end of 4, now none. No mark is
+left in any text, `htmlBalanced` gives the same text run twice, and Qt prints no
+warnings.
+
+### Tests
+
+- **`test_claude_code`**, `aRepliesHtmlIsReadWhole`:
+  - each `/>` case of the re-check, `</br/>`, the quoted values, the comments' likes, a
+    `<pre>` over blank lines and pipes, a comment over a blank line (text), one in a
+    `<pre>` (taken out), a comment never closed in its HTML block (text, nothing after
+    it taken);
+  - md4c's readings: a table's row, an indented line ending a paragraph, `<?x?>`
+    ending one, fences by their runs, indented code after a heading, a fence, a rule, an
+    empty quote line and a table;
+  - each case of the re-check and each shrunk case, followed by a paragraph that must be
+    kept, now through `setMarkdown`;
+  - the property test, through `setMarkdown`, with the new fragments; no mark left.
+- **`anHtmlBlockIsABlockOfItsOwn`** (new):
+  - the `<details>` case and ten more kinds of HTML block, each a block of its own;
+  - ten where Qt had it right, as Qt had them;
+  - centred badges after a title and at the start, still centred;
+  - six texts where md4c reads code, with no mark showing;
+  - a reply with `<details>` in the panel, its summary a line of its own;
+  - no Qt warning.
+- **`aLongReplyIsReadInLinearTime`** (new): three texts - mixed Markdown, one long
+  paragraph of code, a comment and an unclosed `<?` on each line, and text with a tag
+  to escape every few characters. Four times each takes less than eight times as long
+  (about four; sixteen before). A lone surrogate becomes U+FFFD in `htmlBalanced` and in
+  `findMath`'s formula.
+- **`test_markdown_doc`**, `anUnclosedTagKeepsTheRest`: a `/>` in an HTML block, a tag
+  in CDATA and `alt="a>b"`, the text after each rendered; a heading's centred badges
+  apart and centred.
+
+Each part was broken on purpose: 49 breaks, 48 caught. The one not caught is the
+table check's look at its first character, which saves a constant factor rather than a
+square: no test of time can tell it from noise. The first run had 50 breaks and 17 not
+caught:
+- **Code that made no difference, taken out:**
+  - a `/>` written `&gt;` in an escaped `<name/>`: the next round does it;
+  - a block boundary after an HTML block: Qt drew the same either way;
+  - a list item's or quote's format kept, and the next block's format set, when an empty
+    mark's block goes: Qt keeps the next block's format by itself;
+  - "no closing run from here" remembered for inline code. A run that found no closer
+    has no run of its length after it in its paragraph, so it could never be used.
+- **Tests added:** the edits in one pass (the dense-tag text), the HTML block's own
+  boundary (a quote's indented code before one), the comments' likes as HTML blocks,
+  `<?x` ending a paragraph, fences closed by a longer run or with text after them,
+  the indented code rules, and the four-space rule for marks (`<div>` then
+  `>      <hr>`).
+
+Full suite 88/88. Under AddressSanitizer 87 of 88 passed together;
+`tuneHoldsAndCompares` found the simulator not starting while four tests ran at once,
+and passed alone; no sanitizer report. The new linear-time test holds there too
+(about 4.1 times for four times the text). The end-to-end scenarios: 97 checks, none
+failed.
+
+### Not done
+
+- **Indented code inside a list item or a quote** (`1.` or `>` followed by five
+  spaces) is read by the walk as text, and by md4c as code. 1 to 2 random texts in
+  20,000 lose their end this way; no reply or file has it.
+- **Thousands of unclosed `<!--` or `<pre>` at line starts** each still look to the
+  text's end: 40,000 characters of nothing else take about 170 ms. No reply or file has
+  more than a few.
+- **A mark can show** as `<p></p>` when a fence is indented by a tab inside a list item:
+  1 in 20,000 random texts.
+- **A list whose first item starts with an HTML block** (`- <div>x</div>`) loses its
+  list, and Qt warns "attempted to insert into a list that no longer exists", as before.
+  Where a text used to lose its end before reaching such an item, Qt now reaches it
+  and warns.
+- **An HTML block after a paragraph's line, indented four spaces or more**, is read
+  rightly but not marked, so Qt still puts it into the paragraph.
