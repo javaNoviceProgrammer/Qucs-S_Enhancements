@@ -1821,14 +1821,22 @@ private slots:
             // block - <?x?> too - ends it, indented however far.)
             {"| a | b |\n|---|---|\n<p>x | y</p>", "| a | b |\n|---|---|\nx | y"},
             {"x```\n    </details><span>```", "x```\n    &lt;/details>&lt;span>```"}, {"`\n<?x?><img src=\"a\">`", "`\n<img src=\"a\"/>`"},
-            {"para\n    <div>a/>b</div>", "para\n    <div>a/&gt;b</div>"}, {"<?x\n\n<b>\n\n?>\nNext", "\nNext"}};
+            {"para\n    <div>a/>b</div>", "para\n    <div>a/&gt;b</div>"}, {"<?x\n\n<b>\n\n?>\nNext", "\nNext"},
+            // (A table only from a paragraph's first line - after no
+            // paragraph's, a list's new item, a quote begun - with its dashes in
+            // the same quote: else its lines are a paragraph's, and an HTML
+            // block's after. A tag over lines within its paragraph or block.)
+            {"r\n|\n-|\n<hr></", "r\n|\n-|\n<hr/>&lt;/"}, {">|\n|-\n<summary></summary><t", ">|\n|-\n<summary></summary>&lt;t"},
+            {"- x\n- | a | b |\n  |---|---|\n  <p>x | y</p>", "- x\n- | a | b |\n  |---|---|\n  x | y"},
+            {"x\n> | a | b |\n> |---|---|\n> <p>x | y</p>", "x\n> | a | b |\n> |---|---|\n> x | y"}, {"<b\n\n>x</b>", "<b\n\n>x&lt;/b>"}};
         for (const auto& [in, out] : counted) QCOMPARE(htmlBalanced(in), out);
         // (Code: a fence to one as long or longer with nothing after it;
         // indented code after a table, a heading, a fence, a rule, an empty
         // quote line.)
         for (const char* same : {"a/> b", "a <b title=\"x>y", "`<div>`/>", "````x\n```\n<b>\n````\n", "```\n```x <b>\n```\n",
                                  "```\n```x\n<b>\n```\n", "````x\n<b>\n`````\n", "| a |\n|---|\n    <b>x\n", "# H\n    <div>x\n",
-                                 "```\nx\n```\n    <div>y\n", "***\n      <div>x\n", "> q\n>\n    <div>x\n"})
+                                 "```\nx\n```\n    <div>y\n", "***\n      <div>x\n", "> q\n>\n    <div>x\n",
+                                 "r\n| a | b |\n|---|---|\n<p>x | y</p>"})
             QCOMPARE(htmlBalanced(same), QString(same));
         // As written: closed elements (across a line, a cell, a list's items),
         // void ones closed already, autolinks, comments, code, escapes, '<' as
@@ -1866,7 +1874,8 @@ private slots:
                                "- ```\n</span>", "1. ```\n</b>", "- ~~~\n\n</x>", "`\n<p>`", "`\n<pre>`", "`\n<!--`\\<hr>", "<hr><x",
                                "<hr><!--\n\n<!---->", "\\\n<hr>\\</x>", "# `\n<name>`", "# ```<p>\n*```", "x```\n```</span>```",
                                "<pre></pre>\n    <b>\n</b>", "*\n    ```\n<br>", "<img src=\"a\">\n~~~<name>", "`\n<?x\n` a/>b",
-                               ">     <i>\n</div></i>", "# \n<br>\n</div><details>\\</details>"}) {
+                               ">     <i>\n</div></i>", "# \n<br>\n</div><details>\\</details>", "r\n|\n-|\n<hr></", "c\n|\n-|\n\t<e>",
+                               "**\n|\n|-\n\t<d>", ">|\n|-\n<summary></summary><t", "<b\n\n>x</b>"}) {
             QTextDocument doc;
             qucs_s::markdown::setMarkdown(&doc, QString::fromUtf8(md) + "\n\nEND OF IT\n");
             QVERIFY2(doc.toPlainText().contains("END OF IT"), qPrintable(QString(md) + " -> " + htmlBalanced(QString::fromUtf8(md))));
@@ -1994,11 +2003,11 @@ private slots:
         };
         const QList<std::pair<QString, QString>> apart{
             {"AFTER-A\n\n<details>\n<summary>Sum line</summary>\n\nbody\n\n</details>\n\nNEXT", "AFTER-A | Sum line | body | NEXT"},
-            {"para\n\n<div>x</div>\n\nNEXT", "para | x | NEXT"}, {"para\n<div>x</div>", "para | x"},
+            {"para\n\n<div>x</div>\n\nNEXT", "para | x | NEXT"}, {"para\n<div>x</div>", "para | x"}, {"para\n    <div>x</div>", "para | x"},
             {"para\n\n<div>x</div>\n\n<div>y</div>", "para | x | y"}, {"# H\n\n<h2>T</h2>\n\nNEXT", "# H | ## T | NEXT"},
             {"# H\n\n<img src=\"n.png\">\n\nNEXT", "# H | ￼ | NEXT"}, {"- item\n\n<div>x</div>\n\nNEXT", "- item | x | NEXT"},
             {"- item\n\n  <div>x</div>\n- two", "- item | x | - two"}, {"> q\n>\n> <div>x</div>\n\nNEXT", "q | x | NEXT"},
-            {"- item\n\n  <img src=\"n.png\">\n\nNEXT", "- item | \uFFFC | NEXT"},
+            {"- item\n\n  <img src=\"n.png\">\n\nNEXT", "- item | \uFFFC | NEXT"}, {"- item\n\n  <div>x</div>", "- item | x"},
             // (A <pre>'s first line too.)
             {"para\n\n<pre>\na\n\n  b\n</pre>\n\nNEXT", "para | a |  |   b | NEXT"}};
         for (const auto& [md, out] : apart) QCOMPARE(read(md), out);
@@ -2006,7 +2015,7 @@ private slots:
         // code (no mark shows in it), a table's row.
         for (const char* md : {"<div>x</div>\n\nNEXT", "> q\n\n<div>x</div>", "```\ncode\n```\n\n<div>x</div>", "| a |\n|---|\n| b |\n\n<div>x</div>",
                                "para\n\n<script>a</script>\n\nNEXT", "- item\n- <div>x</div>\n- three", "# H\n    <div>x</div>",
-                               "```\nx\n```\n    <div>y</div>", "| a | b |\n|---|---|\n<div>x</div>",
+                               "```\nx\n```\n    <div>y</div>", "| a | b |\n|---|---|\n<div>x</div>", "```\ncode\n```\n\n<script>a</script>",
                                "A *list*:\n\n1. one\n2. two `<x>`\n\n> quote\n\n```\ncode\n```\n\n| a | b |\n|---|---|\n| c | d |\n\n# End"}) {
             QTextDocument raw;
             raw.setMarkdown(QString::fromUtf8(md), QTextDocument::MarkdownDialectGitHub);
@@ -2019,14 +2028,45 @@ private slots:
             QVERIFY(doc.begin().text().startsWith(QChar::ObjectReplacementCharacter));
             QVERIFY(doc.begin().blockFormat().alignment() & Qt::AlignHCenter);
         }
-        // No mark shows where md4c reads code: a list item's text five spaces
-        // on, a line indented four after a heading, a fence, an empty item, a
-        // table.
+        // No mark shows where md4c reads code the walk did not, nor where an
+        // HTML block's last line ends in a tag: a list item's text five
+        // spaces on, a line indented four after a heading, a fence, an empty
+        // item, a table, a quote.
         for (const char* md : {"-       <hr>x", "# H\n    <div>x</div>", "```\nx\n```\n    <div>y</div>", "- \n    <div></div>",
-                               "| a |\n|---|\n    <div>x</div>", "<div>\n>      <hr>"}) {
+                               "| a |\n|---|\n    <div>x</div>", "<div>\n>      <hr>", "-\n  <div\n>~~~</div\n>",
+                               "1.\n   <div \"\"></div \"\"\"\"\n>\\"}) {
             QTextDocument doc;
             qucs_s::markdown::setMarkdown(&doc, QString::fromUtf8(md));
             QVERIFY2(!doc.toPlainText().contains("<p>") && !doc.toPlainText().contains("</p>"), qPrintable(doc.toPlainText()));
+        }
+        // In a list's item, set in under its bullet as the item's paragraphs
+        // are (the re-check of dbcf2df: it was at the margin); in a quote, in
+        // the quote; what follows them, as it was.
+        {
+            const auto format = [](const QString& md, const QString& text) {
+                QTextDocument doc;
+                qucs_s::markdown::setMarkdown(&doc, md);
+                for (QTextBlock b = doc.begin(); b.isValid(); b = b.next())
+                    if (b.text() == text) return b.blockFormat();
+                return QTextBlockFormat();
+            };
+            const QString item = "- item\n\n  <div>x</div>\n\n  para\n\nTop", quote = "> q\n>\n> <div>x</div>\n\nTop";
+            QCOMPARE(format(item, "x").indent(), format(item, "para").indent());
+            QCOMPARE(format(item, "x").indent(), 1);
+            QCOMPARE(format(item, "Top").indent(), 0);
+            QCOMPARE(format("- item\n\n  <pre>\n  a\n  b\n  </pre>\n\nTop", "b").indent(), 1);
+            QCOMPARE(format(quote, "x").intProperty(QTextFormat::BlockQuoteLevel), 1);
+            QCOMPARE(format(quote, "x").leftMargin(), format(quote, "q").leftMargin());
+            QCOMPARE(format(quote, "Top").intProperty(QTextFormat::BlockQuoteLevel), 0);
+            QCOMPARE(format("> - item\n>\n>   <div>x</div>", "x").indent(), 1);
+            QCOMPARE(format("> - item\n>\n>   <div>x</div>", "x").intProperty(QTextFormat::BlockQuoteLevel), 1);
+        }
+        // A mark's character in the text (a noncharacter): taken out, nothing
+        // else changed.
+        for (const char16_t mark : {u'\xFDD2', u'\xFDD3', u'\xFDD4'}) {
+            QTextDocument doc;
+            qucs_s::markdown::setMarkdown(&doc, QString("para") + QChar(mark) + " x\n\nnext");
+            QCOMPARE(blocks(doc), QString("para x | next"));
         }
         // A README's centred badges after its title: apart, still centred.
         {

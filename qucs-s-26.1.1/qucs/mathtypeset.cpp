@@ -23,6 +23,7 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextList>
 
 #include <functional>
 
@@ -2558,11 +2559,14 @@ void outsideCode(const QString& md, bool htmlCode, const std::function<qsizetype
     bool paragraph = false;   // the line a paragraph's (not a heading's, a rule's, code, HTML, empty in its marks)
     static const QRegularExpression notParagraph(QStringLiteral(
         "\\G(?:#{1,6}(?=[ \\t\\r\\n]|$)|(?:(?:\\*[ \\t]*){3,}|(?:-[ \\t]*){3,}|(?:_[ \\t]*){3,}|=+[ \\t]*)(?=\\r?\\n|$)|[ \\t]*(?=\\r?\\n|$))"));
-    // A table (md4c's): after a line with a '|', a line of its columns'
-    // dashes; then each line is a row - an HTML tag's, a fence's, a
-    // heading's too - till a blank line, a quote, a list's item, indented
-    // code or a rule.
-    bool inTable = false;
+    // A table (md4c's): a paragraph's first line - after no paragraph's, or
+    // a list's item's, or in a quote of other depth -, then in the same
+    // quote a line of its columns' dashes and a '|'; then each line is a
+    // row - an HTML tag's, a fence's, a heading's too - till a blank line, a
+    // quote, a list's item, indented code or a rule.
+    bool inTable = false, paragraphStart = false;   // (the line its paragraph's first)
+    int quotes = 0;                                 // (the line's quote marks)
+    static const QRegularExpression itemMark(QStringLiteral("(?:[-*+]|\\d{1,9}[.)])(?:[ \\t]|$)"));
     static const QRegularExpression dashes(QStringLiteral("\\G\\|?[ \\t]*:?-+:?[ \\t]*(?:\\|[ \\t]*:?-+:?[ \\t]*)*\\|?[ \\t]*(?=\\r?\\n|$)"));
     static const QRegularExpression notRow(QStringLiteral("\\G(?:>|(?:[-*+]|\\d{1,9}[.)])(?:[ \\t]|$)|(?:(?:\\*[ \\t]*){3,}|(?:-[ \\t]*){3,}|(?:_[ \\t]*){3,})(?=\\r?\\n|$))"));
     // (The paragraph inline code was last looked for in, from where to its
@@ -2571,8 +2575,11 @@ void outsideCode(const QString& md, bool htmlCode, const std::function<qsizetype
     qsizetype paragraphFrom = -1, paragraphTo = -1;
     while (i < n) {
         const QChar c = md.at(i);
-        const bool afterParagraph = paragraph;
+        const bool afterParagraph = paragraph, afterStart = paragraphStart;
+        const int afterQuotes = quotes;
         if (lineStart) {
+            const QStringView marks = QStringView(md).mid(i, contentAt(md, i) - i);
+            quotes = int(marks.count(QLatin1Char('>')));
             qsizetype eol = md.indexOf(QLatin1Char('\n'), i);
             if (eol < 0) eol = n;
             int indent = 0;
@@ -2590,7 +2597,7 @@ void outsideCode(const QString& md, bool htmlCode, const std::function<qsizetype
             }
             // (Its first character looked at first: PCRE looks ahead for the
             // '-' the pattern needs, a long way in a long paragraph.)
-            if (const qsizetype d = contentAt(md, i); !blank && !inTable && afterParagraph && d < n
+            if (const qsizetype d = contentAt(md, i); !blank && !inTable && afterParagraph && afterStart && quotes == afterQuotes && d < n
                 && (md.at(d) == QLatin1Char('|') || md.at(d) == QLatin1Char('-') || md.at(d) == QLatin1Char(':'))
                 && matchAt(dashes, md, d).hasMatch() && QStringView(md).mid(i, eol - i).contains(QLatin1Char('|'))) {
                 inTable = true;
@@ -2603,6 +2610,7 @@ void outsideCode(const QString& md, bool htmlCode, const std::function<qsizetype
             }
             afterBlank = blank;
             paragraph = !blank && !matchAt(notParagraph, md, contentAt(md, i)).hasMatch();
+            paragraphStart = paragraph && (!afterParagraph || quotes != afterQuotes || itemMark.match(marks).hasMatch());
         }
         // An HTML block, read as Qt's importer reads it: each place in it,
         // there being no code and no escape in it. (It may start in a quote
@@ -2924,7 +2932,16 @@ QString htmlBalancedOnce(const QString& md)
             comments << std::pair{i, end - i};
             return end;
         }
-        const QRegularExpressionMatch m = math::matchAt(tagAt, md, i);
+        QRegularExpressionMatch m = math::matchAt(tagAt, md, i);
+        if (m.hasMatch() && m.capturedView().contains(QLatin1Char('\n'))) {
+            // (A tag over lines: within its HTML block or paragraph - not to
+            // a '>' that marks the next line's quote.)
+            if (!raw && (i < paragraphFrom || i >= paragraphTo)) {
+                paragraphFrom = i;
+                paragraphTo = math::paragraphEnd(md, i);
+            }
+            if (m.capturedEnd() > (raw ? htmlEnd : paragraphTo)) m = QRegularExpressionMatch();
+        }
         if (!m.hasMatch()) {
             // (In an HTML block Qt counts each '<' as a tag's: x < y, <x.)
             if (raw) literal << i;
@@ -3050,10 +3067,12 @@ QString htmlBalancedOnce(const QString& md)
 // Qt's importer puts an HTML block into the block before it - a
 // paragraph, a heading, a list's item: "para" then <div>x</div> read
 // "parax", and the <summary> of a <details> taken out joined the paragraph
-// before. Each HTML block starts with a paragraph of this mark, which takes
+// before. Each HTML block starts with a paragraph of a mark, which takes
 // its place there (a <pre>'s text, with it); blocksApart() takes them out.
-// (A noncharacter: U+FDD0 and U+FDD1 are Qt's frames'.)
-constexpr char16_t kBlockMark = 0xFDD2;
+// One in a quote, or indented in a list's item, has marks of its own, at its
+// start and its end: its blocks are set in as the quote's or the item's
+// paragraphs are. (Noncharacters: U+FDD0 and U+FDD1 are Qt's frames'.)
+constexpr char16_t kBlockMark = 0xFDD2, kInnerBlockMark = 0xFDD3, kInnerBlockEnd = 0xFDD4;
 
 QString htmlBlocksMarked(const QString& md)
 {
@@ -3062,22 +3081,32 @@ QString htmlBlocksMarked(const QString& md)
     QList<std::pair<qsizetype, QString>> marks;   // where, what
     math::outsideCode(
         md, false, [](qsizetype, bool) -> qsizetype { return -1; },
-        [&](qsizetype k, qsizetype) {
-            // (Not one indented four spaces or a tab from its line's start or
-            // marks: md4c may read that as code, where the mark would show.
-            // Nor a list item's first: Qt keeps it in the item, the mark's
-            // paragraph would not.)
+        [&](qsizetype k, qsizetype end) {
+            // (Not a list item's first: Qt keeps it in the item, the mark's
+            // paragraph would not. Where md4c reads code the walk did not,
+            // the mark shows as text: markOut() takes it out.)
             const qsizetype line = k == 0 ? 0 : md.lastIndexOf(QLatin1Char('\n'), k - 1) + 1;
             const QStringView before = QStringView(md).mid(line, k - line);
-            if (before.contains(QLatin1Char('\t')) || before.contains(QLatin1String("    ")) || item.match(before).hasMatch()) return;
+            if (item.match(before).hasMatch()) return;
+            // (In a quote; or indented past its quote's marks and their
+            // space: in a list's item, if there is one. Its end marked after
+            // the '>' its last line ends with - else that may be in a tag.)
+            qsizetype spaces = 0;
+            while (spaces < before.size() && before.at(before.size() - 1 - spaces) == QLatin1Char(' ')) ++spaces;
+            qsizetype last = end;
+            while (last > k && md.at(last - 1).isSpace()) --last;
+            const bool inner = (before.contains(QLatin1Char('>')) || spaces > (spaces < before.size() ? 1 : 0)) && last > k
+                               && md.at(last - 1) == QLatin1Char('>');
+            const QChar mark(inner ? kInnerBlockMark : kBlockMark);
             // (A <pre> is to its closing tag, blank lines in it: a <p> before
             // would make it a block to a blank line. Its text starts with the
             // mark.)
             if (!math::matchAt(raw, md, k).hasMatch()) {
-                marks << std::pair{k, QStringLiteral("<p>%1</p>").arg(QChar(kBlockMark))};
+                marks << std::pair{k, QStringLiteral("<p>%1</p>").arg(mark)};
             } else if (const qsizetype close = md.indexOf(QLatin1Char('>'), k); close >= 0) {
-                marks << std::pair{close + 1, QString(QChar(kBlockMark))};
+                marks << std::pair{close + 1, QString(mark)};
             }
+            if (inner) marks << std::pair{last, QStringLiteral("<p>%1</p>").arg(QChar(kInnerBlockEnd))};
         });
     if (marks.isEmpty()) return md;
     QString out;
@@ -3092,12 +3121,43 @@ QString htmlBlocksMarked(const QString& md)
     return out;
 }
 
+// Takes the empty block \a b out, with the break after it - the next block
+// keeps its format -, or at the end with the one before it. (One before a
+// table, in another frame, is kept, as Qt keeps one.)
+void takeOut(const QTextBlock& b)
+{
+    QTextCursor c(b);
+    if (const QTextBlock next = b.next(); next.isValid() && QTextCursor(next).currentFrame() == c.currentFrame()) {
+        c.movePosition(QTextCursor::NextBlock, QTextCursor::KeepAnchor);
+        c.removeSelectedText();
+    } else if (const QTextBlock previous = b.previous(); !next.isValid() && previous.isValid()
+               && QTextCursor(previous).currentFrame() == c.currentFrame()) {
+        c.setPosition(previous.position() + previous.length() - 1);
+        c.setPosition(b.position(), QTextCursor::KeepAnchor);
+        c.removeSelectedText();
+    }
+}
+
+// The mark \a hit selects, taken out - with the "<p>" and "</p>" around it
+// when md4c read them as text, not HTML (code the walk took for none).
+void markOut(QTextCursor& hit)
+{
+    const QTextBlock b = hit.block();
+    const QString text = b.text();
+    const qsizetype at = hit.selectionStart() - b.position();
+    if (at >= 3 && QStringView(text).mid(at - 3, 3) == QLatin1String("<p>") && QStringView(text).mid(at + 1, 4) == QLatin1String("</p>")) {
+        hit.setPosition(b.position() + int(at) - 3);
+        hit.setPosition(b.position() + int(at) + 5, QTextCursor::KeepAnchor);
+    }
+    hit.removeSelectedText();
+}
+
 // What Qt's importer put into one block, apart: the text after an <hr>
 // inside a paragraph, which it draws above the rule (moved to a block of
 // its own after the rule; in a table's cell, a line more in it); and an
 // HTML block, at htmlBlocksMarked()'s marks - each taken out, what follows
 // it in its block moved to a block of its own, a block it alone was taken
-// out.
+// out; one in a quote or a list's item set in as their paragraphs are.
 void blocksApart(QTextDocument* document)
 {
     for (QTextBlock b = document->begin(); b.isValid(); b = b.next()) {
@@ -3108,12 +3168,19 @@ void blocksApart(QTextDocument* document)
         c.insertBlock(f, b.charFormat());
         b = b.next();   // (the text, after the rule's block, now empty)
     }
-    const QString mark{QChar(kBlockMark)};
-    for (QTextCursor hit = document->find(mark); !hit.isNull(); hit = document->find(mark, hit.position())) {
+    static const QRegularExpression marks(QStringLiteral("[\\x{FDD2}\\x{FDD3}]"));
+    const QString innerEnd{QChar(kInnerBlockEnd)};
+    for (QTextCursor hit = document->find(marks); !hit.isNull(); hit = document->find(marks, hit.position())) {
+        const bool inner = hit.selectedText() == QString(QChar(kInnerBlockMark));
         const QTextBlock b = hit.block();
-        hit.removeSelectedText();
+        // How the quote's or the item's paragraphs are set in: as the block
+        // the HTML follows, its list's indent if it is an item.
+        const QTextBlockFormat container = b.blockFormat();
+        const int indent = b.textList() ? b.textList()->format().indent() : container.indent();
+        markOut(hit);
         const qsizetype at = hit.position() - b.position();
         const QString text = b.text();
+        QTextBlock first = b.next();   // the HTML's first block
         if (at > 0 && at < text.size()) {
             // The HTML's text after the block's: a block of its own (not a
             // heading's, nor in a list).
@@ -3121,16 +3188,33 @@ void blocksApart(QTextDocument* document)
             f.clearProperty(QTextFormat::HeadingLevel);
             f.clearProperty(QTextFormat::ObjectIndex);
             hit.insertBlock(f);
-        } else if (text.isEmpty()) {
-            // (Taken out with the break after it: the next block keeps its
-            // format. A table after it is in a frame: the block is kept, as
-            // Qt keeps one before a table.)
-            const QTextBlock next = b.next();
-            QTextCursor c(b);
-            if (!next.isValid() || QTextCursor(next).currentFrame() != c.currentFrame()) continue;
-            c.movePosition(QTextCursor::NextBlock, QTextCursor::KeepAnchor);
-            c.removeSelectedText();
+            first = hit.block();
+        } else if (at == 0) {
+            first = b;
+            if (text.isEmpty()) {
+                const int position = b.position();
+                takeOut(b);
+                first = document->findBlock(position);
+            }
         }
+        if (!inner) continue;
+        // (To its end: after the '>' its last line ends with, in no element.)
+        const QTextCursor end = document->find(innerEnd, hit.position());
+        for (QTextBlock h = first; h.isValid() && (end.isNull() ? h == first : h.position() < end.block().position()); h = h.next()) {
+            if (QTextCursor(h).currentTable() != nullptr || h.textList() != nullptr) continue;
+            QTextBlockFormat f = h.blockFormat();
+            f.setIndent(indent);
+            f.setLeftMargin(container.leftMargin());
+            f.setRightMargin(container.rightMargin());
+            f.setProperty(QTextFormat::BlockQuoteLevel, container.intProperty(QTextFormat::BlockQuoteLevel));
+            QTextCursor(h).setBlockFormat(f);
+        }
+    }
+    // The ends: taken out, a block alone too.
+    for (QTextCursor hit = document->find(innerEnd); !hit.isNull(); hit = document->find(innerEnd, hit.position())) {
+        const QTextBlock b = hit.block();
+        markOut(hit);
+        if (b.text().isEmpty()) takeOut(b);
     }
 }
 
@@ -3138,7 +3222,10 @@ void blocksApart(QTextDocument* document)
 
 void setMarkdown(QTextDocument* document, const QString& markdown)
 {
-    document->setMarkdown(htmlBlocksMarked(htmlBalanced(markdown)), QTextDocument::MarkdownDialectGitHub);
+    // (The marks are its own: noncharacters in the text are taken out.)
+    QString md = markdown;
+    for (const char16_t mark : {kBlockMark, kInnerBlockMark, kInnerBlockEnd}) md.remove(QChar(mark));
+    document->setMarkdown(htmlBlocksMarked(htmlBalanced(md)), QTextDocument::MarkdownDialectGitHub);
     blocksApart(document);
 }
 
