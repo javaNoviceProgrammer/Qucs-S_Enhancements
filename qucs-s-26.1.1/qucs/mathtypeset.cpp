@@ -21,6 +21,8 @@
 #include <QRegularExpression>
 #include <QTextDocument>
 
+#include <functional>
+
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -2359,17 +2361,17 @@ void MathObject::drawObject(QPainter* painter, const QRectF& rect, QTextDocument
 }
 
 // ----------------------------------------------------------------------
-QList<Span> findMath(const QString& md)
+namespace {
+
+// Walks the Markdown \a md past its code - fenced and indented blocks,
+// inline code, <code> and <pre> - and past what a backslash escapes.
+// \a at is called at each other position, and returns where to go on from
+// (past what it took there), or -1 to go on with the next character.
+void outsideCode(const QString& md, const std::function<qsizetype(qsizetype)>& at)
 {
-    QList<Span> spans;
     const qsizetype n = md.size();
     qsizetype i = 0;
     bool lineStart = true;
-    const auto escaped = [&md](qsizetype at) {
-        int backslashes = 0;
-        for (qsizetype k = at - 1; k >= 0 && md.at(k) == QLatin1Char('\\'); --k) ++backslashes;
-        return backslashes % 2 == 1;
-    };
     // An indented code block (CommonMark): lines indented four spaces or
     // more after a blank line or another such line - not in a list, whose
     // items go on indented. What is in it is code, as in a fence.
@@ -2444,6 +2446,27 @@ QList<Span> findMath(const QString& md)
             i = close < 0 ? i + run : close + run;
             continue;
         }
+        if (const qsizetype to = at(i); to > i) {
+            i = to;
+            continue;
+        }
+        i += c == QLatin1Char('\\') && i + 1 < n ? 2 : 1;   // (an escape: \$ is a dollar, \<br> no tag)
+    }
+}
+
+} // namespace
+
+QList<Span> findMath(const QString& md)
+{
+    QList<Span> spans;
+    const qsizetype n = md.size();
+    const auto escaped = [&md](qsizetype at) {
+        int backslashes = 0;
+        for (qsizetype k = at - 1; k >= 0 && md.at(k) == QLatin1Char('\\'); --k) ++backslashes;
+        return backslashes % 2 == 1;
+    };
+    outsideCode(md, [&](qsizetype i) -> qsizetype {
+        const QChar c = md.at(i);
         if (c == QLatin1Char('\\') && i + 1 < n) {
             const QChar next = md.at(i + 1);
             if (next == QLatin1Char('[') || next == QLatin1Char('(')) {
@@ -2451,12 +2474,10 @@ QList<Span> findMath(const QString& md)
                 const qsizetype close = md.indexOf(closing, i + 2);
                 if (close > i + 2) {
                     spans.append({i, close + 2 - i, md.mid(i + 2, close - i - 2).trimmed(), next == QLatin1Char('[')});
-                    i = close + 2;
-                    continue;
+                    return close + 2;
                 }
             }
-            i += 2;   // an escape: \$ is a dollar
-            continue;
+            return -1;
         }
         if (c == QLatin1Char('$') && !escaped(i)) {
             if (i + 1 < n && md.at(i + 1) == QLatin1Char('$')) {
@@ -2465,11 +2486,9 @@ QList<Span> findMath(const QString& md)
                 if (close > i + 2) {
                     const QString tex = md.mid(i + 2, close - i - 2).trimmed();
                     if (!tex.isEmpty()) spans.append({i, close + 2 - i, tex, true});
-                    i = close + 2;
-                    continue;
+                    return close + 2;
                 }
-                i += 2;
-                continue;
+                return i + 2;
             }
             // $...$: not before a space; ends before a $ that follows no
             // space and precedes no digit; not across a blank line.
@@ -2491,14 +2510,37 @@ QList<Span> findMath(const QString& md)
                 }
                 if (close > i + 1) {
                     spans.append({i, close + 1 - i, md.mid(i + 1, close - i - 1), false});
-                    i = close + 1;
-                    continue;
+                    return close + 1;
                 }
             }
         }
-        ++i;
-    }
+        return -1;
+    });
     return spans;
 }
 
 } // namespace qucs_s::math
+
+namespace qucs_s::markdown {
+
+QString voidElementsClosed(const QString& md)
+{
+    // Each void element written open (<br>, <img src="x.png">): the place
+    // of its '>', where a '/' goes.
+    static const QRegularExpression tag(QStringLiteral("\\G<(?:area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)(?=[\\s/>])[^<>]*>"),
+                                        QRegularExpression::CaseInsensitiveOption);
+    QList<qsizetype> open;
+    math::outsideCode(md, [&](qsizetype i) -> qsizetype {
+        if (md.at(i) != QLatin1Char('<')) return -1;
+        const QRegularExpressionMatch m = tag.match(md, i);
+        if (!m.hasMatch()) return -1;
+        const qsizetype end = m.capturedEnd() - 1;   // its '>'
+        if (md.at(end - 1) != QLatin1Char('/')) open << end;
+        return m.capturedEnd();
+    });
+    QString out = md;
+    for (qsizetype k = open.size(); k-- > 0;) out.insert(open.at(k), QLatin1Char('/'));
+    return out;
+}
+
+} // namespace qucs_s::markdown
