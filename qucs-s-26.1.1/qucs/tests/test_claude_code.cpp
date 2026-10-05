@@ -1754,25 +1754,52 @@ private slots:
         QCOMPARE(texts("```\n    $a$\n```\n$c$"), QStringList{"c"});
     }
 
-    // HTML void elements written open - <br>, <hr>, <img ...>, <wbr> -
-    // keep the rest of a reply (the review of 5 October: a <br> in a table's
-    // cell blanked the table's other rows and every bullet and paragraph
-    // after it, but inline code - Qt's Markdown importer took it for a tag
-    // that never closes). They are closed first, outside code; the cell
-    // shows two lines; the reply's text copy loses nothing.
-    void htmlLineBreaksKeepTheRestOfAReply()
+    // A reply's HTML is read whole (the review of 5 October and its re-check).
+    // Qt's Markdown importer dropped all the text after a tag it saw opened
+    // and never closed, or after a closing tag with nothing open, but the
+    // inline code: a <br> in a table's cell blanked the table's other rows
+    // and every bullet and paragraph after it; so did a placeholder such
+    // as <name>.dat or QList<Span>, a lone <b>, a stray </b>. A void element
+    // is closed; a tag of no element, an element not closed in its
+    // paragraph, a closing tag that closes nothing, are text - outside code.
+    // The cell shows two lines; an <hr> in a paragraph comes between its
+    // parts; the reply's text copy loses nothing.
+    void aRepliesHtmlIsReadWhole()
     {
-        using qucs_s::markdown::voidElementsClosed;
-        QCOMPARE(voidElementsClosed("a<br>b"), QString("a<br/>b"));
-        QCOMPARE(voidElementsClosed("a<BR>b <Hr> <wbr>"), QString("a<BR/>b <Hr/> <wbr/>"));
-        QCOMPARE(voidElementsClosed("<img src=\"x.png\" alt=\"x\">"), QString("<img src=\"x.png\" alt=\"x\"/>"));
-        QCOMPARE(voidElementsClosed("<hr class=a >x"), QString("<hr class=a />x"));
-        for (const char* same : {"a<br/>b", "a<br />b", "<b>bold</b> <sup>2</sup> <kbd>F9</kbd>", "x < y and y > z", "<brx>", "<break>",
-                                 "`<br>` and ``a <hr> b``", "```\n<br>\n```\n", "~~~\n<img src=x>\n~~~", "Code:\n\n    <br>\n",
-                                 "\\<br> is written so", "<code>a<br>b</code>", "<pre>\n<hr>\n</pre>"})
-            QCOMPARE(voidElementsClosed(same), QString(same));
-        QCOMPARE(voidElementsClosed("`<br>` then <br>"), QString("`<br>` then <br/>"));
-        QCOMPARE(voidElementsClosed("- item <br>\n\n    <br>\n"), QString("- item <br/>\n\n    <br/>\n"));   // (in a list: not code)
+        using qucs_s::markdown::htmlBalanced;
+        QCOMPARE(htmlBalanced("a<br>b"), QString("a<br/>b"));
+        QCOMPARE(htmlBalanced("a<BR>b <Hr> <wbr>"), QString("a<BR/>b <Hr/> <wbr/>"));
+        QCOMPARE(htmlBalanced("<img src=\"x.png\" alt=\"x\">"), QString("<img src=\"x.png\" alt=\"x\"/>"));
+        QCOMPARE(htmlBalanced("<hr class=a >x"), QString("<hr class=a />x"));
+        // Text: no element; an element not closed (in its paragraph); a
+        // closing tag with nothing open; one left open inside another.
+        const QList<std::pair<QString, QString>> text{
+            {"a<p>b", "a\\<p>b"}, {"a<li>item", "a\\<li>item"}, {"a<span>x", "a\\<span>x"}, {"a<u>x", "a\\<u>x"},
+            {"a<b>unclosed bold", "a\\<b>unclosed bold"}, {"vector<int> x", "vector\\<int> x"}, {"a <T> b", "a \\<T> b"},
+            {"a<x>b", "a\\<x>b"}, {"The dataset is <name>.dat.ngspice", "The dataset is \\<name>.dat.ngspice"},
+            {"QList<Span> x", "QList\\<Span> x"}, {"a <T> b </T> c", "a \\<T> b \\</T> c"}, {"a</b>b", "a\\</b>b"},
+            {"a<b>x</i>y", "a\\<b>x\\</i>y"}, {"a<b><i>x</b>", "a<b>\\<i>x</b>"}, {"<b>x\n\ny</b>", "\\<b>x\n\ny\\</b>"},
+            {"a</br>b", "a\\</br>b"}, {"<brx> <break>", "\\<brx> \\<break>"}, {"a<name/>b", "a\\<name/>b"},
+            {"`<br>` then <br> and <sch>", "`<br>` then <br/> and \\<sch>"}, {"- item <br>\n\n    <name>\n", "- item <br/>\n\n    \\<name>\n"}};
+        for (const auto& [in, out] : text) QCOMPARE(htmlBalanced(in), out);
+        // As written: closed elements (across a line, a cell, a list's items),
+        // void ones closed already, autolinks, comments, code, escapes, '<' as
+        // text.
+        for (const char* same : {"a<br/>b", "a<br />b", "<b>bold</b> <sup>2</sup> <kbd>F9</kbd>", "x < y and y > z", "a <3 b",
+                                 "<details>x</details>", "<details>\n<summary>S</summary>\nbody\n</details>", "<b>x\ny</b>", "a<b/>b",
+                                 "a<b><i>x</i></b>z", "a<B>x</b>y", "a<b class=\"x\">y</b>z", "<https://example.com> <me@x.org>",
+                                 "a<!-- c -->b", "a<!-- c unclosed", "`<br>` and ``a <name> b``", "```\n<br> <name>\n```\n",
+                                 "~~~\n<img src=x> QList<Span>\n~~~", "Code:\n\n    <br> <T>\n", "\\<br> is written so",
+                                 "<code>a<br>b</code>", "<pre>\n<hr> <x>\n</pre>"})
+            QCOMPARE(htmlBalanced(same), QString(same));
+        // Each of the re-check's cases, then a paragraph: kept.
+        for (const char* md : {"a<br>b", "a<BR>b", "a<hr>b", "a<wbr>b", "a<img src=\"x.png\">b", "a<p>b", "a<li>item", "a<span>x", "a<u>x",
+                               "a<b>unclosed bold", "vector<int> x", "a <T> b", "a<x>b", "a</b>b", "1. The dataset is <name>.dat.ngspice beside the schematic.\n2. still here?",
+                               "| A | B |\n|---|---|\n| QList<Span> | y |", "| A | B |\n|---|---|\n| one<br>two | `x` |\n| row2 | y |"}) {
+            QTextDocument doc;
+            doc.setMarkdown(htmlBalanced(QString::fromUtf8(md) + "\n\nNEXT paragraph **bold**\n"), QTextDocument::MarkdownDialectGitHub);
+            QVERIFY2(doc.toPlainText().contains("NEXT paragraph bold"), qPrintable(QString(md) + " -> " + doc.toPlainText()));
+        }
 
         ClaudeCodePanel panel;
         const QString work = fresh("brwork");
@@ -1784,37 +1811,45 @@ private slots:
             "| Part | What I changed | Netlist after OK |\n|---|---|---|\n"
             "| Transistor Q1 | Six values in one OK:<br>Bf 250<br>Vaf 75 | pnp<br>Bf=250 Vaf=75 Re=1.5<br>AREA=2 |\n"
             "| Op-amp U7 | its library<BR>and part | XU7 OpAmps_ua741 |\n"
-            "| Subcircuit SUB1 | Rs and Cs | XSUB1 Rs=2K<br/>Cs=100N |\n\n"
+            "| Subcircuit SUB1 | Rs and Cs, a QList<Span> | XSUB1 Rs=2K<br/>Cs=100N |\n\n"
             "After the table:\n\n- **Q1** kept its 51 property rows\n- `rc_sub.sch` reloaded, its pins as before\n"
-            "- a path: `~/Desktop/check.md`\n\nA rule<hr>then text, a picture <img src=\"x.png\"> here, a <wbr>break.\n\n"
-            "Last paragraph, with `<br>` as code.\n";
+            "- the dataset is <name>.dat.ngspice in Scratch/<sch>/\n- a path: `~/Desktop/check.md`\n- an item<hr>ruled off\n\n"
+            "A rule<hr>then text, a picture <img src=\"x.png\"> here, a <wbr>break.\n\n"
+            "Last paragraph, with `<br>` as code and a lone <b> tag.\n";
         panel.session()->handleLine(QJsonDocument(QJsonObject{
             {"type", "assistant"},
             {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", reply}}}}}}}).toJson(QJsonDocument::Compact));
         panel.renderNow();
         const QString shown = panel.transcriptText();
-        for (const char* kept : {"Transistor Q1", "Six values in one OK:", "Vaf=75", "Op-amp U7", "and part", "Subcircuit SUB1", "Cs=100N",
-                                 "After the table:", "kept its 51 property rows", "reloaded, its pins as before", "a path:",
-                                 "then text, a picture", "here, a", "Last paragraph, with", "<br> as code"})
+        for (const char* kept : {"Transistor Q1", "Six values in one OK:", "Vaf=75", "Op-amp U7", "and part", "Subcircuit SUB1", "a QList<Span>",
+                                 "Cs=100N", "After the table:", "kept its 51 property rows", "reloaded, its pins as before",
+                                 "the dataset is <name>.dat.ngspice in Scratch/<sch>/", "a path:", "ruled off", "then text, a picture", "here, a",
+                                 "Last paragraph, with", "<br> as code and a lone <b> tag."})
             QVERIFY2(shown.contains(QString::fromUtf8(kept)), qPrintable(QString(kept) + "\n---\n" + shown));
-        // The cell: two lines in its block, a line break between.
-        bool twoLines = false;
+        // The cell: two lines in its block. The rule: its own block, empty,
+        // between the paragraph's parts.
+        bool twoLines = false, ruleBetween = false;
         QTextDocument* doc = panel.transcript()->document();
-        for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+        for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
             if (b.text().startsWith("pnp") && b.text().contains(QChar::LineSeparator) && QTextCursor(b).currentTable() != nullptr) twoLines = true;
+            if (b.blockFormat().hasProperty(QTextFormat::BlockTrailingHorizontalRulerWidth))
+                ruleBetween = b.text().isEmpty() && b.previous().text() == "A rule" && b.next().text().startsWith("then text");
+        }
         QVERIFY(twoLines);
+        QVERIFY(ruleBetween);
         // Copied as text: every row on its line, nothing lost.
         QString error;
         const QString txt = QDir(work).filePath("br.txt");
         QVERIFY(panel.exportConversation(txt, ClaudeCodePanel::ExportFormat::Text, &error));
         QFile f(txt);
         QVERIFY(f.open(QIODevice::ReadOnly));
-        const QString text = QString::fromUtf8(f.readAll());
-        QVERIFY2(text.contains("Transistor Q1 | Six values in one OK: Bf 250 Vaf 75 | pnp Bf=250 Vaf=75 Re=1.5 AREA=2"), qPrintable(text));
-        QVERIFY2(text.contains("Op-amp U7 | its library and part | XU7 OpAmps_ua741"), qPrintable(text));
-        for (const char* kept : {"• Q1 kept its 51 property rows", "• rc_sub.sch reloaded", "then text, a picture", "Last paragraph, with <br> as code"})
-            QVERIFY2(text.contains(QString::fromUtf8(kept)), qPrintable(QString(kept) + "\n---\n" + text));
-        QVERIFY(!text.contains(QChar::LineSeparator));
+        const QString copied = QString::fromUtf8(f.readAll());
+        QVERIFY2(copied.contains("Transistor Q1 | Six values in one OK: Bf 250 Vaf 75 | pnp Bf=250 Vaf=75 Re=1.5 AREA=2"), qPrintable(copied));
+        QVERIFY2(copied.contains("Op-amp U7 | its library and part | XU7 OpAmps_ua741"), qPrintable(copied));
+        for (const char* kept : {"• Q1 kept its 51 property rows", "• rc_sub.sch reloaded", "• the dataset is <name>.dat.ngspice in Scratch/<sch>/",
+                                 "ruled off", "A rule\n\n----\n\nthen text, a picture", "Last paragraph, with <br> as code and a lone <b> tag."})
+            QVERIFY2(copied.contains(QString::fromUtf8(kept)), qPrintable(QString(kept) + "\n---\n" + copied));
+        QVERIFY(!copied.contains(QChar::LineSeparator));
     }
 
     // Whatever Claude writes between dollars - TeX cut short, braces out of

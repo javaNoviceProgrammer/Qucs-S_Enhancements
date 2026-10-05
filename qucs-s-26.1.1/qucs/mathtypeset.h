@@ -96,15 +96,27 @@ QList<Span> findMath(const QString& markdown);
 
 } // namespace qucs_s::math
 
+class QTextDocument;
+
 namespace qucs_s::markdown {
 
-/// \a markdown with each HTML void element written open - <br>, <hr>,
-/// <img src="x.png">, <wbr>, ... in any case - closed (<br/>), outside
-/// code. Qt's Markdown importer takes an open one for a tag that never
-/// closes, and drops all the text after it but inline code: a reply with
-/// <br> in a table's cell lost the rest of its table, its lists and its
-/// paragraphs. For each setMarkdown() of a reply or a Markdown file.
-QString voidElementsClosed(const QString& markdown);
+/// \a markdown with its HTML as Qt's Markdown importer reads it whole,
+/// outside code. The importer counts open tags and drops all the text
+/// after one never closed - or after a closing tag with nothing open -
+/// but inline code: a <br> in a table's cell, a placeholder such as
+/// <name>.dat or QList<Span>, a lone <b>, lost the rest of a reply. A void
+/// element written open (<br>, <img src="x.png">, any case) is closed
+/// (<br/>); a tag of no HTML element (<name>, <T>), an element not closed
+/// in its paragraph, and a closing tag that closes nothing, are text (their
+/// '<' escaped). Elements closed (<b>x</b>, <kbd>, <details>), autolinks
+/// and comments stay. For each setMarkdown() of a reply or a Markdown file.
+QString htmlBalanced(const QString& markdown);
+
+/// An <hr> inside a paragraph: Qt puts the text after it into the rule's
+/// block, drawn above the rule. That text is moved to a block of its own
+/// after the rule (in a table's cell too: a line more in it). After
+/// setMarkdown().
+void rulesApart(QTextDocument* document);
 
 } // namespace qucs_s::markdown
 
