@@ -171,6 +171,13 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     gp3->addWidget(Input_Frame2,4,0);
     Input_Frame3 = new QLineEdit(Tab3);
     gp3->addWidget(Input_Frame3,4,1);
+    // Named (they have no labels): for a screen reader, and as the keys of
+    // Claude's get_settings and set_settings - Frame/Title, Frame/Date...
+    Combo_Frame->setAccessibleName(tr("Size"));
+    Input_Frame0->setAccessibleName(tr("Title"));
+    Input_Frame1->setAccessibleName(tr("Drawn by"));
+    Input_Frame2->setAccessibleName(tr("Date"));
+    Input_Frame3->setAccessibleName(tr("Revision"));
 
     t->addTab(Tab3, tr("Frame"));
 

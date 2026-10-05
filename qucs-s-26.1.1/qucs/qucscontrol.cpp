@@ -214,6 +214,7 @@ const char* const kTools = R"JSON([
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "kind": {"type": "string", "enum": ["ac", "tran", "op", "sweep"], "description": "ac, tran, op (the DC operating point) or sweep (of another analysis over a parameter)"},
    "from": {"description": "ac: the start frequency (1 Hz by default); tran: the start time (0); sweep: the first value - a number or text with units (10 kHz)"}, "to": {"description": "ac: the stop frequency (100 MHz by default); sweep: the last value; tran: as 'stop'"}, "stop": {"description": "tran: the stop time, 1 ms by default (1m, 10 us, 0.002)"}, "points": {"description": "How many points: ac 101, tran 201 (the print step is stop/(points-1)), sweep 11 by default"}, "scale": {"type": "string", "enum": ["lin", "log"], "description": "ac and sweep: log or lin (ac log, sweep lin by default)"},
    "analysis": {"type": "string", "description": "sweep: the analysis swept, by name (TR1, AC1, DC1)"}, "parameter": {"type": "string", "description": "sweep: what is swept - a component's name (its value: R2) or a parameter an equation defines"},
+   "properties": {"type": "object", "description": "Its properties by name, as add_component takes them ({\"Start\": \"10 Hz\", \"Points\": \"201\"}, a .TR's \"MaxStep\"): over what kind's defaults set; the same thing in 'from', 'to', 'stop', 'points' or 'scale' as well is refused"},
    "plot": {"type": "array", "items": {"type": "string"}, "description": "What a diagram of its results shows: nodes (out), v(out), i(V1) - or expressions, db(v(out)), v(out)/v(in), which a NutmegEq added beside the analysis computes (ngspice; on an AC plot on the right axis, as the left one shows dB already). No diagram when not given"}, "x": {"type": "integer", "description": "Where the block goes (with 'y'); beside the other analyses by default"}, "y": {"type": "integer", "description": "Where the block goes (with 'x'); beside the other analyses by default"}, "name": {"type": "string", "description": "Its name: AC1, TR1, ... the next free one by default"}, "simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "The simulator its 'plot' expressions are made for - under ngspice and spiceopus a NutmegEq computes them; the one in the settings by default (simulate's 'simulator' runs another once)"}},
    "required": ["kind"]}},
 {"name": "create_subcircuit",
@@ -291,12 +292,12 @@ const char* const kTools = R"JSON([
    "path": {"type": "string", "description": "The document to use it on, brought to the front first; the one in front when not given"}},
   "required": ["action"]}},
 {"name": "get_dialog",
- "description": "Reads the Qucs-S dialog waiting for an answer (or another open window of Qucs-S): its title, texts and controls - fields, lists (and whether each item is ticked, when they have check boxes: 'checked'), check boxes, tabs, tables, trees (a search's results: rows, and whether each is checked), buttons - each with its label, value and an id for set_dialog.",
+ "description": "Reads the Qucs-S dialog waiting for an answer (or another open window of Qucs-S): its title, texts and controls - fields, lists (and whether each item is ticked, when they have check boxes: 'checked'), check boxes, tabs, tables, trees (a search's results: rows, and whether each is checked), buttons - each with its label, value, an id for set_dialog and, while the dialog is shown, 'at' [x, y, width, height] in its picture (send_input's target dialog). A field in a table's cell is named by its row and column: \"R (Value)\".",
  "inputSchema": {"type": "object", "properties": {}}},
 {"name": "set_dialog",
- "description": "Fills in the open dialog and presses a button. 'set' changes controls, each by its id or label from get_dialog: a field takes text, a list an item (or [item or row, true or false] to tick it or not), a check box true or false, a spin box a number, tabs a tab's title, a table [row, column, text], and a tree [row, column, true or false] to check a row or not (or [row, column, text]). 'press' names the button to press afterwards (OK, Cancel, Apply, ... or its id).",
+ "description": "Fills in the open dialog and presses a button. 'set' changes controls, each by its id or label from get_dialog: a field takes text, a list an item (or [item or row, true or false] to tick it or not), a check box true or false, a spin box a number, tabs a tab's title, a table [row, column, text] (a cell with a check box: true or false), and a tree [row, column, true or false] to check a row or not (or [row, column, text]); a field that edits a table's cell (Edit Component Properties' values) gives the cell its value, as Return would. With 'action' (select or activate - a double click) a table's, list's or tree's row is chosen by its text or number as a click would: Diagram Properties' variables take a trace activated. 'press' names the button to press afterwards (OK, Cancel, Apply, ... or its id). The answer names each control set as get_dialog does (its label, else its id; a cell with its row and column).",
  "inputSchema": {"type": "object", "properties": {
-   "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, [row, column, true or false] for a tree's check box, or [item or row, true or false] for a list's}]"},
+   "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}, "action": {"type": "string", "enum": ["select", "activate"]}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, [row, column, true or false] for a tree's check box, or [item or row, true or false] for a list's}]; with \"action\" select or activate, \"value\" is a row of a table, list or tree - its text or number - clicked or double-clicked"},
    "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id"}}}},
 {"name": "get_settings",
  "description": "Reads the settings of Qucs-S, typed: 'scope' app (Application Settings), simulators (Simulators Settings), document (the settings of the document 'path' names, the one in front unless given) or cdl (CDL Settings). Each setting by its key - \"Tab/Label\" as the dialog shows it (\"Settings/Language\", \"Locations/Ngspice\") - with its type (text, bool, option, choice, number, integer, table, folders - a list of folders, such as \"Locations/Library search paths\"), its value, and its choices or range. Nothing is shown or changed.",
@@ -317,9 +318,9 @@ const char* const kTools = R"JSON([
  "description": "Stops a simulation - the one 'id' names (followed since simulate's 'background' or its timeout), or without it the one running now, the user's too (as Simulation > Stop Simulation, or Qucsator's Abort) - and returns its outcome once it has ended.",
  "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The run's id; the one running when not given"}}}},
 {"name": "send_input",
- "description": "Raw mouse and keyboard input - the last resort, for what no other tool does, or to do something exactly as the user did: a 'click' (left unless 'button' says right or middle; 'double'; 'drag_to' drags from it, in steps; 'modifiers' held), then 'keys' (as list_actions writes shortcuts: \"Ctrl+Z\", \"Delete\", \"Escape, Return\" - at most four; Ctrl is Command on a Mac; a key that is an action's shortcut sets off that action, as the keyboard does), then 'text' typed into what has the focus there. On a schematic's canvas ('target' canvas, the default; points in the schematic's coordinates as get_schematic gives them, brought into view - or with 'pixels' the canvas picture's pixels) or on a part of the window as get_ui names it (dock:Content, toolbar:Simulate, statusbar; points in its picture's pixels). Returns what it opened (a dialog: get_dialog reads it; a menu: read and closed - context_menu chooses from one), the status bar's message, and a picture of the target as it is after, with how its pixels map. Not the consoles (console types there), not the Claude Code panel, not keys that would quit Qucs-S or set off what trigger_action refuses: then nothing is sent. Asked about each time.",
+ "description": "Raw mouse and keyboard input - the last resort, for what no other tool does, or to do something exactly as the user did: a 'click' (left unless 'button' says right or middle; 'double'; 'drag_to' drags from it, in steps; 'modifiers' held), then 'keys' (as list_actions writes shortcuts: \"Ctrl+Z\", \"Delete\", \"Escape, Return\" - at most four; Ctrl is Command on a Mac; a key that is an action's shortcut sets off that action, as the keyboard does), then 'text' typed into what has the focus there. On a schematic's canvas ('target' canvas, the default; points in the schematic's coordinates as get_schematic gives them, brought into view - or with 'pixels' the canvas picture's pixels) or on a part of the window as get_ui names it (dock:Content, toolbar:Simulate, statusbar; points in its picture's pixels), or on the dialog that waits for an answer ('target' dialog: points in its picture's pixels - get_dialog's 'at' -, keys and text into its field with the focus, which a click gives; the window's shortcuts are not set off; the only input that reaches a dialog besides set_dialog). Returns what it opened (a dialog: get_dialog reads it; a menu: read and closed - context_menu chooses from one), the status bar's message, and a picture of the target as it is after, with how its pixels map. Not the consoles (console types there), not the Claude Code panel, not keys that would quit Qucs-S or set off what trigger_action refuses: then nothing is sent. Asked about each time.",
  "inputSchema": {"type": "object", "properties": {
-   "target": {"type": "string", "description": "canvas (the default), or dock:<title>, a panel's name, toolbar:<title> or statusbar"},
+   "target": {"type": "string", "description": "canvas (the default), dock:<title>, a panel's name, toolbar:<title>, statusbar, or dialog (the one open)"},
    "path": {"type": "string", "description": "For the canvas: the schematic, the one in front unless given"},
    "click": {"type": "array", "items": {"type": "number"}, "description": "[x, y]: on the canvas the schematic's coordinates (pixels with 'pixels'); on a part of the window its picture's pixels"},
    "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "The mouse button, left unless given"},
@@ -4136,7 +4137,10 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
         QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help"),
         QStringLiteral("list_libraries")};
-    if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool))
+    // (send_input with 'target' dialog: the dialog's own clicks and keys.)
+    const bool intoTheDialog = tool == QLatin1String("send_input")
+                               && args.value(QLatin1String("target")).toString().trimmed().compare(QLatin1String("dialog"), Qt::CaseInsensitive) == 0;
+    if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool) && !intoTheDialog)
         return errorResult(tr("“%1” is open in Qucs-S and waits for an answer: %2 waits until it is closed (get_dialog "
                               "reads it, set_dialog answers it - or ask the user to).")
                                .arg(dialog->windowTitle().isEmpty() ? QString::fromLatin1(dialog->metaObject()->className())
@@ -6925,6 +6929,15 @@ QJsonObject QucsControl::addAnalysis(const QJsonObject& args)
     } else {
         return errorResult(tr("'kind' is ac, tran, op or sweep."));
     }
+    // Its properties as add_component takes them, over what the others set
+    // (one thing said twice is refused: which was meant?).
+    const QJsonObject own = args.value(QLatin1String("properties")).toObject();
+    static const QList<std::pair<const char*, const char*>> saidBy{{"from", "Start"}, {"to", "Stop"}, {"stop", "Stop"}, {"points", "Points"},
+                                                                   {"scale", "Type"}, {"parameter", "Param"}, {"analysis", "Sim"}};
+    for (const auto& [arg, property] : saidBy)
+        if (args.contains(QLatin1String(arg)) && own.contains(QLatin1String(property)))
+            return errorResult(tr("'%1' and 'properties' %2 say the same: give one of them. Nothing was added.").arg(QLatin1String(arg), QLatin1String(property)));
+    for (auto it = own.constBegin(); it != own.constEnd(); ++it) properties.insert(it.key(), it.value());
     const QJsonArray plot = args.value(QLatin1String("plot")).toArray();
     if (!plot.isEmpty() && kind == QLatin1String("op"))
         return errorResult(tr("An operating point has nothing to plot: simulate with operating_point, or get_dataset reads it."));
@@ -10673,11 +10686,71 @@ QLabel* labelAbove(QWidget* w)
     return qobject_cast<QLabel*>(box->itemAt(index - 1)->widget());
 }
 
+// The cell of an item view \a w is the editor or widget of (or inside
+// one): the view and the cell's index; none when it is in no view's cell.
+QAbstractItemView* cellOf(QWidget* w, QModelIndex* cell)
+{
+    for (QWidget* up = w->parentWidget(); up != nullptr; up = up->parentWidget()) {
+        auto* view = qobject_cast<QAbstractItemView*>(up);
+        if (view == nullptr) continue;
+        const QAbstractItemModel* model = view->model();
+        if (model == nullptr || !view->viewport()->isAncestorOf(w)) return nullptr;
+        for (int r = 0; r < model->rowCount(view->rootIndex()) && r < 1000; ++r)
+            for (int k = 0; k < model->columnCount(view->rootIndex()) && k < 50; ++k) {
+                const QModelIndex index = model->index(r, k, view->rootIndex());
+                if (QWidget* there = view->indexWidget(index); there != nullptr && (there == w || there->isAncestorOf(w))) {
+                    *cell = index;
+                    return view;
+                }
+            }
+        return nullptr;
+    }
+    return nullptr;
+}
+
+// A field that is a view's cell editor (Edit Component Properties edits
+// each value in one, open all the time): its text given to the cell, as
+// the view's delegate does when the user leaves it or presses Return - set
+// alone, the dialog read the cell's old value on OK. (The lists in cells
+// are widgets their dialogs read themselves.)
+void commitEditor(QLineEdit* e)
+{
+    QModelIndex cell;
+    QAbstractItemView* view = cellOf(e, &cell);
+    if (view == nullptr || view->indexWidget(cell) != e) return;
+    if (QAbstractItemDelegate* delegate = view->itemDelegateForIndex(cell)) delegate->setModelData(e, view->model(), cell);
+}
+
+// What a field or list in a table's cell is: its row's name and its
+// column's - "R (Value)", Edit Component Properties' value of R.
+QString cellLabel(QWidget* w)
+{
+    if (qobject_cast<QAbstractButton*>(w) != nullptr) return {};   // (its own text: "Remove")
+    QModelIndex cell;
+    QAbstractItemView* view = cellOf(w, &cell);
+    if (view == nullptr) return {};
+    const QString row = cell.column() > 0 ? cell.sibling(cell.row(), 0).data().toString().trimmed() : QString();
+    const QString column = view->model()->headerData(cell.column(), Qt::Horizontal).toString().trimmed();
+    if (row.isEmpty()) return column.isEmpty() ? QString() : QStringLiteral("%1 %2").arg(column).arg(cell.row());
+    return column.isEmpty() ? row : QStringLiteral("%1 (%2)").arg(row, column);
+}
+
+// Whether an item of a table, list or tree has a check box: one it may
+// tick (its flag) and a state to show. (A new item has the flag - a table
+// cell made not editable with flags() ^ ItemIsEditable kept it - with no
+// box drawn, its text all there is.)
+bool hasCheckBox(Qt::ItemFlags flags, const QVariant& state)
+{
+    return (flags & Qt::ItemIsUserCheckable) && state.isValid();
+}
+
 // What a field is called: its label in a form, the label that names it as
 // its buddy, the label before it in its layout or just to its left, the
-// label above it, else what it says of itself.
+// label above it, else what it says of itself. A table cell's field: its
+// row's and its column's names.
 QString labelOf(QWidget* w, QWidget* dialog)
 {
+    if (const QString cell = cellLabel(w); !cell.isEmpty()) return cell;
     for (QFormLayout* form : dialog->findChildren<QFormLayout*>())
         if (QWidget* label = form->labelForField(w))
             if (auto* l = qobject_cast<QLabel*>(label)) return cleanText(l->text()).remove(QLatin1Char(':'));
@@ -11032,9 +11105,9 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
         QWidget* w = list.at(i);
         QJsonObject o{{QStringLiteral("id"), QStringLiteral("c%1").arg(i + 1)}, {QStringLiteral("label"), shownLabel(w, dialog, ui)}};
         if (const QString tab = tabOf(w, dialog); !tab.isEmpty()) o.insert(QStringLiteral("tab"), tab);
-        // Where it is in the area's picture (send_input's pixels), while
-        // the area is shown.
-        if (ui && w != dialog && dialog->isVisible() && w->isVisible()) {
+        // Where it is in the area's (or the dialog's) picture - send_input's
+        // pixels -, while it is shown.
+        if (w != dialog && dialog->isVisible() && w->isVisible()) {
             const QPoint at = w->mapTo(dialog, QPoint(0, 0));
             o.insert(QStringLiteral("at"), QJsonArray{at.x(), at.y(), w->width(), w->height()});
         }
@@ -11100,7 +11173,7 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
                         else row.append(QString());
                     } else {
                         QTableWidgetItem* item = table->item(r, k);
-                        if (item != nullptr && (item->flags() & Qt::ItemIsUserCheckable)) row.append(item->checkState() == Qt::Checked);
+                        if (item != nullptr && hasCheckBox(item->flags(), item->data(Qt::CheckStateRole))) row.append(item->checkState() == Qt::Checked);
                         else row.append(item != nullptr ? item->text() : QString());
                     }
                 }
@@ -11121,7 +11194,7 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
                 QJsonArray row;
                 for (int k = 0; k < tree->columnCount(); ++k) row.append((*it)->text(k));
                 rows.append(row);
-                const bool box = (*it)->flags() & Qt::ItemIsUserCheckable;
+                const bool box = hasCheckBox((*it)->flags(), (*it)->data(0, Qt::CheckStateRole));
                 checkable = checkable || box;
                 checked.append(box ? QJsonValue((*it)->checkState(0) == Qt::Checked) : QJsonValue(QJsonValue::Null));
             }
@@ -11137,7 +11210,7 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
             bool checkable = false;
             for (int k = 0; k < lw->count() && k < 200; ++k) {
                 items.append(lw->item(k)->text());
-                const bool box = lw->item(k)->flags() & Qt::ItemIsUserCheckable;
+                const bool box = hasCheckBox(lw->item(k)->flags(), lw->item(k)->data(Qt::CheckStateRole));
                 checkable = checkable || box;
                 checked.append(box ? QJsonValue(lw->item(k)->checkState() == Qt::Checked) : QJsonValue(QJsonValue::Null));
             }
@@ -11391,12 +11464,17 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
         const QString text = propertyValue(value);
         bool ok = true;
         QString why;   // (what it does take, when that is not plain)
+        QString said;  // (what was set, when its label does not say: a cell)
         reveal(w, dialog);   // as the user would, on its tab
-        auto* view = ui ? qobject_cast<QAbstractItemView*>(w) : nullptr;
-        if (view != nullptr && (qobject_cast<QTableWidget*>(w) != nullptr || qobject_cast<QTreeWidget*>(w) != nullptr
-                                || qobject_cast<QListWidget*>(w) != nullptr) && !change.contains(QLatin1String("action")))
-            view = nullptr;   // (their own way, as in a dialog, unless an action is asked)
-        const QString action = ui ? change.value(QLatin1String("action")).toString(QStringLiteral("select")) : QString();
+        // A row of a view chosen as a click would (an 'action'): a panel's
+        // view always; a dialog's table, list or tree when one is asked -
+        // Diagram Properties' variables take a trace by a double click.
+        auto* view = qobject_cast<QAbstractItemView*>(w);
+        const bool widgetView = qobject_cast<QTableWidget*>(w) != nullptr || qobject_cast<QTreeWidget*>(w) != nullptr
+                                || qobject_cast<QListWidget*>(w) != nullptr;
+        if (view != nullptr && (widgetView || !ui) && !change.contains(QLatin1String("action")))
+            view = nullptr;   // (their own way, unless an action is asked)
+        const QString action = change.value(QLatin1String("action")).toString(QStringLiteral("select"));
         if (auto* secret = qobject_cast<QLineEdit*>(w); secret != nullptr && secret->echoMode() != QLineEdit::Normal) {
             ok = false;
             why = tr("it is a secret field (a password, a key): the user types it");
@@ -11458,6 +11536,7 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
             e->setText(text);
             e->setModified(true);
             if (ui) emit e->textEdited(text);   // (as typed: a panel's search goes by it)
+            commitEditor(e);
         } else if (auto* p = qobject_cast<QPlainTextEdit*>(w)) {
             p->setPlainText(text);
         } else if (auto* t = qobject_cast<QTextEdit*>(w)) {
@@ -11488,16 +11567,43 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
                                       : r < 0 || r >= table->rowCount() ? rowsSaid(table->rowCount(), tr("table"))
                                                                         : columnsSaid(table->columnCount(), tr("table"));
             } else if (QWidget* cw = table->cellWidget(r, k)) {
-                if (auto* cc = qobject_cast<QComboBox*>(cw)) cc->setCurrentIndex(std::max(0, cc->findText(propertyValue(cell.at(2)))));
-                else if (auto* cb = qobject_cast<QAbstractButton*>(cw)) {
+                // (A cell's editor - its value given to the cell, as the
+                // user's Return does - or a widget in it.)
+                if (auto* cc = qobject_cast<QComboBox*>(cw)) {
+                    cc->setCurrentIndex(std::max(0, cc->findText(propertyValue(cell.at(2)))));
+                } else if (auto* cb = qobject_cast<QAbstractButton*>(cw)) {
                     if (cb->isChecked() != cell.at(2).toBool()) cb->click();
-                } else if (auto* ce = qobject_cast<QLineEdit*>(cw)) ce->setText(propertyValue(cell.at(2)));
+                } else if (auto* ce = qobject_cast<QLineEdit*>(cw)) {
+                    ce->setText(propertyValue(cell.at(2)));
+                    ce->setModified(true);
+                    commitEditor(ce);
+                }
             } else {
+                // A cell with a check box takes true or false; one with
+                // text, a text - when the user may edit it.
                 QTableWidgetItem* item = table->item(r, k);
                 if (item == nullptr) table->setItem(r, k, item = new QTableWidgetItem);
-                if (item->flags() & Qt::ItemIsUserCheckable) item->setCheckState(cell.at(2).toBool() ? Qt::Checked : Qt::Unchecked);
-                else item->setText(propertyValue(cell.at(2)));
-                table->setCurrentCell(r, k);
+                const bool box = hasCheckBox(item->flags(), item->data(Qt::CheckStateRole));
+                if (box != cell.at(2).isBool()) {
+                    ok = false;
+                    why = box ? tr("its cell %1, %2 is a check box: true or false").arg(r).arg(k)
+                              : tr("its cell %1, %2 has no check box: it takes a text").arg(r).arg(k);
+                } else if (box) {
+                    item->setCheckState(cell.at(2).toBool() ? Qt::Checked : Qt::Unchecked);
+                } else if (!(item->flags() & Qt::ItemIsEditable)) {
+                    ok = false;
+                    why = tr("its cell %1, %2 is not one to edit (an 'action' chooses a row: select, activate)").arg(r).arg(k);
+                } else {
+                    item->setText(propertyValue(cell.at(2)));
+                }
+                if (ok) table->setCurrentCell(r, k);
+            }
+            if (ok) {
+                const QString row = table->item(r, 0) != nullptr && k > 0 ? table->item(r, 0)->text().trimmed() : QString();
+                const QString column = table->horizontalHeaderItem(k) != nullptr ? table->horizontalHeaderItem(k)->text().trimmed() : QString();
+                said = tr("%1's cell %2, %3%4").arg(shownLabel(w, dialog, ui).isEmpty() ? QStringLiteral("c%1").arg(list.indexOf(w) + 1) : shownLabel(w, dialog, ui))
+                           .arg(r).arg(k)
+                           .arg(row.isEmpty() && column.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(QStringList({row, column}).join(QLatin1Char(' ')).trimmed()));
             }
         } else if (auto* tree = qobject_cast<QTreeWidget*>(w)) {
             // [row, column, true/false] checks a row or not; [row, column,
@@ -11553,9 +11659,12 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
             if (b->isCheckable() && b->isChecked() != want) b->click();
             else if (!b->isCheckable()) ok = false;
         }
-        if (ok) changed << shownLabel(w, dialog, ui);
-        else if (why.isEmpty()) problems << tr("%1 does not take %2").arg(shownLabel(w, dialog, ui), text);
-        else problems << tr("%1 does not take %2: %3").arg(shownLabel(w, dialog, ui), text, why);
+        // Named as get_dialog names it: its label, else its id (a control
+        // with none - a frame's field, a list in a table).
+        const QString name = shownLabel(w, dialog, ui).isEmpty() ? QStringLiteral("c%1").arg(list.indexOf(w) + 1) : shownLabel(w, dialog, ui);
+        if (ok) changed << (said.isEmpty() ? name : said);
+        else if (why.isEmpty()) problems << tr("%1 does not take %2").arg(name, text);
+        else problems << tr("%1 does not take %2: %3").arg(name, text, why);
     }
     const QString press = args.value(QLatin1String("press")).toString().trimmed();
     QAbstractButton* button = nullptr;

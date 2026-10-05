@@ -643,7 +643,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   moves its text, with no need to rewrite its line. `move` moves a group
   with its wiring. `create_subcircuit` turns parts into a subcircuit, and
   a subcircuit's parameters are read and set on its symbol. `add_analysis`
-  adds an AC, transient, DC or sweep analysis with its plot. `get_dataset`
+  adds an AC, transient, DC or sweep analysis with its plot, and takes its
+  `properties` as `add_component` does (a transient's `MaxStep`). `get_dataset`
   reads expressions such as `v(out)/v(in)` and compares a run with a kept
   one. `set_schematic` refuses a component line with a value too many,
   which would have shifted every property after it.
@@ -687,15 +688,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   help says on a topic - each menu action's own help, the component
   types, the examples - and where the online manual is. **The last
   resort**: `send_input` clicks, drags, double-clicks and types on the
-  canvas (in the schematic's coordinates) or a panel (in its pixels, which
-  `get_ui` gives each control) as your mouse and keyboard would - a key
+  canvas (in the schematic's coordinates), a panel (in its pixels, which
+  `get_ui` gives each control) or the dialog that waits for an answer (in
+  its pixels, which `get_dialog` gives) as your mouse and keyboard would - a key
   that is a shortcut sets off its action -, with a picture after; asked
   about each time, and never on a console, on the Claude Code panel, or
   with a key that would quit Qucs-S. `new_document` opens a schematic's data
   display for a report's plots. Equation blocks, Monte Carlo records and
   specs, and hidden text are set by name, so `set_schematic` is rarely
   needed. Diagrams have a title that moves with them. A marker can sit
-  3 dB below 0 dB or the DC value, not only below the peak. `get_dataset`
+  3 dB below 0 dB or the DC value, not only below the peak, on a trace
+  drawn in dB (`part` db) as on one in dB by name. `get_dataset`
   measures a spectrum (`fft`), an eye (`eye`: the bit period, when not
   given, the Tbit of the V(PRBS) source the signal comes from - as the run
   the data is of gave it - or told from its crossings; PAM4's three eyes
@@ -912,7 +915,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     after the option are opened. It ends when its
     input does; unsaved changes are left unsaved (it says so on stderr).
     A dialog that opens is read with `get_dialog` and answered with
-    `set_dialog`. Questions go to the client's user when the client can
+    `set_dialog`: a value set in a table's cell field (Edit Component
+    Properties) is applied on OK as one typed and confirmed with Return,
+    a table's, list's or tree's row is chosen with `action` (select, or
+    activate: a double click - Diagram Properties' variables take a trace
+    so), and each control is named as get_dialog names it ("R (Value)").
+    Questions go to the client's user when the client can
     ask them (MCP elicitation); otherwise writing over a file needs
     `"replace": true`. The tools read and write wherever the user who
     runs it can - a netlist exported to `/tmp`, the files of any folder
