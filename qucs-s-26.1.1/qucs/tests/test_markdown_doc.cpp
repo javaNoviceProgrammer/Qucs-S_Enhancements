@@ -172,7 +172,8 @@ private slots:
     // vector<int>, a lone <b>, a "/>" in an HTML block, a tag in CDATA, an
     // alt="a>b" - is rendered whole: the importer dropped everything after
     // the first (the review of 5 October, its re-checks). An HTML block is a
-    // block of its own: centred badges after a heading were in it.
+    // block of its own: centred badges after a heading were in it; one in a
+    // list's item is under its bullet.
     void anUnclosedTagKeepsTheRest()
     {
         QTextDocument doc;
@@ -183,6 +184,7 @@ private slots:
                                        "<!-- <img src=\"badge.svg\"> a README's badge, commented out -->\n\n"
                                        "<div>a</div>/>\n\nAfter a stray close.\n\n<![CDATA[\nx <b>\n]]>\n\n"
                                        "After CDATA, <img alt=\"a>b\" src=\"n.png\"> inline.\n\n## Badges\n\n<p align=\"center\">\n<img src=\"b.png\"/>\n</p>\n\n"
+                                       "- item\n\n  <div>Under its bullet.</div>\n\n"
                                        "THE END\n",
                                  QFont(), {});
         const QString text = doc.toPlainText();
@@ -200,6 +202,7 @@ private slots:
         QCOMPARE(badges.text(), QString("Badges"));
         QVERIFY(badges.next().text().startsWith(QChar::ObjectReplacementCharacter));
         QVERIFY(badges.next().blockFormat().alignment() & Qt::AlignHCenter);
+        QCOMPARE(blockWith(&doc, "Under its bullet.").blockFormat().indent(), 1);
     }
 
     // A .md file opens in a Markdown document: a text document (highlighted

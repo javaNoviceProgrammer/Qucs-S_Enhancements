@@ -323,3 +323,82 @@ failed.
   and warns.
 - **An HTML block after a paragraph's line, indented four spaces or more**, is read
   rightly but not marked, so Qt still puts it into the paragraph.
+
+## The re-check of `dbcf2df`
+
+The reviewer checked `dbcf2df` on compiled test programs, then in the window once the
+13:08 build was installed. Linear time, the stray `/>`, and HTML blocks as blocks of
+their own were all verified. The 1,419 replies lose nothing and change nowhere they
+were fine, and no mark is left in any output. The reviewer's fuzzer, reseeded and now
+with U+FDD2 in the text, lost 62 and 50 of 20,000 (282 and 699 on `ccc1dd9`). Two
+things were left; both reproduced.
+
+| Re-check | Now |
+|---|---|
+| **Degenerate tables (LOW).** A header line that is only `\|`, or dashes like `-\|`, then HTML: `r`, `\|`, `-\|`, `<hr></` loses the end; so do `>\|`, `\|-`, `<summary></summary><t` and two cases with a tab. md4c reads the lines as a paragraph or a table where `htmlBalanced` read the other. | **The walk starts a table as md4c does.** A table header must be its paragraph's first line: after a line that is no paragraph's, as a list's new item, or as a quote begun. Its dashes must be in the same quote. After `r`, `\|` and `-\|` are a paragraph's lines, so `<hr></` is an HTML block and its `</` is text. After `>\|`, the unquoted `\|-` is the quote's lazy line, so the `<t` is text. The two tab cases kept their end already. |
+| **Cosmetic: a `<div>` in a list item is drawn at the left margin.** | **Under its bullet.** Qt indents an item's second paragraph by its list's indent, outside the list. An HTML block inside a list item, or inside a quote, now gets marks of its own at its start and its end. Every block between them is set in as the item's or the quote's paragraphs are: the list's indent, the quote's margin and level. Before, a `<div>` in a quote was drawn outside the quote. A `<pre>`'s lines all move in. What follows the item is as it was. |
+
+Found along the way:
+- **A tag over lines** ends within its HTML block or paragraph. `<b`, blank line, `>x</b>`
+  had paired a `<b` that md4c reads as text with the `</b>` that Qt counts.
+- **A mark read as text.** Where md4c reads code that the walk took for none, a
+  mark's paragraph would show as `<p></p>`. Such a mark is taken out with its `<p>`
+  and `</p>`. That made the rule against marking blocks indented four spaces
+  unnecessary, so it was removed. md4c's indented HTML block after a paragraph is now a
+  block of its own as well.
+- **An inner block's end mark** goes after the `>` its last line ends with. A block
+  whose last line ends inside a tag is marked as before, without indent.
+- **The marks' characters in a reply** (noncharacters) are taken out before the
+  marks are set.
+
+With all the reviewer's fragments, 14 of 20,000 texts lose the closing paragraph (32
+on `dbcf2df`); without the three newer ones, 9 (29). The property test's seeds lose
+none, or 1 to 2 of 20,000 on three others; all are indented code inside a list item
+or quote. No mark shows. The 1,419 replies and the 79 Markdown files are as before:
+nothing lost, nothing changed where Qt was right, no warnings. `setMarkdown` takes
+about as long as Qt reading the balanced text (30 against 27 ms for 67,000 characters
+with tags), or twice as long where the text is all HTML blocks (140 against 73 ms for
+116,000), and it stays linear.
+
+### Tests
+
+- **`aRepliesHtmlIsReadWhole`:** the reviewer's four tables, each kept to its end and
+  each written as expected. Also md4c's table starts (a list's new item, a quote begun,
+  a paragraph's second line) and a tag over a blank line.
+- **`anHtmlBlockIsABlockOfItsOwn`:**
+  - an item's `<div>` at its paragraphs' indent, and the text after the list at none;
+  - a `<pre>`'s lines in an item;
+  - a quote's `<div>` with its margin and level, and one in a quoted item;
+  - an item's HTML block last in the text;
+  - the marks' characters in a reply, taken out;
+  - two more texts where a mark would have shown;
+  - a paragraph's indented HTML block, apart.
+- **`test_markdown_doc`:** the viewer's list-item `<div>` at indent 1.
+
+Each part was broken on purpose: 65 breaks, 64 caught. The one not caught is still the
+table check's look at its first character, a constant factor. The first run had 66
+breaks and five not caught:
+- two of them only because the code had moved under their text, so the break did not
+  apply; their text was corrected, and both were caught;
+- the rule against marking blocks indented four spaces made no difference once a mark
+  read as text is taken out, and was removed;
+- "an end mark only after a `>`" had no test, so one was added (a last line ending in
+  a tag);
+- the first-character look, as above.
+
+Full suite 88/88. Under AddressSanitizer 87 of 88 passed together: `test_mcp_server`
+waited too long for an answer while four tests ran at once, and passed alone. No
+sanitizer report. The end-to-end scenarios: 97 checks, none failed.
+
+### Not done
+
+As in the last round:
+- indented code inside a list item or a quote is read by the walk as text;
+- thousands of unclosed openers are slow;
+- a list that starts with an HTML block loses its list.
+
+New: **an HTML block in a list nested in another** (indented four spaces or more)
+is not seen as one by the walk. It stays where Qt puts it, in its item's paragraph.
+
+Last round's "a mark can show as `<p></p>`" after a tab-indented fence in a list item
+no longer happens: such a mark is taken out as text.
