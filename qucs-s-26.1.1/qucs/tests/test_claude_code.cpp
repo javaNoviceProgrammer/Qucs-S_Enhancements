@@ -1754,6 +1754,69 @@ private slots:
         QCOMPARE(texts("```\n    $a$\n```\n$c$"), QStringList{"c"});
     }
 
+    // HTML void elements written open - <br>, <hr>, <img ...>, <wbr> -
+    // keep the rest of a reply (the review of 5 October: a <br> in a table's
+    // cell blanked the table's other rows and every bullet and paragraph
+    // after it, but inline code - Qt's Markdown importer took it for a tag
+    // that never closes). They are closed first, outside code; the cell
+    // shows two lines; the reply's text copy loses nothing.
+    void htmlLineBreaksKeepTheRestOfAReply()
+    {
+        using qucs_s::markdown::voidElementsClosed;
+        QCOMPARE(voidElementsClosed("a<br>b"), QString("a<br/>b"));
+        QCOMPARE(voidElementsClosed("a<BR>b <Hr> <wbr>"), QString("a<BR/>b <Hr/> <wbr/>"));
+        QCOMPARE(voidElementsClosed("<img src=\"x.png\" alt=\"x\">"), QString("<img src=\"x.png\" alt=\"x\"/>"));
+        QCOMPARE(voidElementsClosed("<hr class=a >x"), QString("<hr class=a />x"));
+        for (const char* same : {"a<br/>b", "a<br />b", "<b>bold</b> <sup>2</sup> <kbd>F9</kbd>", "x < y and y > z", "<brx>", "<break>",
+                                 "`<br>` and ``a <hr> b``", "```\n<br>\n```\n", "~~~\n<img src=x>\n~~~", "Code:\n\n    <br>\n",
+                                 "\\<br> is written so", "<code>a<br>b</code>", "<pre>\n<hr>\n</pre>"})
+            QCOMPARE(voidElementsClosed(same), QString(same));
+        QCOMPARE(voidElementsClosed("`<br>` then <br>"), QString("`<br>` then <br/>"));
+        QCOMPARE(voidElementsClosed("- item <br>\n\n    <br>\n"), QString("- item <br/>\n\n    <br/>\n"));   // (in a list: not code)
+
+        ClaudeCodePanel panel;
+        const QString work = fresh("brwork");
+        panel.setDefaultDirectory(work);
+        panel.resize(520, 800);
+        panel.session()->setProgram("claude");
+        const QString reply =
+            "The Properties dialog now applies values on all three parts.\n\n"
+            "| Part | What I changed | Netlist after OK |\n|---|---|---|\n"
+            "| Transistor Q1 | Six values in one OK:<br>Bf 250<br>Vaf 75 | pnp<br>Bf=250 Vaf=75 Re=1.5<br>AREA=2 |\n"
+            "| Op-amp U7 | its library<BR>and part | XU7 OpAmps_ua741 |\n"
+            "| Subcircuit SUB1 | Rs and Cs | XSUB1 Rs=2K<br/>Cs=100N |\n\n"
+            "After the table:\n\n- **Q1** kept its 51 property rows\n- `rc_sub.sch` reloaded, its pins as before\n"
+            "- a path: `~/Desktop/check.md`\n\nA rule<hr>then text, a picture <img src=\"x.png\"> here, a <wbr>break.\n\n"
+            "Last paragraph, with `<br>` as code.\n";
+        panel.session()->handleLine(QJsonDocument(QJsonObject{
+            {"type", "assistant"},
+            {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", reply}}}}}}}).toJson(QJsonDocument::Compact));
+        panel.renderNow();
+        const QString shown = panel.transcriptText();
+        for (const char* kept : {"Transistor Q1", "Six values in one OK:", "Vaf=75", "Op-amp U7", "and part", "Subcircuit SUB1", "Cs=100N",
+                                 "After the table:", "kept its 51 property rows", "reloaded, its pins as before", "a path:",
+                                 "then text, a picture", "here, a", "Last paragraph, with", "<br> as code"})
+            QVERIFY2(shown.contains(QString::fromUtf8(kept)), qPrintable(QString(kept) + "\n---\n" + shown));
+        // The cell: two lines in its block, a line break between.
+        bool twoLines = false;
+        QTextDocument* doc = panel.transcript()->document();
+        for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+            if (b.text().startsWith("pnp") && b.text().contains(QChar::LineSeparator) && QTextCursor(b).currentTable() != nullptr) twoLines = true;
+        QVERIFY(twoLines);
+        // Copied as text: every row on its line, nothing lost.
+        QString error;
+        const QString txt = QDir(work).filePath("br.txt");
+        QVERIFY(panel.exportConversation(txt, ClaudeCodePanel::ExportFormat::Text, &error));
+        QFile f(txt);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QString text = QString::fromUtf8(f.readAll());
+        QVERIFY2(text.contains("Transistor Q1 | Six values in one OK: Bf 250 Vaf 75 | pnp Bf=250 Vaf=75 Re=1.5 AREA=2"), qPrintable(text));
+        QVERIFY2(text.contains("Op-amp U7 | its library and part | XU7 OpAmps_ua741"), qPrintable(text));
+        for (const char* kept : {"• Q1 kept its 51 property rows", "• rc_sub.sch reloaded", "then text, a picture", "Last paragraph, with <br> as code"})
+            QVERIFY2(text.contains(QString::fromUtf8(kept)), qPrintable(QString(kept) + "\n---\n" + text));
+        QVERIFY(!text.contains(QChar::LineSeparator));
+    }
+
     // Whatever Claude writes between dollars - TeX cut short, braces out of
     // balance, environments not closed, commands nested deep - is set as
     // far as it goes, and nothing breaks.

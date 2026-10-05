@@ -361,7 +361,7 @@ QString plainTextOf(const QString& markdown)
     for (qsizetype k = spans.size(); k-- > 0;)
         md.replace(spans.at(k).start, spans.at(k).length, QString(QChar(char16_t(kMathMark + k))));
     QTextDocument doc;
-    doc.setMarkdown(md, QTextDocument::MarkdownDialectGitHub);
+    doc.setMarkdown(qucs_s::markdown::voidElementsClosed(md), QTextDocument::MarkdownDialectGitHub);
 
     QStringList out;
     QSet<QTextTable*> tables;
@@ -380,7 +380,8 @@ QString plainTextOf(const QString& markdown)
                     const QTextTableCell cell = table->cellAt(r, k);
                     QTextCursor cc = cell.firstCursorPosition();
                     cc.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
-                    cells << cc.selectedText().replace(QChar::ParagraphSeparator, QLatin1Char(' ')).trimmed();
+                    // (Its paragraphs and lines - a <br> - on the row's line.)
+                    cells << cc.selectedText().replace(QChar::ParagraphSeparator, QLatin1Char(' ')).replace(QChar::LineSeparator, QLatin1Char(' ')).trimmed();
                 }
                 out << cells.join(QStringLiteral(" | "));
             }
@@ -394,6 +395,11 @@ QString plainTextOf(const QString& markdown)
         if (bf.hasProperty(QTextFormat::BlockTrailingHorizontalRulerWidth)) {
             apart(true);
             out << QStringLiteral("----");
+            // (An <hr> in a paragraph: the text after it is the rule's block's.)
+            if (!text.trimmed().isEmpty()) {
+                apart(true);
+                out << quoted + text.replace(QLatin1Char('\n'), QLatin1Char('\n') + quoted);
+            }
             last = Paragraph;
         } else if (QTextList* list = b.textList()) {
             apart(last != Item);
@@ -2626,7 +2632,7 @@ void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
     const int from = c.position();
     QTextDocument doc;
     doc.setDefaultFont(base);
-    doc.setMarkdown(md, QTextDocument::MarkdownDialectGitHub);
+    doc.setMarkdown(qucs_s::markdown::voidElementsClosed(md), QTextDocument::MarkdownDialectGitHub);
     c.insertFragment(QTextDocumentFragment(&doc));
     QTextDocument* target = c.document();
     // Code on a shade, set off from the text.

@@ -64,7 +64,7 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
     }
 
     document->setDefaultFont(font);
-    document->setMarkdown(md, QTextDocument::MarkdownDialectGitHub);
+    document->setMarkdown(qucs_s::markdown::voidElementsClosed(md), QTextDocument::MarkdownDialectGitHub);
 
     const QColor shade = colours.code.isValid()
                              ? colours.code
