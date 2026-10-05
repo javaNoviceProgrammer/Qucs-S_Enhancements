@@ -469,3 +469,119 @@ As before:
 
 The separators follow only lines that end with a block's closing tag. Text after
 `</div>` on the same line still joins it, as in Qt.
+
+## The re-check of `72afb34`
+
+The reviewer checked `72afb34` in the window, and with test programs rebuilt against
+it. Both of last round's items held: the console table showed `<name>` as code, and
+text after an HTML block was a line of its own, in the quote and under the number. The
+1,419 replies were as before. On their fuzzer's seeds, losses went from 16 to 1 of
+20,000, and with the newer fragments from 10 to 3. Their verdict was "done", with four
+fuzz losses left that plain Qt loses too, none like a reply. All four reproduced.
+
+| Re-check | Now |
+|---|---|
+| **1. `1. ```⏎```<n>` and `>```⏎```<r>`: a closing fence with text after it.** | **md4c's reading, followed.** When a quote or a list item ends a fence, md4c still looks at the next line as at the fence's closing. When that fails, it reads what follows the run of backticks as a line of its own: past the run, and past the spaces after it when the run is as long as the fence's. So `<n>` starts an HTML block, and the walk had taken it for a new fence's info string, left raw. The walk now reads such a line the same way: the tag is escaped, and the line shows "```<n>". A run with nothing after it is a blank line, as to md4c. |
+| **2. `>```⏎`<p`: a lazy line after a fence in a quote.** | The same reading: past the one backtick, `<p` starts an HTML block, and its `<` is text. |
+| **3. `1.     e⏎<b><br>⏎#<b</b>`: indented code in a list item.** | Two things lost it. `#<b` is no heading (a heading's `#`s need a space or the line's end after them), but the balancer cut the paragraph there, so `<b>` and `</b>` were in two blocks and were taken out. With them kept, the stray `<` in `#<b` was inside an element: Qt reads the text in an open element as HTML, so `<b</b>` was a tag to it, and the text went. A `<` that is text inside a kept element is now written `&lt;` (below). |
+
+What else came up on the way, each reproduced against md4c's own output (md4c 0.5.3,
+which Qt uses, built into a probe):
+
+- **Indented code in a quote or a list item, read as md4c reads it.** This was in last
+  round's "Not done". It is code when it is four columns past the quote marker's space
+  or past the item's content, or on an item's first line, five columns past its marker.
+  The walk keeps the stack of items a line goes on in:
+  - a line that is no paragraph's lazy line closes the items indented past it;
+  - a line that opens items nested on one line (`- 1. x`) opens each of them;
+  - an item begun empty ends at a blank line;
+  - `- ---` and `* * *` are rules, not items.
+
+  Before, `-     x <name>` and a quote's indented `<b>` showed `&lt;name>` and
+  `&lt;b>` in their code, where plain Qt showed them right.
+- **A fence ends with any of its containers.** It ends at the first line that does not
+  go on in each of them: a quote needs its `>`, an item its indent. `- >```⏎><b>` and
+  `>> ```⏎> <b>` lost the end, because the fence was taken to go on while the line had
+  a `>`.
+- **A `<` that is text inside an element.** `<b>a < b</b>` showed "a", and `<b>a \<
+  b</b>` too: Qt reads the text in an open element as HTML. Such a `<` is now `&lt;`.
+  Inline code and autolinks are left alone, since Qt does not read those as HTML.
+- **A link's `<destination>`.** `[l](<a b>)` and `[l]: <a b>` were read as an `<a>` tag
+  left open. The tag was escaped and the link was lost; that was already so at
+  `72afb34`. md4c reads the link first, so the walk now passes over the destination.
+- **Two marks that lost text,** found on two more seeds and already there at
+  `72afb34`:
+  - An empty block in a table's cell was taken out with the next block, which was in
+    the next cell. A selection over two cells takes both cells' text, so now only
+    blocks in one cell are joined.
+  - An end mark in a `<script>` left open hid the text after it. No end mark goes
+    where an HTML block leaves an element open.
+- **Time.** Three kinds of text were quadratic, all already so at `72afb34`:
+  unclosed `<!--` lines (0.9 s for 112,000 characters), unclosed `<pre>` lines, and
+  `<b title="x` with no `>` after it. Now:
+  - a closer once found to be missing is not looked for again;
+  - PCRE's look-ahead for a far `>` is turned off with `(*NO_START_OPT)`;
+  - a `<code>`'s tag is matched no further than the next `>`.
+
+  The 112,000 characters of `<!--` lines take 63 ms.
+
+With all the reviewer's fragments, none of 20,000 texts loses the closing paragraph,
+with or without the three newer ones (6 and 6 on `72afb34`). On sixteen seeds of the
+property test, none of 20,000 loses it, and no mark changes the text (two did, on
+seeds 13 and 99). The 1,419 replies and the 79 files are unchanged: nothing lost,
+nothing changed where Qt was right, no mark left, no warnings.
+
+### Tests
+
+- **`codeInAQuoteOrAListIsReadAsMd4cReadsIt`** (new):
+  - the reviewer's four, and the nine shapes found on the way, each kept to its end;
+  - the balancer's output for each, and for indented code in quotes and items (left as
+    code), nested items, `- ---` and `* * *`, a tag over lines at a block's start, a
+    `<` in a kept element, autolinks, and links' destinations;
+  - what the viewer shows for code in an item and in a quote, a `<` in bold, and a
+    link with a `<destination>`;
+  - the two cases where a mark lost text: what is shown with the marks equals what Qt
+    shows without them.
+- **`aLongReplyIsReadInLinearTime`:** seven more units, and `setMarkdown` on a long
+  HTML block; each, four times longer, takes less than eight times as long:
+  - unclosed comments and `<pre>`s;
+  - `<b title="x` with no `>`, and with one `>` at the end;
+  - the same tags alone on their lines;
+  - `<code x`;
+  - `[l](<a `.
+- **`aRepliesHtmlIsReadWhole`:** `a <b>⏎<div>x</b></div>`, a paragraph's tag closed in
+  the HTML block that ends it.
+- **`anHtmlBlockIsABlockOfItsOwn`:** two marks md4c reads as text (an end mark after a
+  `</script>`, and a tab after `>`) are taken out.
+- **`test_markdown_doc`:** a numbered item's code (`make <target> && ls <dir>`), a `<`
+  in bold, a link with a `<destination>`.
+
+Each part was broken on purpose: 112 breaks, 111 caught. The one not caught is the
+table check's look at its first character, a constant factor, as before.
+
+The first run of this round's 29 had seven not caught:
+- Five got tests: the blank line after a short run (a later line's backticks are not
+  its code), an item behind a quote's `>` (not one a line without `>` goes on in), a
+  tag over lines at a block's start (md4c's is on one line), and, for the two guards of
+  a `<code>`'s tag, `<code x` and `<b title="x` with a `>` at the end.
+- One guard was taken out with its break: the look at an HTML block's tags for its
+  marks. After balancing, each `<` in an HTML block is a tag with its `>` near. A
+  lone tag's `(*NO_START_OPT)`, added after the first run, went too: it is matched
+  within its line.
+- One break did not build; built, it was caught.
+
+Three earlier breaks had lost their cases, because the walk now reads those cases as
+md4c does: the HTML block's own block, a mark read as text, and a rule as no
+paragraph. Each has a new case.
+
+Full suite 88/88. Under AddressSanitizer 88/88, with no sanitizer report. The
+end-to-end scenarios: 97 checks, none failed.
+
+### Not done
+
+- Two md4c quirks are not followed. After an item's ATX heading (`- # x`), a blank
+  line ends the list, and a tab after `>` counts as the marker's space. Where the walk
+  marks what md4c reads as code there, `markOut()` takes the mark out.
+- A list inside a quote is not tracked: a quote's line uses the quote's own rule.
+- As before: a list that starts with an HTML block, and an HTML block in a nested
+  list.

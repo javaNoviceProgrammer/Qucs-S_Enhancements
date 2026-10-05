@@ -185,6 +185,7 @@ private slots:
                                        "<div>a</div>/>\n\nAfter a stray close.\n\n<![CDATA[\nx <b>\n]]>\n\n"
                                        "After CDATA, <img alt=\"a>b\" src=\"n.png\"> inline.\n\n## Badges\n\n<p align=\"center\">\n<img src=\"b.png\"/>\n</p>\n\n"
                                        "- item\n\n  <div>Under its bullet.</div>\n\n"
+                                       "1. Build it:\n\n       make <target> && ls <dir>\n\n> Note: <b>a < b</b>, see [the docs](<docs/a b.md>).\n\n"
                                        "THE END\n",
                                  QFont(), {});
         const QString text = doc.toPlainText();
@@ -196,7 +197,8 @@ private slots:
         QVERIFY(ruleBetween);
         for (const char* kept : {"one", "two", "row2", "After the table:", "Bold item with text", "plain item and code", "more, <br> as code.",
                                  "The dataset is <name>.dat.ngspice beside the schematic.", "still here?", "A vector<int> and a lone <b>.",
-                                 "After a stray close.", "After CDATA,", "inline.", "THE END"})
+                                 "After a stray close.", "After CDATA,", "inline.", "make <target> && ls <dir>", "Note: a < b, see the docs.",
+                                 "THE END"})
             QVERIFY2(text.contains(QString::fromUtf8(kept)), qPrintable(QString(kept) + "\n---\n" + text));
         const QTextBlock badges = blockWith(&doc, "Badges");
         QCOMPARE(badges.text(), QString("Badges"));
