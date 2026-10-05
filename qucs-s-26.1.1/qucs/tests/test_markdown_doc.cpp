@@ -167,6 +167,21 @@ private slots:
         QVERIFY(!doc.toPlainText().contains("frac"));
     }
 
+    // A Markdown file with HTML void elements written open - a <br> in a
+    // table's cell, an <hr>, an <img> - is rendered whole: Qt's importer
+    // dropped everything after the first (the review of 5 October).
+    void anOpenVoidTagKeepsTheRest()
+    {
+        QTextDocument doc;
+        qucs_s::math::MathObject::install(&doc);
+        qucs_s::markdown::render(&doc, "| A | B |\n|---|---|\n| one<br>two | `x` |\n| row2 | y |\n\nAfter the table:\n\n"
+                                       "- **Bold item** with text\n- plain item and `code`\n\nA rule<HR>and <img src=\"a.png\"> more, `<br>` as code.\n",
+                                 QFont(), {});
+        const QString text = doc.toPlainText();
+        for (const char* kept : {"one", "two", "row2", "After the table:", "Bold item with text", "plain item and code", "more, <br> as code."})
+            QVERIFY2(text.contains(QString::fromUtf8(kept)), qPrintable(QString(kept) + "\n---\n" + text));
+    }
+
     // A .md file opens in a Markdown document: a text document (highlighted
     // as Markdown), shown rendered at first.
     void aMarkdownFileOpensInItsOwnTab()

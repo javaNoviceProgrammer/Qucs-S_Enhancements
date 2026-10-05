@@ -96,4 +96,16 @@ QList<Span> findMath(const QString& markdown);
 
 } // namespace qucs_s::math
 
+namespace qucs_s::markdown {
+
+/// \a markdown with each HTML void element written open - <br>, <hr>,
+/// <img src="x.png">, <wbr>, ... in any case - closed (<br/>), outside
+/// code. Qt's Markdown importer takes an open one for a tag that never
+/// closes, and drops all the text after it but inline code: a reply with
+/// <br> in a table's cell lost the rest of its table, its lists and its
+/// paragraphs. For each setMarkdown() of a reply or a Markdown file.
+QString voidElementsClosed(const QString& markdown);
+
+} // namespace qucs_s::markdown
+
 #endif // QUCS_MATHTYPESET_H

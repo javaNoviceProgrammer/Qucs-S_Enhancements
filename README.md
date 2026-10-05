@@ -441,7 +441,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   beside the schematic. Claude works in the workspace folder (*Application
   Settings → Locations*) unless another is chosen in the dock, and the
   document in front goes along with a prompt when its chip is on. The reply
-  is drawn as it is written (Markdown, code on a shade, TeX math between
+  is drawn as it is written (Markdown - a `<br>` in a table's cell a line
+  break, as on GitHub -, code on a shade, TeX math between
   `$...$` and `$$...$$` typeset: fractions, roots, sums and integrals with
   their limits, matrices, cases, aligned equations, Greek, units), the
   tools Claude uses in a row fold into one line ("Ran 3 commands, read
@@ -1083,7 +1084,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   its text, highlighted and edited as any text document (undo, find and
   replace, save), and the text rendered: GitHub's Markdown (headings,
   lists, task lists, tables, code on a shade, links, images beside the
-  file) and TeX math between dollars, typeset. A bar at the top chooses
+  file, inline HTML such as `<br>`) and TeX math between dollars, typeset. A bar at the top chooses
   *Edit* (the text), *Split* (the text and the rendering side by side, a
   handle sharing the width; the rendering scrolls with the text) or
   *Preview* (the rendering alone); the choice is kept for the next file.
