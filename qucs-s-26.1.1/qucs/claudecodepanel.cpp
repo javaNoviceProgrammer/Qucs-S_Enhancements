@@ -361,8 +361,7 @@ QString plainTextOf(const QString& markdown)
     for (qsizetype k = spans.size(); k-- > 0;)
         md.replace(spans.at(k).start, spans.at(k).length, QString(QChar(char16_t(kMathMark + k))));
     QTextDocument doc;
-    doc.setMarkdown(qucs_s::markdown::htmlBalanced(md), QTextDocument::MarkdownDialectGitHub);
-    qucs_s::markdown::rulesApart(&doc);
+    qucs_s::markdown::setMarkdown(&doc, md);
 
     QStringList out;
     QSet<QTextTable*> tables;
@@ -2628,8 +2627,7 @@ void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
     const int from = c.position();
     QTextDocument doc;
     doc.setDefaultFont(base);
-    doc.setMarkdown(qucs_s::markdown::htmlBalanced(md), QTextDocument::MarkdownDialectGitHub);
-    qucs_s::markdown::rulesApart(&doc);
+    qucs_s::markdown::setMarkdown(&doc, md);
     c.insertFragment(QTextDocumentFragment(&doc));
     QTextDocument* target = c.document();
     // Code on a shade, set off from the text.

@@ -112,15 +112,18 @@ namespace qucs_s::markdown {
 /// another block - a list's next item, a cell beside it, <details> over
 /// blank lines - is taken out with its closing tag (Qt moved text between
 /// the blocks); a comment is taken out. Elements closed in their block
-/// (<b>x</b>, <kbd>, <details>) and autolinks stay. For each setMarkdown()
-/// of a reply or a Markdown file.
+/// (<b>x</b>, <kbd>, <details>) and autolinks stay. A "/>" in an HTML
+/// block that ends no tag is text ("/&gt;"): Qt counts each as a tag closed.
+/// setMarkdown() reads with it.
 QString htmlBalanced(const QString& markdown);
 
-/// An <hr> inside a paragraph: Qt puts the text after it into the rule's
-/// block, drawn above the rule. That text is moved to a block of its own
-/// after the rule (in a table's cell too: a line more in it). After
-/// setMarkdown().
-void rulesApart(QTextDocument* document);
+/// Sets \a document to \a markdown (GitHub's) as Qt's importer reads it
+/// whole - htmlBalanced() - and with the blocks apart that it puts into
+/// one: an HTML block into the paragraph, heading or list item before it
+/// ("para" then <div>x</div> read "parax"); the text after an <hr> inside a
+/// paragraph into the rule's block, drawn above the rule (now after it; in a
+/// table's cell, a line more in it). For each reply and Markdown file.
+void setMarkdown(QTextDocument* document, const QString& markdown);
 
 } // namespace qucs_s::markdown
 
