@@ -97,6 +97,16 @@ IF (UPDATE_TRANSLATIONS)
 ENDIF (UPDATE_TRANSLATIONS)
 add_subdirectory( translations )
 
+# The tests of Claude's tools run the Tools menu's programs with --json:
+# each built before them.
+if(TARGET test_wishlist_tools)
+  foreach(program ${QUCS_NAME}filter ${QUCS_NAME}activefilter ${QUCS_NAME}attenuator ${QUCS_NAME}powercombining ${QUCS_NAME}trans rxcalc)
+    if(TARGET ${program})
+      add_dependencies(test_wishlist_tools ${program})
+    endif()
+  endforeach()
+endif()
+
 install(DIRECTORY "examples" DESTINATION "share/${QUCS_NAME}")
 
 install(FILES contrib/io.github.ra3xdh.qucs_s.metainfo.xml DESTINATION ${CMAKE_INSTALL_PREFIX}/share/metainfo)

@@ -13,6 +13,7 @@
  */
 #include "qucscontrol.h"
 #include "qucscontrol_p.h"
+#include "textplacement.h"
 
 #include "components/component.h"
 #include "components/libcomp.h"
@@ -1016,6 +1017,31 @@ QJsonObject operatingPointJson(const ds::Dataset& data, Schematic* sch, bool dev
     return op;
 }
 
+// How \a v of the dataset \a file is measured: in dB when said so, or
+// when its unit is (vdb(out), an equation's db(...)), and an eye without a
+// bit period at the Tbit of the PRBS source the signal comes from, before
+// what its crossings tell - as the run of \a file gave it - and without
+// levels, at its coding's (PAM4: 4). The same for a run kept as for this
+// one: a kept run's gain_db = dB(v(out)) is in dB too.
+ds::MeasureOptions measureOptionsFor(const ReadOptions& o, const ds::Variable& v, const QString& file)
+{
+    ds::MeasureOptions measureOptions = o.measureOptions;
+    measureOptions.decibels = o.decibels.value_or(ds::isDecibels(ds::unitOf(v.name, definitionOf(o, v.name))));
+    if ((std::isnan(measureOptions.period) || !o.levelsGiven) && o.measure.contains(QStringLiteral("eye")) && o.circuit != nullptr)
+        if (const qucs_s::prbs::Source s = qucs_s::prbs::sourceOf(o.circuit, v.name, file); s.found()) {
+            if (std::isnan(measureOptions.period)) {
+                measureOptions.period = s.ui;
+                measureOptions.periodFrom = s.name;
+            }
+            if (!o.levelsGiven && s.levels == 4) {
+                measureOptions.levels = 4;
+                measureOptions.levelsFrom = s.name;
+            }
+            measureOptions.sourceNote = s.note;
+        }
+    return measureOptions;
+}
+
 QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const ReadOptions& o)
 {
     QJsonObject out{{QStringLiteral("name"), v.name}};
@@ -1042,23 +1068,7 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
     }
     if (const QString trace = traceOf(o, v.name); !trace.isEmpty()) out.insert(QStringLiteral("trace"), trace);
     describe(out, v, o);
-    ds::MeasureOptions measureOptions = o.measureOptions;
-    measureOptions.decibels = o.decibels.value_or(ds::isDecibels(ds::unitOf(v.name, definitionOf(o, v.name))));
-    // An eye without a bit period: the Tbit of the PRBS source the signal
-    // comes from, before what its crossings tell - as the run the data is
-    // of gave it - and without levels, its coding's (PAM4: 4).
-    if ((std::isnan(measureOptions.period) || !o.levelsGiven) && o.measure.contains(QStringLiteral("eye")) && o.circuit != nullptr)
-        if (const qucs_s::prbs::Source s = qucs_s::prbs::sourceOf(o.circuit, v.name, o.file); s.found()) {
-            if (std::isnan(measureOptions.period)) {
-                measureOptions.period = s.ui;
-                measureOptions.periodFrom = s.name;
-            }
-            if (!o.levelsGiven && s.levels == 4) {
-                measureOptions.levels = 4;
-                measureOptions.levelsFrom = s.name;
-            }
-            measureOptions.sourceNote = s.note;
-        }
+    const ds::MeasureOptions measureOptions = measureOptionsFor(o, v, o.file);
     const QString xName = v.dependencies.value(0, QStringLiteral("index"));
     out.insert(QStringLiteral("x"), xName);
     if (v.dependencies.size() > 1) out.insert(QStringLiteral("swept"), QJsonArray::fromStringList(v.dependencies.mid(1)));
@@ -1879,7 +1889,8 @@ namespace {
 // over the same range, its measurements, and the difference on this run's
 // samples (the other's value straight between its samples): the largest
 // and where, its mean and RMS. The first curve of a swept one.
-QJsonObject comparedJson(const ds::Dataset& a, const ds::Variable& va, const ds::Dataset& b, const ds::Variable& vb, const ReadOptions& o)
+QJsonObject comparedJson(const ds::Dataset& a, const ds::Variable& va, const ds::Dataset& b, const ds::Variable& vb, const ReadOptions& o,
+                         const QString& file)
 {
     QJsonObject out;
     const QList<ds::Curve> mine = ds::curvesOf(a, va), theirs = ds::curvesOf(b, vb);
@@ -1894,8 +1905,14 @@ QJsonObject comparedJson(const ds::Dataset& a, const ds::Variable& va, const ds:
     out.insert(QStringLiteral("rms"), number(s.rms));
     out.insert(QStringLiteral("final"), number(s.last));
     if (!o.measure.isEmpty()) {
+        // Measured as this run's variable is: its unit (an equation's dB),
+        // its phase, the PRBS source the other run had.
+        ds::MeasureOptions options = measureOptionsFor(o, vb, file);
+        if (vb.isComplex() && (o.measure.contains(QStringLiteral("phase_margin")) || o.measure.contains(QStringLiteral("gain_margin"))))
+            if (const QList<QVector<double>> phases = ds::phasesOf(b, vb); !phases.isEmpty() && phases.first().size() == theirs.first().x.size())
+                options.phase = ds::within(ds::Curve{theirs.first().x, phases.first()}, o.from, o.to).y;
         QJsonObject m;
-        for (const QString& what : o.measure) m.insert(what, ds::measure(there, what, o.measureOptions));
+        for (const QString& what : o.measure) m.insert(what, ds::measure(there, what, options));
         out.insert(QStringLiteral("measurements"), m);
     }
     // The difference, this run's less the other's, where both have data.
@@ -2258,7 +2275,7 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
             json.insert(QStringLiteral("compared"), tr("the other run has no %1").arg(wantedName));
             return json;
         }
-        json.insert(QStringLiteral("other run"), comparedJson(data, v, other, theirs, o));
+        json.insert(QStringLiteral("other run"), comparedJson(data, v, other, theirs, o, otherFile));
         return json;
     };
     for (const QJsonValue& w : wanted) {
@@ -2992,24 +3009,41 @@ namespace {
 QString overlapOf(Schematic* sch, const Diagram* d)
 {
     const QRect mine(d->cx, d->cy - d->y2, d->x2, d->y2);
-    QStringList diagrams, parts;
+    QStringList diagrams, parts, clashes;
+    // Their frames over each other - or what each draws around its frame:
+    // a title running into the x-axis label of the one above.
+    int clear = std::numeric_limits<int>::min();
     int n = 0;
     for (const Diagram* other : sch->a_DocDiags) {
         ++n;
-        if (other != d && mine.intersects(QRect(other->cx, other->cy - other->y2, other->x2, other->y2)))
+        if (other == d) continue;
+        if (mine.intersects(QRect(other->cx, other->cy - other->y2, other->x2, other->y2))) {
             diagrams << QString::number(n);
+            continue;
+        }
+        int below = std::numeric_limits<int>::min();
+        if (const QString clash = qucs_s::textplace::diagramClash(d, other, n, &below); !clash.isEmpty()) {
+            clashes << clash;
+            clear = std::max(clear, below);
+        }
     }
     for (Component* c : sch->a_DocComps)
         if (mine.intersects(c->boundingRect()) && parts.size() < 8) parts << (c->Name.isEmpty() ? c->Model : c->Name);
     QStringList what;
     if (!diagrams.isEmpty()) what << tr("diagram %1").arg(diagrams.join(QStringLiteral(", ")));
     if (!parts.isEmpty()) what << parts.join(QStringLiteral(", "));
-    if (what.isEmpty()) return {};
-    const QRect used = sch->allBoundingRect();
-    return tr("It lies over %1: x, y is its lower left corner - below everything is y %2 and more (add_diagram without x, y "
-              "puts it there).")
-        .arg(what.join(QStringLiteral(" and ")))
-        .arg(used.bottom() + 80 + d->y2);
+    QStringList said;
+    if (!what.isEmpty()) {
+        const QRect used = sch->allBoundingRect();
+        said << tr("It lies over %1: x, y is its lower left corner - below everything is y %2 and more (add_diagram without x, y "
+                   "puts it there).")
+                    .arg(what.join(QStringLiteral(" and ")))
+                    .arg(used.bottom() + 80 + d->y2);
+    }
+    if (!clashes.isEmpty())
+        said << tr("Drawn into another: %1%2.").arg(clashes.join(QStringLiteral("; ")),
+                                                    clear > std::numeric_limits<int>::min() ? tr(" - y %1 or more clears it").arg(clear) : QString());
+    return said.join(QLatin1Char(' '));
 }
 
 } // namespace
@@ -3026,19 +3060,22 @@ QJsonObject QucsControl::addDiagram(const QJsonObject& args)
     d->setTheme(qucs_s::diagramtheme::defaultForNewDiagrams());
     if (!applyDiagram(d.get(), args, &error)) return errorResult(error);
     QStringList notes;
-    // Not told where: below everything there is, room left for its axes'
-    // numbers and labels.
-    if (!args.contains(QLatin1String("x")) || !args.contains(QLatin1String("y"))) {
+    // Not told where: below everything there is - what the diagrams above
+    // draw included, their axes' numbers and labels - a gap left above its
+    // title.
+    const bool placedBelow = !args.contains(QLatin1String("x")) || !args.contains(QLatin1String("y"));
+    if (placedBelow) {
         const QRect used = sch->allBoundingRect();
         const bool empty = sch->a_DocComps.empty() && sch->a_DocWires.empty() && sch->a_DocDiags.empty() && sch->a_DocPaints.empty();
         if (!args.contains(QLatin1String("x"))) d->cx = empty ? 60 : used.left() + 60;
         if (!args.contains(QLatin1String("y"))) d->cy = (empty ? 0 : used.bottom()) + 80 + d->y2;
-        notes << tr("Placed below the circuit, its lower left corner at %1, %2.").arg(d->cx).arg(d->cy);
     }
     int x = d->cx, y = d->cy;
     sch->setOnGrid(x, y);
     d->cx = x;
     d->cy = y;
+    // (Where it is, on the grid.)
+    if (placedBelow) notes << tr("Placed below the circuit, its lower left corner at %1, %2.").arg(d->cx).arg(d->cy);
     // Expressions (ac.db(v(out))): a NutmegEq's variables, made once every
     // trace is known to do - each trace's graph named after it then.
     QList<QPair<Graph*, QString>> computed;

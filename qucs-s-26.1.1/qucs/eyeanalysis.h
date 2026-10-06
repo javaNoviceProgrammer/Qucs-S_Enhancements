@@ -64,7 +64,7 @@ struct Eye {
     double phase = NaN;              ///< the crossings' mean phase, in UI from the centre (about -0.5)
     double earliest = NaN;           ///< the earliest and latest crossings, in UI from their mean
     double latest = NaN;
-    double q = NaN;                  ///< (high - low) / (sigma high + sigma low); NaN without noise
+    double q = NaN;                  ///< (high - low) / (sigma high + sigma low); infinite without noise, NaN with a level empty
     int crossings = 0;
     int lower = 0, upper = 0;        ///< the symbols on either level at the centre
 };
@@ -94,12 +94,18 @@ QVector<double> crossingTimes(const dataset::Curve& c, double level, double hyst
 
 /// The unit interval of crossings that fall at bit boundaries: the one all
 /// intervals between them are whole multiples of. NaN when it cannot be
-/// told (\a why says why).
-double estimateUi(const QVector<double>& crossings, QString* why = nullptr);
+/// told (\a why says why). \a doubts gets what makes it doubtful: fewer
+/// than 50 crossings, intervals that are no whole number of it, one
+/// shorter than it.
+double estimateUi(const QVector<double>& crossings, QString* why = nullptr, QStringList* doubts = nullptr);
 
 /// \a ui made more exact: \a crossings' times fitted (least squares)
 /// against the number of the UI each falls in.
 double fitted(const QVector<double>& crossings, double ui);
+
+/// \a e's Q into \a o: its value, or null with why when it is infinite
+/// (no noise); nothing when it was not measured.
+void insertQ(QJsonObject& o, const Eye& e);
 
 /// The mask: a hexagon \a width UI wide and \a height high, centred on
 /// (0, 0) - in UI from the eye's centre, and from the threshold.

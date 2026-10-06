@@ -508,6 +508,21 @@ void QucsPowerCombiningTool::on_TopoCombo_currentIndexChanged(int index)
     }
 }
 
+void QucsPowerCombiningTool::deliver(const QString& s)
+{
+    generated = s;
+    if (!quiet) QApplication::clipboard()->setText(s, QClipboard::Clipboard);
+}
+
+QString QucsPowerCombiningTool::generate(bool quietly)
+{
+    generated.clear();
+    quiet = quietly;
+    on_GenerateButton_clicked();
+    quiet = false;
+    return generated;
+}
+
 //---------------------------------------------------------------
 // This function reads the input values and calls the different methods for generating a schematic
 void QucsPowerCombiningTool::on_GenerateButton_clicked()
@@ -773,7 +788,7 @@ int QucsPowerCombiningTool::Wilkinson(double Z0, double Freq, double K, bool SP_
 
     s += "</Wires>\n";
 
-    QApplication::clipboard()->setText(s, QClipboard::Clipboard);//Copy into clipboard
+    deliver(s);//Copy into clipboard
     return 0;
 
 }
@@ -1054,7 +1069,7 @@ int QucsPowerCombiningTool::MultistageWilkinson(double Z0, double Freq, int NSta
       s += "</Components>\n";
       wirestr+="</Wires>\n";;
       s += wirestr;
-      QApplication::clipboard()->setText(s, QClipboard::Clipboard);
+      deliver(s);
       return 0;
 }
 
@@ -1148,7 +1163,7 @@ int QucsPowerCombiningTool::Tee(double Z0, double Freq, double K, bool SP_block,
 
     s += "</Wires>\n";
 
-    QApplication::clipboard()->setText(s, QClipboard::Clipboard);
+    deliver(s);
     return 0;
 }
 
@@ -1231,7 +1246,7 @@ int QucsPowerCombiningTool::Branchline(double Z0, double Freq, double K, bool SP
     s += "</Wires>\n";
 
 
-    QApplication::clipboard()->setText(s, QClipboard::Clipboard);
+    deliver(s);
     return 0;
 
 }
@@ -1344,7 +1359,7 @@ int QucsPowerCombiningTool::DoubleBoxBranchline(double Z0, double Freq, double K
     s += "</Wires>\n";
 
 
-    QApplication::clipboard()->setText(s, QClipboard::Clipboard);
+    deliver(s);
     return 0;
 
 }
@@ -1454,7 +1469,7 @@ int QucsPowerCombiningTool::Bagley(double Z0, double Freq, int N, bool SP_block,
     s += "</Wires>\n";
 
 
-    QApplication::clipboard()->setText(s, QClipboard::Clipboard);
+    deliver(s);
     return 0;
 
 }
@@ -1549,7 +1564,7 @@ int QucsPowerCombiningTool::Gysel(double Z0, double Freq, bool SP_block, bool mi
     s += QStringLiteral("<0 -30 120 -30 \"\" 0 0 0 \"\">\n");
     s += "</Wires>\n";
 
-    QApplication::clipboard()->setText(s, QClipboard::Clipboard);
+    deliver(s);
     return 0;
 }
 
@@ -1687,7 +1702,7 @@ int QucsPowerCombiningTool::TravellingWave(double Z0, double Freq, int N, bool S
     wirestr+="</Wires>\n";;
     s += wirestr;
 
-    QApplication::clipboard()->setText(s, QClipboard::Clipboard);
+    deliver(s);
     return 0;
 }
 
@@ -1803,7 +1818,7 @@ int QucsPowerCombiningTool::Tree(double Z0, double Freq, int N, bool SP_block, b
     s += "</Components>\n";
     wirestr+="</Wires>\n";;
     s += wirestr;
-    QApplication::clipboard()->setText(s, QClipboard::Clipboard);
+    deliver(s);
     return 0;
 }
 

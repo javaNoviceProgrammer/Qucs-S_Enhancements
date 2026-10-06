@@ -1269,6 +1269,58 @@ void QucsTranscalc::slotRadioChecked(int id)
   updateSelection ();
 }
 
+QStringList QucsTranscalc::propertyNames ()
+{
+  QStringList names;
+  for (int box = 0; box < MAX_TRANS_BOXES; box++)
+    for (struct TransValue * val = TransLineTypes[getTypeIndex ()].array[box].item; val->name; val++)
+      names << val->name;
+  return names;
+}
+
+QStringList QucsTranscalc::unitsOf (QString prop)
+{
+  QStringList units;
+  if (struct TransValue * val = findProperty (prop))
+    for (int i = 0; val->units[i]; i++) units << val->units[i];
+  return units;
+}
+
+bool QucsTranscalc::solveFor (QString prop)
+{
+  int idx = getTypeIndex ();
+  struct TransValue * val = TransLineTypes[idx].array[TRANS_PHYSICAL].item;
+  for (int i = 0; i < TransMaxBox[TRANS_PHYSICAL] && val[i].name; i++)
+    if (prop.compare (val[i].name, Qt::CaseInsensitive) == 0 && TransLineTypes[idx].radio[i] != -1) {
+      slotRadioChecked (i);
+      return true;
+    }
+  return false;
+}
+
+int QucsTranscalc::analyze ()
+{
+  if (!TransLineTypes[getTypeIndex()].line) return -1;
+  TransLineTypes[getTypeIndex()].line->analyze();
+  return 0;
+}
+
+int QucsTranscalc::synthesize ()
+{
+  if (!TransLineTypes[getTypeIndex()].line) return -1;
+  return TransLineTypes[getTypeIndex()].line->synthesize();
+}
+
+QList<QPair<QString, QString>> QucsTranscalc::results ()
+{
+  QList<QPair<QString, QString>> list;
+  struct TransType * type = &TransLineTypes[getTypeIndex ()];
+  for (int i = 0; i < type->results && i < MAX_TRANS_RESULTS; i++)
+    if (type->result[i].name && type->result[i].value)
+      list << qMakePair (*type->result[i].name, type->result[i].value->text ());
+  return list;
+}
+
 void QucsTranscalc::slotCopyToClipBoard()
 {
   int created = 0;

@@ -2582,9 +2582,11 @@ void QucsApp::slotProjectsContextMenu(const QPoint &pos)
   open->setEnabled(!path.isEmpty() && QFileInfo(path).isDir() && qucs_s::workspace::isProjectFolder(path) && !isOpenOne);
   connect(open, &QAction::triggered, this, [this, path] { openProject(path); });
   // The Project menu's Close Project: here, with no project open, nothing
-  // to close (there it closes the documents all the same).
+  // to close (there it closes the documents all the same) - and on another
+  // project's row it would close the open one, not that: only on the open
+  // project's row, or on none.
   const bool closeEnabled = projClose->isEnabled();
-  projClose->setEnabled(closeEnabled && !ProjName.isEmpty());
+  projClose->setEnabled(closeEnabled && !ProjName.isEmpty() && (path.isEmpty() || isOpenOne));
   menu.addAction(projClose);
   menu.exec(Projects->viewport()->mapToGlobal(pos));
   projClose->setEnabled(closeEnabled);

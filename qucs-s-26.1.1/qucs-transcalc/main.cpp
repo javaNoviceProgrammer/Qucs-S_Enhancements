@@ -32,6 +32,7 @@
 #include <QSettings>
 
 #include "qucstrans.h"
+#include "../qucs/tooljson.h"
 
 tQucsSettings QucsSettings;
 
@@ -93,9 +94,92 @@ bool saveApplSettings(QucsTranscalc *qucs)
 // ##########                  Program Start                      ##########
 // ##########                                                     ##########
 // #########################################################################
+// --json: a spec on standard input; the window, made but not shown, is
+// filled in from it (in metres, hertz, ohms and degrees) and Analyze or
+// Synthesize pressed - every value and the results on standard output.
+// No setting or file is read or written.
+namespace {
+
+namespace tj = qucs_s::tooljson;
+
+QJsonObject calculate(QucsTranscalc& w, const QJsonObject& spec)
+{
+  auto error = [](const QString& why) { return QJsonObject{{QStringLiteral("error"), why}}; };
+  static const QStringList types{"microstrip", "coplanar", "grounded_coplanar", "rectangular", "coaxial", "coupled_microstrip", "stripline"};
+  static const char* modes[] = {"Microstrip", "Coplanar", "GroundedCoplanar", "Rectangular", "Coaxial", "CoupledMicrostrip", "Stripline"};
+  QString type = spec.value("type").toString(QStringLiteral("microstrip")).toLower().replace(QLatin1Char(' '), QLatin1Char('_')).replace(QLatin1Char('-'), QLatin1Char('_'));
+  if (type == QLatin1String("coax")) type = QStringLiteral("coaxial");
+  if (type == QLatin1String("waveguide") || type == QLatin1String("rectangular_waveguide")) type = QStringLiteral("rectangular");
+  if (type == QLatin1String("coupled")) type = QStringLiteral("coupled_microstrip");
+  const int t = int(types.indexOf(type));
+  if (t < 0) return error(QStringLiteral("'type' is one of %1, not %2").arg(types.join(", "), type));
+  const QString job = spec.value("do").toString(spec.contains("z0") || spec.contains("z0e") ? "synthesize" : "analyze").toLower();
+  if (job != QLatin1String("analyze") && job != QLatin1String("synthesize"))
+    return error(QStringLiteral("'do' is analyze (the geometry gives Z0) or synthesize (Z0 gives the geometry)"));
+  w.setMode(QString::fromLatin1(modes[t]));
+  // Every value in metres, hertz, ohms and degrees.
+  const QStringList names = w.propertyNames();
+  for (const QString& n : names) {
+    const QStringList units = w.unitsOf(n);
+    const QString kind = units.value(0);
+    const char* unit = kind == QLatin1String("mil") ? "m" : kind == QLatin1String("GHz") ? "Hz" : kind == QLatin1String("Ohm") ? "Ohm"
+                     : kind == QLatin1String("Deg") ? "Deg" : nullptr;
+    if (unit) w.setUnit(n, unit);
+  }
+  // The spec's values by name, case aside ("er", "h", "w", "z0", "f").
+  QStringList unknown;
+  for (auto it = spec.constBegin(); it != spec.constEnd(); ++it) {
+    static const QStringList own{"type", "do", "solve_for", "simulator"};
+    if (own.contains(it.key())) continue;
+    if (it.key() == QLatin1String("substrate") && it.value().isObject()) {
+      const QJsonObject sub = it.value().toObject();
+      for (auto jt = sub.constBegin(); jt != sub.constEnd(); ++jt) {
+        QString name;
+        for (const QString& n : names)
+          if (n.compare(jt.key(), Qt::CaseInsensitive) == 0) name = n;
+        if (name.isEmpty()) unknown << jt.key();
+        else w.setProperty(name, tj::number(jt.value()));
+      }
+      continue;
+    }
+    QString key = it.key();
+    if (key == QLatin1String("f") || key == QLatin1String("frequency")) key = QStringLiteral("Freq");
+    if (key == QLatin1String("angle") || key == QLatin1String("electrical_length")) key = QStringLiteral("Ang_l");
+    QString name;
+    for (const QString& n : names)
+      if (n.compare(key, Qt::CaseInsensitive) == 0) name = n;
+    if (name.isEmpty()) unknown << it.key();
+    else w.setProperty(name, tj::number(it.value()));
+  }
+  if (!unknown.isEmpty())
+    return error(QStringLiteral("a %1 has no %2: its values are %3").arg(type, unknown.join(", "), names.join(", ")));
+  if (spec.contains("solve_for") && !w.solveFor(spec.value("solve_for").toString()))
+    return error(QStringLiteral("'solve_for' names a physical value synthesis may solve for (of a %1: one with a choice in the window)").arg(type));
+  const int status = job == QLatin1String("analyze") ? w.analyze() : w.synthesize();
+  QJsonObject values;
+  for (const QString& n : names) values.insert(n, w.getProperty(n));
+  QJsonObject results;
+  for (const auto& [name, value] : w.results()) results.insert(name, value);
+  QJsonObject r{{"type", type}, {"did", job}, {"values", values}, {"results", results},
+                {"units", "lengths m, frequency Hz, impedances ohm, angles degrees"}};
+  if (status != 0) r.insert("error", QStringLiteral("%1 did not converge").arg(job));
+  return r;
+}
+
+} // namespace
 
 int main(int argc, char *argv[])
 {
+  if (qucs_s::tooljson::wanted(argc, argv)) {
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", "offscreen");
+    QApplication a(argc, argv);
+    QString error;
+    const QJsonObject spec = qucs_s::tooljson::spec(&error);
+    if (!error.isEmpty()) return qucs_s::tooljson::fail(error);
+    QucsSettings.font = QFont("Helvetica", 12);
+    QucsTranscalc w;
+    return qucs_s::tooljson::answer(calculate(w, spec));
+  }
   QApplication a(argc, argv);
 
   // apply default settings

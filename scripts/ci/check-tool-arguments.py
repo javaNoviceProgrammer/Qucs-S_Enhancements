@@ -61,6 +61,7 @@ NESTED = {
     ("make_symbol", "parameters"): ("changeParameters", "o"),
     ("set_subcircuit_parameters", "parameters"): ("changeParameters", "o"),
     ("edit_text", "edits"): ("editText", "e"),
+    ("receiver_budget", "stages"): ("stageSpec", "stage"),
 }
 
 # A nested item's key read for another tool sharing the reader: set_ui's

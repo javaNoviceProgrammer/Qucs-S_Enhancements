@@ -20,6 +20,8 @@
 #endif
 
 #include "sallenkey.h"
+
+#include <algorithm>
 #include <iostream>
 
 SallenKey::SallenKey(Filter::FilterFunc ffunc_, Filter::FType type_, FilterParam par) :
@@ -49,7 +51,9 @@ void SallenKey::calcLowPass()
 
         C2 = 10 / Fc;
         C1 = (B*B+4*C*(Kv1-1))*C2/(4*C);
-        R1 = 2/(Wc*(B*C2+sqrt((B*B + 4*C*(Kv1-1))*C2*C2-4*C*C1*C2)));
+        // (With C1 so, what is under the root is 0: rounded, a little
+        // below, and R1 was nan - a unity gain's low-pass of any order.)
+        R1 = 2/(Wc*(B*C2+sqrt(std::max(0.0, (B*B + 4*C*(Kv1-1))*C2*C2-4*C*C1*C2))));
         R2 = 1/(C*C1*C2*R1*Wc*Wc);
 
         if (Kv != 1.0) {
