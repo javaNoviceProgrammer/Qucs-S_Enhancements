@@ -1,6 +1,7 @@
 # Proposal: a GDS/OASIS layout viewer, and later an editor
 
-*6 October 2026 - Qucs-S 26.1.6. A proposal, not built yet. It writes up the answer of
+*6 October 2026 - Qucs-S 26.1.6. A proposal; its phase 1, the viewer, was built the same
+day ([Phase 1, as built](#phase-1-as-built) at the end). It writes up the answer of
 2 October to "How much work does it take to create a built-in gds/oasis viewer and
 editor into qucs? something similar to klayout?", and the look at embedding KLayout of
 29 September, parked then. The facts below were checked in this tree, on this Mac and
@@ -139,3 +140,49 @@ touches it up.
 Design-rule and layout-versus-schematic checks, scripting, parameterised cells, net
 tracing, comparing two layouts, LEF/DEF/DXF and technology files: *Open in KLayout*
 covers them, with KLayout's own.
+
+## Phase 1, as built
+
+*6 October 2026.* The viewer of way 2, with way 1 in its menu.
+
+- **The library**: gdstk 1.0.1, its C++ library only, in `third_party/gdstk`
+  (`README.qucs.md` there), built statically with zlib on every platform.
+- **The code**: `qucs/layout.h/.cpp` reads a layout into Qucs-S's own
+  structures (cells of shapes, paths, texts and placements; repetitions kept
+  as repetitions), draws it and searches it; `qucs/layoutdoc.h/.cpp` is the
+  tab; `qucs/qucscontrol_layout.cpp` has Claude's three tools. About 4,200
+  lines (the estimate was 4-8k), and 1,100 of tests (`test_layout_doc`).
+- **As proposed**: the tab, read in the background with a progress bar and
+  a Cancel, read again when its file changes; the cell tree and the layer
+  list; colours from a `.lyp` beside the layout, else a palette; pan, zoom
+  about the pointer, *Fit*, levels of hierarchy with frames below them; a
+  ruler; a shape's details on a click; a cell found by name; `get_layout`,
+  `find_shapes` and `show_layout`.
+- **Otherwise than proposed**:
+  - The find bar is the layout's own, under its toolbar, as a PDF's is: the
+    schematic find bar (`findbar.h`) is a schematic's.
+  - *Open in KLayout* (way 1) is in the tab's ⋯ menu, when KLayout is
+    installed.
+  - Copy, a zoom box dragged with the right button, Shift for a ruler
+    across or up only, and printing what is in sight were added.
+
+**The open questions, answered:**
+
+- **Qhull's licence**: Qhull is not linked. gdstk used it for one function,
+  a convex hull the viewer never calls; it is a monotone chain of our own
+  instead.
+- **gdstk's OASIS reading**: a file KLayout 0.30.8 wrote - compressed blocks,
+  strict mode, its own repetitions, a property, a layer's name - is read as
+  KLayout counts it, layer for layer; it is a test's fixture
+  (`qucs/tests/data/klayout_sample.oas`). Damaged files were another matter:
+  fuzzing gdstk's readers found 15 ways a cut or changed file crashed them
+  (a null pointer written through, table numbers kept in pointers and freed,
+  counts allocated as given, records read as types they were not). Each is
+  fixed in our copy, and the test reads thousands of damaged files each run,
+  under the sanitizers in CI.
+- **Large files**: a million shapes read in 0.2 s and are drawn whole in
+  31 ms (a corner in 2 ms) on an M-series Mac. Everything is held in
+  memory, as said: files of several GB still need phase 2.
+- **Layer names**: from the file (OASIS LAYERNAME records) and from a
+  KLayout `.lyp`; a technology file (`.lyt`) is not read.
+

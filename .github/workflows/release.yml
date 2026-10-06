@@ -156,7 +156,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ninja-build flex bison gperf dos2unix gcc-12 g++-12 \
-            libglx-dev libgl1-mesa-dev libcups2-dev fuse wget
+            libglx-dev libgl1-mesa-dev libcups2-dev zlib1g-dev fuse wget
           # linuxdeploy runs as an AppImage: FUSE 2 is libfuse2t64 on 24.04
           sudo apt-get install -y --no-install-recommends libfuse2t64 \
             || sudo apt-get install -y --no-install-recommends libfuse2
@@ -344,7 +344,7 @@ jobs:
           update: true
           cache: true
           install: bison flex dos2unix curl zip p7zip
-          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p
+          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p zlib:p
 
       - name: Configure and build
         if: ${{ matrix.enabled }}

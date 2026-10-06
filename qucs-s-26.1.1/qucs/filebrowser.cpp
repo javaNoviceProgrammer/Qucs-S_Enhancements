@@ -133,6 +133,7 @@ const KindRow kKinds[] = {
     {"pdf", QT_TRANSLATE_NOOP("FileBrowser", "PDF document"), "PDF", 0xd93a2b, Kind::Text, false},
     {"png jpg jpeg gif bmp svg tif tiff webp ico icns", QT_TRANSLATE_NOOP("FileBrowser", "Image"), "", 0xd45d9c,
      Kind::Image, false},
+    {"gds gds2 gdsii oas oasis", QT_TRANSLATE_NOOP("FileBrowser", "Layout (GDSII, OASIS)"), "", 0x2f8f9d, Kind::Layout, true},
     {"zip tar gz tgz bz2 xz 7z rar", QT_TRANSLATE_NOOP("FileBrowser", "Archive"), "", 0x8a6d3b, Kind::Archive, false},
 };
 
@@ -282,6 +283,16 @@ void drawGlyph(QPainter& p, const QRectF& art, Kind::Glyph glyph, const QColor& 
         p.setBrush(colour);
         p.setPen(Qt::NoPen);
         p.drawEllipse(QPointF(l + w * 0.76, t + h * 0.26), h * 0.12, h * 0.12);
+        break;
+    }
+    case Kind::Layout: {
+        // Two layers of a layout, one over the other, hatched.
+        const QRectF lower(l, t + h * 0.35, w * 0.7, h * 0.65), upper(l + w * 0.3, t, w * 0.7, h * 0.65);
+        p.setBrush(QBrush(QColor(colour.red(), colour.green(), colour.blue(), 150), Qt::BDiagPattern));
+        p.drawRect(lower);
+        p.setBrush(QBrush(muted, Qt::FDiagPattern));
+        p.drawRect(upper);
+        p.setBrush(Qt::NoBrush);
         break;
     }
     case Kind::Archive: {

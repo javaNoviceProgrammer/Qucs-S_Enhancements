@@ -405,6 +405,11 @@ public:
   static bool isArchiveDocument(QWidget *);
   /// Whether a file of that name is an archive opened in a ZipDoc (.zip).
   static bool isArchiveFile(const QString &name);
+  /// Whether \a w is a GDSII or OASIS layout in a tab (layoutdoc.h).
+  static bool isLayoutDocument(QWidget *);
+  /// Whether a file of that name is a layout opened in a LayoutDoc (.gds,
+  /// .gds2, .gdsii, .gds.gz, .oas, .oasis).
+  static bool isLayoutFile(const QString &name);
   /// The schematic (or data display, or symbol) a tab holds; nullptr for
   /// a text or a PDF document.
   static Schematic *schematicIn(QWidget *);

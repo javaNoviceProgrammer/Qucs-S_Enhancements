@@ -45,7 +45,7 @@ class SortProxy;
 /// What a file is, as Qucs-S sees it: what it is called ("Qucs schematic"),
 /// the tag on its icon ("SCH"), the icon's colour and what is drawn on it.
 struct Kind {
-    enum Glyph { Page, Text, Schematic, Symbol, Plot, Table, Code, Image, Archive, Folder, Project };
+    enum Glyph { Page, Text, Schematic, Symbol, Plot, Table, Code, Image, Archive, Layout, Folder, Project };
     QString name;
     QString tag;
     QColor colour;

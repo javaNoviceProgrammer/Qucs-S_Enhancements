@@ -20,7 +20,9 @@
 #include <QPoint>
 #include <QPointer>
 
+#include <functional>
 #include <list>
+#include <memory>
 #include <optional>
 
 class Component;
@@ -30,6 +32,10 @@ class QucsApp;
 class QucsDoc;
 class Schematic;
 class TextDoc;
+class LayoutDoc;
+namespace qucs_s::layout {
+struct Layout;
+}
 class QWidget;
 class QTabWidget;
 
@@ -390,6 +396,15 @@ private:
     double measureRun(const QJsonObject& spec, const QJsonObject& simulated, const QString& path, const QJsonObject& args,
                       QString* used, QString* why);
     QJsonObject readPdf(const QJsonObject& args);
+    /// GDSII and OASIS layouts (qucscontrol_layout.cpp): the layout of
+    /// args' 'path' (the tab in front's when not given) - its tab's, one
+    /// read before and unchanged, or read now in the background - to
+    /// \a then, with its tab when it has one; \a open opens it in one.
+    void withLayout(const QJsonObject& args, bool open,
+                    std::function<void(std::shared_ptr<const qucs_s::layout::Layout>, LayoutDoc*)> then, const Done& done);
+    void getLayout(const QJsonObject& args, const Done& done);
+    void findShapes(const QJsonObject& args, const Done& done);
+    void showLayout(const QJsonObject& args, const Done& done);
     QJsonObject undoHistory(const QJsonObject& args);
     QJsonObject newProject(const QJsonObject& args);
     QJsonObject openProject(const QJsonObject& args);
