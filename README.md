@@ -173,7 +173,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   with unsaved changes is compiled as saved, and the log says so. *Check
   Schematic* warns about a Verilog-A component whose module is in no
   library and no source of the project.
-- **Libraries that bring their Verilog-A**: *Tools → Create Library*
+- **Libraries that bring their Verilog-A**: *Project → Create Library*
   copies the Verilog-A sources (`.va`) its subcircuits use into the
   library's folder (`user_lib/NAME/`, beside `NAME.lib`), listed with the
   component: those that define the modules their `.model` cards name, and
@@ -560,7 +560,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Ctrl-C when you allow that too. `get_settings` and `set_settings` read
   and set Application Settings, Simulators Settings, CDL Settings and a
   document's own by typed keys ("Tab/Label": a text, a choice and its
-  choices, a number and its range) - `get_settings` only some, by key
+  choices, a number and its range; a check box with no text of its own
+  by the label of its row, "Settings/Ground pin (gnd) in exported
+  subcircuits", not its tool tip) - `get_settings` only some, by key
   (`Locations/*`) or by a word in key, value or choices, across the
   three when no scope is given: set through the dialog's own OK, so
   what the window does after it is done, each change told with what it
@@ -1620,7 +1622,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   a subcircuit's devices under it), every parameter ngspice gives, a
   filter (`gm` shows every device's gm, `T1` all of T1), *Copy* for a
   spreadsheet, and a click that selects the component. Nothing extra to
-  set up: the DC bias run asks ngspice for it (`show all`).
+  set up: the DC bias run asks ngspice for it (`show all`). A run that
+  fails shows none of it: the devices of the run before are forgotten as
+  a DC bias run starts (they were listed after a failure as if they were
+  its own, by the list and by Claude's `simulate`, whose answer now says
+  the run failed and no bias is shown).
 - **Optimization with ngspice** (upstream #1327): the *Optimization*
   component is no longer qucsator-only. Place it beside an ngspice
   simulation, list its variables (initial value, bounds, a linear or

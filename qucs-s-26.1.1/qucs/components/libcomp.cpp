@@ -449,10 +449,11 @@ const LibraryRead& readLibrary(const QString& libraryFile)
         const qsizetype spice = definition.indexOf(QLatin1String("<Spice>"));
         if (spice >= 0) {
           const qsizetype spiceEnd = definition.indexOf(QLatin1String("</Spice>"), spice);
-          // The subcircuit a part names: the library's name and the component's
-          // (createType()).
+          // The subcircuit a part names (createType()): by the library's
+          // name - a part's Lib is that, or the library's path without
+          // ".lib" - and the component's.
           part.pins = subcircuitPins(definition.mid(spice + 7, spiceEnd < 0 ? -1 : spiceEnd - spice - 7),
-                                     misc::properName(info.completeBaseName() + QLatin1Char('_') + name));
+                                     LibComp::subcircuitName(info.completeBaseName(), name));
         }
         if (!read.parts.contains(name)) read.order << name;
         read.parts.insert(name, part);
@@ -475,7 +476,10 @@ bool LibComp::takesGround(const QString& libraryFile, const QString& comp, int p
   // No SPICE model (its Qucs model made one), or no .SUBCKT in it: as it
   // always was.
   if (it == read.parts.constEnd() || it->pins.isEmpty()) return true;
+  // The part's pins and no more: no ground pin.
   if (it->pins.size() == pins) return false;
+  // One more - gnd, as Create Library writes it - or a count that fits
+  // neither, whose netlist no simulator takes either way: as it always was.
   return true;
 }
 
@@ -563,8 +567,12 @@ bool LibComp::createSubNetlist(QTextStream *stream, QStringList &FileList,
 // -------------------------------------------------------
 QString LibComp::createType()
 {
-  QString Type = misc::properFileName(Props.at(0)->Value);
-  return misc::properName(Type + "_" + Props.at(1)->Value);
+  return subcircuitName(Props.at(0)->Value, Props.at(1)->Value);
+}
+
+QString LibComp::subcircuitName(const QString& lib, const QString& comp)
+{
+  return misc::properName(misc::properFileName(lib) + "_" + comp);
 }
 
 // -------------------------------------------------------

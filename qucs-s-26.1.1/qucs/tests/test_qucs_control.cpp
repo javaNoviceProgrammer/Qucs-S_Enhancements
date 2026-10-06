@@ -2284,6 +2284,15 @@ private slots:
         QVERIFY2(diode, qPrintable(text(r)));
         QVERIFY(!QFileInfo::exists(dataset));   // its datasets as they were
         QVERIFY2(outcome.value("analysis").toString().contains("operating point"), qPrintable(text(r)));
+        // One that fails: none of the run before is told as its own - its
+        // devices were listed - and it says it failed, no bias shown.
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "{nosuchparam}"}}}})));
+        r = call("simulate", {{"operating_point", true}, {"timeout", 60}}, 90000);
+        QucsSettings.NgspiceExecutable = ngspice;
+        QVERIFY2(!json(r).toObject().value("succeeded").toBool(true), qPrintable(text(r)));
+        QVERIFY2(!json(r).toObject().contains("operating point"), qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("analysis").toString().contains("it failed, so the schematic shows no bias"), qPrintable(text(r)));
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "1k"}}}})));
         // The next run is its analyses.
         r = call("simulate", {{"timeout", 60}}, 90000);
         QucsSettings.NgspiceExecutable = before;
@@ -5914,6 +5923,12 @@ private slots:
             aBool = aBool || o.value("type").toString() == "bool";
         }
         QVERIFY(aChoice && anInteger && aBool);
+        // A check box with no text of its own: named by its row's label, not
+        // its tool tip (a paragraph was the key).
+        for (const char* key : {"Settings/Ground pin (gnd) in exported subcircuits", "Settings/Embed Verilog-A files in exported libraries",
+                                "Settings/Load documents from future versions", "Appearance/Lock the toolbars"})
+            QVERIFY2(app.contains(key) && app.value(key).value("type").toString() == "bool", key);
+        for (const QString& key : app.keys()) QVERIFY2(!key.contains("Create Library"), qPrintable(key));
         r = call("get_settings", {{"scope", "simulators"}});
         QHash<QString, QJsonObject> sims;
         for (const QJsonValue& v : json(r).toObject().value("settings").toArray()) sims.insert(v.toObject().value("key").toString(), v.toObject());

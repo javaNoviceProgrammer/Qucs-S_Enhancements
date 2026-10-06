@@ -103,6 +103,7 @@ protected:
     virtual QSet<QString> getActiveLabelledNets(spicecompat::SpiceDialect dialect = spicecompat::SPICEDefault);
     QSet<QString> getValidNets(spicecompat::SpiceDialect dialect = spicecompat::SPICEDefault);
     void removeAllSimulatorOutputs();
+    void forgetOperatingPoint();
     bool checkGround();
     bool checkSimulations();
     bool checkDCSimulation();

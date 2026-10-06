@@ -356,6 +356,27 @@ bool copyFresh(const QString& from, const QString& to, bool ours, bool* made)
 
 } // namespace
 
+namespace {
+// The modules of a Verilog-A source (vamodule::sourceModules()), each file
+// read again only when it changed.
+QStringList sourceModulesOf(const QString& file)
+{
+    struct Read {
+        QDateTime modified;
+        qint64 size = -1;
+        QStringList modules;
+    };
+    static QHash<QString, Read> known;
+    const QFileInfo info(file);
+    auto it = known.find(file);
+    if (it != known.end() && it->modified == info.lastModified() && it->size == info.size()) return it->modules;
+    Read read{info.lastModified(), info.size(), {}};
+    QFile f(file);
+    if (f.open(QIODevice::ReadOnly)) read.modules = qucs_s::vamodule::sourceModules(QString::fromUtf8(f.readAll()));
+    return known.insert(file, read)->modules;
+}
+} // namespace
+
 QSet<QString> alwaysLoadedModules(const QString& projectDir)
 {
     QSet<QString> modules;
@@ -365,12 +386,8 @@ QSet<QString> alwaysLoadedModules(const QString& projectDir)
         for (const QString& comp : LibComp::alwaysLoaded(libraryFile))
             for (const QString& file : LibComp::verilogAFilesOf(libraryFile, comp)) {
                 QStringList names;
-                if (file.endsWith(QLatin1String(".va"), Qt::CaseInsensitive)) {
-                    QFile f(file);
-                    if (f.open(QIODevice::ReadOnly)) names = qucs_s::vamodule::sourceModules(QString::fromUtf8(f.readAll()));
-                } else if (file.endsWith(QLatin1String(".osdi"), Qt::CaseInsensitive)) {
-                    names = osdi::modulesOf(file);
-                }
+                if (file.endsWith(QLatin1String(".va"), Qt::CaseInsensitive)) names = sourceModulesOf(file);
+                else if (file.endsWith(QLatin1String(".osdi"), Qt::CaseInsensitive)) names = osdi::modulesOf(file);
                 for (const QString& name : std::as_const(names)) modules.insert(name.toLower());
             }
     };

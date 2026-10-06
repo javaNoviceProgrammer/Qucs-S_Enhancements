@@ -215,7 +215,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     appSettingsGrid->addWidget(new QLabel(tr("Embed Verilog-A files in exported libraries:"), appSettingsTab), 15, 0);
     embedVerilogA = new QCheckBox(appSettingsTab);
     embedVerilogA->setObjectName(QStringLiteral("embedVerilogA"));
-    embedVerilogA->setToolTip(tr("Tools > Create Library copies the Verilog-A sources (.va) its subcircuits "
+    embedVerilogA->setToolTip(tr("Project > Create Library copies the Verilog-A sources (.va) its subcircuits "
                                  "use, and the files they include, into the library's folder. Where the "
                                  "library is used, OpenVAF compiles them before the first simulation - beside "
                                  "them, or into Qucs-S's cache when the library's folder cannot be written: a "
@@ -226,7 +226,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     appSettingsGrid->addWidget(new QLabel(tr("Ground pin (gnd) in exported subcircuits:"), appSettingsTab), 16, 0);
     libraryGroundPin = new QCheckBox(appSettingsTab);
     libraryGroundPin->setObjectName(QStringLiteral("libraryGroundPin"));
-    libraryGroundPin->setToolTip(tr("Tools > Create Library gives each subcircuit's SPICE model (.SUBCKT) a "
+    libraryGroundPin->setToolTip(tr("Project > Create Library gives each subcircuit's SPICE model (.SUBCKT) a "
                                     "first pin, gnd, that a part placed from the library ties to the "
                                     "circuit's ground. Nothing inside the subcircuit needs it - its ground is "
                                     "the circuit's - and another program reading the library sees a pin too "

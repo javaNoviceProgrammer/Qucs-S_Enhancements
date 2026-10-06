@@ -1786,6 +1786,19 @@ void AbstractSpiceKernel::removeAllSimulatorOutputs()
     dir.setFilter(QDir::Files);
     foreach(QString file, dir.entryList())
         dir.remove(file);
+    forgetOperatingPoint();
+}
+
+/*!
+ * \brief AbstractSpiceKernel::forgetOperatingPoint A DC bias run's devices are
+ *        its own or none: those of the run before, kept in the schematic,
+ *        were read after a run that failed - which reads none - as if they
+ *        were its (Claude's simulate listed them, the Operating Point tab
+ *        showed them). Called as a DC bias run starts.
+ */
+void AbstractSpiceKernel::forgetOperatingPoint()
+{
+    if (a_DC_OP_only && a_schematic != nullptr) a_schematic->setOperatingPoint({});
 }
 
 /*!

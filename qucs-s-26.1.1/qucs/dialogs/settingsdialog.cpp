@@ -182,7 +182,7 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     t->addTab(Tab3, tr("Frame"));
 
     // ...........................................................
-    // As a library part (Tools > Create Library).
+    // As a library part (Project > Create Library).
     QWidget *Tab4 = new QWidget(t);
     QVBoxLayout *gp4 = new QVBoxLayout(Tab4);
     Check_AlwaysLoadOSDI = new QCheckBox(tr("Always load its Verilog-A (OSDI) in the project's circuits"), Tab4);
