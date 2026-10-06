@@ -68,6 +68,21 @@ value that is no number (`nan`, `inf`) is refused.
 | `line_calc` | Line calculation's window is filled in, in metres, hertz, ohms and degrees, and Analyze or Synthesize is pressed. A small public API was added: `propertyNames`, `unitsOf`, `solveFor`, `analyze`, `synthesize`, `results`. The wishlist's test, 50 Ω microstrip on FR4 (εr 4.4, h 1.6 mm, 35 µm) at 2.4 GHz: **W = 3.028 mm**. It is the window's own calculation, so it matches the window; analyzed back, it gives 50 Ω within 0.5 %. |
 | `receiver_budget` | RxCalc's `System` and `Stage`. An IP3 or P1dB not given is +100 dBm, no limit, and is said. The cascade's noise figure is Friis's, checked to 0.01 dB. **Found by the ASan run**: `Stage`'s constructor read its IP3 and P1dB priorities before they were set; UBSan saw "a value no `priority` is". The members now have default values. |
 
+**Found when checking the DMG**: the packaged app, opened from the
+repository's `bin/macos/apple-silicon`, found none of the programs: "No
+attenuator: qucs-sattenuator ... is not in this build" (looked for in
+`Contents/MacOS`). They are in `Contents/MacOS/bin`. `main()` took the
+programs' folder (`BinDir`) to be the application's own folder whenever its
+path held "bin" anywhere. That included a folder of that name above the
+bundle, or a user called robin. The same fault kept Tools' own menu from
+starting them from such a place. `db1a289` had fixed it for the resources'
+folder, not for this one. It is now `misc::binDirOf`: the application's own
+folder only when that folder is `bin` (a prefix install). From the same DMG
+copy, `synthesize_attenuator` then placed its pi attenuator. The programs'
+own `main()`s cut their path at the first `/bin` the same way, but only for
+their translations' folder, which `--json` does not use; that is left as it
+was.
+
 ## 4. Placing parts without a rotation table
 
 `add_component` and `edit_component` take **`pin1`** (`top`, `bottom`,
@@ -110,7 +125,7 @@ alpha's").
 
 ## Tests
 
-- **`test_wishlist_tools`** (new, 19 functions). Section 3:
+- **`test_wishlist_tools`** (new, 20 functions). Section 3:
   - `aKeptRunsEquationIsMeasured`;
   - `aKeptRunsEyeIsFoldedAtItsSource`;
   - `settingsAreFoundByKeyAndWord`.
@@ -130,6 +145,7 @@ alpha's").
   - `aCombinerIsSynthesized`;
   - `aLineIsCalculated`;
   - `aReceiverBudgetIsCalculated`;
+  - `theProgramsAreFoundWhereverTheAppIs`: a bundle under a `bin`, a user called robin, a prefix install;
   - `aDesignGoesIntoAnOpenSchematic`.
 
   Section 5:
@@ -148,7 +164,7 @@ alpha's").
 - **`scripts/ci/check-tool-arguments.py`**: `receiver_budget`'s stages are
   read by `stageSpec`.
 
-**76 breaks, 75 caught.** The one not caught is taking the texts that will
+**77 breaks, 76 caught.** The one not caught is taking the texts that will
 move out of `arrange`'s obstacles. Without it, one text that moves can avoid
 another's old place, which only matters when two moving texts compete for
 the same spot. Breaks not caught at first, and what came of them:
@@ -178,12 +194,12 @@ the same spot. Breaks not caught at first, and what came of them:
   The dependency had been added before the programs' targets existed, and is
   now in the top `CMakeLists.txt`.
 
-The full suite passes, 89 of 89; under ASan, 89 of 89 with no report. A
-last ASan run, after the final tidying, had 87 of 89 under load. The two
-that failed are outside this work: `test_status_bar` waits 5 s for a fake
-ngspice's version, and `test_claude_git` reads a detached head's status.
-Both passed when run again on their own, and neither run reported anything. The
-scenario script passes 97 of 97 (s1 to s13; s7 with `project1_prj`). The
+The full suite passes, 89 of 89; under ASan, 89 of 89 with no report. One
+ASan run at six tests at a time had 87 of 89. The two that failed are
+outside this work: `test_status_bar` waits 5 s for a fake ngspice's
+version, and `test_claude_git` reads a detached head's status. Both passed
+on their own, and the whole suite again at four at a time, with nothing
+reported. The scenario script passes 97 of 97. The
 user's `~/QucsWorkspace` and `~/Library/Caches/qucs-s` are as they were
 before the final runs, checked against a marker file.
 

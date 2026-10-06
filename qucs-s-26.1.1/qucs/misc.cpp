@@ -595,6 +595,13 @@ QString misc::scratchDir()
   return QucsSettings.S4Qworkdir;
 }
 
+QString misc::binDirOf(const QString& applicationDir, const QDir& qucsDir)
+{
+  if (QDir(applicationDir).dirName() == QLatin1String("bin"))
+    return applicationDir + QDir::separator();
+  return qucsDir.absoluteFilePath("bin/");
+}
+
 QString misc::cacheDir()
 {
   // (A test's own: nothing of its goes into the user's caches.)
