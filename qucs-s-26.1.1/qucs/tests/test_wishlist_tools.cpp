@@ -600,6 +600,13 @@ private slots:
         QVERIFY2(failed(r) && text(r).contains("not unconditionally stable (K ="), qPrintable(text(r)));
         if (!withNgspice()) QSKIP("no ngspice here: designed, not simulated");
         r = call("simulate", {{"path", "match.sch"}});
+        // Stock ngspice runs no S-parameter analysis of one port: 42 stops
+        // ("can't allocate -8 bytes"), 44 and later refuse it ("Only one RF
+        // Port is found, we need at least two!"). An ngspice that takes one
+        // (the enhanced one) runs it.
+        const QString last = json(r).value("last lines").toString();
+        if (!json(r).value("succeeded").toBool() && (last.contains("Only one RF Port") || last.contains("can't allocate -8 bytes")))
+            QSKIP("this ngspice runs no S-parameter analysis of one port");
         QVERIFY2(json(r).value("succeeded").toBool(), qPrintable(text(r)));
         const double s11 = at("match.sch", "S11_dB", 9e8);
         QVERIFY2(s11 < -20.0, qPrintable(QString::number(s11)));
