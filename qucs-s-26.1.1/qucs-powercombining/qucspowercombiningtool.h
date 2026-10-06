@@ -82,6 +82,10 @@ class QucsPowerCombiningTool : public QMainWindow
 public:
      QucsPowerCombiningTool();
     ~QucsPowerCombiningTool();
+     /// Generate, as its button does: the schematic it would put into the
+     /// clipboard - put there only when not \a quiet (--json); empty when
+     /// none could be made.
+     QString generate(bool quiet);
      QLabel *NLabel,*RefImp,*FreqLabel,*K1Label, *K1LabeldB, *RelPermlabel, *SubstrateHeightlabel, *SubstrateMMlabel, *ThicknessLabel,
             *ThicknessumLabel, *MinWidthLabel, *MinWidthmmLabel, *MaxWidthLabel, *MaxWidthmmLabel, *tanDLabel,
             *ResistivityLabel, *RoughnessLabel,*TopoLabel, *OhmLabel, *NStagesLabel, *AlphaLabel, *AlphadBLabel, *UnitsLabel;
@@ -108,6 +112,10 @@ private slots:
      void on_IdealTLRadioButton_clicked();
 
 private:
+    QString generated;
+    bool quiet = false;
+    /// The schematic made: kept, and into the clipboard unless quiet.
+    void deliver(const QString& s);
     double getScaleFreq();
     void getMicrostrip(double Z0, double freq, tSubstrate *substrate, double &width, double &er_eff);
     QString ConvertLengthFromM(double);

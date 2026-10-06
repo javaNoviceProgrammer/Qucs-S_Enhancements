@@ -1556,7 +1556,7 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
                           {QStringLiteral("jitter, rms"), rounded(one.jitterRms)},
                           {QStringLiteral("threshold"), rounded(one.threshold)},
                           {QStringLiteral("crossings"), one.crossings}};
-            if (std::isfinite(one.q)) j.insert(QStringLiteral("Q"), rounded(one.q));
+            eye::insertQ(j, one);
             return j;
         };
         QJsonObject r = eyeJson(*worst);

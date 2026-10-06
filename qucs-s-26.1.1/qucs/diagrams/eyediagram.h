@@ -97,6 +97,9 @@ private:
   /// diagram's coordinates (origin at the lower left corner, y downwards).
   QRectF boxRect(const QFontMetricsF& metrics) const;
   QImage render(const QSize& pixels) const;
+  /// The width, in pixels of a picture \a pixelsWide across, \a g's
+  /// traces are counted in when drawn as a density: its thickness.
+  int brushPixels(const Graph* g, int pixelsWide) const;
   void paintMarks(QPainter* painter) const;
   void analyse();
 

@@ -154,6 +154,17 @@ public:
   void    setMode (QString);
   static  int translateUnit(const char *, int);
 
+  // For --json: the line type's properties by name, each with the units
+  // it is given in (the first is the kind: mil for lengths, GHz, Ohm,
+  // Deg; NA for a number); which physical value synthesis solves for;
+  // Analyze and Synthesize (0 when they converge); the results' lines.
+  QStringList propertyNames ();
+  QStringList unitsOf (QString);
+  bool    solveFor (QString);
+  int     analyze ();
+  int     synthesize ();
+  QList<QPair<QString, QString>> results ();
+
 private slots:
   void slotAbout();
   void slotQuit();

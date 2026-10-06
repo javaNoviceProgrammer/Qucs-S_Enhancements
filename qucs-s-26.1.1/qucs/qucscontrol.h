@@ -55,6 +55,12 @@ class QucsControl : public QObject, public qucs_s::claude::ToolHost
 
 public:
     explicit QucsControl(QucsApp* app);
+    /// A design's schematic text placed as its paste places it: in the
+    /// schematic 'path' names at 'x', 'y' (below what is there when not
+    /// given), or in a new schematic (saved as 'save_as'). What was placed,
+    /// for the answer; empty, and why in \a error, when it could not be.
+    /// (The synthesis tools'; the tests' too.)
+    QJsonObject placeDesign(const QJsonObject& args, const QString& text, QString* error);
 
     QString serverName() const override { return QStringLiteral("qucs"); }
     QJsonArray tools() const override;
@@ -263,6 +269,7 @@ private:
     QJsonObject remove(const QJsonObject& args);
     QJsonObject moveGroup(const QJsonObject& args);
     /// arrange: the schematic laid out again by signal flow, every net kept.
+    QJsonObject arrangeTexts(Schematic* sch);
     QJsonObject arrange(const QJsonObject& args);
     QJsonObject addAnalysis(const QJsonObject& args);
     /// \a expressions (db(v(out))) as variables of a NutmegEq run after the
@@ -359,6 +366,20 @@ private:
     QString refusedAction(QAction* action) const;
     // The help this build has (qucscontrol_help.cpp).
     QJsonObject readHelp(const QJsonObject& args);
+    /// read_help's 'manual': the online manual's text, fetched once into the
+    /// cache, searched by section or a page given whole.
+    QJsonObject readManual(const QJsonObject& args);
+    // The Tools menu's synthesis and calculation programs.
+    QJsonObject synthesizeFilter(const QJsonObject& args);
+    QJsonObject synthesizeAttenuator(const QJsonObject& args);
+    QJsonObject synthesizeMatching(const QJsonObject& args);
+    QJsonObject synthesizePowerCombiner(const QJsonObject& args);
+    QJsonObject lineCalc(const QJsonObject& args);
+    QJsonObject receiverBudget(const QJsonObject& args);
+    /// One of those programs run with --json: \a spec in, its answer out
+    /// (empty, and why in \a error, when it gave none or an error).
+    QJsonObject runToolProgram(const QString& program, const QJsonObject& spec, QString* error);
+
     void buildVerilogA(const QJsonObject& args, const Done& done);
     void tune(const QJsonObject& args, const Done& done);
     /// tune with several knobs, for as many targets.

@@ -14,6 +14,8 @@
 #endif
 
 #include "attenuatorfunc.h"
+#include "qucsattenuator.h"
+#include "../qucs/extsimkernels/spicecompat.h"
 
 #include <QString>
 
@@ -188,6 +190,21 @@ int QUCS_Att::Calc(tagATT *ATT)
 }
 
 //This function creates the schematic. It receives the attenuator resistor values (tagATT * ATT) and bool flag to include a S-parameter box in the schematic
+// The S-parameters in dB, an equation block at x, y, as the simulator in
+// the settings reads them: Qucsator's S[2,1] (and with none set), ngspice's
+// S_2_1 in a Nutmeg equation - an Eqn's S[2,1] was a .PARAM ngspice
+// refused; none for the others.
+static QString spEquations(int x, int y)
+{
+  if (QucsSettings.DefaultSimulator == spicecompat::simNgspice)
+    return QStringLiteral("<NutmegEq NutmegEq1 1 %1 %2 -32 19 0 0 \"SP1\" 1 \"S21_dB=dB(S_2_1)\" 1 \"S11_dB=dB(S_1_1)\" 1 "
+                          "\"S22_dB=dB(S_2_2)\" 1>\n").arg(x).arg(y);
+  if (QucsSettings.DefaultSimulator == spicecompat::simXyce || QucsSettings.DefaultSimulator == spicecompat::simSpiceOpus)
+    return QString();
+  return QStringLiteral("<Eqn Eqn1 1 %1 %2 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 "
+                        "\"yes\" 0>\n").arg(x).arg(y);
+}
+
 QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
 {
   // create the Qucs schematic
@@ -213,7 +230,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
          *s += "<.SP SP1 1 140 350 0 83 0 0 \"lin\" 1 \"50 MHz\" 1 \"3 GHz\" 1 \"200\" 1 \"no\" 0 \"1\" 0 \"2\" 0 \"no\" 0 \"no\" 0>\n";
 
          // Equations
-         *s += "<Eqn Eqn1 1 360 350 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n";
+         *s += spEquations(360, 350);
 
          // Input term
          *s += QStringLiteral("<Pac P1 1 50 200 18 -26 0 1 \"1\" 1 \"%1 Ohm\" 1 \"0 dBm\" 0 \"1 GHz\" 0 \"26.85\" 0>\n").arg(ATT->Zin);
@@ -268,7 +285,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
         *s += "<.SP SP1 1 140 350 0 83 0 0 \"lin\" 1 \"50 MHz\" 1 \"3 GHz\" 1 \"200\" 1 \"no\" 0 \"1\" 0 \"2\" 0 \"no\" 0 \"no\" 0>\n";
 
         // Equations
-        *s += "<Eqn Eqn1 1 360 350 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n";
+        *s += spEquations(360, 350);
 
         // Input term
         *s += QStringLiteral("<Pac P1 1 70 200 18 -26 0 1 \"1\" 1 \"%1 Ohm\" 1 \"0 dBm\" 0 \"1 GHz\" 0 \"26.85\" 0>\n").arg(ATT->Zin);
@@ -323,7 +340,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
         *s += "<.SP SP1 1 140 350 0 83 0 0 \"lin\" 1 \"50 MHz\" 1 \"3 GHz\" 1 \"200\" 1 \"no\" 0 \"1\" 0 \"2\" 0 \"no\" 0 \"no\" 0>\n";
 
         // Equations
-        *s += "<Eqn Eqn1 1 360 350 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n";
+        *s += spEquations(360, 350);
 
         // Input term
         *s += QStringLiteral("<Pac P1 1 50 200 -100 -26 0 1 \"1\" 1 \"%1 Ohm\" 1 \"0 dBm\" 0 \"1 GHz\" 0 \"26.85\" 0>\n").arg(ATT->Zin);
@@ -381,7 +398,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
           *s += QStringLiteral("<.SP SP1 1 80 400 0 83 0 0 \"lin\" 1 \"50 MHz\" 1 \"3 GHz\" 1 \"200\" 1 \"no\" 0 \"1\" 0 \"2\" 0 \"no\" 0 \"no\" 0>\n");
 
           // Equations
-          *s += "<Eqn Eqn1 1 300 400 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n";
+          *s += spEquations(300, 400);
 
           // Input term
           *s += QStringLiteral("<Pac P1 1 50 200 -100 -26 0 1 \"1\" 1 \"%1 Ohm\" 1 \"0 dBm\" 0 \"1 GHz\" 0 \"26.85\" 0>\n").arg(ATT->Zin);
@@ -462,7 +479,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
           *s += QStringLiteral("<.SP SP1 1 100 270 0 83 0 0 \"lin\" 1 \"%1 MHz\" 1 \"%2 MHz\" 1 \"200\" 1 \"no\" 0 \"1\" 0 \"2\" 0 \"no\" 0 \"no\" 0>\n").arg(freq_start).arg(freq_stop);
 
           // Equations
-          *s += "<Eqn Eqn1 1 320 270 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n";
+          *s += spEquations(320, 270);
 
           // Input term
           *s += QStringLiteral("<Pac P1 1 0 150 -100 -26 0 1 \"1\" 1 \"%1 Ohm\" 1 \"0 dBm\" 0 \"1 GHz\" 0 \"26.85\" 0>\n").arg(ATT->Zin);
@@ -543,7 +560,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
            *s += QStringLiteral("<.SP SP1 1 100 270 0 83 0 0 \"lin\" 1 \"%1 MHz\" 1 \"%2 MHz\" 1 \"200\" 1 \"no\" 0 \"1\" 0 \"2\" 0 \"no\" 0 \"no\" 0>\n").arg(freq_start).arg(freq_stop);
 
            // Equations
-           *s += "<Eqn Eqn1 1 320 270 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n";
+           *s += spEquations(320, 270);
 
            // Input term
            *s += QStringLiteral("<Pac P1 1 0 150 -100 -26 0 1 \"1\" 1 \"%1 Ohm\" 1 \"0 dBm\" 0 \"1 GHz\" 0 \"26.85\" 0>\n").arg(ATT->Zin);
@@ -618,7 +635,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
              *s += "<.SP SP1 1 140 350 0 83 0 0 \"lin\" 1 \"50 MHz\" 1 \"3 GHz\" 1 \"200\" 1 \"no\" 0 \"1\" 0 \"2\" 0 \"no\" 0 \"no\" 0>\n";
 
              // Equations
-             *s += "<Eqn Eqn1 1 360 350 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n";
+             *s += spEquations(360, 350);
 
              // Input term
              *s += QStringLiteral("<Pac P1 1 50 200 18 -26 0 1 \"1\" 1 \"%1 Ohm\" 1 \"0 dBm\" 0 \"1 GHz\" 0 \"26.85\" 0>\n").arg(ATT->Zin);
@@ -672,7 +689,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
              *s += "<.SP SP1 1 140 350 0 83 0 0 \"lin\" 1 \"50 MHz\" 1 \"3 GHz\" 1 \"200\" 1 \"no\" 0 \"1\" 0 \"2\" 0 \"no\" 0 \"no\" 0>\n";
 
              // Equations
-             *s += "<Eqn Eqn1 1 360 350 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n";
+             *s += spEquations(360, 350);
 
              // Input term
              *s += QStringLiteral("<Pac P1 1 50 200 18 -26 0 1 \"1\" 1 \"%1 Ohm\" 1 \"0 dBm\" 0 \"1 GHz\" 0 \"26.85\" 0>\n").arg(ATT->Zin);
@@ -722,7 +739,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
          *s += "<.SP SP1 1 140 350 0 83 0 0 \"lin\" 1 \"50 MHz\" 1 \"3 GHz\" 1 \"200\" 1 \"no\" 0 \"1\" 0 \"2\" 0 \"no\" 0 \"no\" 0>\n";
 
          // Equations
-         *s += "<Eqn Eqn1 1 360 350 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n";
+         *s += spEquations(360, 350);
 
          // Input term
          *s += QStringLiteral("<Pac P1 1 50 200 18 -26 0 1 \"1\" 1 \"%1 Ohm\" 1 \"0 dBm\" 0 \"1 GHz\" 0 \"26.85\" 0>\n").arg(ATT->Zin);
@@ -775,7 +792,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
            *s += "<.SP SP1 1 140 350 0 83 0 0 \"lin\" 1 \"50 MHz\" 1 \"3 GHz\" 1 \"200\" 1 \"no\" 0 \"1\" 0 \"2\" 0 \"no\" 0 \"no\" 0>\n";
 
            // Equations
-           *s += "<Eqn Eqn1 1 360 350 -32 19 0 0 \"S21_dB=dB(S[2,1])\" 1 \"S11_dB=dB(S[1,1])\" 1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n";
+           *s += spEquations(360, 350);
 
            // Input term
            *s += QStringLiteral("<Pac P1 1 50 200 18 -26 0 1 \"1\" 1 \"%1 Ohm\" 1 \"0 dBm\" 0 \"1 GHz\" 0 \"26.85\" 0>\n").arg(ATT->Zin);

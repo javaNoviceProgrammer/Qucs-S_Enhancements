@@ -209,6 +209,14 @@ bool Schematic::pasteFromClipboard(QTextStream *stream, std::list<Element*> *pe)
   }
 
   // If no image in clipboard, proceed with normal text-based clipboard processing
+  return pasteText(stream, pe);
+}
+
+// -------------------------------------------------------------
+// The elements of a schematic's text as copied (<Qucs Schematic VERSION>,
+// then its fields): what a paste puts down, the system clipboard aside.
+bool Schematic::pasteText(QTextStream *stream, std::list<Element*> *pe)
+{
   QString Line;
   Line = stream->readLine();
   if(Line.left(16) != "<Qucs Schematic ")   // wrong file type ?

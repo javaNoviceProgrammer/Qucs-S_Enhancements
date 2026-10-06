@@ -122,18 +122,65 @@ bool clipped(double& x0, double& y0, double& x1, double& y1, double w, double h)
     return true;
 }
 
+// A trace's brush on the pixels it is counted in: a pixel wide, or a
+// disc of its thickness - each pixel then counted once a window (the
+// window's number marked in it).
+struct Brush {
+    int width = 1;
+    QVector<QPoint> disc;          // its pixels, from its centre (width > 1)
+    QVector<quint32> stamp;        // the window each pixel was last counted for
+    quint32 window = 0;
+
+    Brush(int pixels, int w, int h) : width(std::clamp(pixels, 1, 15))
+    {
+        if (width == 1) return;
+        const int lo = -(width - 1) / 2, hi = lo + width - 1;
+        const double c = (lo + hi) / 2.0, r = width / 2.0;
+        for (int dy = lo; dy <= hi; ++dy)
+            for (int dx = lo; dx <= hi; ++dx)
+                if ((dx - c) * (dx - c) + (dy - c) * (dy - c) <= r * r) disc << QPoint(dx, dy);
+        stamp.fill(0, qsizetype(w) * h);
+    }
+    void next() { ++window; }
+};
+
 // Each pixel the segment a-b of a trace passes counted once: \a last is
 // the one the trace was last counted in. (Many points close together - a
 // simulator steps short at each corner of its sources - are one pass.)
-void accumulate(QVector<float>& hits, int w, int h, QPointF a, QPointF b, qsizetype& last)
+// With a brush wider than a pixel, the pixels it covers, each once a
+// window.
+void accumulate(QVector<float>& hits, int w, int h, QPointF a, QPointF b, qsizetype& last, Brush& brush)
 {
     double x0 = a.x(), y0 = a.y(), x1 = b.x(), y1 = b.y();
     if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) || !std::isfinite(y1)) return;
-    if (!clipped(x0, y0, x1, y1, w, h)) return;
+    if (brush.width > 1) {
+        // (Its centre may be off the picture while its edge is on.)
+        const double m = brush.width / 2.0;
+        x0 += m, y0 += m, x1 += m, y1 += m;
+        if (!clipped(x0, y0, x1, y1, w + 2 * m, h + 2 * m)) return;
+        x0 -= m, y0 -= m, x1 -= m, y1 -= m;
+    } else if (!clipped(x0, y0, x1, y1, w, h)) {
+        return;
+    }
     const double dx = x1 - x0, dy = y1 - y0;
     const int steps = std::max(1, int(std::ceil(std::max(std::abs(dx), std::abs(dy)))));
     for (int k = 0; k < steps; ++k) {
         const double t = double(k) / steps;
+        if (brush.width > 1) {
+            const int xi = int(std::floor(x0 + t * dx)), yi = int(std::floor(y0 + t * dy));
+            const qsizetype centre = qsizetype(yi) * (w + 64) + xi;   // (off the picture too)
+            if (centre == last) continue;
+            last = centre;
+            for (const QPoint& o : std::as_const(brush.disc)) {
+                const int px = xi + o.x(), py = yi + o.y();
+                if (px < 0 || py < 0 || px >= w || py >= h) continue;
+                const qsizetype at = qsizetype(py) * w + px;
+                if (brush.stamp.at(at) == brush.window) continue;
+                brush.stamp[at] = brush.window;
+                hits[at] += 1.0f;
+            }
+            continue;
+        }
         const int xi = std::min(w - 1, int(x0 + t * dx));
         const int yi = std::min(h - 1, int(y0 + t * dy));
         if (xi < 0 || yi < 0) continue;
@@ -432,6 +479,7 @@ QList<EyeDiagram::Line> EyeDiagram::lines() const
             add(tr("jitter %1 rms, %2 p-p").arg(engineering(e.jitterRms, s), engineering(e.jitterPp, s)));
             add(tr("levels %1, %2").arg(engineering(r.levels.at(0), unit), engineering(r.levels.at(1), unit)));
             if (std::isfinite(e.q)) add(tr("Q %1").arg(QString::number(e.q, 'g', 3)));
+            else if (std::isinf(e.q)) add(tr("Q ∞ (no noise)"));
         } else {
             for (int k = r.eyes.size() - 1; k >= 0; --k) {   // the top eye first, as drawn
                 const eye::Eye& e = r.eyes.at(k);
@@ -471,6 +519,13 @@ QRectF EyeDiagram::paintedRect(const QFontMetricsF& metrics) const
     const QRectF box = boxRect(metrics);
     if (!box.isNull()) r |= box.translated(cx, cy);
     return r;
+}
+
+int EyeDiagram::brushPixels(const Graph* g, int pixelsWide) const
+{
+    // Thickness 1 (or 0) is the finest, a pixel; more, as wide as a line
+    // of it is drawn.
+    return g->Thick <= 1 ? 1 : int(std::lround(g->Thick * double(pixelsWide) / std::max(1, x2)));
 }
 
 QImage EyeDiagram::render(const QSize& pixels) const
@@ -519,10 +574,13 @@ QImage EyeDiagram::render(const QSize& pixels) const
             // Many: how many windows pass each pixel, and the pixel as
             // opaque as that many lines of that alpha over each other.
             QVector<float> passes(qsizetype(w) * h, 0.0f);
+            Brush brush(brushPixels(g, w), w, h);
             for (const qucs_s::dataset::Curve& c : curves)
                 eye::fold(c, from, unit, origin, span, [&](const QVector<QPointF>& points) {
                     qsizetype last = -1;
-                    for (int k = 1; k < points.size(); ++k) accumulate(passes, w, h, toPixel(points.at(k - 1)), toPixel(points.at(k)), last);
+                    brush.next();
+                    for (int k = 1; k < points.size(); ++k)
+                        accumulate(passes, w, h, toPixel(points.at(k - 1)), toPixel(points.at(k)), last, brush);
                 });
             QImage layer(pixels, QImage::Format_ARGB32);
             layer.fill(Qt::transparent);
@@ -544,12 +602,16 @@ QImage EyeDiagram::render(const QSize& pixels) const
             painter.drawImage(0, 0, layer);
             continue;
         }
-        // How many traces pass each pixel.
+        // How many traces pass each pixel - a trace as wide as its
+        // thickness.
         QVector<float> hits(qsizetype(w) * h, 0.0f);
+        Brush brush(brushPixels(g, w), w, h);
         for (const qucs_s::dataset::Curve& c : curves)
             eye::fold(c, from, unit, origin, span, [&](const QVector<QPointF>& points) {
                 qsizetype last = -1;
-                for (int k = 1; k < points.size(); ++k) accumulate(hits, w, h, toPixel(points.at(k - 1)), toPixel(points.at(k)), last);
+                brush.next();
+                for (int k = 1; k < points.size(); ++k)
+                    accumulate(hits, w, h, toPixel(points.at(k - 1)), toPixel(points.at(k)), last, brush);
             });
         const float most = hits.isEmpty() ? 0.0f : *std::max_element(hits.cbegin(), hits.cend());
         if (most <= 0.0f) continue;

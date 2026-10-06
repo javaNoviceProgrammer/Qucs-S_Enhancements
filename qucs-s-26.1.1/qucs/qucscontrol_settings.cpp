@@ -34,6 +34,7 @@
 #include <QMessageBox>
 #include <QPointer>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QTimer>
 
 #include <memory>
@@ -146,18 +147,100 @@ void QucsControl::withSettingsDialog(const QJsonObject& args, std::function<void
     });
 }
 
+namespace {
+
+// A setting's value and choices as text, for 'search'.
+QString searchedText(const QJsonValue& v)
+{
+    if (v.isArray()) {
+        QStringList parts;
+        for (const QJsonValue& item : v.toArray()) parts << searchedText(item);
+        return parts.join(QLatin1Char(' '));
+    }
+    if (v.isBool()) return v.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    if (v.isDouble()) return QString::number(v.toDouble());
+    return v.toString();
+}
+
+} // namespace
+
 void QucsControl::getSettings(const QJsonObject& args, const Done& done)
 {
     const QString scope = args.value(QLatin1String("scope")).toString().trimmed().toLower();
-    QString error;
-    std::unique_ptr<QWidget> dialog(settingsDialogFor(args, &error));
-    if (dialog == nullptr) {
-        done(errorResult(error));
-        return;
+    // Only some: 'keys' (a key, "Locations/*", or a label alone) and
+    // 'search' (words each in its key, value or choices).
+    QList<QRegularExpression> keys;
+    QStringList labels;
+    const QJsonValue keysGiven = args.value(QLatin1String("keys"));
+    for (const QJsonValue& k : keysGiven.isString() ? QJsonArray{keysGiven} : keysGiven.toArray()) {
+        const QString key = k.toString().trimmed();
+        if (key.isEmpty()) continue;
+        keys << QRegularExpression(QRegularExpression::wildcardToRegularExpression(key, QRegularExpression::NonPathWildcardConversion),
+                                   QRegularExpression::CaseInsensitiveOption);
+        labels << (key.contains(QLatin1Char('/')) ? QString() : key);
     }
-    done(jsonResult(QJsonObject{{QStringLiteral("scope"), scope},
-                                {QStringLiteral("dialog"), dialog->windowTitle()},
-                                {QStringLiteral("settings"), typedSettings(dialog.get(), nullptr)}}));
+    const QStringList words = args.value(QLatin1String("search")).toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const bool filtered = !keys.isEmpty() || !words.isEmpty();
+    const auto wanted = [&](const QJsonObject& o) {
+        const QString key = o.value(QLatin1String("key")).toString();
+        if (!keys.isEmpty()) {
+            bool any = false;
+            for (int i = 0; i < keys.size() && !any; ++i)
+                any = keys.at(i).match(key).hasMatch()
+                      || (!labels.at(i).isEmpty() && keys.at(i).match(key.section(QLatin1Char('/'), 1)).hasMatch());
+            if (!any) return false;
+        }
+        const QString text = key + QLatin1Char(' ') + searchedText(o.value(QLatin1String("value"))) + QLatin1Char(' ')
+                             + searchedText(o.value(QLatin1String("choices"))) + QLatin1Char(' ') + searchedText(o.value(QLatin1String("suggestions")));
+        for (const QString& w : words)
+            if (!text.contains(w, Qt::CaseInsensitive)) return false;
+        return true;
+    };
+    // Without a scope, what 'keys' or 'search' finds in each.
+    QStringList scopes{scope};
+    if (scope.isEmpty()) {
+        if (!filtered) {
+            done(errorResult(tr("'scope' is app (Application Settings), simulators, document (the document's own settings) or cdl - "
+                                "or, without it, 'search' or 'keys' looks through app, simulators and cdl.")));
+            return;
+        }
+        scopes = {QStringLiteral("app"), QStringLiteral("simulators"), QStringLiteral("cdl")};
+    }
+    QJsonArray settings, dialogs;
+    int total = 0;
+    for (const QString& one : std::as_const(scopes)) {
+        QJsonObject a = args;
+        a.insert(QStringLiteral("scope"), one);
+        QString error;
+        std::unique_ptr<QWidget> dialog(settingsDialogFor(a, &error));
+        if (dialog == nullptr) {
+            done(errorResult(error));
+            return;
+        }
+        dialogs.append(dialog->windowTitle());
+        for (const QJsonValue& v : typedSettings(dialog.get(), nullptr)) {
+            ++total;
+            QJsonObject o = v.toObject();
+            if (filtered && !wanted(o)) continue;
+            if (scopes.size() > 1) o.insert(QStringLiteral("scope"), one);
+            settings.append(o);
+        }
+    }
+    QJsonObject result{{QStringLiteral("settings"), settings}};
+    if (scopes.size() == 1) {
+        result.insert(QStringLiteral("scope"), scope);
+        result.insert(QStringLiteral("dialog"), dialogs.first());
+    } else {
+        result.insert(QStringLiteral("scopes"), QJsonArray::fromStringList(scopes));
+    }
+    if (filtered) {
+        result.insert(QStringLiteral("matched"), tr("%1 of %2 settings").arg(settings.size()).arg(total));
+        if (settings.isEmpty())
+            result.insert(QStringLiteral("note"), scopes.size() == 1 ? tr("Nothing matches: without 'keys' and 'search' it lists all %1, or "
+                                                                          "leave out 'scope' to look in app, simulators and cdl.").arg(total)
+                                                                     : tr("Nothing matches: get_settings with a 'scope' alone lists its settings."));
+    }
+    done(jsonResult(result));
 }
 
 void QucsControl::setSettings(const QJsonObject& args, const Done& done)
@@ -165,7 +248,7 @@ void QucsControl::setSettings(const QJsonObject& args, const Done& done)
     const QString scope = args.value(QLatin1String("scope")).toString().trimmed().toLower();
     const QJsonObject values = args.value(QLatin1String("values")).toObject();
     if (values.isEmpty()) {
-        done(errorResult(tr("'values' names the settings and their new values: {\"Settings/Language\": \"English\"} - get_settings "
+        done(errorResult(tr("'values' names the settings and their new values: {\"Settings/Maximum undo operations\": 50} - get_settings "
                             "lists the keys.")));
         return;
     }

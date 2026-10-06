@@ -355,8 +355,6 @@ void QucsFilter::setError(const QString& Message)
 // ************************************************************
 QString * QucsFilter::calculateFilter(struct tFilter * Filter)
 {
-    QString * s = NULL;
-
     tSubstrate Substrate;
     Substrate.er = ComboEr->currentText().toDouble();
     Substrate.height = EditHeight->text().toDouble() / 1e3;
@@ -367,30 +365,41 @@ QString * QucsFilter::calculateFilter(struct tFilter * Filter)
     Substrate.minWidth = EditMinWidth->text().toDouble() / 1e3;
     Substrate.maxWidth = EditMaxWidth->text().toDouble() / 1e3;
 
-    switch(ComboRealize->currentIndex()) {
+    QString * s = schematicOf(Filter, &Substrate, ComboRealize->currentIndex());
+    if (s && Filter->Type == TYPE_CAUER && ComboRealize->currentIndex() < 2)
+      EditOrder->setText(QString::number(Filter->Order));
+    return s;
+}
+
+QString * QucsFilter::schematicOf(struct tFilter * Filter, const tSubstrate * Substrate, int realize)
+{
+    QString * s = NULL;
+    tSubstrate sub = *Substrate;
+
+    switch(realize) {
       case 2:  // C-coupled transmission line filter
-        s = Line_Filter::createSchematic(Filter, &Substrate, false);
+        s = Line_Filter::createSchematic(Filter, &sub, false);
         return s;
       case 3:  // microstrip end-coupled filter
-        s = Line_Filter::createSchematic(Filter, &Substrate, true);
+        s = Line_Filter::createSchematic(Filter, &sub, true);
         return s;
       case 4:  // coupled transmission line filter
-        s = CoupledLine_Filter::createSchematic(Filter, &Substrate, false);
+        s = CoupledLine_Filter::createSchematic(Filter, &sub, false);
         return s;
       case 5:  // coupled microstrip line filter
-        s = CoupledLine_Filter::createSchematic(Filter, &Substrate, true);
+        s = CoupledLine_Filter::createSchematic(Filter, &sub, true);
         return s;
       case 6:  // stepped-impedance transmission line filter
-        s = StepImpedance_Filter::createSchematic(Filter, &Substrate, false);
+        s = StepImpedance_Filter::createSchematic(Filter, &sub, false);
         return s;
       case 7:  // stepped-impedance microstrip line filter
-        s = StepImpedance_Filter::createSchematic(Filter, &Substrate, true);
+        s = StepImpedance_Filter::createSchematic(Filter, &sub, true);
         return s;
       case 8: // Quarter wave transmission line filter
-        s = QuarterWave_Filter::createSchematic(Filter, &Substrate, false);
+        s = QuarterWave_Filter::createSchematic(Filter, &sub, false);
         return s;
       case 9: // Quarter wave microstrip line  filter
-        s = QuarterWave_Filter::createSchematic(Filter, &Substrate, true);
+        s = QuarterWave_Filter::createSchematic(Filter, &sub, true);
         return s;
       case 10:  // equation defined filter
         s = Equation_Filter::createSchematic(Filter);
@@ -400,7 +409,7 @@ QString * QucsFilter::calculateFilter(struct tFilter * Filter)
     }
 
     if (Filter->Type != TYPE_CAUER) {
-      if(ComboRealize->currentIndex() == 0)
+      if(realize == 0)
         s = LC_Filter::createSchematic(Filter, true);
       else
         s = LC_Filter::createSchematic(Filter, false);
@@ -415,7 +424,7 @@ QString * QucsFilter::calculateFilter(struct tFilter * Filter)
       amax = Filter->Attenuation;
       bw = Filter->Frequency2 - fc;
 
-      bool is_tee = ComboRealize->currentIndex() == 1;
+      bool is_tee = realize == 1;
       switch (Filter->Class) {
       case CLASS_LOWPASS:
         F = new qf::cauer (amin, amax, fc, fs, r, 0, qf::LOWPASS, is_tee);
@@ -432,7 +441,7 @@ QString * QucsFilter::calculateFilter(struct tFilter * Filter)
       }
       if (F) {
         //F->dump();
-        EditOrder->setText(QString::number(F->order()));
+        Filter->Order = F->order();
         s = new QString(F->to_qucs());
         delete F;
       }

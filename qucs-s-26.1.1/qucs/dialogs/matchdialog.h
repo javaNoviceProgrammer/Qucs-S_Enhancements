@@ -117,6 +117,21 @@ public:
 
   void getMicrostrip(double, double, tSubstrate *, double &, double &);
   void setFrequency(double);
+
+  /// The schematic Create makes - of topology \a topology (the list's:
+  /// 0 L-section, 1 single stub, 2 double stub, 3 multistage lambda/4,
+  /// 4 cascaded L-sections, 5 lambda/8 + lambda/4), its lines \a binomial
+  /// or Chebyshev - for a load of reflection \a S11real, \a S11imag, or
+  /// for both ports of a two-port: quietly, no message box shown and the
+  /// clipboard untouched; what the calculation said on the way in \a said.
+  /// Empty when none can be made.
+  QString designOnePort(int topology, bool binomial, double S11real, double S11imag, double Z0, double Freq,
+                        bool micro_syn, bool SP_block, bool open_short, tSubstrate Substrate, int order,
+                        double gamma_MAX, bool BalancedStubs, QStringList *said);
+  QString designTwoPort(int topology, bool binomial, double S11real, double S11imag, double S22real, double S22imag,
+                        double DetReal, double DetImag, double Z1, double Z2, double Freq, bool micro_syn,
+                        bool SP_block, bool open_short, tSubstrate Substrate, int order, double gamma_MAX,
+                        bool BalancedStubs, QStringList *said);
   void setTwoPortMatch(bool on) {
     TwoCheck->setChecked(on);
     TwoCheck->setEnabled(false);
@@ -137,6 +152,11 @@ public slots:
   void slotChebyCheck();
 
 private:
+  bool m_quiet = false;     // asked by a tool: nothing shown, nothing into the clipboard
+  QString m_designed;       // ... the schematic made then
+  QStringList m_said;       // ... and what was said on the way
+  void say(bool error, const QString &text);
+
   QHBoxLayout *all; // the mother of all widgets
   QVBoxLayout *MethodLayout;
   QDoubleValidator *DoubleVal;

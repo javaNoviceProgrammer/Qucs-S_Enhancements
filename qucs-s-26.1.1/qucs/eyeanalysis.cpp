@@ -262,7 +262,7 @@ QVector<double> crossingTimes(const Curve& c, double level, double hysteresis)
     return out;
 }
 
-double estimateUi(const QVector<double>& crossings, QString* why)
+double estimateUi(const QVector<double>& crossings, QString* why, QStringList* doubts)
 {
     auto fail = [why](const QString& reason) {
         if (why) *why = reason;
@@ -274,27 +274,42 @@ double estimateUi(const QVector<double>& crossings, QString* why)
     if (gaps.size() < 3) return fail(tr("%1 crossings, too few").arg(crossings.size()));
     QVector<double> sorted = gaps;
     std::sort(sorted.begin(), sorted.end());
-    // The shortest gaps are a single UI (a PRBS's runs are half of them one
-    // bit long); a tenth of the way up leaves a stray short one out.
-    const double rough = sorted.at(int((sorted.size() - 1) / 10));
-    double ui = rough;
-    int kept = 0;
-    for (int round = 0; round < 5; ++round) {
-        double gapsKept = 0.0, uis = 0.0;
-        kept = 0;
-        for (double g : gaps) {
-            const double r = g / ui;
-            const double whole = std::round(r);
-            if (whole >= 1.0 && whole <= 1e6 && std::abs(r - whole) <= 0.25) {
-                gapsKept += g;
-                uis += whole;
-                ++kept;
+    // The UI from a first guess: the mean of the gaps that are whole
+    // multiples of it, each over how many it is, and again.
+    auto refined = [&gaps](double ui, int* kept) {
+        for (int round = 0; round < 5; ++round) {
+            double gapsKept = 0.0, uis = 0.0;
+            *kept = 0;
+            for (double g : gaps) {
+                const double r = g / ui;
+                const double whole = std::round(r);
+                if (whole >= 1.0 && whole <= 1e6 && std::abs(r - whole) <= 0.25) {
+                    gapsKept += g;
+                    uis += whole;
+                    ++*kept;
+                }
             }
+            if (uis <= 0.0) break;
+            ui = gapsKept / uis;
         }
-        if (uis <= 0.0) break;
-        ui = gapsKept / uis;
+        return ui;
+    };
+    // The shortest gaps are a single UI (a PRBS's runs are half of them one
+    // bit long); a tenth of the way up leaves a stray short one out. But
+    // when few of them are - a PRBS31's start, its long runs of ones - that
+    // is two or three UIs, and the shortest gap is the UI: the guess of the
+    // two that more gaps are whole multiples of (of as many, the longer -
+    // half a UI divides them all too).
+    const double rough = sorted.at(int((sorted.size() - 1) / 10));
+    int kept = 0, keptShortest = 0;
+    double ui = refined(rough, &kept);
+    if (const double shortest = refined(sorted.first(), &keptShortest);
+        keptShortest > kept && keptShortest >= 0.8 * gaps.size() && shortest < ui) {
+        ui = shortest;
+        kept = keptShortest;
     }
-    if (kept < 0.8 * gaps.size()) {
+    const bool scanned = kept < 0.8 * gaps.size();
+    if (scanned) {
         // Crossings spread over much of a UI - PAM4's, of edges of different
         // sizes through a slow channel - are no whole multiples of one: the
         // interval they gather at is looked for instead.
@@ -303,7 +318,25 @@ double estimateUi(const QVector<double>& crossings, QString* why)
             return fail(tr("only %1 of the %2 intervals between crossings are whole multiples of one, and they gather at "
                            "no interval").arg(kept).arg(gaps.size()));
     }
-    return fitted(crossings, ui);
+    ui = fitted(crossings, ui);
+    // What makes it doubtful: few crossings, gaps that are no whole number
+    // of it, a gap shorter than it.
+    if (doubts != nullptr) {
+        if (crossings.size() < 50)
+            *doubts << tr("the unit interval is told from only %1 crossings: give it if that is not a bit's length")
+                           .arg(crossings.size());
+        int whole = 0;
+        for (double g : gaps) {
+            const double r = g / ui;
+            if (std::round(r) >= 1.0 && std::abs(r - std::round(r)) <= 0.25) ++whole;
+        }
+        if (!scanned && whole < 0.95 * gaps.size())
+            *doubts << tr("only %1 of the %2 intervals between crossings are a whole number of unit intervals")
+                           .arg(whole).arg(gaps.size());
+        if (!scanned && sorted.first() < 0.75 * ui)
+            *doubts << tr("two crossings are %1 apart, less than the unit interval").arg(number(sorted.first()));
+    }
+    return ui;
 }
 
 double fitted(const QVector<double>& crossings, double ui)
@@ -340,6 +373,16 @@ double fitted(const QVector<double>& crossings, double ui)
     return ui;
 }
 
+void insertQ(QJsonObject& o, const Eye& e)
+{
+    if (std::isfinite(e.q)) {
+        o.insert(QStringLiteral("Q"), dataset::rounded(e.q));
+    } else if (std::isinf(e.q)) {
+        o.insert(QStringLiteral("Q"), QJsonValue(QJsonValue::Null));
+        o.insert(QStringLiteral("Q note"), tr("infinite: no noise - each level is the same at every bit's centre"));
+    }
+}
+
 QPolygonF mask(double width, double height)
 {
     const double w = width / 2.0, h = height / 2.0;
@@ -367,7 +410,7 @@ QJsonObject toJson(const Result& r)
                       {QStringLiteral("jitter, rms"), rounded(e.jitterRms)},
                       {QStringLiteral("threshold"), rounded(e.threshold)},
                       {QStringLiteral("crossings"), e.crossings}};
-        if (std::isfinite(e.q)) j.insert(QStringLiteral("Q"), rounded(e.q));
+        insertQ(j, e);
         eyes << j;
     }
     o.insert(QStringLiteral("levels"), levels);
@@ -490,12 +533,14 @@ Result analyse(const Curve& c, const Options& o)
         r.ui = o.ui;
     } else {
         QString why;
-        r.ui = estimateUi(crossed, &why);
+        QStringList doubts;
+        r.ui = estimateUi(crossed, &why, &doubts);
         if (std::isnan(r.ui)) {
             r.error = tr("the unit interval cannot be told from the crossings (%1): give it").arg(why);
             return r;
         }
         r.uiEstimated = true;
+        r.notes << doubts;
     }
     // A bit shorter than a sample is no eye - and 1e-300 s bits never
     // ended (t + T == t) while the bits filled memory.
@@ -648,8 +693,11 @@ Result analyse(const Curve& c, const Options& o)
                 for (double x : v) s += (x - m) * (x - m);
                 return std::sqrt(s / v.size());
             };
+            // A spread below a billionth of the levels' spacing is the
+            // numbers' rounding (an ideal source's 3.3 V gave Q = 4e14): no
+            // noise, and Q infinite.
             const double noise = sigma(lower, e.low) + sigma(upper, e.high);
-            if (noise > 0.0) e.q = (e.high - e.low) / noise;
+            if (e.high > e.low) e.q = noise > 1e-9 * (e.high - e.low) ? (e.high - e.low) / noise : std::numeric_limits<double>::infinity();
             if (e.height <= 0.0)
                 r.notes << (pam4 ? tr("eye %1 is closed at its centre").arg(i + 1) : tr("the eye is closed at its centre"));
         }

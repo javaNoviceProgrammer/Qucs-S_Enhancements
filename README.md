@@ -532,7 +532,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Ctrl-C when you allow that too. `get_settings` and `set_settings` read
   and set Application Settings, Simulators Settings, CDL Settings and a
   document's own by typed keys ("Tab/Label": a text, a choice and its
-  choices, a number and its range): set through the dialog's own OK, so
+  choices, a number and its range) - `get_settings` only some, by key
+  (`Locations/*`) or by a word in key, value or choices, across the
+  three when no scope is given: set through the dialog's own OK, so
   what the window does after it is done, each change told with what it
   was (set back with that) and what it is now; Claude Code's own
   settings are refused. **It reads the results as
@@ -688,7 +690,23 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the editor shows them to you: a wavy line, a dot in the line numbers'
   margin, the message on the line. `read_help` finds what this build's
   help says on a topic - each menu action's own help, the component
-  types, the examples - and where the online manual is. **The last
+  types, the examples - and the Qucs-S manual: its text fetched once
+  (with `curl`, from qucs-s-help.readthedocs.io; `QUCS_MANUAL_URL` names
+  another copy) into Qucs-S's cache and searched by section from then on,
+  offline, a page whole when asked. **The Tools menu's programs** are
+  tools too, their own calculation run for you: `synthesize_filter`
+  (Filter synthesis and Active filter synthesis), `synthesize_attenuator`,
+  `synthesize_matching` (Matching Circuit), `synthesize_power_combiner`
+  place a design - with its ports, analysis and equations for the
+  simulator in use - in a new schematic or at x, y in one open, one step
+  to undo; `line_calc` (Line calculation) gives a line's geometry from
+  its impedance or the other way; `receiver_budget` (Receiver
+  calculator) a receiver's cascade. Each program takes `--json`: a spec
+  on standard input, the result - its schematic, or numbers - on standard
+  output, no window shown and no setting read or written
+  (`echo '{"type": "chebyshev", "order": 5, "fc": "1 GHz", "ripple": 0.1}' | qucs-sfilter --json`).
+  `get_state` lists the workspace's projects, the open one marked, and
+  says when a document is of another project than the open one. **The last
   resort**: `send_input` clicks, drags, double-clicks and types on the
   canvas (in the schematic's coordinates), a panel (in its pixels, which
   `get_ui` gives each control) or the dialog that waits for an answer (in
@@ -794,7 +812,21 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   where its text has room; `straighten` nudges a part up to four grid
   steps, clear of the others, so the two pins of a wire between two
   parts line up and it runs straight - only pins that face each other,
-  each leaving its symbol toward the other as its stub goes. A library part's pins have
+  each leaving its symbol toward the other as its stub goes. A text drawn
+  over something - a part's over a wire, a symbol (as the symbol draws
+  it: an op-amp's name in its triangle's empty corner is fine), another
+  part's text, a net label or a diagram, a label's over the same, a
+  diagram's title over the x-axis label of the one above - is a note of
+  `check_schematic`'s, with both boxes. `edit_component`'s `text_at`
+  `"auto"` moves a part's text to the nearest spot beside it where it is
+  drawn over nothing (its right, left, below, above); `add_component`
+  puts a new part's text there when its type's place is not clear, and
+  says so; `arrange` with `labels` moves only texts - each part's and
+  each net label's that is drawn over something - never a part or a
+  wire. `add_diagram` and `edit_diagram` say when a diagram's title runs
+  into the axis label of the one above, with the y that clears it. A part
+  of two pins is placed by where its pin 1 goes (`pin1`: top, bottom,
+  left, right) instead of a rotation. A library part's pins have
   the names its model gives them (an op-amp's INN, INP, OUT, VCC, VEE;
   an LED's C and A; the transistor-level uA741's, AD825's and LM3886's
   too): `connect` takes `U1.inp`, `replace_component` maps them by name
@@ -2108,7 +2140,9 @@ next start to report or offer. `QUCS_TRASH_DIR=<dir>` does the same for
 the trash: what Qucs-S moves to the trash (the File Browser, Delete
 Project, Claude's `trash_file`, `clean_scratch` and `import_data`'s
 `remove`) goes into `<dir>` instead of the system's. The tests set it, so a
-test run puts nothing in your trash.
+test run puts nothing in your trash. `QUCS_MANUAL_URL=<url>` is where
+`read_help` fetches the manual from (a `file://` copy, as the tests give it),
+instead of qucs-s-help.readthedocs.io.
 
 `scripts/ci/smoke-test.sh` has three suites — `load` (render every ngspice
 example, and one in every export format), `simulate` (netlist → ngspice → dataset → render; needs `ngspice` on
