@@ -585,3 +585,145 @@ end-to-end scenarios: 97 checks, none failed.
 - A list inside a quote is not tracked: a quote's line uses the quote's own rule.
 - As before: a list that starts with an HTML block, and an HTML block in a nested
   list.
+
+## The final check of `206201e`
+
+The reviewer checked `206201e` in the window, and with test programs compiled from the
+commit:
+- their 46-case regression suite passed;
+- the 1,419 replies were as before;
+- on their old seeds, no text lost its end.
+
+On new seeds with more fragments, 1.4% to 3.2% of 50,000 texts lost the end, against
+75% to 79% in plain Qt. They shrank 120 of those losses, and plain Qt lost all 120 too:
+
+- **112 of them are malformed links:** an empty label (`[]: <v>`) and a stray `](<b>`.
+  The walk passed over a `<…>` after them as a link's destination, but to md4c it is
+  a tag. Valid links all worked.
+- **A line that starts with an unclosed `<script`.**
+- **An unclosed `~~~` in a list item** followed by a tag at the margin.
+- **A degenerate table** with `<details>` across its rows.
+
+Their verdict was "done". They added that the link one alone was worth doing, and
+noted that `build/` was older than the commit. The build was in fact current: the
+tests and the app were linked at 18:36:38, three seconds after
+`mathtypeset.cpp` was last written (a break run restoring it). The 18:45 commit
+changed only a count in this file.
+
+All four reproduced. I wrote a fuzzer with the fragments they listed (tilde fences,
+nested quotes and lists, link destinations, `<script>`, attributes, `- - -`, `***`), and
+added tabs, `](<` and `]: <v>`. On `206201e` it lost about 2,350 of 50,000 texts per
+seed. In 210 of those on one seed, plain Qt kept the end: a closing tag the balancer
+made text had evened out Qt's count by luck. Every case was shrunk and checked against
+md4c 0.5.3's own reading. Each difference found is now read as md4c reads it:
+
+- **Links.** A `<destination>` is a link's only in a link:
+  - its text's `[` comes before it in its paragraph (md4c reads links before a table's
+    cells, so the text may cross a `|`), and it isn't around a link of its own;
+  - a `)` follows it, or a closed title and then a `)`;
+  - an escaped `\]` ends no text.
+
+  `[]: <v>`, `x](<b>`, `[](<n>` and `[](<r>(` now show their `<…>` as written.
+- **Definitions.** A definition has a non-empty label (escapes allowed) and a
+  destination with its parentheses in pairs. It is its paragraph's first line, or
+  follows another definition, and lies within its paragraph; a table's row holds none.
+  None of a definition is HTML: `[<b>]: e` hides its `<b>` from Qt, as md4c does.
+- **HTML blocks of type 1 and 4.**
+  - md4c starts a block at `<pre`, `<script`, `<style` or `<textarea` whatever follows
+    (`<prefix>`, `<script</v>`), and ends it at the line of any of the four closers.
+  - Any other `<!` (`<!1`, `<!<l`) starts a block that ends at its `>`.
+  - One with nothing to close it is written as text, since md4c would take the rest of
+    the reply into it.
+  - The block marks follow the same rule: a `<p>` mark before `<script/>` had changed
+    the block's type.
+- **Fences.**
+  - A fence ends with its list item.
+  - Its closing line is looked for in its own containers: in a top-level fence,
+    `>~~~` is code.
+  - A tab after a list's marker or a `>` counts as the space.
+- **Tables.**
+  - Each row is a block of its own for Qt's tag count.
+  - The underline may be indented however far.
+  - A heading, a fence or an HTML block line is a row; a rule ends the table.
+- **Under a paragraph.**
+  - A run of `-` or `=` underlines it.
+  - A list marker with nothing after it, or a number other than 1, is the paragraph's
+    text. md4c lets `1. ` with a space start a list.
+  - A lazy line keeps the paragraph's quote going: `>p`, `q`, `>[f]: <a>` is one
+    paragraph, with no definition in it.
+- **Where a paragraph ends.**
+  - It ends at a rule, or at a nested item or fence less than four columns past its
+    container's content.
+  - A line of its own quote goes on with it, so code spans cross quote lines.
+  - A tag over lines does not cross the next line's quote mark.
+- **Lists.**
+  - A quote, an HTML block or a fence in an item, indented past the item, is found
+    there.
+  - A line belongs to the deepest item it is indented to, and an item marker indented
+    four or more past its container is text.
+  - Nested empty items (`- -`) and a quote's `>-` hold no paragraph.
+  - An HTML block that breaks into an item's paragraph, however far indented, closes
+    the item.
+- **Time.** The new looks back to a line's start are bounded. A long line of `[`,
+  `](<` or `<script` was quadratic until they were.
+
+Two checks, I found, decided nothing once the balancer's rounds were counted, and were
+taken out:
+- an unclosed `<!` breaking into a paragraph;
+- a table ended by a lone `-`.
+
+Three helpers were made redundant by the list base and were taken out too: a fence's
+extra indent skip, a fallback container for an HTML block, and two unused counters.
+
+The fuzzer above, on its three sets of 50,000 inputs: 0, 0 and 2 texts lose the end
+(about 2,350 each on `206201e`). On four new sets, one of up to 120 fragments: 0, 1, 1
+and 7. That makes 11 of 350,000, with 1 regression against plain Qt in all of them, a
+deeply nested shape. The reviewer's old fuzz loses none, nor do sixteen property seeds,
+with no mark changing the text. The 1,419 replies and the 79 files are unchanged:
+nothing lost, nothing changed where Qt was right, no mark left, no warnings. Time stays
+linear.
+
+### Tests
+
+- **`linksAndBlockStartsAreReadAsMd4cReadsThem`** (new):
+  - 38 shrunk cases from the final check and the fuzzer, each kept to its end;
+  - the balancer's output for 44 more, among them malformed links, definitions,
+    openers, fences, tables, underlines, items that may not break in, paragraph ends,
+    lazy lines and quotes in items;
+  - 23 that must stay as written: valid links, md4c's link across a cell's `|`,
+    definitions in a chain, after a heading, in an item;
+  - what the viewer shows for links, a malformed definition and an unclosed `<script`.
+- **`aRepliesHtmlIsReadWhole`:** the property test's fragments now include `](<`, `[`,
+  `]: <v>`, `<script`, `~~~`, a tab, `<!1`, `-` and `***`; none of its 3,000 texts loses
+  its end.
+- **`aLongReplyIsReadInLinearTime`:** `findMath` alone on tags with one `>` at the
+  end.
+- **`anHtmlBlockIsABlockOfItsOwn`:** one more mark md4c reads as code, after an item's
+  heading, since the walk now reads the earlier two as md4c does.
+
+Each part was broken on purpose: 156 breaks, 154 caught. The two not caught:
+- the table check's look at its first character, a constant factor, as before;
+- the check that an empty block is taken out only within its table cell. Since a `<pre>`
+  line follows md4c's type-1 rule, no known input reaches that case; it stays as a guard.
+
+The first run of this round's 49 breaks had seven not caught, and a later run had nine:
+- Most got cases that only the broken reading changes: code against paragraph, a
+  definition against a tag.
+- Four turned out to decide nothing and were taken out with their code (above).
+- One, the stop at a cell's `|`, was wrong: md4c reads `| [a | b ](<c>) |` as one
+  link. It was taken out, and the case is a test.
+
+Full suite 88/88. Under AddressSanitizer 88/88, with no sanitizer report. The
+end-to-end scenarios: 97 checks, none failed.
+
+### Not done
+
+- md4c ends a list after an item's ATX heading at a blank line (`- # x`). `markOut()`
+  takes out the mark that shows there.
+- md4c reads a tag over a quote's lines without their marks (`><t` then `>a>` is
+  `<t a>`); the walk does not.
+- A link whose text holds a code span (`` ```[```](<b>) ``).
+- A lazy line under a nested item, with tabs: the fuzzer's last losses and its one
+  regression.
+- As before: a list inside a quote, a list that starts with an HTML block, an HTML block
+  in a nested list.
