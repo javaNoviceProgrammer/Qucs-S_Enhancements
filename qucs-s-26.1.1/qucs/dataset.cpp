@@ -472,7 +472,8 @@ double valueAt(const Curve& c, double x)
 {
     const int n = int(c.x.size());
     for (int i = 0; i < n; ++i) {
-        if (c.x.at(i) == x) return c.y.at(i);
+        const double xi = c.x.at(i);
+        if (xi == x || std::abs(xi - x) <= 1e-12 * std::max(std::abs(xi), std::abs(x))) return c.y.at(i);
         if (i + 1 < n) {
             const double x0 = c.x.at(i), x1 = c.x.at(i + 1);
             if ((x0 < x && x < x1) || (x1 < x && x < x0)) {
