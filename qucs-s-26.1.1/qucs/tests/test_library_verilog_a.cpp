@@ -72,13 +72,15 @@ constexpr QFileDevice::Permissions kReadOnlyFolder =
     | QFileDevice::ReadOther | QFileDevice::ExeOther;
 constexpr QFileDevice::Permissions kFolder = kReadOnlyFolder | QFileDevice::WriteOwner;
 
-// A schematic with one part of the library \a lib (its Lib: a path, or a name).
-QByteArray usesLibrary(const QString& lib)
+// A schematic with one part of the library \a lib (its Lib: a path, or a
+// name), and two grounds unless not \a grounded: whether they touch its pins
+// is the symbol's, which a library made here sizes by the font's measure.
+QByteArray usesLibrary(const QString& lib, bool grounded = true)
 {
     return "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
            "  <Lib X1 1 100 100 20 -20 0 0 \"" + lib.toUtf8() + "\" 0 \"sub\" 0>\n"
-           "  <GND * 1 70 100 0 0 0 0>\n  <GND * 1 130 100 0 0 0 0>\n"
-           "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+           + QByteArray(grounded ? "  <GND * 1 70 100 0 0 0 0>\n  <GND * 1 130 100 0 0 0 0>\n" : "")
+           + "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
 }
 
 // A stand-in library: the name between two NULs, after \a header.
@@ -691,10 +693,13 @@ private slots:
         app.ProjName.clear();
         QucsSettings.QucsWorkDir.setPath(dir.filePath("elsewhere"));
         // The part's two pins' nodes; with a gnd pin, ground (0) before them.
-        const QStringList two = nodesOfX1(netlistOf(write(dir.filePath("elsewhere/nognd.sch"), usesLibrary(pins + "/NoGnd"))), "NoGnd_sub");
+        // Nothing is wired to its pins, so a 0 is only a gnd pin's: on Linux
+        // the library's symbol is narrower, and its pins fell on the grounds.
+        const QStringList two = nodesOfX1(netlistOf(write(dir.filePath("elsewhere/nognd.sch"), usesLibrary(pins + "/NoGnd", false))),
+                                          "NoGnd_sub");
         QCOMPARE(two.size(), 2);
-        QVERIFY2(two.first() != "0", qPrintable(two.join(' ')));
-        const QStringList three = nodesOfX1(netlistOf(write(dir.filePath("elsewhere/withgnd.sch"), usesLibrary(pins + "/WithGnd"))),
+        QVERIFY2(!two.contains("0"), qPrintable(two.join(' ')));
+        const QStringList three = nodesOfX1(netlistOf(write(dir.filePath("elsewhere/withgnd.sch"), usesLibrary(pins + "/WithGnd", false))),
                                             "WithGnd_sub");
         QCOMPARE(three, QStringList{"0"} + two);
         // A library with a Qucs model only: made SPICE with a gnd, tied.
