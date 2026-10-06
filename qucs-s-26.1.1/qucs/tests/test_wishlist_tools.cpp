@@ -485,11 +485,48 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QCOMPARE(json(r).value("filter").toObject().value("order").toInt(), 5);
         QVERIFY(!text(r).contains("nan"));
+        // An order given, and no stop band: that order is made - two
+        // op-amps for a 4th. With a stop band too, the order still wins,
+        // said. A Cauer's order comes from its stop band: one given is
+        // said not to be used. A band-stop's order is even.
+        r = call("synthesize_filter", {{"kind", "active"}, {"response", "butterworth"}, {"order", 4}, {"fc", 1000}, {"save_as", path("active4.sch")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("filter").toObject().value("order").toInt(), 4);
+        int opAmps = 0;
+        for (const QString& part : json(r).value("parts").toVariant().toStringList()) opAmps += part.startsWith("OP");
+        QCOMPARE(opAmps, 2);
+        r = call("synthesize_filter", {{"kind", "active"}, {"response", "chebyshev"}, {"order", 3}, {"fc", 1000}, {"fs", 3000}, {"atten", 40}});
+        QCOMPARE(json(r).value("filter").toObject().value("order").toInt(), 3);
+        QVERIFY2(json(r).value("filter").toObject().value("note").toString().contains("order given is made"), qPrintable(text(r)));
+        // Not used, so an attenuation or a loss at fc no filter has does not
+        // matter.
+        r = call("synthesize_filter", {{"kind", "active"}, {"response", "butterworth"}, {"order", 4}, {"fc", 1000}, {"atten", 1e6}, {"ap", 0}});
+        QVERIFY2(json(r).value("filter").toObject().value("order").toInt() == 4, qPrintable(text(r)));
+        r = call("synthesize_filter", {{"kind", "active"}, {"response", "cauer"}, {"topology", "cauer"}, {"order", 2}, {"fc", 1000}, {"fs", 2000}, {"atten", 40}});
+        QVERIFY2(json(r).value("filter").toObject().value("note").toString().contains("not used"), qPrintable(text(r)));
+        r = call("synthesize_filter", {{"kind", "active"}, {"type", "bandstop"}, {"order", 3}, {"fc", 900}, {"f2", 1100}});
+        QVERIFY2(failed(r) && text(r).contains("even"), qPrintable(text(r)));
+        QVERIFY(failed(call("synthesize_filter", {{"kind", "active"}, {"response", "butterworth"}, {"fc", 1000}})));   // nor order nor fs
+        // A stop band at the corner: no order (the window's formula gave one
+        // past what an int holds), refused - not the program stopped.
+        r = call("synthesize_filter", {{"kind", "active"}, {"response", "butterworth"}, {"fc", 1000}, {"fs", 1000}});
+        QVERIFY2(failed(r) && text(r).contains("cannot be made"), qPrintable(text(r)));
+        // A Bessel's order is given, so a band needs no 'transition'.
+        r = call("synthesize_filter", {{"kind", "active"}, {"response", "bessel"}, {"type", "bandpass"}, {"order", 4}, {"fc", 900}, {"f2", 1100}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
         if (!withNgspice()) QSKIP("no ngspice here: designed, not simulated");
         QVERIFY2(json(call("simulate", {{"path", "active.sch"}})).value("succeeded").toBool(), "");
         r = call("get_dataset", {{"path", "active.sch"}, {"variables", QJsonArray{"ac.v(out)"}}, {"measure", QJsonArray{"bandwidth"}}});
         const double f3 = json(r).value("variables").toArray().first().toObject().value("measurements").toObject().value("bandwidth").toObject().value("value").toDouble();
         QVERIFY2(std::abs(f3 / 1000.0 - 1.0) < 0.02, qPrintable(text(r)));
+        // The 4th: -3 dB at fc, and 80 dB down a decade above it.
+        QVERIFY2(json(call("simulate", {{"path", "active4.sch"}})).value("succeeded").toBool(), "");
+        r = call("get_dataset", {{"path", "active4.sch"}, {"variables", QJsonArray{"ac.v(out)"}}, {"measure", QJsonArray{"bandwidth"}}});
+        const QJsonObject v = json(r).value("variables").toArray().first().toObject();
+        QVERIFY2(std::abs(v.value("measurements").toObject().value("bandwidth").toObject().value("value").toDouble() / 1000.0 - 1.0) < 0.02,
+                 qPrintable(text(r)));
+        QCOMPARE(v.value("to").toDouble(), 10000.0);
+        QVERIFY2(std::abs(20 * std::log10(v.value("final").toDouble()) + 80) < 1, qPrintable(text(r)));
     }
 
     // Attenuator synthesis: a 10 dB pi; its equations ngspice's (an Eqn's

@@ -24,7 +24,18 @@
 #include "bessel.h"
 #include "legendre.h"
 
+#include <cmath>
+
 static const int MaxOrder = 50;
+
+// An order's formula's value as an order. Past MaxOrder - however far past,
+// or no number at all (a stop band at the corner, a ripple above the
+// attenuation) - is MaxOrder + 1, which no filter is made of; converted as
+// it was, it could be past what an int holds.
+static int orderOf(double n)
+{
+    return std::isfinite(n) && std::abs(n) <= MaxOrder ? int(n) : MaxOrder + 1;
+}
 
 Filter::Filter(Filter::FilterFunc ffunc_, Filter::FType type_, FilterParam par)
 {
@@ -368,7 +379,7 @@ bool Filter::calcChebyshev()
     double  eps=sqrt(pow(10,0.1*Rp)-1);
 
     double  N1 = acosh(sqrt((pow(10,0.1*As)-1)/(eps*eps)))/acosh(kf);
-    int N = ceil(N1);
+    int N = orderOf(ceil(N1));
 
     if (N>MaxOrder) {
         Poles.clear();
@@ -403,7 +414,7 @@ bool Filter::calcButterworth()
 
     double  C1=(pow(10,(0.1*Ap))-1)/(pow(10,(0.1*As))-1);
     double  J2=log10(C1)/(2*log10(kf));
-    int N2 = round(J2+1);
+    int N2 = orderOf(round(J2+1));
 
     if (ftype==Filter::BandStop) {
         if (N2%2!=0) N2++; // only even order Cauer.
@@ -433,7 +444,7 @@ bool Filter::calcInvChebyshev() // Chebyshev Type-II filter
 
     double  kf = std::max(Fs/Fc,Fc/Fs);
 
-    order = ceil(acosh(sqrt(pow(10.0,0.1*As)-1.0))/acosh(kf));
+    order = orderOf(ceil(acosh(sqrt(pow(10.0,0.1*As)-1.0))/acosh(kf)));
 
     if ((ftype==Filter::BandPass)||(ftype==Filter::BandStop)) {
         if (order%2!=0) order++; // only even order Cauer.
@@ -469,7 +480,7 @@ void Filter::cauerOrderEstim() // from Digital Filter Design Handbook page 102
     double  u = 0.5*(1.0-kk)/(1.0+kk);
     double  q = 150.0*pow(u,13) + 2.0*pow(u,9) + 2.0*pow(u,5) + u;
     double  dd = (pow(10.0,As/10.0)-1.0)/(pow(10.0,Rp/10.0)-1.0);
-    order = ceil(log10(16.0*dd)/log10(1.0/q));
+    order = orderOf(ceil(log10(16.0*dd)/log10(1.0/q)));
 
     if ((ftype==Filter::BandPass)||(ftype==Filter::BandStop)) {
         if (order%2!=0) order++; // only even order Cauer.
