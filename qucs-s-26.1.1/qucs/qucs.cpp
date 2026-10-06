@@ -63,6 +63,7 @@
 #ifdef QUCS_HAVE_QTPDF
 #include "pdfdoc.h"
 #include "zipdoc.h"
+#include "layoutdoc.h"
 #endif
 #include "autosave.h"
 #include "crashhandler.h"
@@ -229,6 +230,7 @@ QucsApp::QucsApp(bool netlist2Console) :
 #ifdef QUCS_HAVE_QTPDF
     tr("PDF Documents") + " (*.pdf);;" +
 #endif
+    tr("Layouts") + " (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis);;" +
     tr("Any File")+" (*)";
 
   //updateSchNameHash();
@@ -2868,6 +2870,13 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     is_pdf = true;
   }
 #endif
+  else if (isLayoutFile(Name)) {
+    // A GDSII or OASIS layout, read in the background (layoutdoc.h).
+    auto *layout = new LayoutDoc(this, Name);
+    d = layout;
+    i = addDocumentTab(layout, Info.fileName());
+    is_pdf = true;   // (no word about simulating a read-only one)
+  }
   else if (isSheetFile(Name)) {
     // Its cells in a table (sheetdoc.h).
     auto *sheet = new SheetDoc(this, Name);
@@ -3054,6 +3063,9 @@ bool QucsApp::saveAs()
     } else if (isArchiveDocument (w)) {
       Filter = tr("ZIP Archives") + " (*.zip)";
       selfilter = Filter;
+    } else if (isLayoutDocument (w)) {
+      Filter = tr("Layouts") + " (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis)";
+      selfilter = Filter;
     } else if (isSheetDocument (w)) {
       const QString csv = tr("CSV Files") + " (*.csv)";
       const QString tsv = tr("Tab-Separated Files") + " (*.tsv)";
@@ -3105,6 +3117,13 @@ bool QucsApp::saveAs()
     }
     else if (isArchiveDocument (w)) {
       if (ext.compare("zip", Qt::CaseInsensitive) != 0) s += ".zip";
+    }
+    else if (isLayoutDocument (w)) {
+      // A copy of the file: of its kind, as it is named.
+      if (!isLayoutFile(s)) {
+        const QString was = QFileInfo(Doc->getDocName()).fileName().toLower();
+        s += was.endsWith(".gds.gz") ? ".gds.gz" : "." + QFileInfo(was).suffix();
+      }
     }
     else if (isSheetDocument (w)) {
       // The filter chosen says which, when the name does not.
@@ -3275,7 +3294,7 @@ void QucsApp::slotFileSaveAll()
     for (int i = 0; i < pane->count(); ++i) {
       QWidget *w = pane->widget(i);
       QucsDoc *Doc = docIn(w);
-      if (Doc == nullptr || isPdfDocument(w)) continue;   // a PDF is only read
+      if (Doc == nullptr || isPdfDocument(w) || isLayoutDocument(w)) continue;   // a PDF, a layout: only read
       if(Doc->getDocName().isEmpty()) {  // make document the current ?
         setActivePane(pane);
         pane->setCurrentIndex(i);
@@ -3560,7 +3579,7 @@ void QucsApp::slotChangeView()
   }
   // for PDF documents: read; View All fits a page, Zoom to Selection the
   // width; for spreadsheets: cells
-  else if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w)) {
+  else if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)) {
     magAll->setDisabled(false);
     magSel->setDisabled(false);
     if(cursorLeft->isEnabled())
@@ -3614,7 +3633,7 @@ void QucsApp::slotFileSettings ()
   editText->setHidden (true); // disable text edit of component property
 
   QWidget * w = DocumentTab->currentWidget ();
-  if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w)) return;   // nothing to set
+  if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)) return;   // nothing to set
   if (isTextDocument (w)) {
     QucsDoc * Doc = (QucsDoc *) ((TextDoc *) w);
     QString ext = Doc->fileSuffix ();
@@ -3952,6 +3971,8 @@ bool QucsApp::reloadDocument(QucsDoc *doc)
   } else if (auto *zip = dynamic_cast<ZipDoc *>(doc)) {
     misc::ErrorCapture quiet;   // (half written: no box - it is read when it is whole)
     loaded = zip->load();
+  } else if (auto *layout = dynamic_cast<LayoutDoc *>(doc)) {
+    loaded = layout->reload();   // (in the background, the cell and view kept)
   }
   return loaded;
 }
@@ -4515,6 +4536,10 @@ void QucsApp::slotSimulate(QWidget *w)
       statusBar()->showMessage(tr("A spreadsheet is not simulated."), 3000);
       return;
   }
+  if (isLayoutDocument(w)) {
+      statusBar()->showMessage(tr("A layout is not simulated."), 3000);
+      return;
+  }
   if (isArchiveDocument(w)) {
       statusBar()->showMessage(tr("An archive is not simulated: open a schematic of it."), 3000);
       return;
@@ -4818,7 +4843,8 @@ void QucsApp::slotToPage()
   QucsDoc *d = getDoc();
   if (d == nullptr || isPdfDocument(DocumentTab->currentWidget())
       || isSheetDocument(DocumentTab->currentWidget())
-      || isArchiveDocument(DocumentTab->currentWidget())) return;   // no data display
+      || isArchiveDocument(DocumentTab->currentWidget())
+      || isLayoutDocument(DocumentTab->currentWidget())) return;   // no data display
   if(d->getDataDisplay().isEmpty()) {
     QMessageBox::critical(this, tr("Error"), tr("No page set !"));
     return;
@@ -4922,7 +4948,8 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
   // Spreadsheets (CSV files, Excel workbooks) and Markdown: in tabs of
   // their own (sheetdoc.h, markdowndoc.h), whatever the text editor of
   // the settings.
-  if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isArchiveFile(absolutePath)) {
+  if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isArchiveFile(absolutePath)
+      || isLayoutFile(absolutePath)) {
     openTextOrSchematicTab(absolutePath);
     return;
   }
@@ -5402,6 +5429,14 @@ bool QucsApp::isArchiveDocument(QWidget *w) {
 
 bool QucsApp::isArchiveFile(const QString &name) {
   return QFileInfo(name).suffix().compare(QLatin1String("zip"), Qt::CaseInsensitive) == 0;
+}
+
+bool QucsApp::isLayoutDocument(QWidget *w) {
+  return w != nullptr && w->inherits("LayoutDoc");
+}
+
+bool QucsApp::isLayoutFile(const QString &name) {
+  return qucs_s::layout::isLayoutFile(name);
 }
 
 bool QucsApp::isMarkdownFile(const QString &name) {

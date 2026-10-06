@@ -567,6 +567,20 @@ const char* const kTools = R"JSON([
 {"name": "read_pdf",
  "description": "Reads the text of a PDF - a datasheet, an application note, a report - page by page, for example to take a model's parameters or a table's values from it. 'path' is relative to the project, otherwise the workspace (the PDF in front if not given); 'pages' is [3, 4], \"2-5\" or 7 (the first 3 by default); 'search' finds a word or value on every page (or those given) and returns the lines around each hit. A scanned page has no text: a screenshot of its tab shows it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\" or 7; the first 3 by default (with 'search', all)"}, "search": {"type": "string", "description": "A word or value to find: the lines around each hit"}}}},
+{"name": "get_layout",
+ "description": "Reads a GDSII or OASIS layout (.gds, .gds2, .gdsii, .gds.gz, .oas, .oasis) - as its tab shows it when it is open, else from its file in the background: the format, the database unit, how many cells, shapes, texts and placements, the top cells with their bounds and size (µm) and how many levels they have, the tree of cells (each cell's cells and how often each is placed; 'depth' levels of it, 3 by default, from 'cell' or from the top cells), the layers (layer/datatype, a name from the file or a KLayout .lyp beside it, shapes and texts on each), cells placed that the file has not, what gdstk warned of, and, when it is open, what its tab shows (cell, region, levels, hidden layers). find_shapes finds its shapes, show_layout shows a part of it.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The layout, relative to the project (else the workspace); the layout in front when not given"}, "cell": {"type": "string", "description": "The tree from this cell instead of the top cells"}, "depth": {"type": "integer", "minimum": 0, "maximum": 50, "description": "Levels of the tree listed, 3 by default"}}}},
+{"name": "find_shapes",
+ "description": "Finds the shapes and texts of a GDSII or OASIS layout: in 'cell' (the one its tab shows, else the largest top cell) and the cells it places, down to 'depth' levels (all by default), each in that cell's coordinates in µm. 'at' [x, y] gives those under a point; 'region' [x1, y1, x2, y2] those that meet it; 'layer' keeps one layer or several: \"1/0\", \"1\" (any datatype), a layer's name, or a list. Each comes with its kind (polygon, path, text), layer, the cell it is in and the cells it is placed through ('via'), its points and bounds (a path: its width, spine and ends; a text: its text and place), which copy of a repetition it is, and its properties. 'limit' (50 by default, 1000 at most) lists that many; 'found' counts them all (to 100000).",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The layout, relative to the project (else the workspace); the layout in front when not given"}, "cell": {"type": "string", "description": "The cell searched; the one its tab shows, else the largest top cell"},
+   "at": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[x, y] in µm: the shapes under this point"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] in µm: the shapes that meet it"},
+   "layer": {"description": "\"1/0\", \"1\" (any datatype), a layer's name, or a list of them"}, "depth": {"type": "integer", "minimum": 0, "description": "Levels below the cell looked into; all by default (0: its own shapes)"},
+   "texts": {"type": "boolean", "description": "Texts too (true by default)"}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many are listed, 50 by default"}}}},
+{"name": "show_layout",
+ "description": "Opens a GDSII or OASIS layout in its tab (or brings it to the front) and shows what is asked: 'cell' (shown whole), 'region' [x1, y1, x2, y2] in µm, 'layers' shown (the others hidden: \"1/0\", \"1\", a name, a list, or \"all\"), 'depth' levels of the hierarchy drawn (\"all\", or a number: deeper cells as their frames), 'texts' on or off. Returns what the tab shows then and what it drew; screenshot takes a picture of it.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The layout, relative to the project (else the workspace); the layout in front when not given"}, "cell": {"type": "string", "description": "The cell shown, whole unless 'region' says"},
+   "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] in µm, shown as large as the tab takes it"}, "layers": {"description": "The layers shown, the others hidden: \"1/0\", \"1\", a name, a list of them, or \"all\""},
+   "depth": {"description": "Levels of the hierarchy drawn: \"all\" or a number (0: the cell's own shapes, the cells it places as frames)"}, "texts": {"type": "boolean", "description": "The texts shown or not"}}}},
 {"name": "describe_part",
  "description": "What a library part is, in one call: its pins in order, each with its name, the side of the symbol it is on and its role (input, output, supply); its supply pins; what its model is - one component placed as that component, a macromodel of controlled sources, a transistor-level subcircuit - with the count of its elements; how the test of every library part under ngspice found it; its description; and 'place' for add_component. find_library_component finds the part.",
  "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "The library, as find_library_component gives it: OpAmps"}, "part": {"type": "string", "description": "The part in it: uA741"}}, "required": ["library", "part"]}},
@@ -738,6 +752,7 @@ const struct {
     const char* action;
 } kActions[] = {
     {"open_document", QT_TRANSLATE_NOOP("QucsControl", "open a document in Qucs-S")},
+    {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "show a layout in Qucs-S")},
     {"new_document", QT_TRANSLATE_NOOP("QucsControl", "open a new document in Qucs-S")},
     {"save_document", QT_TRANSLATE_NOOP("QucsControl", "save a document in Qucs-S")},
     {"close_document", QT_TRANSLATE_NOOP("QucsControl", "close a document in Qucs-S")},
@@ -809,14 +824,16 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
                                  "read_pdf", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
                                  "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
-                                 "ngspice_commands", "list_libraries", "line_calc", "receiver_budget"};
+                                 "ngspice_commands", "list_libraries", "line_calc", "receiver_budget", "get_layout",
+                                 "find_shapes"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
 // changed or taken away - a simulation writes its dataset anew, which it
 // can do again.
 const char* const kAdditive[] = {"add_component", "add_wire", "connect", "set_label", "add_diagram", "add_trace", "add_marker",
                                  "add_painting", "add_analysis", "new_document", "open_document", "new_project", "open_project",
-                                 "simulate", "synthesize_filter", "synthesize_attenuator", "synthesize_matching", "synthesize_power_combiner"};
+                                 "simulate", "synthesize_filter", "synthesize_attenuator", "synthesize_matching", "synthesize_power_combiner",
+                                 "show_layout"};
 
 // Each tool's description in the tool list: a summary (the list is in
 // every turn); describe_tool gives the whole of it.
@@ -826,7 +843,7 @@ const struct {
 } kSummaries[] = {
     {"get_state", QT_TRANSLATE_NOOP("QucsControl", "Returns the state of the Qucs-S window: panes, open documents (each with its revision and who edited it last), the simulator, the open project, a running simulation and any open dialog. Start here.")},
     {"move_to_pane", QT_TRANSLATE_NOOP("QucsControl", "Moves a document to another pane (a number from get_state, or \"right\" or \"below\") to show documents side by side.")},
-    {"open_document", QT_TRANSLATE_NOOP("QucsControl", "Opens a file in a tab (schematic, symbol, data display, text, netlist or PDF), or brings it to the front if it is already open. Warns when a component line has more values than its type.")},
+    {"open_document", QT_TRANSLATE_NOOP("QucsControl", "Opens a file in a tab (schematic, symbol, data display, text, netlist, PDF or layout), or brings it to the front if it is already open. Warns when a component line has more values than its type.")},
     {"new_document", QT_TRANSLATE_NOOP("QucsControl", "Creates an untitled schematic or text document, or opens a schematic's data display (.dpl) for plots.")},
     {"show_document", QT_TRANSLATE_NOOP("QucsControl", "Brings an open document to the front.")},
     {"save_document", QT_TRANSLATE_NOOP("QucsControl", "Saves a document, or saves it under a new name with 'as'. Reports which open schematics picked up a changed subcircuit symbol.")},
@@ -897,6 +914,9 @@ const struct {
     {"build_verilog_a", QT_TRANSLATE_NOOP("QucsControl", "Compiles a Verilog-A file with OpenVAF, reporting each error with its line and column.")},
     {"tune", QT_TRANSLATE_NOOP("QucsControl", "Adjusts a component value, simulating and measuring until a measurement reaches its target (or measures a table of values).")},
     {"read_pdf", QT_TRANSLATE_NOOP("QucsControl", "Reads the text of a PDF, such as a datasheet, page by page.")},
+    {"get_layout", QT_TRANSLATE_NOOP("QucsControl", "Reads a GDSII or OASIS layout: its units, top cells, tree of cells and layers with their shape counts.")},
+    {"find_shapes", QT_TRANSLATE_NOOP("QucsControl", "Finds the shapes and texts of a GDSII or OASIS layout at a point, in a region or on a layer, with their points in µm.")},
+    {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "Shows a cell, a region or some layers of a GDSII or OASIS layout in its tab, for a screenshot.")},
     {"get_text", QT_TRANSLATE_NOOP("QucsControl", "Reads a text tab (.cir, .va, ...) with its unsaved edits, line by line.")},
     {"edit_text", QT_TRANSLATE_NOOP("QucsControl", "Edits a text tab as one undo step, keeping the user's unsaved edits.")},
     {"goto_line", QT_TRANSLATE_NOOP("QucsControl", "Shows a line of a text tab, the cursor there.")},
@@ -959,6 +979,9 @@ const struct {
     {"stop_simulation", "stop abort cancel kill simulation run background"},
     {"send_input", "click mouse keyboard keys type drag double click raw input shortcut press reproduce"},
     {"read_help", "help documentation manual docs whats this tutorial examples paper"},
+    {"get_layout", "gds gdsii oasis oas layout chip mask cells hierarchy layers database unit klayout"},
+    {"find_shapes", "gds gdsii oasis layout polygon path shape text label at point region layer measure width coordinates"},
+    {"show_layout", "gds gdsii oasis layout view show cell region zoom layers hide depth hierarchy screenshot klayout"},
     {"synthesize_filter", "filter synthesis design lowpass highpass bandpass bandstop chebyshev butterworth bessel elliptic cauer lc ladder active sallen key"},
     {"synthesize_attenuator", "attenuator pad pi tee resistive synthesis design dB"},
     {"synthesize_matching", "matching network circuit impedance l-section stub quarter wave smith conjugate amplifier"},
@@ -1946,6 +1969,7 @@ QString kindOf(QucsDoc* doc)
     if (QucsApp::isPdfDocument(QucsApp::documentWidget(doc))) return QStringLiteral("pdf");
     if (QucsApp::isSheetDocument(QucsApp::documentWidget(doc))) return QStringLiteral("spreadsheet");
     if (QucsApp::isArchiveDocument(QucsApp::documentWidget(doc))) return QStringLiteral("archive");
+    if (QucsApp::isLayoutDocument(QucsApp::documentWidget(doc))) return QStringLiteral("layout");
     const QString suffix = QFileInfo(doc->getDocName()).suffix().toLower();
     if (suffix == QLatin1String("dpl")) return QStringLiteral("data display");
     if (suffix == QLatin1String("sym")) return QStringLiteral("symbol");
@@ -3622,6 +3646,8 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
             subject += tr(": %n edit(s)", "", int(a.value(QLatin1String("edits")).toArray().size()));
         else if (tool == QLatin1String("goto_line")) subject += tr(", line %1").arg(a.value(QLatin1String("line")).toInt());
     } else if (tool == QLatin1String("read_pdf")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
+    else if (tool == QLatin1String("get_layout") || tool == QLatin1String("find_shapes") || tool == QLatin1String("show_layout"))
+        subject = s("cell").isEmpty() ? s("path") : tr("%1 in %2").arg(s("cell"), s("path").isEmpty() ? tr("the layout in front") : s("path"));
     else if (tool == QLatin1String("find_library_component")) subject = (s("type") + QLatin1Char(' ') + s("search")).trimmed();
     else if (tool == QLatin1String("describe_part")) subject = s("library") + QLatin1Char('/') + s("part");
     else if (tool == QLatin1String("list_libraries")) subject = s("library");
@@ -3696,7 +3722,9 @@ QString QucsControl::instructions() const
         "write the library's own file), and taken away with its model when no "
         "schematic uses the device; a part named by its library's name is taken from the first library of that name that "
         "has the part (of two that have it, the one the project linked its Verilog-A from: check_schematic warns which); "
-        "read_pdf reads a datasheet's text; "
+        "read_pdf reads a datasheet's text; get_layout reads a GDSII or OASIS layout (its cells, layers and units), "
+        "find_shapes finds its shapes at a point, in a region or on a layer, and show_layout shows a cell, region or layers "
+        "of it in its tab, for a screenshot; "
         "get_text and edit_text read and edit a text tab (a netlist, a .va) with the user's unsaved edits, goto_line "
         "shows a line of it; "
         "import_netlist builds a schematic from a SPICE netlist; import_data brings a data file (CSV, a workbook, NumPy, "
@@ -4287,7 +4315,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
         QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help"),
-        QStringLiteral("list_libraries")};
+        QStringLiteral("list_libraries"), QStringLiteral("get_layout"), QStringLiteral("find_shapes")};
     // (send_input with 'target' dialog: the dialog's own clicks and keys.)
     const bool intoTheDialog = tool == QLatin1String("send_input")
                                && args.value(QLatin1String("target")).toString().trimmed().compare(QLatin1String("dialog"), Qt::CaseInsensitive) == 0;
@@ -4454,6 +4482,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     else if (tool == QLatin1String("send_input")) sendInput(args, done);
     else if (tool == QLatin1String("build_verilog_a")) buildVerilogA(args, done);
     else if (tool == QLatin1String("tune")) tune(args, done);
+    else if (tool == QLatin1String("get_layout")) getLayout(args, done);
+    else if (tool == QLatin1String("find_shapes")) findShapes(args, done);
+    else if (tool == QLatin1String("show_layout")) showLayout(args, done);
     else {
         async = false;
         return errorResult(tr("There is no tool %1.").arg(tool));
@@ -10148,6 +10179,9 @@ QString kindOfFile(const QString& name, QString* simulator = nullptr)
         {QStringLiteral("spice"), QStringLiteral("netlist")},  {QStringLiteral("cdl"), QStringLiteral("netlist")},
         {QStringLiteral("lib"), QStringLiteral("netlist")},    {QStringLiteral("inc"), QStringLiteral("netlist")},
         {QStringLiteral("mod"), QStringLiteral("netlist")},    {QStringLiteral("va"), QStringLiteral("verilog-a")},
+        {QStringLiteral("gds"), QStringLiteral("layout")},     {QStringLiteral("gds2"), QStringLiteral("layout")},
+        {QStringLiteral("gdsii"), QStringLiteral("layout")},   {QStringLiteral("oas"), QStringLiteral("layout")},
+        {QStringLiteral("oasis"), QStringLiteral("layout")},
         {QStringLiteral("pdf"), QStringLiteral("pdf")},        {QStringLiteral("md"), QStringLiteral("markdown")},
         {QStringLiteral("markdown"), QStringLiteral("markdown")}, {QStringLiteral("csv"), QStringLiteral("spreadsheet")},
         {QStringLiteral("tsv"), QStringLiteral("spreadsheet")}, {QStringLiteral("xlsx"), QStringLiteral("spreadsheet")},

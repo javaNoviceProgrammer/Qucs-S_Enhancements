@@ -16,7 +16,8 @@ bool opensItself(const QString& path)
 {
     static const QStringList ours = {"md", "markdown", "sch", "dpl", "sym", "txt", "csv", "tsv", "xlsx", "xlsm",
                                      "cir", "net", "sp", "spice", "lib", "inc", "mod", "ckt", "va", "v", "sv",
-                                     "vhd", "vhdl", "m", "py", "json", "xml", "pdf", "log", "zip"};
+                                     "vhd", "vhdl", "m", "py", "json", "xml", "pdf", "log", "zip", "gds",
+                                     "gds2", "gdsii", "oas", "oasis"};
     return ours.contains(QFileInfo(path).suffix().toLower());
 }
 
