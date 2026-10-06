@@ -14,6 +14,7 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -75,6 +76,9 @@ class TestWishlistTools : public QObject
         return out;
     }
     // With ngspice, for the tests that simulate: false when there is none.
+    // A machine with no font measures every text as nothing, drawn over
+    // nothing (as test_symbol_tools' pin names).
+    static bool noFont() { return QFontMetrics(QucsSettings.font).height() <= 0; }
     bool withNgspice()
     {
         const QString ngspice = QStandardPaths::findExecutable("ngspice");
@@ -128,6 +132,13 @@ private slots:
         QucsSettings.qucsWorkspaceDir.setPath(dir.filePath("workspace"));
         QucsSettings.QucsWorkDir.setPath(dir.filePath("workspace"));
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
+        // The fonts as main() sets them: a part's texts are measured in
+        // QucsSettings.font, and the QFont made before the application,
+        // left as it was, measures nothing on Linux.
+        QucsSettings.font = QApplication::font();
+        QucsSettings.appFont = QApplication::font();
+        QucsSettings.textFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        QucsSettings.font.setPointSize(12);
         Module::registerModules();
         app = new QucsApp(false);
         QucsMain = app;
@@ -235,6 +246,7 @@ private slots:
     // op-amp's name in its triangle's empty corner none.
     void textsOverSomethingAreNoted()
     {
+        if (noFont()) QSKIP("this platform has no font to measure a text with");
         QVERIFY(writeFile(path("overlap.sch"),
                           schematicText("<R R1 1 200 200 -26 15 0 0 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"US\" 0>\n"
                                         "<OpAmp OP1 1 500 200 6 22 0 0 \"1e6\" 1 \"15 V\" 0>\n"
@@ -258,21 +270,29 @@ private slots:
         QCOMPARE(wireNote.value("over").toArray(), (QJsonArray{189, 219, 191, 291}));
         // R2's and R3's texts over each other: said once.
         QCOMPARE(texts, 1);
-        // The letters, not the room after them in their line's box: a wire
-        // down beside R1's name, within the box but past its last letter -
-        // none; through the letters, one.
+        // The letters, not the room around them in their line's box: a wire
+        // within R1's name's box but past its last letter, or under its
+        // letters in the line's descent - none; through the letters, one.
+        // (Which room a font leaves differs: DejaVu Sans, Linux's, leaves
+        // little after "R1"; every font leaves its descent under it.)
         {
             Component* r1 = front()->getComponentByName("R1");
             const QRect name = qucs_s::textplace::textBoxes(r1).first(), ink = qucs_s::textplace::inkBoxes(r1).first();
-            const int beside = (ink.right() + name.right() + 1) / 2;
-            if (name.right() - ink.right() < 4) QSKIP("this font leaves no room after the name's letters");
             const QString r = QStringLiteral("<R R1 1 200 200 -26 15 0 0 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"US\" 0>\n");
-            // (Down to the name's line, not the value's under it.)
-            const auto wire = [&](int x) { return QStringLiteral("<%1 %2 %1 %3 \"\" 0 0 0 \"\">\n").arg(x).arg(name.top() - 6).arg(name.bottom() - 3); };
-            QVERIFY(writeFile(path("ink.sch"), schematicText(r, wire(beside))));
+            // Down beside the name, to its line only, not the value's under it.
+            const auto down = [&](int x) { return QStringLiteral("<%1 %2 %1 %3 \"\" 0 0 0 \"\">\n").arg(x).arg(name.top() - 6).arg(name.bottom() - 3); };
+            // Across from the left, under the letters, ending under them.
+            const auto across = [&](int y) { return QStringLiteral("<%1 %2 %3 %2 \"\" 0 0 0 \"\">\n").arg(name.left() - 10).arg(y).arg(ink.right() - 1); };
+            QString clear;
+            if (name.right() - ink.right() >= 4) clear = down((ink.right() + name.right() + 1) / 2);
+            else if (name.bottom() - ink.bottom() >= 3) clear = across((ink.bottom() + name.bottom() + 1) / 2);
+            QVERIFY2(!clear.isEmpty(), qPrintable(QStringLiteral("no room in the line's box beside or under the letters: %1 in %2")
+                                                      .arg(QString::number(ink.right()) + "," + QString::number(ink.bottom()),
+                                                           QString::number(name.right()) + "," + QString::number(name.bottom()))));
+            QVERIFY(writeFile(path("ink.sch"), schematicText(r, clear)));
             QVERIFY(!failed(call("open_document", {{"path", path("ink.sch")}})));
             QVERIFY2(!overlapNotes("ink.sch").join(" ").contains("R1's text"), qPrintable(overlapNotes("ink.sch").join("\n")));
-            QVERIFY(writeFile(path("ink2.sch"), schematicText(r, wire((ink.left() + ink.right()) / 2))));
+            QVERIFY(writeFile(path("ink2.sch"), schematicText(r, down((ink.left() + ink.right()) / 2))));
             QVERIFY(!failed(call("open_document", {{"path", path("ink2.sch")}})));
             QVERIFY2(overlapNotes("ink2.sch").join(" ").contains("R1's text overlaps the wire"), qPrintable(overlapNotes("ink2.sch").join("\n")));
             QVERIFY(!failed(call("show_document", {{"path", path("overlap.sch")}})));
@@ -287,6 +307,7 @@ private slots:
     // moving; one clear stays where it is.
     void autoTextGoesClear()
     {
+        if (noFont()) QSKIP("this platform has no font to measure a text with");
         QVERIFY(writeFile(path("auto.sch"),
                           schematicText("<R R1 1 200 200 -26 15 0 0 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"US\" 0>\n"
                                         "<R R2 1 500 200 -26 15 0 0 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"US\" 0>\n",
@@ -327,6 +348,7 @@ private slots:
     // the nearest free spot - as Cvcc beside VCC, the 1 October tidying.
     void aNewPartsTextGoesClear()
     {
+        if (noFont()) QSKIP("this platform has no font to measure a text with");
         QVERIFY(writeFile(path("supply.sch"), schematicText("<Vdc VCC 1 640 120 -62 -26 0 1 \"15 V\" 1>\n<GND * 1 640 150 0 0 0 0>\n")));
         QVERIFY(!failed(call("open_document", {{"path", path("supply.sch")}})));
         // Its text where the type puts it, given: on VCC's symbol, noted.
@@ -351,6 +373,7 @@ private slots:
     // none after - parts and wires as they were, every net too.
     void arrangeLabelsMovesOnlyTexts()
     {
+        if (noFont()) QSKIP("this platform has no font to measure a text with");
         QStringList lines{"board", "V1 n0 0 DC 5"};
         for (int i = 1; i < 30; ++i)
             lines << QStringLiteral("%1%2 n%3 n%2 %4").arg(QString("RCL").at(i % 3)).arg(i).arg((i - 1) / 2).arg(QStringList{"1k", "10n", "1u"}.at(i % 3));
@@ -389,6 +412,7 @@ private slots:
     // said with the y that clears it, and noted by check_schematic.
     void diagramsBelowEachOtherKeepClear()
     {
+        if (noFont()) QSKIP("this platform has no font to measure a text with");
         QVERIFY(!failed(call("import_netlist", {{"text", "rc\nV1 in 0 DC 0 AC 1\nR1 in out 1k\nC1 out 0 1n\n.ac dec 10 1k 1meg\n.end"},
                                                 {"save_as", path("plots.sch")}})));
         QJsonObject one = json(call("add_diagram", {{"path", "plots.sch"}, {"traces", QJsonArray{"ac.v(out)"}}, {"title", "Output"},
@@ -575,7 +599,8 @@ private slots:
         r = call("synthesize_matching", {{"f", 1e9}, {"s", QJsonObject{{"s11", "0.9"}, {"s12", "0.5"}, {"s21", "3"}, {"s22", "0.9"}}}});
         QVERIFY2(failed(r) && text(r).contains("not unconditionally stable (K ="), qPrintable(text(r)));
         if (!withNgspice()) QSKIP("no ngspice here: designed, not simulated");
-        QVERIFY(json(call("simulate", {{"path", "match.sch"}})).value("succeeded").toBool());
+        r = call("simulate", {{"path", "match.sch"}});
+        QVERIFY2(json(r).value("succeeded").toBool(), qPrintable(text(r)));
         const double s11 = at("match.sch", "S11_dB", 9e8);
         QVERIFY2(s11 < -20.0, qPrintable(QString::number(s11)));
     }
