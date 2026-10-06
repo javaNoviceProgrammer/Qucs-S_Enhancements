@@ -597,6 +597,27 @@ private slots:
         QVERIFY2(failed(r) && text(r).contains("gian"), qPrintable(text(r) + QJsonDocument(r).toJson()));
     }
 
+    // The programs of an app bundle are in its Contents/MacOS/bin, wherever
+    // the bundle is: a "bin" above it (the repository's bin/macos, a user
+    // called robin) once made Contents/MacOS the programs' folder, and no
+    // program - Tools' nor these tools' - was found.
+    void theProgramsAreFoundWhereverTheAppIs()
+    {
+        const auto bundle = [](const QString& app) {
+            QDir dir(app);   // (as main() makes it on macOS)
+            return misc::binDirOf(app, dir);
+        };
+        QCOMPARE(bundle("/Applications/qucs-s.app/Contents/MacOS"), QString("/Applications/qucs-s.app/Contents/MacOS/bin/"));
+        QCOMPARE(bundle("/Users/robin/Applications/qucs-s.app/Contents/MacOS"),
+                 QString("/Users/robin/Applications/qucs-s.app/Contents/MacOS/bin/"));
+        QCOMPARE(bundle("/Users/x/git/q/bin/macos/qucs-s.app/Contents/MacOS"),
+                 QString("/Users/x/git/q/bin/macos/qucs-s.app/Contents/MacOS/bin/"));
+        // A prefix install: the programs beside it in prefix/bin.
+        QDir prefix("/usr/local/bin");
+        prefix.cdUp();
+        QCOMPARE(misc::binDirOf("/usr/local/bin", prefix), QString("/usr/local/bin") + QDir::separator());
+    }
+
     // A design into a schematic open, at x, y: one step to undo; its ports
     // numbered on from those there, said.
     void aDesignGoesIntoAnOpenSchematic()
