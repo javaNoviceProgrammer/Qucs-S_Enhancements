@@ -374,8 +374,13 @@ private slots:
         QVERIFY(!canChoose(open, "projUnlink"));
         QVERIFY(!canChoose(open, "projOpenRow"));
         QVERIFY(canChoose(projectsMenu(app, rowOf(app, "amp_prj")), "projOpenRow"));   // another one
-        // Close Project chosen: the open project closes.
-        projectsMenu(app, rowOf(app, "amp_prj"), "projClose");
+        // Close Project: not on another project's row - it would close the
+        // open one, not that (the wishlist of 2 October) - but on the open
+        // one's, and on no row.
+        QVERIFY(!canChoose(projectsMenu(app, rowOf(app, "amp_prj")), "projClose"));
+        QVERIFY(canChoose(projectsMenu(app, QPoint(5, below.bottom() - 2)), "projClose"));
+        // Chosen there: the open project closes.
+        projectsMenu(app, rowOf(app, "real_prj"), "projClose");
         QTRY_VERIFY(app.ProjName.isEmpty());
         QVERIFY(close->isEnabled());
         // A linked project opened from its row.

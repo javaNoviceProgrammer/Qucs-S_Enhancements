@@ -38,6 +38,7 @@
 #include "ngstatistics.h"
 #include "ngsweep.h"
 #include "textdoc.h"
+#include "textplacement.h"
 #include "vamodule.h"
 #include "wire.h"
 #include "wirelabel.h"
@@ -110,7 +111,7 @@ namespace {
 // The tools, as MCP's tools/list gives them.
 const char* const kTools = R"JSON([
 {"name": "get_state",
- "description": "Returns the state of the Qucs-S window. Panes: each pane's number, row, column, rectangle and documents, with the active one marked (move_to_pane rearranges them). Documents: path, title, kind, whether it has unsaved changes, whether it is in front, its pane, its revision (a counter of every edit, undo and reload, by anyone), who made the last edit (you, the user, another conversation, or its file changed on disk and loaded again) and when its dataset was last written. Also the simulator chosen in the settings, the workspace folder, the open project ('project': its name and folder, null when none is open; relative paths are resolved against its folder), any simulation in progress, the simulations followed in the background (their ids) and any dialog waiting for an answer. Start here. Every tool result also reports what changed since your last call that you did not do yourself, such as the user's edits or a simulation the user ran.",
+ "description": "Returns the state of the Qucs-S window. Panes: each pane's number, row, column, rectangle and documents, with the active one marked (move_to_pane rearranges them). Documents: path, title, kind, whether it has unsaved changes, whether it is in front, its pane, its revision (a counter of every edit, undo and reload, by anyone), who made the last edit (you, the user, another conversation, or its file changed on disk and loaded again) and when its dataset was last written. Also the simulator chosen in the settings, the workspace folder, the open project ('project': its name and folder, null when none is open; relative paths are resolved against its folder - one is open at a time), the workspace's projects ('projects', the open one marked; each document's 'project' is the one its file is in, and 'project not open' says when that is not the open one), any simulation in progress, the simulations followed in the background (their ids) and any dialog waiting for an answer. Start here. Every tool result also reports what changed since your last call that you did not do yourself, such as the user's edits or a simulation the user ran.",
  "inputSchema": {"type": "object", "properties": {}}},
 {"name": "move_to_pane",
  "description": "Moves a document (the one in front unless 'path' names another) to another pane, to show documents side by side. 'pane' is a pane number from get_state, or \"right\" or \"below\" for a new pane next to the document's current one (at most two panes per row, and two rows). Returns the state with the panes.",
@@ -151,28 +152,30 @@ const char* const kTools = R"JSON([
  "description": "Explains the lines of a .sch file field by field - a component, a wire, a diagram (all of its roughly 30 fields), a trace, a marker, a painting - as set_schematic accepts them and get_schematic's format 'text' returns them. For paintings it also lists the fields add_painting and edit_painting accept, type by type. Without 'element', it explains all of them.",
  "inputSchema": {"type": "object", "properties": {"element": {"type": "string", "enum": ["component", "wire", "diagram", "trace", "marker", "painting"], "description": "The kind of line explained (all of them when not given)"}}}},
 {"name": "add_component",
- "description": "Places a library component at x, y (snapped to the grid). 'type' is its model - R, C, L, GND, Vdc, Vac, Idc, Iac, Diode, _BJT, _MOSFET, OpAmp, Sub, .DC, .AC, .TR, .SP and many more (list_component_types lists them all). Properties go by name, as get_schematic shows them, for example {\"R\": \"4.7k\"}. 'rotation' is in quarter turns from the type's own orientation, as Rotate turns it; 'mirror' mirrors it about the x axis; 'shown' chooses which properties are written on the schematic; 'name_shown' and 'text_at' control its name and where its text goes. An equation block (Eqn, NutmegEq, .PARAM, .OPTIONS, ...) takes 'equations' - they replace its placeholder y=1; an .OPTIONS block takes options without a value (noinit) as 'flags'; an ngspice Monte Carlo (.NGMONTECARLO) or corners block takes 'records' and 'specs'. Returns the component with its pin positions, its equations if it is an equation block, a note on a common mistake with its type, and a note when a pin landed on a wire or another pin (it is then connected to it) or on another net's wire without connecting.",
+ "description": "Places a library component at x, y (snapped to the grid). 'type' is its model - R, C, L, GND, Vdc, Vac, Idc, Iac, Diode, _BJT, _MOSFET, OpAmp, Sub, .DC, .AC, .TR, .SP and many more (list_component_types lists them all). Properties go by name, as get_schematic shows them, for example {\"R\": \"4.7k\"}. 'rotation' is in quarter turns from the type's own orientation, as Rotate turns it - or, for a part of two pins, 'pin1' says where pin 1 goes (top, bottom, left, right) and the turn is found; 'mirror' mirrors it about the x axis; 'shown' chooses which properties are written on the schematic; 'name_shown' and 'text_at' control its name and where its text goes. An equation block (Eqn, NutmegEq, .PARAM, .OPTIONS, ...) takes 'equations' - they replace its placeholder y=1; an .OPTIONS block takes options without a value (noinit) as 'flags'; an ngspice Monte Carlo (.NGMONTECARLO) or corners block takes 'records' and 'specs'. Returns the component with its pin positions, its equations if it is an equation block, a note on a common mistake with its type, and a note when a pin landed on a wire or another pin (it is then connected to it) or on another net's wire without connecting. Its text goes where its type puts it when that is clear, else to the nearest free spot beside it ('text' says where, or that none was free); 'text_at' puts it yourself.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "type": {"type": "string", "description": "Its model: R, C, L, GND, Vdc, Vac, Diode, _BJT, OpAmp, Sub, .TR, .AC, ... (list_component_types)"}, "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10)"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10)"}, "near": {"type": "object", "properties": {"part": {"type": "string"}, "side": {"type": "string", "enum": ["above", "below", "left", "right"]}, "gap": {"type": "integer", "minimum": 0}}, "description": "Instead of x, y: beside another part - {\"part\": \"U1\", \"side\": \"below\", \"gap\": 40}, the room between their symbols (40 unless given), centred on it across that side"},
    "name": {"type": "string", "description": "Its name; the next free one (R1, R2, ...) when not given"},
    "properties": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}, "description": "Values by property name, as get_schematic and describe_component_type show them: {\"R\": \"4.7k\"}; the others stay at the type's defaults. A number with letters after it that are no scale and unit (1kk) is refused. A property a block has any number of - .NGOPT's Knob, Target and Constraint, NgSweep's Record and Vs, a Monte Carlo's Record and Spec, an optimization's Var and Goal - takes a list of its values: {\"Knob\": [\"dparam|Cp|20p|5p|100p\", \"dparam|Lp|100n|20n|500n\"]} (describe_component_type gives each one's fields)"},
    "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3"}, "mirror": {"type": "boolean", "description": "Mirrored about the x axis"},
+   "pin1": {"type": "string", "enum": ["top", "bottom", "left", "right"], "description": "Instead of 'rotation', for a part of two pins: the side of its centre its pin 1 goes to - a capacitor from a node above to ground below is pin1 top - turned so, with no table of rotations"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"R\": true, \"Temp\": false}"},
-   "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": ["array", "object"], "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
+   "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"anyOf": [{"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}, {"type": "string", "enum": ["auto"]}], "description": "Where its text begins (the top left corner), [dx, dy] from its centre - or \"auto\": the nearest spot beside it where it is drawn over nothing (the right, the left, below, above), when where it is is not"}, "equations": {"type": ["array", "object"], "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
    "flags": {"type": "array", "items": {"type": "string"}, "description": "An ngspice .OPTIONS block's (SpiceOptions) options with no value, each written alone: [\"noinit\", \"keepopinfo\"] - as {\"noinit\": true} in 'equations'"},
    "replace_equations": {"type": "boolean", "description": "The equations become exactly the 'equations' and 'flags' given with it (else each given is set or added); alone it is refused"},
    "records": {"type": "array", "items": {}, "description": "An ngspice Monte Carlo's or corners' values recorded for each sample: [{\"name\": \"gain\", \"expression\": \"db(v(out))\"}] or \"gain|db(v(out))\" - the list it records"},
    "specs": {"type": "array", "items": {}, "description": "Their limits: [{\"expression\": \"gain\", \"min\": \"19\", \"max\": \"21\"}] (one limit may be left out) or \"gain|19|21\" - a sample passes within all"}},
    "required": ["type", "x", "y"]}},
 {"name": "edit_component",
- "description": "Changes a component; whatever is not given stays as it is. You can change its properties (by name), its name, its position (x, y: where its center goes), its rotation (0-3 quarter turns from the type's own orientation, as get_schematic reports it), mirroring, whether it is active (an inactive part is left out of the simulation), and its text: 'shown' chooses which properties are written on the schematic ({\"Is\": false} hides one, with no need to rewrite its line with set_schematic), 'name_shown', and 'text_at' ([dx, dy] from its center, where its text begins, to move it off another part). An equation block's 'equations' are changed by name: each one given is set or added, {\"k\": null} removes k, and 'replace_equations' makes the list exactly those given; an .OPTIONS option without a value is a flag ('flags'). A Monte Carlo or corners block's 'records' and 'specs' replace its lists. 'rename' renames the part, and the traces, equations and markers that refer to it follow (i(V1), V1.It, @R1[i], R1's parameters in an equation), as rename_net does for a net. When the part is turned or moved, the circuit stays the same: its pins are wired again to the nets they were on, and other nets' wires under its new pin positions are moved out of the way. A change that cannot keep every net as it was is not made, and the error says why. A pin with nothing connected that lands on another part's pin joins that pin's net, and the result's 'note' says so. The answer lists an equation block's equations as they are afterwards. A ground is named by its ref (GND#2): it can be turned and moved, and the answer gives its ref, which may change.",
+ "description": "Changes a component; whatever is not given stays as it is. You can change its properties (by name), its name, its position (x, y: where its center goes), its rotation (0-3 quarter turns from the type's own orientation, as get_schematic reports it), mirroring, whether it is active (an inactive part is left out of the simulation), and its text: 'shown' chooses which properties are written on the schematic ({\"Is\": false} hides one, with no need to rewrite its line with set_schematic), 'name_shown', and 'text_at' ([dx, dy] from its center, where its text begins, to move it off another part - or \"auto\": the nearest spot beside it where it is drawn over nothing; check_schematic notes each text drawn over something). Moved, turned or with its texts changed, a part whose text is then drawn over something says so ('text'). An equation block's 'equations' are changed by name: each one given is set or added, {\"k\": null} removes k, and 'replace_equations' makes the list exactly those given; an .OPTIONS option without a value is a flag ('flags'). A Monte Carlo or corners block's 'records' and 'specs' replace its lists. 'rename' renames the part, and the traces, equations and markers that refer to it follow (i(V1), V1.It, @R1[i], R1's parameters in an equation), as rename_net does for a net. When the part is turned or moved, the circuit stays the same: its pins are wired again to the nets they were on, and other nets' wires under its new pin positions are moved out of the way. A change that cannot keep every net as it was is not made, and the error says why. A pin with nothing connected that lands on another part's pin joins that pin's net, and the result's 'note' says so. The answer lists an equation block's equations as they are afterwards. A ground is named by its ref (GND#2): it can be turned and moved, and the answer gives its ref, which may change.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "name": {"type": "string", "description": "The part: its name, or a ground by its ref (GND when there is one, GND#2 the second of several, as get_schematic gives it)"}, "rename": {"type": "string", "description": "Its new name; the traces, equations and markers that name it follow"},
    "properties": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}, "description": "Values to change, by property name: {\"R\": \"10k\"}; the rest stay. A number with letters after it that are no scale and unit (1kk) is refused. A property a block has any number of (.NGOPT's Knob, Target and Constraint, ...) takes a list: it replaces every one of that name"},
    "x": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "y": {"type": "integer", "description": "Where its centre goes, in schematic units, on the grid (usually 10); its pins are wired again to their nets"}, "near": {"type": "object", "properties": {"part": {"type": "string"}, "side": {"type": "string", "enum": ["above", "below", "left", "right"]}, "gap": {"type": "integer", "minimum": 0}}, "description": "Instead of x, y: moved beside another part - {\"part\": \"U1\", \"side\": \"below\", \"gap\": 40}, the room between their symbols (40 unless given), centred on it across that side"}, "rotation": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Quarter turns from the type's own orientation, 0-3, as get_schematic gives it"},
+   "pin1": {"type": "string", "enum": ["top", "bottom", "left", "right"], "description": "Instead of 'rotation', for a part of two pins: turned so its pin 1 is on that side of its centre (its nets kept, as a rotation keeps them)"},
    "mirror": {"type": "boolean", "description": "Mirrored about the x axis"}, "active": {"type": "boolean", "description": "false leaves it out of the simulation (inactive); true puts it back"},
    "shown": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "Which properties are shown on the schematic: {\"Is\": false, \"Bf\": true}"},
-   "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where its text begins (the top left corner), [dx, dy] from its centre"}, "equations": {"type": ["array", "object"], "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
+   "name_shown": {"type": "boolean", "description": "Whether its name is written on the schematic"}, "text_at": {"anyOf": [{"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}, {"type": "string", "enum": ["auto"]}], "description": "Where its text begins (the top left corner), [dx, dy] from its centre - or \"auto\": the nearest spot beside it where it is drawn over nothing (the right, the left, below, above), when where it is is not"}, "equations": {"type": ["array", "object"], "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}, "description": "An equation block's equations (Eqn, NutmegEq, .PARAM, .OPTIONS, .FUNC, .IC, ...), as get_schematic gives them: a list of \"name=expression\" in their order, [\"gain_db=db(v(out))\", \"k=2\"]. edit_component changes those it names and keeps the rest ('replace_equations' for a whole new list); {\"k\": null} in the list takes k away. An .OPTIONS option with no value is a flag: 'flags'. The answer lists the block's equations as they are then."},
    "flags": {"type": "array", "items": {"type": "string"}, "description": "An ngspice .OPTIONS block's (SpiceOptions) options with no value, each written alone: [\"noinit\", \"keepopinfo\"] - as {\"noinit\": true} in 'equations'"},
    "replace_equations": {"type": "boolean", "description": "The equations become exactly the 'equations' and 'flags' given with it (else each given is set or added); alone it is refused"},
    "records": {"type": "array", "items": {}, "description": "An ngspice Monte Carlo's or corners' values recorded for each sample: [{\"name\": \"gain\", \"expression\": \"db(v(out))\"}] or \"gain|db(v(out))\" - the list it records"},
@@ -231,7 +234,7 @@ const char* const kTools = R"JSON([
    "diagrams": {"type": "array", "items": {"type": "integer"}, "description": "Diagrams to move along, by their numbers"}, "paintings": {"type": "array", "items": {"type": "integer"}, "description": "Paintings to move along, by their numbers"},
    "selection": {"type": "boolean", "description": "What the user selected - its parts, diagrams and paintings - instead of names"}}}},
 {"name": "arrange",
- "description": "Lays out a whole schematic again so a person can read it. The parts go in columns by signal flow: sources on the left, then each part one column to the right of the part that drives it, with room between them; a DC supply gets a column of its own on the left. Two-pin parts are turned the way schematics usually show them: in series lying down with the driving side on the left, to ground or a supply standing up with ground below. Every wire is redrawn by the same router connect uses (around the parts, never over another pin). Each piece of circuit that had a ground symbol gets one back, and net labels go back on the nets that had them. Blocks without pins (analyses, equations) go in a row below; diagrams and paintings the circuit would cover move to its right. The circuit is kept: every net is compared before and after, and if any would differ nothing changes and the answer says why. It suits a schematic built from scratch or imported; a carefully drawn one may read better as it was, and one undo step brings it back. 'wire_labels' draws wires where only labels join a net's pieces - an imported netlist's nets are labels on every pin - keeping one label for its name. 'keep_places' leaves every part where it is and draws only the wiring again; 'straighten' nudges parts a few grid steps so the wires between them run straight; 'feedback' puts an op-amp's feedback parts below (or above) it; 'supplies': labels joins the supplies by labels and each ground pin by a ground symbol instead of wires. 'preview' reports the result without keeping it.",
+ "description": "Lays out a whole schematic again so a person can read it. The parts go in columns by signal flow: sources on the left, then each part one column to the right of the part that drives it, with room between them; a DC supply gets a column of its own on the left. Two-pin parts are turned the way schematics usually show them: in series lying down with the driving side on the left, to ground or a supply standing up with ground below. Every wire is redrawn by the same router connect uses (around the parts, never over another pin). Each piece of circuit that had a ground symbol gets one back, and net labels go back on the nets that had them. Blocks without pins (analyses, equations) go in a row below; diagrams and paintings the circuit would cover move to its right. The circuit is kept: every net is compared before and after, and if any would differ nothing changes and the answer says why. It suits a schematic built from scratch or imported; a carefully drawn one may read better as it was, and one undo step brings it back. 'wire_labels' draws wires where only labels join a net's pieces - an imported netlist's nets are labels on every pin - keeping one label for its name. 'keep_places' leaves every part where it is and draws only the wiring again; 'straighten' nudges parts a few grid steps so the wires between them run straight; 'feedback' puts an op-amp's feedback parts below (or above) it; 'supplies': labels joins the supplies by labels and each ground pin by a ground symbol instead of wires. 'labels' moves only texts: each that is drawn over something, to a free spot beside its part (check_schematic notes them). 'preview' reports the result without keeping it.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"},
    "spacing": {"type": "integer", "minimum": 30, "maximum": 400, "description": "The room between parts, in the schematic's units: 60 unless given (more room is tried when the wires do not fit)"},
@@ -239,7 +242,8 @@ const char* const kTools = R"JSON([
    "keep_places": {"type": "boolean", "description": "Every part stays where it is: only the wires, ground symbols and labels are drawn again (a tidy)"},
    "straighten": {"type": "boolean", "description": "Nudge parts up to 4 grid steps, clear of the others, so the two pins of each wire between two parts line up and it runs straight; with keep_places, a tidy that finishes a drawing"},
    "feedback": {"type": "string", "enum": ["inline", "below", "above"], "description": "Where a feedback part goes - a two-pin part between two nets of one part of three pins or more (Rf from an op-amp's output to its inverting input): in the columns (inline, the default), or below or above that part, lying as its pins run"},
-   "supplies": {"type": "string", "enum": ["column", "labels"], "description": "column (the default): the supplies in a column at the left, wired; labels: a label of the supply's net on each of its pins (VCC above ground, VEE below, unless it has a name) and a ground symbol on each pin on ground - no wires for them"}}}},
+   "supplies": {"type": "string", "enum": ["column", "labels"], "description": "column (the default): the supplies in a column at the left, wired; labels: a label of the supply's net on each of its pins (VCC above ground, VEE below, unless it has a name) and a ground symbol on each pin on ground - no wires for them"},
+   "labels": {"type": "boolean", "description": "Move only texts, never a part or a wire: each part's text and each net label's that is drawn over something (a wire, a symbol, another text or label, a diagram) to the nearest free spot beside it - the right, the left, below, above; the others stay. Alone, with no other option"}}}},
 {"name": "connect",
  "description": "Draws a wire with right angles between two pins or points, along a path that runs over no other pin or wire (a wire connects to whatever it runs over): around the parts when possible, otherwise across them; 'side' makes it go round one side first, 'via' through points of yours. It joins the two nets and nothing else; if no path would, it draws nothing and explains why. A crossing of another net's wire along the way (no connection) is reported. A pin is \"R1.1\" (the component's name and the pin number, from 1, or the pin's name); a point is [x, y]. With \"ground\" (or \"gnd\") at either end, the pin gets a ground symbol of its own, placed on the pin when it fits there and otherwise a little away and wired to it.",
  "inputSchema": {"type": "object", "properties": {
@@ -300,8 +304,10 @@ const char* const kTools = R"JSON([
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}, "action": {"type": "string", "enum": ["select", "activate"]}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, [row, column, true or false] for a tree's check box, or [item or row, true or false] for a list's}]; with \"action\" select or activate, \"value\" is a row of a table, list or tree - its text or number - clicked or double-clicked"},
    "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id"}}}},
 {"name": "get_settings",
- "description": "Reads the settings of Qucs-S, typed: 'scope' app (Application Settings), simulators (Simulators Settings), document (the settings of the document 'path' names, the one in front unless given) or cdl (CDL Settings). Each setting by its key - \"Tab/Label\" as the dialog shows it (\"Settings/Language\", \"Locations/Ngspice\") - with its type (text, bool, option, choice, number, integer, table, folders - a list of folders, such as \"Locations/Library search paths\"), its value, and its choices or range. Nothing is shown or changed.",
- "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"}}, "required": ["scope"]}},
+ "description": "Reads the settings of Qucs-S, typed: 'scope' app (Application Settings), simulators (Simulators Settings), document (the settings of the document 'path' names, the one in front unless given) or cdl (CDL Settings). Each setting by its key - \"Tab/Label\" as the dialog shows it (\"Settings/Maximum undo operations\", \"Simulators/Ngspice executable location\") - with its type (text, bool, option, choice, number, integer, table, folders - a list of folders, such as \"Locations/Library search paths\"), its value, and its choices or range. 'keys' and 'search' give only some (app alone has about 70): 'keys' by key, * for any part (\"Locations/*\"), or by label alone (\"Maximum undo operations\"); 'search' those with each word in the key, value or choices (\"ngspice\"). Without 'scope', 'keys' or 'search' look through app, simulators and cdl, each setting saying its scope. Nothing is shown or changed.",
+ "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings; not given, 'keys' or 'search' looks through app, simulators and cdl"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"},
+   "keys": {"type": "array", "items": {"type": "string"}, "description": "Only these: keys (\"Simulators/Ngspice executable location\"), with * for any part (\"Locations/*\", \"*/Ngspice*\"), or labels alone (\"Maximum undo operations\"), case aside"},
+   "search": {"type": "string", "description": "Only the settings with each of these words in the key, value or choices (\"ngspice\", \"undo\")"}}}},
 {"name": "set_settings",
  "description": "Changes settings of Qucs-S by their keys (get_settings lists them): 'values' {\"Tab/Label\": new value} - or a label alone when it is one setting's. Done through the settings' own dialog, opened as its menu action opens it and applied with its own OK, so what Qucs-S does after it is done too, and its checks hold. Returns each change with what it 'was' (set_settings with it puts it back) and what it is 'now', read again; what was not done and why; what the dialog said. Claude Code's own settings are refused.",
  "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings"}, "values": {"type": "object", "description": "{\"Tab/Label\": value}: text, true or false, a number, one of its choices, or for folders the whole list of full paths ([] for none)"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"}}, "required": ["scope", "values"]}},
@@ -331,8 +337,11 @@ const char* const kTools = R"JSON([
    "text": {"type": "string", "description": "Characters typed after, into what has the focus there"},
    "pixels": {"type": "boolean", "description": "On the canvas: 'click' and 'drag_to' in the picture's pixels, not the schematic's coordinates"}}}},
 {"name": "read_help",
- "description": "Finds what this build of Qucs-S says on a topic, to answer from the help this version ships: each menu action's own help (its What's This, status tip and shortcut), the component types (describe_component_type explains one), the example schematics (open_document opens one), and any papers or tutorials it has (read_pdf reads them) - and where the online manual and Getting Started tutorial are, which are not in the build. 'topic' is words a match has all of (tuner, s-parameter, monte carlo); without it, what help there is.",
- "inputSchema": {"type": "object", "properties": {"topic": {"type": "string", "description": "Words to find: tuner, s-parameter, monte carlo; none: what help there is"}}}},
+ "description": "Finds what this build of Qucs-S says on a topic, to answer from the help this version ships: each menu action's own help (its What's This, status tip and shortcut), the component types (describe_component_type explains one), the example schematics (open_document opens one), and any papers or tutorials it has (read_pdf reads them) - and the Qucs-S manual: 'manual' fetches its text once into the cache (from qucs-s-help.readthedocs.io) and searches it by section, offline after, and 'page' gives a page whole; the Getting Started tutorial is online only. 'topic' is words a match has all of (tuner, s-parameter, monte carlo); without it, what help there is.",
+ "inputSchema": {"type": "object", "properties": {"topic": {"type": "string", "description": "Words to find: tuner, s-parameter, monte carlo; none: what help there is"},
+   "manual": {"type": "boolean", "description": "Search the Qucs-S manual (qucs-s-help.readthedocs.io): its text is fetched the first time (with curl, a few hundred KB) into Qucs-S's cache and read from there after - each section that has all the topic's words, with its page and an excerpt; once fetched, read_help searches it with every topic"},
+   "page": {"type": "string", "description": "One page of the manual whole, by its name (overview/simulation-types/index, as the sections found name them)"},
+   "refresh": {"type": "boolean", "description": "Fetch the manual again"}}}},
 {"name": "get_ui",
  "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), or the documents' tabs (tabs). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
  "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "dock:<title> or a panel's name (dock:Content), toolbar:<title>, statusbar or tabs; none: the list"}}}},
@@ -648,6 +657,74 @@ const char* const kTools = R"JSON([
 {"name": "set_simulator",
  "description": "Chooses the simulator that simulate runs and get_netlist writes for, like the toolbar's simulator list (a setting kept for next time): ngspice, xyce, spiceopus or qucsator - one that is installed. To run another one once, simulate takes 'simulator'. To compare two engines, simulate, then simulate again with 'simulator'; get_dataset with 'simulator' reads each result. Returns the simulator in use and those installed.",
  "inputSchema": {"type": "object", "properties": {"simulator": {"type": "string", "enum": ["ngspice", "xyce", "spiceopus", "qucsator"], "description": "One that is installed (the answer lists them)"}}, "required": ["simulator"]}},
+{"name": "synthesize_filter",
+ "description": "Designs a filter as Tools > Filter synthesis (an LC ladder, or lines) or Active filter synthesis does - their own calculation, run for you - and places it: in a new schematic (saved as 'save_as' when given), or in the schematic 'path' names at x, y (its top left corner; below what is there when not given), as their 'put into clipboard' and a paste would. It comes with its ports, an analysis and equations of its response (dBS21, dBS11 for an LC filter, for the simulator in the settings or 'simulator'), ready to simulate. 'kind' lc (the default) or active. 'response' bessel, butterworth, chebyshev (LC's default), cauer (elliptic); active also inverse_chebyshev and legendre (butterworth its default). 'type' lowpass (the default), highpass, bandpass, bandstop. 'fc' is the corner (a Chebyshev's -3 dB point) or the band's start, 'f2' the band's end (band-pass, band-stop). The order: 'order', or - an LC Butterworth or Chebyshev low- or high-pass - 'atten' (dB) at 'fs' finds the lowest that has it; a Cauer filter's always comes from 'atten' at 'fs', an active filter's from 'atten' at 'fs' with 'ap' (dB at fc) - a Bessel or Legendre one's is given. 'topology': LC pi (the default), tee, c_coupled_lines, microstrip_end_coupled, coupled_lines, microstrip_coupled, stepped_impedance, microstrip_stepped_impedance, quarter_wave, microstrip_quarter_wave, equation (lines: band-pass; stepped: low-pass); active sallen_key (the default), mfb, cauer. Returns its parts with their values, the order and where it is; simulate then measures it.",
+ "inputSchema": {"type": "object", "properties": {
+   "kind": {"type": "string", "enum": ["lc", "active"], "description": "lc (the default): inductors and capacitors, or lines; active: op-amps, resistors and capacitors"},
+   "response": {"type": "string", "enum": ["bessel", "butterworth", "chebyshev", "cauer", "elliptic", "inverse_chebyshev", "legendre"], "description": "The response: chebyshev for lc, butterworth for active when not given"},
+   "type": {"type": "string", "enum": ["lowpass", "highpass", "bandpass", "bandstop"], "description": "lowpass when not given"},
+   "order": {"type": "integer", "minimum": 1, "maximum": 40, "description": "Its order; else found from 'atten' at 'fs'"},
+   "fc": {"description": "Hz: the corner (low-pass, high-pass), the band's start (band-pass, band-stop) - a number or \"1 GHz\""},
+   "f2": {"description": "Hz: the band's end (band-pass, band-stop)"},
+   "fs": {"description": "Hz: where 'atten' is reached in the stop band"},
+   "ripple": {"type": "number", "description": "dB: the pass band's ripple (Chebyshev, Cauer)"},
+   "atten": {"type": "number", "description": "dB: the stop band's attenuation at fs"},
+   "impedance": {"description": "Ohms: an LC filter's terminations, 50 unless given"},
+   "gain": {"type": "number", "description": "dB: an active filter's pass band gain, 0 unless given"},
+   "ap": {"type": "number", "description": "dB: an active low- or high-pass's attenuation at fc, 3 unless given"},
+   "transition": {"description": "Hz: an active band filter's width from each band edge to where atten is reached"},
+   "topology": {"type": "string", "description": "LC: pi (the default), tee, c_coupled_lines, microstrip_end_coupled, coupled_lines, microstrip_coupled, stepped_impedance, microstrip_stepped_impedance, quarter_wave, microstrip_quarter_wave, equation; active: sallen_key (the default), mfb, cauer"},
+   "substrate": {"type": "object", "properties": {"er": {"type": "number", "description": "Relative permittivity"}, "h": {"description": "Height, metres or \"1.6 mm\""}, "t": {"description": "Metal thickness"}, "min_width": {"description": "The narrowest line"}, "max_width": {"description": "The widest line"}}, "description": "A microstrip realization's substrate"},
+   "simulator": {"type": "string", "enum": ["ngspice", "xyce", "qucsator"], "description": "Whose equations of its response it gets (and, for a combiner, what it can be made of); the settings' when not given"},
+   "path": {"type": "string", "description": "A schematic open to place it in, at x, y (else a new schematic)"}, "x": {"type": "integer", "description": "With 'path': where its top left corner goes (below what is there when x, y are not given)"}, "y": {"type": "integer", "description": "With 'path': where its top left corner goes"}, "save_as": {"type": "string", "description": "The new schematic's file, saved there"}}}},
+{"name": "synthesize_attenuator",
+ "description": "Designs a resistive attenuator as Tools > Attenuator synthesis does (its own calculation) and places it with its ports and an S-parameter analysis: in a new schematic ('save_as'), or in the one 'path' names at x, y. 'topology' pi (the default), tee, bridged_tee, reflection, quarter_wave_series, quarter_wave_shunt (at 'f'; 'lumped' for its CLC equivalent), l_pad_series_first, l_pad_shunt_first, series, shunt. 'attenuation' in dB; 'z_in' and 'z_out' in ohms (50; z_out = z_in unless given) - a pi or tee between unequal ones has a least attenuation, said when it is more. Returns each resistor's ohms and, for 'p_in' watts in, the watts each dissipates.",
+ "inputSchema": {"type": "object", "properties": {
+   "topology": {"type": "string", "enum": ["pi", "tee", "bridged_tee", "reflection", "quarter_wave_series", "quarter_wave_shunt", "l_pad_series_first", "l_pad_shunt_first", "series", "shunt"], "description": "pi when not given"},
+   "attenuation": {"type": "number", "description": "dB"}, "z_in": {"description": "Ohms, 50 unless given"}, "z_out": {"description": "Ohms, z_in unless given"},
+   "f": {"description": "Hz: a quarter-wave attenuator's frequency"}, "lumped": {"type": "boolean", "description": "A quarter-wave attenuator's line as its CLC equivalent"},
+   "r_below_z0": {"type": "boolean", "description": "A reflection attenuator's resistors below the reference (true unless false), else above it"},
+   "p_in": {"type": "number", "description": "Watts in, for the dissipation (1 mW unless given)"}, "s_parameters": {"type": "boolean", "description": "With ports and an S-parameter analysis (true unless false)"},
+   "simulator": {"type": "string", "enum": ["ngspice", "xyce", "qucsator"], "description": "Whose equations of its response it gets (and, for a combiner, what it can be made of); the settings' when not given"},
+   "path": {"type": "string", "description": "A schematic open to place it in, at x, y (else a new schematic)"}, "x": {"type": "integer", "description": "With 'path': where its top left corner goes (below what is there when x, y are not given)"}, "y": {"type": "integer", "description": "With 'path': where its top left corner goes"}, "save_as": {"type": "string", "description": "The new schematic's file, saved there"}}, "required": ["attenuation"]}},
+{"name": "synthesize_matching",
+ "description": "Designs a matching circuit as Tools > Matching Circuit does (its own calculation, in Qucs-S) and places it with its ports and an S-parameter analysis: in a new schematic ('save_as'), or in the one 'path' names at x, y. A load: 'z_load' (\"10-j20\", [10, -20] or {\"re\", \"im\"}) matched to 'z_source' (a real reference, 50 unless given) at 'f'. A two-port (an amplifier's input and output at once): 's' {\"s11\", \"s12\", \"s21\", \"s22\"} - refused, with K and |delta|, when it is not unconditionally stable. 'topology' l_section (the default), single_stub, double_stub ('stubs' open or short, 'balanced_stubs'), quarter_wave ('sections', 'weighting' binomial or chebyshev with 'max_ripple'), cascaded_l_sections ('sections'), lambda8_lambda4; 'microstrip' with a 'substrate' makes its lines microstrip. An element of no reactance is left out (10-j20 to 50 needs no series one). Returns the parts and what the calculation said (a reactive load a quarter-wave transformer matches only the real part of).",
+ "inputSchema": {"type": "object", "properties": {
+   "z_load": {"description": "The load: \"10-j20\", [10, -20], {\"re\": 10, \"im\": -20}"}, "z_source": {"description": "Ohms, real: the reference (50)"}, "z_out": {"description": "A two-port's output reference (z_source unless given)"}, "f": {"description": "Hz: the frequency it matches at"},
+   "s": {"type": "object", "description": "A two-port's S-parameters at f: {\"s11\": [re, im] or {\"mag\", \"deg\"}, \"s12\", \"s21\", \"s22\"}"},
+   "topology": {"type": "string", "enum": ["l_section", "single_stub", "double_stub", "quarter_wave", "cascaded_l_sections", "lambda8_lambda4"], "description": "l_section when not given"},
+   "stubs": {"type": "string", "enum": ["open", "short"], "description": "A stub match's stubs: open (the default) or short"}, "balanced_stubs": {"type": "boolean", "description": "Each stub as two, either side of the line"},
+   "sections": {"type": "integer", "minimum": 1, "maximum": 8, "description": "A multistage quarter-wave or cascaded L match's sections (3)"}, "weighting": {"type": "string", "enum": ["binomial", "chebyshev"], "description": "A multistage quarter-wave match's: binomial (the default) or chebyshev"}, "max_ripple": {"type": "number", "description": "A Chebyshev weighting's largest reflection (0.05)"},
+   "microstrip": {"type": "boolean", "description": "Its lines as microstrip on 'substrate'"}, "substrate": {"type": "object", "description": "{\"er\", \"h\", \"t\", \"tand\", \"resistivity\", \"roughness\", \"min_width\", \"max_width\"}: metres, or text with units"},
+   "s_parameters": {"type": "boolean", "description": "With ports and an S-parameter analysis (true unless false)"},
+   "simulator": {"type": "string", "enum": ["ngspice", "xyce", "qucsator"], "description": "Whose equations of its response it gets (and, for a combiner, what it can be made of); the settings' when not given"},
+   "path": {"type": "string", "description": "A schematic open to place it in, at x, y (else a new schematic)"}, "x": {"type": "integer", "description": "With 'path': where its top left corner goes (below what is there when x, y are not given)"}, "y": {"type": "integer", "description": "With 'path': where its top left corner goes"}, "save_as": {"type": "string", "description": "The new schematic's file, saved there"}}, "required": ["f"]}},
+{"name": "synthesize_power_combiner",
+ "description": "Designs a power divider or combiner as Tools > Power combining does (its own calculation) and places it with its ports and an S-parameter analysis: in a new schematic ('save_as'), or in the one 'path' names at x, y. 'type' wilkinson (the default), multistage_wilkinson ('stages' 2-7), tee, branchline, double_box_branchline, bagley, gysel, travelling_wave, tree ('ways' for the last three). 'f' its frequency, 'z0' (50), 'ratio_db' the split's ratio in dB (wilkinson, tee, branchline). 'implementation': for a SPICE simulator lumped elements only, and only the Wilkinsons (lumped is then its default); with simulator qucsator also ideal (lines, its default) and microstrip ('substrate', 'alpha' dB/m).",
+ "inputSchema": {"type": "object", "properties": {
+   "type": {"type": "string", "enum": ["wilkinson", "multistage_wilkinson", "tee", "branchline", "double_box_branchline", "bagley", "gysel", "travelling_wave", "tree"], "description": "wilkinson when not given"},
+   "f": {"description": "Hz: its frequency"}, "z0": {"description": "Ohms, 50 unless given"}, "ways": {"type": "integer", "description": "Outputs: a Bagley's, a travelling wave's, a tree's"}, "stages": {"type": "integer", "description": "A multistage Wilkinson's, 2 to 7"},
+   "ratio_db": {"type": "number", "description": "An unequal split's power ratio in dB (wilkinson, tee, branchline)"},
+   "implementation": {"type": "string", "enum": ["lumped", "ideal", "microstrip"], "description": "lumped (a SPICE simulator's, the Wilkinsons only), ideal lines or microstrip (qucsator)"},
+   "substrate": {"type": "object", "description": "A microstrip implementation's {\"er\", \"h\", \"t\", \"tand\", \"resistivity\", \"roughness\", \"min_width\", \"max_width\"}"}, "alpha": {"type": "number", "description": "A line's loss in dB/m"},
+   "s_parameters": {"type": "boolean", "description": "With ports and an S-parameter analysis (true unless false)"},
+   "simulator": {"type": "string", "enum": ["ngspice", "xyce", "qucsator"], "description": "Whose equations of its response it gets (and, for a combiner, what it can be made of); the settings' when not given"},
+   "path": {"type": "string", "description": "A schematic open to place it in, at x, y (else a new schematic)"}, "x": {"type": "integer", "description": "With 'path': where its top left corner goes (below what is there when x, y are not given)"}, "y": {"type": "integer", "description": "With 'path': where its top left corner goes"}, "save_as": {"type": "string", "description": "The new schematic's file, saved there"}}, "required": ["f"]}},
+{"name": "line_calc",
+ "description": "Tools > Line calculation's own calculation, for numbers: a transmission line's geometry from its impedance and electrical length (do synthesize - the default when z0 or z0e is given) or its impedance, effective permittivity and losses from its geometry (do analyze). 'type' microstrip (the default), coplanar, grounded_coplanar, rectangular (waveguide), coaxial, coupled_microstrip, stripline. Values in metres, hertz, ohms and degrees (numbers, or text with units: \"1.6 mm\", \"2.4 GHz\"): f; substrate er, mur, h, h_t, t, cond, sigma, tand, tanm, rough (or in 'substrate'); geometry w, l, s, a, b, din, dout; electrical z0, z0e, z0o, angle - each line type takes those its window has. 'solve_for' picks which physical value synthesis finds where the window offers a choice (coaxial din or dout). Returns every value afterwards and the results (ErEff, conductor and dielectric losses, skin depth) - the width of a 50 ohm microstrip on FR4 is W.",
+ "inputSchema": {"type": "object", "properties": {
+   "type": {"type": "string", "enum": ["microstrip", "coplanar", "grounded_coplanar", "rectangular", "coaxial", "coupled_microstrip", "stripline"], "description": "microstrip when not given"},
+   "do": {"type": "string", "enum": ["analyze", "synthesize"], "description": "analyze: the geometry gives Z0; synthesize: Z0 gives the geometry"},
+   "f": {"description": "Hz"}, "z0": {"description": "Ohms: its impedance"}, "z0e": {"description": "Ohms: a coupled line's even mode impedance"}, "z0o": {"description": "Ohms: its odd mode impedance"}, "angle": {"description": "Degrees: its electrical length"},
+   "er": {"description": "The substrate's relative permittivity"}, "mur": {"description": "Its relative permeability"}, "h": {"description": "The substrate's height (a stripline's: between its grounds)"}, "h_t": {"description": "The height of a cover above it"}, "t": {"description": "The metal's thickness"},
+   "cond": {"description": "The metal's conductivity, S/m"}, "sigma": {"description": "A coax's or stripline's conductivity, S/m"}, "tand": {"description": "The dielectric's loss tangent"}, "tanm": {"description": "A waveguide's magnetic loss tangent"}, "rough": {"description": "The metal's roughness"},
+   "w": {"description": "The line's width"}, "l": {"description": "Its length"}, "s": {"description": "A gap: coplanar's, coupled lines'"}, "a": {"description": "A waveguide's broad side"}, "b": {"description": "Its narrow side"}, "din": {"description": "A coax's inner diameter"}, "dout": {"description": "Its outer diameter"},
+   "substrate": {"type": "object", "description": "The substrate's values, by the same names, in one object"}, "solve_for": {"type": "string", "description": "The physical value synthesis finds, where there is a choice: din or dout of a coax, a or b of a waveguide"}}}},
+{"name": "receiver_budget",
+ "description": "Tools > Receiver calculator's own calculation (RxCalc): a receiver's cascade, stage by stage. 'stages' [{\"name\", \"gain\" dB, \"nf\" dB (a passive stage's loss when not given), \"iip3\" or \"oip3\" dBm, \"ip1db\" or \"op1db\" dBm, \"enabled\"}], the input's first; an IP3 or P1dB not given is +100 dBm (no limit, said). 'input_power' dBm (-60), 'bandwidth' Hz (the noise bandwidth, 1000), 'snr_min' dB (10), 'temperature' C (25), 'peak_to_average' dB. Returns each stage's cascade to there (gain, noise figure, IIP3, OIP3, P1dB, powers, its part of the noise figure and IP3, backoff) and the system's: gain, noise figure, IP3, P1dB, noise floor, noise temperature, MDS, sensitivity, SNR, IMD, SFDR, blocking dynamic range.",
+ "inputSchema": {"type": "object", "properties": {
+   "stages": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string", "description": "Its name"}, "gain": {"type": "number", "description": "dB"}, "nf": {"type": "number", "description": "Its noise figure, dB"}, "iip3": {"type": "number", "description": "dBm, at its input"}, "oip3": {"type": "number", "description": "dBm, at its output"}, "ip1db": {"type": "number", "description": "Its 1 dB compression at the input, dBm"}, "op1db": {"type": "number", "description": "... at the output, dBm"}, "enabled": {"type": "boolean", "description": "false leaves it out"}}}, "description": "The stages, the input's first"},
+   "input_power": {"type": "number", "description": "dBm at the input (-60)"}, "bandwidth": {"description": "Hz: the noise bandwidth (1000)"}, "snr_min": {"type": "number", "description": "dB: the least signal to noise, for the sensitivity (10)"}, "temperature": {"type": "number", "description": "C (25)"}, "peak_to_average": {"type": "number", "description": "dB: the signal's peak over its average"}}, "required": ["stages"]}},
 {"name": "ngspice_commands",
  "description": "Tells which commands ngspice has and how to write them: the analyses (op, dc, ac, tran, noise, pz, sens, tf, disto; sp, pss, hb, stb, loadpull and the rest of the RF set), measurements (meas, fft, fourier, eye, track), vectors and expressions (let, print, set, option), plots and data files (wrdata, write, pyplot, wrsnp), the circuit (alter, altermod, show, save), compiled models (pre_osdi, snp), statistics and optimization (montecarlo, corners, sweep, optimize), breakpoints and the .control language (if, foreach, dowhile) - each summed up in a line, by category. It asks the ngspice of the settings for its own list (help all), so the answer says which of them it has, which it lacks and any others it has; * marks those stock ngspice lacks (the enhanced build's). Without arguments: every command in a line, by category, and how Qucs-S uses them - a Nutmeg script block (.CUSTOMSIM) holds any commands, a NutmegEq computes let expressions, the simulation blocks write theirs. 'command' names one or several (tran, .tran, pre_osdi, meas) for the syntax, what it does, this ngspice's own help line, how Qucs-S writes it and an example; 'search' finds commands by what they do (stability, touchstone, monte carlo, eye); 'category' lists a category's commands with their syntax. Use it before writing a Nutmeg script or NutmegEq, or to answer whether ngspice can do something.",
  "inputSchema": {"type": "object", "properties": {"command": {"description": "A command's name, or a list of names: tran, .tran (a dot-card's command), pre_osdi, [\"meas\", \"fft\"]"},
@@ -719,6 +796,10 @@ const struct {
     {"export_data", QT_TRANSLATE_NOOP("QucsControl", "write curves of Qucs-S to a file")},
     {"create_library", QT_TRANSLATE_NOOP("QucsControl", "make a component library in Qucs-S")},
     {"import_library", QT_TRANSLATE_NOOP("QucsControl", "bring a component library into Qucs-S")},
+    {"synthesize_filter", QT_TRANSLATE_NOOP("QucsControl", "design a filter into a schematic in Qucs-S")},
+    {"synthesize_attenuator", QT_TRANSLATE_NOOP("QucsControl", "design an attenuator into a schematic in Qucs-S")},
+    {"synthesize_matching", QT_TRANSLATE_NOOP("QucsControl", "design a matching circuit into a schematic in Qucs-S")},
+    {"synthesize_power_combiner", QT_TRANSLATE_NOOP("QucsControl", "design a power combiner into a schematic in Qucs-S")},
 };
 
 // Tools that only look (or move the view): used without asking.
@@ -727,14 +808,14 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
                                  "read_pdf", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
                                  "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
-                                 "ngspice_commands", "list_libraries"};
+                                 "ngspice_commands", "list_libraries", "line_calc", "receiver_budget"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
 // changed or taken away - a simulation writes its dataset anew, which it
 // can do again.
 const char* const kAdditive[] = {"add_component", "add_wire", "connect", "set_label", "add_diagram", "add_trace", "add_marker",
                                  "add_painting", "add_analysis", "new_document", "open_document", "new_project", "open_project",
-                                 "simulate"};
+                                 "simulate", "synthesize_filter", "synthesize_attenuator", "synthesize_matching", "synthesize_power_combiner"};
 
 // Each tool's description in the tool list: a summary (the list is in
 // every turn); describe_tool gives the whole of it.
@@ -783,7 +864,13 @@ const struct {
     {"stop_simulation", QT_TRANSLATE_NOOP("QucsControl", "Stops a simulation (one followed by its id, or the one running) and returns its outcome.")},
     {"send_input", QT_TRANSLATE_NOOP("QucsControl", "Raw mouse and keyboard input on the canvas or a part of the window - the last resort - with a picture after.")},
     {"read_help", QT_TRANSLATE_NOOP("QucsControl", "Finds what this build's help says on a topic: menu actions' help, component types, examples, papers.")},
-    {"get_settings", QT_TRANSLATE_NOOP("QucsControl", "Reads the settings (application, simulators, a document's, CDL) by typed keys.")},
+    {"get_settings", QT_TRANSLATE_NOOP("QucsControl", "Reads the settings (application, simulators, a document's, CDL) by typed keys, or those 'keys' or 'search' find.")},
+    {"synthesize_filter", QT_TRANSLATE_NOOP("QucsControl", "Designs an LC or active filter (Tools > Filter synthesis) and places it, with its analysis, in a new schematic or one open.")},
+    {"synthesize_attenuator", QT_TRANSLATE_NOOP("QucsControl", "Designs a resistive attenuator (Tools > Attenuator synthesis) and places it with its ports and analysis.")},
+    {"synthesize_matching", QT_TRANSLATE_NOOP("QucsControl", "Designs a matching circuit for a load or a two-port (Tools > Matching Circuit) and places it.")},
+    {"synthesize_power_combiner", QT_TRANSLATE_NOOP("QucsControl", "Designs a power divider or combiner (Tools > Power combining) and places it.")},
+    {"line_calc", QT_TRANSLATE_NOOP("QucsControl", "Calculates a transmission line's geometry from its impedance, or its impedance and losses from its geometry (Tools > Line calculation).")},
+    {"receiver_budget", QT_TRANSLATE_NOOP("QucsControl", "A receiver's cascade: gain, noise figure, IP3, P1dB, sensitivity, stage by stage (Tools > Receiver calculator).")},
     {"set_settings", QT_TRANSLATE_NOOP("QucsControl", "Changes settings by their keys through their own dialog, each with its old value.")},
     {"set_ui", QT_TRANSLATE_NOOP("QucsControl", "Uses a dock, panel, toolbar or the tabs, as set_dialog a dialog.")},
     {"context_menu", QT_TRANSLATE_NOOP("QucsControl", "Opens a right-click menu, lists it, and chooses an entry.")},
@@ -871,6 +958,12 @@ const struct {
     {"stop_simulation", "stop abort cancel kill simulation run background"},
     {"send_input", "click mouse keyboard keys type drag double click raw input shortcut press reproduce"},
     {"read_help", "help documentation manual docs whats this tutorial examples paper"},
+    {"synthesize_filter", "filter synthesis design lowpass highpass bandpass bandstop chebyshev butterworth bessel elliptic cauer lc ladder active sallen key"},
+    {"synthesize_attenuator", "attenuator pad pi tee resistive synthesis design dB"},
+    {"synthesize_matching", "matching network circuit impedance l-section stub quarter wave smith conjugate amplifier"},
+    {"synthesize_power_combiner", "power combiner divider splitter wilkinson branchline hybrid coupler"},
+    {"line_calc", "transmission line calculator microstrip coplanar coax stripline width impedance z0 effective permittivity"},
+    {"receiver_budget", "receiver cascade budget noise figure friis gain ip3 p1db sensitivity mds sfdr rxcalc"},
     {"get_ui", "dock panel toolbar status bar tabs widget read log tuner problems operating point content projects components filter"},
     {"set_ui", "dock panel toolbar status bar tabs widget click button filter row select open expand slider tuner"},
     {"context_menu", "right-click context menu popup entries choose canvas part diagram tab file project"},
@@ -1101,26 +1194,47 @@ void orient(Component* c, int turns, bool mirror)
     for (int i = 0; i < 4 && c->rotated != want; ++i) c->rotate();
 }
 
+// The rotation (as get_schematic gives it) that puts pin 1 of a part of
+// two pins on \a side of its centre - top, bottom, left or right -
+// mirrored as \a mirror: tried on \a c (new, not placed), left turned so.
+// -1, and why, when it has not two pins or no turn does.
+int rotationForPin1(Component* c, const QString& side, bool mirror, QString* why)
+{
+    static const QStringList sides{QStringLiteral("top"), QStringLiteral("bottom"), QStringLiteral("left"), QStringLiteral("right")};
+    if (!sides.contains(side)) {
+        *why = tr("'pin1' is top, bottom, left or right: the side of its centre pin 1 goes to.");
+        return -1;
+    }
+    if (c->Ports.size() != 2) {
+        *why = tr("'pin1' places a part of two pins; %1 has %2: give 'rotation' (describe_component_type gives its pins as each "
+                  "rotation places them).").arg(c->Model).arg(c->Ports.size());
+        return -1;
+    }
+    for (int turns = 0; turns < 4; ++turns) {
+        orient(c, turns, mirror);
+        const QPoint p(c->Ports.at(0)->x, c->Ports.at(0)->y);
+        const QString at = std::abs(p.y()) > std::abs(p.x()) ? (p.y() < 0 ? sides.at(0) : sides.at(1)) : (p.x() < 0 ? sides.at(2) : sides.at(3));
+        if (at == side && p != QPoint()) return turns;
+    }
+    *why = tr("no turn of %1 puts pin 1 at the %2: its pins are not either side of its centre - give 'rotation'.").arg(c->Model, side);
+    return -1;
+}
+
 // Where each of its texts is on the schematic, [x1, y1, x2, y2]: its name,
 // then each property shown for the simulator in the settings, one under
 // the other from its text's corner - as they are drawn.
 QJsonArray textBoxes(const Component* c)
 {
     QJsonArray texts;
-    const QFontMetrics metrics(QucsSettings.font, nullptr);
-    QRect line(c->tx, c->ty, 0, 0);
-    const auto add = [&](const QString& text, int top) {
-        const QSize size = metrics.size(0, text);
-        line = QRect(c->tx, top, size.width(), size.height());
-        const QRect box = line.translated(c->cx, c->cy);
-        texts.append(QJsonObject{{QStringLiteral("text"), text},
+    const QList<QRect> boxes = qucs_s::textplace::textBoxes(c);
+    QStringList shown;
+    if (c->showName && !c->Name.isEmpty()) shown << c->Name;
+    for (const Property* p : c->Props)
+        if (p->display && (p->simulators & QucsSettings.DefaultSimulator) == QucsSettings.DefaultSimulator) shown << p->displayText();
+    for (int i = 0; i < boxes.size() && i < shown.size(); ++i) {
+        const QRect& box = boxes.at(i);
+        texts.append(QJsonObject{{QStringLiteral("text"), shown.at(i)},
                                  {QStringLiteral("box"), QJsonArray{box.left(), box.top(), box.right(), box.bottom()}}});
-    };
-    if (c->showName && !c->Name.isEmpty()) add(c->Name, c->ty);
-    for (const Property* p : c->Props) {
-        if (!p->display) continue;
-        if ((p->simulators & QucsSettings.DefaultSimulator) != QucsSettings.DefaultSimulator) continue;
-        add(p->displayText(), line.bottom());
     }
     return texts;
 }
@@ -1780,11 +1894,13 @@ bool setTextOf(Component* c, const QJsonObject& args, QString* error, bool apply
         return false;
     }
     QPoint at(c->tx, c->ty);
-    if (args.contains(QLatin1String("text_at"))) {
+    // ("auto": the caller finds it a free spot, the schematic around it.)
+    if (args.contains(QLatin1String("text_at")) && args.value(QLatin1String("text_at")).toString() != QLatin1String("auto")) {
         const QJsonArray a = args.value(QLatin1String("text_at")).toArray();
         if (a.size() != 2 || !a.at(0).isDouble() || !a.at(1).isDouble() || std::abs(a.at(0).toDouble()) > 100000
             || std::abs(a.at(1).toDouble()) > 100000) {
-            *error = tr("'text_at' is [dx, dy]: where its text begins (the top left corner) from its centre.");
+            *error = tr("'text_at' is [dx, dy]: where its text begins (the top left corner) from its centre - or \"auto\": a free spot "
+                        "beside it.");
             return false;
         }
         at = QPoint(a.at(0).toInt(), a.at(1).toInt());
@@ -1795,6 +1911,32 @@ bool setTextOf(Component* c, const QJsonObject& args, QString* error, bool apply
     c->tx = at.x();
     c->ty = at.y();
     return true;
+}
+
+// \a c's text put clear of what is around it - the wires, the symbols, the
+// other texts and labels, the diagrams - at the nearest free spot beside
+// it (the right, the left, below, above), unless it is clear where it is
+// and \a keepIfClear: what was done, for the answer ("" when it was clear).
+QString placeTextClear(Schematic* sch, Component* c, bool keepIfClear)
+{
+    namespace tp = qucs_s::textplace;
+    if (tp::textBoxes(c).isEmpty()) return keepIfClear ? QString() : tr("it shows no text to place");
+    const QList<tp::Thing> all = tp::things(sch);
+    const QStringList over = tp::overlapped(c, all);
+    if (over.isEmpty() && keepIfClear) return {};
+    QString side;
+    const std::optional<QPoint> spot = tp::freeSpot(c, all, &side);
+    if (!spot) {
+        return over.isEmpty() ? tr("its text is left where it is: no other spot beside it is free")
+                              : tr("its text overlaps %1, and no spot beside it is free: move a part, or give text_at")
+                                    .arg(over.mid(0, 3).join(QStringLiteral(", ")));
+    }
+    if (QPoint(c->tx, c->ty) == *spot) return over.isEmpty() ? tr("its text is clear where it is") : QString();
+    c->tx = spot->x();
+    c->ty = spot->y();
+    return over.isEmpty() ? tr("its text put %1 of it, [%2, %3]").arg(side).arg(spot->x()).arg(spot->y())
+                          : tr("its text put %1 of it, [%2, %3], clear of %4").arg(side).arg(spot->x()).arg(spot->y())
+                                .arg(over.mid(0, 3).join(QStringLiteral(", ")));
 }
 
 QString kindOf(QucsDoc* doc)
@@ -3187,6 +3329,12 @@ QJsonObject mergedJson(QJsonObject a, const QJsonObject& b)
     return a;
 }
 
+// A box as the tools give one: [x1, y1, x2, y2].
+QJsonArray rectArray(const QRect& r)
+{
+    return QJsonArray{r.left(), r.top(), r.right(), r.bottom()};
+}
+
 QJsonObject issueJson(const qucs_s::erc::Issue& i)
 {
     QJsonObject o{{QStringLiteral("message"), i.message}, {QStringLiteral("at"), QJsonArray{i.where.x(), i.where.y()}}};
@@ -3374,7 +3522,9 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
         if (!s("press").isEmpty()) parts << tr("press %1").arg(s("press"));
         subject = parts.join(QStringLiteral(", "));
     } else if (tool == QLatin1String("set_settings") || tool == QLatin1String("get_settings")) {
-        QStringList parts{s("scope")};
+        QStringList parts{s("scope").isEmpty() ? QStringLiteral("app, simulators, cdl") : s("scope")};
+        if (!s("search").isEmpty()) parts << tr("search %1").arg(s("search"));
+        for (const QJsonValue& k : a.value(QLatin1String("keys")).toArray()) parts << k.toString();
         // (Iterated as one object kept here: an iterator of a temporary's
         // pointed into an object already gone - and took the window down.)
         const QJsonObject values = a.value(QLatin1String("values")).toObject();
@@ -4282,6 +4432,12 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("import_library")) return importLibrary(args);
     if (tool == QLatin1String("simulation_status")) return simulationStatus(args);
     if (tool == QLatin1String("read_help")) return readHelp(args);
+    if (tool == QLatin1String("synthesize_filter")) return synthesizeFilter(args);
+    if (tool == QLatin1String("synthesize_attenuator")) return synthesizeAttenuator(args);
+    if (tool == QLatin1String("synthesize_matching")) return synthesizeMatching(args);
+    if (tool == QLatin1String("synthesize_power_combiner")) return synthesizePowerCombiner(args);
+    if (tool == QLatin1String("line_calc")) return lineCalc(args);
+    if (tool == QLatin1String("receiver_budget")) return receiverBudget(args);
     async = true;
     if (tool == QLatin1String("batch")) runBatch(args, done);
     else if (tool == QLatin1String("trigger_action")) triggerAction(args, done);
@@ -4554,6 +4710,25 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
     const QString pinned = args.value(QLatin1String("path")).toString().trimmed();
     bool pinnedOpen = false;
     const QList<ContextMenuTabWidget*> panes = a_app->panes();
+    // The workspace's projects, by their folders as they really are (a
+    // linked one where it points): each document's is the one it is in.
+    struct ProjectFolder {
+        QString name, folder, real;
+        bool linked = false;
+    };
+    QList<ProjectFolder> projectFolders;
+    const QString workspace = QucsSettings.qucsWorkspaceDir.absolutePath();
+    for (const QFileInfo& fi : QDir(workspace).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+        if (qucs_s::workspace::isProjectFolder(fi.filePath()))
+            projectFolders.append({qucs_s::workspace::projectName(fi.fileName()), fi.absoluteFilePath(), fi.canonicalFilePath(), fi.isSymLink()});
+    const QString openFolder = a_app->ProjName.isEmpty() ? QString() : QFileInfo(QucsSettings.QucsWorkDir.absolutePath()).canonicalFilePath();
+    const auto projectOf = [&projectFolders](const QString& file) -> const ProjectFolder* {
+        const QString real = QFileInfo(file).canonicalFilePath();
+        if (real.isEmpty()) return nullptr;
+        for (const ProjectFolder& p : projectFolders)
+            if (!p.real.isEmpty() && real.startsWith(p.real + QLatin1Char('/'))) return &p;
+        return nullptr;
+    };
     for (QucsDoc* doc : a_app->allDocuments()) {
         QJsonObject d{{QStringLiteral("title"), titleOf(doc)},
                       {QStringLiteral("path"), doc->getDocName()},
@@ -4571,6 +4746,15 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
         }
         if (const QDateTime written = datasetWritten(doc); written.isValid())
             d.insert(QStringLiteral("dataset written"), written.toString(Qt::ISODate));
+        // The project its file is in - another than the open one said so:
+        // relative paths, Scratch and Verilog-A are the open project's.
+        if (const ProjectFolder* p = doc->getDocName().isEmpty() ? nullptr : projectOf(doc->getDocName())) {
+            d.insert(QStringLiteral("project"), p->name);
+            if (p->real != openFolder)
+                d.insert(QStringLiteral("project not open"), openFolder.isEmpty() ? tr("no project is open: open_project opens %1").arg(p->name)
+                                                                                  : tr("%1 is open, not %2: relative paths, Scratch and Verilog-A are "
+                                                                                       "%1's").arg(a_app->ProjName, p->name));
+        }
         if (!pinned.isEmpty() && !doc->getDocName().isEmpty() && sameFile(doc->getDocName(), absolute(pinned))) {
             d.insert(QStringLiteral("this conversation's document"), true);
             pinnedOpen = true;
@@ -4634,6 +4818,16 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
                                                 ? QJsonValue(QJsonValue::Null)
                                                 : QJsonValue(QJsonObject{{QStringLiteral("name"), a_app->ProjName},
                                                                          {QStringLiteral("folder"), QDir::toNativeSeparators(QucsSettings.QucsWorkDir.absolutePath())}}));
+    // Every project of the workspace: one is open at a time.
+    QJsonArray projects;
+    for (const ProjectFolder& p : std::as_const(projectFolders)) {
+        if (projects.size() >= 100) break;
+        QJsonObject o{{QStringLiteral("name"), p.name}, {QStringLiteral("folder"), QDir::toNativeSeparators(p.folder)}};
+        if (p.real == openFolder && !openFolder.isEmpty()) o.insert(QStringLiteral("open"), true);
+        if (p.linked) o.insert(QStringLiteral("linked"), true);
+        projects.append(o);
+    }
+    state.insert(QStringLiteral("projects"), projects);
     // Simulations followed in the background, while they run.
     QJsonArray following;
     for (const SimRun& r : std::as_const(a_simRuns))
@@ -5589,6 +5783,26 @@ QJsonObject QucsControl::checkSchematic(const QJsonObject& args)
     for (const auto& i : qucs_s::erc::check(sch))
         (i.severity == qucs_s::erc::Severity::Error ? errors : warnings).append(issueJson(i));
     for (const auto& i : qucs_s::erc::notes(sch)) notes.append(issueJson(i));
+    // A text drawn over something - a wire, a symbol, another text, a
+    // label, a diagram: a note, with both boxes (edit_component's text_at
+    // "auto", or arrange's 'labels', moves it clear).
+    const QList<qucs_s::textplace::Overlap> overlapping = qucs_s::textplace::overlaps(sch);
+    for (const auto& o : overlapping) {
+        if (notes.size() >= 200) {
+            notes.append(QJsonObject{{QStringLiteral("message"), tr("... and %1 more texts drawn over something").arg(overlapping.size() - int(&o - overlapping.constData()))}});
+            break;
+        }
+        QJsonObject n{{QStringLiteral("message"), o.message},
+                      {QStringLiteral("at"), QJsonArray{o.where.x(), o.where.y()}},
+                      {QStringLiteral("box"), rectArray(o.box)},
+                      {QStringLiteral("over"), rectArray(o.other)}};
+        if (!o.part.isEmpty()) n.insert(QStringLiteral("component"), o.part);
+        notes.append(n);
+    }
+    if (!overlapping.isEmpty())
+        notes.append(QJsonObject{{QStringLiteral("message"), tr("%n text(s) drawn over something: edit_component with 'text_at': \"auto\" moves "
+                                                                "a part's clear, arrange with 'labels' all of them (never a part or a wire)",
+                                                                nullptr, int(overlapping.size()))}});
     QJsonObject result{{QStringLiteral("document"), titleOf(sch)},
                        {QStringLiteral("errors"), errors},
                        {QStringLiteral("warnings"), warnings},
@@ -6079,8 +6293,21 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
         return errorResult(tr("There is no part %1 in a library %2 here (Lib and Comp name them): find_library_component finds "
                               "the parts there are.").arg(comp, lib));
     }
+    // 'pin1': the turn that puts pin 1 of a part of two pins on that side.
+    int turns = args.value(QLatin1String("rotation")).toInt();
+    if (args.contains(QLatin1String("pin1"))) {
+        if (args.contains(QLatin1String("rotation"))) {
+            delete c;
+            return errorResult(tr("Give 'rotation' or 'pin1', not both."));
+        }
+        turns = rotationForPin1(c, args.value(QLatin1String("pin1")).toString().trimmed().toLower(), args.value(QLatin1String("mirror")).toBool(), &error);
+        if (turns < 0) {
+            delete c;
+            return errorResult(error);
+        }
+    }
     prepare(sch);
-    orient(c, args.value(QLatin1String("rotation")).toInt(), args.value(QLatin1String("mirror")).toBool());
+    orient(c, turns, args.value(QLatin1String("mirror")).toBool());
     int x = args.value(QLatin1String("x")).toInt(), y = args.value(QLatin1String("y")).toInt();
     // Or beside another part: "Rf below U1".
     QString nearHow;
@@ -6118,9 +6345,14 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     if (c->tx < c->x1) c->tx -= x2 - x1;
     if (!wanted.isEmpty()) c->Name = wanted;
     setTextOf(c, args, &error);
+    // Its text where it is clear: its type's place, or the nearest free
+    // spot beside it - unless it was given.
+    const bool textGiven = args.contains(QLatin1String("text_at")) && args.value(QLatin1String("text_at")).toString() != QLatin1String("auto");
+    const QString textPlaced = textGiven ? QString() : placeTextClear(sch, c, true);
     sch->enlargeView(c);
     finish(sch, {QPoint(c->cx, c->cy)});
     QJsonObject result = componentJson(c);
+    if (!textPlaced.isEmpty()) result.insert(QStringLiteral("text"), textPlaced);
     // An equation block's equations as they are now, as get_schematic gives
     // and 'equations' takes them: what came of what was given, at a look.
     if (isEquationKind(c)) result.insert(QStringLiteral("equations"), componentModel(c).value(QLatin1String("equations")));
@@ -6205,6 +6437,21 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
                                    .arg(probe.Props.at(0)->Value, probe.Props.at(1)->Value, name));
     }
     if (!setTextOf(c, args, &error, false) || !setListsOf(c, args, &error, true)) return errorResult(error);
+    // 'pin1': the turn that puts its pin 1 on that side, tried on a part of
+    // its type and values.
+    if (args.contains(QLatin1String("pin1"))) {
+        if (args.contains(QLatin1String("rotation"))) return errorResult(tr("Give 'rotation' or 'pin1', not both."));
+        std::unique_ptr<Component> probe(newComponent(c->Model));
+        if (!probe) return errorResult(tr("%1 cannot be turned by 'pin1': give 'rotation'.").arg(name));
+        probe->setSchematic(sch);
+        for (const Property* p : c->Props)
+            if (Property* q = probe->getProperty(p->Name)) q->Value = p->Value;
+        probe->recreate();
+        const int turns = rotationForPin1(probe.get(), args.value(QLatin1String("pin1")).toString().trimmed().toLower(),
+                                          args.contains(QLatin1String("mirror")) ? args.value(QLatin1String("mirror")).toBool() : c->mirroredX, &error);
+        if (turns < 0) return errorResult(error);
+        placed.insert(QStringLiteral("rotation"), turns);
+    }
     prepare(sch);
     const QString before = sch->snapshot();
     const QList<qucs_s::erc::Issue> wiringBefore = qucs_s::erc::wiring(sch);
@@ -6214,7 +6461,7 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
         sch->recreateComponent(c);
     }
     QStringList landed;
-    if (placed.contains(QLatin1String("x")) || placed.contains(QLatin1String("y")) || args.contains(QLatin1String("rotation"))
+    if (placed.contains(QLatin1String("x")) || placed.contains(QLatin1String("y")) || placed.contains(QLatin1String("rotation"))
         || args.contains(QLatin1String("mirror"))) {
         QString why;
         // turnAndMove() finds the part by its name: one without has one
@@ -6242,9 +6489,24 @@ QJsonObject QucsControl::editComponent(const QJsonObject& args)
         if (!renamedToo.isEmpty() || !rewritten.isEmpty()) sch->reloadGraphs();
     }
     setTextOf(c, args, &error);
+    // "auto": the nearest free spot beside it, when where it is is not.
+    // Moved, turned or with other texts shown, and its text now drawn over
+    // something: said.
+    QString textPlaced;
+    if (args.value(QLatin1String("text_at")).toString() == QLatin1String("auto")) {
+        textPlaced = placeTextClear(sch, c, true);
+        if (textPlaced.isEmpty()) textPlaced = tr("its text is clear where it is: left there");
+    } else if (!args.contains(QLatin1String("text_at"))
+               && (placed.contains(QLatin1String("x")) || placed.contains(QLatin1String("y")) || placed.contains(QLatin1String("rotation"))
+                   || args.contains(QLatin1String("mirror")) || args.contains(QLatin1String("shown")) || args.contains(QLatin1String("name_shown"))
+                   || !props.isEmpty() || !rename.isEmpty())) {
+        if (const QStringList over = qucs_s::textplace::overlapped(c, qucs_s::textplace::things(sch)); !over.isEmpty())
+            textPlaced = tr("its text overlaps %1 - text_at \"auto\" moves it clear").arg(over.mid(0, 3).join(QStringLiteral(", ")));
+    }
     sch->enlargeView(c);
     finish(sch, {QPoint(c->cx, c->cy)});
     QJsonObject result = componentJson(c);
+    if (!textPlaced.isEmpty()) result.insert(QStringLiteral("text"), textPlaced);
     if (unnamed) result.insert(QStringLiteral("ref"), refOf(sch, c));   // (another number, when it was taken up and put down)
     if (isEquationKind(c)) result.insert(QStringLiteral("equations"), componentModel(c).value(QLatin1String("equations")));
     if (const QStringList values = valueNotes(c, props.keys(), sch); !values.isEmpty())
@@ -8332,11 +8594,109 @@ Nets withoutGroundSymbols(const Schematic* sch, Nets nets, const QStringList& dr
 
 } // namespace
 
+namespace {
+
+// Each net label of \a sch.
+QList<WireLabel*> netLabels(Schematic* sch)
+{
+    QList<WireLabel*> labels;
+    for (Wire* w : sch->a_DocWires)
+        if (w->label() != nullptr) labels << w->label();
+    for (Node* n : sch->a_DocNodes)
+        if (n->label() != nullptr) labels << n->label();
+    return labels;
+}
+
+} // namespace
+
+// arrange's 'labels': only texts move - each part's text and each net
+// label's that is drawn over something, to the nearest free spot beside
+// it; the others stay, and nothing else changes.
+QJsonObject QucsControl::arrangeTexts(Schematic* sch)
+{
+    namespace tp = qucs_s::textplace;
+    const int before = int(tp::overlaps(sch).size());
+    QList<tp::Thing> all = tp::things(sch);
+    // Those drawn over something are taken up first, out of the others' way.
+    QList<Component*> parts;
+    for (Component* c : sch->a_DocComps)
+        if (!tp::textBoxes(c).isEmpty() && tp::textOverlaps(c, all)) parts << c;
+    QList<WireLabel*> labels;
+    for (WireLabel* l : netLabels(sch))
+        if (tp::labelOverlaps(l, all)) labels << l;
+    if (parts.isEmpty() && labels.isEmpty())
+        return jsonResult(QJsonObject{{QStringLiteral("document"), titleOf(sch)},
+                                      {QStringLiteral("moved"), QJsonArray()},
+                                      {QStringLiteral("arranged"), tr("Nothing moved: no text is drawn over anything.")}});
+    for (const Component* c : std::as_const(parts)) all = tp::without(all, c, true);
+    for (const WireLabel* l : std::as_const(labels)) all = tp::without(all, l, true);
+    // From the top left, as a page is read.
+    std::stable_sort(parts.begin(), parts.end(), [](const Component* a, const Component* b) {
+        return std::tie(a->cy, a->cx) < std::tie(b->cy, b->cx);
+    });
+    prepare(sch);
+    const QHash<const Component*, QString> refs = qucs_s::erc::refs(sch);
+    QJsonArray moved, left;
+    QList<QPoint> where;
+    for (Component* c : std::as_const(parts)) {
+        const QString name = refs.value(c, c->Name.isEmpty() ? c->Model : c->Name);
+        QString side;
+        if (const std::optional<QPoint> spot = tp::freeSpot(c, all, &side)) {
+            c->tx = spot->x();
+            c->ty = spot->y();
+            moved.append(tr("%1's text: %2 of it, [%3, %4]").arg(name, side).arg(spot->x()).arg(spot->y()));
+            where << QPoint(c->cx, c->cy);
+        } else {
+            left.append(tr("%1's text: no spot beside it is free").arg(name));
+        }
+        // (Where it is now is taken.)
+        for (const tp::Thing& t : tp::things(sch))
+            if (t.owner == c && t.kind == tp::Thing::Text) all << t;
+    }
+    for (WireLabel* l : std::as_const(labels)) {
+        if (const std::optional<QPoint> spot = tp::freeLabelSpot(l, all)) {
+            l->moveCenter(spot->x() - l->x1, spot->y() - l->y1);
+            moved.append(tr("the label %1: at [%2, %3]").arg(l->Name).arg(spot->x()).arg(spot->y()));
+            where << QPoint(l->cx, l->cy);
+        } else {
+            left.append(tr("the label %1: no spot near it is free").arg(l->Name));
+        }
+        tp::Thing t;
+        t.kind = tp::Thing::Label;
+        t.box = tp::labelBox(l);
+        t.owner = l;
+        t.name = tr("the label %1").arg(l->Name);
+        all << t;
+    }
+    if (!moved.isEmpty()) finish(sch, where);
+    const QList<tp::Overlap> after = tp::overlaps(sch);
+    QJsonObject result{{QStringLiteral("document"), titleOf(sch)},
+                       {QStringLiteral("moved"), moved},
+                       {QStringLiteral("arranged"), tr("%1 texts moved clear, no part or wire: %2 texts were drawn over something, %3 are now")
+                                                        .arg(moved.size()).arg(before).arg(after.size())}};
+    if (!left.isEmpty()) result.insert(QStringLiteral("left where they were"), left);
+    if (!after.isEmpty()) {
+        QJsonArray still;
+        for (const tp::Overlap& o : after)
+            if (still.size() < 20) still.append(o.message);
+        result.insert(QStringLiteral("still"), still);
+    }
+    if (!moved.isEmpty()) result.insert(QStringLiteral("one step to undo"), true);
+    return jsonResult(result);
+}
+
 QJsonObject QucsControl::arrange(const QJsonObject& args)
 {
     QString error;
     Schematic* sch = schematic(args, &error, true);
     if (sch == nullptr) return errorResult(error);
+    if (args.value(QLatin1String("labels")).toBool()) {
+        for (const char* other : {"spacing", "wire_labels", "keep_places", "straighten", "feedback", "supplies"})
+            if (args.contains(QLatin1String(other)))
+                return errorResult(tr("'labels' moves only texts, never a part or a wire: it takes no '%1' (arrange without 'labels' "
+                                      "lays the parts out).").arg(QLatin1String(other)));
+        return arrangeTexts(sch);
+    }
     const int asked = std::clamp(args.value(QLatin1String("spacing")).toInt(60), 30, 400);
     const bool wireLabels = args.value(QLatin1String("wire_labels")).toBool();
     // The parts where they are, the wiring drawn again ("tidy"); a feedback
@@ -11758,8 +12118,20 @@ QJsonObject QucsControl::comparedRuns(Schematic* doc, const QJsonObject& compare
             row.insert(QStringLiteral("change"), a - b);
             if (b != 0) row.insert(QStringLiteral("change %"), std::round((a - b) / std::abs(b) * 10000.0) / 100.0);
         } else {
-            row.insert(QStringLiteral("note"), v.contains(QStringLiteral("compared")) ? v.value(QStringLiteral("compared")).toString()
-                                                                                        : tr("not measured on both runs (%1)").arg(field));
+            // Why not: the run it failed on, and its error - or the field
+            // not among those it gives.
+            const QJsonObject measuredAfter = v.value(QStringLiteral("measurements")).toObject().value(what).toObject();
+            const QJsonObject measuredBefore = other.value(QStringLiteral("measurements")).toObject().value(what).toObject();
+            QString note;
+            if (v.contains(QStringLiteral("compared"))) note = v.value(QStringLiteral("compared")).toString();
+            else if (!stat && measuredAfter.contains(QStringLiteral("error")))
+                note = tr("not measured on this run: %1").arg(measuredAfter.value(QStringLiteral("error")).toString());
+            else if (!stat && measuredBefore.contains(QStringLiteral("error")))
+                note = tr("not measured on %1: %2").arg(with, measuredBefore.value(QStringLiteral("error")).toString());
+            else if (!stat && !measuredAfter.isEmpty() && !measuredAfter.contains(field))
+                note = tr("%1 gives no '%2': 'field' is one of %3").arg(what, field, measuredAfter.keys().join(QStringLiteral(", ")));
+            else note = tr("not measured on both runs (%1)").arg(field);
+            row.insert(QStringLiteral("note"), note);
         }
         table.append(row);
     }

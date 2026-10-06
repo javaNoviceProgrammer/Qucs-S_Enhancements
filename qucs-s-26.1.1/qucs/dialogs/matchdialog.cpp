@@ -33,6 +33,7 @@
 #include "../../qucs-filter/material_props.h"
 #include "main.h"
 #include "matchdialog.h"
+#include "extsimkernels/spicecompat.h"
 #include "misc.h"
 #include "qucs.h"
 
@@ -813,9 +814,7 @@ QString MatchDialog::calcMatchingLC(double r_real, double r_imag, double Z0,
 
   if (Zreal < 0.0) {
     if (Zreal < -1e-13) {
-      QMessageBox::critical(
-          0, tr("Error"),
-          tr("Real part of impedance must be greater zero,\nbut is %1 !")
+      say(true, tr("Real part of impedance must be greater zero,\nbut is %1 !")
               .arg(Zreal));
       return QString(); // matching not possible
     }
@@ -854,14 +853,20 @@ QString MatchDialog::calcMatchingLC(double r_real, double r_imag, double Z0,
 
   // Circuit topology and values
   QString laddercode = "", series_element, shunt_element;
-  // serial component
-  if (X1 < 0.0) // capacitance ?
+  // serial component - none when its reactance is none (10 - j20 to 50:
+  // the load's own reactance is the one needed), not a 0 H inductor a SPICE
+  // simulator refuses
+  if (std::abs(X1) < 1e-9 * Z0)
+    series_element.clear();
+  else if (X1 < 0.0) // capacitance ?
     series_element = QStringLiteral("CS:%1;").arg(-1.0 / Omega / X1);
   else // inductance
     series_element = QStringLiteral("LS:%1;").arg(X1 / Omega);
 
-  // parallel component
-  if (X2 < 0.0) // inductance ?
+  // parallel component (likewise none of no susceptance)
+  if (std::abs(X2) < 1e-9 / Z0)
+    shunt_element.clear();
+  else if (X2 < 0.0) // inductance ?
     shunt_element = QStringLiteral("LP:%1;").arg(-1.0 / Omega / X2);
   else // capacitance
     shunt_element = QStringLiteral("CP:%1;").arg(X2 / Omega);
@@ -1301,8 +1306,7 @@ QString MatchDialog::calcDoubleStub(double r_real, double r_imag, double Z0,
   if (GL > Y0 * ((1 + t * t) / (2 * t * t))) // Not every load can be match
                                              // using the double stub technique.
   {
-    QMessageBox::warning(0, tr("Error"),
-                tr("It is not possible to match this load using the double stub method"));
+    say(true, tr("It is not possible to match this load using the double stub method"));
     return QString();
   }
 
@@ -1394,16 +1398,13 @@ QString MatchDialog::calcBinomialLines(double r_real, double r_imag, double Z0,
                                        int order, double Freq) {
   double RL = r_real, XL = r_imag;
   r2z(RL, XL, Z0);
-  if (RL == 0) {
-    QMessageBox::warning(
-        0, QObject::tr("Error"),
-        QObject::tr("The load has not resistive part. It cannot be matched "
+  if (RL < 1e-9 * Z0) {   // (a pure reactance - to rounding: its lines were nan)
+    say(true, QObject::tr("The load has not resistive part. It cannot be matched "
                     "using the quarter wavelength method"));
     return nullptr;
   }
   if (XL != 0) {
-    QMessageBox::warning(0, QObject::tr("Warning"),
-                         QObject::tr("Reactive loads cannot be matched. Only "
+    say(false, QObject::tr("Reactive loads cannot be matched. Only "
                                      "the real part will be matched"));
   }
   double l4 = SPEED_OF_LIGHT / (4. * Freq);
@@ -1429,9 +1430,7 @@ QString MatchDialog::calcChebyLines(double r_real, double r_imag, double Z0,
              // sections. Probably, it makes no sense to use a higher number of
              // sections because of the losses
   {
-    QMessageBox::warning(
-        0, QObject::tr("Error"),
-        QObject::tr("Chebyshev weighting for N>7 is not available"));
+    say(true, QObject::tr("Chebyshev weighting for N>7 is not available"));
     return QString();
   }
 
@@ -1525,16 +1524,13 @@ QString MatchDialog::calcMatchingCascadedLCSections(double r_real,
   double Raux, R, R1, R2;
   QString s = "";
 
-  if (RL == 0) {
-    QMessageBox::warning(
-        0, QObject::tr("Error"),
-        QObject::tr("The load is reactive. It cannot be matched "
+  if (RL < 1e-9 * Z0) {   // (a pure reactance - to rounding: its lines were nan)
+    say(true, QObject::tr("The load is reactive. It cannot be matched "
                     "using the quarter wavelength method"));
     return nullptr;
   }
   if (XL != 0) {
-    QMessageBox::warning(0, QObject::tr("Warning"),
-                         QObject::tr("Reactive loads cannot be matched. Only "
+    say(false, QObject::tr("Reactive loads cannot be matched. Only "
                                      "the real part will be matched"));
   }
 
@@ -1957,13 +1953,21 @@ void MatchDialog::SchematicParser(QString laddercode, int &x_pos, double Freq,
               .arg((val_freq_start))
               .arg((val_freq_stop));
 
-      if (laddercode.indexOf("P2") == -1) // One port simulation
-        componentstr += QStringLiteral("<Eqn Eqn1 1 200 100 -28 15 0 0 "
-                                "\"S11_dB=dB(S[1,1])\" 1 \"yes\" 0>\n");
-      else // Two ports simulation
-        componentstr += QStringLiteral("<Eqn Eqn1 1 200 100 -28 15 0 0 "
-                                "\"S11_dB=dB(S[1,1])\" 1 \"S21_dB=dB(S[2,1])\" "
-                                "1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n");
+      // The dB of the S-parameters, as the simulator in the settings reads
+      // them: Qucsator's S[1,1], ngspice's S_1_1 in a Nutmeg equation (an
+      // Eqn's S[1,1] was a .PARAM ngspice refused).
+      const bool twoPorts = laddercode.indexOf("P2") != -1;
+      if (QucsSettings.DefaultSimulator == spicecompat::simQucsator)
+        componentstr += twoPorts ? QStringLiteral("<Eqn Eqn1 1 200 100 -28 15 0 0 "
+                                                  "\"S11_dB=dB(S[1,1])\" 1 \"S21_dB=dB(S[2,1])\" "
+                                                  "1 \"S22_dB=dB(S[2,2])\" 1 \"yes\" 0>\n")
+                                 : QStringLiteral("<Eqn Eqn1 1 200 100 -28 15 0 0 "
+                                                  "\"S11_dB=dB(S[1,1])\" 1 \"yes\" 0>\n");
+      else if (QucsSettings.DefaultSimulator == spicecompat::simNgspice)
+        componentstr += twoPorts ? QStringLiteral("<NutmegEq NutmegEq1 1 200 100 -28 15 0 0 \"SP1\" 1 "
+                                                  "\"S11_dB=dB(S_1_1)\" 1 \"S21_dB=dB(S_2_1)\" 1 \"S22_dB=dB(S_2_2)\" 1>\n")
+                                 : QStringLiteral("<NutmegEq NutmegEq1 1 200 100 -28 15 0 0 \"SP1\" 1 "
+                                                  "\"S11_dB=dB(S_1_1)\" 1>\n");
     } else if (!tag.compare("ZL")) // Complex load
     {
       double RL = value;
@@ -2096,6 +2100,50 @@ void MatchDialog::SchematicParser(QString laddercode, int &x_pos, double Freq,
   Schematic += paintingstr;
   Schematic += "</Paintings>\n";
 
-  //Copy the schematic into clipboard
-  QApplication::clipboard()->setText(Schematic, QClipboard::Clipboard);
+  //Copy the schematic into clipboard - or, asked quietly, keep it
+  if (m_quiet) m_designed = Schematic;
+  else QApplication::clipboard()->setText(Schematic, QClipboard::Clipboard);
+}
+
+// -----------------------------------------------------------------------
+// What a calculation says on the way: in a message box - or, asked quietly
+// (Claude's tool), kept for the answer.
+void MatchDialog::say(bool error, const QString &text) {
+  if (m_quiet) {
+    m_said << text;
+    return;
+  }
+  if (error) QMessageBox::critical(0, tr("Error"), text);
+  else QMessageBox::warning(0, tr("Warning"), text);
+}
+
+QString MatchDialog::designOnePort(int topology, bool binomial, double S11real, double S11imag, double Z0, double Freq,
+                                   bool micro_syn, bool SP_block, bool open_short, tSubstrate Substrate, int order,
+                                   double gamma_MAX, bool BalancedStubs, QStringList *said) {
+  TopoCombo->setCurrentIndex(topology);
+  (binomial ? BinRadio : ChebyRadio)->setChecked(true);
+  m_quiet = true;
+  m_designed.clear();
+  m_said.clear();
+  const bool ok = calcMatchingCircuit(S11real, S11imag, Z0, Freq, micro_syn, SP_block, open_short, Substrate, order,
+                                      gamma_MAX, BalancedStubs);
+  m_quiet = false;
+  if (said) *said = m_said;
+  return ok ? m_designed : QString();
+}
+
+QString MatchDialog::designTwoPort(int topology, bool binomial, double S11real, double S11imag, double S22real,
+                                   double S22imag, double DetReal, double DetImag, double Z1, double Z2, double Freq,
+                                   bool micro_syn, bool SP_block, bool open_short, tSubstrate Substrate, int order,
+                                   double gamma_MAX, bool BalancedStubs, QStringList *said) {
+  TopoCombo->setCurrentIndex(topology);
+  (binomial ? BinRadio : ChebyRadio)->setChecked(true);
+  m_quiet = true;
+  m_designed.clear();
+  m_said.clear();
+  const bool ok = calc2PortMatch(S11real, S11imag, S22real, S22imag, DetReal, DetImag, Z1, Z2, Freq, micro_syn,
+                                 SP_block, open_short, Substrate, order, gamma_MAX, BalancedStubs);
+  m_quiet = false;
+  if (said) *said = m_said;
+  return ok ? m_designed : QString();
 }

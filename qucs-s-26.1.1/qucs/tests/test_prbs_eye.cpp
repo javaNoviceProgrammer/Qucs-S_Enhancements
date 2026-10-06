@@ -105,6 +105,20 @@ ds::Curve waveform(const QVector<double>& levels, double edge, double dt, double
     return c;
 }
 
+// The first \a n bits of a PRBS31 (x^31 + x^28 + 1) from all ones: long
+// runs of ones and zeros, few crossings - its slow start.
+QVector<double> prbs31Start(int n)
+{
+    QVector<double> out;
+    quint32 reg = 0x7fffffff;
+    for (int k = 0; k < n; ++k) {
+        const quint32 b = ((reg >> 30) ^ (reg >> 27)) & 1u;
+        reg = ((reg << 1) | b) & 0x7fffffffu;
+        out << double(b);
+    }
+    return out;
+}
+
 QVector<double> nrz(int n)
 {
     QVector<double> v;
@@ -1471,6 +1485,129 @@ private slots:
         p.y1 = 0.25;
         const QString text = qucs_s::status::readout(d.data(), p);
         QVERIFY2(text.contains("t 50 ps") && text.contains("(0.50 UI)") && text.contains("v 250m"), qPrintable(text));
+    }
+
+    // The wishlist of 2 October: a trace not from a PRBS source with few
+    // transitions - PRBS31's slow start, 34 crossings in 300 bits - was
+    // read as 3 UI from the shortest gaps. The shortest gap the UI when
+    // more gaps are whole multiples of it; few crossings, gaps that are no
+    // whole number of the UI, said.
+    void fewCrossingsAreSaid()
+    {
+        const ds::Curve c = waveform(prbs31Start(300), 10e-12, 2.5e-12, 37e-12);
+        const QVector<double> crossed = eye::crossingTimes(c, 0.5, 0.05);
+        QVERIFY2(crossed.size() < 50 && crossed.size() > 10, qPrintable(QString::number(crossed.size())));
+        QStringList doubts;
+        const double estimate = eye::estimateUi(crossed, nullptr, &doubts);
+        QVERIFY2(std::abs(estimate / UI - 1.0) < 1e-3, qPrintable(QString::number(estimate / UI, 'g', 8)));
+        QVERIFY2(doubts.join(" ").contains(QStringLiteral("told from only %1 crossings").arg(crossed.size())), qPrintable(doubts.join("; ")));
+        const eye::Result r = eye::analyse(c, eye::Options());
+        QVERIFY2(r.ok() && r.uiEstimated && std::abs(r.ui / UI - 1.0) < 1e-3, qPrintable(r.error + QString::number(r.ui)));
+        QVERIFY2(r.notes.join(" ").contains("told from only"), qPrintable(r.notes.join("; ")));
+        QVERIFY(eye::toJson(r).value("note").toString().contains("told from only"));
+        // Given, nothing said; many crossings, nothing said.
+        eye::Options o;
+        o.ui = UI;
+        QVERIFY(!eye::analyse(c, o).notes.join(" ").contains("told from"));
+        doubts.clear();
+        eye::estimateUi(eye::crossingTimes(waveform(nrz(400), 10e-12, 2.5e-12, 37e-12), 0.5, 0.05), nullptr, &doubts);
+        QVERIFY2(doubts.isEmpty(), qPrintable(doubts.join("; ")));
+        // A tenth of the gaps at 1.4 UI, no whole number of it: said.
+        QVector<double> times;
+        double t = 0.0;
+        for (int k = 0; k < 200; ++k) {
+            times << t;
+            t += (k % 10 == 3 ? 1.4 : 1.0 + (k % 3)) * UI;
+        }
+        doubts.clear();
+        eye::estimateUi(times, nullptr, &doubts);
+        QVERIFY2(doubts.join(" ").contains("are a whole number of unit intervals"), qPrintable(doubts.join("; ")));
+    }
+
+    // An ideal source's levels are the same at every bit - to rounding: Q
+    // was 4e14, as if measured. A spread below a billionth of the levels'
+    // spacing is no noise: Q infinite, null with why in JSON, "Q ∞ (no
+    // noise)" beside the diagram. Noise of a millivolt: a Q as before.
+    void aNoiselessEyeHasNoQ()
+    {
+        ds::Curve c = waveform(nrz(200), 10e-12, 2.5e-12);
+        for (int i = 0; i < c.y.size(); ++i)
+            if (c.y.at(i) == 1.0) c.y[i] = i % 2 ? 3.3 : 0.1 * 33.0;   // (3.3000000000000003)
+            else c.y[i] *= 3.3;
+        eye::Options o;
+        o.ui = UI;
+        const eye::Result r = eye::analyse(c, o);
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        QVERIFY2(std::isinf(r.eyes.first().q), qPrintable(QString::number(r.eyes.first().q)));
+        const QJsonObject e = eye::toJson(r).value("eyes").toArray().first().toObject();
+        QVERIFY2(e.contains("Q") && e.value("Q").isNull() && e.value("Q note").toString().contains("infinite"),
+                 qPrintable(QJsonDocument(e).toJson()));
+        ds::MeasureOptions mo;
+        mo.period = UI;
+        const QJsonObject m = ds::measure(c, "eye", mo);
+        QVERIFY2(m.value("Q").isNull() && m.value("Q note").toString().contains("no noise"), qPrintable(QJsonDocument(m).toJson()));
+        // Beside the diagram.
+        const QString file = dir.filePath("ideal.dat");
+        QVERIFY(writeDataset(file, c));
+        QScopedPointer<EyeDiagram> d(makeDiagram(eyeLine(" 1e-10 2 - 2 - 0 1 - -")));
+        d->loadGraphData(file);
+        QVERIFY2(d->measurementLines().contains(QStringLiteral("Q ∞ (no noise)")), qPrintable(d->measurementLines().join("\n")));
+        // Noise: measured.
+        const QVector<double> noise = gaussian(c.y.size(), 1e-3, 5);
+        for (int i = 0; i < c.y.size(); ++i) c.y[i] += noise.at(i);
+        const eye::Result noisy = eye::analyse(c, o);
+        QVERIFY2(std::isfinite(noisy.eyes.first().q) && noisy.eyes.first().q > 100, qPrintable(QString::number(noisy.eyes.first().q)));
+        QVERIFY(eye::toJson(noisy).value("eyes").toArray().first().toObject().value("Q").isDouble());
+    }
+
+    // Drawn as a density, a trace was a pixel wide whatever its thickness
+    // (edit_trace's 3 took and changed nothing): now as wide as a line of
+    // it - and drawn as many traces, too. Thickness 1 is as it was.
+    void aThickTraceIsDrawnThick()
+    {
+        // (Drawn as traces, more than 2000 windows are counted a pixel
+        // each: 1200 bits, two UIs a window.)
+        const QString file = dir.filePath("thick.dat"), many = dir.filePath("thickmany.dat");
+        // (No jitter: each line drawn over the others, its width alone.)
+        QVERIFY(writeDataset(file, waveform(nrz(300), 20e-12, 2.5e-12)));
+        QVERIFY(writeDataset(many, waveform(nrz(1200), 20e-12, 2.5e-12)));
+        for (const int drawn : {int(EyeDiagram::Density), int(EyeDiagram::Traces)}) {
+            int counted[2] = {0, 0};
+            for (int k = 0; k < 2; ++k) {
+                QScopedPointer<EyeDiagram> d(makeDiagram(eyeLine(" 1e-10 2 - 2 - 0 0 - -")));
+                d->drawn = drawn;
+                d->Graphs.first()->Thick = k == 0 ? 1 : 3;
+                d->loadGraphData(drawn == int(EyeDiagram::Density) ? file : many);
+                QVERIFY(drawn == int(EyeDiagram::Density) || d->results().first().symbols * 2 > 2000);
+                const QImage img = render(d.data(), d->x2 + 10);
+                counted[k] = coloured(img, QRect(1, 1, d->x2 - 2, d->y2 - 2));
+            }
+            QVERIFY2(counted[1] > counted[0] * 2, qPrintable(QStringLiteral("drawn %1: thickness 1 %2 pixels, 3 %3").arg(drawn).arg(counted[0]).arg(counted[1])));
+        }
+        // Each pixel counted once a window, however wide the brush: one
+        // pulse in 1200 bits, drawn as many traces - where its edges cross
+        // (two windows) a thick trace no darker than a thin one.
+        QVector<double> pulse(1200, 0.0);
+        pulse[600] = 1.0;
+        const QString single = dir.filePath("pulse.dat");
+        QVERIFY(writeDataset(single, waveform(pulse, 20e-12, 2.5e-12)));
+        int darkest[2] = {0, 0};
+        for (int k = 0; k < 2; ++k) {
+            QScopedPointer<EyeDiagram> d(makeDiagram(eyeLine(" 1e-10 2 - 2 0.5 1 0 - -")));
+            d->Graphs.first()->Thick = k == 0 ? 1 : 3;
+            d->loadGraphData(single);
+            const QImage img = render(d.data(), d->x2 + 10);
+            // (The middle of the swing: the edges alone pass there.)
+            for (int y = d->y2 * 3 / 10; y <= d->y2 * 7 / 10; ++y)
+                for (int x = 4; x < d->x2 - 4; ++x) {
+                    // (How opaque the trace's blue is there: the grey grid has none.)
+                    const QColor p = img.pixelColor(x, y);
+                    darkest[k] = std::max(darkest[k], p.blue() - p.red());
+                }
+        }
+        // (A thin line meets the other edge's in no pixel there: one
+        // window's opacity; a thick one meets it - two, no more.)
+        QVERIFY2(darkest[0] > 5 && darkest[1] <= 2 * darkest[0] + 3, qPrintable(QStringLiteral("thin %1, thick %2").arg(darkest[0]).arg(darkest[1])));
     }
 };
 

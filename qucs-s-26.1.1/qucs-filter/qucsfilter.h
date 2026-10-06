@@ -44,12 +44,21 @@ struct tQucsSettings {
 
 extern struct tQucsSettings QucsSettings;
 
+struct tSubstrate;
+
 class QucsFilter : public QMainWindow
 {
   Q_OBJECT
 public:
   QucsFilter();
  ~QucsFilter();
+
+  /// The schematic of \a Filter as realization \a realize (the window's
+  /// list: 0 an LC ladder of pi type ... 10 equation-defined) on
+  /// \a Substrate (microstrip realizations): what Calculate puts into the
+  /// clipboard. A Cauer filter's order, found from its attenuation, goes
+  /// into \a Filter. Null when it cannot be made.
+  static QString * schematicOf(struct tFilter * Filter, const tSubstrate * Substrate, int realize);
 
 private slots:
   void slotQuit();

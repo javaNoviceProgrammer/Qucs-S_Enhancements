@@ -74,17 +74,20 @@ public:
     sysStruct sys;
 
 private:
-    // Stage params:
+    // Stage params - each with a value before the constructor sets it:
+    // setPowerGain() reads the priorities and the IP3s and P1dBs, and the
+    // constructor's first call of it read them unset (a value no priority
+    // is, by UBSan).
     QString m_name;
-    bool m_enabled;
-    float m_powerGain;
-    float m_noiseFigure;
-    float m_oip3;
-    float m_op1db;
-    float m_iip3;
-    float m_ip1db;
-    priority m_iip3Priority;
-    priority m_ip1dbPriority;
+    bool m_enabled = true;
+    float m_powerGain = 0;
+    float m_noiseFigure = 0;
+    float m_oip3 = 0;
+    float m_op1db = 0;
+    float m_iip3 = 0;
+    float m_ip1db = 0;
+    priority m_iip3Priority = undifinited;
+    priority m_ip1dbPriority = undifinited;
 };
 
 #endif // STAGE_H

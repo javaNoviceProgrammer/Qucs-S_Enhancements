@@ -111,6 +111,9 @@ qucs_add_test(test_large_schematics)
 qucs_add_test(test_canvas_drawing)
 qucs_add_test(test_claude_code)
 qucs_add_test(test_qucs_control)
+# The Tools menu's programs as Claude's tools (their --json): built first
+# (the top CMakeLists.txt, once they are known).
+qucs_add_test(test_wishlist_tools)
 qucs_add_test(test_file_browser)
 qucs_add_test(test_file_browser_drop)
 qucs_add_test(test_new_paintings)

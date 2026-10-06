@@ -36,6 +36,7 @@ struct tQucsSettings
   QFont font;
   QString LangDir;
   QString Language;
+  int DefaultSimulator = 0;   // whose equations a schematic gets (spicecompat's numbers; 0: none set, Qucsator's)
 };
 
 extern struct tQucsSettings QucsSettings;

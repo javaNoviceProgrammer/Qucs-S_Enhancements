@@ -301,6 +301,9 @@ public:
   void    cut();
   void    copy();
   bool    paste(QTextStream*, std::list<Element*>*);
+  /// The elements of a schematic's text as Copy writes it (a synthesis
+  /// tool's): what a paste puts down, without the system clipboard's image.
+  bool    pasteText(QTextStream *, std::list<Element*>*);
   bool    load();
   int     save();
   bool    writeTo(const QString& path) override;

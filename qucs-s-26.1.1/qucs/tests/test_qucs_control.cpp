@@ -6689,6 +6689,7 @@ private slots:
             {"y", {{"name", "R1"}, {"y", 160}}},
             {"near", {{"name", "R1"}, {"near", QJsonObject{{"part", "C1"}, {"side", "below"}}}}},
             {"rotation", {{"name", "R1"}, {"rotation", 1}}},
+            {"pin1", {{"name", "C1"}, {"pin1", "top"}}},
             {"mirror", {{"name", "R1"}, {"mirror", true}}},
             {"active", {{"name", "R1"}, {"active", false}}},
             {"shown", {{"name", "R1"}, {"shown", QJsonObject{{"R", false}}}}},
