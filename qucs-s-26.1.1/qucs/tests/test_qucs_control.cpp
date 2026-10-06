@@ -5657,6 +5657,23 @@ private slots:
         r = call("create_library", {{"name", "LocalAmps"}, {"subcircuits", QJsonArray{"buf.sch"}}, {"destination", "project"}});
         QVERIFY2(!failed(r) && QFileInfo::exists(project + "/LocalAmps.lib"), qPrintable(text(r)));
         QVERIFY(!json(r).toObject().contains("also_named"));
+        // Its SPICE subcircuit: the part's two pins - or, 'ground_pin', a
+        // first one, gnd, before them.
+        const auto subcircuitPins = [](const QString& file) {
+            QFile f(file);
+            if (!f.open(QIODevice::ReadOnly)) return QStringList{"(not read)"};
+            for (const QString& line : QString::fromUtf8(f.readAll()).split('\n'))
+                if (line.startsWith(".SUBCKT ")) return line.split(' ', Qt::SkipEmptyParts).mid(2);
+            return QStringList{"(no .SUBCKT)"};
+        };
+        const QStringList pins = subcircuitPins(project + "/LocalAmps.lib");
+        QCOMPARE(pins.size(), 2);
+        r = call("create_library", {{"name", "GndAmps"}, {"subcircuits", QJsonArray{"buf.sch"}}, {"destination", "project"},
+                                    {"ground_pin", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(subcircuitPins(project + "/GndAmps.lib"), QStringList{"gnd"} + pins);
+        QVERIFY(!QucsSettings.LibraryGroundPin);   // (for that library only)
+        QVERIFY(QFile::remove(project + "/GndAmps.lib"));
         // With the name of another library there is: said, which - a part
         // placed by the name is taken from the first of them that has it.
         r = call("create_library", {{"name", "TestAmps"}, {"subcircuits", QJsonArray{"buf.sch"}}, {"destination", "project"}});

@@ -55,6 +55,7 @@ public:
   QLineEdit *Input_DataSet, *Input_DataDisplay, *Input_Script;
   QLineEdit *Input_GridX, *Input_GridY;
   QCheckBox *Check_OpenDpl, *Check_GridOn, *Check_RunScript;
+  QCheckBox *Check_AlwaysLoadOSDI;   ///< Library: the part's Verilog-A in all the project's circuits
 
   QVBoxLayout *all;
   QRegularExpressionValidator *valExpr;

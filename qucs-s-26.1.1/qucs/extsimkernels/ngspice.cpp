@@ -192,9 +192,8 @@ QString Ngspice::osdiLoads(const QString& netlist) const
         else
             loadable << file;
     }
-    const QString base = QFileInfo(a_schematic->getDocName()).absolutePath();
     QString out;
-    for (const QString& file : qucs_s::osdi::needed(loadable, qucs_s::osdi::usedModelTypes(netlist, base), &notes))
+    for (const QString& file : qucs_s::osdi::needed(loadable, modelTypesOf(netlist), &notes))
         out += QStringLiteral("pre_osdi '%1'\n").arg(file);
     for (const QString& note : notes)
         out += QStringLiteral("* OSDI: %1\n").arg(note);
@@ -216,9 +215,29 @@ QList<qucs_s::osdi::Build> Ngspice::verilogABuilds()
         createNetlist(stream, simulations, vars, outputs);
     }
     a_output = output;
-    const QString base = QFileInfo(a_schematic->getDocName()).absolutePath();
-    return qucs_s::osdi::builds(sources, libraries, qucs_s::osdi::usedModelTypes(netlist, base),
-                                programFile(a_simulator_cmd), misc::cacheDir());
+    return qucs_s::osdi::builds(sources, libraries, modelTypesOf(netlist), programFile(a_simulator_cmd), misc::cacheDir());
+}
+
+/*!
+ * \brief Ngspice::modelTypesOf The device types \a netlist uses (its .model
+ *        cards' and those of the files it includes: osdi::usedModelTypes())
+ *        - and, for a circuit of the open project, the modules of the
+ *        library parts marked to be loaded in all its circuits, placed or
+ *        not (projectlibraries::alwaysLoadedModules()). The Verilog-A
+ *        compiled and loaded for it are those defining these.
+ */
+QSet<QString> Ngspice::modelTypesOf(const QString& netlist) const
+{
+    const QString name = a_schematic->getDocName();
+    QSet<QString> types = qucs_s::osdi::usedModelTypes(netlist, QFileInfo(name).absolutePath());
+    if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty()) {
+        const QString project = QFileInfo(QucsSettings.QucsWorkDir.absolutePath()).canonicalFilePath();
+        const QString file = name.isEmpty() ? QString() : QFileInfo(name).canonicalFilePath();
+        // (An untitled one is the project's: it is saved there.)
+        if (!project.isEmpty() && (name.isEmpty() || file.startsWith(project + QLatin1Char('/'))))
+            types.unite(qucs_s::projectlibraries::alwaysLoadedModules(project));
+    }
+    return types;
 }
 
 /*!

@@ -95,6 +95,7 @@ void settingsManager::initDefaults()
     m_Defaults["ShowPinNames"] = true;
     m_Defaults["ShowPinDirections"] = false;
     m_Defaults["EmbedVerilogAInLibraries"] = true;
+    m_Defaults["LibraryGroundPin"] = false;
     m_Defaults["WriteTextDocSettings"] = true;
     m_Defaults["PaperFollowsTheme"] = false;
     m_Defaults["DiagramTheme"] = "";   // the theme new diagrams start with (diagramtheme.h)

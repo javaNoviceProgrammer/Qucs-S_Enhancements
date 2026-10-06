@@ -292,6 +292,7 @@ QJsonObject QucsControl::createLibrary(const QJsonObject& args)
     for (auto it = descriptions.begin(); it != descriptions.end(); ++it) request.descriptions.insert(it.key(), it.value().toString());
     request.analogOnly = !args.value(QLatin1String("digital_models")).toBool();
     request.embedVerilogA = args.value(QLatin1String("embed_verilog_a")).toBool(QucsSettings.EmbedVerilogAInLibraries);
+    request.groundPin = args.value(QLatin1String("ground_pin")).toBool(QucsSettings.LibraryGroundPin);
     request.replace = args.value(QLatin1String("replace")).toBool();
     // (Replaced: the old one to the trash first, to take back.)
     const QString file = QDir(folder).filePath(name + QStringLiteral(".lib"));

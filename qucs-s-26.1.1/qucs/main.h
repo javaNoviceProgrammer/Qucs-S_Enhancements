@@ -162,6 +162,13 @@ struct tQucsSettings {
   // Create Library: the Verilog-A sources (.va) the subcircuits use go
   // into the library, beside its other files; compiled where it is used.
   bool EmbedVerilogAInLibraries = true;
+  // Create Library: each subcircuit's SPICE model (.SUBCKT) gets a first
+  // pin, gnd, that a part placed from the library ties to the circuit's
+  // ground (0). Inside the subcircuit nothing needs it - its ground is the
+  // circuit's 0 - and other programs reading the library see a pin too
+  // many, so it is left out unless asked for. A library made with it keeps
+  // it: a part tells from its library's .SUBCKT line which it has.
+  bool LibraryGroundPin = false;
   // Saving a text document also writes its Document Settings into a file
   // beside it (name.cfg). Off: only when they hold something (a document
   // whose settings were set) or changed; a file of defaults says nothing.

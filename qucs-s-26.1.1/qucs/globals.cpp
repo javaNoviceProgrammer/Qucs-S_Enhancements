@@ -165,6 +165,7 @@ bool loadSettings()
     QucsSettings.ShowPinNames = _settings::Get().item<bool>("ShowPinNames");
     QucsSettings.ShowPinDirections = _settings::Get().item<bool>("ShowPinDirections");
     QucsSettings.EmbedVerilogAInLibraries = _settings::Get().item<bool>("EmbedVerilogAInLibraries");
+    QucsSettings.LibraryGroundPin = _settings::Get().item<bool>("LibraryGroundPin");
     QucsSettings.WriteTextDocSettings = _settings::Get().item<bool>("WriteTextDocSettings");
     QucsSettings.PaperFollowsTheme = _settings::Get().item<bool>("PaperFollowsTheme");
     QucsSettings.GridMode = std::clamp(_settings::Get().item<int>("GridMode"), 0, 2);
@@ -309,6 +310,7 @@ bool saveApplSettings()
     qs.setItem<bool>("ShowPinNames",QucsSettings.ShowPinNames);
     qs.setItem<bool>("ShowPinDirections",QucsSettings.ShowPinDirections);
     qs.setItem<bool>("EmbedVerilogAInLibraries",QucsSettings.EmbedVerilogAInLibraries);
+    qs.setItem<bool>("LibraryGroundPin",QucsSettings.LibraryGroundPin);
     qs.setItem<bool>("WriteTextDocSettings",QucsSettings.WriteTextDocSettings);
     qs.setItem<bool>("PaperFollowsTheme",QucsSettings.PaperFollowsTheme);
     qs.setItem<int>("GridMode",QucsSettings.GridMode);

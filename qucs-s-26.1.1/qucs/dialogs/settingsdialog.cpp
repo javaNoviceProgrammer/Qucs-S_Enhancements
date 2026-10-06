@@ -182,6 +182,24 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     t->addTab(Tab3, tr("Frame"));
 
     // ...........................................................
+    // As a library part (Tools > Create Library).
+    QWidget *Tab4 = new QWidget(t);
+    QVBoxLayout *gp4 = new QVBoxLayout(Tab4);
+    Check_AlwaysLoadOSDI = new QCheckBox(tr("Always load its Verilog-A (OSDI) in the project's circuits"), Tab4);
+    Check_AlwaysLoadOSDI->setObjectName(QStringLiteral("alwaysLoadOSDI"));
+    gp4->addWidget(Check_AlwaysLoadOSDI);
+    QLabel *libraryNote = new QLabel(
+        tr("Made into a library part, this subcircuit is marked in the library: every circuit of a "
+           "project that has the library - its own library, or one whose part a schematic of it "
+           "places - loads the Verilog-A models (OSDI) of the devices in this subcircuit, whether "
+           "the part is placed or not. For a model a circuit uses where Qucs-S cannot see it.\n"
+           "Off: a circuit loads only the models its parts use."), Tab4);
+    libraryNote->setWordWrap(true);
+    gp4->addWidget(libraryNote);
+    gp4->addStretch();
+    t->addTab(Tab4, tr("Library"));
+
+    // ...........................................................
     // buttons on the bottom of the dialog (independent of the TabWidget)
     QHBoxLayout *Butts = new QHBoxLayout();
     Butts->setSpacing(5);
@@ -209,6 +227,7 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     Check_OpenDpl->setChecked(Doc->getSimOpenDpl());
     Check_RunScript->setChecked(Doc->getSimRunScript());
     Check_GridOn->setChecked(Doc->getGridOn());
+    Check_AlwaysLoadOSDI->setChecked(Doc->getAlwaysLoadOSDI());
     Input_GridX->setText(QString::number(Doc->getGridX()));
     Input_GridY->setText(QString::number(Doc->getGridY()));
 
@@ -320,6 +339,12 @@ void SettingsDialog::slotApply()
     if(Doc->getGridOn() != Check_GridOn->isChecked())
     {
         Doc->setGridOn(Check_GridOn->isChecked());
+        changed = true;
+    }
+
+    if(Doc->getAlwaysLoadOSDI() != Check_AlwaysLoadOSDI->isChecked())
+    {
+        Doc->setAlwaysLoadOSDI(Check_AlwaysLoadOSDI->isChecked());
         changed = true;
     }
 

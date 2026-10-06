@@ -223,8 +223,22 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                  "Off: the library holds the subcircuits and their symbols only."));
     appSettingsGrid->addWidget(embedVerilogA, 15, 1);
 
+    appSettingsGrid->addWidget(new QLabel(tr("Ground pin (gnd) in exported subcircuits:"), appSettingsTab), 16, 0);
+    libraryGroundPin = new QCheckBox(appSettingsTab);
+    libraryGroundPin->setObjectName(QStringLiteral("libraryGroundPin"));
+    libraryGroundPin->setToolTip(tr("Tools > Create Library gives each subcircuit's SPICE model (.SUBCKT) a "
+                                    "first pin, gnd, that a part placed from the library ties to the "
+                                    "circuit's ground. Nothing inside the subcircuit needs it - its ground is "
+                                    "the circuit's - and another program reading the library sees a pin too "
+                                    "many.\n"
+                                    "On: for a library Qucs-S 26.1.5 or earlier, or another Qucs-S, will use: "
+                                    "they always tie a first pin to ground.\n"
+                                    "A library made either way keeps working: a part tells from its library "
+                                    "which it has."));
+    appSettingsGrid->addWidget(libraryGroundPin, 16, 1);
+
     appSettingsGrid->addWidget(new QLabel(tr("Write a settings file (.cfg) beside each text document:"),
-                                          appSettingsTab), 16, 0);
+                                          appSettingsTab), 17, 0);
     writeDocSettings = new QCheckBox(appSettingsTab);
     writeDocSettings->setObjectName(QStringLiteral("writeDocSettings"));
     writeDocSettings->setToolTip(tr("Saving a text document also writes name.cfg beside it (notes.txt.cfg for "
@@ -234,7 +248,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                     "Off: a settings file is written only for a document whose Document "
                                     "Settings were set or changed, so none is lost. The files already there "
                                     "are left alone."));
-    appSettingsGrid->addWidget(writeDocSettings, 16, 1);
+    appSettingsGrid->addWidget(writeDocSettings, 17, 1);
 
     // ...........................................................
     // The appearance settings tab
@@ -834,6 +848,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     showPinNames->setChecked(QucsSettings.ShowPinNames);
     showPinDirections->setChecked(QucsSettings.ShowPinDirections);
     embedVerilogA->setChecked(QucsSettings.EmbedVerilogAInLibraries);
+    libraryGroundPin->setChecked(QucsSettings.LibraryGroundPin);
     writeDocSettings->setChecked(QucsSettings.WriteTextDocSettings);
 
     ShortcutButton->setText("Custom Shortcut");
@@ -1073,6 +1088,7 @@ void QucsSettingsDialog::slotApply()
     QucsSettings.ShowPinNames = showPinNames->isChecked();
     QucsSettings.ShowPinDirections = showPinDirections->isChecked();
     QucsSettings.EmbedVerilogAInLibraries = embedVerilogA->isChecked();
+    QucsSettings.LibraryGroundPin = libraryGroundPin->isChecked();
     QucsSettings.WriteTextDocSettings = writeDocSettings->isChecked();
 
     QucsSettings.FileTypes.clear();
@@ -1338,6 +1354,7 @@ void QucsSettingsDialog::slotDefaultValues()
     showPinNames->setChecked(true);
     showPinDirections->setChecked(false);
     embedVerilogA->setChecked(_settings::Get().itemDefault<bool>("EmbedVerilogAInLibraries"));
+    libraryGroundPin->setChecked(_settings::Get().itemDefault<bool>("LibraryGroundPin"));
     writeDocSettings->setChecked(_settings::Get().itemDefault<bool>("WriteTextDocSettings"));
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));
     paperFollowsTheme->setChecked(false);

@@ -27,6 +27,7 @@
 #include "components/libcomp.h"
 #include "dialogs/librarydialog.h"
 #include "dialogs/qucssettingsdialog.h"
+#include "dialogs/settingsdialog.h"
 #include "extsimkernels/ngspice.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -188,6 +189,45 @@ class TestLibraryVerilogA : public QObject
         kernel.setWorkdir(dir.filePath("kernel"));
         kernel.SaveNetlist(dir.filePath("kernel/net.cir"), false);
         return read(dir.filePath("kernel/net.cir"));
+    }
+
+    // A library made of the project's \a subcircuits into \a folder (the
+    // request's \a ground pin); the messages.
+    QString makeLibrary(QucsApp& app, const QString& name, const QStringList& subcircuits, const QString& folder,
+                        bool ground = false)
+    {
+        LibraryDialog dialog(&app);
+        dialog.fillSchematicList(subcircuits);
+        LibraryDialog::Request request;
+        request.name = name;
+        request.subcircuits = subcircuits;
+        request.folder = folder;
+        request.embedVerilogA = QucsSettings.EmbedVerilogAInLibraries;
+        request.groundPin = ground;
+        QString log, error;
+        if (!dialog.create(request, &log, &error)) return QStringLiteral("not made: ") + error + "\n" + log;
+        return log;
+    }
+
+    // The nodes of the part X1 in the netlist \a netlist: what is between its
+    // name and its subcircuit's, \a type.
+    static QStringList nodesOfX1(const QString& netlist, const QString& type)
+    {
+        for (const QString& line : netlist.split('\n')) {
+            const QStringList words = line.split(' ', Qt::SkipEmptyParts);
+            if (words.isEmpty() || words.first() != "XX1") continue;
+            const qsizetype at = words.indexOf(type);
+            return at > 0 ? words.mid(1, at - 1) : QStringList{"(no " + type + ")"};
+        }
+        return {"(no XX1)"};
+    }
+
+    // The pins of the .SUBCKT line in \a library.
+    static QStringList subcircuitPins(const QString& library)
+    {
+        for (const QString& line : library.split('\n'))
+            if (line.startsWith(".SUBCKT ")) return line.split(' ', Qt::SkipEmptyParts).mid(2);
+        return {"(no .SUBCKT)"};
     }
 
     // What a simulation of \a file compiles first.
@@ -617,6 +657,183 @@ private slots:
         QVERIFY2(files == QStringList{here + "/TeamLib/good.va"}, qPrintable(files.join('\n')));
         const QString netlist = netlistOf(use);   // the model: that copy's too
         QVERIFY2(netlist.contains(".model m1loose good"), qPrintable(netlist));
+    }
+
+    // A library's SPICE subcircuit has the part's pins and no more, unless
+    // asked for a first one, gnd; a part tells from its library which it
+    // has: one with gnd (made so, or before 26.1.6) and one with a Qucs
+    // model only (made SPICE with a gnd) tie it to the circuit's ground.
+    void aSubcircuitHasNoGroundPinUnlessAsked()
+    {
+        QVERIFY(!QucsSettings.LibraryGroundPin);   // the default
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        const QString pins = dir.filePath("pins");
+        QString log = makeLibrary(app, "NoGnd", {"sub.sch"}, pins);
+        QVERIFY2(log.contains("Successfully created library."), qPrintable(log));
+        log = makeLibrary(app, "WithGnd", {"sub.sch"}, pins, true);
+        QVERIFY2(log.contains("Successfully created library."), qPrintable(log));
+        QVERIFY(!QucsSettings.LibraryGroundPin);   // (the request's, for that library only)
+
+        const QStringList none = subcircuitPins(read(pins + "/NoGnd.lib"));
+        const QStringList with = subcircuitPins(read(pins + "/WithGnd.lib"));
+        QCOMPARE(none.size(), 2);
+        QVERIFY2(!none.contains("gnd"), qPrintable(none.join(' ')));
+        QCOMPARE(with.size(), 3);
+        QCOMPARE(with.first(), QString("gnd"));
+        QCOMPARE(with.mid(1), none);
+        QVERIFY(!LibComp::takesGround(pins + "/NoGnd.lib", "sub", 2));
+        QVERIFY(LibComp::takesGround(pins + "/WithGnd.lib", "sub", 2));
+
+        app.ProjName.clear();
+        QucsSettings.QucsWorkDir.setPath(dir.filePath("elsewhere"));
+        // The part's two pins' nodes; with a gnd pin, ground (0) before them.
+        const QStringList two = nodesOfX1(netlistOf(write(dir.filePath("elsewhere/nognd.sch"), usesLibrary(pins + "/NoGnd"))), "NoGnd_sub");
+        QCOMPARE(two.size(), 2);
+        QVERIFY2(two.first() != "0", qPrintable(two.join(' ')));
+        const QStringList three = nodesOfX1(netlistOf(write(dir.filePath("elsewhere/withgnd.sch"), usesLibrary(pins + "/WithGnd"))),
+                                            "WithGnd_sub");
+        QCOMPARE(three, QStringList{"0"} + two);
+        // A library with a Qucs model only: made SPICE with a gnd, tied.
+        QString qucsOnly = read(pins + "/NoGnd.lib");
+        qucsOnly.replace("NoGnd", "QucsOnly");
+        const qsizetype spice = qucsOnly.indexOf("  <Spice>"), spiceEnd = qucsOnly.indexOf("</Spice>");
+        QVERIFY(spice > 0 && spiceEnd > spice);
+        qucsOnly.remove(spice, spiceEnd + 9 - spice);
+        write(pins + "/QucsOnly.lib", qucsOnly.toUtf8());
+        QVERIFY(LibComp::takesGround(pins + "/QucsOnly.lib", "sub", 2));
+        // The library changed: read again.
+        write(pins + "/Changed.lib", read(pins + "/NoGnd.lib").replace("NoGnd", "Changed").toUtf8());
+        QVERIFY(!LibComp::takesGround(pins + "/Changed.lib", "sub", 2));
+        write(pins + "/Changed.lib", read(pins + "/WithGnd.lib").replace("WithGnd", "Changed").toUtf8() + "\n");
+        QVERIFY(LibComp::takesGround(pins + "/Changed.lib", "sub", 2));
+    }
+
+    // The ground pin's setting: Application Settings > Settings, off unless
+    // changed, kept.
+    void theGroundPinSettingIsInTheSettingsDialog()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QucsSettingsDialog dialog(&app);
+        auto* box = dialog.findChild<QCheckBox*>("libraryGroundPin");
+        QVERIFY(box != nullptr);
+        QVERIFY(!box->isChecked());
+        QVERIFY(!_settings::Get().itemDefault<bool>("LibraryGroundPin"));
+        box->setChecked(true);
+        QVERIFY(QMetaObject::invokeMethod(&dialog, "slotApply"));
+        QVERIFY(QucsSettings.LibraryGroundPin);
+        QVERIFY(_settings::Get().item<bool>("LibraryGroundPin"));
+        QucsSettings.LibraryGroundPin = false;
+        saveApplSettings();
+        QVERIFY(!_settings::Get().item<bool>("LibraryGroundPin"));
+    }
+
+    // Document Settings > Library marks a subcircuit: saved with it -
+    // <AlwaysLoadOSDI=1>, only when set (a Qucs-S that does not know it
+    // refuses the file) - and read back.
+    void theDocumentSettingsMarkASubcircuit()
+    {
+        Module::registerModules();   // (a QucsApp's destructor unregisters them)
+        const QString file = write(project + "/marked.sch", read(project + "/sub.sch").toUtf8());
+        Schematic sch(nullptr, file);
+        QVERIFY(sch.load());
+        QVERIFY(!sch.getAlwaysLoadOSDI());
+        {
+            SettingsDialog dialog(&sch);
+            auto* box = dialog.findChild<QCheckBox*>("alwaysLoadOSDI");
+            QVERIFY(box != nullptr);
+            QVERIFY(!box->isChecked());
+            box->setChecked(true);
+            QVERIFY(QMetaObject::invokeMethod(&dialog, "slotApply"));
+        }
+        QVERIFY(sch.getAlwaysLoadOSDI());
+        QVERIFY(sch.getDocChanged());
+        QVERIFY(sch.save() >= 0);
+        QVERIFY2(read(file).contains("\n  <AlwaysLoadOSDI=1>\n"), qPrintable(read(file)));
+        {
+            Schematic again(nullptr, file);
+            QVERIFY(again.load());
+            QVERIFY(again.getAlwaysLoadOSDI());
+            SettingsDialog dialog(&again);
+            QVERIFY(dialog.findChild<QCheckBox*>("alwaysLoadOSDI")->isChecked());
+        }
+        sch.setAlwaysLoadOSDI(false);
+        QVERIFY(sch.save() >= 0);
+        QVERIFY2(!read(file).contains("AlwaysLoadOSDI"), qPrintable(read(file)));
+        // Read again into one that had it: not marked, as the file says.
+        sch.setAlwaysLoadOSDI(true);
+        QVERIFY(sch.load());
+        QVERIFY(!sch.getAlwaysLoadOSDI());
+        QFile::remove(file);
+    }
+
+    // A part marked so (its subcircuit's Document Settings > Library):
+    // every circuit of a project that has its library - here the project's
+    // own - loads its Verilog-A, placed or not; a circuit elsewhere does
+    // not, nor does one when the mark is gone. Marked with no Verilog-A in the
+    // library: said, as loading nothing.
+    void aMarkedPartsVerilogAIsLoadedInTheProjectsCircuits()
+    {
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        write(project + "/always.va", "`include \"disciplines.vams\"\nmodule always(p, n);\nendmodule\n");
+        write(project + "/always.sch", read(project + "/sub.sch").replace(".model m1 good", ".model m3 always")
+                                          .replace("<Components>", "<Properties>\n  <AlwaysLoadOSDI=1>\n</Properties>\n<Components>")
+                                          .toUtf8());
+        QString log = makeLibrary(app, "MarkLib", {"sub.sch", "always.sch"}, project);
+        QVERIFY2(log.contains("Successfully created library."), qPrintable(log));
+        QVERIFY2(log.contains("Marked: every circuit of a project that has the library loads its Verilog-A models."), qPrintable(log));
+        QCOMPARE(LibComp::alwaysLoaded(project + "/MarkLib.lib"), QStringList{"always"});
+        QVERIFY(QFileInfo::exists(project + "/MarkLib/always.va"));
+
+        // A circuit of the project that places none of it: always compiled
+        // and loaded; good, which it does not use, not.
+        const QString plain = write(project + "/plain.sch",
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <R R1 1 100 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+            "  <GND * 1 70 100 0 0 0 0>\n  <GND * 1 130 100 0 0 0 0>\n"
+            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        QStringList compiled;
+        for (const qucs_s::osdi::Build& b : buildsFor(plain)) compiled << QFileInfo(b.source).fileName();
+        QVERIFY2(compiled.contains("always.va") && !compiled.contains("good.va"), qPrintable(compiled.join(' ')));
+        write(project + "/always.osdi", osdi("always", nativeHeader()));
+        write(project + "/MarkLib/always.osdi", osdi("always", nativeHeader()));
+        QString netlist = netlistOf(plain);
+        QVERIFY2(netlist.contains("pre_osdi '") && netlist.contains("always.osdi'"), qPrintable(netlist));
+        QVERIFY2(!netlist.contains("good.osdi"), qPrintable(netlist));
+
+        // Not a circuit of the project: not loaded.
+        app.ProjName.clear();
+        QucsSettings.QucsWorkDir.setPath(dir.filePath("elsewhere"));
+        const QString outside = write(dir.filePath("elsewhere/plain.sch"), read(plain).toUtf8());
+        QVERIFY2(!netlistOf(outside).contains("always.osdi"), qPrintable(netlistOf(outside)));
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        QVERIFY2(!netlistOf(outside).contains("always.osdi"), qPrintable(netlistOf(outside)));   // (another folder's)
+
+        // The mark gone from the library: not loaded.
+        write(project + "/MarkLib.lib", read(project + "/MarkLib.lib").remove("  <AlwaysLoadOSDI>\n").toUtf8());
+        QVERIFY(LibComp::alwaysLoaded(project + "/MarkLib.lib").isEmpty());
+        netlist = netlistOf(plain);
+        QVERIFY2(!netlist.contains("always.osdi"), qPrintable(netlist));
+
+        // Marked, with no Verilog-A embedded: made, and said to load nothing.
+        QucsSettings.EmbedVerilogAInLibraries = false;
+        log = makeLibrary(app, "BareMark", {"always.sch"}, dir.filePath("bare"));
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QVERIFY2(log.contains("Successfully created library.") && log.contains("the mark loads nothing"), qPrintable(log));
+        QCOMPARE(LibComp::alwaysLoaded(dir.filePath("bare/BareMark.lib")), QStringList{"always"});
+
+        for (const QString& f : {project + "/always.va", project + "/always.sch", project + "/always.osdi", plain,
+                                 project + "/MarkLib.lib"})
+            QFile::remove(f);
+        QDir(project + "/MarkLib").removeRecursively();
     }
 
     // The setting: Application Settings > Settings, kept.
