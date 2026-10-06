@@ -106,8 +106,9 @@ Trying the other tools from the DMG found two more.
 - **`get_dataset`'s `at` at a sweep's end.** At 10000, the `to` the answer
   gives, it was null. ngspice writes the end of a 10 kHz sweep as
   9999.999999999889, so 10000 was just outside it. **Now** a sample
-  within 10⁻¹² of the x asked for is at it (`ds::valueAt`). This holds for
-  markers and measurements too.
+  within 10⁻¹² of the x asked for is at it (`ds::valueAt`). `compare`'s
+  differences and the margins measured at a crossover read values the
+  same way; a diagram's markers have their own lookup.
 
 ## 4. Placing parts without a rotation table
 
