@@ -234,8 +234,10 @@ QSet<QString> Ngspice::modelTypesOf(const QString& netlist) const
         const QString project = QFileInfo(QucsSettings.QucsWorkDir.absolutePath()).canonicalFilePath();
         const QString file = name.isEmpty() ? QString() : QFileInfo(name).canonicalFilePath();
         // (An untitled one is the project's: it is saved there.)
-        if (!project.isEmpty() && (name.isEmpty() || file.startsWith(project + QLatin1Char('/'))))
-            types.unite(qucs_s::projectlibraries::alwaysLoadedModules(project));
+        if (!project.isEmpty() && (name.isEmpty() || file.startsWith(project + QLatin1Char('/')))) {
+            if (!a_alwaysLoaded) a_alwaysLoaded = qucs_s::projectlibraries::alwaysLoadedModules(project);
+            types.unite(*a_alwaysLoaded);
+        }
     }
     return types;
 }

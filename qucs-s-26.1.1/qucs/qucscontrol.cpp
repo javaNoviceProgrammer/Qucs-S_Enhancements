@@ -11108,7 +11108,11 @@ bool hasCheckBox(Qt::ItemFlags flags, const QVariant& state)
 // What a field is called: its label in a form, the label that names it as
 // its buddy, the label before it in its layout or just to its left, the
 // label above it, else what it says of itself. A table cell's field: its
-// row's and its column's names.
+// row's and its column's names. A button says what it is itself - but a
+// check box with no text of its own is named by the label before it in its
+// row, as a field is (Application Settings' "Ground pin (gnd) in exported
+// subcircuits:" beside its box; its tool tip, a paragraph, named it) - by
+// its tool tip still when its row has none.
 QString labelOf(QWidget* w, QWidget* dialog)
 {
     if (const QString cell = cellLabel(w); !cell.isEmpty()) return cell;
@@ -11117,7 +11121,9 @@ QString labelOf(QWidget* w, QWidget* dialog)
             if (auto* l = qobject_cast<QLabel*>(label)) return cleanText(l->text()).remove(QLatin1Char(':'));
     for (QLabel* l : dialog->findChildren<QLabel*>())
         if (l->buddy() == w) return cleanText(l->text()).remove(QLatin1Char(':'));
-    if (qobject_cast<QAbstractButton*>(w) == nullptr)
+    auto* check = qobject_cast<QCheckBox*>(w);
+    const bool textless = check != nullptr && cleanText(check->text()).isEmpty();
+    if (qobject_cast<QAbstractButton*>(w) == nullptr || textless)
         if (QLabel* l = labelBeside(w); l != nullptr && !l->text().trimmed().isEmpty())
             return cleanText(l->text()).remove(QLatin1Char(':'));
     if (qobject_cast<QAbstractButton*>(w) == nullptr) {
@@ -12830,6 +12836,12 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
                 // error and exited so (the dataset's name is its affair).
                 const bool succeeded = r->wasSimulated() && !r->hasError() && r->exitCode() == 0;
                 result.insert(QStringLiteral("succeeded"), succeeded);
+                // A DC bias run that failed shows no bias (the devices of the
+                // run before were forgotten as it started).
+                if (operatingPoint && !succeeded)
+                    result.insert(QStringLiteral("analysis"), tr("the DC operating point alone (as Simulation > Calculate DC "
+                                                                 "bias): it failed, so the schematic shows no bias and there "
+                                                                 "is no operating point to read; its datasets are as they were"));
                 result.insert(QStringLiteral("stopped"), r->wasStopped());
                 result.insert(QStringLiteral("exit code"), r->exitCode());
                 // (Stopped - by the user, stop_simulation, a timeout - is no
