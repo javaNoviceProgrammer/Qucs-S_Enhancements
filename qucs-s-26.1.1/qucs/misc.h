@@ -120,6 +120,12 @@ namespace misc {
   /// workspace, so that two runs (or a run and the user's window) do not
   /// write over each other's. QUCS_CACHE_DIR, when set, is it (a test's).
   QString cacheDir();
+  /// The folder of the programs the Tools menu runs (qucs-sfilter and the
+  /// others): the application's own folder when that is a bin folder (a
+  /// prefix install's prefix/bin), else bin in \a qucsDir (an app bundle's
+  /// Contents/MacOS/bin). A "bin" further up \a applicationDir - a folder
+  /// of that name above the bundle, a user called robin - is not it.
+  QString binDirOf(const QString& applicationDir, const QDir& qucsDir);
   /// Where the simulations of one schematic write their temporary files:
   /// a folder of the schematic's name (its path relative to the project,
   /// without the extension - "amp" for amp.sch, "sub/amp" for sub/amp.sch)
