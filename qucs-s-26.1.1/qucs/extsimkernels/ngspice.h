@@ -20,6 +20,7 @@
 #define NGSPICE_H
 
 #include <QString>
+#include <optional>
 #include <QStringList>
 #include <QDataStream>
 #include "schematic.h"
@@ -52,6 +53,10 @@ private:
     void verilogAFiles(QStringList* sources, QStringList* libraries) const;
     QString osdiLoads(const QString& netlist) const;
     QSet<QString> modelTypesOf(const QString& netlist) const;
+    // projectlibraries::alwaysLoadedModules() of the project, once a
+    // kernel: a run asks for it three times (its compile step, the netlist
+    // that step writes, the netlist it runs).
+    mutable std::optional<QSet<QString>> a_alwaysLoaded;
     QStringList besideSchematic(const QStringList& patterns) const;
 
 public:

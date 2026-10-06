@@ -63,8 +63,11 @@ public:
   /// when the settings ask for it (LibraryGroundPin), and always did before
   /// 26.1.6 -, or the library has no SPICE model and its Qucs model is made
   /// one (qucs2spice gives that a gnd pin). False when the .SUBCKT has the
-  /// part's pins and no more.
+  /// part's pins and no more; true, as before, for a count that fits neither.
   static bool takesGround(const QString& libraryFile, const QString& comp, int pins);
+  /// The SPICE subcircuit a part of the component \a comp of the library
+  /// its Lib \a lib names stands for: LIB_COMP, as a name (createType()).
+  static QString subcircuitName(const QString& lib, const QString& comp);
   /// The components of \a libraryFile marked <AlwaysLoadOSDI> - their
   /// subcircuit's Document Settings asked for it -, whose Verilog-A every
   /// circuit of a project that has the library loads, placed or not

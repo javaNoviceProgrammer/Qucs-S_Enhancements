@@ -27,7 +27,9 @@
 #include "misc.h"
 #include "oppoint.h"
 #include "components/component.h"
+#include "extsimkernels/ngspice.h"
 #include "extsimkernels/spicecompat.h"
+#include "extsimkernels/xyce.h"
 #include "isolated_settings.h"
 
 using namespace qucs_s::oppoint;
@@ -140,6 +142,61 @@ private slots:
         QVERIFY(QDir().mkpath(dir.filePath("work")));
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
         Module::registerModules();
+    }
+
+    // A DC bias run forgets the devices of the run before as it starts -
+    // ngspice's and Xyce's: one that fails, which reads none, tells none of
+    // them as its own (Claude's simulate listed them, the tab showed them).
+    // A run of the analyses keeps them.
+    void aDcBiasRunForgetsTheRunBefore()
+    {
+        const QString file = dir.filePath("forget.sch");
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                    "  <Vdc V1 1 100 200 18 -26 0 1 \"1 V\" 1>\n  <GND * 1 100 230 0 0 0 0>\n"
+                    "  <R R1 1 200 200 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                    "  <GND * 1 200 230 0 0 0 0>\n"
+                    "  <.TR TR1 1 100 400 0 57 0 0 \"lin\" 1 \"0\" 1 \"1 ms\" 1 \"11\" 0>\n"
+                    "</Components>\n<Wires>\n  <100 170 200 170 \"\" 0 0 0 \"\">\n</Wires>\n"
+                    "<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        }
+        Schematic doc(nullptr, file);
+        QVERIFY(doc.load());
+        const QList<Device> before = parseShow(" Resistor: r\n device r1\n i 0.001\n p 0.001\n");
+        QCOMPARE(before.size(), 1);
+        struct Kernel : Ngspice {
+            using Ngspice::Ngspice;
+            void start() { removeAllSimulatorOutputs(); }   // (as slotSimulate() starts)
+        };
+        doc.setOperatingPoint(before);
+        doc.setShowBias(-1);   // its analyses
+        {
+            Kernel kernel(&doc);
+            kernel.setWorkdir(dir.filePath("work"));
+            kernel.start();
+        }
+        QCOMPARE(doc.operatingPoint().size(), 1);
+        doc.setShowBias(0);    // a DC bias run
+        {
+            Kernel kernel(&doc);
+            kernel.setWorkdir(dir.filePath("work"));
+            kernel.start();
+        }
+        QVERIFY(doc.operatingPoint().isEmpty());
+        // Xyce's, as it starts (no Xyce here: it starts, and fails).
+        doc.setOperatingPoint(before);
+        doc.setShowBias(0);
+        const QString xyce = QucsSettings.XyceExecutable;
+        QucsSettings.XyceExecutable = dir.filePath("no-such-xyce");
+        {
+            Xyce kernel(&doc);
+            kernel.setWorkdir(dir.filePath("work"));
+            kernel.slotSimulate();
+        }
+        QucsSettings.XyceExecutable = xyce;
+        QVERIFY(doc.operatingPoint().isEmpty());
     }
 
     void showAllIsRead()

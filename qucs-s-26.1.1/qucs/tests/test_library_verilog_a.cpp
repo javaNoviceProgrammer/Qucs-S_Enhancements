@@ -1,5 +1,5 @@
 /*
- * Libraries that bring their Verilog-A: Tools > Create Library copies the
+ * Libraries that bring their Verilog-A: Project > Create Library copies the
  * .va sources the subcircuits use - and the files they include - into the
  * library's folder when the setting says so, never a compiled .osdi model,
  * which runs on one platform only; a circuit that uses the library, in any
@@ -22,6 +22,7 @@
 #include "main.h"
 #include "misc.h"
 #include "osdiselection.h"
+#include "projectlibraries.h"
 #include "schematic.h"
 #include "settings.h"
 #include "components/libcomp.h"
@@ -164,7 +165,7 @@ class TestLibraryVerilogA : public QObject
     QTemporaryDir dir;
     QString workspace, project, userLib, team;
 
-    // Tools > Create Library with the subcircuit \a schematic, no
+    // Project > Create Library with the subcircuit \a schematic, no
     // descriptions; the dialog's messages.
     QString createLibrary(QucsApp& app, const QString& name, const QString& schematic = "sub.sch")
     {
@@ -709,6 +710,18 @@ private slots:
         QVERIFY(!LibComp::takesGround(pins + "/Changed.lib", "sub", 2));
         write(pins + "/Changed.lib", read(pins + "/WithGnd.lib").replace("WithGnd", "Changed").toUtf8() + "\n");
         QVERIFY(LibComp::takesGround(pins + "/Changed.lib", "sub", 2));
+        // The component's own .SUBCKT, by the name a part gives it - not one
+        // it places, before or after it.
+        QCOMPARE(LibComp::subcircuitName(pins + "/Order", "sub"), QString("Order_sub"));
+        QString order = read(pins + "/NoGnd.lib").replace("NoGnd", "Order");
+        const qsizetype ends = order.indexOf(".ENDS");
+        QVERIFY(ends > 0);
+        order.insert(order.indexOf('\n', ends) + 1, ".SUBCKT inner a b c\nR1 a b 1k\n.ENDS\n");
+        write(pins + "/Order.lib", order.toUtf8());
+        QVERIFY(!LibComp::takesGround(pins + "/Order.lib", "sub", 2));
+        // A count that fits neither: as it always was.
+        write(pins + "/Odd.lib", read(pins + "/NoGnd.lib").replace("NoGnd", "Odd").replace("Odd_sub ", "Odd_sub x y ").toUtf8());
+        QVERIFY(LibComp::takesGround(pins + "/Odd.lib", "sub", 2));
     }
 
     // The ground pin's setting: Application Settings > Settings, off unless
@@ -721,6 +734,10 @@ private slots:
         auto* box = dialog.findChild<QCheckBox*>("libraryGroundPin");
         QVERIFY(box != nullptr);
         QVERIFY(!box->isChecked());
+        // Create Library is in the Project menu.
+        QVERIFY2(box->toolTip().startsWith("Project > Create Library"), qPrintable(box->toolTip()));
+        QVERIFY2(dialog.findChild<QCheckBox*>("embedVerilogA")->toolTip().startsWith("Project > Create Library"),
+                 qPrintable(dialog.findChild<QCheckBox*>("embedVerilogA")->toolTip()));
         QVERIFY(!_settings::Get().itemDefault<bool>("LibraryGroundPin"));
         box->setChecked(true);
         QVERIFY(QMetaObject::invokeMethod(&dialog, "slotApply"));
@@ -791,6 +808,13 @@ private slots:
         QVERIFY2(log.contains("Marked: every circuit of a project that has the library loads its Verilog-A models."), qPrintable(log));
         QCOMPARE(LibComp::alwaysLoaded(project + "/MarkLib.lib"), QStringList{"always"});
         QVERIFY(QFileInfo::exists(project + "/MarkLib/always.va"));
+        QCOMPARE(qucs_s::projectlibraries::alwaysLoadedModules(project), QSet<QString>{"always"});
+        // Its source changed: read again (each is read once while unchanged).
+        const QByteArray source = read(project + "/MarkLib/always.va").toUtf8();
+        write(project + "/MarkLib/always.va", QByteArray(source).replace("module always(", "module renamed(p, q, "));
+        QCOMPARE(qucs_s::projectlibraries::alwaysLoadedModules(project), QSet<QString>{"renamed"});
+        write(project + "/MarkLib/always.va", source);
+        QCOMPARE(qucs_s::projectlibraries::alwaysLoadedModules(project), QSet<QString>{"always"});
 
         // A circuit of the project that places none of it: always compiled
         // and loaded; good, which it does not use, not.

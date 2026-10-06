@@ -366,6 +366,7 @@ void Xyce::slotSimulate()
     if (a_DC_OP_only) {
         a_simulationsQueue.append("dc");
     } else  determineUsedSimulations();
+    forgetOperatingPoint();
 
     QFile::remove(a_workdir+"spice4qucs.sens_tr.cir.SENS.prn");
     QFile::remove(a_workdir+"spice4qucs.sens_tr.cir.TRADJ.prn");
