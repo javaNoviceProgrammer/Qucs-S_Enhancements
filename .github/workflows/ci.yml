@@ -55,7 +55,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ninja-build flex bison gperf dos2unix \
-            libglx-dev libgl1-mesa-dev libcups2-dev \
+            libglx-dev libgl1-mesa-dev libcups2-dev zlib1g-dev \
             ngspice fonts-dejavu-core
           ngspice --version | sed -n '2p'
 
@@ -194,7 +194,7 @@ jobs:
           update: true
           cache: true
           install: bison flex dos2unix
-          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p
+          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p zlib:p
 
       - name: Configure and build (Release)
         run: |

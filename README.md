@@ -695,7 +695,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `describe_component_type` gives a Verilog-A module's parameters and a
   `.model` card. `find_library_component` finds a part by its values (an
   NPN with Bf near 200) in the libraries and the project's SPICE models,
-  and `read_pdf` reads a datasheet's text. `import_netlist` makes a
+  and `read_pdf` reads a datasheet's text. `get_layout`, `find_shapes`
+  and `show_layout` read a GDSII or OASIS layout (below): its cells,
+  layers and units; its shapes at a point, in a region or on a layer,
+  each with its points in µm; and a cell, region or layers of it shown
+  in its tab for a `screenshot`. `import_netlist` makes a
   schematic of a SPICE netlist, and `make_symbol` draws a subcircuit's
   symbol with its pins on four sides. `ngspice_commands` tells Claude
   which commands ngspice has: all 165, each in a line by category (the
@@ -1204,6 +1208,36 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   an empty one, *untitled.zip*; files and folders dropped on it or added
   go in, and *Save* asks where, offering the folder the menu was of and
   a name free there (`Archive.zip`, `Archive 2.zip`).
+- **GDSII and OASIS layouts**, viewed: a `.gds`, `.gds2`, `.gdsii`,
+  `.gds.gz`, `.oas` or `.oasis` file opens in a tab of its own, read by
+  [gdstk](https://github.com/heitzmann/gdstk) (built in) in the
+  background — a progress bar and a *Cancel* while a large one is read,
+  the window free meanwhile. Beside the layout, its **cells** (the top
+  ones, and in each the cells it places, each with how often — a click
+  shows one) and its **layers** (layer/datatype, a name, how many shapes;
+  a tick shows or hides one, the right-click menu shows all, none or only
+  one, or colours one). Each layer has its colour and fill: from a
+  KLayout layer properties file (`.lyp`) beside the layout — `chip.lyp`
+  for `chip.gds`, or the folder's only one — else from a palette of
+  sixteen colours and eight hatches (*⋯ → Load Layer Properties…* reads
+  another). Pan with a drag, the arrow keys or two fingers; zoom with
+  the wheel, a pinch, `+`/`−`, or a box dragged with the right button,
+  about the pointer; `F` shows the whole cell. *Levels* is how deep the
+  hierarchy is drawn, the cells below as their frames; shapes too small
+  to see are a pixel each, and arrays of them where they are. A **click**
+  selects the shape or text under the pointer (again: the next one
+  under it) and says under the view what it is: its layer, the cell it
+  is in and through which it is placed, its size and corners, a path's
+  width and ends, its properties — *Edit → Copy* copies that with its
+  points. The **ruler** measures with a drag, snapped to corners and
+  edges (Shift: across or up only). *Edit → Find* finds a cell by its
+  name (`*` and `?` as wildcards). Written again by another program, a
+  layout is read again where it was. *⋯ → Open in KLayout* hands it to an
+  installed KLayout for editing and checks. It is read, not edited: a
+  layout editor is a later step
+  ([docs/proposals](docs/proposals/2026-10-06-gds-oasis-layout-viewer.md)).
+  A damaged file is refused, not a crash: gdstk's readers were hardened
+  for it (`third_party/gdstk/README.qucs.md`).
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,
@@ -2064,14 +2098,14 @@ Debian / Ubuntu (22.04 or newer):
 ```bash
 sudo apt-get install build-essential git cmake ninja-build flex bison gperf dos2unix ngspice \
     qt6-base-dev qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools linguist-qt6 \
-    libqt6svg6-dev qt6-charts-dev libqt6opengl6-dev libglx-dev libgl1-mesa-dev libcups2-dev
+    libqt6svg6-dev qt6-charts-dev libqt6opengl6-dev libglx-dev libgl1-mesa-dev libcups2-dev zlib1g-dev
 ```
 
 Fedora:
 
 ```bash
 sudo dnf install gcc-c++ git cmake ninja-build flex bison gperf dos2unix ngspice \
-    qt6-qtbase-devel qt6-qtsvg-devel qt6-qttools-devel qt6-qtcharts-devel
+    qt6-qtbase-devel qt6-qtsvg-devel qt6-qttools-devel qt6-qtcharts-devel zlib-devel
 ```
 
 Arch:
@@ -2119,7 +2153,8 @@ locally. In a *MSYS2 UCRT64* shell:
 ```bash
 pacman -S --needed git bison flex dos2unix zip \
     mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-gperf \
-    mingw-w64-ucrt-x86_64-qt6-base mingw-w64-ucrt-x86_64-qt6-tools mingw-w64-ucrt-x86_64-qt6-svg mingw-w64-ucrt-x86_64-qt6-charts
+    mingw-w64-ucrt-x86_64-qt6-base mingw-w64-ucrt-x86_64-qt6-tools mingw-w64-ucrt-x86_64-qt6-svg mingw-w64-ucrt-x86_64-qt6-charts \
+    mingw-w64-ucrt-x86_64-zlib
 ```
 
 Clone with LF line endings (`git config --global core.autocrlf false` before
