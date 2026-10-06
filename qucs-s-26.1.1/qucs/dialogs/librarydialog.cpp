@@ -54,6 +54,8 @@
 #include "extsimkernels/abstractspicekernel.h"
 #include "extsimkernels/spicecompat.h"
 
+#include <algorithm>
+
 extern SubMap FileList;
 
 LibraryDialog::LibraryDialog(QWidget *parent)
@@ -682,6 +684,18 @@ void LibraryDialog::slotSave()
           Stream << "<SpiceAttach \"" << copiedFiles.join("\" \"")
                  << "\">\n";
         }
+        // Its Verilog-A loaded in every circuit of a project that has the
+        // library, placed or not: its Document Settings > Library ask for it.
+        if (Doc->getAlwaysLoadOSDI()) {
+          Stream << "  <AlwaysLoadOSDI>\n";
+          const bool verilogA = std::any_of(copiedFiles.cbegin(), copiedFiles.cend(), [](const QString &f) {
+            return f.endsWith(QLatin1String(".va"), Qt::CaseInsensitive) || f.endsWith(QLatin1String(".osdi"), Qt::CaseInsensitive);
+          });
+          ErrText->insertPlainText(verilogA
+              ? tr("Marked: every circuit of a project that has the library loads its Verilog-A models.\n")
+              : tr("Marked to load its Verilog-A models in the project's circuits, but the library has none "
+                   "of it (embedding Verilog-A is off, or it uses none): the mark loads nothing.\n"));
+        }
         delete kern;
         // The subcircuits written into the SPICE netlist: forgotten. Kept, the
         // next netlist built - a simulation's, the Verilog-A it compiles -
@@ -825,10 +839,12 @@ bool LibraryDialog::create(const Request &request, QString *log, QString *error)
     Descriptions.append(request.descriptions.value(sub, request.descriptions.value(bare)));
   }
   checkAnalogLib->setChecked(request.analogOnly);
-  const bool embed = QucsSettings.EmbedVerilogAInLibraries;
+  const bool embed = QucsSettings.EmbedVerilogAInLibraries, ground = QucsSettings.LibraryGroundPin;
   QucsSettings.EmbedVerilogAInLibraries = request.embedVerilogA;
+  QucsSettings.LibraryGroundPin = request.groundPin;
   slotSave();
   QucsSettings.EmbedVerilogAInLibraries = embed;
+  QucsSettings.LibraryGroundPin = ground;
   if (log != nullptr) *log = ErrText->toPlainText();
   if (!QFileInfo::exists(LibFile.fileName()))   // (a library not made is removed)
     return fail(tr("the library was not made (its messages say why)"));

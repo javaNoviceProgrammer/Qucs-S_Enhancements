@@ -17,6 +17,7 @@
 #define QUCS_PROJECTLIBRARIES_H
 
 #include <QList>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -51,10 +52,22 @@ struct Use {
 /// Scratch folder) and \a open, schematics in memory (unsaved changes) -
 /// with the subcircuits outside the project they place. \a uses: each
 /// library device's Verilog-A sources (a library inside the project is
-/// not one: its files are the project's already); \a unresolved: the
-/// names of the libraries parts name that are not found here.
+/// not one: its files are the project's already) - and those of the parts
+/// of its libraries marked to be loaded in all its circuits
+/// (LibComp::alwaysLoaded()), placed or not; \a unresolved: the names of
+/// the libraries parts name that are not found here.
 void usedSources(const QString& projectDir, const QList<Schematic*>& open, QList<Use>* uses,
                  QStringList* unresolved);
+
+/// The modules, in lower case, of the Verilog-A of the library parts marked
+/// to be loaded in every circuit of the project, placed or not
+/// (LibComp::alwaysLoaded(): their subcircuit's Document Settings >
+/// Library): of the project's own libraries (a NAME.lib in it), and of the
+/// libraries whose parts its schematics place - usedSources() counts the
+/// marked parts of those as used, so sync() links their sources into
+/// Libraries/, whose records name them here. Read from each part's .va (or
+/// .osdi) in its library.
+QSet<QString> alwaysLoadedModules(const QString& projectDir);
 
 /// What sync() did, as paths relative to the project.
 struct Report {

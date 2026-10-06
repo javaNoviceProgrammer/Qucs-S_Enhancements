@@ -258,6 +258,34 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   netlist built left out the model of a library part the new library's
   subcircuits used - the first simulation then compiled no Verilog-A for
   it.
+- **A library subcircuit has the part's pins**: *Create Library* writes
+  each subcircuit's SPICE model (`.SUBCKT`) with the part's pins only.
+  Before 26.1.6 it added a first pin, `gnd`, that every part from the
+  library tied to the circuit's ground (`0`): nothing inside used it - the
+  subcircuit's ground is the circuit's `0` - and another program reading
+  the library saw a pin too many. *Application Settings → Settings →
+  Ground pin (gnd) in exported subcircuits* (off by default) puts it back,
+  for a library that Qucs-S 26.1.5 or earlier, or another Qucs-S, will
+  use: they always tie a first pin to ground. Claude's `create_library`
+  takes `ground_pin` for one library. A part tells from its library's
+  `.SUBCKT` line which it has, so the libraries made before keep working,
+  and so does one with a Qucs model only (made SPICE with a `gnd`).
+- **A library part's Verilog-A in every circuit of a project**: for the
+  rare circuit that needs the model of a device none of its parts places.
+  A subcircuit's *File → Document Settings → Library → Always load its
+  Verilog-A (OSDI) in the project's circuits* marks it; *Create Library*
+  writes `<AlwaysLoadOSDI>` with its component, and says so - or that the
+  library holds none of its Verilog-A (embedding off), the mark then
+  loading nothing. Every ngspice circuit of a project that has the library
+  - the project's own, or one a part of which a schematic of the project
+  places - compiles and loads that part's Verilog-A, placed or not: its
+  source is linked into `Libraries/<library>/` with the others (above) and
+  its modules count as used. A circuit outside the project, or of a
+  project that places nothing of the library, does not; nor does any once
+  the mark is gone. The subcircuit keeps the setting as
+  `<AlwaysLoadOSDI=1>` in its properties, written only when it is on:
+  Qucs-S 26.1.5 and earlier refuse a schematic that has it ("Unknown
+  property").
 - **Library search paths**: *Application Settings → Locations → Library
   Search Paths* lists folders of component libraries besides the installed
   ones and the workspace's `user_lib` - a team's share, a git checkout of

@@ -51,6 +51,7 @@ private:
     void createSpiceinit(const QString &initial_spiceinit);
     void verilogAFiles(QStringList* sources, QStringList* libraries) const;
     QString osdiLoads(const QString& netlist) const;
+    QSet<QString> modelTypesOf(const QString& netlist) const;
     QStringList besideSchematic(const QStringList& patterns) const;
 
 public:

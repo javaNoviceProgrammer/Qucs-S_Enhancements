@@ -57,6 +57,19 @@ public:
   /// Whether the library \a libraryFile has a component \a comp (its
   /// components read once while the file is unchanged).
   static bool hasComponent(const QString& libraryFile, const QString& comp);
+  /// Whether a part of the component \a comp of \a libraryFile, of \a pins
+  /// pins, ties a first pin of its SPICE model to the circuit's ground: its
+  /// .SUBCKT has a pin more than the part, gnd - as Create Library writes it
+  /// when the settings ask for it (LibraryGroundPin), and always did before
+  /// 26.1.6 -, or the library has no SPICE model and its Qucs model is made
+  /// one (qucs2spice gives that a gnd pin). False when the .SUBCKT has the
+  /// part's pins and no more.
+  static bool takesGround(const QString& libraryFile, const QString& comp, int pins);
+  /// The components of \a libraryFile marked <AlwaysLoadOSDI> - their
+  /// subcircuit's Document Settings asked for it -, whose Verilog-A every
+  /// circuit of a project that has the library loads, placed or not
+  /// (projectlibraries::alwaysLoadedModules()). In the library's order.
+  static QStringList alwaysLoaded(const QString& libraryFile);
   /// What a part's Lib holds to name the library \a libraryFile: its name
   /// when the name finds this very library (libraryFileOf() with no
   /// schematic) - a schematic that goes to another computer, or a library

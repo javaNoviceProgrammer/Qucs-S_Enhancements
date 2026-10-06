@@ -378,32 +378,114 @@ QStringList LibComp::librariesNamedLike(const QString& libraryFile)
   return others;
 }
 
-bool LibComp::hasComponent(const QString& libraryFile, const QString& comp)
+namespace {
+
+// What a library says of one of its components.
+struct LibraryPart {
+  bool alwaysLoad = false;   // <AlwaysLoadOSDI>
+  QStringList pins;          // its SPICE model's (<Spice>) .SUBCKT's pins, in order
+};
+
+// A library's components, read once while the file is unchanged - as
+// loadSectionOf() finds one: "\n<Component NAME>" to "\n</Component>", in
+// a Qucs library.
+struct LibraryRead {
+  QDateTime modified;
+  qint64 size = -1;
+  QStringList order;
+  QHash<QString, LibraryPart> parts;
+};
+
+// The pins of the .SUBCKT line of the subcircuit \a name in \a spice - its
+// continuation lines (+) joined -, else of the last one there (the
+// component's own comes after those it places): the names after the
+// subcircuit's up to its parameters (R=1k, params:).
+QStringList subcircuitPins(const QString& spice, const QString& name)
 {
-  struct Read {
-    QDateTime modified;
-    qint64 size = -1;
-    QSet<QString> components;
-  };
-  static QHash<QString, Read> known;
+  QStringList lines;
+  for (const QString& raw : spice.split(QLatin1Char('\n'))) {
+    const QString line = raw.trimmed();
+    if (line.startsWith(QLatin1Char('+')) && !lines.isEmpty()) lines.last() += QLatin1Char(' ') + line.mid(1);
+    else lines << line;
+  }
+  QStringList found;
+  for (const QString& line : std::as_const(lines)) {
+    const QStringList words = line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    if (words.size() < 2 || words.first().compare(QLatin1String(".SUBCKT"), Qt::CaseInsensitive) != 0) continue;
+    QStringList pins;
+    for (qsizetype i = 2; i < words.size(); ++i) {
+      if (words.at(i).contains(QLatin1Char('=')) || words.at(i).compare(QLatin1String("params:"), Qt::CaseInsensitive) == 0) break;
+      pins << words.at(i);
+    }
+    found = pins;
+    if (words.at(1).compare(name, Qt::CaseInsensitive) == 0) return pins;
+  }
+  return found;
+}
+
+const LibraryRead& readLibrary(const QString& libraryFile)
+{
+  static QHash<QString, LibraryRead> known;
+  static const LibraryRead none;
   const QFileInfo info(libraryFile);
-  if (!info.isFile()) return false;
+  if (!info.isFile()) return none;
   const QString key = info.absoluteFilePath();
   auto it = known.find(key);
-  if (it == known.end() || it->modified != info.lastModified() || it->size != info.size()) {
-    Read read{info.lastModified(), info.size(), {}};
-    QFile f(key);
-    if (f.open(QIODevice::ReadOnly)) {
-      QTextStream stream(&f);
-      const QString text = stream.readAll();   // (read as loadSectionOf() reads it: a byte order mark left out)
-      // As loadSectionOf() finds one: "\n<Component NAME>", in a Qucs library.
-      if (text.startsWith(QLatin1String("<Qucs Library ")))
-        for (qsizetype at = text.indexOf(QLatin1String("\n<Component ")); at >= 0; at = text.indexOf(QLatin1String("\n<Component "), at + 1))
-          if (const qsizetype close = text.indexOf(QLatin1Char('>'), at); close > 0) read.components.insert(text.mid(at + 12, close - at - 12));
-    }
-    it = known.insert(key, read);
+  if (it != known.end() && it->modified == info.lastModified() && it->size == info.size()) return *it;
+  LibraryRead read{info.lastModified(), info.size(), {}, {}};
+  QFile f(key);
+  if (f.open(QIODevice::ReadOnly)) {
+    QTextStream stream(&f);
+    const QString text = stream.readAll();   // (read as loadSectionOf() reads it: a byte order mark left out)
+    if (text.startsWith(QLatin1String("<Qucs Library ")))
+      for (qsizetype at = text.indexOf(QLatin1String("\n<Component ")); at >= 0; at = text.indexOf(QLatin1String("\n<Component "), at + 1)) {
+        const qsizetype close = text.indexOf(QLatin1Char('>'), at);
+        if (close < 0) continue;
+        const QString name = text.mid(at + 12, close - at - 12);
+        const qsizetype end = text.indexOf(QLatin1String("\n</Component>"), close);
+        const QString definition = text.mid(close + 1, end < 0 ? -1 : end - close - 1);
+        LibraryPart part;
+        part.alwaysLoad = definition.contains(QRegularExpression(QStringLiteral("\\n\\s*<AlwaysLoadOSDI>")));
+        const qsizetype spice = definition.indexOf(QLatin1String("<Spice>"));
+        if (spice >= 0) {
+          const qsizetype spiceEnd = definition.indexOf(QLatin1String("</Spice>"), spice);
+          // The subcircuit a part names: the library's name and the component's
+          // (createType()).
+          part.pins = subcircuitPins(definition.mid(spice + 7, spiceEnd < 0 ? -1 : spiceEnd - spice - 7),
+                                     misc::properName(info.completeBaseName() + QLatin1Char('_') + name));
+        }
+        if (!read.parts.contains(name)) read.order << name;
+        read.parts.insert(name, part);
+      }
   }
-  return it->components.contains(comp);
+  return *known.insert(key, read);
+}
+
+} // namespace
+
+bool LibComp::hasComponent(const QString& libraryFile, const QString& comp)
+{
+  return readLibrary(libraryFile).parts.contains(comp);
+}
+
+bool LibComp::takesGround(const QString& libraryFile, const QString& comp, int pins)
+{
+  const LibraryRead& read = readLibrary(libraryFile);
+  const auto it = read.parts.constFind(comp);
+  // No SPICE model (its Qucs model made one), or no .SUBCKT in it: as it
+  // always was.
+  if (it == read.parts.constEnd() || it->pins.isEmpty()) return true;
+  if (it->pins.size() == pins) return false;
+  return true;
+}
+
+QStringList LibComp::alwaysLoaded(const QString& libraryFile)
+{
+  const LibraryRead& read = readLibrary(libraryFile);
+  QStringList marked;
+  for (const QString& name : read.order)
+    if (read.parts.value(name).alwaysLoad) marked << name;
+  return marked;
 }
 
 QString LibComp::referenceTo(const QString& libraryFile)
@@ -544,7 +626,10 @@ QString LibComp::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompa
 {
     Q_UNUSED(dialect);
 
-    QString s = SpiceModel + Name + " " + "0"; // connect ground of subckt to circuit ground
+    // The first pin of a library's subcircuit that has one for its ground
+    // (gnd: takesGround()) tied to the circuit's; one made without has none.
+    QString s = SpiceModel + Name;
+    if (takesGround(libraryFile(), Props.at(1)->Value, int(Ports.size()))) s += QStringLiteral(" 0");
     for (Port *p1 : Ports)
       s += " "  + spicecompat::normalize_node_name(p1->Connection->Name);   // node names
     s += " " + createType();
