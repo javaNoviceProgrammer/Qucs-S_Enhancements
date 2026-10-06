@@ -83,6 +83,32 @@ own `main()`s cut their path at the first `/bin` the same way, but only for
 their translations' folder, which `--json` does not use; that is left as it
 was.
 
+Trying the other tools from the DMG found two more.
+
+- **An active filter's `order`.** `{kind: active, response: butterworth,
+  order: 4, fc: 1 kHz}` was refused: "'fs' ... gives the order". With `fs`
+  given as well, the order given was passed over without a word. The
+  window finds a Butterworth's or a Chebyshev's order from `atten` at its
+  stop band, but their poles are the order's alone: the stop band only
+  picks the order. **Now** an order given is made. The program finds,
+  by halving, a stop band edge (`fs`, or `transition` for a band) that
+  gives it, with `atten` and `ap` set aside. With a stop band given too,
+  the order wins, and a note says so. An inverse Chebyshev's or a Cauer's
+  zeros are where its stop band is, so an order given there is noted as
+  not used. A band-stop's order must be even, and an odd one is refused
+  saying so. A band Bessel or Legendre, whose order is always given, no
+  longer needs `transition`. The 4th-order Butterworth simulates to −3 dB
+  at 999.98 Hz and −80.0 dB at 10 kHz, two op-amps. **Found by UBSan on
+  the way**: the window's order formulas converted their value to an
+  `int` however large. The search's nearest stop band, and a stop band at
+  the corner (`fs` = `fc`), gave 2.3×10¹², which an `int` cannot hold. Past
+  50, the most it makes, is now 51, which it refuses: "cannot be made".
+- **`get_dataset`'s `at` at a sweep's end.** At 10000, the `to` the answer
+  gives, it was null. ngspice writes the end of a 10 kHz sweep as
+  9999.999999999889, so 10000 was just outside it. **Now** a sample
+  within 10⁻¹² of the x asked for is at it (`ds::valueAt`). This holds for
+  markers and measurements too.
+
 ## 4. Placing parts without a rotation table
 
 `add_component` and `edit_component` take **`pin1`** (`top`, `bottom`,
@@ -139,7 +165,7 @@ alpha's").
 
   Section 4: `pin1PlacesATwoPinPart`. Section 1:
   - `aFilterIsSynthesized`;
-  - `anActiveFilterIsSynthesized`;
+  - `anActiveFilterIsSynthesized`: from `atten` at `fs`, and from an `order` alone (simulated: −3 dB at fc, −80 dB a decade above); an order with a stop band, a Cauer's, an odd band-stop's, a stop band at the corner;
   - `anAttenuatorIsSynthesized`;
   - `aMatchIsSynthesized`;
   - `aCombinerIsSynthesized`;
@@ -159,12 +185,13 @@ alpha's").
   `aThickTraceIsDrawnThick`. The last includes a single pulse: where its two
   edges cross, a thick trace is no more opaque than two windows'.
 - **`test_workspace_projects`**: `theMenu` (Close Project).
+- **`test_dataset`**: `curvesAreSampledAndSummed` reads a sweep's end written with rounding.
 - **`test_qucs_control`**: `eachArgumentAloneChangesThePart` gives `pin1` a
   value.
 - **`scripts/ci/check-tool-arguments.py`**: `receiver_budget`'s stages are
   read by `stageSpec`.
 
-**77 breaks, 76 caught.** The one not caught is taking the texts that will
+**86 breaks, 85 caught.** The one not caught is taking the texts that will
 move out of `arrange`'s obstacles. Without it, one text that moves can avoid
 another's old place, which only matters when two moving texts compete for
 the same spot. Breaks not caught at first, and what came of them:
@@ -194,12 +221,11 @@ the same spot. Breaks not caught at first, and what came of them:
   The dependency had been added before the programs' targets existed, and is
   now in the top `CMakeLists.txt`.
 
-The full suite passes, 89 of 89; under ASan, 89 of 89 with no report. One
-ASan run at six tests at a time had 87 of 89. The two that failed are
-outside this work: `test_status_bar` waits 5 s for a fake ngspice's
-version, and `test_claude_git` reads a detached head's status. Both passed
-on their own, and the whole suite again at four at a time, with nothing
-reported. The scenario script passes 97 of 97. The
+The full suite passes, 89 of 89; under ASan, 89 of 89 with no report, four
+tests at a time. One ASan run at six at a time had 87 of 89. The two that
+failed are outside this work: `test_status_bar` waits 5 s for a fake
+ngspice's version, and `test_claude_git` reads a detached head's status.
+Both passed on their own. The scenario script passes 97 of 97. The
 user's `~/QucsWorkspace` and `~/Library/Caches/qucs-s` are as they were
 before the final runs, checked against a marker file.
 

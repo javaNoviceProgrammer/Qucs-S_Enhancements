@@ -129,7 +129,9 @@ QList<QVector<double>> phasesOf(const Dataset& data, const Variable& v);
 /// limit).
 Curve within(const Curve& c, double from, double to);
 
-/// y at \a x, straight between the samples; NaN outside the curve.
+/// y at \a x, straight between the samples; NaN outside the curve. A
+/// sample within rounding of \a x is at it: a sweep's end of 10 kHz may be
+/// written 9999.999999999889.
 double valueAt(const Curve& c, double x);
 
 struct Crossing {

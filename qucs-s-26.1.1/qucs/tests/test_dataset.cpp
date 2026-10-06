@@ -158,6 +158,11 @@ private slots:
         QCOMPARE(ds::valueAt(line, 2.5), 5.0);
         QCOMPARE(ds::valueAt(line, 10), 20.0);
         QVERIFY(std::isnan(ds::valueAt(line, 11)));
+        // An end written with rounding (ngspice's 10 kHz) is at that x.
+        const ds::Curve sweep{{1, 9999.999999999889}, {3, 4}};
+        QCOMPARE(ds::valueAt(sweep, 10000), 4.0);
+        QVERIFY(std::isnan(ds::valueAt(sweep, 10000.001)));
+        QVERIFY(std::isnan(ds::valueAt(sweep, 0.999999)));
         const ds::Curve part = ds::within(line, 2, 4);
         QCOMPARE(part.x, (QVector<double>{2, 3, 4}));
 
