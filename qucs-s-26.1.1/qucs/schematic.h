@@ -350,6 +350,12 @@ public:
   void setFrame_Text3(const QString value) { a_Frame_Text3 = value; }
   FrameSize getShowFrame() const { return a_showFrame; }
   void setShowFrame(int value) {a_showFrame = static_cast<FrameSize>(value);}
+  /// Made into a library part (Create Library), whether every circuit of a
+  /// project that has the library loads the part's Verilog-A models -
+  /// placed or not (<AlwaysLoadOSDI> in the library). Document Settings >
+  /// Library; saved as <AlwaysLoadOSDI=1> only when set.
+  bool getAlwaysLoadOSDI() const { return a_alwaysLoadOSDI; }
+  void setAlwaysLoadOSDI(bool value) { a_alwaysLoadOSDI = value; }
   int getViewX1() const { return a_ViewX1; }
   int getViewY1() const { return a_ViewY1; }
   int getGridX() const { return a_GridX; }
@@ -436,6 +442,7 @@ private:
   int a_ViewY2;
 
   FrameSize a_showFrame; // Frame format
+  bool a_alwaysLoadOSDI = false;
   QString a_Frame_Text0;
   QString a_Frame_Text1;
   QString a_Frame_Text2;

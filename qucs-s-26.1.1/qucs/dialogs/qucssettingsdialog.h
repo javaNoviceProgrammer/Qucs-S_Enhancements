@@ -181,6 +181,7 @@ public:
     QCheckBox *showPinNames;
     QCheckBox *showPinDirections;
     QCheckBox *embedVerilogA;        ///< Create Library copies the .va and .osdi files the subcircuits use.
+    QCheckBox *libraryGroundPin;     ///< Create Library gives each .SUBCKT a first pin, gnd.
     QCheckBox *writeDocSettings;     ///< Saving a text document writes its settings file (.cfg).
 
     /// @brief Enables anti-aliasing for diagram graphs.

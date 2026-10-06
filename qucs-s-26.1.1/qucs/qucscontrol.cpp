@@ -587,6 +587,7 @@ const char* const kTools = R"JSON([
    "descriptions": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Each part's description, by subcircuit name: {\"amp\": \"A x10 amplifier\"}"},
    "digital_models": {"type": "boolean", "description": "Verilog and VHDL models too, for a digital simulation (off: analog only, the default)"},
    "embed_verilog_a": {"type": "boolean", "description": "Copy the Verilog-A sources its models use into its folder (the setting's choice when not given, on unless changed)"},
+   "ground_pin": {"type": "boolean", "description": "Give each subcircuit's SPICE model a first pin, gnd, its parts tie to the circuit's ground - for Qucs-S 26.1.5 and earlier, which always tie one (the setting's choice when not given, off unless changed)"},
    "replace": {"type": "boolean", "description": "Write over a library of that name there, the old one moved to the trash"}},
   "required": ["name"]}},
 {"name": "import_library",

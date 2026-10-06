@@ -1383,6 +1383,101 @@ private slots:
         QVERIFY(!QFileInfo::exists(p + "/Libraries/VaLib"));
         QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
     }
+
+    // A part of a library marked to be loaded in every circuit of a project
+    // (its subcircuit's Document Settings > Library): a project that places
+    // another part of the library has the marked one's source linked too,
+    // and each circuit of it loads that, placed or not - a circuit outside
+    // it does not; the library's other parts, not placed, are not linked.
+    // A project that places none of the library has neither; one that stops
+    // placing it, its links taken away.
+    void aMarkedPartIsLinkedAndLoadedInEveryCircuitOfTheProject()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "src";
+        QucsSettings.QucsWorkDir.setPath(source);
+        write(source + "/always.va", "`include \"disciplines.vams\"\nmodule always(p, n);\nendmodule\n");
+        write(source + "/always.sch", QString::fromUtf8(bytes(source + "/sub.sch"))
+                                          .replace(".model m1 good", ".model m3 always")
+                                          .replace("<Components>", "<Properties>\n  <AlwaysLoadOSDI=1>\n</Properties>\n<Components>")
+                                          .toUtf8());
+        {
+            LibraryDialog dialog(&app);
+            dialog.fillSchematicList({"sub.sch", "sub2.sch", "always.sch"});
+            LibraryDialog::Request request;
+            request.name = "MarkLib";
+            request.subcircuits = {"sub.sch", "sub2.sch", "always.sch"};
+            request.folder = team;
+            QString log, error;
+            QVERIFY2(dialog.create(request, &log, &error), qPrintable(error + "\n" + log));
+            QVERIFY2(log.contains("Marked: every circuit"), qPrintable(log));
+        }
+        app.ProjName.clear();
+        QCOMPARE(LibComp::alwaysLoaded(team + "/MarkLib.lib"), QStringList{"always"});
+        const auto netlistOf = [&](const QString& file) {
+            Schematic sch(nullptr, file);
+            if (!sch.load()) return QString("(not loaded)");
+            Ngspice kernel(&sch);
+            kernel.setWorkdir(dir.filePath("kernel"));
+            kernel.SaveNetlist(dir.filePath("kernel/p15.cir"), false);
+            return QString::fromUtf8(bytes(dir.filePath("kernel/p15.cir")));
+        };
+
+        // Placing sub (good.va): always.va linked too; better.va (sub2) not.
+        const QString p = project("p15");
+        write(p + "/use.sch", usesParts("MarkLib", {"sub"}));
+        const QString plainHere = write(p + "/plain.sch", plain());
+        app.openProject(p);
+        QStringList made = app.lastLibrarySync().made;
+        made.sort();
+        QCOMPARE(made, (QStringList{"Libraries/MarkLib/always.va", "Libraries/MarkLib/good.va"}));
+        QCOMPARE(projectlibraries::alwaysLoadedModules(p), QSet<QString>{"always"});
+        // Compiled (as OpenVAF does), beside the links.
+        write(p + "/Libraries/MarkLib/always.osdi", QByteArray(64, '\0') + "always" + QByteArray(1, '\0'));
+        write(p + "/Libraries/MarkLib/good.osdi", QByteArray(64, '\0') + "good" + QByteArray(1, '\0'));
+        const QString always = "pre_osdi '" + QFileInfo(p + "/Libraries/MarkLib/always.osdi").absoluteFilePath() + "'";
+        const QString good = "pre_osdi '" + QFileInfo(p + "/Libraries/MarkLib/good.osdi").absoluteFilePath() + "'";
+        QString netlist = netlistOf(plainHere);
+        QVERIFY2(netlist.contains(always) && !netlist.contains(good), qPrintable(netlist));
+        netlist = netlistOf(p + "/use.sch");
+        QVERIFY2(netlist.contains(always) && netlist.contains(good), qPrintable(netlist));
+        // Its sources compiled for a circuit of it - the marked one too.
+        QFile::remove(p + "/Libraries/MarkLib/always.osdi");
+        {
+            Schematic sch(nullptr, plainHere);
+            QVERIFY(sch.load());
+            Ngspice kernel(&sch);
+            kernel.setWorkdir(dir.filePath("kernel"));
+            const QList<osdi::Build> builds = kernel.verilogABuilds();
+            QCOMPARE(builds.size(), 1);
+            QCOMPARE(builds.first().source, QFileInfo(p + "/Libraries/MarkLib/always.va").absoluteFilePath());
+        }
+        // A circuit outside the project: not loaded.
+        const QString outside = write(dir.filePath("outside/plain.sch"), plain());
+        netlist = netlistOf(outside);
+        QVERIFY2(!netlist.contains("always"), qPrintable(netlist));
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
+
+        // A project that places none of the library: nothing linked, loaded.
+        const QString q = project("p16");
+        const QString plainThere = write(q + "/plain.sch", plain());
+        app.openProject(q);
+        QVERIFY(!QFileInfo::exists(q + "/Libraries/MarkLib"));
+        QVERIFY(projectlibraries::alwaysLoadedModules(q).isEmpty());
+        netlist = netlistOf(plainThere);
+        QVERIFY2(!netlist.contains("always"), qPrintable(netlist));
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotMenuProjClose"));
+
+        // p placing it no longer: both taken away.
+        write(p + "/use.sch", plain());
+        QStringList removed = projectlibraries::sync(p, {}, Mode::Link).removed;
+        removed.sort();
+        QCOMPARE(removed, (QStringList{"Libraries/MarkLib/always.va", "Libraries/MarkLib/good.va"}));
+        QVERIFY(projectlibraries::alwaysLoadedModules(p).isEmpty());
+        QFile::remove(team + "/MarkLib.lib");
+        QDir(team + "/MarkLib").removeRecursively();
+    }
 };
 
 QTEST_MAIN(TestProjectLibraries)

@@ -78,6 +78,7 @@ public:
     QHash<QString, QString> descriptions;
     bool analogOnly = true;
     bool embedVerilogA = true;
+    bool groundPin = false;   ///< each .SUBCKT's first pin gnd (QucsSettings.LibraryGroundPin)
     bool replace = false;
   };
   bool create(const Request &request, QString *log, QString *error);

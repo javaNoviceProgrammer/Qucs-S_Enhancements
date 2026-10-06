@@ -812,6 +812,8 @@ void Schematic::writeDocumentTo(QTextStream& stream)
   stream << "  <Script=" << a_Script << ">\n";
   stream << "  <RunScript=" << a_SimRunScript << ">\n";
   stream << "  <showFrame=" << static_cast<int>(a_showFrame) << ">\n";
+  // (Only when set: a Qucs-S that does not know it refuses the file.)
+  if (a_alwaysLoadOSDI) stream << "  <AlwaysLoadOSDI=1>\n";
 
   QString t;
   misc::convert2ASCII(t = a_Frame_Text0);
@@ -977,6 +979,7 @@ bool Schematic::loadProperties(QTextStream *stream)
 {
   bool ok = true;
   QString Line, cstr, nstr;
+  a_alwaysLoadOSDI = false;   // (written only when set)
   while(!stream->atEnd()) {
     Line = stream->readLine();
     if(Line.startsWith("</")) return true;  // field end ?
@@ -1029,6 +1032,7 @@ bool Schematic::loadProperties(QTextStream *stream)
     if(nstr.toInt(&ok) == 0) a_SimOpenDpl = false;
     else a_SimOpenDpl = true;
     else if(cstr == "Script") a_Script = nstr;
+    else if(cstr == "AlwaysLoadOSDI") a_alwaysLoadOSDI = nstr.trimmed() == QLatin1String("1");
     else if(cstr == "RunScript")
     if(nstr.toInt(&ok) == 0) a_SimRunScript = false;
     else a_SimRunScript = true;
