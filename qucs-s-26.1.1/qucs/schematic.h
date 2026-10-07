@@ -357,8 +357,9 @@ public:
   bool getAlwaysLoadOSDI() const { return a_alwaysLoadOSDI; }
   void setAlwaysLoadOSDI(bool value) { a_alwaysLoadOSDI = value; }
   /// SPICE .model cards of its own - its Verilog-A device's, .model resmod
-  /// va_res r=1k - written into its SPICE netlist, as a subcircuit too and
-  /// in a library made of it, as a .MODEL block's are. Document Settings >
+  /// va_res r=1k - written at the top level of a SPICE netlist: its own,
+  /// and that of a circuit placing it as a subcircuit or as a library part
+  /// made of it (after its .ENDS, not inside it). Document Settings >
   /// Library; saved as <ModelCards=...> only when there are any.
   QString getModelCards() const { return a_modelCards; }
   void setModelCards(const QString& cards) { a_modelCards = cards; }

@@ -828,13 +828,30 @@ private slots:
         QFile::remove(file);
     }
 
+    // Whether \a line is in \a netlist at its top level: inside no .SUBCKT.
+    static bool atTopLevel(const QString& netlist, const QString& line)
+    {
+        int depth = 0;
+        bool found = false;
+        for (const QString& l : netlist.split('\n')) {
+            if (l.startsWith(".SUBCKT ", Qt::CaseInsensitive)) ++depth;
+            else if (l.startsWith(".ENDS", Qt::CaseInsensitive)) --depth;
+            else if (l == line) {
+                if (depth != 0) return false;
+                found = true;
+            }
+        }
+        return found;
+    }
+
     // A subcircuit's own .model cards (Document Settings > Library: its
-    // Verilog-A device's, no .MODEL block placed for it) go into its
-    // netlist, into a library made of it - inside its .SUBCKT, its
-    // Verilog-A embedded - and into a circuit that places it; a line that
-    // is no card does not, and Check Schematic says so. In a folder of the
-    // project: its part is named for the library all the same (inner/own
-    // is OwnLib_own).
+    // Verilog-A device's) go to the top level of a netlist - its own, and
+    // that of a circuit that places it as a subcircuit or a part of a
+    // library made of it: after its .SUBCKT's .ENDS, not inside it (where
+    // they were what a .MODEL block in it is), its Verilog-A embedded in
+    // the library. A line that is no card does not, and Check Schematic
+    // says so. In a folder of the project: its part is named for the
+    // library all the same (inner/own is OwnLib_own).
     void aSubcircuitsOwnModelCardsGoIntoItsNetlists()
     {
         QStringList rejected;
@@ -856,21 +873,26 @@ private slots:
         write(project + "/inner/own.sch", own.toUtf8());
         const QString netlist = netlistOf(project + "/inner/own.sch");
         QVERIFY2(netlist.contains("\n* own\n.model m3 good\n+ r=2k\n"), qPrintable(netlist));
+        QVERIFY2(atTopLevel(netlist, ".model m3 good"), qPrintable(netlist));
         const QString log = makeLibrary(app, "OwnLib", {"inner/own.sch"}, userLib);
         QVERIFY2(log.contains("Embedding Verilog-A: good.va"), qPrintable(log));
         const QString lib = read(userLib + "/OwnLib.lib");
-        QVERIFY2(lib.contains(".SUBCKT OwnLib_own ") && lib.contains("\n.model m3 good\n+ r=2k\n.ENDS\n"), qPrintable(lib));
+        QVERIFY2(lib.contains(".SUBCKT OwnLib_own ") && lib.contains("\n.ENDS\n* own\n.model m3 good\n+ r=2k\n"), qPrintable(lib));
         QVERIFY2(lib.contains("<SpiceAttach \"good.va\">"), qPrintable(lib));
-        // A circuit that places it as a subcircuit: in its .SUBCKT.
+        // A circuit that places it as a subcircuit: at its top level, after
+        // the .SUBCKT's .ENDS.
         write(project + "/uses_own.sch",
               "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
               "  <Sub SUB1 1 300 200 -26 21 0 0 \"inner/own.sch\" 1>\n"
               "  <GND * 1 270 260 0 0 0 0>\n"
               "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
         const QString uses = netlistOf(project + "/uses_own.sch");
-        const qsizetype sub = uses.indexOf(".SUBCKT own ");
-        QVERIFY2(sub >= 0 && uses.indexOf(".model m3 good", sub) > sub && uses.indexOf(".model m3 good", sub) < uses.indexOf(".ENDS", sub),
-                 qPrintable(uses));
+        QVERIFY2(uses.contains(".SUBCKT own ") && atTopLevel(uses, ".model m3 good") && atTopLevel(uses, "+ r=2k"), qPrintable(uses));
+        // One that places the library's part: at its top level too.
+        write(project + "/uses_ownlib.sch", QString(usesLibrary(userLib + "/OwnLib")).replace("\"sub\"", "\"own\"").toUtf8());
+        const QString usesLib = netlistOf(project + "/uses_ownlib.sch");
+        QVERIFY2(usesLib.contains(".SUBCKT OwnLib_own ") && atTopLevel(usesLib, ".model m3 good") && atTopLevel(usesLib, "+ r=2k"),
+                 qPrintable(usesLib));
         // A line that is no card (a file written by hand): left out, said.
         write(project + "/inner/bad.sch", QString(own).replace("+ r=2k>", "+ r=2k\\n.control\\nshell ls\\n.endc>").toUtf8());
         const QString bad = netlistOf(project + "/inner/bad.sch");
