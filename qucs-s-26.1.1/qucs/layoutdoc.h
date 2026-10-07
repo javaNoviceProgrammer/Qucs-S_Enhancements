@@ -69,6 +69,18 @@ public:
     bool labelsShown() const { return a_labels; }
     void setLabelsShown(bool shown);
 
+    /// The canvas's colours: the application's theme's, or light or dark
+    /// whatever its theme.
+    enum class Theme { Application, Light, Dark };
+    Theme theme() const { return a_theme; }
+    void setTheme(Theme theme);
+    /// What the canvas is drawn in: its background, the texts and rulers,
+    /// the cells drawn as frames, and what is selected.
+    struct Colors {
+        QColor background, ink, frames, highlight;
+    };
+    Colors colors() const;
+
     /// Pixels per µm, and the point (µm) in the middle.
     double scale() const { return a_scale; }
     QPointF center() const { return a_center; }
@@ -140,6 +152,7 @@ private:
     int a_cell = -1;
     int a_depth = 1 << 20;
     bool a_labels = true;
+    Theme a_theme = Theme::Application;
     QPointF a_center;
     double a_scale = 1;
     bool a_fitted = false;      // fitted since the layout or the cell came
@@ -214,6 +227,8 @@ public:
     QString layerPropertiesFile() const { return a_lypFile; }
     bool loadLayerProperties(const QString& path, QString* error = nullptr);
     void usePalette();
+    /// The canvas's theme, here and in every layout tab, kept for the next.
+    void setCanvasTheme(qucs_s::layout::LayoutView::Theme theme);
 
     /// The cells whose names have \a text (a wildcard: * ?) listed in the
     /// cell panel; the first shown.
@@ -232,6 +247,7 @@ public:
     QLabel* positionLabel() const { return a_position; }
     QSpinBox* depthBox() const { return a_depthBox; }
     QPushButton* cancelButton() const { return a_cancel; }
+    QToolButton* menuButton() const { return a_menuButton; }
     QWidget* sidebar() const;
 
 public slots:
