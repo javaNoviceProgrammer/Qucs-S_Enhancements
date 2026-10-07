@@ -37,6 +37,7 @@ extern const char * qucs_gnd;
 void qucs_producer (void);
 int  qucs_find_node (struct node_t *, char *);
 void qucslib_producer (char *libname);
+int qucslib_count (void);
 void qucsdata_producer_vcd (void);
 void qucsdata_producer (qucs::dataset *);
 

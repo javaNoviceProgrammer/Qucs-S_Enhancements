@@ -82,7 +82,41 @@ public:
   static QString referenceTo(const QString& libraryFile);
   /// The library's folder: libraryFile() without ".lib".
   QString getSubcircuitFile();
+  /// An .INCLUDE of each SPICE file the component attaches (<SpiceAttach>):
+  /// every attached file but its Verilog-A (.va, .vams, .vh, .osdi) - a
+  /// .inc or .mod as well as a .lib or .cir.
   QString getSpiceLibrary();
+  /// Those SPICE files, in the library's folder: Create Library takes them
+  /// into a library made of a subcircuit that places this part.
+  QStringList getSpiceLibraryFiles() override;
+  /// getSpiceLibraryFiles() of the component \a comp of \a libraryFile.
+  static QStringList spiceFilesOf(const QString& libraryFile, const QString& comp);
+  /// A library part's SPICE model \a spice (its <Spice> section, and the
+  /// files it includes) with its subcircuits named for the part: its own -
+  /// the one named \a own, else \a written (the name the library was made
+  /// under), else the last - is \a own (createType()), every other one
+  /// own__name, and the calls to them (X lines; .SUBCKT and .ENDS) follow.
+  /// Two parts whose inner subcircuits share a name - two libraries'
+  /// "stage", a library's and the circuit's own - no longer take one
+  /// another's, and a library whose file was renamed still names its part
+  /// as the netlist calls it. SPICE names are matched in any case.
+  static QString scopedSpice(const QString& spice, const QString& own, const QString& written);
+  /// scopedSpice() for a Qucs model: .Def:NAME ... .Def:End and the
+  /// Type="NAME" of its Sub: lines.
+  static QString scopedQucsModel(const QString& model, const QString& own, const QString& written);
+  /// The version of Qucs-S that made \a libraryFile when it is newer than
+  /// this one and so is not read (unless Application Settings > Load
+  /// documents from future versions is on); empty otherwise.
+  static QString newerVersion(const QString& libraryFile);
+  /// Why a library this Qucs-S does not read because a newer one made it
+  /// is not read, and what reads it - empty when newerVersion() is.
+  static QString newerVersionReason(const QString& libraryFile);
+  /// The files the component \a comp of \a libraryFile names in its
+  /// library's folder that are not there - a library brought without its
+  /// folder - as named in the library: those its SPICE model attaches
+  /// (<SpiceAttach>, with \a spice) and its Qucs model includes
+  /// (<ModelIncludes>, with \a qucs).
+  static QStringList missingFiles(const QString& libraryFile, const QString& comp, bool spice = true, bool qucs = true);
   /// The .va files attached to the component in its library (Create
   /// Library embeds them), in the library's folder, and the .osdi model
   /// compiled from each where there is one (OpenVAF puts it beside the
@@ -123,6 +157,9 @@ private:
   static int loadSectionOf(const QString& libraryFile, const QString& comp, const QString& Name, QString& Section,
                            QStringList* Includes, QStringList* Attach);
   QString createType();
+  /// subcircuitName() of the name its library was made under (its
+  /// title) and its Comp: what the library calls the part's subcircuit.
+  QString writtenName();
 };
 
 #endif

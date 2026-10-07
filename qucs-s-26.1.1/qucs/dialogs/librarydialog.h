@@ -69,8 +69,10 @@ public:
   /// fillSchematicList was given them), into \a folder; each subcircuit's
   /// description by its name; analog only, or with Verilog and VHDL models;
   /// Verilog-A embedded or not; a library of that name there replaced only
-  /// when \a replace. False and why in \a error (nothing written, or the
-  /// failed library removed); what it said in \a log.
+  /// when \a replace - moved to the trash once the new one is made, and
+  /// the new one not put in its place when it cannot be (\a trashed: where
+  /// it went). False and why in \a error (nothing written, a library there
+  /// as it was); what it said in \a log.
   struct Request {
     QString name;
     QStringList subcircuits;
@@ -81,7 +83,15 @@ public:
     bool groundPin = false;   ///< each .SUBCKT's first pin gnd (QucsSettings.LibraryGroundPin)
     bool replace = false;
   };
-  bool create(const Request &request, QString *log, QString *error);
+  bool create(const Request &request, QString *log, QString *error, QStringList *trashed = nullptr);
+
+  /// The part a subcircuit file becomes in a library: its file's name
+  /// without ".sch" - div.v2 of div.v2.sch, deep of sub/deep.sch.
+  static QString partName(const QString &subcircuit);
+  /// Why the \a subcircuits cannot all be parts of one library \a name:
+  /// two that would be parts of one name, or SPICE subcircuits of one name
+  /// (any case, as SPICE reads names); empty when they can.
+  static QString nameClash(const QString &name, const QStringList &subcircuits);
 
 private slots:
   void slotCreateNext();
@@ -107,6 +117,19 @@ private:
   /// Copies \a from into the library's folder as \a name (a path in it);
   /// a name another file already took this time is an error.
   bool copyIntoLibrary(const QString &from, const QString &name);
+  /// A SPICE file a subcircuit uses (a SPICE library part's, an .INCLUDE's)
+  /// into the library's folder, with the files it includes where it finds
+  /// them: under its own name, or in a folder named as the one it is in
+  /// when another file took the name (two vendors' models.lib). What the
+  /// library attaches it as; empty when it could not be copied.
+  QString copySpiceFile(const QString &file);
+  /// Where the library's folder of files is made: in the staging folder
+  /// beside the library's (slotSave()), put in place when it is whole.
+  QString modelsFolder() const;
+  /// Why the library's folder of files (NAME/ where it goes) cannot be
+  /// it: a folder of the project's own (Scratch, Libraries); empty when it
+  /// can.
+  QString folderTaken() const;
 
 private:
   int curDescr;
@@ -134,6 +157,11 @@ private:
   QFile LibFile;
   QDir LibDir;
   QHash<QString, QString> a_copied;   // what the library's folder got this time: name -> source
+  QHash<QString, QString> a_spiceRoots;   // a SPICE file taken in this time -> what it is attached as
+  QString a_staging;       // .NAME.qucs-new beside the library: where it is made
+  bool a_made = false;     // the last slotSave() put a library in place
+  bool a_mustTrash = false;   // a library there replaced only when it can go to the trash (create())
+  QStringList a_trashed;   // where what it replaced went
   QRegularExpression Expr;
   QRegularExpressionValidator *Validator;
 };

@@ -1106,15 +1106,27 @@ private slots:
             QVERIFY2(issuesOf(sch).contains("(the library VaLib there is, " + native(real(p + "/VaLib.lib")) + ", has no part nosuch)"),
                      qPrintable(issuesOf(sch)));
         }
-        // One of a later Qucs-S's that has it: said so.
+        // One of a later Qucs-S's that has it: said so, with the version and
+        // what reads it (it said "a later Qucs-S's, or damaged"); a damaged
+        // one, as damaged.
         write(p + "/Later.lib", QByteArray(libraryOf("Later", "sub")).replace(PACKAGE_VERSION, "99.0.0"));
         write(p + "/use.sch", usesParts("Later", {"sub"}));
         {
             Schematic sch(nullptr, p + "/use.sch");
             QVERIFY(sch.load());
             QVERIFY2(issuesOf(sch).contains("X1: the library part sub of Later could not be loaded (it is in " + native(real(p + "/Later.lib"))
-                                            + ", which it could not be read from: a library of a later Qucs-S, or damaged)"),
+                                            + ", but it was made by Qucs-S 99.0.0, newer than this one (" PACKAGE_VERSION "), and is not "
+                                              "read: Application Settings > Load documents from future versions reads it)"),
                      qPrintable(issuesOf(sch)));
+        }
+        write(p + "/Later.lib", QByteArray(libraryOf("Later", "sub")).replace("<Symbol>", "<Symbol>\n  <Line"));
+        {
+            Schematic sch(nullptr, p + "/use.sch");
+            QVERIFY(sch.load());
+            const QString issues = issuesOf(sch);
+            QVERIFY2(issues.contains("X1: the library part sub of Later could not be loaded (it is in " + native(real(p + "/Later.lib"))
+                                     + ", which it could not be read from: damaged)"),
+                     qPrintable(issues));
         }
         write(p + "/use.sch", usesParts("Nowhere", {"sub"}));
         {
