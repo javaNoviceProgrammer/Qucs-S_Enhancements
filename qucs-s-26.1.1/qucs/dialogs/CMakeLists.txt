@@ -109,3 +109,4 @@ add_library(dialogs STATIC
     ${DIALOGS_MOC_SRCS}
     ${DIALOGS_UIC_SRCS}
 )
+add_dependencies(dialogs qucs-commit)   # (the About box's qucs_commit.h)

@@ -105,6 +105,16 @@ CONFIGURE_FILE (
 
 INCLUDE_DIRECTORIES("${PROJECT_BINARY_DIR}")
 
+# The commit the build is of (qucs_commit.h, QUCS_COMMIT), written at every
+# build and only when it changed (cmake/commit.cmake): in config.h, read when
+# the tree was configured, it named that commit long after. GIT (-DGIT) is
+# taken where the source tree has no repository.
+add_custom_target(qucs-commit
+    COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}" "-DFALLBACK=${GIT}"
+            "-DOUTPUT=${PROJECT_BINARY_DIR}/qucs_commit.h" -P "${CMAKE_SOURCE_DIR}/cmake/commit.cmake"
+    BYPRODUCTS "${PROJECT_BINARY_DIR}/qucs_commit.h"
+    VERBATIM)
+
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -374,6 +384,7 @@ if(UNIX AND NOT APPLE)
   list(APPEND QUCS_LINK_LIBRARIES util)
 endif()
 target_link_libraries(qucs-core PUBLIC ${QUCS_LINK_LIBRARIES})
+add_dependencies(qucs-core qucs-commit)
 set_target_properties(qucs-core PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
 
 ADD_EXECUTABLE( ${QUCS_NAME} MACOSX_BUNDLE WIN32
@@ -388,6 +399,7 @@ ADD_EXECUTABLE( ${QUCS_NAME} MACOSX_BUNDLE WIN32
 # Tell CMake which libraries we need to link our executable against.
 #
 TARGET_LINK_LIBRARIES( ${QUCS_NAME} ${QUCS_LINK_LIBRARIES} )
+add_dependencies(${QUCS_NAME} qucs-commit)   # (main.cpp)
 SET_TARGET_PROPERTIES(${QUCS_NAME} PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
 IF(APPLE)
   # CMake's own template plus the document types: the Finder offers the

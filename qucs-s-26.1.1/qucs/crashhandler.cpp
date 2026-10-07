@@ -15,6 +15,7 @@
 #ifdef HAVE_CONFIG_H
 # include <config.h>
 #endif
+#include "qucs_commit.h"   // QUCS_COMMIT (written at every build)
 
 #include "crashhandler.h"
 
@@ -228,11 +229,7 @@ void install(std::function<void()> emergency)
 #else
              "?",
 #endif
-#ifdef GIT
-             GIT,
-#else
-             "",
-#endif
+             QUCS_COMMIT,
              qVersion(), QSysInfo::prettyProductName().toUtf8().constData());
 #ifdef QUCS_HAVE_BACKTRACE
     // backtrace() may allocate the first time it runs; do that now, not in
