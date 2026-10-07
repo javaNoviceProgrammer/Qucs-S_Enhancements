@@ -18,6 +18,7 @@
 #include "settings.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QBoxLayout>
 #include <QClipboard>
@@ -67,6 +68,24 @@ namespace {
 
 const char* const kSidebarKey = "LayoutViewer/sidebar";
 const char* const kLabelsKey = "LayoutViewer/labels";
+const char* const kBackgroundKey = "LayoutViewer/background";   // app, light or dark
+
+LayoutView::Theme themeNamed(const QString& name)
+{
+    if (name == QLatin1String("light")) return LayoutView::Theme::Light;
+    if (name == QLatin1String("dark")) return LayoutView::Theme::Dark;
+    return LayoutView::Theme::Application;
+}
+
+QString nameOf(LayoutView::Theme theme)
+{
+    switch (theme) {
+    case LayoutView::Theme::Light: return QStringLiteral("light");
+    case LayoutView::Theme::Dark: return QStringLiteral("dark");
+    case LayoutView::Theme::Application: break;
+    }
+    return QStringLiteral("app");
+}
 constexpr int AllLevels = 100;   // the depth box's "all"
 
 // The toolbar's icons, drawn in the text's colour of the moment.
@@ -289,6 +308,25 @@ void LayoutView::setLabelsShown(bool shown)
     invalidate();
 }
 
+void LayoutView::setTheme(Theme theme)
+{
+    if (theme == a_theme) return;
+    a_theme = theme;
+    invalidate();
+}
+
+LayoutView::Colors LayoutView::colors() const
+{
+    switch (a_theme) {
+    case Theme::Light: return {QColor(255, 255, 255), QColor(32, 32, 32), QColor(80, 80, 80, 170), QColor(0, 110, 220)};
+    case Theme::Dark: return {QColor(22, 22, 24), QColor(230, 230, 230), QColor(200, 200, 200, 150), QColor(90, 170, 255)};
+    case Theme::Application: break;
+    }
+    QColor frames = palette().color(QPalette::Text);
+    frames.setAlpha(150);
+    return {palette().color(QPalette::Base), palette().color(QPalette::Text), frames, palette().color(QPalette::Highlight)};
+}
+
 void LayoutView::invalidate()
 {
     a_dirty = true;
@@ -449,11 +487,11 @@ void LayoutView::paintEvent(QPaintEvent*)
 {
     const qreal ratio = devicePixelRatioF();
     const QSize pixels = (QSizeF(size()) * ratio).toSize();
-    const QColor background = palette().color(QPalette::Base);
+    const Colors c = colors();
     if (a_dirty || a_cache.size() != pixels) {
         a_cache = QImage(pixels, QImage::Format_ARGB32_Premultiplied);
         a_cache.setDevicePixelRatio(ratio);
-        a_cache.fill(background);
+        a_cache.fill(c.background);
         if (a_layout && a_cell >= 0) {
             QPainter p(&a_cache);
             RenderOptions o;
@@ -463,10 +501,8 @@ void LayoutView::paintEvent(QPaintEvent*)
             o.toDevice = viewTransform(a_center, a_scale, o.device);
             o.styles = &a_styles;
             o.labels = a_labels;
-            QColor frames = palette().color(QPalette::Text);
-            frames.setAlpha(150);
-            o.frames = frames;
-            o.text = palette().color(QPalette::Text);
+            o.frames = c.frames;
+            o.text = c.ink;
             a_stats = qucs_s::layout::render(p, *a_layout, o);
             ++a_renders;
         }
@@ -477,7 +513,7 @@ void LayoutView::paintEvent(QPaintEvent*)
     p.setRenderHint(QPainter::Antialiasing);
     // What is selected.
     if (!a_selectionOutline.isEmpty()) {
-        QPen pen(palette().color(QPalette::Highlight), 2);
+        QPen pen(c.highlight, 2);
         p.setPen(pen);
         p.setBrush(Qt::NoBrush);
         QPolygonF shown;
@@ -487,7 +523,7 @@ void LayoutView::paintEvent(QPaintEvent*)
     }
     // The rulers.
     if (!a_rulers.isEmpty()) {
-        const QColor ink = palette().color(QPalette::Text);
+        const QColor ink = c.ink;
         QFont font = p.font();
         font.setPixelSize(11);
         p.setFont(font);
@@ -504,15 +540,15 @@ void LayoutView::paintEvent(QPaintEvent*)
             const QRectF box = fm.boundingRect(text).adjusted(-3, -1, 3, 1);
             const QPointF mid = (a + b) / 2 + QPointF(6, -6);
             const QRectF at(mid, box.size());
-            QColor paper = palette().color(QPalette::Base);
+            QColor paper = c.background;
             paper.setAlpha(220);
             p.fillRect(at, paper);
             p.drawText(at, Qt::AlignCenter, text);
         }
     }
     if (a_drag == Drag::Zoom && !a_zoomBox.isNull()) {
-        p.setPen(QPen(palette().color(QPalette::Highlight), 1, Qt::DashLine));
-        QColor tint = palette().color(QPalette::Highlight);
+        p.setPen(QPen(c.highlight, 1, Qt::DashLine));
+        QColor tint = c.highlight;
         tint.setAlpha(40);
         p.setBrush(tint);
         p.drawRect(a_zoomBox);
@@ -828,6 +864,21 @@ void LayoutDoc::buildUi()
     menu->addSeparator();
     menu->addAction(tr("Load Layer Properties…"), this, &LayoutDoc::chooseLayerProperties);
     menu->addAction(tr("Colours of the Palette"), this, &LayoutDoc::usePalette);
+    // The canvas light or dark whatever the application's theme.
+    QMenu* background = menu->addMenu(tr("Background"));
+    background->setObjectName(QStringLiteral("layoutBackground"));
+    auto* themes = new QActionGroup(background);
+    for (const auto& [theme, text] : {std::pair{LayoutView::Theme::Application, tr("Like the Application")},
+                                      std::pair{LayoutView::Theme::Light, tr("Light")},
+                                      std::pair{LayoutView::Theme::Dark, tr("Dark")}}) {
+        QAction* a = background->addAction(text, this, [this, theme = theme] { setCanvasTheme(theme); });
+        a->setCheckable(true);
+        a->setData(nameOf(theme));
+        themes->addAction(a);
+    }
+    connect(background, &QMenu::aboutToShow, this, [this, background] {
+        for (QAction* a : background->actions()) a->setChecked(a->data().toString() == nameOf(a_view->theme()));
+    });
     menu->addSeparator();
     menu->addAction(tr("Clear the Rulers"), this, [this] { a_view->clearRulers(); });
     menu->addAction(tr("Reload"), this, [this] { reload(); });
@@ -967,6 +1018,7 @@ void LayoutDoc::buildUi()
     // What the controls do.
     const QucsSettingsFile settings;
     setSidebarShown(settings.value(QLatin1String(kSidebarKey), true).toBool());
+    a_view->setTheme(themeNamed(settings.value(QLatin1String(kBackgroundKey)).toString()));
     const bool labels = settings.value(QLatin1String(kLabelsKey), true).toBool();
     a_labelsButton->setChecked(labels);
     a_view->setLabelsShown(labels);
@@ -1433,6 +1485,16 @@ void LayoutDoc::usePalette()
     if (!a_layout) return;
     a_view->setStyles(stylesFor(*a_layout, a_lyp));
     fillLayers();
+}
+
+void LayoutDoc::setCanvasTheme(LayoutView::Theme theme)
+{
+    QucsSettingsFile().setValue(QLatin1String(kBackgroundKey), nameOf(theme));
+    a_view->setTheme(theme);
+    // (every layout tab alike)
+    if (a_App != nullptr)
+        for (QucsDoc* doc : a_App->allDocuments())
+            if (auto* other = dynamic_cast<LayoutDoc*>(doc); other != nullptr && other != this) other->view()->setTheme(theme);
 }
 
 void LayoutDoc::chooseLayerProperties()

@@ -1220,7 +1220,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   KLayout layer properties file (`.lyp`) beside the layout — `chip.lyp`
   for `chip.gds`, or the folder's only one — else from a palette of
   sixteen colours and eight hatches (*⋯ → Load Layer Properties…* reads
-  another). Pan with a drag, the arrow keys or two fingers; zoom with
+  another). *⋯ → Background* draws the canvas light or dark whatever
+  Qucs-S's theme (or like it, the default), in every layout tab, kept for
+  the next time. Pan with a drag, the arrow keys or two fingers; zoom with
   the wheel, a pinch, `+`/`−`, or a box dragged with the right button,
   about the pointer; `F` shows the whole cell. *Levels* is how deep the
   hierarchy is drawn, the cells below as their frames; shapes too small
