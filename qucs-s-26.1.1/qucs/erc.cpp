@@ -2217,6 +2217,18 @@ QList<Issue> check(Schematic* doc, bool run)
 
     dcSweepIssues(doc, simulator, errors);
     if (run) nutmegNameIssues(doc, simulator, errors);
+    // Its own .model cards (Document Settings > Library) with a line that is
+    // none - a file written by hand: left out of the netlist, said here.
+    if (spiceSimulator(simulator)) {
+        QStringList rejected;
+        Schematic::modelCardsOf(doc->getModelCards(), &rejected);
+        if (!rejected.isEmpty())
+            warnings << Issue{Severity::Warning,
+                              tr("its .model cards (Document Settings > Library) have lines that are no card, nor a + line "
+                                 "going on with one, nor a * comment - left out of the netlist: %1")
+                                  .arg(rejected.join(QStringLiteral("; "))),
+                              QPoint(), QString()};
+    }
 
     // A subcircuit port on a net without a label lends its own name to
     // that net, so the pin of the subcircuit is called after the port. A

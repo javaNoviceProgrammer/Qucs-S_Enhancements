@@ -831,7 +831,8 @@ void LibraryDialog::slotSave()
         // .INCLUDEs', the library parts' it places - with the files they
         // include, each under a name of its own (copySpiceFile()).
         QStringList copiedFiles;
-        for (const QString &file : kern->collectSpiceLibraryFiles(Doc)) {
+        const QStringList spiceFiles = kern->collectSpiceLibraryFiles(Doc);
+        for (const QString &file : spiceFiles) {
           const QString attached = copySpiceFile(file);
           if (attached.isEmpty()) partMade = false;
           else if (!copiedFiles.contains(attached)) copiedFiles << attached;
@@ -845,7 +846,13 @@ void LibraryDialog::slotSave()
                                        .arg(pc->Name, QDir::toNativeSeparators(pc->Props.value(0) != nullptr ? pc->Props.at(0)->Value : QString())));
         if (QucsSettings.EmbedVerilogAInLibraries) {
           const QString base = QFileInfo(QucsSettings.QucsWorkDir.filePath(SelectedNames[i])).absolutePath();
-          if (embedVerilogA(Doc, spiceNetlist, base, copiedFiles) > 0)
+          // The .model cards of the SPICE files it attaches too, and of
+          // those they include: a wrapper subcircuit in a SPICE file brings
+          // its N device's card, whose Verilog-A was left behind - placed
+          // elsewhere, the part found no model.
+          QString scanned = spiceNetlist;
+          for (const QString &file : spiceFiles) scanned += QStringLiteral("\n.include \"%1\"\n").arg(file);
+          if (embedVerilogA(Doc, scanned, base, copiedFiles) > 0)
             partMade = false;
         }
         if (!copiedFiles.isEmpty()) {

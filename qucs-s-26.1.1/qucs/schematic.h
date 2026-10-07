@@ -356,6 +356,16 @@ public:
   /// Library; saved as <AlwaysLoadOSDI=1> only when set.
   bool getAlwaysLoadOSDI() const { return a_alwaysLoadOSDI; }
   void setAlwaysLoadOSDI(bool value) { a_alwaysLoadOSDI = value; }
+  /// SPICE .model cards of its own - its Verilog-A device's, .model resmod
+  /// va_res r=1k - written into its SPICE netlist, as a subcircuit too and
+  /// in a library made of it, as a .MODEL block's are. Document Settings >
+  /// Library; saved as <ModelCards=...> only when there are any.
+  QString getModelCards() const { return a_modelCards; }
+  void setModelCards(const QString& cards) { a_modelCards = cards; }
+  /// The lines of \a text that go into a netlist: .model cards, the +
+  /// lines that go on with one, * comments (blank lines left out); the
+  /// others, "3: .control" (numbered from 1), in \a rejected.
+  static QString modelCardsOf(const QString& text, QStringList* rejected = nullptr);
   int getViewX1() const { return a_ViewX1; }
   int getViewY1() const { return a_ViewY1; }
   int getGridX() const { return a_GridX; }
@@ -443,6 +453,7 @@ private:
 
   FrameSize a_showFrame; // Frame format
   bool a_alwaysLoadOSDI = false;
+  QString a_modelCards;   // getModelCards()
   QString a_Frame_Text0;
   QString a_Frame_Text1;
   QString a_Frame_Text2;

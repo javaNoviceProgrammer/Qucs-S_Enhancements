@@ -26,6 +26,7 @@ class Schematic;
 class QLineEdit;
 class QTextEdit;
 class QCheckBox;
+class QPlainTextEdit;
 class QComboBox;
 class QVBoxLayout;
 class QRegExpValidator;
@@ -46,6 +47,9 @@ private slots:
   void slotOK();
   void slotApply();
 
+private:
+  bool apply();   ///< false, and why in a box, when a field is refused
+
 public:
   Schematic *Doc;
 
@@ -56,6 +60,7 @@ public:
   QLineEdit *Input_GridX, *Input_GridY;
   QCheckBox *Check_OpenDpl, *Check_GridOn, *Check_RunScript;
   QCheckBox *Check_AlwaysLoadOSDI;   ///< Library: the part's Verilog-A in all the project's circuits
+  QPlainTextEdit *Input_ModelCards;  ///< Library: .model cards of its own, in its netlist
 
   QVBoxLayout *all;
   QRegularExpressionValidator *valExpr;
