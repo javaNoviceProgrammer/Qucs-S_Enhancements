@@ -23,6 +23,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QToolButton>
+#include <QAction>
+#include <QMenu>
 #include <QLineEdit>
 #include <QPainter>
 #include <QPushButton>
@@ -48,6 +51,7 @@
 #include "module.h"
 #include "qucs.h"
 #include "qucscontrol.h"
+#include "settings.h"
 
 using namespace qucs_s::layout;
 
@@ -901,6 +905,52 @@ private slots:
         QCOMPARE(view->scale(), scale);
         QVERIFY(!view->styles().at(doc->layout()->layerIndex({2, 0})).visible);
         QCOMPARE(doc->layerList()->topLevelItemCount(), 7);
+    }
+
+    // The ⋯ menu's Background: the canvas light or dark whatever the
+    // application's theme, in every layout tab, kept for the next one; or
+    // the application's again.
+    void theCanvasIsLightOrDarkWhateverTheTheme()
+    {
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        QCOMPARE(view->theme(), LayoutView::Theme::Application);
+        QMenu* background = doc->menuButton()->menu()->findChild<QMenu*>("layoutBackground");
+        QVERIFY(background != nullptr);
+        QStringList choices;
+        for (QAction* a : background->actions()) choices << a->text();
+        QCOMPARE(choices, QStringList({"Like the Application", "Light", "Dark"}));
+        const auto choose = [](QMenu* menu, const QString& text) {
+            for (QAction* a : menu->actions())
+                if (a->text() == text) a->trigger();
+        };
+        // (a corner of the view: its margin, nothing drawn there)
+        const auto corner = [view] { return view->picture().pixelColor(2, 2); };
+        choose(background, "Dark");
+        QCOMPARE(view->theme(), LayoutView::Theme::Dark);
+        QVERIFY2(corner().lightness() < 40, qPrintable(corner().name()));
+        QCOMPARE(QucsSettingsFile().value("LayoutViewer/background").toString(), QString("dark"));
+        // Another tab: dark as it opens; Light chosen there, both light.
+        LayoutDoc* other = open(path("sample.oas"));
+        QVERIFY(other != nullptr && other != doc);
+        QCOMPARE(other->view()->theme(), LayoutView::Theme::Dark);
+        QMenu* otherBackground = other->menuButton()->menu()->findChild<QMenu*>("layoutBackground");
+        choose(otherBackground, "Light");
+        QCOMPARE(other->view()->theme(), LayoutView::Theme::Light);
+        QCOMPARE(view->theme(), LayoutView::Theme::Light);
+        QVERIFY2(corner().lightness() > 240, qPrintable(corner().name()));
+        // The menu shows which.
+        emit background->aboutToShow();
+        QStringList checked;
+        for (QAction* a : background->actions())
+            if (a->isChecked()) checked << a->text();
+        QCOMPARE(checked, QStringList{"Light"});
+        // The application's again: its Base.
+        choose(background, "Like the Application");
+        QCOMPARE(view->theme(), LayoutView::Theme::Application);
+        QCOMPARE(corner(), view->palette().color(QPalette::Base));
+        QCOMPARE(QucsSettingsFile().value("LayoutViewer/background").toString(), QString("app"));
     }
 
     // A KLayout .lyp beside the layout: its colours, fills, names and
