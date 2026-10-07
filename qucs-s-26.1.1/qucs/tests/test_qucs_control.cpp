@@ -5941,12 +5941,51 @@ private slots:
         QVERIFY(put(from + "/vend.lib", "* v\n.include \"sub/inner.inc\"\n.lib \"corners.lib\" TT\n.subckt VDIV 1 2\nXA 1 2 INNER\n.ends\n"));
         QVERIFY(put(from + "/sub/inner.inc", ".subckt INNER 1 2\nR1 1 2 1k\n.ends\n"));
         QVERIFY(put(from + "/corners.lib", ".lib TT\n.subckt CORNER 1 2\nR1 1 2 1k\n.ends\n.endl TT\n"));
+        const auto read = [](const QString& path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
         QJsonObject r = call("import_library", {{"path", from + "/vend.lib"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QCOMPARE(json(r).toObject().value("written").toArray().size(), 3);
-        QVERIFY(QFileInfo::exists(userLib + "/sub/inner.inc") && QFileInfo::exists(userLib + "/corners.lib"));
-        r = call("import_library", {{"path", from + "/vend.lib"}, {"replace", true}});   // (its includes the same: not in the way)
-        QVERIFY2(!failed(r) && json(r).toObject().value("written").toArray().size() == 1, qPrintable(text(r)));
+        // In a folder of its own, its include lines naming them there - not
+        // user_lib/sub/inner.inc, which another library's include of that
+        // path wrote over.
+        QVERIFY(QFileInfo::exists(userLib + "/vend/sub/inner.inc") && QFileInfo::exists(userLib + "/vend/corners.lib"));
+        QVERIFY(!QFileInfo::exists(userLib + "/sub/inner.inc") && !QFileInfo::exists(userLib + "/corners.lib"));
+        QVERIFY2(read(userLib + "/vend.lib").contains(".include \"vend/sub/inner.inc\"\n.lib \"vend/corners.lib\" TT\n"), read(userLib + "/vend.lib").constData());
+        QVERIFY2(json(r).toObject().value("note").toString().contains("in its own folder vend/"), qPrintable(text(r)));
+        r = call("import_library", {{"path", from + "/vend.lib"}, {"replace", true}});   // (the library and its folder anew)
+        QVERIFY2(!failed(r) && json(r).toObject().value("written").toArray().size() == 3, qPrintable(text(r)));
+        // Two libraries including the same path, each its own file: the second
+        // brought in, then again with 'replace', leaves the first's as it was.
+        QVERIFY(put(from + "/a/Shared1.lib", "* 1\n.include models/rmod.inc\n.subckt SP 1 2\nR1 1 2 {RA}\n.ends\n"));
+        QVERIFY(put(from + "/a/models/rmod.inc", ".param RA=4k\n"));
+        QVERIFY(put(from + "/b/Shared2.lib", "* 2\n.include models/rmod.inc\n.subckt SP 1 2\nR1 1 2 {RA}\n.ends\n"));
+        QVERIFY(put(from + "/b/models/rmod.inc", ".param RA=9k\n"));
+        QVERIFY2(!failed(r = call("import_library", {{"path", from + "/a/Shared1.lib"}})), qPrintable(text(r)));
+        QVERIFY2(!failed(r = call("import_library", {{"path", from + "/b/Shared2.lib"}})), qPrintable(text(r)));
+        QVERIFY2(!failed(r = call("import_library", {{"path", from + "/b/Shared2.lib"}, {"replace", true}})), qPrintable(text(r)));
+        QCOMPARE(read(userLib + "/Shared1/models/rmod.inc"), QByteArray(".param RA=4k\n"));
+        QCOMPARE(read(userLib + "/Shared2/models/rmod.inc"), QByteArray(".param RA=9k\n"));
+        QVERIFY(read(userLib + "/Shared1.lib").contains(".include Shared1/models/rmod.inc\n"));
+        QVERIFY(!QFileInfo::exists(userLib + "/models"));
+        // Under another name: its folder that name, an include naming the
+        // library back follows it, and a byte not UTF-8 is kept.
+        QVERIFY(put(from + "/c/back.lib", "* \xb5\n.include 'sub/x.inc'\n.subckt BK 1 2\nR1 1 2 1k\n.ends\n"));
+        QVERIFY(put(from + "/c/sub/x.inc", "* x\n.lib \"../back.lib\" TT\n.include y.inc\n"));
+        QVERIFY(put(from + "/c/sub/y.inc", "* y\n"));
+        QVERIFY2(!failed(r = call("import_library", {{"path", from + "/c/back.lib"}, {"name", "Back2"}})), qPrintable(text(r)));
+        QCOMPARE(read(userLib + "/Back2.lib"), QByteArray("* \xb5\n.include 'Back2/sub/x.inc'\n.subckt BK 1 2\nR1 1 2 1k\n.ends\n"));
+        QCOMPARE(read(userLib + "/Back2/sub/x.inc"), QByteArray("* x\n.lib \"../../Back2.lib\" TT\n.include y.inc\n"));
+        QCOMPARE(read(userLib + "/Back2/sub/y.inc"), QByteArray("* y\n"));
+        // 'replace' would put in the trash the folder its own include is in:
+        // refused, nothing touched.
+        QVERIFY(put(userLib + "/Src.lib", "* s\n.include Dst/x.inc\n.subckt S 1 2\nR1 1 2 1k\n.ends\n"));
+        QVERIFY(put(userLib + "/Dst/x.inc", "* x\n"));
+        r = call("import_library", {{"path", userLib + "/Src.lib"}, {"name", "Dst"}, {"replace", true}});
+        QVERIFY2(failed(r) && text(r).contains("holds") && QFileInfo::exists(userLib + "/Dst/x.inc"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(userLib + "/Dst.lib"));
         // One it includes by a path out of its folder: refused, nothing brought.
         QVERIFY(put(from + "/deep/out.lib", "* o\n.include \"../shared.inc\"\n.subckt OUT 1 2\nR1 1 2 1k\n.ends\n"));
         QVERIFY(put(from + "/shared.inc", "* s\n"));
@@ -5976,13 +6015,50 @@ private slots:
         r = call("import_library", {{"path", from + "/Sent.lib"}});
         QVERIFY2(!failed(r) && json(r).toObject().value("missing").toArray() == QJsonArray{"Sent/dev.lib"}, qPrintable(text(r)));
         QVERIFY2(json(r).toObject().value("warning").toString().contains("did not come with it"), qPrintable(text(r)));
+        // (What it stops: a SPICE model's attachment, a SPICE simulator's run.)
+        QVERIFY2(json(r).toObject().value("warning").toString().contains("under ngspice or Xyce stops at them"), qPrintable(text(r)));
         r = call("describe_part", {{"library", "Sent"}, {"part", "one"}});
         QVERIFY2(json(r).toObject().value("missing").toArray() == QJsonArray{"dev.lib"}, qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("warning").toString().contains("a run of it under ngspice or Xyce stops at dev.lib"), qPrintable(text(r)));
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
         r = call("add_component", {{"type", "Lib"}, {"name", "X1"}, {"x", 300}, {"y", 200}, {"properties", QJsonObject{{"Lib", "Sent"}, {"Comp", "one"}}}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         r = call("check_schematic");
-        QVERIFY2(text(r).contains("X1: its library Sent names dev.lib in its folder"), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("X1: its library Sent names dev.lib in its folder") && text(r).contains("a run under Ngspice stops at it"),
+                 qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        // Its Qucsator model's include missing alone: a Qucsator run stops at
+        // it, ngspice's does not (the part's SPICE model needs none of it).
+        QVERIFY(put(from + "/Lst.lib", QString(library).replace("\"Made\"", "\"Lst\"")
+                                           .replace("<SpiceAttach \"dev.lib\">\n", "<ModelIncludes \"gone.lst\">\n").toUtf8()));
+        r = call("import_library", {{"path", from + "/Lst.lib"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("missing").toArray() == QJsonArray{"Lst/gone.lst"}, qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("warning").toString().contains("under Qucsator stops at them")
+                     && json(r).toObject().value("warning").toString().contains("simulated from their SPICE models"), qPrintable(text(r)));
+        r = call("describe_part", {{"library", "Lst"}, {"part", "one"}});
+        QVERIFY2(json(r).toObject().value("warning").toString().contains("a run of it under Qucsator stops at gone.lst")
+                     && json(r).toObject().value("warning").toString().contains("simulated from its SPICE model, which needs none of them"),
+                 qPrintable(text(r)));
+        // (A part with no SPICE model is not said to be simulated from one.)
+        QString noSpice = QString(library).replace("\"Made\"", "\"LstNs\"").replace("<SpiceAttach \"dev.lib\">\n", "<ModelIncludes \"gone.lst\">\n");
+        noSpice.remove(QRegularExpression("\\s*<Spice>.*</Spice>", QRegularExpression::DotMatchesEverythingOption));
+        QVERIFY(put(from + "/LstNs.lib", noSpice.toUtf8()));
+        r = call("import_library", {{"path", from + "/LstNs.lib"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("warning").toString().contains("under Qucsator stops at them")
+                     && !json(r).toObject().value("warning").toString().contains("SPICE models"), qPrintable(text(r)));
+        r = call("describe_part", {{"library", "LstNs"}, {"part", "one"}});
+        QVERIFY2(json(r).toObject().value("warning").toString().contains("a run of it under Qucsator stops at gone.lst")
+                     && !json(r).toObject().value("warning").toString().contains("SPICE model"), qPrintable(text(r)));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("add_component", {{"type", "Lib"}, {"name", "X1"}, {"x", 300}, {"y", 200}, {"properties", QJsonObject{{"Lib", "Lst"}, {"Comp", "one"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("check_schematic");
+        QVERIFY2(!text(r).contains("gone.lst"), qPrintable(text(r)));
+        const int simulatorWas = QucsSettings.DefaultSimulator;
+        QucsSettings.DefaultSimulator = spicecompat::simQucsator;
+        r = call("check_schematic");
+        QucsSettings.DefaultSimulator = simulatorWas;
+        QVERIFY2(text(r).contains("names gone.lst in its folder") && text(r).contains("a run under Qucsator stops at it"), qPrintable(text(r)));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
         // With its folder, under another name.
         QVERIFY(put(from + "/Sent/dev.lib", "* dev\n"));
@@ -6053,6 +6129,192 @@ private slots:
         for (int i = 0; i < 210; ++i) QFile::remove(userLib + QStringLiteral("/Many%1.lib").arg(i, 3, 10, QLatin1Char('0')));
         app->fillLibrariesTreeView();
         QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+    }
+
+    // A run whose netlist cannot be made - a subcircuit not there - answers
+    // at once with why (the library check of 2026-10-07, 3): its netlist is
+    // made after the call, where nothing closed the "Cannot load document"
+    // box, which waited for an answer and the run with it past its timeout
+    // (and blocked the next run). Under Qucsator "Cannot simulate a text
+    // file!" followed, said of a schematic.
+    void aRunsNetlistErrorsAreSaidNotBoxed()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 200}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 250}, {"y", 120}})));
+        QVERIFY(!failed(call("connect", {{"from", "V1.1"}, {"to", "R1.1"}})));
+        QVERIFY(!failed(call("connect", {{"from", "V1.2"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("connect", {{"from", "R1.2"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("add_component", {{"type", ".DC"}, {"name", "DC1"}, {"x", 100}, {"y", 400}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Sub"}, {"name", "SUB9"}, {"x", 400}, {"y", 300},
+                                               {"properties", QJsonObject{{"File", "not_there.sch"}}}})));
+        QVERIFY(!failed(call("save_document", {{"as", "netlist_boxed"}, {"replace", true}})));
+        const auto noBox = [this] {
+            for (QMessageBox* box : app->findChildren<QMessageBox*>())
+                if (box->isVisible()) return false;
+            for (QWidget* w : QApplication::topLevelWidgets())
+                if (qobject_cast<QMessageBox*>(w) != nullptr && w->isVisible()) return false;
+            return true;
+        };
+        QElapsedTimer clock;
+        clock.start();
+        QJsonObject r = call("simulate", {{"timeout", 30}}, 60000);   // (ngspice here: a stand-in)
+        QVERIFY2(clock.elapsed() < 20000 && json(r).toObject().value("finished").toBool(), qPrintable(text(r)));
+        int said = 0;
+        for (const QJsonValue& v : json(r).toObject().value("errors").toArray())
+            if (v.toObject().value("message").toString().startsWith("Cannot load document")) {
+                ++said;
+                QCOMPARE(v.toObject().value("when").toString(), QStringLiteral("its netlist was made"));
+            }
+        QVERIFY2(said == 1, qPrintable(text(r)));   // (made more than once: said once)
+        QVERIFY(noBox());
+        const QString qucsator = QDir(QCoreApplication::applicationDirPath()).filePath("../../qucsator_rf/src/qucsator_rf");
+        if (QFileInfo(qucsator).isExecutable()) {
+            const QString was = QucsSettings.Qucsator;
+            QucsSettings.Qucsator = QFileInfo(qucsator).canonicalFilePath();
+            app->simulatorList()->addItem("Qucsator", int(spicecompat::simQucsator));
+            // (Its netlist's folder gone - a cache emptied while it runs: made
+            // again, not "Cannot write netlist file!".)
+            QVERIFY(QDir(QucsSettings.tempFilesDir.absolutePath()).removeRecursively());
+            clock.restart();
+            r = call("simulate", {{"simulator", "qucsator"}, {"timeout", 30}}, 60000);
+            const qint64 took = clock.elapsed();
+            for (SimMessage* m : app->findChildren<SimMessage*>()) m->slotClose();
+            app->simulatorList()->removeItem(app->simulatorList()->count() - 1);
+            QucsSettings.Qucsator = was;
+            QVERIFY2(took < 20000 && json(r).toObject().value("finished").toBool(), qPrintable(text(r)));
+            QVERIFY2(text(r).contains("Cannot load subcircuit") && text(r).contains("Cannot load document"), qPrintable(text(r)));
+            QVERIFY2(!text(r).contains("text file"), qPrintable(text(r)));
+            QVERIFY(noBox());
+        }
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A net named as a Nutmeg operator (the library check of 2026-10-07,
+    // 2): ngspice is not started with one, in any case (OR too) - the run's
+    // answer says why, not "Unknown error" of a process never started;
+    // check_schematic finds it, set_label and rename_net warn. Inside a
+    // subcircuit the node is x1.or: no matter.
+    void nutmegWordsAreNoNetNames()
+    {
+        QVERIFY(!spicecompat::check_nodename("or") && !spicecompat::check_nodename("OR") && !spicecompat::check_nodename("Eq"));
+        QVERIFY(spicecompat::check_nodename("out") && spicecompat::check_nodename("order") && spicecompat::check_nodename("nor"));
+        QCOMPARE(QucsSettings.DefaultSimulator, int(spicecompat::simNgspice));
+        const auto divider = [this] {
+            QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+            QVERIFY(!failed(call("add_component", {{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 200}})));
+            QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 250}, {"y", 120}})));
+            QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R2"}, {"x", 350}, {"y", 200}, {"rotation", 1}})));
+            QVERIFY(!failed(call("connect", {{"from", "V1.1"}, {"to", "R1.1"}})));
+            QVERIFY(!failed(call("connect", {{"from", "R1.2"}, {"to", "R2.1"}})));
+            QVERIFY(!failed(call("add_component", {{"type", ".DC"}, {"name", "DC1"}, {"x", 100}, {"y", 400}})));
+        };
+        divider();
+        QVERIFY(!failed(call("connect", {{"from", "V1.2"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("connect", {{"from", "R2.2"}, {"to", "ground"}})));
+        QJsonObject r = call("set_label", {{"at", "R1.2"}, {"name", "OR"}});
+        QVERIFY2(!failed(r) && text(r).contains("Warning: OR is an operator of Nutmeg"), qPrintable(text(r)));
+        r = call("check_schematic");
+        bool found = false;
+        for (const QJsonValue& v : json(r).toObject().value("errors").toArray())
+            found = found || v.toObject().value("message").toString().contains("the net OR is named as an operator of Nutmeg");
+        QVERIFY2(found, qPrintable(text(r)));
+        QVERIFY(!failed(call("save_document", {{"as", "nutmeg_or"}, {"replace", true}})));
+        r = call("simulate", {{"timeout", 20}}, 40000);
+        QVERIFY2(failed(r) && text(r).contains("Ngspice was not started: There were Nutmeg-incompatible node names")
+                     && text(r).contains("Incompatible node names are: OR") && !text(r).contains("Unknown error"),
+                 qPrintable(text(r)));
+        // Its node names alone, not the parts the check before found too (they
+        // were listed among the names).
+        front()->getComponentByName("R2")->SpiceModel.clear();
+        r = call("simulate", {{"timeout", 20}}, 40000);
+        front()->getComponentByName("R2")->SpiceModel = QStringLiteral("R");
+        QVERIFY2(text(r).contains("Incompatible components are: R2") && text(r).contains("Incompatible node names are: OR\n"), qPrintable(text(r)));
+        r = call("rename_net", {{"from", "OR"}, {"to", "And"}});
+        QVERIFY2(!failed(r) && text(r).contains("Warning: And is an operator of Nutmeg"), qPrintable(text(r)));
+        r = call("rename_net", {{"from", "And"}, {"to", "out"}});
+        QVERIFY2(!failed(r) && !text(r).contains("Warning"), qPrintable(text(r)));
+        // Under Qucsator a net may be so named.
+        QucsSettings.DefaultSimulator = spicecompat::simQucsator;
+        r = call("set_label", {{"at", "R1.2"}, {"name", "or"}});
+        const QString qucsatorCheck = text(call("check_schematic"));
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        QVERIFY2(!failed(r) && !text(r).contains("Warning"), qPrintable(text(r)));
+        QVERIFY2(!qucsatorCheck.contains("operator of Nutmeg"), qPrintable(qucsatorCheck));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // No ground: why, too.
+        divider();
+        QVERIFY(!failed(call("connect", {{"from", "V1.2"}, {"to", "R2.2"}})));
+        QVERIFY(!failed(call("save_document", {{"as", "nutmeg_noground"}, {"replace", true}})));
+        r = call("simulate", {{"timeout", 20}}, 40000);
+        QVERIFY2(failed(r) && text(r).contains("Ngspice was not started: No Ground found"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // A subcircuit's net named so: not the run's net.
+        const QString sub = dir.filePath("nutmeg_sub.sch");
+        QFile f(sub);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                "  <Port P1 1 220 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n  <Port P2 1 280 100 4 12 1 2 \"2\" 1 \"analog\" 0>\n"
+                "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                "</Components>\n<Wires>\n  <220 100 220 100 \"or\" 240 70 0 \"\">\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        f.close();
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("add_component", {{"type", "Sub"}, {"name", "SUB1"}, {"x", 300}, {"y", 200}, {"properties", QJsonObject{{"File", sub}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("check_schematic", {{"subcircuits", true}});
+        QVERIFY2(json(r).toObject().value("subcircuits").toArray().size() == 1, qPrintable(text(r)));   // (it was checked)
+        QVERIFY2(!text(r).contains("operator of Nutmeg"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // A wire end on another wire mid-way - a T - is joined, the wire split
+    // there, as drawing it joins it: whichever of the two lines comes first
+    // (the library check of 2026-10-07, 3). It was joined when the wire it
+    // lies on came first, else not: the same lines in another order were
+    // another circuit, in set_schematic and in a file opened alike.
+    void aTeeIsJoinedWhicheverLineComesFirst()
+    {
+        const QString parts = "<Components>\n<Vdc V1 1 100 200 18 -26 0 1 \"1 V\" 1>\n"
+                              "<R R1 1 300 140 -26 15 0 0 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                              "<R R2 1 400 220 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+                              "<GND * 1 100 260 0 0 0 0>\n<GND * 1 400 280 0 0 0 0>\n</Components>\n";
+        const QString bar = "<330 140 480 140 \"\" 0 0 0 \"\">", stem = "<400 140 400 190 \"\" 0 0 0 \"\">";
+        const QString rest = "<100 140 270 140 \"\" 0 0 0 \"\">\n<100 140 100 170 \"\" 0 0 0 \"\">\n<100 230 100 260 \"\" 0 0 0 \"\">\n"
+                             "<400 250 400 280 \"\" 0 0 0 \"\">\n";
+        for (const bool stemFirst : {true, false}) {
+            const QString text_ = parts + "<Wires>\n" + (stemFirst ? stem + "\n" + bar : bar + "\n" + stem) + "\n" + rest + "</Wires>\n";
+            QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+            QJsonObject r = call("set_schematic", {{"text", text_}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            QJsonArray tee;   // (one point: by append, a list of one list)
+            tee.append(QJsonArray{400, 140});
+            QCOMPARE(json(r).toObject().value("joined").toArray(), tee);
+            QCOMPARE(json(r).toObject().value("wire count").toInt(), 7);
+            QVERIFY2(json(r).toObject().value("note").toString().contains("joined to it there"), qPrintable(text(r)));
+            r = call("check_schematic");
+            QVERIFY2(!text(r).contains("mid-way") && !text(r).contains("400, 140 is connected to nothing"), qPrintable(text(r)));
+            QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+            // A file of those lines, opened.
+            const QString file = dir.filePath(stemFirst ? "tee_stem.sch" : "tee_bar.sch");
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(("<Qucs Schematic " PACKAGE_VERSION ">\n" + text_).toUtf8());
+            f.close();
+            QVERIFY(!failed(call("open_document", {{"path", file}})));
+            QCOMPARE(int(front()->a_DocWires.size()), 7);
+            QCOMPARE(front()->wireEndsJoined(), QList<QPoint>{QPoint(400, 140)});
+            QVERIFY2(!text(call("check_schematic")).contains("mid-way"), qPrintable(text(call("check_schematic"))));
+            QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        }
+        // A pin on a wire mid-way is not joined: a wire must end at it (the
+        // check says so).
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QJsonObject r = call("set_schematic", {{"text", parts + "<Wires>\n<370 190 430 190 \"\" 0 0 0 \"\">\n</Wires>\n"}});
+        QVERIFY2(!failed(r) && !json(r).toObject().contains("joined"), qPrintable(text(r)));
+        QVERIFY2(text(call("check_schematic")).contains("at 400, 190 is on the wire"), qPrintable(text(call("check_schematic"))));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
     void settingsAreReadAndSetByKeys()
@@ -8609,13 +8871,17 @@ private slots:
             QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "V1.2"}, {"to", "ground"}}}},
             QJsonObject{{"tool", "connect"}, {"arguments", QJsonObject{{"from", "C1.1"}, {"to", "ground"}}}},
             QJsonObject{{"tool", "set_label"}, {"arguments", QJsonObject{{"at", "R1.2"}, {"name", "out"}}}},
+            QJsonObject{{"tool", "get_netlist"}},
             QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "NoSuchType"}, {"x", 0}, {"y", 0}}}}}},
                                        {"keep_going", true}});
         const QString said = text(r);
         QVERIFY2(said.contains("[2] add_component: name R1, type R, x 220, y 100"), qPrintable(said));
         QVERIFY2(said.contains("[5] connect: Wired V1.1 to R1.1"), qPrintable(said));
         QVERIFY2(!said.contains("\"properties\""), qPrintable(said));   // (not the whole answer)
-        QVERIFY2(said.contains("[10] add_component failed:") && said.contains("NoSuchType"), qPrintable(said));   // (a failure in full)
+        // A call that only looks, in full: what it read is the point (it was
+        // "done (3 fields)").
+        QVERIFY2(said.contains("[10] get_netlist:\n") && said.mid(said.indexOf("[10] get_netlist:")).contains("\nR1 "), qPrintable(said));
+        QVERIFY2(said.contains("[11] add_component failed:") && said.contains("NoSuchType"), qPrintable(said));   // (a failure in full)
         const QString ngspice = QStandardPaths::findExecutable("ngspice");
         if (ngspice.isEmpty()) {
             QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));

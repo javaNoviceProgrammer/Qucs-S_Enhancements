@@ -168,14 +168,27 @@ bool copyFolder(const QString& from, const QString& to, QStringList* written)
     return true;
 }
 
+// A SPICE include line (.include, .inc, .lib FILE): its file, quoted or not,
+// is captured 1, 2 or 3.
+const QRegularExpression& includeLine()
+{
+    static const QRegularExpression include(QStringLiteral(R"re(^\s*\.(?:include|inc|lib)\s+(?:"([^"]+)"|'([^']+)'|(\S+)))re"),
+                                            QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption);
+    return include;
+}
+
+int namedGroup(const QRegularExpressionMatch& m)
+{
+    return !m.captured(1).isEmpty() ? 1 : !m.captured(2).isEmpty() ? 2 : 3;
+}
+
 // The files a SPICE library \a file includes (.include, .inc, .lib FILE),
 // and those they include: each by its path from the library's folder in
 // \a beside; one a relative path leads out of the folder to in \a outside.
 // Those named by a full path are found where they are, and not listed.
 void spiceIncludesOf(const QString& file, QList<std::pair<QString, QString>>* beside, QStringList* outside)
 {
-    static const QRegularExpression include(QStringLiteral(R"re(^\s*\.(?:include|inc|lib)\s+(?:"([^"]+)"|'([^']+)'|(\S+)))re"),
-                                            QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption);
+    const QRegularExpression& include = includeLine();
     const QDir root = QFileInfo(file).absoluteDir();
     QStringList pending{QFileInfo(file).absoluteFilePath()};
     QSet<QString> seen{QFileInfo(file).canonicalFilePath()};
@@ -186,7 +199,7 @@ void spiceIncludesOf(const QString& file, QList<std::pair<QString, QString>>* be
         const QDir here = QFileInfo(f.fileName()).absoluteDir();
         for (auto it = include.globalMatch(text); it.hasNext();) {
             const QRegularExpressionMatch m = it.next();
-            const QString named = !m.captured(1).isEmpty() ? m.captured(1) : !m.captured(2).isEmpty() ? m.captured(2) : m.captured(3);
+            const QString named = m.captured(namedGroup(m));
             if (QFileInfo(named).isAbsolute() || named.startsWith(QLatin1Char('~'))) continue;   // found where it is
             const QFileInfo info(QDir::cleanPath(here.absoluteFilePath(named)));
             if (!info.isFile() || seen.contains(info.canonicalFilePath())) continue;   // (a .lib line naming a section)
@@ -199,10 +212,31 @@ void spiceIncludesOf(const QString& file, QList<std::pair<QString, QString>>* be
     }
 }
 
-bool sameBytes(const QString& a, const QString& b)
+// The SPICE file \a file, read from \a wasIn and written as \a file, with
+// each include line naming a file that \a moved (its old path, canonical, to
+// its new one) took elsewhere than its path now leads named by the path that
+// does. Its other bytes are written as they were (read as Latin-1).
+bool followMoved(const QString& file, const QDir& wasIn, const QHash<QString, QString>& moved)
 {
-    QFile fa(a), fb(b);
-    return fa.open(QIODevice::ReadOnly) && fb.open(QIODevice::ReadOnly) && fa.size() == fb.size() && fa.readAll() == fb.readAll();
+    QFile f(file);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    QString text = QString::fromLatin1(f.readAll());
+    f.close();
+    const QDir now = QFileInfo(file).absoluteDir();
+    QList<QRegularExpressionMatch> lines;   // (last first: an earlier one's place is kept)
+    for (auto it = includeLine().globalMatch(text); it.hasNext();) lines.prepend(it.next());
+    bool changed = false;
+    for (const QRegularExpressionMatch& m : std::as_const(lines)) {
+        const int n = namedGroup(m);
+        const QString named = QString::fromUtf8(m.captured(n).toLatin1());
+        if (QFileInfo(named).isAbsolute() || named.startsWith(QLatin1Char('~'))) continue;
+        const QString to = moved.value(QFileInfo(QDir::cleanPath(wasIn.absoluteFilePath(named))).canonicalFilePath());
+        if (to.isEmpty() || QDir::cleanPath(now.absoluteFilePath(named)) == to) continue;
+        text.replace(m.capturedStart(n), m.capturedLength(n), QString::fromLatin1(now.relativeFilePath(to).toUtf8()));
+        changed = true;
+    }
+    if (!changed) return true;
+    return f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(text.toLatin1()) == text.size();
 }
 
 // The other libraries of the name of \a file, when there are: "also_named",
@@ -432,24 +466,42 @@ QJsonObject QucsControl::importLibrary(const QJsonObject& args)
                               "adds its folder %3.")
                                .arg(info.fileName(), shown.join(QStringLiteral(", ")), QDir::toNativeSeparators(info.absolutePath())));
     }
-    // What would be written over: refused unless 'replace'; an include
-    // there with the same bytes is used as it is.
+    // A SPICE library's files go into a folder of its own, NAME/, as a Qucs-S
+    // library's models do, each at its path from the library's folder (its
+    // folder of models too, then): in the folder they shared, a library
+    // brought in after another with an include of the same path changed that
+    // one's results. The library's include lines name them there.
+    const bool spice = lib.kind == QLatin1String("spice");
+    QString modelsInto = modelsTo;
+    if (spice) modelsInto = QDir(modelsTo).filePath(info.completeBaseName());
+    QList<std::pair<QString, QString>> includes;   // to copy: source, target
+    QHash<QString, QString> moved{{info.canonicalFilePath(), target}};
+    for (const auto& [from, relative] : std::as_const(beside)) {
+        const QString to = QDir(modelsTo).filePath(relative);
+        moved.insert(QFileInfo(from).canonicalFilePath(), to);
+        // (One in its folder of models comes with the folder.)
+        if (!QFileInfo(modelsFrom).isDir() || !relative.startsWith(info.completeBaseName() + QLatin1Char('/'))) includes.append({from, to});
+    }
+    const bool hasFolder = QFileInfo(modelsFrom).isDir() || !beside.isEmpty();
+    // What would be written over: refused unless 'replace'.
     QStringList taken;
     if (QFileInfo::exists(target)) taken << target;
-    if (QFileInfo(modelsFrom).isDir() && QFileInfo::exists(modelsTo)) taken << modelsTo;
-    QList<std::pair<QString, QString>> includes;   // to copy: source, target
-    for (const auto& [from, relative] : std::as_const(beside)) {
-        const QString to = QDir(folder).filePath(relative);
-        if (QFileInfo::exists(to) && sameBytes(from, to)) continue;
-        if (QFileInfo::exists(to)) taken << to;
-        includes.append({from, to});
-    }
+    if (hasFolder && QFileInfo::exists(modelsTo)) taken << modelsTo;
     if (!taken.isEmpty()) {
         QStringList shown;
         for (const QString& f : std::as_const(taken)) shown << QDir::toNativeSeparators(f);
         if (!replace)
             return errorResult(tr("%1 is there already ('replace' puts it in the trash and brings this one in%2).")
                                    .arg(shown.join(QStringLiteral(", ")), newName.isEmpty() ? tr("; 'name' brings it in under another name") : QString()));
+        // (Its own files there would go to the trash before they were copied.)
+        for (const QString& old : std::as_const(taken))
+            for (const QString& from : QStringList{source, modelsFrom} + QStringList(moved.keys())) {
+                const QString was = QFileInfo(old).canonicalFilePath(), file = QFileInfo(from).canonicalFilePath();
+                if (!file.isEmpty() && (file == was || file.startsWith(was + QLatin1Char('/'))))
+                    return errorResult(tr("%1, which 'replace' would put in the trash, holds %2, which the library brings: nothing was "
+                                          "brought in. 'name' brings it in under another name.")
+                                           .arg(QDir::toNativeSeparators(old), QDir::toNativeSeparators(from)));
+            }
         for (const QString& old : std::as_const(taken))
             if (!misc::moveToTrash(old, nullptr))
                 return errorResult(tr("%1 could not be moved to the trash: nothing was brought in.").arg(QDir::toNativeSeparators(old)));
@@ -457,13 +509,22 @@ QJsonObject QucsControl::importLibrary(const QJsonObject& args)
     if (!QDir().mkpath(folder)) return errorResult(tr("The folder %1 cannot be made.").arg(QDir::toNativeSeparators(folder)));
     if (!QFile::copy(source, target)) return errorResult(tr("%1 could not be copied to %2.").arg(QDir::toNativeSeparators(source), QDir::toNativeSeparators(folder)));
     QStringList written{target};
-    if (QFileInfo(modelsFrom).isDir() && !copyFolder(modelsFrom, modelsTo, &written))
+    if (QFileInfo(modelsFrom).isDir() && !copyFolder(modelsFrom, modelsInto, &written))
         return errorResult(tr("The library was copied, but not all of its folder %1: %2 files were.")
                                .arg(QDir::toNativeSeparators(modelsFrom)).arg(written.size() - 1));
     for (const auto& [from, to] : std::as_const(includes)) {
         if (!QDir().mkpath(QFileInfo(to).absolutePath()) || !QFile::copy(from, to))
             return errorResult(tr("The library was copied, but not %1, which it includes.").arg(QDir::toNativeSeparators(from)));
         written << to;
+    }
+    // Its include lines (and theirs) name its files where they are now.
+    if (spice) {
+        QList<std::pair<QString, QString>> files{{source, target}};
+        for (const auto& [from, relative] : std::as_const(beside)) files.append({from, QDir(modelsTo).filePath(relative)});
+        for (const auto& [from, to] : std::as_const(files))
+            if (!followMoved(to, QFileInfo(from).absoluteDir(), moved))
+                return errorResult(tr("The library was copied, but %1 could not be written to name its includes where they are now.")
+                                       .arg(QDir::toNativeSeparators(to)));
     }
     a_app->fillLibrariesTreeView();
     QJsonArray files;
@@ -475,8 +536,13 @@ QJsonObject QucsControl::importLibrary(const QJsonObject& args)
                        {QStringLiteral("file"), QDir::toNativeSeparators(target)},
                        {QStringLiteral("written"), files},
                        {QStringLiteral("parts"), partsOf(target, lib.kind, false)},
-                       {QStringLiteral("note"), tr("It is in the Libraries panel; each part's 'place' is its add_component.%1")
-                                                    .arg(taken.isEmpty() ? QString() : tr(" What it replaced is in the trash."))}};
+                       {QStringLiteral("note"), tr("It is in the Libraries panel; each part's 'place' is its add_component.%1%2")
+                                                    .arg(spice && !beside.isEmpty()
+                                                             ? tr(" The files it includes are in its own folder %1/, where its include "
+                                                                  "lines now name them: no other library's include is the same file.")
+                                                                   .arg(base)
+                                                             : QString(),
+                                                         taken.isEmpty() ? QString() : tr(" What it replaced is in the trash."))}};
     if (lib.kind == QLatin1String("qucs") && lib.name != base) result.insert(QStringLiteral("made as"), lib.name);
     QStringList warnings;
     if (lib.kind == QLatin1String("qucs")) {
@@ -488,15 +554,31 @@ QJsonObject QucsControl::importLibrary(const QJsonObject& args)
         }
         // The files its parts name in its folder that did not come with it
         // (a .lib sent alone): every run of such a part stopped there.
+        // (Its SPICE models' under ngspice and Xyce, its Qucsator models'
+        // under Qucsator.)
         QJsonArray missing;
-        for (const QJsonValue& part : result.value(QStringLiteral("parts")).toArray())
-            for (const QString& file : LibComp::missingFiles(target, part.toObject().value(QStringLiteral("part")).toString()))
+        bool spiceNeeds = false, qucsNeeds = false, spiceModels = true;
+        for (const QJsonValue& part : result.value(QStringLiteral("parts")).toArray()) {
+            const QString name = part.toObject().value(QStringLiteral("part")).toString();
+            const QStringList spiceMissing = LibComp::missingFiles(target, name, true, false), qucsMissing = LibComp::missingFiles(target, name, false, true);
+            spiceNeeds |= !spiceMissing.isEmpty();
+            qucsNeeds |= !qucsMissing.isEmpty();
+            if (!qucsMissing.isEmpty() && !LibComp::hasSpiceModel(target, name)) spiceModels = false;
+            for (const QString& file : spiceMissing + qucsMissing)
                 if (!missing.contains(QJsonValue(base + QLatin1Char('/') + file))) missing.append(base + QLatin1Char('/') + file);
+        }
         if (!missing.isEmpty()) {
             result.insert(QStringLiteral("missing"), missing);
             warnings << tr("Its parts need files that did not come with it (missing): its folder %1 beside %2 was not there, or "
-                           "lacks them. Bring the folder too, or a part that needs them stops the simulation.")
-                            .arg(info.completeBaseName(), QDir::toNativeSeparators(source));
+                           "lacks them. Bring the folder too, or %3.")
+                            .arg(info.completeBaseName(), QDir::toNativeSeparators(source),
+                                 spiceNeeds && qucsNeeds ? tr("a run of a part that needs them stops at them (describe_part tells, for "
+                                                              "each part, which its SPICE model needs and which its Qucsator model)")
+                                 : spiceNeeds ? tr("a run of a part that needs them under ngspice or Xyce stops at them (its SPICE "
+                                                   "model's)")
+                                 : spiceModels ? tr("a run of a part that needs them under Qucsator stops at them (its Qucsator model's: "
+                                                    "under ngspice or Xyce the parts are simulated from their SPICE models)")
+                                               : tr("a run of a part that needs them under Qucsator stops at them (its Qucsator model's)"));
         }
         addNamedLike(result, target);
     }

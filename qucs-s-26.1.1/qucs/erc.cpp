@@ -1850,6 +1850,30 @@ void dcSweepIssues(Schematic* doc, int simulator, QList<Issue>& errors)
     }
 }
 
+// A net named as an operator of Nutmeg's (or, and, ...): ngspice and SPICE
+// OPUS are not started with one (Ngspice::checkNodeNames(): v(or) is a
+// syntax error), in any case. Of the schematic run only: in a subcircuit
+// the node is x1.or.
+void nutmegNameIssues(Schematic* doc, int simulator, QList<Issue>& errors)
+{
+    if (simulator != spicecompat::simNgspice && simulator != spicecompat::simSpiceOpus) return;
+    QSet<QString> said;
+    const auto look = [&](const QString& name, QPoint where) {
+        if (spicecompat::check_nodename(name) || said.contains(name)) return;
+        said.insert(name);
+        errors << Issue{Severity::Error,
+                        tr("the net %1 is named as an operator of Nutmeg (%2, in any case): %3 is not started with it - "
+                           "name the net otherwise")
+                            .arg(name, spicecompat::nutmegKeywords().join(QStringLiteral(", ")),
+                                 spicecompat::getDefaultSimulatorName(simulator)),
+                        where, QString()};
+    };
+    for (const Node* n : doc->a_DocNodes)
+        if (n->hasLabel()) look(n->label()->Name, n->center());
+    for (const Wire* w : doc->a_DocWires)
+        if (w->hasLabel()) look(w->label()->Name, QPoint(w->label()->cx, w->label()->cy));
+}
+
 // A pulse's edge below 0: taken without a word, as no edge time (the time
 // step).
 void negativeEdgeIssues(const Component* c, QList<Issue>& warnings)
@@ -1888,7 +1912,7 @@ QHash<const Component*, QString> refs(const Schematic* doc)
     return out;
 }
 
-QList<Issue> check(Schematic* doc)
+QList<Issue> check(Schematic* doc, bool run)
 {
     QList<Issue> errors, warnings;
     if (doc == nullptr) return errors;
@@ -2078,8 +2102,9 @@ QList<Issue> check(Schematic* doc)
                 if (const QStringList missing = LibComp::missingFiles(file, comp, spice, qucs); !missing.isEmpty())
                     errors << Issue{Severity::Error,
                                     tr("%1: its library %2 names %3 in its folder %4, which is not there (the library came "
-                                       "without its folder?): a simulation stops at it")
-                                        .arg(c->Name, name, missing.join(QStringLiteral(", ")), QDir::toNativeSeparators(file.chopped(4))),
+                                       "without its folder?): a run under %5 stops at it")
+                                        .arg(c->Name, name, missing.join(QStringLiteral(", ")), QDir::toNativeSeparators(file.chopped(4)),
+                                             spicecompat::getDefaultSimulatorName(simulator)),
                                     QPoint(c->cx, c->cy), c->Name};
             }
         }
@@ -2191,6 +2216,7 @@ QList<Issue> check(Schematic* doc)
     }
 
     dcSweepIssues(doc, simulator, errors);
+    if (run) nutmegNameIssues(doc, simulator, errors);
 
     // A subcircuit port on a net without a label lends its own name to
     // that net, so the pin of the subcircuit is called after the port. A
@@ -2371,7 +2397,7 @@ QList<SubcircuitFindings> checkSubcircuits(Schematic* doc, const std::function<S
                 }
                 sub = loaded.get();
             }
-            found << SubcircuitFindings{file, check(sub)};
+            found << SubcircuitFindings{file, check(sub, false)};
             path << file;
             walk(sub, int(found.size()) - 1);
             path.removeLast();

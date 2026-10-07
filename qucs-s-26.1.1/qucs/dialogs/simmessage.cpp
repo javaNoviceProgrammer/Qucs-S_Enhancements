@@ -38,6 +38,7 @@
 #include <QMessageBox>
 
 #include <filesystem>
+#include <optional>
 
 #include "simmessage.h"
 #include "main.h"
@@ -173,6 +174,9 @@ bool SimMessage::startProcess()
 
   Collect.clear();  // clear list for NodeSets, SPICE components etc.
   ProgText->appendPlainText(tr("creating netlist... "));
+  // (Its folder made when it is not there: the cache emptied while Qucs-S
+  // runs - every run then stopped at "Cannot write netlist file!".)
+  QDir().mkpath(QucsSettings.tempFilesDir.absolutePath());
   NetlistFile.setFileName(QucsSettings.tempFilesDir.filePath("netlist.txt"));
    if(!NetlistFile.open(QIODevice::WriteOnly)) {
     ErrText->appendPlainText(tr("ERROR: Cannot write netlist file!"));
@@ -183,11 +187,27 @@ bool SimMessage::startProcess()
   Stream.setDevice(&NetlistFile);
 
   if(!QucsApp::isTextDocument(DocWidget)) {
+    // Claude's run (its errors kept for it: no box waits for an answer
+    // there): what making the netlist says in a box - a subcircuit not
+    // there - in the errors too.
+    std::optional<misc::ErrorCapture> capture;
+    if (misc::ErrorCapture::active()) capture.emplace();
+    const int said = ErrText->document()->blockCount();
+    const bool empty = ErrText->toPlainText().isEmpty();
     SimPorts =
        schematicDoc()->prepareNetlist(Stream, Collect, ErrText);
+    if (capture) {
+      const QStringList boxed = capture->errors();
+      capture.reset();
+      for (const QString& e : boxed) ErrText->appendPlainText(tr("ERROR: %1").arg(e));
+    }
     if(SimPorts < -5) {
       NetlistFile.close();
-      ErrText->appendPlainText(tr("ERROR: Cannot simulate a text file!"));
+      // The netlist could not be made: why is said above as a rule (a
+      // library part not loaded, ...). "Cannot simulate a text file!" was
+      // said here, of a schematic.
+      if (ErrText->document()->blockCount() == said && ErrText->toPlainText().isEmpty() == empty)
+        ErrText->appendPlainText(tr("ERROR: The netlist could not be made: nothing was simulated."));
       FinishSimulation(-1);
       return false;
     }

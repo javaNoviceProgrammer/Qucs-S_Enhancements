@@ -398,12 +398,17 @@ QString spicecompat::convert_sweep_type(const QString& sweep)
  * \param node[in] Node name
  * \return true if node name is allowed, false otherwise.
  */
-bool spicecompat::check_nodename(QString &node)
+bool spicecompat::check_nodename(const QString &node)
 {
-    static QStringList nutmeg_keywords = {"gt","lt","ge","ne","le","and","not","or","eq"};
-    // logical operations (case sensitive)
-    //nutmeg_keywords<<"gt"<<"lt"<<"ge"<<"ne"<<"le"<<"and"<<"not"<<"or"<<"eq";
-    return !nutmeg_keywords.contains(node);
+    // Nutmeg's logical operators: v(or) is a syntax error. In any case, as
+    // ngspice reads its input in lower case (OR and Or are refused too).
+    return !nutmegKeywords().contains(node, Qt::CaseInsensitive);
+}
+
+const QStringList& spicecompat::nutmegKeywords()
+{
+    static const QStringList keywords{"and", "or", "not", "eq", "ne", "gt", "lt", "ge", "le"};
+    return keywords;
 }
 
 QString spicecompat::getDefaultSimulatorName(int simulator)

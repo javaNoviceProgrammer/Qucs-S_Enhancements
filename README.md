@@ -220,12 +220,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   one is read while it is made (a subcircuit may place its parts) and
   goes to the trash then, and one that cannot be made leaves it as it
   was. Claude's `import_library` brings a SPICE library with the files it
-  includes beside it (one included from outside its folder is refused:
-  the folder is a library search path instead), takes `name` to bring a
-  library in under a name of its own, and says what a library lacks:
-  its folder of models not sent (`missing`), or a newer Qucs-S that made
-  it — as `describe_part`, `add_component`, the *Libraries* panel and
-  *Check Schematic* do. With the check of commands on, *Check Schematic*
+  includes beside it into a folder of its own, `NAME/`, its include lines
+  rewritten to name them there — two libraries' `models/params.inc` stay
+  two, and bringing in one never changes another's results (one included
+  from outside its folder is refused: the folder is a library search
+  path instead) —, takes `name` to bring a library in under a name of
+  its own, and says what a library lacks: its folder of models not sent
+  (`missing`, and which simulator's run stops at it: a SPICE model's
+  file ngspice's and Xyce's, a Qucsator model's include Qucsator's), or
+  a newer Qucs-S that made it — as `describe_part`, `add_component`, the
+  *Libraries* panel and *Check Schematic* do. With the check of commands on, *Check Schematic*
   and `simulate` find a `.control` block that runs a program in a library
   part's SPICE text, in the files it attaches, and in a SPICE library's
   or `.INCLUDE`'s file and what it includes, through subcircuits too.
@@ -711,7 +715,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `properties` as `add_component` does (a transient's `MaxStep`). `get_dataset`
   reads expressions such as `v(out)/v(in)` and compares a run with a kept
   one. `set_schematic` refuses a component line with a value too many,
-  which would have shifted every property after it.
+  which would have shifted every property after it. A wire end that lies
+  on another wire mid-way (a T) is joined to it when a schematic is read,
+  as drawing it joins it, whichever line comes first: the same lines in
+  another order were another circuit (`set_schematic` lists the places
+  it joined).
   **Design tools**: `tune` sets a part's value, simulates and measures,
   over and over, until a number comes out right: sweep RE until the
   emitter sits at 5 V, or C until the peaking is 1 dB. It takes a few runs
@@ -1422,7 +1430,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   tells it: voltage sources in parallel or shorted by a wire (errors: the
   operating point fails), an inductor across a source, a negative
   capacitance, an AC analysis with no AC source, a NutmegEq's `v(node)` of
-  no net (warnings). Every simulation runs the check first and
+  no net (warnings); under ngspice, a net named as a Nutmeg operator
+  (`or`, `and`, `not`, `eq`, ... in any case), which ngspice is not
+  started with (an error; the run says so too, where it said "Unknown
+  error"). Every simulation runs the check first and
   brings the tab up when there are errors (the run goes ahead anyway; the
   simulator has the last word). Subcircuits (schematics with ports) are
   not asked for a ground or a simulation. A ground symbol is required by
