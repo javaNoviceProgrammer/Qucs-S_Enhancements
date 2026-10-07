@@ -31,6 +31,7 @@
 #include "valuereading.h"
 
 #include "components/component.h"
+#include "components/libcomp.h"
 #include "paintings/id_text.h"
 
 #include <QDir>
@@ -1567,7 +1568,7 @@ QJsonObject QucsControl::describePart(const QJsonObject& args)
         return errorResult(tr("Say which part: 'library' and 'part', as find_library_component gives them (OpAmps, uA741)."));
     // Its block in its library: the installed ones, the project's, the
     // user's, those of the library search paths.
-    QString library, body;
+    QString library, body, libraryPath;
     for (const QString& dirName : misc::libraryFolders()) {
         for (const QFileInfo& fi : QDir(dirName).entryInfoList({QStringLiteral("*.lib")}, QDir::Files, QDir::Name)) {
             if (fi.completeBaseName().compare(wantedLibrary, Qt::CaseInsensitive) != 0) continue;
@@ -1577,6 +1578,7 @@ QJsonObject QucsControl::describePart(const QJsonObject& args)
                                            QRegularExpression::DotMatchesEverythingOption);
             if (const QRegularExpressionMatch m = block.match(QString::fromUtf8(f.readAll())); m.hasMatch()) {
                 library = fi.completeBaseName();
+                libraryPath = fi.absoluteFilePath();
                 body = m.captured(1);
                 break;
             }
@@ -1586,6 +1588,9 @@ QJsonObject QucsControl::describePart(const QJsonObject& args)
     if (body.isEmpty())
         return errorResult(tr("There is no part %1 in a library %2 here: find_library_component finds one by its name or values.")
                                .arg(part, wantedLibrary));
+    // (Read here, its pins were none, and nothing said why.)
+    if (const QString why = LibComp::newerVersionReason(libraryPath); !why.isEmpty())
+        return errorResult(tr("%1 of the library %2 cannot be placed: %3.").arg(part, library, why));
     const auto section = [&body](const QString& name) {
         return body.section(QStringLiteral("<%1>").arg(name), 1).section(QStringLiteral("</%1>").arg(name), 0, 0).trimmed();
     };
@@ -1656,6 +1661,15 @@ QJsonObject QucsControl::describePart(const QJsonObject& args)
     if (!description.isEmpty()) result.insert(QStringLiteral("note"), description.section(QLatin1Char('\n'), 0, 0).simplified());
     if (!supplies.isEmpty()) result.insert(QStringLiteral("supply pins"), QJsonArray::fromStringList(supplies));
     if (oneLine) result.insert(QStringLiteral("placed as"), placedAs);
+    // Files its model names in the library's folder that are not there (a
+    // library brought without it): a run of the part stops at them.
+    if (const QStringList missing = LibComp::missingFiles(libraryPath, part); !missing.isEmpty()) {
+        result.insert(QStringLiteral("missing"), QJsonArray::fromStringList(missing));
+        result.insert(QStringLiteral("warning"), tr("Its model needs %1 in the library's folder %2, which is not there: a simulation "
+                                                    "of it stops at it until the file is put there.")
+                                                     .arg(missing.join(QStringLiteral(", ")),
+                                                          QDir::toNativeSeparators(libraryPath.chopped(4))));
+    }
     if (!c->Ports.isEmpty() && std::all_of(c->Ports.cbegin(), c->Ports.cend(), [](const Port* p) { return p->Name.isEmpty(); })
         && c->Ports.size() > 2)
         result.insert(QStringLiteral("pins without names"),

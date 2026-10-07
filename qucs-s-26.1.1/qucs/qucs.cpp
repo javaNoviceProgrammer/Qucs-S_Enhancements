@@ -1161,6 +1161,11 @@ bool QucsApp::populateLibTreeFromDir(const QString &LibDirPath, QList<QTreeWidge
             markUnreadable(newlibitem, getLibAbsPath(libPath), tr("It is not a library Qucs-S reads."));
             continue;
         }
+        // Made by a newer Qucs-S: listed, but its parts are not placed - why.
+        if (const QString why = LibComp::newerVersionReason(libPath + QStringLiteral(".lib")); !why.isEmpty()) {
+            markUnreadable(newlibitem, getLibAbsPath(libPath), why.left(1).toUpper() + why.mid(1) + QLatin1Char('.'));
+            continue;
+        }
         addLibraryParts(newlibitem, parsedlibrary, libPath);
     }
     return true;
@@ -1178,6 +1183,10 @@ bool QucsApp::readLibraryParts(QTreeWidgetItem *library)
     const int result = parseComponentLibrary(libPath, parsed, QUCS_COMP_LIB_FULL, LibComp::referenceTo(file) != libPath);
     if (result != QUCS_COMP_LIB_OK) {
         markUnreadable(library, file, result == QUCS_COMP_LIB_IO_ERROR ? tr("It cannot be opened.") : tr("It is not a library Qucs-S reads."));
+        return false;
+    }
+    if (const QString why = LibComp::newerVersionReason(file); !why.isEmpty()) {
+        markUnreadable(library, file, why.left(1).toUpper() + why.mid(1) + QLatin1Char('.'));
         return false;
     }
     if (!parsed.name.isEmpty()) library->setText(0, parsed.name);

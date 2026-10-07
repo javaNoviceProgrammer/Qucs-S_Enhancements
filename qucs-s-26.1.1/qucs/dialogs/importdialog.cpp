@@ -150,7 +150,7 @@ void ImportDialog::slotBrowse()
      this, tr("Enter a Data File Name"),
      lastImportDir.isEmpty() ? QStringLiteral(".") : lastImportDir,
      tr("All known")+
-     " (*.s?p *.csv *.citi *.cit *.asc *.mdl *.vcd *.dat *.cir *.dat.ngspice *.dat.xyce *.dat.spopus);;"+
+     " (*.s?p *.csv *.citi *.cit *.asc *.mdl *.vcd *.dat *.cir *.ckt *.sp *.lib *.mod *.inc *.dat.ngspice *.dat.xyce *.dat.spopus);;"+
      tr("Touchstone files")+" (*.s?p);;"+
      tr("CSV files")+" (*.csv);;"+
      tr("CITI files")+" (*.citi *.cit);;"+
@@ -158,7 +158,7 @@ void ImportDialog::slotBrowse()
      tr("IC-CAP model files")+" (*.mdl);;"+
      tr("VCD files")+" (*.vcd);;"+
      tr("Qucs dataset files")+" (*.dat *.dat.ngspice *.dat.xyce *.dat.spopus);;"+
-     tr("SPICE files")+" (*.cir);;"+
+     tr("SPICE files")+" (*.cir *.ckt *.sp *.lib *.mod *.inc);;"+
      tr("Any file")+" (*)");
 
   if(!s.isEmpty()) {
@@ -400,7 +400,11 @@ void ImportDialog::slotValidateInput()
             FullSuffix == "dat.xyce" || FullSuffix == "dat.spopus") {
       idx = 3;
       getDataVarsFromDatafile(in_file);
-    } else if(Suffix == "cir" || Suffix == "ckt" || Suffix == "sp") {
+    } else if(Suffix == "cir" || Suffix == "ckt" || Suffix == "sp" || Suffix == "spi"
+              || Suffix == "lib" || Suffix == "mod" || Suffix == "inc") {
+      // A SPICE library or model file (a vendor's .lib, .mod): SPICE, whose
+      // Qucs library output takes its .model cards (it was read as a Qucs
+      // dataset, and the library output hidden).
       idx = 0;
     } else if (snp_expr.match(Suffix).hasMatch()) {
       idx = 7;

@@ -106,6 +106,7 @@ QString S4Q_Include::getSpiceLibrary()
 QStringList S4Q_Include::getSpiceLibraryFiles()
 {
   QStringList files;
+  if (isActive != COMP_IS_ACTIVE) return files;   // (as getSpiceLibrary(): nothing included)
   for (Property *pp : Props) {
     QString val = pp->Value;
     if (!val.isEmpty()) {

@@ -202,6 +202,36 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   by default) turns it off: the library then holds the subcircuits and
   their symbols only, as before. Share the library as `NAME.lib` with its
   folder; older versions of Qucs-S read it and ignore the Verilog-A files.
+- **Libraries made whole, and brought in whole**: *Project → Create
+  Library* (and Claude's `create_library`) names each part after its file
+  — a subcircuit in a folder of the project, `sub/amp.sch`, is `amp`;
+  `amp.v2.sch` is `amp.v2`; two that would be one part are refused. It
+  takes in the SPICE files its subcircuits use (a SPICE library part's,
+  an `.INCLUDE`'s, a placed library part's) with the files they include,
+  each under a name of its own — two `models.lib` from two folders are
+  both kept, the second in a folder named as its own — and a part
+  includes any of them where it is used, a `.inc` or `.mod` too; a
+  library part a subcircuit places goes into the Qucs model as well. A
+  part's inner subcircuits are named for it where it is used
+  (`LIB_part__inner`), so two libraries' `inner`, and the circuit's own,
+  stay three; a hierarchical subcircuit's model is read whole, as are
+  libraries made before; and a library whose file was renamed still
+  works. A library is replaced only once the new one is made: the old
+  one is read while it is made (a subcircuit may place its parts) and
+  goes to the trash then, and one that cannot be made leaves it as it
+  was. Claude's `import_library` brings a SPICE library with the files it
+  includes beside it (one included from outside its folder is refused:
+  the folder is a library search path instead), takes `name` to bring a
+  library in under a name of its own, and says what a library lacks:
+  its folder of models not sent (`missing`), or a newer Qucs-S that made
+  it — as `describe_part`, `add_component`, the *Libraries* panel and
+  *Check Schematic* do. With the check of commands on, *Check Schematic*
+  and `simulate` find a `.control` block that runs a program in a library
+  part's SPICE text, in the files it attaches, and in a SPICE library's
+  or `.INCLUDE`'s file and what it includes, through subcircuits too.
+  *Tools → Convert Data File* takes a vendor's `.lib`, `.mod` or `.inc`
+  as SPICE; its Qucs library, made of `.model` cards alone, is refused
+  for a file of subcircuits instead of written empty.
 - **A library device's Verilog-A in the project**: when a schematic of the
   open project uses a device of a library that brings Verilog-A (one on
   the library search paths, in `user_lib`, anywhere but the project

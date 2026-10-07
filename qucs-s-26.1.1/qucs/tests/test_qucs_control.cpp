@@ -5905,6 +5905,156 @@ private slots:
         QVERIFY2(failed(r) && text(r).contains("No project is open"), qPrintable(text(r)));
     }
 
+    // A library brought in whole, or told what it lacks (the hunt of 7
+    // October): a SPICE library's includes beside it come along, one out of
+    // its folder is refused; a library is not brought into its own folder;
+    // one sent without its folder says what is missing, as describe_part
+    // and Check Schematic do; one of a newer Qucs-S says why its parts
+    // cannot be placed; 'name' brings one in under another. create_library
+    // takes a subcircuit by its path when two have its name, and keeps the
+    // library it could not replace. get_ui says how many rows it left out.
+    void librariesComeInWhole()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        if (!app->ProjName.isEmpty()) QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+        QVERIFY(!failed(call("new_project", {{"name", "whole"}})));
+        const QString project = QucsSettings.QucsWorkDir.absolutePath();
+        const QString userLib = QucsSettings.qucsWorkspaceDir.filePath("user_lib");
+        const QString from = dir.filePath("whole-from");
+        const auto put = [](const QString& path, const QByteArray& bytes) {
+            QDir().mkpath(QFileInfo(path).absolutePath());
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size();
+        };
+        const auto sch = [](const QByteArray& more) {
+            return "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                   "  <Port P1 1 220 100 -23 12 0 0 \"1\" 1 \"analog\" 0>\n  <Port P2 1 280 100 4 12 1 2 \"2\" 1 \"analog\" 0>\n"
+                   + more + "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        };
+        const QByteArray r1 = "  <R R1 1 250 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
+        for (const char* f : {"one.sch", "sub/twin.sch", "zz/twin.sch"}) QVERIFY(put(project + "/" + f, sch(r1)));
+        QVERIFY(put(project + "/broken.sch", sch("  <Sub SUB1 1 250 300 -26 21 0 0 \"gone.sch\" 1>\n")));
+        QVERIFY(!failed(call("open_project", {{"name", "whole"}})));
+
+        // A SPICE library and what it includes beside it: brought along.
+        QVERIFY(put(from + "/vend.lib", "* v\n.include \"sub/inner.inc\"\n.lib \"corners.lib\" TT\n.subckt VDIV 1 2\nXA 1 2 INNER\n.ends\n"));
+        QVERIFY(put(from + "/sub/inner.inc", ".subckt INNER 1 2\nR1 1 2 1k\n.ends\n"));
+        QVERIFY(put(from + "/corners.lib", ".lib TT\n.subckt CORNER 1 2\nR1 1 2 1k\n.ends\n.endl TT\n"));
+        QJsonObject r = call("import_library", {{"path", from + "/vend.lib"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("written").toArray().size(), 3);
+        QVERIFY(QFileInfo::exists(userLib + "/sub/inner.inc") && QFileInfo::exists(userLib + "/corners.lib"));
+        r = call("import_library", {{"path", from + "/vend.lib"}, {"replace", true}});   // (its includes the same: not in the way)
+        QVERIFY2(!failed(r) && json(r).toObject().value("written").toArray().size() == 1, qPrintable(text(r)));
+        // One it includes by a path out of its folder: refused, nothing brought.
+        QVERIFY(put(from + "/deep/out.lib", "* o\n.include \"../shared.inc\"\n.subckt OUT 1 2\nR1 1 2 1k\n.ends\n"));
+        QVERIFY(put(from + "/shared.inc", "* s\n"));
+        r = call("import_library", {{"path", from + "/deep/out.lib"}});
+        QVERIFY2(failed(r) && text(r).contains("leads out of its folder"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(userLib + "/out.lib"));
+
+        // Into its own folder of models: refused (it was copied into itself).
+        QVERIFY(put(from + "/Self/readme.txt", "models\n"));
+        QVERIFY(put(from + "/Self.lib", "* self\n.subckt SELF 1 2\nR1 1 2 1k\n.ends\n"));
+        const QStringList pathsWere = QucsSettings.LibraryPaths;
+        QucsSettings.LibraryPaths = {from + "/Self"};
+        r = call("import_library", {{"path", from + "/Self.lib"}, {"destination", from + "/Self"}});
+        QVERIFY2(failed(r) && text(r).contains("not brought into itself"), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(from + "/Self/Self"));
+        QucsSettings.LibraryPaths = pathsWere;
+
+        // A Qucs-S library whose part attaches dev.lib, sent without its folder.
+        r = call("create_library", {{"name", "Made"}, {"subcircuits", QJsonArray{"one"}}, {"destination", "project"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QFile made(project + "/Made.lib");
+        QVERIFY(made.open(QIODevice::ReadOnly));
+        const QString library = QString::fromUtf8(made.readAll()).replace("  </Spice>\n", "  </Spice>\n<SpiceAttach \"dev.lib\">\n");
+        made.close();
+        QVERIFY(made.remove());
+        QVERIFY(put(from + "/Sent.lib", QString(library).replace("\"Made\"", "\"Sent\"").toUtf8()));
+        r = call("import_library", {{"path", from + "/Sent.lib"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("missing").toArray() == QJsonArray{"Sent/dev.lib"}, qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("warning").toString().contains("did not come with it"), qPrintable(text(r)));
+        r = call("describe_part", {{"library", "Sent"}, {"part", "one"}});
+        QVERIFY2(json(r).toObject().value("missing").toArray() == QJsonArray{"dev.lib"}, qPrintable(text(r)));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("add_component", {{"type", "Lib"}, {"name", "X1"}, {"x", 300}, {"y", 200}, {"properties", QJsonObject{{"Lib", "Sent"}, {"Comp", "one"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("check_schematic");
+        QVERIFY2(text(r).contains("X1: its library Sent names dev.lib in its folder"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        // With its folder, under another name.
+        QVERIFY(put(from + "/Sent/dev.lib", "* dev\n"));
+        r = call("import_library", {{"path", from + "/Sent.lib"}, {"name", "a b"}});
+        QVERIFY2(failed(r) && text(r).contains("letters, digits and _"), qPrintable(text(r)));
+        r = call("import_library", {{"path", from + "/Sent.lib"}, {"name", "Renamed"}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(userLib + "/Renamed.lib") && QFileInfo::exists(userLib + "/Renamed/dev.lib"), qPrintable(text(r)));
+        QCOMPARE(json(r).toObject().value("library").toString(), QStringLiteral("Renamed"));
+        QCOMPARE(json(r).toObject().value("made as").toString(), QStringLiteral("Sent"));
+        QVERIFY(!json(r).toObject().contains("missing"));
+        QCOMPARE(json(r).toObject().value("parts").toArray().at(0).toObject().value("place").toObject().value("properties")
+                     .toObject().value("Lib").toString(), QStringLiteral("Renamed"));
+
+        // One a newer Qucs-S made: why its parts are not placed, everywhere.
+        QVERIFY(put(from + "/Newer.lib", QString(library).replace(QRegularExpression("^<Qucs Library \\S+ \"Made\">"), "<Qucs Library 99.0.0 \"Newer\">").toUtf8()));
+        r = call("import_library", {{"path", from + "/Newer.lib"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("made by").toString() == "99.0.0", qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("warning").toString().contains("made by Qucs-S 99.0.0"), qPrintable(text(r)));
+        r = call("list_libraries", {{"library", "Newer"}});
+        QVERIFY2(json(r).toObject().value("not read").toString().contains("Load documents from future versions"), qPrintable(text(r)));
+        bool marked = false;   // (the Libraries panel: greyed, why in its tooltip)
+        for (int i = 0; i < app->librariesTree()->topLevelItemCount(); ++i)
+            for (int k = 0; k < app->librariesTree()->topLevelItem(i)->childCount(); ++k)
+                if (QTreeWidgetItem* item = app->librariesTree()->topLevelItem(i)->child(k); item->text(0) == "Newer")
+                    marked = item->toolTip(0).contains("made by Qucs-S 99.0.0, newer than this one");
+        for (int i = 0; i < app->librariesTree()->topLevelItemCount(); ++i)
+            if (QTreeWidgetItem* item = app->librariesTree()->topLevelItem(i); item->text(0) == "Newer")
+                marked = marked || item->toolTip(0).contains("made by Qucs-S 99.0.0, newer than this one");
+        QVERIFY(marked);
+        r = call("describe_part", {{"library", "Newer"}, {"part", "one"}});
+        QVERIFY2(failed(r) && text(r).contains("cannot be placed: it was made by Qucs-S 99.0.0"), qPrintable(text(r)));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        r = call("add_component", {{"type", "Lib"}, {"name", "X1"}, {"x", 300}, {"y", 200}, {"properties", QJsonObject{{"Lib", "Newer"}, {"Comp", "one"}}}});
+        QVERIFY2(failed(r) && text(r).contains("made by Qucs-S 99.0.0"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // create_library: a name two subcircuits have is named by its path;
+        // a library it could not replace is kept.
+        r = call("create_library", {{"name", "Twins"}, {"subcircuits", QJsonArray{"twin"}}});
+        QVERIFY2(failed(r) && text(r).contains("twin is the name of") && text(r).contains("sub/twin.sch") && text(r).contains("zz/twin.sch"),
+                 qPrintable(text(r)));
+        r = call("create_library", {{"name", "Twins"}, {"subcircuits", QJsonArray{"zz/twin"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QFile kept(userLib + "/Twins.lib");
+        QVERIFY(kept.open(QIODevice::ReadOnly));
+        const QByteArray before = kept.readAll();
+        kept.close();
+        r = call("create_library", {{"name", "Twins"}, {"subcircuits", QJsonArray{"zz/twin", "broken"}}, {"replace", true}});
+        QVERIFY2(failed(r) && text(r).contains("the one there is as it was"), qPrintable(text(r)));
+        QVERIFY(kept.open(QIODevice::ReadOnly));
+        QCOMPARE(kept.readAll(), before);
+
+        // get_ui: a tree's first 200 rows, and how many more (210 libraries
+        // in user_lib: more than 200 rows).
+        for (int i = 0; i < 210; ++i) QVERIFY(put(userLib + QStringLiteral("/Many%1.lib").arg(i, 3, 10, QLatin1Char('0')), ".subckt X 1 2\n.ends\n"));
+        app->fillLibrariesTreeView();
+        r = call("get_ui", {{"area", "dock:Main Dock/Libraries"}});
+        QVERIFY2(!failed(r), qPrintable(text(r).left(300)));
+        int all = 0;
+        for (QTreeWidgetItemIterator it(app->librariesTree()); *it != nullptr; ++it) ++all;
+        for (const QJsonValue& v : json(r).toObject().value("controls").toArray()) {
+            const QJsonObject o = v.toObject();
+            if (o.value("kind") != "tree") continue;
+            QVERIFY(all > 210);
+            QCOMPARE(o.value("rows").toArray().size(), 200);
+            QCOMPARE(o.value("rows not shown").toInt(), all - 200);
+        }
+        for (int i = 0; i < 210; ++i) QFile::remove(userLib + QStringLiteral("/Many%1.lib").arg(i, 3, 10, QLatin1Char('0')));
+        app->fillLibrariesTreeView();
+        QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+    }
+
     void settingsAreReadAndSetByKeys()
     {
         for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);

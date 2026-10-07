@@ -370,8 +370,11 @@ static void qucslib_list_device (struct definition_t * def) {
   struct pair_t * pair;
   char txt[1024];
 
-  sprintf (txt, "\n<Component %s>\n", def->instance[0] == dev->stype[0] ?
-	   &def->instance[1] : def->instance);
+  /* Qucs-S: the device's SPICE letter left out of a part number only
+     (D1N4148 is 1N4148, Q2N3904 2N3904): MYNMOS stays MYNMOS, not YNMOS. */
+  sprintf (txt, "\n<Component %s>\n",
+	   toupper ((unsigned char) def->instance[0]) == toupper ((unsigned char) dev->stype[0]) &&
+	   isdigit ((unsigned char) def->instance[1]) ? &def->instance[1] : def->instance);
   fprintf (qucs_out, "%s", txt);
   fprintf (qucs_out, "  <Description>\n");
   fprintf (qucs_out, "  </Description>\n");
@@ -388,6 +391,16 @@ static void qucslib_list_device (struct definition_t * def) {
   fprintf (qucs_out, ">\n");
   fprintf (qucs_out, "  </Model>\n");
   fprintf (qucs_out, "</Component>\n");
+}
+
+/* Qucs-S: how many of the netlist's devices a Qucs library would have (its
+   .model cards of a kind Qucs has; a .subckt is not one). */
+int qucslib_count (void)
+{
+  int n = 0;
+  for (struct definition_t * def = device_root; def; def = def->next)
+    if (qucslib_find_device (def->type)) n++;
+  return n;
 }
 
 /* This function is the overall Qucs library producer. */

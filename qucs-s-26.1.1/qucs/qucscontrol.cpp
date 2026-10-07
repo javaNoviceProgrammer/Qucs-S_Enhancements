@@ -343,7 +343,7 @@ const char* const kTools = R"JSON([
    "page": {"type": "string", "description": "One page of the manual whole, by its name (overview/simulation-types/index, as the sections found name them)"},
    "refresh": {"type": "boolean", "description": "Fetch the manual again"}}}},
 {"name": "get_ui",
- "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), or the documents' tabs (tabs). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
+ "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), or the documents' tabs (tabs). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open; the first 200 rows or items of each, and 'rows not shown' / 'items not shown' how many more), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
  "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "dock:<title> or a panel's name (dock:Content), toolbar:<title>, statusbar or tabs; none: the list"}}}},
 {"name": "set_ui",
  "description": "Uses a part of the window as set_dialog answers a dialog - its dock is shown first. 'set' changes controls by their id or label from get_ui: a field takes text (a filter's: the panel filters), a list an item, a check box true or false, a slider a number, tabs a tab's title; a view's row (its text, its number in get_ui's rows, or a tree's path \"Schematics > amp.sch\") is selected, or with 'action' activated (a double click: a file opens), expanded or collapsed. 'press' presses a button. Area tabs: 'value' a tab's title brings that document to the front. Refused: the Claude Code panel, a secret field, and the consoles (Terminal, Python Shell, Octave), whose typing runs commands - the console tool types there.",
@@ -605,11 +605,12 @@ const char* const kTools = R"JSON([
    "replace": {"type": "boolean", "description": "Write over a library of that name there, the old one moved to the trash"}},
   "required": ["name"]}},
 {"name": "import_library",
- "description": "Brings a library file into Qucs-S: a Qucs-S library (made by Create Library or create_library - another computer's, a colleague's) or a SPICE library of subcircuits (a .lib with .subckt), copied with its folder of models (NAME/ beside NAME.lib) into user_lib (the default), the project, or a folder of the library search paths. It is in the Libraries panel at once; the answer gives its kind, the files written and each part's add_component ('place'). One there already is refused unless 'replace', which moves it (and its folder) to the trash first. A Qucs-S library whose name another library has elsewhere is said in 'also_named' and 'warning' (a part placed by the name is taken from the first of them that has it). A folder of libraries is used where it is instead: set_settings (scope app, \"Locations/Library search paths\") adds it.",
+ "description": "Brings a library file into Qucs-S: a Qucs-S library (made by Create Library or create_library - another computer's, a colleague's) or a SPICE library of subcircuits (a .lib with .subckt), copied with its folder of models (NAME/ beside NAME.lib) - and a SPICE library with the files it includes beside it, in their places - into user_lib (the default), the project, or a folder of the library search paths; 'name' brings it in under another name. It is in the Libraries panel at once; the answer gives its kind, the files written and each part's add_component ('place'). One there already is refused unless 'replace', which moves it (and its folder) to the trash first. Said in 'warning': files its parts need that did not come with it ('missing'), a library made by a newer Qucs-S that this one does not read ('made by'), and a Qucs-S library whose name another library has elsewhere ('also_named': a part placed by the name is taken from the first of them that has it - 'name' gives it one of its own). A SPICE library including a file by a path out of its folder, and a folder of libraries, are used where they are instead: set_settings (scope app, \"Locations/Library search paths\") adds the folder.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The library file (a .lib): a path, or a name in the open project's folder (else the workspace's)"},
    "destination": {"type": "string", "description": "user_lib (the default), project, or a folder of the library search paths"},
-   "replace": {"type": "boolean", "description": "Replace a library of that name there, the old one (and its folder) moved to the trash"}},
+   "name": {"type": "string", "description": "Bring it in under this name (letters, digits and _): NAME.lib and its folder NAME/, its parts placed with Lib NAME - when its own name is another library's (also_named)"},
+   "replace": {"type": "boolean", "description": "Replace a library of that name there, the old one (and its folder, and an include it brings that differs) moved to the trash"}},
   "required": ["path"]}},
 {"name": "new_project",
  "description": "Creates a project in the workspace (a NAME_prj folder with its Scratch folder, like Project > New Project; a plain folder when any folder is a project) and opens it unless 'open' is false. Opening closes the documents, so it is not opened while one has unsaved changes. Relative paths are then resolved against the open project.",
@@ -6321,7 +6322,12 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     if (c->Model == QLatin1String("Lib") && c->Ports.isEmpty()) {
         const QString lib = c->Props.value(0) != nullptr ? c->Props.at(0)->Value : QString();
         const QString comp = c->Props.value(1) != nullptr ? c->Props.at(1)->Value : QString();
+        const QString file = static_cast<LibComp*>(c)->libraryFile();
         delete c;
+        // There, but made by a newer Qucs-S: said so (it read "no part").
+        if (LibComp::hasComponent(file, comp))
+            if (const QString why = LibComp::newerVersionReason(file); !why.isEmpty())
+                return errorResult(tr("%1 of the library %2 cannot be placed: %3.").arg(comp, QDir::toNativeSeparators(file), why));
         return errorResult(tr("There is no part %1 in a library %2 here (Lib and Comp name them): find_library_component finds "
                               "the parts there are.").arg(comp, lib));
     }
@@ -11541,6 +11547,7 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
             QJsonArray items;
             for (int k = 0; k < c->count() && k < 200; ++k) items.append(c->itemText(k));
             o.insert(QStringLiteral("items"), items);
+            if (c->count() > 200) o.insert(QStringLiteral("items not shown"), c->count() - 200);   // (the first 200 are)
         } else if (auto* s = qobject_cast<QAbstractSpinBox*>(w)) {
             o.insert(QStringLiteral("kind"), QStringLiteral("number"));
             o.insert(QStringLiteral("value"), s->text());
@@ -11582,6 +11589,7 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
             }
             o.insert(QStringLiteral("columns"), columns);
             o.insert(QStringLiteral("rows"), rows);
+            if (table->rowCount() > 200) o.insert(QStringLiteral("rows not shown"), table->rowCount() - 200);
         } else if (auto* tree = qobject_cast<QTreeWidget*>(w)) {
             // Its rows in order, each item before its children (a search's
             // results, each with its check box: which of them are acted on).
@@ -11602,6 +11610,11 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
             o.insert(QStringLiteral("columns"), columns);
             o.insert(QStringLiteral("rows"), rows);
             if (checkable) o.insert(QStringLiteral("checked"), checked);
+            // The first 200 rows: how many more there are (the Libraries
+            // panel ended in the middle of the installed ones, unsaid).
+            int all = 0;
+            for (QTreeWidgetItemIterator it(tree); *it != nullptr; ++it) ++all;
+            if (all > 200) o.insert(QStringLiteral("rows not shown"), all - 200);
         } else if (auto* lw = qobject_cast<QListWidget*>(w)) {
             o.insert(QStringLiteral("kind"), QStringLiteral("list"));
             o.insert(QStringLiteral("value"), lw->currentItem() != nullptr ? lw->currentItem()->text() : QString());
@@ -11617,6 +11630,7 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
             }
             o.insert(QStringLiteral("items"), items);
             if (checkable) o.insert(QStringLiteral("checked"), checked);
+            if (lw->count() > 200) o.insert(QStringLiteral("items not shown"), lw->count() - 200);
         } else if (auto* slider = qobject_cast<QAbstractSlider*>(w)) {
             o.insert(QStringLiteral("kind"), QStringLiteral("slider"));
             o.insert(QStringLiteral("value"), slider->value());
@@ -11630,7 +11644,9 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
                                                      : qobject_cast<QTableView*>(view) != nullptr ? QStringLiteral("table view")
                                                                                                     : QStringLiteral("list view"));
             QList<QModelIndex> shownRows;
-            viewRows(view, view->rootIndex(), 0, 200, &shownRows);
+            viewRows(view, view->rootIndex(), 0, 100000, &shownRows);
+            const qsizetype hidden = shownRows.size() - 200;   // (the first 200 shown; how many more)
+            if (hidden > 0) shownRows.resize(200);
             // The columns shown beside the name: none in a list, a tree's
             // and a table's that are not hidden.
             QList<int> columns;
@@ -11654,6 +11670,7 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
                 rows.append(row);
             }
             o.insert(QStringLiteral("rows"), rows);
+            if (hidden > 0) o.insert(QStringLiteral("rows not shown"), int(hidden));
             if (view->currentIndex().isValid()) o.insert(QStringLiteral("value"), view->currentIndex().data().toString());
         }
         controls.append(o);

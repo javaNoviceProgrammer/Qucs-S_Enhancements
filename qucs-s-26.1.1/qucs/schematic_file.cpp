@@ -1819,6 +1819,7 @@ bool Schematic::throughAllComps(QTextStream *stream, int& countInit,
       d->a_isVerilog = a_isVerilog;
       d->a_isAnalog = a_isAnalog;
       d->a_creatingLib = a_creatingLib;
+      d->a_libraryScratch = a_libraryScratch;
       r = d->createSubNetlist(stream, countInit, Collect, ErrText, NumPorts);
       if (r)
       {
@@ -1845,6 +1846,29 @@ bool Schematic::throughAllComps(QTextStream *stream, int& countInit,
 
     if(LibComp* lib = dynamic_cast</*const*/LibComp*>(pc)) {
       if(a_creatingLib) {
+        // Its Qucs model into a file of its own (setLibraryScratch()), which
+        // the new library takes in as a subcircuit's - left out, a part of
+        // the library placing it named a subcircuit Qucsator had no
+        // definition of.
+        const QString key = pc->getSubcircuitFile() + "/" + pc->Props.at(1)->Value;
+        if (a_isAnalog && !a_libraryScratch.isEmpty()) {
+          if (FileList.find(key) != FileList.end()) continue;   // once
+          const QString base = QDir(a_libraryScratch).filePath(LibComp::subcircuitName(pc->Props.at(0)->Value, pc->Props.at(1)->Value));
+          QFile file(base + ".lst");
+          QStringList includes;   // (read for it alone)
+          bool written = file.open(QIODevice::WriteOnly);
+          if (written) {
+            QTextStream model(&file);
+            written = lib->createSubNetlist(&model, includes, 1);
+          }
+          if (!written) {
+            ErrText->appendPlainText(QObject::tr("ERROR: \"%1\": Cannot load library component \"%2\" from \"%3\"")
+                                         .arg(pc->Name, pc->Props.at(1)->Value, pc->getSubcircuitFile()));
+            return false;
+          }
+          FileList.insert(key, SubFile("SCH", base));
+          continue;
+        }
         ErrText->appendPlainText(
         QObject::tr("WARNING: Skipping library component \"%1\".").
         arg(pc->Name));

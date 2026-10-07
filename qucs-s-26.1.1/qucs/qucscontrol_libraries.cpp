@@ -155,14 +155,54 @@ QString destinationFolder(const QString& given, QString* error)
 bool copyFolder(const QString& from, const QString& to, QStringList* written)
 {
     if (!QDir().mkpath(to)) return false;
-    QDirIterator it(from, QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        const QString file = it.next();
+    // (Listed before one is written: a copy is not walked into and copied
+    // again.)
+    QStringList files;
+    for (QDirIterator it(from, QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden, QDirIterator::Subdirectories); it.hasNext();)
+        files << it.next();
+    for (const QString& file : std::as_const(files)) {
         const QString target = QDir(to).filePath(QDir(from).relativeFilePath(file));
         if (!QDir().mkpath(QFileInfo(target).absolutePath()) || !QFile::copy(file, target)) return false;
         *written << target;
     }
     return true;
+}
+
+// The files a SPICE library \a file includes (.include, .inc, .lib FILE),
+// and those they include: each by its path from the library's folder in
+// \a beside; one a relative path leads out of the folder to in \a outside.
+// Those named by a full path are found where they are, and not listed.
+void spiceIncludesOf(const QString& file, QList<std::pair<QString, QString>>* beside, QStringList* outside)
+{
+    static const QRegularExpression include(QStringLiteral(R"re(^\s*\.(?:include|inc|lib)\s+(?:"([^"]+)"|'([^']+)'|(\S+)))re"),
+                                            QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption);
+    const QDir root = QFileInfo(file).absoluteDir();
+    QStringList pending{QFileInfo(file).absoluteFilePath()};
+    QSet<QString> seen{QFileInfo(file).canonicalFilePath()};
+    while (!pending.isEmpty() && seen.size() < 1000) {
+        QFile f(pending.takeFirst());
+        if (!f.open(QIODevice::ReadOnly)) continue;
+        const QString text = QString::fromUtf8(f.readAll());
+        const QDir here = QFileInfo(f.fileName()).absoluteDir();
+        for (auto it = include.globalMatch(text); it.hasNext();) {
+            const QRegularExpressionMatch m = it.next();
+            const QString named = !m.captured(1).isEmpty() ? m.captured(1) : !m.captured(2).isEmpty() ? m.captured(2) : m.captured(3);
+            if (QFileInfo(named).isAbsolute() || named.startsWith(QLatin1Char('~'))) continue;   // found where it is
+            const QFileInfo info(QDir::cleanPath(here.absoluteFilePath(named)));
+            if (!info.isFile() || seen.contains(info.canonicalFilePath())) continue;   // (a .lib line naming a section)
+            seen.insert(info.canonicalFilePath());
+            pending << info.absoluteFilePath();
+            const QString relative = root.relativeFilePath(info.absoluteFilePath());
+            if (relative.startsWith(QLatin1String(".."))) *outside << info.absoluteFilePath();
+            else beside->append({info.absoluteFilePath(), relative});
+        }
+    }
+}
+
+bool sameBytes(const QString& a, const QString& b)
+{
+    QFile fa(a), fb(b);
+    return fa.open(QIODevice::ReadOnly) && fb.open(QIODevice::ReadOnly) && fa.size() == fb.size() && fa.readAll() == fb.readAll();
 }
 
 // The other libraries of the name of \a file, when there are: "also_named",
@@ -179,7 +219,7 @@ void addNamedLike(QJsonObject& result, const QString& file)
                                   "of them that has it - installed, beside the schematic, the project's, user_lib's, the library "
                                   "search paths' in their order - so a part of a name both have may be the other's: each part's "
                                   "'place' here names this library by its path where the name finds another. A name of its own "
-                                  "avoids it.")
+                                  "avoids it (import_library's 'name').")
                       .arg(QFileInfo(file).completeBaseName()));
 }
 
@@ -216,6 +256,8 @@ QJsonObject QucsControl::listLibraries(const QJsonObject& args)
                               {QStringLiteral("parts"), partsOf(fi.absoluteFilePath(), lib.kind, installed)}};
                 o.insert(QStringLiteral("note"), tr("Each part's 'place' is its add_component; describe_part (library, part) gives a Qucs-S "
                                                     "library part's pins."));
+                if (const QString why = LibComp::newerVersionReason(fi.absoluteFilePath()); !why.isEmpty())
+                    o.insert(QStringLiteral("not read"), tr("Its parts cannot be placed: %1.").arg(why));
                 return jsonResult(o);
             }
             QJsonObject o{{QStringLiteral("name"), lib.name}, {QStringLiteral("file"), QDir::toNativeSeparators(fi.absoluteFilePath())}};
@@ -224,6 +266,8 @@ QJsonObject QucsControl::listLibraries(const QJsonObject& args)
             else {
                 o.insert(QStringLiteral("kind"), lib.kind);
                 o.insert(QStringLiteral("parts"), lib.parts);
+                if (const QString why = LibComp::newerVersionReason(fi.absoluteFilePath()); !why.isEmpty())
+                    o.insert(QStringLiteral("not read"), why);
             }
             if (installed && blacklisted.contains(fi.fileName()))
                 o.insert(QStringLiteral("hidden"), tr("not shown with this simulator (its blacklist)"));
@@ -267,14 +311,20 @@ QJsonObject QucsControl::createLibrary(const QJsonObject& args)
                                    .arg(available.join(QStringLiteral(", "))));
         for (const QJsonValue& v : subcircuits.toArray()) {
             const QString given = v.toString().trimmed();
-            QString found;
+            // Its path (amp, amp.sch, sub/amp), else its name alone when one
+            // subcircuit has it (the last of several was taken, unsaid).
+            QStringList found;
             for (const QString& a : available)
-                if (a.compare(given, Qt::CaseInsensitive) == 0 || a.compare(given + QStringLiteral(".sch"), Qt::CaseInsensitive) == 0
-                    || QFileInfo(a).completeBaseName().compare(given, Qt::CaseInsensitive) == 0)
-                    found = a;
+                if (a.compare(given, Qt::CaseInsensitive) == 0 || a.compare(given + QStringLiteral(".sch"), Qt::CaseInsensitive) == 0)
+                    found = {a};
+            if (found.isEmpty())
+                for (const QString& a : available)
+                    if (QFileInfo(a).completeBaseName().compare(given, Qt::CaseInsensitive) == 0) found << a;
             if (found.isEmpty())
                 return errorResult(tr("%1 is not a subcircuit of the project %2: they are %3.").arg(given, QucsMain->ProjName, available.join(QStringLiteral(", "))));
-            if (!chosen.contains(found)) chosen << found;
+            if (found.size() > 1)
+                return errorResult(tr("%1 is the name of %2: name the one meant by its path.").arg(given, found.join(QStringLiteral(", "))));
+            if (!chosen.contains(found.first())) chosen << found.first();
         }
     }
     // Made of the files: one open with unsaved changes is saved first.
@@ -294,20 +344,15 @@ QJsonObject QucsControl::createLibrary(const QJsonObject& args)
     request.embedVerilogA = args.value(QLatin1String("embed_verilog_a")).toBool(QucsSettings.EmbedVerilogAInLibraries);
     request.groundPin = args.value(QLatin1String("ground_pin")).toBool(QucsSettings.LibraryGroundPin);
     request.replace = args.value(QLatin1String("replace")).toBool();
-    // (Replaced: the old one to the trash first, to take back.)
+    // (Replaced: the old one goes to the trash once the new one is made -
+    // read while it is made, when a subcircuit places its parts - and stays
+    // as it was when the new one cannot be.)
     const QString file = QDir(folder).filePath(name + QStringLiteral(".lib"));
-    QString trashed;
-    const bool replacing = request.replace && QFileInfo::exists(file);
-    if (replacing) {
-        if (!misc::moveToTrash(file, &trashed)) return errorResult(tr("%1 could not be moved to the trash: nothing was written.").arg(QDir::toNativeSeparators(file)));
-        const QString models = QDir(folder).filePath(name);
-        if (QFileInfo(models).isDir()) misc::moveToTrash(models, nullptr);
-        request.replace = false;
-    }
     LibraryDialog dialog(a_app);
     dialog.fillSchematicList(available);
     QString log;
-    const bool made = dialog.create(request, &log, &error);
+    QStringList trashed;
+    const bool made = dialog.create(request, &log, &error, &trashed);
     a_app->fillLibrariesTreeView();
     const QStringList messages = log.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     if (!made && messages.isEmpty()) return errorResult(error + QLatin1Char('.'));
@@ -326,7 +371,7 @@ QJsonObject QucsControl::createLibrary(const QJsonObject& args)
         result.insert(QStringLiteral("models"), files);
     }
     result.insert(QStringLiteral("note"), tr("It is in the Libraries panel; each part's 'place' is its add_component.%1")
-                                              .arg(trashed.isEmpty() && !replacing ? QString() : tr(" The library it replaced is in the trash.")));
+                                              .arg(trashed.isEmpty() ? QString() : tr(" The library it replaced is in the trash.")));
     addNamedLike(result, file);
     return jsonResult(result);
 }
@@ -334,7 +379,13 @@ QJsonObject QucsControl::createLibrary(const QJsonObject& args)
 QJsonObject QucsControl::importLibrary(const QJsonObject& args)
 {
     const QString given = args.value(QLatin1String("path")).toString().trimmed();
+    const QString newName = args.value(QLatin1String("name")).toString().trimmed();
+    const QString destination = args.value(QLatin1String("destination")).toString();
+    const bool replace = args.value(QLatin1String("replace")).toBool();
     if (given.isEmpty()) return errorResult(tr("'path' is the library file brought in (a .lib; its folder of models beside it comes too)."));
+    static const QRegularExpression whole(QStringLiteral("^\\w+$"));
+    if (!newName.isEmpty() && !whole.match(newName).hasMatch())
+        return errorResult(tr("'name' is the name it is brought in under: letters, digits and _ (%1 is not).").arg(newName));
     const QString source = QDir::cleanPath(absolute(given));
     const QFileInfo info(source);
     if (!info.isFile()) return errorResult(tr("There is no file %1.").arg(QDir::toNativeSeparators(source)));
@@ -347,22 +398,60 @@ QJsonObject QucsControl::importLibrary(const QJsonObject& args)
                               "brought in. A SPICE file of .model cards is found by find_library_component in the project as it is.")
                                .arg(info.fileName()));
     QString error;
-    const QString folder = destinationFolder(args.value(QLatin1String("destination")).toString(), &error);
+    const QString folder = destinationFolder(destination, &error);
     if (folder.isEmpty()) return errorResult(error);
-    const QString target = QDir(folder).filePath(info.fileName());
+    // Under its own name, or 'name' (its parts' Lib is the file's name; the
+    // library's models keep the name it was made under, which is read too).
+    const QString base = newName.isEmpty() ? info.completeBaseName() : newName;
+    const QString target = QDir(folder).filePath(base + QStringLiteral(".lib"));
     if (QFileInfo(target).canonicalFilePath() == info.canonicalFilePath())
         return errorResult(tr("%1 is there already: it is in the Libraries panel as it is.").arg(QDir::toNativeSeparators(target)));
     // Its folder of models (NAME/ beside NAME.lib), as Create Library writes
     // it and the library reads it.
     const QString modelsFrom = info.absoluteDir().filePath(info.completeBaseName());
-    const QString modelsTo = QDir(folder).filePath(info.completeBaseName());
-    const bool replace = args.value(QLatin1String("replace")).toBool();
-    if (QFileInfo::exists(target) || (QFileInfo(modelsFrom).isDir() && QFileInfo::exists(modelsTo))) {
+    const QString modelsTo = QDir(folder).filePath(base);
+    if (QFileInfo(modelsFrom).isDir()) {
+        // (Brought into its own folder of models, it was copied into itself,
+        // its copies copied again.)
+        const QString inside = QFileInfo(modelsFrom).canonicalFilePath(), into = QFileInfo(folder).canonicalFilePath();
+        if (!into.isEmpty() && (into == inside || into.startsWith(inside + QLatin1Char('/'))))
+            return errorResult(tr("%1 is the library's own folder of models, or in it: a library is not brought into itself. Its "
+                                  "folder %2 is a library search path as it is.")
+                                   .arg(QDir::toNativeSeparators(folder), QDir::toNativeSeparators(info.absolutePath())));
+    }
+    // A SPICE library's includes, beside it: brought along where it finds
+    // them (left behind, every run stopped at the missing include).
+    QList<std::pair<QString, QString>> beside;
+    QStringList outside;
+    if (lib.kind == QLatin1String("spice")) spiceIncludesOf(source, &beside, &outside);
+    if (!outside.isEmpty()) {
+        QStringList shown;
+        for (const QString& f : std::as_const(outside)) shown << QDir::toNativeSeparators(f);
+        return errorResult(tr("%1 includes %2 by a path that leads out of its folder, which would not be found from where it is brought: "
+                              "nothing was brought in. Use it where it is - set_settings (scope app, \"Locations/Library search paths\") "
+                              "adds its folder %3.")
+                               .arg(info.fileName(), shown.join(QStringLiteral(", ")), QDir::toNativeSeparators(info.absolutePath())));
+    }
+    // What would be written over: refused unless 'replace'; an include
+    // there with the same bytes is used as it is.
+    QStringList taken;
+    if (QFileInfo::exists(target)) taken << target;
+    if (QFileInfo(modelsFrom).isDir() && QFileInfo::exists(modelsTo)) taken << modelsTo;
+    QList<std::pair<QString, QString>> includes;   // to copy: source, target
+    for (const auto& [from, relative] : std::as_const(beside)) {
+        const QString to = QDir(folder).filePath(relative);
+        if (QFileInfo::exists(to) && sameBytes(from, to)) continue;
+        if (QFileInfo::exists(to)) taken << to;
+        includes.append({from, to});
+    }
+    if (!taken.isEmpty()) {
+        QStringList shown;
+        for (const QString& f : std::as_const(taken)) shown << QDir::toNativeSeparators(f);
         if (!replace)
-            return errorResult(tr("%1 is there already ('replace' puts it in the trash and brings this one in).")
-                                   .arg(QDir::toNativeSeparators(QFileInfo::exists(target) ? target : modelsTo)));
-        for (const QString& old : {target, modelsTo})
-            if (QFileInfo::exists(old) && !misc::moveToTrash(old, nullptr))
+            return errorResult(tr("%1 is there already ('replace' puts it in the trash and brings this one in%2).")
+                                   .arg(shown.join(QStringLiteral(", ")), newName.isEmpty() ? tr("; 'name' brings it in under another name") : QString()));
+        for (const QString& old : std::as_const(taken))
+            if (!misc::moveToTrash(old, nullptr))
                 return errorResult(tr("%1 could not be moved to the trash: nothing was brought in.").arg(QDir::toNativeSeparators(old)));
     }
     if (!QDir().mkpath(folder)) return errorResult(tr("The folder %1 cannot be made.").arg(QDir::toNativeSeparators(folder)));
@@ -371,16 +460,49 @@ QJsonObject QucsControl::importLibrary(const QJsonObject& args)
     if (QFileInfo(modelsFrom).isDir() && !copyFolder(modelsFrom, modelsTo, &written))
         return errorResult(tr("The library was copied, but not all of its folder %1: %2 files were.")
                                .arg(QDir::toNativeSeparators(modelsFrom)).arg(written.size() - 1));
+    for (const auto& [from, to] : std::as_const(includes)) {
+        if (!QDir().mkpath(QFileInfo(to).absolutePath()) || !QFile::copy(from, to))
+            return errorResult(tr("The library was copied, but not %1, which it includes.").arg(QDir::toNativeSeparators(from)));
+        written << to;
+    }
     a_app->fillLibrariesTreeView();
     QJsonArray files;
     for (const QString& f : std::as_const(written)) files.append(QDir::toNativeSeparators(f));
-    QJsonObject result{{QStringLiteral("library"), lib.name},
+    // Its parts are placed by the file's name: its 'library'. The name it
+    // was made under, when another: 'made as'.
+    QJsonObject result{{QStringLiteral("library"), base},
                        {QStringLiteral("kind"), lib.kind},
                        {QStringLiteral("file"), QDir::toNativeSeparators(target)},
                        {QStringLiteral("written"), files},
                        {QStringLiteral("parts"), partsOf(target, lib.kind, false)},
                        {QStringLiteral("note"), tr("It is in the Libraries panel; each part's 'place' is its add_component.%1")
-                                                    .arg(replace ? tr(" What it replaced is in the trash.") : QString())}};
-    if (lib.kind == QLatin1String("qucs")) addNamedLike(result, target);
+                                                    .arg(taken.isEmpty() ? QString() : tr(" What it replaced is in the trash."))}};
+    if (lib.kind == QLatin1String("qucs") && lib.name != base) result.insert(QStringLiteral("made as"), lib.name);
+    QStringList warnings;
+    if (lib.kind == QLatin1String("qucs")) {
+        // A library this Qucs-S does not read: said now, not when a part of
+        // it will not be placed.
+        if (const QString why = LibComp::newerVersionReason(target); !why.isEmpty()) {
+            result.insert(QStringLiteral("made by"), LibComp::newerVersion(target));
+            warnings << tr("Its parts cannot be placed: %1.").arg(why);
+        }
+        // The files its parts name in its folder that did not come with it
+        // (a .lib sent alone): every run of such a part stopped there.
+        QJsonArray missing;
+        for (const QJsonValue& part : result.value(QStringLiteral("parts")).toArray())
+            for (const QString& file : LibComp::missingFiles(target, part.toObject().value(QStringLiteral("part")).toString()))
+                if (!missing.contains(QJsonValue(base + QLatin1Char('/') + file))) missing.append(base + QLatin1Char('/') + file);
+        if (!missing.isEmpty()) {
+            result.insert(QStringLiteral("missing"), missing);
+            warnings << tr("Its parts need files that did not come with it (missing): its folder %1 beside %2 was not there, or "
+                           "lacks them. Bring the folder too, or a part that needs them stops the simulation.")
+                            .arg(info.completeBaseName(), QDir::toNativeSeparators(source));
+        }
+        addNamedLike(result, target);
+    }
+    if (!warnings.isEmpty()) {
+        const QString named = result.value(QStringLiteral("warning")).toString();
+        result.insert(QStringLiteral("warning"), (warnings + (named.isEmpty() ? QStringList() : QStringList{named})).join(QLatin1Char(' ')));
+    }
     return jsonResult(result);
 }
