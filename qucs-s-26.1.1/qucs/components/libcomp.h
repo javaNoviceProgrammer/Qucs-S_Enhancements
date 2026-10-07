@@ -68,11 +68,20 @@ public:
   /// The SPICE subcircuit a part of the component \a comp of the library
   /// its Lib \a lib names stands for: LIB_COMP, as a name (createType()).
   static QString subcircuitName(const QString& lib, const QString& comp);
-  /// The components of \a libraryFile marked <AlwaysLoadOSDI> - their
-  /// subcircuit's Document Settings asked for it -, whose Verilog-A every
-  /// circuit of a project that has the library loads, placed or not
-  /// (projectlibraries::alwaysLoadedModules()). In the library's order.
+  /// The components of \a libraryFile whose Verilog-A every circuit of a
+  /// project that has the library loads, placed or not
+  /// (projectlibraries::alwaysLoadedModules()): marked <AlwaysLoadOSDI>, or
+  /// <AlwaysModelCards> - their .model cards, written in those circuits,
+  /// name its modules. Their subcircuit's Document Settings asked for it.
+  /// In the library's order.
   static QStringList alwaysLoaded(const QString& libraryFile);
+  /// The .model cards of the components of \a libraryFile marked
+  /// <AlwaysModelCards>, each component's together: their subcircuit's own
+  /// (Document Settings > Library), as its <Spice> section ends with them
+  /// after its .SUBCKT's .ENDS - written at the top of every circuit of a
+  /// project that has the library, placed or not
+  /// (projectlibraries::alwaysWrittenModelCards()). In the library's order.
+  static QStringList alwaysWrittenCards(const QString& libraryFile);
   /// What a part's Lib holds to name the library \a libraryFile: its name
   /// when the name finds this very library (libraryFileOf() with no
   /// schematic) - a schematic that goes to another computer, or a library

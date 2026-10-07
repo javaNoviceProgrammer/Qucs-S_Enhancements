@@ -61,6 +61,7 @@ public:
   QCheckBox *Check_OpenDpl, *Check_GridOn, *Check_RunScript;
   QCheckBox *Check_AlwaysLoadOSDI;   ///< Library: the part's Verilog-A in all the project's circuits
   QPlainTextEdit *Input_ModelCards;  ///< Library: .model cards of its own, in its netlist
+  QCheckBox *Check_AlwaysModelCards; ///< Library: those cards in all the project's circuits
 
   QVBoxLayout *all;
   QRegularExpressionValidator *valExpr;

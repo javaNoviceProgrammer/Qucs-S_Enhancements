@@ -57,6 +57,9 @@ private:
     // kernel: a run asks for it three times (its compile step, the netlist
     // that step writes, the netlist it runs).
     mutable std::optional<QSet<QString>> a_alwaysLoaded;
+    // projectlibraries::alwaysWrittenModelCards() of the project, once a kernel.
+    mutable std::optional<QStringList> a_alwaysCards;
+    QString projectOfCircuit() const;
     QStringList besideSchematic(const QStringList& patterns) const;
 
 public:

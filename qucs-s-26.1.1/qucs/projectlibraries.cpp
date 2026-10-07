@@ -377,12 +377,37 @@ QStringList sourceModulesOf(const QString& file)
 }
 } // namespace
 
+// The libraries the project has, whose marked parts are its circuits' too
+// (alwaysLoadedModules(), alwaysWrittenModelCards()): its own - NAME.lib in
+// it, not in Scratch, not a linked library's folder; LibComp reads a Qucs
+// library only - and those its schematics place parts of, by the records
+// of Libraries/ (sync() links their marked parts' sources there).
+namespace {
+QStringList librariesOfProject(const QString& projectDir)
+{
+    QStringList libraries;
+    if (projectDir.isEmpty()) return libraries;
+    const QDir project(projectDir);
+    const QString scratch = QString::fromLatin1(misc::ScratchFolder) + QLatin1Char('/');
+    const QString linked = QString::fromLatin1(FolderName) + QLatin1Char('/');
+    for (const QString& file : misc::projectFiles(project, {QStringLiteral("*.lib")}))
+        if (!file.startsWith(scratch) && !file.startsWith(linked)) libraries << project.absoluteFilePath(file);
+    const QString root = project.absoluteFilePath(QLatin1String(FolderName));
+    if (!QFileInfo(root).isSymLink())
+        for (const QFileInfo& dir : QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks)) {
+            Record r;
+            if (readRecordOnce(QDir(dir.absoluteFilePath()).absoluteFilePath(QLatin1String(RecordName)), &r) && !r.folder.isEmpty()
+                && !libraries.contains(r.folder + QStringLiteral(".lib")))
+                libraries << r.folder + QStringLiteral(".lib");
+        }
+    return libraries;
+}
+} // namespace
+
 QSet<QString> alwaysLoadedModules(const QString& projectDir)
 {
     QSet<QString> modules;
-    if (projectDir.isEmpty()) return modules;
-    const QDir project(projectDir);
-    const auto addOf = [&modules](const QString& libraryFile) {
+    for (const QString& libraryFile : librariesOfProject(projectDir))
         for (const QString& comp : LibComp::alwaysLoaded(libraryFile))
             for (const QString& file : LibComp::verilogAFilesOf(libraryFile, comp)) {
                 QStringList names;
@@ -390,23 +415,16 @@ QSet<QString> alwaysLoadedModules(const QString& projectDir)
                 else if (file.endsWith(QLatin1String(".osdi"), Qt::CaseInsensitive)) names = osdi::modulesOf(file);
                 for (const QString& name : std::as_const(names)) modules.insert(name.toLower());
             }
-    };
-    // The project's own libraries: NAME.lib in it (not in Scratch, not a
-    // linked library's folder). LibComp reads a Qucs library only.
-    const QString scratch = QString::fromLatin1(misc::ScratchFolder) + QLatin1Char('/');
-    const QString linked = QString::fromLatin1(FolderName) + QLatin1Char('/');
-    for (const QString& file : misc::projectFiles(project, {QStringLiteral("*.lib")}))
-        if (!file.startsWith(scratch) && !file.startsWith(linked)) addOf(project.absoluteFilePath(file));
-    // The libraries its schematics place parts of, by the records of
-    // Libraries/ (sync() links their marked parts' sources there).
-    const QString root = project.absoluteFilePath(QLatin1String(FolderName));
-    if (!QFileInfo(root).isSymLink())
-        for (const QFileInfo& dir : QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks)) {
-            Record r;
-            if (readRecordOnce(QDir(dir.absoluteFilePath()).absoluteFilePath(QLatin1String(RecordName)), &r) && !r.folder.isEmpty())
-                addOf(r.folder + QStringLiteral(".lib"));
-        }
     return modules;
+}
+
+QStringList alwaysWrittenModelCards(const QString& projectDir)
+{
+    QStringList cards;
+    for (const QString& libraryFile : librariesOfProject(projectDir))
+        for (const QString& part : LibComp::alwaysWrittenCards(libraryFile))
+            if (!cards.contains(part)) cards << part;
+    return cards;
 }
 
 void usedSources(const QString& projectDir, const QList<Schematic*>& open, QList<Use>* uses, QStringList* unresolved)

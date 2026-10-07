@@ -393,6 +393,8 @@ namespace {
 // What a library says of one of its components.
 struct LibraryPart {
   bool alwaysLoad = false;   // <AlwaysLoadOSDI>
+  bool alwaysCards = false;  // <AlwaysModelCards>
+  QString cards;             // its own .model cards: after its .SUBCKT's .ENDS in <Spice> (ownCards())
   QStringList pins;          // its SPICE model's (<Spice>) .SUBCKT's pins, in order
   QStringList attach;        // the files of the library's folder it attaches (<SpiceAttach>)
   QStringList includes;      // and its Qucs model includes (<ModelIncludes>)
@@ -455,6 +457,40 @@ QStringList subcircuitPins(const QString& spice, const QStringList& names)
   return last;
 }
 
+// The .model cards after the .ENDS of the first of the subcircuits \a names
+// there is in \a spice, else of the last one: the component's own, as
+// Create Library writes them (AbstractSpiceKernel::createSubNetlist()) - up
+// to the first line that is no card (Schematic::modelCardsOf()).
+QString ownCards(const QString& spice, const QStringList& names)
+{
+  const QStringList lines = spice.split(QLatin1Char('\n'));
+  qsizetype own = -1;
+  for (const QString& name : names) {
+    for (qsizetype i = 0; i < lines.size() && own < 0; ++i) {
+      const QStringList words = lines.at(i).split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+      if (words.size() >= 2 && words.first().compare(QLatin1String(".SUBCKT"), Qt::CaseInsensitive) == 0
+          && words.at(1).compare(name, Qt::CaseInsensitive) == 0)
+        own = i;
+    }
+    if (own >= 0) break;
+  }
+  if (own < 0)
+    for (qsizetype i = 0; i < lines.size(); ++i)
+      if (lines.at(i).trimmed().startsWith(QLatin1String(".SUBCKT "), Qt::CaseInsensitive)) own = i;
+  if (own < 0) return {};
+  qsizetype at = own + 1;
+  while (at < lines.size() && !lines.at(at).trimmed().startsWith(QLatin1String(".ENDS"), Qt::CaseInsensitive)) ++at;
+  QString after;
+  for (++at; at < lines.size(); ++at) {
+    const QString line = lines.at(at).trimmed();
+    if (!line.isEmpty() && !line.startsWith(QLatin1String(".model"), Qt::CaseInsensitive) && !line.startsWith(QLatin1Char('+'))
+        && !line.startsWith(QLatin1Char('*')))
+      break;
+    after += line + QLatin1Char('\n');
+  }
+  return Schematic::modelCardsOf(after);
+}
+
 const LibraryRead& readLibrary(const QString& libraryFile)
 {
   static QHash<QString, LibraryRead> known;
@@ -480,6 +516,7 @@ const LibraryRead& readLibrary(const QString& libraryFile)
         const QString definition = text.mid(close + 1, end < 0 ? -1 : end - close - 1);
         LibraryPart part;
         part.alwaysLoad = definition.contains(QRegularExpression(QStringLiteral("\\n\\s*<AlwaysLoadOSDI>")));
+        part.alwaysCards = definition.contains(QRegularExpression(QStringLiteral("\\n\\s*<AlwaysModelCards>")));
         part.attach = filesOfTag(definition, QStringLiteral("SpiceAttach"));
         part.includes = filesOfTag(definition, QStringLiteral("ModelIncludes"));
         const qsizetype spice = definition.indexOf(QLatin1String("<Spice>"));
@@ -490,9 +527,10 @@ const LibraryRead& readLibrary(const QString& libraryFile)
           // name - a part's Lib is that, or the library's path without
           // ".lib" - and the component's; or by the name the library was
           // made under, when its file was renamed (scopedSpice()).
-          part.pins = subcircuitPins(definition.mid(spice + 7, spiceEnd < 0 ? -1 : spiceEnd - spice - 7),
-                                     {LibComp::subcircuitName(info.completeBaseName(), name),
-                                      LibComp::subcircuitName(read.title, name)});
+          const QString section = definition.mid(spice + 7, spiceEnd < 0 ? -1 : spiceEnd - spice - 7);
+          const QStringList own{LibComp::subcircuitName(info.completeBaseName(), name), LibComp::subcircuitName(read.title, name)};
+          part.pins = subcircuitPins(section, own);
+          if (part.alwaysCards) part.cards = ownCards(section, own);
         }
         if (!read.parts.contains(name)) read.order << name;
         read.parts.insert(name, part);
@@ -527,8 +565,17 @@ QStringList LibComp::alwaysLoaded(const QString& libraryFile)
   const LibraryRead& read = readLibrary(libraryFile);
   QStringList marked;
   for (const QString& name : read.order)
-    if (read.parts.value(name).alwaysLoad) marked << name;
+    if (read.parts.value(name).alwaysLoad || read.parts.value(name).alwaysCards) marked << name;
   return marked;
+}
+
+QStringList LibComp::alwaysWrittenCards(const QString& libraryFile)
+{
+  const LibraryRead& read = readLibrary(libraryFile);
+  QStringList cards;
+  for (const QString& name : read.order)
+    if (const LibraryPart& part = read.parts[name]; part.alwaysCards && !part.cards.isEmpty()) cards << part.cards;
+  return cards;
 }
 
 QString LibComp::newerVersion(const QString& libraryFile)

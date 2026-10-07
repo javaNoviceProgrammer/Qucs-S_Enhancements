@@ -230,16 +230,26 @@ QSet<QString> Ngspice::modelTypesOf(const QString& netlist) const
 {
     const QString name = a_schematic->getDocName();
     QSet<QString> types = qucs_s::osdi::usedModelTypes(netlist, QFileInfo(name).absolutePath());
-    if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty()) {
-        const QString project = QFileInfo(QucsSettings.QucsWorkDir.absolutePath()).canonicalFilePath();
-        const QString file = name.isEmpty() ? QString() : QFileInfo(name).canonicalFilePath();
-        // (An untitled one is the project's: it is saved there.)
-        if (!project.isEmpty() && (name.isEmpty() || file.startsWith(project + QLatin1Char('/')))) {
-            if (!a_alwaysLoaded) a_alwaysLoaded = qucs_s::projectlibraries::alwaysLoadedModules(project);
-            types.unite(*a_alwaysLoaded);
-        }
+    if (const QString project = projectOfCircuit(); !project.isEmpty()) {
+        if (!a_alwaysLoaded) a_alwaysLoaded = qucs_s::projectlibraries::alwaysLoadedModules(project);
+        types.unite(*a_alwaysLoaded);
     }
     return types;
+}
+
+/*!
+ * \brief Ngspice::projectOfCircuit The open project's folder (its real
+ *        path) when the schematic is one of its circuits - an untitled one
+ *        is: it is saved there -, else empty.
+ */
+QString Ngspice::projectOfCircuit() const
+{
+    if (QucsMain == nullptr || QucsMain->ProjName.isEmpty()) return {};
+    const QString name = a_schematic->getDocName();
+    const QString project = QFileInfo(QucsSettings.QucsWorkDir.absolutePath()).canonicalFilePath();
+    const QString file = name.isEmpty() ? QString() : QFileInfo(name).canonicalFilePath();
+    if (project.isEmpty() || (!name.isEmpty() && !file.startsWith(project + QLatin1Char('/')))) return {};
+    return project;
 }
 
 /*!
@@ -279,6 +289,14 @@ void Ngspice::createNetlist(
     if (prepared)
         startNetlist(bodyStream); // output .PARAM and components
     bodyStream.flush();
+    // The .model cards of the project's library parts marked to be in all
+    // its circuits, placed or not (Document Settings > Library), at its top
+    // level - not those a placed part's model wrote already.
+    if (const QString project = prepared ? projectOfCircuit() : QString(); !project.isEmpty()) {
+        if (!a_alwaysCards) a_alwaysCards = qucs_s::projectlibraries::alwaysWrittenModelCards(project);
+        for (const QString& cards : std::as_const(*a_alwaysCards))
+            if (!body.contains(cards)) body += cards;
+    }
     stream<<body;
     if (!prepared) return; // Unable to perform spice simulation
     const QString osdi = osdiLoads(libraries + body);
