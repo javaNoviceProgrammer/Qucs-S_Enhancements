@@ -1,0 +1,115 @@
+<Qucs Library 26.1.6 "Sp">
+
+<Component a>
+  <Description>
+
+  </Description>
+  <Model>
+.Def:Sp_a P1 P2
+SpLib:X1 P1 P2 File="models/dev.lib" Device="DEVA" SymPattern="auto" Params="" PinAssign=""
+.Def:End
+  </Model>
+  <Spice>
+.SUBCKT Sp_a P1 P2 
+XX1  P1 P2 DEVA 
+.ENDS
+  </Spice>
+<SpiceAttach "dev.lib">
+  <Symbol>
+    <.ID -25 14 SUB>
+    <.PortSym -35 0 1 0 P1>
+    <.PortSym 35 0 2 180 P2>
+    <Line -25 0 -10 0 #000080 2 1>
+    <Line 25 0 10 0 #000080 2 1>
+    <Line -25 -10 50 0 #000080 2 1>
+    <Line 25 -10 0 20 #000080 2 1>
+    <Line -25 10 50 0 #000080 2 1>
+    <Line -25 -10 0 20 #000080 2 1>
+  </Symbol>
+</Component>
+
+<Component b>
+  <Description>
+
+  </Description>
+  <Model>
+.Def:Sp_b P1 P2
+SpLib:X1 P1 P2 File="other/dev.lib" Device="DEVB" SymPattern="auto" Params="" PinAssign=""
+.Def:End
+  </Model>
+  <Spice>
+.SUBCKT Sp_b P1 P2 
+XX1  P1 P2 DEVB 
+.ENDS
+  </Spice>
+<SpiceAttach "dev.lib">
+  <Symbol>
+    <.ID -25 14 SUB>
+    <.PortSym -35 0 1 0 P1>
+    <.PortSym 35 0 2 180 P2>
+    <Line -25 0 -10 0 #000080 2 1>
+    <Line 25 0 10 0 #000080 2 1>
+    <Line -25 -10 50 0 #000080 2 1>
+    <Line 25 -10 0 20 #000080 2 1>
+    <Line -25 10 50 0 #000080 2 1>
+    <Line -25 -10 0 20 #000080 2 1>
+  </Symbol>
+</Component>
+
+<Component c>
+  <Description>
+
+  </Description>
+  <Model>
+.Def:Sp_c P1 P2
+SpLib:X1 P1 P2 File="vendor.inc" Device="DEVC" SymPattern="auto" Params="" PinAssign=""
+.Def:End
+  </Model>
+  <Spice>
+.SUBCKT Sp_c P1 P2 
+XX1  P1 P2 DEVC 
+.ENDS
+  </Spice>
+<SpiceAttach "vendor.inc">
+  <Symbol>
+    <.ID -25 14 SUB>
+    <.PortSym -35 0 1 0 P1>
+    <.PortSym 35 0 2 180 P2>
+    <Line -25 0 -10 0 #000080 2 1>
+    <Line 25 0 10 0 #000080 2 1>
+    <Line -25 -10 50 0 #000080 2 1>
+    <Line 25 -10 0 20 #000080 2 1>
+    <Line -25 10 50 0 #000080 2 1>
+    <Line -25 -10 0 20 #000080 2 1>
+  </Symbol>
+</Component>
+
+<Component e>
+  <Description>
+
+  </Description>
+  <Model>
+.Def:Sp_e a b
+.Def:End
+  </Model>
+  <Spice>
+.SUBCKT Sp_e a b 
+
+
+XU a b DEVD
+.ENDS
+  </Spice>
+<SpiceAttach "vendor.mod">
+  <Symbol>
+    <.ID -20 14 SUB>
+    <.PortSym -30 0 1 0 a>
+    <.PortSym 30 0 2 180 b>
+    <Line -20 0 -10 0 #000080 2 1>
+    <Line 20 0 10 0 #000080 2 1>
+    <Line -20 -10 40 0 #000080 2 1>
+    <Line 20 -10 0 20 #000080 2 1>
+    <Line -20 10 40 0 #000080 2 1>
+    <Line -20 -10 0 20 #000080 2 1>
+  </Symbol>
+</Component>
+

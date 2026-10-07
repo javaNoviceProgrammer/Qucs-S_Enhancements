@@ -1,0 +1,22 @@
+"""p5: create_library replace that fails (a subcircuit's own subcircuit missing): what is left in user_lib, and what the answer says."""
+import os, json, mcp, lib
+s = mcp.Server('p5')
+d = lib.project(s, 'rf', {'div.sch': lib.divider('1k', '3k'), 'inner.sch': lib.divider('2k', '2k')})
+r = s.call('create_library', {'name': 'Amps', 'subcircuits': ['div']})
+print('first:', s.last_error, [p['part'] for p in r['parts']], os.listdir(s.ws + '/user_lib'))
+# outer.sch places inner.sch; then inner.sch goes away (moved, renamed).
+s.call('new_document', {})
+s.call('add_component', {'type': 'Port', 'name': 'P1', 'x': 100, 'y': 100})
+s.call('add_component', {'type': 'Port', 'name': 'P2', 'x': 600, 'y': 100})
+s.call('add_component', {'type': 'Sub', 'name': 'SUB1', 'x': 320, 'y': 120, 'properties': {'File': 'inner.sch'}})
+s.call('connect', {'from': 'P1.1', 'to': 'SUB1.1'})
+s.call('connect', {'from': 'SUB1.2', 'to': 'P2.1'})
+s.call('save_document', {'as': d + '/outer.sch'})
+s.call('close_document', {})
+os.rename(d + '/inner.sch', d + '/inner_old.txt')
+r = s.call('create_library', {'name': 'Amps', 'subcircuits': ['div', 'outer'], 'replace': True})
+print('replace: isError', s.last_error)
+print(json.dumps(r, indent=1)[:1500] if not isinstance(r, str) else r[:1500])
+print('user_lib now:', os.listdir(s.ws + '/user_lib'))
+print('trash:', [os.path.relpath(os.path.join(a, f), s.root + '/trash') for a, _, fs in os.walk(s.root + '/trash') for f in fs])
+s.close()
