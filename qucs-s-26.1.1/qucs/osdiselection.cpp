@@ -341,7 +341,16 @@ bool defines(const QString& osdiFile, const QString& module)
     return readable ? modules.contains(module.toLower()) : holdsName(osdiFile, module);
 }
 
-QStringList needed(const QStringList& osdiFiles, const QSet<QString>& types, QStringList* notes)
+namespace {
+// One file by two names (a link, ..): their real paths, else as given.
+bool sameFile(const QString& a, const QString& b)
+{
+    const QString ra = QFileInfo(a).canonicalFilePath(), rb = QFileInfo(b).canonicalFilePath();
+    return !ra.isEmpty() && !rb.isEmpty() ? ra == rb : QFileInfo(a).absoluteFilePath() == QFileInfo(b).absoluteFilePath();
+}
+} // namespace
+
+QStringList needed(const QStringList& osdiFiles, const QSet<QString>& types, QStringList* notes, const QStringList& preferred)
 {
     QStringList sortedTypes(types.cbegin(), types.cend());
     sortedTypes.sort();
@@ -361,19 +370,27 @@ QStringList needed(const QStringList& osdiFiles, const QSet<QString>& types, QSt
                 candidates << file;
         if (candidates.isEmpty())
             continue;   // a built-in device, a code model - or a module no library has
+        // Of those a placed part's own library brings, when one has it: a
+        // project file that happens to define the module too was taken when
+        // built last, and the part ran another model.
+        QStringList among;
+        for (const QString& file : candidates)
+            if (std::any_of(preferred.cbegin(), preferred.cend(), [&](const QString& p) { return sameFile(p, file); }))
+                among << file;
+        if (among.isEmpty()) among = candidates;
         // A library already loaded has it; else the one with the most of
         // what is still needed, then the most recently built (the first
         // of those built at the same time).
         QString pick;
-        for (const QString& file : candidates)
+        for (const QString& file : among)
             if (chosen.contains(file)) {
                 pick = file;
                 break;
             }
         if (pick.isEmpty()) {
             const auto uncovered = [&](const QString& file) { return (has.value(file) - covered).size(); };
-            pick = candidates.first();
-            for (const QString& file : candidates) {
+            pick = among.first();
+            for (const QString& file : among) {
                 const int more = uncovered(file) - uncovered(pick);
                 if (more > 0 || (more == 0 && QFileInfo(file).lastModified() > QFileInfo(pick).lastModified()))
                     pick = file;
@@ -424,6 +441,25 @@ QStringList sourceIncludes(const QString& vaFile)
         }
     }
     return found;
+}
+
+QStringList missingSourceIncludes(const QString& vaFile)
+{
+    static const QStringList ownHeaders{QStringLiteral("disciplines.vams"), QStringLiteral("constants.vams"),
+                                        QStringLiteral("discipline.h"), QStringLiteral("constants.h")};
+    QStringList missing;
+    QStringList files{QFileInfo(vaFile).absoluteFilePath()};
+    files << sourceIncludes(vaFile);
+    for (const QString& file : std::as_const(files)) {
+        const QFileInfo info(file);
+        const QDir folder = info.isSymLink() ? QFileInfo(info.symLinkTarget()).absoluteDir() : info.absoluteDir();
+        for (const QString& name : readSource(file).includes) {
+            if (QFileInfo(folder.absoluteFilePath(name)).isFile()) continue;
+            if (!name.contains(QLatin1Char('/')) && ownHeaders.contains(name, Qt::CaseInsensitive)) continue;
+            if (!missing.contains(name)) missing << name;
+        }
+    }
+    return missing;
 }
 
 namespace {

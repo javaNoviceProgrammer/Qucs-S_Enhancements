@@ -137,6 +137,26 @@ QString unitOf(const QString& type, const QString& parameter)
     return QString();
 }
 
+bool isOsdi(const Device& device)
+{
+    return device.description.contains(QLatin1String("loaded with OSDI"), Qt::CaseInsensitive);
+}
+
+QString unitOf(const Device& device, const QString& parameter)
+{
+    if (!isOsdi(device)) return unitOf(device.type, parameter);
+    if (parameter == QLatin1String("dt") || parameter == QLatin1String("dtemp")) return QStringLiteral("K");
+    if (parameter == QLatin1String("temp")) return QStringLiteral("°C");
+    return QString();
+}
+
+bool isOperatingQuantity(const Device& device, const QString& parameter)
+{
+    if (!isOsdi(device)) return isOperatingQuantity(device.type, parameter);
+    return parameter != QLatin1String("dt") && parameter != QLatin1String("dtemp") && parameter != QLatin1String("temp")
+        && parameter != QLatin1String("m");
+}
+
 bool isOperatingQuantity(const QString& type, const QString& parameter)
 {
     if (parameter.startsWith(QLatin1String("icv"))) return false;   // set, not found
@@ -147,7 +167,7 @@ bool isOperatingQuantity(const QString& type, const QString& parameter)
 
 QString valueText(const Device& device, const Parameter& parameter)
 {
-    const QString unit = unitOf(device.type, parameter.name);
+    const QString unit = unitOf(device, parameter.name);
     // "Not set" is a huge number to ngspice (bv_max 1e99); integers stay so.
     if (std::fabs(parameter.value) >= 1e30 || (unit.isEmpty() && parameter.value == std::round(parameter.value)))
         return QString::number(parameter.value, 'g', 6);

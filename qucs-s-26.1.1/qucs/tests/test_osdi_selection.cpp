@@ -288,6 +288,11 @@ private slots:
         QCOMPARE(osdi::needed(all, {"hicum_l2", "mextram"}), (QStringList{both}));   // one library does both
         QCOMPARE(osdi::needed(all, {"npn", "d"}), QStringList());
         QCOMPARE(osdi::needed(all, {}), QStringList());
+        // One a placed part's own library brings goes first, newer or not (a
+        // project file of the module's name, built last, was taken - the
+        // Verilog-A check of 2026-10-07, 1); without it, as before.
+        QCOMPARE(osdi::needed(all, {"psp103"}, nullptr, {oldPsp}), QStringList{oldPsp});
+        QCOMPARE(osdi::needed(all, {"psp103"}, nullptr, {hicum}), QStringList{psp});   // (it has none of it)
     }
 
     void realLibrariesAreReadExactly()

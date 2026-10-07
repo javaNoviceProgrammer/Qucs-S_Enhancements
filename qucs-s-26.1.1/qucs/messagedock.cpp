@@ -433,7 +433,7 @@ void MessageDock::showOperatingPoint(Schematic* doc, bool raise)
             auto *row = new QTreeWidgetItem(device, {p.name, qucs_s::oppoint::valueText(d, p)});
             row->setData(0, Qt::UserRole, d.component);
             row->setData(0, ValueRole, p.value);
-            row->setData(0, UnitRole, qucs_s::oppoint::unitOf(d.type, p.name));
+            row->setData(0, UnitRole, qucs_s::oppoint::unitOf(d, p.name));
             row->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
         }
     }

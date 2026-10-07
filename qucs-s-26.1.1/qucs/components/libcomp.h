@@ -129,6 +129,19 @@ public:
   /// Whether the component \a comp of \a libraryFile has a SPICE model
   /// (<Spice>): what ngspice and Xyce simulate it from.
   static bool hasSpiceModel(const QString& libraryFile, const QString& comp);
+  /// Whether the Qucs netlist \a model has a device of Qucsator's - a line
+  /// Type:Name that is no subcircuit's instance (Sub:) or equation (Eqn:).
+  static bool qucsDevicesIn(const QString& model);
+  /// The Verilog-A modules the component \a comp of \a libraryFile needs
+  /// (<VerilogAModules "vx_res">, as Create Library records them, whether
+  /// it embedded their sources or not); none for a library made before.
+  static QStringList verilogAModules(const QString& libraryFile, const QString& comp);
+  /// Whether Qucsator simulates the component \a comp of \a libraryFile:
+  /// false for one with a SPICE model whose Qucs model (and the files it
+  /// includes) has no device of Qucsator's - a subcircuit wrapping SPICE or
+  /// Verilog-A devices, which Qucsator leaves out, every node through it
+  /// open. True when that cannot be told.
+  static bool qucsatorSimulates(const QString& libraryFile, const QString& comp);
   /// The .va files attached to the component in its library (Create
   /// Library embeds them), in the library's folder, and the .osdi model
   /// compiled from each where there is one (OpenVAF puts it beside the

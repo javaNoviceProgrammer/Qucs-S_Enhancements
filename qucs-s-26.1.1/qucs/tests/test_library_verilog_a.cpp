@@ -1098,6 +1098,168 @@ private slots:
         QDir(project + "/CardLib").removeRecursively();
     }
 
+    // The Verilog-A check of 2026-10-07 (docs/feature_gaps/
+    // 2026-10-07-claude-va-library-export-import-check.md), 1: a module a
+    // library part in the subcircuit uses comes from that part's own
+    // library - an unrelated project file defining one of that name was
+    // embedded beside it, and a circuit ran whichever was built last; two
+    // sources that differ for the subcircuit's own card: refused.
+    void aPartsModuleComesFromItsOwnLibrary()
+    {
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        QString log = makeLibrary(app, "OwnMod", {"sub.sch"}, dir.filePath("ownmod"));
+        QVERIFY2(log.contains("Embedding Verilog-A: good.va"), qPrintable(log));
+        write(project + "/stray/strayres.va", "`include \"disciplines.vams\"\n// another model of the name\nmodule good(p, n);\nendmodule\n");
+        write(project + "/wrapgood.sch", usesLibrary(dir.filePath("ownmod/OwnMod")));
+        log = makeLibrary(app, "WrapMod", {"wrapgood.sch"}, dir.filePath("wrapmod"));
+        QVERIFY2(log.contains("Successfully created library.") && log.contains("Embedding Verilog-A: good.va") && !log.contains("strayres"),
+                 qPrintable(log));
+        QVERIFY2(read(dir.filePath("wrapmod/WrapMod.lib")).contains("<SpiceAttach \"good.va\">"), qPrintable(read(dir.filePath("wrapmod/WrapMod.lib"))));
+        QCOMPARE(read(dir.filePath("wrapmod/WrapMod/good.va")), read(dir.filePath("ownmod/OwnMod/good.va")));
+        // The subcircuit's own card, two project files that differ: refused.
+        log = makeLibrary(app, "TwoMod", {"sub.sch"}, dir.filePath("twomod"));
+        QVERIFY2(log.contains("Error: the Verilog-A module good is defined differently by") && log.contains("strayres.va")
+                     && !log.contains("Successfully created library."), qPrintable(log));
+        QVERIFY(!QFileInfo::exists(dir.filePath("twomod/TwoMod.lib")));
+        QFile::remove(project + "/stray/strayres.va");
+        QFile::remove(project + "/wrapgood.sch");
+    }
+
+    // 2: parts of two libraries whose sources define one module differently
+    // in one circuit - ngspice loads one definition, every part of either
+    // runs it, and nothing said so: Check Schematic's error under ngspice,
+    // the netlist's note (simulate gives it as a warning). One a placed
+    // part's library brings goes before a project file of the name
+    // (osdi::needed()'s preferred: test_osdi_selection).
+    void twoLibrariesDefiningAModuleDifferentlyAreSaid()
+    {
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        QString log = makeLibrary(app, "ModA", {"sub.sch"}, dir.filePath("moda"));
+        QVERIFY2(log.contains("Successfully created library."), qPrintable(log));
+        write(dir.filePath("modb/ModB.lib"), read(dir.filePath("moda/ModA.lib")).replace("\"ModA\"", "\"ModB\"").replace("ModA_", "ModB_").toUtf8());
+        write(dir.filePath("modb/ModB/good.va"), read(dir.filePath("moda/ModA/good.va")).replace("endmodule", "// B's\nendmodule").toUtf8());
+        write(dir.filePath("modb/ModB/inc/common.vams"), read(dir.filePath("moda/ModA/inc/common.vams")).toUtf8());
+        const QString both = write(project + "/bothmods.sch",
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <Lib X1 1 100 100 20 -20 0 0 \"" + dir.filePath("moda/ModA").toUtf8() + "\" 0 \"sub\" 0>\n"
+            "  <Lib X2 1 300 100 20 -20 0 0 \"" + dir.filePath("modb/ModB").toUtf8() + "\" 0 \"sub\" 0>\n"
+            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        Schematic sch(nullptr, both);
+        QVERIFY(sch.load());
+        QString said;
+        for (const auto& issue : qucs_s::erc::check(&sch))
+            if (issue.message.contains("bring the Verilog-A module good, defined differently")) said = issue.message;
+        QVERIFY2(said.contains("X1 (ModA) and X2 (ModB)"), qPrintable(said));
+        const QString netlist = netlistOf(both);
+        QVERIFY2(netlist.contains("* OSDI: good is defined differently by") && netlist.contains("one of them is loaded"), qPrintable(netlist));
+        // One of them alone: nothing said.
+        const QString one = write(project + "/onemod.sch", QString(read(both)).remove(QRegularExpression("  <Lib X2[^\\n]*\\n")).toUtf8());
+        Schematic sch1(nullptr, one);
+        QVERIFY(sch1.load());
+        for (const auto& issue : qucs_s::erc::check(&sch1)) QVERIFY2(!issue.message.contains("defined differently"), qPrintable(issue.message));
+        QFile::remove(both);
+        QFile::remove(one);
+    }
+
+    // 4: a source including a file from outside its folder (`include
+    // "../common/up.vams"): the library embeds it below NAME.includes/ and
+    // names it there - it was left out, and OpenVAF failed where the
+    // library was used. One made without it says what it lacks.
+    void anIncludeFromOutsideItsFolderIsEmbedded()
+    {
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        write(project + "/common/up.vams", "`define UPSCALE 5\n");
+        write(project + "/va2/upx.va", "`include \"disciplines.vams\"\n`include \"../common/up.vams\"\nmodule upx(p, n);\nendmodule\n");
+        write(project + "/upx.sch", read(project + "/sub.sch").replace(".model m1 good", ".model m6 upx").toUtf8());
+        const QString log = makeLibrary(app, "UpLib", {"upx.sch"}, dir.filePath("uplib"));
+        QVERIFY2(log.contains("Successfully created library.") && log.contains("from outside its folder: embedded below upx.includes/"),
+                 qPrintable(log));
+        QCOMPARE(read(dir.filePath("uplib/UpLib/upx.includes/common/up.vams")), QStringLiteral("`define UPSCALE 5\n"));
+        QVERIFY2(read(dir.filePath("uplib/UpLib/upx.va")).contains("`include \"upx.includes/common/up.vams\"\n"), qPrintable(read(dir.filePath("uplib/UpLib/upx.va"))));
+        QVERIFY(read(dir.filePath("uplib/UpLib/upx.va")).contains("`include \"disciplines.vams\"\n"));   // (OpenVAF's own, as it was)
+        QVERIFY(LibComp::missingFiles(dir.filePath("uplib/UpLib.lib"), "upx").isEmpty());
+        // Made without it (as before): said.
+        QFile::remove(dir.filePath("uplib/UpLib/upx.includes/common/up.vams"));
+        QCOMPARE(LibComp::missingFiles(dir.filePath("uplib/UpLib.lib"), "upx"), QStringList{"upx.va's include upx.includes/common/up.vams"});
+        for (const QString& f : {project + "/common/up.vams", project + "/va2/upx.va", project + "/upx.sch"}) QFile::remove(f);
+    }
+
+    // 5: the modules a part needs recorded in the library, embedded or not
+    // (<VerilogAModules>): where nothing defines them - a library made
+    // without its Verilog-A - Check Schematic says so, not only the run's
+    // "no loaded OSDI defines".
+    void aLibraryRecordsTheModulesItNeeds()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        QucsSettings.EmbedVerilogAInLibraries = false;
+        const QString log = makeLibrary(app, "NoVa", {"sub.sch"}, dir.filePath("nova"));
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QVERIFY2(log.contains("Successfully created library.") && !log.contains("Embedding"), qPrintable(log));
+        QVERIFY2(read(dir.filePath("nova/NoVa.lib")).contains("\n  <VerilogAModules \"good\">\n"), qPrintable(read(dir.filePath("nova/NoVa.lib"))));
+        QCOMPARE(LibComp::verilogAModules(dir.filePath("nova/NoVa.lib"), "sub"), QStringList{"good"});
+        // Placed where nothing defines good: said.
+        app.ProjName.clear();
+        QucsSettings.QucsWorkDir.setPath(dir.filePath("bare"));
+        const QString bare = write(dir.filePath("bare/usesnova.sch"), usesLibrary(dir.filePath("nova/NoVa")));
+        Schematic sch(nullptr, bare);
+        QVERIFY(sch.load());
+        QString said;
+        for (const auto& issue : qucs_s::erc::check(&sch))
+            if (issue.message.contains("was made without the Verilog-A of")) said = issue.message;
+        QVERIFY2(said.contains("X1: its library NoVa was made without the Verilog-A of good"), qPrintable(said));
+        // Where the project has good's source: nothing to say.
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        const QString inProject = write(project + "/usesnova.sch", usesLibrary(dir.filePath("nova/NoVa")));
+        Schematic sch2(nullptr, inProject);
+        QVERIFY(sch2.load());
+        for (const auto& issue : qucs_s::erc::check(&sch2)) QVERIFY2(!issue.message.contains("made without"), qPrintable(issue.message));
+        QFile::remove(inProject);
+    }
+
+    // Nit: a library replaced without descriptions keeps those it had, by
+    // part (create_library with 'replace' dropped them all).
+    void aReplacedLibraryKeepsItsDescriptions()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        const auto make = [&](const QHash<QString, QString>& descriptions) {
+            LibraryDialog dialog(&app);
+            dialog.fillSchematicList({"sub.sch", "bin.sch"});
+            LibraryDialog::Request request;
+            request.name = "Described";
+            request.subcircuits = {"sub.sch", "bin.sch"};
+            request.folder = dir.filePath("described");
+            request.descriptions = descriptions;
+            request.embedVerilogA = false;
+            request.replace = true;
+            QString log, error;
+            return dialog.create(request, &log, &error) ? log : error;
+        };
+        QVERIFY(make({{"sub", "the first part"}, {"bin", "the second part"}}).contains("Successfully created library."));
+        QVERIFY(make({{"bin", "the second, again"}}).contains("Successfully created library."));
+        const QString lib = read(dir.filePath("described/Described.lib"));
+        QVERIFY2(lib.contains("<Component sub>\n  <Description>\nthe first part\n  </Description>"), qPrintable(lib));
+        QVERIFY2(lib.contains("<Component bin>\n  <Description>\nthe second, again\n  </Description>"), qPrintable(lib));
+    }
+
     // The setting: Application Settings > Settings, kept.
     void theSettingIsInTheSettingsDialog()
     {

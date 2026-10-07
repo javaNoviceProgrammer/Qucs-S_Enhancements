@@ -55,11 +55,13 @@ bool defines(const QString& osdiFile, const QString& module);
 
 /// The libraries of \a osdiFiles a netlist that uses \a types needs, in
 /// the order given: each type a library defines is taken from one library
-/// - one already taken, else the one with the most of what is needed,
-/// else the most recently built. What was left out for another library is
-/// said in \a notes.
+/// - of those in \a preferred when one there has it (the models a placed
+/// part's own library brings, before a project file of the module's name),
+/// one already taken, else the one with the most of what is needed, else
+/// the most recently built. What was left out for another library is said
+/// in \a notes.
 QStringList needed(const QStringList& osdiFiles, const QSet<QString>& types,
-                   QStringList* notes = nullptr);
+                   QStringList* notes = nullptr, const QStringList& preferred = {});
 
 /// Whether the Verilog-A source defines \a module (any case).
 bool sourceDefines(const QString& vaFile, const QString& module);
@@ -68,6 +70,12 @@ bool sourceDefines(const QString& vaFile, const QString& module);
 /// the files those bring in - that are there: taken against the folder of
 /// the file that names them (where a link leads, for a link).
 QStringList sourceIncludes(const QString& vaFile);
+
+/// The `include names of a Verilog-A source - and of the files it brings
+/// in - that lead to no file, as written ("../common/up.vams"): a library
+/// made without them fails in OpenVAF where it is compiled. Those OpenVAF
+/// brings itself (disciplines.vams, constants.vams) are not missing.
+QStringList missingSourceIncludes(const QString& vaFile);
 
 /// Where the library of the Verilog-A source goes.
 enum class Into {

@@ -1701,7 +1701,7 @@ QString AbstractSpiceKernel::convertToQucsData(const QString &qucs_dataset)
             if (!f.open(QIODevice::ReadOnly)) continue;
             for (const qucs_s::oppoint::Device& d : qucs_s::oppoint::parseShow(QString::fromUtf8(f.readAll())))
                 for (const qucs_s::oppoint::Parameter& p : d.parameters)
-                    if (qucs_s::oppoint::isOperatingQuantity(d.type, p.name) && std::isfinite(p.value)) {
+                    if (qucs_s::oppoint::isOperatingQuantity(d, p.name) && std::isfinite(p.value)) {
                         out->begin(QStringLiteral("indep @%1[%2] 1").arg(d.name, p.name));
                         out->real(p.value);
                         out->end();

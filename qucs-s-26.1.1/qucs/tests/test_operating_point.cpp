@@ -306,6 +306,28 @@ private slots:
         QCOMPARE(isOperatingQuantity(type, parameter), operating);
     }
 
+    // A Verilog-A device's own values have no unit read from their names:
+    // its module names them ("gain" read as a conductance, "vmax" as a
+    // voltage - the Verilog-A check of 2026-10-07); ngspice's dt, dtemp and
+    // temp keep theirs, and a built-in device's gm stays a conductance.
+    void aVerilogADevicesValuesHaveNoGuessedUnits()
+    {
+        const QList<Device> devices = parseShow(
+            " vx_amp: A simulator independent device loaded with OSDI\n device n.xsa.nx1\n gain 3\n vmax 2\n i_out 1e-09\n"
+            " dtemp 0\n temp 27\n\n Mos1: Level 1 MOSfet model with Meyer capacitance model\n device m1\n gm 0.001\n");
+        QCOMPARE(devices.size(), 2);
+        const Device& va = devices.at(0);
+        QVERIFY(qucs_s::oppoint::isOsdi(va) && !qucs_s::oppoint::isOsdi(devices.at(1)));
+        QCOMPARE(qucs_s::oppoint::unitOf(va, "gain"), QString());
+        QCOMPARE(qucs_s::oppoint::unitOf(va, "vmax"), QString());
+        QCOMPARE(qucs_s::oppoint::unitOf(va, "i_out"), QString());
+        QCOMPARE(qucs_s::oppoint::unitOf(va, "dtemp"), QStringLiteral("K"));
+        QCOMPARE(qucs_s::oppoint::unitOf(va, "temp"), QStringLiteral("°C"));
+        QVERIFY(qucs_s::oppoint::isOperatingQuantity(va, "gain") && !qucs_s::oppoint::isOperatingQuantity(va, "temp"));
+        QCOMPARE(qucs_s::oppoint::unitOf(devices.at(1), "gm"), QStringLiteral("S"));
+        QCOMPARE(qucs_s::oppoint::valueText(va, va.parameters.at(0)), QStringLiteral("3"));
+    }
+
     void valuesAreWritten()
     {
         const Device d{"q1", "BJT", "", "qn", {}, "Q1", ""};

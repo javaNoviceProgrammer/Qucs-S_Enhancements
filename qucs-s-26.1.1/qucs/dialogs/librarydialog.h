@@ -117,6 +117,9 @@ private:
   /// Copies \a from into the library's folder as \a name (a path in it);
   /// a name another file already took this time is an error.
   bool copyIntoLibrary(const QString &from, const QString &name);
+  bool writeIntoLibrary(const QString &from, const QString &name, const QByteArray &bytes);
+  QStringList verilogAModulesOf(Schematic *doc, const QString &spice, const QString &baseDir);
+  static QHash<QString, QString> descriptionsOf(const QString &file);
   /// A SPICE file a subcircuit uses (a SPICE library part's, an .INCLUDE's)
   /// into the library's folder, with the files it includes where it finds
   /// them: under its own name, or in a folder named as the one it is in
