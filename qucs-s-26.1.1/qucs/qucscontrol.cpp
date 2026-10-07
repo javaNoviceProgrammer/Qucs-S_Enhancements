@@ -140,11 +140,11 @@ const char* const kTools = R"JSON([
    "region": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4, "description": "Only the parts whose centre is in [x1, y1, x2, y2], with their nets and the wires in it"},
    "selection": {"type": "boolean", "description": "What the user selected: those components (or that region)"}}}},
 {"name": "check_schematic",
- "description": "Checks a schematic for anything a simulation would fail on or do differently than intended, like Simulation > Check Schematic, and reports each finding with its location and part. Errors: no ground, two parts with the same name, a part the simulator cannot handle, voltage sources in parallel or shorted by a wire, and so on. Warnings: pins and wire ends connected to nothing; a wire end or a pin lying on another net's wire mid-segment (not connected: a wire connects only at its ends); wires of two nets on top of each other; parts not connected to any ground (floating); nets that reach ground only through capacitors or current sources (no DC path, so no operating point); an inductor across a source; a negative capacitance; an AC analysis with no AC source, or only ones of AC magnitude 0 (a Vac of U = 0); a NutmegEq's v(node) of no net; an equation's variable named as a net, which under ngspice writes over the node's voltage; no simulation block. Notes, fine if intended: wires of two nets crossing without a junction, a net label on a single pin, two labels on one net, a 0 Ohm part, a capacitor across a pulse source, an input, base or gate with no DC bias but through its own part, an op-amp loaded under 1 kOhm. A topology and netlist check: nothing found does not mean the circuit works. Use it after building or rewiring a circuit and before simulate; get_schematic's summary also counts these findings.",
+ "description": "Checks a schematic for anything a simulation would fail on or do differently than intended, like Simulation > Check Schematic, and reports each finding with its location and part. Errors: no ground, two parts with the same name, a part the simulator cannot handle, voltage sources in parallel or shorted by a wire, a net named as a Nutmeg operator (or, and, not, eq, ...) under ngspice, and so on. Warnings: pins and wire ends connected to nothing; a wire end or a pin lying on another net's wire mid-segment (not connected: a wire connects only at its ends); wires of two nets on top of each other; parts not connected to any ground (floating); nets that reach ground only through capacitors or current sources (no DC path, so no operating point); an inductor across a source; a negative capacitance; an AC analysis with no AC source, or only ones of AC magnitude 0 (a Vac of U = 0); a NutmegEq's v(node) of no net; an equation's variable named as a net, which under ngspice writes over the node's voltage; no simulation block. Notes, fine if intended: wires of two nets crossing without a junction, a net label on a single pin, two labels on one net, a 0 Ohm part, a capacitor across a pulse source, an input, base or gate with no DC bias but through its own part, an op-amp loaded under 1 kOhm. A topology and netlist check: nothing found does not mean the circuit works. Use it after building or rewiring a circuit and before simulate; get_schematic's summary also counts these findings.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"},
    "subcircuits": {"type": "boolean", "description": "Also the findings inside each subcircuit it uses, at any depth, each with its file (without it, a line of counts for each)"}}}},
 {"name": "set_schematic",
- "description": "Replaces the elements of a schematic in one undo step. Give either the JSON form - 'components' and 'wires', as get_schematic's format json returns them, with properties by name and checked against each type - or 'text': the text of a .sch file, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are ignored). Diagrams re-read their data. Returns what it read in each section it replaced: the components by name and type, the number of wires, the diagrams as get_schematic lists them (each trace's points or why it has none, each marker and the sample it shows) and the paintings. If the text cannot be read, the schematic stays unchanged and the error is reported. The same happens for a component line with more values than its type has properties, because values are positional and one extra value in the middle puts every later value in the wrong property. A line with fewer values is accepted, the rest at their defaults, and the result says so. A number with letters after it that are no scale and unit (1kk, 10uu) is refused, and the schematic stays unchanged. Other values that do not fit their property - a word where a number belongs, a word that is not one of the property's choices - are listed under 'values'. To hide or show a property or move a part's text, use edit_component instead of rewriting the line. describe_format explains each line's fields. For diagrams, traces and markers, add_diagram, edit_diagram, add_trace, edit_trace, add_marker and edit_marker are simpler and safer.",
+ "description": "Replaces the elements of a schematic in one undo step. Give either the JSON form - 'components' and 'wires', as get_schematic's format json returns them, with properties by name and checked against each type - or 'text': the text of a .sch file, or any of its <Components>, <Wires>, <Diagrams> and <Paintings> sections (sections left out stay as they are; <Properties> and <Symbol> are ignored). Diagrams re-read their data. Returns what it read in each section it replaced: the components by name and type, the number of wires, the diagrams as get_schematic lists them (each trace's points or why it has none, each marker and the sample it shows) and the paintings. If the text cannot be read, the schematic stays unchanged and the error is reported. The same happens for a component line with more values than its type has properties, because values are positional and one extra value in the middle puts every later value in the wrong property. A line with fewer values is accepted, the rest at their defaults, and the result says so. A wire end that lies on another wire mid-way (a T) is joined to it, that wire split there, as drawing it joins it - 'joined' lists the places (a pin on a wire is not: a wire must end at it). A number with letters after it that are no scale and unit (1kk, 10uu) is refused, and the schematic stays unchanged. Other values that do not fit their property - a word where a number belongs, a word that is not one of the property's choices - are listed under 'values'. To hide or show a property or move a part's text, use edit_component instead of rewriting the line. describe_format explains each line's fields. For diagrams, traces and markers, add_diagram, edit_diagram, add_trace, edit_trace, add_marker and edit_marker are simpler and safer.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "text": {"type": "string", "description": "The .sch lines (or 'components' and 'wires' instead)"},
    "components": {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string"}, "name": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}, "rotation": {"type": "integer"}, "mirror": {"type": "boolean"}, "properties": {"type": "object"}, "shown": {"type": "object"}, "name_shown": {"type": "boolean"}, "text_at": {"type": "array"}, "active": {"type": "boolean"}, "equations": {"type": "array"}, "replace_equations": {"type": "boolean"}, "flags": {"type": "array"}, "records": {"type": "array"}, "specs": {"type": "array"}}}, "description": "The JSON form, in place of <Components>: each part {\"type\": \"R\", \"name\": \"R1\", \"x\": 100, \"y\": 100, \"rotation\": 0-3, \"mirror\": false, \"properties\": {\"R\": \"1k\"}, \"shown\": {...}, \"equations\": [...], \"active\": true, \"text_at\": [dx, dy]} - properties by name, checked against the type, so no value can shift into another's place; get_schematic's format json gives them so"},
    "wires": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "array"}, "to": {"type": "array"}, "at": {"type": "array"}, "label": {"type": "string"}, "label_at": {"type": "array"}, "initial": {"type": "string"}}}, "description": "The JSON form, in place of <Wires>: {\"from\": [x, y], \"to\": [x, y], \"label\": \"out\"}, a label on a pin alone {\"at\": [x, y], \"label\": \"in\"}; a label's 'initial' is its net's initial value (.IC)"}}}},
@@ -257,7 +257,7 @@ const char* const kTools = R"JSON([
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "points": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}, "minItems": 2, "description": "Its points in order, [[x1, y1], [x2, y2], ...]: a segment from each to the next, a bend where a step is not straight"}},
    "required": ["points"]}},
 {"name": "set_label",
- "description": "Names the net at a pin or at a point on a wire (a net label: nets with the same name are connected). An empty name removes the label. 'text_at' puts the label's text where you want it (the same name again moves only its text).",
+ "description": "Names the net at a pin or at a point on a wire (a net label: nets with the same name are connected). An empty name removes the label. 'text_at' puts the label's text where you want it (the same name again moves only its text). A name Nutmeg reads as an operator (or, and, not, eq, ne, gt, lt, ge, le) is set with a warning under ngspice, which is not started with it.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "at": {"description": "\"R1.1\" or [x, y]"}, "name": {"type": "string", "description": "The net's name (\"\" takes the label away); nets of one name are one. As the label dialog takes one: a letter, then letters, digits and single _ - not gnd, 0 or net1, net2 ..."},
    "text_at": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Where the label's text goes, [x, y] on the schematic (above right of the place unless given)"}}, "required": ["at", "name"]}},
@@ -494,7 +494,7 @@ const char* const kTools = R"JSON([
    "calls": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
      "tool": {"type": "string", "description": "A tool's name: add_component, connect, ..."},
      "arguments": {"type": "object"}}, "required": ["tool"]}, "description": "The calls in order: [{\"tool\": \"add_component\", \"arguments\": {...}}, ...]; not another batch"},
-   "keep_going": {"type": "boolean", "description": "Go on after one that fails"}, "brief": {"type": "boolean", "description": "Each call that succeeds said in a line (what it made: a part's name, type and place, a note) instead of its whole answer; those that fail in full"},
+   "keep_going": {"type": "boolean", "description": "Go on after one that fails"}, "brief": {"type": "boolean", "description": "Each call that succeeds and changes something said in a line (what it made: a part's name, type and place, a note) instead of its whole answer; those that fail, and those that only look (get_dataset, get_netlist, get_schematic, ...), in full"},
    "atomic": {"type": "boolean", "description": "All or nothing: when one fails, the changes of those before it are undone"}}, "required": ["calls"]}},
 {"name": "add_painting",
  "description": "Draws a painting - a text, arrow, line, box, text box, table, dimension or formula - on a schematic, or on its symbol with 'symbol' (the document switches to show its symbol, like Edit Circuit Symbol; a .sym file is all symbol). Use it to annotate a result, label part of the circuit or draw a subcircuit's symbol. 'type' is text, line, arrow, rectangle, ellipse, arc, polyline, image (from 'file'), rounded_rectangle, polygon, brace, waveform, text_box (kind block, note or callout, with a 'tip' it points at), table, dimension or formula (TeX). Its fields go by name: a text's x, y, text (_x or _{xy} for a subscript, ^ for a superscript, as in TeX), size, color and angle; a line's or arrow's from and to ([x, y]) and an arrow's head (open or filled); a box's x, y (top left corner), width and height; color, thickness, style, fill_color, fill_style, filled and so on. describe_format with element painting lists every type's fields. Returns it as get_schematic lists it, with its number. One undo step.",
@@ -605,12 +605,12 @@ const char* const kTools = R"JSON([
    "replace": {"type": "boolean", "description": "Write over a library of that name there, the old one moved to the trash"}},
   "required": ["name"]}},
 {"name": "import_library",
- "description": "Brings a library file into Qucs-S: a Qucs-S library (made by Create Library or create_library - another computer's, a colleague's) or a SPICE library of subcircuits (a .lib with .subckt), copied with its folder of models (NAME/ beside NAME.lib) - and a SPICE library with the files it includes beside it, in their places - into user_lib (the default), the project, or a folder of the library search paths; 'name' brings it in under another name. It is in the Libraries panel at once; the answer gives its kind, the files written and each part's add_component ('place'). One there already is refused unless 'replace', which moves it (and its folder) to the trash first. Said in 'warning': files its parts need that did not come with it ('missing'), a library made by a newer Qucs-S that this one does not read ('made by'), and a Qucs-S library whose name another library has elsewhere ('also_named': a part placed by the name is taken from the first of them that has it - 'name' gives it one of its own). A SPICE library including a file by a path out of its folder, and a folder of libraries, are used where they are instead: set_settings (scope app, \"Locations/Library search paths\") adds the folder.",
+ "description": "Brings a library file into Qucs-S: a Qucs-S library (made by Create Library or create_library - another computer's, a colleague's) or a SPICE library of subcircuits (a .lib with .subckt), copied with its folder of models (NAME/ beside NAME.lib) - and a SPICE library with the files it includes beside it, into a folder of its own (NAME/, at their paths from its folder, its include lines rewritten to name them there: no two libraries share an include) - into user_lib (the default), the project, or a folder of the library search paths; 'name' brings it in under another name. It is in the Libraries panel at once; the answer gives its kind, the files written and each part's add_component ('place'). One there already is refused unless 'replace', which moves it (and its folder) to the trash first. Said in 'warning': files its parts need that did not come with it ('missing'), a library made by a newer Qucs-S that this one does not read ('made by'), and a Qucs-S library whose name another library has elsewhere ('also_named': a part placed by the name is taken from the first of them that has it - 'name' gives it one of its own). A SPICE library including a file by a path out of its folder, and a folder of libraries, are used where they are instead: set_settings (scope app, \"Locations/Library search paths\") adds the folder.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The library file (a .lib): a path, or a name in the open project's folder (else the workspace's)"},
    "destination": {"type": "string", "description": "user_lib (the default), project, or a folder of the library search paths"},
    "name": {"type": "string", "description": "Bring it in under this name (letters, digits and _): NAME.lib and its folder NAME/, its parts placed with Lib NAME - when its own name is another library's (also_named)"},
-   "replace": {"type": "boolean", "description": "Replace a library of that name there, the old one (and its folder, and an include it brings that differs) moved to the trash"}},
+   "replace": {"type": "boolean", "description": "Replace a library of that name there, the old one (and its folder) moved to the trash"}},
   "required": ["path"]}},
 {"name": "new_project",
  "description": "Creates a project in the workspace (a NAME_prj folder with its Scratch folder, like Project > New Project; a plain folder when any folder is a project) and opens it unless 'open' is false. Opening closes the documents, so it is not opened while one has unsaved changes. Relative paths are then resolved against the open project.",
@@ -1185,6 +1185,18 @@ QString badNetName(const QString& name)
     if (!ok.match(name).hasMatch())
         return tr("%1 cannot name a net: a letter first, then letters, digits and single _ (as the label dialog takes a name)").arg(name);
     return {};
+}
+
+// A net name Nutmeg reads as an operator (or, and, ...), when the simulator
+// is ngspice or SPICE OPUS: it does not start with one. Empty otherwise.
+QString nutmegNameNote(const QString& name)
+{
+    const int simulator = QucsSettings.DefaultSimulator;
+    if (spicecompat::check_nodename(name) || (simulator != spicecompat::simNgspice && simulator != spicecompat::simSpiceOpus))
+        return {};
+    return QucsControl::tr("Warning: %1 is an operator of Nutmeg (%2, in any case) - %3, the simulator now, is not started with a "
+                           "net so named: name it otherwise to simulate it.")
+        .arg(name, spicecompat::nutmegKeywords().join(QStringLiteral(", ")), spicecompat::getDefaultSimulatorName(simulator));
 }
 
 QString propertyValue(const QJsonValue& v)
@@ -6169,6 +6181,16 @@ QJsonObject QucsControl::setSchematic(const QJsonObject& args)
     if (replaced("<Wires>")) {
         sections.append(QStringLiteral("wires"));
         result.insert(QStringLiteral("wire count"), int(sch->a_DocWires.size()));
+        // Its wire ends on another wire mid-way (a T): joined, that wire
+        // split there, whichever line came first.
+        if (const QList<QPoint>& joined = sch->wireEndsJoined(); !joined.isEmpty()) {
+            QJsonArray points;
+            for (const QPoint& p : joined)
+                if (const QJsonArray point{p.x(), p.y()}; !points.contains(point)) points.append(point);
+            result.insert(QStringLiteral("joined"), points);
+            short_ << tr("%n wire end(s) lay on another wire mid-way (joined): each is joined to it there, that wire split in two, as "
+                         "drawing it joins it", nullptr, int(points.size()));
+        }
     }
     if (replaced("<Diagrams>")) {
         sections.append(QStringLiteral("diagrams"));
@@ -9778,6 +9800,7 @@ QJsonObject QucsControl::setLabel(const QJsonObject& args)
     finish(sch, {p});
     QString text = name.isEmpty() ? tr("The label at %1, %2 is gone.").arg(p.x()).arg(p.y())
                                   : tr("The net at %1, %2 is %3.").arg(p.x()).arg(p.y()).arg(name);
+    if (const QString note = nutmegNameNote(name); !name.isEmpty() && !note.isEmpty()) text += QLatin1Char(' ') + note;
     // Traces of the name the net had, when no net has it now.
     if (!before.isEmpty() && before != name && !netNamed(sch, before)) {
         const QStringList orphans = tracesNaming(showingDataOf(sch), before);
@@ -9920,6 +9943,7 @@ QJsonObject QucsControl::renameNet(const QJsonObject& args)
                                                  : tr("The net %1 is %2 now (its %3 labels).").arg(from, to).arg(labels.size()));
     if (!changed.isEmpty()) text += QLatin1Char(' ') + tr("Renamed too: %1.").arg(changed.join(QStringLiteral("; ")));
     if (!rewritten.isEmpty()) text += QLatin1Char(' ') + rewritten;
+    if (const QString note = nutmegNameNote(to); !note.isEmpty()) text += QLatin1Char(' ') + note;
     if (!changed.isEmpty() || !rewritten.isEmpty())
         text += QLatin1Char(' ') + tr("The dataset still calls it %1: the traces show it again after the next simulation.").arg(from);
     return textResult(text);
@@ -10713,7 +10737,8 @@ public:
     }
 
     /// Each call that succeeds said in a line of its own: what it made or
-    /// changed, not its whole answer (those that fail in full).
+    /// changed, not its whole answer (those that fail, and those that only
+    /// look, in full).
     void setBrief(bool brief) { a_brief = brief; }
 
     void next()
@@ -10804,7 +10829,9 @@ private:
             else if (tool == QLatin1String("undo")) a_steps[where] -= steps;
             else if (tool == QLatin1String("redo")) a_steps[where] += steps;
         }
-        if (a_brief && !error) {
+        // (A call that only looks - get_dataset, get_netlist - is there to
+        // be read: its answer whole. "done (3 fields)" hid what it read.)
+        if (a_brief && !error && !a_control->readOnlyTools().contains(tool)) {
             a_content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
                                          {QStringLiteral("text"), QStringLiteral("[%1] %2: %3").arg(index + 1).arg(tool, briefOf(result))}});
             return;
@@ -12713,6 +12740,10 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
         QTimer::singleShot(0, a_app, [app = a_app, doc] {
             if (!doc) return;
             app->showDocument(doc);
+            // (Its netlist is made now, after this call: what that says in a
+            // box - a subcircuit not there - in the run's errors. The box
+            // waited for an answer, and the run with it, past its timeout.)
+            misc::ErrorCapture capture;
             app->slotSimulate();
         });
         QTimer::singleShot(0, this, [=, this] {
@@ -12787,13 +12818,20 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
     const int logBefore = console->statusLog()->count();
     // (Its own schematic, in front: one closed meanwhile is not run, nor the
     // document then in front in its place - its log came back as this one's.)
-    QTimer::singleShot(0, a_app, [app = a_app, doc] {
+    // (Its netlist is made then, after this call: what that says in a box -
+    // a subcircuit not there - in the answer's errors. The box waited for
+    // an answer, and the run with it, past its timeout.)
+    auto netlistSaid = std::make_shared<QStringList>();
+    QTimer::singleShot(0, a_app, [app = a_app, doc, netlistSaid] {
         if (!doc) return;
         app->showDocument(doc);
+        misc::ErrorCapture capture;
         app->slotSimulateWithSpice();
+        *netlistSaid = capture.errors();
+        netlistSaid->removeDuplicates();   // (made more than once: each said once)
     });
     QTimer::singleShot(0, this, [this, done, timeout, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning, logBefore,
-                                 compare, brief, followed, pastTimeout, caller, simulatorArg = args.value(QLatin1String("simulator")),
+                                 compare, brief, followed, pastTimeout, caller, netlistSaid, simulatorArg = args.value(QLatin1String("simulator")),
                                  applyOptimum = args.value(QLatin1String("apply_optimum")).toBool()] {
         SimulationRun* run = console->currentRun();
         // Closed before it began (a call right behind this one): said -
@@ -12810,7 +12848,7 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
             for (int i = std::min(logBefore, console->statusLog()->count()); i < console->statusLog()->count(); ++i)
                 log << console->statusLog()->item(i)->text();
             if (doc && doc->getShowBias() == 0) doc->setShowBias(-1);   // (the next run is its analyses)
-            done(errorResult(tr("The simulation did not start. %1").arg(log.join(QLatin1Char('\n')))));
+            done(errorResult(tr("The simulation did not start. %1").arg((*netlistSaid + log).join(QLatin1Char('\n')))));
             return;
         }
         run->setQuiet(true);   // (its errors in the answer, not in a box)
@@ -12819,7 +12857,7 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
         // under the id the answer gave.
         auto answered = std::make_shared<int>(0);   // 1: at its timeout, 2: at its end
         auto report = [this, done, answered, doc, title, console, started, simulator, keepAs, operatingPoint, restore, changedWhileRunning,
-                       compare, brief, simulatorArg, applyOptimum, timeout, caller](SimulationRun* r, bool timedOut, int id) {
+                       compare, brief, simulatorArg, applyOptimum, timeout, caller, netlistSaid](SimulationRun* r, bool timedOut, int id) {
             if (*answered == 2 || (*answered == 1 && timedOut)) return;
             *answered = timedOut ? 1 : 2;
             if (!timedOut) restore();
@@ -12848,6 +12886,8 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
                 }
             }
             QJsonArray errors, warnings;
+            for (const QString& said : std::as_const(*netlistSaid))
+                errors.append(QJsonObject{{QStringLiteral("message"), said}, {QStringLiteral("when"), tr("its netlist was made")}});
             for (const QJsonValue& p : qucs_s::simlog::toJson(qucs_s::simlog::problems(output, netlist, parts))) {
                 QJsonObject o = p.toObject();
                 if (doc && simulator == spicecompat::simNgspice)

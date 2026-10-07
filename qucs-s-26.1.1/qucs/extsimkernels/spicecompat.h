@@ -22,7 +22,8 @@ namespace spicecompat {
      int getPins(const QString &file, const QString &compname, QStringList &pin_names);
      QString getSubcktName(const QString& subfilename);
      QString convert_sweep_type(const QString& sweep);
-     bool check_nodename(QString &node);
+     bool check_nodename(const QString &node);
+     const QStringList& nutmegKeywords();   ///< net names Nutmeg reads as operators
      QString getDefaultSimulatorName(int simulator);
      QString getSpiceLibPath(const QString &lib);
      QString togglingPWL(const QStringList& durations, const QString& firstLevel, const QString& otherLevel,

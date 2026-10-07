@@ -386,6 +386,7 @@ Node* Schematic::provideNode(int x, int y)
             if (a_insertionIndex != nullptr) {
                 a_insertionIndex->add(piece);
             }
+            if (a_loadingWires) a_wireEndsJoined << new_node->center();
         }
     };
 
@@ -700,6 +701,49 @@ Wire* Schematic::splitWire(Wire *source_wire, Node *splitter_node)
     }
 
     return new_wire;
+}
+
+// Each wire end that lies on another wire mid-way joined to it, that wire
+// split there - as drawing it joins it. A document's wires are read one
+// after another, and a new node splits the wires it lies on
+// (provideNode()): an end on a wire read before it was joined, one on a
+// wire read after it was not, so the same lines in another order were
+// another circuit. The places joined: wireEndsJoined(). (A pin on a wire
+// is left: a part's pins are read before the wires, and stay as they were.)
+void Schematic::joinWireEnds()
+{
+  if (a_Wires != &a_DocWires) return;   // (the symbol shown: its lists are the symbol's)
+  std::list<Node*> ends;
+  for (Node* n : *a_Nodes)
+    if (!n->wires().empty()) ends.push_back(n);
+  if (ends.empty()) return;
+  const qucs_s::NodesByPlace byPlace{ends};
+  std::vector<Wire*> pending(a_Wires->begin(), a_Wires->end());
+  while (!pending.empty()) {
+    Wire* w = pending.back();
+    pending.pop_back();
+    const QPoint p1 = w->Port1->center(), p2 = w->Port2->center();
+    std::vector<Node*> on = byPlace.between(p1, p2);
+    if (on.empty()) continue;
+    if (p1.x() == p2.x() || p1.y() == p2.y()) {
+      // The farthest from Port1 first: the others stay on the piece that keeps it.
+      std::ranges::sort(on, std::ranges::greater{}, [p1](const Node* n) { return (n->center() - p1).manhattanLength(); });
+      for (Node* n : on) {
+        Wire* piece = splitWire(w, n);
+        if (a_insertionIndex != nullptr) a_insertionIndex->add(piece);   // (an index of a caller's, as provideNode())
+        a_wireEndsJoined << n->center();
+      }
+    } else {
+      // (A diagonal wire's tolerance: a node on the whole need not be on
+      // the piece it falls in - both pieces again.)
+      Node* n = on[on.size() / 2];
+      Wire* piece = splitWire(w, n);
+      if (a_insertionIndex != nullptr) a_insertionIndex->add(piece);
+      pending.push_back(piece);
+      pending.push_back(w);
+      a_wireEndsJoined << n->center();
+    }
+  }
 }
 
 // Deletes the wire and the nodes it was connected to if they

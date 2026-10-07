@@ -1661,14 +1661,28 @@ QJsonObject QucsControl::describePart(const QJsonObject& args)
     if (!description.isEmpty()) result.insert(QStringLiteral("note"), description.section(QLatin1Char('\n'), 0, 0).simplified());
     if (!supplies.isEmpty()) result.insert(QStringLiteral("supply pins"), QJsonArray::fromStringList(supplies));
     if (oneLine) result.insert(QStringLiteral("placed as"), placedAs);
-    // Files its model names in the library's folder that are not there (a
-    // library brought without it): a run of the part stops at them.
-    if (const QStringList missing = LibComp::missingFiles(libraryPath, part); !missing.isEmpty()) {
+    // Files its models name in the library's folder that are not there (a
+    // library brought without it): a run of the part stops at them - its
+    // SPICE model's under ngspice and Xyce, its Qucsator model's (the .lst
+    // includes) under Qucsator, each run only at its own.
+    const QStringList spiceMissing = LibComp::missingFiles(libraryPath, part, true, false),
+                      qucsMissing = LibComp::missingFiles(libraryPath, part, false, true);
+    if (!spiceMissing.isEmpty() || !qucsMissing.isEmpty()) {
+        QStringList missing = spiceMissing;
+        for (const QString& file : qucsMissing)
+            if (!missing.contains(file)) missing << file;
         result.insert(QStringLiteral("missing"), QJsonArray::fromStringList(missing));
-        result.insert(QStringLiteral("warning"), tr("Its model needs %1 in the library's folder %2, which is not there: a simulation "
-                                                    "of it stops at it until the file is put there.")
-                                                     .arg(missing.join(QStringLiteral(", ")),
-                                                          QDir::toNativeSeparators(libraryPath.chopped(4))));
+        QStringList stops;
+        if (!spiceMissing.isEmpty())
+            stops << tr("a run of it under ngspice or Xyce stops at %1, which its SPICE model needs").arg(spiceMissing.join(QStringLiteral(", ")));
+        if (!qucsMissing.isEmpty())
+            stops << tr("a run of it under Qucsator stops at %1, which its Qucsator model needs%2")
+                         .arg(qucsMissing.join(QStringLiteral(", ")),
+                              spiceMissing.isEmpty() && LibComp::hasSpiceModel(libraryPath, part)
+                                  ? tr(" (under ngspice or Xyce it is simulated from its SPICE model, which needs none of them)")
+                                  : QString());
+        result.insert(QStringLiteral("warning"), tr("The library's folder %1 lacks files: %2. Put them there to simulate it so.")
+                                                     .arg(QDir::toNativeSeparators(libraryPath.chopped(4)), stops.join(QStringLiteral("; "))));
     }
     if (!c->Ports.isEmpty() && std::all_of(c->Ports.cbegin(), c->Ports.cend(), [](const Port* p) { return p->Name.isEmpty(); })
         && c->Ports.size() > 2)

@@ -332,9 +332,11 @@ void Xyce::slotSimulate()
 
     QStringList incompat;
     bool checker_error = false;
+    a_refusal.clear();
+    const qsizetype checked = a_output.size();   // (the checks' text after it)
     if (!checkSchematic(incompat)) {
         QString s = incompat.join("; ");
-        a_output.append("There were SPICE-incompatible components. Simulator cannot proceed.");
+        a_output.append("There were SPICE-incompatible components. Simulator cannot proceed.\n");
         a_output.append("Incompatible components are: " + s + "\n");
         checker_error = true;
     }
@@ -353,6 +355,8 @@ void Xyce::slotSimulate()
     }
 
     if (checker_error) {
+        // (Said as the run's error: the process it never started has none.)
+        a_refusal = a_output.mid(checked).trimmed();
         if (a_console != nullptr)
             a_console->insertPlainText(a_output);
         //emit finished();

@@ -79,6 +79,7 @@ protected:
     QString a_simulator_cmd;
     QString a_simulator_parameters;
     QString a_output;
+    QString a_refusal;   ///< refusal()
     QProcess *a_simProcess;
 
     QPlainTextEdit *a_console;
@@ -164,6 +165,9 @@ public:
     /// The simulator process's own account of its last error, and the
     /// command it was started with (for the messages of a failed start).
     QString processErrorString() const;
+    /// Why the kernel did not start the simulator (its checks of the
+    /// schematic), when it did not: empty when it started it, or tried.
+    QString refusal() const { return a_refusal; }
     QString simulatorCommand() const { return a_simulator_cmd; }
     /// How the simulator process ended the last time: its exit code, or
     /// -1 when it crashed or never ran.

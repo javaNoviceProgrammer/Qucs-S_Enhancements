@@ -117,6 +117,9 @@ public:
   /// (<SpiceAttach>, with \a spice) and its Qucs model includes
   /// (<ModelIncludes>, with \a qucs).
   static QStringList missingFiles(const QString& libraryFile, const QString& comp, bool spice = true, bool qucs = true);
+  /// Whether the component \a comp of \a libraryFile has a SPICE model
+  /// (<Spice>): what ngspice and Xyce simulate it from.
+  static bool hasSpiceModel(const QString& libraryFile, const QString& comp);
   /// The .va files attached to the component in its library (Create
   /// Library embeds them), in the library's folder, and the .osdi model
   /// compiled from each where there is one (OpenVAF puts it beside the
