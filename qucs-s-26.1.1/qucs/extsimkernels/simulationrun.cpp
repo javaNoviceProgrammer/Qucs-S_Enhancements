@@ -286,7 +286,11 @@ void SimulationRun::slotNgspiceStartError(QProcess::ProcessError err)
                                       : static_cast<AbstractSpiceKernel*>(a_ngspice);
     switch (err) {
     case QProcess::FailedToStart:
-        msg = tr("Failed to start simulator \"%1\": %2").arg(kernel->simulatorCommand(), kernel->processErrorString());
+        // Not started at all - the kernel's checks refused the schematic -
+        // said as they said it: the process's own error was "Unknown error".
+        msg = !kernel->refusal().isEmpty()
+                  ? tr("%1 was not started: %2").arg(spicecompat::getDefaultSimulatorName(QucsSettings.DefaultSimulator), kernel->refusal())
+                  : tr("Failed to start simulator \"%1\": %2").arg(kernel->simulatorCommand(), kernel->processErrorString());
         break;
     case QProcess::Crashed:
         msg = tr("Simulator crashed!");

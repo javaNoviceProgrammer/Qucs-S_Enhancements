@@ -52,6 +52,7 @@
 #include "vamodule.h"
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QScopeGuard>
 
 #include <optional>
 
@@ -1159,10 +1160,21 @@ bool Schematic::loadWires(QTextStream *stream, std::list<Element*> *List)
   Wire *w;
   QString Line;
   std::optional<IndexedInsertion> indexed;
-  if (List == nullptr) indexed.emplace(this);
+  if (List == nullptr) {
+    indexed.emplace(this);
+    a_wireEndsJoined.clear();
+    a_loadingWires = true;
+  }
+  const auto loaded = qScopeGuard([this] { a_loadingWires = false; });
   while(!stream->atEnd()) {
     Line = stream->readLine();
-    if(Line.startsWith("</")) return true;
+    if(Line.startsWith("</")) {
+      if (List == nullptr) {
+        indexed.reset();
+        joinWireEnds();
+      }
+      return true;
+    }
     Line = Line.trimmed();
     if(Line.isEmpty()) continue;
 

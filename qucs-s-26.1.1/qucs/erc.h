@@ -60,8 +60,10 @@ struct Issue {
 QHash<const Component*, QString> refs(const Schematic* doc);
 
 /// The issues of \a doc, errors first, in the order they were found;
-/// each carries the document's name as its file.
-QList<Issue> check(Schematic* doc);
+/// each carries the document's name as its file. \a run false: \a doc is a
+/// subcircuit of the one run, and what matters only to the schematic a
+/// simulator is given (its net names Nutmeg reads) is left out.
+QList<Issue> check(Schematic* doc, bool run = true);
 
 /// What the wires of \a doc show and do not do - a wire's end or a pin on
 /// another net's wire mid-way, two nets' wires over each other (part of

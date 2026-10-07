@@ -570,6 +570,13 @@ QStringList LibComp::missingFiles(const QString& libraryFile, const QString& com
   return missing;
 }
 
+bool LibComp::hasSpiceModel(const QString& libraryFile, const QString& comp)
+{
+  const LibraryRead& read = readLibrary(libraryFile);
+  const auto it = read.parts.constFind(comp);
+  return it != read.parts.constEnd() && it->spice;
+}
+
 QString LibComp::writtenName()
 {
   return subcircuitName(readLibrary(libraryFile()).title, Props.at(1)->Value);

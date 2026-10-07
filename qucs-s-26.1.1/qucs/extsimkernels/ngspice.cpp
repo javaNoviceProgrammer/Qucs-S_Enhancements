@@ -696,6 +696,7 @@ QString Ngspice::getParentSWPscript(Component *pc_swp, QString sim, bool before,
 void Ngspice::slotSimulate()
 {
     a_output.clear();
+    a_refusal.clear();
 
     QString mathf_inc; // drain
     if (QucsSettings.NgspiceMathFuncs && !findMathFuncInc(mathf_inc)) {
@@ -703,10 +704,11 @@ void Ngspice::slotSimulate()
     }
 
     bool checker_error = false;
+    const qsizetype checked = a_output.size();   // (the checks' text after it)
     QStringList incompat;
     if (!checkSchematic(incompat)) {
         QString s = incompat.join("; ");
-        a_output.append("There were SPICE-incompatible components. Simulator cannot proceed.");
+        a_output.append("There were SPICE-incompatible components. Simulator cannot proceed.\n");
         a_output.append("Incompatible components are: " + s + "\n");
         checker_error = true;
     }
@@ -733,14 +735,19 @@ void Ngspice::slotSimulate()
         checker_error = true;
     }
 
+    incompat.clear();
     if (!checkNodeNames(incompat)) {
         QString s = incompat.join("; ");
         a_output.append("There were Nutmeg-incompatible node names. Simulator cannot proceed.\n");
         a_output.append("Incompatible node names are: " + s + "\n");
+        a_output.append("(Nutmeg reads " + spicecompat::nutmegKeywords().join(", ")
+                        + " as operators, in any case: rename the net.)\n");
         checker_error = true;
     }
 
     if (checker_error) {
+        // (Said as the run's error: the process it never started has none.)
+        a_refusal = a_output.mid(checked).trimmed();
         if (a_console != nullptr)
             a_console->insertPlainText(a_output);
         //emit finished();

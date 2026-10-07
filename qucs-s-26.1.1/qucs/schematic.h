@@ -850,6 +850,9 @@ public:
   /// with fewer is taken, its last properties at their defaults, and
   /// \a notes says which.
   bool replaceContent(const QString& text, QString* error = nullptr, QStringList* notes = nullptr);
+  /// The wire ends the last load of the wires found on another wire
+  /// mid-way, and joined to it there (joinWireEnds()).
+  const QList<QPoint>& wireEndsJoined() const { return a_wireEndsJoined; }
   /// The elements as they are now, to come back to with restore().
   QString snapshot();
   /// The schematic's undo stack (not its symbol's): the state each step
@@ -911,6 +914,9 @@ private:
   bool loadComponents(QTextStream*, std::list<Component*> *List=0);
   void simpleInsertWire(Wire*);
   bool loadWires(QTextStream*, std::list<Element*> *List=0);
+  void joinWireEnds();
+  QList<QPoint> a_wireEndsJoined;   // wireEndsJoined()
+  bool a_loadingWires = false;      // (loadWires() reads a document's: provideNode() says what it joined)
   bool loadDiagrams(QTextStream*, std::list<Diagram*>*);
   bool loadPaintings(QTextStream*, std::list<Painting*>*);
   bool loadIntoNothing(QTextStream*);
