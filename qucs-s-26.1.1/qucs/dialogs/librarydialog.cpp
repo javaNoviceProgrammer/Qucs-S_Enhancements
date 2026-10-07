@@ -871,6 +871,15 @@ void LibraryDialog::slotSave()
               : tr("Marked to load its Verilog-A models in the project's circuits, but the library has none "
                    "of it (embedding Verilog-A is off, or it uses none): the mark loads nothing.\n"));
         }
+        // Its .model cards written in every circuit of a project that has the
+        // library, placed or not: its Document Settings > Library ask for it.
+        if (Doc->getAlwaysModelCards()) {
+          Stream << "  <AlwaysModelCards>\n";
+          ErrText->insertPlainText(!Schematic::modelCardsOf(Doc->getModelCards()).isEmpty()
+              ? tr("Marked: every circuit of a project that has the library has its .model cards.\n")
+              : tr("Marked to write its .model cards in the project's circuits, but it has none (Document Settings > "
+                   "Library): the mark writes nothing.\n"));
+        }
         delete kern;
         // The subcircuits written into the SPICE netlist: forgotten. Kept, the
         // next netlist built - a simulation's, the Verilog-A it compiles -

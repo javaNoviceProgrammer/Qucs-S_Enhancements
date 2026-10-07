@@ -69,6 +69,12 @@ void usedSources(const QString& projectDir, const QList<Schematic*>& open, QList
 /// .osdi) in its library.
 QSet<QString> alwaysLoadedModules(const QString& projectDir);
 
+/// The .model cards of the library parts marked to have them in every
+/// circuit of the project, placed or not (LibComp::alwaysWrittenCards():
+/// their subcircuit's Document Settings > Library), each part's together:
+/// of the project's libraries as alwaysLoadedModules() finds them.
+QStringList alwaysWrittenModelCards(const QString& projectDir);
+
 /// What sync() did, as paths relative to the project.
 struct Report {
     QStringList made;       ///< linked (or copied) in

@@ -217,6 +217,15 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
            "on with one, * comments; ngspice and Xyce read them, Qucsator does not."), Tab4);
     cardsNote->setWordWrap(true);
     gp4->addWidget(cardsNote);
+    Check_AlwaysModelCards = new QCheckBox(tr("Always write its .model cards in the project's circuits"), Tab4);
+    Check_AlwaysModelCards->setObjectName(QStringLiteral("alwaysModelCards"));
+    Check_AlwaysModelCards->setToolTip(
+        tr("Made into a library part, its .model cards above are marked in the library: every ngspice circuit of "
+           "a project that has the library - its own library, or one whose part a schematic of it places - has "
+           "them at the top of its netlist, whether the part is placed or not, and loads the Verilog-A models "
+           "(OSDI) of the library part they name, as the mark above does. For a model a circuit uses where "
+           "Qucs-S cannot see it.\nOff: a circuit has the cards of the parts it places."));
+    gp4->addWidget(Check_AlwaysModelCards);
     t->addTab(Tab4, tr("Library"));
 
     // ...........................................................
@@ -249,6 +258,7 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     Check_GridOn->setChecked(Doc->getGridOn());
     Check_AlwaysLoadOSDI->setChecked(Doc->getAlwaysLoadOSDI());
     Input_ModelCards->setPlainText(Doc->getModelCards());
+    Check_AlwaysModelCards->setChecked(Doc->getAlwaysModelCards());
     Input_GridX->setText(QString::number(Doc->getGridX()));
     Input_GridY->setText(QString::number(Doc->getGridY()));
 
@@ -388,6 +398,12 @@ bool SettingsDialog::apply()
     if (const QString cards = Input_ModelCards->toPlainText().trimmed(); Doc->getModelCards() != cards)
     {
         Doc->setModelCards(cards);
+        changed = true;
+    }
+
+    if (Doc->getAlwaysModelCards() != Check_AlwaysModelCards->isChecked())
+    {
+        Doc->setAlwaysModelCards(Check_AlwaysModelCards->isChecked());
         changed = true;
     }
 
