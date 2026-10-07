@@ -1308,10 +1308,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   another). *⋯ → Background* draws the canvas light or dark whatever
   Qucs-S's theme (or like it, the default), in every layout tab, kept for
   the next time. Pan with a drag, the arrow keys or two fingers; zoom with
-  the wheel, a pinch, `+`/`−`, or a box dragged with the right button,
-  about the pointer; `F` shows the whole cell. *Levels* is how deep the
-  hierarchy is drawn, the cells below as their frames; shapes too small
-  to see are a pixel each, and arrays of them where they are. A **click**
+  the wheel (or Ctrl+wheel, as *Settings → Mouse wheel* says), a pinch,
+  `+`/`−`, or a box dragged with the right button, about the pointer;
+  `F` shows the whole cell. *Levels* is how deep the hierarchy is drawn,
+  the cells below as their frames; shapes too small to see are a pixel
+  each, and arrays of them where they are. A **click**
   selects the shape or text under the pointer (again: the next one
   under it) and says under the view what it is: its layer, the cell it
   is in and through which it is placed, its size and corners, a path's
@@ -1433,6 +1434,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     white.
   Under the platform's themes the text editor is black on white, as
   before.
+- **The mouse wheel zooms, or scrolls, as you choose** (*Application
+  Settings → Settings → Mouse wheel*): *Zooms in and out*, the default,
+  or *Scrolls*, as upstream did. Ctrl+wheel (Command+wheel on macOS) does
+  the other; Shift+wheel, or a wheel tilted sideways, scrolls left and
+  right either way. It applies to schematics, symbols, data displays and
+  the layout viewer. A touchpad's two-finger swipe scrolls whatever the
+  setting, and zooms with Ctrl; its pinch zooms. The PDF and text views
+  scroll with the wheel as before, Ctrl+wheel zooming.
 - **Status bar**: on the left, what the tool in hand does and the keys it
   takes — *Double-click to edit · ⌘-click to add · drag on empty space to
   select*, *Click to place ground · right-click to rotate · Esc to stop*,

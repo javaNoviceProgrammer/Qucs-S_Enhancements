@@ -588,14 +588,18 @@ bool LayoutView::event(QEvent* event)
 
 void LayoutView::wheelEvent(QWheelEvent* event)
 {
-    // A trackpad's two fingers pan; a wheel - or either with Ctrl - zooms.
-    const bool zoom = event->modifiers() & Qt::ControlModifier || event->pixelDelta().isNull();
-    if (zoom) {
-        const QPoint d = event->angleDelta();
-        const double steps = (d.y() != 0 ? d.y() : d.x()) / 120.0;
-        if (steps != 0) zoomBy(std::pow(1.25, steps), event->position());
+    // A wheel zooms or pans as the settings say, with Ctrl the other way;
+    // a trackpad's two fingers pan, and zoom with Ctrl. Sideways - a
+    // wheel tilted, or turned with Shift - pans, as on a schematic.
+    const QPoint angle = event->angleDelta();
+    const bool shift = event->modifiers() & Qt::ShiftModifier;
+    if (!shift && angle.x() == 0 && misc::wheelZooms(event)) {
+        if (angle.y() != 0) zoomBy(std::pow(1.25, angle.y() / 120.0), event->position());
     } else {
-        const QPoint d = event->pixelDelta();
+        // A trackpad's pixels, or half a wheel's angle (as a schematic
+        // scrolls).
+        QPoint d = event->pixelDelta().isNull() ? angle / 2 : event->pixelDelta();
+        if (shift && d.x() == 0) d = QPoint(d.y(), 0);
         setView(a_center + QPointF(-d.x() / a_scale, d.y() / a_scale), a_scale);
     }
     event->accept();
