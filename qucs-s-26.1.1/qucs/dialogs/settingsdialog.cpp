@@ -210,11 +210,11 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     cardsLabel->setBuddy(Input_ModelCards);
     gp4->addWidget(Input_ModelCards, 1);
     QLabel *cardsNote = new QLabel(
-        tr("Written into this schematic's SPICE netlist with its devices - inside the subcircuit when "
-           "it is one, and into a library part made of it: the .model card of a Verilog-A device in it "
-           "(an N device whose model is resmod: .model resmod va_res r=1k), with no .MODEL block placed "
-           "for it. One card a line, + lines going on with one, * comments; ngspice and Xyce read them, "
-           "Qucsator does not."), Tab4);
+        tr("Written at the top level of the SPICE netlist - not inside this subcircuit - of a circuit that "
+           "places it, as a subcircuit or as a library part made of it (and of its own netlist): the global "
+           ".model card of a Verilog-A device in it (an N device whose model is resmod: .model resmod va_res "
+           "r=1k). A .MODEL block placed in it is the subcircuit's own instead. One card a line, + lines going "
+           "on with one, * comments; ngspice and Xyce read them, Qucsator does not."), Tab4);
     cardsNote->setWordWrap(true);
     gp4->addWidget(cardsNote);
     t->addTab(Tab4, tr("Library"));

@@ -321,13 +321,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Qucs-S 26.1.5 and earlier refuse a schematic that has it ("Unknown
   property").
 - **A subcircuit's own `.model` cards**: *File → Document Settings →
-  Library → SPICE .model cards of its own* holds the `.model` card of a
-  Verilog-A device in a subcircuit wrapper - an N device whose model is
-  `resmod`: `.model resmod va_res r=1k` - with no *.MODEL* block placed
-  for it. The cards go into the schematic's SPICE netlist with its
-  devices: inside its `.SUBCKT` where a circuit places it, and in a
-  library part made of it, whose Verilog-A is embedded for them as for a
-  block's. One card a line, `+` lines going on with one, `*` comments;
+  Library → SPICE .model cards of its own* holds the global `.model`
+  card of a Verilog-A device in a subcircuit wrapper - an N device whose
+  model is `resmod`: `.model resmod va_res r=1k`. The cards go to the top
+  level of the SPICE netlist, not inside the subcircuit (a *.MODEL* block
+  placed in the wrapper is the subcircuit's own): of a circuit that
+  places the wrapper, right after its `.SUBCKT`'s `.ENDS`; of one that
+  places a library part made of it, whose `<Spice>` section ends with
+  them and whose Verilog-A is embedded for them; and of the wrapper's own
+  netlist. A model name is then global: two wrappers that give one name
+  two cards meet in one netlist, and ngspice keeps the first and warns.
+  One card a line, `+` lines going on with one, `*` comments;
   any other line - a `.control` block - is refused in the dialog, and one
   in a file written by hand is left out of the netlist and said by
   *Check Schematic*. ngspice and Xyce read them, Qucsator does not.

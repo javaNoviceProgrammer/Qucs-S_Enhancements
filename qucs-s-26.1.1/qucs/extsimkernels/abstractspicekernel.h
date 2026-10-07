@@ -91,6 +91,7 @@ protected:
     bool a_wroteNoResults = false;
     bool a_needsPrefix;
     QString a_extraParameters;   // .PARAM lines ahead of the schematic's own
+    bool a_writingSubcircuit = false;   // (startNetlist() within createSubNetlist(): its .model cards go after the .ENDS)
     Schematic *a_schematic;
 
     bool a_parseFourTHD;  // Fourier output is parsed twice, first freqencies, then THD
