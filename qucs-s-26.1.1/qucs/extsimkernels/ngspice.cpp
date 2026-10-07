@@ -174,18 +174,78 @@ QString Ngspice::osdiLoads(const QString& netlist) const
     verilogAFiles(&sources, &files);
     const QString simulator = programFile(a_simulator_cmd);
     const QString cache = misc::cacheDir();
+    // What the circuit's library parts bring, each its own library's: a
+    // module of theirs is loaded from it, not from a project file that
+    // happens to define one of that name (osdi::needed()'s preferred).
+    QSet<QString> brought;
+    for (const QString& file : collectVerilogAFiles(a_schematic)) brought.insert(QFileInfo(file).canonicalFilePath());
+    brought.remove(QString());
+    const auto ofParts = [&brought](const QString& source) {
+        if (brought.contains(QFileInfo(source).canonicalFilePath())) return true;
+        const auto entry = qucs_s::projectlibraries::entryOf(source);   // (a project's copy of one: Windows)
+        return !entry.isEmpty() && brought.contains(QFileInfo(entry.original).canonicalFilePath());
+    };
+    QStringList preferred;
+    for (const QString& file : std::as_const(files))
+        if (ofParts(file)) preferred << file;
     for (const QString& source : std::as_const(sources)) {
         const QString model = qucs_s::osdi::modelOf(source, cache, simulator);
         const QFileInfo va(source);
         const QString beside = va.absoluteDir().absoluteFilePath(va.completeBaseName() + QStringLiteral(".osdi"));
+        if (!model.isEmpty() && ofParts(source)) preferred << model;
         if (model.isEmpty() || model == beside) continue;
         files.erase(std::remove_if(files.begin(), files.end(), [&](const QString& f) { return containsFile({beside}, f); }),
                     files.end());
         if (!files.contains(model)) files << model;
     }
-    if (files.isEmpty())
-        return QString();
+    const QSet<QString> types = modelTypesOf(netlist);
     QStringList notes, loadable;
+    // A module two sources define differently - two libraries' vx_res, a
+    // project file and a part's library -: ngspice loads one definition and
+    // every device of the module runs it, which no line said (one of them
+    // never compiled, nothing was even left out). Said.
+    QStringList sortedTypes(types.cbegin(), types.cend());
+    sortedTypes.sort();
+    for (const QString& type : std::as_const(sortedTypes)) {
+        // Each content once (a project's copy of a library's source is
+        // that source), a part's when any file of it is.
+        struct Content {
+            QByteArray bytes;
+            QString shown;
+            bool ofParts = false;
+        };
+        QList<Content> contents;
+        for (const QString& source : std::as_const(sources)) {
+            if (!qucs_s::osdi::sourceDefines(source, type)) continue;
+            QFile f(source);
+            const QByteArray bytes = f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            const bool part = ofParts(source);
+            auto it = std::find_if(contents.begin(), contents.end(), [&](const Content& c) { return c.bytes == bytes; });
+            if (it == contents.end()) contents.append({bytes, QDir::toNativeSeparators(source), part});
+            else if (part && !it->ofParts) *it = {bytes, QDir::toNativeSeparators(source), true};
+        }
+        QStringList distinct, distinctOfParts;
+        for (const Content& c : std::as_const(contents)) {
+            distinct << c.shown;
+            if (c.ofParts) distinctOfParts << c.shown;
+        }
+        if (distinct.size() < 2) continue;
+        if (distinctOfParts.size() == 1) {
+            QStringList others = distinct;
+            others.removeAll(distinctOfParts.first());
+            notes << QStringLiteral("%1 from %2, the library of the part that uses it - not from %3, which defines it differently")
+                         .arg(type, distinctOfParts.first(), others.join(QStringLiteral(", ")));
+        } else {
+            notes << QStringLiteral("%1 is defined differently by %2: one of them is loaded, and every device of %1 runs it")
+                         .arg(type, (distinctOfParts.isEmpty() ? distinct : distinctOfParts).join(QStringLiteral(", ")));
+        }
+    }
+    // (Said whether a compiled model is there or not.)
+    if (files.isEmpty()) {
+        QString out;
+        for (const QString& note : std::as_const(notes)) out += QStringLiteral("* OSDI: %1\n").arg(note);
+        return out;
+    }
     for (const QString& file : std::as_const(files)) {
         if (qucs_s::osdi::builtForAnotherPlatform(file, simulator))
             notes << QStringLiteral("%1 was built for another platform: not loaded").arg(QDir::toNativeSeparators(file));
@@ -193,7 +253,7 @@ QString Ngspice::osdiLoads(const QString& netlist) const
             loadable << file;
     }
     QString out;
-    for (const QString& file : qucs_s::osdi::needed(loadable, modelTypesOf(netlist), &notes))
+    for (const QString& file : qucs_s::osdi::needed(loadable, types, &notes, preferred))
         out += QStringLiteral("pre_osdi '%1'\n").arg(file);
     for (const QString& note : notes)
         out += QStringLiteral("* OSDI: %1\n").arg(note);

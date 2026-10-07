@@ -24,6 +24,7 @@
 #include "misc.h"
 #include "node.h"
 #include "projectlibraries.h"
+#include "osdiselection.h"
 #include "schematic.h"
 #include "extsimkernels/qucs2spice.h"
 #include "extsimkernels/spicecompat.h"
@@ -399,6 +400,8 @@ struct LibraryPart {
   QStringList attach;        // the files of the library's folder it attaches (<SpiceAttach>)
   QStringList includes;      // and its Qucs model includes (<ModelIncludes>)
   bool spice = false;        // it has a SPICE model (<Spice>)
+  bool qucsDevices = true;   // its Qucs model (and what it includes) has a device of Qucsator's (LibComp::qucsDevicesIn())
+  QStringList modules;       // the Verilog-A modules it needs (<VerilogAModules>)
 };
 
 // The files a component's tag names - <SpiceAttach "a.lib" "b.va"> - as
@@ -518,6 +521,7 @@ const LibraryRead& readLibrary(const QString& libraryFile)
         part.alwaysLoad = definition.contains(QRegularExpression(QStringLiteral("\\n\\s*<AlwaysLoadOSDI>")));
         part.alwaysCards = definition.contains(QRegularExpression(QStringLiteral("\\n\\s*<AlwaysModelCards>")));
         part.attach = filesOfTag(definition, QStringLiteral("SpiceAttach"));
+        part.modules = filesOfTag(definition, QStringLiteral("VerilogAModules"));
         part.includes = filesOfTag(definition, QStringLiteral("ModelIncludes"));
         const qsizetype spice = definition.indexOf(QLatin1String("<Spice>"));
         part.spice = spice >= 0;
@@ -531,6 +535,18 @@ const LibraryRead& readLibrary(const QString& libraryFile)
           const QStringList own{LibComp::subcircuitName(info.completeBaseName(), name), LibComp::subcircuitName(read.title, name)};
           part.pins = subcircuitPins(section, own);
           if (part.alwaysCards) part.cards = ownCards(section, own);
+        }
+        // Its Qucs model, with the files it includes from the library's
+        // folder: a SPICE wrapper's has no device of Qucsator's.
+        if (const qsizetype model = definition.indexOf(QLatin1String("<Model>")); model >= 0) {
+          const qsizetype modelEnd = definition.indexOf(QLatin1String("</Model>"), model);
+          QString text = definition.mid(model + 7, modelEnd < 0 ? -1 : modelEnd - model - 7);
+          const QDir folder(info.absolutePath() + QLatin1Char('/') + info.completeBaseName());
+          for (const QString& include : std::as_const(part.includes)) {
+            QFile lst(folder.absoluteFilePath(include));
+            if (lst.open(QIODevice::ReadOnly)) text += QLatin1Char('\n') + QString::fromUtf8(lst.readAll());
+          }
+          part.qucsDevices = LibComp::qucsDevicesIn(text);
         }
         if (!read.parts.contains(name)) read.order << name;
         read.parts.insert(name, part);
@@ -614,7 +630,37 @@ QStringList LibComp::missingFiles(const QString& libraryFile, const QString& com
   QStringList missing;
   for (const QString& file : attach + includes)
     if (!file.trimmed().isEmpty() && !QFileInfo::exists(QDir(folder).filePath(file)) && !missing.contains(file)) missing << file;
+  // What its Verilog-A includes and the library does not have - made when
+  // a file from outside the source's folder was left out: OpenVAF failed on
+  // it where the library was used ("failed to read '../common/up.vams'").
+  for (const QString& file : attach)
+    if (file.endsWith(QLatin1String(".va"), Qt::CaseInsensitive) && QFileInfo(QDir(folder).filePath(file)).isFile())
+      for (const QString& name : qucs_s::osdi::missingSourceIncludes(QDir(folder).filePath(file)))
+        if (const QString said = QStringLiteral("%1's include %2").arg(file, name); !missing.contains(said)) missing << said;
   return missing;
+}
+
+QStringList LibComp::verilogAModules(const QString& libraryFile, const QString& comp)
+{
+  const LibraryRead& read = readLibrary(libraryFile);
+  const auto it = read.parts.constFind(comp);
+  return it == read.parts.constEnd() ? QStringList() : it->modules;
+}
+
+bool LibComp::qucsDevicesIn(const QString& model)
+{
+  // A line of a device: Type:Name, not a subcircuit's instance, an equation
+  // or a .Def line.
+  static const QRegularExpression device(QStringLiteral("^\\s*(?!Sub:|Eqn:)[A-Za-z_][A-Za-z0-9_]*:\\S"),
+                                         QRegularExpression::MultilineOption);
+  return device.match(model).hasMatch();
+}
+
+bool LibComp::qucsatorSimulates(const QString& libraryFile, const QString& comp)
+{
+  const LibraryRead& read = readLibrary(libraryFile);
+  const auto it = read.parts.constFind(comp);
+  return it == read.parts.constEnd() || !it->spice || it->qucsDevices;
 }
 
 bool LibComp::hasSpiceModel(const QString& libraryFile, const QString& comp)

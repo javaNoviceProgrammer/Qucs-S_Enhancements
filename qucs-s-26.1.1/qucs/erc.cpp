@@ -28,8 +28,10 @@
 #include "qucs.h"
 #include "components/vacomponent.h"
 #include "valuereading.h"
+#include "vamodule.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -1874,6 +1876,86 @@ void nutmegNameIssues(Schematic* doc, int simulator, QList<Issue>& errors)
         if (w->hasLabel()) look(w->label()->Name, QPoint(w->label()->cx, w->label()->cy));
 }
 
+// A Verilog-A source's modules (lower case) and a digest of its bytes,
+// read once while it is unchanged: Check Schematic asks after each edit.
+struct SourceRead {
+    QDateTime modified;
+    qint64 size = -1;
+    QByteArray digest;
+    QStringList modules;
+};
+
+SourceRead sourceRead(const QString& file)
+{
+    static QMutex mutex;
+    static QHash<QString, SourceRead> known;
+    const QFileInfo info(file);
+    QMutexLocker lock(&mutex);
+    auto it = known.find(info.absoluteFilePath());
+    if (it != known.end() && it->modified == info.lastModified() && it->size == info.size()) return *it;
+    SourceRead read{info.lastModified(), info.size(), {}, {}};
+    QFile f(file);
+    if (f.open(QIODevice::ReadOnly)) {
+        const QByteArray bytes = f.readAll();
+        read.digest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha1);
+        for (const QString& module : qucs_s::vamodule::sourceModules(QString::fromUtf8(bytes))) read.modules << module.toLower();
+    }
+    return *known.insert(info.absoluteFilePath(), read);
+}
+
+// The circuit's library parts whose libraries bring one Verilog-A module,
+// defined differently - two libraries' vx_res, an old copy and a new one:
+// ngspice loads one definition, and every part using the module runs it,
+// with no word from the simulator (a run says it as a warning). Under
+// ngspice, of its own parts.
+void moduleClashIssues(Schematic* doc, int simulator, QList<Issue>& errors)
+{
+    if (simulator != spicecompat::simNgspice) return;
+    struct Source {
+        QString file;
+        QByteArray digest;
+        const Component* part;
+        QString library;
+    };
+    QHash<QString, QList<Source>> byModule;   // one of each content
+    QStringList order;
+    for (const Component* c : doc->a_DocComps) {
+        auto* part = dynamic_cast<LibComp*>(const_cast<Component*>(c));
+        if (part == nullptr || !inCircuit(c)) continue;
+        for (const QString& file : part->getVerilogAFiles()) {
+            if (!file.endsWith(QLatin1String(".va"), Qt::CaseInsensitive)) continue;
+            const SourceRead read = sourceRead(file);
+            if (read.digest.isEmpty()) continue;
+            for (const QString& module : read.modules) {
+                QList<Source>& known = byModule[module];
+                if (known.isEmpty()) order << module;
+                if (std::none_of(known.cbegin(), known.cend(), [&](const Source& k) { return k.digest == read.digest; }))
+                    known << Source{file, read.digest, c, QFileInfo(part->libraryFile()).completeBaseName()};
+            }
+        }
+    }
+    for (const QString& module : std::as_const(order)) {
+        const QList<Source>& known = byModule.value(module);
+        if (known.size() < 2) continue;
+        QStringList parts, files;
+        for (const Source& k : known) {
+            const QString part = QStringLiteral("%1 (%2)").arg(k.part->Name, k.library);
+            if (!parts.contains(part)) parts << part;
+            files << QDir::toNativeSeparators(k.file);
+        }
+        // (One part's library bringing two: made before a library took one
+        // source a module.)
+        const QString what = parts.size() == 1
+            ? tr("%1 brings the Verilog-A module %2 twice, defined differently (%3): ngspice loads one of them, and every "
+                 "part using %2 runs it - make the library again, which takes one source a module")
+                  .arg(parts.first(), module, files.join(QStringLiteral(", ")))
+            : tr("%1 bring the Verilog-A module %2, defined differently (%3): ngspice loads one of them, and every part "
+                 "using %2 runs it - rename the module in one library, or place parts of one")
+                  .arg(parts.join(tr(" and ")), module, files.join(QStringLiteral(", ")));
+        errors << Issue{Severity::Error, what, QPoint(known.first().part->cx, known.first().part->cy), known.first().part->Name};
+    }
+}
+
 // A pulse's edge below 0: taken without a word, as no edge time (the time
 // step).
 void negativeEdgeIssues(const Component* c, QList<Issue>& warnings)
@@ -1937,6 +2019,8 @@ QList<Issue> check(Schematic* doc, bool run)
     // Verilog-A component asks: ngspice gets its modules from them.
     QStringList vaLibraries, vaSources;
     bool vaListed = false;
+    QStringList placedVerilogA;   // what the circuit's library parts bring (read when a part asks)
+    bool placedVerilogAListed = false;
     const bool inAProject = QucsMain != nullptr && !QucsMain->ProjName.isEmpty();
     const auto moduleInProject = [&](const QString& module) {
         if (!inAProject && doc->getDocName().isEmpty()) return true;   // nowhere to look
@@ -2096,15 +2180,68 @@ QList<Issue> check(Schematic* doc, bool run)
             // stops at the first ("Could not find include file"), the check
             // said nothing. The SPICE model's for a SPICE simulator, the
             // Qucs model's for Qucsator.
+            // The Verilog-A modules it needs (as Create Library recorded
+            // them) that nothing here defines - not its library, not the
+            // project, not another placed part's library: a library made
+            // without its Verilog-A, which only the run told, as "no loaded
+            // OSDI defines".
+            if (part != nullptr && simulator == spicecompat::simNgspice) {
+                if (const QStringList modules = LibComp::verilogAModules(part->libraryFile(), comp); !modules.isEmpty()) {
+                    if (!placedVerilogAListed) {
+                        for (const Component* other : doc->a_DocComps)
+                            if (auto* lib = dynamic_cast<LibComp*>(const_cast<Component*>(other)); lib != nullptr && inCircuit(other))
+                                placedVerilogA << lib->getVerilogAFiles();
+                        placedVerilogAListed = true;
+                    }
+                    QStringList lacking;
+                    for (const QString& module : modules) {
+                        const bool here = std::any_of(placedVerilogA.cbegin(), placedVerilogA.cend(), [&](const QString& file) {
+                            return file.endsWith(QLatin1String(".va"), Qt::CaseInsensitive) ? osdi::sourceDefines(file, module)
+                                                                                             : osdi::defines(file, module);
+                        });
+                        if (!here && !moduleInProject(module)) lacking << module;
+                    }
+                    if (!lacking.isEmpty())
+                        errors << Issue{Severity::Error,
+                                        tr("%1: its library %2 was made without the Verilog-A of %3, which no source or compiled "
+                                           "model here defines: ngspice stops at it (\"Unable to find definition of model\") - "
+                                           "bring the module's .va into the project, or the library made with its Verilog-A")
+                                            .arg(c->Name, name, lacking.join(QStringLiteral(", "))),
+                                        QPoint(c->cx, c->cy), c->Name};
+                }
+            }
+            // A part Qucsator leaves out - a subcircuit wrapping SPICE or
+            // Verilog-A devices, its Qucs model none of Qucsator's: every
+            // node through it open, and the run "succeeded".
+            if (part != nullptr && !c->Ports.isEmpty() && simulator == spicecompat::simQucsator
+                && !LibComp::qucsatorSimulates(part->libraryFile(), comp))
+                errors << Issue{Severity::Error,
+                                tr("%1: not available for Qucsator - its library part (%2) has a SPICE model only (a subcircuit of "
+                                   "SPICE or Verilog-A devices): Qucsator leaves it out, every node through it open. Simulate "
+                                   "it with ngspice")
+                                    .arg(c->Name, name),
+                                QPoint(c->cx, c->cy), c->Name};
             if (part != nullptr && !c->Ports.isEmpty()) {
                 const bool spice = spiceSimulator(simulator), qucs = simulator == spicecompat::simQucsator;
                 const QString file = part->libraryFile();
-                if (const QStringList missing = LibComp::missingFiles(file, comp, spice, qucs); !missing.isEmpty())
+                QStringList missing = LibComp::missingFiles(file, comp, spice, qucs), includes;
+                for (const QString& m : std::as_const(missing))
+                    if (m.contains(QLatin1String("'s include "))) includes << m;
+                for (const QString& m : std::as_const(includes)) missing.removeAll(m);
+                if (!missing.isEmpty())
                     errors << Issue{Severity::Error,
                                     tr("%1: its library %2 names %3 in its folder %4, which is not there (the library came "
                                        "without its folder?): a run under %5 stops at it")
                                         .arg(c->Name, name, missing.join(QStringLiteral(", ")), QDir::toNativeSeparators(file.chopped(4)),
                                              spicecompat::getDefaultSimulatorName(simulator)),
+                                    QPoint(c->cx, c->cy), c->Name};
+                // (A library made when a file from outside the source's
+                // folder was left out of it.)
+                if (!includes.isEmpty())
+                    errors << Issue{Severity::Error,
+                                    tr("%1: the Verilog-A of its library %2 includes what the library does not have (%3): OpenVAF "
+                                       "fails on it here - make the library again, which brings it")
+                                        .arg(c->Name, name, includes.join(QStringLiteral(", "))),
                                     QPoint(c->cx, c->cy), c->Name};
             }
         }
@@ -2217,6 +2354,7 @@ QList<Issue> check(Schematic* doc, bool run)
 
     dcSweepIssues(doc, simulator, errors);
     if (run) nutmegNameIssues(doc, simulator, errors);
+    moduleClashIssues(doc, simulator, errors);
     // Its own .model cards (Document Settings > Library) with a line that is
     // none - a file written by hand: left out of the netlist, said here.
     if (spiceSimulator(simulator)) {
