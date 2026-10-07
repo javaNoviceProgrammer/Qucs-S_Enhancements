@@ -320,6 +320,23 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `<AlwaysLoadOSDI=1>` in its properties, written only when it is on:
   Qucs-S 26.1.5 and earlier refuse a schematic that has it ("Unknown
   property").
+- **A subcircuit's own `.model` cards**: *File → Document Settings →
+  Library → SPICE .model cards of its own* holds the `.model` card of a
+  Verilog-A device in a subcircuit wrapper - an N device whose model is
+  `resmod`: `.model resmod va_res r=1k` - with no *.MODEL* block placed
+  for it. The cards go into the schematic's SPICE netlist with its
+  devices: inside its `.SUBCKT` where a circuit places it, and in a
+  library part made of it, whose Verilog-A is embedded for them as for a
+  block's. One card a line, `+` lines going on with one, `*` comments;
+  any other line - a `.control` block - is refused in the dialog, and one
+  in a file written by hand is left out of the netlist and said by
+  *Check Schematic*. ngspice and Xyce read them, Qucsator does not.
+  Saved as `<ModelCards=...>` (lines escaped), only when there are any;
+  Claude's `get_settings` and `set_settings` (scope document) read and set
+  them by that key. *Create Library* also embeds the Verilog-A of a
+  `.model` card in a SPICE file the subcircuit brings - a wrapper
+  `.subckt` in a SPICE file beside its `.va` - which it left behind (the
+  part, placed elsewhere, found no model).
 - **Library search paths**: *Application Settings → Locations → Library
   Search Paths* lists folders of component libraries besides the installed
   ones and the workspace's `user_lib` - a team's share, a git checkout of
