@@ -1,0 +1,35 @@
+"""p3c: under Qucsator - a library part, and one whose subcircuit places a library part (its Qucs model skipped it)."""
+import os, re, json, mcp, lib
+s = mcp.Server('p3c')
+d = lib.project(s, 'rep', {'div.sch': lib.divider('1k', '3k')})
+r = s.call('create_library', {'name': 'Keep', 'subcircuits': ['div']})
+place = r['parts'][0]['place']
+s.call('new_document', {})
+s.call('add_component', {'type': 'Port', 'name': 'P1', 'x': 100, 'y': 100})
+s.call('add_component', {'type': 'Port', 'name': 'P2', 'x': 600, 'y': 100})
+s.call('add_component', {'type': place['type'], 'name': 'X1', 'x': 320, 'y': 120, 'properties': place['properties']})
+s.call('connect', {'from': 'P1.1', 'to': 'X1.1'})
+s.call('connect', {'from': 'X1.2', 'to': 'P2.1'})
+s.call('save_document', {'as': d + '/wrap.sch'})
+s.call('close_document', {})
+r2 = s.call('create_library', {'name': 'Other', 'subcircuits': ['wrap']})
+text = open(s.ws + '/user_lib/Other.lib').read()
+print('Other:wrap <Model>:', re.search(r'<Model>(.*?)</Model>', text, re.S).group(1).strip())
+print('set_simulator:', s.call('set_simulator', {'simulator': 'qucsator'}))
+for label, pl in [('Keep:div', place), ('Other:wrap', r2['parts'][0]['place']), ('wrap.sch as Sub', {'type': 'Sub', 'properties': {'File': 'wrap.sch'}})]:
+    s.call('new_document', {})
+    s.call('add_component', {'type': 'Vdc', 'name': 'V1', 'x': 100, 'y': 200, 'properties': {'U': '1 V'}})
+    s.call('add_component', {'type': pl['type'], 'name': 'X1', 'x': 320, 'y': 120, 'properties': pl['properties']})
+    s.call('connect', {'from': 'V1.1', 'to': 'X1.1'})
+    s.call('connect', {'from': 'V1.2', 'to': 'ground'})
+    s.call('set_label', {'at': 'X1.2', 'name': 'out'})
+    s.call('add_analysis', {'kind': 'op'})
+    name = re.sub(r'\W', '_', label)
+    s.call('save_document', {'as': d + f'/q_{name}.sch'})
+    sim = s.call('simulate', {})
+    ok = isinstance(sim, dict) and sim.get('succeeded')
+    if ok:
+        print(label, 'ok', json.dumps(s.call('get_dataset', {'variables': ['out']}).get('variables'))[:200])
+    else:
+        print(label, 'FAILED', json.dumps(sim)[:700])
+s.close()

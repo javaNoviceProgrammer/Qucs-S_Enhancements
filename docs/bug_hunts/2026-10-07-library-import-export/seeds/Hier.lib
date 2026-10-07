@@ -1,0 +1,159 @@
+<Qucs Library 26.1.6 "Hier">
+
+<Component inner>
+  <Description>
+
+  </Description>
+  <Model>
+.Def:Hier_inner P1 P2
+R:R1 P1 P2 R="1k" Temp="26.85" Tc1="0.0" Tc2="0.0" Tnom="26.85"
+R:R2 gnd P2 R="1k" Temp="26.85" Tc1="0.0" Tc2="0.0" Tnom="26.85"
+.Def:End
+  </Model>
+  <Spice>
+.SUBCKT Hier_inner P1 P2 
+R1 P1 P2  1K tc1=0.0 tc2=0.0 
+R2 0 P2  1K tc1=0.0 tc2=0.0 
+.ENDS
+  </Spice>
+  <Symbol>
+    <.ID -25 14 SUB>
+    <.PortSym -35 0 1 0 P1>
+    <.PortSym 35 0 2 180 P2>
+    <Line -25 0 -10 0 #000080 2 1>
+    <Line 25 0 10 0 #000080 2 1>
+    <Line -25 -10 50 0 #000080 2 1>
+    <Line 25 -10 0 20 #000080 2 1>
+    <Line -25 10 50 0 #000080 2 1>
+    <Line -25 -10 0 20 #000080 2 1>
+  </Symbol>
+</Component>
+
+<Component outer>
+  <Description>
+
+  </Description>
+  <Model>
+.Def:Hier_outer P1 P2
+Sub:SUB1 P1 P2 Type="inner"
+.Def:End
+  </Model>
+  <ModelIncludes "inner.sch.lst">
+  <Spice>.SUBCKT inner P1 P2 
+R1 P1 P2  1K tc1=0.0 tc2=0.0 
+R2 0 P2  1K tc1=0.0 tc2=0.0 
+.ENDS
+
+.SUBCKT Hier_outer P1 P2 
+XSUB1 P1 P2 inner
+.ENDS
+  </Spice>
+  <Symbol>
+    <.ID -25 14 SUB>
+    <.PortSym -35 0 1 0 P1>
+    <.PortSym 35 0 2 180 P2>
+    <Line -25 0 -10 0 #000080 2 1>
+    <Line 25 0 10 0 #000080 2 1>
+    <Line -25 -10 50 0 #000080 2 1>
+    <Line 25 -10 0 20 #000080 2 1>
+    <Line -25 10 50 0 #000080 2 1>
+    <Line -25 -10 0 20 #000080 2 1>
+  </Symbol>
+</Component>
+
+<Component outer2>
+  <Description>
+
+  </Description>
+  <Model>
+.Def:Hier_outer2 P1 P2
+Sub:SUB1 P1 P2 Type="par" r2="3k"
+.Def:End
+  </Model>
+  <ModelIncludes "par.sch.lst">
+  <Spice>.SUBCKT par P1 P2 r2=1k 
+R1 P1 P2  1K tc1=0.0 tc2=0.0 
+R2 0 P2  {R2} tc1=0.0 tc2=0.0 
+.ENDS
+
+.SUBCKT Hier_outer2 P1 P2 
+XSUB1 P1 P2 par r2=3K
+.ENDS
+  </Spice>
+  <Symbol>
+    <.ID -25 14 SUB>
+    <.PortSym -35 0 1 0 P1>
+    <.PortSym 35 0 2 180 P2>
+    <Line -25 0 -10 0 #000080 2 1>
+    <Line 25 0 10 0 #000080 2 1>
+    <Line -25 -10 50 0 #000080 2 1>
+    <Line 25 -10 0 20 #000080 2 1>
+    <Line -25 10 50 0 #000080 2 1>
+    <Line -25 -10 0 20 #000080 2 1>
+  </Symbol>
+</Component>
+
+<Component outer3>
+  <Description>
+
+  </Description>
+  <Model>
+.Def:Hier_outer3 P1 P2
+Sub:SUB1 P1 P2 Type="outer"
+.Def:End
+  </Model>
+  <ModelIncludes "inner.sch.lst" "outer.sch.lst">
+  <Spice>.SUBCKT inner P1 P2 
+R1 P1 P2  1K tc1=0.0 tc2=0.0 
+R2 0 P2  1K tc1=0.0 tc2=0.0 
+.ENDS
+.SUBCKT outer P1 P2 
+XSUB1 P1 P2 inner
+.ENDS
+
+.SUBCKT Hier_outer3 P1 P2 
+XSUB1 P1 P2 outer
+.ENDS
+  </Spice>
+  <Symbol>
+    <.ID -25 14 SUB>
+    <.PortSym -35 0 1 0 P1>
+    <.PortSym 35 0 2 180 P2>
+    <Line -25 0 -10 0 #000080 2 1>
+    <Line 25 0 10 0 #000080 2 1>
+    <Line -25 -10 50 0 #000080 2 1>
+    <Line 25 -10 0 20 #000080 2 1>
+    <Line -25 10 50 0 #000080 2 1>
+    <Line -25 -10 0 20 #000080 2 1>
+  </Symbol>
+</Component>
+
+<Component par>
+  <Description>
+
+  </Description>
+  <Model>
+.Def:Hier_par P1 P2 r2="1k"
+R:R1 P1 P2 R="1k" Temp="26.85" Tc1="0.0" Tc2="0.0" Tnom="26.85"
+R:R2 gnd P2 R="{r2}" Temp="26.85" Tc1="0.0" Tc2="0.0" Tnom="26.85"
+.Def:End
+  </Model>
+  <Spice>
+.SUBCKT Hier_par P1 P2 r2=1k 
+R1 P1 P2  1K tc1=0.0 tc2=0.0 
+R2 0 P2  {R2} tc1=0.0 tc2=0.0 
+.ENDS
+  </Spice>
+  <Symbol>
+    <.ID -25 14 SUB "1=r2=1k==">
+    <.PortSym -35 0 1 0 P1>
+    <.PortSym 35 0 2 180 P2>
+    <Line -25 0 -10 0 #000080 2 1>
+    <Line 25 0 10 0 #000080 2 1>
+    <Line -25 -10 50 0 #000080 2 1>
+    <Line 25 -10 0 20 #000080 2 1>
+    <Line -25 10 50 0 #000080 2 1>
+    <Line -25 -10 0 20 #000080 2 1>
+  </Symbol>
+</Component>
+

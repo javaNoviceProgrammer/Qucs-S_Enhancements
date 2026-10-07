@@ -1,0 +1,5 @@
+* DEVB
+.subckt DEVB 1 2
+R1 1 2 1k
+R2 2 0 3k
+.ends DEVB

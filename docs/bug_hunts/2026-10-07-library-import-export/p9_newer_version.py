@@ -1,0 +1,23 @@
+"""p9: import_library of a Qucs-S library made by a newer Qucs-S (its header's version above this one's): what import, list, describe and place say."""
+import os, re, json, mcp, lib
+s = mcp.Server('p9')
+d = lib.project(s, 'nv', {'div.sch': lib.divider('1k', '3k')})
+r = s.call('create_library', {'name': 'Mine', 'destination': 'project'})
+text = open(d + '/Mine.lib').read()
+os.makedirs(s.root + '/colleague', exist_ok=True)
+newer = re.sub(r'^<Qucs Library \S+ "Mine">', '<Qucs Library 26.2.0 "Theirs">', text).replace('Mine_', 'Theirs_')
+open(s.root + '/colleague/Theirs.lib', 'w').write(newer)
+os.remove(d + '/Mine.lib')
+r = s.call('import_library', {'path': s.root + '/colleague/Theirs.lib'})
+print('import:', s.last_error, json.dumps({k: r.get(k) for k in ('kind', 'parts', 'note', 'warning')} if isinstance(r, dict) else r)[:500])
+l = s.call('list_libraries', {'library': 'Theirs'})
+print('list_libraries:', s.last_error, json.dumps(l)[:300].replace(s.root, '<root>'))
+dp = s.call('describe_part', {'library': 'Theirs', 'part': 'div'})
+print('describe_part:', s.last_error, json.dumps(dp)[:300])
+f = s.call('find_library_component', {'search': 'div'})
+print('find_library_component:', json.dumps(f)[:300])
+if isinstance(r, dict) and r.get('parts'):
+    out = lib.bench(s, r['parts'][0]['place'], d + '/use_theirs.sch')
+    print('placed and simulated:', json.dumps(out)[:600])
+    print('placed:', json.dumps(s.call('get_schematic', {}).get('components', []))[:400] if isinstance(s.call('get_schematic', {}), dict) else '')
+s.close()
