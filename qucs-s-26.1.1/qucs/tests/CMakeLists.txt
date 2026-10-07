@@ -33,6 +33,8 @@ endfunction()
 
 qucs_add_test(test_schematic_lifetime)
 qucs_add_test(test_crash_reports)
+qucs_add_test(test_build_commit)
+add_dependencies(test_build_commit qucs-commit)   # (qucs_commit.h)
 qucs_add_test(test_autosave)
 qucs_add_test(test_loader)
 qucs_add_test(test_simout)

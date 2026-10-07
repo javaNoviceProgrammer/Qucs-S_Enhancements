@@ -22,6 +22,7 @@
 #ifdef HAVE_CONFIG_H
 # include <config.h>
 #endif
+#include "qucs_commit.h"   // QUCS_COMMIT (written at every build)
 
 #include <stdlib.h>
 #include <ctype.h>
@@ -907,11 +908,10 @@ int main(int argc, char *argv[])
     // work properly !???!
     setlocale (LC_NUMERIC, "C");
 
-#ifdef GIT
-    const QString applicationVersion(QString::fromUtf8("qucs s%1 (%2)").arg(PACKAGE_VERSION).arg(GIT));
-#else
-    const QString applicationVersion(QString::fromUtf8("Qucs %1").arg(PACKAGE_VERSION));
-#endif
+    // (The commit the build is of, when it is known: qucs_commit.h.)
+    const QString applicationVersion = QStringLiteral(QUCS_COMMIT).isEmpty()
+        ? QString::fromUtf8("Qucs %1").arg(PACKAGE_VERSION)
+        : QString::fromUtf8("qucs s%1 (%2)").arg(PACKAGE_VERSION, QStringLiteral(QUCS_COMMIT));
 
     QCoreApplication::setApplicationVersion(applicationVersion);
     QStringList cmdArgs;

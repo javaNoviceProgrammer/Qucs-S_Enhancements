@@ -22,6 +22,7 @@
 #ifdef HAVE_CONFIG_H
 # include <config.h>
 #endif
+#include "qucs_commit.h"   // QUCS_COMMIT (written at every build)
 
 #include <cmath>
 #include "misc.h"
@@ -69,14 +70,12 @@ QString misc::getWindowTitle()
     if (title.endsWith(".0")) {
         title.chop(2);
     }
-#if defined(GIT)
     if (title.endsWith(".99")) {
-        QString hash = GIT;
+        const QString hash = QStringLiteral(QUCS_COMMIT);
         if (!hash.isEmpty()) {
             title.append("-").append(hash);
         }
     }
-#endif
 
     return title;
 }
