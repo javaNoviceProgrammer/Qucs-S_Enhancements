@@ -12,7 +12,7 @@
 #
 # Usage:
 #   scripts/fetch-binaries.sh            # the rolling "continuous" pre-release
-#   scripts/fetch-binaries.sh v26.1.6    # a tagged release
+#   scripts/fetch-binaries.sh v26.1.7    # a tagged release
 #   scripts/fetch-binaries.sh --run 123  # artifacts of a specific workflow run
 #
 # Needs the GitHub CLI (gh) authenticated for this repository. Binaries are
