@@ -47,6 +47,7 @@
 #include <QDir>
 #include <QCryptographicHash>
 #include <QStandardPaths>
+#include <QWheelEvent>
 #include <QMimeData>
 #include <QSaveFile>
 #include <QUrl>
@@ -1444,4 +1445,15 @@ QString misc::formatValue(const QString& input, int precision) {
         return formattedNumber + unitPart;
     }
     return input;
+}
+
+bool misc::wheelZooms(const QWheelEvent* event)
+{
+    const bool ctrl = event->modifiers() & Qt::ControlModifier;
+    // A touchpad: by its device, or by the phases of its swipe (macOS
+    // names no device; a mouse wheel's turn has no phase).
+    const QPointingDevice* device = event->pointingDevice();
+    const bool touchpad = event->phase() != Qt::NoScrollPhase
+                          || (device != nullptr && device->type() == QInputDevice::DeviceType::TouchPad);
+    return touchpad ? ctrl : ctrl != QucsSettings.WheelZooms;
 }

@@ -183,6 +183,7 @@ public:
     QCheckBox *embedVerilogA;        ///< Create Library copies the .va and .osdi files the subcircuits use.
     QCheckBox *libraryGroundPin;     ///< Create Library gives each .SUBCKT a first pin, gnd.
     QCheckBox *writeDocSettings;     ///< Saving a text document writes its settings file (.cfg).
+    QComboBox *wheelCombo;           ///< A mouse wheel zooms (true) or scrolls (false).
 
     /// @brief Enables anti-aliasing for diagram graphs.
     QCheckBox *checkAntiAliasing;

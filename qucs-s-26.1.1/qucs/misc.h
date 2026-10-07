@@ -31,6 +31,7 @@
 
 class QDir;
 class QMimeData;
+class QWheelEvent;
 class Schematic;
 
 namespace misc {
@@ -265,6 +266,12 @@ namespace misc {
 
   void getSymbolPatternsList(QStringList &symbols);
   QString formatValue(const QString& input, int precision);
+
+  // What a turn of the wheel does on a schematic or a layout: zoom (true)
+  // or scroll. A mouse wheel zooms or scrolls as the settings say
+  // (QucsSettings.WheelZooms), and with Ctrl the other; a touchpad's two
+  // fingers scroll, as everywhere (its pinch zooms), and with Ctrl zoom.
+  bool wheelZooms(const QWheelEvent* event);
 
 }
 

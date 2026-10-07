@@ -146,73 +146,84 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     checkWiring = new QCheckBox(appSettingsTab);
     appSettingsGrid->addWidget(checkWiring, 4, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Load documents from future versions:")), 5, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Mouse wheel:"), appSettingsTab), 5, 0);
+    wheelCombo = new QComboBox(appSettingsTab);
+    wheelCombo->setObjectName(QStringLiteral("wheelCombo"));
+    wheelCombo->addItem(tr("Zooms in and out"), true);
+    wheelCombo->addItem(tr("Scrolls"), false);
+    wheelCombo->setToolTip(tr("What turning the mouse wheel does on a schematic, a symbol, a data display or "
+                              "a layout. Ctrl+wheel (Command+wheel on macOS) does the other. Shift+wheel, or "
+                              "a wheel tilted sideways, scrolls left and right either way.\n"
+                              "A touchpad's two-finger swipe scrolls whatever this says, and its pinch zooms."));
+    appSettingsGrid->addWidget(wheelCombo, 5, 1);
+
+    appSettingsGrid->addWidget(new QLabel(tr("Load documents from future versions:")), 6, 0);
     checkLoadFromFutureVersions = new QCheckBox(appSettingsTab);
     checkLoadFromFutureVersions->setToolTip(tr("Try to load also documents created with newer versions of Qucs."));
-    appSettingsGrid->addWidget(checkLoadFromFutureVersions, 5, 1);
+    appSettingsGrid->addWidget(checkLoadFromFutureVersions, 6, 1);
     checkLoadFromFutureVersions->setChecked(QucsSettings.IgnoreFutureVersion);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Show trace name prefix on diagrams:")), 6, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Show trace name prefix on diagrams:")), 7, 0);
     checkFullTraceNames = new QCheckBox(appSettingsTab);
     checkFullTraceNames->setToolTip(tr("Show prefixes for trace names on diagrams like \"ngspice/\""));
-    appSettingsGrid->addWidget(checkFullTraceNames, 6, 1);
+    appSettingsGrid->addWidget(checkFullTraceNames, 7, 1);
     checkFullTraceNames->setChecked(QucsSettings.fullTraceName);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Always prefix the dataset with simulation label:")), 7, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Always prefix the dataset with simulation label:")), 8, 0);
     alwaysPrefixDataset = new QCheckBox(appSettingsTab);
     alwaysPrefixDataset->setToolTip(tr("Always use the prefix for dataset, i.e. \"tr1.v(out)\" rather than \"v(out)\""));
-    appSettingsGrid->addWidget(alwaysPrefixDataset, 7, 1);
+    appSettingsGrid->addWidget(alwaysPrefixDataset, 8, 1);
     alwaysPrefixDataset->setChecked(QucsSettings.alwaysPrefixDataset);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Flexible wires (requires restart):"), appSettingsTab), 8, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Flexible wires (requires restart):"), appSettingsTab), 9, 0);
     allowFlexibleWires = new QCheckBox(appSettingsTab);
-    appSettingsGrid->addWidget(allowFlexibleWires, 8, 1);
+    appSettingsGrid->addWidget(allowFlexibleWires, 9, 1);
 
     t->addTab(appSettingsTab, tr("Settings"));
 
-    appSettingsGrid->addWidget(new QLabel(tr("Set custom shortcut:"), appSettingsTab), 9, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Set custom shortcut:"), appSettingsTab), 10, 0);
     ShortcutButton = new QPushButton(appSettingsTab);
     connect(ShortcutButton, SIGNAL(clicked()),
         parent, SLOT(slotShortcutDialog()));
-    appSettingsGrid->addWidget(ShortcutButton, 9, 1);
+    appSettingsGrid->addWidget(ShortcutButton, 10, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Refresh the Content panel automatically:"), appSettingsTab), 10, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Refresh the Content panel automatically:"), appSettingsTab), 11, 0);
     contentAutoRefresh = new QCheckBox(appSettingsTab);
     contentAutoRefresh->setToolTip(tr("Every few seconds the project's files are listed again, and the "
                                       "Content panel is rebuilt when a file came, went or changed.\n"
                                       "Off: only Qucs' own actions and Refresh on the panel's menu list them again."));
-    appSettingsGrid->addWidget(contentAutoRefresh, 10, 1);
+    appSettingsGrid->addWidget(contentAutoRefresh, 11, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Content panel refresh interval (seconds):"), appSettingsTab), 11, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Content panel refresh interval (seconds):"), appSettingsTab), 12, 0);
     contentRefreshSeconds = new QSpinBox(appSettingsTab);
     contentRefreshSeconds->setRange(1, 3600);
     contentRefreshSeconds->setToolTip(tr("How often the project's files are looked at; a large project on a slow "
                                          "disk wants a longer interval."));
-    appSettingsGrid->addWidget(contentRefreshSeconds, 11, 1);
+    appSettingsGrid->addWidget(contentRefreshSeconds, 12, 1);
     connect(contentAutoRefresh, &QCheckBox::toggled, contentRefreshSeconds, &QWidget::setEnabled);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Folder icons in the Content panel:"), appSettingsTab), 12, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Folder icons in the Content panel:"), appSettingsTab), 13, 0);
     contentFolderIcons = new QCheckBox(appSettingsTab);
     contentFolderIcons->setToolTip(tr("Show a folder icon on the folder rows of the Content panel's "
                                       "sub-trees (Toggle hierarchy search view). Off: plain rows."));
-    appSettingsGrid->addWidget(contentFolderIcons, 12, 1);
+    appSettingsGrid->addWidget(contentFolderIcons, 13, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Pin names in subcircuit symbols:"), appSettingsTab), 13, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Pin names in subcircuit symbols:"), appSettingsTab), 14, 0);
     showPinNames = new QCheckBox(appSettingsTab);
     showPinNames->setToolTip(tr("Write the name of each pin inside the symbol of a subcircuit - the "
                                 "name the netlist gives that pin.\n"
                                 "Off: only what the symbol itself draws."));
-    appSettingsGrid->addWidget(showPinNames, 13, 1);
+    appSettingsGrid->addWidget(showPinNames, 14, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Pin directions in subcircuit symbols:"), appSettingsTab), 14, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Pin directions in subcircuit symbols:"), appSettingsTab), 15, 0);
     showPinDirections = new QCheckBox(appSettingsTab);
     showPinDirections->setToolTip(tr("Mark which way each pin points, from the type of the port it stands "
                                      "for (in, out, inout).\n"
                                      "A symbol drawn anew then puts the inputs on the left and the outputs "
                                      "on the right."));
-    appSettingsGrid->addWidget(showPinDirections, 14, 1);
+    appSettingsGrid->addWidget(showPinDirections, 15, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Embed Verilog-A files in exported libraries:"), appSettingsTab), 15, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Embed Verilog-A files in exported libraries:"), appSettingsTab), 16, 0);
     embedVerilogA = new QCheckBox(appSettingsTab);
     embedVerilogA->setObjectName(QStringLiteral("embedVerilogA"));
     embedVerilogA->setToolTip(tr("Project > Create Library copies the Verilog-A sources (.va) its subcircuits "
@@ -221,9 +232,9 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                  "them, or into Qucs-S's cache when the library's folder cannot be written: a "
                                  "compiled model (.osdi) runs on one platform only, so it is not embedded.\n"
                                  "Off: the library holds the subcircuits and their symbols only."));
-    appSettingsGrid->addWidget(embedVerilogA, 15, 1);
+    appSettingsGrid->addWidget(embedVerilogA, 16, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Ground pin (gnd) in exported subcircuits:"), appSettingsTab), 16, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Ground pin (gnd) in exported subcircuits:"), appSettingsTab), 17, 0);
     libraryGroundPin = new QCheckBox(appSettingsTab);
     libraryGroundPin->setObjectName(QStringLiteral("libraryGroundPin"));
     libraryGroundPin->setToolTip(tr("Project > Create Library gives each subcircuit's SPICE model (.SUBCKT) a "
@@ -235,10 +246,10 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                     "they always tie a first pin to ground.\n"
                                     "A library made either way keeps working: a part tells from its library "
                                     "which it has."));
-    appSettingsGrid->addWidget(libraryGroundPin, 16, 1);
+    appSettingsGrid->addWidget(libraryGroundPin, 17, 1);
 
     appSettingsGrid->addWidget(new QLabel(tr("Write a settings file (.cfg) beside each text document:"),
-                                          appSettingsTab), 17, 0);
+                                          appSettingsTab), 18, 0);
     writeDocSettings = new QCheckBox(appSettingsTab);
     writeDocSettings->setObjectName(QStringLiteral("writeDocSettings"));
     writeDocSettings->setToolTip(tr("Saving a text document also writes name.cfg beside it (notes.txt.cfg for "
@@ -248,7 +259,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                     "Off: a settings file is written only for a document whose Document "
                                     "Settings were set or changed, so none is lost. The files already there "
                                     "are left alone."));
-    appSettingsGrid->addWidget(writeDocSettings, 17, 1);
+    appSettingsGrid->addWidget(writeDocSettings, 18, 1);
 
     // ...........................................................
     // The appearance settings tab
@@ -850,6 +861,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     embedVerilogA->setChecked(QucsSettings.EmbedVerilogAInLibraries);
     libraryGroundPin->setChecked(QucsSettings.LibraryGroundPin);
     writeDocSettings->setChecked(QucsSettings.WriteTextDocSettings);
+    wheelCombo->setCurrentIndex(wheelCombo->findData(QucsSettings.WheelZooms));
 
     ShortcutButton->setText("Custom Shortcut");
 
@@ -1090,6 +1102,7 @@ void QucsSettingsDialog::slotApply()
     QucsSettings.EmbedVerilogAInLibraries = embedVerilogA->isChecked();
     QucsSettings.LibraryGroundPin = libraryGroundPin->isChecked();
     QucsSettings.WriteTextDocSettings = writeDocSettings->isChecked();
+    QucsSettings.WheelZooms = wheelCombo->currentData().toBool();
 
     QucsSettings.FileTypes.clear();
     for (int row=0; row < fileTypesTableWidget->rowCount(); row++)
@@ -1356,6 +1369,7 @@ void QucsSettingsDialog::slotDefaultValues()
     embedVerilogA->setChecked(_settings::Get().itemDefault<bool>("EmbedVerilogAInLibraries"));
     libraryGroundPin->setChecked(_settings::Get().itemDefault<bool>("LibraryGroundPin"));
     writeDocSettings->setChecked(_settings::Get().itemDefault<bool>("WriteTextDocSettings"));
+    wheelCombo->setCurrentIndex(wheelCombo->findData(_settings::Get().itemDefault<bool>("WheelZooms")));
     ThemeCombo->setCurrentIndex(ThemeCombo->findData(qucs_s::apptheme::System));
     paperFollowsTheme->setChecked(false);
     gridModeCombo->setCurrentIndex(gridModeCombo->findData(0));

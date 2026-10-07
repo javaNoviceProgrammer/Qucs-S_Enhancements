@@ -167,6 +167,7 @@ bool loadSettings()
     QucsSettings.EmbedVerilogAInLibraries = _settings::Get().item<bool>("EmbedVerilogAInLibraries");
     QucsSettings.LibraryGroundPin = _settings::Get().item<bool>("LibraryGroundPin");
     QucsSettings.WriteTextDocSettings = _settings::Get().item<bool>("WriteTextDocSettings");
+    QucsSettings.WheelZooms = _settings::Get().item<bool>("WheelZooms");
     QucsSettings.PaperFollowsTheme = _settings::Get().item<bool>("PaperFollowsTheme");
     QucsSettings.GridMode = std::clamp(_settings::Get().item<int>("GridMode"), 0, 2);
     QucsSettings.SimulationConsoleHost = _settings::Get().item<int>("SimulationConsoleHost");
@@ -312,6 +313,7 @@ bool saveApplSettings()
     qs.setItem<bool>("EmbedVerilogAInLibraries",QucsSettings.EmbedVerilogAInLibraries);
     qs.setItem<bool>("LibraryGroundPin",QucsSettings.LibraryGroundPin);
     qs.setItem<bool>("WriteTextDocSettings",QucsSettings.WriteTextDocSettings);
+    qs.setItem<bool>("WheelZooms",QucsSettings.WheelZooms);
     qs.setItem<bool>("PaperFollowsTheme",QucsSettings.PaperFollowsTheme);
     qs.setItem<int>("GridMode",QucsSettings.GridMode);
     qs.setItem<int>("SimulationConsoleHost",QucsSettings.SimulationConsoleHost);
