@@ -2651,8 +2651,9 @@ void Schematic::contentsWheelEvent(QWheelEvent *Event)
             scrollRight(-delta);
         }
     }
-    // Zoom in or out
-    else if (Event->modifiers() & Qt::ControlModifier) {
+    // Zoom in or out: a mouse wheel as the settings say (Ctrl+wheel the
+    // other way), a touchpad's swipe with Ctrl
+    else if (misc::wheelZooms(Event)) {
         // zoom factor scaled according to the wheel delta, to accommodate
         //  values different from 60 (slower or faster zoom)
         double scaleCoef = pow(1.1, verticalWheelAngleDelta / 60.0);
