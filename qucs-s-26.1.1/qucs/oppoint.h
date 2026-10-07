@@ -57,11 +57,21 @@ void attribute(QList<Device>& devices, const QStringList& components);
 /// Hz, ...; empty when it is not an electrical quantity (a flag, a count,
 /// a geometry) or not known.
 QString unitOf(const QString& type, const QString& parameter);
+/// As unitOf(device.type, parameter) - but a Verilog-A (OSDI) device's own
+/// parameters and quantities have none: their names are the module's, and
+/// "gain" read as a conductance, "vmax" as a voltage. Its dt, dtemp and
+/// temp (ngspice's, every device's) keep theirs.
+QString unitOf(const Device& device, const QString& parameter);
+/// Whether \a device was loaded with OSDI (a Verilog-A module).
+bool isOsdi(const Device& device);
 
 /// Whether a parameter describes the operating point (a current, voltage,
 /// conductance, capacitance, charge or power) rather than the device's
 /// set-up (its geometry, flags, multipliers).
 bool isOperatingQuantity(const QString& type, const QString& parameter);
+/// As isOperatingQuantity(device.type, parameter); a Verilog-A device's own
+/// values all are (their units unknown), ngspice's dt, dtemp, temp not.
+bool isOperatingQuantity(const Device& device, const QString& parameter);
 
 /// The value as it is shown: engineering notation and unit ("1.2 mA").
 QString valueText(const Device& device, const Parameter& parameter);

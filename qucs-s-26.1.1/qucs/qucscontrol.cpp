@@ -5881,10 +5881,18 @@ QJsonObject QucsControl::checkSchematic(const QJsonObject& args)
                                                    + tr("; in its subcircuits %1 errors, %2 warnings").arg(subErrors).arg(subWarnings));
     }
     if (errors.isEmpty() && warnings.isEmpty()) {
-        QString verdict = notes.isEmpty() ? tr("Nothing found.") : tr("Nothing wrong found; the notes are fine if meant.");
-        if (subErrors + subWarnings > 0)
-            verdict += full ? tr(" Its subcircuits have findings of their own, listed.")
-                            : tr(" Its subcircuits have findings of their own: 'subcircuits': true lists them.");
+        // Its subcircuits' errors first: "Nothing wrong found" led a
+        // schematic whose subcircuits had 8 (Qucsator leaving them out).
+        QString verdict;
+        if (subErrors > 0)
+            verdict = tr("Nothing wrong in it, but its subcircuits have %n error(s): %1", nullptr, subErrors)
+                          .arg(full ? tr("listed under 'subcircuits'.") : tr("'subcircuits': true lists them."));
+        else {
+            verdict = notes.isEmpty() ? tr("Nothing found.") : tr("Nothing wrong found; the notes are fine if meant.");
+            if (subWarnings > 0)
+                verdict += full ? tr(" Its subcircuits have findings of their own, listed.")
+                                : tr(" Its subcircuits have findings of their own: 'subcircuits': true lists them.");
+        }
         result.insert(QStringLiteral("verdict"), verdict);
     }
     return jsonResult(result);
@@ -12239,9 +12247,16 @@ QJsonObject QucsControl::datasetOfRun(Schematic* doc, int simulator, const QDate
         qucs_s::dataset::Dataset data;
         QJsonArray names;
         int count = 0;
-        if (data.read(dataset.absoluteFilePath()))
+        // (An independent one nothing depends on is a value, not an axis:
+        // Qucsator writes a DC operating point's node voltages so - every
+        // Qucsator DC run listed none.)
+        if (data.read(dataset.absoluteFilePath())) {
+            QSet<QString> axes;
             for (const auto& v : data.variables())
-                if (!v.independent && ++count <= 40) names.append(v.name);
+                for (const QString& d : v.dependencies) axes.insert(d);
+            for (const auto& v : data.variables())
+                if ((!v.independent || !axes.contains(v.name)) && ++count <= 40) names.append(v.name);
+        }
         // The first 40 by name, and how many there are (a list cut at 40
         // read as 40).
         if (count > names.size()) names.append(tr("... %1 more").arg(count - names.size()));
@@ -12540,8 +12555,30 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
     // What Check Schematic finds, before the run - the moment it matters:
     // put first in the answer.
     QJsonArray checkErrors, checkWarnings;
+    // (For the simulator of the run: one run with Qucsator was checked for
+    // the one in the settings.)
+    const int settingsSimulator = QucsSettings.DefaultSimulator;
+    QucsSettings.DefaultSimulator = simulator;
     for (const auto& i : qucs_s::erc::check(sch))
         (i.severity == qucs_s::erc::Severity::Error ? checkErrors : checkWarnings).append(issueJson(i));
+    // Its subcircuits' errors too, each with its file - two sources in
+    // parallel inside one, which ngspice names by a node alone
+    // (v.x1.vx#branch). Before every run, not after a failed one alone: a
+    // subcircuit Qucsator leaves out ran "successfully".
+    QJsonArray subErrors;
+    QStringList subText;
+    {
+        const auto open = [this](const QString& file) { return dynamic_cast<Schematic*>(a_app->findDoc(file)); };
+        for (const auto& sub : qucs_s::erc::checkSubcircuits(sch, open))
+            for (const auto& i : sub.issues) {
+                if (i.severity != qucs_s::erc::Severity::Error) continue;
+                QJsonObject o = issueJson(i);
+                o.insert(QStringLiteral("file"), QDir::toNativeSeparators(sub.file));
+                subErrors.append(o);
+                subText << tr("error in %1: %2").arg(QFileInfo(sub.file).fileName(), i.message);
+            }
+    }
+    QucsSettings.DefaultSimulator = settingsSimulator;
     QString checkText;
     if (!checkErrors.isEmpty() || !checkWarnings.isEmpty()) {
         QStringList found;
@@ -12585,8 +12622,7 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
         *restored = true;
         QucsSettings.DefaultSimulator = previous;
     };
-    const QPointer<Schematic> checked(sch);
-    const Done done = [this, checked, doneGiven, checkText, checkErrors, checkWarnings, oneOff, savedNote, openedNote](const QJsonObject& r) {
+    const Done done = [doneGiven, checkText, checkErrors, checkWarnings, subErrors, subText, oneOff, savedNote, openedNote](const QJsonObject& r) {
         QJsonObject result = r;
         QJsonArray content = result.value(QStringLiteral("content")).toArray();
         // Into the report itself, too.
@@ -12598,23 +12634,6 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
                 if (!openedNote.isEmpty()) report.insert(QStringLiteral("opened"), openedNote);
                 savedSaid = true;
                 const bool failed = report.contains(QStringLiteral("succeeded")) && !report.value(QStringLiteral("succeeded")).toBool();
-                // A run that failed: the errors of its subcircuits too - two
-                // sources in parallel inside one, which ngspice names by a
-                // node alone (v.x1.vx#branch). (Not before every run: a
-                // hierarchy is read from disk for it.)
-                QJsonArray subErrors;
-                QStringList subText;
-                if (failed && checked) {
-                    const auto open = [this](const QString& file) { return dynamic_cast<Schematic*>(a_app->findDoc(file)); };
-                    for (const auto& sub : qucs_s::erc::checkSubcircuits(checked, open))
-                        for (const auto& i : sub.issues) {
-                            if (i.severity != qucs_s::erc::Severity::Error) continue;
-                            QJsonObject o = issueJson(i);
-                            o.insert(QStringLiteral("file"), QDir::toNativeSeparators(sub.file));
-                            subErrors.append(o);
-                            subText << tr("error in %1: %2").arg(QFileInfo(sub.file).fileName(), i.message);
-                        }
-                }
                 if (!checkErrors.isEmpty() || !checkWarnings.isEmpty() || !subErrors.isEmpty()) {
                     // (Named to come first in the answer, which lists its
                     // fields in order of their names.)
@@ -12900,6 +12919,12 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
                 QJsonArray& list = isError ? errors : warnings;
                 if (list.size() < 40) list.append(o);
             }
+            // A Verilog-A module two sources define differently, which
+            // ngspice loaded one of for every device of it (the netlist's
+            // "* OSDI:" note): said - the run gave no word of it.
+            for (const QString& line : std::as_const(netlist))
+                if (line.startsWith(QLatin1String("* OSDI: ")) && line.contains(QLatin1String("one of them is loaded")) && warnings.size() < 40)
+                    warnings.append(QJsonObject{{QStringLiteral("message"), tr("Verilog-A: %1").arg(line.mid(8).trimmed())}});
             result.insert(QStringLiteral("errors"), errors);
             result.insert(QStringLiteral("warnings"), warnings);
             bool written = false;

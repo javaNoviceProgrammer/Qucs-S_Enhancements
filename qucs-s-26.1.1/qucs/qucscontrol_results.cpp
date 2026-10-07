@@ -1777,10 +1777,10 @@ QJsonObject operatingPointOfRun(Schematic* sch, const QString& scratch)
             QJsonObject values;
             QList<qucs_s::oppoint::Parameter> operating;
             for (const auto& p : d.parameters) {
-                if (!qucs_s::oppoint::isOperatingQuantity(d.type, p.name)) continue;
+                if (!qucs_s::oppoint::isOperatingQuantity(d, p.name)) continue;
                 values.insert(p.name, number(p.value));
                 operating << p;
-                if (const QString u = qucs_s::oppoint::unitOf(d.type, p.name); !u.isEmpty()) units.insert(p.name, u);
+                if (const QString u = qucs_s::oppoint::unitOf(d, p.name); !u.isEmpty()) units.insert(p.name, u);
             }
             e.insert(QStringLiteral("values"), values);
             if (const QJsonObject derived = derivedQuantities(operating); !derived.isEmpty()) e.insert(QStringLiteral("derived"), derived);

@@ -2846,6 +2846,8 @@ private slots:
             QCOMPARE(q.value("simulator").toString(), QStringLiteral("Qucsator"));
             QVERIFY2(q.value("finished").toBool(), qPrintable(text(r)));
             QVERIFY2(q.contains("succeeded"), qPrintable(text(r)));
+            // (Its node voltages, written as independent vectors: listed.)
+            QVERIFY2(q.value("variable count").toInt() > 0, qPrintable(text(r)));
             QVERIFY2(q.value("simulator in the settings").toString().contains("unchanged"), qPrintable(text(r)));
             QCOMPARE(QucsSettings.DefaultSimulator, before);
             for (SimMessage* m : app->findChildren<SimMessage*>()) m->slotClose();
@@ -6128,6 +6130,129 @@ private slots:
         }
         for (int i = 0; i < 210; ++i) QFile::remove(userLib + QStringLiteral("/Many%1.lib").arg(i, 3, 10, QLatin1Char('0')));
         app->fillLibrariesTreeView();
+        QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+    }
+
+    // The Verilog-A check of 2026-10-07 (docs/feature_gaps/
+    // 2026-10-07-claude-va-library-export-import-check.md), as Claude's
+    // tools say it: a library bringing a module another defines differently
+    // (import_library's warning, a run's), one made without its Verilog-A
+    // (import_library's 'modules not here'), a part of SPICE devices alone
+    // under Qucsator (create_library's note, the check, the verdict, a
+    // run's check of its subcircuits).
+    void verilogALibrariesSayWhatTheyLack()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        if (!app->ProjName.isEmpty()) QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
+        QVERIFY(!failed(call("new_project", {{"name", "vacheck"}})));
+        const QString project = QucsSettings.QucsWorkDir.absolutePath();
+        const QString userLib = QucsSettings.qucsWorkspaceDir.filePath("user_lib");
+        const auto put = [](const QString& path, const QByteArray& bytes) {
+            QDir().mkpath(QFileInfo(path).absolutePath());
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size();
+        };
+        // A wrapper of a Verilog-A device, tm, and its source.
+        QVERIFY(put(project + "/wr.sch",
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <Port P1 1 60 70 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+            "  <SPICE_dev X1 1 200 100 -26 -66 0 0 \"2\" 1 \"N\" 1 \"tmod\" 0 \"\" 0>\n"
+            "  <Port P2 1 340 70 -23 -42 1 0 \"2\" 1 \"analog\" 0>\n"
+            "  <SpiceModel SpiceModel1 1 150 250 -22 14 0 0 \".MODEL tmod tm\" 1 \"\" 0 \"\" 0 \"\" 0 \"Line_5=\" 0>\n"
+            "</Components>\n<Wires>\n  <60 70 160 70 \"\" 0 0 0 \"\">\n  <160 70 160 100 \"\" 0 0 0 \"\">\n"
+            "  <240 100 340 100 \"\" 0 0 0 \"\">\n  <340 70 340 100 \"\" 0 0 0 \"\">\n</Wires>\n"
+            "<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n"));
+        QVERIFY(put(project + "/va/tm.va", "`include \"disciplines.vams\"\nmodule tm(p, n);\n  inout p, n;\n  electrical p, n;\n  analog I(p, n) <+ V(p, n) / 1k;\nendmodule\n"));
+        QVERIFY(!failed(call("open_project", {{"name", "vacheck"}})));
+        QJsonObject r = call("create_library", {{"name", "TmA"}, {"subcircuits", QJsonArray{"wr"}}});
+        QVERIFY2(!failed(r) && text(r).contains("Embedding Verilog-A: tm.va"), qPrintable(text(r)));
+        // (Qucsator leaves it out: said, in the answer's warning too.)
+        QVERIFY2(json(r).toObject().value("warning").toString().contains("has no Qucs model") , qPrintable(text(r)));
+        // Another library whose tm differs.
+        QVERIFY(put(project + "/va/tm.va", "`include \"disciplines.vams\"\nmodule tm(p, n);\n  inout p, n;\n  electrical p, n;\n  analog I(p, n) <+ V(p, n) / 2k;\nendmodule\n"));
+        QVERIFY2(!failed(r = call("create_library", {{"name", "TmB"}, {"subcircuits", QJsonArray{"wr"}}})), qPrintable(text(r)));
+        // Brought in beside TmA: said.
+        const QString from = dir.filePath("vacheck-from");
+        QVERIFY(put(from + "/TmC.lib", [&] { QFile f(userLib + "/TmB.lib"); f.open(QIODevice::ReadOnly); return f.readAll(); }()));
+        QVERIFY(put(from + "/TmC/tm.va", [&] { QFile f(userLib + "/TmB/tm.va"); f.open(QIODevice::ReadOnly); return f.readAll(); }()));
+        r = call("import_library", {{"path", from + "/TmC.lib"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("modules defined differently").toArray().size() >= 1
+                     && json(r).toObject().value("warning").toString().contains("another library defines differently"), qPrintable(text(r)));
+        // One made without its Verilog-A, brought where nothing defines tm.
+        QVERIFY2(!failed(r = call("create_library", {{"name", "TmNo"}, {"subcircuits", QJsonArray{"wr"}}, {"embed_verilog_a", false},
+                                                    {"destination", "project"}})), qPrintable(text(r)));
+        QFile made(project + "/TmNo.lib");
+        QVERIFY(made.open(QIODevice::ReadOnly));
+        QVERIFY(put(from + "/TmNo2.lib", made.readAll()));
+        made.close();
+        QVERIFY(QFile::remove(project + "/va/tm.va"));
+        r = call("import_library", {{"path", from + "/TmNo2.lib"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("modules not here").toArray() == QJsonArray{"tm (wr)"}
+                     && json(r).toObject().value("warning").toString().contains("made without its Verilog-A"), qPrintable(text(r)));
+
+        // TmA's part and TmB's in one circuit: a run says it (compiled models
+        // beside the sources: nothing to build).
+        QVERIFY(put(userLib + "/TmA/tm.osdi", QByteArray(64, '\0') + QByteArray(1, '\0') + "tm" + QByteArray(1, '\0')));
+        QVERIFY(put(userLib + "/TmB/tm.osdi", QByteArray(64, '\0') + QByteArray(1, '\0') + "tm" + QByteArray(1, '\0')));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Lib"}, {"name", "XA"}, {"x", 200}, {"y", 200}, {"properties", QJsonObject{{"Lib", "TmA"}, {"Comp", "wr"}}}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Lib"}, {"name", "XB"}, {"x", 400}, {"y", 200}, {"properties", QJsonObject{{"Lib", "TmB"}, {"Comp", "wr"}}}})));
+        QVERIFY(!failed(call("connect", {{"from", "XA.1"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("connect", {{"from", "XA.2"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("connect", {{"from", "XB.1"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("connect", {{"from", "XB.2"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("add_component", {{"type", ".DC"}, {"name", "DC1"}, {"x", 100}, {"y", 400}})));
+        QVERIFY(!failed(call("save_document", {{"as", "twotm"}})));
+        r = call("check_schematic");
+        QVERIFY2(text(r).contains("XA (TmA) and XB (TmB) bring the Verilog-A module tm, defined differently"), qPrintable(text(r)));
+        r = call("simulate", {{"timeout", 30}}, 60000);   // (ngspice here: a stand-in)
+        bool warned = false;
+        for (const QJsonValue& w : json(r).toObject().value("warnings").toArray())
+            warned = warned || w.toObject().value("message").toString().startsWith("Verilog-A: tm is defined differently by");
+        QVERIFY2(warned, qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // Under Qucsator: the part, and the wrapper as a subcircuit.
+        const int simulatorWas = QucsSettings.DefaultSimulator;
+        QucsSettings.DefaultSimulator = spicecompat::simQucsator;
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Lib"}, {"name", "XA"}, {"x", 200}, {"y", 200}, {"properties", QJsonObject{{"Lib", "TmA"}, {"Comp", "wr"}}}})));
+        r = call("check_schematic");
+        const QString underQucsator = text(r);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "Sub"}, {"name", "SUB1"}, {"x", 200}, {"y", 200}, {"properties", QJsonObject{{"File", "wr.sch"}}}})));
+        QVERIFY(!failed(call("connect", {{"from", "SUB1.1"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("connect", {{"from", "SUB1.2"}, {"to", "ground"}})));
+        QVERIFY(!failed(call("add_component", {{"type", ".DC"}, {"name", "DC1"}, {"x", 100}, {"y", 400}})));
+        r = call("check_schematic");
+        const QString verdict = json(r).toObject().value("verdict").toString();
+        QucsSettings.DefaultSimulator = simulatorWas;
+        QVERIFY2(underQucsator.contains("XA: not available for Qucsator - its library part (TmA) has a SPICE model only"), qPrintable(underQucsator));
+        QVERIFY2(verdict.startsWith("Nothing wrong in it, but its subcircuits have"), qPrintable(text(r)));
+        // A run with Qucsator: its subcircuits' errors before it.
+        const QString qucsator = QDir(QCoreApplication::applicationDirPath()).filePath("../../qucsator_rf/src/qucsator_rf");
+        if (QFileInfo(qucsator).isExecutable()) {
+            const QString was = QucsSettings.Qucsator;
+            QucsSettings.Qucsator = QFileInfo(qucsator).canonicalFilePath();
+            app->simulatorList()->addItem("Qucsator", int(spicecompat::simQucsator));
+            QVERIFY(!failed(call("save_document", {{"as", "subq"}})));
+            r = call("simulate", {{"simulator", "qucsator"}, {"timeout", 30}}, 60000);
+            for (SimMessage* m : app->findChildren<SimMessage*>()) m->slotClose();
+            app->simulatorList()->removeItem(app->simulatorList()->count() - 1);
+            QucsSettings.Qucsator = was;
+            const QJsonObject before = json(r).toObject().value("before the run").toObject();
+            bool said = false;
+            for (const QJsonValue& e : before.value("errors in its subcircuits").toArray())
+                said = said || (e.toObject().value("message").toString().startsWith("X1: not available for Qucsator")
+                                && e.toObject().value("file").toString().endsWith("wr.sch"));
+            // (Once: not among its own errors as well.)
+            QVERIFY2(said && before.value("errors").toArray().isEmpty()
+                         && json(r).toObject().value("last lines").toString().contains("Check Schematic, of its subcircuits: error in wr.sch: X1"),
+                     qPrintable(text(r)));
+        }
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
         QVERIFY(QMetaObject::invokeMethod(app, "slotMenuProjClose"));
     }
 

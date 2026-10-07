@@ -202,6 +202,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   by default) turns it off: the library then holds the subcircuits and
   their symbols only, as before. Share the library as `NAME.lib` with its
   folder; older versions of Qucs-S read it and ignore the Verilog-A files.
+  A module a library part in the subcircuit uses comes from that part's
+  own library, the project's files only for the subcircuit's own cards
+  (an unrelated project file of the module's name was taken too); two
+  sources that differ for one module refuse the library. A file a source
+  includes from outside its folder (`` `include "../common/up.vams" ``)
+  goes below `NAME.includes/` beside it, the library's copies naming it
+  there. Each part records the modules it needs, embedded or not
+  (`<VerilogAModules "vx_res">`): `import_library` says which nothing
+  defines where it is brought (a library made without its Verilog-A),
+  and *Check Schematic* says so where a part is placed. Two libraries
+  that define one module differently are said by `import_library`,
+  *Check Schematic* and a run (ngspice loads one module of a name), and a
+  run takes a placed part's module from its own library before a project
+  file of the name. Under Qucsator a library part of SPICE or Verilog-A
+  devices alone, which it leaves out, is an error (and `create_library`
+  notes it); `simulate`'s check before a run takes in its subcircuits.
 - **Libraries made whole, and brought in whole**: *Project → Create
   Library* (and Claude's `create_library`) names each part after its file
   — a subcircuit in a folder of the project, `sub/amp.sch`, is `amp`;

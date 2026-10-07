@@ -27,6 +27,8 @@
 #include "qucslib_common.h"
 #include "dialogs/librarydialog.h"
 #include "components/libcomp.h"
+#include "vamodule.h"
+#include "osdiselection.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -239,6 +241,54 @@ bool followMoved(const QString& file, const QDir& wasIn, const QHash<QString, QS
     return f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(text.toLatin1()) == text.size();
 }
 
+// The Verilog-A modules (lower case) of the sources in a library's folder
+// (NAME/ beside NAME.lib), each with the source and its bytes.
+struct ModuleSource {
+    QString module, file;
+    QByteArray bytes;
+};
+
+QList<ModuleSource> modulesInFolder(const QString& folder)
+{
+    QList<ModuleSource> found;
+    if (!QFileInfo(folder).isDir()) return found;
+    for (QDirIterator it(folder, {QStringLiteral("*.va")}, QDir::Files, QDirIterator::Subdirectories); it.hasNext();) {
+        const QString file = it.next();
+        QFile f(file);
+        if (!f.open(QIODevice::ReadOnly)) continue;
+        const QByteArray bytes = f.readAll();
+        for (const QString& module : qucs_s::vamodule::sourceModules(QString::fromUtf8(bytes))) found.append({module.toLower(), file, bytes});
+    }
+    return found;
+}
+
+// The Verilog-A modules the library \a file brings that another library
+// of the panel's (the project's too) defines differently: a circuit placing
+// parts of both runs one definition for all of them, with no word from the
+// simulator. Each "vx_res (VXLib, its/path.va)"; none: empty.
+QStringList modulesDefinedDifferently(const QString& file)
+{
+    const QList<ModuleSource> own = modulesInFolder(file.chopped(4));
+    if (own.isEmpty()) return {};
+    QStringList said;
+    QSet<QString> seen{QFileInfo(file).canonicalFilePath()};
+    for (const Section& section : librarySections())
+        for (const QString& name : QDir(section.folder).entryList({QStringLiteral("*.lib")}, QDir::Files)) {
+            const QString other = QDir(section.folder).absoluteFilePath(name);
+            const QString real = QFileInfo(other).canonicalFilePath();
+            if (real.isEmpty() || seen.contains(real)) continue;
+            seen.insert(real);
+            for (const ModuleSource& theirs : modulesInFolder(other.chopped(4)))
+                for (const ModuleSource& mine : own)
+                    if (theirs.module == mine.module && theirs.bytes != mine.bytes) {
+                        const QString line = QStringLiteral("%1 (%2, %3)").arg(mine.module, QFileInfo(other).completeBaseName(),
+                                                                              QDir::toNativeSeparators(theirs.file));
+                        if (!said.contains(line)) said << line;
+                    }
+        }
+    return said;
+}
+
 // The other libraries of the name of \a file, when there are: "also_named",
 // and what that means for a part placed by the name.
 void addNamedLike(QJsonObject& result, const QString& file)
@@ -407,6 +457,15 @@ QJsonObject QucsControl::createLibrary(const QJsonObject& args)
     result.insert(QStringLiteral("note"), tr("It is in the Libraries panel; each part's 'place' is its add_component.%1")
                                               .arg(trashed.isEmpty() ? QString() : tr(" The library it replaced is in the trash.")));
     addNamedLike(result, file);
+    // What the messages warn of, where it is seen: only among the lines,
+    // "Successfully created library." read as all was well.
+    QStringList warned;
+    for (const QString& line : messages)
+        if (line.startsWith(QLatin1String("Warning:")) || line.startsWith(QLatin1String("Note:"))) warned << line;
+    if (!warned.isEmpty()) {
+        const QString named = result.value(QStringLiteral("warning")).toString();
+        result.insert(QStringLiteral("warning"), (warned + (named.isEmpty() ? QStringList() : QStringList{named})).join(QLatin1Char(' ')));
+    }
     return jsonResult(result);
 }
 
@@ -580,7 +639,46 @@ QJsonObject QucsControl::importLibrary(const QJsonObject& args)
                                                     "under ngspice or Xyce the parts are simulated from their SPICE models)")
                                                : tr("a run of a part that needs them under Qucsator stops at them (its Qucsator model's)"));
         }
+        // The Verilog-A modules its parts need (as it was made to record
+        // them) that neither it nor the open project has a source or a
+        // compiled model of: made without its Verilog-A. Only the run told,
+        // as "no loaded OSDI defines", not that the library lacked them.
+        {
+            QStringList projectFiles;
+            if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty()) {
+                const QDir project(QucsSettings.QucsWorkDir);
+                for (const QString& f : misc::projectFiles(project, {QStringLiteral("*.va"), QStringLiteral("*.osdi")}))
+                    projectFiles << project.absoluteFilePath(f);
+            }
+            QStringList lacking;
+            for (const QJsonValue& p : result.value(QStringLiteral("parts")).toArray()) {
+                const QString part = p.toObject().value(QStringLiteral("part")).toString();
+                const QStringList files = LibComp::verilogAFilesOf(target, part) + projectFiles;
+                for (const QString& module : LibComp::verilogAModules(target, part)) {
+                    const bool here = std::any_of(files.cbegin(), files.cend(), [&](const QString& file) {
+                        return file.endsWith(QLatin1String(".va"), Qt::CaseInsensitive) ? qucs_s::osdi::sourceDefines(file, module)
+                                                                                         : qucs_s::osdi::defines(file, module);
+                    });
+                    if (const QString said = QStringLiteral("%1 (%2)").arg(module, part); !here && !lacking.contains(said)) lacking << said;
+                }
+            }
+            if (!lacking.isEmpty()) {
+                result.insert(QStringLiteral("modules not here"), QJsonArray::fromStringList(lacking));
+                warnings << tr("Its parts need Verilog-A modules that neither it nor the project has a source or a compiled model "
+                               "of: %1. It was made without its Verilog-A: a run of such a part stops at it - bring the modules' "
+                               ".va into the project, or the library made with them.")
+                                .arg(lacking.join(QStringLiteral(", ")));
+            }
+        }
         addNamedLike(result, target);
+        // A Verilog-A module of its that another library defines differently.
+        if (const QStringList clashes = modulesDefinedDifferently(target); !clashes.isEmpty()) {
+            result.insert(QStringLiteral("modules defined differently"), QJsonArray::fromStringList(clashes));
+            warnings << tr("It brings Verilog-A modules that another library defines differently: %1. A circuit that places "
+                           "parts of both runs one definition for all of them (ngspice loads one module of a name), and its "
+                           "check says so - rename the module in one of them.")
+                            .arg(clashes.join(QStringLiteral("; ")));
+        }
     }
     if (!warnings.isEmpty()) {
         const QString named = result.value(QStringLiteral("warning")).toString();

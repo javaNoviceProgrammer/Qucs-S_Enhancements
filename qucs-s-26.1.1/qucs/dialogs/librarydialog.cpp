@@ -43,6 +43,7 @@
 #include <QGroupBox>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QSaveFile>
 #include <QDirIterator>
 
 #include "librarydialog.h"
@@ -354,6 +355,10 @@ void LibraryDialog::slotCreateNext()
                               + tr("(It goes to the trash once the new one is made, and stays as it is if that cannot be made.)"),
                           QMessageBox::Yes, QMessageBox::No);
     if (ans == QMessageBox::No) return;
+    // Each part's description the library had, to keep or change.
+    const QHash<QString, QString> before = descriptionsOf(LibFile.fileName());
+    for (int i = 0; i < SelectedNames.size() && i < Descriptions.size(); ++i)
+      if (Descriptions[i].isEmpty()) Descriptions[i] = before.value(partName(SelectedNames[i]));
   }
 
   if (checkDescr->checkState() == Qt::Checked){
@@ -453,6 +458,71 @@ bool LibraryDialog::copyIntoLibrary(const QString &from, const QString &name)
   QString why;
   if (!misc::copyFileOver(source, target, &why)) {
     ErrText->insertPlainText(QObject::tr("ERROR: Cannot create file \"%1\".\n").arg(name) + why + QLatin1Char('\n'));
+    return false;
+  }
+  a_copied.insert(name, source);
+  return true;
+}
+
+// ---------------------------------------------------------------
+// Each component's description in the library \a file, by its name.
+QHash<QString, QString> LibraryDialog::descriptionsOf(const QString &file)
+{
+  QHash<QString, QString> found;
+  QFile f(file);
+  if (!f.open(QIODevice::ReadOnly)) return found;
+  const QString text = QString::fromUtf8(f.readAll());
+  static const QRegularExpression component(QStringLiteral("\\n<Component ([^>\\n]+)>\\s*\\n\\s*<Description>\\n(.*?)\\n\\s*</Description>"),
+                                            QRegularExpression::DotMatchesEverythingOption);
+  for (auto it = component.globalMatch(text); it.hasNext();) {
+    const QRegularExpressionMatch m = it.next();
+    found.insert(m.captured(1).trimmed(), m.captured(2).trimmed());
+  }
+  return found;
+}
+
+// ---------------------------------------------------------------
+// The modules (in their case, sorted) of the .model cards of \a spice (and
+// the files it includes, from \a baseDir) that a Verilog-A source or a
+// compiled model of the project, or of the subcircuit's library parts,
+// defines: what the part needs of Verilog-A.
+QStringList LibraryDialog::verilogAModulesOf(Schematic *doc, const QString &spice, const QString &baseDir)
+{
+  const QSet<QString> types = qucs_s::osdi::usedModelTypes(spice, baseDir);
+  if (types.isEmpty()) return {};
+  QStringList sources, libraries;
+  const QDir project(QucsSettings.QucsWorkDir);
+  for (const QString &file : misc::projectFiles(project, {"*.va"})) sources << project.absoluteFilePath(file);
+  for (const QString &file : misc::projectFiles(project, {"*.osdi"})) libraries << project.absoluteFilePath(file);
+  for (const QString &file : AbstractSpiceKernel::collectVerilogAFiles(doc))
+    (file.endsWith(".osdi", Qt::CaseInsensitive) ? libraries : sources) << file;
+  QStringList modules;
+  for (const QString &type : types) {
+    const bool verilogA = std::any_of(sources.cbegin(), sources.cend(), [&](const QString &va) { return qucs_s::osdi::sourceDefines(va, type); })
+        || std::any_of(libraries.cbegin(), libraries.cend(), [&](const QString &osdi) { return qucs_s::osdi::defines(osdi, type); });
+    if (verilogA) modules << type;
+  }
+  modules.sort();
+  return modules;
+}
+
+// ---------------------------------------------------------------
+// As copyIntoLibrary(), with \a bytes for \a from's: its include lines
+// rewritten for where the library has the files.
+bool LibraryDialog::writeIntoLibrary(const QString &from, const QString &name, const QByteArray &bytes)
+{
+  const QString source = QFileInfo(from).absoluteFilePath();
+  if (a_copied.contains(name)) {
+    if (a_copied.value(name) == source) return true;   // another subcircuit uses it too
+    ErrText->insertPlainText(tr("ERROR: %1 and %2 would both be \"%3\" in the library.\n")
+                               .arg(QDir::toNativeSeparators(a_copied.value(name)), QDir::toNativeSeparators(source), name));
+    return false;
+  }
+  const QString target = QDir(modelsFolder()).absoluteFilePath(name);
+  QSaveFile out(target);
+  if (!QDir().mkpath(QFileInfo(target).absolutePath()) || !out.open(QIODevice::WriteOnly) || out.write(bytes) != bytes.size()
+      || !out.commit()) {
+    ErrText->insertPlainText(QObject::tr("ERROR: Cannot create file \"%1\".\n").arg(name));
     return false;
   }
   a_copied.insert(name, source);
@@ -579,14 +649,53 @@ int LibraryDialog::embedVerilogA(Schematic *doc, const QString &spice, const QSt
   // The sources of the modules the .model cards name. A compiled model
   // (.osdi) runs on one platform only: the library brings the source, and
   // OpenVAF compiles it where the library is used.
+  //
+  // One source a module: that of the library a part in the subcircuit is
+  // of, for a module it uses (what the parts bring: collectVerilogAFiles());
+  // the project's for the subcircuit's own cards. Every project file that
+  // defined the module was taken - an unrelated one beside the part's own
+  // - and a circuit using the library ran whichever was built last. Two
+  // that differ still: refused, the module named. The library made again
+  // here is not one: its folder is the old library's.
+  QSet<QString> brought;
+  for (const QString &file : AbstractSpiceKernel::collectVerilogAFiles(doc))
+    if (file.endsWith(".va", Qt::CaseInsensitive)) brought.insert(QFileInfo(file).canonicalFilePath());
+  brought.remove(QString());
+  const QString replaced = QFileInfo(LibDir.absoluteFilePath(NameEdit->text().trimmed())).canonicalFilePath();
+  const auto sameBytes = [](const QString &a, const QString &b) {
+    QFile fa(a), fb(b);
+    return fa.open(QIODevice::ReadOnly) && fb.open(QIODevice::ReadOnly) && fa.size() == fb.size() && fa.readAll() == fb.readAll();
+  };
   QStringList definingSources;
   QSet<QString> fromSource;
-  for (const QString &va : std::as_const(sources))
-    for (const QString &type : types)
-      if (qucs_s::osdi::sourceDefines(va, type)) {
-        if (!definingSources.contains(va)) definingSources << va;
-        fromSource.insert(type);
-      }
+  int errors = 0;
+  QStringList sortedTypes(types.cbegin(), types.cend());
+  sortedTypes.sort();
+  for (const QString &type : std::as_const(sortedTypes)) {
+    QStringList defining, ofParts;
+    for (const QString &va : std::as_const(sources)) {
+      const QString real = QFileInfo(va).canonicalFilePath();
+      if (!replaced.isEmpty() && real.startsWith(replaced + QLatin1Char('/'))) continue;
+      if (!qucs_s::osdi::sourceDefines(va, type)) continue;
+      defining << va;
+      if (brought.contains(real)) ofParts << va;
+    }
+    if (defining.isEmpty()) continue;
+    QStringList distinct;   // (copies of one file are one)
+    for (const QString &va : ofParts.isEmpty() ? std::as_const(defining) : std::as_const(ofParts))
+      if (std::none_of(distinct.cbegin(), distinct.cend(), [&](const QString &d) { return sameBytes(d, va); })) distinct << va;
+    if (distinct.size() > 1) {
+      QStringList shown;
+      for (const QString &va : std::as_const(distinct)) shown << QDir::toNativeSeparators(project.relativeFilePath(va));
+      ErrText->insertPlainText(tr("Error: the Verilog-A module %1 is defined differently by %2: a circuit using the library "
+                                  "would load one of them. Rename the module in one, or take the one not meant out of the "
+                                  "project.\n").arg(type, shown.join(", ")));
+      ++errors;
+      continue;
+    }
+    if (!definingSources.contains(distinct.first())) definingSources << distinct.first();
+    fromSource.insert(type);
+  }
   QSet<QString> compiledOnly;
   for (const QString &osdi : std::as_const(libraries))
     for (const QString &type : types)
@@ -598,35 +707,84 @@ int LibraryDialog::embedVerilogA(Schematic *doc, const QString &spice, const QSt
                                 "it is not embedded, as a compiled model runs on one platform only.\n")
                                .arg(modules.join(", ")));
   }
-  if (definingSources.isEmpty()) return 0;   // no Verilog-A in it
+  if (definingSources.isEmpty()) return errors;   // no Verilog-A in it
 
   const QDir folder(modelsFolder());
-  int errors = 0;
   QStringList embedded;
   for (const QString &va : std::as_const(definingSources)) {
     const QString name = QFileInfo(va).fileName();
     const bool copied = !a_copied.contains(name)
         && QFileInfo(folder.absoluteFilePath(name)).canonicalFilePath() != QFileInfo(va).canonicalFilePath();
-    if (!copyIntoLibrary(va, name)) { ++errors; continue; }
-    // A model compiled from what the library brought before is compiled
-    // again from this source.
-    if (copied) QFile::remove(folder.absoluteFilePath(QFileInfo(name).completeBaseName() + ".osdi"));
-    if (!attached.contains(name)) attached << name;
-    embedded << name;
-    // The files it includes, where it finds them: beside it, or below
-    // (beside the file a link leads to, for a library's linked source).
+    // Where each file goes in the library: the source by its name, what it
+    // includes from its folder (or below) at its path from there (beside
+    // the file a link leads to, for a library's linked source), and one
+    // from outside it - `include "../common/up.vams" - below NAME.includes/
+    // beside it, at its path from the folder they all share: left out, the
+    // library compiled nowhere ("failed to read '../common/up.vams'"). An
+    // include line naming a file now elsewhere is rewritten, in the
+    // library's copy.
     const QFileInfo vaInfo(va);
     const QDir sourceFolder = vaInfo.isSymLink() ? QFileInfo(vaInfo.symLinkTarget()).absoluteDir() : vaInfo.absoluteDir();
+    QList<std::pair<QString, QString>> places{{va, name}};   // source, its path in the library
+    QHash<QString, QString> placeOf{{QDir::cleanPath(vaInfo.absoluteFilePath()), name}};
+    QStringList outside;
     for (const QString &included : qucs_s::osdi::sourceIncludes(va)) {
       const QString relative = sourceFolder.relativeFilePath(included);
       if (relative.startsWith("..")) {
-        ErrText->insertPlainText(tr("Warning: %1 includes %2 from outside its folder; it is not "
-                                    "embedded.\n").arg(QFileInfo(va).fileName(),
-                                                        QDir::toNativeSeparators(included)));
+        outside << included;
         continue;
       }
-      if (copyIntoLibrary(included, relative)) embedded << relative;
-      else ++errors;
+      places.append({included, relative});
+      placeOf.insert(QDir::cleanPath(included), relative);
+    }
+    if (!outside.isEmpty()) {
+      QStringList common = QDir::cleanPath(sourceFolder.absolutePath()).split(QLatin1Char('/'));
+      for (const QString &file : std::as_const(outside)) {
+        const QStringList parts = QDir::cleanPath(QFileInfo(file).absolutePath()).split(QLatin1Char('/'));
+        int same = 0;
+        while (same < common.size() && same < parts.size() && common.at(same) == parts.at(same)) ++same;
+        common = common.mid(0, same);
+      }
+      const QDir shared(common.join(QLatin1Char('/')).isEmpty() ? QStringLiteral("/") : common.join(QLatin1Char('/')));
+      for (const QString &file : std::as_const(outside)) {
+        const QString relative = QFileInfo(name).completeBaseName() + QStringLiteral(".includes/") + shared.relativeFilePath(QDir::cleanPath(file));
+        places.append({file, relative});
+        placeOf.insert(QDir::cleanPath(file), relative);
+      }
+      QStringList shown;
+      for (const QString &file : std::as_const(outside)) shown << QDir::toNativeSeparators(file);
+      ErrText->insertPlainText(tr("%1 includes %2 from outside its folder: embedded below %3.includes/, its include lines "
+                                  "naming it there.\n").arg(name, shown.join(", "), QFileInfo(name).completeBaseName()));
+    }
+    for (const auto &[from, to] : std::as_const(places)) {
+      // Its include lines that name a file the library has elsewhere.
+      static const QRegularExpression includeLine(QStringLiteral("`include\\s+\"([^\"]+)\""));
+      QFile f(from);
+      QString text = f.open(QIODevice::ReadOnly) ? QString::fromLatin1(f.readAll()) : QString();   // (bytes kept)
+      const QFileInfo info(from);
+      const QDir here = info.isSymLink() ? QFileInfo(info.symLinkTarget()).absoluteDir() : info.absoluteDir();
+      const QString root = QDir::rootPath() + QStringLiteral("library/"), toDir = QFileInfo(root + to).absolutePath();   // (paths only)
+      QList<QRegularExpressionMatch> lines;   // (last first: an earlier one's place kept)
+      for (auto it = includeLine.globalMatch(text); it.hasNext();) lines.prepend(it.next());
+      bool rewrite = false;
+      for (const QRegularExpressionMatch &m : std::as_const(lines)) {
+        const QString named = QString::fromUtf8(m.captured(1).toLatin1());
+        const QString target = placeOf.value(QDir::cleanPath(here.absoluteFilePath(named)));
+        if (target.isEmpty() || QDir::cleanPath(toDir + QLatin1Char('/') + named) == QDir::cleanPath(root + target)) continue;
+        text.replace(m.capturedStart(1), m.capturedLength(1), QString::fromLatin1(QDir(toDir).relativeFilePath(root + target).toUtf8()));
+        rewrite = true;
+      }
+      if (!(rewrite ? writeIntoLibrary(from, to, text.toLatin1()) : copyIntoLibrary(from, to))) {
+        ++errors;
+        continue;
+      }
+      if (to == name) {
+        // A model compiled from what the library brought before is compiled
+        // again from this source.
+        if (copied) QFile::remove(folder.absoluteFilePath(QFileInfo(name).completeBaseName() + ".osdi"));
+        if (!attached.contains(name)) attached << name;
+      }
+      embedded << to;
     }
   }
   embedded.removeDuplicates();
@@ -779,6 +937,7 @@ void LibraryDialog::slotSave()
     ret = Doc->createLibNetlist(&ts, ErrText, -1);
     QucsSettings.DefaultSimulator = sim;
     if(ret) {
+      const QString qucsModel = tmp;   // (said below when it has no device of Qucsator's)
       intoStream(Stream, tmp, "Model");
       int error = 0;
       QStringList IFiles;
@@ -801,6 +960,22 @@ void LibraryDialog::slotSave()
       if(!IFiles.isEmpty()) {
           Stream << "  <ModelIncludes \"" << IFiles.join("\" \"") << "\">\n";
       }
+      // No device of Qucsator's in it, nor in what it includes - a wrapper of
+      // SPICE or Verilog-A devices: Qucsator leaves the part out, every node
+      // through it open (Check Schematic says so where it is placed).
+      QString included = qucsModel;
+      for (const QString &lst : std::as_const(IFiles)) {
+        QFile f(QDir(modelsFolder()).absoluteFilePath(lst));
+        if (f.open(QIODevice::ReadOnly)) included += QString::fromUtf8(f.readAll());
+      }
+      bool spiceDevices = false;
+      for (Component *pc : Doc->a_DocComps)
+        if (pc->isActive == COMP_IS_ACTIVE && !pc->isEquation && !pc->isProbe && !pc->SpiceModel.isEmpty() && pc->Model != QLatin1String("Port")
+            && !pc->SpiceModel.startsWith(QLatin1Char('.')))
+          spiceDevices = true;
+      if (spiceDevices && !LibComp::qucsDevicesIn(included))
+        ErrText->insertPlainText(tr("Note: \"%1\" has no Qucs model (its devices are SPICE's or Verilog-A): Qucsator leaves "
+                                    "this part out - simulate it with ngspice.\n").arg(SelectedNames[i]));
       if (error > 0) partMade = false;
     }
     else {
@@ -858,6 +1033,17 @@ void LibraryDialog::slotSave()
         if (!copiedFiles.isEmpty()) {
           Stream << "<SpiceAttach \"" << copiedFiles.join("\" \"")
                  << "\">\n";
+        }
+        // The Verilog-A modules its .model cards name (those a source or a
+        // compiled model here defines), embedded or not: a library made
+        // without them recorded nothing, and where it was brought only the
+        // run told - "no loaded OSDI defines" - not that the library lacked
+        // them (LibComp::verilogAModules()).
+        {
+          QString scanned = spiceNetlist;
+          for (const QString &file : spiceFiles) scanned += QStringLiteral("\n.include \"%1\"\n").arg(file);
+          const QStringList modules = verilogAModulesOf(Doc, scanned, QFileInfo(QucsSettings.QucsWorkDir.filePath(SelectedNames[i])).absolutePath());
+          if (!modules.isEmpty()) Stream << "  <VerilogAModules \"" << modules.join("\" \"") << "\">\n";
         }
         // Its Verilog-A loaded in every circuit of a project that has the
         // library, placed or not: its Document Settings > Library ask for it.
@@ -1098,9 +1284,14 @@ bool LibraryDialog::create(const Request &request, QString *log, QString *error,
   if (const QString taken = folderTaken(); !taken.isEmpty()) return fail(taken);
   SelectedNames = request.subcircuits;
   Descriptions.clear();
+  // One not given, of a library it replaces: the description that part had
+  // there (create_library with 'replace' dropped them all).
+  const QHash<QString, QString> before = LibFile.exists() ? descriptionsOf(LibFile.fileName()) : QHash<QString, QString>();
   for (const QString &sub : request.subcircuits) {
     const QString bare = QFileInfo(sub).completeBaseName();
-    Descriptions.append(request.descriptions.value(sub, request.descriptions.value(bare)));
+    const QString given = request.descriptions.value(sub, request.descriptions.value(bare));
+    Descriptions.append(given.isEmpty() && !request.descriptions.contains(sub) && !request.descriptions.contains(bare)
+                            ? before.value(partName(sub)) : given);
   }
   checkAnalogLib->setChecked(request.analogOnly);
   const bool embed = QucsSettings.EmbedVerilogAInLibraries, ground = QucsSettings.LibraryGroundPin;
