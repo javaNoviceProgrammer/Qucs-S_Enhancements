@@ -815,6 +815,11 @@ void Schematic::writeDocumentTo(QTextStream& stream)
   stream << "  <showFrame=" << static_cast<int>(a_showFrame) << ">\n";
   // (Only when set: a Qucs-S that does not know it refuses the file.)
   if (a_alwaysLoadOSDI) stream << "  <AlwaysLoadOSDI=1>\n";
+  if (!a_modelCards.trimmed().isEmpty()) {   // (lines and \ escaped, as a frame's text is)
+    QString cards = a_modelCards.trimmed();
+    misc::convert2ASCII(cards);
+    stream << "  <ModelCards=" << cards << ">\n";
+  }
 
   QString t;
   misc::convert2ASCII(t = a_Frame_Text0);
@@ -976,11 +981,34 @@ int Schematic::saveDocument()
 }
 
 // -------------------------------------------------------------
+QString Schematic::modelCardsOf(const QString& text, QStringList* rejected)
+{
+  static const QRegularExpression card(QStringLiteral("^\\.model\\s+\\S+\\s+\\S"), QRegularExpression::CaseInsensitiveOption);
+  QString cards;
+  bool inCard = false;   // (a + line goes on with a card)
+  const QStringList lines = text.split(QLatin1Char('\n'));
+  for (int n = 0; n < lines.size(); ++n) {
+    const QString line = lines.at(n).trimmed();
+    if (line.isEmpty()) continue;
+    if (line.startsWith(QLatin1Char('*'))) cards += line + QLatin1Char('\n');
+    else if (card.match(line).hasMatch() || (inCard && line.startsWith(QLatin1Char('+')))) {
+      cards += line + QLatin1Char('\n');
+      inCard = true;
+    } else {
+      if (rejected != nullptr) *rejected << QStringLiteral("%1: %2").arg(n + 1).arg(line);
+      inCard = false;
+    }
+  }
+  return cards;
+}
+
+// -------------------------------------------------------------
 bool Schematic::loadProperties(QTextStream *stream)
 {
   bool ok = true;
   QString Line, cstr, nstr;
   a_alwaysLoadOSDI = false;   // (written only when set)
+  a_modelCards.clear();
   while(!stream->atEnd()) {
     Line = stream->readLine();
     if(Line.startsWith("</")) return true;  // field end ?
@@ -1034,6 +1062,7 @@ bool Schematic::loadProperties(QTextStream *stream)
     else a_SimOpenDpl = true;
     else if(cstr == "Script") a_Script = nstr;
     else if(cstr == "AlwaysLoadOSDI") a_alwaysLoadOSDI = nstr.trimmed() == QLatin1String("1");
+    else if(cstr == "ModelCards") misc::convert2Unicode(a_modelCards = Line.section('=', 1));   // (a card has = in it)
     else if(cstr == "RunScript")
     if(nstr.toInt(&ok) == 0) a_SimRunScript = false;
     else a_SimRunScript = true;

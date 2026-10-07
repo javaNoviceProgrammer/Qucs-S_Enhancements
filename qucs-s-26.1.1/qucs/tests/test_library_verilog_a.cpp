@@ -11,12 +11,14 @@
 #include <QtTest>
 #include <QCheckBox>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
 #include "config.h"
+#include "erc.h"
 #include "qucs.h"
 #include "module.h"
 #include "main.h"
@@ -782,14 +784,132 @@ private slots:
             SettingsDialog dialog(&again);
             QVERIFY(dialog.findChild<QCheckBox*>("alwaysLoadOSDI")->isChecked());
         }
+        // Its own .model cards: saved (lines escaped), read back into the
+        // dialog; a line that is no card refused, nothing applied.
+        {
+            SettingsDialog dialog(&sch);
+            auto* cards = dialog.findChild<QPlainTextEdit*>("modelCards");
+            QVERIFY(cards != nullptr);
+            QVERIFY(cards->toPlainText().isEmpty());
+            cards->setPlainText("* its own\n.model m3 good\n+ r=2k\n");
+            QVERIFY(QMetaObject::invokeMethod(&dialog, "slotApply"));
+            QCOMPARE(sch.getModelCards(), QStringLiteral("* its own\n.model m3 good\n+ r=2k"));
+            cards->setPlainText(".model m3 good\n.control\nshell ls\n.endc");
+            QString said;
+            QTimer::singleShot(0, [&said] {
+                if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                    said = box->text();
+                    box->close();
+                }
+            });
+            QVERIFY(QMetaObject::invokeMethod(&dialog, "slotApply"));
+            QVERIFY2(said.contains("2: .control") && said.contains("3: shell ls") && said.contains("Nothing was applied"), qPrintable(said));
+            QCOMPARE(sch.getModelCards(), QStringLiteral("* its own\n.model m3 good\n+ r=2k"));
+        }
+        QVERIFY(sch.save() >= 0);
+        QVERIFY2(read(file).contains("\n  <ModelCards=* its own\\n.model m3 good\\n+ r=2k>\n"), qPrintable(read(file)));
+        {
+            Schematic again(nullptr, file);
+            QVERIFY(again.load());
+            QCOMPARE(again.getModelCards(), QStringLiteral("* its own\n.model m3 good\n+ r=2k"));
+            SettingsDialog dialog(&again);
+            QCOMPARE(dialog.findChild<QPlainTextEdit*>("modelCards")->toPlainText(), QStringLiteral("* its own\n.model m3 good\n+ r=2k"));
+        }
+        sch.setModelCards(QString());
         sch.setAlwaysLoadOSDI(false);
         QVERIFY(sch.save() >= 0);
-        QVERIFY2(!read(file).contains("AlwaysLoadOSDI"), qPrintable(read(file)));
+        QVERIFY2(!read(file).contains("AlwaysLoadOSDI") && !read(file).contains("ModelCards"), qPrintable(read(file)));
         // Read again into one that had it: not marked, as the file says.
         sch.setAlwaysLoadOSDI(true);
+        sch.setModelCards(".model x y");
         QVERIFY(sch.load());
         QVERIFY(!sch.getAlwaysLoadOSDI());
+        QVERIFY(sch.getModelCards().isEmpty());
         QFile::remove(file);
+    }
+
+    // A subcircuit's own .model cards (Document Settings > Library: its
+    // Verilog-A device's, no .MODEL block placed for it) go into its
+    // netlist, into a library made of it - inside its .SUBCKT, its
+    // Verilog-A embedded - and into a circuit that places it; a line that
+    // is no card does not, and Check Schematic says so. In a folder of the
+    // project: its part is named for the library all the same (inner/own
+    // is OwnLib_own).
+    void aSubcircuitsOwnModelCardsGoIntoItsNetlists()
+    {
+        QStringList rejected;
+        QCOMPARE(Schematic::modelCardsOf("+ alone\n\n.MODEL a b\n+ c=1\n* note\nfoo\n+ after foo", &rejected),
+                 QStringLiteral(".MODEL a b\n+ c=1\n* note\n"));
+        QCOMPARE(rejected, (QStringList{"1: + alone", "6: foo", "7: + after foo"}));
+        QCOMPARE(Schematic::modelCardsOf(".model onlyname"), QString());
+
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        // sub.sch with no .MODEL block, its card its own.
+        const QString own = QString(read(project + "/sub.sch"))
+                                .replace("  <SpiceModel SpiceModel1 1 120 300 -27 16 0 0 \".model m1 good\" 1 \"\" 0>\n", QString())
+                                .replace("<Components>", "<Properties>\n  <ModelCards=* own\\n.model m3 good\\n+ r=2k>\n</Properties>\n<Components>");
+        QVERIFY(!own.contains("SpiceModel1"));
+        write(project + "/inner/own.sch", own.toUtf8());
+        const QString netlist = netlistOf(project + "/inner/own.sch");
+        QVERIFY2(netlist.contains("\n* own\n.model m3 good\n+ r=2k\n"), qPrintable(netlist));
+        const QString log = makeLibrary(app, "OwnLib", {"inner/own.sch"}, userLib);
+        QVERIFY2(log.contains("Embedding Verilog-A: good.va"), qPrintable(log));
+        const QString lib = read(userLib + "/OwnLib.lib");
+        QVERIFY2(lib.contains(".SUBCKT OwnLib_own ") && lib.contains("\n.model m3 good\n+ r=2k\n.ENDS\n"), qPrintable(lib));
+        QVERIFY2(lib.contains("<SpiceAttach \"good.va\">"), qPrintable(lib));
+        // A circuit that places it as a subcircuit: in its .SUBCKT.
+        write(project + "/uses_own.sch",
+              "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+              "  <Sub SUB1 1 300 200 -26 21 0 0 \"inner/own.sch\" 1>\n"
+              "  <GND * 1 270 260 0 0 0 0>\n"
+              "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        const QString uses = netlistOf(project + "/uses_own.sch");
+        const qsizetype sub = uses.indexOf(".SUBCKT own ");
+        QVERIFY2(sub >= 0 && uses.indexOf(".model m3 good", sub) > sub && uses.indexOf(".model m3 good", sub) < uses.indexOf(".ENDS", sub),
+                 qPrintable(uses));
+        // A line that is no card (a file written by hand): left out, said.
+        write(project + "/inner/bad.sch", QString(own).replace("+ r=2k>", "+ r=2k\\n.control\\nshell ls\\n.endc>").toUtf8());
+        const QString bad = netlistOf(project + "/inner/bad.sch");
+        QVERIFY2(bad.contains(".model m3 good\n+ r=2k\n") && !bad.contains("shell ls"), qPrintable(bad));
+        Schematic sch(nullptr, project + "/inner/bad.sch");
+        QVERIFY(sch.load());
+        QString warned;
+        for (const auto& issue : qucs_s::erc::check(&sch))
+            if (issue.message.contains("no card")) warned = issue.message;
+        QVERIFY2(warned.contains("4: .control") && warned.contains("5: shell ls"), qPrintable(warned));
+        QFile::remove(userLib + "/OwnLib.lib");
+        QDir(userLib + "/OwnLib").removeRecursively();
+    }
+
+    // A subcircuit that brings a SPICE file whose .model card is of a
+    // Verilog-A module (a wrapper subcircuit in a SPICE file, beside its
+    // .va): the library embeds the module's source. Only the cards of the
+    // subcircuit's own netlist were read - placed elsewhere, the part found
+    // no model ("Unable to find definition of model").
+    void aSpiceFilesModelCardsBringTheirVerilogA()
+    {
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        write(project + "/inner/wrap.lib", "* a wrapper\n.subckt vwrap p n\nN1 p n m4\n.model m4 good\n.ends vwrap\n");
+        write(project + "/inner/wrapped.sch",
+              QString(read(project + "/sub.sch"))
+                  .replace("  <SpiceModel SpiceModel1 1 120 300 -27 16 0 0 \".model m1 good\" 1 \"\" 0>\n",
+                           "  <SpiceInclude SpiceInclude1 1 120 300 -27 16 0 0 \"wrap.lib\" 1 \"\" 0 \"\" 0 \"\" 0 \"\" 0>\n")
+                  .toUtf8());
+        const QString log = makeLibrary(app, "WrapLib", {"inner/wrapped.sch"}, userLib);
+        QVERIFY2(log.contains("Successfully created library.") && log.contains("Embedding Verilog-A: good.va"), qPrintable(log));
+        const QString lib = read(userLib + "/WrapLib.lib");
+        QVERIFY2(lib.contains("<SpiceAttach \"wrap.lib\" \"good.va\">"), qPrintable(lib));
+        QVERIFY(QFileInfo::exists(userLib + "/WrapLib/good.va"));
+        QFile::remove(userLib + "/WrapLib.lib");
+        QDir(userLib + "/WrapLib").removeRecursively();
     }
 
     // A part marked so (its subcircuit's Document Settings > Library):

@@ -274,6 +274,10 @@ void AbstractSpiceKernel::startNetlist(QTextStream &stream, spicecompat::SpiceDi
                 stream<<s;
             }
         }
+        // And its own (Document Settings > Library: its Verilog-A device's
+        // .model), where its devices are - a subcircuit's inside it, in a
+        // library made of it too.
+        stream<<Schematic::modelCardsOf(a_schematic->getModelCards());
 }
 
 /*!

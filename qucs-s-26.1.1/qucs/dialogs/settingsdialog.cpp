@@ -33,6 +33,8 @@
 #include <QRegularExpressionValidator>
 #include <QLineEdit>
 #include <QTextEdit>
+#include <QPlainTextEdit>
+#include <QMessageBox>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QTabWidget>
@@ -196,7 +198,25 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
            "Off: a circuit loads only the models its parts use."), Tab4);
     libraryNote->setWordWrap(true);
     gp4->addWidget(libraryNote);
-    gp4->addStretch();
+    gp4->addSpacing(8);
+    QLabel *cardsLabel = new QLabel(tr("SPICE .model cards of its own:"), Tab4);
+    gp4->addWidget(cardsLabel);
+    Input_ModelCards = new QPlainTextEdit(Tab4);
+    Input_ModelCards->setObjectName(QStringLiteral("modelCards"));
+    Input_ModelCards->setAccessibleName(tr("SPICE .model cards"));   // (get_settings' key is its label's: Library/SPICE .model cards of its own)
+    Input_ModelCards->setPlaceholderText(QStringLiteral(".model resmod va_res r=1k"));
+    Input_ModelCards->setLineWrapMode(QPlainTextEdit::NoWrap);
+    Input_ModelCards->setTabChangesFocus(true);
+    cardsLabel->setBuddy(Input_ModelCards);
+    gp4->addWidget(Input_ModelCards, 1);
+    QLabel *cardsNote = new QLabel(
+        tr("Written into this schematic's SPICE netlist with its devices - inside the subcircuit when "
+           "it is one, and into a library part made of it: the .model card of a Verilog-A device in it "
+           "(an N device whose model is resmod: .model resmod va_res r=1k), with no .MODEL block placed "
+           "for it. One card a line, + lines going on with one, * comments; ngspice and Xyce read them, "
+           "Qucsator does not."), Tab4);
+    cardsNote->setWordWrap(true);
+    gp4->addWidget(cardsNote);
     t->addTab(Tab4, tr("Library"));
 
     // ...........................................................
@@ -228,6 +248,7 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     Check_RunScript->setChecked(Doc->getSimRunScript());
     Check_GridOn->setChecked(Doc->getGridOn());
     Check_AlwaysLoadOSDI->setChecked(Doc->getAlwaysLoadOSDI());
+    Input_ModelCards->setPlainText(Doc->getModelCards());
     Input_GridX->setText(QString::number(Doc->getGridX()));
     Input_GridY->setText(QString::number(Doc->getGridY()));
 
@@ -293,14 +314,30 @@ void SettingsDialog::slotScriptBrowse() {
 // Close the dialog, applying any settings
 void SettingsDialog::slotOK()
 {
-    slotApply();
-    accept();
+    if (apply()) accept();   // (one refused: the dialog stays, to put it right)
+}
+
+// -----------------------------------------------------------
+void SettingsDialog::slotApply()
+{
+    apply();
 }
 
 // -----------------------------------------------------------
 // Applies the settings chosen in the dialog
-void SettingsDialog::slotApply()
+bool SettingsDialog::apply()
 {
+    // Its .model cards: only cards go into a netlist (a line of another
+    // kind - a .control block - is said, and nothing is applied).
+    QStringList rejected;
+    Schematic::modelCardsOf(Input_ModelCards->toPlainText(), &rejected);
+    if (!rejected.isEmpty()) {
+        QMessageBox::warning(this, tr("Document Settings"),
+                             tr("Library: these lines are no .model card (nor a + line going on with one, nor a * "
+                                "comment), and only cards go into the netlist:\n\n%1\n\nNothing was applied.")
+                                 .arg(rejected.join(QLatin1Char('\n'))));
+        return false;
+    }
     bool changed = false;
 
     // (A name beside the schematic, ending in .dat: shown as it is taken.)
@@ -345,6 +382,12 @@ void SettingsDialog::slotApply()
     if(Doc->getAlwaysLoadOSDI() != Check_AlwaysLoadOSDI->isChecked())
     {
         Doc->setAlwaysLoadOSDI(Check_AlwaysLoadOSDI->isChecked());
+        changed = true;
+    }
+
+    if (const QString cards = Input_ModelCards->toPlainText().trimmed(); Doc->getModelCards() != cards)
+    {
+        Doc->setModelCards(cards);
         changed = true;
     }
 
@@ -403,6 +446,7 @@ void SettingsDialog::slotApply()
         Doc->setChanged(true);
         Doc->viewport()->repaint();
     }
+    return true;
 }
 
 AuxFilesDialog::AuxFilesDialog(QWidget *parent, const QString &filter) :QDialog(parent)
