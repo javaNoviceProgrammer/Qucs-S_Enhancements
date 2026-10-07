@@ -363,6 +363,13 @@ public:
   /// Library; saved as <ModelCards=...> only when there are any.
   QString getModelCards() const { return a_modelCards; }
   void setModelCards(const QString& cards) { a_modelCards = cards; }
+  /// Made into a library part, its .model cards (getModelCards()) are
+  /// written at the top of every ngspice circuit of a project that has the
+  /// library, placed or not (<AlwaysModelCards> in the library), and its
+  /// Verilog-A loaded for them. Document Settings > Library; saved as
+  /// <AlwaysModelCards=1> only when set.
+  bool getAlwaysModelCards() const { return a_alwaysModelCards; }
+  void setAlwaysModelCards(bool value) { a_alwaysModelCards = value; }
   /// The lines of \a text that go into a netlist: .model cards, the +
   /// lines that go on with one, * comments (blank lines left out); the
   /// others, "3: .control" (numbered from 1), in \a rejected.
@@ -455,6 +462,7 @@ private:
   FrameSize a_showFrame; // Frame format
   bool a_alwaysLoadOSDI = false;
   QString a_modelCards;   // getModelCards()
+  bool a_alwaysModelCards = false;   // getAlwaysModelCards()
   QString a_Frame_Text0;
   QString a_Frame_Text1;
   QString a_Frame_Text2;

@@ -337,7 +337,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Check Schematic*. ngspice and Xyce read them, Qucsator does not.
   Saved as `<ModelCards=...>` (lines escaped), only when there are any;
   Claude's `get_settings` and `set_settings` (scope document) read and set
-  them by that key. *Create Library* also embeds the Verilog-A of a
+  them by that key. *Always write its .model cards in the project's
+  circuits*, below them, does for the cards what *Always load its
+  Verilog-A* does for the models: *Create Library* writes
+  `<AlwaysModelCards>` with the part, and every ngspice circuit of a
+  project that has the library - its own, or one a part of which a
+  schematic of the project places - has the part's cards at the top of
+  its netlist, placed or not (once: a placed part's model brings them
+  already), and loads the Verilog-A they name; a circuit outside the
+  project does not. For a model a circuit uses where Qucs-S cannot see
+  it: an N device of the circuit's own whose model is the wrapper's.
+  Saved as `<AlwaysModelCards=1>`, only when on. *Create Library* also embeds the Verilog-A of a
   `.model` card in a SPICE file the subcircuit brings - a wrapper
   `.subckt` in a SPICE file beside its `.va` - which it left behind (the
   part, placed elsewhere, found no model).

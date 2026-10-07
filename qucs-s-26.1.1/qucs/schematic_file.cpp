@@ -815,6 +815,7 @@ void Schematic::writeDocumentTo(QTextStream& stream)
   stream << "  <showFrame=" << static_cast<int>(a_showFrame) << ">\n";
   // (Only when set: a Qucs-S that does not know it refuses the file.)
   if (a_alwaysLoadOSDI) stream << "  <AlwaysLoadOSDI=1>\n";
+  if (a_alwaysModelCards) stream << "  <AlwaysModelCards=1>\n";
   if (!a_modelCards.trimmed().isEmpty()) {   // (lines and \ escaped, as a frame's text is)
     QString cards = a_modelCards.trimmed();
     misc::convert2ASCII(cards);
@@ -1009,6 +1010,7 @@ bool Schematic::loadProperties(QTextStream *stream)
   QString Line, cstr, nstr;
   a_alwaysLoadOSDI = false;   // (written only when set)
   a_modelCards.clear();
+  a_alwaysModelCards = false;
   while(!stream->atEnd()) {
     Line = stream->readLine();
     if(Line.startsWith("</")) return true;  // field end ?
@@ -1062,6 +1064,7 @@ bool Schematic::loadProperties(QTextStream *stream)
     else a_SimOpenDpl = true;
     else if(cstr == "Script") a_Script = nstr;
     else if(cstr == "AlwaysLoadOSDI") a_alwaysLoadOSDI = nstr.trimmed() == QLatin1String("1");
+    else if(cstr == "AlwaysModelCards") a_alwaysModelCards = nstr.trimmed() == QLatin1String("1");
     else if(cstr == "ModelCards") misc::convert2Unicode(a_modelCards = Line.section('=', 1));   // (a card has = in it)
     else if(cstr == "RunScript")
     if(nstr.toInt(&ok) == 0) a_SimRunScript = false;

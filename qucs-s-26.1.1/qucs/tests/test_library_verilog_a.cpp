@@ -815,16 +815,37 @@ private slots:
             SettingsDialog dialog(&again);
             QCOMPARE(dialog.findChild<QPlainTextEdit*>("modelCards")->toPlainText(), QStringLiteral("* its own\n.model m3 good\n+ r=2k"));
         }
+        // Its cards in all the project's circuits: <AlwaysModelCards=1>, read back.
+        {
+            SettingsDialog dialog(&sch);
+            auto* always = dialog.findChild<QCheckBox*>("alwaysModelCards");
+            QVERIFY(always != nullptr && !always->isChecked());
+            always->setChecked(true);
+            QVERIFY(QMetaObject::invokeMethod(&dialog, "slotApply"));
+        }
+        QVERIFY(sch.getAlwaysModelCards());
+        QVERIFY(sch.save() >= 0);
+        QVERIFY2(read(file).contains("\n  <AlwaysModelCards=1>\n"), qPrintable(read(file)));
+        {
+            Schematic again(nullptr, file);
+            QVERIFY(again.load());
+            QVERIFY(again.getAlwaysModelCards());
+            SettingsDialog dialog(&again);
+            QVERIFY(dialog.findChild<QCheckBox*>("alwaysModelCards")->isChecked());
+        }
         sch.setModelCards(QString());
         sch.setAlwaysLoadOSDI(false);
+        sch.setAlwaysModelCards(false);
         QVERIFY(sch.save() >= 0);
         QVERIFY2(!read(file).contains("AlwaysLoadOSDI") && !read(file).contains("ModelCards"), qPrintable(read(file)));
         // Read again into one that had it: not marked, as the file says.
         sch.setAlwaysLoadOSDI(true);
         sch.setModelCards(".model x y");
+        sch.setAlwaysModelCards(true);
         QVERIFY(sch.load());
         QVERIFY(!sch.getAlwaysLoadOSDI());
         QVERIFY(sch.getModelCards().isEmpty());
+        QVERIFY(!sch.getAlwaysModelCards());
         QFile::remove(file);
     }
 
@@ -1005,6 +1026,76 @@ private slots:
                                  project + "/MarkLib.lib"})
             QFile::remove(f);
         QDir(project + "/MarkLib").removeRecursively();
+    }
+
+    // A part whose .model cards are marked to be in all the project's
+    // circuits (its subcircuit's Document Settings > Library): every ngspice
+    // circuit of a project that has its library - here the project's own -
+    // has them at its top, placed or not, and once where the part is placed
+    // (its model wrote them); its Verilog-A counts as loaded for them. A
+    // circuit elsewhere has none, nor does one when the mark is gone. Marked
+    // with no cards: said, as writing nothing.
+    void aPartsMarkedModelCardsAreInTheProjectsCircuits()
+    {
+        QucsSettings.EmbedVerilogAInLibraries = true;
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        const QString cardsOnly = QString(read(project + "/sub.sch"))
+            .replace("  <SpiceModel SpiceModel1 1 120 300 -27 16 0 0 \".model m1 good\" 1 \"\" 0>\n", QString());
+        write(project + "/cardsmark.sch",
+              QString(cardsOnly).replace("<Components>", "<Properties>\n  <AlwaysModelCards=1>\n  <ModelCards=* marked\\n.model m5 good\\n+ r=2k>\n"
+                                                         "</Properties>\n<Components>").toUtf8());
+        QString log = makeLibrary(app, "CardLib", {"cardsmark.sch"}, project);
+        QVERIFY2(log.contains("Successfully created library.") && log.contains("Embedding Verilog-A: good.va"), qPrintable(log));
+        QVERIFY2(log.contains("Marked: every circuit of a project that has the library has its .model cards."), qPrintable(log));
+        QVERIFY2(read(project + "/CardLib.lib").contains("\n  <AlwaysModelCards>\n"), qPrintable(read(project + "/CardLib.lib")));
+        const QString cards = "* marked\n.model m5 good\n+ r=2k\n";
+        QCOMPARE(LibComp::alwaysWrittenCards(project + "/CardLib.lib"), QStringList{cards});
+        QCOMPARE(LibComp::alwaysLoaded(project + "/CardLib.lib"), QStringList{"cardsmark"});   // (its Verilog-A, for them)
+        QCOMPARE(qucs_s::projectlibraries::alwaysWrittenModelCards(project), QStringList{cards});
+        QVERIFY(qucs_s::projectlibraries::alwaysLoadedModules(project).contains("good"));
+
+        // A circuit of the project that places none of it: at its top.
+        const QString plain = write(project + "/cardsplain.sch",
+            "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+            "  <R R1 1 100 100 -26 15 0 0 \"1 kOhm\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n"
+            "  <GND * 1 70 100 0 0 0 0>\n  <GND * 1 130 100 0 0 0 0>\n"
+            "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        QString netlist = netlistOf(plain);
+        QVERIFY2(netlist.contains(cards) && atTopLevel(netlist, ".model m5 good"), qPrintable(netlist));
+        // One that places the part: once (its model wrote them).
+        const QString placed = write(project + "/cardsplaced.sch",
+                                     QString(usesLibrary(project + "/CardLib")).replace("\"sub\"", "\"cardsmark\"").toUtf8());
+        netlist = netlistOf(placed);
+        QVERIFY2(netlist.contains(".SUBCKT CardLib_cardsmark ") && netlist.count(".model m5 good") == 1, qPrintable(netlist));
+
+        // Not a circuit of the project: none.
+        app.ProjName.clear();
+        QucsSettings.QucsWorkDir.setPath(dir.filePath("elsewhere"));
+        const QString outside = write(dir.filePath("elsewhere/cardsplain.sch"), read(plain).toUtf8());
+        QVERIFY2(!netlistOf(outside).contains(".model m5"), qPrintable(netlistOf(outside)));
+        app.ProjName = "vaproj";
+        QucsSettings.QucsWorkDir.setPath(project);
+        QVERIFY2(!netlistOf(outside).contains(".model m5"), qPrintable(netlistOf(outside)));   // (another folder's)
+
+        // The mark gone from the library: none, and its Verilog-A not loaded for it.
+        write(project + "/CardLib.lib", read(project + "/CardLib.lib").remove("  <AlwaysModelCards>\n").toUtf8());
+        QVERIFY(LibComp::alwaysWrittenCards(project + "/CardLib.lib").isEmpty() && LibComp::alwaysLoaded(project + "/CardLib.lib").isEmpty());
+        netlist = netlistOf(plain);
+        QVERIFY2(!netlist.contains(".model m5"), qPrintable(netlist));
+
+        // Marked with no cards: made, and said to write nothing.
+        write(project + "/nocards.sch",
+              QString(cardsOnly).replace("<Components>", "<Properties>\n  <AlwaysModelCards=1>\n</Properties>\n<Components>").toUtf8());
+        log = makeLibrary(app, "NoCards", {"nocards.sch"}, dir.filePath("bare"));
+        QVERIFY2(log.contains("Successfully created library.") && log.contains("the mark writes nothing"), qPrintable(log));
+        QVERIFY(LibComp::alwaysWrittenCards(dir.filePath("bare/NoCards.lib")).isEmpty());
+
+        for (const QString& f : {project + "/cardsmark.sch", project + "/nocards.sch", plain, placed, project + "/CardLib.lib"})
+            QFile::remove(f);
+        QDir(project + "/CardLib").removeRecursively();
     }
 
     // The setting: Application Settings > Settings, kept.
