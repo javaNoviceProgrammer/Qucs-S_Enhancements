@@ -275,9 +275,9 @@ void AbstractSpiceKernel::startNetlist(QTextStream &stream, spicecompat::SpiceDi
             }
         }
         // And its own (Document Settings > Library: its Verilog-A device's
-        // .model), where its devices are - a subcircuit's inside it, in a
-        // library made of it too.
-        stream<<Schematic::modelCardsOf(a_schematic->getModelCards());
+        // .model), at the top of the netlist - a subcircuit's after its
+        // .ENDS (createSubNetlist()).
+        if (!a_writingSubcircuit) stream<<Schematic::modelCardsOf(a_schematic->getModelCards());
 }
 
 /*!
@@ -364,9 +364,17 @@ void AbstractSpiceKernel::createSubNetlist(QTextStream &stream, bool lib)
 
     const spicecompat::SpiceDialect dialect(
             QucsSettings.DefaultSimulator == spicecompat::simXyce ? spicecompat::SPICEXyce : spicecompat::SPICEDefault);
+    a_writingSubcircuit = true;
     startNetlist(stream, dialect);
+    a_writingSubcircuit = false;
     for (const QString& line : std::as_const(joins)) stream << line;
     stream<<".ENDS\n";
+    // Its own .model cards (Document Settings > Library) at the top level of
+    // the netlist, not inside it: after its .ENDS, where the subcircuits are
+    // defined - of a circuit that places it, and of one that places a
+    // library part made of it (its <Spice> section ends with them). Inside
+    // it they were what a .MODEL block in it is.
+    stream<<Schematic::modelCardsOf(a_schematic->getModelCards());
 }
 
 /*!
