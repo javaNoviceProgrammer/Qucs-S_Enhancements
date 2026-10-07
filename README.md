@@ -2124,8 +2124,12 @@ Build dependencies on every platform: a C++20 compiler (GCC 12, Clang 15 or newe
 Qt 6 with the Svg, Xml, PrintSupport, Charts and Tools (Linguist) modules,
 flex, bison ≥ 3, gperf and dos2unix. ngspice is a run-time dependency only.
 The source tree is `qucs-s-26.1.1/`; every recipe below configures it into a
-sibling build directory (`build*/` is git-ignored) and stamps the commit into
-the About dialog with `-DGIT`.
+sibling build directory (`build*/` is git-ignored). The commit a build is of
+is read from git at every build (`cmake/commit.cmake`, into `qucs_commit.h`)
+and shown in *Help → About* ("Version 26.1.7 (a4e23cf)"), `--version` and a
+crash report; `-DGIT` names it where the sources are in no repository (a
+tarball). Read once when the tree was configured, it named that commit long
+after.
 
 ### macOS (Homebrew)
 

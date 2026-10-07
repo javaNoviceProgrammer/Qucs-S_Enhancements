@@ -35,6 +35,7 @@
 #ifdef HAVE_CONFIG_H
 # include <config.h>
 #endif
+#include "qucs_commit.h"   // QUCS_COMMIT (written at every build)
 #include "aboutdialog.h"
 
 #include <QObject>
@@ -142,7 +143,10 @@ AboutDialog::AboutDialog(QWidget *parent)
   hl->addWidget(vbox);
 
   QString versionText;
-  versionText = tr("Version")+" "+PACKAGE_VERSION+"\n";
+  // With the commit it is built of (qucs_commit.h), when that is known.
+  versionText = tr("Version")+" "+PACKAGE_VERSION
+              + (QStringLiteral(QUCS_COMMIT).isEmpty() ? QString() : QStringLiteral(" (%1)").arg(QStringLiteral(QUCS_COMMIT)))
+              + "\n";
 
   vl->addWidget(new QLabel("<span style='font-size:x-large; font-weight:bold;'>Quite Universal Circuit Simulator</span>"));
   lbl = new QLabel(versionText);
