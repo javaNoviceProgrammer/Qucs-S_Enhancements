@@ -826,6 +826,11 @@ private:
 public:
   static int testFile(const QString &);
   bool createLibNetlist(QTextStream*, QPlainTextEdit*, int);
+  /// Where, while a library is made of it (createLibNetlist()), the Qucs
+  /// model of each library part it places is written - a .lst Create
+  /// Library takes into the new library, as it takes a subcircuit's. None:
+  /// such a part is left out, with a warning.
+  void setLibraryScratch(const QString& folder) { a_libraryScratch = folder; }
   bool createSubNetlist(QTextStream *, int&, QStringList&, QPlainTextEdit*, int);
   void createSubNetlistPlain(QTextStream*, QPlainTextEdit*, int);
   int  prepareNetlist(QTextStream&, QStringList&, QPlainTextEdit*);
@@ -934,6 +939,7 @@ private:
   bool a_isAnalog;
   bool a_isVerilog;
   bool a_creatingLib;
+  QString a_libraryScratch;   // setLibraryScratch()
 };
 
 #endif

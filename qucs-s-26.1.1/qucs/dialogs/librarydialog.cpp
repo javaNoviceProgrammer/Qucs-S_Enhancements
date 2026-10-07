@@ -42,6 +42,8 @@
 #include <QStackedWidget>
 #include <QGroupBox>
 #include <QStringList>
+#include <QTemporaryDir>
+#include <QDirIterator>
 
 #include "librarydialog.h"
 #include "main.h"
@@ -275,6 +277,12 @@ void LibraryDialog::slotCreateNext()
     return;
   }
 
+  // (Chosen afresh each time: a "No" to Rewrite? and another name, or a
+  // folder that could not be made, came back here and added them again -
+  // each part twice in the library.)
+  SelectedNames.clear();
+  Descriptions.clear();
+  curDescr = 0;
   int count=0;
   for(int i = 0; i < subcirFileList->count(); i++) {
       auto itm = subcirFileList->item(i);
@@ -289,6 +297,39 @@ void LibraryDialog::slotCreateNext()
   if(count < 1) {
     QMessageBox::critical(this, tr("Error"), tr("Please choose at least one subcircuit!"));
     return;
+  }
+  if (const QString clash = nameClash(NameEdit->text(), SelectedNames); !clash.isEmpty()) {
+    QMessageBox::critical(this, tr("Error"), clash + QLatin1Char('.'));
+    return;
+  }
+
+  // A library is made of the subcircuits' files: one open with changes is
+  // saved first, or the library is not made (it took the file as last
+  // saved, the changes left out without a word).
+  if (QucsMain != nullptr) {
+    QList<QucsDoc*> unsaved;
+    QStringList names;
+    for (QucsDoc *doc : QucsMain->allDocuments())
+      for (const QString &sub : std::as_const(SelectedNames))
+        if (doc->getDocChanged() && !doc->getDocName().isEmpty()
+            && misc::isSameFile(doc->getDocName(), QucsSettings.QucsWorkDir.filePath(sub)) && !unsaved.contains(doc)) {
+          unsaved << doc;
+          names << sub;
+        }
+    if (!unsaved.isEmpty()) {
+      QMessageBox box(QMessageBox::Question, tr("Create Library"),
+                      tr("%1 has changes that are not saved, and the library is made of the saved file.", "", int(names.size()))
+                          .arg(names.join(QStringLiteral(", "))),
+                      QMessageBox::NoButton, this);
+      box.setObjectName(QStringLiteral("saveSubcircuits"));
+      QPushButton *save = box.addButton(tr("Save and Go On"), QMessageBox::AcceptRole);
+      box.addButton(QMessageBox::Cancel);
+      box.setDefaultButton(save);
+      box.exec();
+      if (box.clickedButton() != save) return;
+      for (QucsDoc *doc : std::as_const(unsaved))
+        if (!QucsMain->saveFile(doc)) return;
+    }
   }
 
   // The folder chosen (user_lib made when it is not there yet).
@@ -309,7 +350,8 @@ void LibraryDialog::slotCreateNext()
   LibFile.setFileName(LibDir.absoluteFilePath(NameEdit->text()) + ".lib");
   if(LibFile.exists()) {
     auto ans = QMessageBox::question(this, tr("Error"),
-                          tr("A library with this name already exists! Rewrite?"),
+                          tr("A library with this name already exists! Rewrite?") + QLatin1Char('\n')
+                              + tr("(It goes to the trash once the new one is made, and stays as it is if that cannot be made.)"),
                           QMessageBox::Yes, QMessageBox::No);
     if (ans == QMessageBox::No) return;
   }
@@ -348,46 +390,47 @@ void LibraryDialog::intoStream(QTextStream &Stream, QString &tmp,
 }
 
 // ---------------------------------------------------------------
+// A model file of a subcircuit (its .lst, Verilog, VHDL) into the library's
+// folder as \a ofn's name; a .lst read is removed.
 int LibraryDialog::intoFile(QString &ifn, QString &ofn, QStringList &IFiles)
 {
-  int error = 0;
   QFile ifile(ifn);
   if(!ifile.open(QIODevice::ReadOnly)) {
     ErrText->insertPlainText(QObject::tr("ERROR: Cannot open file \"%1\".\n").
         arg(ifn));
-    error++;
+    return 1;
   }
-  else {
-    QByteArray FileContent = ifile.readAll();
-    ifile.close();
-    if(ifile.fileName().right(4) == ".lst")
-      LibDir.remove(ifile.fileName());
-    QDir LibDirSub(LibDir);
-    if(!LibDirSub.cd(NameEdit->text())) {
-      if(!LibDirSub.mkdir(NameEdit->text())) {
-        ErrText->insertPlainText(
-        QObject::tr("ERROR: Cannot create user library subdirectory !\n"));
-        error++;
-      }
-      LibDirSub.cd(NameEdit->text());
-    }
-    QFileInfo Info(ofn);
-    ofn = Info.fileName();
-    IFiles.append(ofn);
-    QFile ofile;
-    ofile.setFileName(LibDirSub.absoluteFilePath(ofn));
-    if(!ofile.open(QIODevice::WriteOnly)) {
-      ErrText->insertPlainText(
-        QObject::tr("ERROR: Cannot create file \"%1\".\n").arg(ofn));
-      error++;
-    }
-    else {
-      QDataStream ds(&ofile);
-      ds.writeRawData(FileContent.data(), FileContent.size());
-      ofile.close();
-    }
+  QByteArray FileContent = ifile.readAll();
+  ifile.close();
+  if(ifile.fileName().right(4) == ".lst")
+    QFile::remove(ifile.fileName());
+  ofn = QFileInfo(ofn).fileName();
+  // (Two subcircuits of one file name in two folders: one would be the
+  // other's in the library.)
+  const QString source = QFileInfo(ifn).absoluteFilePath();
+  if (a_copied.contains(ofn) && a_copied.value(ofn) != source) {
+    ErrText->insertPlainText(tr("ERROR: %1 and %2 would both be \"%3\" in the library.\n")
+                               .arg(QDir::toNativeSeparators(a_copied.value(ofn)), QDir::toNativeSeparators(source), ofn));
+    return 1;
   }
-  return error;
+  a_copied.insert(ofn, source);
+  IFiles.append(ofn);
+  QFile ofile(QDir(modelsFolder()).absoluteFilePath(ofn));
+  if (!QDir().mkpath(modelsFolder()) || !ofile.open(QIODevice::WriteOnly)) {
+    ErrText->insertPlainText(
+      QObject::tr("ERROR: Cannot create file \"%1\".\n").arg(ofn));
+    return 1;
+  }
+  QDataStream ds(&ofile);
+  ds.writeRawData(FileContent.data(), FileContent.size());
+  ofile.close();
+  return 0;
+}
+
+// ---------------------------------------------------------------
+QString LibraryDialog::modelsFolder() const
+{
+  return QDir(a_staging).absoluteFilePath(NameEdit->text());
 }
 
 // ---------------------------------------------------------------
@@ -401,17 +444,11 @@ bool LibraryDialog::copyIntoLibrary(const QString &from, const QString &name)
                                     QDir::toNativeSeparators(source), name));
     return false;
   }
-  QDir folder(LibDir);
-  if (!folder.mkpath(NameEdit->text()) || !folder.cd(NameEdit->text())) {
+  const QString target = QDir(modelsFolder()).absoluteFilePath(name);
+  if (!QDir().mkpath(QFileInfo(target).absolutePath())) {
     ErrText->insertPlainText(QObject::tr("ERROR: Cannot create user library subdirectory !\n"));
     return false;
   }
-  const QString target = folder.absoluteFilePath(name);
-  if (misc::isSameFile(target, source)) {
-    a_copied.insert(name, source);   // there already: the library made again, a component of it in use
-    return true;
-  }
-  QDir().mkpath(QFileInfo(target).absolutePath());
   // Copied beside and renamed over: a copy that fails leaves the old file.
   QString why;
   if (!misc::copyFileOver(source, target, &why)) {
@@ -420,6 +457,93 @@ bool LibraryDialog::copyIntoLibrary(const QString &from, const QString &name)
   }
   a_copied.insert(name, source);
   return true;
+}
+
+// ---------------------------------------------------------------
+QString LibraryDialog::copySpiceFile(const QString &file)
+{
+  const QString source = QFileInfo(file).absoluteFilePath();
+  if (a_spiceRoots.contains(source)) return a_spiceRoots.value(source);
+  if (!QFileInfo(source).isFile()) {
+    ErrText->insertPlainText(QObject::tr("ERROR: Cannot open file \"%1\".\n").arg(QDir::toNativeSeparators(source)));
+    return {};
+  }
+  // The file and those it includes, each where it is from the file's
+  // folder: they keep their places, as the file names them so.
+  const QDir root = QFileInfo(source).absoluteDir();
+  QList<std::pair<QString, QString>> files{{source, QFileInfo(source).fileName()}};   // source, its path from root
+  QSet<QString> seen{QFileInfo(source).canonicalFilePath()};
+  for (int i = 0; i < files.size() && files.size() < 1000; ++i) {
+    QFile f(files.at(i).first);
+    if (!f.open(QIODevice::ReadOnly)) continue;
+    const QString text = QString::fromUtf8(f.readAll());
+    for (const QString &included : qucs_s::osdi::includedFiles(text, QFileInfo(files.at(i).first).absolutePath())) {
+      const QFileInfo info(included);
+      if (!info.isFile() || seen.contains(info.canonicalFilePath())) continue;   // (a .lib line naming a section)
+      seen.insert(info.canonicalFilePath());
+      const QString relative = root.relativeFilePath(info.absoluteFilePath());
+      if (relative.startsWith("..") || QFileInfo(relative).isAbsolute()) {
+        ErrText->insertPlainText(tr("Warning: %1 includes %2 from outside its folder; it is not embedded, and the library "
+                                    "needs it there.\n").arg(QFileInfo(source).fileName(), QDir::toNativeSeparators(included)));
+        continue;
+      }
+      files.append({info.absoluteFilePath(), relative});
+    }
+  }
+  // Its own name in the library's folder, else a folder named as the one it
+  // is in (two vendors' models.lib), numbered when that is taken too.
+  const auto fits = [this, &files](const QString &folder) {
+    for (const auto &[from, relative] : files) {
+      const QString name = folder.isEmpty() ? relative : folder + "/" + relative;
+      if (a_copied.contains(name) && a_copied.value(name) != from) return false;
+    }
+    return true;
+  };
+  const QString dirName = root.dirName().isEmpty() ? QStringLiteral("spice") : root.dirName();
+  QString folder;
+  for (int n = 1; !fits(folder); ++n) folder = n == 1 ? dirName : QStringLiteral("%1_%2").arg(dirName).arg(n);
+  for (const auto &[from, relative] : files)
+    if (!copyIntoLibrary(from, folder.isEmpty() ? relative : folder + "/" + relative)) return {};
+  const QString attached = folder.isEmpty() ? files.first().second : folder + "/" + files.first().second;
+  a_spiceRoots.insert(source, attached);
+  return attached;
+}
+
+// ---------------------------------------------------------------
+QString LibraryDialog::folderTaken() const
+{
+  const QString name = NameEdit->text();
+  // The project's own folders: its temporary files', and the one Qucs-S
+  // keeps the libraries' Verilog-A in.
+  if (QucsMain != nullptr && !QucsMain->ProjName.isEmpty() && misc::isSameFile(LibDir.absolutePath(), QucsSettings.QucsWorkDir.absolutePath())
+      && (name.compare(QLatin1String("Scratch"), Qt::CaseInsensitive) == 0 || name.compare(QLatin1String("Libraries"), Qt::CaseInsensitive) == 0))
+    return tr("%1 is a folder the project keeps for itself: a library's files would go into it - choose another name").arg(name);
+  return {};
+}
+
+// ---------------------------------------------------------------
+QString LibraryDialog::partName(const QString &subcircuit)
+{
+  QString name = QFileInfo(subcircuit).fileName();
+  if (name.endsWith(QLatin1String(".sch"), Qt::CaseInsensitive)) name.chop(4);
+  return name;
+}
+
+// ---------------------------------------------------------------
+QString LibraryDialog::nameClash(const QString &name, const QStringList &subcircuits)
+{
+  QHash<QString, QString> parts, spice;   // in lower case -> the subcircuit
+  for (const QString &sub : subcircuits) {
+    const QString part = partName(sub);
+    if (const QString other = parts.value(part.toLower()); !other.isEmpty())
+      return tr("%1 and %2 would both be the part %3: rename one, or put them in two libraries").arg(other, sub, part);
+    parts.insert(part.toLower(), sub);
+    const QString subcircuit = LibComp::subcircuitName(name, part);
+    if (const QString other = spice.value(subcircuit.toLower()); !other.isEmpty())
+      return tr("%1 and %2 would both be the SPICE subcircuit %3: rename one, or put them in two libraries").arg(other, sub, subcircuit);
+    spice.insert(subcircuit.toLower(), sub);
+  }
+  return {};
 }
 
 // ---------------------------------------------------------------
@@ -476,7 +600,7 @@ int LibraryDialog::embedVerilogA(Schematic *doc, const QString &spice, const QSt
   }
   if (definingSources.isEmpty()) return 0;   // no Verilog-A in it
 
-  const QDir folder(LibDir.absoluteFilePath(NameEdit->text()));
+  const QDir folder(modelsFolder());
   int errors = 0;
   QStringList embedded;
   for (const QString &va : std::as_const(definingSources)) {
@@ -567,24 +691,52 @@ void LibraryDialog::slotUpdateDescription()
 void LibraryDialog::slotSave()
 {
   stackedWidgets->setCurrentIndex(2); //message window
-  libSaveName->setText(NameEdit->text() + ".lib");
+  const QString name = NameEdit->text();
+  libSaveName->setText(name + ".lib");
+  a_made = false;
+  a_trashed.clear();
 
   ErrText->insertPlainText(tr("Saving library..."));
 
-  if(!LibFile.open(QIODevice::WriteOnly)) {
+  // Made in a folder of its own beside where it goes (.NAME.qucs-new) and
+  // put in place when it is whole: a library of its name there is read
+  // while this one is made - a subcircuit may place its parts - and stays
+  // as it was when this one cannot be made (it was written over first, and
+  // removed with the failed one).
+  a_staging = LibDir.absoluteFilePath(QStringLiteral(".%1.qucs-new").arg(name));
+  QDir(a_staging).removeRecursively();
+  if (const QString clash = nameClash(name, SelectedNames); !clash.isEmpty()) {
+    ErrText->appendPlainText(tr("Error: %1.").arg(clash));
+    ErrText->appendPlainText(tr("Error creating library."));
+    return;
+  }
+  if (const QString taken = folderTaken(); !taken.isEmpty()) {
+    ErrText->appendPlainText(tr("Error: %1.").arg(taken));
+    ErrText->appendPlainText(tr("Error creating library."));
+    return;
+  }
+  QFile staged(QDir(a_staging).filePath(name + ".lib"));
+  if (!QDir().mkpath(a_staging) || !staged.open(QIODevice::WriteOnly)) {
     ErrText->appendPlainText(tr("Error: Cannot create library!"));
+    QDir(a_staging).removeRecursively();
     return;
   }
   QTextStream Stream;
-  Stream.setDevice(&LibFile);
+  Stream.setDevice(&staged);
   Stream << "<Qucs Library " PACKAGE_VERSION " \""
-    << NameEdit->text() << "\">\n\n";
+    << name << "\">\n\n";
 
   bool Success = true, ret;
+  // A load's errors among the messages, not in boxes over the dialog.
+  misc::ErrorCapture capture;
+  // The Qucs models of library parts the subcircuits place (Schematic::
+  // setLibraryScratch()).
+  QTemporaryDir scratch(QDir(a_staging).filePath(QStringLiteral("scratch-XXXXXX")));
 
   QString tmp;
   QTextStream ts(&tmp, QIODevice::WriteOnly);
   a_copied.clear();
+  a_spiceRoots.clear();
 
   for (int i=0; i < SelectedNames.count(); i++) {
     ErrText->insertPlainText("\n=================\n");
@@ -593,7 +745,10 @@ void LibraryDialog::slotSave()
     if(checkDescr->checkState() == Qt::Checked)
       description = Descriptions[i];
 
-    Stream << "<Component " + SelectedNames[i].section('.',0,0) + ">\n"
+    // The part: its file's name without .sch (a folder's subcircuit was
+    // "sub/deep", a dotted name cut at its first dot - "div.v2" and "div"
+    // one part's name).
+    Stream << "<Component " + partName(SelectedNames[i]) + ">\n"
            << "  <Description>\n"
            << description
            << "\n  </Description>\n";
@@ -607,8 +762,11 @@ void LibraryDialog::slotSave()
         Success = false;   // (it said "Successfully created" and kept the half-written library)
         break;
     }
-    Doc->setDocName(NameEdit->text() + "_" + SelectedNames[i]);
-    Success = false;
+    // Its subcircuit's name: the library's and the file's (not the folder's:
+    // sub/deep.sch was a subcircuit "deep", called as Lib_sub_deep).
+    Doc->setDocName(name + "_" + QFileInfo(SelectedNames[i]).fileName());
+    Doc->setLibraryScratch(scratch.path());
+    bool partMade = true;
 
     // save analog model
     tmp.truncate(0);
@@ -643,14 +801,14 @@ void LibraryDialog::slotSave()
       if(!IFiles.isEmpty()) {
           Stream << "  <ModelIncludes \"" << IFiles.join("\" \"") << "\">\n";
       }
-      Success = error > 0 ? false : true;
+      if (error > 0) partMade = false;
     }
     else {
         ErrText->insertPlainText("\n");
         ErrText->insertPlainText(tr("Error: Cannot create netlist for \"%1\".\n").arg(SelectedNames[i]));
+        partMade = false;
     }
 
-    //if (QucsSettings.DefaultSimulator != spicecompat::simQucsator ) { // SPICE
     if (QucsSettings.DefaultSimulator == spicecompat::simQucsator ) {
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
     }
@@ -669,16 +827,26 @@ void LibraryDialog::slotSave()
         const QString spiceNetlist = tmp;
         intoStream(Stream, tmp, "Spice");
 
-        QStringList libs = kern->collectSpiceLibraryFiles(Doc);
+        // The SPICE files it uses - its SPICE library parts', its
+        // .INCLUDEs', the library parts' it places - with the files they
+        // include, each under a name of its own (copySpiceFile()).
         QStringList copiedFiles;
-        for (QString &file: libs) {
-          QString ofile = file;
-          intoFile(file, ofile, copiedFiles);
+        for (const QString &file : kern->collectSpiceLibraryFiles(Doc)) {
+          const QString attached = copySpiceFile(file);
+          if (attached.isEmpty()) partMade = false;
+          else if (!copiedFiles.contains(attached)) copiedFiles << attached;
         }
+        // A .LIB directive's file and section are not taken in: the part
+        // needs the file where it is and the circuit's own .LIB of it.
+        for (Component *pc : Doc->a_DocComps)
+          if (pc->Model == QLatin1String("SpiceLib") && pc->isActive == COMP_IS_ACTIVE)
+            ErrText->insertPlainText(tr("Warning: %1, a .LIB directive (%2), is not embedded: a circuit using the part needs "
+                                        "a .LIB of its own of that file and section.\n")
+                                       .arg(pc->Name, QDir::toNativeSeparators(pc->Props.value(0) != nullptr ? pc->Props.at(0)->Value : QString())));
         if (QucsSettings.EmbedVerilogAInLibraries) {
           const QString base = QFileInfo(QucsSettings.QucsWorkDir.filePath(SelectedNames[i])).absolutePath();
           if (embedVerilogA(Doc, spiceNetlist, base, copiedFiles) > 0)
-            Success = false;
+            partMade = false;
         }
         if (!copiedFiles.isEmpty()) {
           Stream << "<SpiceAttach \"" << copiedFiles.join("\" \"")
@@ -702,7 +870,6 @@ void LibraryDialog::slotSave()
         // took the library's parts for written and left their model out.
         FileList.clear();
         QucsSettings.DefaultSimulator = sim;
-    //}
 
   if (!checkAnalogLib->isChecked()) {
     // save verilog model
@@ -737,7 +904,8 @@ void LibraryDialog::slotSave()
           Stream << "  <VerilogModelIncludes \""
                  << IFiles.join("\" \"") << "\">\n";
       }
-      Success = error > 0 ? false : true;
+      // (An earlier failure - a Verilog-A source not embedded - stays one.)
+      if (error > 0) partMade = false;
     }
     else {
         ErrText->insertPlainText("\n");
@@ -774,7 +942,7 @@ void LibraryDialog::slotSave()
           Stream << "  <VHDLModelIncludes \""
                  << IFiles.join("\" \"") << "\">\n";
       }
-      Success = error > 0 ? false : true;
+      if (error > 0) partMade = false;
       }
       else {
           ErrText->insertPlainText("\n");
@@ -791,18 +959,96 @@ void LibraryDialog::slotSave()
 
       delete Doc;
 
-      if(!Success) break;
+      if(!partMade) {
+        Success = false;
+        break;
+      }
 
   } // for
 
-  LibFile.close();
+  Stream.flush();
+  staged.close();
+  for (const QString &e : capture.errors()) ErrText->appendPlainText(e);
+  const QString finalLib = LibFile.fileName();
+  const QString finalModels = LibDir.absoluteFilePath(name);
+  const QString stagedModels = modelsFolder();
+  if (Success && staged.error() != QFileDevice::NoError) {
+    ErrText->appendPlainText(tr("Error: %1 could not be written: %2").arg(QDir::toNativeSeparators(staged.fileName()), staged.errorString()));
+    Success = false;
+  }
+  const auto there = [](const QString &path) { return QFileInfo::exists(path) || QFileInfo(path).isSymLink(); };
   if(!Success) {
-    LibFile.remove();
+    QDir(a_staging).removeRecursively();
     ErrText->appendPlainText(tr("Error creating library."));
+    if (there(finalLib))
+      ErrText->appendPlainText(tr("The library %1 there is as it was.").arg(QDir::toNativeSeparators(finalLib)));
     return;
   }
 
+  // In place: what was there (the library, its folder) to the trash first.
+  // A folder of its name with no library of it (one whose .lib was taken
+  // away, someone's own) is not taken away: the library's files go into it,
+  // as they always did.
+  const bool replacing = there(finalLib);
+  QStringList removed;
+  for (const QString &old : {finalLib, finalModels}) {
+    if (!there(old) || (old == finalModels && !replacing)) continue;
+    QString where;
+    if (misc::moveToTrash(old, &where)) {
+      a_trashed << where;
+      removed << old;
+      continue;
+    }
+    // No trash there (a share): the old library written over, as Rewrite
+    // asked - unless asked to keep it then (create()'s replace).
+    if (!a_mustTrash && (QFileInfo(old).isDir() && !QFileInfo(old).isSymLink() ? QDir(old).removeRecursively() : QFile::remove(old))) {
+      ErrText->appendPlainText(tr("%1 could not be moved to the trash: it was written over.").arg(QDir::toNativeSeparators(old)));
+      removed << old;
+      continue;
+    }
+    // Put back what went already; the new one is not put in place.
+    for (int k = 0; k < a_trashed.size(); ++k) QDir().rename(a_trashed.at(k), removed.at(k));
+    a_trashed.clear();
+    QDir(a_staging).removeRecursively();
+    ErrText->appendPlainText(tr("Error: %1 could not be moved to the trash: the library there is as it was.").arg(QDir::toNativeSeparators(old)));
+    ErrText->appendPlainText(tr("Error creating library."));
+    return;
+  }
+  bool placed = QDir().rename(staged.fileName(), finalLib);
+  if (placed && QFileInfo(stagedModels).isDir() && !QDir(stagedModels).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden)) {
+    if (!there(finalModels)) {
+      placed = QDir().rename(stagedModels, finalModels);
+    } else {
+      // Into the folder there: each file over its own, and a model compiled
+      // from an earlier source of a Verilog-A file (name.osdi beside
+      // name.va) taken away - compiled again from this one where used.
+      QStringList files;
+      for (QDirIterator it(stagedModels, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories); it.hasNext();) files << it.next();
+      for (const QString &file : std::as_const(files)) {
+        const QString relative = QDir(stagedModels).relativeFilePath(file);
+        const QString target = QDir(finalModels).filePath(relative);
+        QString why;
+        if (!QDir().mkpath(QFileInfo(target).absolutePath()) || !misc::copyFileOver(file, target, &why)) {
+          ErrText->appendPlainText(tr("Error: %1 could not be written: %2").arg(QDir::toNativeSeparators(target), why));
+          placed = false;
+          break;
+        }
+        if (relative.endsWith(QLatin1String(".va"), Qt::CaseInsensitive))
+          QFile::remove(QDir(finalModels).filePath(relative.chopped(3) + QStringLiteral(".osdi")));
+      }
+      if (!placed) QFile::remove(finalLib);   // (not a library without its files)
+    }
+  }
+  QDir(a_staging).removeRecursively();
+  if (!placed) {
+    ErrText->appendPlainText(tr("Error: the library could not be put in %1.").arg(QDir::toNativeSeparators(LibDir.absolutePath())));
+    ErrText->appendPlainText(tr("Error creating library."));
+    return;
+  }
+  a_made = true;
+
   ErrText->appendPlainText(tr("Successfully created library."));
+  if (!a_trashed.isEmpty()) ErrText->appendPlainText(tr("The library it replaced is in the trash."));
   // Another library of its name: a part placed by the name could be either's.
   if (const QStringList others = LibComp::librariesNamedLike(LibFile.fileName()); !others.isEmpty()) {
     QStringList shown;
@@ -810,12 +1056,12 @@ void LibraryDialog::slotSave()
     ErrText->appendPlainText(tr("Note: another library is named %1 too: %2. A part placed by that name is taken from the first of "
                                 "them that has it - installed, beside the schematic, the project's, user_lib's, the library search "
                                 "paths' in their order; the Libraries panel places this one's parts by their path where the name "
-                                "finds another.").arg(NameEdit->text(), shown.join(QStringLiteral(", "))));
+                                "finds another.").arg(name, shown.join(QStringLiteral(", "))));
   }
 }
 
 // ---------------------------------------------------------------
-bool LibraryDialog::create(const Request &request, QString *log, QString *error)
+bool LibraryDialog::create(const Request &request, QString *log, QString *error, QStringList *trashed)
 {
   const auto fail = [error](const QString &why) {
     if (error != nullptr) *error = why;
@@ -825,6 +1071,7 @@ bool LibraryDialog::create(const Request &request, QString *log, QString *error)
   if (!whole.match(request.name).hasMatch())
     return fail(tr("a library's name is letters, digits and _ (%1 is not)").arg(request.name));
   if (request.subcircuits.isEmpty()) return fail(tr("no subcircuit to put in it"));
+  if (const QString clash = nameClash(request.name, request.subcircuits); !clash.isEmpty()) return fail(clash);
   if (!QDir().mkpath(request.folder))
     return fail(tr("the folder %1 cannot be made").arg(QDir::toNativeSeparators(request.folder)));
   LibDir = QDir(request.folder);
@@ -832,6 +1079,7 @@ bool LibraryDialog::create(const Request &request, QString *log, QString *error)
   if (LibFile.exists() && !request.replace)
     return fail(tr("%1 is there already ('replace' writes over it)").arg(QDir::toNativeSeparators(LibFile.fileName())));
   NameEdit->setText(request.name);
+  if (const QString taken = folderTaken(); !taken.isEmpty()) return fail(taken);
   SelectedNames = request.subcircuits;
   Descriptions.clear();
   for (const QString &sub : request.subcircuits) {
@@ -842,12 +1090,16 @@ bool LibraryDialog::create(const Request &request, QString *log, QString *error)
   const bool embed = QucsSettings.EmbedVerilogAInLibraries, ground = QucsSettings.LibraryGroundPin;
   QucsSettings.EmbedVerilogAInLibraries = request.embedVerilogA;
   QucsSettings.LibraryGroundPin = request.groundPin;
+  a_mustTrash = true;   // (a replaced library is said to be in the trash)
   slotSave();
+  a_mustTrash = false;
   QucsSettings.EmbedVerilogAInLibraries = embed;
   QucsSettings.LibraryGroundPin = ground;
   if (log != nullptr) *log = ErrText->toPlainText();
-  if (!QFileInfo::exists(LibFile.fileName()))   // (a library not made is removed)
-    return fail(tr("the library was not made (its messages say why)"));
+  if (trashed != nullptr) *trashed = a_trashed;
+  if (!a_made)
+    return fail(LibFile.exists() ? tr("the library was not made (its messages say why); the one there is as it was")
+                                 : tr("the library was not made (its messages say why)"));
   return true;
 }
 

@@ -1683,12 +1683,13 @@ void QucsApp::slotCreateLib() {
     return;
   }
 
-  LibraryDialog *d = new LibraryDialog(this);
-  d->fillSchematicList(Content->exportSchematic());
-  auto r = d->exec();
-  if (r != QDialog::Accepted) {
-    fillLibrariesTreeView();
-  }
+  // The project's subcircuits as they are now (a schematic saved since the
+  // Content panel was filled is one), in a dialog of this time alone.
+  Content->refresh();
+  LibraryDialog d(this);
+  d.fillSchematicList(Content->exportSchematic());
+  d.exec();
+  fillLibrariesTreeView();
 }
 
 // -----------------------------------------------------------

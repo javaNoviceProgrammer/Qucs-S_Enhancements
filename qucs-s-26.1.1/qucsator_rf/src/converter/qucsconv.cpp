@@ -237,6 +237,17 @@ int spice2qucs (struct actionset_t * action, char * infile, char * outfile) {
     return -1;
   }
 
+  /* Qucs-S: a library of nothing - the file's subcircuits are not made
+     parts - is not written ("Successfully converted", an empty library). */
+  if (strcmp (action->out, "qucs") && qucslib_count () == 0) {
+    fprintf (stderr, "%s has no .model card of a device Qucs has (a diode, a "
+             "transistor), and a Qucs library is made of those alone: its "
+             ".subckt subcircuits are not converted. A SPICE library of "
+             "subcircuits is used as it is: placed as a SPICE library device "
+             "(SpLib), or brought in with Claude's import_library.\n", infile);
+    spice_destroy ();
+    return -1;
+  }
   if ((qucs_out = open_file (outfile, "w")) == NULL)
     return -1;
   if (!strcmp (action->out, "qucs"))

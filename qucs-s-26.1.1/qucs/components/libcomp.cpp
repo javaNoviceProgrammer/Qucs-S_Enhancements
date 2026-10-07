@@ -15,6 +15,10 @@
  *                                                                         *
  ***************************************************************************/
 
+#ifdef HAVE_CONFIG_H
+# include <config.h>
+#endif
+
 #include "libcomp.h"
 #include "main.h"
 #include "misc.h"
@@ -204,9 +208,15 @@ int LibComp::loadSectionOf(const QString& libraryFile, const QString& comp, cons
       return -7;  // symbol not found
     }
   }
-  Start = Section.indexOf('\n', Start);
-  if(Start < 0)  return -8;  // file corrupt
-  while(Section.at(++Start) == ' ') ;
+  // The section starts on the line after its tag - or on the tag's own
+  // line when something follows it there: a hierarchical subcircuit's
+  // first .SUBCKT, as Create Library wrote it before 26.1.6 (left out, the
+  // part's SPICE model had an .ENDS too many).
+  Start += Name.size() + 2;
+  const int lineEnd = Section.indexOf('\n', Start);
+  if(lineEnd < 0)  return -8;  // file corrupt
+  if(Section.mid(Start, lineEnd - Start).trimmed().isEmpty()) Start = lineEnd + 1;
+  while(Start < Section.size() && Section.at(Start) == ' ') ++Start;
   End = Section.indexOf("</"+Name+">", Start);
   if(End < 0)  return -9;  // file corrupt
 
@@ -384,7 +394,25 @@ namespace {
 struct LibraryPart {
   bool alwaysLoad = false;   // <AlwaysLoadOSDI>
   QStringList pins;          // its SPICE model's (<Spice>) .SUBCKT's pins, in order
+  QStringList attach;        // the files of the library's folder it attaches (<SpiceAttach>)
+  QStringList includes;      // and its Qucs model includes (<ModelIncludes>)
+  bool spice = false;        // it has a SPICE model (<Spice>)
 };
+
+// The files a component's tag names - <SpiceAttach "a.lib" "b.va"> - as
+// loadSectionOf() reads them.
+QStringList filesOfTag(const QString& definition, const QString& tag)
+{
+  const qsizetype at = definition.indexOf(QLatin1Char('<') + tag);
+  if (at < 0) return {};
+  const qsizetype open = definition.indexOf(QLatin1Char('"'), at);
+  const qsizetype close = definition.indexOf(QLatin1Char('>'), at);
+  if (open < 0 || close < 0 || open > close) return {};
+  QStringList files;
+  for (const QString& f : definition.mid(open + 1, close - open - 2).split(QRegularExpression(QStringLiteral("\"\\s+\""))))
+    if (!f.trimmed().isEmpty()) files << f;
+  return files;
+}
 
 // A library's components, read once while the file is unchanged - as
 // loadSectionOf() finds one: "\n<Component NAME>" to "\n</Component>", in
@@ -394,13 +422,14 @@ struct LibraryRead {
   qint64 size = -1;
   QStringList order;
   QHash<QString, LibraryPart> parts;
+  QString title;     // the name it was made under: <Qucs Library VERSION "TITLE">
 };
 
-// The pins of the .SUBCKT line of the subcircuit \a name in \a spice - its
-// continuation lines (+) joined -, else of the last one there (the
-// component's own comes after those it places): the names after the
-// subcircuit's up to its parameters (R=1k, params:).
-QStringList subcircuitPins(const QString& spice, const QString& name)
+// The pins of the .SUBCKT line of the first of the subcircuits \a names
+// there is in \a spice - its continuation lines (+) joined -, else of the
+// last one there (the component's own comes after those it places): the
+// names after the subcircuit's up to its parameters (R=1k, params:).
+QStringList subcircuitPins(const QString& spice, const QStringList& names)
 {
   QStringList lines;
   for (const QString& raw : spice.split(QLatin1Char('\n'))) {
@@ -408,7 +437,8 @@ QStringList subcircuitPins(const QString& spice, const QString& name)
     if (line.startsWith(QLatin1Char('+')) && !lines.isEmpty()) lines.last() += QLatin1Char(' ') + line.mid(1);
     else lines << line;
   }
-  QStringList found;
+  QStringList last;
+  QHash<QString, QStringList> named;
   for (const QString& line : std::as_const(lines)) {
     const QStringList words = line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
     if (words.size() < 2 || words.first().compare(QLatin1String(".SUBCKT"), Qt::CaseInsensitive) != 0) continue;
@@ -417,10 +447,12 @@ QStringList subcircuitPins(const QString& spice, const QString& name)
       if (words.at(i).contains(QLatin1Char('=')) || words.at(i).compare(QLatin1String("params:"), Qt::CaseInsensitive) == 0) break;
       pins << words.at(i);
     }
-    found = pins;
-    if (words.at(1).compare(name, Qt::CaseInsensitive) == 0) return pins;
+    last = pins;
+    if (!named.contains(words.at(1).toLower())) named.insert(words.at(1).toLower(), pins);
   }
-  return found;
+  for (const QString& name : names)
+    if (const auto it = named.constFind(name.toLower()); it != named.constEnd()) return *it;
+  return last;
 }
 
 const LibraryRead& readLibrary(const QString& libraryFile)
@@ -432,11 +464,13 @@ const LibraryRead& readLibrary(const QString& libraryFile)
   const QString key = info.absoluteFilePath();
   auto it = known.find(key);
   if (it != known.end() && it->modified == info.lastModified() && it->size == info.size()) return *it;
-  LibraryRead read{info.lastModified(), info.size(), {}, {}};
+  LibraryRead read{info.lastModified(), info.size(), {}, {}, {}};
   QFile f(key);
   if (f.open(QIODevice::ReadOnly)) {
     QTextStream stream(&f);
     const QString text = stream.readAll();   // (read as loadSectionOf() reads it: a byte order mark left out)
+    static const QRegularExpression header(QStringLiteral("^<Qucs Library (\\S+) \"([^\"\n]*)\">"));
+    if (const QRegularExpressionMatch m = header.match(text); m.hasMatch()) read.title = m.captured(2).trimmed();
     if (text.startsWith(QLatin1String("<Qucs Library ")))
       for (qsizetype at = text.indexOf(QLatin1String("\n<Component ")); at >= 0; at = text.indexOf(QLatin1String("\n<Component "), at + 1)) {
         const qsizetype close = text.indexOf(QLatin1Char('>'), at);
@@ -446,14 +480,19 @@ const LibraryRead& readLibrary(const QString& libraryFile)
         const QString definition = text.mid(close + 1, end < 0 ? -1 : end - close - 1);
         LibraryPart part;
         part.alwaysLoad = definition.contains(QRegularExpression(QStringLiteral("\\n\\s*<AlwaysLoadOSDI>")));
+        part.attach = filesOfTag(definition, QStringLiteral("SpiceAttach"));
+        part.includes = filesOfTag(definition, QStringLiteral("ModelIncludes"));
         const qsizetype spice = definition.indexOf(QLatin1String("<Spice>"));
+        part.spice = spice >= 0;
         if (spice >= 0) {
           const qsizetype spiceEnd = definition.indexOf(QLatin1String("</Spice>"), spice);
           // The subcircuit a part names (createType()): by the library's
           // name - a part's Lib is that, or the library's path without
-          // ".lib" - and the component's.
+          // ".lib" - and the component's; or by the name the library was
+          // made under, when its file was renamed (scopedSpice()).
           part.pins = subcircuitPins(definition.mid(spice + 7, spiceEnd < 0 ? -1 : spiceEnd - spice - 7),
-                                     LibComp::subcircuitName(info.completeBaseName(), name));
+                                     {LibComp::subcircuitName(info.completeBaseName(), name),
+                                      LibComp::subcircuitName(read.title, name)});
         }
         if (!read.parts.contains(name)) read.order << name;
         read.parts.insert(name, part);
@@ -490,6 +529,50 @@ QStringList LibComp::alwaysLoaded(const QString& libraryFile)
   for (const QString& name : read.order)
     if (read.parts.value(name).alwaysLoad) marked << name;
   return marked;
+}
+
+QString LibComp::newerVersion(const QString& libraryFile)
+{
+  if (QucsSettings.IgnoreFutureVersion) return {};
+  // Its first line alone (the Libraries panel asks of every library).
+  QFile f(libraryFile);
+  if (!f.open(QIODevice::ReadOnly)) return {};
+  QString line = QString::fromUtf8(f.readLine(1024));
+  if (line.startsWith(QChar(0xFEFF))) line.remove(0, 1);
+  static const QRegularExpression header(QStringLiteral("^<Qucs Library (\\S+) "));
+  const QRegularExpressionMatch m = header.match(line);
+  if (!m.hasMatch()) return {};
+  return VersionTriplet(m.captured(1)) > QucsVersion ? m.captured(1) : QString();
+}
+
+QString LibComp::newerVersionReason(const QString& libraryFile)
+{
+  const QString version = newerVersion(libraryFile);
+  if (version.isEmpty()) return {};
+  return QObject::tr("it was made by Qucs-S %1, newer than this one (%2), and is not read: Application Settings > "
+                     "Load documents from future versions reads it")
+      .arg(version, QString::fromLatin1(PACKAGE_VERSION));
+}
+
+QStringList LibComp::missingFiles(const QString& libraryFile, const QString& comp, bool spice, bool qucs)
+{
+  // (Read once while the library is unchanged: the check asks after each
+  // edit, of each part.)
+  const LibraryRead& read = readLibrary(libraryFile);
+  const auto it = read.parts.constFind(comp);
+  if (it == read.parts.constEnd()) return {};
+  const QStringList attach = spice ? it->attach : QStringList(), includes = qucs ? it->includes : QStringList();
+  QString folder = libraryFile;
+  folder.chop(4);
+  QStringList missing;
+  for (const QString& file : attach + includes)
+    if (!file.trimmed().isEmpty() && !QFileInfo::exists(QDir(folder).filePath(file)) && !missing.contains(file)) missing << file;
+  return missing;
+}
+
+QString LibComp::writtenName()
+{
+  return subcircuitName(readLibrary(libraryFile()).title, Props.at(1)->Value);
 }
 
 QString LibComp::referenceTo(const QString& libraryFile)
@@ -539,29 +622,179 @@ bool LibComp::createSubNetlist(QTextStream *stream, QStringList &FileList,
   }
   if(r < 0)  return false;
 
-  // also include files
+  // Its Qucs or SPICE model with the subcircuits in it named for this part
+  // (scopedQucsModel(), scopedSpice()): the files it includes go with it,
+  // once for each part, as they are renamed for it - the key ends with the
+  // file's name, as a library's includes in Collect do (a netlist leaves
+  // those out).
+  const bool scoped = (type & (1 | 8 | 16)) != 0;
+  QString text;
   int error = 0;
-  for(QStringList::Iterator it = Includes.begin();
-      it != Includes.end(); ++it ) {
-    QString s = getSubcircuitFile()+"/"+*it;
-    if(FileList.indexOf(s) >= 0) continue;
-    FileList.append(s);
-
-    // load file and stuff into stream
+  for (const QString& include : std::as_const(Includes)) {
+    const QString s = getSubcircuitFile() + "/" + include;
+    const QString key = scoped ? getSubcircuitFile() + "/" + createType() + "/" + include : s;
+    if (FileList.indexOf(key) >= 0) continue;
+    FileList.append(key);
     QFile file(s);
-    if(!file.open(QIODevice::ReadOnly)) {
+    if (!file.open(QIODevice::ReadOnly)) {
       error++;
-    } else {
-      QByteArray FileContent = file.readAll();
-      file.close();
-      //?stream->writeRawBytes(FileContent.data(), FileContent.size());
-      (*stream) << FileContent.data();
-      qDebug() << "hi from libcomp";
+      continue;
     }
+    text += QString::fromUtf8(file.readAll());
   }
+  text += "\n" + FileString + "\n";
+  if (type & 1) text = scopedQucsModel(text, createType(), writtenName());
+  else if (type & (8 | 16)) text = scopedSpice(text, createType(), writtenName());
+  (*stream) << text;
+  return error == 0;
+}
 
-  (*stream) << "\n" << FileString << "\n";
-  return error > 0 ? false : true;
+namespace {
+
+// A line's words (split at white space), each with where it starts.
+struct Word {
+  int at;
+  QString text;
+};
+
+QList<Word> wordsOf(const QString& line)
+{
+  QList<Word> words;
+  const int n = line.size();
+  for (int i = 0; i < n;) {
+    while (i < n && line.at(i).isSpace()) ++i;
+    if (i >= n) break;
+    const int start = i;
+    while (i < n && !line.at(i).isSpace()) ++i;
+    words.append({start, line.mid(start, i - start)});
+  }
+  return words;
+}
+
+// Of \a defined (names as written), the part's own subcircuit: the one
+// named \a own, else \a written, else the last; matched in any case when
+// \a anyCase.
+QString ownOf(const QStringList& defined, const QString& own, const QString& written, bool anyCase)
+{
+  const auto find = [&](const QString& name) {
+    for (const QString& d : defined)
+      if (!name.isEmpty() && d.compare(name, anyCase ? Qt::CaseInsensitive : Qt::CaseSensitive) == 0) return d;
+    return QString();
+  };
+  QString mine = find(own);
+  if (mine.isEmpty()) mine = find(written);
+  return mine.isEmpty() ? defined.last() : mine;
+}
+
+// A Verilog-A file a library attaches (compiled where it is used), not a
+// SPICE one.
+bool isVerilogA(const QString& file)
+{
+  const QString suffix = QFileInfo(file).suffix().toLower();
+  return suffix == QLatin1String("va") || suffix == QLatin1String("vams") || suffix == QLatin1String("vh")
+         || suffix == QLatin1String("osdi");
+}
+
+} // namespace
+
+QString LibComp::scopedSpice(const QString& spice, const QString& own, const QString& written)
+{
+  QStringList lines = spice.split(QLatin1Char('\n'));
+  QStringList defined;
+  for (const QString& line : std::as_const(lines)) {
+    const QList<Word> w = wordsOf(line);
+    if (w.size() >= 2 && w.at(0).text.compare(QLatin1String(".subckt"), Qt::CaseInsensitive) == 0) defined << w.at(1).text;
+  }
+  if (defined.isEmpty() || own.isEmpty()) return spice;
+  const QString mine = ownOf(defined, own, written, true);
+  QHash<QString, QString> renamed;   // a defined name in lower case: its new name
+  for (const QString& d : std::as_const(defined))
+    if (!renamed.contains(d.toLower()))
+      renamed.insert(d.toLower(), d.compare(mine, Qt::CaseInsensitive) == 0 ? own : own + QStringLiteral("__") + d);
+  const auto rename = [&renamed](QString& line, const Word& w) {
+    const auto it = renamed.constFind(w.text.toLower());
+    if (it != renamed.constEnd() && *it != w.text) line.replace(w.at, w.text.size(), *it);
+  };
+  for (int i = 0; i < lines.size(); ++i) {
+    const QList<Word> w = wordsOf(lines.at(i));
+    if (w.isEmpty()) continue;
+    const QString first = w.at(0).text.toLower();
+    if ((first == QLatin1String(".subckt") || first == QLatin1String(".ends")) && w.size() >= 2) {
+      rename(lines[i], w.at(1));
+      continue;
+    }
+    if (!first.startsWith(QLatin1Char('x'))) continue;
+    // A call: Xname nodes... subcircuit [params:] [name=value ...], over
+    // its continuation lines (+). The subcircuit is the word before the
+    // first parameter ("r=1k", "r = 1k", "r={ 2 * a }") or "params:".
+    // A line's words up to its comment (";", or a word starting "$": the
+    // 555 timer's "X1 6 5 22 comparator5 ; the reset comparator").
+    QList<std::pair<int, Word>> words;
+    const auto take = [&words](int line, Word word) {
+      const qsizetype semicolon = word.text.indexOf(QLatin1Char(';'));
+      if (word.text.startsWith(QLatin1Char('$')) || semicolon == 0) return false;
+      if (semicolon > 0) word.text.truncate(semicolon);
+      words.append({line, word});
+      return semicolon < 0;
+    };
+    for (const Word& word : w)
+      if (!take(i, word)) break;
+    for (int j = i + 1; j < lines.size(); ++j) {
+      const QList<Word> more = wordsOf(lines.at(j));
+      if (more.isEmpty() || !more.first().text.startsWith(QLatin1Char('+'))) break;
+      for (int k = 0; k < more.size(); ++k) {
+        Word word = more.at(k);
+        if (k == 0) {
+          if (word.text == QLatin1String("+")) continue;
+          word = {word.at + 1, word.text.mid(1)};
+        }
+        if (!take(j, word)) break;
+      }
+    }
+    int stop = int(words.size());
+    for (int k = 1; k < words.size(); ++k) {
+      const QString& t = words.at(k).second.text;
+      if (t.compare(QLatin1String("params:"), Qt::CaseInsensitive) == 0) {
+        stop = k;
+        break;
+      }
+      if (t.contains(QLatin1Char('='))) {
+        stop = t.startsWith(QLatin1Char('=')) ? k - 1 : k;
+        break;
+      }
+    }
+    if (stop - 1 >= 1) rename(lines[words.at(stop - 1).first], words.at(stop - 1).second);
+  }
+  return lines.join(QLatin1Char('\n'));
+}
+
+QString LibComp::scopedQucsModel(const QString& model, const QString& own, const QString& written)
+{
+  QStringList lines = model.split(QLatin1Char('\n'));
+  static const QRegularExpression def(QStringLiteral("^(\\s*\\.Def:)(\\S+)"));
+  QStringList defined;
+  for (const QString& line : std::as_const(lines))
+    if (const QRegularExpressionMatch m = def.match(line); m.hasMatch() && m.captured(2) != QLatin1String("End"))
+      defined << m.captured(2);
+  if (defined.isEmpty() || own.isEmpty()) return model;
+  const QString mine = ownOf(defined, own, written, false);
+  QHash<QString, QString> renamed;
+  for (const QString& d : std::as_const(defined))
+    if (!renamed.contains(d)) renamed.insert(d, d == mine ? own : own + QStringLiteral("__") + d);
+  static const QRegularExpression type(QStringLiteral("\\bType=\"([^\"]*)\""));
+  for (QString& line : lines) {
+    if (const QRegularExpressionMatch m = def.match(line); m.hasMatch() && renamed.contains(m.captured(2))) {
+      line.replace(m.capturedStart(2), m.capturedLength(2), renamed.value(m.captured(2)));
+      continue;
+    }
+    if (!line.trimmed().startsWith(QLatin1String("Sub:"))) continue;
+    // (From the end: a name replaced does not move those before it.)
+    QList<QRegularExpressionMatch> found;
+    for (auto it = type.globalMatch(line); it.hasNext();) found.prepend(it.next());
+    for (const QRegularExpressionMatch& m : std::as_const(found))
+      if (renamed.contains(m.captured(1))) line.replace(m.capturedStart(1), m.capturedLength(1), renamed.value(m.captured(1)));
+  }
+  return lines.join(QLatin1Char('\n'));
 }
 
 // -------------------------------------------------------
@@ -686,26 +919,32 @@ QStringList LibComp::verilogAFilesOf(const QString& libraryFile, const QString& 
 
 QString LibComp::getSpiceLibrary()
 {
-  QStringList files;
-  QString content;
-  QStringList includes,attach;
-
-  int r = loadSection("Spice",content,&includes,&attach);
-  if (r<0) {
-    return QString();
-  }
-  for (const auto &file : attach) {
-    if (file.endsWith(".cir", Qt::CaseInsensitive) ||
-        file.endsWith(".ckt", Qt::CaseInsensitive) ||
-        file.endsWith(".lib", Qt::CaseInsensitive) ||
-        file.endsWith(".sp", Qt::CaseInsensitive)) {
-      files.append(getSubcircuitFile()+'/'+file);
-    }
-  }
-
   QString s;
-  for (const auto &file: files) { // for netlist
+  for (const QString& file : getSpiceLibraryFiles())   // for netlist
     s += QStringLiteral(".INCLUDE \"%1\"\n").arg(file);
-  }
   return s;
+}
+
+QStringList LibComp::getSpiceLibraryFiles()
+{
+  return spiceFilesOf(libraryFile(), Props.at(1)->Value);
+}
+
+QStringList LibComp::spiceFilesOf(const QString& libraryFile, const QString& comp)
+{
+  // (As read once while the library is unchanged: Check Schematic asks.)
+  const LibraryRead& read = readLibrary(libraryFile);
+  const auto it = read.parts.constFind(comp);
+  if (it == read.parts.constEnd() || !it->spice) return {};
+  const QStringList& attach = it->attach;
+  QString folder = libraryFile;
+  folder.chop(4);
+  // Every SPICE file it attaches: a .inc or a .mod too (Create Library
+  // takes in whatever file a SPICE part or an .INCLUDE names; only .cir,
+  // .ckt, .lib and .sp were included, and a part needing the others was an
+  // unknown subcircuit). Its Verilog-A is compiled and loaded instead.
+  QStringList files;
+  for (const QString& file : std::as_const(attach))
+    if (!file.trimmed().isEmpty() && !isVerilogA(file)) files.append(folder + '/' + file);
+  return files;
 }

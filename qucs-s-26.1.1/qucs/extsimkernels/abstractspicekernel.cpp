@@ -300,6 +300,10 @@ void AbstractSpiceKernel::createSubNetlist(QTextStream &stream, bool lib)
     header = QStringLiteral(".SUBCKT %1 ").arg(misc::properName(f));
 
     QList< QPair<int,QString> > ports;
+    // A library's model starts on the line after its <Spice> tag, before
+    // the subcircuits this one places: written after them, the newline left
+    // the first .SUBCKT on the tag's line, which libraries were read without.
+    if (lib) stream<<"\n";
     if(!prepareSpiceNetlist(stream,true)) {
         emit finished();
         emit errors(QProcess::FailedToStart);
@@ -352,7 +356,6 @@ void AbstractSpiceKernel::createSubNetlist(QTextStream &stream, bool lib)
       }
 
     header += "\n";
-    if (lib) stream<<"\n";
     stream<<header;
 
     const spicecompat::SpiceDialect dialect(
@@ -2012,6 +2015,9 @@ void collectSpiceLibraryFilesIn(Schematic* sch, QSet<QString>& visited, QStringL
 {
   for (Component *pc : sch->a_DocComps) {
     QStringList new_libs;
+    // A part left out of the circuit (open or shorted) needs none of its
+    // files.
+    if (pc->isActive != COMP_IS_ACTIVE) continue;
     if (pc->Model == "Sub") {
       const QString file = ((Subcircuit *)pc)->getSubcircuitFile();
       if (!AbstractSpiceKernel::firstVisit(file, visited)) continue;

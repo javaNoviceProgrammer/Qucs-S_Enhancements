@@ -30,7 +30,10 @@
 #include "valuereading.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
+#include <QMutex>
 #include <QFileInfo>
 #include <QHash>
 #include <QRegularExpression>
@@ -1469,15 +1472,220 @@ QString commandShown(const QStringList& lines)
     return lines.size() == 1 ? first : tr("%1 (and %2 more lines)").arg(first).arg(lines.size() - 1);
 }
 
+// ngspice's commands that start a program: shell, system, and !.
+const QRegularExpression& programRun()
+{
+    static const QRegularExpression runs(QStringLiteral("^\\s*(shell|system)(\\s|$)|^\\s*!"), QRegularExpression::CaseInsensitiveOption);
+    return runs;
+}
+
+// The lines of the .control blocks of SPICE text that start a program: what
+// ngspice runs as it reads the text - a netlist, or a file it includes.
+QStringList controlCommands(const QString& spice)
+{
+    QStringList lines;
+    bool control = false;
+    for (const QString& raw : spice.split(QLatin1Char('\n'))) {
+        const QString line = raw.trimmed();
+        if (line.startsWith(QLatin1String(".control"), Qt::CaseInsensitive)) control = true;
+        else if (line.startsWith(QLatin1String(".endc"), Qt::CaseInsensitive)) control = false;
+        else if (control && programRun().match(line).hasMatch()) lines << line;
+    }
+    return lines;
+}
+
+// What is read of files for the commands in them - a SPICE file's own and
+// the files it includes; a library's, by its components' SPICE models;
+// a subcircuit's parts that bring SPICE text in - each kept while its file
+// is unchanged (the check runs after each edit).
+struct Stamp {
+    QDateTime modified;
+    qint64 size = -1;
+    static Stamp of(const QFileInfo& info) { return {info.lastModified(), info.size()}; }
+    bool operator==(const Stamp& o) const { return modified == o.modified && size == o.size; }
+};
+struct SpiceFileRead {
+    Stamp stamp;
+    QStringList commands, includes;
+};
+struct LibraryCommands {
+    Stamp stamp;
+    QHash<QString, QStringList> byPart;   // a component: the commands of its <Spice>
+};
+// A part of a subcircuit that brings SPICE text in: its model, its
+// properties' values, the folder its files are named from.
+struct PartRef {
+    QString model;
+    QStringList values;
+};
+struct SubcircuitRead {
+    Stamp stamp;
+    QList<PartRef> parts;
+};
+QMutex& readsMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+// The commands of SPICE files and of those they include (each once, a few
+// hundred at most), each with the file it is in.
+QStringList commandsInFiles(const QStringList& files)
+{
+    static QHash<QString, SpiceFileRead> known;
+    QStringList found;
+    QStringList pending = files;
+    QSet<QString> seen;
+    while (!pending.isEmpty() && seen.size() < 500) {
+        const QFileInfo info(pending.takeFirst());
+        const QString key = info.canonicalFilePath();
+        if (key.isEmpty() || seen.contains(key) || !info.isFile()) continue;
+        seen.insert(key);
+        SpiceFileRead read;
+        {
+            QMutexLocker lock(&readsMutex());
+            if (const auto it = known.constFind(key); it != known.constEnd() && it->stamp == Stamp::of(info)) read = *it;
+        }
+        if (!(read.stamp == Stamp::of(info))) {
+            read = {Stamp::of(info), {}, {}};
+            QFile f(key);
+            if (info.size() < 64 * 1024 * 1024 && f.open(QIODevice::ReadOnly)) {
+                const QString text = QString::fromUtf8(f.readAll());
+                read.commands = controlCommands(text);
+                read.includes = qucs_s::osdi::includedFiles(text, info.absolutePath());
+            }
+            QMutexLocker lock(&readsMutex());
+            known.insert(key, read);
+        }
+        for (const QString& line : std::as_const(read.commands)) found << tr("%1 (in %2)").arg(line, QFileInfo(key).fileName());
+        pending << read.includes;
+    }
+    return found;
+}
+
+// The commands in the SPICE model (<Spice>) of the component \a comp of
+// the library \a libraryFile.
+QStringList commandsInLibrary(const QString& libraryFile, const QString& comp)
+{
+    static QHash<QString, LibraryCommands> known;
+    const QFileInfo info(libraryFile);
+    const QString key = info.canonicalFilePath();
+    if (key.isEmpty() || !info.isFile()) return {};
+    LibraryCommands read;
+    {
+        QMutexLocker lock(&readsMutex());
+        if (const auto it = known.constFind(key); it != known.constEnd() && it->stamp == Stamp::of(info)) read = *it;
+    }
+    if (!(read.stamp == Stamp::of(info))) {
+        read = {Stamp::of(info), {}};
+        QFile f(key);
+        if (f.open(QIODevice::ReadOnly)) {
+            const QString text = QString::fromUtf8(f.readAll());
+            // As LibComp finds a component: "\n<Component NAME>" to
+            // "\n</Component>", its model between <Spice> and </Spice>.
+            for (qsizetype at = text.indexOf(QLatin1String("\n<Component ")); at >= 0;
+                 at = text.indexOf(QLatin1String("\n<Component "), at + 1)) {
+                const qsizetype close = text.indexOf(QLatin1Char('>'), at);
+                if (close < 0) break;
+                const qsizetype end = text.indexOf(QLatin1String("\n</Component>"), close);
+                const QString body = text.mid(close + 1, end < 0 ? -1 : end - close - 1);
+                const qsizetype spice = body.indexOf(QLatin1String("<Spice>"));
+                if (spice < 0) continue;
+                const qsizetype spiceEnd = body.indexOf(QLatin1String("</Spice>"), spice);
+                const QStringList lines = controlCommands(body.mid(spice + 7, spiceEnd < 0 ? -1 : spiceEnd - spice - 7));
+                if (!lines.isEmpty()) read.byPart.insert(text.mid(at + 12, close - at - 12), lines);
+            }
+        }
+        QMutexLocker lock(&readsMutex());
+        known.insert(key, read);
+    }
+    return read.byPart.value(comp);
+}
+
+// The parts of the subcircuit \a file that bring SPICE text in from
+// outside it (and its own subcircuits), as loaded.
+QList<PartRef> partsOfSubcircuit(const QString& file)
+{
+    static QHash<QString, SubcircuitRead> known;
+    const QFileInfo info(file);
+    const QString key = info.canonicalFilePath();
+    if (key.isEmpty() || !info.isFile()) return {};
+    {
+        QMutexLocker lock(&readsMutex());
+        if (const auto it = known.constFind(key); it != known.constEnd() && it->stamp == Stamp::of(info)) return it->parts;
+    }
+    SubcircuitRead read{Stamp::of(info), {}};
+    Schematic sub(nullptr, key);
+    misc::ErrorCapture quiet;   // (one that cannot be loaded is no command)
+    if (sub.loadDocument())
+        for (const Component* c : sub.a_DocComps) {
+            if (!inCircuit(c)) continue;
+            static const QStringList models{QStringLiteral("Lib"), QStringLiteral("SpLib"), QStringLiteral("SpiceInclude"),
+                                            QStringLiteral("SpiceLib"), QStringLiteral("Sub")};
+            if (!models.contains(c->Model)) continue;
+            PartRef ref{c->Model, {}};
+            for (const Property* p : c->Props) ref.values << p->Value;
+            read.parts << ref;
+        }
+    QMutexLocker lock(&readsMutex());
+    known.insert(key, read);
+    return read.parts;
+}
+
+// The commands that the SPICE text a part brings into a netlist from
+// outside the schematic runs: a library part's model and the files it
+// attaches; a SPICE library's, an .INCLUDE's, a .LIB's file; and, through
+// a subcircuit, those of its own parts. \a model and \a values are the
+// part's, \a folder the one its files are named from.
+QStringList partCommands(const QString& model, const QStringList& values, const QString& folder, QSet<QString>& visited)
+{
+    QStringList found;
+    const auto file = [&folder](const QString& name) { return misc::properAbsFileNameIn(name, folder); };
+    if (model == QLatin1String("Lib") && values.size() >= 2) {
+        const QString library = LibComp::libraryFileOf(values.at(0), folder, values.at(1));
+        for (const QString& line : commandsInLibrary(library, values.at(1)))
+            found << tr("%1 (in the library %2)").arg(line, QFileInfo(library).completeBaseName());
+        found << commandsInFiles(LibComp::spiceFilesOf(library, values.at(1)));   // its attached SPICE files
+    } else if (model == QLatin1String("SpLib") || model == QLatin1String("SpiceLib")) {
+        if (!values.isEmpty() && !values.at(0).trimmed().isEmpty()) found << commandsInFiles({file(values.at(0))});
+    } else if (model == QLatin1String("SpiceInclude")) {
+        QStringList files;
+        for (const QString& v : values)
+            if (!v.trimmed().isEmpty()) files << file(v);
+        found << commandsInFiles(files);
+    } else if (model == QLatin1String("Sub") && !values.isEmpty() && !values.at(0).trimmed().isEmpty()) {
+        const QString sub = file(values.at(0));
+        const QString key = QFileInfo(sub).canonicalFilePath();
+        if (key.isEmpty() || visited.contains(key)) return found;
+        visited.insert(key);
+        for (const PartRef& ref : partsOfSubcircuit(sub))
+            found << partCommands(ref.model, ref.values, QFileInfo(key).absolutePath(), visited);
+    }
+    return found;
+}
+
 // What a simulation of \a doc runs besides the simulator (commandsRun()),
 // each with the part that holds it (none for the Octave script).
 QList<std::pair<QString, const Component*>> commandsOf(Schematic* doc)
 {
     QList<std::pair<QString, const Component*>> list;
-    // ngspice's commands that start a program: shell, system, and !.
-    static const QRegularExpression runs(QStringLiteral("^\\s*(shell|system)(\\s|$)|^\\s*!"), QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpression& runs = programRun();
+    QSet<QString> visited;   // (subcircuits: each looked into once)
+    if (!doc->getDocName().isEmpty()) visited.insert(QFileInfo(doc->getDocName()).canonicalFilePath());
     for (const Component* c : doc->a_DocComps) {
         if (!inCircuit(c)) continue;
+        // SPICE text it brings in - a library's, a SPICE file's (from a
+        // colleague, a vendor) - whose .control block starts a program.
+        if (c->Model == QLatin1String("Lib") || c->Model == QLatin1String("SpLib") || c->Model == QLatin1String("SpiceInclude")
+            || c->Model == QLatin1String("SpiceLib") || c->Model == QLatin1String("Sub")) {
+            QStringList values;
+            for (const Property* p : c->Props) values << p->Value;
+            if (const QStringList lines = partCommands(c->Model, values, doc->getFileInfo().dir().path(), visited); !lines.isEmpty())
+                list.append({tr("%1 brings SPICE text into the netlist whose .control block runs a command in a shell: %2")
+                                 .arg(c->Name, commandShown(lines)),
+                             c});
+            continue;
+        }
         if (c->Model == QLatin1String("CMD")) {
             // As runPostSimCommands runs it: its lines but blank ones and
             // comments (#).
@@ -1833,9 +2041,11 @@ QList<Issue> check(Schematic* doc)
                 else if (with.isEmpty())
                     why = without.size() == 1 ? tr("the library %1 there is, %2, has no part %3").arg(name, shown(without), comp)
                                               : tr("the libraries %1 there are - %2 - have no part %3").arg(name, shown(without), comp);
+                else if (const QString file = part != nullptr ? part->libraryFile() : with.first();
+                         !LibComp::newerVersionReason(file).isEmpty())
+                    why = tr("it is in %1, but %2").arg(shown({file}), LibComp::newerVersionReason(file));
                 else
-                    why = tr("it is in %1, which it could not be read from: a library of a later Qucs-S, or damaged")
-                              .arg(shown({part != nullptr ? part->libraryFile() : with.first()}));
+                    why = tr("it is in %1, which it could not be read from: damaged").arg(shown({file}));
                 errors << Issue{Severity::Error,
                                 tr("%1: the library part %2 of %3 could not be loaded (%4): it has no pins, and what was wired to "
                                    "them is on nothing")
@@ -1856,6 +2066,21 @@ QList<Issue> check(Schematic* doc)
                                                                 : tr(" (the project's Verilog-A of it is linked from there)"),
                                            shown(others)),
                                   QPoint(c->cx, c->cy), c->Name};
+            }
+            // Files its model names in its library's folder that are not
+            // there (a library brought without its folder): the simulator
+            // stops at the first ("Could not find include file"), the check
+            // said nothing. The SPICE model's for a SPICE simulator, the
+            // Qucs model's for Qucsator.
+            if (part != nullptr && !c->Ports.isEmpty()) {
+                const bool spice = spiceSimulator(simulator), qucs = simulator == spicecompat::simQucsator;
+                const QString file = part->libraryFile();
+                if (const QStringList missing = LibComp::missingFiles(file, comp, spice, qucs); !missing.isEmpty())
+                    errors << Issue{Severity::Error,
+                                    tr("%1: its library %2 names %3 in its folder %4, which is not there (the library came "
+                                       "without its folder?): a simulation stops at it")
+                                        .arg(c->Name, name, missing.join(QStringLiteral(", ")), QDir::toNativeSeparators(file.chopped(4))),
+                                    QPoint(c->cx, c->cy), c->Name};
             }
         }
         // A subcircuit: its file given, found (a file, not a folder), and
