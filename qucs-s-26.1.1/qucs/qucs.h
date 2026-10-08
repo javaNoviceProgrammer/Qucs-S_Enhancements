@@ -647,6 +647,11 @@ signals:
   void signalKillEmAll();
 
 public:
+  /// The components panel made again, in the category it shows: its parts
+  /// and icons as the settings now say (Component symbols). Not while a
+  /// symbol is edited - its panel has the paintings only, and the parts
+  /// are made again when the schematic is back.
+  void refreshComponentsPanel();
   MouseActions *view;
   ContextMenuTabWidget *DocumentTab;   // the active pane
   QSplitter *a_paneArea = nullptr;     // rows of panes (the central widget)

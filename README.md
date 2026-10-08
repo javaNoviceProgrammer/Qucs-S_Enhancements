@@ -1477,6 +1477,32 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the layout viewer. A touchpad's two-finger swipe scrolls whatever the
   setting, and zooms with Ctrl; its pinch zooms. The PDF and text views
   scroll with the wheel as before, Ctrl+wheel zooming.
+- **US or European symbols for new parts** (*Application Settings →
+  Settings → Component symbols*): *US (ANSI/IEEE)*, the default, or
+  *European (IEC)*, for the parts that have both:
+  - **Resistor:** a zigzag or a box.
+  - **Diode:** a broken line or an unbroken one.
+  - **Logic gates:** the distinctive shapes or the DIN 40900 rectangles
+    (*n-port AND* to *XNOR*, *Buffer*, *Inverter*).
+
+  Upstream always made the box, the unbroken diode line and the
+  distinctive gates.
+
+  A part already placed keeps its own symbol: its *Symbol* property, which
+  is saved with it, still changes it. Opening, pasting and undoing never
+  redraw a part.
+
+  The setting applies at once, also after *File → Import Settings*, to:
+  - the components panel and its icons, where the second resistor gives
+    the other symbol (*Resistor European* while US is set, *Resistor US*
+    while European is);
+  - Claude's `add_component`;
+  - the designs of the synthesis tools: attenuator, active filter, power
+    combiner and matching. Before this, the attenuator, power-combiner
+    and matching tools gave US resistors and the active-filter tool gave
+    European ones.
+
+  Claude reads and sets it as `Settings/Component symbols`.
 - **Status bar**: on the left, what the tool in hand does and the keys it
   takes — *Double-click to edit · ⌘-click to add · drag on empty space to
   select*, *Click to place ground · right-click to rotate · Esc to stop*,

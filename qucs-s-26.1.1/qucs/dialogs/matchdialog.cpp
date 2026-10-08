@@ -35,6 +35,7 @@
 #include "matchdialog.h"
 #include "extsimkernels/spicecompat.h"
 #include "misc.h"
+#include "symbolstyle.h"
 #include "qucs.h"
 
 #include <QApplication>
@@ -2085,9 +2086,9 @@ void MatchDialog::SchematicParser(QString laddercode, int &x_pos, double Freq,
   // Schematic header
   QString Schematic = "<Qucs Schematic " PACKAGE_VERSION ">\n";
 
-  // Add components
+  // Add components: the load's resistor drawn as new parts are
   Schematic += "<Components>\n";
-  Schematic += componentstr;
+  Schematic += qucs_s::symbols::styled(componentstr, static_cast<qucs_s::symbols::Style>(QucsSettings.ComponentSymbols));
   Schematic += "</Components>\n";
 
   // Add wires

@@ -3857,6 +3857,9 @@ QStringList QucsApp::applyImportedSettings(const QString &workspaceBefore, const
   simConsole->applyHostSetting();
   updatePathList(QStringList(qucsPathList));
   fillLibrariesTreeView();   // (the library search paths, as imported)
+  // The components panel: its parts and their icons drawn as the settings
+  // say new parts are (Component symbols).
+  refreshComponentsPanel();
 
   // The shortcuts: the defaults, and those the settings change.
   QucsShortcutManager &shortcuts = QucsShortcutManager::instance();
@@ -5400,6 +5403,13 @@ void QucsApp::switchEditMode(bool SchematicMode)
   // no search in "symbol painting mode" as only paintings should be used
   CompSearch->setEnabled(SchematicMode);
   CompSearchClear->setEnabled(SchematicMode);
+}
+
+// ---------------------------------------------------------
+void QucsApp::refreshComponentsPanel()
+{
+  if (const Schematic *front = schematicIn(DocumentTab->currentWidget()); front != nullptr && front->getSymbolMode()) return;
+  slotSetCompView(fillComboBox(true));
 }
 
 // ---------------------------------------------------------

@@ -23,11 +23,16 @@
 
 class Resistor : public MultiViewComponent  {
 public:
-  Resistor(bool european=true);
+  /// Drawn as Application Settings say new parts are (ComponentSymbols).
+  Resistor();
+  explicit Resistor(bool european);
  ~Resistor() {};
   Component* newOne();
+  /// "Resistor": drawn as the settings say.
   static Element* info(QString&, char* &, bool getNewOne=false);
-  static Element* info_us(QString&, char* &, bool getNewOne=false);
+  /// The other symbol: "Resistor US" when the settings say European,
+  /// "Resistor European" when they say US.
+  static Element* info_other(QString&, char* &, bool getNewOne=false);
 
 protected:
   QString spice_netlist(spicecompat::SpiceDialect dialect = spicecompat::SPICEDefault);

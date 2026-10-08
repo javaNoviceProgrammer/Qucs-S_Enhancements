@@ -288,7 +288,7 @@ REGISTER_COMP_1 (QObject::tr("magnetic cores"),val)
 void Module::registerModules (void) {
   unregisterModules();
 
-  REGISTER_LUMPED_2 (Resistor, info, info_us);
+  REGISTER_LUMPED_2 (Resistor, info, info_other);
   REGISTER_LUMPED_1 (Capacitor);
   REGISTER_LUMPED_1 (Inductor);
   REGISTER_LUMPED_1 (IndQ);
@@ -653,7 +653,7 @@ void Module::registerModules (void) {
 
 
       // Qucs legacy devices
-//      REGISTER_QUCS_2 (Resistor, info, info_us);
+//      REGISTER_QUCS_2 (Resistor, info, info_other);
 //      REGISTER_QUCS_1 (Capacitor);
 //      REGISTER_QUCS_1 (Inductor);
 //      REGISTER_QUCS_1 (Diode);

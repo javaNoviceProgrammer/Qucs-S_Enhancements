@@ -155,6 +155,11 @@ struct tQucsSettings {
   // suffix ("inc" -> "spice"); qucs_s::syntax (syntax.h) has the defaults.
   QMap<QString, QString> SyntaxFormats;
   QMap<QString, QString> SyntaxForSuffix;
+  // The symbols a new part is drawn with, where it has US and European
+  // ones (a resistor, a diode, the logic gates; qucs_s::symbols::Style in
+  // symbolstyle.h): US, the default, or European. A part placed keeps its
+  // own - its Symbol property - whatever this says later.
+  int ComponentSymbols = 0;
   // Symbols: write the name of each pin of a subcircuit inside its
   // symbol, and mark which way the pin points (in, out, inout).
   bool ShowPinNames = true;

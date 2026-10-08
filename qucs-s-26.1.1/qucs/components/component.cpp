@@ -26,6 +26,7 @@
 #include "subcircuit.h"
 #include "spicecomponents/isffm.h"
 #include "main.h"
+#include "symbolstyle.h"
 #include "ink.h"
 #include "levelofdetail.h"
 #include "schematic.h"
@@ -1860,7 +1861,8 @@ GateComponent::GateComponent() {
                               QObject::tr("transfer function scaling factor")));
 
     // this must be the last property in the list !!!
-    Props.append(new Property("Symbol", "old", false,
+    // (old: the US distinctive shapes; DIN40900: IEC's rectangles.)
+    Props.append(new Property("Symbol", QucsSettings.ComponentSymbols == qucs_s::symbols::European ? "DIN40900" : "old", false,
                               QObject::tr("schematic symbol") + " [old, DIN40900]"));
 }
 
