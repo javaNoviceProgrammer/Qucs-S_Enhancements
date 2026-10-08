@@ -276,6 +276,14 @@ private:
   QLineEdit   *TubUi = nullptr, *TubFrom = nullptr, *TubThreshold = nullptr, *TubBer = nullptr, *TubFloor = nullptr;
   QComboBox   *TubLevels = nullptr;
   QCheckBox   *TubMeasured = nullptr;
+  QComboBox   *TubDirection = nullptr;   // against the sampling instant, or the threshold
+  QLineEdit   *TubPhase = nullptr;       // on its side: the sampling instant
+  // A level histogram's: its fold (as an eye's), sampling instant, bins,
+  // Gaussians and the rate its opening is measured at.
+  QLineEdit   *LevelUi = nullptr, *LevelFrom = nullptr, *LevelThreshold = nullptr, *LevelPhase = nullptr, *LevelBer = nullptr;
+  QComboBox   *LevelLevels = nullptr;
+  QSpinBox    *LevelBins = nullptr;
+  QCheckBox   *LevelGaussians = nullptr;
   // A contour map's: its iso-lines, colours and pass band.
   QSpinBox    *MapLevels = nullptr;
   QComboBox   *MapColours = nullptr;

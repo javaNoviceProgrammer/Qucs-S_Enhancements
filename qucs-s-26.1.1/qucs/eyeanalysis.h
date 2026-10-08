@@ -107,6 +107,7 @@ double fitted(const QVector<double>& crossings, double ui);
 /// \a e's Q into \a o: its value, or null with why when it is infinite
 /// (no noise); nothing when it was not measured.
 void insertQ(QJsonObject& o, const Eye& e);
+void insertQ(QJsonObject& o, double q);
 
 /// The mask: a hexagon \a width UI wide and \a height high, centred on
 /// (0, 0) - in UI from the eye's centre, and from the threshold.
@@ -169,6 +170,62 @@ double gaussianTailInverse(double p);
 /// model, RJ, DJ, the total jitter and the opening at it (seconds and
 /// UI), where the rate is lowest and how low; or {"error"}.
 QJsonObject toJson(const Bathtub& b, double ber);
+
+/// The signal of \a c at each sampling instant of \a r - its centre, then
+/// a UI apart, from its start to its end - moved \a phase UI from the
+/// centre (-0.5 to 0.5: from one wall to the other). None without an eye.
+QVector<double> sampledAt(const dataset::Curve& c, const Result& r, double phase = 0.0);
+
+/// A level's symbols at a sampling instant.
+struct Level {
+    double mean = NaN;        ///< of its symbols (NaN: none)
+    double sigma = NaN;       ///< their spread about it (rms; 0 without noise)
+    QVector<double> values;   ///< the symbols, rising
+    int count() const { return int(values.size()); }
+};
+
+/// \a sampled (sampledAt()) each on its level of \a r, lowest first: NRZ's
+/// by the eye's threshold, PAM4's the nearest of its levels.
+QList<Level> levelsOf(const Result& r, const QVector<double>& sampled);
+
+/// The vertical (voltage) bathtub of an eye: the bit error rate against
+/// the decision threshold, at a sampling instant. An error is a symbol of
+/// the lower level above the threshold, or of the upper below it; the rate
+/// is their share of all the symbols (PAM4's, of each eye's, as the timing
+/// bathtub's is). Measured, they are counted, down to one in their number;
+/// beyond them each level is a Gaussian of its mean and spread (the Q
+/// model), weighted by its share of the symbols.
+struct VoltageBathtub {
+    QString error;                ///< why there is none (empty: there is one)
+    double phase = 0.0;           ///< the sampling instant, in UI from the eye's centre
+    Level low, high;              ///< the eye's levels
+    int symbols = 0;              ///< all the symbols sampled
+    bool ok() const { return error.isEmpty(); }
+    /// The model's rate deciding at \a threshold.
+    double ber(double threshold) const;
+    /// The symbols counted on the wrong side of \a threshold, per symbol.
+    double measured(double threshold) const;
+    /// The threshold the model's rate is lowest at (between the levels).
+    double best() const;
+    /// The thresholds either side of best() where the model's rate rises
+    /// through \a ber: false when it is above it at best() too.
+    bool opening(double ber, double* from, double* to) const;
+    /// Q: the levels' distance over the sum of their spreads; infinite
+    /// without noise.
+    double q() const;
+    /// The rate Q gives, Q(q) = erfc(q / sqrt 2) / 2: deciding at the best
+    /// threshold with the levels equally likely and spread.
+    double berOfQ() const;
+};
+
+/// Eye \a eye of \a r (NRZ's 0, PAM4's 0 to 2)'s vertical bathtub from
+/// \a sampled (sampledAt() at \a phase).
+VoltageBathtub voltageBathtubOf(const Result& r, int eye, const QVector<double>& sampled, double phase = 0.0);
+
+/// \a b as JSON, the opening at \a ber: each level's mean, spread and
+/// symbols, Q and the rate it gives, the best threshold and the rate there,
+/// the opening (volts and from-to) or that it is closed; or {"error"}.
+QJsonObject toJson(const VoltageBathtub& b, double ber);
 
 /// \a r as JSON, its numbers to 7 places: the unit interval, the levels,
 /// each eye (its height, width, jitter, Q, threshold), the symbols, the
