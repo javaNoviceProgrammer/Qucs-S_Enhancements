@@ -24,6 +24,11 @@
  *        the crossings counted, and beyond them the dual-Dirac model, down
  *        to a floor on a log axis. The opening at a target rate (1e-12) is
  *        marked, and the random, deterministic and total jitter written.
+ *        Turned on its side (Voltage), the rate against the decision
+ *        threshold at a sampling instant (eyeanalysis.h's VoltageBathtub):
+ *        the symbols counted, and beyond them each level's Gaussian - with
+ *        each eye's Q, the rate it gives, the best threshold and the
+ *        vertical opening at the target.
  */
 class BathtubDiagram : public RectDiagram {
 public:
@@ -37,12 +42,19 @@ public:
   double threshold;          ///< NRZ's decision threshold; NaN: halfway between the levels
   double ber = 1e-12;        ///< the rate the opening is measured at
   double floor;              ///< the axis down to; NaN: the target's 1e-4
-  bool measured = true;      ///< the crossings counted drawn too
+  bool measured = true;      ///< the crossings (the symbols, on its side) counted drawn too
+  enum Direction { Timing = 0, Voltage = 1 };
+  int direction = Timing;    ///< against the sampling instant, or the decision threshold
+  double phase = 0.0;        ///< Voltage: the sampling instant, in UI from the eye's centre (-0.5 to 0.5)
 
   /// The axis' bottom: floor, or the target's 1e-4.
   double floorRate() const;
-  /// Each graph's eyes' bathtubs (NRZ one, PAM4 three), as last laid out.
+  /// Each graph's eyes' bathtubs (NRZ one, PAM4 three), as last laid out
+  /// (Timing; none on its side).
   const QList<QList<qucs_s::eye::Bathtub>>& bathtubs() const { return m_tubs; }
+  /// Each graph's eyes' vertical bathtubs, as last laid out (Voltage; none
+  /// across).
+  const QList<QList<qucs_s::eye::VoltageBathtub>>& voltageBathtubs() const { return m_volts; }
   /// Each graph's fold, as last laid out.
   const QList<qucs_s::eye::Result>& results() const { return m_folding.results; }
 
@@ -66,8 +78,11 @@ protected:
 private:
   void analyse();
   QStringList summary() const;
+  QStringList voltageSummary() const;
+  void paintVoltage(QPainter*);
   EyeDiagram::Folding m_folding;
   QList<QList<qucs_s::eye::Bathtub>> m_tubs;
+  QList<QList<qucs_s::eye::VoltageBathtub>> m_volts;
 };
 
 #endif

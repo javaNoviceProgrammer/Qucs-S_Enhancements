@@ -346,18 +346,22 @@ EyeDiagram::Folding EyeDiagram::foldingOf(const Diagram* owner, double ui, int l
                 break;
             }
     eye::Options o = options;
+    for (const Graph* g : graphs) {
+        const QList<qucs_s::dataset::Curve> curves = curvesOf(g);
+        f.curves << (curves.isEmpty() ? qucs_s::dataset::Curve() : curves.first());
+    }
     auto one = [&](int i) {
-        const QList<qucs_s::dataset::Curve> curves = curvesOf(graphs.at(i));
+        const qucs_s::dataset::Curve& curve = f.curves.at(i);
         const qucs_s::prbs::Source& s = sources.at(i);
         eye::Result r;
-        if (curves.isEmpty() || curves.first().x.size() < 2) {
+        if (curve.x.size() < 2) {
             r.error = tr("no data: simulate, or check the variable's name");
             return r;
         }
         const bool own = !std::isfinite(given) && s.found();
         o.ui = own ? s.ui : other;
         o.levels = levels == 2 || levels == 4 ? levels : s.found() ? s.levels : 2;
-        r = eye::analyse(curves.first(), o);
+        r = eye::analyse(curve, o);
         r.uiSource = std::isfinite(given) ? QString() : own ? s.name : otherFrom;
         if (s.found() && !s.note.isEmpty()) r.notes.prepend(s.note);
         if (s.found() && s.levels == 4 && o.levels == 2)

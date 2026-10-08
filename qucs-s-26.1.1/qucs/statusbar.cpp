@@ -39,6 +39,7 @@
 #include "diagrams/polezerodiagram.h"
 #include "diagrams/spectrumdiagram.h"
 #include "diagrams/bathtubdiagram.h"
+#include "diagrams/levelhistogramdiagram.h"
 #include "diagrams/contourdiagram.h"
 #include "diagrams/tornadodiagram.h"
 #include "diagrams/boxplotdiagram.h"
@@ -395,6 +396,32 @@ QString readout(const Diagram* diagram, const MappedPoint& p)
 
     // A bathtub curve: the sampling instant (in UI and in time), the rate
     // up y, and each trace's narrowest eye's rate there.
+    if (const auto* tub = dynamic_cast<const BathtubDiagram*>(diagram); tub && tub->direction == BathtubDiagram::Voltage) {
+        // On its side: the decision threshold across, and each trace's
+        // highest eye's rate there.
+        const QString unit = tub->Graphs.isEmpty() ? QString() : unitOf(bare(tub->Graphs.first()->Var));
+        QStringList parts{tr("threshold %1").arg(number(p.x, unit)), QStringLiteral("BER %1").arg(p.y1, 0, 'g', 2)};
+        for (int i = 0; i < tub->voltageBathtubs().size() && i < tub->Graphs.size(); ++i) {
+            double highest = -1;
+            for (const qucs_s::eye::VoltageBathtub& b : tub->voltageBathtubs().at(i))
+                if (b.ok() && p.x >= b.low.mean && p.x <= b.high.mean) highest = std::max(highest, b.ber(p.x));
+            if (highest >= 0) parts << QStringLiteral("%1 %2").arg(bare(tub->Graphs.at(i)->Var)).arg(highest, 0, 'g', 2);
+        }
+        return parts.join(QStringLiteral("  \u00B7  "));
+    }
+    // A level histogram: the signal up, and how many symbols of each trace
+    // fall in the bar there.
+    if (const auto* levels = dynamic_cast<const LevelHistogramDiagram*>(diagram)) {
+        const QString unit = levels->Graphs.isEmpty() ? QString() : unitOf(bare(levels->Graphs.first()->Var));
+        QStringList parts{number(p.y1, unit)};
+        for (int i = 0; i < levels->histograms().size() && i < levels->Graphs.size(); ++i) {
+            const LevelHistogramDiagram::Histogram& h = levels->histograms().at(i);
+            const double k = h.width > 0.0 ? std::floor((p.y1 - h.low) / h.width) : -1.0;
+            if (k >= 0.0 && k < h.counts.size())
+                parts << tr("%1 %2 symbols").arg(bare(levels->Graphs.at(i)->Var)).arg(h.counts.at(int(k)), 0, 'f', 0);
+        }
+        return parts.join(QStringLiteral("  \u00B7  "));
+    }
     if (const auto* tub = dynamic_cast<const BathtubDiagram*>(diagram)) {
         QStringList parts;
         QString at = QStringLiteral("%1 UI").arg(p.x, 0, 'f', 3);

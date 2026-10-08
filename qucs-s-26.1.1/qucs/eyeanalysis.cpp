@@ -377,9 +377,14 @@ double fitted(const QVector<double>& crossings, double ui)
 
 void insertQ(QJsonObject& o, const Eye& e)
 {
-    if (std::isfinite(e.q)) {
-        o.insert(QStringLiteral("Q"), dataset::rounded(e.q));
-    } else if (std::isinf(e.q)) {
+    insertQ(o, e.q);
+}
+
+void insertQ(QJsonObject& o, double q)
+{
+    if (std::isfinite(q)) {
+        o.insert(QStringLiteral("Q"), dataset::rounded(q));
+    } else if (std::isinf(q)) {
         o.insert(QStringLiteral("Q"), QJsonValue(QJsonValue::Null));
         o.insert(QStringLiteral("Q note"), tr("infinite: no noise - each level is the same at every bit's centre"));
     }
@@ -611,6 +616,168 @@ QJsonObject toJson(const Bathtub& b, double ber)
         o.insert(QStringLiteral("to, UI"), rounded(to));
     } else {
         o.insert(QStringLiteral("note"), tr("closed at BER %1: the rate is above it at every phase").arg(ber));
+    }
+    return o;
+}
+
+QVector<double> sampledAt(const Curve& c, const Result& r, double phase)
+{
+    if (!r.ok() || !(r.ui > 0.0) || !std::isfinite(r.centre) || !std::isfinite(phase)) return {};
+    double first = r.centre + phase * r.ui;
+    // (From the eye's start: none of the settling before it.)
+    if (first < r.start) first += std::ceil((r.start - first) / r.ui) * r.ui;
+    return centres(c, first, r.ui, r.end);
+}
+
+QList<Level> levelsOf(const Result& r, const QVector<double>& sampled)
+{
+    QList<Level> levels;
+    if (!r.ok() || r.levels.isEmpty()) return levels;
+    for (int i = 0; i < r.levels.size(); ++i) levels << Level();
+    const bool pam4 = r.levels.size() == 4;
+    const double threshold = !r.eyes.isEmpty() ? r.eyes.first().threshold : NaN;
+    for (double v : sampled) {
+        if (!std::isfinite(v)) continue;
+        const int k = pam4 ? nearest(r.levels, v) : (v > threshold ? 1 : 0);
+        levels[k].values << v;
+    }
+    for (Level& l : levels) {
+        if (l.values.isEmpty()) continue;
+        std::sort(l.values.begin(), l.values.end());
+        double sum = 0.0;
+        for (double v : std::as_const(l.values)) sum += v;
+        l.mean = sum / l.values.size();
+        double squares = 0.0;
+        for (double v : std::as_const(l.values)) squares += (v - l.mean) * (v - l.mean);
+        l.sigma = std::sqrt(squares / l.values.size());
+    }
+    return levels;
+}
+
+double VoltageBathtub::ber(double threshold) const
+{
+    if (!ok() || symbols <= 0) return NaN;
+    const double pLow = double(low.count()) / symbols, pHigh = double(high.count()) / symbols;
+    return pLow * tailOf(threshold - low.mean, low.sigma) + pHigh * tailOf(high.mean - threshold, high.sigma);
+}
+
+double VoltageBathtub::measured(double threshold) const
+{
+    if (!ok() || symbols <= 0) return NaN;
+    const auto above = low.values.cend() - std::upper_bound(low.values.cbegin(), low.values.cend(), threshold);
+    const auto below = std::lower_bound(high.values.cbegin(), high.values.cend(), threshold) - high.values.cbegin();
+    return double(above + below) / symbols;
+}
+
+double VoltageBathtub::best() const
+{
+    if (!ok()) return NaN;
+    // On a grid between the levels, then finer about the lowest.
+    const double span = high.mean - low.mean;
+    double at = (low.mean + high.mean) / 2.0, lowest = ber(at);
+    for (int i = 0; i <= 2000; ++i) {
+        const double v = low.mean + span * i / 2000.0, b = ber(v);
+        if (b < lowest) {
+            lowest = b;
+            at = v;
+        }
+    }
+    double lo = at - span / 2000.0, hi = at + span / 2000.0;
+    for (int i = 0; i < 60; ++i) {
+        const double a = lo + (hi - lo) / 3.0, b = hi - (hi - lo) / 3.0;
+        if (ber(a) <= ber(b)) hi = b;
+        else lo = a;
+    }
+    const double refined = (lo + hi) / 2.0;
+    return ber(refined) <= lowest ? refined : at;
+}
+
+bool VoltageBathtub::opening(double rate, double* from, double* to) const
+{
+    const double b = best();
+    *from = *to = b;
+    if (!ok() || !(ber(b) <= rate)) return false;
+    // Each side: where the rate rises through it, between the best and the
+    // level (there it is about half that level's share).
+    const auto through = [&](double inside, double outside) {
+        for (int i = 0; i < 100; ++i) {
+            const double mid = (inside + outside) / 2.0;
+            (ber(mid) <= rate ? inside : outside) = mid;
+        }
+        return (inside + outside) / 2.0;
+    };
+    *from = through(b, low.mean);
+    *to = through(b, high.mean);
+    return true;
+}
+
+double VoltageBathtub::q() const
+{
+    if (!ok()) return NaN;
+    const double noise = low.sigma + high.sigma, gap = high.mean - low.mean;
+    // (A spread below a billionth of the gap is the numbers' rounding.)
+    return noise > 1e-9 * std::abs(gap) ? gap / noise : std::numeric_limits<double>::infinity();
+}
+
+double VoltageBathtub::berOfQ() const
+{
+    const double x = q();
+    if (!std::isfinite(x)) return std::isnan(x) ? NaN : 0.0;
+    return gaussianTail(x);
+}
+
+VoltageBathtub voltageBathtubOf(const Result& r, int eye, const QVector<double>& sampled, double phase)
+{
+    VoltageBathtub b;
+    b.phase = phase;
+    if (!r.ok()) {
+        b.error = r.error;
+        return b;
+    }
+    if (eye < 0 || eye + 1 >= r.levels.size()) {
+        b.error = tr("there is no eye %1").arg(eye + 1);
+        return b;
+    }
+    const QList<Level> levels = levelsOf(r, sampled);
+    b.low = levels.at(eye);
+    b.high = levels.at(eye + 1);
+    for (const Level& l : levels) b.symbols += l.count();
+    if (b.low.count() == 0 || b.high.count() == 0) {
+        b.error = b.low.count() == 0 ? tr("no symbol on the lower level at that instant") : tr("no symbol on the upper level at that instant");
+        return b;
+    }
+    if (!(b.high.mean > b.low.mean)) b.error = tr("the levels meet at that instant: the eye is closed");
+    return b;
+}
+
+QJsonObject toJson(const VoltageBathtub& b, double ber)
+{
+    using dataset::rounded;
+    if (!b.ok()) return {{QStringLiteral("error"), b.error}};
+    const auto level = [](const Level& l) {
+        return QJsonObject{{QStringLiteral("mean"), rounded(l.mean)},
+                           {QStringLiteral("sigma"), rounded(l.sigma)},
+                           {QStringLiteral("symbols"), l.count()}};
+    };
+    double from = NaN, to = NaN;
+    const bool open = b.opening(ber, &from, &to);
+    const double best = b.best();
+    QJsonObject o{{QStringLiteral("BER"), ber},
+                  {QStringLiteral("phase, UI"), rounded(b.phase)},
+                  {QStringLiteral("low level"), level(b.low)},
+                  {QStringLiteral("high level"), level(b.high)},
+                  {QStringLiteral("best threshold"), rounded(best)},
+                  {QStringLiteral("BER at the best threshold"), rounded(b.ber(best))},
+                  {QStringLiteral("symbols"), b.symbols}};
+    insertQ(o, b.q());
+    if (std::isfinite(b.q())) o.insert(QStringLiteral("BER from Q"), rounded(b.berOfQ()));
+    if (open) {
+        o.insert(QStringLiteral("opening"), rounded(to - from));
+        o.insert(QStringLiteral("from"), rounded(from));
+        o.insert(QStringLiteral("to"), rounded(to));
+    } else {
+        o.insert(QStringLiteral("opening"), 0.0);
+        o.insert(QStringLiteral("note"), tr("closed at BER %1: the rate is above it at every threshold").arg(ber));
     }
     return o;
 }

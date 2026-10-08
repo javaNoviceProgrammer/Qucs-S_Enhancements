@@ -12,6 +12,7 @@
 
 #include "bathtubdiagram.h"
 
+#include "dataset.h"
 #include "ink.h"
 
 #include <QPainter>
@@ -38,6 +39,13 @@ double fieldValue(const QString& text)
 QString rateText(double rate)
 {
     return QString::number(rate, 'g', 3);
+}
+
+// The sampling instant, as the voltage tub says it: "the centre", "+0.25 UI".
+QString phaseText(double phase)
+{
+    return phase == 0.0 ? QObject::tr("the eye's centre")
+                        : QObject::tr("%1 UI from the eye's centre").arg((phase > 0 ? QStringLiteral("+") : QString()) + QString::number(phase, 'g', 3));
 }
 
 } // namespace
@@ -76,7 +84,9 @@ qucs_s::numberformat::Notation BathtubDiagram::notationOf(const Axis* axis) cons
 {
     using qucs_s::numberformat::Notation;
     if (notation != Notation::Automatic || notationDecimals >= 0) return notation;
-    return axis == &xAxis ? Notation::Decimal : Notation::Power;
+    // (On its side, the thresholds in the signal's unit as any axis has it.)
+    if (axis == &xAxis) return direction == Voltage ? Notation::Automatic : Notation::Decimal;
+    return Notation::Power;
 }
 
 QList<Diagram::Part> BathtubDiagram::themeParts() const
@@ -93,6 +103,24 @@ void BathtubDiagram::analyse()
     o.threshold = threshold;
     m_folding = EyeDiagram::foldingOf(this, ui, levels, o);
     m_tubs.clear();
+    m_volts.clear();
+    if (direction == Voltage) {
+        // Each graph sampled at the instant, each eye's levels on either side.
+        for (int i = 0; i < m_folding.results.size(); ++i) {
+            const eye::Result& r = m_folding.results.at(i);
+            QList<eye::VoltageBathtub> tubs;
+            if (!r.ok()) {
+                eye::VoltageBathtub none;
+                none.error = r.error;
+                tubs << none;
+            } else {
+                const QVector<double> sampled = eye::sampledAt(m_folding.curves.value(i), r, phase);
+                for (int k = 0; k < r.eyes.size(); ++k) tubs << eye::voltageBathtubOf(r, k, sampled, phase);
+            }
+            m_volts << tubs;
+        }
+        return;
+    }
     for (const eye::Result& r : std::as_const(m_folding.results)) {
         QList<eye::Bathtub> tubs;
         if (!r.ok()) {
@@ -126,8 +154,16 @@ int BathtubDiagram::calcDiagram()
                 lo = std::isfinite(lo) ? std::min(lo, b.left) : b.left;
                 hi = std::isfinite(hi) ? std::max(hi, b.left + 1.0) : b.left + 1.0;
             }
-    xAxis.min = std::isfinite(lo) ? lo : -0.5;
-    xAxis.max = std::isfinite(hi) ? hi : 0.5;
+    // On its side: from the lowest level to the highest (each level the
+    // wall of the eyes beside it).
+    for (const QList<eye::VoltageBathtub>& tubs : std::as_const(m_volts))
+        for (const eye::VoltageBathtub& b : tubs)
+            if (b.ok()) {
+                lo = std::isfinite(lo) ? std::min(lo, b.low.mean) : b.low.mean;
+                hi = std::isfinite(hi) ? std::max(hi, b.high.mean) : b.high.mean;
+            }
+    xAxis.min = std::isfinite(lo) ? lo : direction == Voltage ? 0.0 : -0.5;
+    xAxis.max = std::isfinite(hi) && hi > lo ? hi : direction == Voltage ? 1.0 : 0.5;
     yAxis.min = floorRate();
     yAxis.max = 1.0;
     return RectDiagram::calcDiagram();
@@ -136,7 +172,9 @@ int BathtubDiagram::calcDiagram()
 void BathtubDiagram::createAxisLabels()
 {
     const QString x = xAxis.Label, y = yAxis.Label;
-    if (x.isEmpty()) xAxis.Label = QObject::tr("sampling instant (UI from the eye's centre)");
+    if (x.isEmpty())
+        xAxis.Label = direction == Voltage ? QObject::tr("decision threshold, sampling at %1").arg(phaseText(phase))
+                                           : QObject::tr("sampling instant (UI from the eye's centre)");
     if (y.isEmpty()) yAxis.Label = QObject::tr("bit error rate");
     RectDiagram::createAxisLabels();
     xAxis.Label = x;
@@ -145,6 +183,10 @@ void BathtubDiagram::createAxisLabels()
 
 void BathtubDiagram::paintBehindGraphs(QPainter* painter)
 {
+    if (direction == Voltage) {
+        paintVoltage(painter);
+        return;
+    }
     // (In its coordinates: origin at the lower left corner, y up.)
     painter->save();
     painter->setClipRect(QRectF(0, 0, x2, y2));
@@ -223,6 +265,111 @@ void BathtubDiagram::paintBehindGraphs(QPainter* painter)
     painter->restore();
 }
 
+void BathtubDiagram::paintVoltage(QPainter* painter)
+{
+    // (In its coordinates: origin at the lower left corner, y up.)
+    painter->save();
+    painter->setClipRect(QRectF(0, 0, x2, y2));
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    const double bottom = floorRate() / 10.0;   // below the axis: drawn out of the frame
+    const auto at = [&](double threshold, double rate) {
+        const double y[2] = {std::max(rate, bottom), 0};
+        float px = 0, py = 0;
+        calcCoordinate(&threshold, y, nullptr, &px, &py, &yAxis);
+        return QPointF(px, py);
+    };
+    painter->setPen(QPen(QColor(128, 128, 128), 1, Qt::DashLine));
+    painter->drawLine(at(xAxis.low, ber), at(xAxis.up, ber));
+    for (int i = 0; i < m_volts.size() && i < Graphs.size(); ++i) {
+        const Graph* g = Graphs.at(i);
+        const QColor ink = qucs_s::ink::on(g->Color);
+        const QString unit = qucs_s::dataset::unitOf(g->Var.section(QLatin1Char('/'), -1));
+        const QList<eye::VoltageBathtub>& tubs = m_volts.at(i);
+        for (int k = 0; k < tubs.size(); ++k) {
+            const eye::VoltageBathtub& b = tubs.at(k);
+            if (!b.ok()) continue;
+            // The symbols counted: steps, thin.
+            if (measured) {
+                QVector<double> breaks = b.low.values + b.high.values;
+                breaks << xAxis.low << xAxis.up;
+                std::sort(breaks.begin(), breaks.end());
+                QColor light = ink;
+                light.setAlpha(150);
+                painter->setPen(QPen(light, 1));
+                QPolygonF steps;
+                for (int j = 0; j + 1 < breaks.size(); ++j) {
+                    if (breaks.at(j + 1) <= breaks.at(j)) continue;
+                    const double v = b.measured((breaks.at(j) + breaks.at(j + 1)) / 2.0);
+                    steps << at(breaks.at(j), v) << at(breaks.at(j + 1), v);
+                }
+                painter->drawPolyline(steps);
+            }
+            // The model: PAM4's eyes solid, dashed, dotted.
+            static const Qt::PenStyle styles[] = {Qt::SolidLine, Qt::DashLine, Qt::DotLine};
+            painter->setPen(QPen(ink, std::max(1, g->Thick), styles[k % 3], Qt::RoundCap, Qt::RoundJoin));
+            QPolygonF line;
+            for (int j = 0; j <= 800; ++j) {
+                const double v = xAxis.low + (xAxis.up - xAxis.low) * j / 800.0;
+                line << at(v, b.ber(v));
+            }
+            painter->drawPolyline(line);
+            // Its opening at the target: the ends ticked, the height under it.
+            double from = 0, to = 0;
+            if (!b.opening(ber, &from, &to)) continue;
+            const QPointF a = at(from, ber), z = at(to, ber);
+            painter->setPen(QPen(ink, 1.5));
+            painter->drawLine(a, z);
+            painter->drawLine(a + QPointF(0, -5), a + QPointF(0, 5));
+            painter->drawLine(z + QPointF(0, -5), z + QPointF(0, 5));
+            const QString text = EyeDiagram::engineering(to - from, unit);
+            painter->save();
+            painter->translate((a + z) / 2.0);
+            painter->scale(1, -1);
+            const QFontMetricsF fm(painter->font());
+            painter->drawText(QPointF(-fm.horizontalAdvance(text) / 2.0, fm.ascent() + 4 + i * fm.height()), text);
+            painter->restore();
+        }
+    }
+    painter->restore();
+}
+
+QStringList BathtubDiagram::voltageSummary() const
+{
+    QStringList lines;
+    for (int i = 0; i < m_volts.size() && i < Graphs.size(); ++i) {
+        const QString name = Graphs.at(i)->Var.section(QLatin1Char('/'), -1);
+        const QString unit = qucs_s::dataset::unitOf(name);
+        const QList<eye::VoltageBathtub>& tubs = m_volts.at(i);
+        if (tubs.isEmpty()) continue;
+        if (tubs.size() == 1 && tubs.first().symbols == 0 && !tubs.first().ok()) {
+            lines << QObject::tr("%1: %2").arg(name, tubs.first().error);
+            continue;
+        }
+        lines << QObject::tr("%1: %2 symbols").arg(name).arg(tubs.first().symbols);
+        for (int k = 0; k < tubs.size(); ++k) {
+            const eye::VoltageBathtub& b = tubs.at(k);
+            const QString eyeName = tubs.size() > 1 ? QObject::tr("eye %1: ").arg(k + 1) : QString();
+            if (!b.ok()) {
+                lines << eyeName + b.error;
+                continue;
+            }
+            // (Short lines: the box is as wide as its longest.)
+            const QString sigma = QString(QChar(0x03C3)), indent = tubs.size() > 1 ? QStringLiteral("   ") : QString();
+            const QString q = std::isfinite(b.q()) ? QObject::tr("Q %1, BER %2").arg(QString::number(b.q(), 'f', 2), rateText(b.berOfQ()))
+                                                   : QObject::tr("Q infinite (no noise)");
+            double from = 0, to = 0;
+            const QString open = b.opening(ber, &from, &to) ? EyeDiagram::engineering(to - from, unit) : QObject::tr("closed");
+            lines << eyeName
+                         + QObject::tr("levels %1 %2 %3, %4 %5 %6")
+                               .arg(EyeDiagram::engineering(b.low.mean, unit), sigma, EyeDiagram::engineering(b.low.sigma, unit),
+                                    EyeDiagram::engineering(b.high.mean, unit), sigma, EyeDiagram::engineering(b.high.sigma, unit));
+            lines << indent + QObject::tr("%1; best %2").arg(q, EyeDiagram::engineering(b.best(), unit));
+            lines << indent + QObject::tr("opening %1 at %2").arg(open, rateText(ber));
+        }
+    }
+    return lines;
+}
+
 QStringList BathtubDiagram::summary() const
 {
     QStringList lines;
@@ -260,7 +407,7 @@ QStringList BathtubDiagram::summary() const
 void BathtubDiagram::paintInFront(QPainter* painter, const Colors& colors)
 {
     RectDiagram::paintInFront(painter, colors);
-    const QStringList lines = summary();
+    const QStringList lines = direction == Voltage ? voltageSummary() : summary();
     if (lines.isEmpty()) return;
     // (y down.) At the top in the middle, between the walls.
     painter->save();
@@ -282,11 +429,13 @@ void BathtubDiagram::paintInFront(QPainter* painter, const Colors& colors)
 
 QString BathtubDiagram::extraSaveFields() const
 {
-    return QStringLiteral(" %1 %2 %3 %4 %5 %6 %7")
+    return QStringLiteral(" %1 %2 %3 %4 %5 %6 %7 %8 %9")
         .arg(fieldText(ui), fieldText(start))
         .arg(levels)
         .arg(fieldText(threshold), fieldText(ber), fieldText(floor))
-        .arg(measured ? 1 : 0);
+        .arg(measured ? 1 : 0)
+        .arg(direction)
+        .arg(fieldText(phase));
 }
 
 void BathtubDiagram::loadExtraFields(const QStringList& fields)
@@ -303,4 +452,8 @@ void BathtubDiagram::loadExtraFields(const QStringList& fields)
     floor = fieldValue(fields.value(5));
     if (!(floor > 0.0 && floor < ber)) floor = eye::NaN;
     measured = fields.value(6) != QLatin1String("0");
+    // (A file made before they were has neither: across, at the centre.)
+    direction = fields.value(7) == QLatin1String("1") ? Voltage : Timing;
+    const double p = fieldValue(fields.value(8));
+    phase = std::isfinite(p) ? std::clamp(p, -0.5, 0.5) : 0.0;
 }

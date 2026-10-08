@@ -587,6 +587,7 @@ void Module::registerModules (void) {
   REGISTER_DIAGRAM_1 (HistogramDiagram);
   REGISTER_DIAGRAM_1 (EyeDiagram);
   REGISTER_DIAGRAM_1 (BathtubDiagram);
+  REGISTER_DIAGRAM_1 (LevelHistogramDiagram);
   REGISTER_DIAGRAM_1 (ContourDiagram);
   REGISTER_DIAGRAM_1 (SpectrogramDiagram);
   REGISTER_DIAGRAM_1 (TornadoDiagram);

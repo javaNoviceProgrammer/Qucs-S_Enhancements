@@ -1425,6 +1425,7 @@ bool Schematic::loadDiagrams(QTextStream *stream, std::list<Diagram*> *List)
     else if(cstr == "<Nichols") d = new NicholsDiagram();
     else if(cstr == "<Spectrum") d = new SpectrumDiagram();
     else if(cstr == "<Bathtub") d = new BathtubDiagram();
+    else if(cstr == "<LevelHistogram") d = new LevelHistogramDiagram();
     else if(cstr == "<Contour") d = new ContourDiagram();
     else if(cstr == "<Spectrogram") d = new SpectrogramDiagram();
     else if(cstr == "<Bars") d = new TornadoDiagram();

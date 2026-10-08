@@ -31,6 +31,7 @@
 #include "nicholsdiagram.h"
 #include "spectrumdiagram.h"
 #include "bathtubdiagram.h"
+#include "levelhistogramdiagram.h"
 #include "contourdiagram.h"
 #include "spectrogramdiagram.h"
 #include "tornadodiagram.h"

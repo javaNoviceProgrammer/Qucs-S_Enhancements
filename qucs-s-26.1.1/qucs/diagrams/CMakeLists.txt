@@ -28,6 +28,7 @@ bodediagram.h
 nicholsdiagram.h
 spectrumdiagram.h
 bathtubdiagram.h
+levelhistogramdiagram.h
 contourdiagram.h
 spectrogramdiagram.h
 tornadodiagram.h
@@ -53,6 +54,7 @@ bodediagram.cpp
 nicholsdiagram.cpp
 spectrumdiagram.cpp
 bathtubdiagram.cpp
+levelhistogramdiagram.cpp
 contourdiagram.cpp
 spectrogramdiagram.cpp
 tornadodiagram.cpp
