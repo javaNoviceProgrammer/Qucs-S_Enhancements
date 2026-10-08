@@ -321,9 +321,11 @@ void AbstractSpiceKernel::createSubNetlist(QTextStream &stream, bool lib)
     }
     std::sort(ports.begin(), ports.end());
     // A library's: a first pin, gnd, that its parts tie to the circuit's
-    // ground, when the settings ask for it (LibraryGroundPin) - nothing in
-    // here needs it, the subcircuit's ground being the circuit's 0.
-    if (lib && QucsSettings.LibraryGroundPin) header += " gnd ";
+    // ground, when the settings ask for it (LibraryGroundPin) or the
+    // subcircuit does (its Library Export, or Document Settings > Library)
+    // - nothing in here needs it, the subcircuit's ground being the
+    // circuit's 0.
+    if (lib && a_schematic->libraryGroundPin()) header += " gnd ";
     // Each port a node of its own on the line. A second port on a net (a
     // pass-through) named it twice, and a port on the subcircuit's ground
     // named gnd: ngspice tied one of them and left the other open, or the

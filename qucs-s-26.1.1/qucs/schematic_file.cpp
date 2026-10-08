@@ -55,11 +55,44 @@
 #include <QScopeGuard>
 
 #include <optional>
+#include "spicecomponents/sp_libraryexport.h"
 
 
 // Here the subcircuits, SPICE components etc are collected. It must be
 // global to also work within the subcircuits.
 SubMap FileList;
+
+namespace {
+
+// A schematic's Document Settings > Library as the first line of an undo
+// step carries them: "<Library>" for the defaults, or with their values.
+QString libraryUndoText(const LibrarySettings& s)
+{
+  if (s.isDefault()) return QStringLiteral("<Library>");
+  const QJsonObject o{{QStringLiteral("osdi"), s.alwaysLoadOSDI},
+                      {QStringLiteral("cards"), s.modelCards},
+                      {QStringLiteral("always"), s.alwaysModelCards},
+                      {QStringLiteral("gnd"), int(s.groundPin)}};
+  return QStringLiteral("<Library ") + QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)) + QLatin1Char('>');
+}
+
+// Read back: none from a text without them (one made to replace the
+// elements alone, replaceContent()), which leaves them as they are.
+std::optional<LibrarySettings> libraryFromUndoText(const QString& text)
+{
+  if (text == QLatin1String("<Library>")) return LibrarySettings{};
+  if (!text.startsWith(QLatin1String("<Library ")) || !text.endsWith(QLatin1Char('>'))) return std::nullopt;
+  const QJsonObject o = QJsonDocument::fromJson(text.mid(9, text.size() - 10).toUtf8()).object();
+  LibrarySettings s;
+  s.alwaysLoadOSDI = o.value(QLatin1String("osdi")).toBool();
+  s.modelCards = o.value(QLatin1String("cards")).toString();
+  s.alwaysModelCards = o.value(QLatin1String("always")).toBool();
+  const int pin = o.value(QLatin1String("gnd")).toInt(-1);
+  s.groundPin = pin == 1 ? LibrarySettings::With : pin == 0 ? LibrarySettings::Without : LibrarySettings::Default;
+  return s;
+}
+
+} // namespace
 
 
 // -------------------------------------------------------------
@@ -656,6 +689,8 @@ bool Schematic::replaceContent(const QString& text, QString* error, QStringList*
   }
   if (notes != nullptr) *notes = std::exchange(a_loadShortNotes, {});
   a_loadShortNotes.clear();
+  // A Library Export the text brings: it holds the library settings.
+  if (const QString settled = settleLibrarySettings(); !settled.isEmpty() && notes != nullptr) *notes << settled;
   // The diagrams are new: their traces read the dataset (undo does so too).
   reloadGraphs();
   setChanged(true, true);
@@ -813,9 +848,13 @@ void Schematic::writeDocumentTo(QTextStream& stream)
   stream << "  <Script=" << a_Script << ">\n";
   stream << "  <RunScript=" << a_SimRunScript << ">\n";
   stream << "  <showFrame=" << static_cast<int>(a_showFrame) << ">\n";
-  // (Only when set: a Qucs-S that does not know it refuses the file.)
-  if (a_alwaysLoadOSDI) stream << "  <AlwaysLoadOSDI=1>\n";
-  if (a_alwaysModelCards) stream << "  <AlwaysModelCards=1>\n";
+  // (Only when set: a Qucs-S that does not know it refuses the file. While
+  // a Library Export is placed they are its, and these are cleared:
+  // settleLibrarySettings().)
+  if (a_library.alwaysLoadOSDI) stream << "  <AlwaysLoadOSDI=1>\n";
+  if (a_library.alwaysModelCards) stream << "  <AlwaysModelCards=1>\n";
+  if (a_library.groundPin != LibrarySettings::Default)
+    stream << "  <LibraryGroundPin=" << (a_library.groundPin == LibrarySettings::With ? 1 : 0) << ">\n";
   if (!a_probeSaves.isEmpty()) stream << "  <ProbeSaves=" << a_probeSaves.join(QLatin1Char(' ')) << ">\n";
   // Values at the Marker shown: kept, with the marker they follow by its
   // number among all the diagrams' markers (0: the selected or first) -
@@ -829,8 +868,8 @@ void Schematic::writeDocumentTo(QTextStream& stream)
       }
     stream << "  <ValuesAtMarker=" << number << ">\n";
   }
-  if (!a_modelCards.trimmed().isEmpty()) {   // (lines and \ escaped, as a frame's text is)
-    QString cards = a_modelCards.trimmed();
+  if (!a_library.modelCards.trimmed().isEmpty()) {   // (lines and \ escaped, as a frame's text is)
+    QString cards = a_library.modelCards.trimmed();
     misc::convert2ASCII(cards);
     stream << "  <ModelCards=" << cards << ">\n";
   }
@@ -995,6 +1034,91 @@ int Schematic::saveDocument()
 }
 
 // -------------------------------------------------------------
+Component* Schematic::libraryExport() const
+{
+  for (Component* c : a_DocComps)
+    if (LibraryExport::is(c)) return c;
+  return nullptr;
+}
+
+LibrarySettings Schematic::heldLibrarySettings() const
+{
+  const Component* part = libraryExport();
+  return part != nullptr ? LibraryExport::settingsOf(part) : a_library;
+}
+
+LibrarySettings Schematic::librarySettings() const
+{
+  const Component* part = libraryExport();
+  if (part == nullptr) return a_library;
+  // Off, it holds them for when it is on again.
+  return part->isActive == COMP_IS_ACTIVE ? LibraryExport::settingsOf(part) : LibrarySettings{};
+}
+
+void Schematic::setLibrarySettings(const LibrarySettings& s)
+{
+  if (Component* part = libraryExport()) {
+    LibraryExport::setSettings(part, s);
+    recreateComponent(part);   // (its texts, as a property dialog leaves them)
+  } else {
+    a_library = s;
+  }
+}
+
+void Schematic::setAlwaysLoadOSDI(bool value)
+{
+  LibrarySettings s = heldLibrarySettings();
+  s.alwaysLoadOSDI = value;
+  setLibrarySettings(s);
+}
+
+void Schematic::setModelCards(const QString& cards)
+{
+  LibrarySettings s = heldLibrarySettings();
+  s.modelCards = cards;
+  setLibrarySettings(s);
+}
+
+void Schematic::setAlwaysModelCards(bool value)
+{
+  LibrarySettings s = heldLibrarySettings();
+  s.alwaysModelCards = value;
+  setLibrarySettings(s);
+}
+
+bool Schematic::libraryGroundPin() const
+{
+  return librarySettings().groundPinFor(QucsSettings.LibraryGroundPin);
+}
+
+QString Schematic::refusedLibraryExport(const Component* c) const
+{
+  if (!LibraryExport::is(c)) return QString();
+  for (const Component* other : a_DocComps)
+    if (other != c && LibraryExport::is(other))
+      return QObject::tr("%1 holds this schematic's library settings already: one Library Export a schematic (double-click "
+                         "it to change them)").arg(other->Name);
+  return QString();
+}
+
+QString Schematic::settleLibrarySettings()
+{
+  Component* part = libraryExport();
+  if (part == nullptr || a_library.isDefault()) return QString();
+  QString done;
+  if (LibraryExport::settingsOf(part).isDefault()) {
+    LibraryExport::setSettings(part, a_library);
+    recreateComponent(part);
+    done = QObject::tr("%1 took this schematic's Document Settings > Library: it holds them now").arg(part->Name);
+  } else {
+    done = QObject::tr("%1's settings replace this schematic's Document Settings > Library: it holds them now (undo "
+                       "brings those back)").arg(part->Name);
+  }
+  a_library = {};
+  return done;
+}
+
+// -------------------------------------------------------------
 QString Schematic::modelCardsOf(const QString& text, QStringList* rejected)
 {
   static const QRegularExpression card(QStringLiteral("^\\.model\\s+\\S+\\s+\\S"), QRegularExpression::CaseInsensitiveOption);
@@ -1021,9 +1145,7 @@ bool Schematic::loadProperties(QTextStream *stream)
 {
   bool ok = true;
   QString Line, cstr, nstr;
-  a_alwaysLoadOSDI = false;   // (written only when set)
-  a_modelCards.clear();
-  a_alwaysModelCards = false;
+  a_library = {};   // (written only when set)
   while(!stream->atEnd()) {
     Line = stream->readLine();
     if(Line.startsWith("</")) return true;  // field end ?
@@ -1076,14 +1198,16 @@ bool Schematic::loadProperties(QTextStream *stream)
     if(nstr.toInt(&ok) == 0) a_SimOpenDpl = false;
     else a_SimOpenDpl = true;
     else if(cstr == "Script") a_Script = nstr;
-    else if(cstr == "AlwaysLoadOSDI") a_alwaysLoadOSDI = nstr.trimmed() == QLatin1String("1");
-    else if(cstr == "AlwaysModelCards") a_alwaysModelCards = nstr.trimmed() == QLatin1String("1");
+    else if(cstr == "AlwaysLoadOSDI") a_library.alwaysLoadOSDI = nstr.trimmed() == QLatin1String("1");
+    else if(cstr == "AlwaysModelCards") a_library.alwaysModelCards = nstr.trimmed() == QLatin1String("1");
+    else if(cstr == "LibraryGroundPin")
+      a_library.groundPin = nstr.trimmed() == QLatin1String("1") ? LibrarySettings::With : LibrarySettings::Without;
     else if(cstr == "ProbeSaves") a_probeSaves = nstr.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
     else if(cstr == "ValuesAtMarker") {
       a_cursorValues = true;
       a_pendingCursorMarker = std::max(0, nstr.trimmed().toInt());
     }
-    else if(cstr == "ModelCards") misc::convert2Unicode(a_modelCards = Line.section('=', 1));   // (a card has = in it)
+    else if(cstr == "ModelCards") misc::convert2Unicode(a_library.modelCards = Line.section('=', 1));   // (a card has = in it)
     else if(cstr == "RunScript")
     if(nstr.toInt(&ok) == 0) a_SimRunScript = false;
     else a_SimRunScript = true;
@@ -1489,6 +1613,9 @@ bool Schematic::loadDocument()
         if (++k == a_pendingCursorMarker) a_cursorMarker = m;
     a_pendingCursorMarker = 0;
   }
+  // A file with both a Library Export and library settings of its own (not
+  // one saved so): the part holds them.
+  settleLibrarySettings();
 
   file.close();
   return true;
@@ -1502,7 +1629,10 @@ QString Schematic::createUndoString(char Op)
   // Build element document.
   QString s;
   s.reserve(a_lastUndoSize + a_lastUndoSize / 16 + 1024);
-  s = QStringLiteral("  \n");
+  // Its Document Settings > Library on the first line, after the two
+  // characters: placing a Library Export moves them into it, and undoing
+  // that brings them back (rebuild()).
+  s = QStringLiteral("  ") + libraryUndoText(a_library) + QStringLiteral("\n");
   s.replace(0,1,Op);
   for(auto* pc : a_DocComps)
     s += pc->save()+"\n";
@@ -1555,7 +1685,8 @@ bool Schematic::rebuild(QString *s)
 
   QString Line;
   QTextStream stream(s, QIODevice::ReadOnly);
-  Line = stream.readLine();  // skip identity byte
+  Line = stream.readLine();  // identity byte, and the Document Settings > Library
+  if (const std::optional<LibrarySettings> library = libraryFromUndoText(Line.mid(2))) a_library = *library;
 
   // read content *************************
   const bool ok = loadComponents(&stream)

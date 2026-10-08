@@ -2039,6 +2039,15 @@ QStringList describeChanges(const QString& before, const QString& after, int mos
     QStringList changes;
     if (before == after) return changes;
     const QStringList a = sectionsOf(before), b = sectionsOf(after);
+    // Its Document Settings > Library, on an undo step's first line
+    // (Schematic::createUndoString()): a step of them alone was "nothing
+    // seen".
+    const auto library = [](const QString& state) {
+        const QString first = state.section(QLatin1Char('\n'), 0, 0).mid(2);
+        return first.startsWith(QLatin1String("<Library")) ? first : QString();
+    };
+    if (const QString was = library(before), now = library(after); !was.isNull() && !now.isNull() && was != now)
+        changes << tr("its library settings (Document Settings > Library)");
 
     // Components, by name (an unnamed one - a ground - by its type and place).
     // Only the lines that differ: a part whose line is the same says nothing,

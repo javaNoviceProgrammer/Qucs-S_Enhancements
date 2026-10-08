@@ -317,7 +317,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Ground pin (gnd) in exported subcircuits* (off by default) puts it back,
   for a library that Qucs-S 26.1.5 or earlier, or another Qucs-S, will
   use: they always tie a first pin to ground. Claude's `create_library`
-  takes `ground_pin` for one library. A part tells from its library's
+  takes `ground_pin` for one library, and a subcircuit can choose for
+  itself (*A subcircuit's own ground pin*, below). A part tells from its library's
   `.SUBCKT` line which it has, so the libraries made before keep working,
   and so does one with a Qucs model only (made SPICE with a `gnd`).
 - **A library part's Verilog-A in every circuit of a project**: for the
@@ -367,6 +368,36 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `.model` card in a SPICE file the subcircuit brings - a wrapper
   `.subckt` in a SPICE file beside its `.va` - which it left behind (the
   part, placed elsewhere, found no model).
+- **Library Export, a subcircuit's library settings on its schematic**:
+  the components panel has a section *SPICE subcircuit*, right after
+  *SPICE netlist sections*, for parts a subcircuit's schematic holds for
+  it; its first is *Library Export*. Placed, it holds what *Create
+  Library* does with the subcircuit - the settings of *Document Settings
+  → Library* above (*Always load its Verilog-A*, its `.model` cards,
+  *Always write its .model cards*) and its ground pin (below) - and
+  shows them on the schematic. One a schematic: a second is refused,
+  placed by hand, pasted or by Claude's `add_component`, and *Check
+  Schematic* warns of two in a file and of one on a schematic with no
+  ports. While it is placed the settings are its: placing it moves the
+  Document Settings' values into it (the status bar says so; undo moves
+  them back), deleting it takes them away, and switched off it applies
+  none. *Document Settings → Library* shows and changes it while it is
+  there - a step undo takes back - and double-clicking it opens the same
+  controls with its name. It is saved as the part, not in the
+  schematic's properties (a file with both is read into the part), and
+  writes nothing into a netlist. Claude sets it by its properties
+  `AlwaysLoadOSDI`, `ModelCards`, `AlwaysModelCards` and `GroundPin`.
+  Also fixed: the Library tab, at the dialog's first size, drew its
+  notes over each other.
+- **A subcircuit's own ground pin**: a Library Export's *GroundPin* - or,
+  without one, *Document Settings → Library → Ground pin (gnd) in its
+  exported subcircuit* - chooses for that subcircuit: *default* as
+  *Application Settings* say (above), *yes* a first pin `gnd` in its
+  `.SUBCKT`, *no* none, whatever the setting or `create_library`'s
+  `ground_pin` says. *Create Library* says which subcircuits chose, and
+  whose choice it was; each part tells from its library's `.SUBCKT` which
+  it has. The Document Settings keep it as `<LibraryGroundPin=0|1>`, only
+  when chosen.
 - **Library search paths**: *Application Settings → Locations → Library
   Search Paths* lists folders of component libraries besides the installed
   ones and the workspace's `user_lib` - a team's share, a git checkout of

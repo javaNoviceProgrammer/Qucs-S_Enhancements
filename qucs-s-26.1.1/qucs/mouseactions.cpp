@@ -66,6 +66,8 @@
 #include "qucs_assert.h"
 #include "statusbar.h"
 #include "probe.h"
+#include "dialogs/libraryexportdialog.h"
+#include "spicecomponents/sp_libraryexport.h"
 
 #include <QToolTip>
 
@@ -1151,6 +1153,12 @@ void MouseActions::MPressElement(Schematic *Doc, QMouseEvent *Event, float, floa
 
         switch (Event->button()) {
         case Qt::LeftButton:
+            // A second Library Export: refused, said (one holds the
+            // schematic's library settings).
+            if (const QString refused = Doc->refusedLibraryExport(Comp); !refused.isEmpty()) {
+                if (QucsMain != nullptr) QucsMain->statusBar()->showMessage(refused + QLatin1Char('.'), 10000);
+                return;
+            }
             // left mouse button inserts component into the schematic
             // give the component a pointer to the schematic it's a
             // part of
@@ -1160,6 +1168,9 @@ void MouseActions::MPressElement(Schematic *Doc, QMouseEvent *Event, float, floa
             Comp->textSize(x2, y2);
             if (Comp->tx < Comp->x1)
                 Comp->tx -= x2 - x1;
+            // (A Library Export: whether it took the Document Settings'.)
+            if (const QString note = Doc->takeLibraryNote(); !note.isEmpty() && QucsMain != nullptr)
+                QucsMain->statusBar()->showMessage(note + QLatin1Char('.'), 10000);
 
             // Note: insertCopmponents does increment  name1 -> name2
 
@@ -1733,11 +1744,22 @@ void MouseActions::MReleasePaste(Schematic *Doc, QMouseEvent *Event)
         // NOTE: Markers and nodes are excluded
         {
             Schematic::BulkNaming naming{Doc};
+            QStringList said;
             for (auto* pc : movingState.selection.components) {
                 pc->isSelected = false;
+                // A second Library Export: left out, said.
+                if (const QString refused = Doc->refusedLibraryExport(pc); !refused.isEmpty()) {
+                    said << refused;
+                    delete pc;
+                    continue;
+                }
                 Doc->insertComponent(pc);
                 Doc->enlargeView(pc);
+                if (const QString note = Doc->takeLibraryNote(); !note.isEmpty()) said << note;
             }
+            movingState.selection.components.clear();   // (inserted, or freed)
+            if (!said.isEmpty() && QucsMain != nullptr)
+                QucsMain->statusBar()->showMessage(said.join(QStringLiteral("; ")) + QLatin1Char('.'), 10000);
         }
 
         for (auto* pw : movingState.selection.wires) {
@@ -1922,6 +1944,10 @@ void MouseActions::editElement(Schematic *Doc, QMouseEvent *Event)
             TextBoxDialog *od = new TextBoxDialog("Edit .spiceinit configuration", c, Doc);
             if (od->exec() != 1)
                 break; // dialog is WDestructiveClose
+        } else if (LibraryExport::is(c)) {
+            LibraryExportDialog dialog(c, Doc);
+            if (dialog.exec() != QDialog::Accepted)
+                break;
         } else {
             ComponentDialog *cd = new ComponentDialog(c, Doc);
             if (cd->exec() != 1)

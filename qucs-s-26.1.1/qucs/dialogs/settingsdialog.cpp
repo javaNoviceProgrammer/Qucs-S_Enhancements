@@ -22,6 +22,8 @@
 #include "qucs.h"
 #include "mnemo.h"
 #include "schematic.h"
+#include "libraryexportdialog.h"
+#include "components/component.h"
 
 #include <QGridLayout>
 #include <QVBoxLayout>
@@ -184,48 +186,15 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     t->addTab(Tab3, tr("Frame"));
 
     // ...........................................................
-    // As a library part (Project > Create Library).
+    // As a library part (Project > Create Library): the settings a Library
+    // Export placed on the schematic holds while it is there.
     QWidget *Tab4 = new QWidget(t);
     QVBoxLayout *gp4 = new QVBoxLayout(Tab4);
-    Check_AlwaysLoadOSDI = new QCheckBox(tr("Always load its Verilog-A (OSDI) in the project's circuits"), Tab4);
-    Check_AlwaysLoadOSDI->setObjectName(QStringLiteral("alwaysLoadOSDI"));
-    gp4->addWidget(Check_AlwaysLoadOSDI);
-    QLabel *libraryNote = new QLabel(
-        tr("Made into a library part, this subcircuit is marked in the library: every circuit of a "
-           "project that has the library - its own library, or one whose part a schematic of it "
-           "places - loads the Verilog-A models (OSDI) of the devices in this subcircuit, whether "
-           "the part is placed or not. For a model a circuit uses where Qucs-S cannot see it.\n"
-           "Off: a circuit loads only the models its parts use."), Tab4);
-    libraryNote->setWordWrap(true);
-    gp4->addWidget(libraryNote);
-    gp4->addSpacing(8);
-    QLabel *cardsLabel = new QLabel(tr("SPICE .model cards of its own:"), Tab4);
-    gp4->addWidget(cardsLabel);
-    Input_ModelCards = new QPlainTextEdit(Tab4);
-    Input_ModelCards->setObjectName(QStringLiteral("modelCards"));
-    Input_ModelCards->setAccessibleName(tr("SPICE .model cards"));   // (get_settings' key is its label's: Library/SPICE .model cards of its own)
-    Input_ModelCards->setPlaceholderText(QStringLiteral(".model resmod va_res r=1k"));
-    Input_ModelCards->setLineWrapMode(QPlainTextEdit::NoWrap);
-    Input_ModelCards->setTabChangesFocus(true);
-    cardsLabel->setBuddy(Input_ModelCards);
-    gp4->addWidget(Input_ModelCards, 1);
-    QLabel *cardsNote = new QLabel(
-        tr("Written at the top level of the SPICE netlist - not inside this subcircuit - of a circuit that "
-           "places it, as a subcircuit or as a library part made of it (and of its own netlist): the global "
-           ".model card of a Verilog-A device in it (an N device whose model is resmod: .model resmod va_res "
-           "r=1k). A .MODEL block placed in it is the subcircuit's own instead. One card a line, + lines going "
-           "on with one, * comments; ngspice and Xyce read them, Qucsator does not."), Tab4);
-    cardsNote->setWordWrap(true);
-    gp4->addWidget(cardsNote);
-    Check_AlwaysModelCards = new QCheckBox(tr("Always write its .model cards in the project's circuits"), Tab4);
-    Check_AlwaysModelCards->setObjectName(QStringLiteral("alwaysModelCards"));
-    Check_AlwaysModelCards->setToolTip(
-        tr("Made into a library part, its .model cards above are marked in the library: every ngspice circuit of "
-           "a project that has the library - its own library, or one whose part a schematic of it places - has "
-           "them at the top of its netlist, whether the part is placed or not, and loads the Verilog-A models "
-           "(OSDI) of the library part they name, as the mark above does. For a model a circuit uses where "
-           "Qucs-S cannot see it.\nOff: a circuit has the cards of the parts it places."));
-    gp4->addWidget(Check_AlwaysModelCards);
+    Library = new LibraryOptions(Tab4);
+    gp4->addWidget(Library);
+    Check_AlwaysLoadOSDI = Library->alwaysLoadOSDI;
+    Input_ModelCards = Library->modelCards;
+    Check_AlwaysModelCards = Library->alwaysModelCards;
     t->addTab(Tab4, tr("Library"));
 
     // ...........................................................
@@ -256,9 +225,12 @@ SettingsDialog::SettingsDialog(Schematic *Doc_)
     Check_OpenDpl->setChecked(Doc->getSimOpenDpl());
     Check_RunScript->setChecked(Doc->getSimRunScript());
     Check_GridOn->setChecked(Doc->getGridOn());
-    Check_AlwaysLoadOSDI->setChecked(Doc->getAlwaysLoadOSDI());
-    Input_ModelCards->setPlainText(Doc->getModelCards());
-    Check_AlwaysModelCards->setChecked(Doc->getAlwaysModelCards());
+    Library->setSettings(Doc->heldLibrarySettings());
+    if (const Component *held = Doc->libraryExport())
+      Library->setHeldBy(held->isActive == COMP_IS_ACTIVE
+          ? tr("Held by %1, the Library Export on the schematic: changes here go to it.").arg(held->Name)
+          : tr("Held by %1, the Library Export on the schematic, which is off: Create Library uses none of them until "
+               "it is on again. Changes here go to it.").arg(held->Name));
     Input_GridX->setText(QString::number(Doc->getGridX()));
     Input_GridY->setText(QString::number(Doc->getGridY()));
 
@@ -339,9 +311,7 @@ bool SettingsDialog::apply()
 {
     // Its .model cards: only cards go into a netlist (a line of another
     // kind - a .control block - is said, and nothing is applied).
-    QStringList rejected;
-    Schematic::modelCardsOf(Input_ModelCards->toPlainText(), &rejected);
-    if (!rejected.isEmpty()) {
+    if (const QStringList rejected = Library->rejectedCards(); !rejected.isEmpty()) {
         QMessageBox::warning(this, tr("Document Settings"),
                              tr("Library: these lines are no .model card (nor a + line going on with one, nor a * "
                                 "comment), and only cards go into the netlist:\n\n%1\n\nNothing was applied.")
@@ -389,22 +359,13 @@ bool SettingsDialog::apply()
         changed = true;
     }
 
-    if(Doc->getAlwaysLoadOSDI() != Check_AlwaysLoadOSDI->isChecked())
+    // Its library settings: its Library Export's when one is placed - a
+    // step undo takes back, as an edit of the part is.
+    bool libraryChanged = false;
+    if (const LibrarySettings library = Library->settings(); Doc->heldLibrarySettings() != library)
     {
-        Doc->setAlwaysLoadOSDI(Check_AlwaysLoadOSDI->isChecked());
-        changed = true;
-    }
-
-    if (const QString cards = Input_ModelCards->toPlainText().trimmed(); Doc->getModelCards() != cards)
-    {
-        Doc->setModelCards(cards);
-        changed = true;
-    }
-
-    if (Doc->getAlwaysModelCards() != Check_AlwaysModelCards->isChecked())
-    {
-        Doc->setAlwaysModelCards(Check_AlwaysModelCards->isChecked());
-        changed = true;
+        Doc->setLibrarySettings(library);
+        libraryChanged = true;
     }
 
     if(Doc->getGridX() != Input_GridX->text().toInt())
@@ -457,7 +418,12 @@ bool SettingsDialog::apply()
         changed = true;
     }
 
-    if(changed)
+    if (libraryChanged)
+    {
+        Doc->setChanged(true, true);
+        Doc->viewport()->repaint();
+    }
+    else if(changed)
     {
         Doc->setChanged(true);
         Doc->viewport()->repaint();

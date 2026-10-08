@@ -33,6 +33,7 @@
 #include "biaslabels.h"
 #include "erc.h"
 #include "oppoint.h"
+#include "librarysettings.h"
 
 #include "qt3_compat/q3scrollview.h"
 #include <QVector>
@@ -351,26 +352,53 @@ public:
   void setFrame_Text3(const QString value) { a_Frame_Text3 = value; }
   FrameSize getShowFrame() const { return a_showFrame; }
   void setShowFrame(int value) {a_showFrame = static_cast<FrameSize>(value);}
+  /// What Create Library does with it made into a library part
+  /// (librarysettings.h): its Library Export's settings when one is placed
+  /// (the defaults while it is off), or else its Document Settings >
+  /// Library - saved as <AlwaysLoadOSDI=1>, <ModelCards=...>,
+  /// <AlwaysModelCards=1>, <LibraryGroundPin=0|1>, each only when set (a
+  /// Library Export placed takes them: settleLibrarySettings()).
+  LibrarySettings librarySettings() const;
+  /// The settings as held: a Library Export's even while it is off.
+  LibrarySettings heldLibrarySettings() const;
+  /// Gives it \a s: to its Library Export when one is placed (its texts
+  /// redrawn), or else to its Document Settings > Library.
+  void setLibrarySettings(const LibrarySettings& s);
+  /// The Library Export placed on it - the first, if there are more (Check
+  /// Schematic says so) - or null.
+  Component* libraryExport() const;
+  /// Why \a c, a Library Export about to be placed on it, cannot be: one is
+  /// placed already. Empty for any other component, or when it can.
+  QString refusedLibraryExport(const Component* c) const;
+  /// A Library Export has come onto it (placed, pasted, written as text, or
+  /// read with a file that has both): its Document Settings > Library go
+  /// into the part when the part holds the defaults, or give way to the
+  /// part's - and are cleared, the part holding the settings now. What was
+  /// done, or empty when nothing was to do.
+  QString settleLibrarySettings();
+  /// What settleLibrarySettings() did when insertComponent() placed a
+  /// Library Export, taken (empty when nothing).
+  QString takeLibraryNote() { return std::exchange(a_libraryNote, {}); }
+  /// Whether its .SUBCKT made for a library has a first pin gnd: its own
+  /// choice (librarySettings()), or else Application Settings'.
+  bool libraryGroundPin() const;
   /// Made into a library part (Create Library), whether every circuit of a
   /// project that has the library loads the part's Verilog-A models -
-  /// placed or not (<AlwaysLoadOSDI> in the library). Document Settings >
-  /// Library; saved as <AlwaysLoadOSDI=1> only when set.
-  bool getAlwaysLoadOSDI() const { return a_alwaysLoadOSDI; }
-  void setAlwaysLoadOSDI(bool value) { a_alwaysLoadOSDI = value; }
+  /// placed or not (<AlwaysLoadOSDI> in the library). librarySettings().
+  bool getAlwaysLoadOSDI() const { return librarySettings().alwaysLoadOSDI; }
+  void setAlwaysLoadOSDI(bool value);
   /// SPICE .model cards of its own - its Verilog-A device's, .model resmod
   /// va_res r=1k - written at the top level of a SPICE netlist: its own,
   /// and that of a circuit placing it as a subcircuit or as a library part
-  /// made of it (after its .ENDS, not inside it). Document Settings >
-  /// Library; saved as <ModelCards=...> only when there are any.
-  QString getModelCards() const { return a_modelCards; }
-  void setModelCards(const QString& cards) { a_modelCards = cards; }
+  /// made of it (after its .ENDS, not inside it). librarySettings().
+  QString getModelCards() const { return librarySettings().modelCards; }
+  void setModelCards(const QString& cards);
   /// Made into a library part, its .model cards (getModelCards()) are
   /// written at the top of every ngspice circuit of a project that has the
   /// library, placed or not (<AlwaysModelCards> in the library), and its
-  /// Verilog-A loaded for them. Document Settings > Library; saved as
-  /// <AlwaysModelCards=1> only when set.
-  bool getAlwaysModelCards() const { return a_alwaysModelCards; }
-  void setAlwaysModelCards(bool value) { a_alwaysModelCards = value; }
+  /// Verilog-A loaded for them. librarySettings().
+  bool getAlwaysModelCards() const { return librarySettings().alwaysModelCards; }
+  void setAlwaysModelCards(bool value);
   /// The currents and powers its probes asked for (probe.h): vectors an
   /// ngspice netlist saves beyond the labelled nets - @r1[i], i(v1),
   /// @r1[p]. Saved as <ProbeSaves=...> only when there are any.
@@ -466,9 +494,8 @@ private:
   int a_ViewY2;
 
   FrameSize a_showFrame; // Frame format
-  bool a_alwaysLoadOSDI = false;
-  QString a_modelCards;   // getModelCards()
-  bool a_alwaysModelCards = false;   // getAlwaysModelCards()
+  LibrarySettings a_library;   // Document Settings > Library (librarySettings())
+  QString a_libraryNote;       // takeLibraryNote()
   QStringList a_probeSaves;          // getProbeSaves()
   QString a_Frame_Text0;
   QString a_Frame_Text1;
