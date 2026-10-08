@@ -12725,6 +12725,62 @@ private slots:
         QCOMPARE(front()->getComponentByName("SUB1")->Props.at(0)->Value, amp);
         front()->setDocChanged(false);
     }
+
+    // A combo box set by set_dialog or set_ui is chosen as the user chooses
+    // one: its activated and textActivated come too, which many a widget
+    // waits for alone - the components panel's category was shown chosen
+    // and its list kept the parts it had. A combo in a table's cell too.
+    void aComboIsChosenAsTheUserChoosesIt()
+    {
+        QDialog dialog(app);
+        dialog.setWindowTitle("Choices");
+        auto* layout = new QVBoxLayout(&dialog);
+        auto* shape = new QComboBox(&dialog);
+        shape->setObjectName("shape");
+        shape->addItems({"sine", "square", "triangle"});
+        auto* table = new QTableWidget(1, 1, &dialog);
+        table->setObjectName("cells");
+        auto* cell = new QComboBox;
+        cell->addItems({"yes", "no"});
+        table->setCellWidget(0, 0, cell);
+        layout->addWidget(shape);
+        layout->addWidget(table);
+        QStringList heard;
+        connect(shape, &QComboBox::activated, this, [&heard](int i) { heard << QStringLiteral("activated %1").arg(i); });
+        connect(shape, &QComboBox::textActivated, this, [&heard](const QString& t) { heard << "text " + t; });
+        connect(cell, &QComboBox::activated, this, [&heard](int i) { heard << QStringLiteral("cell %1").arg(i); });
+        QJsonObject set;
+        QTimer::singleShot(300, this, [&] {
+            set = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "shape"}, {"value", "square"}},
+                                                         QJsonObject{{"control", "cells"}, {"value", QJsonArray{0, 0, "no"}}}}}});
+            dialog.reject();
+        });
+        dialog.exec();
+        QVERIFY2(!failed(set), qPrintable(text(set)));
+        QCOMPARE(shape->currentIndex(), 1);
+        QCOMPARE(cell->currentIndex(), 1);
+        QCOMPARE(heard, (QStringList{"activated 1", "text square", "cell 1"}));
+
+        // The components panel: its list follows the category chosen.
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const auto listWith = [this](const QString& item) {
+            for (const QJsonValue& v : json(call("get_ui", {{"area", "dock:Components"}})).toObject().value("controls").toArray())
+                if (v.toObject().value("items").toArray().contains(item)) return v.toObject();
+            return QJsonObject();
+        };
+        const QJsonObject category = listWith("SPICE netlist sections");
+        QVERIFY(!category.isEmpty());
+        QVERIFY(listWith(".MODEL Section").isEmpty());   // (lumped components first)
+        QJsonObject r = call("set_ui", {{"area", "dock:Components"},
+                                        {"set", QJsonArray{QJsonObject{{"control", category.value("id")}, {"value", "SPICE netlist sections"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(!listWith(".MODEL Section").isEmpty(), qPrintable(text(call("get_ui", {{"area", "dock:Components"}}))));
+        QVERIFY(!failed(call("set_ui", {{"area", "dock:Components"},
+                                        {"set", QJsonArray{QJsonObject{{"control", category.value("id")}, {"value", "lumped components"}}}}})));
+        front()->setDocChanged(false);
+    }
 };
 
 QTEST_MAIN(TestQucsControl)
