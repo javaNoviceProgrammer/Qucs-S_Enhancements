@@ -6,7 +6,9 @@
  * view, hierarchy, closing and reopening - with every dialog that comes up
  * either cancelled or filled with odd values and accepted.
  *
- * It asserts nothing about the result: the application must survive it.
+ * It asserts nothing about the result but that the wheel's turns reach
+ * the canvas (some move the view: they were once sent where nothing
+ * received them): the application must survive it.
  * Run under ASan/UBSan, where a use after free, an out-of-bounds read or
  * UB anywhere on the way ends the run with a report; a watchdog turns a
  * step that does not finish (a hang, a modal loop nobody can leave) into
@@ -39,6 +41,7 @@
 #include <QPointer>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QTableWidget>
@@ -199,6 +202,9 @@ class TestGuiMonkey : public QObject
     QTimer a_dialogTimer;
     QHash<QWidget*, int> a_dialogAge;   // ticks a dialog has been up
     int a_dialogsAccepted = 0, a_dialogsRejected = 0, a_boxes = 0, a_popups = 0;
+    // Wheel turns on a schematic and on a PDF, and how many moved the view
+    // (zoomed or scrolled it): none at all is a turn that reached nothing.
+    int a_wheelTurns = 0, a_wheelMoved = 0, a_pdfWheelTurns = 0, a_pdfWheelMoved = 0;
 
     // Straight from the engine, which the standard specifies bit for bit
     // (its distributions it does not): a seed walks the same way on every
@@ -455,13 +461,28 @@ class TestGuiMonkey : public QObject
             QTest::mouseClick(vp, Qt::RightButton, mods, a);
             break;
         case 8: {
+            // A wheel's turn, or a touchpad's swipe (a scroll phase and
+            // pixels), now and then tilted sideways, under either choice of
+            // Settings > Mouse wheel. Sent to the scroll view, not the
+            // viewport: Qt passes a turn the viewport leaves on to its
+            // parent only when it is real, so one sent to the viewport
+            // reached nothing.
             const int delta = (pick(2) ? 120 : -120) * (1 + pick(3));
             const Qt::KeyboardModifiers wm = pickOf(QList<Qt::KeyboardModifiers>{
                 Qt::NoModifier, Qt::ControlModifier, Qt::ShiftModifier});
-            note(QStringLiteral("wheel %1 at %2,%3 mods %4").arg(delta).arg(a.x()).arg(a.y()).arg(int(wm)));
-            QWheelEvent ev(a, vp->mapToGlobal(a), QPoint(), QPoint(0, delta), Qt::NoButton, wm,
-                           Qt::NoScrollPhase, false);
-            QApplication::sendEvent(vp, &ev);
+            const bool touchpad = chance(0.25), sideways = chance(0.15);
+            QucsSettings.WheelZooms = chance(0.7);
+            note(QStringLiteral("%1 %2%3 at %4,%5 mods %6, the wheel %7")
+                     .arg(touchpad ? "swipe" : "wheel").arg(delta).arg(sideways ? " sideways" : "")
+                     .arg(a.x()).arg(a.y()).arg(int(wm)).arg(QucsSettings.WheelZooms ? "zooming" : "scrolling"));
+            const QPoint angle = sideways ? QPoint(delta, 0) : QPoint(0, delta);
+            const double scale = sch->getScale();
+            const QPoint corner = sch->viewportToModel(QPoint(0, 0));
+            QWheelEvent ev(vp->mapTo(sch, a), vp->mapToGlobal(a), touchpad ? angle / 4 : QPoint(), angle, Qt::NoButton,
+                           wm, touchpad ? Qt::ScrollUpdate : Qt::NoScrollPhase, false);
+            QApplication::sendEvent(sch, &ev);
+            ++a_wheelTurns;
+            if (!qFuzzyCompare(sch->getScale(), scale) || sch->viewportToModel(QPoint(0, 0)) != corner) ++a_wheelMoved;
             break;
         }
         default: {
@@ -509,8 +530,14 @@ class TestGuiMonkey : public QObject
             const int delta = (pick(2) ? 120 : -120) * (1 + pick(3));
             const Qt::KeyboardModifiers m = chance(0.4) ? Qt::ControlModifier : Qt::NoModifier;
             note(QStringLiteral("pdf: wheel %1 mods %2").arg(delta).arg(int(m)));
+            // (To the viewport: a scroll area's viewport hands its events
+            // to the area, the view's own wheelEvent.)
+            const qreal zoom = view->zoom();
+            const int scrolled = view->verticalScrollBar()->value();
             QWheelEvent ev(a, vp->mapToGlobal(a), QPoint(), QPoint(0, delta), Qt::NoButton, m, Qt::NoScrollPhase, false);
             QApplication::sendEvent(vp, &ev);
+            ++a_pdfWheelTurns;
+            if (!qFuzzyCompare(view->zoom(), zoom) || view->verticalScrollBar()->value() != scrolled) ++a_pdfWheelMoved;
             break;
         }
         case 1:
@@ -1032,6 +1059,8 @@ private slots:
         std::fprintf(stderr, "monkey: seed %u, %d steps noted; dialogs: %d accepted with odd values, "
                              "%d cancelled; %d message boxes, %d popups\n",
                      g_seed, g_trailNext.load(), a_dialogsAccepted, a_dialogsRejected, a_boxes, a_popups);
+        std::fprintf(stderr, "monkey: the wheel turned %d times on a schematic (%d moved the view), %d on a PDF (%d)\n",
+                     a_wheelTurns, a_wheelMoved, a_pdfWheelTurns, a_pdfWheelMoved);
     }
 
     void survivesARandomWalk()
@@ -1048,6 +1077,11 @@ private slots:
         for (int i = 0; i < 4; ++i) app->gotoPage(pickOf(a_schematics));
         walk(steps);
         QVERIFY(a_app);
+        // The one thing it asserts besides surviving: the wheel's turns
+        // reach the canvas (a turn may do nothing - zoomed out all the way,
+        // a PDF at its top - but not every one).
+        QVERIFY2(a_wheelTurns == 0 || a_wheelMoved > 0, "no wheel turn moved a schematic");
+        QVERIFY2(a_pdfWheelTurns == 0 || a_pdfWheelMoved > 0, "no wheel turn moved a PDF");
         delete app;
         QucsMain = nullptr;
     }

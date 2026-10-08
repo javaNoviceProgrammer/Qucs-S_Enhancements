@@ -2349,10 +2349,13 @@ walk over copies of the ngspice examples — clicks, drags (some interrupted
 by an undo or a delete), double clicks, the wheel and keys in every mouse
 mode, the menu and toolbar commands, tabs, symbol view and hierarchy,
 placing components, closing and reopening — where every dialog that comes
-up is cancelled or filled with odd values and accepted. It asserts nothing
-but that the application survives; a watchdog turns a step that never
-ends into an abort with the stack, and the last steps are printed with any
-failure. CTest runs a short walk; a stress run takes more steps and seeds,
+up is cancelled or filled with odd values and accepted. The wheel is a
+mouse's or a touchpad's, sometimes tilted sideways, under either choice of
+*Mouse wheel*. It asserts nothing but that the application survives and
+that the wheel's turns reach the canvas: some of them must move the view.
+Its turns were once sent where they reached nothing. A watchdog turns a
+step that never ends into an abort with the stack, and the last steps are
+printed with any failure. CTest runs a short walk; a stress run takes more steps and seeds,
 and a seed replays the same walk on every platform:
 
 ```bash
