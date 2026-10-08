@@ -2030,9 +2030,11 @@ void MatchDialog::SchematicParser(QString laddercode, int &x_pos, double Freq,
       } else if ((RL < 1e-3) && (XL > 1e-3)) // L
       {
         QString val_Ind = misc::num2str(XL / (2 * pi * Freq), 3, "H");
+        // An inductor's L and I: no initial current (a resistor's fields,
+        // "26.85" and "US", gave it 26.85 A).
         componentstr +=
             QString(
-                "<L L1 1 %1 -30 15 -26 0 -1 \"%2\" 1 \"26.85\" 0 \"US\" 0>\n")
+                "<L L1 1 %1 -30 15 -26 0 -1 \"%2\" 1 \"\" 0>\n")
                 .arg(x_pos)
                 .arg(val_Ind);
         wirestr += QStringLiteral("<%1 -60 %1 -120>\n").arg(x_pos); // Vertical wire
@@ -2046,9 +2048,11 @@ void MatchDialog::SchematicParser(QString laddercode, int &x_pos, double Freq,
       {
         // Need to use abs() because XL < 0
         QString val_Cap = misc::num2str(1 / (fabs(XL) * 2 * pi * Freq), 3, "F");
+        // A capacitor's C, V and Symbol: no initial voltage, not polarised
+        // (a resistor's fields gave it 26.85 V and the polar symbol).
         componentstr +=
             QString(
-                "<C C1 1 %1 -30 15 -26 0 -1 \"%2\" 1 \"26.85\" 0 \"US\" 0>\n")
+                "<C C1 1 %1 -30 15 -26 0 -1 \"%2\" 1 \"\" 0 \"neutral\" 0>\n")
                 .arg(x_pos)
                 .arg(val_Cap);
         wirestr += QStringLiteral("<%1 -60 %1 -120>\n").arg(x_pos); // Vertical wire

@@ -454,7 +454,8 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
         if (ATT->useLumped)
         {
           double w = 2*PI*ATT->freq;
-          *s += QStringLiteral("<L L1 1 250 0 -40 -60 0 0 \"%1H\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"US\" 0>\n").arg(num2str(ATT->Zin/w));
+          // (An inductor's L and I, no initial current: a resistor's fields gave it 26.85 A.)
+          *s += QStringLiteral("<L L1 1 250 0 -40 -60 0 0 \"%1H\" 1 \"\" 0>\n").arg(num2str(ATT->Zin/w));
           *s += QStringLiteral("<C C1 1 180 -60 -90 -20 0 1 \"%1F\" 1 \"\" 0 \"neutral\" 0>\n").arg(num2str(1/(ATT->Zin*w)));
           *s += "<GND * 1 180 -90 0 0 1 0>\n";
           *s += QStringLiteral("<C C1 1 320 -60 20 -20 0 1 \"%1F\" 1 \"\" 0 \"neutral\" 0>\n").arg(num2str(1/(ATT->Zin*w)));
@@ -535,7 +536,7 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
         if (ATT->useLumped)
         {
            double w = 2*PI*ATT->freq;
-           *s += QStringLiteral("<L L1 1 200 60 20 -35 0 1 \"%1H\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"US\" 0>\n").arg(num2str(ATT->Zin/w));
+           *s += QStringLiteral("<L L1 1 200 60 20 -35 0 1 \"%1H\" 1 \"\" 0>\n").arg(num2str(ATT->Zin/w));
            *s += QStringLiteral("<C C1 1 200 -60 -90 -20 0 1 \"%1F\" 1 \"\" 0 \"neutral\" 0>\n").arg(num2str(1/(ATT->Zin*w)));
            *s += "<GND * 1 200 -90 0 0 1 0>\n";
            *s += QStringLiteral("<C C1 1 320 150 0 60 0 1 \"%1F\" 1 \"\" 0 \"neutral\" 0>\n").arg(num2str(1/(ATT->Zin*w)));
