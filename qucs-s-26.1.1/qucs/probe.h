@@ -52,9 +52,12 @@ std::optional<Target> at(Schematic* sch, const QPoint& at);
 QString netName(Schematic* sch, const Target& target, QString* error);
 
 /// The vector the simulator writes for \a target: v(out); i(v1), @r1[i],
-/// @q1[ic] (the device's current at the terminal of the pin, as SPICE
-/// orders them); @r1[p]. Empty, and why in \a error, when there is none:
-/// a part of no device of its own (a subcircuit), Qucsator.
+/// @q1[ic] (the current into the pin: the device's at the terminal of the
+/// pin, as SPICE orders them); @r1[p]. Where ngspice writes none, what
+/// gives it, a minus first: -@r1[i] (into a two-terminal device's second
+/// terminal), -(@q1[ic] + @q1[ib]) (a bipolar's emitter). Empty, and why in
+/// \a error, when there is none: a part of no device of its own (a
+/// subcircuit), Qucsator.
 QString vectorOf(Schematic* sch, const Target& target, QString* error);
 
 /// The vectors a probe asks the netlist to save beyond the labelled nets
@@ -71,7 +74,8 @@ Diagram* frontDiagram(Schematic* sch);
 struct Result {
     QString variable;      ///< the trace's variable, as a graph names it
     QString labelled;      ///< a net label put on an unnamed net
-    QString saved;         ///< a vector the netlist is to save now
+    QString saved;         ///< the vectors the netlist is to save now
+    QString computed;      ///< the equation a NutmegEq was given for it
     bool hasData = false;  ///< whether the dataset has it already
     Diagram* diagram = nullptr;
     bool newDiagram = false;

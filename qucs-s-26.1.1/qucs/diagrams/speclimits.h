@@ -72,6 +72,10 @@ void curveOf(const Graph* g, int curve, const Axis* axis, QVector<double>* x, QV
 /// its curves' together.
 QList<Violation> check(const Diagram* d);
 
+/// The limits of \a d no trace with data is drawn against (on their axis
+/// and pane): they check nothing.
+QList<int> unchecked(const Diagram* d);
+
 /// "upper" or "lower".
 QString sideName(Limit::Side side);
 

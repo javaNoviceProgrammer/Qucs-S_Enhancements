@@ -58,7 +58,7 @@ struct Eye {
     double inner = NaN, outer = NaN; ///< the highest symbol of the lower level and the lowest of the upper, at the centre
     double height = NaN;             ///< inner opening at the centre: lowest upper less highest lower (below 0: closed)
     double width = NaN;              ///< a UI less the crossings' spread (0: closed)
-    double widthBer12 = NaN;         ///< a UI less 14.069 rms jitter: the width at a bit error rate of 1e-12, the jitter Gaussian
+    double widthBer12 = NaN;         ///< the width at a bit error rate of 1e-12: the bathtub's opening there (its dual-Dirac fit); a UI less 14.069 rms jitters, the jitter Gaussian, where there is no bathtub
     double jitterRms = NaN;          ///< of the crossings about their mean
     double jitterPp = NaN;           ///< the crossings' spread
     double phase = NaN;              ///< the crossings' mean phase, in UI from the centre (about -0.5)

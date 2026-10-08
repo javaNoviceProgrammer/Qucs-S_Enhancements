@@ -1879,7 +1879,7 @@ void AbstractSpiceKernel::normalizeVarsNames(QStringList &var_list, const QStrin
         }
     }
 
-    if ( a_needsPrefix || isCustom )
+    if ( a_needsPrefix || isCustom || a_prefixedSims.contains(dataset_prefix) )
         if ( !dataset_prefix.isEmpty() ) {
             for ( it = var_list.begin() ; it != var_list.end() ; ++it)
                 if ( !(*it).isEmpty() )

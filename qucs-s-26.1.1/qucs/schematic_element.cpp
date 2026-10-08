@@ -1534,6 +1534,7 @@ bool Schematic::deleteElements()
                 Marker* marker = marker_iter.next();
                 if (marker->isSelected) {
                     marker_iter.remove();
+                    pd->forgetMarker(marker);
                     delete marker;
                     sel = true;
                 }

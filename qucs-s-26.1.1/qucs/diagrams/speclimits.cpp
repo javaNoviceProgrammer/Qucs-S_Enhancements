@@ -84,13 +84,13 @@ QString Limit::save() const
 
 bool Limit::load(const QString& line, Limit* limit)
 {
-    static const QRegularExpression form(QStringLiteral("^<Limit (\\d) (\\d) (\\d+) \"([^\"]*)\" ([^>]*)>$"));
+    static const QRegularExpression form(QStringLiteral("^<Limit (\\d) (\\d) (-?\\d+) \"([^\"]*)\" ([^>]*)>$"));
     const QRegularExpressionMatch m = form.match(line.trimmed());
     if (!m.hasMatch()) return false;
     Limit l;
     l.side = m.captured(1) == QLatin1String("1") ? Lower : Upper;
     l.axis = m.captured(2) == QLatin1String("1") ? 1 : 0;
-    l.pane = std::min(m.captured(3).toInt(), 63);
+    l.pane = std::clamp(m.captured(3).toInt(), 0, 63);
     l.label = m.captured(4);
     for (const QString& pair : m.captured(5).split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
         bool okx = false, oky = false;
@@ -104,6 +104,18 @@ bool Limit::load(const QString& line, Limit* limit)
         if (l.points.at(i + 1).x() < l.points.at(i).x()) return false;
     *limit = l;
     return true;
+}
+
+QList<int> unchecked(const Diagram* d)
+{
+    QList<int> out;
+    for (int li = 0; li < d->limits.size(); ++li) {
+        const Axis* axis = d->limitAxis(d->limits.at(li));
+        bool checked = false;
+        for (const Graph* g : d->Graphs) checked = checked || (axis != nullptr && g->cPointsY != nullptr && d->graphAxis(g) == axis);
+        if (!checked) out << li;
+    }
+    return out;
 }
 
 QString sideName(Limit::Side side)

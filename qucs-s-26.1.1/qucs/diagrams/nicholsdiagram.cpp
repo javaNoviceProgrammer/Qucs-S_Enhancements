@@ -230,9 +230,15 @@ QString NicholsDiagram::extraMarkerText(Marker const* m) const
              QString::number(20 * std::log10(std::abs(closed)), 'f', 2), QString::number(std::arg(closed) * Degrees, 'f', 1));
 }
 
+int NicholsDiagram::turnsInView() const
+{
+    if (!std::isfinite(xAxis.low) || !std::isfinite(xAxis.up)) return 0;
+    return int(std::ceil(xAxis.up / 360.0)) + 1 - int(std::floor(xAxis.low / 360.0)) + 1;
+}
+
 void NicholsDiagram::paintBehindGraphs(QPainter* painter)
 {
-    if (!grid) return;
+    if (!grid || turnsInView() > MostTurns) return;
     // (In its coordinates: origin at the lower left corner, y up.)
     painter->save();
     painter->setClipRect(QRectF(0, 0, x2, y2));
@@ -273,12 +279,27 @@ void NicholsDiagram::paintBehindGraphs(QPainter* painter)
                 if (piece.size() > 1) painter->drawPolyline(piece);
                 piece.clear();
             };
+            // Only what is in sight (and the points either side of it).
+            const QRectF sight(-x2 * 0.05, -y2 * 0.05, x2 * 1.1, y2 * 1.1);
+            QPointF previous(NAN, NAN);
+            bool previousIn = false;
             for (const QPointF& p : contour) {
                 if (!std::isfinite(p.x())) {
                     flush();
+                    previous = QPointF(NAN, NAN);
+                    previousIn = false;
                     continue;
                 }
                 const QPointF q = at(p.x() + 360.0 * k, p.y());
+                const bool in = sight.contains(q);
+                if (!in && !previousIn) {
+                    flush();
+                    previous = q;
+                    continue;
+                }
+                if (piece.isEmpty() && std::isfinite(previous.x()) && !previousIn) piece << previous;
+                previous = q;
+                previousIn = in;
                 piece << q;
                 if (q.x() < 2 || q.x() > x2 - 2 || q.y() < 2 || q.y() > y2 - 2) continue;
                 if (!std::isfinite(best.x()) || (lowest ? q.y() < best.y() : q.x() > best.x())) best = q;

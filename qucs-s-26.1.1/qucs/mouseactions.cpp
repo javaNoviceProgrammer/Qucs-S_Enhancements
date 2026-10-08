@@ -42,6 +42,7 @@
 #include "module.h"
 #include "node.h"
 #include "painting.h"
+#include "paintings/buspainting.h"
 #include "wire.h"
 #include "qucs.h"
 #include "schematic.h"
@@ -56,6 +57,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QStatusBar>
 #include <QTextStream>
 #include <numeric>
 
@@ -1229,6 +1231,9 @@ void MouseActions::MPressElement(Schematic *Doc, QMouseEvent *Event, float, floa
     // ***********  it is a painting !!!
     if (((Painting *) selElem)->MousePressing(Doc)) {
         Doc->a_Paintings->push_back((Painting *) selElem);
+        // A bus is named for its nets: said, where it is drawn without one.
+        if (const auto *bus = dynamic_cast<BusPainting *>(selElem); bus && bus->busName.isEmpty() && QucsMain)
+            QucsMain->statusBar()->showMessage(QObject::tr("The bus has no name yet: double-click it to name it for its nets (D[7:0])."), 10000);
         selElem = ((Painting *) selElem)->newOne();
 
         Doc->viewport()->update();
