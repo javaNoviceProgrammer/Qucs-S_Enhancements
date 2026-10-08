@@ -38,6 +38,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A Debug build under ASan links every test against all of qucs-core,
+      # each with its debug info: some 95 executables outgrew the runner's
+      # free disk ("No space left on device" at link, October 2026). The
+      # runner's preinstalled SDKs, none of which this job uses, make room.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift
+          sudo docker image prune --all --force > /dev/null || true
+          df -h /
+
       # Before the build, in a second: every argument a Claude tool reads is
       # in its schema - a call with one it lacks is refused - and the other
       # way round (see scripts/ci/check-tool-arguments.py).
@@ -84,6 +96,10 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: cmake --build build --parallel
+
+      # How much room the build left: the next growth shows here first.
+      - name: Disk left after the build
+        run: df -h / && du -sh build
 
       - name: Unit tests (QtTest, headless)
         run: ctest --test-dir build --output-on-failure
