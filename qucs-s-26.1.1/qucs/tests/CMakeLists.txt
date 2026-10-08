@@ -11,17 +11,51 @@ endif()
 
 set(QUCS_EXAMPLES_DIR "${CMAKE_SOURCE_DIR}/examples")
 
+# Each test links the core as the application does: its objects and the
+# static libraries, a copy in every executable. With QUCS_SHARED_TEST_CORE
+# they are linked once instead, into a shared library every test uses - for
+# a build where the copies cost: a Debug build under the sanitizers on Linux
+# wrote the core's debug info into each of some 95 tests, 89 GB (CI turns
+# it on). The tests are compiled as before; only their link differs.
+option(QUCS_SHARED_TEST_CORE "Link the unit tests against one shared library of the core, not each a copy of it" OFF)
+if(QUCS_SHARED_TEST_CORE)
+  if(CMAKE_VERSION VERSION_LESS 3.24)
+    message(FATAL_ERROR "QUCS_SHARED_TEST_CORE needs CMake 3.24 or later (LINK_LIBRARY:WHOLE_ARCHIVE)")
+  endif()
+  # The project's static libraries whole (a test calls what the core does
+  # not), the others - Qt, zlib through gdstk, util - as they are.
+  set(QUCS_OWN_LIBRARIES components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat gdstk)
+  set(QUCS_OTHER_LIBRARIES ${QUCS_LINK_LIBRARIES})
+  list(REMOVE_ITEM QUCS_OTHER_LIBRARIES ${QUCS_OWN_LIBRARIES})
+  string(JOIN "," QUCS_OWN_LIBRARIES_LIST ${QUCS_OWN_LIBRARIES})
+  add_library(qucs-test-core SHARED $<TARGET_OBJECTS:qucs-core>)
+  set_target_properties(qucs-test-core PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
+  target_link_libraries(qucs-test-core
+    PUBLIC ${QUCS_OTHER_LIBRARIES}
+    PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,${QUCS_OWN_LIBRARIES_LIST}>")
+  # (gdstk's headers and zlib, as linking it gave them: test_layout_doc
+  # reads the headers and writes a .gds.gz itself.)
+  find_package(ZLIB REQUIRED)
+  target_link_libraries(qucs-test-core PUBLIC ZLIB::ZLIB)
+  target_include_directories(qucs-test-core SYSTEM INTERFACE $<TARGET_PROPERTY:gdstk,INTERFACE_INCLUDE_DIRECTORIES>)
+  set(QUCS_TEST_CORE_OBJECTS "")
+  set(QUCS_TEST_LINK_LIBRARIES qucs-test-core)
+else()
+  set(QUCS_TEST_CORE_OBJECTS $<TARGET_OBJECTS:qucs-core>)
+  set(QUCS_TEST_LINK_LIBRARIES ${QUCS_LINK_LIBRARIES})
+endif()
+
 # qucs_add_test(<name>) : builds tests/<name>.cpp and registers it with CTest.
 function(qucs_add_test name)
   add_executable(${name}
     ${name}.cpp
-    $<TARGET_OBJECTS:qucs-core>
+    ${QUCS_TEST_CORE_OBJECTS}
     ${CMAKE_CURRENT_SOURCE_DIR}/../qucs.qrc)
   target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
   target_compile_definitions(${name} PRIVATE
     QUCS_EXAMPLES_DIR="${QUCS_EXAMPLES_DIR}"
     HAVE_CONFIG_H)
-  target_link_libraries(${name} ${QUCS_LINK_LIBRARIES} Qt6::Test)
+  target_link_libraries(${name} ${QUCS_TEST_LINK_LIBRARIES} Qt6::Test)
   add_test(NAME ${name} COMMAND ${name})
   set_tests_properties(${name} PROPERTIES
     # UBSan only prints by default; make a report fail the test.
@@ -88,11 +122,11 @@ qucs_add_test(test_symbol_tools)
 # simulator output (see simout_harness.cpp).
 add_executable(simout_harness
   simout_harness.cpp
-  $<TARGET_OBJECTS:qucs-core>
+  ${QUCS_TEST_CORE_OBJECTS}
   ${CMAKE_CURRENT_SOURCE_DIR}/../qucs.qrc)
 target_include_directories(simout_harness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_compile_definitions(simout_harness PRIVATE HAVE_CONFIG_H)
-target_link_libraries(simout_harness ${QUCS_LINK_LIBRARIES})
+target_link_libraries(simout_harness ${QUCS_TEST_LINK_LIBRARIES})
 qucs_add_test(test_simulator_modes)
 qucs_add_test(test_component_search)
 qucs_add_test(test_bias_labels)

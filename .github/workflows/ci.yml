@@ -82,12 +82,17 @@ jobs:
           cache: true
           install-deps: true
 
+      # The tests share one library of the core (QUCS_SHARED_TEST_CORE):
+      # each linking its own copy, with this build's debug info, came to
+      # 89 GB.
       - name: Configure (Debug, ASan + UBSan)
         run: |
           cmake -S "$SRC_DIR" -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DQUCS_SHARED_TEST_CORE=ON \
             -DGIT="${GITHUB_SHA::7}"
 
       - name: Build
@@ -97,9 +102,16 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: cmake --build build --parallel
 
-      # How much room the build left: the next growth shows here first.
+      # How much room the build left, and what takes it: the next growth
+      # shows here first.
       - name: Disk left after the build
-        run: df -h / && du -sh build
+        run: |
+          df -h /
+          du -sh build
+          du -sh build/qucs/tests build/qucs/CMakeFiles build/qucsator_rf 2>/dev/null || true
+          find build/qucs/tests -maxdepth 1 -type f \( -perm -u+x -o -name '*.so' \) -printf '%s %p\n' \
+            | sort -n | awk '{ total += $1 } END { printf "tests and their library: %d files, %.1f GB\n", NR, total / 2^30 }
+                            { last = $0 } END { print "largest: " last }' 
 
       - name: Unit tests (QtTest, headless)
         run: ctest --test-dir build --output-on-failure
