@@ -167,6 +167,11 @@ public:
 
   QDateTime lastLoaded;  // when it was loaded into memory
   int     yAxisNo;       // which y axis is used
+  int     pane = 0;      // a stacked diagram's pane it is in (0: the top one)
+  /// Drawn faint, behind the others: a kept run beside this one's (the
+  /// same variable from simulate's keep_as, a before for an after).
+  bool ghost = false;
+  static constexpr double GhostOpacity = 0.35;
   double *cPointsY;
   int     countY;    // number of curves
   QString Var;
@@ -192,6 +197,21 @@ public:
   /// Whether a diagram of this kind draws curves that auto colors apply
   /// to (Rect, Polar, Smith, the polar-Smith ones, Curve).
   static bool autoColorApplies(const QString& diagramName);
+  /// The other way a SPICE dataset may spell \a var: a name alone
+  /// (ac.gain) as a voltage, ac.v(gain) - ngspice writes a computed vector
+  /// of a voltage's type so - and a voltage as the name alone: ngspice 46
+  /// writes an S-parameter analysis' s_1_1 (no longer of a voltage's
+  /// type) where the examples' traces name ac.v(s_1_1). Empty: neither.
+  static QString otherSpelling(const QString& var);
+  /// Where the "@" of "var@other" (var plotted against other) is, or -1:
+  /// not an @ that begins a device's vector (@r1[i], tran.@q1[ic]) - at
+  /// the start or after a dot.
+  static int plotVsSeparator(const QString& var)
+  {
+    for (int i = 1; i < var.size(); ++i)
+      if (var.at(i) == QLatin1Char('@') && var.at(i - 1) != QLatin1Char('.')) return i;
+    return -1;
+  }
   /// Whether this graph's curves are drawn each in a color of its own.
   bool colorsEachCurve() const;
   /// The color curve \a curve (0 to countY - 1) is drawn in: the

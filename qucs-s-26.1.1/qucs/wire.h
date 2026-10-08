@@ -31,6 +31,9 @@ public:
   Wire(Node* n1, Node* n2);
 
   void paint(QPainter* painter) const;
+  /// ... as its net's kind is drawn (View > Colour Wires by Net): 1 ground
+  /// (green), 2 a supply (red, thicker), else a signal.
+  void paint(QPainter* painter, int netKind) const;
   void paintScheme(Schematic* sch) override;
 
   bool getSelected(int, int);

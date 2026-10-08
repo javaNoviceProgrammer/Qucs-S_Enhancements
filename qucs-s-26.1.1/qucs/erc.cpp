@@ -10,6 +10,7 @@
  */
 
 #include "erc.h"
+#include "paintings/buspainting.h"
 
 #include "schematic.h"
 #include "node.h"
@@ -1431,6 +1432,108 @@ void loadNotes(Schematic* doc, const Nets& nets, QList<Issue>& out)
 
 } // namespace
 
+QString nameOf(NetKind kind)
+{
+    switch (kind) {
+    case NetKind::Ground: return QStringLiteral("ground");
+    case NetKind::Supply: return QStringLiteral("supply");
+    default: return QStringLiteral("signal");
+    }
+}
+
+QHash<const Wire*, NetKind> wireKinds(Schematic* doc)
+{
+    QHash<const Wire*, NetKind> out;
+    if (doc == nullptr) return out;
+    const Nets nets = netsOf(doc);
+    // A rail by its name: VCC, VDD, VEE, V+ (supplySign), +5V, -12V, 3V3,
+    // VBAT, VIN, VSUP.
+    static const QRegularExpression rail(QStringLiteral("^([+-]?\\d+(\\.\\d+)?v\\d*|\\d+v\\d+|v(bat|in|sup|supply|bus|ref)\\d*)$"),
+                                         QRegularExpression::CaseInsensitiveOption);
+    QSet<int> supplies;
+    QHash<int, QStringList> labelsOf;
+    for (const Node* n : doc->a_DocNodes)
+        if (n->hasLabel()) labelsOf[nets.of.value(n, -1)] << n->label()->Name;
+    for (const Wire* w : doc->a_DocWires)
+        if (w->hasLabel()) labelsOf[nets.of.value(w->Port1, -1)] << w->label()->Name;
+    for (auto it = labelsOf.cbegin(); it != labelsOf.cend(); ++it)
+        for (const QString& name : it.value())
+            if (supplySign(name) != 0 || rail.match(name).hasMatch()) supplies.insert(it.key());
+    for (const Component* c : doc->a_DocComps) {
+        if (!inCircuit(c)) continue;
+        // A part's supply pin (an op-amp's VCC) on the net.
+        for (const Port* p : c->Ports)
+            if (p->Connection != nullptr && supplyName(p->Name)) supplies.insert(nets.of.value(p->Connection, -1));
+        // A DC source with one pin on ground: its other pin's net (a SPICE
+        // source's too, of a constant: 5, DC 5).
+        static const QRegularExpression constant(QStringLiteral("^(dc\\s+)?[-+]?[0-9.]+\\s*[a-z]*$"), QRegularExpression::CaseInsensitiveOption);
+        const bool dc = c->Model == QLatin1String("Vdc")
+                        || (c->Model == QLatin1String("S4Q_V") && !c->Props.isEmpty() && constant.match(c->Props.first()->Value.trimmed()).hasMatch());
+        if (dc && c->Ports.size() == 2 && nets.ground >= 0) {
+            const int a = c->Ports.at(0)->Connection ? nets.of.value(c->Ports.at(0)->Connection, -1) : -1;
+            const int b = c->Ports.at(1)->Connection ? nets.of.value(c->Ports.at(1)->Connection, -1) : -1;
+            if (a == nets.ground && b >= 0 && b != nets.ground) supplies.insert(b);
+            if (b == nets.ground && a >= 0 && a != nets.ground) supplies.insert(a);
+        }
+    }
+    for (const Wire* w : doc->a_DocWires) {
+        const int net = w->Port1 != nullptr ? nets.of.value(w->Port1, -1) : -1;
+        if (net < 0) continue;
+        if (net == nets.ground) out.insert(w, NetKind::Ground);
+        else if (supplies.contains(net)) out.insert(w, NetKind::Supply);
+    }
+    return out;
+}
+
+// Buses: drawings (BusPainting) that join nothing by touching - a net
+// ending on one is its member by its name (D0 ... D7 of D[7:0]). A bus with
+// no bus's name; a net ending on one with no name, or with a name that is
+// none of its members (a wire drawn to the bus to join it, which it does
+// not).
+void busIssues(Schematic* doc, const Nets& nets, QList<Issue>& out)
+{
+    QHash<int, QStringList> labelsOf;
+    for (const Node* n : doc->a_DocNodes)
+        if (n->hasLabel()) labelsOf[nets.of.value(n, -1)] << n->label()->Name;
+    for (const Wire* w : doc->a_DocWires)
+        if (w->hasLabel()) labelsOf[nets.of.value(w->Port1, -1)] << w->label()->Name;
+    const Qt::CaseSensitivity cs = namesWithoutCase(doc) ? Qt::CaseInsensitive : Qt::CaseSensitive;
+    for (Painting* p : doc->a_DocPaints) {
+        const auto* bus = dynamic_cast<const BusPainting*>(p);
+        if (bus == nullptr) continue;
+        const QPoint at(bus->x1, bus->y1);
+        const QStringList members = bus->members();
+        if (members.isEmpty()) {
+            out << Issue{Severity::Warning,
+                         bus->busName.isEmpty() ? tr("a bus with no name: name it with its members' numbers, D[7:0] (its nets D7 to D0)")
+                                                : tr("bus %1: no bus's name - give its members' numbers, D[7:0] (its nets D7 to D0)").arg(bus->busName),
+                         at, QString()};
+            continue;
+        }
+        const QString range = members.first() + QStringLiteral(" … ") + members.last();
+        QSet<int> told;
+        for (const Node* n : doc->a_DocNodes) {
+            if (!bus->touches(QPoint(n->x(), n->y()))) continue;
+            const int net = nets.of.value(n, -1);
+            if (net < 0 || told.contains(net)) continue;
+            told.insert(net);
+            const QStringList names = labelsOf.value(net);
+            bool member = false;
+            for (const QString& name : names) member = member || members.contains(name, cs);
+            if (member) continue;
+            const QString message =
+                net == nets.ground ? tr("ground ends on bus %1 at %2, %3: a bus joins nothing by touching; ground is none of its members (%4)")
+                                         .arg(bus->busName).arg(n->x()).arg(n->y()).arg(range)
+                : names.isEmpty()
+                    ? tr("a net ends on bus %1 at %2, %3 with no name: a bus joins nothing by touching - label the wire with a member's "
+                         "name (%4)").arg(bus->busName).arg(n->x()).arg(n->y()).arg(range)
+                    : tr("net %1 ends on bus %2 at %3, %4 but is none of its members (%5): a bus joins nothing by touching")
+                          .arg(names.first(), bus->busName).arg(n->x()).arg(n->y()).arg(range);
+            out << Issue{Severity::Warning, message, QPoint(n->x(), n->y()), QString()};
+        }
+    }
+}
+
 QList<Issue> wiring(Schematic* doc)
 {
     QList<Issue> out;
@@ -2441,6 +2544,7 @@ QList<Issue> check(Schematic* doc, bool run)
                                        spicecompat::getDefaultSimulatorName(QucsSettings.DefaultSimulator)),
                               join.second, QString()};
         wiringIssues(doc, nets, warnings, false);
+        busIssues(doc, nets, warnings);
         topologyIssues(doc, nets, port, warnings);
         supplyIssues(doc, nets, warnings);
         polarityIssues(doc, nets, &warnings, nullptr);
@@ -2475,6 +2579,26 @@ QList<Issue> check(Schematic* doc, bool run)
                             where, QString()};
         if (!simulation)
             warnings << Issue{Severity::Warning, tr("no simulation: no .AC, .TR, .DC, .SP, ... block"), where, QString()};
+    }
+
+    // A diagram's traces beyond its spec limits (the data it shows: the
+    // last run's). Said once per trace and limit, the worst first.
+    int diagramNumber = 0;
+    for (const Diagram* d : doc->a_DocDiags) {
+        ++diagramNumber;
+        for (const qucs_s::limits::Violation& v : d->violations()) {
+            const Graph* g = d->Graphs.value(v.graph);
+            if (g == nullptr || v.limit < 0 || v.limit >= d->limits.size()) continue;
+            const qucs_s::limits::Limit& l = d->limits.at(v.limit);
+            const QString limit = l.label.isEmpty() ? tr("its %1 limit %2").arg(qucs_s::limits::sideName(l.side)).arg(v.limit + 1)
+                                                    : tr("its %1 limit %2").arg(qucs_s::limits::sideName(l.side), l.label);
+            warnings << Issue{Severity::Warning,
+                              tr("diagram %1: %2 is beyond %3 from %4 to %5, by %6 at %7 (the last run's data)")
+                                  .arg(diagramNumber)
+                                  .arg(g->Var.section(QLatin1Char('/'), -1), limit, misc::num2str(v.from), misc::num2str(v.to),
+                                       misc::num2str(v.worst), misc::num2str(v.worstAt)),
+                              QPoint(d->cx, d->cy), QString(), QString(), QString(), true};
+        }
     }
 
     QList<Issue> all = errors + warnings;

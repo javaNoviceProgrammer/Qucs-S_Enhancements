@@ -17,6 +17,7 @@
 
 
 #include "ngspice.h"
+#include "probe.h"
 
 #include <algorithm>
 #include <functional>
@@ -385,6 +386,15 @@ void Ngspice::createNetlist(
     vars = QStringList(validNets.begin(), validNets.end());
     vars.sort();
 
+    // The currents and powers probed (probe.h): every device's current
+    // kept, the powers asked for saved beside all the rest.
+    const QStringList probed = a_schematic->getProbeSaves();
+    if (std::any_of(probed.cbegin(), probed.cend(), qucs_s::probe::isCurrentVector)) stream << ".options savecurrents\n";
+    QStringList powers;
+    for (const QString& v : probed)
+        if (qucs_s::probe::isPowerVector(v)) powers << v;
+    if (!powers.isEmpty()) stream << ".save all " << powers.join(QLatin1Char(' ')) << "\n";
+
     stream << "\n.control\n\n";          //execute simulations
 
     stream<<osdi;
@@ -454,6 +464,7 @@ void Ngspice::createNetlist(
             else
                 nods.append(QStringLiteral("v(%1) ").arg(nod));
         }
+        for (const QString& v : probed) nods.append(v + QLatin1Char(' '));   // (the probes')
         // (The nodes' voltages and the probes' currents: what a save before
         // the analysis can name - an equation's variable is made after it.)
         const QString nodeVectors = nods;

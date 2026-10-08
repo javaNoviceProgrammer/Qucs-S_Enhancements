@@ -466,6 +466,7 @@ private:
     QJsonObject ngspiceCommands(const QJsonObject& args);
     QJsonObject editMarker(const QJsonObject& args);
     QJsonObject deleteMarker(const QJsonObject& args);
+    QJsonObject probeTool(const QJsonObject& args);
     QJsonObject renameNet(const QJsonObject& args);
     /// What names a net or a part - the traces of the schematic's diagrams
     /// and of its data displays (a closed one's file rewritten), its

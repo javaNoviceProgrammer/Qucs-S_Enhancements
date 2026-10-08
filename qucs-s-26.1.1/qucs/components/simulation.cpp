@@ -1,5 +1,6 @@
 #include "simulation.h"
 #include "settings.h"
+#include "main.h"
 #include <vector>
 #include <QPainter>
 #include "ink.h"
@@ -86,7 +87,7 @@ namespace qucs::component {
 
 QPen SimulationComponent::pen() const
 {
-    auto default_sim      = _settings::Get().item<int>("DefaultSimulator");
+    auto default_sim      = QucsSettings.DefaultSimulator;
     auto correctSimulator = (Simulator & default_sim) == default_sim;
 
     return correctSimulator ? QPen{color(), 2, Qt::SolidLine, Qt::FlatCap}

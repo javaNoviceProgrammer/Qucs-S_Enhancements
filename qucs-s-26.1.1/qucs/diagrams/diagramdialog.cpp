@@ -32,6 +32,19 @@
 #include "rect3ddiagram.h"
 #include "histogramdiagram.h"
 #include "eyediagram.h"
+#include "stackeddiagram.h"
+#include "polezerodiagram.h"
+#include "bodediagram.h"
+#include "nicholsdiagram.h"
+#include "spectrumdiagram.h"
+#include "bathtubdiagram.h"
+#include "contourdiagram.h"
+#include "spectrogramdiagram.h"
+#include "tornadodiagram.h"
+#include "boxplotdiagram.h"
+#include "constellationdiagram.h"
+#include "smithdiagram.h"
+#include "polardiagram.h"
 #include "valuereading.h"
 #include "schematic.h"
 #include "settings.h"
@@ -54,6 +67,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QDoubleSpinBox>
 #include <QSlider>
 #include <QStandardItemModel>
 #include <QStringList>
@@ -210,8 +224,11 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   } else if (Diag->Name == "Rect3D") {
     NameY = tr("y-Axis");
     NameZ = tr("z-Axis");
-  } else if (Diag->Name == "Histogram" || Diag->Name == "Eye") {
+  } else if (Diag->Name == "Histogram" || Diag->Name == "Eye" || Diag->Name == "Bathtub") {
     NameY = tr("y-Axis");
+  } else if (Diag->Name == "Contour") {
+    NameY = tr("y-Axis");
+    NameZ = tr("Colour bar");
   }
 
   all = new QVBoxLayout(this); // to provide necessary size
@@ -320,6 +337,13 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       AutoColorBox->setEnabled(false);
       Box2Layout->addWidget(AutoColorBox);
       connect(AutoColorBox, &QCheckBox::toggled, this, &DiagramDialog::slotSetAutoColor);
+      GhostBox = new QCheckBox(tr("ghost"));
+      GhostBox->setObjectName(QStringLiteral("traceGhost"));
+      GhostBox->setToolTip(tr("Drawn faint, behind the others: a kept run's beside this one's - a before for an after "
+                              "(the variable of a run kept with simulate's keep_as: ngspice/before:tran.v(out))"));
+      GhostBox->setEnabled(false);
+      Box2Layout->addWidget(GhostBox);
+      connect(GhostBox, &QCheckBox::toggled, this, &DiagramDialog::slotSetGhost);
     }
 
     Box2Layout->setStretchFactor(new QWidget(Box2),
@@ -374,14 +398,19 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
             &DiagramDialog::slotSetThickness);
 
     if ((Diag->Name == "Rect") || (Diag->Name == "PS") ||
-        (Diag->Name == "SP") || (Diag->Name == "Curve")) {
-      Label4 = new QLabel(tr("y-Axis:"));
+        (Diag->Name == "SP") || (Diag->Name == "Curve") || (Diag->Name == "Stacked")) {
+      Label4 = new QLabel(Diag->Name == "Stacked" ? tr("Pane:") : tr("y-Axis:"));
       Box2Layout->addWidget(Label4);
       Label4->setEnabled(false);
       yAxisBox = new QComboBox();
+      yAxisBox->setObjectName(QStringLiteral("yAxisBox"));
       Box2Layout->addWidget(yAxisBox);
-      yAxisBox->addItem(NameY);
-      yAxisBox->addItem(NameZ);
+      if (Diag->Name == "Stacked") {
+        fillAxisBox();
+      } else {
+        yAxisBox->addItem(NameY);
+        yAxisBox->addItem(NameZ);
+      }
       yAxisBox->setEnabled(false);
       connect(yAxisBox, QOverload<int>::of(&QComboBox::activated), this,
               &DiagramDialog::slotSetYAxis);
@@ -562,14 +591,17 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     gp->addWidget(xLabel, Row, 1);
     Row++;
 
-    gp->addWidget(new QLabel(NameY + " " + tr("Label:"), Tab2), Row, 0);
+    ylLabelName = new QLabel(NameY + " " + tr("Label:"), Tab2);
+    gp->addWidget(ylLabelName, Row, 0);
     ylLabel = new QLineEdit(Tab2);
     ylLabel->setValidator(Validator);
     gp->addWidget(ylLabel, Row, 1);
     Row++;
 
-    if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram") && (Diag->Name != "Eye")) {
-      gp->addWidget(new QLabel(NameZ + " " + tr("Label:"), Tab2), Row, 0);
+    if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram") && (Diag->Name != "Eye")
+        && (Diag->Name != "Bathtub")) {
+      yrLabelName = new QLabel(NameZ + " " + tr("Label:"), Tab2);
+      gp->addWidget(yrLabelName, Row, 0);
       yrLabel = new QLineEdit(Tab2);
       yrLabel->setValidator(Validator);
       gp->addWidget(yrLabel, Row, 1);
@@ -757,6 +789,412 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       EyeMaskHeight = valueEdit(eyeDiagram->maskHeight, "", tr("no mask"));
       EyeMaskHeight->setToolTip(tr("... and its height, in the unit of the signal (0.2, 200m)"));
       el->addWidget(EyeMaskHeight, r++, 1);
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A stacked diagram: its panes, each with its own y axes; the x axis'
+    // scale.
+    if (auto *stacked = dynamic_cast<StackedDiagram *>(Diag)) {
+      for (QWidget *w : {static_cast<QWidget *>(ylLabelName), static_cast<QWidget *>(ylLabel),
+                         static_cast<QWidget *>(yrLabelName), static_cast<QWidget *>(yrLabel)})
+        if (w) w->setVisible(false);
+      QGroupBox *box = new QGroupBox(tr("Panes"), Tab2);
+      QGridLayout *pl = new QGridLayout(box);
+      pl->addWidget(new QLabel(tr("Panes:")), 0, 0);
+      PaneCount = new QSpinBox();
+      PaneCount->setObjectName(QStringLiteral("paneCount"));
+      PaneCount->setRange(1, StackedDiagram::MaxPanes);
+      PaneCount->setValue(stacked->paneCount());
+      PaneCount->setToolTip(tr("How many panes, one above the other on the one x axis: each trace in its own "
+                               "(the y-Axis box beside its colour), each pane with its own y axes"));
+      PaneCount->setEnabled(!dynamic_cast<BodeDiagram *>(Diag));   // (a Bode diagram's: the magnitude and the phase)
+      pl->addWidget(PaneCount, 0, 1);
+      GridLogX = new QCheckBox(tr("logarithmic X Axis Grid"));
+      GridLogX->setChecked(Diag->xAxis.log);
+      pl->addWidget(GridLogX, 0, 2);
+      PaneTable = new QTableWidget(0, 8);
+      PaneTable->setObjectName(QStringLiteral("paneTable"));
+      PaneTable->setHorizontalHeaderLabels({tr("left label"), tr("from"), tr("to"), tr("log"), tr("right label"),
+                                            tr("from"), tr("to"), tr("log")});
+      PaneTable->setToolTip(tr("Each pane's axes, the top one first: a label (empty: its traces' names), "
+                               "its limits (both empty: automatic) and whether it is logarithmic"));
+      // The labels as wide as there is room, the limits room for a number.
+      for (int c : {0, 4}) PaneTable->horizontalHeader()->setSectionResizeMode(c, QHeaderView::Stretch);
+      for (int c : {1, 2, 5, 6}) PaneTable->setColumnWidth(c, 70);
+      for (int c : {3, 7}) PaneTable->horizontalHeader()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+      PaneTable->setMinimumHeight(120);
+      setPaneRows(stacked->paneCount());
+      for (int i = 0; i < stacked->paneCount(); ++i) {
+        int c = 0;
+        for (const Axis *a : {&stacked->pane(i).left, &stacked->pane(i).right}) {
+          PaneTable->item(i, c)->setText(a->Label);
+          PaneTable->item(i, c + 1)->setText(a->autoScale ? QString() : QString::number(a->limit_min));
+          PaneTable->item(i, c + 2)->setText(a->autoScale ? QString() : QString::number(a->limit_max));
+          PaneTable->item(i, c + 3)->setCheckState(a->log ? Qt::Checked : Qt::Unchecked);
+          c += 4;
+        }
+      }
+      pl->addWidget(PaneTable, 1, 0, 1, 3);
+      connect(PaneCount, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int n) {
+        setPaneRows(n);
+        // The traces in a pane no longer there go to the last.
+        for (int i = 0; i < int(Graphs.size()); ++i)
+          if (Graphs.at(i)->pane >= n) {
+            Graphs.at(i)->pane = n - 1;
+            updateGraphListItem(i);
+          }
+        const int at = yAxisBox ? yAxisBox->currentIndex() : -1;
+        fillAxisBox();
+        if (yAxisBox) yAxisBox->setCurrentIndex(std::min(at, yAxisBox->count() - 1));
+        changed = true;
+      });
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A Bode diagram: its crossovers and margins.
+    if (auto *bode = dynamic_cast<BodeDiagram *>(Diag)) {
+      BodeMargins = new QCheckBox(tr("crossovers and margins marked"), Tab2);
+      BodeMargins->setObjectName(QStringLiteral("bodeMargins"));
+      BodeMargins->setToolTip(tr("Where each loop gain falls through 0 dB and its phase through -180\u00B0, with the phase margin "
+                                 "and the gain margin"));
+      BodeMargins->setChecked(bode->margins);
+      gp->addWidget(BodeMargins, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A Nichols chart: its contours. A polar diagram: a Nyquist plot's marks.
+    if (auto *nichols = dynamic_cast<NicholsDiagram *>(Diag)) {
+      NicholsGrid = new QCheckBox(tr("M and N contours of the closed loop"), Tab2);
+      NicholsGrid->setObjectName(QStringLiteral("nicholsGrid"));
+      NicholsGrid->setChecked(nichols->grid);
+      gp->addWidget(NicholsGrid, Row, 0, 1, 2);
+      Row++;
+    }
+    if (auto *polar = dynamic_cast<PolarDiagram *>(Diag)) {
+      NyquistMarks = new QCheckBox(tr("Nyquist: the critical point -1 and the unit circle"), Tab2);
+      NyquistMarks->setObjectName(QStringLiteral("nyquistMarks"));
+      NyquistMarks->setChecked(polar->nyquist);
+      gp->addWidget(NyquistMarks, Row, 0, 1, 2);
+      Row++;
+      NyquistMirror = new QCheckBox(tr("Nyquist: the negative frequencies too (mirrored, dashed)"), Tab2);
+      NyquistMirror->setObjectName(QStringLiteral("nyquistMirror"));
+      NyquistMirror->setChecked(polar->mirror);
+      gp->addWidget(NyquistMirror, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A spectrum view: its window, harmonics, units and lines.
+    if (auto *spectrum = dynamic_cast<SpectrumDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Spectrum"), Tab2);
+      QGridLayout *sl = new QGridLayout(box);
+      int r = 0;
+      sl->addWidget(new QLabel(tr("Window:")), r, 0);
+      SpecWindow = new QComboBox();
+      SpecWindow->setObjectName(QStringLiteral("spectrumWindow"));
+      for (const QString &w : qucs_s::spectrum::windowNames()) SpecWindow->addItem(QString(w).replace('_', ' '));
+      SpecWindow->setCurrentIndex(int(spectrum->window));
+      SpecWindow->setToolTip(tr("Hann for most; flat top reads a line's amplitude best; Blackman-Harris shows the "
+                                "lowest spurs; rectangular for a signal of whole periods"));
+      sl->addWidget(SpecWindow, r++, 1);
+      sl->addWidget(new QLabel(tr("Harmonics:")), r, 0);
+      SpecHarmonics = new QSpinBox();
+      SpecHarmonics->setRange(2, 50);
+      SpecHarmonics->setValue(spectrum->harmonics);
+      SpecHarmonics->setToolTip(tr("The highest harmonic numbered and counted in THD"));
+      sl->addWidget(SpecHarmonics, r++, 1);
+      SpecDbc = new QCheckBox(tr("in dBc (the fundamental at 0)"));
+      SpecDbc->setChecked(spectrum->dbc);
+      sl->addWidget(SpecDbc, r++, 0, 1, 2);
+      SpecStems = new QCheckBox(tr("a stem for each line"));
+      SpecStems->setChecked(spectrum->stems);
+      sl->addWidget(SpecStems, r++, 0, 1, 2);
+      const auto edit = [](double v, const QString &empty) {
+        auto *e = new QLineEdit(std::isfinite(v) ? misc::num2str(v, -1, QString()) : QString());
+        e->setPlaceholderText(empty);
+        return e;
+      };
+      sl->addWidget(new QLabel(tr("From:")), r, 0);
+      SpecFrom = edit(spectrum->from, tr("the start"));
+      SpecFrom->setToolTip(tr("The signal from this time on, its settling left out (1m)"));
+      sl->addWidget(SpecFrom, r++, 1);
+      sl->addWidget(new QLabel(tr("Fundamental:")), r, 0);
+      SpecFundamental = edit(spectrum->fundamental, tr("the strongest line"));
+      SpecFundamental->setToolTip(tr("Its frequency in Hz (1k), or empty: the strongest line"));
+      sl->addWidget(SpecFundamental, r++, 1);
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A bathtub curve: its traces folded as an eye's, the rate its
+    // opening is measured at, the axis' floor.
+    if (auto *tub = dynamic_cast<BathtubDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Bathtub"), Tab2);
+      QGridLayout *bl = new QGridLayout(box);
+      int r = 0;
+      const auto edit = [](double v, const QString &empty, const char *name) {
+        auto *e = new QLineEdit(std::isfinite(v) ? misc::num2str(v, -1, QString()) : QString());
+        e->setPlaceholderText(empty);
+        e->setObjectName(QLatin1String(name));
+        return e;
+      };
+      bl->addWidget(new QLabel(tr("Unit interval:")), r, 0);
+      TubUi = edit(tub->ui, tr("the PRBS source's Tbit, else the crossings'"), "bathtubUi");
+      TubUi->setToolTip(tr("A bit's length (100p), as the eye diagram takes it"));
+      bl->addWidget(TubUi, r++, 1);
+      bl->addWidget(new QLabel(tr("From:")), r, 0);
+      TubFrom = edit(tub->start, tr("the start"), "bathtubFrom");
+      TubFrom->setToolTip(tr("The signal from this time on, its settling left out (2n)"));
+      bl->addWidget(TubFrom, r++, 1);
+      bl->addWidget(new QLabel(tr("Levels:")), r, 0);
+      TubLevels = new QComboBox();
+      TubLevels->setObjectName(QStringLiteral("bathtubLevels"));
+      TubLevels->addItems({tr("as the source is coded"), tr("2 (NRZ)"), tr("4 (PAM4)")});
+      TubLevels->setCurrentIndex(tub->levels == 2 ? 1 : tub->levels == 4 ? 2 : 0);
+      bl->addWidget(TubLevels, r++, 1);
+      bl->addWidget(new QLabel(tr("Threshold:")), r, 0);
+      TubThreshold = edit(tub->threshold, tr("halfway between the levels"), "bathtubThreshold");
+      bl->addWidget(TubThreshold, r++, 1);
+      bl->addWidget(new QLabel(tr("Bit error rate:")), r, 0);
+      TubBer = edit(tub->ber, QStringLiteral("1e-12"), "bathtubBer");
+      TubBer->setToolTip(tr("The rate the opening and the total jitter are measured at, at most 0.01"));
+      bl->addWidget(TubBer, r++, 1);
+      bl->addWidget(new QLabel(tr("Down to:")), r, 0);
+      TubFloor = edit(tub->floor, tr("the rate over 10000"), "bathtubFloor");
+      TubFloor->setToolTip(tr("The rate the axis goes down to, below the one measured at"));
+      bl->addWidget(TubFloor, r++, 1);
+      TubMeasured = new QCheckBox(tr("the crossings counted, too"));
+      TubMeasured->setObjectName(QStringLiteral("bathtubMeasured"));
+      TubMeasured->setToolTip(tr("The rate the crossings give, down to one in their number, beside the model's"));
+      TubMeasured->setChecked(tub->measured);
+      bl->addWidget(TubMeasured, r++, 0, 1, 2);
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A Smith chart: its two-port's circles.
+    if (auto *smith = dynamic_cast<SmithDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Circles"), Tab2);
+      QGridLayout *sl = new QGridLayout(box);
+      sl->addWidget(new QLabel(tr("Circles:")), 0, 0);
+      SmithCircles = new QLineEdit(SmithDiagram::circlesText(smith->circles));
+      SmithCircles->setObjectName(QStringLiteral("smithCircles"));
+      SmithCircles->setPlaceholderText(tr("in, out, gain 12, noise 2"));
+      SmithCircles->setToolTip(tr("Of the two-port the traces' run is of (its S-parameters): in and out, its stability circles; "
+                                  "gain <dB>, available gain; noise <dB>, noise figure (the run's Fmin, Sopt, Rn)"));
+      sl->addWidget(SmithCircles, 0, 1);
+      sl->addWidget(new QLabel(tr("At:")), 1, 0);
+      SmithFrequency = new QLineEdit(std::isfinite(smith->circleFrequency) ? misc::num2str(smith->circleFrequency, -1, QString()) : QString());
+      SmithFrequency->setObjectName(QStringLiteral("smithFrequency"));
+      SmithFrequency->setPlaceholderText(tr("the middle of the sweep"));
+      sl->addWidget(SmithFrequency, 1, 1);
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A constellation: its symbols' sampling and modulation.
+    if (auto *iq = dynamic_cast<ConstellationDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Constellation"), Tab2);
+      QGridLayout *cl = new QGridLayout(box);
+      const auto edit = [](double v, const QString &empty, const char *name) {
+        auto *e = new QLineEdit(std::isfinite(v) ? misc::num2str(v, -1, QString()) : QString());
+        e->setPlaceholderText(empty);
+        e->setObjectName(QLatin1String(name));
+        return e;
+      };
+      int r = 0;
+      cl->addWidget(new QLabel(tr("Symbol period:")), r, 0);
+      IqPeriod = edit(iq->period, tr("every sample"), "constellationPeriod");
+      cl->addWidget(IqPeriod, r++, 1);
+      cl->addWidget(new QLabel(tr("First sample:")), r, 0);
+      IqOffset = edit(iq->offset, tr("half a period in"), "constellationOffset");
+      cl->addWidget(IqOffset, r++, 1);
+      cl->addWidget(new QLabel(tr("From:")), r, 0);
+      IqFrom = edit(iq->from, tr("the start"), "constellationFrom");
+      cl->addWidget(IqFrom, r++, 1);
+      cl->addWidget(new QLabel(tr("Modulation:")), r, 0);
+      IqModulation = new QComboBox();
+      IqModulation->setObjectName(QStringLiteral("constellationModulation"));
+      IqModulation->addItems({tr("none"), QStringLiteral("BPSK"), QStringLiteral("QPSK"), QStringLiteral("8-PSK"), QStringLiteral("16-QAM"), QStringLiteral("64-QAM")});
+      IqModulation->setCurrentIndex(iq->modulation);
+      cl->addWidget(IqModulation, r++, 1);
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A box plot: where each curve's value is taken, its whiskers.
+    if (auto *boxes = dynamic_cast<BoxPlotDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Box plot"), Tab2);
+      QGridLayout *bl = new QGridLayout(box);
+      bl->addWidget(new QLabel(tr("Curves at x:")), 0, 0);
+      BoxAt = new QLineEdit(std::isfinite(boxes->at) ? misc::num2str(boxes->at, -1, QString()) : QString());
+      BoxAt->setObjectName(QStringLiteral("boxPlotAt"));
+      BoxAt->setPlaceholderText(tr("their last (the final values)"));
+      BoxAt->setToolTip(tr("Of a trace of several curves (a sweep, Monte Carlo runs): each curve's value at this x"));
+      bl->addWidget(BoxAt, 0, 1);
+      BoxRange = new QCheckBox(tr("whiskers to the lowest and highest (no outliers)"));
+      BoxRange->setObjectName(QStringLiteral("boxPlotRange"));
+      BoxRange->setChecked(boxes->range);
+      bl->addWidget(BoxRange, 1, 0, 1, 2);
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A tornado chart: its bars' values, how many, a sensitivity run's parts.
+    if (auto *tornado = dynamic_cast<TornadoDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Tornado chart"), Tab2);
+      QGridLayout *tl = new QGridLayout(box);
+      int r = 0;
+      tl->addWidget(new QLabel(tr("Bars:")), r, 0);
+      TornadoMode = new QComboBox();
+      TornadoMode->setObjectName(QStringLiteral("tornadoMode"));
+      TornadoMode->addItems({tr("each trace's value at a point (a sensitivity)"), tr("each trace's spread (corners, Monte Carlo)")});
+      TornadoMode->setCurrentIndex(tornado->mode);
+      tl->addWidget(TornadoMode, r++, 1);
+      tl->addWidget(new QLabel(tr("At:")), r, 0);
+      TornadoAt = new QLineEdit(std::isfinite(tornado->at) ? misc::num2str(tornado->at, -1, QString()) : QString());
+      TornadoAt->setObjectName(QStringLiteral("tornadoAt"));
+      TornadoAt->setPlaceholderText(tr("the sweep's first point"));
+      tl->addWidget(TornadoAt, r++, 1);
+      tl->addWidget(new QLabel(tr("At most:")), r, 0);
+      TornadoBars = new QSpinBox();
+      TornadoBars->setObjectName(QStringLiteral("tornadoBars"));
+      TornadoBars->setRange(1, TornadoDiagram::MaxBars);
+      TornadoBars->setValue(tornado->bars);
+      tl->addWidget(TornadoBars, r++, 1);
+      auto *parts = new QPushButton(tr("Add the parts of a sensitivity run"));
+      parts->setObjectName(QStringLiteral("tornadoParts"));
+      parts->setToolTip(tr("Of the run chosen on the Data tab (ngspice's .SENS): a trace for each part - its _scale "
+                           "(the output's change per 100 % of its value) where it has one, else its derivative"));
+      connect(parts, &QPushButton::clicked, this, &DiagramDialog::addSensitivityParts);
+      tl->addWidget(parts, r++, 0, 1, 2);
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A spectrogram: its window, segments and range.
+    if (auto *gram = dynamic_cast<SpectrogramDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Spectrogram"), Tab2);
+      QGridLayout *gl = new QGridLayout(box);
+      int r = 0;
+      gl->addWidget(new QLabel(tr("Window:")), r, 0);
+      GramWindow = new QComboBox();
+      GramWindow->setObjectName(QStringLiteral("spectrogramWindow"));
+      for (const QString &w : qucs_s::spectrum::windowNames()) GramWindow->addItem(QString(w).replace('_', ' '));
+      GramWindow->setCurrentIndex(int(gram->window));
+      gl->addWidget(GramWindow, r++, 1);
+      gl->addWidget(new QLabel(tr("Segment:")), r, 0);
+      GramSegment = new QLineEdit(std::isfinite(gram->segment) ? misc::num2str(gram->segment, -1, QString()) : QString());
+      GramSegment->setObjectName(QStringLiteral("spectrogramSegment"));
+      GramSegment->setPlaceholderText(tr("a sixteenth of the transient"));
+      GramSegment->setToolTip(tr("The seconds each column is the spectrum of (1m)"));
+      gl->addWidget(GramSegment, r++, 1);
+      gl->addWidget(new QLabel(tr("Overlap:")), r, 0);
+      GramOverlap = new QDoubleSpinBox();
+      GramOverlap->setObjectName(QStringLiteral("spectrogramOverlap"));
+      GramOverlap->setRange(0, 0.9);
+      GramOverlap->setSingleStep(0.25);
+      GramOverlap->setValue(gram->overlap);
+      gl->addWidget(GramOverlap, r++, 1);
+      gl->addWidget(new QLabel(tr("Range (dB):")), r, 0);
+      GramRange = new QDoubleSpinBox();
+      GramRange->setObjectName(QStringLiteral("spectrogramRange"));
+      GramRange->setRange(1, 400);
+      GramRange->setValue(gram->range);
+      GramRange->setToolTip(tr("The colours over this many dB below the loudest (when the colour bar's range is automatic)"));
+      gl->addWidget(GramRange, r++, 1);
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A contour map: its iso-lines, colours, labels and pass band.
+    if (auto *contour = dynamic_cast<ContourDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Contour map"), Tab2);
+      QGridLayout *cl = new QGridLayout(box);
+      int r = 0;
+      cl->addWidget(new QLabel(tr("Iso-lines:")), r, 0);
+      MapLevels = new QSpinBox();
+      MapLevels->setObjectName(QStringLiteral("contourLevels"));
+      MapLevels->setRange(0, ContourDiagram::MaxLevels);
+      MapLevels->setValue(contour->levels);
+      MapLevels->setToolTip(tr("About how many, at round values across the colour range (0: none)"));
+      cl->addWidget(MapLevels, r++, 1);
+      cl->addWidget(new QLabel(tr("Colours:")), r, 0);
+      MapColours = new QComboBox();
+      MapColours->setObjectName(QStringLiteral("contourMap"));
+      MapColours->addItems({tr("viridis"), tr("turbo"), tr("grey")});
+      MapColours->setCurrentIndex(contour->map);
+      cl->addWidget(MapColours, r++, 1);
+      MapFilled = new QCheckBox(tr("the first trace in colour"));
+      MapFilled->setObjectName(QStringLiteral("contourFilled"));
+      MapFilled->setChecked(contour->filled);
+      cl->addWidget(MapFilled, r++, 0, 1, 2);
+      MapLabels = new QCheckBox(tr("the iso-lines' values on them"));
+      MapLabels->setChecked(contour->labels);
+      cl->addWidget(MapLabels, r++, 0, 1, 2);
+      const auto edit = [](double v, const char *name) {
+        auto *e = new QLineEdit(std::isfinite(v) ? misc::num2str(v, -1, QString()) : QString());
+        e->setPlaceholderText(tr("none"));
+        e->setObjectName(QLatin1String(name));
+        return e;
+      };
+      cl->addWidget(new QLabel(tr("Passes from:")), r, 0);
+      MapPassMin = edit(contour->passMin, "contourPassMin");
+      MapPassMin->setToolTip(tr("The lowest value that passes (20, 1.5m); the rest hatched"));
+      cl->addWidget(MapPassMin, r++, 1);
+      cl->addWidget(new QLabel(tr("to:")), r, 0);
+      MapPassMax = edit(contour->passMax, "contourPassMax");
+      MapPassMax->setToolTip(tr("The highest value that passes"));
+      cl->addWidget(MapPassMax, r++, 1);
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A pole-zero map: its guides.
+    if (auto *pz = dynamic_cast<PoleZeroDiagram *>(Diag)) {
+      PzGuides = new QCheckBox(tr("\u03B6 lines and \u03C9n circles"), Tab2);
+      PzGuides->setObjectName(QStringLiteral("poleZeroGuides"));
+      PzGuides->setToolTip(tr("Lines of constant damping and circles of constant natural frequency in the left half-plane"));
+      PzGuides->setChecked(pz->guides);
+      gp->addWidget(PzGuides, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // Its spec limits: lines and masks its traces keep within.
+    if (Diag->takesLimits()) {
+      QGroupBox *box = new QGroupBox(tr("Limits"), Tab2);
+      QGridLayout *ll = new QGridLayout(box);
+      const bool panes = dynamic_cast<StackedDiagram *>(Diag) != nullptr;
+      LimitTable = new QTableWidget(0, panes ? 5 : 4);
+      LimitTable->setObjectName(QStringLiteral("limitTable"));
+      QStringList heads{tr("limit"), tr("points: x, y; x, y; ... or a level"), tr("label"), tr("axis")};
+      if (panes) heads << tr("pane");
+      LimitTable->setHorizontalHeaderLabels(heads);
+      LimitTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+      LimitTable->setToolTip(tr("What the traces keep within: below an upper limit, above a lower one. Its points run "
+                                "straight from one to the next, x rising (1k, -3; 10k, -3); two of one x are a "
+                                "mask's step; a number alone is a level over all x. Its y in the units the axis "
+                                "shows (dB on an axis of dB). Drawn dashed, the traces red where beyond, PASS or "
+                                "FAIL in the corner."));
+      LimitTable->setMinimumHeight(110);
+      for (const qucs_s::limits::Limit &limit : Diag->limits) addLimitRow(limit);
+      ll->addWidget(LimitTable, 0, 0, 1, 3);
+      QPushButton *add = new QPushButton(tr("Add Limit"));
+      add->setObjectName(QStringLiteral("addLimit"));
+      connect(add, &QPushButton::clicked, this, [this] {
+        qucs_s::limits::Limit l;
+        l.points << QPointF(0, 1);
+        addLimitRow(l);
+        LimitTable->item(LimitTable->rowCount() - 1, 1)->setText(QString());
+        LimitTable->editItem(LimitTable->item(LimitTable->rowCount() - 1, 1));
+      });
+      QPushButton *remove = new QPushButton(tr("Remove Limit"));
+      connect(remove, &QPushButton::clicked, this, [this] {
+        if (LimitTable->currentRow() >= 0) LimitTable->removeRow(LimitTable->currentRow());
+      });
+      ll->addWidget(add, 1, 0);
+      ll->addWidget(remove, 1, 1);
       gp->addWidget(box, Row, 0, 1, 2);
       Row++;
     }
@@ -1094,11 +1532,18 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     stopZ->setText(QString::number(val_stopZ));
 
     if ((Diag->Name == "Smith") || (Diag->Name == "ySmith") ||
-        (Diag->Name == "Polar") || (Diag->Name == "Histogram") || (Diag->Name == "Eye")) {
+        (Diag->Name == "Polar") || (Diag->Name == "Histogram") || (Diag->Name == "Eye") || (Diag->Name == "PoleZero")
+        || (Diag->Name == "Bathtub")) {
       axisZ->setEnabled(false);
     }
+    if (Diag->Name == "Stacked") {   // (its panes' axes: on the Properties tab)
+      axisY->setVisible(false);
+      axisZ->setVisible(false);
+    }
     if (Diag->Name.left(4) != "Rect") // cartesian 2D and 3D
-      if (Diag->Name != "Curve" && Diag->Name != "Histogram" && Diag->Name != "Eye") {
+      if (Diag->Name != "Curve" && Diag->Name != "Histogram" && Diag->Name != "Eye" && Diag->Name != "Stacked"
+          && Diag->Name != "PoleZero" && Diag->Name != "Nichols" && Diag->Name != "Bode" && Diag->Name != "Spectrum"
+          && Diag->Name != "Bathtub" && Diag->Name != "Contour") {
         axisX->setEnabled(false);
         startY->setEnabled(false);
         startZ->setEnabled(false);
@@ -1245,7 +1690,8 @@ QList<QPair<QString, QString>> DiagramDialog::traceFiles() const {
       file = dir + QDir::separator() + var.left(colon) + ".dat" + tail;
       var = var.mid(colon + 1);
     }
-    list.append({file, var.section('@', 0, 0)});
+    const int at = Graph::plotVsSeparator(var);
+    list.append({file, at > 0 ? var.left(at) : var});
   }
   return list;
 }
@@ -1515,7 +1961,7 @@ void DiagramDialog::slotTakeVar(QTableWidgetItem *Item) {
     g->Style = toGraphStyle(PropertyBox->currentIndex());
     QUCS_ASSERT(g->Style != GRAPHSTYLE_INVALID);
     if (yAxisBox) {
-      g->yAxisNo = yAxisBox->currentIndex();
+      setAxisIndex(g, yAxisBox->currentIndex());
       yAxisBox->setEnabled(true);
       Label4->setEnabled(true);
     } else if (Diag->Name == "Rect3D") {
@@ -1612,7 +2058,7 @@ void DiagramDialog::SelectGraph(Graph *g) {
       misc::setPickerColor(ColorButt, g->Color);
       PropertyBox->setCurrentIndex(g->Style);
       if (yAxisBox) {
-        yAxisBox->setCurrentIndex(g->yAxisNo);
+        yAxisBox->setCurrentIndex(axisIndexOf(g));
         yAxisBox->setEnabled(true);
         Label4->setEnabled(true);
       }
@@ -1623,6 +2069,11 @@ void DiagramDialog::SelectGraph(Graph *g) {
         const QSignalBlocker block(AutoColorBox);
         AutoColorBox->setChecked(g->autoColor);
         AutoColorBox->setEnabled(true);
+      }
+      if (GhostBox) {
+        const QSignalBlocker block(GhostBox);
+        GhostBox->setChecked(g->ghost);
+        GhostBox->setEnabled(true);
       }
       if (MarkerBox) {
         const QSignalBlocker block(MarkerBox);
@@ -1701,6 +2152,7 @@ void DiagramDialog::slotDeleteGraph() {
     Label3->setEnabled(false);
     ColorButt->setEnabled(false);
     if (AutoColorBox) AutoColorBox->setEnabled(GraphList->rowCount() != 0);
+    if (GhostBox) GhostBox->setEnabled(GraphList->rowCount() != 0);
     if (GraphList->rowCount() == 0) enableMarkerBox(nullptr);
   } else {
     if (precisionSpin)
@@ -1763,7 +2215,7 @@ void DiagramDialog::slotNewGraph() {
     g->Style = toGraphStyle(PropertyBox->currentIndex());
     QUCS_ASSERT(g->Style != GRAPHSTYLE_INVALID);
     if (yAxisBox) {
-      g->yAxisNo = yAxisBox->currentIndex();
+      setAxisIndex(g, yAxisBox->currentIndex());
     } else if (Diag->Name == "Rect3D") {
       g->yAxisNo = 1;
     }
@@ -1797,6 +2249,10 @@ void DiagramDialog::slotOK() {
 // field given the focus (an eye diagram's: they were dropped without a
 // word, and a mask set before went with them).
 bool DiagramDialog::valuesTaken() {
+  if (LimitTable) {
+    QList<qucs_s::limits::Limit> limits;
+    if (!readLimits(&limits, true)) return false;
+  }
   auto *eyeDiagram = dynamic_cast<EyeDiagram *>(Diag);
   if (eyeDiagram == nullptr || EyeUi == nullptr) return true;
   struct Check {
@@ -1933,6 +2389,218 @@ void DiagramDialog::slotApply() {
       for (QLineEdit *e : {EyeUi, EyeStart, EyeThreshold, EyeMaskWidth, EyeMaskHeight}) e->setProperty("qucsShown", e->text());
     }
 
+    if (auto *stacked = dynamic_cast<StackedDiagram *>(Diag); stacked && PaneCount) {
+      if (stacked->paneCount() != PaneCount->value()) {
+        stacked->setPaneCount(PaneCount->value());
+        changed = true;
+      }
+      if (GridLogX && Diag->xAxis.log != GridLogX->isChecked()) {
+        Diag->xAxis.log = GridLogX->isChecked();
+        changed = true;
+      }
+      // A step of 1, 2 or 5 times a power of ten, some five across.
+      const auto niceStep = [](double from, double to) {
+        const double span = std::abs(to - from);
+        if (!(span > 0) || !std::isfinite(span)) return 1.0;
+        const double power = std::pow(10.0, std::floor(std::log10(span / 5)));
+        const double f = span / 5 / power;
+        return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * power;
+      };
+      for (int i = 0; i < stacked->paneCount() && i < PaneTable->rowCount(); ++i) {
+        int c = 0;
+        for (Axis *a : {&stacked->pane(i).left, &stacked->pane(i).right}) {
+          const QString label = PaneTable->item(i, c)->text();
+          bool okFrom = false, okTo = false;
+          const double from = PaneTable->item(i, c + 1)->text().toDouble(&okFrom);
+          const double to = PaneTable->item(i, c + 2)->text().toDouble(&okTo);
+          const bool log = PaneTable->item(i, c + 3)->checkState() == Qt::Checked;
+          // Limits given both, and of use (above 0 on a log axis), else automatic.
+          const bool manual = okFrom && okTo && from < to && (!log || from > 0);
+          if (a->Label != label || a->log != log || a->autoScale == manual
+              || (manual && (a->limit_min != from || a->limit_max != to))) {
+            a->Label = label;
+            a->log = log;
+            a->autoScale = !manual;
+            if (manual) {
+              a->limit_min = from;
+              a->limit_max = to;
+              a->step = niceStep(from, to);
+            }
+            changed = true;
+          }
+          c += 4;
+        }
+      }
+    }
+
+    if (auto *bode = dynamic_cast<BodeDiagram *>(Diag); bode && BodeMargins && bode->margins != BodeMargins->isChecked()) {
+      bode->margins = BodeMargins->isChecked();
+      changed = true;
+    }
+    if (auto *spectrum = dynamic_cast<SpectrumDiagram *>(Diag); spectrum && SpecWindow) {
+      const auto read = [](const QLineEdit *e) {
+        const qucs_s::units::Reading r = qucs_s::units::read(e->text().trimmed());
+        return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
+      };
+      const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
+      const double from = read(SpecFrom);
+      double fundamental = read(SpecFundamental);
+      if (!(fundamental > 0)) fundamental = std::nan("");
+      if (int(spectrum->window) != SpecWindow->currentIndex() || spectrum->harmonics != SpecHarmonics->value()
+          || spectrum->dbc != SpecDbc->isChecked() || spectrum->stems != SpecStems->isChecked() || !same(spectrum->from, from)
+          || !same(spectrum->fundamental, fundamental)) {
+        spectrum->window = qucs_s::spectrum::Window(SpecWindow->currentIndex());
+        spectrum->harmonics = SpecHarmonics->value();
+        spectrum->dbc = SpecDbc->isChecked();
+        spectrum->stems = SpecStems->isChecked();
+        spectrum->from = from;
+        spectrum->fundamental = fundamental;
+        changed = true;
+      }
+    }
+    if (auto *smith = dynamic_cast<SmithDiagram *>(Diag); smith && SmithCircles) {
+      QList<SmithDiagram::CircleSpec> circles;
+      QString why;
+      if (!SmithDiagram::circlesFromText(SmithCircles->text(), &circles, &why)) {
+        QMessageBox::warning(this, tr("Circles"), tr("The circles are kept as they were: %1.").arg(why));
+        SmithCircles->setText(SmithDiagram::circlesText(smith->circles));
+      } else {
+        const qucs_s::units::Reading r = qucs_s::units::read(SmithFrequency->text().trimmed());
+        const double frequency = r.kind == qucs_s::units::Reading::Number && r.value > 0 ? r.value : std::nan("");
+        const bool same = (std::isnan(frequency) && std::isnan(smith->circleFrequency)) || frequency == smith->circleFrequency;
+        if (circles != smith->circles || !same) {
+          smith->circles = circles;
+          smith->circleFrequency = frequency;
+          changed = true;
+        }
+      }
+    }
+    if (auto *iq = dynamic_cast<ConstellationDiagram *>(Diag); iq && IqPeriod) {
+      const auto read = [](const QLineEdit *e) {
+        const qucs_s::units::Reading r = qucs_s::units::read(e->text().trimmed());
+        return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
+      };
+      const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
+      double period = read(IqPeriod);
+      if (!(period > 0)) period = std::nan("");
+      const double offset = read(IqOffset), from = read(IqFrom);
+      if (!same(iq->period, period) || !same(iq->offset, offset) || !same(iq->from, from) || iq->modulation != IqModulation->currentIndex()) {
+        iq->period = period;
+        iq->offset = offset;
+        iq->from = from;
+        iq->modulation = IqModulation->currentIndex();
+        changed = true;
+      }
+    }
+    if (auto *boxes = dynamic_cast<BoxPlotDiagram *>(Diag); boxes && BoxAt) {
+      const qucs_s::units::Reading r = qucs_s::units::read(BoxAt->text().trimmed());
+      const double at = r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
+      const bool same = (std::isnan(at) && std::isnan(boxes->at)) || at == boxes->at;
+      if (!same || boxes->range != BoxRange->isChecked()) {
+        boxes->at = at;
+        boxes->range = BoxRange->isChecked();
+        changed = true;
+      }
+    }
+    if (auto *tornado = dynamic_cast<TornadoDiagram *>(Diag); tornado && TornadoMode) {
+      const qucs_s::units::Reading r = qucs_s::units::read(TornadoAt->text().trimmed());
+      const double at = r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
+      const bool same = (std::isnan(at) && std::isnan(tornado->at)) || at == tornado->at;
+      if (tornado->mode != TornadoMode->currentIndex() || !same || tornado->bars != TornadoBars->value()) {
+        tornado->mode = TornadoMode->currentIndex();
+        tornado->at = at;
+        tornado->bars = TornadoBars->value();
+        changed = true;
+      }
+    }
+    if (auto *gram = dynamic_cast<SpectrogramDiagram *>(Diag); gram && GramWindow) {
+      const qucs_s::units::Reading r = qucs_s::units::read(GramSegment->text().trimmed());
+      double segment = r.kind == qucs_s::units::Reading::Number && r.value > 0 ? r.value : std::nan("");
+      const bool same = (std::isnan(segment) && std::isnan(gram->segment)) || segment == gram->segment;
+      if (int(gram->window) != GramWindow->currentIndex() || !same || gram->overlap != GramOverlap->value() || gram->range != GramRange->value()) {
+        gram->window = qucs_s::spectrum::Window(GramWindow->currentIndex());
+        gram->segment = segment;
+        gram->overlap = GramOverlap->value();
+        gram->range = GramRange->value();
+        changed = true;
+      }
+    }
+    if (auto *contour = dynamic_cast<ContourDiagram *>(Diag); contour && MapLevels) {
+      const auto read = [](const QLineEdit *e) {
+        const qucs_s::units::Reading r = qucs_s::units::read(e->text().trimmed());
+        return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
+      };
+      const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
+      double lo = read(MapPassMin), hi = read(MapPassMax);
+      if (std::isfinite(lo) && std::isfinite(hi) && !(lo < hi)) {
+        QMessageBox::warning(this, tr("Contour map"), tr("What passes goes from a value below the one it goes to: %1 to %2 is kept as it was.")
+                                                          .arg(MapPassMin->text(), MapPassMax->text()));
+        lo = contour->passMin;
+        hi = contour->passMax;
+      }
+      if (contour->levels != MapLevels->value() || contour->map != MapColours->currentIndex() || contour->filled != MapFilled->isChecked()
+          || contour->labels != MapLabels->isChecked() || !same(contour->passMin, lo) || !same(contour->passMax, hi)) {
+        contour->levels = MapLevels->value();
+        contour->map = MapColours->currentIndex();
+        contour->filled = MapFilled->isChecked();
+        contour->labels = MapLabels->isChecked();
+        contour->passMin = lo;
+        contour->passMax = hi;
+        changed = true;
+      }
+    }
+    if (auto *tub = dynamic_cast<BathtubDiagram *>(Diag); tub && TubUi) {
+      const auto read = [](const QLineEdit *e) {
+        const qucs_s::units::Reading r = qucs_s::units::read(e->text().trimmed());
+        return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
+      };
+      const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
+      double ui = read(TubUi), ber = read(TubBer), floor = read(TubFloor);
+      if (!(ui > 0)) ui = std::nan("");
+      // (A rate out of range: the one it had, said.)
+      if (!(ber > 0 && ber <= 0.01)) {
+        QMessageBox::warning(this, tr("Bathtub"), tr("The bit error rate is above 0 and at most 0.01: \"%1\" is not one; it stays %2.")
+                                                       .arg(TubBer->text(), QString::number(tub->ber, 'g', 3)));
+        TubBer->setText(misc::num2str(tub->ber, -1, QString()));
+        ber = tub->ber;
+      }
+      if (!(floor > 0 && floor < ber)) floor = std::nan("");
+      const int levels = TubLevels->currentIndex() == 1 ? 2 : TubLevels->currentIndex() == 2 ? 4 : 0;
+      const double from = read(TubFrom), threshold = read(TubThreshold);
+      if (!same(tub->ui, ui) || !same(tub->start, from) || tub->levels != levels || !same(tub->threshold, threshold)
+          || tub->ber != ber || !same(tub->floor, floor) || tub->measured != TubMeasured->isChecked()) {
+        tub->ui = ui;
+        tub->start = from;
+        tub->levels = levels;
+        tub->threshold = threshold;
+        tub->ber = ber;
+        tub->floor = floor;
+        tub->measured = TubMeasured->isChecked();
+        changed = true;
+      }
+    }
+    if (auto *nichols = dynamic_cast<NicholsDiagram *>(Diag); nichols && NicholsGrid && nichols->grid != NicholsGrid->isChecked()) {
+      nichols->grid = NicholsGrid->isChecked();
+      changed = true;
+    }
+    if (auto *polar = dynamic_cast<PolarDiagram *>(Diag); polar && NyquistMarks
+        && (polar->nyquist != NyquistMarks->isChecked() || polar->mirror != NyquistMirror->isChecked())) {
+      polar->nyquist = NyquistMarks->isChecked();
+      polar->mirror = NyquistMirror->isChecked();
+      changed = true;
+    }
+    if (auto *pz = dynamic_cast<PoleZeroDiagram *>(Diag); pz && PzGuides && pz->guides != PzGuides->isChecked()) {
+      pz->guides = PzGuides->isChecked();
+      changed = true;
+    }
+    if (LimitTable) {
+      QList<qucs_s::limits::Limit> limits;
+      if (readLimits(&limits, false) && limits != Diag->limits) {
+        Diag->limits = limits;
+        changed = true;
+      }
+    }
+
     if ((Diag->Name.left(4) == "Rect") || (Diag->Name == "Curve")) {
       auto yUnit = Diag->yAxis.Units;
       if (yUnit != LogUnitsY->currentIndex()) {
@@ -1960,7 +2628,8 @@ void DiagramDialog::slotApply() {
             (Qt::PenStyle)(GridStyleBox->currentIndex() + 1));
         changed = true;
       }
-    if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram") && (Diag->Name != "Eye")) {
+    if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram") && (Diag->Name != "Eye")
+        && (Diag->Name != "Bathtub")) {
       if (Diag->zAxis.Label.isEmpty())
         Diag->zAxis.Label = ""; // can be not 0 and empty!
       if (yrLabel->text().isEmpty())
@@ -2158,6 +2827,15 @@ void DiagramDialog::slotSetAutoColor(bool on) {
   toTake = false;
 }
 
+void DiagramDialog::slotSetGhost(bool on) {
+  const int i = GraphList->currentRow();
+  if (i < 0)
+    return;
+  Graphs.at(i)->ghost = on;
+  changed = true;
+  toTake = false;
+}
+
 void DiagramDialog::enableMarkerBox(const Graph *g) {
   if (MarkerBox == nullptr) return;
   const bool line = g != nullptr && g->Style >= GRAPHSTYLE_SOLID && g->Style <= GRAPHSTYLE_LONGDASH;
@@ -2350,7 +3028,7 @@ void DiagramDialog::slotSetYAxis(int axis) {
   if (i < 0)
     return;
 
-  Graphs.at(i)->yAxisNo = axis;
+  setAxisIndex(Graphs.at(i).get(), axis);
   updateGraphListItem(i); // Update table display
   changed = true;
   toTake = false;
@@ -2507,7 +3185,8 @@ void DiagramDialog::slotEditRotZ(const QString &Text) {
 
 void DiagramDialog::slotPlotVs(int) {
   QString s = GraphInput->text();
-  s.remove(QRegularExpression("@.*$")); // remove all after "@" symbol
+  // (All after the "@" of "plotted against", not that of a device's vector.)
+  if (const int at = Graph::plotVsSeparator(s); at > 0) s.truncate(at);
   if (ChooseXVar->currentIndex() != 0) {
     s += "@" + ChooseXVar->currentText();
   }
@@ -2517,8 +3196,8 @@ void DiagramDialog::slotPlotVs(int) {
 void DiagramDialog::updateXVar() {
   ChooseXVar->blockSignals(true);
   QString s = GraphInput->text();
-  if (s.contains("@")) {
-    QString xvar = s.section("@", 1, 1);
+  if (const int at = Graph::plotVsSeparator(s); at > 0) {
+    QString xvar = s.mid(at + 1);
     int n = ChooseXVar->findText(xvar);
     if (n != -1)
       ChooseXVar->setCurrentIndex(n);
@@ -2767,16 +3446,7 @@ void DiagramDialog::updateGraphListItem(int row) {
     }
 
     // Column 4: y-Axis (if applicable)
-    QString axisName = "";
-    if (yAxisBox) {
-      if ((Diag->Name == "Rect") || (Diag->Name == "Curve")) {
-        axisName = (g->yAxisNo == 0) ? tr("left") : tr("right");
-      } else if (Diag->Name == "PS" || Diag->Name == "SP") {
-        axisName = (g->yAxisNo == 0) ? tr("smith") : tr("polar");
-      } else {
-        axisName = (g->yAxisNo == 0) ? tr("y") : tr("z");
-      }
-    }
+    const QString axisName = axisNameOf(g);
     QTableWidgetItem *axisItem = GraphList->item(row, 4);
     if (!axisItem) {
       axisItem = new QTableWidgetItem(axisName);
@@ -2961,4 +3631,160 @@ void DiagramDialog::showTheme() {
   if (model != nullptr && custom >= 0) model->item(custom)->setEnabled(match < 0);
   a_themePreset->setCurrentIndex(match >= 0 ? match : custom);
   if (a_themePreview != nullptr) a_themePreview->show(ofThisDiagram(a_theme));
+}
+
+void DiagramDialog::fillAxisBox() {
+  auto *stacked = dynamic_cast<StackedDiagram *>(Diag);
+  if (!yAxisBox || !stacked) return;
+  yAxisBox->clear();
+  const int n = PaneCount ? PaneCount->value() : stacked->paneCount();
+  for (int i = 1; i <= n; ++i) {
+    yAxisBox->addItem(tr("pane %1, left").arg(i));
+    yAxisBox->addItem(tr("pane %1, right").arg(i));
+  }
+}
+
+int DiagramDialog::axisIndexOf(const Graph *g) const {
+  if (Diag->Name == "Stacked") return 2 * g->pane + (g->yAxisNo == 0 ? 0 : 1);
+  return g->yAxisNo;
+}
+
+void DiagramDialog::setAxisIndex(Graph *g, int index) const {
+  if (index < 0) index = 0;
+  if (Diag->Name == "Stacked") {
+    g->pane = index / 2;
+    g->yAxisNo = index % 2;
+    return;
+  }
+  g->yAxisNo = index;
+}
+
+QString DiagramDialog::axisNameOf(const Graph *g) const {
+  if (!yAxisBox) return QString();
+  if (Diag->Name == "Stacked")
+    return tr("pane %1, %2").arg(g->pane + 1).arg(g->yAxisNo == 0 ? tr("left") : tr("right"));
+  if ((Diag->Name == "Rect") || (Diag->Name == "Curve")) return (g->yAxisNo == 0) ? tr("left") : tr("right");
+  if (Diag->Name == "PS" || Diag->Name == "SP") return (g->yAxisNo == 0) ? tr("smith") : tr("polar");
+  return (g->yAxisNo == 0) ? tr("y") : tr("z");
+}
+
+void DiagramDialog::setPaneRows(int n) {
+  if (!PaneTable) return;
+  const int was = PaneTable->rowCount();
+  PaneTable->setRowCount(n);
+  for (int i = was; i < n; ++i) {
+    PaneTable->setVerticalHeaderItem(i, new QTableWidgetItem(tr("pane %1").arg(i + 1)));
+    for (int c = 0; c < 8; ++c) {
+      auto *item = new QTableWidgetItem();
+      if (c == 3 || c == 7) {
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable);
+        item->setCheckState(Qt::Unchecked);
+      }
+      PaneTable->setItem(i, c, item);
+    }
+  }
+}
+
+void DiagramDialog::addLimitRow(const qucs_s::limits::Limit &limit) {
+  const int row = LimitTable->rowCount();
+  LimitTable->setRowCount(row + 1);
+  auto *side = new QComboBox();
+  side->addItem(tr("upper"));
+  side->addItem(tr("lower"));
+  side->setCurrentIndex(limit.side == qucs_s::limits::Limit::Lower ? 1 : 0);
+  LimitTable->setCellWidget(row, 0, side);
+  QStringList points;
+  for (const QPointF &p : limit.points)
+    points << (limit.isLevel() ? misc::num2str(p.y(), -1, QString()) : misc::num2str(p.x(), -1, QString()) + ", " + misc::num2str(p.y(), -1, QString()));
+  LimitTable->setItem(row, 1, new QTableWidgetItem(points.join(QStringLiteral("; "))));
+  LimitTable->setItem(row, 2, new QTableWidgetItem(limit.label));
+  auto *axis = new QComboBox();
+  axis->addItem(tr("left"));
+  axis->addItem(tr("right"));
+  axis->setCurrentIndex(limit.axis == 1 ? 1 : 0);
+  LimitTable->setCellWidget(row, 3, axis);
+  if (LimitTable->columnCount() > 4) {
+    auto *pane = new QSpinBox();
+    auto *stacked = dynamic_cast<StackedDiagram *>(Diag);
+    pane->setRange(1, stacked ? StackedDiagram::MaxPanes : 1);
+    pane->setValue(limit.pane + 1);
+    LimitTable->setCellWidget(row, 4, pane);
+  }
+}
+
+bool DiagramDialog::readLimits(QList<qucs_s::limits::Limit> *limits, bool warn) {
+  limits->clear();
+  const auto number = [](const QString &text, double *v) {
+    const qucs_s::units::Reading r = qucs_s::units::read(text.trimmed());
+    if (r.kind != qucs_s::units::Reading::Number || !std::isfinite(r.value)) return false;
+    *v = r.value;
+    return true;
+  };
+  for (int row = 0; row < LimitTable->rowCount(); ++row) {
+    qucs_s::limits::Limit l;
+    auto *side = qobject_cast<QComboBox *>(LimitTable->cellWidget(row, 0));
+    l.side = side && side->currentIndex() == 1 ? qucs_s::limits::Limit::Lower : qucs_s::limits::Limit::Upper;
+    const QString text = LimitTable->item(row, 1) ? LimitTable->item(row, 1)->text().trimmed() : QString();
+    QString why;
+    const QStringList pairs = text.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    if (pairs.size() == 1 && !pairs.first().contains(QLatin1Char(','))) {
+      double y = 0;
+      if (!number(pairs.first(), &y)) why = tr("%1 is no number.").arg(pairs.first().trimmed());
+      else l.points << QPointF(0, y);
+    } else {
+      for (const QString &pair : pairs) {
+        double x = 0, y = 0;
+        if (!number(pair.section(QLatin1Char(','), 0, 0), &x) || !number(pair.section(QLatin1Char(','), 1, 1), &y)) {
+          why = tr("%1 is no point: x, y.").arg(pair.trimmed());
+          break;
+        }
+        if (!l.points.isEmpty() && x < l.points.last().x()) {
+          why = tr("The points go with x rising.");
+          break;
+        }
+        l.points << QPointF(x, y);
+      }
+      if (why.isEmpty() && l.points.size() < 2) why = tr("A limit is a level (a number) or two points or more.");
+    }
+    l.label = LimitTable->item(row, 2) ? LimitTable->item(row, 2)->text().trimmed() : QString();
+    if (l.label.contains(QLatin1Char('"'))) why = tr("A label has no double quotes.");
+    auto *axis = qobject_cast<QComboBox *>(LimitTable->cellWidget(row, 3));
+    l.axis = axis && axis->currentIndex() == 1 ? 1 : 0;
+    if (auto *pane = qobject_cast<QSpinBox *>(LimitTable->cellWidget(row, 4))) l.pane = pane->value() - 1;
+    if (!why.isEmpty()) {
+      if (warn) {
+        QMessageBox::warning(this, tr("Limits"), tr("Limit %1 cannot be taken. %2").arg(row + 1).arg(why));
+        LimitTable->setCurrentCell(row, 1);
+      }
+      return false;
+    }
+    *limits << l;
+  }
+  return true;
+}
+
+void DiagramDialog::addSensitivityParts()
+{
+  // The Data tab's variables: a part's chosen as a sensitivity run's are,
+  // taken as a double click on it takes it (those shown already left).
+  QStringList names;
+  QHash<QString, QTableWidgetItem *> items;
+  for (int row = 0; row < ChooseVars->rowCount(); ++row)
+    if (QTableWidgetItem *item = ChooseVars->item(row, 0)) {
+      names << item->text();
+      items.insert(item->text(), item);
+    }
+  QStringList shown;
+  for (int row = 0; row < GraphList->rowCount(); ++row)
+    if (QTableWidgetItem *item = GraphList->item(row, 0)) shown << item->text().section('/', -1);
+  int added = 0;
+  for (const QString &part : TornadoDiagram::sensitivityParts(names)) {
+    if (shown.contains(part)) continue;
+    slotTakeVar(items.value(part));
+    ++added;
+  }
+  if (added == 0)
+    QMessageBox::information(this, tr("Tornado chart"),
+                             tr("The run chosen on the Data tab has no part of a sensitivity run not shown already "
+                                "(ngspice's .SENS: r1, r1_scale, v1, ...)."));
 }

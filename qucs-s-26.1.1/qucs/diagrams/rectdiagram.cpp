@@ -194,16 +194,11 @@ int RectDiagram::calcDiagram()
   qDeleteAll(Arcs);
   Arcs.clear();
 
-  double GridStep, corr, zD, zDstep, GridNum;
-  // get size of text using the screen-compatible metric
-  QFontMetrics metrics(QucsSettings.font, 0);
   y1 = QucsSettings.font.pointSize() + 6;
 
   x1 = 10;      // position of label text
   x3 = x2 + 7;
-  QString tmp;
-  bool back = false;
-  int  z, w, valid = 0;
+  int valid = 0;
 
   // =====  give "step" the right sign (if user made it wrong)  ==============
   xAxis.step = fabs(xAxis.step);
@@ -218,13 +213,36 @@ int RectDiagram::calcDiagram()
   if(zAxis.limit_min > zAxis.limit_max)
     zAxis.step *= -1.0;
 
+  if(createXGrid()) {
+    // ====  y grid  =======================================================
+    if(zAxis.numGraphs > 0) if(calcYAxis(&zAxis, x2)) valid |= 2;
+    if(yAxis.numGraphs > 0) if(calcYAxis(&yAxis, 0))  valid |= 1;
+  }
+
+  // outer frame
+  Lines.append(as(Part::Frame, new qucs::Line(0,  y2, x2, y2, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(x2, y2, x2,  0, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(0,   0, x2,  0, QPen(Qt::black,0))));
+  Lines.append(as(Part::Frame, new qucs::Line(0,  y2,  0,  0, QPen(Qt::black,0))));
+  return valid;
+}
+
+// --------------------------------------------------------------
+bool RectDiagram::createXGrid()
+{
+  double GridStep, corr, zD, zDstep, GridNum;
+  // get size of text using the screen-compatible metric
+  QFontMetrics metrics(QucsSettings.font, 0);
+  QString tmp;
+  bool back = false;
+  int  z, w;
 
   // ====  x grid  =======================================================
 if(xAxis.log) {
   if(xAxis.autoScale) {
-    if(!(xAxis.max*xAxis.min >= 1e-200))  goto Frame;  // invalid (or nan)
+    if(!(xAxis.max*xAxis.min >= 1e-200))  return false;  // invalid (or nan)
   }
-  else  if(!(xAxis.limit_min*xAxis.limit_max >= 1e-200))  goto Frame;  // invalid (or nan)
+  else  if(!(xAxis.limit_min*xAxis.limit_max >= 1e-200))  return false;  // invalid (or nan)
 
   back = calcAxisLogScale(&xAxis, z, zD, zDstep, corr, x2);
 
@@ -234,7 +252,7 @@ if(xAxis.log) {
       Lines.prepend(as(Part::Grid, new qucs::Line(z, y2, z, 0, GridPen)));  // x grid
 
     if((zD < 1.5*zDstep) || (z == 0) || (z == x2)) {
-      tmp = numberText(zD);
+      tmp = numberText(&xAxis, zD);
       if(xAxis.up < 0.0)  tmp = '-'+tmp;
       w = metrics.boundingRect(tmp).width();  // width of text
       // center text horizontally under the x tick mark
@@ -263,7 +281,7 @@ else {  // not logarithmical
   z = gridPixel(zD);   //  "int(...)" implies "floor(...)"
   for (int gridLines = 0; (z <= x2) && (z >= 0) && gridLines < MaxGridLines; ++gridLines) {    // create all grid lines
     if(fabs(GridNum) < 0.01*pow(10.0, Expo)) GridNum = 0.0;// make 0 really 0
-    tmp = numberText(GridNum, GridStep);
+    tmp = numberText(&xAxis, GridNum, GridStep);
     w = metrics.boundingRect(tmp).width();  // width of text
     // center text horizontally under the x tick mark
     Texts.append(as(Part::XAxis, new Text(z-(w>>1), -y1, tmp))); // Text(x, y, str, ...)
@@ -276,20 +294,7 @@ else {  // not logarithmical
     z = gridPixel(zD);
   }
 } // of "if(xlog) ... else ..."
-
-
-  // ====  y grid  =======================================================
-  if(zAxis.numGraphs > 0) if(calcYAxis(&zAxis, x2)) valid |= 2;
-  if(yAxis.numGraphs > 0) if(calcYAxis(&yAxis, 0))  valid |= 1;
-
-
-Frame:
-  // outer frame
-  Lines.append(as(Part::Frame, new qucs::Line(0,  y2, x2, y2, QPen(Qt::black,0))));
-  Lines.append(as(Part::Frame, new qucs::Line(x2, y2, x2,  0, QPen(Qt::black,0))));
-  Lines.append(as(Part::Frame, new qucs::Line(0,   0, x2,  0, QPen(Qt::black,0))));
-  Lines.append(as(Part::Frame, new qucs::Line(0,  y2,  0,  0, QPen(Qt::black,0))));
-  return valid;
+  return true;
 }
 
 // ------------------------------------------------------------

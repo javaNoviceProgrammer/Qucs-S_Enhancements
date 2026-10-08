@@ -18,6 +18,7 @@
 #include "misc.h"
 #include "schematic.h"
 #include "settings.h"
+#include "main.h"
 
 
 SP_Sim::SP_Sim()
@@ -104,7 +105,8 @@ int SP_Sim::getSPortsNumber()
 
 QStringList SP_Sim::getExtraVariables()
 {
-    switch (_settings::Get().item<int>("DefaultSimulator")) {
+    // The simulator in use (a run's own, --ngspice), not the one stored.
+    switch (QucsSettings.DefaultSimulator) {
         case spicecompat::simNgspice:
             return getNgspiceExtraVariables();
         case spicecompat::simXyce:

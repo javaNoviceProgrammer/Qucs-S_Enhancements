@@ -35,7 +35,18 @@ public:
 
   QList<Part> themeParts() const override;
 
+  /// A Nyquist plot's marks: the critical point -1 and the unit circle
+  /// (the chart then reaches 1 at least).
+  bool nyquist = false;
+  /// Each graph's negative frequencies too: its mirror image in the real
+  /// axis, dashed.
+  bool mirror = false;
+
 protected:
+  QString extraSaveFields() const override;
+  void loadExtraFields(const QStringList&) override;
+  void paintBehindGraphs(QPainter*) override;
+  void paintInFront(QPainter*, const Colors&) override;
   /// (A circle; its numbers inside it.)
   QPainterPath plotAreaShape() const override;
   bool numbersInside() const override { return true; }

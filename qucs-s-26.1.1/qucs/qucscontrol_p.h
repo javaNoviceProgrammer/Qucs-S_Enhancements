@@ -75,6 +75,8 @@ QString badFileName(const QString& name);
 /// The parts of type \a model (any case: gnd is GND) that have no name
 /// (grounds), in order.
 QList<Component*> unnamedOf(const Schematic* sch, const QString& model);
+/// A part by what refOf() tells it by. Null, and why in \a error.
+Component* componentOf(const Schematic* sch, const QString& ref, QString* error);
 /// What a part is told by: its name; one without a name (a ground) by its
 /// type when it is the only one of it, else by its number among them -
 /// GND#2, get_schematic's 'ref'. Every tool that names a part names it so.
@@ -101,6 +103,9 @@ QString datasetFile(const QString& schematic, const QString& dataSet, int simula
 /// one's type, place, axes and traces - with whether each trace has data
 /// and, when not, why.
 QJsonArray diagramsJson(Schematic* sch);
+/// The named nets' values at the marker they follow (cursorvalues.h):
+/// which marker, its x, each net's value - or why there are none.
+QJsonObject cursorValuesJson(Schematic* sch);
 /// The diagram \a which (its number) of \a sch; when not given, the only
 /// one there is. nullptr and why in \a error.
 Diagram* diagramOf(Schematic* sch, const QJsonValue& which, QString* error);

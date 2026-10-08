@@ -11,6 +11,7 @@ ellipse.h
 ellipsearc.h
 filldialog.h
 graphicline.h
+buspainting.h
 graphictext.h
 graphictextdialog.h
 id_dialog.h
@@ -30,7 +31,7 @@ formulapainting.h
 
 SET(PAINTINGS_SRCS
 arrow.cpp arrowdialog.cpp
-graphicline.cpp	id_text.cpp
+graphicline.cpp	buspainting.cpp	id_text.cpp
 graphictext.cpp	painting.cpp
 ellipse.cpp	graphictextdialog.cpp
 portsymbol.cpp ellipsearc.cpp

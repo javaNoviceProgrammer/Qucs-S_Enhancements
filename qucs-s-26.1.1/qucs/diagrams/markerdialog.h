@@ -61,6 +61,7 @@ public:
   QComboBox  *IndicatorBox;
   QLineEdit  *SourceImpedance;
   QCheckBox  *TransBox;
+  QComboBox  *RelativeBox;    // a delta marker's reference: none, or another of the diagram's
   QPushButton *TextColorButton, *FillColorButton;   // a colour chosen
   QToolButton *TextColorAuto, *FillColorAuto;       // back to automatic
 };

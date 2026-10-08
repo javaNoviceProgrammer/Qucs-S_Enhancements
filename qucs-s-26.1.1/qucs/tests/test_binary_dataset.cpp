@@ -550,7 +550,8 @@ private slots:
     // A diagram's graph reads a binary dataset as it reads text: a real
     // curve, a complex one shown as its phase, a family over two variables,
     // an independent variable over its index, one over another (PlotVs), a
-    // name alone found as a voltage - and nothing for one not there.
+    // name alone found as a voltage, a voltage found as the name alone
+    // (ngspice 46's s_1_1 for v(s_1_1)) - and nothing for one not there.
     void aGraphReadsBinaryAsItReadsText()
     {
         const auto blocks = [](df::Writer& w) {
@@ -578,6 +579,11 @@ private slots:
             w.complex(0, -2);
             w.complex(-3, 0.5);
             w.end();
+            w.begin("dep ac.s_1_1 frequency");
+            w.complex(0.5, -0.1);
+            w.complex(0.4, -0.2);
+            w.complex(0.3, -0.3);
+            w.end();
             w.begin("dep tran.v(short) time");   // fewer values than time has: nothing
             for (int i = 0; i < 3; ++i) w.real(i);
             w.end();
@@ -599,7 +605,7 @@ private slots:
             QVERIFY(f.commit());
         }
         const QStringList traces{"ngspice/tran.v(out)", "ngspice/tran.v(fam)", "ngspice/time", "ngspice/tran.v(out)@tran.v(gain)",
-                                 "ngspice/tran.gain", "ngspice/ac.v(out)", "ngspice/tran.v(short)", "ngspice/nothing"};
+                                 "ngspice/tran.gain", "ngspice/ac.v(out)", "ngspice/ac.v(s_1_1)", "ngspice/tran.v(short)", "ngspice/nothing"};
         for (const QString& trace : traces) {
             for (const auto part : {Graph::ValuePart::Auto, Graph::ValuePart::Phase}) {
                 RectDiagram d1, d2;

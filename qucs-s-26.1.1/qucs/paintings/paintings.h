@@ -26,6 +26,7 @@
 #include "ellipse.h"
 #include "arrow.h"
 #include "graphicline.h"
+#include "buspainting.h"
 #include "graphictext.h"
 #include "portsymbol.h"
 #include "ellipsearc.h"

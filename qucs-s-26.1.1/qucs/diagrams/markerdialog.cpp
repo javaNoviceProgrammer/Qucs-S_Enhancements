@@ -174,6 +174,24 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
   a_fillColor = pMarker->fillColor;
   showColors();
 
+  // A delta marker: Δx, Δy and 1/Δx from another marker of the diagram.
+  g->addWidget(new QLabel(tr("Relative to:")), 9, 0);
+  RelativeBox = new QComboBox();
+  RelativeBox->setObjectName(QStringLiteral("markerRelativeTo"));
+  RelativeBox->addItem(tr("none"), -1);
+  RelativeBox->setToolTip(tr("Its text adds \u0394x, \u0394y and 1/\u0394x from that marker, and a dashed line joins the two: "
+                             "the time between two edges, the band between two -3 dB points"));
+  if (const Diagram *d = pMarker->diag()) {
+    const QList<Marker *> all = d->markers();
+    for (int i = 0; i < all.size(); ++i) {
+      if (all.at(i) == pMarker) continue;
+      const QString first = all.at(i)->Text.section('\n', 0, 0);
+      RelativeBox->addItem(tr("marker %1 (%2)").arg(i + 1).arg(first), i);
+      if (all.at(i) == pMarker->reference()) RelativeBox->setCurrentIndex(RelativeBox->count() - 1);
+    }
+  }
+  g->addWidget(RelativeBox, 9, 1);
+
   // first => activated by pressing RETURN
   QPushButton *ButtOK = new QPushButton(tr("OK"));
   connect(ButtOK, SIGNAL(clicked()), SLOT(slotAcceptValues()));
@@ -185,7 +203,7 @@ MarkerDialog::MarkerDialog(Marker *pm_, QWidget *parent)
   b->setSpacing(5);
   b->addWidget(ButtOK);
   b->addWidget(ButtCancel);
-  g->addLayout(b,9,0,1,2);   // (under the rest: it covered the check box once)
+  g->addLayout(b,10,0,1,2);   // (under the rest: it covered the check box once)
 
   this->setLayout(g);
 }
@@ -266,6 +284,16 @@ void MarkerDialog::slotAcceptValues()
     changed = true;
   }
 
+  {
+    const Diagram *d = pMarker->diag();
+    const int at = RelativeBox->currentData().toInt();
+    const Marker *ref = d && at >= 0 && at < d->markers().size() ? d->markers().at(at) : nullptr;
+    if (ref != pMarker->reference()) {
+      pMarker->setReference(ref);
+      changed = true;
+    }
+  }
+
   double xpos = XPosition->text().toDouble();
   if ((xpos != pMarker->powFreq()) &&
       (pMarker->varPos().size() > 0)) {
@@ -275,6 +303,7 @@ void MarkerDialog::slotAcceptValues()
 
   if(changed) {
     pMarker->createText();
+    pMarker->refreshDependents();
     done(2);
   }
   else done(1);
