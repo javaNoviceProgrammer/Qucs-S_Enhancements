@@ -40,6 +40,8 @@
 #include "diagrams/polardiagram.h"
 #include "diagrams/spectrumdiagram.h"
 #include "diagrams/bathtubdiagram.h"
+#include "diagrams/levelhistogramdiagram.h"
+#include "diagrams/histogramdiagram.h"
 #include "diagrams/contourdiagram.h"
 #include "diagrams/spectrogramdiagram.h"
 #include <QDoubleSpinBox>
@@ -152,6 +154,35 @@ Signal dataSignal(double ui, int symbols, double rj, double dj, bool pam4 = fals
     }
     s.t << symbols * ui;
     s.v << b.last();
+    return s;
+}
+
+// A data signal with noise on its levels: each symbol's value - its
+// level, plus \a sigma (\a sigmaHigh on the upper levels, when given) times
+// a Gaussian - held from a tenth of its UI to nine tenths, the edges
+// between: sampled at the UI's middle, the value itself.
+Signal noisySignal(double ui, int symbols, double sigma, bool pam4 = false, double sigmaHigh = -1.0, double gain = 1.0, double offset = 0.0)
+{
+    constexpr double Pi = 3.14159265358979323846;
+    std::mt19937 random(11);
+    const auto uniform = [&] { return (double(random()) + 0.5) / 4294967296.0; };
+    const auto gaussian = [&] { return std::sqrt(-2 * std::log(uniform())) * std::cos(2 * Pi * uniform()); };
+    unsigned lfsr = 0x7f;
+    Signal s;
+    for (int i = 0; i < symbols; ++i) {
+        int level = 0;
+        if (pam4) {
+            level = int(random() % 4);
+        } else {
+            const unsigned bit = ((lfsr >> 6) ^ (lfsr >> 5)) & 1u;
+            lfsr = ((lfsr << 1) | bit) & 0x7fu;
+            level = int(bit);
+        }
+        const bool upper = pam4 ? level >= 2 : level == 1;
+        const double v = offset + gain * level + (upper && sigmaHigh >= 0 ? sigmaHigh : sigma) * gaussian();
+        s.t << (i + 0.1) * ui << (i + 0.9) * ui;
+        s.v << v << v;
+    }
     return s;
 }
 
@@ -1247,6 +1278,323 @@ private slots:
         QVERIFY(view->measured && std::isnan(view->floor));
         QCOMPARE(view->floorRate(), 1e-13);
         dialog->close();
+    }
+
+    // ---- The levels at the sampling instant: each level's mean and
+    // spread of a signal of known noise, Q and the rate it gives, the
+    // vertical bathtub's best threshold and opening against their closed
+    // forms; counted against the model; PAM4's three; a phase off the
+    // centre; no noise.
+    void levelsAtTheSamplingInstant()
+    {
+        namespace eye = qucs_s::eye;
+        const double ui = 100e-12, sigma = 0.05;
+        const Signal sig = noisySignal(ui, 4000, sigma);
+        const auto curveOf = [](const Signal& s) {
+            qucs_s::dataset::Curve c;
+            c.x = s.t;
+            c.y = s.v;
+            return c;
+        };
+        eye::Options o;
+        o.ui = ui;
+        const qucs_s::dataset::Curve c = curveOf(sig);
+        const eye::Result r = eye::analyse(c, o);
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        const QVector<double> sampled = eye::sampledAt(c, r);
+        QCOMPARE(int(sampled.size()), r.symbols);
+        const QList<eye::Level> levels = eye::levelsOf(r, sampled);
+        QCOMPARE(levels.size(), 2);
+        QCOMPARE(levels.at(0).count() + levels.at(1).count(), r.symbols);
+        for (int k = 0; k < 2; ++k) {
+            const eye::Level& l = levels.at(k);
+            QVERIFY2(std::abs(l.mean - k) < 4 * sigma / std::sqrt(double(l.count())), qPrintable(QString::number(l.mean)));
+            QVERIFY2(std::abs(l.sigma - sigma) < 0.08 * sigma, qPrintable(QString::number(l.sigma)));
+            QVERIFY(std::is_sorted(l.values.cbegin(), l.values.cend()));
+        }
+        // The vertical bathtub: Q, the rate it gives; the best threshold
+        // halfway, the opening at 1e-12 where each level's tail, weighted by
+        // its share, falls through it.
+        const eye::VoltageBathtub b = eye::voltageBathtubOf(r, 0, sampled);
+        QVERIFY2(b.ok(), qPrintable(b.error));
+        QCOMPARE(b.symbols, r.symbols);
+        const double q = (b.high.mean - b.low.mean) / (b.low.sigma + b.high.sigma);
+        QCOMPARE(b.q(), q);
+        QVERIFY2(std::abs(q - 1 / (2 * sigma)) < 0.1 / (2 * sigma), qPrintable(QString::number(q)));
+        QCOMPARE(b.berOfQ(), eye::gaussianTail(q));
+        QVERIFY2(std::abs(b.best() - 0.5) < 0.03, qPrintable(QString::number(b.best())));
+        double from = 0, to = 0;
+        QVERIFY(b.opening(1e-12, &from, &to));
+        const double pLow = double(b.low.count()) / b.symbols, pHigh = double(b.high.count()) / b.symbols;
+        const double lo = b.low.mean + b.low.sigma * eye::gaussianTailInverse(1e-12 / pLow);
+        const double hi = b.high.mean - b.high.sigma * eye::gaussianTailInverse(1e-12 / pHigh);
+        QVERIFY2(std::abs(from - lo) < 1e-6 && std::abs(to - hi) < 1e-6, qPrintable(QStringLiteral("%1 %2 / %3 %4").arg(from).arg(to).arg(lo).arg(hi)));
+        // Counted: none wrong at the best threshold, half a level's at its mean.
+        QCOMPARE(b.measured(b.best()), 0.0);
+        QVERIFY2(std::abs(b.measured(b.low.mean) - pLow / 2) < 0.1 * pLow, qPrintable(QString::number(b.measured(b.low.mean))));
+        QVERIFY(std::abs(b.ber(b.low.mean) - pLow / 2) < 0.01);
+        // A noisier upper level: the best threshold nearer the quiet one.
+        {
+            const qucs_s::dataset::Curve c2 = curveOf(noisySignal(ui, 4000, sigma, false, 2 * sigma));
+            const eye::Result r2 = eye::analyse(c2, o);
+            const eye::VoltageBathtub b2 = eye::voltageBathtubOf(r2, 0, eye::sampledAt(c2, r2));
+            QVERIFY2(b2.ok() && b2.best() < 0.45, qPrintable(QString::number(b2.best())));
+        }
+        // Off the centre, near the walls (the edges): the levels spread, Q falls.
+        const eye::VoltageBathtub near = eye::voltageBathtubOf(r, 0, eye::sampledAt(c, r, 0.45), 0.45);
+        QVERIFY2(near.ok() && near.q() < q / 2, qPrintable(QString::number(near.q())));
+        QCOMPARE(near.phase, 0.45);
+        // Off the centre, none from before the eye's start (the settling,
+        // at 10 here, until just before it): the first instant moved a UI on.
+        {
+            qucs_s::dataset::Curve settled = c;
+            for (int i = 0; i < settled.x.size(); ++i)
+                if (settled.x.at(i) < 49.95 * ui) settled.y[i] = 10.0;
+            eye::Options os = o;
+            os.start = 50.3 * ui;
+            const eye::Result rs = eye::analyse(settled, os);
+            QVERIFY2(rs.ok(), qPrintable(rs.error));
+            for (const double at : {-0.45, -0.2, 0.0, 0.3}) {
+                const QVector<double> v = eye::sampledAt(settled, rs, at);
+                QVERIFY2(!v.isEmpty() && *std::max_element(v.cbegin(), v.cend()) < 2.0, qPrintable(QString::number(at)));
+            }
+        }
+        // No eye 2 in NRZ.
+        QVERIFY(!eye::voltageBathtubOf(r, 1, sampled).ok());
+        // PAM4: four levels, three eyes.
+        const qucs_s::dataset::Curve c4 = curveOf(noisySignal(ui, 4000, sigma, true));
+        eye::Options o4 = o;
+        o4.levels = 4;
+        const eye::Result r4 = eye::analyse(c4, o4);
+        QVERIFY2(r4.ok(), qPrintable(r4.error));
+        const QVector<double> s4 = eye::sampledAt(c4, r4);
+        const QList<eye::Level> l4 = eye::levelsOf(r4, s4);
+        QCOMPARE(l4.size(), 4);
+        for (int k = 0; k < 4; ++k) QVERIFY2(std::abs(l4.at(k).mean - k) < 0.01, qPrintable(QString::number(l4.at(k).mean)));
+        for (int k = 0; k < 3; ++k) {
+            const eye::VoltageBathtub e = eye::voltageBathtubOf(r4, k, s4);
+            QVERIFY2(e.ok() && std::abs(e.best() - (k + 0.5)) < 0.05, qPrintable(QString::number(e.best())));
+        }
+        // No noise - a spread below a billionth of the gap is the numbers'
+        // rounding: Q infinite, the rate it gives 0, open from level to level.
+        const qucs_s::dataset::Curve clean = curveOf(noisySignal(ui, 2000, 1e-13));
+        const eye::Result rc = eye::analyse(clean, o);
+        const eye::VoltageBathtub bc = eye::voltageBathtubOf(rc, 0, eye::sampledAt(clean, rc));
+        QVERIFY(bc.ok() && std::isinf(bc.q()) && bc.berOfQ() == 0.0);
+        QVERIFY(bc.opening(1e-12, &from, &to) && std::abs((to - from) - 1.0) < 1e-6);
+        // As JSON.
+        const QJsonObject j = eye::toJson(b, 1e-12);
+        QCOMPARE(j.value("Q").toDouble(), qucs_s::dataset::rounded(q));
+        // (Exactly: QCOMPARE takes a value below 1e-12 for 0.)
+        QVERIFY(j.contains("BER from Q") && j.value("BER from Q").toDouble() == qucs_s::dataset::rounded(b.berOfQ()));
+        QVERIFY(j.value("low level").toObject().value("symbols").toInt() == b.low.count() && j.contains("best threshold"));
+        b.opening(1e-12, &from, &to);
+        QCOMPARE(j.value("opening").toDouble(), qucs_s::dataset::rounded(to - from));
+        QVERIFY(eye::toJson(bc, 1e-12).value("Q").isNull());
+        // The automatic bins: from each level's spread, a bar a fraction of
+        // a sigma - those of the values together are wider than the noise.
+        const int bins = LevelHistogramDiagram::levelBins(levels, sampled.first(), sampled.last());
+        QVector<double> sorted = sampled;
+        std::sort(sorted.begin(), sorted.end());
+        const double width = (sorted.last() - sorted.first()) / bins;
+        QVERIFY2(width < sigma, qPrintable(QString::number(width)));
+        QVERIFY(HistogramDiagram::automaticBins(sampled, sorted.first(), sorted.last()) < bins);
+    }
+
+    // ---- The level histogram and the bathtub on its side: in the tools,
+    // the file, the dialog, the picture and the readout.
+    void levelHistogramAndVoltageBathtub()
+    {
+        namespace eye = qucs_s::eye;
+        const double ui = 100e-12, sigma = 0.05;
+        // (Its levels 0.3 and 1.5: an axis from 0 to 1 is no fit. Beside it,
+        // one at 0 and 1, through 0.)
+        const Signal sig = noisySignal(ui, 3000, sigma, false, -1.0, 1.2, 0.3);
+        const Signal zero = noisySignal(ui, 3000, sigma);
+        QVERIFY(schematicWith("levels", datasetText("time", sig.t, {{"tran.v(rx)", [&](double x) { return sig.at(x); }},
+                                                                    {"tran.v(zero)", [&](double x) { return zero.at(x); }}})));
+        // Among the diagrams.
+        bool listed = false;
+        for (Module* m : Category::getModules(QObject::tr("diagrams"))) {
+            QString name;
+            char* file = nullptr;
+            delete m->info(name, file, false);
+            listed = listed || name == QObject::tr("Level Histogram");
+        }
+        QVERIFY(listed);
+        QJsonObject res = call("add_diagram", {{"type", "level_histogram"}, {"x", 100}, {"y", 400}, {"width", 300}, {"height", 300},
+                                               {"traces", QJsonArray{"tran.v(rx)"}}, {"level_histogram", QJsonObject{{"unit_interval", "100p"}}}});
+        QVERIFY2(!failed(res), qPrintable(text(res)));
+        auto* hist = dynamic_cast<LevelHistogramDiagram*>(front()->a_DocDiags.front());
+        QVERIFY(hist);
+        QCOMPARE(hist->histograms().size(), 1);
+        const LevelHistogramDiagram::Histogram h = hist->histograms().first();   // (a copy: an edit lays them out again)
+        QVERIFY2(h.error.isEmpty(), qPrintable(h.error));
+        double counted = 0;
+        for (double n : h.counts) counted += n;
+        QCOMPARE(int(counted), h.symbols);
+        QVERIFY2(h.width < sigma, qPrintable(QString::number(h.width)));
+        QCOMPARE(h.levels.size(), 2);
+        QCOMPARE(h.thresholds.size(), 1);
+        // Its numbers, as the eye's analysis gives them.
+        const QJsonObject a = json(res).value("analyses").toArray().first().toObject();
+        QCOMPARE(a.value("levels").toArray().size(), 2);
+        QCOMPARE(a.value("levels").toArray().at(1).toObject().value("sigma").toDouble(), qucs_s::dataset::rounded(h.levels.at(1).sigma));
+        QCOMPARE(a.value("eye").toObject().value("Q").toDouble(), qucs_s::dataset::rounded(h.eyes.first().q()));
+        QCOMPARE(a.value("symbols").toInt(), h.symbols);
+        QCOMPARE(json(res).value("level_histogram").toObject().value("unit_interval").toDouble(), ui);
+        // The signal up, from its lowest value to its highest; the counts
+        // across from 0.
+        QVERIFY(hist->yAxis.low <= h.levels.first().values.first() && hist->yAxis.up >= h.levels.last().values.last());
+        QVERIFY(hist->xAxis.low <= 0.0 && hist->xAxis.low > -0.2 * hist->xAxis.up);
+        const auto render = [](Diagram* view) {
+            QImage img(view->x2 + 200, view->y2 + 100, QImage::Format_RGB32);
+            img.fill(Qt::white);
+            QPainter p(&img);
+            p.translate(100 - view->cx, 50 + view->y2 - view->cy);
+            view->paintDiagram(&p);
+            return img;
+        };
+        // A bar of the lower level at its mean, none halfway between them.
+        const auto inkAt = [&](const QImage& img, double count, double value) {
+            const double X = (count - hist->xAxis.low) / (hist->xAxis.up - hist->xAxis.low) * hist->x2;
+            const double Y = (value - hist->yAxis.low) / (hist->yAxis.up - hist->yAxis.low) * hist->y2;
+            const QColor c = img.pixelColor(100 + int(X), 50 + hist->y2 - int(Y));
+            return c != QColor(Qt::white);
+        };
+        const QImage shown = render(hist);
+        QVERIFY(inkAt(shown, 1.0, h.levels.first().mean));
+        QVERIFY(inkAt(shown, 1.0, h.levels.last().mean));
+        // The threshold dashed across, left of the box.
+        {
+            const double Y = (h.thresholds.first() - hist->yAxis.low) / (hist->yAxis.up - hist->yAxis.low) * hist->y2;
+            int grey = 0;
+            for (int X = 5; X < 60; ++X)
+                for (int dy = -1; dy <= 1; ++dy) {   // (the pixel's row either way of the value's)
+                    const QColor col = shown.pixelColor(100 + X, 50 + hist->y2 - int(std::lround(Y)) + dy);
+                    if (col.red() > 100 && col.red() < 180 && std::abs(col.red() - col.blue()) < 20) ++grey;
+                }
+            QVERIFY2(grey > 10, qPrintable(QString::number(grey)));
+        }
+        QVERIFY(!failed(call("edit_diagram", {{"level_histogram", QJsonObject{{"gaussians", false}}}})));
+        QVERIFY(!hist->gaussians);
+        QVERIFY(render(hist) != shown);
+        // No markers on it.
+        res = call("add_marker", {{"trace", 1}, {"at", 1e-9}});
+        QVERIFY(failed(res) && text(res).contains("no markers"));
+        // Sampled into the edges: the levels spread.
+        QVERIFY(!failed(call("edit_diagram", {{"level_histogram", QJsonObject{{"bins", 40}, {"phase", 0.45}}}})));
+        QVERIFY(hist->bins == 40 && hist->phase == 0.45);
+        QCOMPARE(hist->histograms().first().counts.size(), 40);
+        // A few symbols a bar: the counts from 0 all the same.
+        QVERIFY(!failed(call("edit_diagram", {{"level_histogram", QJsonObject{{"bins", 1000}}}})));
+        QVERIFY2(hist->xAxis.low <= 0.0, qPrintable(QString::number(hist->xAxis.low)));
+        QVERIFY(!failed(call("edit_diagram", {{"level_histogram", QJsonObject{{"bins", 40}}}})));
+        QVERIFY2(hist->histograms().first().levels.first().sigma > 1.5 * h.levels.first().sigma,
+                 qPrintable(QString::number(hist->histograms().first().levels.first().sigma)));
+        // Refused: a phase past a wall, bins below 0, a bool not one, a rate
+        // out of range, another type's.
+        QVERIFY(failed(call("edit_diagram", {{"level_histogram", QJsonObject{{"phase", 0.6}}}})));
+        QVERIFY(failed(call("edit_diagram", {{"level_histogram", QJsonObject{{"bins", -1}}}})));
+        QVERIFY(failed(call("edit_diagram", {{"level_histogram", QJsonObject{{"gaussians", "yes"}}}})));
+        QVERIFY(failed(call("edit_diagram", {{"level_histogram", QJsonObject{{"ber", 0.5}}}})));
+        QVERIFY(failed(call("edit_diagram", {{"bathtub", QJsonObject{{"direction", "voltage"}}}})));
+        QVERIFY(hist->phase == 0.45 && hist->bins == 40);
+        // The readout: the value up, and the symbols in its bar.
+        const QString read = qucs_s::status::readout(hist, MappedPoint{1.0, h.levels.first().mean, 0});
+        QVERIFY2(read.contains("symbols") && read.contains("tran.v(rx)"), qPrintable(read));
+
+        // The bathtub on its side, beside it.
+        res = call("add_diagram", {{"type", "bathtub"}, {"x", 500}, {"y", 400}, {"width", 400}, {"height", 260}, {"traces", QJsonArray{"tran.v(rx)"}},
+                                   {"bathtub", QJsonObject{{"unit_interval", "100p"}, {"direction", "voltage"}}}});
+        QVERIFY2(!failed(res), qPrintable(text(res)));
+        auto* tub = dynamic_cast<BathtubDiagram*>(front()->a_DocDiags.back());
+        QVERIFY(tub && tub->direction == BathtubDiagram::Voltage);
+        QCOMPARE(tub->voltageBathtubs().size(), 1);
+        QVERIFY(tub->bathtubs().isEmpty());
+        const eye::VoltageBathtub v = tub->voltageBathtubs().first().first();   // (a copy: an edit lays them out again)
+        QVERIFY2(v.ok(), qPrintable(v.error));
+        const QJsonObject va = json(res).value("analyses").toArray().first().toObject();
+        QCOMPARE(va.value("Q").toDouble(), qucs_s::dataset::rounded(v.q()));
+        double from = 0, to = 0;
+        QVERIFY(v.opening(1e-12, &from, &to));
+        QCOMPARE(va.value("opening").toDouble(), qucs_s::dataset::rounded(to - from));
+        QCOMPARE(json(res).value("bathtub").toObject().value("direction").toString(), QString("voltage"));
+        // (Its rates are on the log axis, not the signal's values through 0.)
+        res = call("add_trace", {{"diagram", 2}, {"variable", "tran.v(zero)"}});
+        QVERIFY2(!failed(res), qPrintable(text(res)));
+        QVERIFY2(!text(res).contains("left off the log axis"), qPrintable(text(res)));
+        QVERIFY(!failed(call("delete", {{"traces", QJsonArray{QJsonObject{{"diagram", 2}, {"trace", 2}}}}})));
+        // Across from the lower level to the upper; the thresholds' notation.
+        QVERIFY(std::abs(tub->xAxis.low - v.low.mean) < 0.2 && std::abs(tub->xAxis.up - v.high.mean) < 0.2);
+        QCOMPARE(tub->notationOf(&tub->xAxis), qucs_s::numberformat::Notation::Automatic);
+        // The model drawn where it falls through 1e-6.
+        const QImage side = render(tub);
+        QVERIFY(v.opening(1e-6, &from, &to));
+        const auto inkNear = [&](const QImage& img, double threshold, double rate) {
+            const double y[2] = {rate, 0};
+            float px = 0, py = 0;
+            tub->calcCoordinate(&threshold, y, nullptr, &px, &py, &tub->yAxis);
+            int hits = 0;
+            for (int dx = -2; dx <= 2; ++dx)
+                for (int dy = -2; dy <= 2; ++dy) {
+                    const QColor col = img.pixelColor(100 + int(px) + dx, 50 + tub->y2 - int(py) + dy);
+                    if (col.blue() > 150 && col.red() < 100) ++hits;
+                }
+            return hits;
+        };
+        QVERIFY(inkNear(side, from, 1e-6) > 0 && inkNear(side, to, 1e-6) > 0);
+        // Refused: a direction not one, a phase past a wall.
+        QVERIFY(failed(call("edit_diagram", {{"diagram", 2}, {"bathtub", QJsonObject{{"direction", "sideways"}}}})));
+        QVERIFY(failed(call("edit_diagram", {{"diagram", 2}, {"bathtub", QJsonObject{{"phase", -0.7}}}})));
+        QVERIFY(!failed(call("edit_diagram", {{"diagram", 2}, {"bathtub", QJsonObject{{"phase", -0.1}}}})));
+        QCOMPARE(tub->phase, -0.1);
+        QCOMPARE(tub->voltageBathtubs().first().first().phase, -0.1);
+        const QString tubRead = qucs_s::status::readout(tub, MappedPoint{0.8, 1e-9, 0});
+        QVERIFY2(tubRead.contains("threshold") && tubRead.contains("BER 1e-09"), qPrintable(tubRead));
+        // Back across: the timing tubs again.
+        QVERIFY(!failed(call("edit_diagram", {{"diagram", 2}, {"bathtub", QJsonObject{{"direction", "timing"}}}})));
+        QVERIFY(tub->voltageBathtubs().isEmpty() && tub->bathtubs().size() == 1);
+        QVERIFY(!failed(call("edit_diagram", {{"diagram", 2}, {"bathtub", QJsonObject{{"direction", "voltage"}}}})));
+
+        // Kept with the schematic.
+        QVERIFY(!failed(call("save_document", {})));
+        closeAll();
+        res = call("open_document", {{"path", path("levels.sch")}});
+        QVERIFY2(!failed(res), qPrintable(text(res)));
+        hist = dynamic_cast<LevelHistogramDiagram*>(front()->a_DocDiags.front());
+        tub = dynamic_cast<BathtubDiagram*>(front()->a_DocDiags.back());
+        QVERIFY(hist && hist->ui == ui && hist->phase == 0.45 && hist->bins == 40 && !hist->gaussians && hist->ber == 1e-12 && hist->levels == 0);
+        QVERIFY(std::isnan(hist->start) && std::isnan(hist->threshold));
+        QVERIFY(tub && tub->direction == BathtubDiagram::Voltage && tub->phase == -0.1);
+        // The dialogs.
+        auto* dialog = new DiagramDialog(hist, nullptr);
+        auto* bins = dialog->findChild<QSpinBox*>("levelBins");
+        auto* phase = dialog->findChild<QLineEdit*>("levelPhase");
+        auto* gaussians = dialog->findChild<QCheckBox*>("levelGaussians");
+        auto* levelsBox = dialog->findChild<QComboBox*>("levelLevels");
+        QVERIFY(bins && phase && gaussians && levelsBox);
+        QCOMPARE(bins->value(), 40);
+        bins->setValue(0);
+        phase->setText("0.9");   // (past a wall: the wall)
+        gaussians->setChecked(true);
+        levelsBox->setCurrentIndex(1);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "slotApply"));
+        QVERIFY(hist->bins == 0 && hist->phase == 0.5 && hist->gaussians && hist->levels == 2);
+        dialog->close();
+        dialog = new DiagramDialog(tub, nullptr);
+        auto* direction = dialog->findChild<QComboBox*>("bathtubDirection");
+        auto* tubPhase = dialog->findChild<QLineEdit*>("bathtubPhase");
+        QVERIFY(direction && tubPhase);
+        QCOMPARE(direction->currentIndex(), 1);
+        tubPhase->setText("0.2");
+        QVERIFY(QMetaObject::invokeMethod(dialog, "slotApply"));
+        QCOMPARE(tub->phase, 0.2);
+        direction->setCurrentIndex(0);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "slotApply"));
+        QCOMPARE(tub->direction, int(BathtubDiagram::Timing));
+        dialog->close();
+        closeAll();
     }
 
     // ---- Resizing by the handle: a polar chart stays square, the new

@@ -101,7 +101,8 @@ const DiagramKind kDiagramKinds[] = {
     {"bode", "Bode", "Bode pair: a loop gain's magnitude in dB above its phase, the crossovers and margins marked"},
     {"nichols", "Nichols", "Nichols chart: a loop gain's open-loop gain in dB against its phase, over the closed loop's M and N contours"},
     {"spectrum", "Spectrum", "spectrum view: a transient's windowed spectrum in dBc, its harmonics numbered, THD, SFDR, SNR and SINAD"},
-    {"bathtub", "Bathtub", "bathtub curve: a data signal's bit error rate against the sampling instant, its RJ, DJ and the opening at a target rate"},
+    {"bathtub", "Bathtub", "bathtub curve: a data signal's bit error rate against the sampling instant, its RJ, DJ and the opening at a target rate - or, direction voltage, against the decision threshold, with Q and the vertical opening"},
+    {"level_histogram", "LevelHistogram", "level histogram: a data signal's values at the sampling instant counted up its axis, each level's Gaussian, Q, the bit error rate Q gives and the vertical opening at a target rate"},
     {"contour", "Contour", "contour map: a value over two swept parameters in colour, its iso-lines labelled, the region that passes a band"},
     {"spectrogram", "Spectrogram", "spectrogram: a transient's spectrum as it goes - time along, frequency up, level in dB in colour"},
     {"box_plot", "BoxPlot", "box plot: each trace's spread - corner or Monte Carlo runs - as a box of its quartiles, median, mean, whiskers and outliers"},
@@ -140,6 +141,7 @@ Diagram* newDiagram(const QString& wanted)
     if (file == QLatin1String("Nichols")) return new NicholsDiagram();
     if (file == QLatin1String("Spectrum")) return new SpectrumDiagram();
     if (file == QLatin1String("Bathtub")) return new BathtubDiagram();
+    if (file == QLatin1String("LevelHistogram")) return new LevelHistogramDiagram();
     if (file == QLatin1String("Contour")) return new ContourDiagram();
     if (file == QLatin1String("Spectrogram")) return new SpectrogramDiagram();
     if (file == QLatin1String("Bars")) return new TornadoDiagram();
@@ -215,7 +217,7 @@ QStringList domainNotes(const Diagram* d)
     };
     int wants = 0;
     if (d->Name == QLatin1String("Spectrum") || d->Name == QLatin1String("Spectrogram") || d->Name == QLatin1String("Bathtub")
-        || d->Name == QLatin1String("Eye") || d->Name == QLatin1String("Constellation"))
+        || d->Name == QLatin1String("Eye") || d->Name == QLatin1String("Constellation") || d->Name == QLatin1String("LevelHistogram"))
         wants = 1;
     else if (d->Name == QLatin1String("Bode") || d->Name == QLatin1String("Nichols") || d->Name == QLatin1String("Smith")
              || d->Name == QLatin1String("ySmith"))
@@ -542,9 +544,27 @@ QJsonObject eyeJson(const EyeDiagram* d)
     return o;
 }
 
+// A sampling instant given as 'phase', in UI from the eye's centre: -0.5
+// to 0.5, null the centre. False, with why, for another.
+bool readPhase(const QJsonObject& o, double* phase, QString* error)
+{
+    const QJsonValue v = o.value(QLatin1String("phase"));
+    if (v.isNull()) {
+        *phase = 0.0;
+        return true;
+    }
+    double p = NaN;
+    if (!(valueOrNull(v, &p) && p >= -0.5 && p <= 0.5)) {
+        *error = tr("'phase' is the sampling instant in UI from the eye's centre, -0.5 to 0.5 (0: the centre), or null: the centre.");
+        return false;
+    }
+    *phase = p;
+    return true;
+}
+
 // A bathtub curve's own, from {"unit_interval", "from", "levels",
-// "threshold", "ber", "floor", "measured"}: all checked before any is
-// set. What is not given stays; null is automatic.
+// "threshold", "ber", "floor", "measured", "direction", "phase"}: all
+// checked before any is set. What is not given stays; null is automatic.
 bool applyBathtub(Diagram* d, const QJsonValue& value, QString* error)
 {
     auto* b = dynamic_cast<BathtubDiagram*>(d);
@@ -553,7 +573,8 @@ bool applyBathtub(Diagram* d, const QJsonValue& value, QString* error)
         return false;
     }
     if (!value.isObject()) {
-        *error = tr("'bathtub' is an object: {\"unit_interval\", \"from\", \"levels\", \"threshold\", \"ber\", \"floor\", \"measured\"}.");
+        *error = tr("'bathtub' is an object: {\"unit_interval\", \"from\", \"levels\", \"threshold\", \"ber\", \"floor\", \"measured\", "
+                    "\"direction\", \"phase\"}.");
         return false;
     }
     const QJsonObject o = value.toObject();
@@ -602,6 +623,17 @@ bool applyBathtub(Diagram* d, const QJsonValue& value, QString* error)
         }
         measured = o.value(QLatin1String("measured")).toBool();
     }
+    int direction = b->direction;
+    if (given("direction")) {
+        const QString w = o.value(QLatin1String("direction")).toString().trimmed().toLower();
+        if (w != QLatin1String("timing") && w != QLatin1String("voltage")) {
+            *error = tr("'direction' is timing (the rate against the sampling instant) or voltage (against the decision threshold).");
+            return false;
+        }
+        direction = w == QLatin1String("voltage") ? BathtubDiagram::Voltage : BathtubDiagram::Timing;
+    }
+    double phase = b->phase;
+    if (given("phase") && !readPhase(o, &phase, error)) return false;
     b->ui = ui;
     b->start = from;
     b->threshold = threshold;
@@ -609,13 +641,127 @@ bool applyBathtub(Diagram* d, const QJsonValue& value, QString* error)
     b->ber = ber;
     b->floor = floor;
     b->measured = measured;
+    b->direction = direction;
+    b->phase = phase;
     return true;
+}
+
+// A level histogram's own, from {"unit_interval", "from", "levels",
+// "threshold", "phase", "bins", "gaussians", "ber"}: all checked before
+// any is set. What is not given stays; null is automatic.
+bool applyLevelHistogram(Diagram* d, const QJsonValue& value, QString* error)
+{
+    auto* h = dynamic_cast<LevelHistogramDiagram*>(d);
+    if (h == nullptr) {
+        *error = tr("'level_histogram' is a level histogram's (type level_histogram); this is a %1.").arg(kindName(d));
+        return false;
+    }
+    if (!value.isObject()) {
+        *error = tr("'level_histogram' is an object: {\"unit_interval\", \"from\", \"levels\", \"threshold\", \"phase\", \"bins\", "
+                    "\"gaussians\", \"ber\"}.");
+        return false;
+    }
+    const QJsonObject o = value.toObject();
+    const auto given = [&](const char* key) { return o.contains(QLatin1String(key)); };
+    const auto isNull = [&](const char* key) { return o.value(QLatin1String(key)).isNull(); };
+    double ui = h->ui, from = h->start, threshold = h->threshold, phase = h->phase, ber = h->ber;
+    if (given("unit_interval") && (!valueOrNull(o.value(QLatin1String("unit_interval")), &ui) || !(ui > 0)) && !isNull("unit_interval")) {
+        *error = tr("'unit_interval' is a bit's length in seconds above 0 (1e-10, \"100p\"), or null: as the eye diagram tells it.");
+        return false;
+    }
+    if (given("from") && !valueOrNull(o.value(QLatin1String("from")), &from) && !isNull("from")) {
+        *error = tr("'from' is the time the eye starts at, in seconds (2e-9, \"2n\"), or null: from the start.");
+        return false;
+    }
+    if (given("threshold") && !valueOrNull(o.value(QLatin1String("threshold")), &threshold) && !isNull("threshold")) {
+        *error = tr("'threshold' is a value in the signal's unit (0.5), or null: halfway between the levels.");
+        return false;
+    }
+    if (given("phase") && !readPhase(o, &phase, error)) return false;
+    if (given("ber") && !(valueOrNull(o.value(QLatin1String("ber")), &ber) && ber > 0 && ber <= 0.01)) {
+        *error = tr("'ber' is the bit error rate the vertical opening is measured at, above 0 and at most 0.01 (1e-12).");
+        return false;
+    }
+    int levels = h->levels;
+    if (given("levels")) {
+        const double l = isNull("levels") ? 0 : o.value(QLatin1String("levels")).toDouble(NaN);
+        if (l != 0 && l != 2 && l != 4) {
+            *error = tr("'levels' is 2 (NRZ) or 4 (PAM4), or null: as each trace's V(PRBS) source is coded.");
+            return false;
+        }
+        levels = int(l);
+    }
+    int bins = h->bins;
+    if (given("bins")) {
+        const double n = isNull("bins") ? 0 : o.value(QLatin1String("bins")).toDouble(NaN);
+        if (!(n >= 0 && n <= 1000 && n == std::floor(n))) {
+            *error = tr("'bins' is how many, 1 to 1000, or 0 or null: automatic (each level's own spread).");
+            return false;
+        }
+        bins = int(n);
+    }
+    // (A gaussians that is no bool is refused by its type before.)
+    const bool gaussians = given("gaussians") ? o.value(QLatin1String("gaussians")).toBool() : h->gaussians;
+    h->ui = ui;
+    h->start = from;
+    h->threshold = threshold;
+    h->levels = levels;
+    h->phase = phase;
+    h->bins = bins;
+    h->gaussians = gaussians;
+    h->ber = ber;
+    return true;
+}
+
+// A level histogram's settings, and each trace's levels and eyes.
+QJsonObject levelHistogramJson(const LevelHistogramDiagram* d)
+{
+    QJsonObject o{{QStringLiteral("phase"), d->phase}, {QStringLiteral("bins"), d->bins}, {QStringLiteral("gaussians"), d->gaussians},
+                  {QStringLiteral("ber"), d->ber}};
+    if (d->levels == 2 || d->levels == 4) o.insert(QStringLiteral("levels"), d->levels);
+    if (std::isfinite(d->ui)) o.insert(QStringLiteral("unit_interval"), d->ui);
+    if (std::isfinite(d->start)) o.insert(QStringLiteral("from"), d->start);
+    if (std::isfinite(d->threshold)) o.insert(QStringLiteral("threshold"), d->threshold);
+    return o;
+}
+
+QJsonArray levelHistogramAnalyses(const LevelHistogramDiagram* d)
+{
+    QJsonArray analyses;
+    for (int i = 0; i < d->histograms().size(); ++i) {
+        const LevelHistogramDiagram::Histogram& h = d->histograms().at(i);
+        QJsonObject a;
+        if (!h.error.isEmpty()) {
+            a.insert(QStringLiteral("error"), h.error);
+        } else {
+            QJsonArray levels;
+            for (const qucs_s::eye::Level& l : h.levels)
+                levels << QJsonObject{{QStringLiteral("mean"), ds::rounded(l.mean)}, {QStringLiteral("sigma"), ds::rounded(l.sigma)},
+                                      {QStringLiteral("symbols"), l.count()}};
+            a.insert(QStringLiteral("levels"), levels);
+            a.insert(QStringLiteral("symbols"), h.symbols);
+            a.insert(QStringLiteral("bins"), int(h.counts.size()));
+            a.insert(QStringLiteral("bin width"), ds::rounded(h.width));
+            if (h.eyes.size() == 1) {
+                a.insert(QStringLiteral("eye"), qucs_s::eye::toJson(h.eyes.first(), d->ber));
+            } else {
+                QJsonArray eyes;
+                for (const qucs_s::eye::VoltageBathtub& b : h.eyes) eyes << qucs_s::eye::toJson(b, d->ber);
+                a.insert(QStringLiteral("eyes"), eyes);
+            }
+        }
+        a.insert(QStringLiteral("trace"), i + 1);
+        analyses << a;
+    }
+    return analyses;
 }
 
 // A bathtub curve's settings, and each trace's eyes' bathtubs.
 QJsonObject bathtubJson(const BathtubDiagram* d)
 {
-    QJsonObject o{{QStringLiteral("ber"), d->ber}, {QStringLiteral("floor"), d->floorRate()}, {QStringLiteral("measured"), d->measured}};
+    QJsonObject o{{QStringLiteral("ber"), d->ber}, {QStringLiteral("floor"), d->floorRate()}, {QStringLiteral("measured"), d->measured},
+                  {QStringLiteral("direction"), d->direction == BathtubDiagram::Voltage ? QStringLiteral("voltage") : QStringLiteral("timing")}};
+    if (d->direction == BathtubDiagram::Voltage) o.insert(QStringLiteral("phase"), d->phase);
     if (d->levels == 2 || d->levels == 4) o.insert(QStringLiteral("levels"), d->levels);
     if (std::isfinite(d->ui)) o.insert(QStringLiteral("unit_interval"), d->ui);
     if (std::isfinite(d->start)) o.insert(QStringLiteral("from"), d->start);
@@ -626,15 +772,29 @@ QJsonObject bathtubJson(const BathtubDiagram* d)
 QJsonArray bathtubAnalyses(const BathtubDiagram* d)
 {
     QJsonArray analyses;
-    for (int i = 0; i < d->bathtubs().size(); ++i) {
-        const QList<qucs_s::eye::Bathtub>& tubs = d->bathtubs().at(i);
+    const bool voltage = d->direction == BathtubDiagram::Voltage;
+    const qsizetype traces = voltage ? d->voltageBathtubs().size() : d->bathtubs().size();
+    for (int i = 0; i < traces; ++i) {
         QJsonObject a;
-        if (tubs.size() == 1) {
-            a = qucs_s::eye::toJson(tubs.first(), d->ber);
+        if (voltage) {
+            // On its side: each eye's against the threshold.
+            const QList<qucs_s::eye::VoltageBathtub>& tubs = d->voltageBathtubs().at(i);
+            if (tubs.size() == 1) {
+                a = qucs_s::eye::toJson(tubs.first(), d->ber);
+            } else {
+                QJsonArray eyes;
+                for (const qucs_s::eye::VoltageBathtub& b : tubs) eyes << qucs_s::eye::toJson(b, d->ber);
+                a.insert(QStringLiteral("eyes"), eyes);
+            }
         } else {
-            QJsonArray eyes;
-            for (const qucs_s::eye::Bathtub& b : tubs) eyes << qucs_s::eye::toJson(b, d->ber);
-            a.insert(QStringLiteral("eyes"), eyes);
+            const QList<qucs_s::eye::Bathtub>& tubs = d->bathtubs().at(i);
+            if (tubs.size() == 1) {
+                a = qucs_s::eye::toJson(tubs.first(), d->ber);
+            } else {
+                QJsonArray eyes;
+                for (const qucs_s::eye::Bathtub& b : tubs) eyes << qucs_s::eye::toJson(b, d->ber);
+                a.insert(QStringLiteral("eyes"), eyes);
+            }
         }
         if (i < d->results().size() && d->results().at(i).ok()) {
             a.insert(QStringLiteral("unit interval"), ds::rounded(d->results().at(i).ui));
@@ -1637,6 +1797,7 @@ bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
     }
     if (args.contains(QLatin1String("spectrum")) && !applySpectrum(d, args.value(QLatin1String("spectrum")).toObject(), error)) return false;
     if (args.contains(QLatin1String("bathtub")) && !applyBathtub(d, args.value(QLatin1String("bathtub")), error)) return false;
+    if (args.contains(QLatin1String("level_histogram")) && !applyLevelHistogram(d, args.value(QLatin1String("level_histogram")), error)) return false;
     if (args.contains(QLatin1String("contour")) && !applyContour(d, args.value(QLatin1String("contour")), error)) return false;
     if (args.contains(QLatin1String("spectrogram")) && !applySpectrogram(d, args.value(QLatin1String("spectrogram")), error)) return false;
     if (args.contains(QLatin1String("box_plot")) && !applyBoxPlot(d, args.value(QLatin1String("box_plot")), error)) return false;
@@ -3035,6 +3196,11 @@ QJsonArray diagramsJson(Schematic* sch)
         if (const auto* bathtub = dynamic_cast<const BathtubDiagram*>(d)) {
             o.insert(QStringLiteral("bathtub"), bathtubJson(bathtub));
             const QJsonArray analyses = bathtubAnalyses(bathtub);
+            if (!analyses.isEmpty()) o.insert(QStringLiteral("analyses"), analyses);
+        }
+        if (const auto* levels = dynamic_cast<const LevelHistogramDiagram*>(d)) {
+            o.insert(QStringLiteral("level_histogram"), levelHistogramJson(levels));
+            const QJsonArray analyses = levelHistogramAnalyses(levels);
             if (!analyses.isEmpty()) o.insert(QStringLiteral("analyses"), analyses);
         }
         if (const auto* nichols = dynamic_cast<const NicholsDiagram*>(d)) {
@@ -5217,7 +5383,7 @@ bool drawsMarkers(const Diagram* d)
     return d->Name != QLatin1String("Tab") && d->Name != QLatin1String("Truth") && d->Name != QLatin1String("Spectrum")
            && d->Name != QLatin1String("Bathtub") && d->Name != QLatin1String("Contour") && d->Name != QLatin1String("Bars")
            && d->Name != QLatin1String("Spectrogram") && d->Name != QLatin1String("BoxPlot")
-           && d->Name != QLatin1String("Constellation");
+           && d->Name != QLatin1String("Constellation") && d->Name != QLatin1String("LevelHistogram");
 }
 
 } // namespace

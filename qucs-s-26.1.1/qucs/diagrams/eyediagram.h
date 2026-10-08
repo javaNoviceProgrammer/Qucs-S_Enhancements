@@ -83,6 +83,7 @@ public:
     bool mixed = false;             ///< the graphs' UIs differ
     QStringList sourceWhy;          ///< each graph's: why a PRBS source there is gives no UI
     QStringList levelsFrom;         ///< each graph's: the source whose coding gave its levels
+    QList<qucs_s::dataset::Curve> curves;   ///< each graph's signal (empty with no data): sampledAt() reads it
   };
   static Folding foldingOf(const Diagram* owner, double ui, int levels, const qucs_s::eye::Options& options);
 

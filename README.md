@@ -1709,7 +1709,26 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   folds it (the UI of the PRBS source it comes from). The crossings are
   counted, and the dual-Dirac model is fitted to their tails. The opening
   at a target BER is marked, with RJ, DJ and TJ; PAM4's three eyes each
-  get a tub.
+  get a tub. Turned on its side (*Against: the decision threshold*), it
+  is the voltage bathtub: the rate against the threshold at a sampling
+  instant (the eye's centre, or a phase from it). The symbols on the
+  wrong side are counted, and beyond them each level is a Gaussian of
+  its mean and spread, weighted by its share of the symbols. Each eye's
+  levels, Q and the rate Q gives, the best threshold and the vertical
+  opening at the target are written. A Gaussian of the whole spread is
+  pessimistic for a signal shaped mostly by the channel's memory (its
+  values in a few sub-levels): the counted steps show where it is open.
+- **Level histogram** (*diagrams → Level Histogram*): a data signal's
+  values at the sampling instant, folded as the eye diagram folds it,
+  counted into bars up the signal's axis - as a sampling oscilloscope's
+  vertical histogram - with each level's Gaussian over its bars and each
+  eye's threshold dashed. The bins follow each level's own spread (those
+  of all the values together take the gap between the levels for a
+  spread). A box gives each level's mean, σ and symbols, and each eye's
+  Q, the bit error rate Q gives (erfc(Q/√2)/2) and the vertical opening
+  at a target BER. The instant can be moved off the centre, towards the
+  crossings. Claude's `add_diagram` places it (`level_histogram`), and
+  its numbers come in `analyses`.
 - **Contour map** and **Spectrogram**: a value over two swept parameters
   in colour (viridis, turbo or grey) with a colour bar. Iso-lines are
   labelled, and a pass band hatches what fails and gives the share that

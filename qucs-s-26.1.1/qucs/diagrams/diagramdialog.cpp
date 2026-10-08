@@ -38,6 +38,7 @@
 #include "nicholsdiagram.h"
 #include "spectrumdiagram.h"
 #include "bathtubdiagram.h"
+#include "levelhistogramdiagram.h"
 #include "contourdiagram.h"
 #include "spectrogramdiagram.h"
 #include "tornadodiagram.h"
@@ -251,7 +252,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   } else if (Diag->Name == "Rect3D") {
     NameY = tr("y-Axis");
     NameZ = tr("z-Axis");
-  } else if (Diag->Name == "Histogram" || Diag->Name == "Eye" || Diag->Name == "Bathtub") {
+  } else if (Diag->Name == "Histogram" || Diag->Name == "Eye" || Diag->Name == "Bathtub" || Diag->Name == "LevelHistogram") {
     NameY = tr("y-Axis");
   } else if (Diag->Name == "Contour") {
     NameY = tr("y-Axis");
@@ -626,7 +627,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     Row++;
 
     if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram") && (Diag->Name != "Eye")
-        && (Diag->Name != "Bathtub")) {
+        && (Diag->Name != "Bathtub") && (Diag->Name != "LevelHistogram")) {
       yrLabelName = new QLabel(NameZ + " " + tr("Label:"), Tab2);
       gp->addWidget(yrLabelName, Row, 0);
       yrLabel = new QLineEdit(Tab2);
@@ -993,9 +994,74 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       bl->addWidget(TubFloor, r++, 1);
       TubMeasured = new QCheckBox(tr("the crossings counted, too"));
       TubMeasured->setObjectName(QStringLiteral("bathtubMeasured"));
-      TubMeasured->setToolTip(tr("The rate the crossings give, down to one in their number, beside the model's"));
+      TubMeasured->setToolTip(tr("The rate the crossings give (on its side, the symbols), down to one in their number, beside the model's"));
       TubMeasured->setChecked(tub->measured);
       bl->addWidget(TubMeasured, r++, 0, 1, 2);
+      bl->addWidget(new QLabel(tr("Against:")), r, 0);
+      TubDirection = new QComboBox();
+      TubDirection->setObjectName(QStringLiteral("bathtubDirection"));
+      TubDirection->addItems({tr("the sampling instant (timing)"), tr("the decision threshold (voltage)")});
+      TubDirection->setToolTip(tr("Across the UI, the rate the jitter gives; on its side, the rate the levels' noise gives "
+                                  "at a sampling instant, with Q and the vertical opening"));
+      TubDirection->setCurrentIndex(tub->direction == BathtubDiagram::Voltage ? 1 : 0);
+      bl->addWidget(TubDirection, r++, 1);
+      bl->addWidget(new QLabel(tr("Sampled at:")), r, 0);
+      TubPhase = edit(tub->phase, tr("the eye's centre"), "bathtubPhase");
+      TubPhase->setToolTip(tr("Against the threshold: the sampling instant, in UI from the eye's centre (-0.5 to 0.5)"));
+      bl->addWidget(TubPhase, r++, 1);
+      gp->addWidget(box, Row, 0, 1, 2);
+      Row++;
+    }
+
+    // A level histogram: its traces folded as an eye's and sampled at an
+    // instant; its bins, Gaussians and the rate its opening is measured at.
+    if (auto *hist = dynamic_cast<LevelHistogramDiagram *>(Diag)) {
+      QGroupBox *box = new QGroupBox(tr("Level histogram"), Tab2);
+      QGridLayout *bl = new QGridLayout(box);
+      int r = 0;
+      const auto edit = [](double v, const QString &empty, const char *name) {
+        auto *e = keptEdit(v);
+        e->setPlaceholderText(empty);
+        e->setObjectName(QLatin1String(name));
+        return e;
+      };
+      bl->addWidget(new QLabel(tr("Unit interval:")), r, 0);
+      LevelUi = edit(hist->ui, tr("the PRBS source's Tbit, else the crossings'"), "levelUi");
+      LevelUi->setToolTip(tr("A bit's length (100p), as the eye diagram takes it"));
+      bl->addWidget(LevelUi, r++, 1);
+      bl->addWidget(new QLabel(tr("From:")), r, 0);
+      LevelFrom = edit(hist->start, tr("the start"), "levelFrom");
+      LevelFrom->setToolTip(tr("The signal from this time on, its settling left out (2n)"));
+      bl->addWidget(LevelFrom, r++, 1);
+      bl->addWidget(new QLabel(tr("Levels:")), r, 0);
+      LevelLevels = new QComboBox();
+      LevelLevels->setObjectName(QStringLiteral("levelLevels"));
+      LevelLevels->addItems({tr("as the source is coded"), tr("2 (NRZ)"), tr("4 (PAM4)")});
+      LevelLevels->setCurrentIndex(hist->levels == 2 ? 1 : hist->levels == 4 ? 2 : 0);
+      bl->addWidget(LevelLevels, r++, 1);
+      bl->addWidget(new QLabel(tr("Threshold:")), r, 0);
+      LevelThreshold = edit(hist->threshold, tr("halfway between the levels"), "levelThreshold");
+      bl->addWidget(LevelThreshold, r++, 1);
+      bl->addWidget(new QLabel(tr("Sampled at:")), r, 0);
+      LevelPhase = edit(hist->phase, tr("the eye's centre"), "levelPhase");
+      LevelPhase->setToolTip(tr("The sampling instant, in UI from the eye's centre (-0.5 to 0.5)"));
+      bl->addWidget(LevelPhase, r++, 1);
+      bl->addWidget(new QLabel(tr("Bins:")), r, 0);
+      LevelBins = new QSpinBox();
+      LevelBins->setObjectName(QStringLiteral("levelBins"));
+      LevelBins->setRange(0, 1000);
+      LevelBins->setSpecialValueText(tr("automatic"));
+      LevelBins->setValue(hist->bins);
+      bl->addWidget(LevelBins, r++, 1);
+      bl->addWidget(new QLabel(tr("Bit error rate:")), r, 0);
+      LevelBer = edit(hist->ber, QStringLiteral("1e-12"), "levelBer");
+      LevelBer->setToolTip(tr("The rate the vertical opening is measured at, at most 0.01"));
+      bl->addWidget(LevelBer, r++, 1);
+      LevelGaussians = new QCheckBox(tr("each level's Gaussian"));
+      LevelGaussians->setObjectName(QStringLiteral("levelGaussians"));
+      LevelGaussians->setToolTip(tr("The normal distribution of each level's mean and spread over its bars"));
+      LevelGaussians->setChecked(hist->gaussians);
+      bl->addWidget(LevelGaussians, r++, 0, 1, 2);
       gp->addWidget(box, Row, 0, 1, 2);
       Row++;
     }
@@ -1560,7 +1626,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
 
     if ((Diag->Name == "Smith") || (Diag->Name == "ySmith") ||
         (Diag->Name == "Polar") || (Diag->Name == "Histogram") || (Diag->Name == "Eye") || (Diag->Name == "PoleZero")
-        || (Diag->Name == "Bathtub")) {
+        || (Diag->Name == "Bathtub") || (Diag->Name == "LevelHistogram")) {
       axisZ->setEnabled(false);
     }
     if (Diag->Name == "Stacked") {   // (its panes' axes: on the Properties tab)
@@ -1570,7 +1636,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     if (Diag->Name.left(4) != "Rect") // cartesian 2D and 3D
       if (Diag->Name != "Curve" && Diag->Name != "Histogram" && Diag->Name != "Eye" && Diag->Name != "Stacked"
           && Diag->Name != "PoleZero" && Diag->Name != "Nichols" && Diag->Name != "Bode" && Diag->Name != "Spectrum"
-          && Diag->Name != "Bathtub" && Diag->Name != "Contour") {
+          && Diag->Name != "Bathtub" && Diag->Name != "LevelHistogram" && Diag->Name != "Contour") {
         axisX->setEnabled(false);
         startY->setEnabled(false);
         startZ->setEnabled(false);
@@ -2594,8 +2660,12 @@ void DiagramDialog::slotApply() {
       if (!(floor > 0 && floor < ber)) floor = std::nan("");
       const int levels = TubLevels->currentIndex() == 1 ? 2 : TubLevels->currentIndex() == 2 ? 4 : 0;
       const double from = read(TubFrom), threshold = read(TubThreshold);
+      const int direction = TubDirection->currentIndex() == 1 ? BathtubDiagram::Voltage : BathtubDiagram::Timing;
+      double phase = read(TubPhase);
+      phase = std::isfinite(phase) ? std::clamp(phase, -0.5, 0.5) : 0.0;
       if (!same(tub->ui, ui) || !same(tub->start, from) || tub->levels != levels || !same(tub->threshold, threshold)
-          || tub->ber != ber || !same(tub->floor, floor) || tub->measured != TubMeasured->isChecked()) {
+          || tub->ber != ber || !same(tub->floor, floor) || tub->measured != TubMeasured->isChecked()
+          || tub->direction != direction || tub->phase != phase) {
         tub->ui = ui;
         tub->start = from;
         tub->levels = levels;
@@ -2603,6 +2673,38 @@ void DiagramDialog::slotApply() {
         tub->ber = ber;
         tub->floor = floor;
         tub->measured = TubMeasured->isChecked();
+        tub->direction = direction;
+        tub->phase = phase;
+        changed = true;
+      }
+    }
+    if (auto *hist = dynamic_cast<LevelHistogramDiagram *>(Diag); hist && LevelUi) {
+      const auto read = [](const QLineEdit *e) {
+        const qucs_s::units::Reading r = readKept(e);
+        return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
+      };
+      const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
+      double ui = read(LevelUi), ber = read(LevelBer), phase = read(LevelPhase);
+      if (!(ui > 0)) ui = std::nan("");
+      if (!(ber > 0 && ber <= 0.01)) {
+        QMessageBox::warning(this, tr("Level histogram"), tr("The bit error rate is above 0 and at most 0.01: \"%1\" is not one; it stays %2.")
+                                                               .arg(LevelBer->text(), QString::number(hist->ber, 'g', 3)));
+        LevelBer->setText(misc::num2str(hist->ber, -1, QString()));
+        ber = hist->ber;
+      }
+      phase = std::isfinite(phase) ? std::clamp(phase, -0.5, 0.5) : 0.0;
+      const int levels = LevelLevels->currentIndex() == 1 ? 2 : LevelLevels->currentIndex() == 2 ? 4 : 0;
+      const double from = read(LevelFrom), threshold = read(LevelThreshold);
+      if (!same(hist->ui, ui) || !same(hist->start, from) || hist->levels != levels || !same(hist->threshold, threshold)
+          || hist->phase != phase || hist->bins != LevelBins->value() || hist->ber != ber || hist->gaussians != LevelGaussians->isChecked()) {
+        hist->ui = ui;
+        hist->start = from;
+        hist->levels = levels;
+        hist->threshold = threshold;
+        hist->phase = phase;
+        hist->bins = LevelBins->value();
+        hist->ber = ber;
+        hist->gaussians = LevelGaussians->isChecked();
         changed = true;
       }
     }
@@ -2656,7 +2758,7 @@ void DiagramDialog::slotApply() {
         changed = true;
       }
     if ((Diag->Name != "Smith") && (Diag->Name != "Polar") && (Diag->Name != "Histogram") && (Diag->Name != "Eye")
-        && (Diag->Name != "Bathtub")) {
+        && (Diag->Name != "Bathtub") && (Diag->Name != "LevelHistogram")) {
       if (Diag->zAxis.Label.isEmpty())
         Diag->zAxis.Label = ""; // can be not 0 and empty!
       if (yrLabel->text().isEmpty())

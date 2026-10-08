@@ -960,6 +960,10 @@ int Diagram::leftOffLogAxis(const Graph* g) const
 {
     const DataX* pD = g->axis(0);
     if (pD == nullptr || pD->Points == nullptr || Name.isEmpty() || Name[0] == 'C') return 0;
+    // (One that draws what it makes of its graphs - a bathtub's rates on a
+    // log axis, a spectrum's lines - leaves none of their values off it: a
+    // bathtub of a signal through 0 said its points were.)
+    if (!paintsGraphs()) return 0;
     int n = 0;
     const bool xLog = xAxis.log && logLeavesOut(g, true);
     const Axis* pa = graphAxis(g);
