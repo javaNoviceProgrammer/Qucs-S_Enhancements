@@ -730,6 +730,7 @@ private:
   mutable quint64 a_wireKindsGeneration = ~quint64(0);
   mutable std::size_t a_wireKindsWires = 0;
   const Marker* a_cursorMarker = nullptr;   // (only compared: followed while a diagram has it)
+  int a_pendingCursorMarker = 0;            // (its number in a file read, until the diagrams are)
   /// What a value's label had better not cover.
   qucs_s::bias::Obstacles labelObstacles() const;
   void drawCursorValues(QPainter* painter);

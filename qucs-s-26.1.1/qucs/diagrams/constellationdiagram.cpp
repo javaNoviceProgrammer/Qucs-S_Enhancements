@@ -156,15 +156,42 @@ ConstellationDiagram::Pair ConstellationDiagram::sampled(const QString& i, const
     }
     const double start = std::max(ti.first(), tq.first()), end = std::min(ti.last(), tq.last());
     const double first = std::isfinite(from) ? std::max(start, from) : start;
+    // What is at fault when nothing is sampled: said by its name (it was
+    // "no sample from 0 on" whatever it was - bug hunt of 2026-10-08, N21).
+    if (std::isfinite(from) && from > end) {
+        pair.error = QObject::tr("'from' (%1) is past the run's end (%2)").arg(from).arg(end);
+        return pair;
+    }
+    if (std::isfinite(period) && period > 0 && std::isfinite(offset) && offset > end) {
+        pair.error = QObject::tr("the offset (%1) is past the run's end (%2)").arg(offset).arg(end);
+        return pair;
+    }
+    if (std::isfinite(period) && period > end - first) {
+        pair.error = QObject::tr("a symbol period of %1 is longer than the run from %2 to %3").arg(period).arg(first).arg(end);
+        return pair;
+    }
+    double reached = end;
     if (std::isfinite(period) && period > 0) {
         // Once a symbol: from the offset (else half a period in).
         double t = std::isfinite(offset) ? offset : start + period / 2;
         if (t < first) t += std::ceil((first - t) / period) * period;
-        for (; t <= end && pair.points.size() < kMostPoints; t += period) pair.points << QPointF(at(ti, vi, t), at(tq, vq, t));
+        for (; t <= end && pair.points.size() < kMostPoints; t += period) {
+            pair.points << QPointF(at(ti, vi, t), at(tq, vq, t));
+            reached = t;
+        }
+        if (pair.points.size() >= kMostPoints && reached + period <= end)
+            pair.note = QObject::tr("the first %1 symbols only, to %2 of the run's %3 (at most %1 are taken: a longer symbol period, "
+                                    "or a later 'from', takes others)").arg(kMostPoints).arg(reached).arg(end);
     } else {
         // Every sample of I, Q there.
         for (int k = 0; k < ti.size() && pair.points.size() < kMostPoints; ++k)
-            if (ti.at(k) >= first && ti.at(k) <= end) pair.points << QPointF(vi.at(k), at(tq, vq, ti.at(k)));
+            if (ti.at(k) >= first && ti.at(k) <= end) {
+                pair.points << QPointF(vi.at(k), at(tq, vq, ti.at(k)));
+                reached = ti.at(k);
+            }
+        if (pair.points.size() >= kMostPoints && reached < end)
+            pair.note = QObject::tr("the first %1 samples only, to %2 of the run's %3 (at most %1 are taken: a symbol period, or a "
+                                    "later 'from', takes others)").arg(kMostPoints).arg(reached).arg(end);
     }
     if (pair.points.isEmpty()) {
         pair.error = QObject::tr("no sample from %1 on").arg(first);

@@ -30,6 +30,7 @@
 #include "one_point.h"
 #include "main.h"
 
+#include <QLocale>
 #include <QString>
 #include <QPainter>
 #include <QPainterPath>
@@ -110,7 +111,9 @@ Marker::~Marker()
  */
 void Marker::initText(int datapoints_before_branch)
 {
-  if (pGraph->isEmpty()) {
+  // (A graph its diagram does not draw - an axis it cannot lay out - has
+  // its x but no y: nothing to walk.)
+  if (pGraph->isEmpty() || pGraph->cPointsY == nullptr) {
     makeInvalid();
     return;
   }
@@ -265,7 +268,19 @@ void Marker::createText()
   if (const Marker* ref = reference(); ref && !ref->varPos().empty() && !VarPos.empty()) {
     const double dx = VarPos[0] - ref->varPos().front();
     Text += QString::fromUtf8("\nΔx: ") + numberText(dx);
-    Text += QString::fromUtf8("\nΔy: ") + numberText(shownValue() - ref->shownValue());
+    // In the complex plane (a Smith chart, a polar diagram) neither axis
+    // is the magnitude: the change of the magnitude, and the distance
+    // between the two points, each named (bug hunt of 2026-10-08, N23).
+    const QString kind = diag()->Name;
+    if (kind == "Smith" || kind == "ySmith" || kind == "Polar" || kind == "PS" || kind == "SP") {
+      std::vector<double> mine = VarPos, theirs = ref->varPos();
+      const auto a = pGraph->findSample(mine);
+      const auto b = ref->graph() ? ref->graph()->findSample(theirs) : std::pair<double, double>(0.0, 0.0);
+      Text += QString::fromUtf8("\nΔ|y|: ") + numberText(std::hypot(a.first, a.second) - std::hypot(b.first, b.second));
+      Text += QString::fromUtf8("\n|Δy|: ") + numberText(std::hypot(a.first - b.first, a.second - b.second));
+    } else {
+      Text += QString::fromUtf8("\nΔy: ") + numberText(shownValue() - ref->shownValue());
+    }
     if (dx != 0.0) Text += QString::fromUtf8("\n1/Δx: ") + numberText(1.0 / dx);
   }
 
@@ -552,8 +567,11 @@ QString Marker::save()
 {
   QString s  = "<Mkr ";
 
+  // As many digits as read it back as it was: at 6 it moved to another
+  // sample on save, reopening and undo, and at an edge read the other side
+  // of it (bug hunt of 2026-10-08, B9).
   for(auto i : VarPos){
-    s += QString::number(i)+"/";
+    s += QString::number(i, 'g', QLocale::FloatingPointShortest)+"/";
   }
   s.replace(s.length()-1,1,' ');
   //s.at(s.length()-1) = (const QChar&)' ';

@@ -952,8 +952,9 @@ void QucsApp::initActions() {
   colourWires->setCheckable(true);
   colourWires->setChecked(QucsSettings.ColourWires);
   colourWires->setStatusTip(tr("Draws a supply's wires red and thicker, ground's green"));
-  colourWires->setWhatsThis(tr("Colour Wires by Net\n\nDraws each wire as its net is: a supply's (VCC, VDD, +5V, a DC source's "
-                               "pin to ground, a part's supply pin) red and thicker, ground's green, a signal's as ever."));
+  colourWires->setWhatsThis(tr("Colour Wires by Net\n\nDraws each wire as its net is: a supply's (a label VCC, VDD_IO, VEE, VPP, "
+                               "P5V, N12V, V3V3, VBAT; a DC source's pin to ground, a part's supply pin) red and thicker, ground's "
+                               "(and a label AGND, DGND, GNDA ...) green, a signal's as ever."));
   connect(colourWires, &QAction::toggled, this, &QucsApp::slotColourWires);
 
   showGrid = new QAction(tr("Show Grid (current document)"), this);

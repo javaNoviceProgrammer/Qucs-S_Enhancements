@@ -37,6 +37,9 @@ public:
   QString save() override;
   QString saveJSON() override;
   bool Dialog(QWidget* parent = nullptr) override;
+  /// As a line is drawn - but a second click on the first point draws on:
+  /// a bus of no length was kept (bug hunt of 2026-10-08, N15).
+  bool MousePressing(Schematic* sch = nullptr) override;
 
   /// Its name, D[7:0] (D[0:7], D[0..7] alike).
   QString busName;
@@ -48,6 +51,9 @@ public:
   bool touches(const QPoint& p) const;
 
   static constexpr int Width = 6;
+
+private:
+  bool m_started = false;   // its first click made, the second awaited
 };
 
 #endif

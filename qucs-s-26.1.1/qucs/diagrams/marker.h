@@ -96,6 +96,8 @@ public: // power matching stuff. some sort of VarPos (ab?)use
   /// and a line joins the two. Null: none, or one no longer in the diagram.
   const Marker* reference() const;
   void setReference(const Marker* m) { a_reference = m; }
+  /// The reference as set, whether or not it is still the diagram's.
+  const Marker* referenceSet() const { return a_reference; }
   /// The reference as a file names it, its number among the diagram's
   /// markers (from 1; 0 none): read by load(), made a pointer once the
   /// diagram's markers are all there (Diagram::load()).

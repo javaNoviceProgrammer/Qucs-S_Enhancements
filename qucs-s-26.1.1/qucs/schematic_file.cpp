@@ -817,6 +817,18 @@ void Schematic::writeDocumentTo(QTextStream& stream)
   if (a_alwaysLoadOSDI) stream << "  <AlwaysLoadOSDI=1>\n";
   if (a_alwaysModelCards) stream << "  <AlwaysModelCards=1>\n";
   if (!a_probeSaves.isEmpty()) stream << "  <ProbeSaves=" << a_probeSaves.join(QLatin1Char(' ')) << ">\n";
+  // Values at the Marker shown: kept, with the marker they follow by its
+  // number among all the diagrams' markers (0: the selected or first) -
+  // they were gone after a save and reopening (bug hunt of 2026-10-08, N22).
+  if (a_cursorValues) {
+    int number = 0, k = 0;
+    for (const Diagram *d : a_DocDiags)
+      for (const Marker *m : d->markers()) {
+        ++k;
+        if (m == a_cursorMarker) number = k;
+      }
+    stream << "  <ValuesAtMarker=" << number << ">\n";
+  }
   if (!a_modelCards.trimmed().isEmpty()) {   // (lines and \ escaped, as a frame's text is)
     QString cards = a_modelCards.trimmed();
     misc::convert2ASCII(cards);
@@ -1067,6 +1079,10 @@ bool Schematic::loadProperties(QTextStream *stream)
     else if(cstr == "AlwaysLoadOSDI") a_alwaysLoadOSDI = nstr.trimmed() == QLatin1String("1");
     else if(cstr == "AlwaysModelCards") a_alwaysModelCards = nstr.trimmed() == QLatin1String("1");
     else if(cstr == "ProbeSaves") a_probeSaves = nstr.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    else if(cstr == "ValuesAtMarker") {
+      a_cursorValues = true;
+      a_pendingCursorMarker = std::max(0, nstr.trimmed().toInt());
+    }
     else if(cstr == "ModelCards") misc::convert2Unicode(a_modelCards = Line.section('=', 1));   // (a card has = in it)
     else if(cstr == "RunScript")
     if(nstr.toInt(&ok) == 0) a_SimRunScript = false;
@@ -1463,6 +1479,15 @@ bool Schematic::loadDocument()
       file.close();
       return false;
     }
+  }
+
+  // The marker the values at the marker follow, by its number.
+  if (a_pendingCursorMarker > 0) {
+    int k = 0;
+    for (const Diagram *d : a_DocDiags)
+      for (const Marker *m : d->markers())
+        if (++k == a_pendingCursorMarker) a_cursorMarker = m;
+    a_pendingCursorMarker = 0;
   }
 
   file.close();

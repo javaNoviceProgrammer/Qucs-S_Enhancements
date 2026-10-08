@@ -113,7 +113,8 @@ QString PoleZeroDiagram::rootText(const Root& r)
                        .arg(engineering(r.wn(), QStringLiteral("rad/s")), engineering(r.wn() / (2 * Pi), QStringLiteral("Hz")))
                        .arg(std::isfinite(r.zeta()) ? QString::number(r.zeta(), 'g', 3) : QStringLiteral("-"));
     if (std::isfinite(r.q())) text += QObject::tr(", Q %1").arg(QString::number(r.q(), 'g', 3));
-    if (r.re >= 0) text += QObject::tr(" - in the right half-plane");
+    if (r.re > 0) text += QObject::tr(" - in the right half-plane");
+    else if (r.re == 0) text += QObject::tr(" - on the imaginary axis");
     return text;
 }
 

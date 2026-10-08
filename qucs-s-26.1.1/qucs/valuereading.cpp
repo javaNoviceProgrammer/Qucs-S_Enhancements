@@ -53,11 +53,11 @@ double spiceNumber(const QString& text, bool* ok)
     case 'T': return number * 1e12;
     case 'G': return number * 1e9;
     case 'K': return number * 1e3;
-    case 'M': return number * 1e-3;
-    case 'U': return number * 1e-6;
-    case 'N': return number * 1e-9;
-    case 'P': return number * 1e-12;
-    case 'F': return number * 1e-15;
+    case 'M': return number / 1e3;
+    case 'U': return number / 1e6;
+    case 'N': return number / 1e9;
+    case 'P': return number / 1e12;
+    case 'F': return number / 1e15;
     default: return number;
     }
 }
@@ -115,7 +115,10 @@ Reading read(const QString& input)
     double n = 0, factor = 1;
     QString unused;   // (the unit is read from the text below, the prefix taken apart)
     misc::str2num(value, n, unused, factor);
-    r.value = n * factor;
+    // A prefix below one divides by its power of ten, which is exact: 10f
+    // times 1e-15 is 1.0000000000000002e-14, and a dialog's value shown as
+    // 10f and read back changed on every OK (bug hunt of 2026-10-08, N11).
+    r.value = factor > 0 && factor < 1.0 ? n / std::round(1.0 / factor) : n * factor;
     // The unit: what follows the prefix Qucs took (none when it took none).
     r.unit = isEuropean ? QString() : factor != 1.0 && !rest.isEmpty() ? rest.mid(1) : rest;
     if (factor != 1.0 && r.unit.startsWith(QLatin1String("eg"))) r.unit = r.unit.mid(2);   // "Meg"

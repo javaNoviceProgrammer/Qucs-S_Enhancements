@@ -13,6 +13,7 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QElapsedTimer>
 #include <QFontDatabase>
 #include <QImage>
 #include <QJsonArray>
@@ -56,6 +57,7 @@
 #include <QSpinBox>
 #include <random>
 #include "spectrum.h"
+#include "valuereading.h"
 #include <complex>
 #include "statusbar.h"
 #include <QCheckBox>
@@ -374,8 +376,11 @@ private slots:
         QVERIFY(o.value("has data").toBool() && o.value("new diagram").toBool());
         QCOMPARE(o.value("trace").toObject().value("net").toString(), QString("out"));
         QCOMPARE(o.value("trace").toObject().value("points").toInt(), 11);
-        // Again: there already.
-        QVERIFY(json(call("probe", {{"what", "out"}})).value("already there").toBool());
+        // Again: there already - with its data (it said none: bug hunt of
+        // 2026-10-08, B6).
+        o = json(call("probe", {{"what", "out"}}));
+        QVERIFY(o.value("already there").toBool() && o.value("has data").toBool());
+        QVERIFY2(!o.value("text").toString().contains("Simulate"), qPrintable(o.value("text").toString()));
         // A pin: the current into it, saved by the next run.
         o = json(call("probe", {{"what", "R1.1"}}));
         QCOMPARE(o.value("variable").toString(), QString("ngspice/tran.@r1[i]"));
@@ -476,12 +481,19 @@ private slots:
         QJsonObject r = call("probe", {{"what", QJsonArray{265, 140}}});   // the wire between R1 and R2
         QVERIFY2(!failed(r), qPrintable(text(r)));
         const QJsonObject o = json(r);
-        QCOMPARE(o.value("labelled").toString(), QString("net1"));
-        QCOMPARE(o.value("variable").toString(), QString("ngspice/tran.v(net1)"));
+        // (probe1: net1, net2 ... are the names get_schematic gives the nets
+        // without a label - another net was called so too, bug hunt of
+        // 2026-10-08, B3.)
+        QCOMPARE(o.value("labelled").toString(), QString("probe1"));
+        QCOMPARE(o.value("variable").toString(), QString("ngspice/tran.v(probe1)"));
         bool labelled = false;
-        for (Wire* w : front()->a_DocWires) labelled = labelled || (w->hasLabel() && w->label()->Name == "net1");
+        for (Wire* w : front()->a_DocWires) labelled = labelled || (w->hasLabel() && w->label()->Name == "probe1");
         QVERIFY(labelled);
-        QVERIFY(get_netlistNames().contains("net1"));
+        QVERIFY(get_netlistNames().contains("probe1"));
+        QStringList netNames;
+        for (const QJsonValue& n : json(call("get_schematic", {})).value("nets").toArray()) netNames << n.toObject().value("net").toString();
+        QCOMPARE(netNames.count("probe1"), 1);
+        QCOMPARE(netNames.count("net1"), 1);
         // One step to undo: label, diagram and trace.
         QVERIFY(!failed(call("undo", {})));
         labelled = false;
@@ -499,7 +511,7 @@ private slots:
         // Another unnamed net: a name not taken.
         r = call("probe", {{"what", QJsonArray{130, 140}}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
-        QCOMPARE(json(r).value("labelled").toString(), QString("net2"));
+        QCOMPARE(json(r).value("labelled").toString(), QString("probe2"));
         // The nodes keep the names they had (a DC bias shown: its values).
         for (Node* n : front()->a_DocNodes) n->Name = "1.5 V";
         QVERIFY(!failed(call("probe", {{"what", "R1.2"}})));
@@ -1998,7 +2010,8 @@ private slots:
         const lt::Conversion c = lt::convert(asc, {path("lt")}, "rc.asc");
         QVERIFY2(c.error.isEmpty(), qPrintable(c.error));
         const QStringList lines = c.netlist.split('\n');
-        QVERIFY2(lines.contains("V1 tap 0 SIN(0 1 1k)"), qPrintable(c.netlist));
+        // (Its Rser a resistor of its own, as LTspice draws it.)
+        QVERIFY2(lines.contains("V1 tap V1_rser SIN(0 1 1k)") && lines.contains("RV1_rser V1_rser 0 0.1"), qPrintable(c.netlist));
         QVERIFY2(lines.contains("R1 out tap 1k"), qPrintable(c.netlist));
         QVERIFY2(lines.contains("M1 d g s s IRF530"), qPrintable(c.netlist));   // (its bulk on its source)
         QVERIFY2(lines.contains("C1 out 0 1u"), qPrintable(c.netlist));
@@ -2009,7 +2022,7 @@ private slots:
         QVERIFY2(lines.contains("XU1 a b c MYSUB"), qPrintable(c.netlist));
         const QString notes = c.notes.join("\n");
         QVERIFY2(notes.contains("Z9 (nosuchpart)") && notes.contains("left out"), qPrintable(notes));
-        QVERIFY2(notes.contains("Rser=0.1 left out"), qPrintable(notes));
+        QVERIFY2(notes.contains("V1: rser=0.1 made parts of their own (RV1_rser)"), qPrintable(notes));
         QVERIFY2(notes.contains("of Rloose at 716, 80 joins nothing"), qPrintable(notes));
         QCOMPARE(c.parts, 6);
         // Not an .asc; none of its parts known.
@@ -2654,6 +2667,670 @@ private slots:
             written = written || (line.startsWith("write ") && line.contains("S_2_1") && line.contains("NFmin") && line.contains("SOpt") && line.contains("Rn"));
         QVERIFY2(written, qPrintable(netlist));
         closeAll();
+    }
+
+    // ==== The bug hunt of 8 October (docs/bug_hunts/2026-10-08-new-diagrams.md):
+    // each finding's case, as it was found.
+
+    // F1: a marker on a log x axis whose data start at 0 - a linear AC
+    // sweep from 0 Hz on a Bode diagram, an FFT's spectrum on a log x -
+    // crashed Qucs-S, and the diagram drew nothing. The point at 0 is left
+    // out of the axis (said), the rest drawn; a trace not drawn refuses a
+    // marker, with why.
+    void huntMarkerOnALogAxisFromZero()
+    {
+        const auto h = [](double f) { return std::complex<double>(1.0) / std::complex<double>(1.0, f / 1e3); };
+        QVERIFY(schematicWith("logzero", datasetText("frequency", range(0, 1e5, 101),
+                                                     {{"ac.v(out)", [&](double f) { return h(f).real(); }, [&](double f) { return h(f).imag(); }},
+                                                      {"ac.v(none)", [](double) { return 0.0; }}})));
+        for (const char* type : {"bode", "rect", "stacked"}) {
+            QJsonObject args{{"type", type}, {"traces", QJsonArray{"ac.v(out)"}}};
+            if (QString(type) != "bode") args.insert("x_axis", QJsonObject{{"log", true}});
+            QJsonObject r = call("add_diagram", args);
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            const QJsonObject t = json(r).value("traces").toArray().first().toObject();
+            QVERIFY2(t.value("left off the log axis").toString().startsWith("1 point"), qPrintable(text(r)));
+            QVERIFY(!t.contains("not drawn"));
+            r = call("add_marker", {{"diagram", json(r).value("diagram")}, {"at", 1000}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            QCOMPARE(json(r).value("at").toObject().value("frequency").toDouble(), 1000.0);
+        }
+        // All of a trace at 0 on a log y axis: not drawn - a marker refused.
+        QJsonObject r = call("add_diagram", {{"type", "rect"}, {"traces", QJsonArray{"ac.v(none)"}}, {"y_axis", QJsonObject{{"log", true}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("traces").toArray().first().toObject().contains("not drawn"), qPrintable(text(r)));
+        r = call("add_marker", {{"diagram", json(r).value("diagram")}, {"at", 1000}});
+        QVERIFY2(failed(r) && text(r).contains("is not drawn"), qPrintable(text(r)));
+    }
+
+    // F2: a spectrogram's segment far below the sampling took time growing
+    // as 1/segment - a file keeping one could not be opened; and the answer
+    // asked for a shorter one. B7: an AC sweep is no transient to cut.
+    void huntASpectrogramsShortSegment()
+    {
+        constexpr double Pi = 3.14159265358979323846;
+        QVERIFY(schematicWith("seg", datasetText("time", range(0, 10e-3, 20001), {{"tran.v(out)", [](double t) { return std::sin(2 * Pi * 1e3 * t); }}})
+                                         + datasetText("frequency", range(1, 1e3, 11), {{"ac.v(out)", [](double) { return 1.0; }}})));
+        QElapsedTimer timer;
+        timer.start();
+        QJsonObject r = call("add_diagram", {{"type", "spectrogram"}, {"traces", QJsonArray{"tran.v(out)"}}, {"spectrogram", QJsonObject{{"segment", 1e-12}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(timer.elapsed() < 5000);
+        QString error = json(r).value("analyses").toArray().first().toObject().value("error").toString();
+        QVERIFY2(error.contains("fewer than 8 of the run's samples") && error.contains("give a longer segment"), qPrintable(error));
+        // Eight samples a segment: at most 1024 columns, spread over the
+        // whole run (they stopped at 1024 of the first).
+        r = call("edit_diagram", {{"spectrogram", QJsonObject{{"segment", 5e-6}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* gram = dynamic_cast<SpectrogramDiagram*>(front()->a_DocDiags.back());
+        QVERIFY(gram);
+        const ContourDiagram::Grid& g = gram->grids().first();
+        QVERIFY2(g.ok(), qPrintable(g.error));
+        QVERIFY(g.x.size() > 900 && g.x.size() <= 1024);
+        QVERIFY2(g.x.last() > 9.9e-3, qPrintable(QString::number(g.x.last())));
+        // Kept in the file, and read again at once.
+        QVERIFY(!failed(call("edit_diagram", {{"spectrogram", QJsonObject{{"segment", 1e-12}}}})));
+        QVERIFY(!failed(call("save_document", {})));
+        closeAll();
+        timer.restart();
+        QVERIFY(!failed(call("open_document", {{"path", path("seg.sch")}})));
+        QVERIFY(timer.elapsed() < 5000);
+        // An AC sweep: refused, said.
+        r = call("add_diagram", {{"type", "spectrogram"}, {"traces", QJsonArray{"ac.v(out)"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        error = json(r).value("analyses").toArray().first().toObject().value("error").toString();
+        QVERIFY2(error.contains("is over frequency") && error.contains("cuts a transient"), qPrintable(error));
+        QVERIFY2(json(r).value("note").toString().contains("is over frequency: a spectrogram reads a transient"), qPrintable(text(r)));
+    }
+
+    // F3, B14, B15, N8, N14, N18, N19: the LTspice import.
+    void huntLtspiceImport()
+    {
+        namespace lt = qucs_s::ltspice;
+        const QString head = "Version 4\nSHEET 1 880 680\n";
+        // F3: coordinates beyond the model plane's reach refused (they
+        // overflowed an int: a Debug build aborted, Release wrapped).
+        lt::Conversion c = lt::convert(head + "SYMBOL res 800 2147483647 R0\nSYMATTR InstName R1\nSYMATTR Value 1k\n");
+        QVERIFY2(c.error.contains("line 3") && c.error.contains("within 8388608"), qPrintable(c.error));
+        c = lt::convert(head + "WIRE -2147483648 0 0 0\nSYMBOL res 0 0 R0\nSYMATTR InstName R1\nSYMATTR Value 1k\n");
+        QVERIFY2(c.error.contains("line 3"), qPrintable(c.error));
+        QVERIFY(writeFile(path("lt2/far.asy"), "Version 4\nSymbolType CELL\nPIN 2147483647 -2147483648 NONE 8\nPINATTR SpiceOrder 1\n"
+                                               "PIN 0 32 NONE 8\nPINATTR SpiceOrder 2\nSYMATTR Prefix X\nSYMATTR SpiceModel FAR\n"));
+        c = lt::convert(head + "SYMBOL far 0 0 R0\nSYMATTR InstName U1\n", {path("lt2")});
+        QVERIFY2(c.error.contains("far.asy: a pin beyond 8388608"), qPrintable(c.error));
+        // N8: a symbol's SpiceOrder of 0, of text, twice: said.
+        for (const char* order : {"0", "-1", "x"}) {
+            QVERIFY(writeFile(path("lt2/odd.asy"), QStringLiteral("Version 4\nPIN 0 0 NONE 8\nPINATTR SpiceOrder %1\nPIN 0 32 NONE 8\nPINATTR SpiceOrder 2\n"
+                                                                  "SYMATTR Prefix X\nSYMATTR SpiceModel ODD\n").arg(order)));
+            c = lt::convert(head + "SYMBOL odd 0 0 R0\nSYMATTR InstName U1\n", {path("lt2")});
+            QVERIFY2(c.notes.join('\n').contains(QStringLiteral("odd.asy: SpiceOrder %1 (the pin at 0, 0) is not 1, 2, 3").arg(order)), qPrintable(c.notes.join('\n')));
+        }
+        // B15: a capacitor's and an inductor's database ratings left out,
+        // their parasitics parts of their own; a resistor's tolerance out,
+        // its temperature kept. B14: .step and .four kept for the import,
+        // .meas and .wave said; .backanno LTspice's own bookkeeping.
+        const QString asc = head + "FLAG 0 0 g\nFLAG 0 64 0\nFLAG 100 16 h\nFLAG 100 96 0\nFLAG 216 16 h\nFLAG 216 96 0\nFLAG 0 80 0\n"
+                                   "SYMBOL voltage 0 -16 R0\nSYMATTR InstName V1\nSYMATTR Value SINE(0 1 1k)\n"
+                                   "SYMBOL cap -16 0 R0\nSYMATTR InstName C1\nSYMATTR Value 1u\nSYMATTR SpiceLine V=50 Irms=1 Rser=0.01\nSYMATTR SpiceLine2 Lser=1n\n"
+                                   "SYMBOL ind 84 0 R0\nSYMATTR InstName L1\nSYMATTR Value 1m\n"
+                                   "SYMATTR SpiceLine Ipk=1 Rser=0.05 Rpar=1000 Cpar=0 mfg=\"Coil craft\" pn=\"XAL4020\" type=\"ferrite\"\n"
+                                   "SYMBOL res 200 0 R0\nSYMATTR InstName R1\nSYMATTR Value {Rv}\nSYMATTR SpiceLine tol=1 pwr=0.25 temp=50\n"
+                                   "TEXT 0 200 Left 2 !.param Rv=1k\\n.step param Rv 1k 3k 1k\\n.meas tran vmax MAX V(g)\\n.four 1k V(h)\\n"
+                                   ".wave out.wav 16 44.1K V(g)\\n.backanno\\n.tran 3m\n";
+        c = lt::convert(asc);
+        QVERIFY2(c.error.isEmpty(), qPrintable(c.error));
+        QStringList lines = c.netlist.split('\n');
+        for (const char* line : {"C1 g C1_rser 1u", "RC1_rser C1_rser C1_lser 0.01", "LC1_lser C1_lser 0 1n", "L1 h L1_rser 1m",
+                                 "RL1_rser L1_rser 0 0.05", "RL1_rpar h 0 1000", "R1 h 0 {Rv} temp=50", ".step param Rv 1k 3k 1k", ".four 1k V(h)"})
+            QVERIFY2(lines.contains(line), qPrintable(QString(line) + "\n" + c.netlist));
+        QVERIFY2(!c.netlist.contains("Irms") && !c.netlist.contains("Ipk") && !c.netlist.contains("mfg") && !c.netlist.contains("CL1_cpar")
+                     && !c.netlist.contains("tol") && !c.netlist.contains(".meas") && !c.netlist.contains(".wave") && !c.netlist.contains(".backanno"),
+                 qPrintable(c.netlist));
+        QString notes = c.notes.join('\n');
+        for (const char* note : {"C1: V=50 Irms=1 left out", "C1: lser=1n rser=0.01 made parts of their own (LC1_lser, RC1_rser)",
+                                 "L1: Ipk=1 mfg=\"Coil craft\" pn=\"XAL4020\" type=\"ferrite\" left out", "R1: tol=1 pwr=0.25 left out",
+                                 ".meas tran vmax MAX V(g): LTspice's measurement - not taken", ".wave out.wav 16 44.1K V(g): LTspice's .wav file"})
+            QVERIFY2(notes.contains(note), qPrintable(QString(note) + "\n" + notes));
+        QCOMPARE(c.parts, 4);
+        // Imported: the stepped runs a Parameter Sweep, .four a Fourier
+        // analysis - and with ngspice, three runs of R1.
+        QVERIFY(writeFile(path("lt2/st.asc"), asc));
+        QJsonObject r = call("import_netlist", {{"file", path("lt2/st.asc")}, {"save_as", path("lt2/st.sch")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QStringList converted = json(r).value("converted").toVariant().toStringList();
+        QVERIFY2(converted.join('\n').contains(".step param Rv 1k 3k 1k: a Parameter Sweep of TR1 over Rv, 3 points (SW1)")
+                     && converted.join('\n').contains(".four 1k V(h): a Fourier analysis of TR1 (FOUR1)"),
+                 qPrintable(text(r)));
+        Component* sweep = front()->getComponentByName("SW1");
+        QVERIFY(sweep && sweep->getProperty("Param")->Value == "Rv" && sweep->getProperty("Points")->Value == "3");
+        if (withNgspice()) {
+            r = call("simulate", {{"timeout", 120}});
+            QVERIFY2(json(r).value("succeeded").toBool(), qPrintable(text(r)));
+        }
+        closeAll();
+        // N14: UTF-16 big-endian, with its mark or without; the old Mac's
+        // line ends; a line LTspice has no word for (a NUL first), said.
+        const QString rc = head + "WIRE 0 0 100 0\nFLAG 0 0 a\nFLAG 0 64 0\nSYMBOL cap -16 0 R0\nSYMATTR InstName C1\nSYMATTR Value 1u\n";
+        QByteArray be("\xFE\xFF", 2);
+        for (const QChar ch : rc) {
+            be += char(ch.unicode() >> 8);
+            be += char(ch.unicode() & 0xff);
+        }
+        QCOMPARE(lt::textOf(be), rc);
+        QCOMPARE(lt::textOf(be.mid(2)), rc);
+        QCOMPARE(lt::textOf(QString(rc).replace('\n', '\r').toLatin1()), rc);
+        c = lt::convert(rc + QStringLiteral("%1WIRE 0 64 100 64\n").arg(QChar(0)));
+        QVERIFY2(c.notes.join('\n').contains("1 line(s) not read, none of an .asc's words: line 9"), qPrintable(c.notes.join('\n')));
+        // N18: a model of LTspice's own library, defined nowhere: said.
+        c = lt::convert(head + "FLAG 16 0 a\nFLAG 16 64 0\nSYMBOL diode 0 0 R0\nSYMATTR InstName D1\nSYMATTR Value 1N4148\n");
+        QVERIFY2(c.notes.join('\n').contains("D1 (1N4148): models defined nowhere in it - LTspice takes them from its own library"),
+                 qPrintable(c.notes.join('\n')));
+        c = lt::convert(head + "FLAG 16 0 a\nFLAG 16 64 0\nSYMBOL diode 0 0 R0\nSYMATTR InstName D1\nSYMATTR Value DX\nTEXT 0 100 Left 2 !.model DX D\n");
+        QVERIFY2(!c.notes.join('\n').contains("models defined"), qPrintable(c.notes.join('\n')));
+        // N19: flags a net label cannot take, renamed to names it can - said.
+        c = lt::convert(head + "FLAG 16 0 +5V\nFLAG 16 64 -12V\nFLAG 116 0 3V3\nFLAG 116 64 V+\nFLAG 216 0 a.b\nFLAG 216 64 a_b\n"
+                               "SYMBOL cap 0 0 R0\nSYMATTR InstName C1\nSYMATTR Value 1u\nSYMBOL cap 100 0 R0\nSYMATTR InstName C2\nSYMATTR Value 1u\n"
+                               "SYMBOL cap 200 0 R0\nSYMATTR InstName C3\nSYMATTR Value 1u\n");
+        lines = c.netlist.split('\n');
+        QVERIFY2(lines.contains("C1 P5V N12V 1u") && lines.contains("C2 V3V3 VP 1u") && lines.contains("C3 a_b_2 a_b 1u"), qPrintable(c.netlist));
+        notes = c.notes.join('\n');
+        QVERIFY2(notes.contains("the net +5V is P5V here") && notes.contains("the net a.b is a_b_2 here"), qPrintable(notes));
+        // (And a SPICE netlist's: its signs as letters, said.)
+        r = call("import_netlist", {{"text", "t\nV1 +5V 0 5\nR1 +5V v- 1k\nR2 v- 0 1k\n.op\n.end"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("converted").toVariant().toStringList().join('\n').contains("the node +5V is the net P5V"), qPrintable(text(r)));
+    }
+
+    // A1: a tornado chart's parts named with an underscore (R_load), and
+    // ngspice 46's AC sensitivity (ac.v(r1_scale)); N3, N17: its 'at'
+    // between two points of the sweep, and beyond it.
+    void huntTornadoParts()
+    {
+        QCOMPARE(TornadoDiagram::sensitivityParts({"r1", "r1_m", "r1_scale", "r_load", "r_load_m", "r_load_scale", "v1", "v1_dc"}),
+                 (QStringList{"r1_scale", "r_load_scale", "v1"}));
+        QCOMPARE(TornadoDiagram::sensitivityParts({"ac.v(r1)", "ac.v(r1_scale)", "ac.v(c_in)", "ac.v(c_in_m)", "ac.v(c_in_scale)", "frequency"}),
+                 (QStringList{"ac.v(r1_scale)", "ac.v(c_in_scale)"}));
+        QVERIFY(schematicWith("tor", datasetText("r1", {1000, 2000, 4000}, {{"sw.v(out)", [](double r) { return r / 1000; }},
+                                                                            {"sw.v(in)", [](double r) { return -r / 2000; }},
+                                                                            {"sw.v(nil)", [](double) { return 0.0; }}})));
+        QJsonObject r = call("add_diagram", {{"type", "tornado"}, {"traces", QJsonArray{"sw.v(out)", "sw.v(in)", "sw.v(nil)"}}, {"tornado", QJsonObject{{"at", 3000}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject t = json(r).value("tornado").toObject();
+        QCOMPARE(t.value("shown").toArray().first().toObject().value("value").toDouble(), 3.0);   // between 2000 and 4000
+        QCOMPARE(t.value("of 0, not shown").toInt(), 1);
+        QVERIFY(!t.contains("at outside"));
+        r = call("edit_diagram", {{"tornado", QJsonObject{{"at", 99}}}});
+        t = json(r).value("tornado").toObject();
+        QVERIFY2(t.value("at outside").toString().contains("99 is beyond the sweep (1000 to 4000)"), qPrintable(text(r)));
+        QCOMPARE(t.value("shown").toArray().first().toObject().value("value").toDouble(), 1.0);
+    }
+
+    // A3: the spectrum view's fundamental read between the bins, and each
+    // harmonic sought at its multiple: a line there a peak above the floor,
+    // else the bin there. A square's 2nd was "at 1800 Hz, -45.6 dBc", and a
+    // pure sine of 10.5 periods read at 952 Hz, its THD up to 5.5 %.
+    void huntSpectrumHarmonics()
+    {
+        namespace sp = qucs_s::spectrum;
+        constexpr double Pi = 3.14159265358979323846;
+        QVector<double> t, square, sine;
+        for (int i = 0; i <= 20000; ++i) {
+            t << i * 0.5e-6;   // 10 ms
+            square << (std::fmod(t.last(), 1e-3) < 0.5e-3 ? 1.0 : 0.0);
+        }
+        const sp::Analysis a = sp::analyse(sp::of(t, square, sp::Window::Hann));
+        QVERIFY2(a.ok, qPrintable(a.error));
+        QVERIFY(std::abs(a.fundamental - 1000) < 1);
+        for (const sp::Line& l : a.harmonics) {
+            QVERIFY2(std::abs(l.frequency - l.harmonic * a.fundamental) < 5, qPrintable(QStringLiteral("%1: %2").arg(l.harmonic).arg(l.frequency)));
+            if (l.harmonic % 2 == 0) QVERIFY2(l.dBc < -40, qPrintable(QStringLiteral("%1: %2 dBc").arg(l.harmonic).arg(l.dBc)));
+        }
+        QVERIFY(std::abs(a.harmonics.at(2).dBc - 20 * std::log10(1.0 / 3)) < 0.5);   // the 3rd: a third of the 1st
+        // A sine of 10.5 periods.
+        QVector<double> x;
+        for (int i = 0; i < 20000; ++i) {
+            x << i * 10.5e-3 / 20000;
+            sine << std::sin(2 * Pi * 1e3 * x.last());
+        }
+        for (sp::Window w : {sp::Window::Hann, sp::Window::Blackman, sp::Window::BlackmanHarris}) {
+            const sp::Analysis s = sp::analyse(sp::of(x, sine, w));
+            QVERIFY2(std::abs(s.fundamental - 1000) < 5, qPrintable(QString::number(s.fundamental)));
+            QVERIFY2(s.thd < 1e-3, qPrintable(QString::number(s.thd)));
+            QVERIFY(std::abs(s.harmonics.last().frequency - 9 * s.fundamental) < 1);
+        }
+        // As ngspice samples a square (each edge a nanosecond, the rest 10 us
+        // apart), from 2 ms: the "2nd harmonic" was a ripple of the floor a
+        // bin away (1875 Hz).
+        QVector<double> ts, vs;
+        for (int k = 0; k < 10; ++k)
+            for (int half = 0; half < 2; ++half) {
+                const double a = k * 1e-3 + half * 0.5e-3, level = half ? 0.0 : 1.0;
+                ts << a << a + 1e-9;
+                vs << (half ? 1.0 : 0.0) << level;
+                for (int j = 1; j < 50; ++j) {
+                    ts << a + j * 10e-6;
+                    vs << level;
+                }
+            }
+        ts << 10e-3;
+        vs << 0.0;
+        const sp::Analysis ng = sp::analyse(sp::of(ts, vs, sp::Window::Hann, 2e-3));
+        QVERIFY2(ng.ok, qPrintable(ng.error));
+        for (const sp::Line& l : ng.harmonics) {
+            QVERIFY2(std::abs(l.frequency - l.harmonic * ng.fundamental) < 5, qPrintable(QStringLiteral("%1: %2").arg(l.harmonic).arg(l.frequency)));
+            if (l.harmonic % 2 == 0) QVERIFY2(l.dBc < -40, qPrintable(QStringLiteral("%1: %2 dBc").arg(l.harmonic).arg(l.dBc)));
+        }
+        // N2: a spectrum from past the run's end says so.
+        QVERIFY(schematicWith("spec", datasetText("time", t, {{"tran.v(sq)", [](double v) { return std::fmod(v, 1e-3) < 0.5e-3 ? 1.0 : 0.0; }}})));
+        QJsonObject r = call("add_diagram", {{"type", "spectrum"}, {"traces", QJsonArray{"tran.v(sq)"}}, {"spectrum", QJsonObject{{"from", 0.02}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("analyses").toArray().first().toObject().value("error").toString().contains("past the run's end"), qPrintable(text(r)));
+    }
+
+    // A5: a two-terminal part's second pin gave its first's current - the
+    // sign wrong; B12: a bipolar's emitter (@q1[ie], which ngspice writes
+    // none of) failed every run. Each computed by a NutmegEq now.
+    void huntProbedCurrents()
+    {
+        QJsonObject r = call("import_netlist", {{"text", "bjt\nV1 c 0 5\nVb b0 0 0.7\nRb b0 b 1k\nR1 c out 1k\nQ1 out b e QN\nRe e 0 100\n"
+                                                         ".model QN NPN(BF=100)\n.tran 1u 100u\n.end"},
+                                                {"save_as", path("bjt.sch")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Schematic* sch = front();
+        const auto vectors = [&](const QString& part) {
+            QStringList out;
+            Component* c = sch->getComponentByName(part);
+            for (int i = 0; c && i < c->Ports.size(); ++i) {
+                QString error;
+                out << qucs_s::probe::vectorOf(sch, qucs_s::probe::Target{qucs_s::probe::Kind::Current, nullptr, nullptr, c, i}, &error);
+            }
+            out.sort();
+            return out;
+        };
+        QCOMPARE(vectors("R1"), (QStringList{"-@r1[i]", "@r1[i]"}));
+        QCOMPARE(vectors("V1"), (QStringList{"-i(v1)", "i(v1)"}));
+        QCOMPARE(vectors("Q1"), (QStringList{"-(@q1[ic] + @q1[ib])", "@q1[ib]", "@q1[ic]"}));
+        // Probed: the pin's current named after it, a NutmegEq's equation.
+        Component* r1 = sch->getComponentByName("R1");
+        QString secondPin;
+        for (int i = 0; i < r1->Ports.size(); ++i) {
+            QString error;
+            if (qucs_s::probe::vectorOf(sch, {qucs_s::probe::Kind::Current, nullptr, nullptr, r1, i}, &error).startsWith('-'))
+                secondPin = QStringLiteral("R1.%1").arg(i + 1);
+        }
+        r = call("probe", {{"what", secondPin}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r);
+        const QString pin = secondPin.mid(3);
+        QCOMPARE(o.value("variable").toString(), QStringLiteral("ngspice/tran.i(r1_pin%1)").arg(pin));
+        QCOMPARE(o.value("computed").toString(), QStringLiteral("r1_pin%1 = -@r1[i], computed by a NutmegEq after TR1").arg(pin));
+        QCOMPARE(o.value("saved by the next run").toString(), QString("@r1[i]"));
+        // The emitter.
+        Component* q1 = sch->getComponentByName("Q1");
+        QString emitter;
+        for (int i = 0; i < q1->Ports.size(); ++i) {
+            QString error;
+            if (qucs_s::probe::vectorOf(sch, {qucs_s::probe::Kind::Current, nullptr, nullptr, q1, i}, &error).startsWith('-'))
+                emitter = QStringLiteral("Q1.%1").arg(i + 1);
+        }
+        r = call("probe", {{"what", emitter}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("saved by the next run").toString(), QString("@q1[ic], @q1[ib]"));
+        const QString netlist = text(call("get_netlist", {}));
+        QVERIFY2(netlist.contains(QStringLiteral("let r1_pin%1 = -@r1[i]").arg(pin)) && netlist.contains("= -(@q1[ic] + @q1[ib])"), qPrintable(netlist));
+        if (withNgspice()) {
+            r = call("simulate", {{"timeout", 120}});
+            QVERIFY2(json(r).value("succeeded").toBool(), qPrintable(text(r)));
+            const QJsonArray v = json(call("get_dataset", {{"variables", QJsonArray{"tran.@r1[i]", QStringLiteral("tran.i(r1_pin%1)").arg(pin),
+                                                                                       "tran.@q1[ic]", "tran.@q1[ib]", QStringLiteral("tran.i(q1_pin%1)").arg(emitter.mid(3))}},
+                                                         {"at", QJsonArray{5e-5}}})).value("variables").toArray();
+            QVERIFY2(v.size() == 5, qPrintable(QJsonDocument(v).toJson(QJsonDocument::Compact) + text(call("get_netlist", {}))));
+            const auto at = [&](int k) { return v.at(k).toObject().value("at").toArray().first().toArray().at(1).toDouble(); };
+            QVERIFY(at(0) != 0);
+            QVERIFY2(std::abs(at(1) + at(0)) < 1e-12, qPrintable(QString::number(at(1))));
+            QVERIFY2(std::abs(at(4) + at(2) + at(3)) < 1e-9, qPrintable(QString::number(at(4))));
+            // The probes' traces draw (the emitter's ngspice wrote as the name
+            // alone, of vectors of no type).
+            for (const Graph* g : sch->a_DocDiags.front()->Graphs) QVERIFY2(!g->isEmpty(), qPrintable(g->Var));
+        }
+        // B13: under Qucsator a net is probed (the netlist "could not be
+        // written").
+        QucsSettings.DefaultSimulator = spicecompat::simQucsator;
+        const auto restore = qScopeGuard([] { QucsSettings.DefaultSimulator = spicecompat::simNgspice; });
+        r = call("probe", {{"what", "out"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("variable").toString(), QString("out.Vt"));
+        // N1: a list of names, each probed.
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        r = call("probe", {{"what", QJsonArray{"out", "R1"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray each = json(r).value("probed").toArray();
+        QCOMPARE(each.size(), 2);
+        QCOMPARE(each.at(1).toObject().value("variable").toString(), QString("ngspice/tran.@r1[p]"));
+    }
+
+    // A6: a delta marker placed on an earlier trace measured from the wrong
+    // marker; B2: one whose reference went kept its Δ lines; B9: a marker's
+    // x kept to six digits moved on save; N13: 'relative_to' with no other
+    // marker said "1 to 1"; N23: in the complex plane, a Δ of magnitudes.
+    void huntMarkers()
+    {
+        QVector<double> t;
+        for (int i = 0; i <= 1000; ++i) {
+            t << i * 1e-5;
+            if (i == 300)
+                for (int k = 1; k <= 20; ++k) t << 3e-3 + k * 1e-9;   // (an edge's samples, a nanosecond apart)
+        }
+        QVERIFY(schematicWith("mk", datasetText("time", t, {{"tran.a", [](double x) { return x; }}, {"tran.b", [](double x) { return 2 * x; }}})));
+        QJsonObject r = call("add_diagram", {{"type", "rect"}, {"traces", QJsonArray{"tran.a", "tran.b"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("add_marker", {{"trace", 1}, {"at", 0.001}, {"relative_to", 1}});
+        QVERIFY2(failed(r) && text(r).contains("it has none yet"), qPrintable(text(r)));
+        QVERIFY(!failed(call("add_marker", {{"trace", 2}, {"at", 0.002}})));
+        QVERIFY(!failed(call("add_marker", {{"trace", 2}, {"at", 0.006}})));
+        r = call("add_marker", {{"trace", 1}, {"at", 0.004}, {"relative_to", 2}});   // the one at 6 ms, as numbered before
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(std::abs(json(r).value("delta").toObject().value("x").toDouble() + 2e-3) < 1e-9, qPrintable(text(r)));
+        // B2: the reference deleted - no Δ left in the text.
+        Diagram* d = front()->a_DocDiags.front();
+        Marker* delta = d->markers().first();
+        QVERIFY(delta->Text.contains(QString::fromUtf8("Δx")));
+        QVERIFY(!failed(call("delete_marker", {{"marker", 3}})));
+        QVERIFY2(!delta->Text.contains(QString::fromUtf8("Δ")), qPrintable(delta->Text));
+        QVERIFY(delta->reference() == nullptr);
+        // B9: every digit of its x kept - on a sample a nanosecond from
+        // others, it stays on it reopened (at six digits it moved).
+        r = call("add_marker", {{"trace", 1}, {"at", 3.000006e-3}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const double x = json(r).value("at").toObject().value("time").toDouble();
+        QVERIFY(std::abs(x - 3.000006e-3) < 1e-13);
+        QVERIFY(!failed(call("save_document", {})));
+        closeAll();
+        QVERIFY(!failed(call("open_document", {{"path", path("mk.sch")}})));
+        bool kept = false;
+        for (const Marker* m : front()->a_DocDiags.front()->markers()) kept = kept || std::abs(m->varPos().front() - 3.000006e-3) < 1e-13;
+        QVERIFY(kept);
+        // N23: Smith - Δ|y| and |Δy|, the distance.
+        using C = std::complex<double>;
+        QVERIFY(schematicWith("mks", datasetText("frequency", {1e6, 2e6}, {{"ac.s_1_1", [](double f) { return f < 1.5e6 ? 0.3 : 0.0; },
+                                                                                     [](double f) { return f < 1.5e6 ? 0.0 : 0.4; }}})));
+        QVERIFY(!failed(call("add_diagram", {{"type", "smith"}, {"traces", QJsonArray{"ac.s_1_1"}}})));
+        QVERIFY(!failed(call("add_marker", {{"at", 1e6}})));
+        r = call("add_marker", {{"at", 2e6}, {"relative_to", 1}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject dl = json(r).value("delta").toObject();
+        QVERIFY(std::abs(dl.value("magnitude").toDouble() - 0.1) < 1e-9 && std::abs(dl.value("distance").toDouble() - std::abs(C(0, 0.4) - C(0.3, 0))) < 1e-9);
+        QVERIFY(!dl.contains("y"));
+        QVERIFY2(json(r).value("text").toString().contains(QString::fromUtf8("\n|Δy|: ")) && json(r).value("text").toString().contains(QString::fromUtf8("\nΔ|y|: "))
+                     && !json(r).value("text").toString().contains(QString::fromUtf8("\nΔy: ")),
+                 qPrintable(json(r).value("text").toString()));
+    }
+
+    // A2 (unchecked limits), N6 (a limit at one x), N7 (a limit that does
+    // not read leaves the schematic be), N16 (one warning a limit).
+    void huntLimits()
+    {
+        QVERIFY(schematicWith("lim", datasetText("time", range(0, 10e-3, 1001), {{"tran.v(sq)", [](double v) { return std::fmod(v, 1e-3) < 0.5e-3 ? 1.0 : 0.0; }}})));
+        QJsonObject r = call("add_diagram", {{"type", "rect"}, {"traces", QJsonArray{"tran.v(sq)"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("edit_diagram", {{"limits", QJsonArray{QJsonObject{{"upper", QJsonArray{QJsonArray{0, 1}, QJsonArray{0, 1}, QJsonArray{0, 1}}}}}}});
+        QVERIFY2(failed(r) && text(r).contains("all at x = 0"), qPrintable(text(r)));
+        r = call("edit_diagram", {{"limits", QJsonArray{QJsonObject{{"upper", 0.9}}}}});
+        QVERIFY(!json(r).value("verdict").toObject().value("pass").toBool());
+        int said = 0;
+        for (const QJsonValue& w : json(call("check_schematic", {})).value("warnings").toArray())
+            if (w.toObject().value("message").toString().startsWith("diagram 1: tran.v(sq) is beyond")) {
+                ++said;
+                QVERIFY2(w.toObject().value("message").toString().contains("(the worst of 11 stretches beyond it)"), qPrintable(w.toObject().value("message").toString()));
+            }
+        QCOMPARE(said, 1);
+        // On the right axis, which no trace is drawn against: not a pass.
+        r = call("edit_diagram", {{"limits", QJsonArray{QJsonObject{{"upper", 0.9}, {"axis", "right"}}}}});
+        QJsonObject verdict = json(r).value("verdict").toObject();
+        QVERIFY(!verdict.value("pass").toBool());
+        QCOMPARE(verdict.value("unchecked").toArray(), QJsonArray{1});
+        bool unchecked = false;
+        for (const QJsonValue& w : json(call("check_schematic", {})).value("warnings").toArray())
+            unchecked = unchecked || w.toObject().value("message").toString().contains("its upper limit 1 checks nothing");
+        QVERIFY(unchecked);
+        // In a file: a negative pane, points that do not read - the limit
+        // left out or its pane the first, the schematic read.
+        QVERIFY(!failed(call("edit_diagram", {{"limits", QJsonArray{QJsonObject{{"upper", 0.9}}}}})));
+        QVERIFY(!failed(call("save_document", {})));
+        closeAll();
+        QFile f(path("lim.sch"));
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QString saved = QString::fromUtf8(f.readAll());
+        f.close();
+        QVERIFY(saved.contains("<Limit 0 0 0 "));
+        QVERIFY(writeFile(path("lim.sch"), QString(saved).replace("<Limit 0 0 0 ", "<Limit 0 0 -3 ")));
+        QVERIFY(!failed(call("open_document", {{"path", path("lim.sch")}})));
+        QCOMPARE(front()->a_DocDiags.front()->limits.size(), 1);
+        closeAll();
+        QVERIFY(writeFile(path("lim.sch"), QString(saved).replace(QRegularExpression("<Limit 0 0 0 \"[^\"]*\" "), "<Limit 0 0 0 \"\" abc;")));
+        QVERIFY(!failed(call("open_document", {{"path", path("lim.sch")}})));
+        QCOMPARE(int(front()->a_DocDiags.size()), 1);
+        QVERIFY(front()->a_DocDiags.front()->limits.isEmpty());
+    }
+
+    // B1: a vector its simulation's name put before it (two simulations of
+    // a kind ran: tr1.tran.v(out)) found by the name alone, when one is so.
+    void huntPrefixedNames()
+    {
+        QVERIFY(schematicWith("pre", datasetText("time", range(0, 1e-3, 11), {{"tr1.tran.v(out)", [](double) { return 1.0; }}})
+                                         + datasetText("frequency", range(1, 10, 10), {{"fft1.ac.s", [](double) { return 2.0; }},
+                                                                                     {"fft1.ac.v(two)", [](double) { return 3.0; }},
+                                                                                     {"ac1.ac.v(two)", [](double) { return 4.0; }}})));
+        QJsonObject r = call("add_diagram", {{"type", "rect"}, {"traces", QJsonArray{"tran.v(out)", "ac.s"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        for (const QJsonValue& t : json(r).value("traces").toArray()) QVERIFY2(t.toObject().value("points").toInt() > 0, qPrintable(text(r)));
+        // (Named as asked - shown on when one simulation runs alone again -
+        // and found: no "has no variable".)
+        QCOMPARE(json(r).value("traces").toArray().first().toObject().value("variable").toString(), QString("ngspice/tran.v(out)"));
+        QVERIFY2(!json(r).value("note").toString().contains("has no variable"), qPrintable(text(r)));
+        r = call("get_dataset", {{"variables", QJsonArray{"tran.v(out)"}}});
+        QVERIFY2(!failed(r) && json(r).value("variables").toArray().first().toObject().value("name").toString() == "tr1.tran.v(out)", qPrintable(text(r)));
+        r = call("get_dataset", {{"variables", QJsonArray{"v(two)"}}});   // each simulation's
+        QVERIFY2(!failed(r) && json(r).value("variables").toArray().size() == 2, qPrintable(text(r)));
+        r = call("get_dataset", {{"variables", QJsonArray{"ac.v(two)"}}});   // two: both, each by its name
+        QVERIFY2(!failed(r) && json(r).value("variables").toArray().size() == 2, qPrintable(text(r)));
+        // B6: a trace shown, its data the run names otherwise (tr1.tran.v(out)):
+        // probed again, it has data; and one of a dataset named before it, as
+        // the examples' traces are, is found in it.
+        {
+            const QString sch = path("pre6.sch");
+            QVERIFY(writeFile(sch, QStringLiteral(
+                "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n<Components>\n"
+                "  <R R1 1 160 100 -26 15 0 0 \"1k\" 1 \"26.85\" 0 \"european\" 0>\n</Components>\n<Wires>\n"
+                "  <100 100 130 100 \"in\" 100 70 0 \"\">\n  <190 100 220 100 \"out\" 200 70 0 \"\">\n</Wires>\n<Diagrams>\n"
+                "  <Rect 380 311 329 231 3 #c0c0c0 1 00 1 0 0.0002 0.001 1 -1 1 1 1 -1 5 5 315 0 225 0 0 0 \"\" \"\" \"\">\n"
+                "\t<\"ngspice/tran.v(out)\" #0000ff 0 3 0 0 0>\n  </Rect>\n"
+                "  <Rect 380 611 329 231 3 #c0c0c0 1 00 1 0 0.0002 0.001 1 -1 1 1 1 -1 5 5 315 0 225 0 0 0 \"\" \"\" \"\">\n"
+                "\t<\"ngspice/pre6:tran.v(out)\" #0000ff 0 3 0 0 0>\n  </Rect>\n</Diagrams>\n<Paintings>\n</Paintings>\n")));
+            QVERIFY(writeFile(path("pre6.dat.ngspice"), datasetText("time", range(0, 1e-3, 11), {{"tr1.tran.v(out)", [](double) { return 1.0; }},
+                                                                                                {"tran.v(in)", [](double) { return 2.0; }}})));
+            QVERIFY(!failed(call("open_document", {{"path", sch}})));
+            QVERIFY(!front()->a_DocDiags.front()->Graphs.first()->isEmpty());
+            r = call("probe", {{"what", "out"}, {"diagram", 1}});
+            QVERIFY2(json(r).value("already there").toBool() && json(r).value("has data").toBool(), qPrintable(text(r)));
+            r = call("probe", {{"what", "in"}, {"diagram", 2}});
+            QCOMPARE(json(r).value("variable").toString(), QString("ngspice/pre6:tran.v(in)"));
+            QVERIFY2(json(r).value("has data").toBool(), qPrintable(text(r)));
+        }
+        // A run: an .AC beside the example's .FFT (both write "ac") prefixes
+        // theirs alone - the transient's stay tran.v(out), and the example's
+        // diagrams draw (they went blank).
+        if (withNgspice()) {
+            const QString sch = path("rcfft.sch");
+            QFile::remove(sch);
+            QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/General Electronics/RC_filter_FFT.sch"), sch));
+            QFile(sch).setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+            QVERIFY(!failed(call("open_document", {{"path", sch}})));
+            QVERIFY(!failed(call("add_analysis", {{"kind", "ac"}})));
+            r = call("simulate", {{"timeout", 120}});
+            QVERIFY2(json(r).value("succeeded").toBool(), qPrintable(text(r)));
+            QStringList names;
+            for (const QJsonValue& v : json(call("get_dataset", {})).value("variables").toArray()) names << v.toObject().value("name").toString();
+            QVERIFY2(names.contains("tran.v(out)") && names.contains("ac1.ac.v(out)") && names.contains("fft1.ac.s"), qPrintable(names.join(", ")));
+            for (const Diagram* d : front()->a_DocDiags)
+                for (const Graph* g : d->Graphs) QVERIFY2(!g->isEmpty(), qPrintable(g->Var));
+        }
+    }
+
+    // B4 (Smith circles beyond the sweep), B5 (add_diagram's run), B8
+    // (rails a label can name), B16 (a Nichols chart's grid of many turns),
+    // N4, N21 (a constellation's limits said), N9 (a box plot's 'at' on one
+    // curve), N10 (iso-lines the data does not reach), N20 (a zero's half-
+    // plane), N22 (Values at the Marker kept with the schematic).
+    void huntTheRest()
+    {
+        // B4.
+        QVERIFY(schematicWith("sp", datasetText("frequency", range(1e6, 2e7, 5), {{"ac.s_1_1", [](double) { return 0.3; }, [](double) { return 0.1; }},
+                                                                                 {"ac.s_1_2", [](double) { return 0.05; }}, {"ac.s_2_1", [](double) { return 2.0; }},
+                                                                                 {"ac.s_2_2", [](double) { return 0.5; }}})));
+        QJsonObject r = call("add_diagram", {{"type", "smith"}, {"traces", QJsonArray{"ac.s_1_1"}},
+                                             {"smith_circles", QJsonObject{{"frequency", 1e15}, {"circles", QJsonArray{QJsonObject{{"kind", "stability_in"}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("smith_circles").toObject().value("error").toString().contains("outside the sweep (1e+06 to 2e+07 Hz)"), qPrintable(text(r)));
+        // B5 and N4, N21, N9 on a transient.
+        QVERIFY(schematicWith("rest", datasetText("time", range(0, 10e-3, 1001), {{"tran.i", [](double t) { return std::cos(3000 * t); }},
+                                                                                  {"tran.q", [](double t) { return std::sin(3000 * t); }}})));
+        QVERIFY(writeFile(path("before.dat.ngspice"), datasetText("time", range(0, 10e-3, 11), {{"tran.i", [](double) { return 0.5; }}})));
+        r = call("add_diagram", {{"type", "rect"}, {"traces", QJsonArray{"tran.i", QJsonObject{{"variable", "tran.i"}, {"run", "before"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray traces = json(r).value("traces").toArray();
+        QCOMPARE(traces.at(1).toObject().value("variable").toString(), QString("ngspice/before:tran.i"));
+        QVERIFY(traces.at(1).toObject().value("ghost").toBool() && traces.at(1).toObject().value("points").toInt() == 11);
+        r = call("add_diagram", {{"type", "constellation"}, {"traces", QJsonArray{"tran.i", "tran.q"}}, {"constellation", QJsonObject{{"symbol_period", 1e-15}}}});
+        QVERIFY2(json(r).value("constellation").toObject().value("pairs").toArray().first().toObject().value("note").toString().startsWith("the first 20000 symbols only"),
+                 qPrintable(text(r)));
+        r = call("edit_diagram", {{"diagram", 2}, {"constellation", QJsonObject{{"symbol_period", 1}}}});
+        QVERIFY2(json(r).value("constellation").toObject().value("pairs").toArray().first().toObject().value("error").toString().contains("longer than the run"),
+                 qPrintable(text(r)));
+        r = call("edit_diagram", {{"diagram", 2}, {"constellation", QJsonObject{{"symbol_period", 1e-3}, {"offset", 1}}}});
+        QVERIFY2(json(r).value("constellation").toObject().value("pairs").toArray().first().toObject().value("error").toString().contains("the offset (1) is past"),
+                 qPrintable(text(r)));
+        QVERIFY(failed(call("edit_diagram", {{"diagram", 2}, {"constellation", QJsonObject{{"offset", -1e-3}}}})));
+        r = call("add_diagram", {{"type", "box_plot"}, {"traces", QJsonArray{"tran.i"}}, {"box_plot", QJsonObject{{"at", 0.003}}}});
+        QVERIFY2(json(r).value("box_plot").toObject().value("boxes").toArray().first().toObject().value("at").toString().startsWith("not used"), qPrintable(text(r)));
+        // N22: Values at the Marker kept.
+        r = call("add_marker", {{"diagram", 1}, {"trace", 1}, {"at", 0.004}, {"annotate", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(front()->cursorValuesShown());
+        QVERIFY(!failed(call("save_document", {})));
+        closeAll();
+        QVERIFY(!failed(call("open_document", {{"path", path("rest.sch")}})));
+        QVERIFY(front()->cursorValuesShown());
+        QVERIFY(front()->cursorMarker() != nullptr && front()->cursorMarker() == front()->a_DocDiags.front()->markers().first());
+        // N13: an NRZ signal read as PAM4 (levels 4) - three eyes drawn - said.
+        if (withNgspice()) {
+            const QString sch = path("nrz.sch");
+            QFile::remove(sch);
+            QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/NGspice features/PRBS_eye_diagram.sch"), sch));
+            QFile(sch).setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+            QVERIFY(!failed(call("open_document", {{"path", sch}})));
+            r = call("simulate", {{"timeout", 120}});
+            QVERIFY2(json(r).value("succeeded").toBool(), qPrintable(text(r)));
+            r = call("add_diagram", {{"type", "bathtub"}, {"traces", QJsonArray{"tran.v(rx)"}}, {"bathtub", QJsonObject{{"levels", 4}}}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            const QString notes = json(r).value("analyses").toArray().first().toObject().value("notes").toVariant().toStringList().join('\n');
+            QVERIFY2(notes.contains("is it NRZ") && notes.contains("levels 2 reads it so"), qPrintable(text(r)));
+            r = call("edit_diagram", {{"diagram", int(front()->a_DocDiags.size())}, {"bathtub", QJsonObject{{"levels", 2}}}});
+            QVERIFY2(!json(r).value("analyses").toArray().first().toObject().contains("notes"), qPrintable(text(r)));
+            closeAll();
+        }
+        // B8: the rails a label can name.
+        const auto kind = [](const QString& name) {
+            const QString sch = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n<Components>\n</Components>\n"
+                                               "<Wires>\n  <300 100 400 100 \"%1\" 320 70 0 \"\">\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n").arg(name);
+            return sch;
+        };
+        int k = 0;
+        for (const auto& [name, expected] : std::initializer_list<std::pair<const char*, int>>{
+                 {"P5V", 1}, {"N12V", 1}, {"V3V3", 1}, {"VDD_IO", 1}, {"VPP", 1}, {"VCC_3V3", 1}, {"VCC_EN", 0}, {"VIN", 0}, {"VREF", 0}, {"AGND", 2}, {"GNDA", 2}}) {
+            const QString file = path(QStringLiteral("cw%1.sch").arg(++k));
+            QVERIFY(writeFile(file, kind(name)));
+            QVERIFY(!failed(call("open_document", {{"path", file}})));
+            const QHash<const Wire*, qucs_s::erc::NetKind> kinds = qucs_s::erc::wireKinds(front());
+            const qucs_s::erc::NetKind got = kinds.value(front()->a_DocWires.front(), qucs_s::erc::NetKind::Signal);
+            QVERIFY2(int(got) == (expected == 1 ? int(qucs_s::erc::NetKind::Supply) : expected == 2 ? int(qucs_s::erc::NetKind::Ground) : int(qucs_s::erc::NetKind::Signal)),
+                     name);
+            closeAll();
+        }
+        // B16: a Nichols chart over many turns of the phase: no grid, said.
+        QVERIFY(schematicWith("nic", datasetText("frequency", range(1, 1000, 1000), {{"ac.v(g)", [](double f) { return std::polar(0.5, -f * 0.1).real(); },
+                                                                                    [](double f) { return std::polar(0.5, -f * 0.1).imag(); }}})));
+        r = call("add_diagram", {{"type", "nichols"}, {"traces", QJsonArray{"ac.v(g)"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* nichols = dynamic_cast<NicholsDiagram*>(front()->a_DocDiags.front());
+        QVERIFY(nichols && nichols->turnsInView() > NicholsDiagram::MostTurns);
+        QVERIFY2(json(r).value("nichols").toObject().value("grid not drawn").toString().contains("turns"), qPrintable(text(r)));
+        QByteArray svg;
+        {
+            const QString file = path("nic.svg");
+            QVERIFY(!failed(call("export_image", {{"diagram", 1}, {"save_as", file}})));
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            svg = f.readAll();
+        }
+        QVERIFY2(svg.size() < 2000000, qPrintable(QString::number(svg.size())));
+        QVERIFY(!failed(call("edit_diagram", {{"nichols", QJsonObject{{"grid", false}}}})));
+        {
+            const QString file = path("nic-nogrid.svg");
+            QVERIFY(!failed(call("export_image", {{"diagram", 1}, {"save_as", file}})));
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QVERIFY2(svg.size() < f.size() + f.size() / 10, qPrintable(QStringLiteral("%1 %2").arg(svg.size()).arg(f.size())));
+        }
+        // N10: iso-lines the data does not reach, not listed.
+        const QVector<double> xs = range(1, 10, 10), ys = range(0, 1, 6);
+        QVERIFY(schematicWith("iso", datasetText2("r", xs, "c", ys, {{"sw.v", [](double x, double y) { return x + 10 * y; }}})));
+        r = call("add_diagram", {{"type", "contour"}, {"traces", QJsonArray{"sw.v"}}, {"contour", QJsonObject{{"range", QJsonObject{{"from", 0}, {"to", 1e-3}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject an = json(r).value("analyses").toArray().first().toObject();
+        QVERIFY2(an.value("iso-lines").toArray().isEmpty() && an.value("iso-lines not drawn").toString().contains("beyond the data (1 to 20)"), qPrintable(text(r)));
+        // N20: a zero's side is its phase's, not a pole's stability.
+        QVERIFY(schematicWith("pz", datasetText("index", {1}, {{"pz.pole(1)", [](double) { return -1000.0; }}, {"pz.zero(1)", [](double) { return 0.0; }}})));
+        r = call("add_diagram", {{"type", "pole_zero"}, {"traces", QJsonArray{"pz.pole(1)", "pz.zero(1)"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray roots = json(r).value("roots").toArray();
+        QVERIFY(roots.at(0).toObject().value("roots").toArray().first().toObject().value("stable").toBool());
+        const QJsonObject zero = roots.at(1).toObject().value("roots").toArray().first().toObject();
+        QVERIFY2(!zero.contains("stable") && !zero.value("minimum phase").toBool() && zero.value("on the imaginary axis").toBool(), qPrintable(text(r)));
+    }
+
+    // N5 (a bus named ""), N15 (one of no length), N11 (a dialog's value
+    // read back as it was shown).
+    void huntBusesAndDialogValues()
+    {
+        QVERIFY(schematicWith("bus", datasetText("time", range(0, 1, 11), {{"tran.v", [](double t) { return t; }}})));
+        QJsonObject r = call("add_painting", {{"type", "bus"}, {"from", QJsonArray{0, 0}}, {"to", QJsonArray{100, 0}}, {"name", ""}});
+        QVERIFY2(failed(r) && text(r).contains("D[7:0]"), qPrintable(text(r)));
+        BusPainting bus;
+        bus.x1 = bus.x2 = 10;
+        bus.y1 = bus.y2 = 20;
+        QVERIFY(!bus.MousePressing(front()));   // first click
+        QVERIFY(!bus.MousePressing(front()));   // the second on it: drawing on
+        bus.x2 = 60;
+        QVERIFY(bus.MousePressing(front()));    // finished
+        // (Exactly: QCOMPARE's doubles are fuzzy.)
+        QVERIFY(qucs_s::units::read("10f").value == 1e-14);
+        QVERIFY(qucs_s::units::read("100u").value == 1e-4);
+        // Diagram Properties, OK as it was: 1e-14 and 1e-4 stay so.
+        QVERIFY(!failed(call("add_diagram", {{"type", "bathtub"}, {"traces", QJsonArray{"tran.v"}},
+                                             {"bathtub", QJsonObject{{"unit_interval", 5e-4}, {"ber", 1e-9}, {"floor", 1e-14}}}})));
+        QVERIFY(!failed(call("add_diagram", {{"type", "constellation"}, {"traces", QJsonArray{"tran.v", "tran.v"}},
+                                             {"constellation", QJsonObject{{"symbol_period", 5e-4}, {"offset", 1e-4}}}})));
+        for (Diagram* d : front()->a_DocDiags) {
+            auto* dialog = new DiagramDialog(d, nullptr);
+            QVERIFY(QMetaObject::invokeMethod(dialog, "slotApply"));
+            dialog->close();
+        }
+        auto* tub = dynamic_cast<BathtubDiagram*>(front()->a_DocDiags.front());
+        auto* iq = dynamic_cast<ConstellationDiagram*>(front()->a_DocDiags.back());
+        QVERIFY(tub && iq);
+        QVERIFY2(tub->floor == 1e-14 && tub->ui == 5e-4 && tub->ber == 1e-9, qPrintable(QString::number(tub->floor, 'g', 17)));
+        QVERIFY2(iq->offset == 1e-4 && iq->period == 5e-4, qPrintable(QString::number(iq->offset, 'g', 17)));
     }
 };
 

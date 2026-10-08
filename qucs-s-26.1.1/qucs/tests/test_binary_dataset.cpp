@@ -590,6 +590,18 @@ private slots:
             w.begin("dep tran.v(out) time");   // a name twice: a graph takes the first
             for (int i = 0; i < 5; ++i) w.real(-i);
             w.end();
+            // Two simulations of a kind: their names first (tr1.tran.v(pre)),
+            // found by the name alone when one has it, not when two do (bug
+            // hunt of 2026-10-08, B1).
+            w.begin("dep tr1.tran.v(pre) time");
+            for (int i = 0; i < 5; ++i) w.real(i + 0.25);
+            w.end();
+            w.begin("dep fft1.ac.v(two) frequency");
+            for (int i = 0; i < 3; ++i) w.complex(i, 1);
+            w.end();
+            w.begin("dep ac1.ac.v(two) frequency");
+            for (int i = 0; i < 3; ++i) w.complex(i, 2);
+            w.end();
         };
         const QString textBase = dir.filePath("graphtext"), binaryBase = dir.filePath("graphbin");
         for (const bool binary : {false, true}) {
@@ -605,7 +617,8 @@ private slots:
             QVERIFY(f.commit());
         }
         const QStringList traces{"ngspice/tran.v(out)", "ngspice/tran.v(fam)", "ngspice/time", "ngspice/tran.v(out)@tran.v(gain)",
-                                 "ngspice/tran.gain", "ngspice/ac.v(out)", "ngspice/ac.v(s_1_1)", "ngspice/tran.v(short)", "ngspice/nothing"};
+                                 "ngspice/tran.gain", "ngspice/ac.v(out)", "ngspice/ac.v(s_1_1)", "ngspice/tran.v(short)", "ngspice/nothing",
+                                 "ngspice/tran.v(pre)", "ngspice/ac.v(two)"};
         for (const QString& trace : traces) {
             for (const auto part : {Graph::ValuePart::Auto, Graph::ValuePart::Phase}) {
                 RectDiagram d1, d2;
@@ -616,7 +629,8 @@ private slots:
                 t->valuePart = b->valuePart = part;
                 const int loadedText = t->loadDatFile(textBase + ".dat");
                 QCOMPARE(b->loadDatFile(binaryBase + ".dat"), loadedText);
-                QVERIFY2(loadedText == (trace.endsWith("nothing") || trace.endsWith("short)") ? 0 : 2), qPrintable(trace));
+                QVERIFY2(loadedText == (trace.endsWith("nothing") || trace.endsWith("short)") || trace.endsWith("(two)") ? 0 : 2), qPrintable(trace));
+                if (trace.endsWith("(pre)") && part == Graph::ValuePart::Auto) QCOMPARE(b->cPointsY[2], 1.25);
                 if (trace == "ngspice/tran.v(out)" && part == Graph::ValuePart::Auto) QVERIFY(b->cPointsY[2] > 15);   // the first of its name
                 QCOMPARE(b->numAxes(), t->numAxes());
                 QCOMPARE(b->countY, t->countY);

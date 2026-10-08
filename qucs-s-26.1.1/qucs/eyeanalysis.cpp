@@ -843,6 +843,20 @@ Result analyse(const Curve& c, const Options& o)
         const double gap1 = levels.at(1) - levels.at(0), gap2 = levels.at(2) - levels.at(1), gap3 = levels.at(3) - levels.at(2);
         if (std::min({gap1, gap2, gap3}) < 0.25 * std::max({gap1, gap2, gap3}))
             r.notes << tr("the four levels are far from evenly spaced: is it PAM4?");
+        // Two levels with hardly a symbol on them - an NRZ signal read as
+        // four (its transitions' samples): said (bug hunt of 2026-10-08,
+        // N13, three eyes drawn without a remark).
+        // So too a middle gap twice the outer ones: an NRZ signal's levels and
+        // its intersymbol interference's, which PAM4's spacing is not.
+        QVector<int> on(4, 0);
+        for (double v : std::as_const(sampled)) ++on[nearest(levels, v)];
+        if (!sampled.isEmpty() && on.at(1) + on.at(2) < 0.1 * sampled.size())
+            r.notes << tr("the middle levels hold %1 of the %2 symbols: is it NRZ? (levels 2 reads it so)")
+                           .arg(on.at(1) + on.at(2))
+                           .arg(sampled.size());
+        else if (gap2 > 1.6 * std::max(gap1, gap3))
+            r.notes << tr("the middle gap is %1 times the outer ones: is it NRZ, the middle levels its intersymbol "
+                          "interference? (levels 2 reads it so)").arg(number(gap2 / std::max(gap1, gap3)));
     }
     r.symbols = int(sampled.size());
 
@@ -899,6 +913,16 @@ Result analyse(const Curve& c, const Options& o)
                 r.notes << (pam4 ? tr("eye %1 is closed at its centre").arg(i + 1) : tr("the eye is closed at its centre"));
         }
         r.eyes << e;
+    }
+    // The width at a bit error rate of 1e-12: the bathtub's opening there -
+    // its dual-Dirac fit of the crossings' tails - as the bathtub diagram
+    // gives it. A UI less 14.069 rms jitters takes the whole spread for
+    // random jitter, and closed an eye the bathtub found 0.57 UI open (bug
+    // hunt of 2026-10-08, A4); it stays where there is no bathtub.
+    for (int i = 0; i < r.eyes.size(); ++i) {
+        const Bathtub b = bathtubOf(r, i);
+        double from = NaN, to = NaN;
+        if (b.ok()) r.eyes[i].widthBer12 = b.opening(1e-12, &from, &to) ? std::max(0.0, to - from) * r.ui : 0.0;
     }
 
     // The mask, at each eye's centre: the UIs whose trace goes through it.

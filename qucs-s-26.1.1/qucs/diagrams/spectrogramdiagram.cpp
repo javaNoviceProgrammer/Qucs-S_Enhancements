@@ -82,6 +82,12 @@ ContourDiagram::Grid SpectrogramDiagram::gridFor(const Graph* g) const
 {
     Grid grid;
     const DataX* xs = g->axis(0);
+    // (Over frequency - an AC sweep - there is no time to cut: bug hunt of
+    // 2026-10-08, B7.)
+    if (xs != nullptr && xs->Var.contains(QLatin1String("freq"), Qt::CaseInsensitive)) {
+        grid.error = QObject::tr("%1 is over %2 (an AC run's): a spectrogram cuts a transient, over time").arg(g->Var.section(QLatin1Char('/'), -1), xs->Var);
+        return grid;
+    }
     if (g->cPointsY == nullptr || xs == nullptr || xs->Points == nullptr || xs->count < 16) {
         grid.error = QObject::tr("no transient to cut: simulate, or check the variable's name (at least 16 samples)");
         return grid;
@@ -100,11 +106,27 @@ ContourDiagram::Grid SpectrogramDiagram::gridFor(const Graph* g) const
         grid.error = QObject::tr("too short a transient to cut into segments");
         return grid;
     }
-    const double hop = std::max(length * (1.0 - std::clamp(overlap, 0.0, 0.9)), length / 10.0);
+    // A segment holds 8 samples or more, as a spectrum needs: a shorter one
+    // gives none, and cut a run into billions of steps (bug hunt of
+    // 2026-10-08, F2: a file that kept one could not be opened).
+    const double interval = (t.last() - t.first()) / (t.size() - 1);
+    if (length < 8 * interval) {
+        grid.error = QObject::tr("a segment of %1 s holds fewer than 8 of the run's samples (%2 s apart on average): give a "
+                                 "longer segment, %3 s or more")
+                         .arg(length)
+                         .arg(interval)
+                         .arg(8 * interval);
+        return grid;
+    }
+    // At most kMostColumns steps over the whole run, each segment's start
+    // counted whether it gives a spectrum or not.
+    const double hop = std::max({length * (1.0 - std::clamp(overlap, 0.0, 0.9)), length / 10.0,
+                                 (t.last() - t.first() - length) / (kMostColumns - 1)});
     // Each segment: its samples, its ends straight between them - every one
     // as long, its bins as wide (1 / its length).
     QList<sp::Spectrum> spectra;
-    for (double s = t.first(); s + length <= t.last() + 1e-12 * length && spectra.size() < kMostColumns; s += hop) {
+    int steps = 0;
+    for (double s = t.first(); s + length <= t.last() + 1e-12 * length && steps < kMostColumns; s += hop, ++steps) {
         QVector<double> st, sy;
         st << s;
         sy << at(t, y, s);
@@ -120,7 +142,10 @@ ContourDiagram::Grid SpectrogramDiagram::gridFor(const Graph* g) const
         grid.x << s + length / 2;
     }
     if (spectra.size() < 2) {
-        grid.error = QObject::tr("fewer than two segments of %1 s: give a shorter segment").arg(length);
+        grid.error = QObject::tr("fewer than two segments of %1 s with a spectrum: give a shorter segment (a run of %2 s), or "
+                                 "a longer one where the samples are sparse")
+                         .arg(length)
+                         .arg(t.last() - t.first());
         return grid;
     }
     // Up to the highest frequency every segment has (at most 512 rows) -

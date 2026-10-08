@@ -50,6 +50,7 @@ public:
     double evmRms = 0, evmPeak = 0;   ///< percent of the ideal rms
     QPointF centre;            ///< the samples' mean (a DC offset)
     QString error;
+    QString note;              ///< what was left out (past the most symbols taken)
     bool ok() const { return error.isEmpty(); }
   };
   const QList<Pair>& pairs() const { return m_pairs; }

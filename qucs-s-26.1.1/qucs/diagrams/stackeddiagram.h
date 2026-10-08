@@ -62,8 +62,10 @@ public:
   QString extraMarkerText(Marker const*) const override;
   bool takesLimits() const override { return true; }
   const Axis* limitAxis(const qucs_s::limits::Limit& limit) const override;
-  /// What a cursor at \a x reads in pane \a pane: a line per trace there.
-  QStringList valuesAt(double x, int pane) const;
+  /// What a cursor at \a x reads in pane \a pane: a line per trace there -
+  /// those over the x variable \a over only, when it is given; each value
+  /// written by \a marker as it writes its own, when it is given.
+  QStringList valuesAt(double x, int pane, const QString& over = QString(), const Marker* marker = nullptr) const;
 
 protected:
   QString extraSaveFields() const override;

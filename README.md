@@ -1661,12 +1661,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   magnitude in dB above its phase, its crossovers and gain and phase
   margins marked. The *Nichols chart* is open-loop gain in dB against
   phase over the closed loop's M and N contours, the critical point
-  marked. The polar diagram's *Nyquist* option marks −1 and the unit
-  circle and can mirror the negative-frequency branch.
+  marked (the contours left out when the phase spans more than eight
+  turns). The polar diagram's *Nyquist* option marks −1 and the unit
+  circle and can mirror the negative-frequency branch. A log axis over
+  data from 0 — a linear AC sweep from 0 Hz, an FFT's spectrum — leaves
+  the point at 0 out of its range and draws the rest.
 - **Spectrum** (*diagrams → Spectrum*): a transient's windowed spectrum in
   dBc (rectangular, Hann, Hamming, Blackman, Blackman-Harris or flat
   top), as a line or stems, its harmonics numbered, THD, SFDR, SNR and
-  SINAD in its corner. The settling can be left out and the fundamental
+  SINAD in its corner. The fundamental is read between the bins and each
+  harmonic sought at its multiple — a line there only when it stands
+  above the floor. The settling can be left out and the fundamental
   given.
 - **Bathtub curve** (*diagrams → Bathtub Curve*): a data signal's bit
   error rate against the sampling instant, folded as the eye diagram
@@ -1678,11 +1683,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   in colour (viridis, turbo or grey) with a colour bar. Iso-lines are
   labelled, and a pass band hatches what fails and gives the share that
   passes. The spectrogram is a transient's short-time spectrum: time
-  along, frequency up, the level in dB in colour.
+  along, frequency up, the level in dB in colour — a segment holds eight
+  samples or more, and at most 1024 columns cover the whole run.
 - **Tornado chart** (*diagrams → Tornado Chart*): a bar for each trace,
   the largest on top: its value at a point (a sensitivity) or its spread
-  over corner or Monte Carlo runs. *Add the parts of a sensitivity run* adds one per part
-  from an ngspice `.SENS` run, by its `_scale` where it has one.
+  over corner or Monte Carlo runs, at a point of the sweep (straight
+  between its samples). *Add the parts of a sensitivity run* adds one per part
+  from an ngspice `.SENS` run, by its `_scale` where it has one — `R_load`
+  as `R1`, and an AC sensitivity's `ac.v(r1_scale)` too.
 - **Box plot** (*diagrams → Box Plot*): a box for each trace, over its
   runs or its curves at an x: quartiles, median, mean, and whiskers
   (Tukey's, with outliers, or the full range).
@@ -1699,26 +1707,39 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Relative to* another (Δx, Δy, 1/Δx, a dashed line between). Upper and
   lower limits, a level or a mask of points, are drawn dashed on a
   Cartesian or stacked diagram, the trace red where beyond, PASS or FAIL
-  in the corner; `tune`'s `hold` can keep to them. A run kept with
+  in the corner — UNCHECKED when no trace is drawn against one; `tune`'s
+  `hold` can keep to them. A run kept with
   `keep_as` can be drawn faint behind the new one (a trace's *ghost* box in
   Diagram Properties; `overlay` in the tools).
 - **Cross-probing** (*Simulation → Probe*): click a net for its voltage, a
-  pin for its current or a part for its power, and the trace goes into
-  the selected diagram. An unnamed net is labelled, and a current or
-  power is saved by the next run. Selecting a trace lights up its net or
+  pin for the current into it or a part for its power, and the trace goes
+  into the selected diagram. A two-terminal part's second pin, and a
+  bipolar's emitter, get a current ngspice does not write — the negative
+  of the part's, −(ic + ib) — computed by a NutmegEq after the analysis.
+  An unnamed net is labelled (`probe1`, ...), and a current or power is
+  saved by the next run; under Qucsator a net's voltage is probed too. Selecting a trace lights up its net or
   part. **Values at the Marker** (*Simulation*) labels each named net
   with its voltage where a diagram's marker is, following the marker.
 - **Buses** (*Insert → Bus*): a thick line named `D[7:0]`, its members
   the nets D7 to D0, checked by *Check Schematic*. **LTspice import**
   (*File → Import LTspice Schematic…*): an `.asc` made a schematic, its
   symbols by their `.asy` or LTspice's standard ones, its wires and flags
-  the nets, its directives kept, what is left out said. **Colour Wires by
-  Net** (*View*): supplies red and thicker, ground green.
+  the nets, its directives kept, what is left out said. A part's ratings
+  from LTspice's database (`V=50 Irms=1`, `Ipk`, `mfg`) are left out and
+  its Rser, Lser, Rpar and Cpar made parts of their own; `.step param` is
+  a Parameter Sweep, `.four` a Fourier analysis, `.meas` and `.wave`
+  said; a model of LTspice's own library said; flags a label cannot take
+  renamed (`+5V` P5V, `3V3` V3V3) and said. **Colour Wires by Net**
+  (*View*): supplies red and thicker (VCC, VDD_IO, VPP, P5V, N12V, V3V3,
+  ...), ground green (AGND, GNDA too).
 - **S-parameters from a headless run, and ngspice 46's names**: an
   S-parameter simulation now writes its S, Y, Z and noise vectors
   whatever simulator the settings store (a fresh settings folder or
   `--ngspice` wrote none). A trace named `ac.v(s_1_1)`, as twelve shipped
-  examples name it, finds the `ac.s_1_1` ngspice 46 writes.
+  examples name it, finds the `ac.s_1_1` ngspice 46 writes. Two
+  simulations of one kind (an `.AC` beside an `.FFT`) prefix their own
+  vectors only, and a trace without the prefix finds the one vector that
+  has it.
 - **Six number notations for a diagram's axes** (*Properties* of a
   diagram, *Number notation* and *Decimal places*): automatic (what
   "scientific" was: decimal, with an exponent for large and small

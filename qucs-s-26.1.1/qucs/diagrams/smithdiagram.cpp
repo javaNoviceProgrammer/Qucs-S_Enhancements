@@ -23,6 +23,7 @@
 #if HAVE_CONFIG_H
 # include <config.h>
 #endif
+#include <algorithm>
 #include <cmath>
 #include <float.h>
 #if HAVE_IEEEFP_H
@@ -264,7 +265,17 @@ void SmithDiagram::computeCircles()
     m_circles.error = QObject::tr("the S-parameters' frequencies cannot be read");
     return;
   }
-  // The frequency: given (the nearest), else the middle of the sweep.
+  // The frequency: given (the nearest sample), else the middle of the
+  // sweep. One outside it has no circles: they were drawn at its end,
+  // without a word (bug hunt of 2026-10-08, B4).
+  if (std::isfinite(circleFrequency)) {
+    const auto [lo, hi] = std::minmax_element(f->re.cbegin(), f->re.cend());
+    const double tolerance = 1e-9 * std::max(std::abs(*lo), std::abs(*hi));
+    if (circleFrequency < *lo - tolerance || circleFrequency > *hi + tolerance) {
+      m_circles.error = QObject::tr("%1 Hz is outside the sweep (%2 to %3 Hz)").arg(circleFrequency).arg(*lo).arg(*hi);
+      return;
+    }
+  }
   int k = f->size() / 2;
   if (std::isfinite(circleFrequency))
     for (int i = 0; i < f->size(); ++i)

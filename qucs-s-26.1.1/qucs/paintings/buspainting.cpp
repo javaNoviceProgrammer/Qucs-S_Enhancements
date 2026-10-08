@@ -29,6 +29,13 @@ BusPainting::BusPainting(int ax, int ay, int bx, int by, const QString& name)
   Name = "Bus ";
 }
 
+bool BusPainting::MousePressing(Schematic* sch)
+{
+  if (m_started && x1 == x2 && y1 == y2) return false;
+  m_started = !m_started;
+  return GraphicLine::MousePressing(sch);
+}
+
 Painting* BusPainting::newOne()
 {
   return new BusPainting();
