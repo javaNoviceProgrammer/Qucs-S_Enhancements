@@ -15,6 +15,7 @@ set(DIALOGS_HDRS
     importdialog.h
     labeldialog.h
     librarydialog.h
+    libraryexportdialog.h
     loaddialog.h
     matchdialog.h
     newprojdialog.h
@@ -48,6 +49,7 @@ set(DIALOGS_SRCS
     labeldialog.cpp
     searchdialog.cpp
     librarydialog.cpp
+    libraryexportdialog.cpp
     settingsdialog.cpp
     matchdialog.cpp
     simmessage.cpp
@@ -73,6 +75,7 @@ set(DIALOGS_MOC_HDRS
     importdialog.h
     labeldialog.h
     librarydialog.h
+    libraryexportdialog.h
     loaddialog.h
     matchdialog.h
     newprojdialog.h

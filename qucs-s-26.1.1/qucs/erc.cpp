@@ -31,6 +31,7 @@
 #include "components/vacomponent.h"
 #include "valuereading.h"
 #include "vamodule.h"
+#include "spicecomponents/sp_libraryexport.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -2472,17 +2473,36 @@ QList<Issue> check(Schematic* doc, bool run)
     dcSweepIssues(doc, simulator, errors);
     if (run) nutmegNameIssues(doc, simulator, errors);
     moduleClashIssues(doc, simulator, errors);
-    // Its own .model cards (Document Settings > Library) with a line that is
-    // none - a file written by hand: left out of the netlist, said here.
+    // Its own .model cards (its Library Export's, or Document Settings >
+    // Library) with a line that is none - a file written by hand, a
+    // property set so: left out of the netlist, said here.
+    const Component* libraryExport = doc->libraryExport();
     if (spiceSimulator(simulator)) {
         QStringList rejected;
         Schematic::modelCardsOf(doc->getModelCards(), &rejected);
         if (!rejected.isEmpty())
             warnings << Issue{Severity::Warning,
-                              tr("its .model cards (Document Settings > Library) have lines that are no card, nor a + line "
-                                 "going on with one, nor a * comment - left out of the netlist: %1")
-                                  .arg(rejected.join(QStringLiteral("; "))),
-                              QPoint(), QString()};
+                              tr("its .model cards (%1) have lines that are no card, nor a + line going on with one, nor a * "
+                                 "comment - left out of the netlist: %2")
+                                  .arg(libraryExport != nullptr ? tr("%1, its Library Export").arg(libraryExport->Name)
+                                                                : tr("Document Settings > Library"),
+                                       rejected.join(QStringLiteral("; "))),
+                              libraryExport != nullptr ? QPoint(libraryExport->cx, libraryExport->cy) : QPoint(),
+                              libraryExport != nullptr ? libraryExport->Name : QString()};
+    }
+    // Its Library Export: one a schematic, and of a subcircuit.
+    if (libraryExport != nullptr) {
+        for (const Component* c : doc->a_DocComps)
+            if (c != libraryExport && LibraryExport::is(c))
+                warnings << Issue{Severity::Warning,
+                                  tr("%1: a second Library Export - %2 holds the schematic's library settings, and this one's "
+                                     "are not used").arg(c->Name, libraryExport->Name),
+                                  QPoint(c->cx, c->cy), c->Name};
+        if (!port)
+            warnings << Issue{Severity::Warning,
+                              tr("%1: a Library Export on a schematic with no ports - it is no subcircuit, and Create Library "
+                                 "makes no part of it").arg(libraryExport->Name),
+                              QPoint(libraryExport->cx, libraryExport->cy), libraryExport->Name};
     }
 
     // A subcircuit port on a net without a label lends its own name to

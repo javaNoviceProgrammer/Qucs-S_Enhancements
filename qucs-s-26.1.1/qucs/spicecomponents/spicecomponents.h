@@ -77,6 +77,7 @@
 #include "sp_lib.h"
 #include "sp_func.h"
 #include "sp_spiceinit.h"
+#include "sp_libraryexport.h"
 #include "incl_script.h"
 
 // Spice simulations

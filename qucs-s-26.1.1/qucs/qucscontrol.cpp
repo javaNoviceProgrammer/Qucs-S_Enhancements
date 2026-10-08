@@ -631,7 +631,7 @@ const char* const kTools = R"JSON([
  "description": "Lists the component libraries as the Libraries panel shows them, by section: installed (Qucs-S's own), user (the workspace's user_lib), each folder of the library search paths, and the open project's - each library with its file, its kind (qucs: a Qucs-S library; spice: a SPICE library of subcircuits) and how many parts it has; one that cannot be read, and one hidden with this simulator, say so. 'library' (a name or a file) gives one library's parts instead, each with its description and 'place': the add_component that places it (a Qucs-S library's part as type Lib with Lib and Comp, a SPICE library's as SpLib with File and Device). create_library makes a library, import_library brings one in, and set_settings (scope app, \"Locations/Library search paths\") adds a folder of them.",
  "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "One library, by its name (OpAmps) or its file: its parts"}}}},
 {"name": "create_library",
- "description": "Makes a component library of the open project's subcircuits, as Project > Create Library does: NAME.lib, with each subcircuit's Qucs and SPICE models and its symbol, and beside it a folder NAME/ of the files its models need (SPICE libraries, and the Verilog-A sources of the modules its .model cards name unless 'embed_verilog_a' is false). 'destination' is user_lib (the default: the user libraries), project, or a folder of the library search paths. It is in the Libraries panel at once; the answer gives each part's add_component ('place') and the messages of making it. A library of that name there is refused unless 'replace', which moves the old one to the trash first. Another library of the name elsewhere (installed, the project's, user_lib's, a search path's) is said in 'also_named' and 'warning': a part placed by the name is taken from the first of them that has it, so a name of its own is better. Without 'subcircuits', every subcircuit of the project (a schematic with ports; create_subcircuit makes one).",
+ "description": "Makes a component library of the open project's subcircuits, as Project > Create Library does: NAME.lib, with each subcircuit's Qucs and SPICE models and its symbol, and beside it a folder NAME/ of the files its models need (SPICE libraries, and the Verilog-A sources of the modules its .model cards name unless 'embed_verilog_a' is false). 'destination' is user_lib (the default: the user libraries), project, or a folder of the library search paths. It is in the Libraries panel at once; the answer gives each part's add_component ('place') and the messages of making it. A library of that name there is refused unless 'replace', which moves the old one to the trash first. Another library of the name elsewhere (installed, the project's, user_lib's, a search path's) is said in 'also_named' and 'warning': a part placed by the name is taken from the first of them that has it, so a name of its own is better. Without 'subcircuits', every subcircuit of the project (a schematic with ports; create_subcircuit makes one). What it does with each subcircuit - its Verilog-A loaded and its .model cards written in every circuit of the project, its own .model cards, its ground pin - that subcircuit's Library Export holds (add_component LibraryExport on its schematic; its properties AlwaysLoadOSDI, ModelCards, AlwaysModelCards, GroundPin default/yes/no), or its document settings' Library tab (get_settings scope document) when none is placed: one a schematic, the tab showing the part's while it is there.",
  "inputSchema": {"type": "object", "properties": {
    "name": {"type": "string", "description": "The library's name: letters, digits and _ (MyAmps); its file is NAME.lib"},
    "subcircuits": {"type": "array", "items": {"type": "string"}, "description": "The project's subcircuits to put in it, by name (amp or amp.sch); all of them when not given"},
@@ -639,7 +639,7 @@ const char* const kTools = R"JSON([
    "descriptions": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Each part's description, by subcircuit name: {\"amp\": \"A x10 amplifier\"}"},
    "digital_models": {"type": "boolean", "description": "Verilog and VHDL models too, for a digital simulation (off: analog only, the default)"},
    "embed_verilog_a": {"type": "boolean", "description": "Copy the Verilog-A sources its models use into its folder (the setting's choice when not given, on unless changed)"},
-   "ground_pin": {"type": "boolean", "description": "Give each subcircuit's SPICE model a first pin, gnd, its parts tie to the circuit's ground - for Qucs-S 26.1.5 and earlier, which always tie one (the setting's choice when not given, off unless changed)"},
+   "ground_pin": {"type": "boolean", "description": "Give each subcircuit's SPICE model a first pin, gnd, its parts tie to the circuit's ground - for Qucs-S 26.1.5 and earlier, which always tie one (the setting's choice when not given, off unless changed). A subcircuit that chooses for itself - its Library Export's GroundPin, or its document settings' Library tab - keeps its choice"},
    "replace": {"type": "boolean", "description": "Write over a library of that name there, the old one moved to the trash"}},
   "required": ["name"]}},
 {"name": "import_library",
@@ -6384,6 +6384,12 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
         delete c;
         return errorResult(tr("There is a component named %1 already.").arg(wanted));
     }
+    // One Library Export a schematic: it holds the library settings.
+    if (const QString refused = sch->refusedLibraryExport(c); !refused.isEmpty()) {
+        delete c;
+        return errorResult(refused.section(QStringLiteral(" (double-click"), 0, 0)
+                           + tr(" - edit_component changes its settings (its properties), as set_settings' document Library tab does."));
+    }
     if (const QString bad = wanted.isEmpty() ? QString() : badPartName(wanted); !bad.isEmpty()) {
         delete c;
         return errorResult(bad + QLatin1Char('.'));
@@ -6459,9 +6465,13 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     int x1, y1, x2, y2;
     c->textSize(x1, y1);
     sch->insertComponent(c);
+    QString libraryNote = sch->takeLibraryNote();   // (a Library Export: whether it took the Document Settings')
     c->textSize(x2, y2);
     if (c->tx < c->x1) c->tx -= x2 - x1;
-    if (!wanted.isEmpty()) c->Name = wanted;
+    if (!wanted.isEmpty()) {
+        libraryNote.replace(c->Name, wanted);
+        c->Name = wanted;
+    }
     setTextOf(c, args, &error);
     // Its text where it is clear: its type's place, or the nearest free
     // spot beside it - unless it was given.
@@ -6471,6 +6481,7 @@ QJsonObject QucsControl::addComponent(const QJsonObject& args)
     finish(sch, {QPoint(c->cx, c->cy)});
     QJsonObject result = componentJson(c);
     if (!textPlaced.isEmpty()) result.insert(QStringLiteral("text"), textPlaced);
+    if (!libraryNote.isEmpty()) result.insert(QStringLiteral("library settings"), libraryNote);
     // An equation block's equations as they are now, as get_schematic gives
     // and 'equations' takes them: what came of what was given, at a look.
     if (isEquationKind(c)) result.insert(QStringLiteral("equations"), componentModel(c).value(QLatin1String("equations")));

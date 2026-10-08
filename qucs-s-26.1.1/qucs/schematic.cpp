@@ -96,7 +96,7 @@ Schematic::Schematic(QucsApp *App_, const QString &Name_) :
     a_tmpViewY2(200),
     a_undoActionIdx(0),
     // The 'i' means state for being unchanged.
-    a_undoAction((QVector<UndoState*>() << new UndoState(QStringLiteral(" i\n</>\n</>\n</>\n</>\n")))),
+    a_undoAction((QVector<UndoState*>() << new UndoState(QStringLiteral(" i<Library>\n</>\n</>\n</>\n</>\n")))),   // (its library settings the defaults: createUndoString())
     a_undoSymbolIdx(0),
     // The 'i' means state for being unchanged.
     a_undoSymbol((QVector<QString*>() << new QString(" i\n</>\n</>\n</>\n</>\n"))),

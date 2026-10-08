@@ -87,6 +87,10 @@
 #include "textdoc.h"
 #include "projectView.h"
 #include "processconsole.h"
+#include "spicecomponents/sp_libraryexport.h"
+#include "mouseactions.h"
+#include <QClipboard>
+#include <QStatusBar>
 
 using qucs_s::control::renameComponentIn;
 
@@ -12492,6 +12496,125 @@ private slots:
         QVERIFY(!failed(call("context_menu", {{"on", QJsonObject{{"diagram", 1}}}, {"choose", "Edit Properties"}}, 20000)));
         QTRY_VERIFY_WITH_TIMEOUT(!edited.isEmpty(), 10000);
         QVERIFY2(text(edited).contains("is not one to edit") && text(edited).contains("'action'"), qPrintable(text(edited)));
+        front()->setDocChanged(false);
+    }
+
+    // A Library Export through the tools: the document settings' Library
+    // tab has the ground pin; placed, the part takes what the tab held
+    // (said); a second refused; its properties changed by edit_component,
+    // and the tab shows them; it netlists as nothing.
+    void aLibraryExportThroughTheTools()
+    {
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        const QString pinKey = "Library/Ground pin (gnd) in its exported subcircuit";
+        const QString osdiKey = "Library/Always load its Verilog-A (OSDI) in the project's circuits";
+        const auto settings = [this] {
+            QHash<QString, QJsonObject> keys;
+            for (const QJsonValue& v : json(call("get_settings", {{"scope", "document"}})).toObject().value("settings").toArray())
+                keys.insert(v.toObject().value("key").toString(), v.toObject());
+            return keys;
+        };
+        QHash<QString, QJsonObject> keys = settings();
+        for (const QString& key : {pinKey, osdiKey, QString("Library/SPICE .model cards of its own"),
+                                   QString("Library/Always write its .model cards in the project's circuits")})
+            QVERIFY2(keys.contains(key), qPrintable(QStringList(keys.keys()).join(" | ")));
+        QCOMPARE(keys.value(pinKey).value("type").toString(), QString("choice"));
+        QVERIFY2(keys.value(pinKey).value("value").toString().startsWith("As Application Settings say"),
+                 qPrintable(keys.value(pinKey).value("value").toString()));
+        QJsonObject r = call("set_settings", {{"scope", "document"}, {"values", QJsonObject{{pinKey, "With a first pin gnd"}, {osdiKey, true}}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("changed").toArray().size() == 2, qPrintable(text(r)));
+        QCOMPARE(front()->librarySettings().groundPin, LibrarySettings::With);
+        QVERIFY(front()->getAlwaysLoadOSDI());
+        // A step of its own, which undo_history names.
+        r = call("undo_history", {{"steps", 1}});
+        QVERIFY2(text(r).contains("its library settings (Document Settings > Library)"), qPrintable(text(r)));
+        // Undone - to the new document's first state - and redone.
+        QVERIFY(!failed(call("undo", {})));
+        QVERIFY(front()->librarySettings().isDefault());
+        QVERIFY(!failed(call("redo", {})));
+        QCOMPARE(front()->librarySettings().groundPin, LibrarySettings::With);
+
+        r = call("add_component", {{"type", "LibraryExport"}, {"x", 300}, {"y", 300}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).toObject().value("library settings").toString().startsWith("LibExport1 took this schematic's Document Settings"),
+                 qPrintable(text(r)));
+        Component* part = front()->libraryExport();
+        QVERIFY(part != nullptr);
+        QCOMPARE(LibraryExport::settingsOf(part).groundPin, LibrarySettings::With);
+        QVERIFY(LibraryExport::settingsOf(part).alwaysLoadOSDI);
+        r = call("add_component", {{"type", "LibraryExport"}, {"x", 500}, {"y", 300}});
+        QVERIFY2(failed(r) && text(r).contains("LibExport1 holds this schematic's library settings already")
+                     && text(r).contains("edit_component"), qPrintable(text(r)));
+        r = call("edit_component", {{"name", "LibExport1"}, {"properties", QJsonObject{{"GroundPin", "no"}, {"ModelCards", ".model m1 good"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(front()->librarySettings().groundPin, LibrarySettings::Without);
+        QCOMPARE(front()->getModelCards(), QString(".model m1 good"));
+        keys = settings();
+        QCOMPARE(keys.value(pinKey).value("value").toString(), QString("Without a gnd pin"));
+        QCOMPARE(keys.value("Library/SPICE .model cards of its own").value("value").toString(), QString(".model m1 good"));
+        r = call("describe_component_type", {{"type", "LibraryExport"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("kind").toString().startsWith("library settings"), qPrintable(text(r)));
+        // Its own dialog, as a double-click opens it.
+        QJsonObject edited;
+        QTimer::singleShot(800, this, [&] {
+            edited = call("get_dialog");
+            call("set_dialog", {{"press", "Cancel"}});
+        });
+        r = call("context_menu", {{"on", QJsonObject{{"part", "LibExport1"}}}, {"choose", "Edit Properties"}}, 20000);
+        QVERIFY2(!failed(r) && text(r).contains("“Library Export”"), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(!edited.isEmpty(), 10000);
+        QVERIFY2(text(edited).contains("Ground pin (gnd) in its exported subcircuit") && text(edited).contains("Without a gnd pin"),
+                 qPrintable(text(edited)));
+
+        // Placed by hand, a second: refused, said in the status bar.
+        Schematic* sch = front();
+        const auto libraryExports = [sch] {
+            int n = 0;
+            for (const Component* c : sch->a_DocComps) n += LibraryExport::is(c) ? 1 : 0;
+            return n;
+        };
+        app->view->selElem = new LibraryExport();
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(10, 10), QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        app->view->MPressElement(sch, &press, 600, 400);
+        QCOMPARE(libraryExports(), 1);
+        QVERIFY2(app->statusBar()->currentMessage().contains("LibExport1 holds this schematic's library settings already"),
+                 qPrintable(app->statusBar()->currentMessage()));
+        delete app->view->selElem;   // (still on the mouse)
+        app->view->selElem = nullptr;
+        // Pasted, a second: left out, said.
+        QApplication::clipboard()->setText(QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n") + front()->libraryExport()->save()
+                                           + QStringLiteral("\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n"));
+        app->statusBar()->clearMessage();
+        QVERIFY(app->view->pasteElements(sch));
+        app->view->movingState = {};
+        QMouseEvent move(QEvent::MouseMove, QPointF(10, 10), QPointF(10, 10), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        app->view->MMovePaste(sch, &move);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(10, 10), QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        app->view->MReleasePaste(sch, &release);
+        QCOMPARE(libraryExports(), 1);
+        QVERIFY2(app->statusBar()->currentMessage().contains("LibExport1 holds this schematic's library settings already"),
+                 qPrintable(app->statusBar()->currentMessage()));
+        app->MouseMoveAction = nullptr;   // (the paste ended)
+        app->MouseReleaseAction = nullptr;
+        // Deleted, and placed by hand with the settings in the document's:
+        // it takes them, said.
+        QVERIFY(!failed(call("delete", {{"names", QJsonArray{"LibExport1"}}})));
+        QCOMPARE(libraryExports(), 0);
+        QVERIFY(front()->librarySettings().isDefault());
+        LibrarySettings own;
+        own.alwaysModelCards = true;
+        own.groundPin = LibrarySettings::With;
+        front()->setLibrarySettings(own);
+        app->view->selElem = new LibraryExport();
+        app->view->MPressElement(sch, &press, 600, 400);
+        QCOMPARE(libraryExports(), 1);
+        QVERIFY2(app->statusBar()->currentMessage().contains("took this schematic's Document Settings > Library"),
+                 qPrintable(app->statusBar()->currentMessage()));
+        QCOMPARE(LibraryExport::settingsOf(front()->libraryExport()), own);
+        delete app->view->selElem;   // (the next one, on the mouse)
+        app->view->selElem = nullptr;
         front()->setDocChanged(false);
     }
 

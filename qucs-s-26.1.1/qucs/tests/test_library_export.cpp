@@ -19,11 +19,14 @@
 #include <QtTest>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QPushButton>
+#include <QTabWidget>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -41,6 +44,9 @@
 #include "components/libcomp.h"
 #include "dialogs/importdialog.h"
 #include "dialogs/librarydialog.h"
+#include "dialogs/libraryexportdialog.h"
+#include "dialogs/settingsdialog.h"
+#include "spicecomponents/sp_libraryexport.h"
 #include "extsimkernels/ngspice.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -183,7 +189,7 @@ class TestLibraryExport : public QObject
     // A library made as create_library makes it; the messages, or "not
     // made: " and why.
     QString make(QucsApp& app, const QString& name, const QStringList& subcircuits, const QString& folder, bool replace = false,
-                 QStringList* trashed = nullptr)
+                 QStringList* trashed = nullptr, bool ground = false)
     {
         LibraryDialog dialog(&app);
         dialog.fillSchematicList(subcircuits);
@@ -193,6 +199,7 @@ class TestLibraryExport : public QObject
         request.folder = folder;
         request.replace = replace;
         request.embedVerilogA = true;
+        request.groundPin = ground;
         QString log, error;
         if (!dialog.create(request, &log, &error, trashed)) return QStringLiteral("not made: ") + error + "\n" + log;
         return log;
@@ -717,6 +724,393 @@ private slots:
                 if (box != type && box->objectName() != "outputData") outputs << box->currentText();
             QVERIFY2(outputs == QStringList{"Qucs library"}, qPrintable(QString(name) + ": " + outputs.join(", ")));
         }
+    }
+
+    // Library Export: the section SPICE subcircuit, right after the netlist
+    // sections, has it, with an icon of its own.
+    void aLibraryExportHasASectionOfItsOwn()
+    {
+        Module::registerModules();   // (a QucsApp's destructor unregisters them)
+        const QStringList sections = Category::getCategories();
+        const qsizetype netlist = sections.indexOf(QObject::tr("SPICE netlist sections"));
+        QVERIFY2(netlist >= 0, qPrintable(sections.join(", ")));
+        QCOMPARE(sections.value(netlist + 1), QObject::tr("SPICE subcircuit"));
+        const QList<Module*> modules = Category::getModules(QObject::tr("SPICE subcircuit"));
+        QCOMPARE(modules.size(), 1);
+        QString name;
+        char* file = nullptr;
+        std::unique_ptr<Element> e(modules.first()->info(name, file, true));
+        QCOMPARE(name, QStringLiteral("Library Export"));
+        auto* c = dynamic_cast<Component*>(e.get());
+        QVERIFY(LibraryExport::is(c));
+        QCOMPARE(misc::getIconPath(QString(file)), QStringLiteral(":bitmaps/svg/sp_libexport.svg"));
+        QVERIFY(QFile::exists(misc::getIconPath(QString(file))));
+        // Its settings: the defaults; and as given.
+        QVERIFY(LibraryExport::settingsOf(c).isDefault());
+        LibrarySettings s;
+        s.alwaysLoadOSDI = true;
+        s.modelCards = ".model m3 good\n+ r=2k";
+        s.groundPin = LibrarySettings::Without;
+        LibraryExport::setSettings(c, s);
+        QCOMPARE(LibraryExport::settingsOf(c), s);
+        QCOMPARE(c->getProperty("GroundPin")->Value, QStringLiteral("no"));
+        c->getProperty("GroundPin")->Value = "With";   // (as typed)
+        QCOMPARE(LibraryExport::settingsOf(c).groundPin, LibrarySettings::With);
+        c->getProperty("GroundPin")->Value = "maybe";
+        QCOMPARE(LibraryExport::settingsOf(c).groundPin, LibrarySettings::Default);
+    }
+
+    // A Library Export holds the schematic's library settings: placed, it
+    // takes its Document Settings > Library (and undo gives them back);
+    // one a schematic; off, it applies none; deleted, they go with it. The
+    // Document Settings show and change it while it is there (a step undo
+    // takes back), and its own dialog changes it. Saved in the part, not in
+    // the file's properties; a file with both is read into the part. It
+    // writes nothing into a netlist.
+    void aLibraryExportHoldsTheLibrarySettings()
+    {
+        Module::registerModules();
+        const unsigned undoSteps = QucsSettings.maxUndo;
+        QucsSettings.maxUndo = 20;
+        const auto restore = qScopeGuard([undoSteps] { QucsSettings.maxUndo = undoSteps; });
+        const QString p = project("held", {{"div.sch", divider("1k", "3k")}});
+        const QString file = p + "/div.sch";
+        Schematic sch(nullptr, file);
+        QVERIFY(sch.load());
+        LibrarySettings own;
+        own.alwaysLoadOSDI = true;
+        own.modelCards = ".model m3 good";
+        own.groundPin = LibrarySettings::With;
+        sch.setLibrarySettings(own);
+        sch.setChanged(true, true);   // (as Document Settings does)
+        QCOMPARE(sch.librarySettings(), own);
+        QVERIFY(sch.libraryGroundPin());
+        QVERIFY(sch.save() >= 0);
+        QVERIFY2(read(file).contains("\n  <LibraryGroundPin=1>\n") && read(file).contains("\n  <AlwaysLoadOSDI=1>\n"), qPrintable(read(file)));
+
+        // Placed: it takes them.
+        Component* part = new LibraryExport();
+        QVERIFY(sch.refusedLibraryExport(part).isEmpty());
+        part->setSchematic(&sch);
+        sch.insertComponent(part);
+        sch.setChanged(true, true);   // (as a click does)
+        QVERIFY2(sch.takeLibraryNote().contains("LibExport1 took this schematic's Document Settings > Library"), "");
+        QCOMPARE(sch.libraryExport(), part);
+        QCOMPARE(LibraryExport::settingsOf(part), own);
+        QCOMPARE(sch.librarySettings(), own);
+        QVERIFY(sch.save() >= 0);
+        QString saved = read(file);
+        QVERIFY2(!saved.contains("<AlwaysLoadOSDI") && !saved.contains("<LibraryGroundPin") && !saved.contains("<ModelCards"),
+                 qPrintable(saved));
+        QVERIFY2(saved.contains("<LibraryExport LibExport1 1 "), qPrintable(saved));
+        // Undone: the Document Settings have them again; redone: the part.
+        QVERIFY(sch.undo());
+        QVERIFY(sch.libraryExport() == nullptr);
+        QCOMPARE(sch.librarySettings(), own);
+        QVERIFY(sch.redo());
+        part = sch.libraryExport();
+        QVERIFY(part != nullptr);
+        QCOMPARE(sch.librarySettings(), own);
+        QVERIFY(sch.save() >= 0);
+        QVERIFY2(!read(file).contains("<AlwaysLoadOSDI"), qPrintable(read(file)));
+        // One a schematic.
+        LibraryExport second;
+        QVERIFY2(sch.refusedLibraryExport(&second).contains("LibExport1 holds this schematic's library settings already"), "");
+        QVERIFY(sch.refusedLibraryExport(part).isEmpty());   // (itself)
+        // Off: none applies; held all the same.
+        part->isActive = COMP_IS_OPEN;
+        QVERIFY(sch.librarySettings().isDefault());
+        QCOMPARE(sch.heldLibrarySettings(), own);
+        QVERIFY(!sch.libraryGroundPin());   // (Application Settings': off)
+        QVERIFY(!sch.getAlwaysLoadOSDI());
+        {
+            SettingsDialog dialog(&sch);
+            auto* held = dialog.findChild<QLabel*>("libraryHeldBy");
+            QVERIFY(held != nullptr && !held->isHidden());
+            QVERIFY2(held->text().contains("LibExport1") && held->text().contains("which is off"), qPrintable(held->text()));
+        }
+        part->isActive = COMP_IS_ACTIVE;
+
+        // Document Settings > Library: the part's, changed in it.
+        LibrarySettings changed = own;
+        {
+            SettingsDialog dialog(&sch);
+            auto* held = dialog.findChild<QLabel*>("libraryHeldBy");
+            QVERIFY2(held->text().startsWith("Held by LibExport1, the Library Export on the schematic"), qPrintable(held->text()));
+            QVERIFY(dialog.findChild<QCheckBox*>("alwaysLoadOSDI")->isChecked());
+            QCOMPARE(dialog.findChild<QPlainTextEdit*>("modelCards")->toPlainText(), own.modelCards);
+            auto* pin = dialog.findChild<QComboBox*>("groundPin");
+            QVERIFY(pin != nullptr);
+            QCOMPARE(pin->currentData().toInt(), int(LibrarySettings::With));
+            pin->setCurrentIndex(pin->findData(int(LibrarySettings::Without)));
+            dialog.findChild<QCheckBox*>("alwaysModelCards")->setChecked(true);
+            QVERIFY(QMetaObject::invokeMethod(&dialog, "slotApply"));
+        }
+        changed.groundPin = LibrarySettings::Without;
+        changed.alwaysModelCards = true;
+        QCOMPARE(LibraryExport::settingsOf(sch.libraryExport()), changed);
+        QVERIFY(!sch.libraryGroundPin());
+        QVERIFY(sch.getAlwaysModelCards());
+        QVERIFY(sch.undo());   // (the dialog's step)
+        QCOMPARE(sch.librarySettings(), own);
+        QVERIFY(sch.libraryExport() != nullptr);
+        QVERIFY(sch.redo());
+        QCOMPARE(sch.librarySettings(), changed);
+        // The setters change the part too.
+        sch.setModelCards(".model m5 good");
+        QCOMPARE(LibraryExport::settingsOf(sch.libraryExport()).modelCards, QStringLiteral(".model m5 good"));
+        sch.setModelCards(changed.modelCards);
+
+        // Its own dialog: a line that is no card refused, nothing applied;
+        // a name taken refused; then applied.
+        part = sch.libraryExport();
+        {
+            LibraryExportDialog dialog(part, &sch);
+            QCOMPARE(dialog.options()->settings(), changed);
+            dialog.options()->modelCards->setPlainText(".model m4 good\n.control\nshell ls\n.endc");
+            QString said;
+            QTimer::singleShot(0, [&said] {
+                if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                    said = box->text();
+                    box->close();
+                }
+            });
+            QVERIFY(QMetaObject::invokeMethod(&dialog, "slotOK"));
+            QVERIFY2(said.contains("2: .control") && said.contains("Nothing was applied"), qPrintable(said));
+            QCOMPARE(LibraryExport::settingsOf(part), changed);
+            dialog.options()->modelCards->setPlainText(".model m4 good");
+            dialog.findChild<QLineEdit*>("name")->setText("R1");
+            said.clear();
+            QTimer::singleShot(0, [&said] {
+                if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                    said = box->text();
+                    box->close();
+                }
+            });
+            QVERIFY(QMetaObject::invokeMethod(&dialog, "slotOK"));
+            QVERIFY2(said.contains("There is a component named R1 already"), qPrintable(said));
+            QCOMPARE(part->Name, QStringLiteral("LibExport1"));
+            dialog.findChild<QLineEdit*>("name")->setText("Export");
+            dialog.findChild<QCheckBox*>("shown")->setChecked(false);
+            QVERIFY(QMetaObject::invokeMethod(&dialog, "slotOK"));
+            QCOMPARE(dialog.result(), int(QDialog::Accepted));
+        }
+        changed.modelCards = ".model m4 good";
+        QCOMPARE(part->Name, QStringLiteral("Export"));
+        QCOMPARE(sch.librarySettings(), changed);
+        for (const Property* prop : part->Props) QVERIFY2(!prop->display, qPrintable(prop->Name));
+
+        // Saved and read back, in the part.
+        QVERIFY(sch.save() >= 0);
+        {
+            Schematic again(nullptr, file);
+            QVERIFY(again.load());
+            QVERIFY(again.libraryExport() != nullptr);
+            QCOMPARE(again.libraryExport()->Name, QStringLiteral("Export"));
+            QCOMPARE(again.librarySettings(), changed);
+        }
+        // Nothing of it in a netlist: ngspice's, Qucsator's; nothing to
+        // check, but that it is of a subcircuit.
+        // (Its first line, a comment, names the file: the folder's name has "export" in it.)
+        const QString net = netlistOf(file).section('\n', 1);
+        QVERIFY2(!net.contains("Export", Qt::CaseInsensitive) && net.contains("R1 ") && net.contains("\n.model m4 good\n"), qPrintable(net));
+        const QString qucs = qucsNetlistOf(file);
+        QVERIFY2(!qucs.contains("LibraryExport") && !qucs.contains("Export:") && qucs.contains("R:R1 "), qPrintable(qucs));
+        {
+            QStringList incompatible;
+            Ngspice kernel(&sch);
+            QVERIFY2(kernel.checkSchematic(incompatible), qPrintable(incompatible.join(", ")));
+            for (const qucs_s::erc::Issue& i : qucs_s::erc::check(&sch, false))
+                QVERIFY2(i.component != "Export", qPrintable(i.message));
+        }
+
+        // Deleted: they go with it.
+        sch.deleteComp(sch.libraryExport());
+        QVERIFY(sch.libraryExport() == nullptr);
+        QVERIFY(sch.librarySettings().isDefault());
+
+        // A file with both (not one saved so): read into the part - which
+        // takes the file's when it holds the defaults, and keeps its own
+        // otherwise.
+        {
+            auto* fresh = new LibraryExport();
+            fresh->setSchematic(&sch);
+            sch.insertComponent(fresh);
+            QVERIFY(sch.save() >= 0);
+            QString both = read(file);
+            both.replace("<Properties>\n", "<Properties>\n  <AlwaysLoadOSDI=1>\n  <LibraryGroundPin=0>\n");
+            write(file, both.toUtf8());
+            Schematic again(nullptr, file);
+            QVERIFY(again.load());
+            LibrarySettings fromFile;
+            fromFile.alwaysLoadOSDI = true;
+            fromFile.groundPin = LibrarySettings::Without;
+            QCOMPARE(LibraryExport::settingsOf(again.libraryExport()), fromFile);
+            QVERIFY(again.save() >= 0);
+            QVERIFY2(!read(file).contains("<AlwaysLoadOSDI"), qPrintable(read(file)));
+            both = read(file);
+            both.replace("<Properties>\n", "<Properties>\n  <AlwaysModelCards=1>\n");
+            write(file, both.toUtf8());
+            Schematic third(nullptr, file);
+            QVERIFY(third.load());
+            QCOMPARE(third.librarySettings(), fromFile);   // (its own: AlwaysModelCards left out)
+        }
+
+        // Two (a file so made): Check Schematic says which one is used; and
+        // one on a schematic with no ports.
+        {
+            QString text = read(file);
+            const qsizetype at = text.indexOf("  <LibraryExport ");
+            QVERIFY(at > 0);
+            const QString line = text.mid(at, text.indexOf('\n', at) + 1 - at);
+            text.insert(at + line.size(), QString(line).replace(QRegularExpression("<LibraryExport \\w+ "), "<LibraryExport Second "));
+            const QString two = write(p + "/two.sch", text.toUtf8());
+            Schematic doc(nullptr, two);
+            QVERIFY(doc.load());
+            int parts = 0;
+            for (const Component* c : doc.a_DocComps) parts += LibraryExport::is(c) ? 1 : 0;
+            QCOMPARE(parts, 2);
+            QStringList said;
+            for (const qucs_s::erc::Issue& i : qucs_s::erc::check(&doc, false)) said << i.message;
+            QVERIFY2(said.join('\n').contains("Second: a second Library Export - LibExport1 holds the schematic's library settings"),
+                     qPrintable(said.join('\n')));
+            const QString lone = write(p + "/lone.sch", schematic(resistor("R1", "1k", 100, 100, 0)
+                                                                  + "  <LibraryExport LibExport1 1 300 300 -30 20 0 0 \"no\" 1 \"foo\" 1 \"no\" 1 \"yes\" 1>\n"));
+            Schematic noPorts(nullptr, lone);
+            QVERIFY(noPorts.load());
+            QVERIFY(noPorts.libraryGroundPin());
+            said.clear();
+            for (const qucs_s::erc::Issue& i : qucs_s::erc::check(&noPorts, false)) said << i.message;
+            QVERIFY2(said.join('\n').contains("LibExport1: a Library Export on a schematic with no ports"), qPrintable(said.join('\n')));
+            // (Its cards, a line that is none: said as the part's.)
+            QVERIFY2(said.join('\n').contains("its .model cards (LibExport1, its Library Export) have lines that are no card"),
+                     qPrintable(said.join('\n')));
+        }
+    }
+
+    // A Library Export the schematic's text brings (set_schematic): it takes
+    // the Document Settings' library settings, said.
+    void aLibraryExportWrittenAsTextHoldsThem()
+    {
+        Module::registerModules();
+        const QString p = project("text", {{"div.sch", divider("1k", "3k")}});
+        Schematic sch(nullptr, p + "/div.sch");
+        QVERIFY(sch.load());
+        LibrarySettings own;
+        own.alwaysModelCards = true;
+        own.modelCards = ".model m6 good";
+        sch.setLibrarySettings(own);
+        QString components;
+        for (Component* c : sch.a_DocComps) components += c->save() + "\n";
+        components += "  <LibraryExport LibExport1 1 300 300 -30 20 0 0 \"no\" 1 \"\" 1 \"no\" 1 \"default\" 1>\n";
+        QString error;
+        QStringList notes;
+        QVERIFY2(sch.replaceContent("<Components>\n" + components + "</Components>\n", &error, &notes), qPrintable(error));
+        QVERIFY2(notes.join('\n').contains("LibExport1 took this schematic's Document Settings > Library"), qPrintable(notes.join('\n')));
+        QVERIFY(sch.libraryExport() != nullptr);
+        QCOMPARE(LibraryExport::settingsOf(sch.libraryExport()), own);
+        QCOMPARE(sch.librarySettings(), own);
+    }
+
+    // Document Settings > Library, opened at its smallest: each note as
+    // tall as it is wrapped - in its tab it was squeezed, its lines drawn
+    // over the next control.
+    void theLibraryTabIsNotSqueezed()
+    {
+        Module::registerModules();
+        const QString p = project("tab", {{"div.sch", divider("1k", "3k")}});
+        Schematic sch(nullptr, p + "/div.sch");
+        QVERIFY(sch.load());
+        SettingsDialog dialog(&sch);
+        auto* tabs = dialog.findChild<QTabWidget*>();
+        QVERIFY(tabs != nullptr);
+        tabs->setCurrentIndex(tabs->count() - 1);
+        QCOMPARE(tabs->tabText(tabs->currentIndex()), QStringLiteral("Library"));
+        dialog.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+        dialog.resize(250, 200);   // (as it opens: grown to its minimum)
+        QApplication::processEvents();
+        auto* options = dialog.findChild<LibraryOptions*>();
+        QVERIFY(options != nullptr);
+        int notes = 0;
+        for (QLabel* label : options->findChildren<QLabel*>()) {
+            if (!label->wordWrap() || !label->isVisible()) continue;
+            ++notes;
+            QVERIFY2(label->height() >= label->heightForWidth(label->width()),
+                     qPrintable(QStringLiteral("%1 high, %2 needed: %3").arg(label->height()).arg(label->heightForWidth(label->width()))
+                                    .arg(label->text().left(40))));
+        }
+        QCOMPARE(notes, 2);
+        dialog.close();
+    }
+
+    // Its ground pin, the subcircuit's own choice (its Library Export's,
+    // or Document Settings'): with gnd or without, whatever the settings or
+    // the request say; by default theirs. Create Library says whose.
+    void aSubcircuitChoosesItsGroundPin()
+    {
+        Module::registerModules();
+        QVERIFY(!QucsSettings.LibraryGroundPin);
+        const QString p = project("pins", {{"plain.sch", divider("1k", "3k")}, {"with.sch", divider("1k", "1k")},
+                                           {"without.sch", divider("2k", "1k")}, {"doc.sch", divider("3k", "1k")}});
+        const auto choose = [&p](const QString& name, LibrarySettings::GroundPin pin, bool part) {
+            Schematic s(nullptr, p + "/" + name);
+            QVERIFY(s.load());
+            if (part) {
+                auto* c = new LibraryExport();
+                c->setSchematic(&s);
+                s.insertComponent(c);
+            }
+            LibrarySettings l;
+            l.groundPin = pin;
+            s.setLibrarySettings(l);
+            QVERIFY(s.save() >= 0);
+        };
+        choose("with.sch", LibrarySettings::With, true);
+        choose("without.sch", LibrarySettings::Without, true);
+        choose("doc.sch", LibrarySettings::With, false);
+        QVERIFY(read(p + "/doc.sch").contains("\n  <LibraryGroundPin=1>\n"));
+        const auto pins = [](const QString& library, const QString& sub) {
+            const QString line = block(library, sub).section('\n', 0, 0);
+            return line.split(' ', Qt::SkipEmptyParts).mid(2);
+        };
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.ProjName = "pins";
+        const QStringList subs{"plain.sch", "with.sch", "without.sch", "doc.sch"};
+        QString log = make(app, "Pins", subs, userLib);
+        QVERIFY2(log.contains("Successfully created library."), qPrintable(log));
+        QVERIFY2(log.contains("Ground pin: a first pin gnd in its .SUBCKT, as its Library Export LibExport1 asks."), qPrintable(log));
+        QVERIFY2(log.contains("Ground pin: none in its .SUBCKT, as its Library Export LibExport1 asks."), qPrintable(log));
+        QVERIFY2(log.contains("Ground pin: a first pin gnd in its .SUBCKT, as its Document Settings > Library asks."), qPrintable(log));
+        QString lib = read(userLib + "/Pins.lib");
+        QCOMPARE(pins(lib, "Pins_plain").size(), 2);
+        QCOMPARE(pins(lib, "Pins_with").value(0), QStringLiteral("gnd"));
+        QCOMPARE(pins(lib, "Pins_with").size(), 3);
+        QCOMPARE(pins(lib, "Pins_without").size(), 2);
+        QCOMPARE(pins(lib, "Pins_doc").value(0), QStringLiteral("gnd"));
+        // Asked for gnd: the subcircuits that choose keep their choice.
+        log = make(app, "PinsGnd", subs, userLib, false, nullptr, true);
+        QVERIFY2(log.contains("Successfully created library."), qPrintable(log));
+        lib = read(userLib + "/PinsGnd.lib");
+        QCOMPARE(pins(lib, "PinsGnd_plain").value(0), QStringLiteral("gnd"));
+        QCOMPARE(pins(lib, "PinsGnd_with").value(0), QStringLiteral("gnd"));
+        QCOMPARE(pins(lib, "PinsGnd_without").size(), 2);
+        QVERIFY2(!pins(lib, "PinsGnd_without").contains("gnd"), qPrintable(pins(lib, "PinsGnd_without").join(' ')));
+        QVERIFY(!QucsSettings.LibraryGroundPin);   // (the request's, for that library only)
+        // Each part tells which it has.
+        QVERIFY(LibComp::takesGround(userLib + "/PinsGnd.lib", "plain", 2));
+        QVERIFY(!LibComp::takesGround(userLib + "/PinsGnd.lib", "without", 2));
+        QVERIFY(LibComp::takesGround(userLib + "/Pins.lib", "with", 2));
+        QVERIFY(!LibComp::takesGround(userLib + "/Pins.lib", "plain", 2));
+        // And a circuit placing them: two nodes, or ground and two.
+        write(p + "/use.sch", schematic(libPart("X1", "PinsGnd", "without", 300, 100) + libPart("X2", "Pins", "with", 300, 300)));
+        const QString net = netlistOf(p + "/use.sch");
+        QVERIFY2(lines(net, "^XX1 \\S+ \\S+ PinsGnd_without$") == 1, qPrintable(net));
+        QVERIFY2(lines(net, "^XX2 0 \\S+ \\S+ Pins_with$") == 1, qPrintable(net));
+        app.ProjName.clear();
+        QFile::remove(userLib + "/Pins.lib");
+        QFile::remove(userLib + "/PinsGnd.lib");
     }
 
     // Convert Data File's Qucs library of a SPICE file: refused when the file

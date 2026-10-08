@@ -23,6 +23,7 @@
 #include <QRegularExpressionValidator>
 
 class Schematic;
+class LibraryOptions;
 class QLineEdit;
 class QTextEdit;
 class QCheckBox;
@@ -59,6 +60,7 @@ public:
   QLineEdit *Input_DataSet, *Input_DataDisplay, *Input_Script;
   QLineEdit *Input_GridX, *Input_GridY;
   QCheckBox *Check_OpenDpl, *Check_GridOn, *Check_RunScript;
+  LibraryOptions *Library;           ///< Library: its settings as a library part (a Library Export's when one is placed)
   QCheckBox *Check_AlwaysLoadOSDI;   ///< Library: the part's Verilog-A in all the project's circuits
   QPlainTextEdit *Input_ModelCards;  ///< Library: .model cards of its own, in its netlist
   QCheckBox *Check_AlwaysModelCards; ///< Library: those cards in all the project's circuits
