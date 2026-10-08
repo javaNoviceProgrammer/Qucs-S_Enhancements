@@ -177,6 +177,7 @@ qucs_add_test(test_scale_and_memory)
 qucs_add_test(test_graphics_export)
 qucs_add_test(test_osdi_selection)
 qucs_add_test(test_number_format)
+qucs_add_test(test_component_symbols)
 target_compile_definitions(test_system_open PRIVATE QUCS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 if(APPLE)
   target_compile_definitions(test_system_open PRIVATE

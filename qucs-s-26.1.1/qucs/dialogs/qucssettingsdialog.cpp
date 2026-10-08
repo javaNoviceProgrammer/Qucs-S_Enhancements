@@ -42,6 +42,7 @@
 #include "syntaxsettings.h"
 #include "claudehistory.h"
 #include "workspacesession.h"
+#include "symbolstyle.h"
 
 #include <QWidget>
 #include <QLabel>
@@ -208,22 +209,35 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                       "sub-trees (Toggle hierarchy search view). Off: plain rows."));
     appSettingsGrid->addWidget(contentFolderIcons, 13, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Pin names in subcircuit symbols:"), appSettingsTab), 14, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Component symbols:"), appSettingsTab), 14, 0);
+    componentSymbolsCombo = new QComboBox(appSettingsTab);
+    componentSymbolsCombo->setObjectName(QStringLiteral("componentSymbolsCombo"));
+    componentSymbolsCombo->addItem(tr("US (ANSI/IEEE)"), int(qucs_s::symbols::US));
+    componentSymbolsCombo->addItem(tr("European (IEC)"), int(qucs_s::symbols::European));
+    componentSymbolsCombo->setToolTip(tr("The symbols a new part is drawn with, where it has both: a resistor's zigzag "
+                                         "or box, a diode's, the logic gates' distinctive shapes or DIN 40900 "
+                                         "rectangles. The components panel and its icons, Claude's add_component and "
+                                         "the synthesis tools' designs follow it; the panel's second resistor gives "
+                                         "the other one.\n"
+                                         "A part already placed keeps its own: its Symbol property changes it."));
+    appSettingsGrid->addWidget(componentSymbolsCombo, 14, 1);
+
+    appSettingsGrid->addWidget(new QLabel(tr("Pin names in subcircuit symbols:"), appSettingsTab), 15, 0);
     showPinNames = new QCheckBox(appSettingsTab);
     showPinNames->setToolTip(tr("Write the name of each pin inside the symbol of a subcircuit - the "
                                 "name the netlist gives that pin.\n"
                                 "Off: only what the symbol itself draws."));
-    appSettingsGrid->addWidget(showPinNames, 14, 1);
+    appSettingsGrid->addWidget(showPinNames, 15, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Pin directions in subcircuit symbols:"), appSettingsTab), 15, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Pin directions in subcircuit symbols:"), appSettingsTab), 16, 0);
     showPinDirections = new QCheckBox(appSettingsTab);
     showPinDirections->setToolTip(tr("Mark which way each pin points, from the type of the port it stands "
                                      "for (in, out, inout).\n"
                                      "A symbol drawn anew then puts the inputs on the left and the outputs "
                                      "on the right."));
-    appSettingsGrid->addWidget(showPinDirections, 15, 1);
+    appSettingsGrid->addWidget(showPinDirections, 16, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Embed Verilog-A files in exported libraries:"), appSettingsTab), 16, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Embed Verilog-A files in exported libraries:"), appSettingsTab), 17, 0);
     embedVerilogA = new QCheckBox(appSettingsTab);
     embedVerilogA->setObjectName(QStringLiteral("embedVerilogA"));
     embedVerilogA->setToolTip(tr("Project > Create Library copies the Verilog-A sources (.va) its subcircuits "
@@ -232,9 +246,9 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                  "them, or into Qucs-S's cache when the library's folder cannot be written: a "
                                  "compiled model (.osdi) runs on one platform only, so it is not embedded.\n"
                                  "Off: the library holds the subcircuits and their symbols only."));
-    appSettingsGrid->addWidget(embedVerilogA, 16, 1);
+    appSettingsGrid->addWidget(embedVerilogA, 17, 1);
 
-    appSettingsGrid->addWidget(new QLabel(tr("Ground pin (gnd) in exported subcircuits:"), appSettingsTab), 17, 0);
+    appSettingsGrid->addWidget(new QLabel(tr("Ground pin (gnd) in exported subcircuits:"), appSettingsTab), 18, 0);
     libraryGroundPin = new QCheckBox(appSettingsTab);
     libraryGroundPin->setObjectName(QStringLiteral("libraryGroundPin"));
     libraryGroundPin->setToolTip(tr("Project > Create Library gives each subcircuit's SPICE model (.SUBCKT) a "
@@ -246,10 +260,10 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                     "they always tie a first pin to ground.\n"
                                     "A library made either way keeps working: a part tells from its library "
                                     "which it has."));
-    appSettingsGrid->addWidget(libraryGroundPin, 17, 1);
+    appSettingsGrid->addWidget(libraryGroundPin, 18, 1);
 
     appSettingsGrid->addWidget(new QLabel(tr("Write a settings file (.cfg) beside each text document:"),
-                                          appSettingsTab), 18, 0);
+                                          appSettingsTab), 19, 0);
     writeDocSettings = new QCheckBox(appSettingsTab);
     writeDocSettings->setObjectName(QStringLiteral("writeDocSettings"));
     writeDocSettings->setToolTip(tr("Saving a text document also writes name.cfg beside it (notes.txt.cfg for "
@@ -259,7 +273,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                     "Off: a settings file is written only for a document whose Document "
                                     "Settings were set or changed, so none is lost. The files already there "
                                     "are left alone."));
-    appSettingsGrid->addWidget(writeDocSettings, 18, 1);
+    appSettingsGrid->addWidget(writeDocSettings, 19, 1);
 
     // ...........................................................
     // The appearance settings tab
@@ -856,6 +870,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     contentRefreshSeconds->setValue(QucsSettings.ContentRefreshSeconds);
     contentRefreshSeconds->setEnabled(QucsSettings.ContentAutoRefresh);
     contentFolderIcons->setChecked(QucsSettings.ContentFolderIcons);
+    componentSymbolsCombo->setCurrentIndex(componentSymbolsCombo->findData(QucsSettings.ComponentSymbols));
     showPinNames->setChecked(QucsSettings.ShowPinNames);
     showPinDirections->setChecked(QucsSettings.ShowPinDirections);
     embedVerilogA->setChecked(QucsSettings.EmbedVerilogAInLibraries);
@@ -1097,6 +1112,11 @@ void QucsSettingsDialog::slotApply()
     }
     QucsSettings.ContentUserCategories = userCategories;
     fillUserCategories(userCategories);
+    // New parts as the settings now say: the components panel's icons too
+    // (below, once saved), and the synthesis programs started from now on.
+    const bool symbolsChanged = QucsSettings.ComponentSymbols != componentSymbolsCombo->currentData().toInt();
+    QucsSettings.ComponentSymbols = componentSymbolsCombo->currentData().toInt();
+    qucs_s::symbols::tellTools(static_cast<qucs_s::symbols::Style>(QucsSettings.ComponentSymbols));
     QucsSettings.ShowPinNames = showPinNames->isChecked();
     QucsSettings.ShowPinDirections = showPinDirections->isChecked();
     QucsSettings.EmbedVerilogAInLibraries = embedVerilogA->isChecked();
@@ -1186,6 +1206,7 @@ void QucsSettingsDialog::slotApply()
     QucsMain->updatePathList(currentPaths);
 
     saveApplSettings();  // also sets the small and large font
+    if (symbolsChanged) App->refreshComponentsPanel();
     App->applySyntaxSettings();   // the text documents in the formats set
     if (projectsChanged) App->applyProjectSettings();
     // The Content panel as the settings now say (its categories' patterns).
@@ -1364,6 +1385,7 @@ void QucsSettingsDialog::slotDefaultValues()
     for (QCheckBox *box : {restoreWorkspace, restoreProject, restoreDocuments, restorePanels, restoreWindowGeometry,
                            reopenConversations})
         box->setChecked(true);
+    componentSymbolsCombo->setCurrentIndex(componentSymbolsCombo->findData(_settings::Get().itemDefault<int>("ComponentSymbols")));
     showPinNames->setChecked(true);
     showPinDirections->setChecked(false);
     embedVerilogA->setChecked(_settings::Get().itemDefault<bool>("EmbedVerilogAInLibraries"));

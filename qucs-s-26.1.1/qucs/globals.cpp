@@ -25,6 +25,7 @@
 
 #include "qucs.h"
 #include "main.h"
+#include "symbolstyle.h"
 #include "settings.h"
 #include "misc.h"
 #include "crashhandler.h"
@@ -162,6 +163,8 @@ bool loadSettings()
     for (const QString& key : settings.childKeys())
         QucsSettings.SyntaxForSuffix.insert(key, settings.value(key).toString());
     settings.endGroup();
+    QucsSettings.ComponentSymbols = std::clamp(_settings::Get().item<int>("ComponentSymbols"), 0, 1);
+    qucs_s::symbols::tellTools(static_cast<qucs_s::symbols::Style>(QucsSettings.ComponentSymbols));
     QucsSettings.ShowPinNames = _settings::Get().item<bool>("ShowPinNames");
     QucsSettings.ShowPinDirections = _settings::Get().item<bool>("ShowPinDirections");
     QucsSettings.EmbedVerilogAInLibraries = _settings::Get().item<bool>("EmbedVerilogAInLibraries");
@@ -309,6 +312,7 @@ bool saveApplSettings()
     for (auto it = QucsSettings.SyntaxForSuffix.cbegin(); it != QucsSettings.SyntaxForSuffix.cend(); ++it)
         settings.setValue(it.key(), it.value());
     settings.endGroup();
+    qs.setItem<int>("ComponentSymbols",QucsSettings.ComponentSymbols);
     qs.setItem<bool>("ShowPinNames",QucsSettings.ShowPinNames);
     qs.setItem<bool>("ShowPinDirections",QucsSettings.ShowPinDirections);
     qs.setItem<bool>("EmbedVerilogAInLibraries",QucsSettings.EmbedVerilogAInLibraries);
