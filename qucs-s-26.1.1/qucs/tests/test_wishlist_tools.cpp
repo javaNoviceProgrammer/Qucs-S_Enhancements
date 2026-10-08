@@ -23,7 +23,9 @@
 #include <QTemporaryDir>
 #include <QUrl>
 
+#include <algorithm>
 #include <cmath>
+#include <memory>
 
 #include "components/component.h"
 #include "config.h"
@@ -610,6 +612,61 @@ private slots:
         QVERIFY2(json(r).value("succeeded").toBool(), qPrintable(text(r)));
         const double s11 = at("match.sch", "S11_dB", 9e8);
         QVERIFY2(s11 < -20.0, qPrintable(QString::number(s11)));
+    }
+
+    // A design's inductors and capacitors as the file gives them, each
+    // "name value" - and what is wrong with any: an initial current or
+    // voltage, a polarised capacitor.
+    static QStringList inductorsAndCapacitors(const QString& file, QStringList* wrong)
+    {
+        QFile f(file);
+        if (!f.open(QIODevice::ReadOnly)) return {QStringLiteral("(no file)")};
+        QStringList parts;
+        for (const QString& line : QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'))) {
+            QString part = line.trimmed();
+            if (!part.startsWith("<L ") && !part.startsWith("<C ")) continue;
+            std::unique_ptr<Component> c(getComponentFromName(part));
+            if (!c) {
+                *wrong << "unread: " + line.trimmed();
+                continue;
+            }
+            parts << c->Name + " " + c->Props.at(0)->Value;
+            if (!c->Props.at(1)->Value.isEmpty()) *wrong << QStringLiteral("%1 starts at %2 %3").arg(c->Name, c->Props.at(1)->Name, c->Props.at(1)->Value);
+            if (c->Model == "C" && c->getProperty("Symbol")->Value != "neutral")
+                *wrong << QStringLiteral("%1 is drawn %2").arg(c->Name, c->getProperty("Symbol")->Value);
+        }
+        return parts;
+    }
+
+    // A load of no resistance to speak of (under 1 mOhm) is drawn as an
+    // inductor or a capacitor alone: with no initial current or voltage,
+    // the capacitor not polarised - they were given a resistor's
+    // temperature and symbol, 26.85 A, 26.85 V and the polar symbol. So
+    // the lumped quarter-wave attenuators' inductors.
+    void aReactiveLoadStartsAtRest()
+    {
+        for (const char* topology : {"l_section", "single_stub", "double_stub", "lambda8_lambda4"})
+            for (const char* load : {"0.0005+j20", "0.0005-j20"}) {
+                const QString file = path(QStringLiteral("reactive_%1_%2.sch").arg(topology, QString(load).at(6) == '+' ? "l" : "c"));
+                const QJsonObject r = call("synthesize_matching", {{"z_load", load}, {"f", "900 MHz"}, {"topology", topology}, {"save_as", file}});
+                QVERIFY2(!failed(r), qPrintable(text(r)));
+                QStringList wrong;
+                const QStringList parts = inductorsAndCapacitors(file, &wrong);
+                // (20 ohm at 900 MHz: 3.537 nH, 8.842 pF.)
+                const QString drawn = QString(load).at(6) == '+' ? QStringLiteral("3.537nH") : QStringLiteral("8.842pF");
+                QVERIFY2(std::any_of(parts.cbegin(), parts.cend(), [&](const QString& p) { return p.endsWith(" " + drawn); }),
+                         qPrintable(topology + QStringLiteral(": ") + parts.join(", ")));
+                QVERIFY2(wrong.isEmpty(), qPrintable(topology + QStringLiteral(" ") + load + QStringLiteral(": ") + wrong.join("; ")));
+            }
+        for (const char* topology : {"quarter_wave_series", "quarter_wave_shunt"}) {
+            const QString file = path(QStringLiteral("lumped_%1.sch").arg(topology));
+            const QJsonObject r = call("synthesize_attenuator", {{"topology", topology}, {"attenuation", 10}, {"f", 1e9}, {"lumped", true}, {"save_as", file}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            QStringList wrong;
+            const QStringList parts = inductorsAndCapacitors(file, &wrong);
+            QVERIFY2(parts.size() >= 3 && parts.join(" ").contains("H"), qPrintable(topology + QStringLiteral(": ") + parts.join(", ")));
+            QVERIFY2(wrong.isEmpty(), qPrintable(topology + QStringLiteral(": ") + wrong.join("; ")));
+        }
     }
 
     // Power combining: a Wilkinson, lumped for ngspice; -3 dB each way.
