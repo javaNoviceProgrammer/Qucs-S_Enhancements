@@ -409,6 +409,16 @@ private slots:
         QVERIFY(!failed(call("reload_data", {})));
         Diagram* d = front()->a_DocDiags.front();
         QCOMPARE(int(d->Graphs.at(1)->count(0)), 11);
+        // A dataset an earlier Qucs-S wrote of a stock ngspice's run, where
+        // the current is i(@r1[i]): read all the same.
+        QCOMPARE(Graph::otherSpelling("tran.@r1[i]"), QString("tran.i(@r1[i])"));
+        QCOMPARE(Graph::otherSpelling("tran.i(@r1[i])"), QString("tran.@r1[i]"));
+        QCOMPARE(Graph::otherSpelling("@q1[ic]"), QString("i(@q1[ic])"));
+        QVERIFY(writeFile(path("probe.dat.ngspice"),
+                          datasetText("time", t, {{"tran.v(out)", [](double x) { return 1 - std::exp(-x / 1e-3); }},
+                                                  {"tran.i(@r1[i])", [](double x) { return 1e-3 * std::exp(-x / 1e-3); }}})));
+        QVERIFY(!failed(call("reload_data", {})));
+        QCOMPARE(int(d->Graphs.at(1)->count(0)), 11);
         QCOMPARE(Graph::plotVsSeparator("tran.@r1[i]"), -1);
         QCOMPARE(Graph::plotVsSeparator("@r1[i]"), -1);
         QCOMPARE(Graph::plotVsSeparator("v(out)@v(in)"), 6);
@@ -3230,6 +3240,12 @@ private slots:
             QFile(sch).setPermissions(QFile::ReadOwner | QFile::WriteOwner);
             QVERIFY(!failed(call("open_document", {{"path", sch}})));
             r = call("simulate", {{"timeout", 120}});
+        }
+        // (An ngspice without a PRBS source - a stock one: left out.)
+        if (withNgspice() && !json(r).value("succeeded").toBool() && text(r).contains("unknown parameter (prbs)", Qt::CaseInsensitive)) {
+            qInfo("this ngspice has no PRBS source: N13 left out");
+            closeAll();
+        } else if (withNgspice()) {
             QVERIFY2(json(r).value("succeeded").toBool(), qPrintable(text(r)));
             r = call("add_diagram", {{"type", "bathtub"}, {"traces", QJsonArray{"tran.v(rx)"}}, {"bathtub", QJsonObject{{"levels", 4}}}});
             QVERIFY2(!failed(r), qPrintable(text(r)));
