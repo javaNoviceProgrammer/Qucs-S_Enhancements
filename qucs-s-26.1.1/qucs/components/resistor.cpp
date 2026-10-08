@@ -18,7 +18,18 @@
 #include "extsimkernels/spicecompat.h"
 #include "extsimkernels/verilogawriter.h"
 #include "node.h"
+#include "main.h"
+#include "symbolstyle.h"
 
+namespace {
+
+bool europeanByDefault() { return QucsSettings.ComponentSymbols == qucs_s::symbols::European; }
+
+} // namespace
+
+Resistor::Resistor() : Resistor(europeanByDefault())
+{
+}
 
 Resistor::Resistor(bool european)
 {
@@ -150,18 +161,19 @@ void Resistor::createSymbol()
 Element* Resistor::info(QString& Name, char* &BitmapFile, bool getNewOne)
 {
   Name = QObject::tr("Resistor");
-  BitmapFile = (char *) "resistor";
+  BitmapFile = (char *) (europeanByDefault() ? "resistor" : "resistor_us");
 
   if(getNewOne)  return new Resistor();
   return 0;
 }
 
 // -------------------------------------------------------
-Element* Resistor::info_us(QString& Name, char* &BitmapFile, bool getNewOne)
+Element* Resistor::info_other(QString& Name, char* &BitmapFile, bool getNewOne)
 {
-  Name = QObject::tr("Resistor US");
-  BitmapFile = (char *) "resistor_us";
+  const bool european = !europeanByDefault();
+  Name = european ? QObject::tr("Resistor European") : QObject::tr("Resistor US");
+  BitmapFile = (char *) (european ? "resistor" : "resistor_us");
 
-  if(getNewOne)  return new Resistor(false);
+  if(getNewOne)  return new Resistor(european);
   return 0;
 }

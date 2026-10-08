@@ -178,6 +178,7 @@ public:
     void fillUserCategories(const QList<ContentCategory>& categories);
     /// The selected category of the user's one place up (-1) or down (1).
     void moveContentCategory(int by);
+    QComboBox *componentSymbolsCombo;   ///< The symbols new parts get: US or European (qucs_s::symbols::Style).
     QCheckBox *showPinNames;
     QCheckBox *showPinDirections;
     QCheckBox *embedVerilogA;        ///< Create Library copies the .va and .osdi files the subcircuits use.

@@ -19,6 +19,8 @@
 #include "node.h"
 #include "misc.h"
 #include "extsimkernels/spicecompat.h"
+#include "main.h"
+#include "symbolstyle.h"
 
 Diode::Diode()
 {
@@ -80,7 +82,8 @@ Diode::Diode()
 	QObject::tr("temperature at which parameters were extracted")));
   Props.append(new Property("Area", "1.0", false,
 	QObject::tr("default area for diode")));
-  Props.append(new Property("Symbol", "normal", false,
+  // (normal: IEC's, the line through the triangle; US: broken at it.)
+  Props.append(new Property("Symbol", QucsSettings.ComponentSymbols == qucs_s::symbols::European ? "normal" : "US", false,
 	QObject::tr("schematic symbol")+" [normal, US, Schottky, Zener, Varactor]"));
   Props.append(new Property("UseGlobTemp", "yes", false,
         QObject::tr("Use global SPICE temperature")+" [yes,no]"));

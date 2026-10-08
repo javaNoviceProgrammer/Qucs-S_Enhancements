@@ -17,6 +17,7 @@
 
 #include "qucsactivefilter.h"
 #include "sallenkey.h"
+#include "../qucs/symbolstyle.h"
 #include "mfbfilter.h"
 #include "schcauer.h"
 #include "transferfuncdialog.h"
@@ -426,8 +427,9 @@ void QucsActiveFilter::slotCalcSchematic()
 			      "</pre>");
     }
 
+    // The resistors drawn as Qucs-S draws new parts (US or European).
     QClipboard *cb = QApplication::clipboard();
-    cb->setText(s);
+    cb->setText(qucs_s::symbols::styled(s, qucs_s::symbols::forTools()));
 
 }
 

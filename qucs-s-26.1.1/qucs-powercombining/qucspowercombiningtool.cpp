@@ -31,6 +31,7 @@
 #include "../qucs/misc.h"
 #include "../qucs-filter/material_props.h"
 #include "../qucs/extsimkernels/spicecompat.h"
+#include "../qucs/symbolstyle.h"
 
 
 //---------------------------------------------------------
@@ -510,8 +511,9 @@ void QucsPowerCombiningTool::on_TopoCombo_currentIndexChanged(int index)
 
 void QucsPowerCombiningTool::deliver(const QString& s)
 {
-    generated = s;
-    if (!quiet) QApplication::clipboard()->setText(s, QClipboard::Clipboard);
+    // The resistors drawn as Qucs-S draws new parts (US or European).
+    generated = qucs_s::symbols::styled(s, qucs_s::symbols::forTools());
+    if (!quiet) QApplication::clipboard()->setText(generated, QClipboard::Clipboard);
 }
 
 QString QucsPowerCombiningTool::generate(bool quietly)

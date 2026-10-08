@@ -92,6 +92,7 @@ void settingsManager::initDefaults()
     m_Defaults["ContentAutoRefresh"] = true;
     m_Defaults["ContentRefreshSeconds"] = 3;
     m_Defaults["FileNameCap"] = 50;
+    m_Defaults["ComponentSymbols"] = 0;   // qucs_s::symbols::US
     m_Defaults["ShowPinNames"] = true;
     m_Defaults["ShowPinDirections"] = false;
     m_Defaults["EmbedVerilogAInLibraries"] = true;

@@ -31,6 +31,7 @@
 #include "mfbfilter.h"
 #include "schcauer.h"
 #include "../qucs/tooljson.h"
+#include "../qucs/symbolstyle.h"
 
 #include <QJsonArray>
 
@@ -188,7 +189,8 @@ QJsonObject design(const QJsonObject& spec)
         e.insert("calculated", QJsonArray::fromStringList(poles + parts));
         return e;
     }
-    QJsonObject result{{"schematic", s}, {"parts", QJsonArray::fromStringList(parts)}, {"type", response},
+    // (Its resistors drawn as Qucs-S draws new parts, US or European.)
+    QJsonObject result{{"schematic", qucs_s::symbols::styled(s, qucs_s::symbols::forTools())}, {"parts", QJsonArray::fromStringList(parts)}, {"type", response},
                        {"class", classes.at(c)}, {"realization", topology}};
     if (order > 0) result.insert("order", order);
     if (!note.isEmpty()) result.insert("note", note);

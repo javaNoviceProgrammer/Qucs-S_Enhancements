@@ -16,6 +16,7 @@
 #include "attenuatorfunc.h"
 #include "qucsattenuator.h"
 #include "../qucs/extsimkernels/spicecompat.h"
+#include "../qucs/symbolstyle.h"
 
 #include <QString>
 
@@ -832,6 +833,8 @@ QString* QUCS_Att::createSchematic(tagATT *ATT, bool SP_box)
         break;
     }
 
+  // The resistors drawn as Qucs-S draws new parts (US or European).
+  *s = qucs_s::symbols::styled(*s, qucs_s::symbols::forTools());
   return s;
 }
 

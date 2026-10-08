@@ -16,6 +16,8 @@
  ***************************************************************************/
 #include "logical_buf.h"
 #include "node.h"
+#include "main.h"
+#include "symbolstyle.h"
 #include "misc.h"
 #include "extsimkernels/spicecompat.h"
 
@@ -34,7 +36,8 @@ Logical_Buf::Logical_Buf()
 		QObject::tr("transfer function scaling factor")));
 
   // this must be the last property in the list !!!
-  Props.append(new Property("Symbol", "old", false,
+  // (old: the US distinctive shape; DIN40900: IEC's rectangle.)
+  Props.append(new Property("Symbol", QucsSettings.ComponentSymbols == qucs_s::symbols::European ? "DIN40900" : "old", false,
 		QObject::tr("schematic symbol")+" [old, DIN40900]"));
 
   createSymbol();
