@@ -714,6 +714,16 @@ Then:
   failure; the LTspice fuzzer (p9, seeds 1-3) 2,250 mutants, no crash and no report (F3's three
   crashes before).
 
+CI's Linux runner, a stock ngspice-42, then failed two cases that pass on this machine's
+ngspice (a build of its own). **Fixed in `286d644`.**
+- A stock ngspice writes a device's current (`@r1[i]`, `@q1[ic]`) as `i(@r1[i])`, where the one
+  here keeps the name: a probed part's trace (`tran.@r1[i]`) found no data, and
+  `huntProbedCurrents` read 2 of its 5 vectors. Qucs-S now reads such a vector under the one
+  name, and a graph takes either spelling for a dataset written before. Run against a stand-in
+  ngspice that writes the stock names, the case fails without the fix and passes with it.
+- A stock ngspice has no PRBS source: `huntTheRest` leaves N13's run of the PRBS example out
+  there, and says so.
+
 ## What was found right
 
 - **The pole-zero map** of a real `.PZ` (an RLC, `p15`): poles -11,270.2 and -88,729.8
