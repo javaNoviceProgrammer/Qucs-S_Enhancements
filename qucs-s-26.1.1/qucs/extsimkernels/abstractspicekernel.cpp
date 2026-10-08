@@ -1848,8 +1848,14 @@ void AbstractSpiceKernel::normalizeVarsNames(QStringList &var_list, const QStrin
     QRegularExpression iprobe_pattern("^[Vv][Pp][Rr][0-9]+.*");
     QRegularExpression ivprobe_pattern("^[Vv][Pp][Rr][0-9]+.*");
     QRegularExpression ivprobe_pattern_ngspice("^(ac\\.|tran\\.)[Vv][Pp][Rr][0-9]+.*");
+    // A device's vector that is a current (@r1[i], @q1[ic]): ngspice writes
+    // it as i(@r1[i]) - an ngspice of one's own may keep its name. One
+    // spelling, the one the netlist's write line and a probe give it: the
+    // trace of a probed part (tran.@r1[i]) found no data under the other.
+    static const QRegularExpression deviceCurrent(QStringLiteral("^[iI]\\((@[^()\\s]+)\\)$"));
 
     for (it++;it!=var_list.end();it++) {
+        if (const QRegularExpressionMatch m = deviceCurrent.match(*it); m.hasMatch()) *it = m.captured(1);
         if ((!(it->startsWith(prefix)||it->startsWith(iprefix)))||(HB)) {
             if (HB) {
                 QString suffix;
