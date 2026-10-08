@@ -1069,6 +1069,14 @@ QString Graph::otherSpelling(const QString& var)
   // (A current a NutmegEq computes - a probed pin's, i(r1_pin2) - ngspice
   // writes as a current or as the name alone, as its operands' types are.)
   static const QRegularExpression current(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)[iI]\\(([A-Za-z_][A-Za-z0-9_]*)\\)$"));
+  // (A device's current, tran.@r1[i]: a dataset an earlier Qucs-S wrote of
+  // a stock ngspice's run has it as tran.i(@r1[i]) - AbstractSpiceKernel::
+  // normalizeVarsNames() writes the one spelling now.)
+  static const QRegularExpression device(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)(@[^()\\s]+)$"));
+  static const QRegularExpression deviceCurrent(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)[iI]\\((@[^()\\s]+)\\)$"));
+  if (const QRegularExpressionMatch m = device.match(var); m.hasMatch())
+    return m.captured(1) + QStringLiteral("i(") + m.captured(2) + QLatin1Char(')');
+  if (const QRegularExpressionMatch m = deviceCurrent.match(var); m.hasMatch()) return m.captured(1) + m.captured(2);
   if (const QRegularExpressionMatch m = plain.match(var); m.hasMatch())
     return m.captured(1) + QStringLiteral("v(") + m.captured(2) + QLatin1Char(')');
   if (const QRegularExpressionMatch m = voltage.match(var); m.hasMatch()) return m.captured(1) + m.captured(2);

@@ -510,6 +510,35 @@ private slots:
         QCOMPARE(d.find("tran.v(a)")->dependencies, QStringList{"time"});
     }
 
+    // A device's current that ngspice writes as i(@r1[i]) - an ngspice of
+    // one's own may keep the name - is tran.@r1[i] in the dataset, text or
+    // binary: the name a probe's trace reads. A source's current keeps its
+    // i(v1); a device's power, written as it is, too.
+    void aDevicesCurrentHasOneName()
+    {
+        for (const bool binary : {false, true}) {
+            const QString work = dir.filePath(binary ? "device-bin" : "device-text");
+            QVERIFY(QDir().mkpath(work));
+            const int n = 5;
+            QVector<double> values;
+            for (int p = 0; p < n; ++p) values << p * 1e-6 << 1.0 << 1e-3 << -1e-3 << 2e-3 << 5e-4;
+            const QString raw = write(work + "/spice4qucs.tran.plot",
+                                      rawPlot("Transient Analysis", {"time", "v(out)", "i(@r1[i])", "I(@q1[ic])", "i(v1)", "@c1[p]"}, values, n,
+                                              false));
+            QVERIFY(!raw.isEmpty());
+            const QString error = convert(work, {"spice4qucs.tran.plot"}, work + "/dev.dat.ngspice",
+                                          binary ? AbstractSpiceKernel::DatasetFormat::Binary : AbstractSpiceKernel::DatasetFormat::Text);
+            QVERIFY2(error.isEmpty(), qPrintable(error));
+            ds::Dataset d;
+            QVERIFY(d.read(work + "/dev.dat.ngspice"));
+            QStringList names;
+            for (const ds::Variable& v : d.variables()) names << v.name;
+            QVERIFY2(names == (QStringList{"time", "tran.v(out)", "tran.@r1[i]", "tran.@q1[ic]", "tran.i(v1)", "tran.@c1[p]"}),
+                     qPrintable(names.join(", ")));
+            QCOMPARE(d.find("tran.@r1[i]")->re.at(2), 1e-3);
+        }
+    }
+
     // The settings choose: text up to their limit, binary above it; text
     // with binary off; text for a schematic whose Octave script reads it.
     void theSettingsChooseTextOrBinary()
