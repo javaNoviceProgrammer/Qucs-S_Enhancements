@@ -1,0 +1,13 @@
+Version 4
+SymbolType CELL
+PIN 0 0 NONE 8
+PINATTR PinName B
+PINATTR SpiceOrder 2
+PIN 0 32 NONE 8
+PINATTR PinName A
+PINATTR SpiceOrder 1
+PIN 32 16 NONE 8
+PINATTR PinName C
+PINATTR SpiceOrder 3
+SYMATTR Prefix X
+SYMATTR SpiceModel MYSUB
