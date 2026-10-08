@@ -20,6 +20,7 @@
 #include "diagrams/stackeddiagram.h"
 #include "extsimkernels/simulationrun.h"
 #include "extsimkernels/spicecompat.h"
+#include "spicecomponents/sp_nutmeg.h"
 #include "main.h"
 #include "node.h"
 #include "schematic.h"
@@ -32,7 +33,9 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QRegularExpression>
+#include <QPlainTextEdit>
 #include <QTemporaryDir>
+#include <QTextStream>
 
 namespace qucs_s::probe {
 
@@ -67,7 +70,20 @@ bool writtenNetlist(Schematic* sch, QString* text, QHash<Node*, QString>* names,
     QTemporaryDir dir;
     const QString file = dir.filePath(QStringLiteral("probe.cir"));
     bool ok = false;
-    {
+    QString written;
+    if (QucsSettings.DefaultSimulator == spicecompat::simQucsator) {
+        // Qucsator's own netlister (SimulationRun writes SPICE's: under
+        // Qucsator it wrote none, and every net's probe was refused with
+        // "the netlist could not be written" - bug hunt of 2026-10-08, B13).
+        const int bias = sch->getShowBias();
+        QTextStream stream(&written);
+        QStringList collect;
+        QPlainTextEdit messages;
+        const int ports = sch->prepareNetlist(stream, collect, &messages);
+        ok = ports > -10;
+        if (ok) sch->createNetlist(stream, ports);
+        sch->setShowBias(bias);
+    } else {
         SimulationRun run(sch, false);
         ok = run.writeNetlist(file);
     }
@@ -78,6 +94,10 @@ bool writtenNetlist(Schematic* sch, QString* text, QHash<Node*, QString>* names,
     if (!ok) {
         *error = tr("The netlist could not be written (Check Schematic says why).");
         return false;
+    }
+    if (QucsSettings.DefaultSimulator == spicecompat::simQucsator) {
+        if (text) *text = written;
+        return true;
     }
     QFile f(file);
     if (text && f.open(QIODevice::ReadOnly | QIODevice::Text)) *text = QString::fromUtf8(f.readAll());
@@ -135,13 +155,75 @@ QString freshNetName(Schematic* sch, const QHash<Node*, QString>& netlistNames)
     for (Node* n : sch->a_DocNodes)
         if (n->hasLabel()) used.insert(n->label()->Name.toLower());
     for (const QString& name : netlistNames) used.insert(name.toLower());
+    // (probe1, ...: net1, net2 are the names get_schematic gives nets
+    // without a label - another net was called so too, bug hunt of
+    // 2026-10-08, B3.)
     for (int i = 1;; ++i) {
-        const QString name = QStringLiteral("net%1").arg(i);
+        const QString name = QStringLiteral("probe%1").arg(i);
         if (!used.contains(name)) return name;
     }
 }
 
-// The last diagram of each schematic probed into.
+// The analysis block of the kind \a analysis (tran, ac, dc) a NutmegEq
+// computes after: the schematic's first active one.
+Component* analysisBlock(Schematic* sch, const QString& analysis)
+{
+    const QString model = analysis == QLatin1String("tran") ? QStringLiteral(".TR")
+                          : analysis == QLatin1String("ac") ? QStringLiteral(".AC")
+                                                            : QStringLiteral(".DC");
+    for (Component* c : sch->a_DocComps)
+        if (c->isSimulation && c->isActive == COMP_IS_ACTIVE && c->Model == model) return c;
+    return nullptr;
+}
+
+// The name of the variable a NutmegEq after \a analysis computes as
+// \a expression: an equation of one there already; else one added to the
+// first NutmegEq after it, else to a new one beside it (\a changed set),
+// named \a base (base_2 ... when that is taken).
+QString computedVariable(Schematic* sch, Component* analysis, const QString& expression, const QString& base, bool* changed)
+{
+    Component* there = nullptr;
+    QSet<QString> taken;
+    for (Component* c : sch->a_DocComps) {
+        taken.insert(c->Name.toLower());
+        if (c->Model != QLatin1String("NutmegEq") && c->Model != QLatin1String("Eqn")) continue;
+        for (const Property* p : c->Props) taken.insert(p->Name.toLower());
+        if (c->Model != QLatin1String("NutmegEq") || c->isActive != COMP_IS_ACTIVE || c->Props.isEmpty()
+            || c->Props.first()->Value.trimmed().compare(analysis->Name, Qt::CaseInsensitive) != 0)
+            continue;
+        if (there == nullptr) there = c;
+        for (int i = 1; i < c->Props.size(); ++i)
+            if (QString(c->Props.at(i)->Value).remove(QLatin1Char(' ')) == QString(expression).remove(QLatin1Char(' '))) return c->Props.at(i)->Name;
+    }
+    for (Wire* w : sch->a_DocWires)
+        if (w->hasLabel()) taken.insert(w->label()->Name.toLower());
+    for (Node* n : sch->a_DocNodes)
+        if (n->hasLabel()) taken.insert(n->label()->Name.toLower());
+    QString name = base;
+    for (int k = 2; taken.contains(name.toLower()); ++k) name = QStringLiteral("%1_%2").arg(base).arg(k);
+    if (there != nullptr) {
+        // (Before a trailing Export field, as the tools put equations.)
+        int where = int(there->Props.size());
+        while (where > 1 && there->Props.at(where - 1)->Name == QLatin1String("Export")) --where;
+        there->Props.insert(where, new Property(name, expression, true));
+        there->recreate();
+    } else {
+        auto* c = new NutmegEquation();
+        c->Props.at(0)->Value = analysis->Name;
+        c->Props.at(1)->Name = name;
+        c->Props.at(1)->Value = expression;
+        c->recreate();
+        const QRect beside = analysis->boundingRectIncludingProperties();
+        int x = beside.right() + 80, y = analysis->cy;
+        sch->setOnGrid(x, y);
+        c->moveCenter(x - c->cx, y - c->cy);
+        sch->insertComponent(c);
+    }
+    *changed = true;
+    return name;
+}
+
+// The last diagram of each schematic probed into.// The last diagram of each schematic probed into.
 QHash<const Schematic*, const Diagram*>& lastProbed()
 {
     static QHash<const Schematic*, const Diagram*> last;
@@ -242,26 +324,60 @@ QString vectorOf(Schematic* sch, const Target& target, QString* error)
     }
     if (target.kind == Kind::Power) return QStringLiteral("@%1[p]").arg(device);
 
-    // The current at the terminal of the pin, as SPICE orders the device's.
+    // The current into the pin, at the terminal of the device it is, as
+    // SPICE orders them.
+    QString node = names.value(nodeOf(target)).toLower();
+    if (node == QLatin1String("gnd")) node = QStringLiteral("0");
+    const auto terminal = [&](int count) {
+        // (Its node at more than one terminal - shorted: the pin's place.)
+        QList<int> at;
+        for (int k = 1; k < tokens.size() && k <= count; ++k)
+            if (tokens.at(k).toLower() == node) at << k;
+        if (at.size() > 1 && at.contains(target.pin + 1)) return target.pin + 1;
+        return at.isEmpty() ? -1 : at.first();
+    };
+    // A branch's current, a two-terminal device's: into its first terminal,
+    // out of its second - there the negative, computed (a probe of pin 2
+    // showed pin 1's current, the sign wrong: bug hunt of 2026-10-08, A5).
+    QString branch;
+    int terminals = 2;
+    switch (letter.toLatin1()) {
+    case 'v': case 'l': case 'e': case 'h': branch = QStringLiteral("i(%1)").arg(device); break;
+    case 'r': case 'c': case 'f': case 'g': case 'b': branch = QStringLiteral("@%1[i]").arg(device); break;
+    case 'i': branch = QStringLiteral("@%1[current]").arg(device); break;
+    case 'd': branch = QStringLiteral("@%1[id]").arg(device); break;
+    default: break;
+    }
+    if (!branch.isEmpty()) {
+        const int k = terminal(letter == QLatin1Char('e') || letter == QLatin1Char('g') ? 4 : terminals);
+        if (k == 1) return branch;
+        if (k == 2) return QLatin1Char('-') + branch;
+        if (k == 3 || k == 4) {
+            *error = tr("%1's pin %2 is a control input of %3: it senses a voltage, and no current flows into it.").arg(c->Name).arg(target.pin + 1).arg(device);
+            return QString();
+        }
+        *error = tr("%1's pin %2 is none of %3's terminals in the netlist.").arg(c->Name).arg(target.pin + 1).arg(device);
+        return QString();
+    }
     QStringList currents;
     switch (letter.toLatin1()) {
-    case 'v': case 'l': case 'e': case 'h': return QStringLiteral("i(%1)").arg(device);   // its branch
-    case 'r': case 'c': case 'f': case 'g': case 'b': return QStringLiteral("@%1[i]").arg(device);
-    case 'i': return QStringLiteral("@%1[current]").arg(device);
-    case 'd': return QStringLiteral("@%1[id]").arg(device);
-    case 'q': currents = {"ic", "ib", "ie", "is"}; break;
+    // (ngspice writes no bipolar's emitter current: it is -(ic + ib),
+    // computed - asked for, it failed every run, B12.)
+    case 'q': currents = {"ic", "ib", "-", "is"}; break;
     case 'm': currents = {"id", "ig", "is", "ib"}; break;
     case 'j': case 'z': currents = {"id", "ig", "is"}; break;
     default:
         *error = tr("%1 (%2) has no current ngspice can save.").arg(c->Name, device);
         return QString();
     }
-    QString node = names.value(nodeOf(target)).toLower();
-    if (node == QLatin1String("gnd")) node = QStringLiteral("0");
-    for (int k = 1; k < tokens.size() && k <= currents.size(); ++k)
-        if (tokens.at(k).toLower() == node) return QStringLiteral("@%1[%2]").arg(device, currents.at(k - 1));
-    *error = tr("%1's pin %2 is none of %3's terminals in the netlist.").arg(c->Name).arg(target.pin + 1).arg(device);
-    return QString();
+    const int k = terminal(int(currents.size()));
+    if (k < 1) {
+        *error = tr("%1's pin %2 is none of %3's terminals in the netlist.").arg(c->Name).arg(target.pin + 1).arg(device);
+        return QString();
+    }
+    // (Spaced: ngspice reads a name of @ as far as a space.)
+    if (currents.at(k - 1) == QLatin1String("-")) return QStringLiteral("-(@%1[ic] + @%1[ib])").arg(device);
+    return QStringLiteral("@%1[%2]").arg(device, currents.at(k - 1));
 }
 
 Diagram* frontDiagram(Schematic* sch)
@@ -279,6 +395,7 @@ QString Result::text() const
     if (!error.isEmpty()) return error;
     QStringList said;
     if (!labelled.isEmpty()) said << tr("The net is labelled %1 (ngspice saves the nets that have a name).").arg(labelled);
+    if (!computed.isEmpty()) said << tr("The current is %1.").arg(computed);
     said << (already ? tr("The diagram shows %1 already.") : newDiagram ? tr("%1 is in a new diagram.") : tr("%1 is added."))
                 .arg(variable);
     if (!hasData)
@@ -331,6 +448,20 @@ Result probe(Schematic* sch, const Target& target, Diagram* into)
         vector = vectorOf(sch, target, &r.error);
         if (vector.isEmpty()) return r;
     }
+    // A current ngspice writes none of - into a two-pin part's second pin
+    // (-@r1[i]), out of a bipolar's emitter (-(ic + ib)): computed after the
+    // analysis by a NutmegEq, from the vectors the run saves.
+    QString expression;
+    if (vector.startsWith(QLatin1Char('-'))) {
+        if (simulator != spicecompat::simNgspice && simulator != spicecompat::simSpiceOpus) {
+            r.error = tr("The current into this pin is %1, which a NutmegEq computes: under %2 there is none - probe the "
+                         "part's other pin (its current is the negative), or put a current probe (iProbe) in the wire.")
+                          .arg(vector, spicecompat::getDefaultSimulatorName(simulator));
+            return r;
+        }
+        expression = vector;
+        vector.clear();
+    }
 
     // The diagram: given, in front, or a new one below the circuit.
     Diagram* d = into ? into : frontDiagram(sch);
@@ -358,17 +489,27 @@ Result probe(Schematic* sch, const Target& target, Diagram* into)
         analysis = ds::analysisOf(bare);
         if (!analysis.isEmpty()) break;
     }
+    // (A computed current's name: the pin's, r1_pin2 - written by ngspice as
+    // a current, i(r1_pin2).)
+    const QString computedBase = expression.isEmpty() ? QString()
+                                                      : QStringLiteral("%1_pin%2").arg(target.component->Name.toLower()).arg(target.pin + 1)
+                                                            .replace(QRegularExpression(QStringLiteral("[^a-z0-9_]")), QStringLiteral("_"));
     const auto nameIn = [&](const QString& a) {
         if (target.kind == Kind::Voltage) {
             const QString v = voltageName(node, a);
             return simulator == spicecompat::simQucsator ? v : a + QLatin1Char('.') + v;
         }
-        return a + QLatin1Char('.') + vector;
+        return a + QLatin1Char('.') + (expression.isEmpty() ? vector : QStringLiteral("i(%1)").arg(computedBase));
     };
     const auto inData = [&](const QString& name) -> QString {
         if (!read) return QString();
+        // (Its dataset named before it - "RC:tran.v(out)" - when that is
+        // the schematic's own.)
+        const QString kept = name.contains(QLatin1Char(':')) ? name.section(QLatin1Char(':'), 0, 0) : QString();
+        if (!kept.isEmpty() && kept.compare(QFileInfo(sch->getDataSet()).completeBaseName(), Qt::CaseInsensitive) != 0) return QString();
+        const QString bare = kept.isEmpty() ? name : name.mid(kept.size() + 1);
         for (const ds::Variable& v : data.variables())
-            if (v.name.compare(name, Qt::CaseInsensitive) == 0) return v.name;
+            if (v.name.compare(bare, Qt::CaseInsensitive) == 0) return kept.isEmpty() ? v.name : kept + QLatin1Char(':') + v.name;
         return QString();
     };
     QString variable;
@@ -386,16 +527,50 @@ Result probe(Schematic* sch, const Target& target, Diagram* into)
             }
         if (variable.isEmpty()) variable = nameIn(candidates.first());
     }
+    if (!expression.isEmpty()) {
+        // Its equation: after the analysis the variable is of (a dataset's
+        // name before it, "RC:tran.x", kept).
+        const QString kept = variable.contains(QLatin1Char(':')) ? variable.section(QLatin1Char(':'), 0, 0) + QLatin1Char(':') : QString();
+        const QString bareVariable = variable.mid(kept.size());
+        const QString a = ds::analysisOf(bareVariable).isEmpty() ? QStringLiteral("tran") : ds::analysisOf(bareVariable);
+        Component* block = analysisBlock(sch, a);
+        if (block == nullptr) {
+            r.error = tr("The current into this pin is %1, which a NutmegEq computes after an analysis: the schematic has no %2 "
+                         "analysis.").arg(expression, a);
+            return r;
+        }
+        bool made = false;
+        const QString name = computedVariable(sch, block, expression, computedBase, &made);
+        if (made) {
+            r.computed = tr("%1 = %2, computed by a NutmegEq after %3").arg(name, expression, block->Name);
+            changed = true;
+        }
+        variable = inData(kept + a + QStringLiteral(".i(%1)").arg(name));
+        if (variable.isEmpty() && !inData(kept + a + QLatin1Char('.') + name).isEmpty()) variable = kept + a + QLatin1Char('.') + name;
+        if (variable.isEmpty()) variable = kept + a + QStringLiteral(".i(%1)").arg(name);
+    }
     r.hasData = !inData(variable).isEmpty();
     r.variable = prefix.isEmpty() ? variable : prefix + QLatin1Char('/') + variable;
 
-    // A current or a power the dataset lacks: saved by the next run.
-    if (!r.hasData && !vector.isEmpty() && !sch->getProbeSaves().contains(vector)) {
+    // A current or a power the dataset lacks: saved by the next run (a
+    // computed one's vectors).
+    if (!r.hasData) {
+        QStringList wanted;
+        if (!vector.isEmpty()) wanted << vector;
+        static const QRegularExpression device(QStringLiteral("@[A-Za-z0-9_.]+\\[[a-z]+\\]|i\\([^)]+\\)"));
+        for (auto it = device.globalMatch(expression); it.hasNext();) wanted << it.next().captured(0);
         QStringList saves = sch->getProbeSaves();
-        saves << vector;
-        sch->setProbeSaves(saves);
-        r.saved = vector;
-        changed = true;
+        QStringList added;
+        for (const QString& v : std::as_const(wanted))
+            if (!saves.contains(v)) {
+                saves << v;
+                added << v;
+            }
+        if (!added.isEmpty()) {
+            sch->setProbeSaves(saves);
+            r.saved = added.join(QStringLiteral(", "));
+            changed = true;
+        }
     }
 
     // The trace, unless it is there.
@@ -404,6 +579,9 @@ Result probe(Schematic* sch, const Target& target, Diagram* into)
             r.already = true;
             r.graph = g;
         }
+    // (Shown already: its data is what the trace shows - "has data: false"
+    // was said of one drawing 1425 points, bug hunt of 2026-10-08, B6.)
+    if (r.already && r.graph != nullptr && !r.graph->isEmpty()) r.hasData = true;
     if (!r.already) {
         auto* g = new Graph(d, r.variable);
         const QList<QColor>& palette = Graph::autoPalette();

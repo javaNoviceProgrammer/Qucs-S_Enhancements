@@ -90,6 +90,9 @@ protected:
     bool a_DC_OP_only; // only calculate operating point to show DC bias
     bool a_wroteNoResults = false;
     bool a_needsPrefix;
+    /// The simulations (their names, in lower case) whose vectors are
+    /// prefixed with their name: those of a kind another one writes too.
+    QSet<QString> a_prefixedSims;
     QString a_extraParameters;   // .PARAM lines ahead of the schematic's own
     bool a_writingSubcircuit = false;   // (startNetlist() within createSubNetlist(): its .model cards go after the .ENDS)
     Schematic *a_schematic;

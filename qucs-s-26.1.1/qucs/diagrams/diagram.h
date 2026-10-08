@@ -167,6 +167,9 @@ public:
   bool    load(const QString&, QTextStream*);
 
   virtual void getAxisLimits(Graph*);
+  /// How many of \a g's points its log axes leave out: at or below 0 where
+  /// the graph has points above (each drawn off the axis, the rest laid out).
+  int leftOffLogAxis(const Graph* g) const;
   /// The y axis \a g is drawn against: the left one (yAxis) or the right
   /// one (zAxis), as its yAxisNo says - a pane's own in a stacked diagram.
   virtual const Axis* graphAxis(const Graph* g) const;
@@ -183,6 +186,9 @@ public:
   /// Its markers, its graphs' in order: a delta marker's reference is told
   /// by its place in this list.
   QList<Marker*> markers() const;
+  /// Before \a gone is deleted: the markers measuring from it measure
+  /// from none, their texts made again.
+  void forgetMarker(const Marker* gone);
 
   QString Name; // identity of diagram type (e.g. Polar), used for saving etc.
   QPen    GridPen;
@@ -308,6 +314,7 @@ protected:
   /// Whether \a g is drawn, from what calcDiagram() returned: a bit for
   /// each y axis whose scale is valid (1 the left, 2 the right).
   virtual bool drawsGraph(int valid, const Graph* g) const { return (valid & (g->yAxisNo + 1)) != 0; }
+  bool logLeavesOut(const Graph* g, bool x) const;
   /// The axes besides x, y and z a diagram type has (a stacked diagram's
   /// panes'): their ranges cleared before the graphs' limits are taken,
   /// and set to [0, 1] after when no graph gave any.

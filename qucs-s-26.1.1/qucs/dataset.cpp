@@ -378,14 +378,30 @@ QStringList Dataset::resolve(const QString& wanted) const
     if (!names.isEmpty()) return names;
     // A voltage the dataset has as the name alone: ngspice 46 writes an
     // S-parameter analysis' ac.s_1_1 where traces name ac.v(s_1_1).
-    static const QRegularExpression voltage(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)[vV]\\(([A-Za-z_][A-Za-z0-9_]*)\\)$"));
+    // (And a current a NutmegEq computes, i(r1_pin2), as the name alone:
+    // ngspice writes it so when its operands are of no type.)
+    static const QRegularExpression voltage(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)[vViI]\\(([A-Za-z_][A-Za-z0-9_]*)\\)$"));
     if (const QRegularExpressionMatch m = voltage.match(w); spice && m.hasMatch()) {
         const QString alone = m.captured(1) + m.captured(2);
         names = all([&](const QString& n) { return n.compare(alone, Qt::CaseInsensitive) == 0; });
         if (!names.isEmpty()) return names;
     }
+    // Its simulation's name before it, as two simulations of a kind write
+    // their vectors (tr1.tran.v(out)): when one is so (bug hunt of
+    // 2026-10-08, B1).
+    if (spice && !analysisOf(w).isEmpty()) {
+        static const QRegularExpression simulation(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+        names = all([&w](const QString& n) {
+            return n.size() > w.size() + 1 && n.endsWith(QLatin1Char('.') + w, Qt::CaseInsensitive)
+                   && simulation.match(n.left(n.size() - w.size() - 1)).hasMatch();
+        });
+        if (names.size() == 1) return names;
+    }
     if (spice && analysisOf(w).isEmpty()) {
-        names = all([&w](const QString& n) { return bareName(n).compare(w, Qt::CaseInsensitive) == 0; });
+        // (v(out): each analysis's, a simulation's name before it or not.)
+        names = all([&w](const QString& n) {
+            return bareName(n).compare(w, Qt::CaseInsensitive) == 0 || bareName(bareName(n)).compare(w, Qt::CaseInsensitive) == 0;
+        });
         if (!names.isEmpty()) return names;
     }
     // A node: its voltage.

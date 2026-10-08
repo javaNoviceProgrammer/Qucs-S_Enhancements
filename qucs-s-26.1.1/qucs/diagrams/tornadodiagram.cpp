@@ -14,6 +14,7 @@
 
 #include <QFontMetricsF>
 #include <QPainter>
+#include <QRegularExpression>
 #include <QSet>
 
 #include <algorithm>
@@ -72,18 +73,38 @@ Element* TornadoDiagram::info(QString& Name, char*& BitmapFile, bool getNewOne)
 
 QStringList TornadoDiagram::sensitivityParts(const QStringList& names, const std::function<bool(const QString&)>& nonzero)
 {
-    const QSet<QString> all(names.cbegin(), names.cend());
-    // A part's own entry has no "_" ("r1", "v1") and its parameters'
-    // beside it ("r1_m", "v1_freq"): another run's variables are none.
-    QSet<QString> withParameters;
-    for (const QString& name : names)
-        if (name.contains(QLatin1Char('_'))) withParameters.insert(name.section(QLatin1Char('_'), 0, 0));
-    QStringList parts;
+    // Each name as the run's own: its analysis's prefix ("ac.") and
+    // ngspice 46's v(...) of an AC sensitivity taken off - ac.v(r1_scale)
+    // is r1_scale.
+    static const QRegularExpression prefix(QStringLiteral("^(?:[A-Za-z][A-Za-z0-9]*\\.)+"));
+    static const QRegularExpression wrapped(QStringLiteral("^[vV]\\((.*)\\)$"));
+    QHash<QString, QString> nameOf;   // its own -> as the dataset has it
+    QStringList own;
     for (const QString& name : names) {
-        if (name.contains(QLatin1Char('_')) || !withParameters.contains(name)) continue;
-        QString pick = all.contains(name + QStringLiteral("_scale")) ? name + QStringLiteral("_scale") : name;
+        QString n = name;
+        n.remove(prefix);
+        if (const QRegularExpressionMatch m = wrapped.match(n); m.hasMatch()) n = m.captured(1);
+        if (nameOf.contains(n)) continue;
+        nameOf.insert(n, name);
+        own << n;
+    }
+    // A part's own entry has its parameters' beside it ("r1": "r1_m",
+    // "r1_scale"; "r_load": "r_load_scale"), whatever its name holds -
+    // an underscore too (bug hunt of 2026-10-08, A1). Another run's
+    // variables have none.
+    const QSet<QString> all(own.cbegin(), own.cend());
+    QStringList parts;
+    for (const QString& n : std::as_const(own)) {
+        bool hasParameters = false;
+        for (const QString& other : std::as_const(own))
+            if (other.size() > n.size() + 1 && other.startsWith(n) && other.at(n.size()) == QLatin1Char('_')) {
+                hasParameters = true;
+                break;
+            }
+        if (!hasParameters) continue;
+        QString pick = all.contains(n + QStringLiteral("_scale")) ? nameOf.value(n + QStringLiteral("_scale")) : nameOf.value(n);
         if (nonzero && !nonzero(pick)) {
-            if (pick != name && nonzero(name)) pick = name;
+            if (pick != nameOf.value(n) && nonzero(nameOf.value(n))) pick = nameOf.value(n);
             else continue;
         }
         parts << pick;
@@ -96,6 +117,7 @@ void TornadoDiagram::collect()
     m_bars.clear();
     m_nothing = m_smaller = 0;
     m_noData.clear();
+    m_outside = false;
     QList<Bar> all;
     for (int k = 0; k < Graphs.size(); ++k) {
         const Graph* g = Graphs.at(k);
@@ -108,15 +130,30 @@ void TornadoDiagram::collect()
             const double re = g->cPointsY[2 * i], im = g->cPointsY[2 * i + 1];
             return std::fabs(im) > 1e-250 ? std::hypot(re, im) : re;
         };
-        // The point: the sample nearest 'at' on its first curve.
-        int point = 0;
-        if (std::isfinite(at))
-            for (int i = 1; i < xs->count; ++i)
-                if (std::abs(xs->Points[i] - at) < std::abs(xs->Points[point] - at)) point = i;
+        // The point: 'at' on its first curve, straight between the samples
+        // either side, as a box plot's (bug hunt of 2026-10-08, N17); the
+        // end nearest when it is beyond the sweep - said (N3).
         Bar b;
         b.name = bare(g->Var);
         b.graph = k;
-        b.value = valueOf(point);
+        b.value = valueOf(0);
+        if (std::isfinite(at) && xs->count > 1) {
+            const double first = xs->Points[0], last = xs->Points[xs->count - 1];
+            const double lo = std::min(first, last), hi = std::max(first, last);
+            if (at < lo || at > hi) {
+                m_outside = true;
+                m_sweep = {lo, hi};
+                b.value = valueOf(std::abs(at - first) <= std::abs(at - last) ? 0 : xs->count - 1);
+            } else {
+                for (int i = 1; i < xs->count; ++i) {
+                    const double x0 = xs->Points[i - 1], x1 = xs->Points[i];
+                    if ((at - x0) * (at - x1) > 0) continue;
+                    const double f = x1 != x0 ? (at - x0) / (x1 - x0) : 0.0;
+                    b.value = valueOf(i - 1) + f * (valueOf(i) - valueOf(i - 1));
+                    break;
+                }
+            }
+        }
         if (!std::isfinite(b.value)) {
             m_noData << b.name;
             continue;
@@ -298,7 +335,7 @@ void TornadoDiagram::paintInFront(QPainter* painter, const Colors& colors)
         painter->drawText(QPointF(-6 - fm.horizontalAdvance(name), -row.center().y() + fm.ascent() / 2 - 1), name);
     }
     QStringList left;
-    if (m_nothing > 0) left << QObject::tr("%n of nothing", nullptr, m_nothing);
+    if (m_nothing > 0) left << QObject::tr("%n of 0", nullptr, m_nothing);
     if (m_smaller > 0) left << QObject::tr("%n smaller", nullptr, m_smaller);
     if (!m_noData.isEmpty()) left << QObject::tr("%n without data", nullptr, int(m_noData.size()));
     if (!left.isEmpty()) {

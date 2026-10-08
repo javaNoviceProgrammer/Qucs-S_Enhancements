@@ -769,7 +769,17 @@ private slots:
         QVERIFY2(std::abs(e.jitterRms / 2e-12 - 1.0) < 0.15, qPrintable(QString::number(e.jitterRms)));
         QVERIFY2(std::abs(e.jitterPp - (hi - lo)) < 0.3e-12, qPrintable(QString::number(e.jitterPp) + " " + QString::number(hi - lo)));
         QVERIFY(std::abs(e.width - (UI - e.jitterPp)) < 1e-15);
-        QVERIFY(std::abs(e.widthBer12 - std::max(0.0, UI - 14.069 * e.jitterRms)) < 1e-15);
+        // The width at BER 1e-12: the bathtub's opening there, its dual-Dirac
+        // fit (a UI less 14.069 rms jitters took the whole spread for random
+        // jitter, and closed an eye the bathtub found open: bug hunt of
+        // 2026-10-08, A4).
+        {
+            const eye::Bathtub b = eye::bathtubOf(given, 0);
+            double from = 0, to = 0;
+            QVERIFY(b.ok() && b.opening(1e-12, &from, &to));
+            QVERIFY2(std::abs(e.widthBer12 - (to - from) * UI) < 1e-18, qPrintable(QString::number(e.widthBer12)));
+            QVERIFY(e.widthBer12 > 0 && e.widthBer12 < e.width);
+        }
         // Told, as given: not a picosecond more of jitter.
         QVERIFY2(told.eyes.first().jitterPp < e.jitterPp + 1e-12,
                  qPrintable(QString::number(told.eyes.first().jitterPp) + " " + QString::number(e.jitterPp)));

@@ -34,6 +34,11 @@ public:
   static Element* info(QString&, char*&, bool getNewOne = false);
 
   bool grid = true;   ///< the M and N contours
+  /// How many turns of the phase its x axis spans; over MostTurns, the
+  /// contours are not drawn (a spectrum's unwrapped phase spanned hundreds,
+  /// and one chart was a 105 MB SVG: bug hunt of 2026-10-08, B16).
+  int turnsInView() const;
+  static constexpr int MostTurns = 8;
 
   /// The phase (degrees, unwrapped, starting within -360 to 0) and the
   /// gain (dB) of each sample of \a g (every curve's).

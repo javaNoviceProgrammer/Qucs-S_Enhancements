@@ -82,6 +82,33 @@
 #include <QStringListModel>
 #include "qucs_assert.h"
 
+namespace {
+
+// A field showing \a value as misc::num2str writes it, the value kept with
+// it: read back unchanged, it is that value - not what its rounded text
+// says (1e-14 shown as 10f became 1.0000000000000002e-14 at every OK: bug
+// hunt of 2026-10-08, N11).
+QLineEdit *keptEdit(double value)
+{
+  auto *e = new QLineEdit(std::isfinite(value) ? misc::num2str(value, -1, QString()) : QString());
+  if (std::isfinite(value)) {
+    e->setProperty("qucsKept", value);
+    e->setProperty("qucsKeptText", e->text());
+  }
+  return e;
+}
+
+qucs_s::units::Reading readKept(const QLineEdit *e)
+{
+  qucs_s::units::Reading r = qucs_s::units::read(e->text().trimmed());
+  if (r.kind == qucs_s::units::Reading::Number && e->property("qucsKept").isValid()
+      && e->text() == e->property("qucsKeptText").toString())
+    r.value = e->property("qucsKept").toDouble();
+  return r;
+}
+
+} // namespace
+
 #define CROSS3D_SIZE 30
 #define WIDGET3D_SIZE 2 * CROSS3D_SIZE
 // This widget class paints a small 3-dimensional coordinate cross.
@@ -704,7 +731,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       HistStats->setChecked(hist->statistics);
       hl->addWidget(HistStats, 3, 0, 1, 2);
       auto limitEdit = [](double value) {
-        auto *e = new QLineEdit(std::isfinite(value) ? misc::num2str(value, -1, QString()) : QString());
+        auto *e = keptEdit(value);
         e->setPlaceholderText(tr("none"));
         return e;
       };
@@ -911,7 +938,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       SpecStems->setChecked(spectrum->stems);
       sl->addWidget(SpecStems, r++, 0, 1, 2);
       const auto edit = [](double v, const QString &empty) {
-        auto *e = new QLineEdit(std::isfinite(v) ? misc::num2str(v, -1, QString()) : QString());
+        auto *e = keptEdit(v);
         e->setPlaceholderText(empty);
         return e;
       };
@@ -934,7 +961,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       QGridLayout *bl = new QGridLayout(box);
       int r = 0;
       const auto edit = [](double v, const QString &empty, const char *name) {
-        auto *e = new QLineEdit(std::isfinite(v) ? misc::num2str(v, -1, QString()) : QString());
+        auto *e = keptEdit(v);
         e->setPlaceholderText(empty);
         e->setObjectName(QLatin1String(name));
         return e;
@@ -985,7 +1012,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
                                   "gain <dB>, available gain; noise <dB>, noise figure (the run's Fmin, Sopt, Rn)"));
       sl->addWidget(SmithCircles, 0, 1);
       sl->addWidget(new QLabel(tr("At:")), 1, 0);
-      SmithFrequency = new QLineEdit(std::isfinite(smith->circleFrequency) ? misc::num2str(smith->circleFrequency, -1, QString()) : QString());
+      SmithFrequency = keptEdit(smith->circleFrequency);
       SmithFrequency->setObjectName(QStringLiteral("smithFrequency"));
       SmithFrequency->setPlaceholderText(tr("the middle of the sweep"));
       sl->addWidget(SmithFrequency, 1, 1);
@@ -998,7 +1025,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       QGroupBox *box = new QGroupBox(tr("Constellation"), Tab2);
       QGridLayout *cl = new QGridLayout(box);
       const auto edit = [](double v, const QString &empty, const char *name) {
-        auto *e = new QLineEdit(std::isfinite(v) ? misc::num2str(v, -1, QString()) : QString());
+        auto *e = keptEdit(v);
         e->setPlaceholderText(empty);
         e->setObjectName(QLatin1String(name));
         return e;
@@ -1028,7 +1055,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       QGroupBox *box = new QGroupBox(tr("Box plot"), Tab2);
       QGridLayout *bl = new QGridLayout(box);
       bl->addWidget(new QLabel(tr("Curves at x:")), 0, 0);
-      BoxAt = new QLineEdit(std::isfinite(boxes->at) ? misc::num2str(boxes->at, -1, QString()) : QString());
+      BoxAt = keptEdit(boxes->at);
       BoxAt->setObjectName(QStringLiteral("boxPlotAt"));
       BoxAt->setPlaceholderText(tr("their last (the final values)"));
       BoxAt->setToolTip(tr("Of a trace of several curves (a sweep, Monte Carlo runs): each curve's value at this x"));
@@ -1053,7 +1080,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       TornadoMode->setCurrentIndex(tornado->mode);
       tl->addWidget(TornadoMode, r++, 1);
       tl->addWidget(new QLabel(tr("At:")), r, 0);
-      TornadoAt = new QLineEdit(std::isfinite(tornado->at) ? misc::num2str(tornado->at, -1, QString()) : QString());
+      TornadoAt = keptEdit(tornado->at);
       TornadoAt->setObjectName(QStringLiteral("tornadoAt"));
       TornadoAt->setPlaceholderText(tr("the sweep's first point"));
       tl->addWidget(TornadoAt, r++, 1);
@@ -1085,7 +1112,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       GramWindow->setCurrentIndex(int(gram->window));
       gl->addWidget(GramWindow, r++, 1);
       gl->addWidget(new QLabel(tr("Segment:")), r, 0);
-      GramSegment = new QLineEdit(std::isfinite(gram->segment) ? misc::num2str(gram->segment, -1, QString()) : QString());
+      GramSegment = keptEdit(gram->segment);
       GramSegment->setObjectName(QStringLiteral("spectrogramSegment"));
       GramSegment->setPlaceholderText(tr("a sixteenth of the transient"));
       GramSegment->setToolTip(tr("The seconds each column is the spectrum of (1m)"));
@@ -1134,7 +1161,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
       MapLabels->setChecked(contour->labels);
       cl->addWidget(MapLabels, r++, 0, 1, 2);
       const auto edit = [](double v, const char *name) {
-        auto *e = new QLineEdit(std::isfinite(v) ? misc::num2str(v, -1, QString()) : QString());
+        auto *e = keptEdit(v);
         e->setPlaceholderText(tr("none"));
         e->setObjectName(QLatin1String(name));
         return e;
@@ -2336,7 +2363,7 @@ void DiagramDialog::slotApply() {
 
     if (auto *hist = dynamic_cast<HistogramDiagram *>(Diag); hist && HistBins) {
       auto limitOf = [](const QLineEdit *e) {
-        const qucs_s::units::Reading r = qucs_s::units::read(e->text());
+        const qucs_s::units::Reading r = readKept(e);
         return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
       };
       auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
@@ -2358,7 +2385,7 @@ void DiagramDialog::slotApply() {
       // A field as it was shown keeps the value it showed.
       auto valueOf = [](const QLineEdit *e, double was) {
         if (e->text() == e->property("qucsShown").toString()) return was;
-        const qucs_s::units::Reading r = qucs_s::units::read(e->text());
+        const qucs_s::units::Reading r = readKept(e);
         return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
       };
       auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
@@ -2439,7 +2466,7 @@ void DiagramDialog::slotApply() {
     }
     if (auto *spectrum = dynamic_cast<SpectrumDiagram *>(Diag); spectrum && SpecWindow) {
       const auto read = [](const QLineEdit *e) {
-        const qucs_s::units::Reading r = qucs_s::units::read(e->text().trimmed());
+        const qucs_s::units::Reading r = readKept(e);
         return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
       };
       const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
@@ -2465,7 +2492,7 @@ void DiagramDialog::slotApply() {
         QMessageBox::warning(this, tr("Circles"), tr("The circles are kept as they were: %1.").arg(why));
         SmithCircles->setText(SmithDiagram::circlesText(smith->circles));
       } else {
-        const qucs_s::units::Reading r = qucs_s::units::read(SmithFrequency->text().trimmed());
+        const qucs_s::units::Reading r = readKept(SmithFrequency);
         const double frequency = r.kind == qucs_s::units::Reading::Number && r.value > 0 ? r.value : std::nan("");
         const bool same = (std::isnan(frequency) && std::isnan(smith->circleFrequency)) || frequency == smith->circleFrequency;
         if (circles != smith->circles || !same) {
@@ -2477,7 +2504,7 @@ void DiagramDialog::slotApply() {
     }
     if (auto *iq = dynamic_cast<ConstellationDiagram *>(Diag); iq && IqPeriod) {
       const auto read = [](const QLineEdit *e) {
-        const qucs_s::units::Reading r = qucs_s::units::read(e->text().trimmed());
+        const qucs_s::units::Reading r = readKept(e);
         return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
       };
       const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
@@ -2493,7 +2520,7 @@ void DiagramDialog::slotApply() {
       }
     }
     if (auto *boxes = dynamic_cast<BoxPlotDiagram *>(Diag); boxes && BoxAt) {
-      const qucs_s::units::Reading r = qucs_s::units::read(BoxAt->text().trimmed());
+      const qucs_s::units::Reading r = readKept(BoxAt);
       const double at = r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
       const bool same = (std::isnan(at) && std::isnan(boxes->at)) || at == boxes->at;
       if (!same || boxes->range != BoxRange->isChecked()) {
@@ -2503,7 +2530,7 @@ void DiagramDialog::slotApply() {
       }
     }
     if (auto *tornado = dynamic_cast<TornadoDiagram *>(Diag); tornado && TornadoMode) {
-      const qucs_s::units::Reading r = qucs_s::units::read(TornadoAt->text().trimmed());
+      const qucs_s::units::Reading r = readKept(TornadoAt);
       const double at = r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
       const bool same = (std::isnan(at) && std::isnan(tornado->at)) || at == tornado->at;
       if (tornado->mode != TornadoMode->currentIndex() || !same || tornado->bars != TornadoBars->value()) {
@@ -2514,7 +2541,7 @@ void DiagramDialog::slotApply() {
       }
     }
     if (auto *gram = dynamic_cast<SpectrogramDiagram *>(Diag); gram && GramWindow) {
-      const qucs_s::units::Reading r = qucs_s::units::read(GramSegment->text().trimmed());
+      const qucs_s::units::Reading r = readKept(GramSegment);
       double segment = r.kind == qucs_s::units::Reading::Number && r.value > 0 ? r.value : std::nan("");
       const bool same = (std::isnan(segment) && std::isnan(gram->segment)) || segment == gram->segment;
       if (int(gram->window) != GramWindow->currentIndex() || !same || gram->overlap != GramOverlap->value() || gram->range != GramRange->value()) {
@@ -2527,7 +2554,7 @@ void DiagramDialog::slotApply() {
     }
     if (auto *contour = dynamic_cast<ContourDiagram *>(Diag); contour && MapLevels) {
       const auto read = [](const QLineEdit *e) {
-        const qucs_s::units::Reading r = qucs_s::units::read(e->text().trimmed());
+        const qucs_s::units::Reading r = readKept(e);
         return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
       };
       const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };
@@ -2551,7 +2578,7 @@ void DiagramDialog::slotApply() {
     }
     if (auto *tub = dynamic_cast<BathtubDiagram *>(Diag); tub && TubUi) {
       const auto read = [](const QLineEdit *e) {
-        const qucs_s::units::Reading r = qucs_s::units::read(e->text().trimmed());
+        const qucs_s::units::Reading r = readKept(e);
         return r.kind == qucs_s::units::Reading::Number && std::isfinite(r.value) ? r.value : std::nan("");
       };
       const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || a == b; };

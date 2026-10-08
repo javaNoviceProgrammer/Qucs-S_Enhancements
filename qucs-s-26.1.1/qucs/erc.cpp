@@ -10,6 +10,7 @@
  */
 
 #include "erc.h"
+#include "diagrams/stackeddiagram.h"
 #include "paintings/buspainting.h"
 
 #include "schematic.h"
@@ -501,9 +502,13 @@ void supplyIssues(Schematic* doc, const Nets& nets, QList<Issue>& out)
 // negative one (VEE, VSS, V-, NEGRAIL), 0 another.
 int supplySign(const QString& name)
 {
-    static const QRegularExpression positive(QStringLiteral("^(v(cc|dd|s\\+|\\+|pos)\\d*|posrail|avdd|dvdd)$"),
+    // (Also as a net label spells one: VDD_IO, VCC3, VPP, P5V - a +5 V
+    // rail - and N12V a -12 V one: bug hunt of 2026-10-08, B8.)
+    // (A rail's suffix only: VCC_EN, VDD_OK are signals.)
+    static const QString suffix = QStringLiteral("(\\d*|a|d|q|io|core|pll)(_(io|core|aux|a|d|ana|dig|pll|mem|ddr|usb|sys|main|bat|\\d+v\\d*|\\d+))?");
+    static const QRegularExpression positive(QStringLiteral("^(v(cc|dd)%1|v(s\\+|\\+|pos\\d*|pp\\d*)|posrail|avdd|dvdd|p\\d+v\\d*)$").arg(suffix),
                                              QRegularExpression::CaseInsensitiveOption);
-    static const QRegularExpression negative(QStringLiteral("^(v(ee|ss|s-|-|neg)\\d*|negrail|avss|dvss)$"),
+    static const QRegularExpression negative(QStringLiteral("^(v(ee|ss)%1|v(s-|-|neg\\d*)|negrail|avss|dvss|n\\d+v\\d*)$").arg(suffix),
                                              QRegularExpression::CaseInsensitiveOption);
     return positive.match(name).hasMatch() ? 1 : negative.match(name).hasMatch() ? -1 : 0;
 }
@@ -1446,10 +1451,17 @@ QHash<const Wire*, NetKind> wireKinds(Schematic* doc)
     QHash<const Wire*, NetKind> out;
     if (doc == nullptr) return out;
     const Nets nets = netsOf(doc);
-    // A rail by its name: VCC, VDD, VEE, V+ (supplySign), +5V, -12V, 3V3,
-    // VBAT, VIN, VSUP.
-    static const QRegularExpression rail(QStringLiteral("^([+-]?\\d+(\\.\\d+)?v\\d*|\\d+v\\d+|v(bat|in|sup|supply|bus|ref)\\d*)$"),
+    // A rail by its name: VCC, VDD_IO, VEE, VPP, V+, P5V, N12V (supplySign),
+    // V3V3, VBAT, VSUP - and as a file may spell one, +5V, -12V, 3V3. Not
+    // VIN or VREF: a signal's input and a reference as often (bug hunt of
+    // 2026-10-08, B8).
+    static const QRegularExpression rail(QStringLiteral("^([+-]?\\d+(\\.\\d+)?v\\d*|\\d+v\\d+|v\\d+v\\d*|v(bat|sup|supply|bus)\\d*)$"),
                                          QRegularExpression::CaseInsensitiveOption);
+    // Ground by a label's name: AGND, DGND, PGND, GNDA ... (gnd itself is
+    // ground in the netlist).
+    static const QRegularExpression groundName(QStringLiteral("^([adps]gnd|gnd[adps]?|gnd_[a-z0-9_]+|[adps]gnd_[a-z0-9_]+)$"),
+                                               QRegularExpression::CaseInsensitiveOption);
+    QSet<int> grounds;
     QSet<int> supplies;
     QHash<int, QStringList> labelsOf;
     for (const Node* n : doc->a_DocNodes)
@@ -1457,8 +1469,10 @@ QHash<const Wire*, NetKind> wireKinds(Schematic* doc)
     for (const Wire* w : doc->a_DocWires)
         if (w->hasLabel()) labelsOf[nets.of.value(w->Port1, -1)] << w->label()->Name;
     for (auto it = labelsOf.cbegin(); it != labelsOf.cend(); ++it)
-        for (const QString& name : it.value())
+        for (const QString& name : it.value()) {
             if (supplySign(name) != 0 || rail.match(name).hasMatch()) supplies.insert(it.key());
+            if (groundName.match(name).hasMatch()) grounds.insert(it.key());
+        }
     for (const Component* c : doc->a_DocComps) {
         if (!inCircuit(c)) continue;
         // A part's supply pin (an op-amp's VCC) on the net.
@@ -1479,7 +1493,7 @@ QHash<const Wire*, NetKind> wireKinds(Schematic* doc)
     for (const Wire* w : doc->a_DocWires) {
         const int net = w->Port1 != nullptr ? nets.of.value(w->Port1, -1) : -1;
         if (net < 0) continue;
-        if (net == nets.ground) out.insert(w, NetKind::Ground);
+        if (net == nets.ground || (grounds.contains(net) && !supplies.contains(net))) out.insert(w, NetKind::Ground);
         else if (supplies.contains(net)) out.insert(w, NetKind::Supply);
     }
     return out;
@@ -2582,23 +2596,48 @@ QList<Issue> check(Schematic* doc, bool run)
     }
 
     // A diagram's traces beyond its spec limits (the data it shows: the
-    // last run's). Said once per trace and limit, the worst first.
+    // last run's). Said once per trace and limit - the worst stretch, and
+    // how many there are (bug hunt of 2026-10-08, N16: a square wave over
+    // its limit gave one a cycle); a limit no trace is drawn against too.
     int diagramNumber = 0;
     for (const Diagram* d : doc->a_DocDiags) {
         ++diagramNumber;
+        const auto limitName = [&](int li) {
+            const qucs_s::limits::Limit& l = d->limits.at(li);
+            return l.label.isEmpty() ? tr("its %1 limit %2").arg(qucs_s::limits::sideName(l.side)).arg(li + 1)
+                                     : tr("its %1 limit %2").arg(qucs_s::limits::sideName(l.side), l.label);
+        };
+        QList<std::pair<int, int>> order;
+        QHash<std::pair<int, int>, QList<qucs_s::limits::Violation>> byPair;
         for (const qucs_s::limits::Violation& v : d->violations()) {
+            if (d->Graphs.value(v.graph) == nullptr || v.limit < 0 || v.limit >= d->limits.size()) continue;
+            const std::pair<int, int> key{v.graph, v.limit};
+            if (!byPair.contains(key)) order << key;
+            byPair[key] << v;
+        }
+        for (const std::pair<int, int>& key : std::as_const(order)) {
+            const QList<qucs_s::limits::Violation>& list = byPair.value(key);
+            qucs_s::limits::Violation v = list.first();
+            for (const qucs_s::limits::Violation& each : list)
+                if (each.worst > v.worst) v = each;
             const Graph* g = d->Graphs.value(v.graph);
-            if (g == nullptr || v.limit < 0 || v.limit >= d->limits.size()) continue;
-            const qucs_s::limits::Limit& l = d->limits.at(v.limit);
-            const QString limit = l.label.isEmpty() ? tr("its %1 limit %2").arg(qucs_s::limits::sideName(l.side)).arg(v.limit + 1)
-                                                    : tr("its %1 limit %2").arg(qucs_s::limits::sideName(l.side), l.label);
+            const QString stretches = list.size() > 1 ? tr(" (the worst of %1 stretches beyond it)").arg(list.size()) : QString();
             warnings << Issue{Severity::Warning,
-                              tr("diagram %1: %2 is beyond %3 from %4 to %5, by %6 at %7 (the last run's data)")
+                              tr("diagram %1: %2 is beyond %3 from %4 to %5, by %6 at %7%8 (the last run's data)")
                                   .arg(diagramNumber)
-                                  .arg(g->Var.section(QLatin1Char('/'), -1), limit, misc::num2str(v.from), misc::num2str(v.to),
-                                       misc::num2str(v.worst), misc::num2str(v.worstAt)),
+                                  .arg(g->Var.section(QLatin1Char('/'), -1), limitName(v.limit), misc::num2str(v.from), misc::num2str(v.to),
+                                       misc::num2str(v.worst), misc::num2str(v.worstAt), stretches),
                               QPoint(d->cx, d->cy), QString(), QString(), QString(), true};
         }
+        bool data = false;
+        for (const Graph* g : d->Graphs) data = data || g->cPointsY != nullptr;
+        if (data && d->takesLimits())
+            for (int li : qucs_s::limits::unchecked(d))
+                warnings << Issue{Severity::Warning,
+                                  tr("diagram %1: %2 checks nothing - no trace with data is drawn against its axis%3")
+                                      .arg(diagramNumber)
+                                      .arg(limitName(li), dynamic_cast<const StackedDiagram*>(d) ? tr(" in its pane") : QString()),
+                                  QPoint(d->cx, d->cy), QString(), QString(), QString(), true};
     }
 
     QList<Issue> all = errors + warnings;

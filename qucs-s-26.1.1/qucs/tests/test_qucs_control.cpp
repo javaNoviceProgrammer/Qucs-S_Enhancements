@@ -3574,7 +3574,9 @@ private slots:
         QCOMPARE(o.value("parts").toArray().size(), 8);
         QCOMPARE(o.value("models").toInt(), 1);
         QVERIFY2(o.value("grounds").toInt() >= 5, qPrintable(text(r)));
-        QVERIFY2(o.value("not taken").toArray().size() == 1 && o.value("not taken").toArray().first().toString().startsWith(".four"),
+        // (.four a Fourier analysis of the transient now: LTspice's .four
+        // was dropped, bug hunt of 2026-10-08, B14.)
+        QVERIFY2(!o.contains("not taken") && o.value("converted").toArray().first().toString() == ".four 1k v(out): a Fourier analysis of TR1 (FOUR1)",
                  qPrintable(text(r)));
         QVERIFY(QFileInfo::exists(o.value("subcircuits").toString()));
         Schematic* sch = front();

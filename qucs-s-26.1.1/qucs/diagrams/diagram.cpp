@@ -39,6 +39,7 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <climits>
 #include <limits>
 #include <clocale>
@@ -582,6 +583,17 @@ bool Diagram::insideDiagram(float x, float y) const {
   return ((x * x + y * y) <= rTol * rTol);
 }
 
+void Diagram::forgetMarker(const Marker* gone)
+{
+    // Those measuring from it measure from nothing now: their texts
+    // without its Δ lines (bug hunt of 2026-10-08, B2).
+    for (Marker* m : markers())
+        if (m != gone && m->referenceSet() == gone) {
+            m->setReference(nullptr);
+            m->createText();
+        }
+}
+
 QList<Marker *> Diagram::markers() const {
     QList<Marker *> all;
     for (Graph *pg: Graphs) all += pg->Markers;
@@ -915,6 +927,59 @@ const Axis *Diagram::graphAxis(const Graph *g) const {
 }
 
 // --------------------------------------------------------------------------
+// Whether \a g has points above 0 and others at or below (by its x when
+// \a x, else by the value its y axis is laid out by): those a log axis
+// leaves out.
+bool Diagram::logLeavesOut(const Graph* g, bool x) const
+{
+    bool above = false, below = false;
+    if (x) {
+        const DataX* pD = g->axis(0);
+        if (pD == nullptr || pD->Points == nullptr) return false;
+        for (int i = 0; i < pD->count && !(above && below); ++i) {
+            const double v = pD->Points[i];
+            if (v > 0.0) above = true;
+            else if (v <= 0.0) below = true;
+        }
+        return above && below;
+    }
+    const DataX* pD = g->axis(0);
+    if (g->cPointsY == nullptr || pD == nullptr) return false;
+    const qsizetype n = qsizetype(g->countY) * pD->count;
+    for (qsizetype i = 0; i < n && !(above && below); ++i) {
+        double v = g->cPointsY[2 * i];
+        const double im = g->cPointsY[2 * i + 1];
+        if (fabs(im) >= 1e-250) v = sqrt(v * v + im * im);
+        if (v > 0.0) above = true;
+        else if (v <= 0.0) below = true;
+    }
+    return above && below;
+}
+
+int Diagram::leftOffLogAxis(const Graph* g) const
+{
+    const DataX* pD = g->axis(0);
+    if (pD == nullptr || pD->Points == nullptr || Name.isEmpty() || Name[0] == 'C') return 0;
+    int n = 0;
+    const bool xLog = xAxis.log && logLeavesOut(g, true);
+    const Axis* pa = graphAxis(g);
+    const bool yLog = pa != nullptr && pa->log && logLeavesOut(g, false);
+    if (!xLog && !yLog) return 0;
+    for (int c = 0; c < g->countY; ++c)
+        for (int i = 0; i < pD->count; ++i) {
+            const qsizetype k = qsizetype(c) * pD->count + i;
+            bool out = xLog && pD->Points[i] <= 0.0;
+            if (!out && yLog && g->cPointsY != nullptr) {
+                double v = g->cPointsY[2 * k];
+                const double im = g->cPointsY[2 * k + 1];
+                if (fabs(im) >= 1e-250) v = sqrt(v * v + im * im);
+                out = v <= 0.0;
+            }
+            if (out) ++n;
+        }
+    return n;
+}
+
 void Diagram::getAxisLimits(Graph *pg) {
     // FIXME: Graph should know the limits. but it doesn't yet.
     //        we should only copy here. better: just wrap, dont use {x,y,z}Axis
@@ -923,10 +988,19 @@ void Diagram::getAxisLimits(Graph *pg) {
     DataX const *pD = pg->axis(0);
     if (pD == nullptr || pD->Points == nullptr || pD->count <= 0) return;  // no data
 
+    // On a log axis a point at or below 0 has no place (it is drawn off the
+    // axis, at "negative infinity"): left out of the limits when the graph
+    // has points above 0, not making the whole graph invalid - a linear AC
+    // sweep from 0 Hz, an FFT's spectrum (bug hunt of 2026-10-08, F1). A
+    // graph all below 0 is laid out mirrored, as it always was.
+    const bool xLog = xAxis.log && Name[0] != 'C' && logLeavesOut(pg, true);
+    const bool yLog = graphAxis(pg)->log && Name[0] != 'C' && logLeavesOut(pg, false);
+
     if (Name[0] != 'C') {   // not for location curves
         p = pD->Points;
         for (z = pD->count; z > 0; z--) { // check x coordinates (1. dimension)
             x = *(p++);
+            if (xLog && x <= 0.0) continue;
             if (std::isfinite(x)) {
                 if (x > xAxis.max) xAxis.max = x;
                 if (x < xAxis.min) xAxis.min = x;
@@ -958,6 +1032,7 @@ void Diagram::getAxisLimits(Graph *pg) {
 
         if (Name[0] != 'C') {
             if (fabs(y) >= 1e-250) x = sqrt(x * x + y * y);
+            if (yLog && x <= 0.0) continue;
             if (std::isfinite(x)) {
                 if (x > pa->max) pa->max = x;
                 if (x < pa->min) pa->min = x;
@@ -1215,6 +1290,29 @@ int Graph::loadDatFile(const QString &fileName) {
     if (!pFile)
         if (const QString other = Graph::otherSpelling(Variable); !other.isEmpty())
             if ((pFile = findVariable(other))) Variable = other;
+    // Its simulation's name before it, as two simulations of a kind are
+    // written (tr1.tran.v(out)): taken when one variable is so named (bug
+    // hunt of 2026-10-08, B1).
+    const int analysisDot = int(Variable.indexOf('.')), firstParen = int(Variable.indexOf('('));
+    const bool ofAnalysis = analysisDot > 0 && (firstParen < 0 || analysisDot < firstParen);   // (tran.v(out), not v(out))
+    if (!pFile && ofAnalysis) {
+        const QByteArray tail = ("." + Variable + " ").toLatin1();
+        QString found;
+        int count = 0;
+        for (char *at = strstr(FileString, tail.constData()); at; at = strstr(at + 1, tail.constData())) {
+            char *start = at;
+            while (start > FileString && (isalnum(static_cast<unsigned char>(start[-1])) || start[-1] == '_')) --start;
+            const bool dep = start - FileString >= 5 && strncmp(start - 5, "<dep ", 5) == 0;
+            const bool indep = start - FileString >= 7 && strncmp(start - 7, "<indep ", 7) == 0;
+            if (start == at || (!dep && !indep)) continue;
+            const QString candidate = QString::fromLatin1(start, at - start) + "." + Variable;
+            if (candidate != found) {
+                found = candidate;
+                ++count;
+            }
+        }
+        if (count == 1 && (pFile = findVariable(found))) Variable = found;
+    }
     Variable = "dep " + Variable + " ";
 
     if (!pFile) return 0;   // data not found
@@ -1456,6 +1554,21 @@ int Graph::loadBinaryDatFile(const QString &path, QString variable, bool hasExpl
     // Spelt the other way (ac.gain as ac.v(gain), ac.v(s_1_1) as ac.s_1_1).
     if (at < 0)
         if (const QString other = Graph::otherSpelling(variable); !other.isEmpty()) at = data.find(other, true);
+    // Its simulation's name before it (tr1.tran.v(out)), when one is so.
+    const int analysisDot = int(variable.indexOf('.')), firstParen = int(variable.indexOf('('));
+    if (at < 0 && analysisDot > 0 && (firstParen < 0 || analysisDot < firstParen)) {
+        static const QRegularExpression simulation(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+        QString found;
+        int count = 0;
+        for (const df::Block &b : data.blocks()) {
+            const QString name = b.name();
+            if (!name.endsWith(QLatin1Char('.') + variable) || name == found) continue;
+            if (!simulation.match(name.left(name.size() - variable.size() - 1)).hasMatch()) continue;
+            found = name;
+            ++count;
+        }
+        if (count == 1) at = data.find(found, true);
+    }
     if (at < 0) return 0;   // data not found
     const df::Block &block = data.blocks().at(at);
 
@@ -1950,8 +2063,9 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
         }
         if (s.section(' ', 0, 0) == "<Limit") {   // a spec limit
             qucs_s::limits::Limit limit;
-            if (!qucs_s::limits::Limit::load(s, &limit)) return false;
-            limits.append(limit);
+            // (One that does not read is left out, not the schematic: bug
+            // hunt of 2026-10-08, N7.)
+            if (qucs_s::limits::Limit::load(s, &limit)) limits.append(limit);
             continue;
         }
         if (s.section(' ', 0, 0) == "<Mkr") {
@@ -2673,15 +2787,18 @@ void Diagram::paintVerdict(QPainter *painter) {
     bool data = false;
     for (const Graph *g: Graphs) data = data || g->cPointsY != nullptr;
     if (!data) return;
+    // A limit no trace is drawn against checks nothing: not a pass (bug
+    // hunt of 2026-10-08, A2).
     const bool pass = a_violations.isEmpty();
-    const QString text = pass ? QObject::tr("PASS") : QObject::tr("FAIL");
+    const bool unchecked = pass && !qucs_s::limits::unchecked(this).isEmpty();
+    const QString text = !pass ? QObject::tr("FAIL") : unchecked ? QObject::tr("UNCHECKED") : QObject::tr("PASS");
     painter->save();
     QFont font = painter->font();
     font.setBold(true);
     painter->setFont(font);
     const QFontMetricsF fm(font);
     const QRectF box(x2 - fm.horizontalAdvance(text) - 14, -y2 + 4, fm.horizontalAdvance(text) + 10, fm.height() + 2);
-    const QColor colour = pass ? QColor(30, 140, 60) : QColor(210, 30, 30);
+    const QColor colour = !pass ? QColor(210, 30, 30) : unchecked ? QColor(200, 130, 0) : QColor(30, 140, 60);
     painter->setPen(Qt::NoPen);
     painter->setBrush(colour);
     painter->setRenderHint(QPainter::Antialiasing, true);

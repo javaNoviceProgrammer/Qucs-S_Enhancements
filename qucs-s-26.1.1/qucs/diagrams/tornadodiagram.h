@@ -52,6 +52,9 @@ public:
   int smaller() const { return m_smaller; }
   /// A bar's where its trace has no data.
   QStringList noData() const { return m_noData; }
+  /// Whether 'at' is beyond a trace's sweep, which then spans this.
+  bool atOutside() const { return m_outside; }
+  std::pair<double, double> sweep() const { return m_sweep; }
 
   /// Of a sensitivity run's variables (ngspice's .SENS: "r1", "r1_scale",
   /// "r1_tc1", "v1", "v1_freq" ...: a part's own, and its parameters'
@@ -88,6 +91,8 @@ private:
   QList<Bar> m_bars;
   int m_nothing = 0, m_smaller = 0;
   QStringList m_noData;
+  bool m_outside = false;
+  std::pair<double, double> m_sweep{0, 0};
 };
 
 #endif

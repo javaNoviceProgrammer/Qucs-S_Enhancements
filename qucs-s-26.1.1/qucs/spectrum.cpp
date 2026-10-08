@@ -183,23 +183,61 @@ Analysis analyse(const Spectrum& s, double fundamental, int harmonics)
         r.error = QObject::tr("no fundamental line in the spectrum (below the window's lobe of DC, or at its end)");
         return r;
     }
+    // A peak's place between the bins: a parabola through the logarithms
+    // of its bin and the two beside it (a sine of 10.5 periods was read
+    // half a bin off, and its harmonics sought at multiples of that: bug
+    // hunt of 2026-10-08, A3).
+    const auto between = [&](int k) {
+        if (k <= 0 || k >= bins - 1) return double(k);
+        const double a = std::log(std::max(s.amplitude.at(k - 1), 1e-300)), b = std::log(std::max(s.amplitude.at(k), 1e-300)),
+                     c = std::log(std::max(s.amplitude.at(k + 1), 1e-300));
+        const double d = a - 2 * b + c;
+        return d < 0 ? k + std::clamp(0.5 * (a - c) / d, -0.5, 0.5) : double(k);
+    };
     const double p1 = lobePower(k1, true);
     if (!(p1 > 0)) {
         r.error = QObject::tr("the fundamental has no power");
         return r;
     }
-    r.fundamental = k1 * s.df;
+    const double f1 = between(k1);
+    r.fundamental = f1 * s.df;
     r.amplitude = std::sqrt(2 * p1);
     r.harmonics << Line{1, r.fundamental, r.amplitude, 0.0};
+    // The floor: the median bin past DC's lobe. A harmonic is a line above
+    // it (10 dB or more); a ripple of the floor is none.
+    QVector<double> floorBins = s.amplitude.mid(lobe + 1);
+    std::sort(floorBins.begin(), floorBins.end());
+    const double floor = floorBins.isEmpty() ? 0.0 : floorBins.at(floorBins.size() / 2);
     double harmonicPower = 0;
     for (int h = 2; h <= harmonics; ++h) {
-        const int k = int(std::lround(h * double(k1)));
+        // Where it is: h times the fundamental. A line there is a peak - a
+        // bin above both beside it - within a bin of it; else none is, and
+        // the bin there tells how little (the strongest bin within the
+        // lobe was numbered the harmonic, leakage of another: a square's
+        // "2nd" at 1800 Hz).
+        const double centre = h * f1;
+        const int k = int(std::lround(centre));
         if (k >= bins - lobe) break;
-        const int at = peakNear(k);
-        const double p = lobePower(at, true);
+        // (Its place between the bins within 0.75 of a bin of it: a line is
+        // nearer than that, a ripple of the floor a bin away is not.)
+        int at = -1;
+        for (int i = std::max(1, k - 1); i <= std::min(bins - 2, k + 1); ++i)
+            if (s.amplitude.at(i) > s.amplitude.at(i - 1) && s.amplitude.at(i) >= s.amplitude.at(i + 1)
+                && std::abs(between(i) - centre) <= 0.75 && s.amplitude.at(i) > 3.16 * floor
+                && (at < 0 || s.amplitude.at(i) > s.amplitude.at(at)))
+                at = i;
+        double p, frequency;
+        if (at >= 0) {
+            p = lobePower(at, true);
+            frequency = between(at) * s.df;
+        } else {
+            p = taken.at(k) ? 0.0 : s.power.at(k);
+            taken[k] = true;
+            frequency = centre * s.df;
+        }
         harmonicPower += p;
         const double amplitude = std::sqrt(2 * p);
-        r.harmonics << Line{h, at * s.df, amplitude, dB(amplitude / r.amplitude)};
+        r.harmonics << Line{h, frequency, amplitude, dB(amplitude / r.amplitude)};
     }
     // The noise: every bin not DC's, the fundamental's or a harmonic's.
     double noisePower = 0;

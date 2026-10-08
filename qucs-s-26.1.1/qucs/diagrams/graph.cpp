@@ -803,9 +803,14 @@ void Graph::drawLines(QPainter* painter) const {
   setLineStyle(pen, Style);
   painter->setPen(pen);
 
+  // (Thinned for the scale they were drawn at: drawn larger - an export
+  // after a small view - they are thinned again, finer.)
+  const double scaleNow = std::max(std::abs(painter->transform().m11()), std::abs(painter->transform().m22()));
   if ( ! linesCalculated.isValid()
     || ! lastLoaded.isValid()
-    || lastLoaded > linesCalculated) {//Start lines (re)calculation
+    || lastLoaded > linesCalculated
+    || scaleNow > 1.5 * linesScale) {//Start lines (re)calculation
+  linesScale = scaleNow;
 
   // How graphs are drawn
   //
@@ -867,6 +872,13 @@ void Graph::drawLines(QPainter* painter) const {
   bool drawing_started = false;
   QPointF segment_start;
   QPointF segment_end;
+  // The last point passed over as too close: drawn to before the next one
+  // that is not, so a corner stays where it is. Passed over, a flat top's
+  // last sample before an edge was, and the line ran from the one drawn
+  // before it straight into the edge - a slope before every edge of a
+  // square wave (bug hunt of 2026-10-08, B11).
+  bool skipped = false;
+  QPointF last_skipped;
 
   lines.clear();
   strokes.clear();
@@ -892,6 +904,12 @@ void Graph::drawLines(QPainter* painter) const {
     // Subgraph has ended, let's pretend like we're
     // drawing a graph from the beginning
     if (point.isStrokeEnd()) {
+      if (drawing_started && skipped) {
+        lines.append(QLineF(segment_start, last_skipped));
+        lineCurves.append(curve);
+        stroke.append(last_skipped);
+      }
+      skipped = false;
       drawing_started = false;
       finish_stroke();
       if (point.isBranchEnd()) ++curve;   // the next curve begins
@@ -916,14 +934,28 @@ void Graph::drawLines(QPainter* painter) const {
     segment_end.setY(point.getScrY());
 
     if (is_too_short(segment_start, segment_end)) {
+      skipped = true;
+      last_skipped = segment_end;
       continue;
     }
 
+    if (skipped) {
+      lines.append(QLineF(segment_start, last_skipped));
+      lineCurves.append(curve);
+      stroke.append(last_skipped);
+      segment_start = last_skipped;
+      skipped = false;
+    }
     lines.append(QLineF(segment_start, segment_end));
     lineCurves.append(curve);
     stroke.append(segment_end);
 
     segment_start = segment_end;
+  }
+  if (drawing_started && skipped) {
+    lines.append(QLineF(segment_start, last_skipped));
+    lineCurves.append(curve);
+    stroke.append(last_skipped);
   }
   finish_stroke();
 
@@ -1034,8 +1066,12 @@ QString Graph::otherSpelling(const QString& var)
 {
   static const QRegularExpression plain(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)([A-Za-z_][A-Za-z0-9_]*)$"));
   static const QRegularExpression voltage(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)[vV]\\(([A-Za-z_][A-Za-z0-9_]*)\\)$"));
+  // (A current a NutmegEq computes - a probed pin's, i(r1_pin2) - ngspice
+  // writes as a current or as the name alone, as its operands' types are.)
+  static const QRegularExpression current(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)[iI]\\(([A-Za-z_][A-Za-z0-9_]*)\\)$"));
   if (const QRegularExpressionMatch m = plain.match(var); m.hasMatch())
     return m.captured(1) + QStringLiteral("v(") + m.captured(2) + QLatin1Char(')');
   if (const QRegularExpressionMatch m = voltage.match(var); m.hasMatch()) return m.captured(1) + m.captured(2);
+  if (const QRegularExpressionMatch m = current.match(var); m.hasMatch()) return m.captured(1) + m.captured(2);
   return {};
 }

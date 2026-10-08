@@ -21,6 +21,7 @@
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTextStream>
 
 #include <cmath>
 
@@ -32,6 +33,8 @@
 #include "diagrams/diagramdialog.h"
 #include "diagrams/marker.h"
 #include "diagrams/stackeddiagram.h"
+#include "diagrams/rectdiagram.h"
+#include "diagrams/speclimits.h"
 #include "isolated_settings.h"
 
 namespace {
@@ -209,6 +212,13 @@ private slots:
         // Between two samples, straight between them.
         QCOMPARE(d.valuesAt(4.5, 0), QStringList{"a: 4.5"});
         QCOMPARE(d.valuesAt(42, 0), QStringList{"a: -"});
+        // The marker's reading of the others in its own precision (they were
+        // at six digits under its three: bug hunt of 2026-10-08, N12), and of
+        // those over its x only (a spectrum read at a time's x: B10).
+        QCOMPARE(d.valuesAt(4.123456, 0, "time", m), QStringList{"a: " + m->numberText(4.123456)});
+        QVERIFY(m->numberText(4.123456).size() < QString("4.123456").size());
+        QCOMPARE(d.valuesAt(4.123456, 0), QStringList{"a: 4.12346"});
+        QVERIFY(d.valuesAt(4.123456, 0, "frequency", m).isEmpty());
         // A line across both panes where it is.
         const QImage img = render(&d);
         const int col = 100 + m->cx;
@@ -337,20 +347,135 @@ private slots:
         dialog->close();
     }
 
-    // A diagram whose x axis cannot be drawn (log through 0) draws nothing,
-    // as a Cartesian one; a pane without traces is a frame.
-    void nothingDrawnOnAnUnusableXAxis()
+    // A limit on a pane taken away goes with the traces to the last pane
+    // left (it was checked against nothing, and the diagram said PASS: bug
+    // hunt of 2026-10-08, A2); one no trace is drawn against is unchecked.
+    void aLimitGoesWithItsPane()
+    {
+        StackedDiagram d(0, 400);
+        d.setPaneCount(4);
+        Graph* a = addGraph(&d, "a", 3);
+        qucs_s::limits::Limit limit;
+        limit.points << QPointF(0, 5);
+        limit.pane = 3;
+        d.limits << limit;
+        d.loadGraphData(data);
+        QVERIFY(!d.violations().isEmpty());
+        d.setPaneCount(2);
+        QCOMPARE(a->pane, 1);
+        QCOMPARE(d.limits.first().pane, 1);
+        d.recalcGraphData();
+        QVERIFY(!d.violations().isEmpty());
+        QVERIFY(qucs_s::limits::unchecked(&d).isEmpty());
+        // On the pane with no trace: it checks nothing - said, not passed.
+        d.limits.first().pane = 0;
+        d.recalcGraphData();
+        QVERIFY(d.violations().isEmpty());
+        QCOMPARE(qucs_s::limits::unchecked(&d), QList<int>{0});
+        // (A pane past the panes, as a file may have: the last one's.)
+        d.limits.first().pane = 50;
+        d.recalcGraphData();
+        QVERIFY(!d.violations().isEmpty());
+    }
+
+    // A square's edge drawn where it is: drawn at a small scale first (a
+    // view zoomed out), then at full size (an export), it had a slope from
+    // the last point drawn before the edge - points closer than a pixel to
+    // it passed over whatever their y, and the lines kept for the small
+    // scale (bug hunt of 2026-10-08, B11).
+    void aSquaresEdgeIsWhereItIs()
+    {
+        const QString file = dir.filePath("square.dat");
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            QTextStream s(&f);
+            s << "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time 1001>\n";
+            for (int i = 0; i <= 1000; ++i) s << i << "\n";
+            s << "</indep>\n<dep sq time>\n";
+            for (int i = 0; i <= 1000; ++i) s << (i < 500 ? 1.0 : i == 500 ? 0.9 : 0.0) << "\n";
+            s << "</dep>\n";
+        }
+        RectDiagram d(0, 300);
+        d.x2 = 400;
+        d.y2 = 200;
+        auto* g = new Graph(&d, "sq");
+        g->Color = Qt::black;
+        d.Graphs.append(g);
+        d.loadGraphData(file);
+        {
+            QImage small(200, 200, QImage::Format_RGB32);
+            QPainter p(&small);
+            p.scale(0.05, 0.05);
+            p.translate(100 - d.cx, 50 + d.y2 - d.cy);
+            d.paintDiagram(&p);
+        }
+        // Thinned for the small scale: the line into the edge starts at the
+        // last sample of the top (499), not at the last drawn before it.
+        const auto at = [&](double t, double v) {
+            const double y[2] = {v, 0.0};
+            float px = 0, py = 0;
+            d.calcCoordinate(&t, y, nullptr, &px, &py, &d.yAxis);
+            return QPointF(px, py);
+        };
+        const QList<QLineF> coarse = g->drawnLines();
+        const QPointF edge = at(500, 0.9), top = at(499, 1.0);
+        bool cornered = false;
+        for (const QLineF& l : coarse)
+            if (QLineF(l.p2(), edge).length() < 0.5) cornered = QLineF(l.p1(), top).length() < 0.5;
+        QVERIFY(cornered);
+        const QImage img = render(&d);
+        // Drawn larger: thinned again, finer.
+        QVERIFY2(g->drawnLines().size() > 2 * coarse.size(), qPrintable(QStringLiteral("%1 %2").arg(g->drawnLines().size()).arg(coarse.size())));
+        for (const double t : {470.0, 490.0, 498.0}) {
+            const double y[2] = {1.0, 0.0};
+            float px = 0, py = 0;
+            d.calcCoordinate(&t, y, nullptr, &px, &py, &d.yAxis);
+            bool dark = false;
+            for (int dy = -1; dy <= 1; ++dy) dark = dark || qGray(img.pixel(100 + int(px + 0.5), 50 + d.y2 - int(py + 0.5) + dy)) < 160;
+            QVERIFY2(dark, qPrintable(QStringLiteral("the top at %1").arg(t)));
+        }
+    }
+
+    // A log x axis over data from 0: the point at 0 has no place on it - it
+    // is left out of the axis' range and drawn off it - and the rest is
+    // drawn (the whole trace was left out, and a marker on it crashed Qucs-S:
+    // bug hunt of 2026-10-08, F1). An axis whose limits are given through 0
+    // draws nothing, as a Cartesian one; a marker on a trace not drawn is
+    // invalid. A pane without traces is a frame.
+    void aLogAxisFromZero()
     {
         StackedDiagram d(0, 400);
         Graph* a = addGraph(&d, "a", 1);
         d.xAxis.log = true;
         d.loadGraphData(data);
+        QCOMPARE(d.xAxis.min, 1.0);
+        QVERIFY(a->cPointsY != nullptr);
+        QCOMPARE(d.leftOffLogAxis(a), 1);
+        QCOMPARE(heightsOf(a).size(), 11);
+        {
+            Marker m(a, 0, d.x2 / 2, 0);
+            QVERIFY2(m.Text != QObject::tr("invalid") && m.varPos().front() > 0, qPrintable(m.Text));
+        }
+        // Limits through 0: nothing drawn, and a marker invalid.
+        d.xAxis.autoScale = false;
+        d.xAxis.limit_min = -1;
+        d.xAxis.limit_max = 10;
+        a->lastLoaded = QDateTime();
+        d.loadGraphData(data);
         QVERIFY(heightsOf(a).isEmpty());
+        QVERIFY(a->cPointsY == nullptr && !a->isEmpty());
+        {
+            Marker m(a, 0, 10, 10);
+            QCOMPARE(m.Text, QObject::tr("invalid"));
+        }
         // (Its data dropped, as a Cartesian diagram's: read again.)
         d.xAxis.log = false;
+        d.xAxis.autoScale = true;
         a->lastLoaded = QDateTime();
         d.loadGraphData(data);
         QCOMPARE(heightsOf(a).size(), 11);
+        QCOMPARE(d.leftOffLogAxis(a), 0);
     }
 };
 

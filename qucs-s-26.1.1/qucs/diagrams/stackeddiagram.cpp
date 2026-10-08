@@ -117,6 +117,10 @@ void StackedDiagram::setPaneCount(int n)
     m_panes.resize(n);
     for (Graph* g : Graphs)
         if (g->pane >= n) g->pane = n - 1;
+    // Its limits with them (bug hunt of 2026-10-08, A2: one on a pane taken
+    // away was checked against nothing, and the diagram said PASS).
+    for (qucs_s::limits::Limit& l : limits)
+        if (l.pane >= n) l.pane = n - 1;
 }
 
 int StackedDiagram::paneOf(const Graph* g) const
@@ -165,8 +169,10 @@ const Axis* StackedDiagram::graphAxis(const Graph* g) const
 
 const Axis* StackedDiagram::limitAxis(const qucs_s::limits::Limit& limit) const
 {
-    if (limit.pane < 0 || limit.pane >= paneCount()) return nullptr;
-    return limit.axis == 0 ? &m_panes.at(limit.pane).left : &m_panes.at(limit.pane).right;
+    if (m_panes.isEmpty()) return nullptr;
+    // (Past the panes, the last one's - as a graph's pane is read.)
+    const int pane = std::clamp(limit.pane, 0, paneCount() - 1);
+    return limit.axis == 0 ? &m_panes.at(pane).left : &m_panes.at(pane).right;
 }
 
 Diagram::Part StackedDiagram::partOf(const Axis* axis) const
@@ -403,11 +409,12 @@ void StackedDiagram::setLimitsBySelectionRect(QRectF select)
     p.right.autoScale = false;
 }
 
-QStringList StackedDiagram::valuesAt(double x, int paneIndex) const
+QStringList StackedDiagram::valuesAt(double x, int paneIndex, const QString& over, const Marker* marker) const
 {
     QStringList lines;
     for (const Graph* g : Graphs) {
         if (paneOf(g) != paneIndex || g->cPointsY == nullptr || g->axis(0) == nullptr) continue;
+        if (!over.isEmpty() && g->axis(0)->Var != over) continue;
         const DataX* xs = g->axis(0);
         const double* xp = xs->Points;
         const int count = xs->count;
@@ -427,19 +434,23 @@ QStringList StackedDiagram::valuesAt(double x, int paneIndex) const
         const Axis* a = graphAxis(g);
         if (std::isfinite(value) && a->log && a->Units != Axis::NoUnits) value = qucs::num2db(value, a->Units);
         const QString name = g->withValuePart(g->Var.contains(QLatin1Char('/')) ? g->Var.section(QLatin1Char('/'), 1) : g->Var);
-        lines << name + QStringLiteral(": ") + (std::isfinite(value) ? numberText(value) : QStringLiteral("-"));
+        lines << name + QStringLiteral(": ")
+                     + (!std::isfinite(value) ? QStringLiteral("-") : marker != nullptr ? marker->numberText(value) : numberText(value));
     }
     return lines;
 }
 
 QString StackedDiagram::extraMarkerText(Marker const* m) const
 {
-    // Every other trace where the marker is: the panes read out together.
-    if (m->varPos().empty() || m->graph() == nullptr) return {};
+    // Every other trace where the marker is: the panes read out together,
+    // in its own precision (they were at six digits under its 0.000: bug
+    // hunt of 2026-10-08, N12) - those over its x variable only (a
+    // spectrum read at a time's x: B10).
+    if (m->varPos().empty() || m->graph() == nullptr || m->graph()->axis(0) == nullptr) return {};
     const double x = m->varPos().front();
     QStringList lines;
     for (int i = 0; i < paneCount(); ++i)
-        for (const QString& line : valuesAt(x, i))
+        for (const QString& line : valuesAt(x, i, m->graph()->axis(0)->Var, m))
             lines << line;
     // (Its own trace is in the text already.)
     const Graph* own = m->graph();

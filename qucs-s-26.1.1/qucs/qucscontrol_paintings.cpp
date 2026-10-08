@@ -627,7 +627,9 @@ QString changedLine(const QString& type, const QString& line, const QJsonObject&
         if (has("name")) {
             QStringList members;
             name = get("name").toString().trimmed();
-            if (!get("name").isString() || (!name.isEmpty() && !BusPainting::membersOf(name, &members))) {
+            // (Not "": a bus is named for its nets - every other malformed
+            // name was refused, bug hunt of 2026-10-08, N5.)
+            if (!get("name").isString() || !BusPainting::membersOf(name, &members)) {
                 *error = tr("A bus's 'name' is a name and its members' numbers: D[7:0] (its nets D7 to D0), A[0:15].");
                 return {};
             }

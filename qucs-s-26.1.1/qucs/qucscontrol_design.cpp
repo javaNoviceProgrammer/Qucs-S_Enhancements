@@ -33,6 +33,7 @@
 
 #include "components/component.h"
 #include "components/libcomp.h"
+#include "diagrams/stackeddiagram.h"
 #include "paintings/id_text.h"
 
 #include <QDir>
@@ -445,6 +446,15 @@ double QucsControl::measureRun(const QJsonObject& spec, const QJsonObject& simul
         }
         for (Graph* g : d->Graphs) g->lastLoaded = QDateTime();
         d->loadGraphData(QFileInfo(sch->getDocName()).absoluteDir().filePath(sch->getDataSet()));
+        // A limit no trace is drawn against measures nothing: not 0 beyond
+        // (bug hunt of 2026-10-08, A2 - every value was kept).
+        if (const QList<int> unchecked = qucs_s::limits::unchecked(d); !unchecked.isEmpty()) {
+            *why = tr("diagram %1's limit %2 checks no trace (none with data is drawn against its axis%3)")
+                       .arg(n)
+                       .arg(unchecked.first() + 1)
+                       .arg(dynamic_cast<StackedDiagram*>(d) ? tr(" in its pane") : QString());
+            return NAN;
+        }
         double worst = 0;
         for (const qucs_s::limits::Violation& v : d->violations()) worst = std::max(worst, v.worst);
         *used = tr("diagram %1's limits (how far beyond at worst)").arg(n);
@@ -3195,7 +3205,7 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
 
     // What is in it.
     QList<NetlistElement> elements;
-    QStringList models, subcircuitText, params, options, includes, skipped, analyses;
+    QStringList models, subcircuitText, params, options, includes, skipped, analyses, steps, fouriers, converted;
     QHash<QString, QString> modelType;      // name (lower) -> NPN, PMOS, D, ...
     QHash<QString, int> subcircuitPins;     // name (lower) -> its pins
     QString inSubcircuit;
@@ -3255,6 +3265,20 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
         if (lower.startsWith(QLatin1String(".tran")) || lower.startsWith(QLatin1String(".ac")) || lower.startsWith(QLatin1String(".op"))
             || lower.startsWith(QLatin1String(".dc"))) {
             analyses << line;
+            continue;
+        }
+        // LTspice's stepped runs and its Fourier analysis: a Parameter
+        // Sweep and a Fourier block below; its measurements said.
+        if (lower.startsWith(QLatin1String(".step "))) {
+            steps << line;
+            continue;
+        }
+        if (lower.startsWith(QLatin1String(".four "))) {
+            fouriers << line;
+            continue;
+        }
+        if (lower.startsWith(QLatin1String(".meas"))) {
+            skipped << tr("%1 (a measurement: get_dataset's measure, or a .control script's meas, gives it)").arg(line.left(80));
             continue;
         }
         if (line.startsWith(QLatin1Char('.'))) {
@@ -3347,12 +3371,19 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
             }
         for (const QString& key : std::as_const(order)) {
             if (netOf.contains(key)) continue;
+            // A sign first or last as a letter (+5V P5V, V- VN), the rest
+            // made _; each renamed node said.
             QString base = spelled.value(key);
+            if (base.size() > 1 && base.startsWith(QLatin1Char('+'))) base = QLatin1Char('P') + base.mid(1);
+            else if (base.size() > 1 && base.startsWith(QLatin1Char('-'))) base = QLatin1Char('N') + base.mid(1);
+            if (base.size() > 1 && base.endsWith(QLatin1Char('+'))) base = base.chopped(1) + QLatin1Char('P');
+            else if (base.size() > 1 && base.endsWith(QLatin1Char('-'))) base = base.chopped(1) + QLatin1Char('N');
             base.replace(unsafe, QStringLiteral("_"));
             QString name = base;
             for (int k = 2; used.contains(name.toLower()); ++k) name = QStringLiteral("%1_%2").arg(base).arg(k);
             netOf.insert(key, name);
             used.insert(name.toLower());
+            converted << tr("the node %1 is the net %2").arg(spelled.value(key), name);
         }
     }
 
@@ -3550,6 +3581,82 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
             skipped << tr("%1 (a DC sweep: add_analysis with kind sweep makes one)").arg(a.left(80));
         }
     }
+    // The first analysis placed: what a sweep or a Fourier analysis is of.
+    QString firstAnalysis, firstTransient;
+    for (const QString& line : std::as_const(componentLines)) {
+        static const QRegularExpression sim(QStringLiteral("^\\s*<\\.(TR|AC|DC) (\\S+) "));
+        const QRegularExpressionMatch m = sim.match(line);
+        if (!m.hasMatch()) continue;
+        if (firstAnalysis.isEmpty()) firstAnalysis = m.captured(2);
+        if (firstTransient.isEmpty() && m.captured(1) == QLatin1String("TR")) firstTransient = m.captured(2);
+    }
+    // .step param X start stop step (or dec/oct ... points): a Parameter
+    // Sweep of the first analysis. A source's or the temperature's, or a
+    // list, said.
+    int sweeps = 0;
+    for (const QString& st : std::as_const(steps)) {
+        QStringList f = st.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        f.removeFirst();
+        QString type = QStringLiteral("lin");
+        if (!f.isEmpty() && (f.first().compare(QLatin1String("dec"), Qt::CaseInsensitive) == 0 || f.first().compare(QLatin1String("oct"), Qt::CaseInsensitive) == 0
+                             || f.first().compare(QLatin1String("lin"), Qt::CaseInsensitive) == 0))
+            type = f.takeFirst().toLower();
+        const bool param = !f.isEmpty() && f.first().compare(QLatin1String("param"), Qt::CaseInsensitive) == 0;
+        if (!param || f.size() < 5 || f.at(2).compare(QLatin1String("list"), Qt::CaseInsensitive) == 0) {
+            skipped << tr("%1 (LTspice's stepped runs: only .step param NAME start stop step is made a Parameter Sweep - add one of "
+                          "the parameter, or of the source's value through a parameter)").arg(st.left(80));
+            continue;
+        }
+        if (firstAnalysis.isEmpty()) {
+            skipped << tr("%1 (LTspice's stepped runs: no analysis to sweep)").arg(st.left(80));
+            continue;
+        }
+        const double start = spiceNumber(f.at(2)), stop = spiceNumber(f.at(3)), step = spiceNumber(f.at(4));
+        int points = 0;
+        if (type == QLatin1String("lin") && step != 0 && std::isfinite(start) && std::isfinite(stop) && std::isfinite(step))
+            points = int(std::floor((stop - start) / step + 1e-9)) + 1;
+        else if (type == QLatin1String("dec") && start > 0 && stop > start && step > 0)
+            points = int(std::round(step * std::log10(stop / start))) + 1;
+        else if (type == QLatin1String("oct") && start > 0 && stop > start && step > 0)
+            points = int(std::round(step * std::log2(stop / start))) + 1;
+        if (points < 2 || points > 100000) {
+            skipped << tr("%1 (its start, stop and step make no sweep)").arg(st.left(80));
+            continue;
+        }
+        const QString name = f.at(1);
+        block(QStringLiteral(".SW"), [&](Component* c) {
+            c->Name = QStringLiteral("SW%1").arg(++sweeps);
+            if (Property* p = c->getProperty(QStringLiteral("Sim"))) p->Value = firstAnalysis;
+            if (Property* p = c->getProperty(QStringLiteral("Type"))) p->Value = type == QLatin1String("lin") ? QStringLiteral("lin") : QStringLiteral("log");
+            if (Property* p = c->getProperty(QStringLiteral("Param"))) p->Value = name;
+            if (Property* p = c->getProperty(QStringLiteral("Start"))) p->Value = QString::number(start);
+            if (Property* p = c->getProperty(QStringLiteral("Stop"))) p->Value = QString::number(type == QLatin1String("lin") ? start + (points - 1) * step : stop);
+            if (Property* p = c->getProperty(QStringLiteral("Points"))) p->Value = QString::number(points);
+        });
+        converted << tr("%1: a Parameter Sweep of %2 over %3, %4 points (SW%5)").arg(st.left(80), firstAnalysis, name).arg(points).arg(sweeps);
+    }
+    // .four f0 [harmonics] V(out) ...: a Fourier analysis of the transient.
+    int fourierCount = 0;
+    for (const QString& fo : std::as_const(fouriers)) {
+        QStringList f = fo.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        f.removeFirst();
+        if (firstTransient.isEmpty() || f.size() < 2 || !std::isfinite(spiceNumber(f.first()))) {
+            skipped << tr("%1 (a Fourier analysis needs a transient one, its frequency and a trace)").arg(fo.left(80));
+            continue;
+        }
+        const QString f0 = f.takeFirst();
+        QString harmonics = QStringLiteral("9");   // (LTspice's)
+        if (!f.isEmpty() && QRegularExpression(QStringLiteral("^\\d+$")).match(f.first()).hasMatch()) harmonics = f.takeFirst();
+        if (!f.isEmpty() && QRegularExpression(QStringLiteral("^-?\\d+$")).match(f.first()).hasMatch()) f.removeFirst();   // (its periods: ngspice's own)
+        block(QStringLiteral(".FOURIER"), [&](Component* c) {
+            c->Name = QStringLiteral("FOUR%1").arg(++fourierCount);
+            if (Property* p = c->getProperty(QStringLiteral("Sim"))) p->Value = firstTransient;
+            if (Property* p = c->getProperty(QStringLiteral("numfreq"))) p->Value = harmonics;
+            if (Property* p = c->getProperty(QStringLiteral("F0"))) p->Value = QString::number(spiceNumber(f0));
+            if (Property* p = c->getProperty(QStringLiteral("Vars"))) p->Value = f.join(QLatin1Char(' '));
+        });
+        converted << tr("%1: a Fourier analysis of %2 (FOUR%3)").arg(fo.left(80), firstTransient).arg(fourierCount);
+    }
 
     // Into a new schematic, as one step to undo.
     a_app->slotFileNew();
@@ -3580,6 +3687,7 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
     if (!models.isEmpty()) result.insert(QStringLiteral("models"), int(models.size()));
     if (!subcircuitFile.isEmpty()) result.insert(QStringLiteral("subcircuits"), QDir::toNativeSeparators(subcircuitFile));
     if (!skipped.isEmpty()) result.insert(QStringLiteral("not taken"), QJsonArray::fromStringList(skipped));
+    if (!converted.isEmpty()) result.insert(QStringLiteral("converted"), QJsonArray::fromStringList(converted));
     if (!notes.isEmpty()) result.insert(QStringLiteral("note"), notes.join(QLatin1Char(' ')));
     if (!fromLTspice.isEmpty()) {
         result.insert(QStringLiteral("LTspice"), QJsonArray::fromStringList(fromLTspice));

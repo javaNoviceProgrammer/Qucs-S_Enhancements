@@ -425,6 +425,10 @@ void Ngspice::createNetlist(
     unsigned int timeSims = 0;
     unsigned int fourSims = 0;
     unsigned int pzSims = 0;
+    // Each simulation's kind (0 DC, 1 frequency, 2 time, 3 Fourier, 4
+    // pole-zero; -1 a custom one's, of any), by its name: the vectors of a
+    // kind two of them write are prefixed with their simulation's name.
+    QHash<QString, int> kindOf;
 
     outputs.clear();
     for (Component* pc : a_schematic->a_DocComps) {
@@ -488,9 +492,11 @@ void Ngspice::createNetlist(
 
         if ( sim_typ == ".AC" ) {
             freqSims++;
+            kindOf.insert(sim_name, 1);
             spiceNetlist.append(pc->getSpiceNetlist());
         } else if ( sim_typ == ".TR" ) {
             timeSims++;
+            kindOf.insert(sim_name, 2);
             spiceNetlist.append(pc->getSpiceNetlist());
             for (Component* pc1 : a_schematic->a_DocComps) {
                 if ( !pc1->isSimulation ) continue;
@@ -498,6 +504,7 @@ void Ngspice::createNetlist(
                 if ( pc1->Model == ".FOURIER" ) {
                     if ( pc1->Props.at(0)->Value.toLower() == sim_name ) {
                         fourSims++;
+                        kindOf.insert(pc1->Name.toLower(), 3);
                         // Add it twice for THD
                         outputs.append("spice4qucs." + pc1->Name.toLower() + ".four");
                         outputs.append("spice4qucs." + pc1->Name.toLower() + ".four");
@@ -506,6 +513,7 @@ void Ngspice::createNetlist(
                 }
             }
         } else if ( sim_typ == ".CUSTOMSIM" ) {
+            kindOf.insert(sim_name, -1);
             spiceNetlist.append(pc->getSpiceNetlist());
             nods = pc->Props.at(1)->Value;
             nods.replace(';', ' ');
@@ -541,10 +549,12 @@ void Ngspice::createNetlist(
             }
         } else if ( sim_typ == ".DISTO" ) {
             freqSims++;
+            kindOf.insert(sim_name, 1);
             spiceNetlist.append(pc->getSpiceNetlist());
             nods.clear();
         } else if ( sim_typ == ".NOISE" ) {
             freqSims++;
+            kindOf.insert(sim_name, 1);
             spiceNetlist.append(pc->getSpiceNetlist());
             outputs.append("spice4qucs." + sim_name + ".cir.noise");
             if ( hasParSWP ) {  // Set necessary plot number to output Noise spectrum
@@ -561,6 +571,7 @@ void Ngspice::createNetlist(
             write_dep_vars = false;
         } else if ( sim_typ == ".PZ" ) {
             pzSims++;
+            kindOf.insert(sim_name, 4);
             netlist_equations = false;
             spiceNetlist.append(pc->getSpiceNetlist());
             QString out = "spice4qucs." + sim_name + ".cir.pz";
@@ -569,31 +580,37 @@ void Ngspice::createNetlist(
             outputs.append(out);
         } else if ( sim_typ == ".SENS" ) {
             dcSims++;
+            kindOf.insert(sim_name, 0);
             netlist_equations = false;
             spiceNetlist.append(pc->getSpiceNetlist());
             outputs.append("spice4qucs." + sim_name + ".ngspice.sens.dc.prn");
         } else if ( sim_typ == ".SENS_AC" ) {
             freqSims++;
+            kindOf.insert(sim_name, 1);
             netlist_equations = false;
             spiceNetlist.append(pc->getSpiceNetlist());
             outputs.append("spice4qucs." + sim_name + ".sens.prn");
         } else if ( sim_typ == ".SP" ) {
             freqSims++;
+            kindOf.insert(sim_name, 1);
             spiceNetlist.append(pc->getSpiceNetlist());
             nods.clear();
             nods.append(' ' + pc->getExtraVariables().join(' '));
         } else if ( sim_typ == ".FFT" ) {
             freqSims++;
+            kindOf.insert(sim_name, 1);
             spiceNetlist.append(pc->getSpiceNetlist());
             spiceNetlist.append(QStringLiteral("linearize %1\n").arg(nods));
             spiceNetlist.append(QStringLiteral("fft %1\n").arg(nods));
         } else if ( sim_typ == ".DC" ) {
             dcSims++;
+            kindOf.insert(sim_name, 0);
             spiceNetlist.append(pc->getSpiceNetlist());
         } else if ( sim_typ == ".SW" ) {
             QString SwpSim = pc->Props.at(0)->Value.toLower();
             if ( SwpSim.startsWith("dc") ) {
                 dcSims++;
+                kindOf.insert(sim_name, 0);
                 spiceNetlist.append(pc->getSpiceNetlist());
             } else
                 continue;
@@ -737,7 +754,15 @@ void Ngspice::createNetlist(
            << ".endc\n";
     stream << ".END\n";
 
-    a_needsPrefix = a_needsPrefix || ( (dcSims | freqSims | timeSims | fourSims | pzSims) > 1 );
+    // Only the kinds two simulations write: an .AC beside an .FFT (both
+    // write "ac") prefixed every vector, the transient's too - tran.v(out)
+    // became tr1.tran.v(out), and every diagram of it went blank (bug hunt
+    // of 2026-10-08, B1). A custom simulation's, when any kind is shared.
+    const unsigned int counts[] = {dcSims, freqSims, timeSims, fourSims, pzSims};
+    const bool anyShared = std::any_of(std::begin(counts), std::end(counts), [](unsigned int n) { return n > 1; });
+    a_prefixedSims.clear();
+    for (auto it = kindOf.cbegin(); it != kindOf.cend(); ++it)
+        if (it.value() < 0 ? anyShared : counts[it.value()] > 1) a_prefixedSims.insert(it.key());
 
     qDebug() << '\n'
              << "Simulations:\n"

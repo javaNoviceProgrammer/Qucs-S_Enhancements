@@ -201,7 +201,9 @@ public:
   /// (ac.gain) as a voltage, ac.v(gain) - ngspice writes a computed vector
   /// of a voltage's type so - and a voltage as the name alone: ngspice 46
   /// writes an S-parameter analysis' s_1_1 (no longer of a voltage's
-  /// type) where the examples' traces name ac.v(s_1_1). Empty: neither.
+  /// type) where the examples' traces name ac.v(s_1_1); a current as the
+  /// name alone (a probed pin's i(r1_pin2), computed of vectors of no
+  /// type). Empty: none.
   static QString otherSpelling(const QString& var);
   /// Where the "@" of "var@other" (var plotted against other) is, or -1:
   /// not an @ that begins a device's vector (@r1[i], tran.@q1[ic]) - at
@@ -286,12 +288,17 @@ private:
   Diagram const* diagram;
 
   mutable QList<QLineF> lines;
+public:
+  /// The lines it was last drawn with (thinned for the painter's scale).
+  const QList<QLineF>& drawnLines() const { return lines; }
+private:
   // The same points as one polyline per stroke: a dash pattern runs on
   // along a polyline, while every line of drawLines() starts it afresh.
   mutable QList<QPolygonF> strokes;
   mutable QList<int> lineCurves;     // the curve (branch) of each line
   mutable QList<int> strokeCurves;   // and of each stroke
   mutable QDateTime     linesCalculated;
+  mutable double        linesScale = 0.0;   // the painter's scale they were thinned for
   void linesInvalidate() {linesCalculated = QDateTime();} //Set to 'null' date
 };
 
