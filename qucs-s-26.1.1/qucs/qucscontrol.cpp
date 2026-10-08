@@ -11326,6 +11326,21 @@ QJsonObject QucsControl::getDialog()
 
 namespace {
 
+// A combo box's item \a index chosen as the user chooses one: activated and
+// textActivated too, which many a widget waits for alone - the components
+// panel's category, the simulator, a diagram dialog's data and part. Set by
+// its index only, the choice was shown and not acted on. (A slot that
+// closes the dialog is let do so.)
+void chooseItem(QComboBox* c, int index)
+{
+    if (index < 0 || index >= c->count()) return;
+    const QPointer<QComboBox> alive(c);
+    const QString text = c->itemText(index);
+    c->setCurrentIndex(index);
+    if (alive) emit c->activated(index);
+    if (alive) emit c->textActivated(text);
+}
+
 // A view's rows as the user sees them, in order: a tree's children under
 // each expanded item, with their depth. At most \a most.
 void viewRows(const QAbstractItemView* view, const QModelIndex& parent, int depth, int most, QList<QModelIndex>* rows)
@@ -12058,7 +12073,7 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
         } else if (auto* c = qobject_cast<QComboBox*>(w)) {
             int index = c->findText(text, Qt::MatchFixedString);
             if (index < 0) index = c->findText(text, Qt::MatchContains);
-            if (index >= 0) c->setCurrentIndex(index);
+            if (index >= 0) chooseItem(c, index);
             else if (c->isEditable()) c->setEditText(text);
             else ok = false;
         } else if (auto* d = qobject_cast<QDoubleSpinBox*>(w)) {
@@ -12084,7 +12099,7 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
                 // (A cell's editor - its value given to the cell, as the
                 // user's Return does - or a widget in it.)
                 if (auto* cc = qobject_cast<QComboBox*>(cw)) {
-                    cc->setCurrentIndex(std::max(0, cc->findText(propertyValue(cell.at(2)))));
+                    chooseItem(cc, std::max(0, cc->findText(propertyValue(cell.at(2)))));
                 } else if (auto* cb = qobject_cast<QAbstractButton*>(cw)) {
                     if (cb->isChecked() != cell.at(2).toBool()) cb->click();
                 } else if (auto* ce = qobject_cast<QLineEdit*>(cw)) {
