@@ -92,10 +92,25 @@ public: // power matching stuff. some sort of VarPos (ab?)use
   double  powImag() const {return VarDep[1];}
   void setPos(const double xpos) { VarPos[0] = xpos; }
 
+  /// A delta marker's reference: its text adds Δx, Δy and 1/Δx from it,
+  /// and a line joins the two. Null: none, or one no longer in the diagram.
+  const Marker* reference() const;
+  void setReference(const Marker* m) { a_reference = m; }
+  /// The reference as a file names it, its number among the diagram's
+  /// markers (from 1; 0 none): read by load(), made a pointer once the
+  /// diagram's markers are all there (Diagram::load()).
+  int pendingReference = 0;
+  /// The value it marks as its text writes it: a complex value's
+  /// magnitude, in dB on an axis of dB.
+  double shownValue() const;
+  /// The markers that measure from this one, written again (it moved).
+  void refreshDependents();
+
 // private: // not yet
   Graph const *pGraph;   // the corresponding graph
 
 private:
+  const Marker* a_reference = nullptr;
   std::vector<double> VarPos;   // values the marker is pointing to
   double VarDep[2];   // dependent value
   float  fCX, fCY;  // coordinates for the line from graph to marker body

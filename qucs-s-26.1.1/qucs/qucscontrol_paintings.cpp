@@ -43,6 +43,7 @@ struct PaintingType {
 const PaintingType kTypes[] = {
     {"text", "Text", "a text"},
     {"line", "Line", "a straight line"},
+    {"bus", "Bus", "a bus: a thick line named for the nets it gathers - D[7:0], its nets D7 to D0 - which join by their names; it joins nothing by touching"},
     {"arrow", "Arrow", "an arrow"},
     {"rectangle", "Rectangle", "a rectangle"},
     {"ellipse", "Ellipse", "an ellipse (a circle)"},
@@ -82,7 +83,7 @@ QString typeOfPainting(const Painting* p)
 
 bool isLegacy(const QString& type)
 {
-    static const QStringList legacy{QStringLiteral("text"),     QStringLiteral("line"),     QStringLiteral("arrow"),
+    static const QStringList legacy{QStringLiteral("text"),     QStringLiteral("line"),     QStringLiteral("arrow"), QStringLiteral("bus"),
                                     QStringLiteral("rectangle"), QStringLiteral("ellipse"), QStringLiteral("arc"),
                                     QStringLiteral("polyline"),  QStringLiteral("image"),   QStringLiteral("port"),
                                     QStringLiteral("id")};
@@ -102,6 +103,7 @@ Painting* newPainting(const QString& type, bool evenFixed = false)
 {
     if (type == QLatin1String("text")) return new GraphicText();
     if (type == QLatin1String("line")) return new GraphicLine();
+    if (type == QLatin1String("bus")) return new BusPainting();
     if (type == QLatin1String("arrow")) return new Arrow();
     if (type == QLatin1String("rectangle")) return new qucs::Rectangle();
     if (type == QLatin1String("ellipse")) return new qucs::Ellipse();
@@ -379,6 +381,13 @@ QJsonObject propsOf(Painting* p)
     if (type == QLatin1String("text")) {
         o = {{QStringLiteral("x"), tokenInt(t, 1)}, {QStringLiteral("y"), tokenInt(t, 2)}, {QStringLiteral("size"), tokenInt(t, 3)},
              {QStringLiteral("color"), colour(4)}, {QStringLiteral("angle"), tokenInt(t, 5)}, {QStringLiteral("text"), textOfLine(line)}};
+    } else if (type == QLatin1String("bus")) {
+        const int x = tokenInt(t, 1), y = tokenInt(t, 2);
+        const auto* bus = dynamic_cast<const BusPainting*>(p);
+        o = {{QStringLiteral("from"), pointJson(x, y)}, {QStringLiteral("to"), pointJson(x + tokenInt(t, 3), y + tokenInt(t, 4))},
+             {QStringLiteral("name"), bus ? bus->busName : QString()}};
+        if (bus && !bus->members().isEmpty())
+            o.insert(QStringLiteral("members"), QStringLiteral("%1 \u2026 %2").arg(bus->members().first(), bus->members().last()));
     } else if (type == QLatin1String("line") || type == QLatin1String("arrow")) {
         const int x = tokenInt(t, 1), y = tokenInt(t, 2);
         o = {{QStringLiteral("from"), pointJson(x, y)}, {QStringLiteral("to"), pointJson(x + tokenInt(t, 3), y + tokenInt(t, 4))}};
@@ -610,6 +619,20 @@ QString changedLine(const QString& type, const QString& line, const QJsonObject&
         }
         misc::convert2ASCII(text);
         return QStringList(t.mid(0, 6)).join(QLatin1Char(' ')) + QStringLiteral(" \"") + text + QLatin1Char('"');
+    }
+    if (type == QLatin1String("bus")) {
+        // Its ends, and its name: a bus's (D[7:0]), or "" for none yet.
+        if (!setEnds()) return {};
+        QString name = line.section(QLatin1Char('"'), 1, 1);
+        if (has("name")) {
+            QStringList members;
+            name = get("name").toString().trimmed();
+            if (!get("name").isString() || (!name.isEmpty() && !BusPainting::membersOf(name, &members))) {
+                *error = tr("A bus's 'name' is a name and its members' numbers: D[7:0] (its nets D7 to D0), A[0:15].");
+                return {};
+            }
+        }
+        return QStringList(t.mid(0, 5)).join(QLatin1Char(' ')) + QStringLiteral(" \"") + name + QLatin1Char('"');
     }
     if (type == QLatin1String("line"))
         ok = setEnds() && setColour(5, "color") && setInt(6, "thickness", 0, 100) && setPen(7, "style");
@@ -923,7 +946,8 @@ Painting* madePainting(const QString& type, Painting* base, const QJsonObject& c
     if (isLegacy(type)) {
         if (isNew) {
             // What places it, which no default can.
-            const QStringList places = type == QLatin1String("line") || type == QLatin1String("arrow") ? QStringList{QStringLiteral("from"), QStringLiteral("to")}
+            const QStringList places = type == QLatin1String("line") || type == QLatin1String("arrow") || type == QLatin1String("bus")
+                                         ? QStringList{QStringLiteral("from"), QStringLiteral("to")}
                                      : type == QLatin1String("polyline") ? QStringList{QStringLiteral("points")}
                                      : type == QLatin1String("text") ? QStringList{QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("text")}
                                                                       : QStringList{QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("width"), QStringLiteral("height")};

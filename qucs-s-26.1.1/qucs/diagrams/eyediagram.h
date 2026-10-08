@@ -70,8 +70,21 @@ public:
   /// How a diagram finds the PRBS source a trace comes from, whose Tbit is
   /// the UI when none is given (prbssource.cpp installs it for the
   /// application's documents); without one, the crossings tell it.
-  using SourceFinder = std::function<qucs_s::prbs::Source(const EyeDiagram*, const QString& variable)>;
+  using SourceFinder = std::function<qucs_s::prbs::Source(const Diagram*, const QString& variable)>;
   static void setSourceFinder(SourceFinder finder);
+
+  /// The eyes of \a owner's graphs (each one's first curve) as an eye
+  /// diagram folds them: at \a ui (NaN: each graph's PRBS source's Tbit,
+  /// else the other graphs', else what the crossings of the first with an
+  /// eye tell), \a levels 2 or 4 (else as each source is coded).
+  struct Folding {
+    QList<qucs_s::eye::Result> results;
+    double ui = qucs_s::eye::NaN;   ///< the first graph's that has an eye
+    bool mixed = false;             ///< the graphs' UIs differ
+    QStringList sourceWhy;          ///< each graph's: why a PRBS source there is gives no UI
+    QStringList levelsFrom;         ///< each graph's: the source whose coding gave its levels
+  };
+  static Folding foldingOf(const Diagram* owner, double ui, int levels, const qucs_s::eye::Options& options);
 
   void getAxisLimits(Graph*) override;
   /// (No right axis.)

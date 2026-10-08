@@ -35,6 +35,13 @@
 #include "diagrams/graph.h"
 #include "diagrams/histogramdiagram.h"
 #include "diagrams/eyediagram.h"
+#include "diagrams/stackeddiagram.h"
+#include "diagrams/polezerodiagram.h"
+#include "diagrams/spectrumdiagram.h"
+#include "diagrams/bathtubdiagram.h"
+#include "diagrams/contourdiagram.h"
+#include "diagrams/tornadodiagram.h"
+#include "diagrams/boxplotdiagram.h"
 #include "extsimkernels/simulationrun.h"
 #include "extsimkernels/spicecompat.h"
 #include "numberformat.h"
@@ -287,9 +294,13 @@ QString readout(const Diagram* diagram, const MappedPoint& p)
 {
     if (diagram == nullptr) return {};
     QList<const Graph*> left, right;
+    // A stacked diagram's: the pane under the cursor, its traces and axes.
+    const auto* stacked = dynamic_cast<const StackedDiagram*>(diagram);
     for (const Graph* g : diagram->Graphs)
-        (g->yAxisNo == 0 ? left : right).append(g);
+        if (!stacked || stacked->paneOf(g) == p.pane) (g->yAxisNo == 0 ? left : right).append(g);
     if (left.isEmpty() && right.isEmpty()) return {};
+    const Axis& leftAxis = stacked && p.pane >= 0 ? stacked->pane(p.pane).left : diagram->yAxis;
+    const Axis& rightAxis = stacked && p.pane >= 0 ? stacked->pane(p.pane).right : diagram->zAxis;
 
     // A value as the diagram writes its numbers - with an SI prefix and
     // the unit where it writes them automatically or with prefixes.
@@ -324,6 +335,84 @@ QString readout(const Diagram* diagram, const MappedPoint& p)
         return graphs.size() == 1 ? bare(graphs.constFirst()->Var) : several;
     };
 
+    // A pole-zero map: the point of the s-plane, and what a root there says.
+    if (dynamic_cast<const PoleZeroDiagram*>(diagram)) {
+        return QStringLiteral("\u03C3 ") + number(p.x, QString()) + QStringLiteral("  \u00B7  j\u03C9 ") + number(p.y1, QString())
+               + QStringLiteral("  \u00B7  ") + PoleZeroDiagram::rootText(PoleZeroDiagram::Root{p.x, p.y1});
+    }
+
+    // A spectrum view: the frequency, and the level in dBc or dB.
+    if (const auto* spectrum = dynamic_cast<const SpectrumDiagram*>(diagram)) {
+        return QStringLiteral("f ") + number(p.x, QStringLiteral("Hz")) + QStringLiteral("  \u00B7  ")
+               + QString::number(p.y1, 'f', 1) + (spectrum->dbc ? QStringLiteral(" dBc") : QStringLiteral(" dB"));
+    }
+
+    // A box plot: the value up y, and the box under the cursor.
+    if (const auto* boxes = dynamic_cast<const BoxPlotDiagram*>(diagram)) {
+        QString text = number(p.y1, axisUnit(diagram->yAxis, left));
+        const int n = int(boxes->boxes().size());
+        const int k = n > 0 ? std::clamp(int(std::floor(p.x)), 0, n - 1) : -1;
+        if (k >= 0 && boxes->boxes().at(k).ok()) {
+            const BoxPlotDiagram::Box& b = boxes->boxes().at(k);
+            text += QStringLiteral("  \u00B7  ") + b.name + QStringLiteral(": median ") + number(b.median, QString()) + QStringLiteral(", ")
+                    + number(b.q1, QString()) + QStringLiteral(" \u2026 ") + number(b.q3, QString()) + QStringLiteral(" (%1 values)").arg(b.n);
+        }
+        return text;
+    }
+
+    // A tornado chart: the value along x, and the bar under the cursor.
+    if (const auto* tornado = dynamic_cast<const TornadoDiagram*>(diagram)) {
+        QString text = number(p.x, QString());
+        const int n = int(tornado->shown().size());
+        const int k = n - 1 - int(std::floor(p.y1));   // (the rows from the top; y1 counts them up)
+        if (k >= 0 && k < n) {
+            const TornadoDiagram::Bar& b = tornado->shown().at(k);
+            text += QStringLiteral("  \u00B7  ") + b.name + QStringLiteral(" ") + number(b.value, QString());
+            if (tornado->mode == TornadoDiagram::Spread)
+                text += QStringLiteral(" (") + number(b.low, QString()) + QStringLiteral(" \u2026 ") + number(b.high, QString()) + QStringLiteral(")");
+        }
+        return text;
+    }
+
+    // A contour map: the two sweeps, and each trace's value there.
+    if (const auto* map = dynamic_cast<const ContourDiagram*>(diagram)) {
+        QStringList parts;
+        const ContourDiagram::Grid* first = nullptr;
+        for (const ContourDiagram::Grid& g : map->grids())
+            if (g.ok()) {
+                first = &g;
+                break;
+            }
+        const QString xName = first ? bare(first->xName) : QStringLiteral("x");
+        const QString yName = first ? bare(first->yName) : QStringLiteral("y");
+        parts << xName + QStringLiteral(" ") + number(p.x, unitOf(xName)) << yName + QStringLiteral(" ") + number(p.y1, unitOf(yName));
+        for (int i = 0; i < map->grids().size() && i < map->Graphs.size(); ++i) {
+            const double v = map->grids().at(i).valueAt(p.x, p.y1, map->xAxis.log, map->yAxis.log);
+            if (std::isfinite(v)) parts << bare(map->Graphs.at(i)->Var) + QStringLiteral(" ") + number(v, unitOf(bare(map->Graphs.at(i)->Var)));
+        }
+        return parts.join(QStringLiteral("  \u00B7  "));
+    }
+
+    // A bathtub curve: the sampling instant (in UI and in time), the rate
+    // up y, and each trace's narrowest eye's rate there.
+    if (const auto* tub = dynamic_cast<const BathtubDiagram*>(diagram)) {
+        QStringList parts;
+        QString at = QStringLiteral("%1 UI").arg(p.x, 0, 'f', 3);
+        for (const QList<qucs_s::eye::Bathtub>& tubs : tub->bathtubs())
+            if (!tubs.isEmpty() && tubs.first().ok()) {
+                at += QStringLiteral(" (") + number(p.x * tubs.first().ui, QStringLiteral("s")) + QStringLiteral(")");
+                break;
+            }
+        parts << at << QStringLiteral("BER %1").arg(p.y1, 0, 'g', 2);
+        for (int i = 0; i < tub->bathtubs().size() && i < tub->Graphs.size(); ++i) {
+            double highest = -1;
+            for (const qucs_s::eye::Bathtub& b : tub->bathtubs().at(i))
+                if (b.ok()) highest = std::max(highest, b.ber(p.x));
+            if (highest >= 0) parts << QStringLiteral("%1 %2").arg(bare(tub->Graphs.at(i)->Var)).arg(highest, 0, 'g', 2);
+        }
+        return parts.join(QStringLiteral("  \u00B7  "));
+    }
+
     // A histogram: the values of its variables along x, how many of them
     // fall in each bar up y.
     if (const auto* histogram = dynamic_cast<const HistogramDiagram*>(diagram)) {
@@ -354,10 +443,10 @@ QString readout(const Diagram* diagram, const MappedPoint& p)
     const bool both = !left.isEmpty() && !right.isEmpty();
     if (!left.isEmpty())
         parts << axisName(left, both ? QStringLiteral("y1") : QStringLiteral("y")) + QStringLiteral(" ")
-                     + number(p.y1, axisUnit(diagram->yAxis, left));
+                     + number(p.y1, axisUnit(leftAxis, left));
     if (!right.isEmpty())
         parts << axisName(right, QStringLiteral("y2")) + QStringLiteral(" ")
-                     + number(p.y2, axisUnit(diagram->zAxis, right));
+                     + number(p.y2, axisUnit(rightAxis, right));
     return parts.join(QStringLiteral("  ·  "));
 }
 
@@ -997,6 +1086,8 @@ QString StatusPanel::modeHint(Schematic* doc) const
     if (press == &MouseActions::MPressMirrorY)
         return join({tr("Click an element to mirror it about the Y axis"), stop});
     if (press == &MouseActions::MPressMarker) return join({tr("Click a graph to put a marker on it"), stop});
+    if (press == &MouseActions::MPressProbe)
+        return join({tr("Click a net for its voltage, a pin for its current, a part for its power"), stop});
     if (press == &MouseActions::MPressSetLimits)
         return join({tr("Drag across a diagram to zoom its axes to that area"), stop});
     if (press == &MouseActions::MPressOnGrid) return join({tr("Click an element to put it on the grid"), stop});

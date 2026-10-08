@@ -584,6 +584,17 @@ void Module::registerModules (void) {
   REGISTER_DIAGRAM_1 (RectDiagram);
   REGISTER_DIAGRAM_1 (HistogramDiagram);
   REGISTER_DIAGRAM_1 (EyeDiagram);
+  REGISTER_DIAGRAM_1 (BathtubDiagram);
+  REGISTER_DIAGRAM_1 (ContourDiagram);
+  REGISTER_DIAGRAM_1 (SpectrogramDiagram);
+  REGISTER_DIAGRAM_1 (TornadoDiagram);
+  REGISTER_DIAGRAM_1 (BoxPlotDiagram);
+  REGISTER_DIAGRAM_1 (ConstellationDiagram);
+  REGISTER_DIAGRAM_1 (StackedDiagram);
+  REGISTER_DIAGRAM_1 (PoleZeroDiagram);
+  REGISTER_DIAGRAM_1 (BodeDiagram);
+  REGISTER_DIAGRAM_1 (NicholsDiagram);
+  REGISTER_DIAGRAM_1 (SpectrumDiagram);
   REGISTER_DIAGRAM_1 (PolarDiagram);
   REGISTER_DIAGRAM_1 (TabDiagram);
   REGISTER_DIAGRAM_2 (SmithDiagram, info, info_y);
@@ -649,6 +660,7 @@ void Module::registerModules (void) {
 
   // paintings
   REGISTER_PAINT_1 (GraphicLine);
+  REGISTER_PAINT_1 (BusPainting);
   REGISTER_PAINT_1 (Arrow);
   REGISTER_PAINT_1 (GraphicText);
   REGISTER_PAINT_2 (qucs::Ellipse, info, info_filled);

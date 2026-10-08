@@ -116,9 +116,7 @@ void Marker::initText(int datapoints_before_branch)
   }
 
   QUCS_ASSERT(diag());
-  Axis const *pa = pGraph->yAxisNo == 0
-                 ? &(diag()->yAxis)
-                 : &(diag()->zAxis);
+  Axis const *pa = diag()->graphAxis(pGraph);
 
   double Dummy = 0.0; // needed for 2D graph in 3D diagram
   double *py = &Dummy;
@@ -250,8 +248,7 @@ void Marker::createText()
   }
 
   Text += pGraph->withValuePart(pGraph->Var.contains('/') ? pGraph->Var.section('/', 1) : pGraph->Var) + ": ";
-  const Axis *ax = &(diag()->yAxis);
-  if (pGraph->yAxisNo > 0) ax = &(diag()->zAxis);
+  const Axis *ax = diag()->graphAxis(pGraph);
   int units = ax->Units;
   if (units == Axis::NoUnits || !ax->log) {
       Text += complexText(pz[0], pz[1], numMode);
@@ -263,12 +260,19 @@ void Marker::createText()
       Text += numberText(val);
   }
 
+  // A delta marker: from its reference, x and the value, and 1/Δx (a
+  // frequency from a time, a period from a frequency).
+  if (const Marker* ref = reference(); ref && !ref->varPos().empty() && !VarPos.empty()) {
+    const double dx = VarPos[0] - ref->varPos().front();
+    Text += QString::fromUtf8("\nΔx: ") + numberText(dx);
+    Text += QString::fromUtf8("\nΔy: ") + numberText(shownValue() - ref->shownValue());
+    if (dx != 0.0) Text += QString::fromUtf8("\n1/Δx: ") + numberText(1.0 / dx);
+  }
+
   QUCS_ASSERT(diag());
   Text += diag()->extraMarkerText(this);
 
-  Axis const *pa;
-  if(pGraph->yAxisNo == 0)  pa = &(diag()->yAxis);
-  else  pa = &(diag()->zAxis);
+  Axis const *pa = diag()->graphAxis(pGraph);
   pp = &(VarPos[0]);
 
   diag()->calcCoordinate(pp, pz, py, &fCX, &fCY, pa);
@@ -359,6 +363,7 @@ bool Marker::moveLeftRight(bool left)
   }
   VarPos[0] = *px;
   createText();
+  refreshDependents();
 
   return true;
 }
@@ -499,6 +504,14 @@ void Marker::paint(QPainter* painter) {
        marker_root.y() > text_box.bottom() ? text_box.bottom()
                                            : text_box.top()});
 
+  // A delta marker: a dashed line from its reference's point to its own.
+  if (const Marker* ref = reference()) {
+    painter->save();
+    painter->setPen(QPen(qucs_s::ink::on(Qt::darkMagenta), 0, Qt::DashLine));
+    painter->drawLine(QPointF(ref->cx, -ref->cy), marker_root);
+    painter->restore();
+  }
+
   switch (indicatorMode) {
   case indicator_Square:
     square_marker(painter, marker_root);
@@ -555,11 +568,15 @@ QString Marker::save()
     return !c.isValid() ? QStringLiteral("-") : c.name(c.alpha() < 255 ? QColor::HexArgb : QColor::HexRgb);
   };
   const bool colours = textColor.isValid() || fillColor.isValid();
-  // Last, a notation of its own (none: the diagram's).
-  const bool own = notation >= 0;
+  // Then a notation of its own (none: the diagram's); last, a delta
+  // marker's reference, by its number among the diagram's markers.
+  int ref = 0;
+  if (const Marker* r = reference(); r && diag()) ref = int(diag()->markers().indexOf(const_cast<Marker*>(r))) + 1;
+  const bool own = notation >= 0 || ref > 0;
   if (indicatorMode != indicator_Triangle || colours || own) s += " " + QString::number(int(indicatorMode));
   if (colours || own) s += " " + colour(textColor) + " " + colour(fillColor);
   if (own) s += " " + QString::number(notation);
+  if (ref > 0) s += " " + QString::number(ref);
   return s + ">";
 }
 
@@ -633,6 +650,11 @@ bool Marker::load(const QString& Line)
   const int own = n.toInt(&ok);
   notation = ok && own >= 0 && own <= int(qucs_s::numberformat::Notation::Power) ? own : -1;
 
+  // A delta marker's reference (optional): resolved by the diagram.
+  n = s.section(' ',11,11);
+  const int ref = n.toInt(&ok);
+  pendingReference = ok && ref > 0 ? ref : 0;
+
   return true;
 }
 
@@ -675,8 +697,37 @@ Marker* Marker::sameNewOne(Graph *pGraph_)
   pm->notation      = notation;
   pm->textColor     = textColor;
   pm->fillColor     = fillColor;
+  pm->a_reference   = a_reference;   // (a copy of the diagram points it at its own: Diagram)
 
   return pm;
+}
+
+const Marker* Marker::reference() const
+{
+  if (a_reference == nullptr || a_reference == this || !diag()) return nullptr;
+  // Still one of its diagram's.
+  for (const Marker* m : diag()->markers())
+    if (m == a_reference) return a_reference;
+  return nullptr;
+}
+
+double Marker::shownValue() const
+{
+  if (!pGraph || pGraph->isEmpty() || VarPos.empty()) return 0.0;
+  std::vector<double> at = VarPos;   // (findSample takes it to change)
+  const auto p = pGraph->findSample(at);
+  const double re = p.first, im = p.second;
+  double v = std::fabs(im) > 1e-250 ? std::sqrt(re * re + im * im) : re;
+  if (const Axis* a = diag() ? diag()->graphAxis(pGraph) : nullptr; a && a->log && a->Units != Axis::NoUnits)
+    v = qucs::num2db(std::fabs(v), a->Units);
+  return v;
+}
+
+void Marker::refreshDependents()
+{
+  if (!diag()) return;
+  for (Marker* m : diag()->markers())
+    if (m != this && m->reference() == this) m->createText();
 }
 
 

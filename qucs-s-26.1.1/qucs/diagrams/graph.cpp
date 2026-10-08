@@ -29,6 +29,7 @@
 #include <QDebug>
 #include <QPainterPath>
 #include <QtAlgorithms>
+#include <QRegularExpression>
 #include "qucs_assert.h"
 
 class Diagram;
@@ -94,7 +95,9 @@ void Graph::paint(QPainter* painter) {
   }
 
   // **** not selected ****
-  // (Its colour fitted to the paper it is on: a diagram's plot area.)
+  // (Its colour fitted to the paper it is on: a diagram's plot area. A
+  // ghost - a kept run beside this one - faint.)
+  if (ghost) painter->setOpacity(painter->opacity() * GhostOpacity);
   painter->setPen(QPen(qucs_s::ink::on(Color), Thick, Qt::SolidLine));
   paintLines(painter);
   drawPointMarkers(painter);
@@ -128,13 +131,19 @@ QString Graph::save()
   // before them do not read; written only when there is something to say.
   // The part of the value shown a tenth (the two before it then written
   // too, as they are).
-  const bool part = valuePart != ValuePart::Auto;
+  // A stacked diagram's pane an eleventh (when not the top one); a ghost
+  // a twelfth.
+  const bool part = valuePart != ValuePart::Auto || pane > 0 || ghost;
   if (autoColor || pointMarker != PointMarker::None || part)
     s += autoColor ? " 1" : " 0";
   if (pointMarker != PointMarker::None || part)
     s += " " + QString::number(int(pointMarker));
   if (part)
     s += " " + QString::number(int(valuePart));
+  if (pane > 0 || ghost)
+    s += " " + QString::number(pane);
+  if (ghost)
+    s += " 1";
   s += ">";
 
   for (Marker *pm : Markers)
@@ -194,6 +203,10 @@ bool Graph::load(const QString& _s)
   n  = s.section(' ',9,9);    // the part of the value shown
   const int part = n.toInt(&ok);
   valuePart = ok && part > int(ValuePart::Auto) && part <= int(ValuePart::Imaginary) ? ValuePart(part) : ValuePart::Auto;
+  n  = s.section(' ',10,10);   // a stacked diagram's pane
+  const int inPane = n.toInt(&ok);
+  pane = ok && inPane > 0 && inPane < 64 ? inPane : 0;
+  ghost = s.section(' ',11,11) == QLatin1String("1");   // drawn dimmed, behind
 
   return true;
 }
@@ -306,6 +319,8 @@ Graph* Graph::sameNewOne()
   pg->autoColor = autoColor;
   pg->pointMarker = pointMarker;
   pg->valuePart = valuePart;
+  pg->pane = pane;
+  pg->ghost = ghost;
 
   for (Marker *pm : Markers)
     pg->Markers.append(pm->sameNewOne(pg));
@@ -334,7 +349,7 @@ const QList<QColor>& Graph::autoPalette()
 
 bool Graph::valuePartApplies(const QString& diagramName)
 {
-  static const QStringList cartesian = {"Rect", "Rect3D", "Tab", "Histogram"};
+  static const QStringList cartesian = {"Rect", "Rect3D", "Tab", "Histogram", "Stacked", "Contour"};
   return cartesian.contains(diagramName);
 }
 
@@ -367,7 +382,7 @@ void Graph::takeValuePart(ValuePart part, double* re, double* im)
 
 bool Graph::autoColorApplies(const QString& diagramName)
 {
-  static const QStringList curves = {"Rect", "Polar", "Smith", "ySmith", "PS", "SP", "Curve"};
+  static const QStringList curves = {"Rect", "Polar", "Smith", "ySmith", "PS", "SP", "Curve", "Stacked", "Bode", "Nichols", "Spectrum"};
   return curves.contains(diagramName);
 }
 
@@ -1014,3 +1029,13 @@ void Graph::drawLines(QPainter* painter) const {
 }
 
 // vim:ts=8:sw=2:et
+
+QString Graph::otherSpelling(const QString& var)
+{
+  static const QRegularExpression plain(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)([A-Za-z_][A-Za-z0-9_]*)$"));
+  static const QRegularExpression voltage(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)[vV]\\(([A-Za-z_][A-Za-z0-9_]*)\\)$"));
+  if (const QRegularExpressionMatch m = plain.match(var); m.hasMatch())
+    return m.captured(1) + QStringLiteral("v(") + m.captured(2) + QLatin1Char(')');
+  if (const QRegularExpressionMatch m = voltage.match(var); m.hasMatch()) return m.captured(1) + m.captured(2);
+  return {};
+}

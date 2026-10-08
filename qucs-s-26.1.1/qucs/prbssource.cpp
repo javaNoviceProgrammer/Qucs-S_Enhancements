@@ -288,7 +288,7 @@ Source sourceOf(const Schematic* sch, const QString& variable, const QString& da
 
 void installForEyeDiagrams()
 {
-    EyeDiagram::setSourceFinder([](const EyeDiagram* d, const QString& variable) -> Source {
+    EyeDiagram::setSourceFinder([](const Diagram* d, const QString& variable) -> Source {
         if (QucsMain == nullptr) return {};
         const QList<QucsDoc*> docs = QucsMain->allDocuments();
         const Schematic* owner = nullptr;

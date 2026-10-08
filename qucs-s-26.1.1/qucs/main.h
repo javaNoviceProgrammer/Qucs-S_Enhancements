@@ -177,6 +177,9 @@ struct tQucsSettings {
   // Ctrl+wheel scrolling; off, it scrolls and Ctrl+wheel zooms
   // (misc::wheelZooms()).
   bool WheelZooms = true;
+  // View > Colour Wires by Net: a supply's wires red and thicker, ground's
+  // green, the signals' as ever (erc.h's wireKinds).
+  bool ColourWires = false;
   bool PaperFollowsTheme = false;   // the schematic paper (and grid) is the theme's
   int GridMode = 0;   // the grid of the schematics: 0 as each says, 1 always hidden, 2 always shown
   // Where the simulator's output goes: the Simulation dock, a window of

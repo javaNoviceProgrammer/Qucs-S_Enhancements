@@ -100,6 +100,7 @@ public:
   void MMoveDelete(Schematic*, QMouseEvent*);
   void MMoveLabel(Schematic*, QMouseEvent*);
   void MMoveMarker(Schematic*, QMouseEvent*);
+  void MMoveProbe(Schematic*, QMouseEvent*);
   void MMoveSetLimits(Schematic*, QMouseEvent*);
   void MMoveMirrorY(Schematic*, QMouseEvent*);
   void MMoveMirrorX(Schematic*, QMouseEvent*);
@@ -125,6 +126,7 @@ public:
   void MPressWire2(Schematic*, QMouseEvent*, float, float);
   void MPressPainting(Schematic*, QMouseEvent*, float, float);
   void MPressMarker(Schematic*, QMouseEvent*, float, float);
+  void MPressProbe(Schematic*, QMouseEvent*, float, float);
   void MPressSetLimits(Schematic*, QMouseEvent*, float, float);
   void MPressOnGrid(Schematic*, QMouseEvent*, float, float);
   void MPressMoveText(Schematic*, QMouseEvent*, float, float);

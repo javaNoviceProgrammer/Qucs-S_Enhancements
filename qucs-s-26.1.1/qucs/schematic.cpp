@@ -31,6 +31,8 @@
 #include "wire.h"
 #include "paintings/paintings.h"
 #include "schematic.h"
+#include "cursorvalues.h"
+#include "probe.h"
 #include "statusbar.h"
 #include "ink.h"
 #include "levelofdetail.h"
@@ -742,6 +744,9 @@ void Schematic::drawContents(QPainter *p, int clipx, int clipy, int clipw, int c
         if (gesture == Gesture::Moving)
             drawElements(p, area, Layer::Moving);
     }
+    // The values where a marker is: not held with the scene - they follow
+    // the marker as it moves.
+    if (a_cursorValues) drawCursorValues(p);
 
     drawPostPaintEvents(p);
 }
@@ -928,12 +933,35 @@ Schematic::Net Schematic::netOf(Wire* start) const {
 
 Schematic::Net Schematic::selectedNet() const {
     Net net;
-    for (auto* wire : *a_Wires) {
-        if (!wire->isSelected || net.wires.count(wire)) continue;
+    const auto take = [&](Wire* wire) {
+        if (net.wires.count(wire)) return;
         Net part = netOf(wire);
         net.wires.merge(part.wires);
         net.nodes.merge(part.nodes);
-    }
+    };
+    for (auto* wire : *a_Wires)
+        if (wire->isSelected) take(wire);
+    // What a selected trace shows: a net's voltage (by its label), a
+    // part's current or power.
+    if (a_Diagrams == nullptr) return net;
+    for (Diagram* d : *a_Diagrams)
+        for (Graph* g : d->Graphs) {
+            if (!g->isSelected) continue;
+            if (const QString name = qucs_s::probe::netOfVariable(g->Var); !name.isEmpty()) {
+                for (auto* wire : *a_Wires)
+                    if (wire->hasLabel() && wire->label()->Name.compare(name, Qt::CaseInsensitive) == 0) take(wire);
+                for (auto* node : *a_Nodes)
+                    if (node->hasLabel() && node->label()->Name.compare(name, Qt::CaseInsensitive) == 0) {
+                        net.nodes.insert(node);
+                        for (Wire* wire : node->wires()) take(wire);
+                    }
+            } else if (const QString part = qucs_s::probe::partOfVariable(g->Var); !part.isEmpty()) {
+                for (auto* c : *a_Components)
+                    if (c->Name.compare(part, Qt::CaseInsensitive) == 0
+                        || spicecompat::check_refdes(c->Name, c->SpiceModel).compare(part, Qt::CaseInsensitive) == 0)
+                        net.parts.insert(c);
+            }
+        }
     return net;
 }
 
@@ -952,6 +980,11 @@ void Schematic::drawNetHighlight(QPainter* painter, const Net& net, const QRectF
     for (Node* n : net.nodes)
         if (area.contains(n->x(), n->y()))
             painter->drawEllipse(QPoint(n->x(), n->y()), 6, 6);
+    // A part whose current or power is shown: a glow around it.
+    for (Component* c : net.parts) {
+        const QRect box = c->boundingRect().adjusted(-4, -4, 4, 4);
+        if (area.intersects(QRectF(box))) painter->drawRoundedRect(box, 4, 4);
+    }
     painter->restore();
 }
 
@@ -1045,9 +1078,19 @@ void Schematic::drawElements(QPainter* painter, const QRectF& area, Layer layer)
     if (!a_symbolMode && layer != Layer::Staying)
         drawNetHighlight(painter, selectedNet(), area);
 
+    // Each wire in its net's kind's colour (View > Colour Wires by Net):
+    // the kinds found again when the schematic changed.
+    const bool kinds = QucsSettings.ColourWires && !a_symbolMode;
+    if (kinds && (a_wireKindsGeneration != a_sceneGeneration || a_wireKindsWires != a_Wires->size())) {
+        a_wireKinds = qucs_s::erc::wireKinds(const_cast<Schematic*>(this));
+        a_wireKindsGeneration = a_sceneGeneration;
+        a_wireKindsWires = a_Wires->size();
+    }
     for (auto* wire : *a_Wires) {
-        if (of(wire->isSelected) && touches(area, wire->boundingRect()))
-            wire->paint(painter);
+        if (of(wire->isSelected) && touches(area, wire->boundingRect())) {
+            if (kinds) wire->paint(painter, int(a_wireKinds.value(wire, qucs_s::erc::NetKind::Signal)));
+            else wire->paint(painter);
+        }
         if (wire->hasLabel()) {
             const bool moves = wire->isSelected || wire->label()->isSelected;
             if (of(moves) && touches(area, labelReach(wire->label())))
@@ -1140,9 +1183,12 @@ Schematic::BiasLabels Schematic::layoutBiasLabels(const QFontMetrics& metrics) c
     }
     if (result.labels.isEmpty())
         return result;
+    // (Each goes beside its node where it covers the least, upstream #1692.)
+    result.placements = qucs_s::bias::place(result.labels, labelObstacles());
+    return result;
+}
 
-    // What they had better not cover (upstream #1692): each goes beside
-    // its node where it covers the least of this.
+qucs_s::bias::Obstacles Schematic::labelObstacles() const {
     qucs_s::bias::Obstacles obstacles;
     for (auto* pc : *a_Components) {
         obstacles.boxes << pc->boundingRect();
@@ -1165,9 +1211,46 @@ Schematic::BiasLabels Schematic::layoutBiasLabels(const QFontMetrics& metrics) c
         obstacles.boxes << pd->boundingRect();
     for (auto* pp : *a_Paintings)
         obstacles.boxes << pp->boundingRect();
+    return obstacles;
+}
 
+Schematic::BiasLabels Schematic::layoutCursorValues(const QFontMetrics& metrics) const {
+    BiasLabels result;
+    const qucs_s::cursor::Reading reading = qucs_s::cursor::at(this, qucs_s::cursor::source(this));
+    for (const qucs_s::cursor::Value& v : reading.values) {
+        const QRect textRect = metrics.boundingRect(v.text);
+        result.labels << qucs_s::bias::Label{v.anchor, QSize(textRect.width() + 6, textRect.height() + 4), false};
+        result.texts << v.text;
+    }
+    if (result.labels.isEmpty())
+        return result;
+    // Clear of the DC bias labels, when they are shown too.
+    qucs_s::bias::Obstacles obstacles = labelObstacles();
+    if (a_showBias > 0)
+        for (const qucs_s::bias::Placement& p : layoutBiasLabels(metrics).placements) obstacles.boxes << p.box;
     result.placements = qucs_s::bias::place(result.labels, obstacles);
     return result;
+}
+
+void Schematic::drawCursorValues(QPainter* painter) {
+    painter->save();
+    const BiasLabels values = layoutCursorValues(painter->fontMetrics());
+    const QColor ink(123, 31, 162);   // (not the DC bias' blue and green)
+    for (int i = 0; i < values.labels.size(); ++i) {
+        if (!values.placements.at(i).leader) continue;
+        const QRect box = values.placements.at(i).box;
+        const QPoint a = values.labels.at(i).anchor;
+        painter->setPen(QPen(qucs_s::ink::on(ink), 1));
+        painter->drawLine(a, QPoint(qBound(box.left(), a.x(), box.right()), qBound(box.top(), a.y(), box.bottom())));
+    }
+    for (int i = 0; i < values.labels.size(); ++i) {
+        const QRect box = values.placements.at(i).box;
+        painter->setBrush(QColor(243, 229, 245));
+        painter->setPen(QPen(ink, 1));
+        painter->drawRoundedRect(QRectF(box), 15, 15, Qt::RelativeSize);
+        painter->drawText(box, Qt::AlignCenter, values.texts.at(i));
+    }
+    painter->restore();
 }
 
 void Schematic::drawDcBiasPoints(QPainter* painter) {
@@ -1295,7 +1378,7 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
     for (Diagram* diagram : *a_Diagrams) {
         // BUG: Obtaining the diagram type by name is marked as a bug elsewhere (to be solved separately).
         // TODO: Currently only rectangular diagrams are supported.
-        if (diagram->getSelected(xpos, ypos) && (diagram->Name == "Rect" || diagram->Name == "Histogram" || diagram->Name == "Eye")) {
+        if (diagram->getSelected(xpos, ypos) && diagram->zoomsByRectangle()) {
             // Each axis by its variable, with the unit it tells (statusbar.h).
             const QPointF mouseClickPoint(xpos - diagram->cx, diagram->cy - ypos);
             text = qucs_s::status::readout(diagram, diagram->pointToValue(mouseClickPoint));
@@ -1511,9 +1594,15 @@ void Schematic::paintSchToViewpainter(QPainter* painter, bool printAll) {
         }
     }
 
+    // (Printed and exported as drawn: by their nets' kinds when so chosen.)
+    const QHash<const Wire*, qucs_s::erc::NetKind> kinds =
+        QucsSettings.ColourWires && !a_symbolMode ? qucs_s::erc::wireKinds(this) : QHash<const Wire*, qucs_s::erc::NetKind>();
     for (auto* wire : *a_Wires) {
         if (should_draw(wire)) {
-            draw_preserve_selection(wire, painter);
+            const bool selected = wire->isSelected;
+            wire->isSelected = false;
+            wire->paint(painter, int(kinds.value(wire, qucs_s::erc::NetKind::Signal)));
+            wire->isSelected = selected;
         }
 
         if (auto* label = wire->label()) {
@@ -1579,6 +1668,7 @@ void Schematic::paintSchToViewpainter(QPainter* painter, bool printAll) {
     if (a_showBias > 0) { // show DC bias points in schematic ?
         drawDcBiasPoints(painter);
     }
+    if (a_cursorValues) drawCursorValues(painter);   // (printed and exported too)
 }
 
 void Schematic::zoomAroundPoint(double offeredScaleChange, QPoint coords, bool viewportRelative=true)

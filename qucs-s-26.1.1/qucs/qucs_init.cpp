@@ -394,6 +394,15 @@ void QucsApp::initActions() {
   // mainAccel->connectItem(mainAccel->insertItem(Qt::Key_Backspace),
   //                       editDelete, SLOT(toggle()) );
 
+  importLTspice = new QAction(tr("Import LTspice Schematic..."), this);
+  importLTspice->setObjectName(QStringLiteral("importLTspice"));
+  importLTspice->setStatusTip(tr("Makes a schematic of an LTspice schematic (.asc)"));
+  importLTspice->setWhatsThis(
+      tr("Import LTspice Schematic\n\nMakes a schematic of an LTspice .asc: its parts by their symbols' pins (the .asy files "
+         "beside it, else LTspice's standard symbols), its nets by its wires and flags, its directives kept - placed in rows, "
+         "joined by net labels. What was left out is said."));
+  connect(importLTspice, &QAction::triggered, this, &QucsApp::slotImportLTspice);
+
   exportAsImage = new QAction(tr("Export as image..."), this);
   connect(exportAsImage, SIGNAL(triggered()),
           SLOT(slotSaveSchematicToGraphicsFile()));
@@ -721,6 +730,14 @@ void QucsApp::initActions() {
   insWire->setCheckable(true);
   connect(insWire, SIGNAL(toggled(bool)), SLOT(slotSetWire(bool)));
 
+  insBus = new QAction(QIcon((":/bitmaps/svg/bus.svg")), tr("Bus"), this);
+  insBus->setObjectName(QStringLiteral("insertBus"));
+  insBus->setStatusTip(tr("Draws a bus: a thick line named for the nets it gathers"));
+  insBus->setWhatsThis(tr("Bus\n\nDraws a bus - a thick line named for the nets it gathers, D[7:0] (double-click it to name it) - "
+                          "to which their wires are drawn. It joins nothing by touching: its members are the nets named D7 to "
+                          "D0, and Check Schematic says when a net ends on it with no member's name."));
+  connect(insBus, &QAction::triggered, this, &QucsApp::slotInsertBus);
+
   insLabel =
       new QAction(QIcon(":/bitmaps/svg/nodename.svg"), tr("Wire Label"), this);
   insLabel->setShortcut(tr("Ctrl+L"));
@@ -888,6 +905,27 @@ void QucsApp::initActions() {
   setMarker->setCheckable(true);
   connect(setMarker, SIGNAL(toggled(bool)), SLOT(slotSetMarker(bool)));
 
+  probeAction = new QAction(QIcon((":/bitmaps/svg/probe.svg")), tr("Probe"), this);
+  probeAction->setObjectName(QStringLiteral("probe"));
+  probeAction->setStatusTip(tr("Puts what is clicked into a diagram: a net's voltage, a pin's current, a part's power"));
+  probeAction->setWhatsThis(
+      tr("Probe\n\nClick a net for its voltage, a part's pin for the current into it, a part for its power: each "
+         "goes into the selected diagram (else the one probed last, else the first; a new one when there is none). "
+         "A net with no name is labelled, a current or a power saved by the next simulation. Selecting a trace "
+         "lights up its net or its part."));
+  probeAction->setCheckable(true);
+  connect(probeAction, SIGNAL(toggled(bool)), SLOT(slotProbe(bool)));
+
+  cursorValuesAction = new QAction(tr("Values at the Marker"), this);
+  cursorValuesAction->setObjectName(QStringLiteral("cursorValues"));
+  cursorValuesAction->setStatusTip(tr("Writes each named net's voltage where a diagram's marker is, and follows the marker"));
+  cursorValuesAction->setWhatsThis(
+      tr("Values at the Marker\n\nLabels each named net of the schematic with its voltage at the marker's time in a "
+         "transient, or at its point of an AC or DC sweep - from the run of the marker's trace - as the DC bias labels "
+         "show the operating point. The labels follow the marker as it moves (the selected one, else the first)."));
+  cursorValuesAction->setCheckable(true);
+  connect(cursorValuesAction, SIGNAL(toggled(bool)), SLOT(slotCursorValues(bool)));
+
   setDiagramLimits = new QAction(QIcon((":/bitmaps/svg/viewwave.svg")),
                                  tr("Set Diagram Limits"), this);
   // setDiagramLimits->setShortcut(tr("Ctrl+E"));
@@ -908,6 +946,15 @@ void QucsApp::initActions() {
       tr("Reset Diagram Limits\n\nResets the limits for all axis to auto."));
   connect(resetDiagramLimits, SIGNAL(triggered()),
           SLOT(slotResetDiagramLimits()));
+
+  colourWires = new QAction(tr("Colour Wires by Net"), this);
+  colourWires->setObjectName(QStringLiteral("colourWires"));
+  colourWires->setCheckable(true);
+  colourWires->setChecked(QucsSettings.ColourWires);
+  colourWires->setStatusTip(tr("Draws a supply's wires red and thicker, ground's green"));
+  colourWires->setWhatsThis(tr("Colour Wires by Net\n\nDraws each wire as its net is: a supply's (VCC, VDD, +5V, a DC source's "
+                               "pin to ground, a part's supply pin) red and thicker, ground's green, a signal's as ever."));
+  connect(colourWires, &QAction::toggled, this, &QucsApp::slotColourWires);
 
   showGrid = new QAction(tr("Show Grid (current document)"), this);
   showGrid->setCheckable(true);
@@ -1041,6 +1088,7 @@ void QucsApp::initMenuBar() {
   fileMenu->addAction(textNew);
   fileMenu->addAction(symNew);
   fileMenu->addAction(fileOpen);
+  fileMenu->addAction(importLTspice);
 
   QMenu *closeFileMenu = new QMenu(tr("Close"), fileMenu);
   closeFileMenu->addAction(fileClose);
@@ -1128,6 +1176,7 @@ void QucsApp::initMenuBar() {
 
   insMenu = new QMenu(tr("&Insert")); // menuBar entry insMenu
   insMenu->addAction(insWire);
+  insMenu->addAction(insBus);
   insMenu->addAction(insLabel);
   insMenu->addAction(insEquation);
   insMenu->addAction(insGround);
@@ -1198,6 +1247,8 @@ void QucsApp::initMenuBar() {
   simMenu->addAction(checkHierarchyAction);
   simMenu->addAction(showMsg);
   simMenu->addAction(simConsole->clearAction());
+  simMenu->addAction(probeAction);
+  simMenu->addAction(cursorValuesAction);
   simMenu->addAction(showNet);
   simMenu->addAction(reloadSimData);
   simMenu->addAction(save_netlist);
@@ -1217,6 +1268,7 @@ void QucsApp::initMenuBar() {
   viewMenu->addAction(setDiagramLimits);
   viewMenu->addSeparator();
   viewMenu->addAction(showGrid);
+  viewMenu->addAction(colourWires);
   viewMenu->addSeparator();
   // viewMenu->setCheckable(true);
   viewMenu->addAction(viewBrowseDock);
@@ -1419,6 +1471,7 @@ void QucsApp::initToolBar() {
   simulateToolbar->addAction(tune);
   simulateToolbar->addAction(dpl_sch);
   simulateToolbar->addAction(setMarker);
+  simulateToolbar->addAction(probeAction);
   simulateToolbar->addAction(setDiagramLimits);
 
   // Hierarchy and netlist, to the right of the simulation toolbar: into
@@ -1893,6 +1946,9 @@ void QucsApp::setDefaultShortcut() {
 
   mgr.registerCommand("Sim.ReloadData", "Simulation", "Reload Simulation Data", reloadSimData,
                       QKeySequence());
+
+  mgr.registerCommand("Sim.Probe", "Simulation", "Probe", probeAction, QKeySequence());
+  mgr.registerCommand("Sim.CursorValues", "Simulation", "Values at the Marker", cursorValuesAction, QKeySequence());
 
   mgr.registerCommand("Sim.Check", "Simulation", "Check Schematic", checkSchematicAction,
                       QKeySequence(Qt::Key_F10));

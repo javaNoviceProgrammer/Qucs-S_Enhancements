@@ -238,6 +238,8 @@ public:
   /// View > Show Grid: for the current document, or - when the settings
   /// show or hide the grid everywhere - for all schematics.
   void updateGridAction();
+  /// Values at the Marker: checked as the schematic in front shows them.
+  void updateCursorValuesAction();
   /// Locks the toolbars where they are - none can be dragged elsewhere,
   /// one left floating goes back to the window - or unlocks them; kept in
   /// the settings (View > Toolbars > Lock Toolbars).
@@ -706,6 +708,8 @@ public:
   QAction *TabPreviousAction; /// Action for raising the previous document tab
 
   QAction *exportAsImage;
+  QAction *importLTspice = nullptr;   // File > Import LTspice Schematic
+  QAction *colourWires = nullptr;     // View > Colour Wires by Net
   QAction *exportDiagramAsImage;   // a diagram's context menu: the diagram alone
   QAction *exportGraphics;         // the canvas' context menu: the export dialog
   QAction *editCopyImage;          // the selection, or everything, on the clipboard as a picture
@@ -927,9 +931,9 @@ private:
 public:
   void editFile(const QString &, bool reloadFile = false);
 
-  QAction *insWire, *insLabel, *insGround, *insPort, *insEquation, *magPlus,
+  QAction *insWire, *insBus = nullptr, *insLabel, *insGround, *insPort, *insEquation, *magPlus,
       *editRotate, *editMirror, *editMirrorY, *editPaste, *select, *editStretch,
-      *editMove, *editActivate, *editDelete, *setMarker,
+      *editMove, *editActivate, *editDelete, *setMarker, *probeAction, *cursorValuesAction = nullptr,
       *setDiagramLimits, *resetDiagramLimits, *showGrid, *onGrid, *moveText,
       *helpIndex, *helpGetStart, *callEditor, *callFilter, *callLine,
       *callActiveFilter, *showMsg, *showNet, *reloadSimData, *checkSchematicAction, *checkHierarchyAction, *alignTop, *alignBottom,
@@ -965,6 +969,11 @@ public slots:
   void slotEditMove(bool); // move selection of components and disconnect wires.
   void slotInsertLabel(bool);
   void slotSetMarker(bool);
+  void slotProbe(bool);
+  void slotCursorValues(bool);
+  void slotInsertBus();
+  void slotImportLTspice();
+  void slotColourWires(bool on);   // every schematic's wires by their nets' kinds, or not   // an .asc made a schematic (as import_netlist makes it)   // a bus to draw: a thick line named for the nets it gathers   // the named nets' values where a marker is, on the schematic
   void slotSetDiagramLimits(bool);
   void slotResetDiagramLimits();
   void slotShowGrid();     // turn the grid on or off

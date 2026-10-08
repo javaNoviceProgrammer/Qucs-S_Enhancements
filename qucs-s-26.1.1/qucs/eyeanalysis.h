@@ -67,6 +67,7 @@ struct Eye {
     double q = NaN;                  ///< (high - low) / (sigma high + sigma low); infinite without noise, NaN with a level empty
     int crossings = 0;
     int lower = 0, upper = 0;        ///< the symbols on either level at the centre
+    QVector<double> offsets;         ///< each crossing's phase about their mean, in UI, rising
 };
 
 struct Result {
@@ -118,6 +119,56 @@ QPolygonF mask(double width, double height);
 /// curve crosses them. Returns the number of windows.
 int fold(const dataset::Curve& c, double start, double ui, double origin, int span,
          const std::function<void(const QVector<QPointF>&)>& each);
+
+/// The bathtub curve of an eye: the bit error rate sampling at each phase
+/// of the unit interval. An error is a crossing on the wrong side of the
+/// sampling instant: the left wall's later than it, or the right wall's
+/// (a UI later) earlier. Measured, it is the crossings counted, down to
+/// one in their number; beyond them, the jitter's dual-Dirac model: each
+/// tail of the crossings a Gaussian (the random jitter, RJ) about a Dirac
+/// (the two Diracs apart by the deterministic jitter, DJ), half the
+/// transitions each - fitted on the Q scale to the outermost fifth of the
+/// crossings either side. Too few crossings for the tails (under 10): one
+/// Gaussian of their rms. A bit error is a transition's: the rate at a
+/// wall is half the transition density.
+struct Bathtub {
+    QString error;                     ///< why there is none (empty: there is one)
+    double ui = NaN;
+    double density = NaN;              ///< transitions per symbol (0 to 1)
+    double left = NaN;                 ///< the left wall's crossings' mean, in UI from the eye's centre (about -0.5); the right wall's a UI later
+    double deltaLeft = 0.0, deltaRight = 0.0;   ///< the Diracs, in UI about the crossings' mean
+    double sigmaLeft = 0.0, sigmaRight = 0.0;   ///< the Gaussians of the early and the late tail, in UI
+    bool dualDirac = false;            ///< the tails fitted; else one Gaussian of the crossings' rms
+    QVector<double> offsets;           ///< the crossings about their mean, in UI, rising
+    bool ok() const { return error.isEmpty(); }
+    /// The random jitter (rms) and the deterministic (dual-Dirac), in UI.
+    double rj() const { return (sigmaLeft + sigmaRight) / 2.0; }
+    double dj() const { return deltaRight - deltaLeft; }
+    /// The model's bit error rate sampling at \a phase (UI from the eye's
+    /// centre).
+    double ber(double phase) const;
+    /// The crossings counted: 0 where none is on the wrong side.
+    double measured(double phase) const;
+    /// The phase the model's rate is lowest at (between the walls).
+    double best() const;
+    /// The phases either side of best() where the model's rate rises
+    /// through \a ber: false when it is above it at best() too (closed:
+    /// \a from and \a to both best()).
+    bool opening(double ber, double* from, double* to) const;
+};
+
+/// Eye \a eye of \a r (NRZ's 0, PAM4's 0 to 2)'s bathtub curve.
+Bathtub bathtubOf(const Result& r, int eye);
+
+/// The standard normal's tail, Q(x) = P(X > x), and its inverse (p in
+/// (0, 1)).
+double gaussianTail(double x);
+double gaussianTailInverse(double p);
+
+/// \a b as JSON, the opening at \a ber: the transition density, the
+/// model, RJ, DJ, the total jitter and the opening at it (seconds and
+/// UI), where the rate is lowest and how low; or {"error"}.
+QJsonObject toJson(const Bathtub& b, double ber);
 
 /// \a r as JSON, its numbers to 7 places: the unit interval, the levels,
 /// each eye (its height, width, jitter, Q, threshold), the symbols, the

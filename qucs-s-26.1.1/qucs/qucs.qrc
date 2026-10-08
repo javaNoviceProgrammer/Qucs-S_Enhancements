@@ -49,6 +49,19 @@
         <file>bitmaps/svg/rect.svg</file>
         <file>bitmaps/svg/histogram.svg</file>
         <file>bitmaps/svg/eye.svg</file>
+        <file>bitmaps/svg/stacked.svg</file>
+        <file>bitmaps/svg/probe.svg</file>
+        <file>bitmaps/svg/polezero.svg</file>
+        <file>bitmaps/svg/bode.svg</file>
+        <file>bitmaps/svg/nichols.svg</file>
+        <file>bitmaps/svg/spectrum.svg</file>
+        <file>bitmaps/svg/bathtub.svg</file>
+        <file>bitmaps/svg/contour.svg</file>
+        <file>bitmaps/svg/spectrogram.svg</file>
+        <file>bitmaps/svg/tornado.svg</file>
+        <file>bitmaps/svg/boxplot.svg</file>
+        <file>bitmaps/svg/constellation.svg</file>
+        <file>bitmaps/svg/bus.svg</file>
         <file>bitmaps/svg/polar.svg</file>
         <file>bitmaps/svg/tabular.svg</file>
         <file>bitmaps/svg/smith.svg</file>

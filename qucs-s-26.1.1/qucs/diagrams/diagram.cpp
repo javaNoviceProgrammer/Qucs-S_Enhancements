@@ -142,9 +142,12 @@ void Diagram::paintDiagram(QPainter *painter) {
 
         painter->scale(1.0, -1.0); // make Y-axis grow upwards
         paintBehindGraphs(painter);
-        for (Graph *pg: Graphs) {
-            pg->paint(painter);
-        }
+        // (The ghosts first, behind the others.)
+        if (paintsGraphs())
+            for (const bool ghosts : {true, false})
+                for (Graph *pg: Graphs)
+                    if (pg->ghost == ghosts) pg->paint(painter);
+        paintLimits(painter);
     }
     painter->restore();  // to translated(cx, cy) with no negative y-scale
 
@@ -166,6 +169,7 @@ void Diagram::paintDiagram(QPainter *painter) {
 
     paintInFront(painter, colors);
     paintLegend(painter, colors);
+    paintVerdict(painter);
 
     // The title, centred above the frame.
     if (!title.isEmpty()) {
@@ -272,6 +276,7 @@ void Diagram::paintLegend(QPainter *painter, const Colors &colors) {
     constexpr int maxCurveRows = 24;
     QList<Row> rows;
     for (Graph *pg: Graphs) {
+        const qsizetype first = rows.size();
         if (pg->distinguishesCurves() && pg->countY > 1) {
             const int shown = std::min(pg->countY, maxCurveRows);
             for (int c = 0; c < shown; ++c)
@@ -283,6 +288,10 @@ void Diagram::paintLegend(QPainter *painter, const Colors &colors) {
         } else {
             rows.append({pg->curveColor(0), pg->Style, pg->Thick, pg->withValuePart(pg->Var), true, pg->curveMarker(0)});
         }
+        // (A ghost's samples as faint as it is.)
+        if (pg->ghost)
+            for (qsizetype i = first; i < rows.size(); ++i)
+                if (rows[i].color.isValid()) rows[i].color.setAlphaF(Graph::GhostOpacity);
     }
 
     const QFontMetricsF fm(painter->font());
@@ -391,9 +400,10 @@ void Diagram::createAxisLabels() {
     y = -y1;
     if (xAxis.Label.isEmpty()) {
         // write all x labels ----------------------------------------
+        // (A ghost - a kept run's - no label: it is in the legend.)
         for (Graph *pg: Graphs) {
             DataX const *pD = pg->axis(0);
-            if (!pD) continue;
+            if (!pD || pg->ghost) continue;
             y -= LineSpacing;
             if (Name[0] != 'C') {   // locus curve ?
                 w = metrics.boundingRect(pD->Var).width() >> 1;
@@ -426,7 +436,7 @@ void Diagram::createAxisLabels() {
 
     QStringList used_kernels, used_simulations;
     for (const auto pg: Graphs) {
-      if (!pg->Var.contains("/")) continue; // Qucsator data
+      if (!pg->Var.contains("/") || pg->ghost) continue; // Qucsator data; a kept run's
         QString kernel_name = pg->Var.section('/', 0, 0);
         QString var_name = pg->Var;
         auto p = var_name.indexOf('/');
@@ -445,7 +455,7 @@ void Diagram::createAxisLabels() {
         // if all graphs are from the same simulator and simulation
 
         for (Graph *pg: Graphs) {
-            if (pg->yAxisNo != 0) continue;
+            if (pg->yAxisNo != 0 || pg->ghost) continue;
             if (pg->cPointsY) {
                 QString var_name = pg->Var;
                 if (!QucsSettings.fullTraceName) {
@@ -492,7 +502,7 @@ void Diagram::createAxisLabels() {
     if (zAxis.Label.isEmpty()) {
         // draw right y-label for all graphs ------------------------------
         for (Graph *pg: Graphs) {
-            if (pg->yAxisNo != 1) continue;
+            if (pg->yAxisNo != 1 || pg->ghost) continue;
             if (pg->cPointsY) {
                 QString var_name = pg->Var;
                 if (!QucsSettings.fullTraceName) {
@@ -550,9 +560,11 @@ int Diagram::regionCode(float x, float y) const {
     else if (x > float(x2))  // compare as float to avoid integer overflow
         code |= 2;
 
-    if (y < 0.0)
+    // (Within a band of the frame, when one is set: a pane.)
+    const float low = clipBand ? clipLow : 0.0f, high = clipBand ? clipHigh : float(y2);
+    if (y < low)
         code |= 4;
-    else if (y > float(y2))  // compare as float to avoid integer overflow
+    else if (y > high)  // compare as float to avoid integer overflow
         code |= 8;
 
     return code;
@@ -568,6 +580,12 @@ bool Diagram::insideDiagram(float x, float y) const {
 
   float rTol = R + tol; // Radius plus tolerance
   return ((x * x + y * y) <= rTol * rTol);
+}
+
+QList<Marker *> Diagram::markers() const {
+    QList<Marker *> all;
+    for (Graph *pg: Graphs) all += pg->Markers;
+    return all;
 }
 
 /*!
@@ -632,11 +650,13 @@ void Diagram::rectClip(Graph::iterator &p) const {
             y = y_1 + dy * (x2 - x_1) / dx;
             x = float(x2);
         } else if (code & 4) {
-            x = x_1 - dx * y_1 / dy;
-            y = 0.0;
+            const float low = clipBand ? clipLow : 0.0f;
+            x = x_1 + dx * (low - y_1) / dy;
+            y = low;
         } else if (code & 8) {
-            x = x_1 + dx * (y2 - y_1) / dy;
-            y = float(y2);
+            const float high = clipBand ? clipHigh : float(y2);
+            x = x_1 + dx * (high - y_1) / dy;
+            y = high;
         }
 
         if (code == code1) {
@@ -738,10 +758,12 @@ void Diagram::calcData(Graph *g) {
     int i, z, Counter = 2;
     int Size = ((2 * (g->count(0)) + 1) * g->countY) + 10;
 
+    // (Clipped when a band is set too: a pane's.)
     if (xAxis.autoScale)
         if (yAxis.autoScale)
             if (zAxis.autoScale)
-                Counter = -50000;
+                if (!clipBand)
+                    Counter = -50000;
 
     double Dummy = 0.0;  // not used
     double *py = &Dummy;
@@ -761,9 +783,7 @@ void Diagram::calcData(Graph *g) {
     ++p;
     QUCS_ASSERT(p != g->end());
 
-    Axis *pa;
-    if (g->yAxisNo == 0) pa = &yAxis;
-    else pa = &zAxis;
+    const Axis *pa = graphAxis(g);
 
     switch (g->Style) {
         case GRAPHSTYLE_SOLID: // ***** solid line ****************************
@@ -890,6 +910,10 @@ bool Diagram::resizeTouched(float fX, float fY, float len) {
     return true;
 }
 
+const Axis *Diagram::graphAxis(const Graph *g) const {
+    return g->yAxisNo == 0 ? &yAxis : &zAxis;
+}
+
 // --------------------------------------------------------------------------
 void Diagram::getAxisLimits(Graph *pg) {
     // FIXME: Graph should know the limits. but it doesn't yet.
@@ -924,9 +948,7 @@ void Diagram::getAxisLimits(Graph *pg) {
         }
     }
 
-    Axis *pa;
-    if (pg->yAxisNo == 0) pa = &yAxis;
-    else pa = &zAxis;
+    Axis *pa = graphAxis(pg);
     (pa->numGraphs)++;    // count graphs
     p = pg->cPointsY;
     if (p == nullptr) return;    // if no data => invalid
@@ -955,6 +977,7 @@ void Diagram::getAxisLimits(Graph *pg) {
 
 // --------------------------------------------------------------------------
 void Diagram::loadGraphData(const QString &defaultDataSet) {
+    a_dataSet = defaultDataSet;
     int yNum = yAxis.numGraphs;
     int zNum = zAxis.numGraphs;
     yAxis.numGraphs = zAxis.numGraphs = 0;
@@ -963,6 +986,7 @@ void Diagram::loadGraphData(const QString &defaultDataSet) {
     double xmax = xAxis.max, ymax = yAxis.max, zmax = zAxis.max;
     yAxis.min = zAxis.min = xAxis.min = DBL_MAX;
     yAxis.max = zAxis.max = xAxis.max = -DBL_MAX;
+    clearExtraRanges();
 
     int No = 0;
     for (Graph *pg: Graphs) {
@@ -994,6 +1018,7 @@ void Diagram::loadGraphData(const QString &defaultDataSet) {
         yAxis.min = yAxis.max = 0.0;
     if (zAxis.min > zAxis.max)
         zAxis.min = zAxis.max = 0.0;
+    settleExtraRanges();
 
 /*  if((Name == "Polar") || (Name == "Smith")) {  // one axis only
     if(yAxis.min > zAxis.min)  yAxis.min = zAxis.min;
@@ -1009,6 +1034,7 @@ void Diagram::recalcGraphData() {
     yAxis.min = zAxis.min = xAxis.min = DBL_MAX;
     yAxis.max = zAxis.max = xAxis.max = -DBL_MAX;
     yAxis.numGraphs = zAxis.numGraphs = 0;
+    clearExtraRanges();
 
     // get maximum and minimum values
     for (Graph *pg: Graphs)
@@ -1026,6 +1052,7 @@ void Diagram::recalcGraphData() {
         zAxis.min = 0.0;
         zAxis.max = 1.0;
     }
+    settleExtraRanges();
     if ((Name == "Polar") || (Name == "Smith")) {  // one axis only
         if (yAxis.min > zAxis.min) yAxis.min = zAxis.min;
         if (yAxis.max < zAxis.max) yAxis.max = zAxis.max;
@@ -1041,13 +1068,16 @@ void Diagram::updateGraphData() {
 
     for (Graph *pg: Graphs) {
         pg->clear();
-        if ((valid & (pg->yAxisNo + 1)) != 0)
+        if (drawsGraph(valid, pg))
             calcData(pg);   // calculate screen coordinates
         else if (pg->cPointsY) {
             delete[] pg->cPointsY;
             pg->cPointsY = nullptr;
         }
     }
+
+    // Where its traces are beyond its limits.
+    a_violations = limits.isEmpty() || !takesLimits() ? QList<qucs_s::limits::Violation>() : qucs_s::limits::check(this);
 
     createAxisLabels();  // virtual function
 
@@ -1119,10 +1149,11 @@ int Graph::loadDatFile(const QString &fileName) {
     // PlotVs() emulation
     bool hasExplIndep = false; // Ex[licit indep var
     QString ExplIndep = "";
-    if (Variable.contains("@")) {
+    // (Not a device's vector: @r1[i].)
+    if (const int at = Graph::plotVsSeparator(Variable); at > 0) {
         hasExplIndep = true;
-        ExplIndep = Variable.section("@", 1, 1);
-        Variable = Variable.section("@", 0, 0);
+        ExplIndep = Variable.mid(at + 1);
+        Variable = Variable.left(at);
     }
 
 
@@ -1179,15 +1210,11 @@ int Graph::loadDatFile(const QString &fileName) {
     // "pFile" is used through-out the whole function and must NOT used
     // for other purposes!
     char *pFile = findVariable(Variable);
-    // A name alone (ac.gain) that the dataset has as a voltage, v(gain):
-    // ngspice writes a computed vector of a voltage's type so (a NutmegEq's
-    // mag(v(out))), and a trace named before the first run cannot know.
-    static const QRegularExpression plain(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)([A-Za-z_][A-Za-z0-9_]*)$"));
+    // Spelt the other way (ac.gain as ac.v(gain), ac.v(s_1_1) as
+    // ac.s_1_1): a trace named before the first run cannot know.
     if (!pFile)
-        if (const QRegularExpressionMatch m = plain.match(Variable); m.hasMatch()) {
-            const QString voltage = m.captured(1) + QStringLiteral("v(") + m.captured(2) + QLatin1Char(')');
-            if ((pFile = findVariable(voltage))) Variable = voltage;
-        }
+        if (const QString other = Graph::otherSpelling(Variable); !other.isEmpty())
+            if ((pFile = findVariable(other))) Variable = other;
     Variable = "dep " + Variable + " ";
 
     if (!pFile) return 0;   // data not found
@@ -1426,11 +1453,9 @@ int Graph::loadBinaryDatFile(const QString &path, QString variable, bool hasExpl
     df::BinaryReader data;
     if (!data.open(path)) return 0;
     int at = data.find(variable, true);
-    // A name alone (ac.gain) that the dataset has as a voltage, v(gain).
-    static const QRegularExpression plain(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)([A-Za-z_][A-Za-z0-9_]*)$"));
+    // Spelt the other way (ac.gain as ac.v(gain), ac.v(s_1_1) as ac.s_1_1).
     if (at < 0)
-        if (const QRegularExpressionMatch m = plain.match(variable); m.hasMatch())
-            at = data.find(m.captured(1) + QStringLiteral("v(") + m.captured(2) + QLatin1Char(')'), true);
+        if (const QString other = Graph::otherSpelling(variable); !other.isEmpty()) at = data.find(other, true);
     if (at < 0) return 0;   // data not found
     const df::Block &block = data.blocks().at(at);
 
@@ -1743,6 +1768,8 @@ QString Diagram::save() {
 
     for (Graph *pg: Graphs)
         s += pg->save() + "\n";
+    for (const qucs_s::limits::Limit &limit: limits)
+        s += "\t" + limit.save() + "\n";
 
     s += "  </" + Name + ">";
     return s;
@@ -1909,7 +1936,24 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
         s = s.trimmed();
         if (s.isEmpty()) continue;
 
-        if (s == ("</" + Name + ">")) return true;  // found end tag ?
+        if (s == ("</" + Name + ">")) {   // found end tag ?
+            // The delta markers' references, now that all are there.
+            const QList<Marker*> all = markers();
+            for (Marker* m : all)
+                if (m->pendingReference > 0 && m->pendingReference <= all.size()) {
+                    m->setReference(all.at(m->pendingReference - 1));
+                    m->pendingReference = 0;
+                }
+            for (Marker* m : all)
+                if (m->reference()) m->createText();
+            return true;
+        }
+        if (s.section(' ', 0, 0) == "<Limit") {   // a spec limit
+            qucs_s::limits::Limit limit;
+            if (!qucs_s::limits::Limit::load(s, &limit)) return false;
+            limits.append(limit);
+            continue;
+        }
         if (s.section(' ', 0, 0) == "<Mkr") {
 
             // .......................................................
@@ -2409,7 +2453,7 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
 
             if ((zD < 1.5 * zDstep) || (z == 0)) {
                 double yVal = qucs::num2db(zD, Axis->Units);
-                tmp = numberText(yVal);
+                tmp = numberText(Axis, yVal);
 
                 if (Axis->up < 0.0) tmp = '-' + tmp;
 
@@ -2446,7 +2490,7 @@ bool Diagram::calcYAxis(Axis *Axis, int x0) {
         z = gridPixel(zD);   //  "int(...)" implies "floor(...)"
         for (int gridLines = 0; (z <= y2) && (z >= 0) && gridLines < MaxGridLines; ++gridLines) {  // create all grid lines
             if (fabs(GridNum) < 0.01 * pow(10.0, Expo)) GridNum = 0.0;// make 0 really 0
-            tmp = numberText(GridNum, GridStep);
+            tmp = numberText(Axis, GridNum, GridStep);
 
             w = metrics.boundingRect(tmp).width();  // width of text
             if (maxWidth < w) maxWidth = w;
@@ -2561,3 +2605,88 @@ QRectF Diagram::textRect(const Text& text, const QFontMetricsF& metrics) const
 
 
 // vim:ts=8:sw=2:noet
+
+// ------------------------------------------------------------
+void Diagram::paintLimits(QPainter *painter) {
+    if (limits.isEmpty() || !takesLimits()) return;
+    painter->save();
+    // Inside the plot area (its shape is y down; the painter's y is up).
+    painter->setClipPath(QTransform().scale(1.0, -1.0).map(plotAreaShape()), Qt::IntersectClip);
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    const QColor red(210, 30, 30);
+
+    // The traces again, in red, where they are beyond a limit.
+    for (const qucs_s::limits::Violation &v: std::as_const(a_violations)) {
+        Graph *g = Graphs.value(v.graph);
+        if (g == nullptr || g->begin() == g->end()) continue;
+        const Axis *a = graphAxis(g);
+        float x0 = 0, x1 = 0, y = 0;
+        const double y0[2] = {a->low, 0};
+        calcCoordinate(&v.from, y0, nullptr, &x0, &y, a);
+        calcCoordinate(&v.to, y0, nullptr, &x1, &y, a);
+        if (x1 < x0) std::swap(x0, x1);
+        painter->save();
+        painter->setClipRect(QRectF(QPointF(x0 - 1, -1e6), QPointF(x1 + 1, 1e6)), Qt::IntersectClip);
+        painter->setPen(QPen(qucs_s::ink::on(red), g->Thick + 1, Qt::SolidLine));
+        g->paintLines(painter);
+        painter->restore();
+    }
+
+    // The limits, dashed: straight between their points; a level across.
+    for (const qucs_s::limits::Limit &limit: limits) {
+        const Axis *a = limitAxis(limit);
+        if (a == nullptr) continue;
+        // (Back from the units the axis shows to the values it maps.)
+        const auto mapped = [&](double x, double yShown) {
+            double yv = yShown;
+            if (a->log && a->Units != Axis::NoUnits) yv = qucs::db2num(yShown, a->Units);
+            const double yd[2] = {yv, 0};
+            float px = 0, py = 0;
+            calcCoordinate(&x, yd, nullptr, &px, &py, a);
+            return QPointF(px, py);
+        };
+        QPolygonF line;
+        if (limit.isLevel()) {
+            const QPointF p = mapped(xAxis.low, limit.points.first().y());
+            line << QPointF(0, p.y()) << QPointF(x2, p.y());
+        } else {
+            for (const QPointF &p: limit.points) line << mapped(p.x(), p.y());
+        }
+        QPen pen(qucs_s::ink::on(red), 1.5, Qt::DashLine);
+        painter->setPen(pen);
+        painter->drawPolyline(line);
+        // Its label beside its start (upright: the painter's y is up).
+        if (!limit.label.isEmpty() && !line.isEmpty()) {
+            painter->save();
+            const QPointF at = line.first();
+            painter->translate(std::clamp(at.x(), 0.0, double(x2) - 10), at.y());
+            painter->scale(1.0, -1.0);
+            painter->drawText(QPointF(3, limit.side == qucs_s::limits::Limit::Upper ? -3 : 12), limit.label);
+            painter->restore();
+        }
+    }
+    painter->restore();
+}
+
+void Diagram::paintVerdict(QPainter *painter) {
+    if (limits.isEmpty() || !takesLimits()) return;
+    bool data = false;
+    for (const Graph *g: Graphs) data = data || g->cPointsY != nullptr;
+    if (!data) return;
+    const bool pass = a_violations.isEmpty();
+    const QString text = pass ? QObject::tr("PASS") : QObject::tr("FAIL");
+    painter->save();
+    QFont font = painter->font();
+    font.setBold(true);
+    painter->setFont(font);
+    const QFontMetricsF fm(font);
+    const QRectF box(x2 - fm.horizontalAdvance(text) - 14, -y2 + 4, fm.horizontalAdvance(text) + 10, fm.height() + 2);
+    const QColor colour = pass ? QColor(30, 140, 60) : QColor(210, 30, 30);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(colour);
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->drawRoundedRect(box, 3, 3);
+    painter->setPen(Qt::white);
+    painter->drawText(box, Qt::AlignCenter, text);
+    painter->restore();
+}

@@ -841,8 +841,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   measures a spectrum (`fft`), an eye (`eye`: the bit period, when not
   given, the Tbit of the V(PRBS) source the signal comes from - as the run
   the data is of gave it - or told from its crossings; PAM4's three eyes
-  with `levels` 4, or without `levels` when the source is coded PAM4) and a Monte
-  Carlo family's `distribution`, gives a table across a sweep, and reads `.csv` and
+  with `levels` 4, or without `levels` when the source is coded PAM4), a Monte
+  Carlo family's `distribution` (with a box plot's quartiles, whiskers and
+  outliers), a pole-zero run's `roots`, a `spectrum` (THD, SFDR, SNR,
+  SINAD), a `bathtub`, a two-port's `stability` (K, mu, |delta| over the
+  sweep; at given frequencies the maximum available or stable gain and the
+  stability circles) and an I with its Q's `evm`, gives a table across a sweep, and reads `.csv` and
   `.xlsx` results, and says when a dataset is stale: the last run failed
   after it, or the circuit changed since (the netlist a run would be
   given now is not the one it ran; where that netlist is not at hand - a
@@ -1644,6 +1648,77 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   (`eye`), and `get_schematic` lists what was measured on each trace.
   *examples/ngspice/NGspice features/PRBS_eye_diagram.sch* sends a
   10 Gb/s PRBS7 with noise through an RC channel.
+- **Stacked panes** (*diagrams → Stacked panes*): 2 to 8 Cartesian panes
+  one above the other on one x axis, each with its own left and right y
+  axis and its own traces. Zoom and limits are the shared x axis', and a
+  marker placed in one pane reads out every pane's traces at its x. The
+  *Panes* table of its dialog sets each pane's axes.
+- **Pole-zero map** (*diagrams → Pole-zero map*): an ngspice `.PZ` run's
+  poles (×) and zeros (○) in the s-plane, on one scale, with lines of
+  constant ζ and circles of constant ωn. The cursor readout gives the
+  point under it as a root: ωn, f, ζ and Q.
+- **Bode pair, Nichols chart, Nyquist**: the *Bode pair* is a loop gain's
+  magnitude in dB above its phase, its crossovers and gain and phase
+  margins marked. The *Nichols chart* is open-loop gain in dB against
+  phase over the closed loop's M and N contours, the critical point
+  marked. The polar diagram's *Nyquist* option marks −1 and the unit
+  circle and can mirror the negative-frequency branch.
+- **Spectrum** (*diagrams → Spectrum*): a transient's windowed spectrum in
+  dBc (rectangular, Hann, Hamming, Blackman, Blackman-Harris or flat
+  top), as a line or stems, its harmonics numbered, THD, SFDR, SNR and
+  SINAD in its corner. The settling can be left out and the fundamental
+  given.
+- **Bathtub curve** (*diagrams → Bathtub Curve*): a data signal's bit
+  error rate against the sampling instant, folded as the eye diagram
+  folds it (the UI of the PRBS source it comes from). The crossings are
+  counted, and the dual-Dirac model is fitted to their tails. The opening
+  at a target BER is marked, with RJ, DJ and TJ; PAM4's three eyes each
+  get a tub.
+- **Contour map** and **Spectrogram**: a value over two swept parameters
+  in colour (viridis, turbo or grey) with a colour bar. Iso-lines are
+  labelled, and a pass band hatches what fails and gives the share that
+  passes. The spectrogram is a transient's short-time spectrum: time
+  along, frequency up, the level in dB in colour.
+- **Tornado chart** (*diagrams → Tornado Chart*): a bar for each trace,
+  the largest on top: its value at a point (a sensitivity) or its spread
+  over corner or Monte Carlo runs. *Add the parts of a sensitivity run* adds one per part
+  from an ngspice `.SENS` run, by its `_scale` where it has one.
+- **Box plot** (*diagrams → Box Plot*): a box for each trace, over its
+  runs or its curves at an x: quartiles, median, mean, and whiskers
+  (Tukey's, with outliers, or the full range).
+- **Constellation** (*diagrams → Constellation*): I and Q traces in pairs,
+  sampled once a symbol, on one scale. With a modulation (BPSK, QPSK,
+  8PSK, 16QAM, 64QAM), its ideal points and the EVM, rms and peak.
+- **Circles on the Smith chart** (*Edit Diagram Properties → Circles*:
+  "in, out, gain 12, noise 2" and a frequency): the input and output
+  stability circles (their unstable side shaded), available-gain circles
+  and noise-figure circles of the two-port the traces' run is of. They
+  read ngspice's `ac.s_2_1` and noise parameters, or Qucsator's `S[2,1]`.
+  A line under the chart gives K, μ and the verdict.
+- **Delta markers, spec limits, a kept run as a ghost**: a marker can be
+  *Relative to* another (Δx, Δy, 1/Δx, a dashed line between). Upper and
+  lower limits, a level or a mask of points, are drawn dashed on a
+  Cartesian or stacked diagram, the trace red where beyond, PASS or FAIL
+  in the corner; `tune`'s `hold` can keep to them. A run kept with
+  `keep_as` can be drawn faint behind the new one (a trace's *ghost* box in
+  Diagram Properties; `overlay` in the tools).
+- **Cross-probing** (*Simulation → Probe*): click a net for its voltage, a
+  pin for its current or a part for its power, and the trace goes into
+  the selected diagram. An unnamed net is labelled, and a current or
+  power is saved by the next run. Selecting a trace lights up its net or
+  part. **Values at the Marker** (*Simulation*) labels each named net
+  with its voltage where a diagram's marker is, following the marker.
+- **Buses** (*Insert → Bus*): a thick line named `D[7:0]`, its members
+  the nets D7 to D0, checked by *Check Schematic*. **LTspice import**
+  (*File → Import LTspice Schematic…*): an `.asc` made a schematic, its
+  symbols by their `.asy` or LTspice's standard ones, its wires and flags
+  the nets, its directives kept, what is left out said. **Colour Wires by
+  Net** (*View*): supplies red and thicker, ground green.
+- **S-parameters from a headless run, and ngspice 46's names**: an
+  S-parameter simulation now writes its S, Y, Z and noise vectors
+  whatever simulator the settings store (a fresh settings folder or
+  `--ngspice` wrote none). A trace named `ac.v(s_1_1)`, as twelve shipped
+  examples name it, finds the `ac.s_1_1` ngspice 46 writes.
 - **Six number notations for a diagram's axes** (*Properties* of a
   diagram, *Number notation* and *Decimal places*): automatic (what
   "scientific" was: decimal, with an exponent for large and small

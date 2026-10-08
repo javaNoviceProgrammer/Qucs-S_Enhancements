@@ -306,20 +306,33 @@ void EyeDiagram::setSourceFinder(SourceFinder finder)
 
 void EyeDiagram::analyse()
 {
-    m_results.clear();
-    m_sourceWhy.clear();
-    m_levelsFrom.clear();
-    m_mixed = false;
+    eye::Options o;
+    o.start = start;
+    o.threshold = threshold;
+    o.maskWidth = maskWidth;
+    o.maskHeight = maskHeight;
+    Folding f = foldingOf(this, ui, levels, o);
+    m_results = std::move(f.results);
+    m_ui = f.ui;
+    m_mixed = f.mixed;
+    m_sourceWhy = std::move(f.sourceWhy);
+    m_levelsFrom = std::move(f.levelsFrom);
+}
+
+EyeDiagram::Folding EyeDiagram::foldingOf(const Diagram* owner, double ui, int levels, const eye::Options& options)
+{
+    Folding f;
+    const QList<Graph*>& graphs = owner->Graphs;
     const double given = std::isfinite(ui) && ui > 0.0 ? ui : eye::NaN;
     // Each graph's PRBS source: none given, its Tbit is the graph's UI,
     // exact, before what the crossings tell - each graph at its own source's
     // (two sources of different bits in one diagram were both folded at the
     // first one's) - and its coding the levels, when they are not set.
     QList<qucs_s::prbs::Source> sources;
-    for (const Graph* g : Graphs) {
-        const qucs_s::prbs::Source s = sourceFinder() ? sourceFinder()(this, g->Var) : qucs_s::prbs::Source();
+    for (const Graph* g : graphs) {
+        const qucs_s::prbs::Source s = sourceFinder() ? sourceFinder()(owner, g->Var) : qucs_s::prbs::Source();
         sources << s;
-        m_sourceWhy << s.why;
+        f.sourceWhy << s.why;
     }
     // A graph with no source of its own: the first source's UI - else what
     // the crossings of the first graph that has an eye tell.
@@ -332,13 +345,9 @@ void EyeDiagram::analyse()
                 otherFrom = s.name;
                 break;
             }
-    eye::Options o;
-    o.start = start;
-    o.threshold = threshold;
-    o.maskWidth = maskWidth;
-    o.maskHeight = maskHeight;
+    eye::Options o = options;
     auto one = [&](int i) {
-        const QList<qucs_s::dataset::Curve> curves = curvesOf(Graphs.at(i));
+        const QList<qucs_s::dataset::Curve> curves = curvesOf(graphs.at(i));
         const qucs_s::prbs::Source& s = sources.at(i);
         eye::Result r;
         if (curves.isEmpty() || curves.first().x.size() < 2) {
@@ -355,27 +364,28 @@ void EyeDiagram::analyse()
             r.notes << tr("%1 is coded PAM4: 4 levels measure its three eyes").arg(s.name);
         return r;
     };
-    for (int i = 0; i < Graphs.size(); ++i) {
+    for (int i = 0; i < graphs.size(); ++i) {
         const qucs_s::prbs::Source& s = sources.at(i);
-        m_levelsFrom << (levels != 2 && levels != 4 && s.found() && s.levels == 4 ? s.name : QString());
-        m_results << one(i);
-        if (!std::isfinite(other) && m_results.last().ok()) {
-            other = m_results.last().ui;
+        f.levelsFrom << (levels != 2 && levels != 4 && s.found() && s.levels == 4 ? s.name : QString());
+        f.results << one(i);
+        if (!std::isfinite(other) && f.results.last().ok()) {
+            other = f.results.last().ui;
             // The graphs before, whose UI could not be told: at this one's.
             for (int j = 0; j < i; ++j)
-                if (!m_results.at(j).ok()) m_results[j] = one(j);
+                if (!f.results.at(j).ok()) f.results[j] = one(j);
         }
     }
     // The UI across it: the first graph's that has an eye - or, with none,
     // the one the others would have been folded at.
-    m_ui = other;
-    for (const eye::Result& r : std::as_const(m_results))
+    f.ui = other;
+    for (const eye::Result& r : std::as_const(f.results))
         if (r.ok()) {
-            m_ui = r.ui;
+            f.ui = r.ui;
             break;
         }
-    for (const eye::Result& r : std::as_const(m_results))
-        if (r.ok() && std::abs(r.ui - m_ui) > 1e-9 * m_ui) m_mixed = true;
+    for (const eye::Result& r : std::as_const(f.results))
+        if (r.ok() && std::abs(r.ui - f.ui) > 1e-9 * f.ui) f.mixed = true;
+    return f;
 }
 
 double EyeDiagram::axisTime(int i, double seconds) const

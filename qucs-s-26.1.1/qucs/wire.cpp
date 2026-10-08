@@ -104,6 +104,18 @@ void Wire::paint(QPainter *painter) const {
   painter->restore();
 }
 
+void Wire::paint(QPainter* painter, int netKind) const {
+  if (isSelected || netKind <= 0 || netKind > 2) {
+    paint(painter);
+    return;
+  }
+  painter->save();
+  const QPen pen = netKind == 2 ? QPen(QColor(190, 30, 30), 3) : QPen(QColor(0, 120, 40), 2);
+  painter->setPen(qucs_s::ink::on(pen));
+  painter->drawLine(x1, y1, x2, y2);
+  painter->restore();
+}
+
 void Wire::paintScheme(Schematic* sch)
 {
   sch->PostPaintEvent(_Line, x1, y1, x2, y2);

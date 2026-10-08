@@ -30,6 +30,11 @@
 #endif
 
 #include "polardiagram.h"
+#include "ink.h"
+
+#include <QPainter>
+#include <algorithm>
+#include <cmath>
 
 
 PolarDiagram::PolarDiagram(int _cx, int _cy) : Diagram(_cx, _cy)
@@ -88,8 +93,68 @@ int PolarDiagram::calcDiagram()
   Lines.append(as(Part::Grid, new qucs::Line(0, y2>>1, x2, y2>>1, GridPen)));
 
   x3 = x2 + 7;
+  // A Nyquist plot: the critical point in sight.
+  if (nyquist && yAxis.autoScale) yAxis.max = std::max(yAxis.max, 1.05);
   createPolarDiagram(&yAxis);
   return 3;
+}
+
+// ------------------------------------------------------------
+QString PolarDiagram::extraSaveFields() const
+{
+  if (!nyquist && !mirror) return QString();   // (as before: none)
+  return QStringLiteral(" %1 %2").arg(nyquist ? 1 : 0).arg(mirror ? 1 : 0);
+}
+
+void PolarDiagram::loadExtraFields(const QStringList& fields)
+{
+  nyquist = fields.value(0) == QLatin1String("1");
+  mirror = fields.value(1) == QLatin1String("1");
+}
+
+void PolarDiagram::paintBehindGraphs(QPainter* painter)
+{
+  if (!mirror) return;
+  // The negative frequencies: each graph's conjugate, dashed (y up).
+  painter->save();
+  painter->setRenderHint(QPainter::Antialiasing, true);
+  for (const Graph* g : Graphs) {
+    const DataX* xs = g->axis(0);
+    if (xs == nullptr || g->cPointsY == nullptr) continue;
+    for (int c = 0; c < g->countY; ++c) {
+      QPolygonF line;
+      for (int i = 0; i < xs->count; ++i) {
+        const double re = g->cPointsY[2 * (c * xs->count + i)], im = g->cPointsY[2 * (c * xs->count + i) + 1];
+        const double y[2] = {re, -im};
+        float px = 0, py = 0;
+        calcCoordinate(nullptr, y, nullptr, &px, &py, &yAxis);
+        line << QPointF(px, py);
+      }
+      painter->setPen(QPen(qucs_s::ink::on(g->Color), std::max(1, g->Thick), Qt::DashLine));
+      painter->drawPolyline(line);
+    }
+  }
+  painter->restore();
+}
+
+void PolarDiagram::paintInFront(QPainter* painter, const Colors& colors)
+{
+  Diagram::paintInFront(painter, colors);
+  if (!nyquist || !(yAxis.up > 0)) return;
+  // (y down.) The unit circle, dashed, and -1, a red cross in a circle.
+  painter->save();
+  painter->setRenderHint(QPainter::Antialiasing, true);
+  const QPointF centre(x2 / 2.0, -y2 / 2.0);
+  const double r = x2 / 2.0 / yAxis.up;
+  painter->setPen(QPen(qucs_s::ink::on(QColor(110, 110, 140)), 0, Qt::DashLine));
+  painter->drawEllipse(centre, r, r * double(y2) / double(x2));
+  const QPointF critical(centre.x() - r, centre.y());
+  painter->setPen(QPen(qucs_s::ink::on(QColor(210, 30, 30)), 2));
+  painter->drawLine(critical + QPointF(-6, 0), critical + QPointF(6, 0));
+  painter->drawLine(critical + QPointF(0, -6), critical + QPointF(0, 6));
+  painter->drawEllipse(critical, 4.0, 4.0);
+  painter->drawText(critical + QPointF(-14, -8), QStringLiteral("-1"));
+  painter->restore();
 }
 
 // ------------------------------------------------------------
