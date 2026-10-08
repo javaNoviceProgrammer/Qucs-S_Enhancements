@@ -35,6 +35,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "qucs_assert.h"
+#include "spicecomponents/sp_libraryexport.h"
 
 struct Schematic::HealingParams
 {
@@ -2376,6 +2377,8 @@ void Schematic::insertComponent(Component *c)
 
     setComponentNumber(c); // important for power sources and subcircuit ports
     a_Components->push_back(c);
+    // A Library Export: it holds the schematic's library settings now.
+    if (LibraryExport::is(c)) a_libraryNote = settleLibrarySettings();
 }
 
 // ---------------------------------------------------

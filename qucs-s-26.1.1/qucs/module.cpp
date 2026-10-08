@@ -267,6 +267,8 @@ REGISTER_COMP_2 (QObject::tr("microelectronics"),val,inf1,inf2)
   REGISTER_COMP_1 (QObject::tr("SPICE components"),val)
 #define REGISTER_SPICE_SEC_1(val) \
   REGISTER_COMP_1 (QObject::tr("SPICE netlist sections"),val)
+#define REGISTER_SPICE_SUBCKT_1(val) \
+  REGISTER_COMP_1 (QObject::tr("SPICE subcircuit"),val)
 #define REGISTER_SPICE_SIM_1(val) \
   REGISTER_COMP_1 (QObject::tr("SPICE simulations"),val)
 #define REGISTER_XSPICE_1(val) \
@@ -644,6 +646,9 @@ void Module::registerModules (void) {
       REGISTER_SPICE_SEC_1 (SpiceFunc);
       REGISTER_SPICE_SEC_1 (SpiceSpiceinit);
       REGISTER_SPICE_SEC_1 (InclScript);
+
+      // what a subcircuit's schematic holds for it: Create Library's settings
+      REGISTER_SPICE_SUBCKT_1 (LibraryExport);
 
 
       // Qucs legacy devices

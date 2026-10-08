@@ -44,6 +44,7 @@
 #include "qucs.h"
 #include "schematic.h"
 #include "settings.h"
+#include "spicecomponents/sp_libraryexport.h"
 
 #include <QColor>
 #include <QDateTime>
@@ -5768,6 +5769,8 @@ QJsonObject QucsControl::describeComponentType(const QJsonObject& args)
         result.insert(QStringLiteral("names"), tr("%1 and a number: %2, %3, ... (the next free one when add_component is given none)")
                                                    .arg(prefix, prefix + QLatin1Char('1'), prefix + QLatin1Char('2')));
     if (c->isSimulation) result.insert(QStringLiteral("kind"), QStringLiteral("simulation"));
+    else if (LibraryExport::is(c.get()))   // (no equations: what Create Library does with the subcircuit)
+        result.insert(QStringLiteral("kind"), QStringLiteral("library settings: one a schematic, nothing in a netlist"));
     else if (c->isEquation) result.insert(QStringLiteral("kind"), QStringLiteral("equation"));
     else if (c->isProbe) result.insert(QStringLiteral("kind"), QStringLiteral("probe"));
 

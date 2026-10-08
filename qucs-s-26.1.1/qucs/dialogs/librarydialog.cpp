@@ -991,6 +991,14 @@ void LibraryDialog::slotSave()
         QTextStream ts(&tmp,QIODevice::WriteOnly);
         ErrText->insertPlainText("\n");
         ErrText->insertPlainText(tr("Creating SPICE netlist.\n"));
+        // Its own ground pin, whatever the settings (or the request) say.
+        if (const LibrarySettings own = Doc->librarySettings(); own.groundPin != LibrarySettings::Default) {
+          const Component* held = Doc->libraryExport();
+          const QString where = held != nullptr ? tr("its Library Export %1").arg(held->Name) : tr("its Document Settings > Library");
+          ErrText->insertPlainText(own.groundPin == LibrarySettings::With
+              ? tr("Ground pin: a first pin gnd in its .SUBCKT, as %1 asks.\n").arg(where)
+              : tr("Ground pin: none in its .SUBCKT, as %1 asks.\n").arg(where));
+        }
         AbstractSpiceKernel *kern = new AbstractSpiceKernel(Doc);
         QStringList err_lst;
         if (!kern->checkSchematic(err_lst)) {
