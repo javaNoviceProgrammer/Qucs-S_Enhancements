@@ -21,6 +21,7 @@
 
 class Component;
 class Schematic;
+class Wire;
 
 /*!
  * The checks the simulator would fail on, or silently do something
@@ -47,6 +48,9 @@ struct Issue {
     /// The part meant as the tools tell it, when its name does not: a
     /// ground's GND#2, the second of a name given twice R1#2.
     QString ref = QString();
+    /// Of the data a diagram shows (its traces beyond its limits), not of
+    /// the circuit: a check before a run leaves it out.
+    bool ofData = false;
     bool operator==(const Issue& o) const
     {
         return severity == o.severity && message == o.message && where == o.where && component == o.component && file == o.file
@@ -77,6 +81,14 @@ QList<Issue> wiring(Schematic* doc);
 /// - a node named to be plotted or read by an expression, or a label that
 /// was to match another. Warnings, each with its place.
 QList<Issue> notes(Schematic* doc);
+
+/// What a wire's net is, for View > Colour Wires by Net: ground (a ground
+/// symbol's, 0, gnd); a supply (a supply's name - VCC, VDD, VEE, V+,
+/// +5V, 3V3 -, a part's supply pin on it, or a DC source's pin whose other
+/// is on ground); else a signal.
+enum class NetKind { Signal = 0, Ground, Supply };
+QHash<const Wire*, NetKind> wireKinds(Schematic* doc);
+QString nameOf(NetKind kind);
 
 /// The subcircuit files \a doc uses directly (Subcircuit components, as
 /// absolute paths, each once) - those that are there: a file not found is

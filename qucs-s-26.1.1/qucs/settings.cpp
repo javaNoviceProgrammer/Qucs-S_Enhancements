@@ -98,6 +98,7 @@ void settingsManager::initDefaults()
     m_Defaults["LibraryGroundPin"] = false;
     m_Defaults["WriteTextDocSettings"] = true;
     m_Defaults["WheelZooms"] = true;
+    m_Defaults["ColourWires"] = false;
     m_Defaults["PaperFollowsTheme"] = false;
     m_Defaults["DiagramTheme"] = "";   // the theme new diagrams start with (diagramtheme.h)
     m_Defaults["GridMode"] = 0;

@@ -22,6 +22,7 @@
 #include "element.h"
 #include "numberformat.h"
 #include "diagramtheme.h"
+#include "speclimits.h"
 
 #include <QTextStream>
 #include <QFontMetricsF>
@@ -29,6 +30,7 @@
 #include <QPainterPath>
 
 #include <algorithm>
+#include <utility>
 #include <cmath>
 #include "qucs_assert.h"
 
@@ -65,6 +67,7 @@ struct Axis {
 
 struct MappedPoint {
   qreal x, y1, y2;
+  int pane = -1;   // a stacked diagram's pane the point is in
 };
 
 namespace qucs {
@@ -141,6 +144,8 @@ public:
   // TODO: Make pointToValue a pure virtual function.
   virtual MappedPoint pointToValue(const QPointF&) { return MappedPoint(); };
   virtual void setLimitsBySelectionRect(QRectF) {};
+  /// Whether a box dragged on it zooms in (a Cartesian diagram's axes).
+  virtual bool zoomsByRectangle() const { return false; }
   virtual void finishMarkerCoordinates(float&, float&) const;
   virtual void calcLimits() {};
   virtual QString extraMarkerText(Marker const*) const {return "";}
@@ -162,6 +167,10 @@ public:
   bool    load(const QString&, QTextStream*);
 
   virtual void getAxisLimits(Graph*);
+  /// The y axis \a g is drawn against: the left one (yAxis) or the right
+  /// one (zAxis), as its yAxisNo says - a pane's own in a stacked diagram.
+  virtual const Axis* graphAxis(const Graph* g) const;
+  Axis* graphAxis(const Graph* g) { return const_cast<Axis*>(std::as_const(*this).graphAxis(g)); }
   void updateGraphData();
   void loadGraphData(const QString&);
   void recalcGraphData();
@@ -171,6 +180,9 @@ public:
   virtual bool insideDiagram(float, float) const;
   bool insideDiagramP(Graph::iterator const& ) const;
   Marker* setMarker(int x, int y);
+  /// Its markers, its graphs' in order: a delta marker's reference is told
+  /// by its place in this list.
+  QList<Marker*> markers() const;
 
   QString Name; // identity of diagram type (e.g. Polar), used for saving etc.
   QPen    GridPen;
@@ -201,6 +213,14 @@ public:
   {
       return qucs_s::numberformat::format(value, notation, notationDecimals, step);
   }
+  /// ... on \a axis' ticks: in notationOf(axis).
+  QString numberText(const Axis* axis, double value, double step = 0.0) const
+  {
+      return qucs_s::numberformat::format(value, notationOf(axis), notationDecimals, step);
+  }
+  /// The notation \a axis' numbers are written in: the diagram's (a
+  /// bathtub's rates have an exponent when it is automatic).
+  virtual qucs_s::numberformat::Notation notationOf(const Axis*) const { return notation; }
 
   /// Where the legend (a colour/style sample and the variable of every
   /// graph) is drawn: LegendOff, or a corner of the diagram.
@@ -224,6 +244,20 @@ public:
   /// area filled, in the schematic's coordinates.
   void paintBackground(QPainter* painter, const Colors& colors) const;
 
+  /// Its spec limits (limits.h): the lines and masks its traces keep
+  /// within, drawn in it, its traces red where beyond them, and a verdict.
+  /// Saved after its graphs, a line each.
+  QList<qucs_s::limits::Limit> limits;
+  /// Where its traces are beyond its limits, as last laid out.
+  const QList<qucs_s::limits::Violation>& violations() const { return a_violations; }
+  /// Whether it takes limits (a Cartesian diagram, stacked panes).
+  virtual bool takesLimits() const { return false; }
+  /// The axis \a limit is drawn against: null when it has none such.
+  virtual const Axis* limitAxis(const qucs_s::limits::Limit& limit) const
+  {
+    return limit.axis == 0 ? &yAxis : &zAxis;
+  }
+
   // Whether updateGraphData() has laid the diagram out since it was made:
   // until then its axes and labels are the constructor's defaults.
   bool laidOut = false;
@@ -234,12 +268,19 @@ public:
 protected:
   /// What a diagram type saves beyond the common fields, after them and
   /// before the labels (" 12 0 3"), and reads back from those fields.
+  /// The dataset it was last loaded from (its traces' "name.dat"; a
+  /// simulator's adds its suffix): what more a diagram reads of the run.
+  QString dataSetFile() const { return a_dataSet; }
   virtual QString extraSaveFields() const { return QString(); }
   virtual void loadExtraFields(const QStringList&) {}
+  QString a_dataSet;
   /// Painted under the graphs, in their coordinates (origin at the lower
   /// left corner, y upwards), and over the axis texts, in the diagram's
   /// (y downwards), before the legend.
   virtual void paintBehindGraphs(QPainter*) {}
+  /// Whether its graphs draw themselves (a pole-zero map draws its roots
+  /// as symbols of its own, in paintBehindGraphs()).
+  virtual bool paintsGraphs() const { return true; }
   virtual void paintInFront(QPainter*, const Colors&) {}
   /// The area inside its frame, in its coordinates (origin at the lower
   /// left corner, y downwards).
@@ -254,7 +295,7 @@ protected:
     return item;
   }
   /// The part an axis of its is (XAxis, YAxis, RightAxis).
-  Part partOf(const Axis* axis) const;
+  virtual Part partOf(const Axis* axis) const;
   /// Where \a text is drawn, in the diagram's coordinates (origin at the
   /// lower left corner, y downwards): from its baseline, turned.
   virtual QRectF textRect(const Text& text, const QFontMetricsF& metrics) const;
@@ -263,6 +304,19 @@ protected:
   void createSmithChart(Axis*, int Mode=7);
   void calcPolarAxisScale(Axis*, double&, double&, double&);
   void createPolarDiagram(Axis*, int Mode=3);
+
+  /// Whether \a g is drawn, from what calcDiagram() returned: a bit for
+  /// each y axis whose scale is valid (1 the left, 2 the right).
+  virtual bool drawsGraph(int valid, const Graph* g) const { return (valid & (g->yAxisNo + 1)) != 0; }
+  /// The axes besides x, y and z a diagram type has (a stacked diagram's
+  /// panes'): their ranges cleared before the graphs' limits are taken,
+  /// and set to [0, 1] after when no graph gave any.
+  virtual void clearExtraRanges() {}
+  virtual void settleExtraRanges() {}
+  /// Graphs clipped to a band of the frame (bottom and top, y up) while
+  /// they are traced: a stacked diagram's pane. Off: the whole frame.
+  bool clipBand = false;
+  float clipLow = 0, clipHigh = 0;
 
   bool calcAxisScale(Axis*, double&, double&, double&, double&, double);
   bool calcAxisLogScale(Axis*, int&, double&, double&, double&, int);
@@ -278,9 +332,17 @@ protected:
   QTransform pointTransform; // Transform between Qucs-S logical coordinates and diagram (logical) point coordinates.
   QTransform valueTransform; // Transform between diagram point coordinates and diagram values.
 
-private:
+  // What it draws beyond its frame (set in createAxisLabels()).
   int Bounding_x1, Bounding_x2, Bounding_y1, Bounding_y2;
-  Theme a_theme;   // (the grid's colour is GridPen's, not in it)
+
+  /// Its limits drawn (in its coordinates, y up), and its traces again in
+  /// red where beyond them; the verdict in its corner (y down).
+  void paintLimits(QPainter* painter);
+  void paintVerdict(QPainter* painter);
+
+private:
+  Theme a_theme;
+  QList<qucs_s::limits::Violation> a_violations;   // (the grid's colour is GridPen's, not in it)
 };
 
 #endif

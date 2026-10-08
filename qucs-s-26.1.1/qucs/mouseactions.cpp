@@ -63,6 +63,9 @@
 #include <cstdlib>
 #include "qucs_assert.h"
 #include "statusbar.h"
+#include "probe.h"
+
+#include <QToolTip>
 
 #define MIN_SELECT_SIZE 5.0
 
@@ -540,6 +543,22 @@ void MouseActions::MMoveMarker(Schematic *Doc, QMouseEvent *Event)
 }
 
 /**
+ * @brief MouseActions::MMoveProbe Paints a probe's tip at the mouse: a pen
+ *        pointing down-left at what a click probes.
+ */
+void MouseActions::MMoveProbe(Schematic *Doc, QMouseEvent *Event)
+{
+    auto inModel = Doc->contentsToModel(Event->pos());
+    MAx3 = inModel.x();
+    MAy3 = inModel.y();
+    Doc->PostPaintEvent(_Line, MAx3, MAy3, MAx3 + 6, MAy3 - 6);
+    Doc->PostPaintEvent(_Line, MAx3 + 4, MAy3 - 10, MAx3 + 10, MAy3 - 4);
+    Doc->PostPaintEvent(_Line, MAx3 + 4, MAy3 - 10, MAx3 + 16, MAy3 - 22);
+    Doc->PostPaintEvent(_Line, MAx3 + 10, MAy3 - 4, MAx3 + 22, MAy3 - 16);
+    Doc->PostPaintEvent(_Line, MAx3 + 16, MAy3 - 22, MAx3 + 22, MAy3 - 16);
+}
+
+/**
  * @brief MouseActions::MMoveSetLimits Sets the cursor to a magnifying glass with a wave.
  * @param Doc
  * @param Event
@@ -762,7 +781,7 @@ void MouseActions::fillContextMenu(Schematic *Doc, float fX, float fY)
                 Diagram* diagram = static_cast<Diagram*>(focusElement);
 
                 // Only show reset limits action if one or more axis is not autoscaled.
-                if ((diagram->Name == "Rect" || diagram->Name == "Histogram" || diagram->Name == "Eye") &&
+                if (diagram->zoomsByRectangle() &&
                     (!diagram->xAxis.autoScale || !diagram->yAxis.autoScale || !diagram->zAxis.autoScale)) {
                     ComponentMenu->addAction(QucsMain->resetDiagramLimits);
                 }
@@ -937,12 +956,10 @@ void MouseActions::MPressSelect(Schematic *Doc, QMouseEvent *Event, float fX, fl
             return;
 
         case isDiagramResize: // resize diagram ?
-            if (((Diagram *) focusElement)->Name.left(4) != "Rect"
-                && ((Diagram *) focusElement)->Name != "Histogram"
-                && ((Diagram *) focusElement)->Name != "Eye")
-                if (((Diagram *) focusElement)->Name.at(0) != 'T')
-                    if (((Diagram *) focusElement)->Name != "Curve")
-                        isMoveEqual = true; // diagram must be square
+            // (A polar or Smith chart stays square; the others take any
+            // shape - the stacked, Bode, spectrum, bathtub ... too.)
+            if (QStringList{"Polar", "Smith", "ySmith", "PS", "SP"}.contains(((Diagram *) focusElement)->Name))
+                isMoveEqual = true; // diagram must be square
 
             focusElement->Type = isDiagram;
             MAx1 = focusElement->cx;
@@ -1315,6 +1332,23 @@ void MouseActions::MPressWire2(Schematic *Doc, QMouseEvent *Event, float fX, flo
 }
 
 // -----------------------------------------------------------
+// Cross-probing: what is clicked into a diagram (probe.h); what was done
+// said where it was.
+void MouseActions::MPressProbe(Schematic *Doc, QMouseEvent *Event, float fX, float fY)
+{
+    const auto target = qucs_s::probe::at(Doc, QPoint(int(fX), int(fY)));
+    const QPoint global = Event ? Event->globalPosition().toPoint() : QCursor::pos();
+    if (!target) {
+        QToolTip::showText(global, QObject::tr("Nothing to probe here: click a net, a part's pin or a part."), Doc->viewport());
+        return;
+    }
+    const qucs_s::probe::Result r = qucs_s::probe::probe(Doc, *target);
+    QToolTip::showText(global, r.text(), Doc->viewport());
+    if (r.diagram && r.error.isEmpty()) Doc->enlargeView(r.diagram);
+    Doc->viewport()->update();
+}
+
+// -----------------------------------------------------------
 // Is called for setting a marker on a diagram's graph
 void MouseActions::MPressMarker(Schematic *Doc, QMouseEvent *, float fX, float fY)
 {
@@ -1346,7 +1380,7 @@ void MouseActions::MPressSetLimits(Schematic *Doc, QMouseEvent*, float fX, float
     for (Diagram* diagram : *Doc->a_Diagrams) {
         // BUG: Obtaining the diagram type by name is marked as a bug elsewhere (to be solved separately).
         // TODO: Currently only rectangular diagrams are supported.
-        if (diagram->getSelected(fX, fY) && (diagram->Name == "Rect" || diagram->Name == "Histogram" || diagram->Name == "Eye")) {
+        if (diagram->getSelected(fX, fY) && diagram->zoomsByRectangle()) {
             qDebug() << "In a rectangular diagram, setting up for area selection.";
 
             // cx and cy are the adjusted points of the diagram's bottom left hand corner.

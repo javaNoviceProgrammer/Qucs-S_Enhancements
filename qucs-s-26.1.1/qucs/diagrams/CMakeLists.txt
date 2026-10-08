@@ -21,6 +21,19 @@ rect3ddiagram.h
 rectdiagram.h
 histogramdiagram.h
 eyediagram.h
+stackeddiagram.h
+speclimits.h
+polezerodiagram.h
+bodediagram.h
+nicholsdiagram.h
+spectrumdiagram.h
+bathtubdiagram.h
+contourdiagram.h
+spectrogramdiagram.h
+tornadodiagram.h
+boxplotdiagram.h
+smithcircles.h
+constellationdiagram.h
 smithdiagram.h
 tabdiagram.h
 timingdiagram.h
@@ -33,6 +46,19 @@ diagram.cpp		marker.cpp		psdiagram.cpp		tabdiagram.cpp
 diagramdialog.cpp	markerdialog.cpp	rect3ddiagram.cpp	timingdiagram.cpp
 rectdiagram.cpp		truthdiagram.cpp	histogramdiagram.cpp	eyediagram.cpp
 diagramtheme.cpp
+stackeddiagram.cpp
+speclimits.cpp
+polezerodiagram.cpp
+bodediagram.cpp
+nicholsdiagram.cpp
+spectrumdiagram.cpp
+bathtubdiagram.cpp
+contourdiagram.cpp
+spectrogramdiagram.cpp
+tornadodiagram.cpp
+boxplotdiagram.cpp
+smithcircles.cpp
+constellationdiagram.cpp
 dataexportpanel.cpp
 dataimportpanel.cpp
 )

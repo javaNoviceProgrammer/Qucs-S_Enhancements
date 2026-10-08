@@ -160,6 +160,7 @@ struct MeasureOptions {
     double fundamental = qQNaN(); // thd: the fundamental in Hz (else the curve's own frequency)
     int harmonics = 9;            // thd: the highest harmonic counted
     int periods = 1;              // thd: whole periods of the fundamental, ending where the curve ends
+    QString window = QStringLiteral("hann");   // spectrum: its window (spectrum.h's names)
     QVector<double> phase;        // phase_margin, gain_margin: the phase in degrees at each sample (a complex curve's)
     double period = qQNaN();      // eye: the bit period, in the unit of x (seconds); NaN: told from the crossings
     QString periodFrom;           // eye: the PRBS source whose Tbit the period is ("V1"), to say so
@@ -167,6 +168,7 @@ struct MeasureOptions {
     QString sourceNote;           // eye: what changed in the source since the run the data is of
     double offset = 0;            // eye: where the eye begins, after the curve's start (the settling before it left out)
     int levels = 2;               // eye: 2 (NRZ) or 4 (PAM4)
+    double ber = 1e-12;           // bathtub: the bit error rate its opening is measured at
 };
 /// \a what measured on \a c - "rise_time", "fall_time", "overshoot",
 /// "settling_time", "period", "frequency", "duty_cycle", "crossings",
@@ -188,6 +190,9 @@ struct MeasureOptions {
 /// a transient folded at options.period (or the unit interval its
 /// crossings tell) - its height at the centre, its width, the crossings'
 /// jitter (eyeanalysis.h); with options.levels 4, PAM4's three eyes.
+/// bathtub: the same eye's bit error rate against the sampling instant -
+/// its random and deterministic jitter (dual-Dirac) and the opening and
+/// total jitter at options.ber (eyeanalysis.h's Bathtub).
 QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& options);
 
 /// \a v written with 7 significant digits (as the dataset has more than

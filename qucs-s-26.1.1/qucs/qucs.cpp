@@ -3613,6 +3613,7 @@ void QucsApp::slotChangeView()
 
     updateGridAction();
   }
+  updateCursorValuesAction();
 
   Doc->becomeCurrent(true);
   if (a_status != nullptr)   // not yet while the window is being built

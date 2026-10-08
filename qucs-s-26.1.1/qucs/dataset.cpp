@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "dataset.h"
+#include "spectrum.h"
 #include "datasetfile.h"
 #include "eyeanalysis.h"
 #include "spreadsheet.h"
@@ -375,6 +376,14 @@ QStringList Dataset::resolve(const QString& wanted) const
     };
     QStringList names = all([&w](const QString& n) { return n.compare(w, Qt::CaseInsensitive) == 0; });
     if (!names.isEmpty()) return names;
+    // A voltage the dataset has as the name alone: ngspice 46 writes an
+    // S-parameter analysis' ac.s_1_1 where traces name ac.v(s_1_1).
+    static const QRegularExpression voltage(QStringLiteral("^((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)[vV]\\(([A-Za-z_][A-Za-z0-9_]*)\\)$"));
+    if (const QRegularExpressionMatch m = voltage.match(w); spice && m.hasMatch()) {
+        const QString alone = m.captured(1) + m.captured(2);
+        names = all([&](const QString& n) { return n.compare(alone, Qt::CaseInsensitive) == 0; });
+        if (!names.isEmpty()) return names;
+    }
     if (spice && analysisOf(w).isEmpty()) {
         names = all([&w](const QString& n) { return bareName(n).compare(w, Qt::CaseInsensitive) == 0; });
         if (!names.isEmpty()) return names;
@@ -1011,7 +1020,8 @@ QStringList measurements()
             QStringLiteral("settling_time"), QStringLiteral("period"), QStringLiteral("frequency"),
             QStringLiteral("duty_cycle"), QStringLiteral("crossings"), QStringLiteral("bandwidth"),
             QStringLiteral("thd"), QStringLiteral("gain"), QStringLiteral("phase_margin"), QStringLiteral("gain_margin"),
-            QStringLiteral("distribution"), QStringLiteral("fft"), QStringLiteral("eye")};
+            QStringLiteral("distribution"), QStringLiteral("fft"), QStringLiteral("eye"), QStringLiteral("roots"), QStringLiteral("spectrum"),
+            QStringLiteral("bathtub"), QStringLiteral("stability"), QStringLiteral("evm")};
 }
 
 namespace {
@@ -1423,6 +1433,47 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
         }
         return r;
     }
+    if (w == QLatin1String("stability") || w == QLatin1String("evm"))
+        return cannot(tr("%1 is measured on the dataset (a two-port's four S-parameters, an I with its Q), not one curve").arg(w));
+    if (w == QLatin1String("spectrum")) {
+        // The spectrum view's: windowed, the fundamental and its harmonics,
+        // THD, SFDR, SNR, SINAD (spectrum.h).
+        const int window = qucs_s::spectrum::windowOf(o.window);
+        const qucs_s::spectrum::Spectrum s = qucs_s::spectrum::of(c.x, c.y, qucs_s::spectrum::Window(std::max(0, window)));
+        if (s.amplitude.isEmpty()) return cannot(tr("too few samples for a spectrum"));
+        return qucs_s::spectrum::toJson(qucs_s::spectrum::analyse(s, o.fundamental, o.harmonics), s);
+    }
+    if (w == QLatin1String("roots")) {
+        // Each value a root in the s-plane (a pole-zero analysis' poles and
+        // zeros, rad/s): where it is, its natural frequency, damping, Q,
+        // the frequency in Hz, and whether it is in the left half-plane.
+        QJsonArray roots;
+        int unstable = 0;
+        for (int i = 0; i < c.y.size(); ++i) {
+            const double magnitude = c.y.at(i);
+            if (!std::isfinite(magnitude)) continue;
+            const bool complex = i < o.phase.size();
+            const double angle = complex ? o.phase.at(i) * kPi / 180.0 : 0.0;
+            const double re = complex ? magnitude * std::cos(angle) : magnitude;
+            const double im = complex ? magnitude * std::sin(angle) : 0.0;
+            const double wn = std::hypot(re, im);
+            const double zeta = wn > 0 ? -re / wn : qQNaN();
+            QJsonObject root{{QStringLiteral("re"), rounded(re)},
+                             {QStringLiteral("im"), rounded(std::abs(im) < 1e-12 * std::max(1.0, wn) ? 0.0 : im)},
+                             {QStringLiteral("wn"), rounded(wn)},
+                             {QStringLiteral("f"), rounded(wn / (2 * kPi))},
+                             {QStringLiteral("stable"), re < 0}};
+            if (std::isfinite(zeta)) root.insert(QStringLiteral("zeta"), rounded(zeta));
+            if (std::isfinite(zeta) && zeta > 0) root.insert(QStringLiteral("q"), rounded(1.0 / (2.0 * zeta)));
+            if (re >= 0) ++unstable;
+            roots << root;
+        }
+        QJsonObject r{{QStringLiteral("roots"), roots}, {QStringLiteral("count"), roots.size()}, {QStringLiteral("unit"), QStringLiteral("rad/s")}};
+        if (unstable > 0)
+            r.insert(QStringLiteral("note"), QObject::tr("%n root(s) in the right half-plane or on the j\u03C9 axis: as poles, the "
+                                                         "circuit is unstable (or marginal)", nullptr, unstable));
+        return r;
+    }
     if (w == QLatin1String("distribution")) {
         // The values as samples, one per run - not a time average.
         QVector<double> v;
@@ -1455,10 +1506,27 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
                       {QStringLiteral("min"), rounded(v.first())},
                       {QStringLiteral("max"), rounded(v.last())},
                       {QStringLiteral("median"), rounded(percentile(0.5))},
+                      {QStringLiteral("1st quartile"), rounded(percentile(0.25))},
+                      {QStringLiteral("3rd quartile"), rounded(percentile(0.75))},
                       {QStringLiteral("5th percentile"), rounded(percentile(0.05))},
                       {QStringLiteral("95th percentile"), rounded(percentile(0.95))},
                       {QStringLiteral("histogram"), histogram},
                       {QStringLiteral("histogram is"), QStringLiteral("[from, to, count] for each bin")}};
+        // A box plot's: the values beyond 1.5 times the quartiles' spread
+        // from them (Tukey's outliers), and the whiskers' ends within.
+        const double q1 = percentile(0.25), q3 = percentile(0.75), lowFence = q1 - 1.5 * (q3 - q1), highFence = q3 + 1.5 * (q3 - q1);
+        QJsonArray outliers;
+        double low = q1, high = q3;
+        for (double y : v) {
+            if (y < lowFence || y > highFence) {
+                if (outliers.size() < 50) outliers << rounded(y);
+            } else {
+                low = std::min(low, y);
+                high = std::max(high, y);
+            }
+        }
+        r.insert(QStringLiteral("whiskers"), QJsonArray{rounded(low), rounded(high)});
+        if (!outliers.isEmpty()) r.insert(QStringLiteral("outliers"), outliers);
         if (!std::isnan(o.level)) {
             int above = 0;
             for (double y : v) above += y >= o.level ? 1 : 0;
@@ -1529,6 +1597,44 @@ QJsonObject measure(const Curve& c, const QString& what, const MeasureOptions& o
                 {QStringLiteral("points"), n},
                 {QStringLiteral("measured"), tr("the range resampled evenly at %1 points, a Hann window; amplitudes are "
                                                 "peak values, a line's accurate within its bin").arg(n)}};
+    }
+    if (w == QLatin1String("bathtub")) {
+        if (!std::isnan(o.period) && !(o.period > 0))
+            return cannot(tr("a bathtub's bit period ('bit_period', in the unit of x) is above 0"));
+        if (!(o.ber > 0 && o.ber <= 0.01)) return cannot(tr("a bathtub's 'ber' is above 0 and at most 0.01"));
+        eye::Options eo;
+        eo.ui = o.period;   // NaN: told from the crossings
+        eo.start = c.x.first() + o.offset;
+        eo.levels = o.levels;
+        eo.threshold = o.level;
+        const eye::Result e = eye::analyse(c, eo);
+        if (!e.ok()) return cannot(o.sourceNote.isEmpty() ? e.error : QStringLiteral("%1 (%2)").arg(e.error, o.sourceNote));
+        // The narrowest eye's opening is the signal's (PAM4's three listed).
+        QJsonObject r;
+        double narrowest = qQNaN();
+        QJsonArray eyes;
+        for (int k = 0; k < e.eyes.size(); ++k) {
+            const QJsonObject j = eye::toJson(eye::bathtubOf(e, k), o.ber);
+            eyes << j;
+            const double opening = j.value(QStringLiteral("opening")).toDouble(qQNaN());
+            if (j.contains(QStringLiteral("error"))) continue;
+            if (!(opening >= narrowest)) {
+                narrowest = opening;
+                r = j;
+            }
+        }
+        if (r.isEmpty()) return cannot(eyes.first().toObject().value(QStringLiteral("error")).toString());
+        r.insert(QStringLiteral("value"), r.value(QStringLiteral("opening")));
+        r.insert(QStringLiteral("unit interval"), rounded(e.ui));
+        if (e.uiEstimated) r.insert(QStringLiteral("unit interval from"), tr("the crossings (no bit_period given)"));
+        else if (!o.periodFrom.isEmpty()) r.insert(QStringLiteral("unit interval from"), tr("%1's Tbit (no bit_period given)").arg(o.periodFrom));
+        if (!o.levelsFrom.isEmpty()) r.insert(QStringLiteral("levels from"), tr("%1's Coding, PAM4 (no levels given)").arg(o.levelsFrom));
+        if (eyes.size() > 1) r.insert(QStringLiteral("eyes"), eyes);
+        r.insert(QStringLiteral("measured"),
+                 tr("folded at %1 from %2 as the eye is: a bit error a crossing on the wrong side of the sampling instant - "
+                    "counted, and beyond the crossings the dual-Dirac model fitted to their tails; the opening is where the "
+                    "rate is at most %3, the total jitter a UI less it").arg(rounded(e.ui)).arg(rounded(e.start)).arg(o.ber));
+        return r;
     }
     if (w == QLatin1String("eye")) {
         if (!std::isnan(o.period) && !(o.period > 0))

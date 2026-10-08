@@ -31,6 +31,7 @@
 #include "wire_planner.h"
 #include "schematic_selection.h"
 #include "biaslabels.h"
+#include "erc.h"
 #include "oppoint.h"
 
 #include "qt3_compat/q3scrollview.h"
@@ -370,6 +371,11 @@ public:
   /// <AlwaysModelCards=1> only when set.
   bool getAlwaysModelCards() const { return a_alwaysModelCards; }
   void setAlwaysModelCards(bool value) { a_alwaysModelCards = value; }
+  /// The currents and powers its probes asked for (probe.h): vectors an
+  /// ngspice netlist saves beyond the labelled nets - @r1[i], i(v1),
+  /// @r1[p]. Saved as <ProbeSaves=...> only when there are any.
+  const QStringList& getProbeSaves() const { return a_probeSaves; }
+  void setProbeSaves(const QStringList& saves) { a_probeSaves = saves; }
   /// The lines of \a text that go into a netlist: .model cards, the +
   /// lines that go on with one, * comments (blank lines left out); the
   /// others, "3: .control" (numbered from 1), in \a rejected.
@@ -463,6 +469,7 @@ private:
   bool a_alwaysLoadOSDI = false;
   QString a_modelCards;   // getModelCards()
   bool a_alwaysModelCards = false;   // getAlwaysModelCards()
+  QStringList a_probeSaves;          // getProbeSaves()
   QString a_Frame_Text0;
   QString a_Frame_Text1;
   QString a_Frame_Text2;
@@ -668,8 +675,14 @@ public:
   struct Net {
     std::unordered_set<Wire*> wires;
     std::unordered_set<Node*> nodes;
-    bool empty() const { return wires.empty() && nodes.empty(); }
+    /// Parts glowing with it: those whose current or power a selected
+    /// trace shows.
+    std::unordered_set<Component*> parts;
+    bool empty() const { return wires.empty() && nodes.empty() && parts.empty(); }
   };
+  /// ... and the net whose voltage a selected trace of its diagrams shows
+  /// (cross-probing, probe.h), with the part whose current or power one
+  /// shows.
   Net selectedNet() const;
   /// The net a wire belongs to, whether it is selected or not.
   Net netOf(Wire* wire) const;
@@ -689,6 +702,16 @@ public:
   };
   BiasLabels layoutBiasLabels(const QFontMetrics& metrics) const;
 
+  /// Each named net's value where a diagram's marker is (cursorvalues.h),
+  /// following it as it moves: shown or not, and the marker they follow
+  /// when one is chosen (else a marker selected, else the first).
+  bool cursorValuesShown() const { return a_cursorValues; }
+  void showCursorValues(bool on) { a_cursorValues = on; }
+  const Marker* cursorMarker() const { return a_cursorMarker; }
+  void setCursorMarker(const Marker* marker) { a_cursorMarker = marker; }
+  /// Those labels and where each goes (clear of the DC bias labels).
+  BiasLabels layoutCursorValues(const QFontMetrics& metrics) const;
+
   /// The operating point of every device found by the last DC bias run
   /// (ngspice's "show all", oppoint.h): the Operating Point tab lists it,
   /// and a component's tooltip shows its own while the DC bias is shown.
@@ -701,6 +724,15 @@ public:
   QString operatingPointTooltip(const QPoint& viewportPos);
 private:
   QList<qucs_s::oppoint::Device> a_operatingPoint;
+  bool a_cursorValues = false;
+  // Each wire's net's kind, as last found (View > Colour Wires by Net).
+  mutable QHash<const Wire*, qucs_s::erc::NetKind> a_wireKinds;
+  mutable quint64 a_wireKindsGeneration = ~quint64(0);
+  mutable std::size_t a_wireKindsWires = 0;
+  const Marker* a_cursorMarker = nullptr;   // (only compared: followed while a diagram has it)
+  /// What a value's label had better not cover.
+  qucs_s::bias::Obstacles labelObstacles() const;
+  void drawCursorValues(QPainter* painter);
   void drawNetHighlight(QPainter* painter, const Net& net, const QRectF& area);
   void drawDcBiasPoints(QPainter* painter);
   void drawPostPaintEvents(QPainter* painter);

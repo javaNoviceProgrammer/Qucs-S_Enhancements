@@ -28,6 +28,9 @@
 #include "textdoc.h"
 #include "diagrams/diagrams.h"
 #include "diagrams/marker.h"
+#include "probe.h"
+#include "spectrum.h"
+#include "cursorvalues.h"
 #include "extsimkernels/CdlNetlistWriter.h"
 #include "extsimkernels/simulationrun.h"
 #include "extsimkernels/spicecompat.h"
@@ -92,6 +95,17 @@ const DiagramKind kDiagramKinds[] = {
     {"locus", "Curve", "locus curve"},
     {"histogram", "Histogram", "histogram"},
     {"eye", "Eye", "eye diagram (a transient folded at its unit interval)"},
+    {"stacked", "Stacked", "stacked panes: Cartesian plots one above the other on one x axis, each trace in its pane"},
+    {"pole_zero", "PoleZero", "pole-zero map: a pole-zero analysis' poles (crosses) and zeros (circles) in the s-plane"},
+    {"bode", "Bode", "Bode pair: a loop gain's magnitude in dB above its phase, the crossovers and margins marked"},
+    {"nichols", "Nichols", "Nichols chart: a loop gain's open-loop gain in dB against its phase, over the closed loop's M and N contours"},
+    {"spectrum", "Spectrum", "spectrum view: a transient's windowed spectrum in dBc, its harmonics numbered, THD, SFDR, SNR and SINAD"},
+    {"bathtub", "Bathtub", "bathtub curve: a data signal's bit error rate against the sampling instant, its RJ, DJ and the opening at a target rate"},
+    {"contour", "Contour", "contour map: a value over two swept parameters in colour, its iso-lines labelled, the region that passes a band"},
+    {"spectrogram", "Spectrogram", "spectrogram: a transient's spectrum as it goes - time along, frequency up, level in dB in colour"},
+    {"box_plot", "BoxPlot", "box plot: each trace's spread - corner or Monte Carlo runs - as a box of its quartiles, median, mean, whiskers and outliers"},
+    {"constellation", "Constellation", "constellation (IQ): traces in pairs, I then Q, sampled once a symbol; a modulation's ideal points and the EVM"},
+    {"tornado", "Bars", "tornado chart: a bar for each trace, the largest on top - a sensitivity run's parts, or each trace's spread over corner or Monte Carlo runs"},
 };
 
 QString kindName(const Diagram* d)
@@ -119,6 +133,17 @@ Diagram* newDiagram(const QString& wanted)
     if (file == QLatin1String("Truth")) return new TruthDiagram();
     if (file == QLatin1String("Histogram")) return new HistogramDiagram();
     if (file == QLatin1String("Eye")) return new EyeDiagram();
+    if (file == QLatin1String("Stacked")) return new StackedDiagram();
+    if (file == QLatin1String("PoleZero")) return new PoleZeroDiagram();
+    if (file == QLatin1String("Bode")) return new BodeDiagram();
+    if (file == QLatin1String("Nichols")) return new NicholsDiagram();
+    if (file == QLatin1String("Spectrum")) return new SpectrumDiagram();
+    if (file == QLatin1String("Bathtub")) return new BathtubDiagram();
+    if (file == QLatin1String("Contour")) return new ContourDiagram();
+    if (file == QLatin1String("Spectrogram")) return new SpectrogramDiagram();
+    if (file == QLatin1String("Bars")) return new TornadoDiagram();
+    if (file == QLatin1String("BoxPlot")) return new BoxPlotDiagram();
+    if (file == QLatin1String("Constellation")) return new ConstellationDiagram();
     return nullptr;
 }
 
@@ -133,7 +158,7 @@ QString kindNames()
 bool hasRightAxis(const Diagram* d)
 {
     return d->Name == QLatin1String("Rect") || d->Name == QLatin1String("PS") || d->Name == QLatin1String("SP")
-           || d->Name == QLatin1String("Curve");
+           || d->Name == QLatin1String("Curve") || d->Name == QLatin1String("Stacked");
 }
 
 // Whether a diagram of this kind draws curves (colors, styles, markers).
@@ -336,6 +361,24 @@ QJsonObject themeJson(const Diagram* d)
 
 const char* const kEyeDrawn[] = {"density", "traces"};
 
+// A number, a value written as in a property ("100p", "1 ns"), or null
+// (NaN): false when it is none of them.
+bool valueOrNull(const QJsonValue& v, double* out)
+{
+    if (v.isNull()) {
+        *out = NaN;
+        return true;
+    }
+    double x = NaN;
+    if (v.isDouble()) x = v.toDouble();
+    else if (v.isString()) {
+        const qucs_s::units::Reading r = qucs_s::units::read(v.toString());
+        if (r.kind == qucs_s::units::Reading::Number) x = r.value;
+    }
+    *out = x;
+    return std::isfinite(x);
+}
+
 // An eye diagram's own, from {"unit_interval", "span", "from", "levels",
 // "threshold", "drawn", "measurements", "mask"}: all checked before any
 // is set. What is not given stays; null is automatic (or no mask).
@@ -347,21 +390,7 @@ bool applyEye(EyeDiagram* d, const QJsonValue& value, QString* error)
         return false;
     }
     const QJsonObject o = value.toObject();
-    // A number, a value written as in a property ("100p", "1 ns"), or null.
-    auto valueOf = [&](const QJsonValue& v, double* out) {
-        if (v.isNull()) {
-            *out = NaN;
-            return true;
-        }
-        double x = NaN;
-        if (v.isDouble()) x = v.toDouble();
-        else if (v.isString()) {
-            const qucs_s::units::Reading r = qucs_s::units::read(v.toString());
-            if (r.kind == qucs_s::units::Reading::Number) x = r.value;
-        }
-        *out = x;
-        return std::isfinite(x);
-    };
+    const auto valueOf = valueOrNull;
     double ui = d->ui, from = d->start, threshold = d->threshold;
     if (o.contains(QLatin1String("unit_interval")) && (!valueOf(o.value(QLatin1String("unit_interval")), &ui) || !(ui > 0))
         && !o.value(QLatin1String("unit_interval")).isNull()) {
@@ -463,6 +492,983 @@ QJsonObject eyeJson(const EyeDiagram* d)
     return o;
 }
 
+// A bathtub curve's own, from {"unit_interval", "from", "levels",
+// "threshold", "ber", "floor", "measured"}: all checked before any is
+// set. What is not given stays; null is automatic.
+bool applyBathtub(Diagram* d, const QJsonValue& value, QString* error)
+{
+    auto* b = dynamic_cast<BathtubDiagram*>(d);
+    if (b == nullptr) {
+        *error = tr("'bathtub' is a bathtub curve's (type bathtub); this is a %1.").arg(kindName(d));
+        return false;
+    }
+    if (!value.isObject()) {
+        *error = tr("'bathtub' is an object: {\"unit_interval\", \"from\", \"levels\", \"threshold\", \"ber\", \"floor\", \"measured\"}.");
+        return false;
+    }
+    const QJsonObject o = value.toObject();
+    const auto given = [&](const char* key) { return o.contains(QLatin1String(key)); };
+    const auto isNull = [&](const char* key) { return o.value(QLatin1String(key)).isNull(); };
+    double ui = b->ui, from = b->start, threshold = b->threshold, ber = b->ber, floor = b->floor;
+    if (given("unit_interval") && (!valueOrNull(o.value(QLatin1String("unit_interval")), &ui) || !(ui > 0)) && !isNull("unit_interval")) {
+        *error = tr("'unit_interval' is a bit's length in seconds above 0 (1e-10, \"100p\"), or null: as the eye diagram tells it.");
+        return false;
+    }
+    if (given("from") && !valueOrNull(o.value(QLatin1String("from")), &from) && !isNull("from")) {
+        *error = tr("'from' is the time the eye starts at, in seconds (2e-9, \"2n\"), or null: from the start.");
+        return false;
+    }
+    if (given("threshold") && !valueOrNull(o.value(QLatin1String("threshold")), &threshold) && !isNull("threshold")) {
+        *error = tr("'threshold' is a value in the signal's unit (0.5), or null: halfway between the levels.");
+        return false;
+    }
+    if (given("ber") && !(valueOrNull(o.value(QLatin1String("ber")), &ber) && ber > 0 && ber <= 0.01)) {
+        *error = tr("'ber' is the bit error rate the opening is measured at, above 0 and at most 0.01 (1e-12).");
+        return false;
+    }
+    if (given("floor") && !(isNull("floor") || (valueOrNull(o.value(QLatin1String("floor")), &floor) && floor > 0))) {
+        *error = tr("'floor' is the rate the axis goes down to, above 0 and below 'ber', or null: 'ber' over 10000.");
+        return false;
+    }
+    if (given("floor") && isNull("floor")) floor = NaN;
+    if (std::isfinite(floor) && !(floor < ber)) {
+        *error = tr("'floor' (%1) is below 'ber' (%2): the axis goes down past the rate measured at.").arg(floor).arg(ber);
+        return false;
+    }
+    int levels = b->levels;
+    if (given("levels")) {
+        const double l = isNull("levels") ? 0 : o.value(QLatin1String("levels")).toDouble(NaN);
+        if (l != 0 && l != 2 && l != 4) {
+            *error = tr("'levels' is 2 (NRZ) or 4 (PAM4), or null: as each trace's V(PRBS) source is coded.");
+            return false;
+        }
+        levels = int(l);
+    }
+    bool measured = b->measured;
+    if (given("measured")) {
+        if (!o.value(QLatin1String("measured")).isBool()) {
+            *error = tr("'measured' is true or false.");
+            return false;
+        }
+        measured = o.value(QLatin1String("measured")).toBool();
+    }
+    b->ui = ui;
+    b->start = from;
+    b->threshold = threshold;
+    b->levels = levels;
+    b->ber = ber;
+    b->floor = floor;
+    b->measured = measured;
+    return true;
+}
+
+// A bathtub curve's settings, and each trace's eyes' bathtubs.
+QJsonObject bathtubJson(const BathtubDiagram* d)
+{
+    QJsonObject o{{QStringLiteral("ber"), d->ber}, {QStringLiteral("floor"), d->floorRate()}, {QStringLiteral("measured"), d->measured}};
+    if (d->levels == 2 || d->levels == 4) o.insert(QStringLiteral("levels"), d->levels);
+    if (std::isfinite(d->ui)) o.insert(QStringLiteral("unit_interval"), d->ui);
+    if (std::isfinite(d->start)) o.insert(QStringLiteral("from"), d->start);
+    if (std::isfinite(d->threshold)) o.insert(QStringLiteral("threshold"), d->threshold);
+    return o;
+}
+
+QJsonArray bathtubAnalyses(const BathtubDiagram* d)
+{
+    QJsonArray analyses;
+    for (int i = 0; i < d->bathtubs().size(); ++i) {
+        const QList<qucs_s::eye::Bathtub>& tubs = d->bathtubs().at(i);
+        QJsonObject a;
+        if (tubs.size() == 1) {
+            a = qucs_s::eye::toJson(tubs.first(), d->ber);
+        } else {
+            QJsonArray eyes;
+            for (const qucs_s::eye::Bathtub& b : tubs) eyes << qucs_s::eye::toJson(b, d->ber);
+            a.insert(QStringLiteral("eyes"), eyes);
+        }
+        if (i < d->results().size() && d->results().at(i).ok()) a.insert(QStringLiteral("unit interval"), ds::rounded(d->results().at(i).ui));
+        a.insert(QStringLiteral("trace"), i + 1);
+        analyses << a;
+    }
+    return analyses;
+}
+
+// A contour map's own, from {"levels", "map", "filled", "labels", "pass",
+// "range"}: all checked before any is set. What is not given stays.
+bool applyContour(Diagram* d, const QJsonValue& value, QString* error)
+{
+    auto* c = dynamic_cast<ContourDiagram*>(d);
+    if (c == nullptr) {
+        *error = tr("'contour' is a contour map's (type contour); this is a %1.").arg(kindName(d));
+        return false;
+    }
+    if (!value.isObject()) {
+        *error = tr("'contour' is an object: {\"levels\", \"map\", \"filled\", \"labels\", \"pass\", \"range\"}.");
+        return false;
+    }
+    const QJsonObject o = value.toObject();
+    int levels = c->levels, map = c->map;
+    bool filled = c->filled, labels = c->labels;
+    double passMin = c->passMin, passMax = c->passMax;
+    bool autoRange = c->zAxis.autoScale;
+    double from = c->zAxis.limit_min, to = c->zAxis.limit_max;
+    if (o.contains(QLatin1String("levels"))) {
+        const double n = o.value(QLatin1String("levels")).toDouble(NaN);
+        if (!(n >= 0 && n <= ContourDiagram::MaxLevels) || n != std::floor(n)) {
+            *error = tr("'levels' is about how many iso-lines, at round values: 0 (none) to %1.").arg(ContourDiagram::MaxLevels);
+            return false;
+        }
+        levels = int(n);
+    }
+    if (o.contains(QLatin1String("map"))) {
+        map = int(ContourDiagram::mapNames().indexOf(o.value(QLatin1String("map")).toString()));
+        if (map < 0) {
+            *error = tr("'map' is %1.").arg(ContourDiagram::mapNames().join(QStringLiteral(", ")));
+            return false;
+        }
+    }
+    for (const char* key : {"filled", "labels"}) {
+        if (!o.contains(QLatin1String(key))) continue;
+        if (!o.value(QLatin1String(key)).isBool()) {
+            *error = tr("'%1' is true or false.").arg(QLatin1String(key));
+            return false;
+        }
+        (QLatin1String(key) == QLatin1String("filled") ? filled : labels) = o.value(QLatin1String(key)).toBool();
+    }
+    if (o.contains(QLatin1String("pass"))) {
+        const QJsonValue p = o.value(QLatin1String("pass"));
+        if (p.isNull()) {
+            passMin = passMax = NaN;
+        } else {
+            const QJsonObject po = p.toObject();
+            double lo = NaN, hi = NaN;
+            const bool good = p.isObject() && (po.contains(QLatin1String("min")) || po.contains(QLatin1String("max")))
+                              && (!po.contains(QLatin1String("min")) || valueOrNull(po.value(QLatin1String("min")), &lo) || po.value(QLatin1String("min")).isNull())
+                              && (!po.contains(QLatin1String("max")) || valueOrNull(po.value(QLatin1String("max")), &hi) || po.value(QLatin1String("max")).isNull());
+            if (!good || (std::isfinite(lo) && std::isfinite(hi) && !(lo < hi))) {
+                *error = tr("'pass' is {\"min\": the lowest value that passes, \"max\": the highest} (either, or both with min below max), "
+                            "or null for none.");
+                return false;
+            }
+            passMin = lo;
+            passMax = hi;
+        }
+    }
+    if (o.contains(QLatin1String("range"))) {
+        const QJsonValue r = o.value(QLatin1String("range"));
+        if (r.isNull()) {
+            autoRange = true;
+        } else {
+            const QJsonObject ro = r.toObject();
+            double lo = NaN, hi = NaN;
+            if (!r.isObject() || !valueOrNull(ro.value(QLatin1String("from")), &lo) || !valueOrNull(ro.value(QLatin1String("to")), &hi) || !(lo < hi)) {
+                *error = tr("'range' is {\"from\", \"to\"}: the values the colours go from and to (from below to), or null: the first trace's.");
+                return false;
+            }
+            autoRange = false;
+            from = lo;
+            to = hi;
+        }
+    }
+    c->levels = levels;
+    c->map = map;
+    c->filled = filled;
+    c->labels = labels;
+    c->passMin = passMin;
+    c->passMax = passMax;
+    c->zAxis.autoScale = autoRange;
+    c->zAxis.limit_min = from;
+    c->zAxis.limit_max = to;
+    return true;
+}
+
+// A constellation's own, from {"symbol_period", "offset", "from",
+// "modulation"}: all checked before any is set.
+bool applyConstellation(Diagram* d, const QJsonValue& value, QString* error)
+{
+    auto* c = dynamic_cast<ConstellationDiagram*>(d);
+    if (c == nullptr) {
+        *error = tr("'constellation' is a constellation's (type constellation); this is a %1.").arg(kindName(d));
+        return false;
+    }
+    const QJsonObject o = value.toObject();
+    if (!value.isObject()) {
+        *error = tr("'constellation' is an object: {\"symbol_period\", \"offset\", \"from\", \"modulation\"}.");
+        return false;
+    }
+    double period = c->period, offset = c->offset, from = c->from;
+    int modulation = c->modulation;
+    const auto timeOf = [&](const char* key, double* out, bool positive) {
+        if (!o.contains(QLatin1String(key))) return true;
+        const QJsonValue v = o.value(QLatin1String(key));
+        if (v.isNull()) {
+            *out = NaN;
+            return true;
+        }
+        double t = NaN;
+        if (!valueOrNull(v, &t) || (positive && !(t > 0))) {
+            *error = tr("'%1' is a time in seconds (1u, 1e-6)%2, or null.").arg(QLatin1String(key), positive ? tr(" above 0") : QString());
+            return false;
+        }
+        *out = t;
+        return true;
+    };
+    if (!timeOf("symbol_period", &period, true) || !timeOf("offset", &offset, false) || !timeOf("from", &from, false)) return false;
+    if (o.contains(QLatin1String("modulation"))) {
+        modulation = int(ConstellationDiagram::modulationNames().indexOf(o.value(QLatin1String("modulation")).toString().toLower()));
+        if (modulation < 0) {
+            *error = tr("'modulation' is %1.").arg(ConstellationDiagram::modulationNames().join(QStringLiteral(", ")));
+            return false;
+        }
+    }
+    c->period = period;
+    c->offset = offset;
+    c->from = from;
+    c->modulation = modulation;
+    return true;
+}
+
+// A constellation's settings and each pair's symbols and EVM.
+QJsonObject constellationJson(const ConstellationDiagram* d)
+{
+    QJsonArray pairs;
+    for (const ConstellationDiagram::Pair& p : d->pairs()) {
+        QJsonObject pair{{QStringLiteral("I"), p.i}, {QStringLiteral("Q"), p.q}};
+        if (!p.ok()) {
+            pair.insert(QStringLiteral("error"), p.error);
+        } else {
+            pair.insert(QStringLiteral("symbols"), int(p.points.size()));
+            pair.insert(QStringLiteral("centre"), QJsonArray{ds::rounded(p.centre.x()), ds::rounded(p.centre.y())});
+            if (!p.ideal.isEmpty()) {
+                pair.insert(QStringLiteral("EVM rms %"), ds::rounded(p.evmRms));
+                pair.insert(QStringLiteral("EVM peak %"), ds::rounded(p.evmPeak));
+            }
+        }
+        pairs << pair;
+    }
+    const auto timeJson = [](double t) { return std::isfinite(t) ? QJsonValue(t) : QJsonValue(QJsonValue::Null); };
+    return QJsonObject{{QStringLiteral("symbol_period"), timeJson(d->period)},
+                       {QStringLiteral("offset"), timeJson(d->offset)},
+                       {QStringLiteral("from"), timeJson(d->from)},
+                       {QStringLiteral("modulation"), ConstellationDiagram::modulationNames().value(d->modulation)},
+                       {QStringLiteral("pairs"), pairs}};
+}
+
+// A Smith chart's circles, from {"frequency", "circles": [{"kind",
+// "level"}]}, or null for none: all checked before any is set.
+bool applySmithCircles(Diagram* d, const QJsonValue& value, QString* error)
+{
+    auto* smith = dynamic_cast<SmithDiagram*>(d);
+    if (smith == nullptr) {
+        *error = tr("'smith_circles' is a Smith chart's (type smith or admittance_smith); this is a %1.").arg(kindName(d));
+        return false;
+    }
+    if (value.isNull()) {
+        smith->circles.clear();
+        return true;
+    }
+    const QJsonObject o = value.toObject();
+    if (!value.isObject()) {
+        *error = tr("'smith_circles' is {\"frequency\", \"circles\": [{\"kind\", \"level\"}]}, or null for none.");
+        return false;
+    }
+    double frequency = smith->circleFrequency;
+    if (o.contains(QLatin1String("frequency"))
+        && ((!valueOrNull(o.value(QLatin1String("frequency")), &frequency) && !o.value(QLatin1String("frequency")).isNull())
+            || frequency <= 0)) {
+        *error = tr("'frequency' is the frequency the circles are of, above 0 (1G, 1e9); null: the middle of the sweep.");
+        return false;
+    }
+    QList<SmithDiagram::CircleSpec> circles = smith->circles;
+    if (o.contains(QLatin1String("circles"))) {
+        circles.clear();
+        for (const QJsonValue& v : o.value(QLatin1String("circles")).toArray()) {
+            const QJsonObject c = v.toObject();
+            const int kind = int(SmithDiagram::circleKindNames().indexOf(c.value(QLatin1String("kind")).toString()));
+            if (kind < 0) {
+                *error = tr("A circle's 'kind' is %1.").arg(SmithDiagram::circleKindNames().join(QStringLiteral(", ")));
+                return false;
+            }
+            SmithDiagram::CircleSpec spec{kind, 0};
+            if (kind == SmithDiagram::Gain || kind == SmithDiagram::Noise) {
+                const double level = c.value(QLatin1String("level")).toDouble(NaN);
+                if (!std::isfinite(level)) {
+                    *error = tr("A %1 circle's 'level' is its dB.").arg(c.value(QLatin1String("kind")).toString());
+                    return false;
+                }
+                spec.level = level;
+            }
+            circles << spec;
+        }
+    }
+    smith->circleFrequency = frequency;
+    smith->circles = circles;
+    return true;
+}
+
+// A circle on the Smith chart: its centre and radius (a stability
+// circle's stable side), or why there is none.
+QJsonObject circleJson(const qucs_s::smith::Circle& c, bool stability)
+{
+    if (!c.ok) return {{QStringLiteral("none"), c.why}};
+    QJsonObject o{{QStringLiteral("centre"), QJsonArray{ds::rounded(c.centre.real()), ds::rounded(c.centre.imag())}},
+                  {QStringLiteral("radius"), ds::rounded(c.radius)}};
+    if (stability) o.insert(QStringLiteral("stable"), c.stableInside ? QStringLiteral("inside") : QStringLiteral("outside"));
+    return o;
+}
+
+// A Smith chart's circles as last laid out: the frequency, the two-port's
+// K, mu and |delta| there, each circle's centre and radius.
+QJsonObject smithCirclesJson(const SmithDiagram* d)
+{
+    const SmithDiagram::CircleSet& set = d->circleSet();
+    QJsonObject o{{QStringLiteral("frequency"), std::isfinite(d->circleFrequency) ? QJsonValue(d->circleFrequency) : QJsonValue(QJsonValue::Null)}};
+    if (!set.error.isEmpty()) {
+        o.insert(QStringLiteral("error"), set.error);
+        return o;
+    }
+    o.insert(QStringLiteral("at"), ds::rounded(set.frequency));
+    o.insert(QStringLiteral("K"), ds::rounded(set.s.k()));
+    o.insert(QStringLiteral("mu"), ds::rounded(set.s.mu()));
+    o.insert(QStringLiteral("|delta|"), ds::rounded(std::abs(set.s.delta())));
+    o.insert(QStringLiteral("unconditionally stable"), set.s.k() > 1 && std::abs(set.s.delta()) < 1);
+    QJsonArray circles;
+    for (const SmithDiagram::DrawnCircle& c : set.drawn) {
+        QJsonObject one{{QStringLiteral("kind"), SmithDiagram::circleKindNames().value(c.spec.kind)}};
+        if (c.spec.kind == SmithDiagram::Gain || c.spec.kind == SmithDiagram::Noise) one.insert(QStringLiteral("level"), c.spec.level);
+        const QJsonObject drawn = circleJson(c.circle, c.spec.kind <= SmithDiagram::OutputStability);
+        for (auto it = drawn.begin(); it != drawn.end(); ++it) one.insert(it.key(), it.value());
+        circles << one;
+    }
+    o.insert(QStringLiteral("circles"), circles);
+    return o;
+}
+
+// A box plot's own, from {"at", "whiskers"}: all checked before any is set.
+bool applyBoxPlot(Diagram* d, const QJsonValue& value, QString* error)
+{
+    auto* b = dynamic_cast<BoxPlotDiagram*>(d);
+    if (b == nullptr) {
+        *error = tr("'box_plot' is a box plot's (type box_plot); this is a %1.").arg(kindName(d));
+        return false;
+    }
+    const QJsonObject o = value.toObject();
+    if (!value.isObject()) {
+        *error = tr("'box_plot' is an object: {\"at\", \"whiskers\"}.");
+        return false;
+    }
+    double at = b->at;
+    bool range = b->range;
+    if (o.contains(QLatin1String("at")) && !valueOrNull(o.value(QLatin1String("at")), &at) && !o.value(QLatin1String("at")).isNull()) {
+        *error = tr("'at' is the x each curve's value is taken at (1m, 1e3); null: its last, the final value.");
+        return false;
+    }
+    if (o.contains(QLatin1String("whiskers"))) {
+        const QString w = o.value(QLatin1String("whiskers")).toString();
+        if (w != QLatin1String("tukey") && w != QLatin1String("range")) {
+            *error = tr("'whiskers' is tukey (to the farthest values within 1.5 times the box, the rest outliers) or range (to the lowest and highest).");
+            return false;
+        }
+        range = w == QLatin1String("range");
+    }
+    b->at = at;
+    b->range = range;
+    return true;
+}
+
+// A box plot's settings and each trace's box.
+QJsonObject boxPlotJson(const BoxPlotDiagram* d)
+{
+    QJsonArray boxes;
+    for (int k = 0; k < d->boxes().size(); ++k) {
+        const BoxPlotDiagram::Box& b = d->boxes().at(k);
+        QJsonObject box{{QStringLiteral("trace"), k + 1}, {QStringLiteral("variable"), b.name}};
+        if (!b.ok()) {
+            box.insert(QStringLiteral("error"), b.error);
+        } else {
+            box.insert(QStringLiteral("values"), b.n);
+            for (const auto& [key, v] : {std::pair{"min", b.min}, std::pair{"q1", b.q1}, std::pair{"median", b.median}, std::pair{"q3", b.q3},
+                                         std::pair{"max", b.max}, std::pair{"mean", b.mean}, std::pair{"standard deviation", b.sd},
+                                         std::pair{"whisker low", b.low}, std::pair{"whisker high", b.high}})
+                box.insert(QLatin1String(key), ds::rounded(v));
+            if (!b.outliers.isEmpty()) {
+                QJsonArray out;
+                for (double v : b.outliers.mid(0, 20)) out << ds::rounded(v);
+                box.insert(QStringLiteral("outliers"), out);
+                if (b.outliers.size() > 20) box.insert(QStringLiteral("more outliers"), int(b.outliers.size() - 20));
+            }
+        }
+        boxes << box;
+    }
+    return QJsonObject{{QStringLiteral("at"), std::isfinite(d->at) ? QJsonValue(d->at) : QJsonValue(QJsonValue::Null)},
+                       {QStringLiteral("whiskers"), d->range ? QStringLiteral("range") : QStringLiteral("tukey")},
+                       {QStringLiteral("boxes"), boxes}};
+}
+
+// A spectrogram's own, from {"window", "segment", "overlap", "range"}: all
+// checked before any is set.
+bool applySpectrogram(Diagram* d, const QJsonValue& value, QString* error)
+{
+    auto* s = dynamic_cast<SpectrogramDiagram*>(d);
+    if (s == nullptr) {
+        *error = tr("'spectrogram' is a spectrogram's (type spectrogram); this is a %1.").arg(kindName(d));
+        return false;
+    }
+    const QJsonObject o = value.toObject();
+    if (!value.isObject()) {
+        *error = tr("'spectrogram' is an object: {\"window\", \"segment\", \"overlap\", \"range\", \"up_to\"}.");
+        return false;
+    }
+    int window = int(s->window);
+    double segment = s->segment, overlap = s->overlap, range = s->range, upTo = s->upTo;
+    if (o.contains(QLatin1String("window"))) {
+        window = qucs_s::spectrum::windowOf(o.value(QLatin1String("window")).toString());
+        if (window < 0) {
+            *error = tr("The spectrogram's window is %1.").arg(qucs_s::spectrum::windowNames().join(QStringLiteral(", ")));
+            return false;
+        }
+    }
+    if (o.contains(QLatin1String("segment")) && !o.value(QLatin1String("segment")).isNull()
+        && (!valueOrNull(o.value(QLatin1String("segment")), &segment) || !(segment > 0))) {
+        *error = tr("'segment' is the seconds each column is of (1m, 1e-3), above 0; null: a sixteenth of the transient.");
+        return false;
+    }
+    if (o.contains(QLatin1String("segment")) && o.value(QLatin1String("segment")).isNull()) segment = NaN;
+    if (o.contains(QLatin1String("overlap"))) {
+        overlap = o.value(QLatin1String("overlap")).toDouble(NaN);
+        if (!(overlap >= 0 && overlap <= 0.9)) {
+            *error = tr("'overlap' is how much of a segment the next one shares: 0 to 0.9.");
+            return false;
+        }
+    }
+    if (o.contains(QLatin1String("range"))) {
+        range = o.value(QLatin1String("range")).toDouble(NaN);
+        if (!(range > 0 && range <= 400)) {
+            *error = tr("'range' is the dB of colours below the loudest, above 0 and at most 400.");
+            return false;
+        }
+    }
+    if (o.contains(QLatin1String("up_to"))) {
+        if (o.value(QLatin1String("up_to")).isNull()) upTo = NaN;
+        else if (!valueOrNull(o.value(QLatin1String("up_to")), &upTo) || !(upTo > 0)) {
+            *error = tr("'up_to' is the frequency the rows go up to (25k), above 0; null: a quarter past what is within range of the loudest.");
+            return false;
+        }
+    }
+    s->window = qucs_s::spectrum::Window(window);
+    s->segment = segment;
+    s->overlap = overlap;
+    s->range = range;
+    s->upTo = upTo;
+    return true;
+}
+
+// A spectrogram's settings, and each trace's columns and loudest.
+QJsonObject spectrogramJson(const SpectrogramDiagram* d)
+{
+    QJsonObject o{{QStringLiteral("window"), qucs_s::spectrum::windowName(d->window)},
+                  {QStringLiteral("segment"), std::isfinite(d->segment) ? QJsonValue(d->segment) : QJsonValue(QJsonValue::Null)},
+                  {QStringLiteral("overlap"), d->overlap},
+                  {QStringLiteral("range"), d->range},
+                  {QStringLiteral("up_to"), std::isfinite(d->upTo) ? QJsonValue(d->upTo) : QJsonValue(QJsonValue::Null)}};
+    QJsonArray traces;
+    for (int k = 0; k < d->grids().size() && k < d->Graphs.size(); ++k) {
+        const ContourDiagram::Grid& g = d->grids().at(k);
+        QJsonObject t{{QStringLiteral("trace"), k + 1}};
+        if (!g.ok()) {
+            t.insert(QStringLiteral("error"), g.error);
+            traces << t;
+            continue;
+        }
+        t.insert(QStringLiteral("segment"), ds::rounded(d->segmentOf(d->Graphs.at(k))));
+        t.insert(QStringLiteral("columns"), int(g.x.size()));
+        t.insert(QStringLiteral("bins"), int(g.y.size()));
+        t.insert(QStringLiteral("resolution"), ds::rounded(g.y.size() > 1 ? g.y.at(1) - g.y.at(0) : 0));
+        int loudest = -1;
+        const int nx = int(g.x.size());
+        for (int i = 0; i < g.v.size(); ++i)
+            if (i / nx > 0 && (loudest < 0 || g.v.at(i) > g.v.at(loudest))) loudest = i;   // (row 0, DC, left out)
+        if (loudest >= 0)
+            t.insert(QStringLiteral("loudest"), QJsonObject{{QStringLiteral("time"), ds::rounded(g.x.at(loudest % nx))},
+                                                            {QStringLiteral("frequency"), ds::rounded(g.y.at(loudest / nx))},
+                                                            {QStringLiteral("dB"), ds::rounded(g.v.at(loudest))}});
+        traces << t;
+    }
+    o.insert(QStringLiteral("analyses"), traces);
+    return o;
+}
+
+// A contour map's settings.
+QJsonObject contourJson(const ContourDiagram* d)
+{
+    QJsonObject o{{QStringLiteral("levels"), d->levels},
+                  {QStringLiteral("map"), ContourDiagram::mapNames().value(d->map)},
+                  {QStringLiteral("filled"), d->filled},
+                  {QStringLiteral("labels"), d->labels}};
+    if (d->hasBand()) {
+        QJsonObject pass;
+        if (std::isfinite(d->passMin)) pass.insert(QStringLiteral("min"), d->passMin);
+        if (std::isfinite(d->passMax)) pass.insert(QStringLiteral("max"), d->passMax);
+        o.insert(QStringLiteral("pass"), pass);
+    }
+    o.insert(QStringLiteral("range"), d->zAxis.autoScale ? QJsonValue(QJsonValue::Null)
+                                                         : QJsonValue(QJsonObject{{QStringLiteral("from"), d->zAxis.limit_min},
+                                                                                  {QStringLiteral("to"), d->zAxis.limit_max}}));
+    return o;
+}
+
+// Each trace's grid: its sweeps, its values' extremes and where, the
+// iso-lines' values; the first trace's share within the band.
+QJsonArray contourAnalyses(const ContourDiagram* d)
+{
+    QJsonArray analyses;
+    for (int k = 0; k < d->grids().size(); ++k) {
+        const ContourDiagram::Grid& g = d->grids().at(k);
+        QJsonObject a{{QStringLiteral("trace"), k + 1}};
+        if (!g.ok()) {
+            a.insert(QStringLiteral("error"), g.error);
+            analyses << a;
+            continue;
+        }
+        const auto sweep = [](const QString& name, const QVector<double>& v) {
+            return QJsonObject{{QStringLiteral("variable"), name},
+                               {QStringLiteral("from"), ds::rounded(v.first())},
+                               {QStringLiteral("to"), ds::rounded(v.last())},
+                               {QStringLiteral("points"), int(v.size())}};
+        };
+        a.insert(QStringLiteral("x"), sweep(g.xName, g.x));
+        a.insert(QStringLiteral("y"), sweep(g.yName, g.y));
+        int lo = -1, hi = -1, gaps = 0;
+        for (int i = 0; i < g.v.size(); ++i) {
+            if (!std::isfinite(g.v.at(i))) {
+                ++gaps;
+                continue;
+            }
+            if (lo < 0 || g.v.at(i) < g.v.at(lo)) lo = i;
+            if (hi < 0 || g.v.at(i) > g.v.at(hi)) hi = i;
+        }
+        const int nx = int(g.x.size());
+        const auto where = [&](int i) {
+            return QJsonObject{{QStringLiteral("value"), ds::rounded(g.v.at(i))},
+                               {QStringLiteral("x"), ds::rounded(g.x.at(i % nx))},
+                               {QStringLiteral("y"), ds::rounded(g.y.at(i / nx))}};
+        };
+        if (lo >= 0) {
+            a.insert(QStringLiteral("lowest"), where(lo));
+            a.insert(QStringLiteral("highest"), where(hi));
+        }
+        if (gaps > 0) a.insert(QStringLiteral("points without a value"), gaps);
+        if (g.slices > 1)
+            a.insert(QStringLiteral("note"), tr("swept over more than two parameters: drawn at the first value of the others (%1 of them)").arg(g.slices));
+        double lowest = NaN, highest = NaN;
+        if (k == 0) {
+            lowest = d->zAxis.low;
+            highest = d->zAxis.up;
+        } else if (lo >= 0) {
+            lowest = g.v.at(lo);
+            highest = g.v.at(hi);
+        }
+        QJsonArray levels;
+        for (double v : ContourDiagram::levelsIn(lowest, highest, d->levels)) levels << ds::rounded(v);
+        a.insert(QStringLiteral("iso-lines"), levels);
+        if (k == 0 && d->hasBand()) {
+            a.insert(QStringLiteral("passing share"), ds::rounded(d->passing()));
+            // Where it passes: the extent of the points that do.
+            double x0 = NaN, x1 = NaN, y0 = NaN, y1 = NaN;
+            for (int i = 0; i < g.v.size(); ++i)
+                if (std::isfinite(g.v.at(i)) && d->passes(g.v.at(i))) {
+                    const double x = g.x.at(i % nx), y = g.y.at(i / nx);
+                    x0 = std::isfinite(x0) ? std::min(x0, x) : x;
+                    x1 = std::isfinite(x1) ? std::max(x1, x) : x;
+                    y0 = std::isfinite(y0) ? std::min(y0, y) : y;
+                    y1 = std::isfinite(y1) ? std::max(y1, y) : y;
+                }
+            if (std::isfinite(x0))
+                a.insert(QStringLiteral("passing within"), QJsonObject{{QStringLiteral("x"), QJsonArray{ds::rounded(x0), ds::rounded(x1)}},
+                                                                       {QStringLiteral("y"), QJsonArray{ds::rounded(y0), ds::rounded(y1)}}});
+        }
+        analyses << a;
+    }
+    return analyses;
+}
+
+const char* const kTornadoModes[] = {"value", "spread"};
+
+// A tornado chart's own, from {"mode", "at", "bars", "parts"}: all checked
+// before any is set ("parts" is taken by add_diagram and edit_diagram).
+bool applyTornado(Diagram* d, const QJsonValue& value, QString* error)
+{
+    auto* t = dynamic_cast<TornadoDiagram*>(d);
+    if (t == nullptr) {
+        *error = tr("'tornado' is a tornado chart's (type tornado); this is a %1.").arg(kindName(d));
+        return false;
+    }
+    if (!value.isObject()) {
+        *error = tr("'tornado' is an object: {\"mode\", \"at\", \"bars\", \"parts\"}.");
+        return false;
+    }
+    const QJsonObject o = value.toObject();
+    int mode = t->mode, bars = t->bars;
+    double at = t->at;
+    if (o.contains(QLatin1String("mode"))) {
+        mode = indexIn(kTornadoModes, o.value(QLatin1String("mode")).toString());
+        if (mode < 0) {
+            *error = tr("'mode' is %1.").arg(namesOf(kTornadoModes));
+            return false;
+        }
+    }
+    if (o.contains(QLatin1String("at")) && !valueOrNull(o.value(QLatin1String("at")), &at) && !o.value(QLatin1String("at")).isNull()) {
+        *error = tr("'at' is the point of the sweep the values are taken at (27, \"1k\"), or null: its first.");
+        return false;
+    }
+    if (o.contains(QLatin1String("bars"))) {
+        const double n = o.value(QLatin1String("bars")).toDouble(NaN);
+        if (!(n >= 1 && n <= TornadoDiagram::MaxBars) || n != std::floor(n)) {
+            *error = tr("'bars' is how many at most, the largest: 1 to %1.").arg(TornadoDiagram::MaxBars);
+            return false;
+        }
+        bars = int(n);
+    }
+    if (o.contains(QLatin1String("parts")) && !o.value(QLatin1String("parts")).isBool()) {
+        *error = tr("'parts' is true: a bar for each part of the first trace's sensitivity run.");
+        return false;
+    }
+    t->mode = mode;
+    t->at = at;
+    t->bars = bars;
+    return true;
+}
+
+QString traceFile(Schematic* sch, const QString& var, QString* variable);   // (below)
+
+// The variables a tornado chart's 'parts' adds: of the run of its first
+// trace, the ones over the same sweep as a sensitivity run's parts
+// (TornadoDiagram::sensitivityParts), those of nothing at its point left
+// out - each as a trace would name it.
+QStringList sensitivityTraces(Schematic* sch, const TornadoDiagram* d, QString* error)
+{
+    if (d->Graphs.isEmpty()) {
+        *error = tr("'parts' adds the parts of the first trace's sensitivity run: give a trace of it (one of its variables).");
+        return {};
+    }
+    const Graph* first = d->Graphs.first();
+    QString variable;
+    const QString file = traceFile(sch, first->Var, &variable);
+    ds::Dataset data;
+    QString why;
+    if (!data.read(file, &why)) {
+        *error = tr("%1's run cannot be read: %2").arg(first->Var, why);
+        return {};
+    }
+    const ds::Variable* v = data.find(variable);
+    if (v == nullptr || v->dependencies.isEmpty()) {
+        *error = tr("%1 has no variable %2 over a sweep").arg(QFileInfo(file).fileName(), variable);
+        return {};
+    }
+    const ds::Variable* sweep = data.find(v->dependencies.first());
+    int point = 0;
+    if (sweep != nullptr && std::isfinite(d->at))
+        for (int i = 1; i < sweep->size(); ++i)
+            if (std::abs(sweep->re.at(i) - d->at) < std::abs(sweep->re.at(point) - d->at)) point = i;
+    QStringList names;
+    QHash<QString, const ds::Variable*> byName;
+    for (const ds::Variable& each : data.variables())
+        if (!each.independent && each.dependencies == v->dependencies && !byName.contains(each.name)) {
+            names << each.name;
+            byName.insert(each.name, &each);
+        }
+    const QStringList parts = TornadoDiagram::sensitivityParts(names, [&](const QString& name) {
+        const ds::Variable* each = byName.value(name);
+        if (each == nullptr || point >= each->size()) return false;
+        const double re = each->re.at(point), im = each->isComplex() ? each->im.at(point) : 0.0;
+        return std::hypot(re, im) > 0;
+    });
+    // As the first trace is named: its dataset and simulator before it.
+    const QString prefix = first->Var.endsWith(variable) ? first->Var.left(first->Var.size() - variable.size()) : QString();
+    QStringList traces;
+    for (const QString& p : parts) {
+        bool shown = false;
+        for (const Graph* g : d->Graphs) shown = shown || g->Var == prefix + p;
+        if (!shown) traces << prefix + p;
+    }
+    if (parts.isEmpty()) *error = tr("%1 has no part of a sensitivity run over %2 (ngspice's .SENS: r1, r1_scale, v1, ...)")
+                                     .arg(QFileInfo(file).fileName(), v->dependencies.first());
+    return traces;
+}
+
+// A part's trace added to a tornado chart: as add_trace adds one.
+void addPartTrace(TornadoDiagram* d, const QString& var)
+{
+    auto* g = new Graph(d, var);
+    static const QRgb palette[] = {0x0000ff, 0xff0000, 0xff00ff, 0x00ff00, 0x00ffff, 0xffff00, 0x777777, 0x000000};
+    g->Color = QColor(palette[d->Graphs.size() % 8]);
+    g->Thick = _settings::Get().item<QString>("DefaultGraphLineWidth").toInt();
+    d->Graphs.append(g);
+}
+
+// A tornado chart's settings and its bars, the largest first.
+QJsonObject tornadoJson(const TornadoDiagram* d)
+{
+    QJsonObject o{{QStringLiteral("mode"), QString::fromLatin1(kTornadoModes[d->mode == TornadoDiagram::Spread ? 1 : 0])},
+                  {QStringLiteral("at"), std::isfinite(d->at) ? QJsonValue(d->at) : QJsonValue(QJsonValue::Null)},
+                  {QStringLiteral("bars"), d->bars}};
+    QJsonArray bars;
+    for (const TornadoDiagram::Bar& b : d->shown()) {
+        QJsonObject bar{{QStringLiteral("variable"), b.name}, {QStringLiteral("trace"), b.graph + 1}, {QStringLiteral("value"), ds::rounded(b.value)}};
+        if (d->mode == TornadoDiagram::Spread) {
+            bar.insert(QStringLiteral("lowest"), ds::rounded(b.low));
+            bar.insert(QStringLiteral("highest"), ds::rounded(b.high));
+            bar.insert(QStringLiteral("spread"), ds::rounded(b.size()));
+        }
+        bars << bar;
+    }
+    o.insert(QStringLiteral("shown"), bars);
+    if (d->nothing() > 0) o.insert(QStringLiteral("of nothing"), d->nothing());
+    if (d->smaller() > 0) o.insert(QStringLiteral("smaller, not shown"), d->smaller());
+    if (!d->noData().isEmpty()) o.insert(QStringLiteral("without data"), QJsonArray::fromStringList(d->noData()));
+    if (std::any_of(d->shown().cbegin(), d->shown().cend(), [](const TornadoDiagram::Bar& b) { return b.name.endsWith(QLatin1String("_scale")); }))
+        o.insert(QStringLiteral("note"), tr("a part's _scale is its value times the derivative: the output's change per 100 % of the part's "
+                                            "value (a hundredth of it per 1 %); a part without one, its derivative per its unit"));
+    return o;
+}
+
+// One pane's axes from {"y_axis": {...}, "y2_axis": {...}}.
+bool applyPane(StackedDiagram* stacked, int i, const QJsonObject& pane, QString* error)
+{
+    for (auto it = pane.begin(); it != pane.end(); ++it)
+        if (it.key() != QLatin1String("y_axis") && it.key() != QLatin1String("y2_axis")) {
+            *error = tr("Pane %1: '%2' is not a pane's - it has y_axis and y2_axis.").arg(i + 1).arg(it.key());
+            return false;
+        }
+    const QJsonValue left = pane.value(QLatin1String("y_axis"));
+    const QJsonValue right = pane.value(QLatin1String("y2_axis"));
+    for (const auto& [a, axis, key] : {std::tuple<QJsonValue, Axis*, const char*>{left, &stacked->pane(i).left, "y_axis"},
+                                       {right, &stacked->pane(i).right, "y2_axis"}}) {
+        if (a.isUndefined() || a.isNull()) continue;
+        if (!a.isObject()) {
+            *error = tr("Pane %1's %2 is an object: {\"label\", \"log\", \"auto\", \"from\", \"to\", \"step\", \"units\"}.")
+                         .arg(i + 1)
+                         .arg(QLatin1String(key));
+            return false;
+        }
+        if (!applyAxis(axis, a.toObject(), tr("pane %1's %2").arg(i + 1).arg(QLatin1String(key)), error)) return false;
+    }
+    return true;
+}
+
+// A stacked diagram's panes: how many (a number), or each one's y axes
+// ([{"y_axis": {...}, "y2_axis": {...}}, ...], the top one first - as many
+// panes as are given). What is not given stays.
+bool applyPanes(Diagram* d, const QJsonValue& v, QString* error)
+{
+    auto* stacked = dynamic_cast<StackedDiagram*>(d);
+    if (stacked == nullptr || dynamic_cast<BodeDiagram*>(d)) {
+        *error = dynamic_cast<BodeDiagram*>(d) ? tr("A Bode diagram has its two panes, the magnitude and the phase: 'panes' is a stacked diagram's.")
+                                               : tr("'panes' is a stacked diagram's (type stacked); this is a %1.").arg(kindName(d));
+        return false;
+    }
+    const auto count = [&](double n) {
+        if (n != std::floor(n) || n < 1 || n > StackedDiagram::MaxPanes) {
+            *error = tr("A stacked diagram has 1 to %1 panes.").arg(StackedDiagram::MaxPanes);
+            return false;
+        }
+        stacked->setPaneCount(int(n));
+        return true;
+    };
+    if (v.isDouble()) return count(v.toDouble());
+    if (!v.isArray()) {
+        *error = tr("'panes' is how many (a number), or a list of them, the top one first: [{\"y_axis\": {\"label\": \"V\"}}, "
+                    "{\"y_axis\": {\"label\": \"A\"}, \"y2_axis\": {}}].");
+        return false;
+    }
+    const QJsonArray panes = v.toArray();
+    if (!count(panes.size())) return false;
+    for (int i = 0; i < panes.size(); ++i) {
+        if (!panes.at(i).isObject()) {
+            *error = tr("Pane %1 is an object: {\"y_axis\": {...}, \"y2_axis\": {...}}.").arg(i + 1);
+            return false;
+        }
+        if (!applyPane(stacked, i, panes.at(i).toObject(), error)) return false;
+    }
+    return true;
+}
+
+QJsonValue number(double v);   // (below: a number as JSON, nan as null)
+
+// One spec limit from {"upper" or "lower": a level or [[x, y], ...],
+// "label", "axis", "pane"}.
+bool applyLimit(const Diagram* d, int i, const QJsonObject& limit, qucs_s::limits::Limit* out, QString* error)
+{
+    namespace lm = qucs_s::limits;
+    const bool upper = limit.contains(QLatin1String("upper")), lower = limit.contains(QLatin1String("lower"));
+    if (upper == lower) {
+        *error = tr("Limit %1 is \"upper\" or \"lower\" (one of them): a level (1.2) or points [[x, y], ...], x rising.").arg(i + 1);
+        return false;
+    }
+    lm::Limit l;
+    l.side = upper ? lm::Limit::Upper : lm::Limit::Lower;
+    const QJsonValue v = limit.value(upper ? QLatin1String("upper") : QLatin1String("lower"));
+    if (v.isDouble()) {
+        l.points << QPointF(0, v.toDouble());
+    } else {
+        for (const QJsonValue& p : v.toArray()) {
+            const QJsonArray xy = p.toArray();
+            if (xy.size() != 2 || !xy.at(0).isDouble() || !xy.at(1).isDouble()) {
+                *error = tr("Limit %1's points are [[x, y], ...]: two numbers each.").arg(i + 1);
+                return false;
+            }
+            l.points << QPointF(xy.at(0).toDouble(), xy.at(1).toDouble());
+        }
+        if (l.points.size() < 2) {
+            *error = tr("Limit %1 is a level (a number) or two points or more.").arg(i + 1);
+            return false;
+        }
+        for (int k = 0; k + 1 < l.points.size(); ++k)
+            if (l.points.at(k + 1).x() < l.points.at(k).x()) {
+                *error = tr("Limit %1's points go with x rising (two of one x are a step).").arg(i + 1);
+                return false;
+            }
+    }
+    const QString label = limit.value(QLatin1String("label")).toString();
+    if (label.contains(QLatin1Char('"')) || label.contains(QLatin1Char('\n'))) {
+        *error = tr("Limit %1's label has no double quotes or line breaks.").arg(i + 1);
+        return false;
+    }
+    l.label = label;
+    const QString axis = limit.value(QLatin1String("axis")).toString(QStringLiteral("left"));
+    if (axis != QLatin1String("left") && axis != QLatin1String("right")) {
+        *error = tr("Limit %1's axis is left or right.").arg(i + 1);
+        return false;
+    }
+    l.axis = axis == QLatin1String("right") ? 1 : 0;
+    if (limit.contains(QLatin1String("pane"))) {
+        const auto* stacked = dynamic_cast<const StackedDiagram*>(d);
+        const QJsonValue p = limit.value(QLatin1String("pane"));
+        if (stacked == nullptr || !p.isDouble() || p.toInt() < 1 || p.toInt() > stacked->paneCount()) {
+            *error = stacked ? tr("Limit %1's pane is 1 to %2.").arg(i + 1).arg(stacked->paneCount())
+                             : tr("Limit %1: 'pane' is a stacked diagram's.").arg(i + 1);
+            return false;
+        }
+        l.pane = p.toInt() - 1;
+    }
+    *out = l;
+    return true;
+}
+
+// A diagram's spec limits: the list given replaces them ([] none).
+bool applyLimits(Diagram* d, const QJsonValue& v, QString* error)
+{
+    if (!d->takesLimits()) {
+        *error = tr("A %1 diagram takes no limits: a Cartesian (rect) or stacked one does.").arg(kindName(d));
+        return false;
+    }
+    if (!v.isArray()) {
+        *error = tr("'limits' is a list: [{\"upper\": 1.2, \"label\": \"max\"}, {\"lower\": [[0, 0.9], [1e-3, 0.9]]}].");
+        return false;
+    }
+    QList<qucs_s::limits::Limit> limits;
+    const QJsonArray list = v.toArray();
+    for (int i = 0; i < list.size(); ++i) {
+        qucs_s::limits::Limit l;
+        if (!applyLimit(d, i, list.at(i).toObject(), &l, error)) return false;
+        limits << l;
+    }
+    d->limits = limits;
+    return true;
+}
+
+// The limits as a diagram's answer says them, and the verdict.
+void insertLimits(QJsonObject* o, const Diagram* d)
+{
+    if (d->limits.isEmpty()) return;
+    QJsonArray limits;
+    for (const qucs_s::limits::Limit& l : d->limits) {
+        QJsonObject lo;
+        if (l.isLevel()) {
+            lo.insert(qucs_s::limits::sideName(l.side), number(l.points.first().y()));
+        } else {
+            QJsonArray points;
+            for (const QPointF& p : l.points) points << QJsonArray{number(p.x()), number(p.y())};
+            lo.insert(qucs_s::limits::sideName(l.side), points);
+        }
+        if (!l.label.isEmpty()) lo.insert(QStringLiteral("label"), l.label);
+        if (l.axis == 1) lo.insert(QStringLiteral("axis"), QStringLiteral("right"));
+        if (dynamic_cast<const StackedDiagram*>(d)) lo.insert(QStringLiteral("pane"), l.pane + 1);
+        limits << lo;
+    }
+    o->insert(QStringLiteral("limits"), limits);
+    bool data = false;
+    for (const Graph* g : d->Graphs) data = data || g->cPointsY != nullptr;
+    if (!data) return;
+    QJsonArray beyond;
+    for (const qucs_s::limits::Violation& v : d->violations()) {
+        const Graph* g = d->Graphs.value(v.graph);
+        const qucs_s::limits::Limit& l = d->limits.at(v.limit);
+        QJsonObject vo{{QStringLiteral("trace"), v.graph + 1},
+                       {QStringLiteral("variable"), g ? g->Var : QString()},
+                       {QStringLiteral("limit"), v.limit + 1},
+                       {QStringLiteral("from"), number(v.from)},
+                       {QStringLiteral("to"), number(v.to)},
+                       {QStringLiteral("worst"), number(v.worst)},
+                       {QStringLiteral("at"), number(v.worstAt)}};
+        if (!l.label.isEmpty()) vo.insert(QStringLiteral("label"), l.label);
+        beyond << vo;
+    }
+    QJsonObject verdict{{QStringLiteral("pass"), beyond.isEmpty()}};
+    if (!beyond.isEmpty()) verdict.insert(QStringLiteral("beyond"), beyond);
+    o->insert(QStringLiteral("verdict"), verdict);
+}
+
+// A spectrum view's own: its window, harmonics, units, how it is drawn,
+// from when, its fundamental. What is not given stays.
+bool applySpectrum(Diagram* d, const QJsonObject& spectrum, QString* error)
+{
+    auto* s = dynamic_cast<SpectrumDiagram*>(d);
+    if (s == nullptr) {
+        *error = tr("'spectrum' is a spectrum view's (type spectrum); this is a %1.").arg(kindName(d));
+        return false;
+    }
+    if (spectrum.contains(QLatin1String("window"))) {
+        const int w = qucs_s::spectrum::windowOf(spectrum.value(QLatin1String("window")).toString());
+        if (w < 0) {
+            *error = tr("The spectrum's window is %1.").arg(qucs_s::spectrum::windowNames().join(QStringLiteral(", ")));
+            return false;
+        }
+        s->window = qucs_s::spectrum::Window(w);
+    }
+    if (spectrum.contains(QLatin1String("harmonics"))) {
+        const QJsonValue h = spectrum.value(QLatin1String("harmonics"));
+        if (!h.isDouble() || h.toDouble() != std::floor(h.toDouble()) || h.toInt() < 2 || h.toInt() > 50) {
+            *error = tr("The spectrum's harmonics are 2 to 50: the highest numbered and counted.");
+            return false;
+        }
+        s->harmonics = h.toInt();
+    }
+    if (spectrum.contains(QLatin1String("dbc"))) s->dbc = spectrum.value(QLatin1String("dbc")).toBool();
+    if (spectrum.contains(QLatin1String("drawn"))) {
+        const QString drawn = spectrum.value(QLatin1String("drawn")).toString();
+        if (drawn != QLatin1String("line") && drawn != QLatin1String("stems")) {
+            *error = tr("The spectrum is drawn as a line or stems.");
+            return false;
+        }
+        s->stems = drawn == QLatin1String("stems");
+    }
+    for (const auto& [key, field] : {std::pair<const char*, double*>{"from", &s->from}, {"fundamental", &s->fundamental}}) {
+        if (!spectrum.contains(QLatin1String(key))) continue;
+        const QJsonValue v = spectrum.value(QLatin1String(key));
+        if (v.isNull()) {
+            *field = NaN;
+            continue;
+        }
+        if (!v.isDouble() || !std::isfinite(v.toDouble()) || (QLatin1String(key) == QLatin1String("fundamental") && !(v.toDouble() > 0))) {
+            *error = tr("The spectrum's '%1' is a number (seconds; the fundamental Hz above 0) or null.").arg(QLatin1String(key));
+            return false;
+        }
+        *field = v.toDouble();
+    }
+    return true;
+}
+
 // Sets what a diagram's arguments give: place and size, grid, legend,
 // theme, axes, an eye diagram's own. What is not given stays.
 bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
@@ -523,6 +1529,61 @@ bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
         d->notationDecimals = v.toInt();
     }
     if (args.contains(QLatin1String("theme")) && !applyTheme(d, args.value(QLatin1String("theme")), error)) return false;
+    auto* stacked = dynamic_cast<StackedDiagram*>(d);
+    if (args.contains(QLatin1String("panes")) && !applyPanes(d, args.value(QLatin1String("panes")), error)) return false;
+    if (args.contains(QLatin1String("limits")) && !applyLimits(d, args.value(QLatin1String("limits")), error)) return false;
+    if (args.contains(QLatin1String("bode"))) {
+        auto* bode = dynamic_cast<BodeDiagram*>(d);
+        const QJsonObject o = args.value(QLatin1String("bode")).toObject();
+        if (bode == nullptr) {
+            *error = tr("'bode' is a Bode diagram's (type bode); this is a %1.").arg(kindName(d));
+            return false;
+        }
+        if (o.contains(QLatin1String("margins"))) bode->margins = o.value(QLatin1String("margins")).toBool();
+    }
+    if (args.contains(QLatin1String("spectrum")) && !applySpectrum(d, args.value(QLatin1String("spectrum")).toObject(), error)) return false;
+    if (args.contains(QLatin1String("bathtub")) && !applyBathtub(d, args.value(QLatin1String("bathtub")), error)) return false;
+    if (args.contains(QLatin1String("contour")) && !applyContour(d, args.value(QLatin1String("contour")), error)) return false;
+    if (args.contains(QLatin1String("spectrogram")) && !applySpectrogram(d, args.value(QLatin1String("spectrogram")), error)) return false;
+    if (args.contains(QLatin1String("box_plot")) && !applyBoxPlot(d, args.value(QLatin1String("box_plot")), error)) return false;
+    if (args.contains(QLatin1String("constellation")) && !applyConstellation(d, args.value(QLatin1String("constellation")), error)) return false;
+    if (args.contains(QLatin1String("smith_circles")) && !applySmithCircles(d, args.value(QLatin1String("smith_circles")), error)) return false;
+    if (args.contains(QLatin1String("tornado")) && !applyTornado(d, args.value(QLatin1String("tornado")), error)) return false;
+    if (args.contains(QLatin1String("nichols"))) {
+        auto* nichols = dynamic_cast<NicholsDiagram*>(d);
+        const QJsonObject o = args.value(QLatin1String("nichols")).toObject();
+        if (nichols == nullptr) {
+            *error = tr("'nichols' is a Nichols chart's (type nichols); this is a %1.").arg(kindName(d));
+            return false;
+        }
+        if (o.contains(QLatin1String("grid"))) nichols->grid = o.value(QLatin1String("grid")).toBool();
+    }
+    if (args.contains(QLatin1String("nyquist"))) {
+        auto* polar = dynamic_cast<PolarDiagram*>(d);
+        const QJsonObject o = args.value(QLatin1String("nyquist")).toObject();
+        if (polar == nullptr) {
+            *error = tr("'nyquist' is a polar diagram's (type polar); this is a %1.").arg(kindName(d));
+            return false;
+        }
+        if (o.contains(QLatin1String("marks"))) polar->nyquist = o.value(QLatin1String("marks")).toBool();
+        if (o.contains(QLatin1String("mirror"))) polar->mirror = o.value(QLatin1String("mirror")).toBool();
+    }
+    if (args.contains(QLatin1String("pole_zero"))) {
+        auto* pz = dynamic_cast<PoleZeroDiagram*>(d);
+        const QJsonObject o = args.value(QLatin1String("pole_zero")).toObject();
+        if (pz == nullptr) {
+            *error = tr("'pole_zero' is a pole-zero map's (type pole_zero); this is a %1.").arg(kindName(d));
+            return false;
+        }
+        if (o.contains(QLatin1String("guides"))) pz->guides = o.value(QLatin1String("guides")).toBool();
+    }
+    if (stacked && (args.contains(QLatin1String("y_axis")) || args.contains(QLatin1String("y2_axis")))) {
+        *error = tr("A stacked diagram's y axes are its panes': 'panes': [{\"y_axis\": {...}, \"y2_axis\": {...}}, ...], the top "
+                    "pane first.");
+        return false;
+    }
+    if (stacked && args.contains(QLatin1String("grid")))
+        for (int i = 0; i < stacked->paneCount(); ++i) stacked->pane(i).left.GridOn = args.value(QLatin1String("grid")).toBool();
     const struct {
         const char* key;
         Axis* axis;
@@ -581,6 +1642,21 @@ bool applyTrace(Graph* g, const Diagram* d, const QJsonObject& o, QString* error
         }
         g->yAxisNo = axis == QLatin1String("right") ? 1 : 0;
     }
+    if (o.contains(QLatin1String("pane"))) {
+        const auto* stacked = dynamic_cast<const StackedDiagram*>(d);
+        const QJsonValue v = o.value(QLatin1String("pane"));
+        if (stacked == nullptr || dynamic_cast<const BodeDiagram*>(d)) {
+            *error = dynamic_cast<const BodeDiagram*>(d) ? tr("A Bode diagram's trace is in both of its panes: its magnitude above, its phase below.")
+                                                         : tr("'pane' is for a stacked diagram's trace (type stacked); this is a %1.").arg(kindName(d));
+            return false;
+        }
+        if (!v.isDouble() || v.toDouble() != std::floor(v.toDouble()) || v.toDouble() < 1 || v.toDouble() > stacked->paneCount()) {
+            *error = tr("The diagram has %1 pane(s): 'pane' is 1 (the top one) to %1 - edit_diagram's 'panes' makes more.")
+                         .arg(stacked->paneCount());
+            return false;
+        }
+        g->pane = v.toInt() - 1;
+    }
     if (o.contains(QLatin1String("marker"))) {
         const int m = indexIn(kMarkers, o.value(QLatin1String("marker")).toString());
         if (m < 0) {
@@ -590,6 +1666,17 @@ bool applyTrace(Graph* g, const Diagram* d, const QJsonObject& o, QString* error
         g->pointMarker = Graph::PointMarker(m);
     }
     if (o.contains(QLatin1String("auto_color"))) g->autoColor = o.value(QLatin1String("auto_color")).toBool();
+    if (o.contains(QLatin1String("ghost"))) {
+        if (!o.value(QLatin1String("ghost")).isBool()) {
+            *error = tr("'ghost' is true (drawn faint, behind the others: a kept run's) or false.");
+            return false;
+        }
+        if (!drawsCurves(d) && o.value(QLatin1String("ghost")).toBool()) {
+            *error = tr("A %1 diagram draws no curves to fade: 'ghost' is for a curve's trace.").arg(kindName(d));
+            return false;
+        }
+        g->ghost = o.value(QLatin1String("ghost")).toBool();
+    }
     if (o.contains(QLatin1String("part"))) {
         const int part = indexIn(kParts, o.value(QLatin1String("part")).toString().trimmed().toLower());
         if (part < 0) {
@@ -643,7 +1730,7 @@ QString traceFile(Schematic* sch, const QString& var, QString* variable)
         file = dir + QLatin1Char('/') + svar.left(colon) + QStringLiteral(".dat") + tail;
         svar = svar.mid(colon + 1);
     }
-    if (svar.contains(QLatin1Char('@'))) svar = svar.section(QLatin1Char('@'), 0, 0);
+    if (const int at = Graph::plotVsSeparator(svar); at > 0) svar = svar.left(at);
     *variable = svar;
     return file;
 }
@@ -772,9 +1859,37 @@ void reloadDiagram(Schematic* sch, Diagram* d)
     d->loadGraphData(info.absolutePath() + QDir::separator() + sch->getDataSet());
 }
 
+// \a var ("ngspice/ac.v(out)") from the run kept as \a run instead:
+// "ngspice/run:ac.v(out)"; empty when \a var is of another dataset than
+// its schematic's already ("ngspice/m:..."), or \a run is no name.
+QString ofRun(const QString& var, const QString& run)
+{
+    static const QRegularExpression name(QStringLiteral("^[A-Za-z0-9_-]+$"));
+    if (!name.match(run).hasMatch()) return QString();
+    const int slash = int(var.indexOf(QLatin1Char('/')));
+    const QString prefix = slash >= 0 ? var.left(slash + 1) : QString();
+    const QString rest = var.mid(slash + 1);
+    if (rest.contains(QLatin1Char(':'))) return QString();
+    return prefix + run + QLatin1Char(':') + rest;
+}
+
+// Whether the run \a var is of (a kept one's) has its dataset; else why.
+bool runKept(Schematic* sch, const QString& var, const QString& run, QString* error)
+{
+    QString variable;
+    const QString file = traceFile(sch, var, &variable);
+    if (QFileInfo::exists(file)) return true;
+    *error = tr("There is no run kept as %1 (%2): simulate's keep_as keeps one.").arg(run, QFileInfo(file).fileName());
+    return false;
+}
+
 QJsonObject traceJson(Schematic* sch, const Diagram* d, Graph* g, int number)
 {
     QJsonObject t{{QStringLiteral("trace"), number}, {QStringLiteral("variable"), g->Var}};
+    // The net whose voltage it shows, or the part whose current or power:
+    // lit up on the schematic while the trace is selected.
+    if (const QString net = qucs_s::probe::netOfVariable(g->Var); !net.isEmpty()) t.insert(QStringLiteral("net"), net);
+    else if (const QString part = qucs_s::probe::partOfVariable(g->Var); !part.isEmpty()) t.insert(QStringLiteral("part"), part);
     if (g->valuePart != Graph::ValuePart::Auto) t.insert(QStringLiteral("part"), QString::fromLatin1(kParts[int(g->valuePart)]));
     if (drawsCurves(d)) {
         t.insert(QStringLiteral("color"), g->Color.name());
@@ -783,6 +1898,8 @@ QJsonObject traceJson(Schematic* sch, const Diagram* d, Graph* g, int number)
         if (g->Style >= 0 && g->Style < GRAPHSTYLE_COUNT) t.insert(QStringLiteral("style"), QString::fromLatin1(kStyles[g->Style]));
         if (g->pointMarker != Graph::PointMarker::None) t.insert(QStringLiteral("marker"), QString::fromLatin1(kMarkers[int(g->pointMarker)]));
         if (hasRightAxis(d)) t.insert(QStringLiteral("axis"), g->yAxisNo == 1 ? QStringLiteral("right") : QStringLiteral("left"));
+        if (const auto* stacked = dynamic_cast<const StackedDiagram*>(d)) t.insert(QStringLiteral("pane"), stacked->paneOf(g) + 1);
+        if (g->ghost) t.insert(QStringLiteral("ghost"), true);
     } else if (d->Name == QLatin1String("Tab")) {
         t.insert(QStringLiteral("precision"), g->Precision);
         if (g->numMode >= 0 && g->numMode < int(std::size(kNumbers))) t.insert(QStringLiteral("numbers"), QString::fromLatin1(kNumbers[g->numMode]));
@@ -852,6 +1969,11 @@ struct ReadOptions {
     bool levelsGiven = false;   // an eye's levels given: not the source's coding
     QHash<QString, QString> definitions;   // the equations' variables (lower case): what they are defined as
     const Schematic* circuit = nullptr;    // the schematic of the dataset: an eye's PRBS source
+    // evm: the Q of the I measured, once a symbol (NaN: every sample) from
+    // the offset (NaN: half a symbol into the range), against a modulation.
+    QString evmQ;
+    double evmPeriod = NaN, evmOffset = NaN;
+    int evmModulation = ConstellationDiagram::None;
 };
 
 // The trace that shows \a variable of the dataset read: ngspice/v(out),
@@ -1027,7 +2149,8 @@ ds::MeasureOptions measureOptionsFor(const ReadOptions& o, const ds::Variable& v
 {
     ds::MeasureOptions measureOptions = o.measureOptions;
     measureOptions.decibels = o.decibels.value_or(ds::isDecibels(ds::unitOf(v.name, definitionOf(o, v.name))));
-    if ((std::isnan(measureOptions.period) || !o.levelsGiven) && o.measure.contains(QStringLiteral("eye")) && o.circuit != nullptr)
+    if ((std::isnan(measureOptions.period) || !o.levelsGiven)
+        && (o.measure.contains(QStringLiteral("eye")) || o.measure.contains(QStringLiteral("bathtub"))) && o.circuit != nullptr)
         if (const qucs_s::prbs::Source s = qucs_s::prbs::sourceOf(o.circuit, v.name, file); s.found()) {
             if (std::isnan(measureOptions.period)) {
                 measureOptions.period = s.ui;
@@ -1040,6 +2163,154 @@ ds::MeasureOptions measureOptionsFor(const ReadOptions& o, const ds::Variable& v
             measureOptions.sourceNote = s.note;
         }
     return measureOptions;
+}
+
+// The name of a two-port's S-parameter (\a i, \a j) beside \a name, one
+// of them as ngspice (ac.s_2_1, ac.v(s_2_1)) or Qucsator (S[2,1]) names
+// it; empty when \a name is none (or of a port beyond 2).
+QString sParameterBeside(const QString& name, int i, int j)
+{
+    static const QRegularExpression ngspice(QStringLiteral("(^|[.(])s_([12])_([12])(\\)?)$"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression qucsator(QStringLiteral("(^|[.])s\\[([12]),([12])\\]$"), QRegularExpression::CaseInsensitiveOption);
+    if (const QRegularExpressionMatch m = ngspice.match(name); m.hasMatch())
+        return name.left(m.capturedStart(2)) + QStringLiteral("%1_%2").arg(i).arg(j) + m.captured(4);
+    if (const QRegularExpressionMatch m = qucsator.match(name); m.hasMatch())
+        return name.left(m.capturedStart(2)) + QStringLiteral("%1,%2]").arg(i).arg(j);
+    return {};
+}
+
+// stability: of the two-port whose S-parameter \a v is, at each frequency
+// of its curve (from \a offset in the dataset's values) in the range:
+// Rollett's K and |delta|, Edwards and Sinsky's mu; the least mu its
+// value; at 'at', each frequency's numbers, gain and stability circles.
+QJsonObject stabilityJson(const ds::Dataset& data, const ds::Variable& v, int offset, const QVector<double>& x, const ReadOptions& o)
+{
+    const auto cannot = [](const QString& why) { return QJsonObject{{QStringLiteral("error"), why}}; };
+    const ds::Variable* s[4] = {};
+    const int ports[4][2] = {{1, 1}, {1, 2}, {2, 1}, {2, 2}};
+    for (int n = 0; n < 4; ++n) {
+        const QString name = sParameterBeside(v.name, ports[n][0], ports[n][1]);
+        if (name.isEmpty())
+            return cannot(tr("stability is of a two-port's S-parameter - ngspice's ac.s_2_1, Qucsator's S[2,1] - and %1 is none").arg(v.name));
+        s[n] = data.find(name);
+        if (s[n] == nullptr || s[n]->size() != v.size())
+            return cannot(tr("the run has no %1 beside %2: stability needs the two-port's four S-parameters").arg(name, v.name));
+    }
+    const auto sAt = [&](int n, int i) {
+        return std::complex<double>(s[n]->re.value(offset + i, NaN), s[n]->isComplex() ? s[n]->im.value(offset + i, 0.0) : 0.0);
+    };
+    const auto twoPortAt = [&](int i) { return qucs_s::smith::SParameters{sAt(0, i), sAt(1, i), sAt(2, i), sAt(3, i)}; };
+    double kMin = std::numeric_limits<double>::infinity(), muMin = kMin, deltaMax = 0, kAt = NaN, muAt = NaN;
+    QJsonArray unstable;
+    double unstableFrom = NaN, last = NaN;
+    int points = 0;
+    for (int i = 0; i < x.size(); ++i) {
+        if ((!std::isnan(o.from) && x.at(i) < o.from) || (!std::isnan(o.to) && x.at(i) > o.to)) continue;
+        const qucs_s::smith::SParameters p = twoPortAt(i);
+        const double k = p.k(), mu = p.mu(), delta = std::abs(p.delta());
+        if (!std::isfinite(mu) && !std::isinf(mu)) continue;
+        ++points;
+        if (k < kMin) kMin = k, kAt = x.at(i);
+        if (mu < muMin) muMin = mu, muAt = x.at(i);
+        deltaMax = std::max(deltaMax, delta);
+        // The frequencies where it is potentially unstable, as ranges.
+        if (!(mu > 1) && std::isnan(unstableFrom)) unstableFrom = x.at(i);
+        if (mu > 1 && !std::isnan(unstableFrom)) {
+            unstable << QJsonArray{number(unstableFrom), number(last)};
+            unstableFrom = NaN;
+        }
+        last = x.at(i);
+    }
+    if (points == 0) return cannot(tr("no frequency in the range"));
+    if (!std::isnan(unstableFrom)) unstable << QJsonArray{number(unstableFrom), number(last)};
+    QJsonObject r{{QStringLiteral("value"), number(muMin)},
+                  {QStringLiteral("unconditionally stable"), unstable.isEmpty()},
+                  {QStringLiteral("mu min"), number(muMin)},
+                  {QStringLiteral("mu min at"), number(muAt)},
+                  {QStringLiteral("K min"), number(kMin)},
+                  {QStringLiteral("K min at"), number(kAt)},
+                  {QStringLiteral("|delta| max"), number(deltaMax)},
+                  {QStringLiteral("points"), points},
+                  {QStringLiteral("measured"), tr("at each frequency: Rollett's K and |delta| (unconditionally stable with K > 1 and "
+                                                  "|delta| < 1) and Edwards and Sinsky's mu (the same with mu > 1: the distance from the "
+                                                  "chart's centre to the nearest unstable load); the value the least mu")}};
+    if (!unstable.isEmpty()) r.insert(QStringLiteral("potentially unstable"), unstable);
+    // At the frequencies asked for (between the samples): the numbers,
+    // the gain to be had, the stability circles.
+    QJsonArray atList;
+    for (double f : o.at) {
+        int i = 0;
+        while (i + 2 < x.size() && x.at(i + 1) < f) ++i;
+        if (x.size() < 2 || f < x.first() || f > x.last()) {
+            atList << QJsonObject{{QStringLiteral("frequency"), number(f)}, {QStringLiteral("error"), tr("outside the sweep")}};
+            continue;
+        }
+        const double t = x.at(i + 1) != x.at(i) ? (f - x.at(i)) / (x.at(i + 1) - x.at(i)) : 0.0;
+        const qucs_s::smith::SParameters a = twoPortAt(i), b = twoPortAt(i + 1);
+        const qucs_s::smith::SParameters p{a.s11 + t * (b.s11 - a.s11), a.s12 + t * (b.s12 - a.s12), a.s21 + t * (b.s21 - a.s21),
+                                           a.s22 + t * (b.s22 - a.s22)};
+        const double k = p.k(), delta = std::abs(p.delta());
+        QJsonObject one{{QStringLiteral("frequency"), number(f)},
+                        {QStringLiteral("K"), number(k)},
+                        {QStringLiteral("mu"), number(p.mu())},
+                        {QStringLiteral("|delta|"), number(delta)}};
+        const double ratio = std::abs(p.s21) / std::abs(p.s12);
+        if (std::isfinite(ratio) && ratio > 0) {
+            // Unconditionally stable: the maximum available gain; else the
+            // maximum stable gain (|S21/S12|).
+            if (k > 1 && delta < 1) one.insert(QStringLiteral("MAG dB"), number(10 * std::log10(ratio * (k - std::sqrt(k * k - 1)))));
+            else one.insert(QStringLiteral("MSG dB"), number(10 * std::log10(ratio)));
+        }
+        one.insert(QStringLiteral("input stability circle"), circleJson(qucs_s::smith::inputStability(p), true));
+        one.insert(QStringLiteral("output stability circle"), circleJson(qucs_s::smith::outputStability(p), true));
+        atList << one;
+    }
+    if (!atList.isEmpty()) r.insert(QStringLiteral("at"), atList);
+    if (data.find(sParameterBeside(v.name, 1, 1).replace(QLatin1String("1_1"), QLatin1String("3_3")).replace(QLatin1String("1,1"), QLatin1String("3,3"))))
+        r.insert(QStringLiteral("note"), tr("ports 1 and 2 of a network of more: the others terminated as the run had them"));
+    return r;
+}
+
+// evm: \a v an I (curve \a k of it), with its Q, sampled once a symbol
+// and measured against a modulation, as a constellation diagram does.
+QJsonObject evmJson(const ds::Dataset& data, const ds::Variable& v, int k, const ReadOptions& o)
+{
+    const auto cannot = [](const QString& why) { return QJsonObject{{QStringLiteral("error"), why}}; };
+    if (o.evmQ.isEmpty()) return cannot(tr("evm needs the Q of this I: 'evm': {\"q\": \"tran.q\"}"));
+    const QStringList names = data.resolve(o.evmQ);
+    if (names.isEmpty()) return cannot(tr("the run has no %1 (the Q)").arg(o.evmQ));
+    const ds::Variable& q = *data.find(names.first());
+    if (v.isComplex() || q.isComplex()) return cannot(tr("evm's I and Q are real signals (a transient's)"));
+    const QList<ds::Curve> is = ds::curvesOf(data, v), qs = ds::curvesOf(data, q);
+    if (k >= is.size() || qs.isEmpty()) return cannot(tr("no data"));
+    const ds::Curve i = ds::within(is.at(k), o.from, o.to), qc = ds::within(qs.at(std::min<qsizetype>(k, qs.size() - 1)), o.from, o.to);
+    const ConstellationDiagram::Pair p =
+        ConstellationDiagram::sampled(v.name, q.name, i.x, i.y, qc.x, qc.y, o.evmPeriod, o.evmOffset, NaN, o.evmModulation);
+    if (!p.ok()) return cannot(p.error);
+    double power = 0;
+    for (const QPointF& s : p.points) power += s.x() * s.x() + s.y() * s.y();
+    QJsonObject r{{QStringLiteral("Q"), q.name},
+                  {QStringLiteral("symbols"), int(p.points.size())},
+                  {QStringLiteral("centre"), QJsonArray{number(p.centre.x()), number(p.centre.y())}},
+                  {QStringLiteral("rms"), number(std::sqrt(power / p.points.size()))},
+                  {QStringLiteral("modulation"), ConstellationDiagram::modulationNames().value(o.evmModulation)}};
+    if (p.ideal.isEmpty()) {
+        r.insert(QStringLiteral("value"), QJsonValue(QJsonValue::Null));
+        r.insert(QStringLiteral("note"), tr("a modulation ('evm': {\"modulation\": \"qpsk\"}) gives the error vector"));
+    } else {
+        r.insert(QStringLiteral("value"), number(p.evmRms));
+        r.insert(QStringLiteral("unit"), QStringLiteral("%"));
+        r.insert(QStringLiteral("EVM rms %"), number(p.evmRms));
+        r.insert(QStringLiteral("EVM peak %"), number(p.evmPeak));
+    }
+    r.insert(QStringLiteral("measured"), std::isfinite(o.evmPeriod)
+                                             ? tr("I and Q sampled once a symbol (%1) from %2; the error vector: each sample's distance "
+                                                  "to the nearest ideal point (scaled to the samples' rms), over that rms")
+                                                   .arg(o.evmPeriod)
+                                                   .arg(std::isfinite(o.evmOffset) ? QString::number(o.evmOffset) : tr("half a symbol into the range"))
+                                             : tr("every sample of I and Q (no 'symbol_period'); the error vector: each sample's distance "
+                                                  "to the nearest ideal point (scaled to the samples' rms), over that rms"));
+    return r;
 }
 
 QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const ReadOptions& o)
@@ -1088,8 +2359,18 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
     QList<QList<QPair<QString, double>>> outer;
     const QList<ds::Curve> curves = ds::curvesOf(data, v, &outer);
     // (The loop gain's margins need its phase too.)
-    const bool wantsPhase = v.isComplex() && (o.measure.contains(QStringLiteral("phase_margin")) || o.measure.contains(QStringLiteral("gain_margin")));
+    const bool wantsPhase = v.isComplex() && (o.measure.contains(QStringLiteral("phase_margin")) || o.measure.contains(QStringLiteral("gain_margin"))
+                                               || o.measure.contains(QStringLiteral("roots")));
     const QList<QVector<double>> phases = wantsPhase ? ds::phasesOf(data, v) : QList<QVector<double>>();
+    // A measurement: of the curve, or of the dataset around it (a
+    // two-port's stability, an I's error vector).
+    QList<int> offsets;
+    for (int k = 0, at = 0; k < curves.size(); at += int(curves.at(k).x.size()), ++k) offsets << at;
+    const auto measured = [&](const QString& what, int k, const ds::Curve& part, const ds::MeasureOptions& options) {
+        if (what == QLatin1String("stability")) return stabilityJson(data, v, offsets.at(k), curves.at(k).x, o);
+        if (what == QLatin1String("evm")) return evmJson(data, v, k, o);
+        return ds::measure(part, what, options);
+    };
     QJsonArray curveList;
     int offset = 0;
     const int most = 50;
@@ -1157,7 +2438,7 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
             ds::MeasureOptions options = measureOptions;
             if (k < phases.size() && phases.at(k).size() == full.x.size())
                 options.phase = ds::within(ds::Curve{full.x, phases.at(k)}, o.from, o.to).y;
-            for (const QString& what : o.measure) m.insert(what, ds::measure(part, what, options));
+            for (const QString& what : o.measure) m.insert(what, measured(what, k, part, options));
             c.insert(QStringLiteral("measurements"), m);
         }
         if (o.points > 0) {
@@ -1197,7 +2478,7 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
             if (k < phases.size() && phases.at(k).size() == curves.at(k).x.size())
                 options.phase = ds::within(ds::Curve{curves.at(k).x, phases.at(k)}, o.from, o.to).y;
             for (const QString& what : o.measure) {
-                const QJsonValue value = part.x.size() < 2 ? QJsonValue() : ds::measure(part, what, options).value(QStringLiteral("value"));
+                const QJsonValue value = part.x.size() < 2 ? QJsonValue() : measured(what, k, part, options).value(QStringLiteral("value"));
                 row << (value.isDouble() ? value : QJsonValue(QJsonValue::Null));
             }
             rows.append(row);
@@ -1430,7 +2711,38 @@ QJsonObject markerJson(const Diagram* d, Marker* m, int index)
     };
     o.insert(QStringLiteral("text_color"), colour(m->textColor));
     o.insert(QStringLiteral("fill_color"), colour(m->fillColor));
+    // A delta marker: its reference, and what it measures from it.
+    if (const Marker* ref = m->reference(); ref && !pos.empty() && !ref->varPos().empty()) {
+        const double dx = pos.front() - ref->varPos().front();
+        QJsonObject delta{{QStringLiteral("x"), number(dx)}, {QStringLiteral("y"), number(m->shownValue() - ref->shownValue())}};
+        if (dx != 0.0) delta.insert(QStringLiteral("1/x"), number(1.0 / dx));
+        o.insert(QStringLiteral("relative to"), int(markersOf(d).indexOf(const_cast<Marker*>(ref))) + 1);
+        o.insert(QStringLiteral("delta"), delta);
+    }
     return o;
+}
+
+// A delta marker's reference from 'relative_to': a marker's number, or
+// null for none.
+bool setRelative(Marker* m, const Diagram* d, const QJsonValue& v, QString* error)
+{
+    if (v.isNull()) {
+        m->setReference(nullptr);
+        return true;
+    }
+    const QList<Marker*> all = markersOf(d);
+    const int n = v.isDouble() && v.toDouble() == std::floor(v.toDouble()) ? v.toInt() : 0;
+    if (n < 1 || n > all.size()) {
+        *error = tr("'relative_to' is the number of a marker of this diagram, 1 to %1 (get_schematic lists them), or null: none.")
+                     .arg(all.size());
+        return false;
+    }
+    if (all.at(n - 1) == m) {
+        *error = tr("A marker measures from another: 'relative_to' %1 is itself.").arg(n);
+        return false;
+    }
+    m->setReference(all.at(n - 1));
+    return true;
 }
 
 Marker* markerOf(const Diagram* d, const QJsonValue& which, QString* error)
@@ -1453,6 +2765,35 @@ Marker* markerOf(const Diagram* d, const QJsonValue& which, QString* error)
     return all.at(n - 1);
 }
 
+QJsonObject cursorValuesJson(Schematic* sch)
+{
+    const Marker* m = qucs_s::cursor::source(sch);
+    const qucs_s::cursor::Reading r = qucs_s::cursor::at(sch, m);
+    QJsonObject o;
+    int n = 0;
+    for (Diagram* d : sch->a_DocDiags) {
+        ++n;
+        const int k = int(markersOf(d).indexOf(const_cast<Marker*>(m)));
+        if (m != nullptr && k >= 0) {
+            o.insert(QStringLiteral("diagram"), n);
+            o.insert(QStringLiteral("marker"), k + 1);
+        }
+    }
+    if (!r.x.isEmpty()) {
+        o.insert(QStringLiteral("x"), ds::bareName(r.x));
+        o.insert(QStringLiteral("at"), ds::rounded(r.at));
+    }
+    QJsonArray values;
+    for (const qucs_s::cursor::Value& v : r.values) {
+        QJsonObject value{{QStringLiteral("net"), v.net}, {QStringLiteral("value"), ds::rounded(v.value)}};
+        if (v.complex) value.insert(QStringLiteral("phase"), ds::rounded(v.phase));
+        values << value;
+    }
+    o.insert(QStringLiteral("values"), values);
+    if (!r.error.isEmpty()) o.insert(QStringLiteral("error"), r.error);
+    return o;
+}
+
 QJsonArray diagramsJson(Schematic* sch)
 {
     QJsonArray list;
@@ -1470,8 +2811,18 @@ QJsonArray diagramsJson(Schematic* sch)
         if (const QJsonObject colors = themeJson(d); !colors.isEmpty()) o.insert(QStringLiteral("theme"), colors);
         if (d->Name != QLatin1String("Tab") && d->Name != QLatin1String("Truth")) {
             o.insert(QStringLiteral("x_axis"), axisJson(d->xAxis, false));
-            o.insert(QStringLiteral("y_axis"), axisJson(d->yAxis, true));
-            if (hasRightAxis(d)) o.insert(QStringLiteral("y2_axis"), axisJson(d->zAxis, true));
+            if (const auto* stacked = dynamic_cast<const StackedDiagram*>(d)) {
+                // Each pane's axes, the top one first.
+                QJsonArray panes;
+                for (int i = 0; i < stacked->paneCount(); ++i)
+                    panes << QJsonObject{{QStringLiteral("pane"), i + 1},
+                                         {QStringLiteral("y_axis"), axisJson(stacked->pane(i).left, true)},
+                                         {QStringLiteral("y2_axis"), axisJson(stacked->pane(i).right, true)}};
+                o.insert(QStringLiteral("panes"), panes);
+            } else {
+                o.insert(QStringLiteral("y_axis"), axisJson(d->yAxis, true));
+                if (hasRightAxis(d)) o.insert(QStringLiteral("y2_axis"), axisJson(d->zAxis, true));
+            }
             o.insert(QStringLiteral("grid"), d->xAxis.GridOn);
             if (d->legendPos >= 0 && d->legendPos < int(std::size(kLegends)))
                 o.insert(QStringLiteral("legend"), QString::fromLatin1(kLegends[d->legendPos]));
@@ -1486,6 +2837,86 @@ QJsonArray diagramsJson(Schematic* sch)
         int m = 0;
         for (Marker* mk : markersOf(d)) markers.append(markerJson(d, mk, ++m));
         if (!markers.isEmpty()) o.insert(QStringLiteral("markers"), markers);
+        insertLimits(&o, d);
+        if (const auto* s = dynamic_cast<const SpectrumDiagram*>(d)) {
+            // Its settings, and each trace's lines and figures.
+            o.insert(QStringLiteral("spectrum"), QJsonObject{{QStringLiteral("window"), qucs_s::spectrum::windowName(s->window)},
+                                                             {QStringLiteral("harmonics"), s->harmonics},
+                                                             {QStringLiteral("dbc"), s->dbc},
+                                                             {QStringLiteral("drawn"), s->stems ? QStringLiteral("stems") : QStringLiteral("line")},
+                                                             {QStringLiteral("from"), number(s->from)},
+                                                             {QStringLiteral("fundamental"), number(s->fundamental)}});
+            QJsonArray analyses;
+            int k = 0;
+            for (const Graph* g : d->Graphs) {
+                ++k;
+                const SpectrumDiagram::Result r = s->resultOf(g);
+                if (r.spectrum.amplitude.isEmpty()) continue;
+                QJsonObject a = qucs_s::spectrum::toJson(r.analysis, r.spectrum);
+                a.insert(QStringLiteral("trace"), k);
+                analyses << a;
+            }
+            if (!analyses.isEmpty()) o.insert(QStringLiteral("analyses"), analyses);
+        }
+        if (const auto* tornado = dynamic_cast<const TornadoDiagram*>(d)) o.insert(QStringLiteral("tornado"), tornadoJson(tornado));
+        if (const auto* box = dynamic_cast<const BoxPlotDiagram*>(d)) o.insert(QStringLiteral("box_plot"), boxPlotJson(box));
+        if (const auto* iq = dynamic_cast<const ConstellationDiagram*>(d)) o.insert(QStringLiteral("constellation"), constellationJson(iq));
+        if (const auto* smith = dynamic_cast<const SmithDiagram*>(d); smith && !smith->circles.isEmpty())
+            o.insert(QStringLiteral("smith_circles"), smithCirclesJson(smith));
+        if (const auto* spectrogram = dynamic_cast<const SpectrogramDiagram*>(d)) {
+            o.insert(QStringLiteral("contour"), contourJson(spectrogram));
+            QJsonObject own = spectrogramJson(spectrogram);
+            o.insert(QStringLiteral("analyses"), own.take(QStringLiteral("analyses")));
+            o.insert(QStringLiteral("spectrogram"), own);
+        } else if (const auto* contour = dynamic_cast<const ContourDiagram*>(d)) {
+            o.insert(QStringLiteral("contour"), contourJson(contour));
+            const QJsonArray analyses = contourAnalyses(contour);
+            if (!analyses.isEmpty()) o.insert(QStringLiteral("analyses"), analyses);
+        }
+        if (const auto* bathtub = dynamic_cast<const BathtubDiagram*>(d)) {
+            o.insert(QStringLiteral("bathtub"), bathtubJson(bathtub));
+            const QJsonArray analyses = bathtubAnalyses(bathtub);
+            if (!analyses.isEmpty()) o.insert(QStringLiteral("analyses"), analyses);
+        }
+        if (const auto* nichols = dynamic_cast<const NicholsDiagram*>(d))
+            o.insert(QStringLiteral("nichols"), QJsonObject{{QStringLiteral("grid"), nichols->grid}});
+        if (const auto* polar = dynamic_cast<const PolarDiagram*>(d); polar && (polar->nyquist || polar->mirror))
+            o.insert(QStringLiteral("nyquist"), QJsonObject{{QStringLiteral("marks"), polar->nyquist}, {QStringLiteral("mirror"), polar->mirror}});
+        if (dynamic_cast<const BodeDiagram*>(d) || dynamic_cast<const NicholsDiagram*>(d)) {
+            // Each trace's margins, as get_dataset measures them.
+            if (const auto* bode = dynamic_cast<const BodeDiagram*>(d))
+                o.insert(QStringLiteral("bode"), QJsonObject{{QStringLiteral("margins"), bode->margins}});
+            QJsonArray margins;
+            int k = 0;
+            for (const Graph* g : d->Graphs) {
+                ++k;
+                if (g->cPointsY == nullptr) continue;
+                QJsonObject m = BodeDiagram::marginsOf(g);
+                m.insert(QStringLiteral("trace"), k);
+                margins << m;
+            }
+            if (!margins.isEmpty()) o.insert(QStringLiteral("margins"), margins);
+        }
+        if (const auto* pz = dynamic_cast<const PoleZeroDiagram*>(d)) {
+            // Each trace's roots: where, and what they say.
+            o.insert(QStringLiteral("pole_zero"), QJsonObject{{QStringLiteral("guides"), pz->guides}});
+            QJsonArray roots;
+            int k = 0;
+            for (const Graph* g : d->Graphs) {
+                ++k;
+                QJsonArray list;
+                for (const PoleZeroDiagram::Root& r : PoleZeroDiagram::rootsOf(g)) {
+                    QJsonObject ro{{QStringLiteral("re"), number(r.re)}, {QStringLiteral("im"), number(r.im)}, {QStringLiteral("wn"), number(r.wn())},
+                                   {QStringLiteral("f"), number(r.wn() / (2 * 3.14159265358979323846))}, {QStringLiteral("stable"), r.re < 0}};
+                    if (std::isfinite(r.zeta())) ro.insert(QStringLiteral("zeta"), number(r.zeta()));
+                    if (std::isfinite(r.q())) ro.insert(QStringLiteral("q"), number(r.q()));
+                    list << ro;
+                }
+                roots << QJsonObject{{QStringLiteral("trace"), k}, {QStringLiteral("kind"), PoleZeroDiagram::isZero(g) ? QStringLiteral("zeros") : QStringLiteral("poles")},
+                                     {QStringLiteral("roots"), list}};
+            }
+            o.insert(QStringLiteral("roots"), roots);
+        }
         list.append(o);
     }
     return list;
@@ -2217,6 +3648,12 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
         if (!(h >= 2 && h <= 100) || h != std::floor(h)) return errorResult(tr("'harmonics' is the highest harmonic counted, 2 to 100."));
         o.measureOptions.harmonics = int(h);
     }
+    if (args.contains(QLatin1String("window"))) {
+        const QString window = args.value(QLatin1String("window")).toString();
+        if (qucs_s::spectrum::windowOf(window) < 0)
+            return errorResult(tr("'window' is %1.").arg(qucs_s::spectrum::windowNames().join(QStringLiteral(", "))));
+        o.measureOptions.window = window;
+    }
     if (args.contains(QLatin1String("periods"))) {
         const double n = args.value(QLatin1String("periods")).toDouble(NaN);
         if (!(n >= 1 && n <= 10000) || n != std::floor(n)) return errorResult(tr("'periods' is how many whole periods, 1 to 10000."));
@@ -2229,6 +3666,27 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
         o.measureOptions.period = t;
     }
     if (args.contains(QLatin1String("offset"))) o.measureOptions.offset = args.value(QLatin1String("offset")).toDouble(0);
+    // evm: {"q", "symbol_period", "offset", "modulation"}, as a
+    // constellation diagram takes them.
+    if (args.contains(QLatin1String("evm"))) {
+        const QJsonObject e = args.value(QLatin1String("evm")).toObject();
+        o.evmQ = e.value(QLatin1String("q")).toString().trimmed();
+        if (e.contains(QLatin1String("symbol_period"))
+            && (!valueOrNull(e.value(QLatin1String("symbol_period")), &o.evmPeriod) || !(o.evmPeriod > 0)))
+            return errorResult(tr("'evm' 'symbol_period' is a symbol's length (1u, 1e-6), above 0."));
+        if (e.contains(QLatin1String("offset")) && !valueOrNull(e.value(QLatin1String("offset")), &o.evmOffset))
+            return errorResult(tr("'evm' 'offset' is a symbol's sampling instant (0.5u); half a symbol into the range when not given."));
+        if (e.contains(QLatin1String("modulation"))) {
+            o.evmModulation = int(ConstellationDiagram::modulationNames().indexOf(e.value(QLatin1String("modulation")).toString().toLower()));
+            if (o.evmModulation < 0)
+                return errorResult(tr("'evm' 'modulation' is %1.").arg(ConstellationDiagram::modulationNames().join(QStringLiteral(", "))));
+        }
+    }
+    if (args.contains(QLatin1String("ber"))) {
+        const double b = args.value(QLatin1String("ber")).toDouble(NaN);
+        if (!(b > 0 && b <= 0.01)) return errorResult(tr("'ber' is the bit error rate a bathtub's opening is measured at, above 0 and at most 0.01."));
+        o.measureOptions.ber = b;
+    }
     if (args.contains(QLatin1String("levels"))) {
         const double l = args.value(QLatin1String("levels")).toDouble(NaN);
         if (l != 2 && l != 4) return errorResult(tr("'levels' is 2 (NRZ) or 4 (PAM4)."));
@@ -3112,6 +4570,14 @@ QJsonObject QucsControl::addDiagram(const QJsonObject& args)
         g->Var = var;
         if (!note.isEmpty()) notes << note;
     }
+    // A tornado chart's 'parts': a bar for each part of the run.
+    if (auto* tornado = dynamic_cast<TornadoDiagram*>(d.get());
+        tornado && args.value(QLatin1String("tornado")).toObject().value(QLatin1String("parts")).toBool()) {
+        const QStringList more = sensitivityTraces(sch, tornado, &error);
+        if (!error.isEmpty()) return errorResult(error);
+        for (const QString& var : more) addPartTrace(tornado, var);
+        notes << tr("%n part(s) added: %1.", nullptr, int(more.size())).arg(more.join(QStringLiteral(", ")));
+    }
     prepare(sch);
     Diagram* placed = d.release();
     sch->a_DocDiags.push_back(placed);
@@ -3139,8 +4605,52 @@ QJsonObject QucsControl::editDiagram(const QJsonObject& args)
     const QString head = stream.readLine().trimmed();
     if (!trial || !trial->load(head, &stream) || !applyDiagram(trial.get(), args, &error))
         return errorResult(error.isEmpty() ? tr("The diagram could not be changed.") : error);
+    // 'overlay': a ghost of each trace from a kept run (null: none) - the
+    // run checked before anything is changed.
+    QList<Graph*> ghosts;
+    const bool overlay = args.contains(QLatin1String("overlay"));
+    if (overlay && !args.value(QLatin1String("overlay")).isNull()) {
+        const QString run = args.value(QLatin1String("overlay")).toString().trimmed();
+        if (!drawsCurves(d)) return errorResult(tr("A %1 diagram draws no curves to put a kept run's behind.").arg(kindName(d)));
+        for (Graph* g : d->Graphs) {
+            if (g->ghost) continue;
+            const QString kept = ofRun(g->Var, run);
+            if (kept.isEmpty()) {
+                if (ofRun(QStringLiteral("x"), run).isEmpty()) {
+                    qDeleteAll(ghosts);
+                    return errorResult(tr("'overlay' is the name simulate's keep_as gave a run (letters, digits, _ and -), or null: no ghosts."));
+                }
+                continue;   // (of another dataset already)
+            }
+            bool shown = false;
+            for (const Graph* other : d->Graphs) shown = shown || other->Var == kept;
+            if (shown) continue;
+            if (ghosts.isEmpty() && !runKept(sch, kept, run, &error)) return errorResult(error);
+            auto* ghost = new Graph(d, kept);
+            ghost->Color = g->Color;
+            ghost->Thick = g->Thick;
+            ghost->Style = g->Style;
+            ghost->yAxisNo = g->yAxisNo;
+            ghost->valuePart = g->valuePart;
+            ghost->pane = g->pane;
+            ghost->ghost = true;
+            ghosts << ghost;
+        }
+    }
+    // A tornado chart's 'parts' (its run read before anything is changed).
+    QStringList parts;
+    if (auto* tornado = dynamic_cast<TornadoDiagram*>(d); tornado && args.value(QLatin1String("tornado")).toObject().value(QLatin1String("parts")).toBool()) {
+        parts = sensitivityTraces(sch, tornado, &error);
+        if (!error.isEmpty()) return errorResult(error);
+    }
     prepare(sch);
     applyDiagram(d, args, &error);
+    if (auto* tornado = dynamic_cast<TornadoDiagram*>(d))
+        for (const QString& var : std::as_const(parts)) addPartTrace(tornado, var);
+    if (overlay && args.value(QLatin1String("overlay")).isNull())
+        for (int i = int(d->Graphs.size()) - 1; i >= 0; --i)
+            if (d->Graphs.at(i)->ghost) delete d->Graphs.takeAt(i);
+    d->Graphs.append(ghosts);
     if (args.contains(QLatin1String("x")) || args.contains(QLatin1String("y"))) {
         int x = d->cx, y = d->cy;
         sch->setOnGrid(x, y);
@@ -3159,6 +4669,7 @@ QJsonObject QucsControl::editDiagram(const QJsonObject& args)
     QStringList notes;
     if (const QString over = overlapOf(sch, d); !over.isEmpty()) notes << over;
     if (args.contains(QLatin1String("y_axis")) || args.contains(QLatin1String("y2_axis"))) notes << diagramNotes(d, false);
+    if (!parts.isEmpty()) notes << tr("%n part(s) added: %1.", nullptr, int(parts.size())).arg(parts.join(QStringLiteral(", ")));
     if (!notes.isEmpty()) result.insert(QStringLiteral("note"), notes.join(QLatin1Char(' ')));
     return jsonResult(result);
 }
@@ -3181,6 +4692,18 @@ QJsonObject QucsControl::addTrace(const QJsonObject& args)
         var = expressionTrace(sch, wanted, args.value(QLatin1String("path")), false, &note, &error);
         if (var.isEmpty()) return errorResult(error);
     }
+    // From a kept run: the variable as this run names it, of that one.
+    const QString run = args.value(QLatin1String("run")).toString().trimmed();
+    if (args.contains(QLatin1String("run"))) {
+        const QString kept = ofRun(var, run);
+        if (kept.isEmpty())
+            return errorResult(run.isEmpty() || run.contains(QRegularExpression(QStringLiteral("[^A-Za-z0-9_-]")))
+                                   ? tr("'run' is the name simulate's keep_as gave a run (letters, digits, _ and -).")
+                                   : tr("%1 is of another dataset already: 'run' takes a variable of the schematic's own.").arg(var));
+        if (!runKept(sch, kept, run, &error)) return errorResult(error);
+        var = kept;
+        note.clear();
+    }
     for (Graph* g : d->Graphs)
         if (g->Var == var) return errorResult(tr("The diagram shows %1 already.").arg(var));
     auto g = std::make_unique<Graph>(d, var);
@@ -3188,6 +4711,8 @@ QJsonObject QucsControl::addTrace(const QJsonObject& args)
     g->Color = QColor(palette[d->Graphs.size() % 8]);
     g->Thick = _settings::Get().item<QString>("DefaultGraphLineWidth").toInt();
     if (d->Name == QLatin1String("Rect3D")) g->yAxisNo = 1;
+    // (A kept run's: faint behind this one's, unless said otherwise.)
+    if (args.contains(QLatin1String("run")) && drawsCurves(d)) g->ghost = true;
     if (!applyTrace(g.get(), d, args, &error)) return errorResult(error);
     prepare(sch);
     d->Graphs.append(g.release());
@@ -3483,9 +5008,27 @@ bool applyMarker(Marker* m, const Diagram* d, const QJsonObject& args, QString* 
     return true;
 }
 
+// A marker's 'annotate': the schematic's named nets labelled with their
+// values where it is (true), or not at all (false) - as Simulation >
+// Values at the Marker.
+void annotateAt(Schematic* sch, const Marker* m, const QJsonObject& args)
+{
+    if (!args.contains(QLatin1String("annotate"))) return;
+    const bool on = args.value(QLatin1String("annotate")).toBool();
+    if (on) sch->setCursorMarker(m);
+    sch->showCursorValues(on);
+    if (QucsMain != nullptr) QucsMain->updateCursorValuesAction();
+}
+
 bool drawsMarkers(const Diagram* d)
 {
-    return d->Name != QLatin1String("Tab") && d->Name != QLatin1String("Truth");
+    // (A spectrum's lines are numbered and measured, not marked; a
+    // bathtub's curves are not its traces' data; a contour map's cursor
+    // reads its values.)
+    return d->Name != QLatin1String("Tab") && d->Name != QLatin1String("Truth") && d->Name != QLatin1String("Spectrum")
+           && d->Name != QLatin1String("Bathtub") && d->Name != QLatin1String("Contour") && d->Name != QLatin1String("Bars")
+           && d->Name != QLatin1String("Spectrogram") && d->Name != QLatin1String("BoxPlot")
+           && d->Name != QLatin1String("Constellation");
 }
 
 } // namespace
@@ -3505,6 +5048,8 @@ QJsonObject QucsControl::addMarker(const QJsonObject& args)
     QJsonObject found;
     if (!markerPlace(sch, g, args.value(QLatin1String("at")), &x, &found, &error, args.value(QLatin1String("reference"))))
         return errorResult(error);
+    if (args.contains(QLatin1String("annotate")) && !args.value(QLatin1String("annotate")).isBool())
+        return errorResult(tr("'annotate' is true (the schematic's named nets labelled with their values where this marker is) or false."));
 
     auto m = std::make_unique<Marker>(g);
     m->setPos(x);
@@ -3515,9 +5060,17 @@ QJsonObject QucsControl::addMarker(const QJsonObject& args)
     prepare(sch);
     Marker* placed = m.release();
     g->Markers.append(placed);
+    if (args.contains(QLatin1String("relative_to")) && !setRelative(placed, d, args.value(QLatin1String("relative_to")), &error)) {
+        g->Markers.removeOne(placed);
+        delete placed;
+        return errorResult(error);
+    }
     placed->createText();
+    annotateAt(sch, placed, args);
     finish(sch, {QPoint(d->cx + placed->x1, d->cy + placed->y1)});
     QJsonObject result = markerJson(d, placed, int(markersOf(d).indexOf(placed)) + 1);
+    if (sch->cursorValuesShown() && qucs_s::cursor::source(sch) == placed)
+        result.insert(QStringLiteral("values at the marker"), cursorValuesJson(sch));
     if (!found.isEmpty()) {
         found.insert(QStringLiteral("marker on the nearest sample"), number(placed->varPos().at(0)));
         result.insert(QStringLiteral("found"), found);
@@ -3540,6 +5093,8 @@ QJsonObject QucsControl::editMarker(const QJsonObject& args)
     if (args.contains(QLatin1String("at"))
         && !markerPlace(sch, g, args.value(QLatin1String("at")), &x, &found, &error, args.value(QLatin1String("reference"))))
         return errorResult(error);
+    if (args.contains(QLatin1String("annotate")) && !args.value(QLatin1String("annotate")).isBool())
+        return errorResult(tr("'annotate' is true (the schematic's named nets labelled with their values where this marker is) or false."));
     // Tried on a copy first.
     Marker trial(const_cast<Graph*>(g));
     trial.x1 = m->x1;
@@ -3555,9 +5110,19 @@ QJsonObject QucsControl::editMarker(const QJsonObject& args)
         m->y1 = -m->cy + dy;
     }
     applyMarker(m, d, args, &error);
+    if (args.contains(QLatin1String("relative_to"))) {
+        const Marker* was = m->reference();
+        if (!setRelative(m, d, args.value(QLatin1String("relative_to")), &error)) {
+            m->setReference(was);
+            return errorResult(error);
+        }
+    }
     m->createText();
+    m->refreshDependents();   // (it moved: those measuring from it too)
+    annotateAt(sch, m, args);
     finish(sch, {QPoint(d->cx + m->x1, d->cy + m->y1)});
     QJsonObject result = markerJson(d, m, int(markersOf(d).indexOf(m)) + 1);
+    if (sch->cursorValuesShown() && qucs_s::cursor::source(sch) == m) result.insert(QStringLiteral("values at the marker"), cursorValuesJson(sch));
     if (!found.isEmpty()) {
         found.insert(QStringLiteral("marker on the nearest sample"), number(m->varPos().at(0)));
         result.insert(QStringLiteral("found"), found);
@@ -3580,6 +5145,75 @@ QJsonObject QucsControl::deleteMarker(const QJsonObject& args)
     delete m;
     finish(sch, {QPoint(d->cx, d->cy)});
     return textResult(tr("The marker (%1) is deleted (one step to undo).").arg(text));
+}
+
+// Cross-probing (probe.h): a pin's current, a part's power, a net's
+// voltage, or what is at a place, into a diagram - its trace, the label
+// put on an unnamed net, the vector the next run saves.
+QJsonObject QucsControl::probeTool(const QJsonObject& args)
+{
+    namespace pr = qucs_s::probe;
+    QString error;
+    Schematic* sch = schematic(args, &error, true);
+    if (sch == nullptr) return errorResult(error);
+    if (sch->getSymbolMode()) return errorResult(tr("The schematic shows its symbol: probe its circuit."));
+    const QJsonValue what = args.value(QLatin1String("what"));
+    std::optional<pr::Target> target;
+    if (what.isArray() || what.isObject()) {
+        QPoint p;
+        if (!pointOf(sch, what, &p, &error)) return errorResult(error);
+        target = pr::at(sch, p);
+        if (!target) return errorResult(tr("There is nothing to probe at %1, %2: a net, a part's pin or a part.").arg(p.x()).arg(p.y()));
+    } else {
+        const QString name = what.toString().trimmed();
+        if (name.isEmpty())
+            return errorResult(tr("'what' is a pin (\"R1.2\": the current into it), a part (\"R1\": its power), a net's name "
+                                  "(\"out\": its voltage) or a place ([x, y], as a click there)."));
+        // A part's pin, a part, or a net by a label of it.
+        QString ignored;
+        if (const qsizetype dot = name.lastIndexOf(QLatin1Char('.')); dot > 0 && componentOf(sch, name.left(dot), &ignored)) {
+            QPoint p;
+            if (!pointOf(sch, name, &p, &error)) return errorResult(error);
+            Component* c = componentOf(sch, name.left(dot), &error);
+            for (int i = 0; i < c->Ports.size(); ++i)
+                if (QPoint(c->cx + c->Ports.at(i)->x, c->cy + c->Ports.at(i)->y) == p) target = pr::Target{pr::Kind::Current, nullptr, nullptr, c, i};
+        } else if (Component* c = componentOf(sch, name, &ignored)) {
+            target = pr::Target{pr::Kind::Power, nullptr, nullptr, c};
+        } else {
+            for (Wire* w : sch->a_DocWires)
+                if (!target && w->hasLabel() && w->label()->Name.compare(name, Qt::CaseInsensitive) == 0) target = pr::Target{pr::Kind::Voltage, w};
+            for (Node* n : sch->a_DocNodes)
+                if (!target && n->hasLabel() && n->label()->Name.compare(name, Qt::CaseInsensitive) == 0)
+                    target = pr::Target{pr::Kind::Voltage, nullptr, n};
+            if (!target)
+                return errorResult(tr("%1 is no part, pin or net label here: a pin is \"R1.2\", a part \"R1\", a net a label's name "
+                                      "(an unnamed net by a place on it, [x, y]).").arg(name));
+        }
+    }
+    Diagram* into = nullptr;
+    if (args.contains(QLatin1String("diagram"))) {
+        into = diagramOf(sch, args.value(QLatin1String("diagram")), &error);
+        if (into == nullptr) return errorResult(error);
+    }
+    prepare(sch);
+    const pr::Result r = pr::probe(sch, *target, into);
+    sch->viewport()->update();
+    if (!r.error.isEmpty()) return errorResult(r.error);
+    int number = 0, n = 0;
+    for (Diagram* d : sch->a_DocDiags) {
+        ++n;
+        if (d == r.diagram) number = n;
+    }
+    QJsonObject o{{QStringLiteral("variable"), r.variable},
+                  {QStringLiteral("has data"), r.hasData},
+                  {QStringLiteral("diagram"), number},
+                  {QStringLiteral("text"), r.text()}};
+    if (r.newDiagram) o.insert(QStringLiteral("new diagram"), true);
+    if (r.already) o.insert(QStringLiteral("already there"), true);
+    if (!r.labelled.isEmpty()) o.insert(QStringLiteral("labelled"), r.labelled);
+    if (!r.saved.isEmpty()) o.insert(QStringLiteral("saved by the next run"), r.saved);
+    if (r.graph) o.insert(QStringLiteral("trace"), traceJson(sch, r.diagram, r.graph, int(r.diagram->Graphs.indexOf(r.graph)) + 1));
+    return jsonResult(o);
 }
 
 // A Verilog-A module described - by a .va or .osdi file, or by its name,

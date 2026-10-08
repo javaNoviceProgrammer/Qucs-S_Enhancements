@@ -34,11 +34,16 @@ public:
   void calcCoordinate(const double*, const double*, const double*, float*, float*, Axis const*) const;
   MappedPoint  pointToValue(const QPointF& point) override;
   void setLimitsBySelectionRect(QRectF) override;
+  bool zoomsByRectangle() const override { return true; }
+  bool takesLimits() const override { return Name == "Rect"; }
   void finishMarkerCoordinates(float&, float&) const;
   bool insideDiagram(float, float) const;
 
 protected:
   void clip(Graph::iterator &) const;
+  /// The x axis' grid lines (over the frame's height), tick marks and
+  /// numbers; false when its limits are no use (a log axis through 0).
+  bool createXGrid();
 };
 
 #endif

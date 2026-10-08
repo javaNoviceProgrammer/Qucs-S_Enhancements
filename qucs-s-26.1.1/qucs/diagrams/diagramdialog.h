@@ -38,6 +38,7 @@ class QLabel;
 class QLineEdit;
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QDoubleValidator;
 class QIntValidator;
 class QRegExpValidator;
@@ -78,6 +79,7 @@ private slots:
   /// Auto colors for the selected graph: each of its curves in a color of
   /// its own (Graph::autoColor).
   void slotSetAutoColor(bool on);
+  void slotSetGhost(bool on);   // the trace chosen drawn faint, behind
   /// The point marker of the selected graph (Graph::PointMarker, in the
   /// order of the box: none, auto, then the shapes).
   void slotSetPointMarker(int marker);
@@ -244,8 +246,66 @@ private:
   QSpinBox    *EyeSpan = nullptr;
   QComboBox   *EyeLevels = nullptr, *EyeDrawn = nullptr;
   QCheckBox   *EyeMeasure = nullptr;
+  // A stacked diagram's own: how many panes, and each one's axes (a row
+  // each: the left axis' label, from, to and log, then the right one's).
+  QSpinBox    *PaneCount = nullptr;
+  QTableWidget *PaneTable = nullptr;
+  QLabel      *ylLabelName = nullptr, *yrLabelName = nullptr;
+  /// The y-axis box's entries of a stacked diagram: each pane's two.
+  void fillAxisBox();
+  /// The entry of the y-axis box \a g is drawn against, and \a g put there.
+  int axisIndexOf(const Graph *g) const;
+  void setAxisIndex(Graph *g, int index) const;
+  /// What the y-axis column of the graph list says of \a g.
+  QString axisNameOf(const Graph *g) const;
+  /// The panes table's rows as \a n panes (new ones empty).
+  void setPaneRows(int n);
+  // Its spec limits: a row each - upper or lower, its points (x, y; ...)
+  // or a level, a label, its axis, a stacked diagram's pane.
+  QTableWidget *LimitTable = nullptr;
+  QCheckBox   *PzGuides = nullptr;   // a pole-zero map's zeta lines and omega n circles
+  QCheckBox   *BodeMargins = nullptr;   // a Bode diagram's crossovers and margins
+  QCheckBox   *NicholsGrid = nullptr;   // a Nichols chart's M and N contours
+  QCheckBox   *NyquistMarks = nullptr, *NyquistMirror = nullptr;   // a polar diagram's
+  // A spectrum view's own: its window, harmonics, units, stems, from, fundamental.
+  QComboBox   *SpecWindow = nullptr;
+  QSpinBox    *SpecHarmonics = nullptr;
+  QCheckBox   *SpecDbc = nullptr, *SpecStems = nullptr;
+  QLineEdit   *SpecFrom = nullptr, *SpecFundamental = nullptr;
+  // A bathtub curve's: its fold (as an eye's), target rate and floor.
+  QLineEdit   *TubUi = nullptr, *TubFrom = nullptr, *TubThreshold = nullptr, *TubBer = nullptr, *TubFloor = nullptr;
+  QComboBox   *TubLevels = nullptr;
+  QCheckBox   *TubMeasured = nullptr;
+  // A contour map's: its iso-lines, colours and pass band.
+  QSpinBox    *MapLevels = nullptr;
+  QComboBox   *MapColours = nullptr;
+  QCheckBox   *MapFilled = nullptr, *MapLabels = nullptr;
+  QLineEdit   *MapPassMin = nullptr, *MapPassMax = nullptr;
+  // A spectrogram's: its window, segments and range.
+  QComboBox   *GramWindow = nullptr;
+  QLineEdit   *GramSegment = nullptr;
+  QDoubleSpinBox *GramOverlap = nullptr, *GramRange = nullptr;
+  // A tornado chart's: its bars' values, how many, a sensitivity run's parts.
+  QComboBox   *TornadoMode = nullptr;
+  // A box plot's: where the curves are taken, its whiskers.
+  QLineEdit   *BoxAt = nullptr;
+  QCheckBox   *BoxRange = nullptr;
+  // A constellation's: its symbols' sampling and modulation.
+  QLineEdit   *IqPeriod = nullptr, *IqOffset = nullptr, *IqFrom = nullptr;
+  QComboBox   *IqModulation = nullptr;
+  // A Smith chart's circles: which, at what frequency.
+  QLineEdit   *SmithCircles = nullptr, *SmithFrequency = nullptr;
+  QLineEdit   *TornadoAt = nullptr;
+  QSpinBox    *TornadoBars = nullptr;
+  /// The Data tab's variables of a sensitivity run: its parts as traces.
+  void addSensitivityParts();
+  void addLimitRow(const qucs_s::limits::Limit &limit);
+  /// The table's limits; false at the first row that is none (said when
+  /// \a warn).
+  bool readLimits(QList<qucs_s::limits::Limit> *limits, bool warn);
   QPushButton *ColorButt;
   QCheckBox   *AutoColorBox = nullptr;
+  QCheckBox *GhostBox = nullptr;   // a trace drawn faint, behind (a kept run's)
   QLabel      *MarkerLabel = nullptr;
   QComboBox   *MarkerBox = nullptr;
   // What of each value a graph shows (Graph::ValuePart), where it applies.

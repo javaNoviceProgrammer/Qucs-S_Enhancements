@@ -11,6 +11,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
+#include "ltspiceimport.h"
 #include "qucscontrol.h"
 #include "qucscontrol_p.h"
 #include "erc.h"
@@ -393,7 +394,15 @@ bool readHolds(const QJsonObject& args, bool atOperatingPoint, QList<Hold>* hold
         Hold h;
         h.spec = item.value(QLatin1String("measure")).toObject();
         const bool op = h.spec.contains(QLatin1String("operating_point"));
-        if ((!op && h.spec.value(QLatin1String("variable")).toString().trimmed().isEmpty())
+        // A diagram's spec limits: {"limits": its number}, how far its
+        // traces are beyond them at worst (0: within) - "max": 0.
+        const bool limits = h.spec.contains(QLatin1String("limits"));
+        if (limits && (!h.spec.value(QLatin1String("limits")).isDouble() || h.spec.value(QLatin1String("limits")).toInt() < 1)) {
+            *error = tr("A hold's {\"limits\": n} is a diagram's number (get_schematic's): its traces kept within its limits "
+                        "with \"max\": 0.");
+            return false;
+        }
+        if ((!op && !limits && h.spec.value(QLatin1String("variable")).toString().trimmed().isEmpty())
             || (!item.value(QLatin1String("min")).isDouble() && !item.value(QLatin1String("max")).isDouble())) {
             *error = tr("Each of 'hold' is {\"measure\": {...as 'measure'}, \"min\": 50e3} - a 'min', a 'max' or both.");
             return false;
@@ -419,6 +428,28 @@ bool readHolds(const QJsonObject& args, bool atOperatingPoint, QList<Hold>* hold
 double QucsControl::measureRun(const QJsonObject& spec, const QJsonObject& simulated, const QString& path, const QJsonObject& args,
                                QString* used, QString* why)
 {
+    // A diagram's spec limits: its data read again, how far beyond them
+    // its traces are at worst (0 within).
+    if (spec.contains(QLatin1String("limits"))) {
+        QString error;
+        Schematic* sch = schematic(QJsonObject{{QStringLiteral("path"), path}}, &error, false);
+        const int n = spec.value(QLatin1String("limits")).toInt();
+        if (sch == nullptr || n < 1 || n > int(sch->a_DocDiags.size())) {
+            *why = sch == nullptr ? error : tr("there is no diagram %1").arg(n);
+            return NAN;
+        }
+        Diagram* d = *std::next(sch->a_DocDiags.begin(), n - 1);
+        if (d->limits.isEmpty()) {
+            *why = tr("diagram %1 has no limits ('limits' of edit_diagram)").arg(n);
+            return NAN;
+        }
+        for (Graph* g : d->Graphs) g->lastLoaded = QDateTime();
+        d->loadGraphData(QFileInfo(sch->getDocName()).absoluteDir().filePath(sch->getDataSet()));
+        double worst = 0;
+        for (const qucs_s::limits::Violation& v : d->violations()) worst = std::max(worst, v.worst);
+        *used = tr("diagram %1's limits (how far beyond at worst)").arg(n);
+        return worst;
+    }
     QJsonObject answer = simulated;
     if (!spec.contains(QLatin1String("operating_point"))) {
         QJsonObject read{{QStringLiteral("path"), path},
@@ -3086,14 +3117,32 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
     QString text = args.value(QLatin1String("text")).toString();
     const QString fileArg = args.value(QLatin1String("file")).toString().trimmed();
     QString source = tr("the text given");
+    // An LTspice schematic: its symbols beside it (or in 'symbols': LTspice's
+    // lib/sym), made a netlist first.
+    QStringList symbolFolders;
+    if (const QString symbols = args.value(QLatin1String("symbols")).toString().trimmed(); !symbols.isEmpty()) {
+        if (!QFileInfo(absolute(symbols)).isDir()) return errorResult(tr("'symbols' is a folder of LTspice symbols (.asy): %1 is none.").arg(symbols));
+        symbolFolders << absolute(symbols);
+    }
     if (text.trimmed().isEmpty() && !fileArg.isEmpty()) {
         const QString file = absolute(fileArg);
         QFile f(file);
-        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return errorResult(tr("There is no file %1.").arg(QDir::toNativeSeparators(file)));
-        text = QString::fromUtf8(f.readAll());
+        if (!f.open(QIODevice::ReadOnly)) return errorResult(tr("There is no file %1.").arg(QDir::toNativeSeparators(file)));
+        const QByteArray bytes = f.readAll();
+        const bool asc = QFileInfo(file).suffix().compare(QLatin1String("asc"), Qt::CaseInsensitive) == 0;
+        text = asc ? qucs_s::ltspice::textOf(bytes) : QString::fromUtf8(bytes).remove(QLatin1Char('\r'));
+        if (asc) symbolFolders.prepend(QFileInfo(file).absolutePath());
         source = QFileInfo(file).fileName();
     }
-    if (text.trimmed().isEmpty()) return errorResult(tr("Give the netlist: 'text', or 'file' (.cir, .sp, .net)."));
+    if (text.trimmed().isEmpty()) return errorResult(tr("Give the netlist: 'text', or 'file' (.cir, .sp, .net, or LTspice's .asc)."));
+    QStringList fromLTspice;
+    if (qucs_s::ltspice::looksLikeAsc(text)) {
+        const qucs_s::ltspice::Conversion conversion = qucs_s::ltspice::convert(text, symbolFolders, source);
+        if (!conversion.error.isEmpty()) return errorResult(tr("%1: %2. Nothing was imported.").arg(source, conversion.error));
+        text = conversion.netlist;
+        fromLTspice = conversion.notes;
+        fromLTspice.prepend(tr("an LTspice schematic: %1 parts on %2 nets, made the netlist imported").arg(conversion.parts).arg(conversion.nets));
+    }
     // Where it is to be saved, checked first: a file there already kept the
     // document untitled, said only in its 'saved' field, and the next call
     // by that name found nothing open.
@@ -3532,6 +3581,10 @@ QJsonObject QucsControl::importNetlist(const QJsonObject& args)
     if (!subcircuitFile.isEmpty()) result.insert(QStringLiteral("subcircuits"), QDir::toNativeSeparators(subcircuitFile));
     if (!skipped.isEmpty()) result.insert(QStringLiteral("not taken"), QJsonArray::fromStringList(skipped));
     if (!notes.isEmpty()) result.insert(QStringLiteral("note"), notes.join(QLatin1Char(' ')));
+    if (!fromLTspice.isEmpty()) {
+        result.insert(QStringLiteral("LTspice"), QJsonArray::fromStringList(fromLTspice));
+        result.insert(QStringLiteral("netlist"), text);
+    }
     if (!saveAs.isEmpty()) {
         const QJsonObject saved = callNow(QStringLiteral("save_document"), {{QStringLiteral("as"), saveAs}, {QStringLiteral("replace"), replace}});
         result.insert(QStringLiteral("saved"), saved.value(QStringLiteral("isError")).toBool() ? textOf(saved) : QDir::toNativeSeparators(sch->getDocName()));

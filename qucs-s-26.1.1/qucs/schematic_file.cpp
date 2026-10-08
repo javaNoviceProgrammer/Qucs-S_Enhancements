@@ -816,6 +816,7 @@ void Schematic::writeDocumentTo(QTextStream& stream)
   // (Only when set: a Qucs-S that does not know it refuses the file.)
   if (a_alwaysLoadOSDI) stream << "  <AlwaysLoadOSDI=1>\n";
   if (a_alwaysModelCards) stream << "  <AlwaysModelCards=1>\n";
+  if (!a_probeSaves.isEmpty()) stream << "  <ProbeSaves=" << a_probeSaves.join(QLatin1Char(' ')) << ">\n";
   if (!a_modelCards.trimmed().isEmpty()) {   // (lines and \ escaped, as a frame's text is)
     QString cards = a_modelCards.trimmed();
     misc::convert2ASCII(cards);
@@ -1065,6 +1066,7 @@ bool Schematic::loadProperties(QTextStream *stream)
     else if(cstr == "Script") a_Script = nstr;
     else if(cstr == "AlwaysLoadOSDI") a_alwaysLoadOSDI = nstr.trimmed() == QLatin1String("1");
     else if(cstr == "AlwaysModelCards") a_alwaysModelCards = nstr.trimmed() == QLatin1String("1");
+    else if(cstr == "ProbeSaves") a_probeSaves = nstr.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
     else if(cstr == "ModelCards") misc::convert2Unicode(a_modelCards = Line.section('=', 1));   // (a card has = in it)
     else if(cstr == "RunScript")
     if(nstr.toInt(&ok) == 0) a_SimRunScript = false;
@@ -1277,6 +1279,17 @@ bool Schematic::loadDiagrams(QTextStream *stream, std::list<Diagram*> *List)
     else if(cstr == "<Time") d = new TimingDiagram();
     else if(cstr == "<Truth") d = new TruthDiagram();
     else if(cstr == "<Histogram") d = new HistogramDiagram();
+    else if(cstr == "<Stacked") d = new StackedDiagram();
+    else if(cstr == "<PoleZero") d = new PoleZeroDiagram();
+    else if(cstr == "<Bode") d = new BodeDiagram();
+    else if(cstr == "<Nichols") d = new NicholsDiagram();
+    else if(cstr == "<Spectrum") d = new SpectrumDiagram();
+    else if(cstr == "<Bathtub") d = new BathtubDiagram();
+    else if(cstr == "<Contour") d = new ContourDiagram();
+    else if(cstr == "<Spectrogram") d = new SpectrogramDiagram();
+    else if(cstr == "<Bars") d = new TornadoDiagram();
+    else if(cstr == "<BoxPlot") d = new BoxPlotDiagram();
+    else if(cstr == "<Constellation") d = new ConstellationDiagram();
     else if(cstr == "<Eye") d = new EyeDiagram();
     else {
       misc::reportError(QObject::tr("Format Error:\nUnknown diagram!"));
@@ -1316,6 +1329,7 @@ bool Schematic::loadPaintings(QTextStream *stream, std::list<Painting*> *List)
 
     cstr = Line.section(' ',0,0);    // painting type
          if(cstr == "Line") p = new GraphicLine();
+    else if(cstr == "Bus") p = new BusPainting();
     else if(cstr == "EArc") p = new EllipseArc();
     else if(cstr == ".PortSym") p = new PortSymbol();
     else if(cstr == ".ID") p = new ID_Text();

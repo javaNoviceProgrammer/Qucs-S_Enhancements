@@ -66,6 +66,11 @@
 #include "portsymbol.h"
 #include "projectView.h"
 #include "qucs.h"
+#include "cursorvalues.h"
+#include <QJsonArray>
+#include <QJsonDocument>
+#include "qucscontrol.h"
+#include "paintings/buspainting.h"
 #include "filebrowser.h"
 #include "statusbar.h"
 #include "schematic.h"
@@ -311,6 +316,87 @@ void QucsApp::slotInsertLabel(bool on) {
 void QucsApp::slotSetMarker(bool on) {
   performToggleAction(on, setMarker, 0, &MouseActions::MMoveMarker,
                       &MouseActions::MPressMarker);
+}
+
+// -----------------------------------------------------------------------
+// Cross-probing: a click puts a net's voltage, a pin's current or a part's
+// power into a diagram (probe.h).
+void QucsApp::slotProbe(bool on) {
+  performToggleAction(on, probeAction, 0, &MouseActions::MMoveProbe,
+                      &MouseActions::MPressProbe);
+}
+
+void QucsApp::slotColourWires(bool on) {
+  QucsSettings.ColourWires = on;
+  saveApplSettings();
+  for (QucsDoc *doc : allDocuments())
+    if (auto *sch = dynamic_cast<Schematic *>(doc)) sch->viewport()->update();
+}
+
+void QucsApp::slotImportLTspice() {
+  const QString file = QFileDialog::getOpenFileName(this, tr("Import LTspice Schematic"), QucsSettings.qucsWorkspaceDir.absolutePath(),
+                                                    tr("LTspice schematics (*.asc);;All files (*)"));
+  if (file.isEmpty()) return;
+  auto *control = findChild<QucsControl *>();
+  if (control == nullptr) return;
+  const QJsonObject result = control->callNow(QStringLiteral("import_netlist"), {{QStringLiteral("file"), file}}, 120000);
+  if (result.value(QStringLiteral("isError")).toBool()) {
+    QMessageBox::warning(this, tr("Import LTspice Schematic"), QucsControl::textOf(result));
+    return;
+  }
+  // What was left out or changed, said.
+  const QJsonObject answer = QJsonDocument::fromJson(QucsControl::textOf(result).toUtf8()).object();
+  QStringList said;
+  for (const QJsonValue &v : answer.value(QStringLiteral("LTspice")).toArray()) said << v.toString();
+  if (said.size() > 1)
+    QMessageBox::information(this, tr("Import LTspice Schematic"), said.join(QStringLiteral("\n")));
+  else if (!said.isEmpty())
+    statusBar()->showMessage(said.first(), 8000);
+}
+
+void QucsApp::slotInsertBus() {
+  if (currentSchematic() == nullptr) return;
+  // As a painting chosen from the list is: drawn from where it is clicked.
+  slotHideEdit();
+  if (view->selElem != nullptr) delete view->selElem;
+  CompComps->clearSelection();
+  if (activeAction) {
+    activeAction->blockSignals(true);
+    activeAction->setChecked(false);
+    activeAction->blockSignals(false);
+  }
+  activeAction = nullptr;
+  view->selElem = new BusPainting();
+  MouseMoveAction = &MouseActions::MMoveElement;
+  MousePressAction = &MouseActions::MPressElement;
+  MouseReleaseAction = nullptr;
+  MouseDoubleClickAction = nullptr;
+  a_status->scheduleRefresh();
+}
+
+void QucsApp::slotCursorValues(bool on) {
+  Schematic *sch = currentSchematic();
+  if (sch == nullptr) {
+    updateCursorValuesAction();
+    return;
+  }
+  sch->showCursorValues(on);
+  sch->viewport()->update();
+  if (!on) return;
+  // Said when there is nothing to show (yet): no marker, no run, no net.
+  const qucs_s::cursor::Reading reading = qucs_s::cursor::at(sch, qucs_s::cursor::source(sch));
+  if (!reading.error.isEmpty())
+    statusBar()->showMessage(tr("Values at the Marker: %1").arg(reading.error), 8000);
+  else if (reading.values.isEmpty())
+    statusBar()->showMessage(tr("Values at the Marker: no net is named (a wire label names one)"), 8000);
+}
+
+void QucsApp::updateCursorValuesAction() {
+  if (cursorValuesAction == nullptr) return;
+  const Schematic *sch = currentSchematic();
+  const QSignalBlocker block(cursorValuesAction);
+  cursorValuesAction->setEnabled(sch != nullptr);
+  cursorValuesAction->setChecked(sch != nullptr && sch->cursorValuesShown());
 }
 
 // -----------------------------------------------------------------------

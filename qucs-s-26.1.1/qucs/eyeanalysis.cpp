@@ -52,6 +52,7 @@ struct Phases {
     double mean = NaN;      // 0 to 1
     double earliest = 0.0, latest = 0.0, rms = 0.0;   // in UI about the mean
     int count = 0;
+    QVector<double> offsets;   // each about the mean, in UI
 };
 
 Phases phasesOf(const QVector<double>& times, double start, double ui)
@@ -78,6 +79,7 @@ Phases phasesOf(const QVector<double>& times, double start, double ui)
         p.earliest = std::min(p.earliest, d);
         p.latest = std::max(p.latest, d);
         squares += d * d;
+        p.offsets << d;
     }
     p.rms = std::sqrt(squares / ph.size());
     return p;
@@ -420,6 +422,199 @@ QJsonObject toJson(const Result& r)
     return o;
 }
 
+double gaussianTail(double x)
+{
+    return 0.5 * std::erfc(x / std::sqrt(2.0));
+}
+
+double gaussianTailInverse(double p)
+{
+    if (!(p > 0.0)) return std::numeric_limits<double>::infinity();
+    if (!(p < 1.0)) return -std::numeric_limits<double>::infinity();
+    if (p > 0.5) return -gaussianTailInverse(1.0 - p);
+    // (Bisection: Q falls from 0.5 at 0; below 1e-300 at 37.)
+    double lo = 0.0, hi = 40.0;
+    for (int i = 0; i < 200 && hi - lo > 1e-13; ++i) {
+        const double mid = (lo + hi) / 2.0;
+        (gaussianTail(mid) > p ? lo : hi) = mid;
+    }
+    return (lo + hi) / 2.0;
+}
+
+namespace {
+
+// P(a Gaussian about 0 of \a sigma is above \a x): a step when sigma is 0.
+double tailOf(double x, double sigma)
+{
+    if (sigma > 0.0) return gaussianTail(x / sigma);
+    return x > 0.0 ? 0.0 : x < 0.0 ? 1.0 : 0.5;
+}
+
+// x = delta + sigma q fitted (least squares) to \a outward - a tail's
+// crossings, the outermost first, signed so outward is up - each at q,
+// the Gaussian's Q of twice its share of the crossings beyond it (a Dirac
+// carries half). False when its points all have one q.
+bool fitTail(const QVector<double>& outward, int count, double* delta, double* sigma)
+{
+    const int m = int(outward.size());
+    QVector<double> q(m);
+    double sq = 0.0, su = 0.0;
+    for (int k = 0; k < m; ++k) {
+        q[k] = gaussianTailInverse(2.0 * (k + 0.5) / count);
+        sq += q.at(k);
+        su += outward.at(k);
+    }
+    const double mq = sq / m, mu = su / m;
+    double sqq = 0.0, squ = 0.0;
+    for (int k = 0; k < m; ++k) {
+        sqq += (q.at(k) - mq) * (q.at(k) - mq);
+        squ += (q.at(k) - mq) * (outward.at(k) - mu);
+    }
+    if (!(sqq > 0.0)) return false;
+    *sigma = std::max(0.0, squ / sqq);
+    *delta = mu - *sigma * mq;
+    return true;
+}
+
+} // namespace
+
+double Bathtub::ber(double phase) const
+{
+    if (!ok()) return NaN;
+    // The left wall's crossing later than the instant, the right's earlier.
+    const double u = phase - left, v = phase - left - 1.0;
+    const double late = 0.5 * tailOf(u - deltaLeft, sigmaLeft) + 0.5 * tailOf(u - deltaRight, sigmaRight);
+    const double early = 0.5 * tailOf(deltaLeft - v, sigmaLeft) + 0.5 * tailOf(deltaRight - v, sigmaRight);
+    return density * (late + early);
+}
+
+double Bathtub::measured(double phase) const
+{
+    if (!ok() || offsets.isEmpty()) return NaN;
+    const double u = phase - left, v = phase - left - 1.0;
+    const auto late = offsets.cend() - std::upper_bound(offsets.cbegin(), offsets.cend(), u);
+    const auto early = std::lower_bound(offsets.cbegin(), offsets.cend(), v) - offsets.cbegin();
+    return density * double(late + early) / double(offsets.size());
+}
+
+double Bathtub::best() const
+{
+    if (!ok()) return NaN;
+    // On a grid between the walls, then finer about the lowest.
+    double at = left + 0.5, lowest = ber(at);
+    for (int i = 0; i <= 2000; ++i) {
+        const double x = left + i / 2000.0, b = ber(x);
+        if (b < lowest) {
+            lowest = b;
+            at = x;
+        }
+    }
+    double lo = at - 1.0 / 2000.0, hi = at + 1.0 / 2000.0;
+    for (int i = 0; i < 60; ++i) {
+        const double a = lo + (hi - lo) / 3.0, b = hi - (hi - lo) / 3.0;
+        if (ber(a) <= ber(b)) hi = b;
+        else lo = a;
+    }
+    const double refined = (lo + hi) / 2.0;
+    return ber(refined) <= lowest ? refined : at;
+}
+
+bool Bathtub::opening(double rate, double* from, double* to) const
+{
+    const double b = best();
+    *from = *to = b;
+    if (!ok() || !(ber(b) <= rate)) return false;
+    // Each side: where the rate rises through it, between the best and
+    // the wall (its crossings' mean: there it is about half the density).
+    const auto through = [&](double inside, double outside) {
+        for (int i = 0; i < 100; ++i) {
+            const double mid = (inside + outside) / 2.0;
+            (ber(mid) <= rate ? inside : outside) = mid;
+        }
+        return (inside + outside) / 2.0;
+    };
+    *from = through(b, left);
+    *to = through(b, left + 1.0);
+    return true;
+}
+
+Bathtub bathtubOf(const Result& r, int eye)
+{
+    Bathtub b;
+    if (!r.ok()) {
+        b.error = r.error;
+        return b;
+    }
+    if (eye < 0 || eye >= r.eyes.size()) {
+        b.error = tr("there is no eye %1").arg(eye + 1);
+        return b;
+    }
+    const Eye& e = r.eyes.at(eye);
+    if (e.offsets.size() < 2 || !std::isfinite(e.phase)) {
+        b.error = tr("%1 crossings: too few for a bathtub").arg(e.offsets.size());
+        return b;
+    }
+    b.ui = r.ui;
+    b.left = e.phase;
+    b.offsets = e.offsets;
+    b.density = r.symbols > 0 ? std::clamp(double(e.crossings) / r.symbols, 0.0, 1.0) : 1.0;
+    const int n = int(e.offsets.size());
+    // The tails: the outermost fifth each side (at least 5).
+    if (n >= 10) {
+        const int m = std::clamp(int(std::lround(0.2 * n)), 5, n / 2);
+        QVector<double> late, early;
+        for (int k = 0; k < m; ++k) {
+            late << e.offsets.at(n - 1 - k);
+            early << -e.offsets.at(k);
+        }
+        double dl = 0.0, sl = 0.0, dr = 0.0, sr = 0.0;
+        if (fitTail(late, n, &dr, &sr) && fitTail(early, n, &dl, &sl)) {
+            b.deltaRight = dr;
+            b.sigmaRight = sr;
+            b.deltaLeft = -dl;
+            b.sigmaLeft = sl;
+            // (A Gaussian alone fits with the Diracs a little apart; never
+            // crossed.)
+            if (b.deltaRight < b.deltaLeft) b.deltaLeft = b.deltaRight = (b.deltaLeft + b.deltaRight) / 2.0;
+            b.dualDirac = true;
+        }
+    }
+    if (!b.dualDirac) b.sigmaLeft = b.sigmaRight = e.jitterRms / r.ui;
+    // (A spread below a billionth of a UI is the numbers' rounding.)
+    if (b.sigmaLeft < 1e-9) b.sigmaLeft = 0.0;
+    if (b.sigmaRight < 1e-9) b.sigmaRight = 0.0;
+    return b;
+}
+
+QJsonObject toJson(const Bathtub& b, double ber)
+{
+    using dataset::rounded;
+    if (!b.ok()) return {{QStringLiteral("error"), b.error}};
+    double from = NaN, to = NaN;
+    const bool open = b.opening(ber, &from, &to);
+    const double best = b.best();
+    QJsonObject o{{QStringLiteral("BER"), ber},
+                  {QStringLiteral("opening"), rounded((to - from) * b.ui)},
+                  {QStringLiteral("opening, UI"), rounded(to - from)},
+                  {QStringLiteral("total jitter"), rounded((1.0 - (to - from)) * b.ui)},
+                  {QStringLiteral("random jitter, rms"), rounded(b.rj() * b.ui)},
+                  {QStringLiteral("deterministic jitter"), rounded(b.dj() * b.ui)},
+                  {QStringLiteral("model"), b.dualDirac ? tr("dual-Dirac, fitted to the crossings' tails")
+                                                         : tr("one Gaussian of the crossings' rms (under 10 crossings: too few for the tails)")},
+                  {QStringLiteral("transition density"), rounded(b.density)},
+                  {QStringLiteral("best phase, UI"), rounded(best)},
+                  {QStringLiteral("BER at the best phase"), rounded(b.ber(best))},
+                  {QStringLiteral("BER at the centre"), rounded(b.ber(0.0))},
+                  {QStringLiteral("crossings"), int(b.offsets.size())}};
+    if (open) {
+        o.insert(QStringLiteral("from, UI"), rounded(from));
+        o.insert(QStringLiteral("to, UI"), rounded(to));
+    } else {
+        o.insert(QStringLiteral("note"), tr("closed at BER %1: the rate is above it at every phase").arg(ber));
+    }
+    return o;
+}
+
 double originFor(const Result& r, int span)
 {
     return r.centre - span * r.ui / 2.0;
@@ -675,6 +870,8 @@ Result analyse(const Curve& c, const Options& o)
             e.jitterRms = p.rms * r.ui;
             e.width = std::max(0.0, 1.0 - spread) * r.ui;
             e.widthBer12 = std::max(0.0, r.ui - kBer12 * e.jitterRms);
+            e.offsets = p.offsets;
+            std::sort(e.offsets.begin(), e.offsets.end());
         }
         QVector<double> lower, upper;
         for (double v : sampled) {
