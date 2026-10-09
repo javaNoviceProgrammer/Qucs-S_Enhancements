@@ -51,8 +51,15 @@ class tunerElement;
 class SimulationRun;
 class SimulationConsole;
 class ProcessConsole;
+class PythonDataViewer;
 class PythonDoc;
+class PythonPlotsPane;
 class PythonRunConsole;
+class PythonVariablesPane;
+class QActionGroup;
+class QucsControl;
+class QJsonObject;
+namespace qucs_s::python { class Exchange; }
 class ClaudeCodeTabs;
 class FileBrowser;
 class ZipDoc;
@@ -425,8 +432,26 @@ public:
   /// Cell).
   bool runPythonLines(PythonDoc *doc, int firstLine, const QString &code, const QString &what);
   /// Runs \a doc - saved first - under the debugger, stopping at the
-  /// breakpoints of every script open.
-  bool debugPython(PythonDoc *doc);
+  /// breakpoints of every script open (their conditions, hits, messages),
+  /// where an exception is raised when Break on Raised Exceptions is on -
+  /// and once at \a runToLine of \a doc (0: nowhere).
+  bool debugPython(PythonDoc *doc, int runToLine = 0);
+  /// Python Plots (matplotlib's figures), Python Variables (the Python
+  /// Shell's) and their docks; the folders scripts reach Qucs-S through.
+  PythonPlotsPane *pythonPlots() const { return a_pythonPlots; }
+  QDockWidget *pythonPlotsDockWidget() const { return a_pythonPlotsDock; }
+  PythonVariablesPane *pythonVariables() const { return a_pythonVariables; }
+  QDockWidget *pythonVariablesDockWidget() const { return a_pythonVariablesDock; }
+  qucs_s::python::Exchange *pythonExchange() const { return a_pythonExchange; }
+  /// The Data Viewer of the Python Shell's \a expression (View as Table).
+  PythonDataViewer *viewShellTable(const QString &expression);
+  /// qucs.display()'s request: the dataset shown in its data display (made
+  /// when there is none) - a diagram of its traces placed, unless one
+  /// showing them is there already. Its answer: an error, or empty.
+  QString showPythonDisplay(const QJsonObject &request);
+  /// The other files a rename of \a doc's name changes, changed (opened,
+  /// left unsaved, one edit each); why not, or empty.
+  QString applyPythonRename(PythonDoc *doc);
   /// Shows \a line, \a column (1-based; column 0: the line's start) of
   /// the text document \a document - or, without one, of the file \a path,
   /// opened when it is not.
@@ -648,6 +673,11 @@ private slots:
   void slotPythonBack();
   void slotPythonFormat();
   void slotPythonFix();
+  void slotPythonReferences();
+  void slotPythonRename();
+  void slotPythonSymbols();
+  void slotPythonRunToCursor();
+  void slotPythonEditBreakpoint();
   void slotAfterSimulation(int, SimMessage *);
   void slotDCbias();
   void slotChangePage(const QString &, const QString &);
@@ -811,6 +841,33 @@ private:
   QAction *pythonBackAction = nullptr;
   QAction *pythonFormatAction = nullptr;
   QAction *pythonFixAction = nullptr;
+  QAction *pythonPauseAction = nullptr;
+  QAction *pythonRunToCursorAction = nullptr;
+  QAction *pythonRaisedAction = nullptr;
+  QAction *pythonEditBreakpointAction = nullptr;
+  QAction *pythonReferencesAction = nullptr;
+  QAction *pythonRenameAction = nullptr;
+  QAction *pythonSymbolsAction = nullptr;
+  QAction *pythonFoldAction = nullptr;
+  QAction *pythonUnfoldAction = nullptr;
+  QAction *pythonFoldAllAction = nullptr;
+  QAction *pythonUnfoldAllAction = nullptr;
+  QAction *pythonAutoCloseAction = nullptr;
+  QAction *pythonInlinePlotsAction = nullptr;
+  QActionGroup *pythonTypeCheckers = nullptr;
+  QMenu *a_pythonMenu = nullptr;
+  PythonPlotsPane *a_pythonPlots = nullptr;
+  QDockWidget *a_pythonPlotsDock = nullptr;
+  PythonVariablesPane *a_pythonVariables = nullptr;
+  QDockWidget *a_pythonVariablesDock = nullptr;
+  qucs_s::python::Exchange *a_pythonExchange = nullptr;
+  // The Data Viewers waiting for rows: by the request's id (the shell's,
+  // the debugger's).
+  QHash<int, QPointer<PythonDataViewer>> a_shellTables;
+  QHash<int, QPointer<PythonDataViewer>> a_debugTables;
+  // A hover's value asked of the debugger: the script that asked, by id.
+  QHash<int, QPointer<PythonDoc>> a_pythonValues;
+  QucsControl *a_control = nullptr;   // Claude's tools, which add_diagram is (showPythonDisplay())
   QDockWidget *pythonRunDock = nullptr;
   PythonRunConsole *pythonRun = nullptr;
   bool a_pythonCheckRaises = false;   // Check: the next answer brings the Problems tab up

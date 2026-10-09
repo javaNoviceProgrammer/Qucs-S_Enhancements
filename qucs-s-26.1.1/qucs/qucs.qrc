@@ -67,11 +67,19 @@
         <file>bitmaps/svg/python_stepover.svg</file>
         <file>bitmaps/svg/python_stepinto.svg</file>
         <file>bitmaps/svg/python_stepout.svg</file>
+        <file>bitmaps/svg/python_pause.svg</file>
+        <file>bitmaps/svg/python_runtocursor.svg</file>
+        <file>bitmaps/svg/python_plots.svg</file>
+        <file>bitmaps/svg/python_variables.svg</file>
         <file alias="python/qucs.py">python/module/qucs.py</file>
         <file alias="python/_qucs_shell.py">python/tools/_qucs_shell.py</file>
         <file alias="python/completer.py">python/tools/completer.py</file>
         <file alias="python/debugger.py">python/tools/debugger.py</file>
         <file alias="python/formatter.py">python/tools/formatter.py</file>
+        <file alias="python/typecheck.py">python/tools/typecheck.py</file>
+        <file alias="python/_qucs_plots.py">python/tools/_qucs_plots.py</file>
+        <file alias="python/_qucs_data.py">python/tools/_qucs_data.py</file>
+        <file alias="python/_qucs_startup.py">python/tools/_qucs_startup.py</file>
         <file>bitmaps/svg/contour.svg</file>
         <file>bitmaps/svg/spectrogram.svg</file>
         <file>bitmaps/svg/tornado.svg</file>

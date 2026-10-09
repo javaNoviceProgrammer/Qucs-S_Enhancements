@@ -593,6 +593,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     of its own, so a `json.py` beside the script cannot stand in for the
     modules it uses. A check still running when the text changes is
     stopped: only the last one's answer is shown.
+  - **Types checked**, when the script's Python has mypy (or pyright, on
+    `PATH` or installed for it): after each check of a script that
+    compiles, the type checker reads the text as it is in the editor -
+    mypy through `--shadow-file`, with the project's settings and the
+    modules beside the script; pyright with its `pyrightconfig.json` or
+    `pyproject.toml` settings - and its findings join the others as
+    warnings (`... (mypy: assignment)`), moving with the text until its
+    next answer. One runs at a time. *Simulation → Python → Type Checker*:
+    *Automatic* (mypy, else pyright; the default), *mypy*, *pyright* or
+    *Off*. The *Check* tooltip names the one that checked it.
   - **Shown where they are.** A red or amber wavy line under each
     problem, a dot in the line numbers' margin, and the message when the
     mouse is over either. The *Problems* tab lists them too, and a click
@@ -639,6 +649,44 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     package, which opens read-only, says so, and is not checked. A name
     built into Python is said to have no source. *Go Back* (Alt+Left,
     ⌃- on a Mac) returns, again and again.
+  - **Find All References** (Shift+F12) lists where the name at the
+    cursor is used and defined on the *References* tab, grouped by file,
+    a click going there. Without jedi it follows Python's rules of scope
+    in the script: a function's local is that function's, a module's name
+    is found wherever it is that name - not a parameter or a class's
+    attribute of the same name; an attribute (`.gain`) lists every
+    attribute so named. With jedi, the modules beside the script count
+    too, and an attribute is its object's alone.
+  - **Rename Symbol** (Shift+F2) renames the name at the cursor wherever
+    it is that same name, in one edit that Undo takes back. Without jedi
+    it renames within the script, by the same rules of scope, and leaves
+    attributes to jedi. With jedi, the modules beside the script that use
+    the name are opened and changed too, unsaved; one open with unsaved
+    changes of its own is left alone, and the status bar says so.
+  - **Go to Symbol** (Ctrl+F12) lists the script's classes, functions,
+    methods and module variables - and those of the scripts in its folder
+    - and narrows the list as you type the letters of a name in order
+    (`tg` finds `total_gain`), the best matches first. Return goes there;
+    *Go Back* returns.
+  - **Brackets and quotes closed.** Typing `(`, `[`, `{`, `'` or `"`
+    inserts its partner after the cursor (not before a word, nor in a
+    string or a comment - a quote after a letter is an apostrophe, unless
+    the letter is a string prefix such as `f` or `rb`). A closing one
+    typed where one already is moves over it, Backspace between an empty
+    pair deletes both, a third quote makes a triple-quoted string, and a
+    selection is wrapped in the pair. *Close Brackets and Quotes* (on by
+    default) turns this off.
+  - **The matching bracket.** With the cursor beside a bracket, it and its
+    partner are marked; one with no partner is marked red. Brackets in
+    strings and comments are left out.
+  - **Folding.** A triangle right of the line numbers marks each line
+    that begins a block (a function, a class, a loop, any line followed by
+    deeper indentation) or a cell (`# %%`); a click folds the block away
+    and leaves `...` after its first line. *Fold* (Ctrl+Shift+[) folds the
+    block the cursor is in, the next time the one around it; *Unfold*
+    (Ctrl+Shift+]) opens it; *Fold All* folds every function, class and
+    cell, *Unfold All* opens them. Moving the cursor into a fold, or
+    changing its first line, opens it; lines typed into a fold stay folded.
     - Signatures, help and definitions come from the completer: from
       jedi when the script's Python has it, otherwise from the script,
       Python's builtins, the standard modules it imports and the modules
@@ -673,10 +721,21 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   - **Breakpoints and the debugger.** A click in the line numbers'
     margin (or *Toggle Breakpoint*, Ctrl+F9) sets a breakpoint, a red dot,
     or takes it away; breakpoints move with the text and stay through a
-    reload. *Debug* (Ctrl+F2) saves the script and runs it under the
-    debugger, stopping at the breakpoints of every script open - one on a
-    line without code stops at the next line that has some - and where
-    an exception that nothing catches is raised, after its traceback.
+    reload. A right-click in the margin adds a **conditional breakpoint**
+    (it stops only when an expression holds), a **hit count** (`5` stops
+    from the fifth time on, `== 5` the fifth time only, `> 5`, `% 5`
+    every fifth time) or a **logpoint** (a message such as `k is {k}`,
+    each `{expression}` evaluated, written in the output without
+    stopping), and edits, disables or removes one (*Edit Breakpoint...*
+    for the cursor's line). They are drawn as a dot with a bar across, a
+    diamond, and a hollow grey circle when disabled, and changes reach a
+    script being debugged at once. *Debug* (Ctrl+F2) saves the script and
+    runs it under the debugger, stopping at the breakpoints of every
+    script open - one on a line without code stops at the next line that
+    has some - and where an exception that nothing catches is raised,
+    after its traceback. *Break on Raised Exceptions* also stops where
+    one is raised in the script's code even when something catches it
+    (StopIteration and the like aside).
     Where it stopped is marked with an arrow and a yellow line, in the
     script or in a module beside it (opened there). A panel beside the
     *Python Run* output shows:
@@ -692,8 +751,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     *Step Over* (Ctrl+F10) to the next line, *Step Into* (Ctrl+F11) into
     the call on the line - the script's code, not Python's library, which
     is stepped over - and *Step Out* (Ctrl+Shift+F11) to the line that
-    called the function. Breakpoints set or taken away while it runs take
-    effect at once. *Stop* ends it.
+    called the function. *Pause* (Ctrl+F2 while it runs, in Continue's
+    place) stops it at the next line of the script's code, even in a loop
+    on one line; a long call into Python's library or C finishes first.
+    *Run to Cursor* (Ctrl+Shift+F10) goes on to the cursor's line, once -
+    a breakpoint before it still stops it - and starts debugging when it
+    is not. Breakpoints set or taken away while it runs take effect at
+    once. *Stop* ends it.
+
+    While it is stopped, the mouse on a name (`total`, `self.gain`) shows
+    its value in the frame looked at, and an array, a list, a dictionary
+    of columns or a DataFrame among the variables opens in the *Data
+    Viewer* with a double-click (*View as Table*).
   - **Simulation results in Python: the `qucs` module.** A script run
     from Qucs-S (Run, Debug, the Python Shell) can `import qucs`:
     - `qucs.load('amp.sch')` reads the dataset a simulation of the
@@ -709,6 +778,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
       dataset that a diagram of Qucs-S shows.
     - `qucs.simulate('amp.sch')` simulates the schematic with ngspice (or
       Xyce) as Qucs-S does, headless, and returns its dataset.
+    - `qucs.display({'frequency': f, 'gain': g})` shows results in a data
+      display of Qucs-S: it writes `<script>_results.dat` beside the
+      script (or `name=`, `folder=`), and opens `<script>_results.dpl`
+      with a diagram of the variables (`y=`) over the sweep (`x=`, the
+      first by default) - `kind='polar'`, `'smith'`, `'tab'` and the other
+      diagram types too. Run again, the diagram already there shows the new
+      data, and no second one is added. It also takes a dataset from
+      `qucs.load()`. Outside Qucs-S only the dataset is written.
 
     The module is plain Python 3 (numpy is used when it is there);
     outside Qucs-S it is `share/qucs-s/python/qucs.py`.
@@ -722,18 +799,44 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     - **Run (F2):** the script is saved, then run with that Python in its
       folder. Its output appears in the *Python Run* dock as it comes,
       then its exit code and how long it took. A traceback's
-      `File "...", line N` is a link to that line. `input()` gets the end
-      of the file rather than waiting.
+      `File "...", line N` is a link to that line. What `input()` reads
+      is typed in the line below the output and sent with Return, echoed
+      after its prompt (debugging too); *End Input* (Ctrl+D) ends the
+      script's input, so `input()` then reads the end of the file.
     - **Debug (Ctrl+F2):** the script run under the debugger (above).
     - **Stop:** ends the script that is running.
     - **Run in Shell:** runs the script in the Python Shell, in its
       folder, so its variables are still there afterwards.
-    - **Continue, Step Over, Step Into, Step Out:** the debugger's steps,
-      while it is stopped.
+    - **Continue (or Pause), Step Over, Step Into, Step Out, Run to
+      Cursor:** the debugger's steps.
     - **Check:** checks the script now and brings up the Problems tab.
       Its tooltip says what checked it: the Python's version, and ruff's
       or pyflakes'.
     - **Messages at Line Ends:** the setting above.
+    - **Python Plots, Python Variables:** show those docks (below).
+  - **Python Plots.** A script's matplotlib figures appear in the
+    *Python Plots* dock instead of windows of their own, from a script run
+    or debugged and from the Python Shell. `plt.show()` shows each open
+    figure and closes it, a figure's own `show()` keeps it open, and a
+    cell run in the shell shows the figures it leaves open, as a notebook
+    does. The newest is shown fitted to the dock (*Fit* off: at its own
+    size), with a strip of all of them below. *Save As...* writes it as
+    PNG, JPEG or BMP; *Copy*, *Remove* and *Remove All* do what they say;
+    Left and Right move between them. *Simulation → Python → Plots in
+    Qucs-S* (on by default) gives the figures their own windows again:
+    for scripts run from then on, and for the Python Shell once it is
+    started again.
+  - **Python Variables.** The Python Shell's variables, with their types,
+    sizes and values, updated after each command it runs (typed, a cell,
+    a selection). Modules, functions, classes and names starting with `_`
+    are left out, and a filter narrows the list. A double-click on an
+    array, a list, a dictionary of columns, a DataFrame or a `qucs`
+    dataset opens it in the **Data Viewer**: a table with the column
+    names and row labels, rows fetched as you scroll to them (a million
+    rows open at once), arrays of more axes shown as rows of their last
+    axis, complex numbers and NaN as text. *Copy* copies the selected
+    cells - or all of them - tab-separated; *Export as CSV...* writes
+    every row.
 - **Claude Code dock** (*View → Claude Code*, or the *Claude* chip in the
   status bar): a conversation with [Claude Code](https://claude.com/claude-code)
   beside the schematic. Claude works in the workspace folder (*Application

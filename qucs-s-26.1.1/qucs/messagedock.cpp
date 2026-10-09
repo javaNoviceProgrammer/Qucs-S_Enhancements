@@ -24,8 +24,10 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QCollator>
+#include <QDir>
 #include <QDockWidget>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
@@ -120,6 +122,35 @@ MessageDock::MessageDock(QucsApp *App_): QWidget()
         if (!component.isEmpty()) emit componentRequested(component);
     });
     showOperatingPoint(nullptr, false);
+
+    // 5) where a Python name is used (Find All References)
+    auto *refPage = new QWidget();
+    auto *refLayout = new QVBoxLayout(refPage);
+    refLayout->setContentsMargins(0, 0, 0, 0);
+    a_referencesTitle = new QLabel(tr("Find All References (Shift+F12) on a name of a Python script lists where it is used."));
+    a_referencesTitle->setObjectName("referencesTitle");
+    a_referencesTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    references = new QTreeWidget();
+    references->setObjectName("references");
+    references->setHeaderHidden(true);
+    references->setUniformRowHeights(true);
+    references->setToolTip(tr("Where the name is used; click a row to go there."));
+    refLayout->addWidget(a_referencesTitle);
+    refLayout->addWidget(references, 1);
+    a_referencesTab = builderTabs->insertTab(4, refPage, tr("References"));
+    const auto goTo = [this](QTreeWidgetItem *item) {
+      if (item == nullptr || !item->data(0, Qt::UserRole + 1).isValid()) return;
+      const QString file = item->data(0, Qt::UserRole).toString();
+      const int line = item->data(0, Qt::UserRole + 1).toInt();
+      const int column = item->data(0, Qt::UserRole + 2).toInt() + 1;
+      if (file.isEmpty()) {
+        if (auto *doc = qobject_cast<QWidget *>(a_referencesDoc.data())) emit lineRequested(doc, line, column);
+      } else {
+        emit placeRequested(file, line, column);
+      }
+    };
+    connect(references, &QTreeWidget::itemClicked, this, goTo);
+    connect(references, &QTreeWidget::itemActivated, this, goTo);
 
     msgDock = new QDockWidget(tr("admsXml Dock"));
     msgDock->setObjectName(QStringLiteral("MessagesDock"));
@@ -573,6 +604,57 @@ QString MessageDock::operatingPointText() const
                              row->data(0, UnitRole).toString()}.join('\t');
     }
     return lines.join('\n') + '\n';
+}
+
+void MessageDock::showReferences(const QString &title, TextDoc *document, const QList<Reference> &list)
+{
+    a_referencesDoc = document;
+    a_referencesTitle->setText(title);
+    references->clear();
+    QHash<QString, QTreeWidgetItem *> files;
+    for (const Reference &r : list) {
+      QTreeWidgetItem *&group = files[r.file];
+      if (group == nullptr) {
+        group = new QTreeWidgetItem(references);
+        const QString name = r.file.isEmpty() ? (document != nullptr && !document->getDocName().isEmpty()
+                                                     ? QFileInfo(document->getDocName()).fileName() : tr("the script"))
+                                              : QFileInfo(r.file).fileName();
+        group->setText(0, name);
+        group->setToolTip(0, r.file.isEmpty() ? (document != nullptr ? QDir::toNativeSeparators(document->getDocName()) : QString())
+                                              : QDir::toNativeSeparators(r.file));
+        QFont bold = group->font(0);
+        bold.setBold(true);
+        group->setFont(0, bold);
+        group->setExpanded(true);
+      }
+      auto *item = new QTreeWidgetItem(group);
+      const QString text = r.text.trimmed();
+      item->setText(0, tr("%1: %2%3").arg(r.line).arg(text, r.definition ? tr("   (defined)") : QString()));
+      item->setToolTip(0, r.text);
+      item->setData(0, Qt::UserRole, r.file);
+      item->setData(0, Qt::UserRole + 1, r.line);
+      item->setData(0, Qt::UserRole + 2, r.column);
+    }
+    for (QTreeWidgetItem *group : std::as_const(files)) group->setText(0, tr("%1 (%2)").arg(group->text(0)).arg(group->childCount()));
+    builderTabs->setTabText(a_referencesTab, list.isEmpty() ? tr("References") : tr("References (%1)").arg(list.size()));
+    builderTabs->setCurrentIndex(a_referencesTab);
+    msgDock->show();
+    msgDock->raise();
+}
+
+QStringList MessageDock::referenceRows() const
+{
+    QStringList rows;
+    for (int g = 0; g < references->topLevelItemCount(); ++g) {
+      const QTreeWidgetItem *group = references->topLevelItem(g);
+      for (int k = 0; k < group->childCount(); ++k) {
+        const QTreeWidgetItem *item = group->child(k);
+        const QString file = item->data(0, Qt::UserRole).toString();
+        rows << QStringLiteral("%1:%2: %3").arg(file.isEmpty() ? QString() : QFileInfo(file).fileName())
+                    .arg(item->data(0, Qt::UserRole + 1).toInt()).arg(item->toolTip(0).trimmed());
+      }
+    }
+    return rows;
 }
 
 void MessageDock::slotProblemChosen()

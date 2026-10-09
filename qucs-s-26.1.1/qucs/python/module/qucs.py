@@ -16,6 +16,7 @@ inner sweep at the k-th value of the outer one.
 
     qucs.save('gain.dat', {'frequency': f, 'gain': gain}, independent=['frequency'])
     data = qucs.simulate('amp.sch')    # simulated by Qucs-S (ngspice), then read
+    qucs.display({'frequency': f, 'gain': gain})   # in a data display of Qucs-S
 
 Inside Qucs-S - Run, Debug, Run in Shell, the Python Shell - the module is on
 the path. It needs Python 3 alone; numpy, when there, for the arrays.
@@ -33,7 +34,7 @@ try:
 except ImportError:   # (lists of floats and complex numbers instead)
     _np = None
 
-__all__ = ['Dataset', 'load', 'save', 'simulate', 'dataset_of']
+__all__ = ['Dataset', 'load', 'save', 'simulate', 'dataset_of', 'display']
 
 # A simulator's dataset: the schematic's DataSet (amp.dat) and this.
 SUFFIXES = {'ngspice': '.ngspice', 'xyce': '.xyce', 'spiceopus': '.spopus', 'qucsator': ''}
@@ -322,3 +323,67 @@ def simulate(schematic, simulator='ngspice', timeout=None):
         said = (run.stderr or run.stdout).decode('utf-8', 'replace').strip()
         raise RuntimeError('%s was not simulated with %s%s' % (schematic, simulator, ': ' + said[-2000:] if said else '.'))
     return Dataset(out)
+
+
+def _caller_folder_and_name():
+    """The folder and the name of the script running (the shell's: its folder)."""
+    main = __import__('sys').modules.get('__main__')
+    path = getattr(main, '__file__', None) or ''
+    if path:
+        path = os.path.abspath(path)
+        return os.path.dirname(path), os.path.splitext(os.path.basename(path))[0] + '_results'
+    return os.getcwd(), 'python_results'
+
+
+def display(variables, x=None, y=None, name=None, kind='rect', title=None, folder=None):
+    """Shows results in a data display of Qucs-S: \a variables (a name's values
+    each, or a Dataset) written as name.dat - beside the script running, or
+    in \a folder - and name.dpl opened in Qucs-S with a diagram of them: \a y
+    (a name or a list; every variable but the sweeps by default) over \a x
+    (the sweep: a name, the dict's first variable by default). \a kind: the
+    diagram's type - rect, polar, smith, tab (a table) and the rest Qucs-S
+    has. A display that shows these variables already shows them again, read
+    anew (no diagram added). Returns the display's path. Outside Qucs-S the
+    dataset alone is written."""
+    here, default = _caller_folder_and_name()
+    folder = os.path.abspath(os.fspath(folder)) if folder else here
+    name = os.path.splitext(os.path.basename(os.fspath(name)))[0] if name else default
+    if isinstance(variables, Dataset):
+        data = variables
+        independent = data.independent()
+        values = {n: data[n] for n in data}
+        dependencies = {n: data.dependencies(n) for n in data.dependent()}
+    else:
+        values = dict(variables)
+        if not values:
+            raise ValueError('display() of no variables')
+        if x is None:
+            x = next(iter(values))
+        if x not in values:
+            raise KeyError('the sweep %r is not among the variables' % x)
+        independent = [x]
+        dependencies = None
+    if y is None:
+        y = [n for n in values if n not in independent]
+    elif isinstance(y, str):
+        y = [y]
+    for n in y:
+        if n not in values:
+            raise KeyError('%r is not among the variables' % n)
+    dataset = os.path.join(folder, name + '.dat')
+    save(dataset, values, independent=independent, dependencies=dependencies)
+    shown = os.path.join(folder, name + '.dpl')
+    requests = os.environ.get('QUCS_S_REQUESTS', '')
+    if not requests or not os.path.isdir(requests):
+        print('qucs.display(): %s written - outside Qucs-S no display opens.' % dataset, file=__import__('sys').stderr)
+        return shown
+    import json
+    import time
+    request = {'kind': 'display', 'dataset': dataset, 'display': shown, 'traces': list(y), 'type': kind or 'rect',
+               'title': title or ''}
+    stem = os.path.join(requests, '%d-%d' % (os.getpid(), int(time.time() * 1e6)))
+    with open(stem + '.json.part', 'w', encoding='utf-8') as f:
+        json.dump(request, f)
+    os.replace(stem + '.json.part', stem + '.json')
+    return shown
+

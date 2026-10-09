@@ -146,6 +146,9 @@ private slots:
         // (Before what PYTHONPATH had - a stand-in that hides numpy, as on CI.)
         if (const QByteArray had = qgetenv("PYTHONPATH"); !had.isEmpty()) noJedi += QDir::listSeparator().toLatin1() + had;
         qputenv("PYTHONPATH", noJedi);
+        // (Brackets and quotes typed as typed: test_python_ide has them
+        // closed.)
+        PythonDoc::setAutoClose(false);
         app = new QucsApp(false);
         QucsMain = app;
         app->resize(1200, 800);
@@ -957,7 +960,8 @@ private slots:
         };
         QSignalSpy changed(py, &PythonDoc::breakpointsChanged);
         QTest::mouseClick(margin, Qt::LeftButton, {}, QPoint(4, yOf(2)));
-        QTest::mouseClick(margin, Qt::LeftButton, {}, QPoint(margin->width() - 2, yOf(4)));   // (on its number too)
+        // (On its number too - not on the folds' triangles at the right.)
+        QTest::mouseClick(margin, Qt::LeftButton, {}, QPoint(margin->width() - 20, yOf(4)));
         QCOMPARE(py->breakpoints(), (QList<int>{2, 4}));
         QCOMPARE(changed.count(), 2);
         {   // Drawn: a red dot at the left of a line with one, none at another.

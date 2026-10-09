@@ -14,23 +14,29 @@
  */
 #include "pythondoc.h"
 
+#include "pythonviews.h"
 #include "qucs.h"
+#include "settings.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QComboBox>
+#include <QDateTime>
 #include <QCompleter>
 #include <QDir>
 #include <QFileInfo>
 #include <QHelpEvent>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QLabel>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
 #include <QScreen>
+#include <QSet>
 #include <QTextBlock>
 #include <QTimer>
 #include <QToolTip>
@@ -175,8 +181,35 @@ bool PythonDoc::viewportEvent(QEvent* event)
 {
     // The mouse resting on a name: what it is, the line's errors and
     // warnings with it - those at once, the rest when the completer says.
+    // While the debugger is stopped: its value.
     if (event->type() == QEvent::ToolTip) {
         const auto* help = static_cast<QHelpEvent*>(event);
+        if (a_valueLookup) {
+            const QTextCursor cursor = cursorForPosition(help->pos());
+            const QTextBlock block = cursor.block();
+            const auto [expression, start] = qucs_s::python::dottedNameAt(block.text(), cursor.positionInBlock());
+            // (A keyword has no value: what it is, as ever.)
+            static const QSet<QString> keywords{
+                QStringLiteral("False"), QStringLiteral("None"), QStringLiteral("True"), QStringLiteral("and"), QStringLiteral("as"),
+                QStringLiteral("assert"), QStringLiteral("async"), QStringLiteral("await"), QStringLiteral("break"),
+                QStringLiteral("class"), QStringLiteral("continue"), QStringLiteral("def"), QStringLiteral("del"),
+                QStringLiteral("elif"), QStringLiteral("else"), QStringLiteral("except"), QStringLiteral("finally"),
+                QStringLiteral("for"), QStringLiteral("from"), QStringLiteral("global"), QStringLiteral("if"),
+                QStringLiteral("import"), QStringLiteral("in"), QStringLiteral("is"), QStringLiteral("lambda"),
+                QStringLiteral("nonlocal"), QStringLiteral("not"), QStringLiteral("or"), QStringLiteral("pass"),
+                QStringLiteral("raise"), QStringLiteral("return"), QStringLiteral("try"), QStringLiteral("while"),
+                QStringLiteral("with"), QStringLiteral("yield")};
+            if (!expression.isEmpty() && !keywords.contains(expression) && a_valueLookup(expression)) {
+                a_valueExpression = expression;
+                a_valueAt = help->pos();
+                a_helpAt = help->globalPos();
+                QTextCursor first(block), last(block);
+                first.setPosition(block.position() + start);
+                last.setPosition(block.position() + start + int(expression.size()));
+                a_helpRect = cursorRect(first).united(cursorRect(last));
+                return true;
+            }
+        }
         if (showHelpAt(help->pos())) {
             if (!a_helpDiagnostics.isEmpty()) QToolTip::showText(help->globalPos(), a_helpDiagnostics, viewport());
             return true;
@@ -264,6 +297,22 @@ void PythonDoc::paintEvent(QPaintEvent* event)
         if (box.top() > event->rect().bottom()) break;
         if (block.isVisible() && qucs_s::python::isCellMarker(block.text()))
             painter.drawLine(QPointF(0, box.top() + 0.5), QPointF(viewport()->width(), box.top() + 0.5));
+    }
+    // A line folded: a box with three dots after its text.
+    if (a_folds.isEmpty()) return;
+    painter.setRenderHint(QPainter::Antialiasing);
+    for (QTextBlock block = firstVisibleBlock(); block.isValid(); block = block.next()) {
+        const QRectF box = blockBoundingGeometry(block).translated(contentOffset());
+        if (box.top() > event->rect().bottom()) break;
+        if (!block.isVisible() || block.layout() == nullptr || block.layout()->lineCount() == 0 || !isFolded(block.blockNumber() + 1))
+            continue;
+        const QTextLine last = block.layout()->lineAt(block.layout()->lineCount() - 1);
+        const qreal x = box.left() + last.x() + last.naturalTextWidth() + fontMetrics().horizontalAdvance(QLatin1Char(' '));
+        const QRectF dots(x, box.top() + last.y() + 2, fontMetrics().horizontalAdvance(QStringLiteral(" ... ")), last.height() - 4);
+        painter.setPen(QPen(palette().color(QPalette::PlaceholderText), 1));
+        painter.setBrush(palette().color(QPalette::AlternateBase));
+        painter.drawRoundedRect(dots, 3, 3);
+        painter.drawText(dots, Qt::AlignCenter, QStringLiteral("..."));
     }
 }
 
@@ -425,20 +474,69 @@ void PythonDoc::chooseOutlineEntry()
 QList<int> PythonDoc::breakpoints() const
 {
     QList<int> lines;
-    for (const QTextCursor& at : a_breakpoints)
-        if (!at.isNull()) lines << at.blockNumber() + 1;
+    for (const BreakpointMark& b : a_breakpoints)
+        if (!b.at.isNull()) lines << b.at.blockNumber() + 1;
     std::sort(lines.begin(), lines.end());
     lines.erase(std::unique(lines.begin(), lines.end()), lines.end());
     return lines;
 }
 
+QList<qucs_s::python::Breakpoint> PythonDoc::breakpointList() const
+{
+    QList<qucs_s::python::Breakpoint> list;
+    QSet<int> seen;
+    for (const BreakpointMark& b : a_breakpoints) {
+        if (b.at.isNull()) continue;
+        qucs_s::python::Breakpoint spec = b.spec;
+        spec.line = b.at.blockNumber() + 1;
+        if (seen.contains(spec.line)) continue;   // (two that the text brought together: the first)
+        seen.insert(spec.line);
+        list.append(spec);
+    }
+    std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.line < b.line; });
+    return list;
+}
+
+qucs_s::python::Breakpoint PythonDoc::breakpointAt(int line) const
+{
+    for (const qucs_s::python::Breakpoint& b : breakpointList())
+        if (b.line == line) return b;
+    return {};
+}
+
 void PythonDoc::setBreakpoints(const QList<int>& lines)
 {
+    // (Those of the lines that stay keep what they were.)
+    const QList<qucs_s::python::Breakpoint> had = breakpointList();
     a_breakpoints.clear();
     for (const int line : lines) {
         const QTextBlock block = document()->findBlockByNumber(line - 1);
-        if (block.isValid()) a_breakpoints.append(QTextCursor(block));
+        if (!block.isValid()) continue;
+        qucs_s::python::Breakpoint spec;
+        for (const auto& b : had)
+            if (b.line == line) spec = b;
+        spec.line = line;
+        a_breakpoints.append({QTextCursor(block), spec});
     }
+    refreshMarks();
+    emit breakpointsChanged();
+}
+
+void PythonDoc::setBreakpoint(const qucs_s::python::Breakpoint& b)
+{
+    const QTextBlock block = document()->findBlockByNumber(b.line - 1);
+    if (!block.isValid()) return;
+    a_breakpoints.removeIf([&](const BreakpointMark& m) { return m.at.blockNumber() == block.blockNumber(); });
+    a_breakpoints.append({QTextCursor(block), b});
+    refreshMarks();
+    emit breakpointsChanged();
+}
+
+void PythonDoc::removeBreakpoint(int line)
+{
+    const qsizetype had = a_breakpoints.size();
+    a_breakpoints.removeIf([&](const BreakpointMark& m) { return m.at.blockNumber() + 1 == line; });
+    if (a_breakpoints.size() == had) return;
     refreshMarks();
     emit breakpointsChanged();
 }
@@ -448,10 +546,55 @@ void PythonDoc::toggleBreakpoint(int line)
     const QTextBlock block = document()->findBlockByNumber(line - 1);
     if (!block.isValid()) return;
     const qsizetype had = a_breakpoints.size();
-    a_breakpoints.removeIf([&](const QTextCursor& at) { return at.blockNumber() == block.blockNumber(); });
-    if (a_breakpoints.size() == had) a_breakpoints.append(QTextCursor(block));
+    a_breakpoints.removeIf([&](const BreakpointMark& m) { return m.at.blockNumber() == block.blockNumber(); });
+    if (a_breakpoints.size() == had) {
+        qucs_s::python::Breakpoint spec;
+        spec.line = line;
+        a_breakpoints.append({QTextCursor(block), spec});
+    }
     refreshMarks();
     emit breakpointsChanged();
+}
+
+QMenu* PythonDoc::marginMenuAt(int line)
+{
+    auto* menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    const qucs_s::python::Breakpoint b = breakpointAt(line);
+    if (b.line == 0) {
+        menu->addAction(tr("Add Breakpoint"), this, [this, line] { toggleBreakpoint(line); })->setObjectName(QStringLiteral("addBreakpoint"));
+        menu->addAction(tr("Add Conditional Breakpoint..."), this, [this, line] { editBreakpoint(line, 0); })
+            ->setObjectName(QStringLiteral("addConditionalBreakpoint"));
+        menu->addAction(tr("Add Logpoint..."), this, [this, line] { editBreakpoint(line, 2); })->setObjectName(QStringLiteral("addLogpoint"));
+    } else {
+        menu->addAction(tr("Edit Breakpoint..."), this, [this, line] { editBreakpoint(line, 0); })->setObjectName(QStringLiteral("editBreakpoint"));
+        menu->addAction(b.enabled ? tr("Disable Breakpoint") : tr("Enable Breakpoint"), this, [this, b] {
+                qucs_s::python::Breakpoint changed = b;
+                changed.enabled = !b.enabled;
+                setBreakpoint(changed);
+            })->setObjectName(QStringLiteral("enableBreakpoint"));
+        menu->addAction(tr("Remove Breakpoint"), this, [this, line] { removeBreakpoint(line); })->setObjectName(QStringLiteral("removeBreakpoint"));
+    }
+    if (isFolded(line) || isFoldable(line)) {
+        menu->addSeparator();
+        menu->addAction(isFolded(line) ? tr("Unfold") : tr("Fold"), this, [this, line] { toggleFold(line); })
+            ->setObjectName(QStringLiteral("foldHere"));
+    }
+    return menu;
+}
+
+void PythonDoc::marginMenu(const QTextBlock& block, const QPoint& global)
+{
+    marginMenuAt(block.blockNumber() + 1)->popup(global);
+}
+
+void PythonDoc::editBreakpoint(int line, int field)
+{
+    qucs_s::python::Breakpoint b = breakpointAt(line);
+    const bool had = b.line != 0;
+    b.line = line;
+    if (!qucs_s::python::editBreakpointDialog(this, &b, field, had)) return;
+    setBreakpoint(b);
 }
 
 void PythonDoc::setExecutionLine(int line, bool top)
@@ -482,12 +625,27 @@ void PythonDoc::paintMark(QPainter& painter, const QTextBlock& block, const QRec
     painter.setRenderHint(QPainter::Antialiasing);
     const qreal size = std::min(box.width(), box.height()) - 4;
     const QRectF square(box.left() + (box.width() - size) / 2.0, box.top() + (box.height() - size) / 2.0, size, size);
-    const bool breakpoint = std::any_of(a_breakpoints.cbegin(), a_breakpoints.cend(),
-                                        [&](const QTextCursor& at) { return at.blockNumber() == block.blockNumber(); });
-    if (breakpoint) {
-        painter.setPen(QPen(kBreakpoint.darker(130), 1));
-        painter.setBrush(kBreakpoint);
-        painter.drawEllipse(square);
+    const qucs_s::python::Breakpoint b = breakpointAt(block.blockNumber() + 1);
+    if (b.line > 0) {
+        // A dot; a logpoint a diamond; with a condition or hits, a bar
+        // across; off, hollow and grey.
+        const QColor colour = b.enabled ? kBreakpoint : QColor(0x8a, 0x94, 0xa6);
+        painter.setPen(QPen(colour.darker(130), 1.2));
+        painter.setBrush(b.enabled ? QBrush(colour) : QBrush(Qt::NoBrush));
+        if (!b.log.isEmpty()) {
+            QPolygonF diamond;
+            diamond << QPointF(square.center().x(), square.top()) << QPointF(square.right(), square.center().y())
+                    << QPointF(square.center().x(), square.bottom()) << QPointF(square.left(), square.center().y());
+            painter.drawPolygon(diamond);
+        } else {
+            painter.drawEllipse(square);
+        }
+        if (!b.condition.trimmed().isEmpty() || !b.hit.trimmed().isEmpty()) {
+            painter.setPen(QPen(b.enabled ? QColor(Qt::white) : colour, std::max(1.5, size / 7.0), Qt::SolidLine, Qt::RoundCap));
+            const qreal y = square.center().y();
+            painter.drawLine(QPointF(square.left() + size * 0.28, y - size * 0.12), QPointF(square.right() - size * 0.28, y - size * 0.12));
+            painter.drawLine(QPointF(square.left() + size * 0.28, y + size * 0.14), QPointF(square.right() - size * 0.28, y + size * 0.14));
+        }
     }
     if (!a_execution.isNull() && a_execution.blockNumber() == block.blockNumber()) {
         // An arrow, pointing at the line.
@@ -505,12 +663,196 @@ void PythonDoc::paintMark(QPainter& painter, const QTextBlock& block, const QRec
 
 QList<QTextEdit::ExtraSelection> PythonDoc::moreSelections() const
 {
-    if (a_execution.isNull()) return {};
-    QTextEdit::ExtraSelection line;
-    const QColor colour = a_executionTop ? kStopped : kLookedAt;
-    line.format.setBackground(QColor(colour.red(), colour.green(), colour.blue(), 70));
-    line.format.setProperty(QTextFormat::FullWidthSelection, true);
-    line.cursor = a_execution;
-    line.cursor.clearSelection();
-    return {line};
+    QList<QTextEdit::ExtraSelection> marks;
+    if (!a_execution.isNull()) {
+        QTextEdit::ExtraSelection line;
+        const QColor colour = a_executionTop ? kStopped : kLookedAt;
+        line.format.setBackground(QColor(colour.red(), colour.green(), colour.blue(), 70));
+        line.format.setProperty(QTextFormat::FullWidthSelection, true);
+        line.cursor = a_execution;
+        line.cursor.clearSelection();
+        marks.append(line);
+    }
+    marks.append(bracketSelections());
+    return marks;
+}
+
+// ----------------------------------------------------------------------
+// Where a name is used; renamed
+
+QString PythonDoc::nameAtCursor() const
+{
+    const QTextCursor cursor = textCursor();
+    const QString text = cursor.block().text();
+    int start = cursor.positionInBlock(), end = start;
+    const auto nameCharacter = [](QChar c) { return c.isLetterOrNumber() || c == QLatin1Char('_'); };
+    while (start > 0 && nameCharacter(text.at(start - 1))) --start;
+    while (end < text.size() && nameCharacter(text.at(end))) ++end;
+    if (start == end || text.at(start).isDigit() || qucs_s::python::inStringOrComment(text.left(start))) return {};
+    return text.mid(start, end - start);
+}
+
+void PythonDoc::findReferences()
+{
+    const QTextCursor cursor = textCursor();
+    a_references = {};
+    const int id = ask(QStringLiteral("references"), cursor.blockNumber() + 1, cursor.positionInBlock());
+    if (id == 0) {
+        emit referencesAnswered();   // (no completer: none found)
+        return;
+    }
+    a_referencesRequest = id;
+}
+
+void PythonDoc::renameSymbol(const QString& name)
+{
+    const QTextCursor cursor = textCursor();
+    a_rename = {};
+    if (isReadOnly() || !startCompleter()) {
+        a_rename.refusal = isReadOnly() ? tr("The script is read-only.") : tr("No Python to rename with.");
+        emit renameAnswered();
+        return;
+    }
+    const int id = ++a_questions;
+    const QJsonObject question{{QStringLiteral("id"), id},
+                               {QStringLiteral("kind"), QStringLiteral("rename")},
+                               {QStringLiteral("source"), toPlainText()},
+                               {QStringLiteral("line"), cursor.blockNumber() + 1},
+                               {QStringLiteral("column"), cursor.positionInBlock()},
+                               {QStringLiteral("new_name"), name},
+                               {QStringLiteral("path"), getDocName().isEmpty() ? QString() : QFileInfo(getDocName()).absoluteFilePath()}};
+    a_completerProcess->write(QJsonDocument(question).toJson(QJsonDocument::Compact) + '\n');
+    a_renameRequest = id;
+    a_renameRevision = document()->revision();
+}
+
+// ----------------------------------------------------------------------
+// A value, while the debugger is stopped
+
+void PythonDoc::showValue(const QString& expression, const QString& said)
+{
+    if (expression != a_valueExpression) return;   // (another was asked for since)
+    a_valueExpression.clear();
+    a_lastValue = said;
+    if (said.isEmpty()) {   // (no value there - a function of a module, a name of another frame): what it is
+        if (isVisible()) showHelpAt(a_valueAt);
+    } else if (isVisible()) {
+        QToolTip::showText(a_helpAt, QStringLiteral("<p style='white-space:pre-wrap'><code>%1</code></p>").arg(escaped(said)), viewport(), a_helpRect);
+    }
+    emit valueShown();
+}
+
+// ----------------------------------------------------------------------
+// The type check
+
+namespace {
+// The interpreters with no type checker (of a kind) installed, and when
+// that was found: not asked again for a minute (a check is made after each
+// edit), then again - one may have been installed since.
+QHash<QString, QDateTime>& withoutTypeChecker()
+{
+    static QHash<QString, QDateTime> found;
+    return found;
+}
+} // namespace
+
+QString PythonDoc::typeChecker() { return _settings::Get().item<QString>("PythonTypeChecker"); }
+
+void PythonDoc::setTypeChecker(const QString& checker)
+{
+    _settings::Get().setItem<QString>("PythonTypeChecker", checker);
+    withoutTypeChecker().clear();   // (chosen again: looked for again)
+    for (PythonDoc* script : openDocuments()) {
+        script->a_typeRevision = -1;
+        script->a_typeCheck = {};
+        if (checker == QLatin1String("off")) {   // its findings gone
+            QList<Diagnostic> basic;
+            for (const Diagnostic& d : script->diagnostics())
+                if (d.source.isEmpty()) basic.append(d);
+            script->showProblems(basic, {});
+        } else {
+            script->scheduleTypeCheck();
+        }
+    }
+}
+
+void PythonDoc::scheduleTypeCheck()
+{
+    if (typeChecker() == QLatin1String("off") || a_library) return;
+    a_typeDelay->start();
+}
+
+void PythonDoc::startTypeCheck()
+{
+    // One at a time: the next when it is done, if the text changed since.
+    if (a_typeProcess != nullptr) return;
+    const QString checker = typeChecker();
+    if (checker == QLatin1String("off") || a_library) return;
+    if (a_typeRevision == document()->revision() && a_typeRunningWith == checker) return;   // (checked as it is)
+    const QString key = interpreter() + QLatin1Char('\n') + checker;
+    if (const auto none = withoutTypeChecker().constFind(key);
+        none != withoutTypeChecker().constEnd() && none->secsTo(QDateTime::currentDateTimeUtc()) < 60) {
+        a_typeCheck = {};
+        a_typeRevision = document()->revision();
+        a_typeRunningWith = checker;
+        return;
+    }
+    a_typeProcess = new QProcess(this);
+    a_typeRunning = document()->revision();
+    a_typeRunningWith = checker;
+    QProcessEnvironment environment = qucs_s::python::scriptEnvironment();
+    environment.insert(QStringLiteral("PYTHONDONTWRITEBYTECODE"), QStringLiteral("1"));
+    a_typeProcess->setProcessEnvironment(environment);
+    a_typeProcess->setWorkingDirectory(qucs_s::python::neutralFolder());
+    connect(a_typeProcess, &QProcess::finished, this, &PythonDoc::finishTypeCheck);
+    connect(a_typeProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) finishTypeCheck();
+    });
+    const QString name = getDocName().isEmpty() ? QString() : QFileInfo(getDocName()).absoluteFilePath();
+    const QString cache = QDir(qucs_s::python::neutralFolder()).filePath(QStringLiteral("typecheck-cache"));
+    a_typeProcess->start(interpreter(), {QStringLiteral("-c"), qucs_s::python::typeCheckProgram(), checker, name, cache});
+    a_typeProcess->write(toPlainText().toUtf8());
+    a_typeProcess->closeWriteChannel();
+    // (A type check that hangs: ended, the next one when the text changes.)
+    QTimer::singleShot(120000, a_typeProcess, [process = a_typeProcess] { process->kill(); });
+}
+
+void PythonDoc::finishTypeCheck()
+{
+    QProcess* process = a_typeProcess;
+    if (process == nullptr) return;
+    a_typeProcess = nullptr;
+    disconnect(process, nullptr, this, nullptr);
+    process->deleteLater();
+    if (a_typeRunning != document()->revision() || a_typeRunningWith != typeChecker()) {
+        scheduleTypeCheck();   // (of a text no longer there: again)
+        return;
+    }
+    qucs_s::python::TypeCheck check;
+    if (process->error() == QProcess::FailedToStart) check.failure = tr("No Python at %1 to check its types with.").arg(interpreter());
+    else if (process->exitStatus() != QProcess::NormalExit) check.failure = tr("The type check ended before it answered.");
+    else check = qucs_s::python::readTypeCheck(process->readAllStandardOutput());
+    a_typeCheck = check;
+    a_typeRevision = a_typeRunning;
+    const QString key = interpreter() + QLatin1Char('\n') + a_typeRunningWith;
+    if (check.tool.isEmpty() && check.failure.isEmpty()) withoutTypeChecker().insert(key, QDateTime::currentDateTimeUtc());
+    else withoutTypeChecker().remove(key);
+    // The check's findings as they are, and these.
+    QList<Diagnostic> basic, typed;
+    for (const Diagnostic& d : diagnostics())
+        if (d.source.isEmpty()) basic.append(d);
+    const QString tool = check.tool.section(QLatin1Char(' '), 0, 0);
+    for (const qucs_s::python::Problem& p : std::as_const(check.problems)) {
+        Diagnostic d;
+        d.line = p.line;
+        d.column = p.column;
+        d.endLine = p.endLine;
+        d.endColumn = p.endColumn;
+        d.error = false;   // (it runs all the same)
+        d.message = p.code.isEmpty() ? QStringLiteral("%1 (%2)").arg(p.message, tool) : QStringLiteral("%1 (%2: %3)").arg(p.message, tool, p.code);
+        d.source = tool.isEmpty() ? QStringLiteral("types") : tool;
+        typed.append(d);
+    }
+    showProblems(basic, typed);
+    emit typeCheckFinished();
 }

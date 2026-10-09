@@ -84,6 +84,7 @@ public:
     bool error = true;
     int endLine = 0;
     int endColumn = 0;
+    QString source;   ///< what found it, when that matters ("" a check; PythonDoc's type checker its tool)
   };
   /// Shows \a list in the text until the next list (an empty one takes
   /// them away): a wavy underline from the column to its end, or to the
@@ -199,6 +200,15 @@ protected:
       virtual int markRoom() const { return 0; }
       virtual void paintMark(QPainter &painter, const QTextBlock &block, const QRect &box) { Q_UNUSED(painter) Q_UNUSED(block) Q_UNUSED(box) }
       virtual void marginPressed(const QTextBlock &block) { Q_UNUSED(block) }
+      /// A right-click in the margin at \a block's line (\a global: where).
+      virtual void marginMenu(const QTextBlock &block, const QPoint &global) { Q_UNUSED(block) Q_UNUSED(global) }
+      /// Room at the right of the line numbers for a subclass's folds
+      /// (PythonDoc: a triangle where a fold begins), drawn by paintFold()
+      /// for each line shown, in \a box (the line's height, foldRoom()
+      /// wide); a press there is foldPressed()'s, not marginPressed()'s.
+      virtual int foldRoom() const { return 0; }
+      virtual void paintFold(QPainter &painter, const QTextBlock &block, const QRect &box) { Q_UNUSED(painter) Q_UNUSED(block) Q_UNUSED(box) }
+      virtual void foldPressed(const QTextBlock &block) { Q_UNUSED(block) }
       /// Lines marked besides the current one and the diagnostics.
       virtual QList<QTextEdit::ExtraSelection> moreSelections() const { return {}; }
       /// The marks drawn again (after they changed).

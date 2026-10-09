@@ -102,6 +102,10 @@ void settingsManager::initDefaults()
     m_Defaults["PythonMessagesAtLineEnds"] = false;  // PythonDoc::messagesAtLineEnds()
     m_Defaults["PythonCompleteAsYouType"] = true;    // PythonDoc::completeAsYouType()
     m_Defaults["PythonInterpreters"] = QStringList();   // chosen with Browse on the Python toolbar
+    m_Defaults["PythonAutoClose"] = true;            // PythonDoc::autoClose(): brackets and quotes closed as typed
+    m_Defaults["PythonInlinePlots"] = true;          // matplotlib's figures in the Python Plots pane
+    m_Defaults["PythonTypeChecker"] = QString("auto");   // PythonDoc::typeChecker(): auto, mypy, pyright or off
+    m_Defaults["PythonBreakOnRaised"] = false;       // the debugger stops where an exception is raised, caught or not
     m_Defaults["ShowPinNames"] = true;
     m_Defaults["ShowPinDirections"] = false;
     m_Defaults["EmbedVerilogAInLibraries"] = true;

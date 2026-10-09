@@ -182,7 +182,7 @@ ADD_SUBDIRECTORY( spicecomponents )
 
 SET(QUCS_SRCS
   element.cpp	octave_window.cpp	qucsdoc.cpp
-  textdoc.cpp  markdowndoc.cpp  pythondoc.cpp  pythonassist.cpp  pythonrun.cpp  qucs_python.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp  zipdoc.cpp  layout.cpp  layoutdoc.cpp  main.cpp	schematic.cpp
+  textdoc.cpp  markdowndoc.cpp  pythondoc.cpp  pythonassist.cpp  pythonedit.cpp  pythonrun.cpp  pythonviews.cpp  qucs_python.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp  zipdoc.cpp  layout.cpp  layoutdoc.cpp  main.cpp	schematic.cpp
   mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_text.cpp qucscontrol_ui.cpp qucscontrol_console.cpp qucscontrol_settings.cpp qucscontrol_watch.cpp qucscontrol_input.cpp qucscontrol_help.cpp qucscontrol_script.cpp qucscontrol_ngspice.cpp qucscontrol_libraries.cpp qucscontrol_synthesis.cpp qucscontrol_layout.cpp dataset.cpp datasetfile.cpp eyeanalysis.cpp prbssource.cpp textplacement.cpp dataimport.cpp dataexport.cpp simulatorlog.cpp filebrowser.cpp namefilter.cpp
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
   mouseactions.cpp qucs_actions.cpp	qucs_panes.cpp qucs_workspace.cpp workspacesession.cpp schematic_file.cpp
@@ -257,6 +257,7 @@ textdoc.h
 markdowndoc.h
 pythondoc.h
 pythonrun.h
+pythonviews.h
 sheetdoc.h
 zipdoc.h
 layout.h
@@ -288,6 +289,7 @@ SET(QUCS_MOC_HDRS
   markdowndoc.h
   pythondoc.h
   pythonrun.h
+  pythonviews.h
   sheetdoc.h
   zipdoc.h
   layoutdoc.h
