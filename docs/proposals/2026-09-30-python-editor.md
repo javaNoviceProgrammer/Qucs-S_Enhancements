@@ -1,6 +1,26 @@
 # Proposal: a Python editor with its own toolbar
 
-*30 September 2026 - Qucs-S 26.1.4, `96013a8`. A proposal, not built yet.*
+*30 September 2026 - Qucs-S 26.1.4, `96013a8`. Built on 8 October 2026, Qucs-S 26.1.7;
+the README's "Python editor" says what it does.*
+
+**What was decided.** These are the answers to the questions at the end of this
+proposal.
+
+1. **Run:** both, as proposed. Run gives the script a process of its own, with a
+   *Python Run* dock and Stop. Run in Shell sits beside it.
+2. **Checks beyond the syntax:** ruff or pyflakes only, as proposed, and nothing of
+   our own. Ruff is asked first, so that a project's ruff settings apply.
+3. **The message at the end of the line:** built as *Messages at Line Ends* on the
+   Python toolbar, off by default.
+
+**What changed from the proposal.**
+
+- The toolbar's actions are also in *Simulation → Python*, so they can be used from
+  the keyboard and by Claude's `trigger_action`, which runs menu actions only.
+- The check runs in an empty folder of its own, not in the script's folder, because
+  Python puts that folder first on its path.
+- A script reads the end of the file at `input()` instead of waiting for input. The
+  Run console takes no typing; Run in Shell is for a script that needs it.
 
 The request is to run Python scripts from inside Qucs-S, with a toolbar like the
 Simulate toolbar (the simulator list, Simulate, the simulation console with its

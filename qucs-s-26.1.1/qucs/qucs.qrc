@@ -57,6 +57,11 @@
         <file>bitmaps/svg/spectrum.svg</file>
         <file>bitmaps/svg/bathtub.svg</file>
         <file>bitmaps/svg/levelhistogram.svg</file>
+        <file>bitmaps/svg/python_run.svg</file>
+        <file>bitmaps/svg/python_stop.svg</file>
+        <file>bitmaps/svg/python_shell.svg</file>
+        <file>bitmaps/svg/python_check.svg</file>
+        <file>bitmaps/svg/python_lineends.svg</file>
         <file>bitmaps/svg/contour.svg</file>
         <file>bitmaps/svg/spectrogram.svg</file>
         <file>bitmaps/svg/tornado.svg</file>
