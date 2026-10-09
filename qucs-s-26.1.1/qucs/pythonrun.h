@@ -33,6 +33,10 @@ class QProcess;
 class QPushButton;
 class QSplitter;
 class QToolButton;
+class QCompleter;
+class QStringListModel;
+class QTabWidget;
+class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -90,6 +94,7 @@ public:
         int line = 0;
         QString function;
         bool library = false;   ///< Python's own code, or a package's
+        int first = 0;          ///< its code's first line (a function's def)
     };
     QList<Frame> stack() const { return a_stack; }
     /// The frame looked at (0: the innermost).
@@ -127,9 +132,11 @@ public:
     /// stopped: inspected() with the id returned (0: not stopped).
     int inspect(const QString& expression);
     /// A value's rows: of the variable at \a handle (as variablesView()
-    /// has it), or of \a expression in the frame looked at (handle -1);
-    /// dataArrived() with the id returned (0: not stopped).
-    int requestData(int handle, const QString& expression, int start, int count);
+    /// has it), or of \a expression in the frame looked at (handle -1) -
+    /// \a view: {"start", "count"} and the Data Viewer's "sort",
+    /// "descending", "filters", "token"; dataArrived() with the id returned
+    /// (0: not stopped).
+    int requestData(int handle, const QString& expression, const QJsonObject& view);
     /// Its debugger told to stop where an exception is raised (caught or
     /// not), or not - at once, while it runs.
     void setBreakOnRaised(bool on);
@@ -139,6 +146,28 @@ public:
     bool debugsLibrary() const { return a_library; }
     /// Whether Interrupt works here (not on Windows).
     static bool canInterrupt();
+
+    /// The watch list: expressions evaluated in the frame looked at each
+    /// time it stops (kept, a setting: PythonWatches) - on the Watch tab
+    /// beside the variables, opened as they are.
+    QStringList watches() const { return a_watches; }
+    void addWatch(const QString& expression);
+    void removeWatch(int index);
+    /// Edited in a dialog (empty: removed).
+    void editWatch(int index);
+    QTreeWidget* watchView() const { return a_watchView; }
+    QLineEdit* watchLine() const { return a_watchAdd; }
+    /// Its rows: "expression: type = value", or "expression: error".
+    QStringList watchRows() const;
+    /// The names the evaluate line was last offered (its list's).
+    QStringList evaluateCompletions() const;
+    /// The value of a row of the variables or the watch list shown in a
+    /// data display of Qucs-S, beside the script (qucs.display(); its menu's
+    /// Show in a Data Display): displayed() when it is.
+    void showInDisplay(QTreeWidgetItem* item);
+    /// The variables of the frame looked at, by name: their values as shown
+    /// (inline values).
+    QHash<QString, QString> frameValues() const { return a_frameValues; }
 
     /// The most lines kept: earlier ones go.
     static constexpr int kMostLines = 20000;
@@ -196,6 +225,10 @@ signals:
     void dataArrived(int id, const QJsonObject& table);
     /// View as Table on a variable: its handle and its name.
     void tableRequested(int handle, const QString& name);
+    void watchesShown();
+    void completionsShown();
+    /// Show in a Data Display answered: the display opened, or why not.
+    void displayed(const QString& path, const QString& error);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -208,6 +241,13 @@ private:
     void handleEvent(const QJsonObject& event);
     void command(const QJsonObject& command);
     void fillVariables(QTreeWidgetItem* parent, const QJsonArray& items);
+    void viewAsTable(QTreeWidgetItem* item);
+    /// The watch list asked of the debugger (for the frame looked at), and
+    /// its answer shown (empty: the expressions alone).
+    void refreshWatches();
+    void showWatches(const QJsonArray& values);
+    void saveWatches();
+    void askCompletions();
     void setPaused(bool paused);
     void runFinished();
     /// \a text at the end of the output: lines completed are made links
@@ -246,6 +286,18 @@ private:
     QToolButton* a_stepOut = nullptr;
     QListWidget* a_stackView = nullptr;
     QTreeWidget* a_variables = nullptr;
+    QTabWidget* a_valueTabs = nullptr;
+    QTreeWidget* a_watchView = nullptr;
+    QLineEdit* a_watchAdd = nullptr;
+    QStringList a_watches;
+    QStringListModel* a_completions = nullptr;
+    QCompleter* a_evaluateCompleter = nullptr;
+    QTimer* a_completeDelay = nullptr;
+    int a_completeRequest = 0;
+    int a_displayRequest = 0;
+    QStringList a_history;   // the lines evaluated, the last last
+    int a_historyAt = 0;
+    QHash<QString, QString> a_frameValues;
     QLineEdit* a_evaluate = nullptr;
     QByteArray a_events;          // a line of the debugger's not yet whole
     bool a_debugging = false;

@@ -59,6 +59,7 @@ class PythonVariablesPane;
 class QActionGroup;
 class QucsControl;
 class QJsonObject;
+class QImage;
 namespace qucs_s::python { class Exchange; }
 class ClaudeCodeTabs;
 class FileBrowser;
@@ -680,6 +681,8 @@ private slots:
   void slotPythonEditBreakpoint();
   void slotPythonRunSettings();
   void slotPythonQuickFix();
+  void showPythonPlot(const QImage &picture, const QString &title);   // the Data Viewer's plot, in Python Plots
+  void showPythonInlineValues();   // the debugger's frame's values at its lines' ends
   void slotAfterSimulation(int, SimMessage *);
   void slotDCbias();
   void slotChangePage(const QString &, const QString &);
@@ -857,6 +860,7 @@ private:
   QAction *pythonAutoCloseAction = nullptr;
   QAction *pythonInlinePlotsAction = nullptr;
   QAction *pythonRunSettingsAction = nullptr;
+  QAction *pythonInlineValuesAction = nullptr;
   QAction *pythonInterruptAction = nullptr;
   QAction *pythonLibraryAction = nullptr;
   QAction *pythonQuickFixAction = nullptr;

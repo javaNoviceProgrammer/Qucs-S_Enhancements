@@ -30,6 +30,7 @@
 
 #include <functional>
 
+class QComboBox;
 class QFileSystemWatcher;
 class QLabel;
 class QLineEdit;
@@ -40,6 +41,7 @@ class QTableView;
 class QTimer;
 class QToolButton;
 class QTreeWidget;
+class QTreeWidgetItem;
 
 namespace qucs_s::python {
 
@@ -170,32 +172,65 @@ class PythonVariablesPane : public QWidget
 public:
     explicit PythonVariablesPane(QWidget* parent = nullptr);
     void setVariables(const QJsonArray& variables);
+    /// The insides of the value \a expression is (the shell's answer):
+    /// under its row - opened again after each command, as it was.
+    void showChildren(const QString& expression, const QJsonArray& items);
     QTreeWidget* view() const { return a_view; }
-    /// The rows shown: "name: type [size] = value".
+    /// The rows shown: "name: type [size] = value" - those opened under
+    /// their own, indented.
     QStringList rows() const;
+    /// The row of \a expression (nullptr: none shown).
+    QTreeWidgetItem* rowOf(const QString& expression) const;
 
 signals:
-    void tableRequested(const QString& name);
+    /// A value as a table, in a data display, its insides: by its
+    /// expression (a name, or name['key'], name[3], name.attribute).
+    void tableRequested(const QString& expression);
+    void displayRequested(const QString& expression);
+    void childrenRequested(const QString& expression);
     void refreshRequested();
 
 private:
     void filter();
+    void fill(QTreeWidgetItem* parent, const QJsonArray& items);
 
     QLineEdit* a_filter = nullptr;
     QTreeWidget* a_view = nullptr;
     QLabel* a_note = nullptr;
+    QSet<QString> a_opened;   // the expressions opened: opened again
 };
 
-/// The rows of a value, fetched as they are scrolled to: \a ask fetches
-/// those from start (count of them); answer() gives them.
+/// The rows of a value, fetched as they are scrolled to: the fetch asks for
+/// those of a request ({"start", "count"} - and the view's "sort",
+/// "descending", "filters", "token"); answer() gives them.
 class PythonTableModel : public QAbstractTableModel
 {
     Q_OBJECT
 
 public:
-    using Fetch = std::function<void(int start, int count)>;
+    using Fetch = std::function<void(const QJsonObject& request)>;
     explicit PythonTableModel(QObject* parent = nullptr) : QAbstractTableModel(parent) {}
     void setFetch(Fetch fetch) { a_fetch = std::move(fetch); }
+    /// How its rows are asked for: sorted by \a sort (-1: as they are),
+    /// those the filters keep ({column: "> 5" | text}) - fetched again from
+    /// the first.
+    void setView(int sort, bool descending, const QJsonObject& filters);
+    int sortColumn() const { return a_sort; }
+    bool descending() const { return a_descending; }
+    QJsonObject filters() const { return a_filters; }
+    /// The rows before the filters.
+    int total() const { return a_total; }
+    /// Complex numbers shown as they are (a+bj), as magnitude and phase
+    /// (degrees), dB and phase, or one part: the real, the imaginary, the
+    /// magnitude, dB (20 log10), the phase.
+    enum ComplexMode { AsIs, MagnitudePhase, DbPhase, Real, Imaginary, Magnitude, Decibel, Phase };
+    void setComplexMode(int mode);
+    int complexMode() const { return a_complex; }
+    /// A cell's number (a complex one's as the mode has it, its magnitude
+    /// when it shows two) - NaN for none.
+    double number(int row, int column) const;
+    /// A row's label (its index), as text.
+    QString rowLabel(int row) const;
     /// An answer of _qucs_data.table(): the shape (the first), the rows.
     void answer(const QJsonObject& table);
     /// The first rows asked for - its shape with them.
@@ -226,6 +261,12 @@ private:
     QHash<int, QJsonArray> a_index;       // a block's row labels
     mutable QSet<int> a_asked;
     bool a_wantAll = false;
+    int a_sort = -1;
+    bool a_descending = false;
+    QJsonObject a_filters;
+    int a_token = 0;                      // the view: an answer of another left aside
+    int a_total = 0;
+    int a_complex = AsIs;
 };
 
 /*!
@@ -248,20 +289,50 @@ public:
     /// The cells selected - every one when none is - as tab-separated text.
     QString selectedText() const;
 
+    /// Its columns \a columns plotted (fetched first): the first the x of
+    /// the rest when there are two or more, else over the rows' labels (or
+    /// their numbers) - on a log x axis when x is positive over two
+    /// decades; complex values as the complex mode has them.
+    void plotColumns(const QList<int>& columns);
+    /// Filters: a column's rule ("> 5", ">= 5", "< 5", "== 5", "!= 5", or
+    /// text it has; empty: none); sorted by a column (a click on its
+    /// header: up, down, as it was).
+    void setFilter(int column, const QString& rule);
+    void sortBy(int column, bool descending);
+
 public slots:
     void copy();
     void exportAs();
+    /// The columns selected plotted (plotColumns()).
+    void plotSelected();
 
 signals:
     void exported();
+    /// A plot of its columns made: the picture (twice its size, for a
+    /// dense screen) and what it is.
+    void plotted(const QImage& picture, const QString& title);
 
 private:
+    void showFilters();
+
     QString a_name;
     PythonTableModel* a_model = nullptr;
     QTableView* a_view = nullptr;
     QLabel* a_about = nullptr;
+    QLabel* a_filtersShown = nullptr;
+    QComboBox* a_filterColumn = nullptr;
+    QLineEdit* a_filterRule = nullptr;
+    QComboBox* a_complexMode = nullptr;
     QString a_exportPath;
+    QList<int> a_plotColumns;   // to plot when every row is in
 };
+
+namespace qucs_s::python {
+/// A plot of series over \a x, drawn (axes, grid, a legend for more than
+/// one): \a scale its pixels a point's.
+QImage plotImage(const QString& title, const QString& xName, const QVector<double>& x,
+                 const QList<std::pair<QString, QVector<double>>>& series, bool logX, qreal scale = 2);
+} // namespace qucs_s::python
 
 /*!
  * \brief Go to Symbol: the script's classes, functions, methods and

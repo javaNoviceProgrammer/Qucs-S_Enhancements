@@ -3,17 +3,29 @@
 (the Data Viewer) - an array, a list, a dictionary of columns, a DataFrame, a
 qucs.Dataset.
 
-    summary(name, value)  {"name", "type", "size", "value", "table"}
-    table(value, start, count)
+    summary(name, value)  {"name", "type", "size", "value", "table", "inside"}
+    table(value, start, count, sort, descending, filters, token)
         {"shape": [rows, columns], "columns": [...], "start": start, "index":
          [...] (the rows' labels, from start), "rows": [[cell, ...], ...] (from
-         start, count of them at most), "note": what was done to show it}
+         start, count of them at most), "note": what was done to show it,
+         "total": the rows before a filter}
+      sorted by the column sort (descending), the rows the filters keep -
+      {column: "> 5" | ">= 5" | "< 5" | "<= 5" | "== 5" | "!= 5" | text it
+      has}; the order kept for the token (one Data Viewer's view) as long as
+      it asks with it
+    children(value, expression)   a value's insides, each a summary() with
+        the expression that is it ("expression"; None: none) - a dict's
+        items, a list's, an array's rows, a DataFrame's columns, an object's
+        attributes
+    as_variables(value, name)     (variables, x) for qucs.display()
 
 A cell is a number (a float, an int), a string, or null (nothing there);
 complex numbers, NaN and the infinities are strings.
 """
 
+import json
 import math
+import re
 import reprlib
 import types
 
@@ -82,8 +94,118 @@ def is_table(value):
     return False
 
 
+def has_inside(value):
+    """Whether a value has insides to show (cheaply: not made to know)."""
+    if isinstance(value, (str, bytes, bytearray, int, float, complex, bool, type(None), types.ModuleType, types.FunctionType,
+                          types.BuiltinFunctionType, types.MethodType, type)):
+        return False
+    try:
+        from collections.abc import Mapping
+        if isinstance(value, (Mapping, list, tuple, set, frozenset)):
+            return len(value) > 0
+    except Exception:
+        return False
+    shape = getattr(value, 'shape', None)
+    if isinstance(shape, tuple):
+        return len(shape) >= 1 and shape[0] > 0
+    try:
+        return any(not k.startswith('__') for k in vars(value))
+    except TypeError:
+        return False
+
+
 def summary(name, value):
-    return {'name': name, 'type': kind_of(value), 'size': size_of(value), 'value': short(value), 'table': is_table(value)}
+    return {'name': name, 'type': kind_of(value), 'size': size_of(value), 'value': short(value), 'table': is_table(value),
+            'inside': has_inside(value)}
+
+
+def children(value, expression, most=300):
+    """A value's insides: summaries, each with the expression that is it."""
+    np = _numpy()
+    pd = _pandas()
+    pairs = []
+    if pd is not None and isinstance(value, pd.DataFrame):
+        pairs = [(str(c), value[c], '%s[%r]' % (expression, c)) for c in list(value.columns)[:most]]
+    else:
+        try:
+            from collections.abc import Mapping
+            mapping = isinstance(value, Mapping)
+        except Exception:
+            mapping = False
+        if mapping:
+            pairs = [(repr(k), value[k], '%s[%r]' % (expression, k)) for k in list(value.keys())[:most]]
+        elif isinstance(value, (list, tuple)):
+            pairs = [('[%d]' % k, v, '%s[%d]' % (expression, k)) for k, v in enumerate(value[:most])]
+        elif isinstance(value, (set, frozenset)):
+            pairs = [('', v, None) for v in list(value)[:most]]
+        elif isinstance(getattr(value, 'shape', None), tuple) and hasattr(value, '__getitem__'):
+            try:
+                pairs = [('[%d]' % k, value[k], '%s[%d]' % (expression, k)) for k in range(min(value.shape[0], most))]
+            except Exception:
+                pairs = []
+        else:
+            try:
+                attributes = vars(value)
+            except TypeError:
+                attributes = {}
+            pairs = [(k, v, '%s.%s' % (expression, k)) for k, v in sorted(attributes.items(), key=lambda kv: kv[0].lower())
+                     if not k.startswith('__')][:most]
+    out = []
+    for name, child, child_expression in pairs:
+        item = summary(name, child)
+        item['expression'] = child_expression
+        out.append(item)
+    return out
+
+
+def _safe_name(name):
+    """A name a dataset takes for a variable."""
+    text = re.sub(r'[^A-Za-z0-9_.]+', '_', str(name)).strip('_')
+    return text or 'value'
+
+
+def as_variables(value, name='value'):
+    """What qucs.display() is given for a value: (a Dataset, None), or (its
+    variables - a name's values each -, the sweep's name)."""
+    np = _numpy()
+    pd = _pandas()
+    module = __import__('sys').modules.get('qucs')
+    if module is not None and isinstance(value, getattr(module, 'Dataset', ())):
+        return value, None
+    name = _safe_name(name)
+    if pd is not None and isinstance(value, pd.Series):
+        value = value.to_frame(name if value.name is None else value.name)
+    if pd is not None and isinstance(value, pd.DataFrame):
+        variables = {}
+        if not isinstance(value.index, pd.RangeIndex):
+            variables[_safe_name(value.index.name or 'index')] = list(value.index)
+        for c in value.columns:
+            variables[_safe_name(c)] = list(value[c])
+        return variables, next(iter(variables))
+    try:
+        from collections.abc import Mapping
+        if isinstance(value, Mapping):
+            variables = {_safe_name(k): v for k, v in value.items()}
+            if not variables:
+                raise ValueError('nothing in it to show')
+            return variables, next(iter(variables))
+    except ImportError:
+        pass
+    rows = value
+    if np is not None and isinstance(value, np.ndarray):
+        rows = value.tolist()
+    if isinstance(rows, (list, tuple)) and rows:
+        if all(isinstance(r, (list, tuple)) for r in rows):
+            width = len(rows[0])
+            if width >= 2 and all(len(r) == width for r in rows):
+                variables = {name + '_x': [r[0] for r in rows]}
+                for k in range(1, width):
+                    variables['%s_%d' % (name, k)] = [r[k] for r in rows]
+                return variables, name + '_x'
+            raise ValueError('its rows are not of one length, two values or more each')
+        if all(isinstance(v, (int, float, complex)) and not isinstance(v, bool) for v in rows):
+            return {'index': list(range(len(rows))), name: list(rows)}, 'index'
+    raise ValueError('%s is no array, list of numbers, table of columns or dataset' % kind_of(value))
 
 
 def cell(v):
@@ -116,12 +238,82 @@ def _rows_of(columns, length, start, count):
     return rows
 
 
-def table(value, start=0, count=1000):
+_views = {}   # a Data Viewer's view (its token): the whole table and its rows' order
+
+
+def _number(v):
+    """A cell's number to sort by and compare (a complex one: its magnitude);
+    None for text."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return abs(complex(v.replace(' ', '')))
+        except ValueError:
+            try:
+                return float(v)
+            except ValueError:
+                return None
+    return None
+
+
+_COMPARE = re.compile(r'^\s*(>=|<=|==|!=|=|>|<)\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*$')
+
+
+def _passes(v, rule):
+    m = _COMPARE.match(rule)
+    if m:
+        n = _number(v)
+        if n is None or n != n:
+            return False
+        limit = float(m.group(2))
+        return {'>': n > limit, '>=': n >= limit, '<': n < limit, '<=': n <= limit, '==': n == limit, '=': n == limit,
+                '!=': n != limit}[m.group(1)]
+    return rule.strip().lower() in ('' if v is None else str(v)).lower()
+
+
+def table(value, start=0, count=1000, sort=None, descending=False, filters=None, token=None):
     start = max(0, int(start))
     count = max(0, int(count))
-    found = _table(value, start, count)
-    found['start'] = start
-    return found
+    filters = {int(k): str(v) for k, v in (filters or {}).items() if str(v).strip()}
+    if sort is None and not filters:
+        found = _table(value, start, count)
+        found['start'] = start
+        found['total'] = found['shape'][0]
+        found['token'] = token
+        return found
+    key = (token, sort, bool(descending), json.dumps(filters, sort_keys=True))
+    view = _views.get(key) if token is not None else None
+    if view is None:
+        whole = _table(value, 0, 1 << 62)
+        rows = whole['rows']
+        order = [i for i in range(len(rows)) if all(c < len(rows[i]) and _passes(rows[i][c], rule) for c, rule in filters.items())]
+        if sort is not None and 0 <= int(sort) < whole['shape'][1]:
+            column = int(sort)
+            def rank(i):   # numbers before text, nothing (NaN, empty) last either way
+                v = rows[i][column]
+                n = _number(v)
+                if n is not None and n == n:
+                    return (0, n, '')
+                if v is None or n is not None:
+                    return (2, 0.0, '')
+                return (1, 0.0, str(v).lower())
+            present = [i for i in order if rank(i)[0] < 2]
+            absent = [i for i in order if rank(i)[0] == 2]
+            present.sort(key=rank, reverse=bool(descending))
+            order = present + absent
+        view = {'whole': whole, 'order': order}
+        _views.clear()   # (one view kept: the last one asked of)
+        if token is not None:
+            _views[key] = view
+    whole, order = view['whole'], view['order']
+    picked = order[start:start + count]
+    note = whole['note']
+    if filters:
+        note = (note + ' ' if note else '') + '%d of its %d rows kept by the filters.' % (len(order), whole['shape'][0])
+    return {'shape': [len(order), whole['shape'][1]], 'columns': whole['columns'], 'start': start,
+            'index': [whole['index'][i] for i in picked], 'rows': [whole['rows'][i] for i in picked], 'note': note,
+            'total': whole['shape'][0], 'token': token}
 
 
 def _table(value, start, count):
