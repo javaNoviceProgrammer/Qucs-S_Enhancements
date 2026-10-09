@@ -576,6 +576,55 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   dir* (a `cd` / `os.chdir` to the open project). The interpreter is the
   one under *Application Settings → Locations → Python Path*, or `python3`
   on `PATH` when that is empty.
+- **Python editor**: a `.py` or `.pyw` file opens in a tab of its own
+  (from anywhere a file opens, whatever text editor the settings name).
+  It is the text editor, so it has everything that has: highlighting,
+  find and replace, undo, its encoding and line ends kept, reloading,
+  Claude's tools. It writes no settings file (`.cfg`) beside the script,
+  and it has no document settings.
+  - **Checked as you type.** Half a second after the typing stops, the
+    script is compiled, not run, by the Python it runs with, so a newer
+    Python's syntax is no error of its own. Syntax errors come as that
+    Python gives them, at their line and column and to where they end;
+    so do its warnings (`is` with a literal, an escape sequence that is
+    none). When the interpreter has ruff (`python -m ruff`, or ruff on
+    `PATH`) or else pyflakes, their findings are added: names not
+    defined, imports not used and the like. The check runs in a folder
+    of its own, so a `json.py` beside the script cannot stand in for the
+    modules it uses. A check still running when the text changes is
+    stopped: only the last one's answer is shown.
+  - **Shown where they are.** A red or amber wavy line under each
+    problem, a dot in the line numbers' margin, and the message when the
+    mouse is over either. The *Problems* tab lists them too, and a click
+    on one goes to its line. *Messages at Line Ends* (off by default)
+    writes each line's first message after its text, faintly. With no
+    Python to check with, the status bar says so once, and the Problems
+    tab says the script was not checked.
+  - **Indented as Python is.** Return indents one level after a line
+    ending in `:`, and one less after `return`, `pass`, `break`,
+    `continue` or `raise`; one undo takes the new line back. Tab indents
+    to the next level and Shift+Tab takes one away, on a line or on every
+    line selected. A level is four spaces, or a tab in a file indented
+    with tabs.
+  - **The Python toolbar**, shown while a script is in front (hidden from
+    the Toolbars menu, it stays hidden), and the same in *Simulation →
+    Python*:
+    - **Interpreter:** a virtual environment's (`.venv`, `venv`) beside
+      the script or in the project, which is the default when there is
+      one; the one Application Settings name; `python3` and `python` on
+      `PATH`; or another, chosen with *Browse...*.
+    - **Run (F2):** the script is saved, then run with that Python in its
+      folder. Its output appears in the *Python Run* dock as it comes,
+      then its exit code and how long it took. A traceback's
+      `File "...", line N` is a link to that line. `input()` gets the end
+      of the file rather than waiting.
+    - **Stop:** ends the script that is running.
+    - **Run in Shell:** runs the script in the Python Shell, in its
+      folder, so its variables are still there afterwards.
+    - **Check:** checks the script now and brings up the Problems tab.
+      Its tooltip says what checked it: the Python's version, and ruff's
+      or pyflakes'.
+    - **Messages at Line Ends:** the setting above.
 - **Claude Code dock** (*View → Claude Code*, or the *Claude* chip in the
   status bar): a conversation with [Claude Code](https://claude.com/claude-code)
   beside the schematic. Claude works in the workspace folder (*Application
