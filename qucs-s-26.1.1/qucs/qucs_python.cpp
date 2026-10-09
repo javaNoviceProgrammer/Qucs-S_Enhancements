@@ -346,6 +346,25 @@ void QucsApp::initPythonToolbar()
   connect(pythonUnfoldAllAction, &QAction::triggered, this, [this] {
     if (PythonDoc *py = currentPythonDoc()) py->unfoldAll();
   });
+  // Lines made comments, or comments no more: Cmd+/ on macOS, Ctrl+/
+  // elsewhere - and there Ctrl+Shift+/ too, where / is a shifted key
+  // (Shift+7 on a German keyboard). (Not on macOS: Cmd+Shift+/ is the
+  // system's Help search.)
+  pythonCommentAction = new QAction(tr("Toggle Line Comment"), this);
+  pythonCommentAction->setObjectName(QStringLiteral("pythonComment"));
+  {
+    QList<QKeySequence> keys{QKeySequence(Qt::CTRL | Qt::Key_Slash)};
+#ifndef Q_OS_MACOS
+    keys << QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Slash);
+#endif
+    pythonCommentAction->setShortcuts(keys);
+  }
+  pythonCommentAction->setToolTip(tr("The lines selected - or the cursor's - made comments (# at their indentation), or "
+                                     "comments no more when they all are (%1)")
+                                      .arg(QKeySequence(Qt::CTRL | Qt::Key_Slash).toString(QKeySequence::NativeText)));
+  connect(pythonCommentAction, &QAction::triggered, this, [this] {
+    if (PythonDoc *py = currentPythonDoc()) py->toggleLineComment();
+  });
   pythonAutoCloseAction = new QAction(tr("Close Brackets and Quotes"), this);
   pythonAutoCloseAction->setObjectName(QStringLiteral("pythonAutoClose"));
   pythonAutoCloseAction->setCheckable(true);
@@ -432,7 +451,7 @@ void QucsApp::initPythonToolbar()
   for (QAction *a : {pythonRunSelectionAction, pythonRunCellAction, pythonRunCellAdvanceAction, pythonDefinitionAction,
                      pythonBackAction, pythonBreakpointAction, pythonFormatAction, pythonSignatureAction, pythonReferencesAction,
                      pythonRenameAction, pythonSymbolsAction, pythonFoldAction, pythonUnfoldAction, pythonRunToCursorAction,
-                     pythonQuickFixAction, pythonImportsAction, pythonFormatSelectionAction})
+                     pythonQuickFixAction, pythonImportsAction, pythonFormatSelectionAction, pythonCommentAction})
     a->setShortcutContext(Qt::WidgetShortcut);
 
   // The same in the Python menu, a menu of its own right of View: for the
@@ -478,6 +497,7 @@ void QucsApp::initPythonToolbar()
   pythonMenu->addAction(pythonSignatureAction);
   pythonMenu->addAction(pythonAsYouTypeAction);
   pythonMenu->addAction(pythonAutoCloseAction);
+  pythonMenu->addAction(pythonCommentAction);
   pythonMenu->addSeparator();
   pythonMenu->addAction(pythonDefinitionAction);
   pythonMenu->addAction(pythonBackAction);
@@ -734,7 +754,7 @@ void QucsApp::updatePythonToolbar()
     a->setEnabled(py != nullptr);
   pythonFormatAction->setEnabled(editable);
   pythonFixAction->setEnabled(editable);
-  for (QAction *a : {pythonQuickFixAction, pythonImportsAction, pythonFormatSelectionAction}) a->setEnabled(editable);
+  for (QAction *a : {pythonQuickFixAction, pythonImportsAction, pythonFormatSelectionAction, pythonCommentAction}) a->setEnabled(editable);
   pythonRunSettingsAction->setEnabled(py != nullptr && !py->getDocName().isEmpty());
   if (py != nullptr && !py->getDocName().isEmpty()) {   // (the Run button says how it runs)
     const qucs_s::python::RunSettings how = qucs_s::python::runSettingsFor(py->getDocName());
@@ -885,7 +905,7 @@ void QucsApp::connectPythonDoc(PythonDoc *py)
   py->addActions({pythonRunSelectionAction, pythonRunCellAction, pythonRunCellAdvanceAction, pythonDefinitionAction,
                   pythonBackAction, pythonBreakpointAction, pythonFormatAction, pythonSignatureAction, pythonReferencesAction,
                   pythonRenameAction, pythonSymbolsAction, pythonFoldAction, pythonUnfoldAction, pythonRunToCursorAction,
-                  pythonQuickFixAction, pythonImportsAction, pythonFormatSelectionAction});
+                  pythonQuickFixAction, pythonImportsAction, pythonFormatSelectionAction, pythonCommentAction});
   connect(py, &PythonDoc::checkFinished, this, [this, py] { pythonChecked(py); });
   connect(py, &PythonDoc::typeCheckFinished, this, [this, py] { pythonChecked(py); });
   connect(py, &PythonDoc::definitionAnswered, this, [this, py] { pythonDefinitionFound(py); });

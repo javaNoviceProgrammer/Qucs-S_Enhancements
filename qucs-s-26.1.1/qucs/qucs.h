@@ -856,6 +856,7 @@ private:
   QAction *pythonRenameAction = nullptr;
   QAction *pythonSymbolsAction = nullptr;
   QAction *pythonFoldAction = nullptr;
+  QAction *pythonCommentAction = nullptr;   // Cmd+/ (Ctrl+/): lines made comments, or not
   QAction *pythonUnfoldAction = nullptr;
   QAction *pythonFoldAllAction = nullptr;
   QAction *pythonUnfoldAllAction = nullptr;
