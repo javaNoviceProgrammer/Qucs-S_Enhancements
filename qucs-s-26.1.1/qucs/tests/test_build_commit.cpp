@@ -6,6 +6,8 @@
  * About box named none.
  */
 #include <QtTest>
+#include <QTabWidget>
+#include <QTextBrowser>
 #include <QLabel>
 #include <QProcess>
 #include <QStandardPaths>
@@ -42,6 +44,32 @@ private slots:
         QStringList texts;
         for (const QLabel* label : about.findChildren<QLabel*>()) texts << label->text();
         QVERIFY2(texts.contains(shown), qPrintable(texts.join(" | ").left(600)));
+    }
+
+    // The Authors tab: this build's team first - Meisam Bahadori, then
+    // Claude Code -, Qucs-S's after it; so again when the tab is shown
+    // again (the other names shuffled).
+    void theEnhancedTeamComesFirst()
+    {
+        AboutDialog about(nullptr);
+        QTextBrowser* authors = nullptr;
+        for (QTextBrowser* b : about.findChildren<QTextBrowser*>())
+            if (b->toPlainText().contains("Qucs-S project team:")) authors = b;
+        QVERIFY(authors != nullptr);
+        const auto check = [authors] {
+            const QString text = authors->toPlainText();
+            QVERIFY2(text.startsWith("Enhanced Qucs-S project team:"), qPrintable(text.left(200)));
+            const qsizetype meisam = text.indexOf("Meisam Bahadori"), claude = text.indexOf("Claude Code"),
+                            qucs = text.indexOf("\nQucs-S project team:");
+            QVERIFY(meisam > 0 && claude > meisam && qucs > claude);
+            QCOMPARE(text.count("Meisam Bahadori"), 1);
+        };
+        check();
+        auto* tabs = about.findChild<QTabWidget*>();
+        QVERIFY(tabs != nullptr);
+        for (int k = 0; k < tabs->count(); ++k) tabs->setCurrentIndex(k);
+        tabs->setCurrentIndex(tabs->indexOf(authors));
+        check();
     }
 };
 
