@@ -65,6 +65,7 @@ Output run(const QString& program, const QString& dir, const QStringList& args, 
     if (program.isEmpty()) return o;
     QProcess p;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    forgetRepositoryVariables(env);
     env.insert(QStringLiteral("GIT_OPTIONAL_LOCKS"), QStringLiteral("0"));
     env.insert(QStringLiteral("GIT_TERMINAL_PROMPT"), QStringLiteral("0"));
     env.insert(QStringLiteral("GH_PROMPT_DISABLED"), QStringLiteral("1"));
@@ -209,6 +210,18 @@ bool Status::operator==(const Status& o) const
             return false;
     }
     return true;
+}
+
+QStringList readOnlyGuards(const QString& root)
+{
+    return guards(root);
+}
+
+void forgetRepositoryVariables(QProcessEnvironment& env)
+{
+    for (const char* name : {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                             "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_PREFIX"})
+        env.remove(QLatin1String(name));
 }
 
 QString program()

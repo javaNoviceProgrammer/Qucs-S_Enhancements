@@ -145,6 +145,12 @@ public:
     void setQucsFilesOnly(bool on);
     /// Only the entries whose names hold \a text (in the Tree, files only).
     void setFilterText(const QString& text);
+    /// Whether the files' git states are shown (Show Git Status: on at
+    /// first) - a colour and a letter each, the repository's branch.
+    bool gitShown() const { return a_gitShown; }
+    void setGitShown(bool on);
+    /// The entries selected in the view, in its order.
+    QStringList selectedPaths() const;
 
     bool canGoBack() const { return !a_back.isEmpty(); }
     bool canGoForward() const { return !a_forward.isEmpty(); }
@@ -249,6 +255,8 @@ private:
     /// The Details view's name column: what the others leave of the width.
     void fitDetails();
     void showContextMenu(QAbstractItemView* view, const QPoint& pos);
+    /// The Git submenu of \a paths' context menu.
+    void addGitMenu(QMenu* menu, const QStringList& paths);
     void rename(const QString& path);
     QAbstractItemView* viewFor(View view) const;
     /// A drag over \a watched (a view's viewport, a button of the path):
@@ -275,6 +283,7 @@ private:
     bool a_columnsPending = false;  // the Columns view given a folder still loading
     bool a_showHidden = false;
     bool a_qucsOnly = false;
+    bool a_gitShown = true;
     QString a_selected;   // kept across the views
 
     qucs_s::files::IconProvider* a_icons = nullptr;
@@ -294,6 +303,7 @@ private:
     QActionGroup* a_viewActions = nullptr;
     QAction* a_hiddenAction = nullptr;
     QAction* a_qucsAction = nullptr;
+    QAction* a_gitAction = nullptr;
     QAction* a_documentAction = nullptr;
     // The path.
     QStackedWidget* a_pathStack = nullptr;

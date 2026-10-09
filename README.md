@@ -1577,6 +1577,80 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     or the open project.
   - **Open documents:** documents open from moved or renamed files or
     folders follow them; their tabs and names update.
+- **Git**, as Eclipse has it, for a project (or any folder) in a git
+  repository:
+  - **In the File Browser** (on by default; *Show Git Status* in its ⋯
+    menu): each file's name in the colour of its state, with a letter at
+    the right — *M* modified (amber), *A* added and *U* untracked
+    (green), *R* renamed, *!* in conflict (red), the ignored greyed; a
+    folder with changes in it has a dot, a repository's folder its
+    branch beside its name (`main ↑1 ↓2`), and the status line says the
+    branch and how many changes are not committed. The right-click menu
+    of entries (several at once too) and of the folder shown has a *Git*
+    submenu: *Commit…*, *Stage*, *Unstage*, *Discard Changes…*, *Show
+    Changes*, *Show History*, *Show Blame*, *Add to .gitignore*, *Stop
+    Tracking, Keep the File*, *Fetch*, *Pull*, *Push*, *Switch to
+    Branch*, *New Branch…*, *Stash Changes…*. Outside a repository it
+    offers *Create Repository Here…* and *Clone a Repository Here…*.
+  - **The Git menu** (left of *Help*) works on the repository of the
+    document in front (else the File Browser's folder, else the
+    project's). It has *Commit…* and *Show All Changes*; the document's
+    *Show Changes*, *Stage*, *Unstage*, *Discard*, *History* and *Blame*;
+    *Stage All*, *Unstage All*, *Discard All Changes…* and *History*;
+    *Fetch*, *Pull* and *Push* (the first push of a branch sets its
+    upstream); *Switch to Branch* (a remote's branch becomes a local one
+    that follows it; changes in the way can be stashed first), *New*,
+    *Rename*, *Delete* and *Merge into the Current Branch*; *Stash
+    Changes…*, *Stashes* (apply, apply and drop, show, drop), *New Tag…*,
+    *Abort* of a merge, rebase, cherry-pick or revert under way; *Add This
+    File to .gitignore*, *Edit .gitignore*, *Remotes…*, *Create
+    Repository…*, *Clone Repository…* and *Refresh Git Status*. Only what
+    applies is enabled.
+  - **The status bar's git chip** shows the branch of the document in
+    front and its file's letter (`⎇ main ↑1 · M`). It turns red when the
+    file is in conflict and amber while a merge is under way; its tool
+    tip gives the repository, the upstream, the file's state and the
+    count of changes. A click opens a menu with the file's state and what
+    can be done with it and its repository.
+  - **Windows**: *Commit* lists the changes not staged and those staged
+    side by side, with the selected file's diff. Files move between the
+    lists (*Stage*, *Unstage* and their *All*; a double-click opens a
+    file), *Discard…* throws a change away, and the message box commits,
+    with *Amend the last commit* and *Commit and Push*. When nothing is
+    staged it offers to stage everything. *History* lists the commits,
+    newest first, with their branches and tags, author, date and hash; a
+    commit's changes show below it, and its menu copies the hash, checks
+    it out, makes a branch or a tag there, reverts or cherry-picks it, or
+    resets the branch to it (soft, mixed, or hard after asking). *Blame*
+    shows who last changed each line, in which commit and when.
+  - **Safe by default**: a file git knows is put back as last committed
+    when discarded, while a new file goes to the trash, not deleted. What
+    goes over the network, and commits, run without blocking the window,
+    with their progress and *Cancel*. git never asks for a password: a
+    credential helper or ssh agent provides it, or the error is shown.
+    While Qucs-S only looks (the colours, the menus, a diff, the history,
+    blame), git runs nothing the repository's own configuration names (a
+    file system monitor, its filters, hooks), so a downloaded project
+    cannot run its programs that way. A branch, tag, remote or URL that
+    begins with `-` is refused (git would take it for an option), as are
+    paths outside the repository. The state is read on another thread
+    and again when git changes the index or a branch, from Qucs-S or
+    elsewhere; a slow repository is polled less often.
+  - **Claude's git tools**: `git_status`, `git_diff` (head, staged or
+    unstaged), `git_log`, `git_show` and `git_blame` only look.
+    `git_stage`, `git_unstage`, `git_discard`, `git_commit` (with `paths`,
+    `amend`, `push`), `git_branch` (list, create, switch — `stash` first
+    —, rename, delete, merge), `git_remote` (list, fetch, pull, push, add,
+    remove), `git_stash`, `git_tag`, `git_commit_action` (revert,
+    cherry_pick, check_out, reset), `git_abort`, `git_init`, `git_clone`
+    and `git_ignore` change things. Each tool takes the repository as
+    `path` (a file or folder of it; `paths` are relative to it), else the
+    document in front's. They answer with where the repository stands:
+    branch, upstream, ahead and behind, what is staged, not staged,
+    untracked and in conflict. A merge in conflict is reported, not an
+    error. What loses work or publishes it — a discard, a hard reset, a
+    forced branch delete, a dropped stash, a push — is asked about every
+    time. Open documents whose files git changed are loaded again.
 - **PDF viewer**: a PDF document — a datasheet, an application note, a
   report written by a script — opens in a tab of its own, from the File
   Browser, the Content panel, *File → Open*, a drop, or Claude's

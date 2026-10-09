@@ -65,6 +65,7 @@
 #include "zipdoc.h"
 #include "layoutdoc.h"
 #include "imagedoc.h"
+#include "gitrepo.h"
 #endif
 #include "autosave.h"
 #include "crashhandler.h"
@@ -248,6 +249,7 @@ QucsApp::QucsApp(bool netlist2Console) :
   initView();
   initActions();
   initMenuBar();
+  initGitMenu();
   fillSimulatorsComboBox();
   initToolBar();
   initStatusBar();
@@ -3030,6 +3032,7 @@ bool QucsApp::saveFile(QucsDoc *Doc)
   int Result = Doc->save();
   if(Result < 0)  return false;
   qucs_s::autosave::remove(Doc->getDocName());
+  qucs_s::git::Tracker::instance()->refresh(Doc->getDocName());   // (its git state)
   if (dynamic_cast<Schematic *>(Doc) != nullptr) syncProjectLibraries();
 
   // It's assumed that *.sym files contain *only* a symbol
@@ -3250,6 +3253,7 @@ bool QucsApp::saveDocumentAs(QucsDoc *Doc, const QString &fileName)
     lastDirOpenSave = wasDir;
     return false;
   }
+  qucs_s::git::Tracker::instance()->refresh(s);
   if (wasNamed.isEmpty())
     qucs_s::autosave::removeUntitled(docIndex, schematicIn(w) != nullptr);   // it was untitled before
   qucs_s::autosave::remove(s);

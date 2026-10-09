@@ -16,6 +16,8 @@
 #include <QList>
 #include <QString>
 
+class QProcessEnvironment;
+
 namespace qucs_s::git {
 
 /// A file changed since the base (Status::base): its lines added and
@@ -62,6 +64,17 @@ struct Status {
 /// PATH (or where Homebrew puts it). Empty when there is none - on macOS
 /// too when /usr/bin/git would only ask to install the command line tools.
 QString program();
+
+/// The settings that keep git from running what a repository's own
+/// configuration names - a file system monitor, its filters, its hooks -
+/// while Qucs-S only looks at it (status, diff, log, blame): "key=value"
+/// pairs, for -c. The user's own filters (git-lfs's) are kept.
+QStringList readOnlyGuards(const QString& root);
+
+/// \a env without what points git at one repository whatever the folder
+/// (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE...: Qucs-S started from a git
+/// hook): each path's own found.
+void forgetRepositoryVariables(QProcessEnvironment& env);
 
 /// Where \a dir stands (a Status whose repository is false outside a work
 /// tree, or without git). Runs git: best not on the GUI thread.

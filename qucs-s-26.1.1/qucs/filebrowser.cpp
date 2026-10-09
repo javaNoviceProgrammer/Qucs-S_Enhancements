@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "filebrowser.h"
+#include "gitui.h"
 #include "imagedoc.h"
 #include "namefilter.h"
 
@@ -85,6 +86,7 @@ const QString kLocation = QStringLiteral("FileBrowser/location");
 const QString kView = QStringLiteral("FileBrowser/view");
 const QString kHidden = QStringLiteral("FileBrowser/showHidden");
 const QString kQucsOnly = QStringLiteral("FileBrowser/qucsFilesOnly");
+const QString kGit = QStringLiteral("FileBrowser/gitStatus");
 
 QString trf(const char* text)
 {
@@ -550,6 +552,18 @@ QIcon glyphIcon(Glyph glyph)
     return QIcon(new GlyphIcon(glyph));
 }
 
+// What the views show of a file's git state: its name's colour, a letter
+// at the end of its row, a line of its tooltip, a repository's branch
+// after its folder's name.
+struct GitMark {
+    QColor colour;
+    QString letter;
+    QString tip;
+    QString branch;
+};
+constexpr int GitLetterRole = Qt::UserRole + 40;
+constexpr int GitBranchRole = Qt::UserRole + 41;
+
 // The Recent view's rows: the icon, the name, and the folder under it.
 class RecentDelegate : public QStyledItemDelegate
 {
@@ -588,6 +602,60 @@ public:
         const QRect bottom(text.left(), top.bottom(), text.width(), text.height() - top.height());
         const QString where = index.data(Qt::UserRole + 1).toString();
         p->drawText(bottom, Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(small).elidedText(where, Qt::ElideMiddle, bottom.width()));
+        p->restore();
+    }
+};
+
+// A row with its git mark: the letter at its end (its name drawn in the
+// room left), a repository's branch after its folder's name, muted.
+class GitDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter* p, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        const QString letter = index.column() == 0 ? index.data(GitLetterRole).toString() : QString();
+        const QString branch = index.column() == 0 ? index.data(GitBranchRole).toString() : QString();
+        if ((letter.isEmpty() && branch.isEmpty()) || option.decorationPosition == QStyleOptionViewItem::Top) {
+            QStyledItemDelegate::paint(p, option, index);
+            return;
+        }
+        QStyleOptionViewItem o = option;
+        initStyleOption(&o, index);
+        QStyle* style = o.widget != nullptr ? o.widget->style() : QApplication::style();
+        const QFontMetrics fm(o.font);
+        const int room = letter.isEmpty() ? 0 : fm.horizontalAdvance(QStringLiteral("M")) + 12;
+        // The row's background whole; the entry in less room.
+        QStyleOptionViewItem back = o;
+        back.text.clear();
+        back.icon = QIcon();
+        style->drawControl(QStyle::CE_ItemViewItem, &back, p, o.widget);
+        QStyleOptionViewItem item = o;
+        item.rect.setRight(item.rect.right() - room);
+        item.state &= ~QStyle::State_HasFocus;
+        style->drawControl(QStyle::CE_ItemViewItem, &item, p, o.widget);
+        const bool selected = o.state & QStyle::State_Selected;
+        const QBrush brush = index.data(Qt::ForegroundRole).value<QBrush>();
+        const QColor ink = selected ? o.palette.color(QPalette::HighlightedText)
+                                    : brush.style() != Qt::NoBrush ? brush.color() : o.palette.color(QPalette::Text);
+        p->save();
+        if (!letter.isEmpty()) {
+            QFont bold = o.font;
+            bold.setBold(true);
+            p->setFont(bold);
+            p->setPen(ink);
+            p->drawText(QRect(o.rect.right() - room, o.rect.top(), room - 4, o.rect.height()), Qt::AlignRight | Qt::AlignVCenter, letter);
+        }
+        if (!branch.isEmpty()) {
+            const QRect text = style->subElementRect(QStyle::SE_ItemViewItemText, &item, o.widget);
+            const int used = fm.horizontalAdvance(item.text);
+            const QRect after(text.left() + used + 8, text.top(), text.right() - text.left() - used - 8, text.height());
+            if (after.width() > 24) {
+                p->setFont(o.font);
+                p->setPen(selected ? ink : qucs_s::apptheme::mix(o.palette.color(QPalette::Base), o.palette.color(QPalette::Text), 0.55));
+                p->drawText(after, Qt::AlignLeft | Qt::AlignVCenter, fm.elidedText(branch, Qt::ElideRight, after.width()));
+            }
+        }
         p->restore();
     }
 };
@@ -740,6 +808,31 @@ public:
     {
         a_collator.setCaseSensitivity(Qt::CaseInsensitive);
     }
+    /// The git marks of a path (a folder's with \a dir).
+    void setGit(std::function<GitMark(const QString& path, bool dir)> git) { a_git = std::move(git); }
+    QVariant data(const QModelIndex& index, int role) const override
+    {
+        if (index.column() == 0 && a_git
+            && (role == Qt::ForegroundRole || role == Qt::ToolTipRole || role == GitLetterRole || role == GitBranchRole)) {
+            const auto* fs = static_cast<QFileSystemModel*>(sourceModel());
+            const QModelIndex source = mapToSource(index);
+            const GitMark m = a_git(fs->filePath(source), fs->isDir(source));
+            switch (role) {
+            case Qt::ForegroundRole:
+                if (m.colour.isValid()) return QBrush(m.colour);
+                break;
+            case Qt::ToolTipRole:
+                if (!m.tip.isEmpty()) {
+                    const QString base = QSortFilterProxyModel::data(index, role).toString();
+                    return base.isEmpty() ? m.tip : base + QLatin1Char('\n') + m.tip;
+                }
+                break;
+            case GitLetterRole: return m.letter;
+            default: return m.branch;
+            }
+        }
+        return QSortFilterProxyModel::data(index, role);
+    }
     void configure(const QString& text, bool qucsOnly, bool flat, const QString& location)
     {
         if (text == a_filter.text() && qucsOnly == a_qucsOnly && flat == a_flat && location == a_location) return;
@@ -796,6 +889,7 @@ protected:
     }
 
 private:
+    std::function<GitMark(const QString&, bool)> a_git;
     QCollator a_collator;
     NameFilter a_filter;
     bool a_qucsOnly = false;
@@ -903,6 +997,7 @@ protected:
     {
         auto* view = new QListView(viewport());
         initializeColumn(view);
+        if (itemDelegate() != nullptr) view->setItemDelegate(itemDelegate());
         view->setRootIndex(index);
         if (model()->canFetchMore(index)) model()->fetchMore(index);
         if (a_dropFilter != nullptr) {
@@ -1063,6 +1158,52 @@ FileBrowser::FileBrowser(QWidget* parent)
     a_proxy->setSourceModel(a_model);
     a_proxy->setDynamicSortFilter(true);
     a_proxy->sort(0, Qt::AscendingOrder);
+    // Git: a file's state in its repository, as last read (and read when
+    // first asked for: drawn again then).
+    a_proxy->setGit([this](const QString& path, bool dir) {
+        GitMark m;
+        if (!a_gitShown) return m;
+        auto* tracker = qucs_s::git::Tracker::instance();
+        const qucs_s::git::Repository* repo = tracker->repositoryOf(path);
+        if (repo == nullptr) return m;
+        bool inside = false;
+        const QString rel = qucs_s::git::relativePath(repo->root, path, &inside);
+        if (!inside) return m;
+        const QPalette pal = palette();
+        if (rel.isEmpty()) {
+            m.branch = repo->branchText();
+            m.tip = tr("A git repository: %1").arg(repo->branchText());
+            if (repo->changedCount() > 0) {
+                m.colour = qucs_s::git::changedFolderColour(pal);
+                m.tip += QLatin1Char('\n') + tr("Changes not committed: %1").arg(repo->changedCount());
+            }
+            return m;
+        }
+        if (const qucs_s::git::Entry* e = repo->entryOf(rel)) {
+            m.colour = qucs_s::git::colourOf(*e, pal);
+            if (!e->ignored) m.letter = e->letter();
+            m.tip = tr("git: %1").arg(e->describe());
+            return m;
+        }
+        if (dir && repo->changedIn(rel)) {
+            m.colour = qucs_s::git::changedFolderColour(pal);
+            m.letter = QStringLiteral("\u2022");
+            m.tip = tr("git: changes in it");
+        }
+        return m;
+    });
+    // Read anew: drawn again.
+    connect(qucs_s::git::Tracker::instance(), &qucs_s::git::Tracker::changed, this, [this] {
+        if (!a_gitShown) return;
+        for (QAbstractItemView* v : {static_cast<QAbstractItemView*>(a_tree), static_cast<QAbstractItemView*>(a_list),
+                                     static_cast<QAbstractItemView*>(a_grid), static_cast<QAbstractItemView*>(a_details),
+                                     static_cast<QAbstractItemView*>(a_columns)})
+            if (v != nullptr) {
+                v->viewport()->update();
+                for (QAbstractItemView* column : v->viewport()->findChildren<QAbstractItemView*>()) column->viewport()->update();
+            }
+        a_statusTimer->start();
+    });
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 4, 0, 0);
@@ -1106,6 +1247,7 @@ FileBrowser::FileBrowser(QWidget* parent)
     QucsSettingsFile settings;
     setShowHidden(settings.value(kHidden, false).toBool());
     setQucsFilesOnly(settings.value(kQucsOnly, false).toBool());
+    setGitShown(settings.value(kGit, true).toBool());
     const int view = settings.value(kView, int(View::List)).toInt();
     setView(view >= int(View::Tree) && view <= int(View::Recent) ? View(view) : View::List);
     const QString where = settings.value(kLocation).toString();
@@ -1189,6 +1331,13 @@ void FileBrowser::buildToolbar()
     a_qucsAction->setToolTip(tr("Schematics, symbols, data displays, datasets, netlists and libraries, HDL and "
                                 "Verilog-A sources, S-parameters, Octave scripts - and the folders"));
     connect(a_qucsAction, &QAction::toggled, this, &FileBrowser::setQucsFilesOnly);
+    a_gitAction = menu->addAction(tr("Show Git Status"));
+    a_gitAction->setObjectName(QStringLiteral("fbShowGit"));
+    a_gitAction->setCheckable(true);
+    a_gitAction->setChecked(true);
+    a_gitAction->setToolTip(tr("In a git repository: each file's state - changed, staged, new, in conflict, ignored - by its "
+                               "colour and a letter, the branch after the repository's folder"));
+    connect(a_gitAction, &QAction::toggled, this, &FileBrowser::setGitShown);
     menu->addSeparator();
     a_documentAction = menu->addAction(tr("Show the Document in Front"), this, [this] {
         const QString doc = a_document ? a_document() : QString();
@@ -1397,6 +1546,9 @@ void FileBrowser::buildViews()
     a_recent->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
     for (QAbstractItemView* v : {static_cast<QAbstractItemView*>(a_tree), static_cast<QAbstractItemView*>(a_list),
+                                 static_cast<QAbstractItemView*>(a_details), static_cast<QAbstractItemView*>(a_columns)})
+        v->setItemDelegate(new GitDelegate(v));
+    for (QAbstractItemView* v : {static_cast<QAbstractItemView*>(a_tree), static_cast<QAbstractItemView*>(a_list),
                                  static_cast<QAbstractItemView*>(a_grid), static_cast<QAbstractItemView*>(a_details),
                                  static_cast<QAbstractItemView*>(a_columns), static_cast<QAbstractItemView*>(a_recent)})
         connect(v->selectionModel(), &QItemSelectionModel::currentChanged, this, [this, v](const QModelIndex& now) {
@@ -1419,8 +1571,13 @@ void FileBrowser::buildViews()
     a_statusTimer->setInterval(60);
     connect(a_statusTimer, &QTimer::timeout, this, &FileBrowser::updateStatus);
     const auto later = [this] { a_statusTimer->start(); };
+    const auto gitLater = [this] {
+        if (a_gitShown && !a_location.isEmpty()) qucs_s::git::Tracker::instance()->refresh(a_location);
+    };
     connect(a_proxy, &QAbstractItemModel::rowsInserted, this, later);
     connect(a_proxy, &QAbstractItemModel::rowsRemoved, this, later);
+    connect(a_model, &QAbstractItemModel::rowsInserted, this, gitLater);
+    connect(a_model, &QAbstractItemModel::rowsRemoved, this, gitLater);
     connect(a_proxy, &QAbstractItemModel::layoutChanged, this, later);
     connect(a_proxy, &QAbstractItemModel::modelReset, this, later);
     connect(a_model, &QFileSystemModel::directoryLoaded, this, later);
@@ -2349,6 +2506,7 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
         menu->addSeparator();
         menu->addAction(revealLabel(false), this, [this] { QDesktopServices::openUrl(QUrl::fromLocalFile(a_location)); });
         menu->addAction(tr("Copy Path"), this, [this] { QApplication::clipboard()->setText(QDir::toNativeSeparators(a_location)); });
+        addGitMenu(menu, {a_location});
         return menu;
     }
     if (info.isDir()) {
@@ -2382,10 +2540,52 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
     menu->addSeparator();
     menu->addAction(revealLabel(true), this, [path] { revealItem(path); });
     menu->addAction(tr("Copy Path"), this, [path] { QApplication::clipboard()->setText(QDir::toNativeSeparators(path)); });
+    // The entries chosen (this one among them), or this one.
+    QStringList chosen = selectedPaths();
+    if (!chosen.contains(path)) chosen = {path};
+    addGitMenu(menu, chosen);
     menu->addSeparator();
     menu->addAction(tr("Rename…"), this, [this, path] { rename(path); });
     menu->addAction(tr("Move to Trash…"), this, [this, path] { moveToTrash(path); });
     return menu;
+}
+
+void FileBrowser::addGitMenu(QMenu* menu, const QStringList& paths)
+{
+    menu->addSeparator();
+    QMenu* git = menu->addMenu(tr("Git"));
+    git->setObjectName(QStringLiteral("fbGitMenu"));
+    // (Filled as it opens: it asks git.)
+    connect(git, &QMenu::aboutToShow, this, [git, paths] {
+        git->clear();
+        qucs_s::git::Commands::instance()->fillEntryMenu(git, paths);
+    });
+}
+
+QStringList FileBrowser::selectedPaths() const
+{
+    QStringList paths;
+    QAbstractItemView* v = currentView();
+    if (v == nullptr || v->selectionModel() == nullptr) return paths;
+    for (const QModelIndex& index : v->selectionModel()->selectedIndexes())
+        if (index.column() == 0)
+            if (const QString p = pathOf(index); !p.isEmpty() && !paths.contains(p)) paths << p;
+    return paths;
+}
+
+void FileBrowser::setGitShown(bool on)
+{
+    a_gitShown = on;
+    if (a_gitAction != nullptr) {
+        const QSignalBlocker block(a_gitAction);
+        a_gitAction->setChecked(on);
+    }
+    for (QAbstractItemView* v : {static_cast<QAbstractItemView*>(a_tree), static_cast<QAbstractItemView*>(a_list),
+                                 static_cast<QAbstractItemView*>(a_grid), static_cast<QAbstractItemView*>(a_details),
+                                 static_cast<QAbstractItemView*>(a_columns)})
+        if (v != nullptr) v->viewport()->update();
+    a_statusTimer->start();
+    save();
 }
 
 void FileBrowser::showContextMenu(QAbstractItemView* view, const QPoint& pos)
@@ -2431,6 +2631,13 @@ void FileBrowser::updateStatus()
     QString text = QStringLiteral("%1, %2").arg(folders == 1 ? tr("1 folder") : tr("%1 folders").arg(folders),
                                                 files == 1 ? tr("1 file") : tr("%1 files").arg(files));
     if (!a_filter->text().trimmed().isEmpty() || a_qucsOnly) text += QStringLiteral("  ·  ") + tr("filtered");
+    // In a repository: its branch, what is not committed.
+    if (const qucs_s::git::Repository* repo = a_gitShown ? qucs_s::git::Tracker::instance()->repositoryOf(a_location) : nullptr) {
+        text += QStringLiteral("  ·  \u2387 ") + repo->branchText();
+        const int changed = repo->changedCount();
+        if (changed > 0) text += QStringLiteral("  ·  ") + (changed == 1 ? tr("1 change") : tr("%1 changes").arg(changed));
+        if (!repo->operation.isEmpty()) text += QStringLiteral("  ·  ") + tr("%1 under way").arg(repo->operation);
+    }
     a_status->setText(text);
 }
 
@@ -2444,6 +2651,7 @@ void FileBrowser::save() const
     settings.setValue(kView, int(a_view));
     settings.setValue(kHidden, a_showHidden);
     settings.setValue(kQucsOnly, a_qucsOnly);
+    settings.setValue(kGit, a_gitShown);
 }
 
 void FileBrowser::restyle()

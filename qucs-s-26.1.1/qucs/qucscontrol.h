@@ -29,6 +29,9 @@ class Component;
 class Painting;
 class QAction;
 class QucsApp;
+namespace qucs_s::git {
+struct Result;
+}
 class QucsDoc;
 class Schematic;
 class TextDoc;
@@ -430,6 +433,37 @@ private:
     QJsonObject listLibraries(const QJsonObject& args);
     QJsonObject createLibrary(const QJsonObject& args);
     QJsonObject importLibrary(const QJsonObject& args);
+    // Git (qucscontrol_git.cpp): the repository of \a path, else of the
+    // document in front - what the Git menu and the File Browser do.
+    QString gitRootOf(const QString& path, QString* error);
+    /// The repository of \a args' 'path', its 'paths' in \a paths
+    /// (relative to it then); else of the first of the paths.
+    QString gitRootOf(const QJsonObject& args, QStringList* paths, QString* error);
+    QJsonObject gitState(const QString& root);
+    QJsonObject gitStatus(const QJsonObject& args);
+    QJsonObject gitDiff(const QJsonObject& args);
+    QJsonObject gitLog(const QJsonObject& args);
+    QJsonObject gitShow(const QJsonObject& args);
+    QJsonObject gitBlame(const QJsonObject& args);
+    QJsonObject gitStage(const QJsonObject& args);
+    QJsonObject gitUnstage(const QJsonObject& args);
+    QJsonObject gitDiscard(const QJsonObject& args);
+    QJsonObject gitBranch(const QJsonObject& args);
+    QJsonObject gitStash(const QJsonObject& args);
+    QJsonObject gitTag(const QJsonObject& args);
+    QJsonObject gitCommitAction(const QJsonObject& args);
+    QJsonObject gitAbort(const QJsonObject& args);
+    QJsonObject gitInit(const QJsonObject& args);
+    QJsonObject gitIgnore(const QJsonObject& args);
+    void gitCommit(const QJsonObject& args, const Done& done);
+    void gitRemote(const QJsonObject& args, const Done& done);
+    void gitClone(const QJsonObject& args, const Done& done);
+    /// The open documents of \a root whose files git changed: loaded again.
+    void reloadGitChanged(const QString& root);
+    /// \a args of git run in \a root without waiting, its answer \a then's
+    /// (after \a timeoutMs it is stopped).
+    void gitJob(const QString& root, const QStringList& args, int timeoutMs, const QByteArray& input,
+                const std::function<QJsonObject(const qucs_s::git::Result&)>& then, const Done& done);
     /// What a run of \a doc wrote: its dataset - written when it is newer than
     /// \a before (its time before the run; invalid when there was none) -
     /// its variables, the copy \a keepAs, and the traces left blank.
