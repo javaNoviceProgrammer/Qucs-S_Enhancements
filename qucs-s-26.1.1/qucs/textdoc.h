@@ -84,7 +84,7 @@ public:
     bool error = true;
     int endLine = 0;
     int endColumn = 0;
-    QString source;   ///< what found it, when that matters ("" a check; PythonDoc's type checker its tool)
+    QString source{};   ///< what found it, when that matters ("" a check; PythonDoc's type checker its tool)
   };
   /// Shows \a list in the text until the next list (an empty one takes
   /// them away): a wavy underline from the column to its end, or to the
@@ -199,7 +199,8 @@ protected:
       /// markRoom() wide); a press there is marginPressed()'s.
       virtual int markRoom() const { return 0; }
       virtual void paintMark(QPainter &painter, const QTextBlock &block, const QRect &box) { Q_UNUSED(painter) Q_UNUSED(block) Q_UNUSED(box) }
-      virtual void marginPressed(const QTextBlock &block) { Q_UNUSED(block) }
+      /// (\a x: where in the margin; \a global: on the screen.)
+      virtual void marginPressed(const QTextBlock &block, int x, const QPoint &global) { Q_UNUSED(block) Q_UNUSED(x) Q_UNUSED(global) }
       /// A right-click in the margin at \a block's line (\a global: where).
       virtual void marginMenu(const QTextBlock &block, const QPoint &global) { Q_UNUSED(block) Q_UNUSED(global) }
       /// Room at the right of the line numbers for a subclass's folds

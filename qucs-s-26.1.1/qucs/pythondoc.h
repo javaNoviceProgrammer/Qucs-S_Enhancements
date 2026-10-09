@@ -49,7 +49,31 @@ struct Problem {
     bool error = false;
     QString message;
     QString code;
+    /// The checker's fix of it (ruff's): what it does, whether it is safe
+    /// ("safe", "unsafe": it may change what the code does), its edits -
+    /// none when it has no fix.
+    struct Edit {
+        int line = 1;      ///< from 1
+        int column = 1;    ///< from 1
+        int endLine = 1;
+        int endColumn = 1;   ///< the character after it
+        QString text;
+    };
+    QString fixMessage;
+    QString fixApplicability;
+    QList<Edit> fixEdits;
 };
+/// \a text with \a edits made (positions of the text as it is; any
+/// order).
+QString applyEdits(const QString& text, QList<Problem::Edit> edits);
+/// The name an "undefined name" message is about (ruff's, pyflakes', mypy's,
+/// pyright's); empty for any other.
+QString undefinedName(const QString& message);
+/// The comment that has \a code ignored on its line by its checker -
+/// `# noqa: F401`, `# type: ignore[assignment]` (mypy), `# pyright:
+/// ignore[rule]` - for \a line (its text), \a source the checker ("" the
+/// check's, mypy, pyright): the line as it is then.
+QString ignoredOnLine(const QString& line, const QString& code, const QString& source);
 
 /// A check's answer: the Python that compiled the script ("3.14.7"), the
 /// checker besides the compiler ("ruff 0.6.9", "pyflakes 3.2.0"; empty:
@@ -187,6 +211,14 @@ struct Answer {
     QList<FileChange> changes;
     int count = 0;
     QString refusal;
+    /// imports: the imports that would define a name, each its line and
+    /// where it goes (before the line, from 1).
+    struct Import {
+        QString title;
+        int line = 1;
+        QString text;
+    };
+    QList<Import> imports;
 };
 Answer readAnswer(const QByteArray& line);
 
@@ -289,8 +321,45 @@ QString neutralFolder();
 QString programText(const QString& name);
 /// The debugger (python/tools/debugger.py), as python -u -c <it> script.
 const QString& debuggerProgram();
-/// Format Document and Fix Problems (python/tools/formatter.py).
+/// Format Document and Fix Problems, Organize Imports, Format Selection
+/// (python/tools/formatter.py).
 const QString& formatterProgram();
+
+/// How a script is run and debugged (Run Settings): its arguments - split
+/// as a shell splits them -, its working folder (empty: its own),
+/// environment variables (NAME=value, a line each) and a .env file of
+/// more (relative: to its folder). Kept for each script, by its path.
+struct RunSettings {
+    QString arguments;
+    QString folder;
+    QString environment;
+    QString envFile;
+    bool isEmpty() const { return arguments.trimmed().isEmpty() && folder.trimmed().isEmpty() && environment.trimmed().isEmpty() && envFile.trimmed().isEmpty(); }
+    bool operator==(const RunSettings& o) const
+    {
+        return arguments == o.arguments && folder == o.folder && environment == o.environment && envFile == o.envFile;
+    }
+};
+RunSettings runSettingsFor(const QString& script);
+void setRunSettingsFor(const QString& script, const RunSettings& settings);
+/// \a text split into arguments as a shell would (quotes, escapes).
+QStringList splitArguments(const QString& text);
+/// The variables of a .env file's text (or of Run Settings' lines):
+/// NAME=value lines - "export" before one allowed, quotes taken off,
+/// # comments and blank lines left out, ${NAME} the value of \a base's
+/// or of a line before.
+QList<std::pair<QString, QString>> readEnvironment(const QString& text, const QProcessEnvironment& base);
+/// What a run of \a script is given: scriptEnvironment() with its Run
+/// Settings' variables (the .env file's, then the lines'), its folder and
+/// its arguments - or why it cannot run so (a .env file not there, a
+/// folder that is none).
+struct RunPlan {
+    QStringList arguments;
+    QString folder;
+    QProcessEnvironment environment;
+    QString failure;
+};
+RunPlan runPlanFor(const QString& script);
 
 /// Whether \a line begins a cell: # %%, #%%, # In[3]:, # <codecell>.
 bool isCellMarker(const QString& line);
@@ -442,11 +511,35 @@ public:
     /// The cell the cursor is in: its first and last lines.
     std::pair<int, int> currentCell() const;
 
-    /// The script formatted by ruff (or black) / what ruff can fix fixed:
-    /// one edit, undone at once; formatted() says what was done.
+    /// The script formatted by ruff (or black) / what ruff can fix fixed /
+    /// its imports sorted (ruff's isort rules, else isort) / the lines of
+    /// the selection (the cursor's line) formatted: one edit, undone at
+    /// once; formatted() says what was done.
     void format();
     void fixProblems();
+    void organizeImports();
+    void formatSelection();
     bool formatting() const { return a_formatProcess != nullptr; }
+    /// Formatted before each save (a setting, PythonFormatOnSave; off by
+    /// default) - waiting for it a few seconds at most.
+    static bool formatOnSave();
+    static void setFormatOnSave(bool on);
+    int save() override;
+
+    /// The fixes of the problems on \a line (from 1): ruff's fix of each
+    /// (while the check's answer is of the text as it is), an import for a
+    /// name not defined (the completer's: fixesAnswered() when they come),
+    /// and each one ignored on the line (# noqa: F401, # type: ignore[...]).
+    /// \a showAt: a menu of them shown there when they are all in (on the
+    /// screen; null: none shown).
+    void quickFix(int line, const QPoint& showAt = QPoint());
+    /// Those of the last quickFix(), by their titles; one made (one edit).
+    QStringList fixTitles() const;
+    bool applyFix(int index);
+    QMenu* fixMenu() const { return a_fixMenu; }
+    /// The line the light bulb is on - the cursor's, when it has a problem
+    /// (0: none).
+    int bulbLine() const;
 
     /// The outline above the text: its functions and classes, the one the
     /// cursor is in chosen; one chosen goes there.
@@ -547,6 +640,8 @@ signals:
     void breakpointsChanged();
     void referencesAnswered();
     void renameAnswered();
+    /// quickFix()'s list is whole (the imports in).
+    void fixesAnswered();
     /// The type check answered (or failed): its findings are shown.
     void typeCheckFinished();
     void valueShown();
@@ -567,7 +662,7 @@ protected:
     QMargins extraMargins() const override;
     int markRoom() const override;
     void paintMark(QPainter& painter, const QTextBlock& block, const QRect& box) override;
-    void marginPressed(const QTextBlock& block) override;
+    void marginPressed(const QTextBlock& block, int x, const QPoint& global) override;
     void marginMenu(const QTextBlock& block, const QPoint& global) override;
     int foldRoom() const override;
     void paintFold(QPainter& painter, const QTextBlock& block, const QRect& box) override;
@@ -602,8 +697,10 @@ private:
     void answerSignature(const qucs_s::python::Answer& answer);
     void answerHelp(const qucs_s::python::Answer& answer);
     void placeSignature();
-    void runFormatter(const QString& mode);
+    void runFormatter(const QString& mode, const QString& lines = QString());
     void finishFormat();
+    /// The menu of the fixes, shown at a_fixAt.
+    void showFixMenu();
     /// \a text in place of the script's, changing only what differs.
     void replaceText(const QString& text);
     void updateOutline();
@@ -664,6 +761,20 @@ private:
     QProcess* a_formatProcess = nullptr;
     int a_formatRevision = -1;
     QString a_formatMode;
+    QString a_formatLines;
+    int a_checkRevision = -1;   // the text lastCheck() is of
+
+    struct Fix {
+        QString title;
+        QList<qucs_s::python::Problem::Edit> edits;   // on the text as it is (one edit, applied)
+    };
+    QList<Fix> a_fixes;
+    int a_fixesRevision = -1;
+    int a_fixRequest = 0;       // the imports asked for
+    int a_fixLine = 0;
+    QPoint a_fixAt;             // where its menu goes (null: none)
+    QMenu* a_fixMenu = nullptr;
+    int a_bulbLine = 0;         // where the bulb was drawn
 
     QWidget* a_outlineBar = nullptr;
     QComboBox* a_outline = nullptr;

@@ -165,6 +165,31 @@ void QucsApp::initPythonToolbar()
     _settings::Get().setItem<bool>("PythonBreakOnRaised", on);
     if (pythonRun != nullptr && pythonRun->isDebugging()) pythonRun->setBreakOnRaised(on);
   });
+  pythonLibraryAction = new QAction(tr("Debug Library Code"), this);
+  pythonLibraryAction->setObjectName(QStringLiteral("pythonDebugLibrary"));
+  pythonLibraryAction->setCheckable(true);
+  pythonLibraryAction->setChecked(_settings::Get().item<bool>("PythonDebugLibraryCode"));
+  pythonLibraryAction->setToolTip(tr("Step Into goes into Python's library and installed packages too (opened read-only), "
+                                     "not over them; their frames are stopped in like the script's"));
+  connect(pythonLibraryAction, &QAction::toggled, this, [this](bool on) {
+    _settings::Get().setItem<bool>("PythonDebugLibraryCode", on);
+    if (pythonRun != nullptr) pythonRun->setDebugLibrary(on);
+  });
+  pythonInterruptAction = new QAction(tr("Interrupt"), this);
+  pythonInterruptAction->setObjectName(QStringLiteral("pythonInterrupt"));
+  pythonInterruptAction->setToolTip(tr("A KeyboardInterrupt in the script that is running, as Ctrl+C in a terminal - in a "
+                                       "long call too, where Pause waits; debugged, it stops where it was"));
+  pythonInterruptAction->setEnabled(false);
+  pythonInterruptAction->setVisible(PythonRunConsole::canInterrupt());
+  connect(pythonInterruptAction, &QAction::triggered, this, [this] {
+    if (pythonRun != nullptr) pythonRun->interrupt();
+  });
+  pythonRunSettingsAction = new QAction(tr("Run Settings..."), this);
+  pythonRunSettingsAction->setObjectName(QStringLiteral("pythonRunSettings"));
+  pythonRunSettingsAction->setToolTip(tr("The script's arguments, working folder, environment variables and .env file, "
+                                         "for Run and Debug"));
+  connect(pythonRunSettingsAction, &QAction::triggered, this, &QucsApp::slotPythonRunSettings);
+
   pythonEditBreakpointAction = new QAction(tr("Edit Breakpoint..."), this);
   pythonEditBreakpointAction->setObjectName(QStringLiteral("pythonEditBreakpoint"));
   pythonEditBreakpointAction->setToolTip(tr("The breakpoint at the cursor's line - its condition, hits, a logpoint's "
@@ -353,6 +378,36 @@ void QucsApp::initPythonToolbar()
   pythonFormatAction->setToolTip(tr("The script formatted by ruff (or black) installed for its Python - one edit, "
                                     "Undo takes it back"));
   connect(pythonFormatAction, &QAction::triggered, this, &QucsApp::slotPythonFormat);
+  pythonImportsAction = new QAction(tr("Organize Imports"), this);
+  pythonImportsAction->setObjectName(QStringLiteral("pythonOrganizeImports"));
+  pythonImportsAction->setShortcut(QKeySequence(Qt::SHIFT | Qt::ALT | Qt::Key_O));
+  pythonImportsAction->setToolTip(tr("The imports sorted and grouped by ruff (its isort rules), else isort, installed for "
+                                     "the script's Python (Shift+Alt+O) - one edit, Undo takes it back"));
+  connect(pythonImportsAction, &QAction::triggered, this, [this] {
+    if (PythonDoc *py = currentPythonDoc()) py->organizeImports();
+  });
+  pythonFormatSelectionAction = new QAction(tr("Format Selection"), this);
+  pythonFormatSelectionAction->setObjectName(QStringLiteral("pythonFormatSelection"));
+  pythonFormatSelectionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_F));
+  pythonFormatSelectionAction->setToolTip(tr("The lines selected - or the cursor's - formatted by ruff (or black), the rest "
+                                             "left as it is (Ctrl+Alt+F)"));
+  connect(pythonFormatSelectionAction, &QAction::triggered, this, [this] {
+    if (PythonDoc *py = currentPythonDoc()) py->formatSelection();
+  });
+  pythonFormatOnSaveAction = new QAction(tr("Format on Save"), this);
+  pythonFormatOnSaveAction->setObjectName(QStringLiteral("pythonFormatOnSave"));
+  pythonFormatOnSaveAction->setCheckable(true);
+  pythonFormatOnSaveAction->setChecked(PythonDoc::formatOnSave());
+  pythonFormatOnSaveAction->setToolTip(tr("A script formatted (ruff, or black) each time it is saved"));
+  connect(pythonFormatOnSaveAction, &QAction::toggled, this, [](bool on) { PythonDoc::setFormatOnSave(on); });
+  pythonQuickFixAction = new QAction(tr("Quick Fix..."), this);
+  pythonQuickFixAction->setObjectName(QStringLiteral("pythonQuickFix"));
+  pythonQuickFixAction->setShortcut(QKeySequence(Qt::SHIFT | Qt::ALT | Qt::Key_Return));
+  pythonQuickFixAction->setToolTip(tr("The fixes of the problems on the cursor's line (Alt+Shift+Return, or the light "
+                                      "bulb in the margin): ruff's fix, an import for a name not defined, each ignored on "
+                                      "the line"));
+  connect(pythonQuickFixAction, &QAction::triggered, this, &QucsApp::slotPythonQuickFix);
+
   pythonFixAction = new QAction(tr("Fix Problems"), this);
   pythonFixAction->setObjectName(QStringLiteral("pythonFix"));
   pythonFixAction->setToolTip(tr("What ruff can fix of what it finds (imports not used and more) fixed - one edit, "
@@ -363,7 +418,8 @@ void QucsApp::initPythonToolbar()
   // Shift+Return in the Python Shell's line, nor Alt+Left in another text.
   for (QAction *a : {pythonRunSelectionAction, pythonRunCellAction, pythonRunCellAdvanceAction, pythonDefinitionAction,
                      pythonBackAction, pythonBreakpointAction, pythonFormatAction, pythonSignatureAction, pythonReferencesAction,
-                     pythonRenameAction, pythonSymbolsAction, pythonFoldAction, pythonUnfoldAction, pythonRunToCursorAction})
+                     pythonRenameAction, pythonSymbolsAction, pythonFoldAction, pythonUnfoldAction, pythonRunToCursorAction,
+                     pythonQuickFixAction, pythonImportsAction, pythonFormatSelectionAction})
     a->setShortcutContext(Qt::WidgetShortcut);
 
   // The same in Simulation > Python, above the simulators' settings: for
@@ -372,7 +428,9 @@ void QucsApp::initPythonToolbar()
   pythonMenu->addAction(pythonRunAction);
   pythonMenu->addAction(pythonDebugAction);
   pythonMenu->addAction(pythonStopAction);
+  pythonMenu->addAction(pythonInterruptAction);
   pythonMenu->addAction(pythonShellAction);
+  pythonMenu->addAction(pythonRunSettingsAction);
   pythonMenu->addSeparator();
   pythonMenu->addAction(pythonRunSelectionAction);
   pythonMenu->addAction(pythonRunCellAction);
@@ -387,14 +445,19 @@ void QucsApp::initPythonToolbar()
   pythonMenu->addAction(pythonBreakpointAction);
   pythonMenu->addAction(pythonEditBreakpointAction);
   pythonMenu->addAction(pythonRaisedAction);
+  pythonMenu->addAction(pythonLibraryAction);
   pythonMenu->addSeparator();
   pythonMenu->addAction(pythonCheckAction);
   pythonMenu->addAction(pythonLineEndsAction);
   QMenu *types = pythonMenu->addMenu(tr("Type Checker"));
   types->setObjectName(QStringLiteral("pythonTypeCheckerMenu"));
   types->addActions(pythonTypeCheckers->actions());
+  pythonMenu->addAction(pythonQuickFixAction);
   pythonMenu->addAction(pythonFormatAction);
+  pythonMenu->addAction(pythonFormatSelectionAction);
+  pythonMenu->addAction(pythonImportsAction);
   pythonMenu->addAction(pythonFixAction);
+  pythonMenu->addAction(pythonFormatOnSaveAction);
   pythonMenu->addSeparator();
   pythonMenu->addAction(pythonCompleteAction);
   pythonMenu->addAction(pythonSignatureAction);
@@ -591,6 +654,16 @@ void QucsApp::updatePythonToolbar()
     a->setEnabled(py != nullptr);
   pythonFormatAction->setEnabled(editable);
   pythonFixAction->setEnabled(editable);
+  for (QAction *a : {pythonQuickFixAction, pythonImportsAction, pythonFormatSelectionAction}) a->setEnabled(editable);
+  pythonRunSettingsAction->setEnabled(py != nullptr && !py->getDocName().isEmpty());
+  if (py != nullptr && !py->getDocName().isEmpty()) {   // (the Run button says how it runs)
+    const qucs_s::python::RunSettings how = qucs_s::python::runSettingsFor(py->getDocName());
+    QString tip = tr("Run (F2): the script saved and run with this Python in its folder, its output in the Python Run console");
+    if (!how.arguments.isEmpty()) tip += QLatin1Char('\n') + tr("Arguments: %1").arg(how.arguments);
+    if (!how.folder.isEmpty()) tip += QLatin1Char('\n') + tr("Working folder: %1").arg(how.folder);
+    if (!how.environment.isEmpty() || !how.envFile.isEmpty()) tip += QLatin1Char('\n') + tr("With its environment (Run Settings)");
+    pythonRunAction->setToolTip(tip);
+  }
   pythonRenameAction->setEnabled(editable);
   pythonBackAction->setEnabled(!a_pythonBack.isEmpty());
   // (Debug, Pause and Continue share Ctrl+F2: one of them enabled at a
@@ -600,6 +673,7 @@ void QucsApp::updatePythonToolbar()
   pythonDebugAction->setEnabled(py != nullptr && !debugging);
   for (QAction *a : {pythonContinueAction, pythonStepOverAction, pythonStepIntoAction, pythonStepOutAction}) a->setEnabled(paused);
   pythonPauseAction->setEnabled(debugging && !paused && !pythonRun->pausing());
+  pythonInterruptAction->setEnabled(pythonRun != nullptr && pythonRun->isRunning() && !paused && PythonRunConsole::canInterrupt());
   pythonRunToCursorAction->setEnabled(py != nullptr && !py->getDocName().isEmpty() && (!debugging || paused));
   // Pause in Continue's place while it runs (on the toolbar and in the
   // menu; the one hidden has no key).
@@ -697,6 +771,7 @@ bool QucsApp::debugPython(PythonDoc *py, int runToLine)
   pythonRunDock->raise();
   const std::pair<QString, int> runTo =
       runToLine > 0 ? std::pair<QString, int>{QFileInfo(py->getDocName()).absoluteFilePath(), runToLine} : std::pair<QString, int>{};
+  pythonRun->setDebugLibrary(pythonLibraryAction->isChecked());
   const bool started = pythonRun->debug(py->interpreter(), py->getDocName(), breakpoints, pythonRaisedAction->isChecked(), runTo);
   updatePythonToolbar();
   return started;
@@ -712,6 +787,13 @@ void QucsApp::showPythonExecution(const QString &file, int line, bool top)
     shown = currentPythonDoc();
     if (shown != nullptr && QFileInfo(shown->getDocName()).canonicalFilePath() != QFileInfo(file).canonicalFilePath())
       shown = nullptr;
+    // Python's own, or a package's (Debug Library Code): read-only.
+    if (shown != nullptr && pythonRun != nullptr && !shown->isLibraryFile())
+      for (const PythonRunConsole::Frame &f : pythonRun->stack())
+        if (f.library && f.file == file) {
+          shown->setLibraryFile(true);
+          break;
+        }
   }
   for (QucsDoc *doc : allDocuments())
     if (auto *script = dynamic_cast<PythonDoc *>(doc))
@@ -722,7 +804,8 @@ void QucsApp::connectPythonDoc(PythonDoc *py)
 {
   py->addActions({pythonRunSelectionAction, pythonRunCellAction, pythonRunCellAdvanceAction, pythonDefinitionAction,
                   pythonBackAction, pythonBreakpointAction, pythonFormatAction, pythonSignatureAction, pythonReferencesAction,
-                  pythonRenameAction, pythonSymbolsAction, pythonFoldAction, pythonUnfoldAction, pythonRunToCursorAction});
+                  pythonRenameAction, pythonSymbolsAction, pythonFoldAction, pythonUnfoldAction, pythonRunToCursorAction,
+                  pythonQuickFixAction, pythonImportsAction, pythonFormatSelectionAction});
   connect(py, &PythonDoc::checkFinished, this, [this, py] { pythonChecked(py); });
   connect(py, &PythonDoc::typeCheckFinished, this, [this, py] { pythonChecked(py); });
   connect(py, &PythonDoc::definitionAnswered, this, [this, py] { pythonDefinitionFound(py); });
@@ -979,6 +1062,24 @@ void QucsApp::slotPythonRunToCursor()
     return;
   }
   debugPython(py, line);
+}
+
+void QucsApp::slotPythonRunSettings()
+{
+  PythonDoc *py = currentPythonDoc();
+  if (py == nullptr || py->getDocName().isEmpty()) return;
+  qucs_s::python::RunSettings settings = qucs_s::python::runSettingsFor(py->getDocName());
+  if (!qucs_s::python::editRunSettingsDialog(this, py->getDocName(), &settings)) return;
+  qucs_s::python::setRunSettingsFor(py->getDocName(), settings);
+  updatePythonToolbar();
+}
+
+void QucsApp::slotPythonQuickFix()
+{
+  PythonDoc *py = currentPythonDoc();
+  if (py == nullptr) return;
+  const QRect at = py->cursorRect();
+  py->quickFix(py->textCursor().blockNumber() + 1, py->viewport()->mapToGlobal(at.bottomLeft()));
 }
 
 void QucsApp::slotPythonEditBreakpoint()

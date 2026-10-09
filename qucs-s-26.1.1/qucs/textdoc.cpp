@@ -894,7 +894,7 @@ void TextDoc::lineNumberAreaPressed(QMouseEvent *event)
     }
     if (event->button() != Qt::LeftButton) return;
     if (foldRoom() > 0 && event->position().x() >= lineNumberArea->width() - foldRoom()) foldPressed(block);
-    else marginPressed(block);
+    else marginPressed(block, int(event->position().x()), event->globalPosition().toPoint());
 }
 
 void TextDoc::setDiagnostics(const QList<Diagnostic> &list)

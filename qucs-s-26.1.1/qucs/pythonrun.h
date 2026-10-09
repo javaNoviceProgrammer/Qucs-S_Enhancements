@@ -67,8 +67,10 @@ public:
     explicit PythonRunConsole(QWidget* parent = nullptr);
     ~PythonRunConsole() override;
 
-    /// Runs \a script with \a interpreter (a run going is stopped first);
-    /// false, said in the console, when it could not be started.
+    /// Runs \a script with \a interpreter (a run going is stopped first),
+    /// as its Run Settings say - its arguments, its folder, its environment
+    /// (qucs_s::python::runPlanFor()); false, said in the console, when it
+    /// could not be started.
     bool run(const QString& interpreter, const QString& script);
     /// Runs \a script under the debugger, stopping at \a breakpoints (a
     /// file's lines, from 1) - or those with their conditions, hits and
@@ -87,6 +89,7 @@ public:
         QString file;
         int line = 0;
         QString function;
+        bool library = false;   ///< Python's own code, or a package's
     };
     QList<Frame> stack() const { return a_stack; }
     /// The frame looked at (0: the innermost).
@@ -130,6 +133,12 @@ public:
     /// Its debugger told to stop where an exception is raised (caught or
     /// not), or not - at once, while it runs.
     void setBreakOnRaised(bool on);
+    /// Python's library and packages stepped into too (not stepped over) -
+    /// for the next debug run, and at once in one going.
+    void setDebugLibrary(bool on);
+    bool debugsLibrary() const { return a_library; }
+    /// Whether Interrupt works here (not on Windows).
+    static bool canInterrupt();
 
     /// The most lines kept: earlier ones go.
     static constexpr int kMostLines = 20000;
@@ -153,6 +162,10 @@ public slots:
     void setBreakpoints(const QString& file, const QList<qucs_s::python::Breakpoint>& breakpoints);
     /// While it runs: stopped at the next line of the script's (Pause).
     void pause();
+    /// A KeyboardInterrupt in the script (SIGINT, as Ctrl+C in a terminal)
+    /// - in a long call of C too, where Pause waits; debugged, it stops
+    /// where it was, as an exception no one catches does.
+    void interrupt();
     /// While it is stopped: on to \a line of \a file - once - or to a
     /// breakpoint before it (Run to Cursor).
     void runTo(const QString& file, int line);
@@ -188,7 +201,8 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
-    bool start(const QString& interpreter, const QString& script, const QStringList& arguments, bool debugging);
+    bool start(const QString& interpreter, const QString& script, const QStringList& arguments, bool debugging,
+               const qucs_s::python::RunPlan& plan);
     void readOutput();
     void readEvents();
     void handleEvent(const QJsonObject& event);
@@ -208,6 +222,7 @@ private:
     QPlainTextEdit* a_output = nullptr;
     QLabel* a_status = nullptr;
     QPushButton* a_stop = nullptr;
+    QPushButton* a_interrupt = nullptr;
     QPushButton* a_clear = nullptr;
     QLineEdit* a_input = nullptr;
     QPushButton* a_endInput = nullptr;
@@ -242,6 +257,8 @@ private:
     QString a_lastEvaluated;
     QHash<int, QTreeWidgetItem*> a_opening;   // a value's insides asked for: its row, by its handle
     bool a_pausing = false;
+    bool a_library = false;                   // setDebugLibrary()
+    bool a_interrupted = false;               // the run's end said so
     int a_requests = 0;                       // inspect() and requestData(): the next id
 };
 

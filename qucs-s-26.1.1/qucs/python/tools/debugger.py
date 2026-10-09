@@ -9,7 +9,7 @@ input and error are the editor's: what to do, a JSON object a line, in;
 where the script stopped and what is there, a JSON object a line, out.
 
     in   {"command": "start", "breakpoints": [b, ...], "raised": bool,
-          "run_to": {"file": f, "line": n}}
+          "run_to": {"file": f, "line": n}, "library": bool}
          {"command": "continue" | "next" | "step" | "return"}
          {"command": "run_to", "file": f, "line": n}    on to there (once)
          {"command": "pause"}                          stopped where it is
@@ -21,12 +21,14 @@ where the script stopped and what is there, a JSON object a line, out.
           "start": r, "count": n, "id": i}             a value's rows
          {"command": "breakpoints", "file": f, "lines": [b, ...]}   at any time
          {"command": "raised", "on": bool}             stopped where one is raised
+         {"command": "library", "on": bool}            Python's library stepped into too
          {"command": "input", "text": t} | {"command": "eof"}   the script's input
     a breakpoint b: a line, or {"line": n, "condition": e, "hit": "5" | "== 5"
          | "> 5" | "% 5" ..., "log": "x is {x}", "enabled": bool}
     out  {"event": "stopped", "reason": "breakpoint" | "step" | "pause" |
           "raised" | "exception", "exception": "ZeroDivisionError: ...",
-          "stack": [{"file", "line", "function"}, ...] (the innermost first),
+          "stack": [{"file", "line", "function", "library"}, ...] (the innermost
+          first; library: Python's own, or a package's),
           "frame": 0, "variables": [...]}
          {"event": "running"}
          {"event": "variables", "frame": k, "variables": [...]}
@@ -40,12 +42,16 @@ where the script stopped and what is there, a JSON object a line, out.
 It stops at a breakpoint - when its condition holds and its hits are as asked;
 a logpoint writes its message (the {expressions} in it evaluated) and goes on
 -, as it is stepped, in the code of the user - not in Python's library or a
-package installed for it, stepped over -, where it is paused, where an
+package installed for it, stepped over, unless asked to ("library") -, where it is paused, where an
 exception is raised when asked to, and where an exception no one catches is
 raised, after its traceback, to be looked at.
 """
 
+import signal
 import sys
+# (An Interrupt before the script runs is none of its: the debugger's start
+# goes on - main() takes it again for the script.)
+signal.signal(signal.SIGINT, signal.SIG_IGN)
 # (Not the folder it runs in - the script's, where a json.py or a queue.py of
 # its own would stand in for the modules this program imports.)
 sys.path[:] = [p for p in sys.path if p not in ('', '.')]
@@ -99,9 +105,14 @@ except (AttributeError, OSError):
 _OWN = os.path.realpath(bdb.__file__)
 
 
+def no_source(path):
+    """Code of no file to show (<frozen importlib._bootstrap>, <string>)."""
+    return not path or path.startswith('<')
+
+
 def is_library(path):
     """Python's library, a package installed for it, or no file at all."""
-    if not path or path.startswith('<'):
+    if no_source(path):
         return True
     real = os.path.realpath(path)
     return any(real == p or real.startswith(p + os.sep) for p in _LIBRARY)
@@ -219,6 +230,7 @@ class Debugger(bdb.Bdb):
         self.points = {}           # where they are: a file's lines with code, each its breakpoint
         self.temporary = None      # Run to Cursor's place: (file, line with code)
         self.raised = False        # stopped where an exception is raised
+        self.library = False       # Python's library stepped into too
         self.pausing = False       # Pause asked for
         self.main_thread = threading.get_ident()
         self.frames = []           # the stack at the stop, the innermost first
@@ -319,6 +331,11 @@ class Debugger(bdb.Bdb):
         # (Traced still: a breakpoint set while it runs stops it.)
         self._set_stopinfo(self.botframe, None, -1)
 
+    def skipped(self, path):
+        """Code stepped over: Python's library (unless it is stepped into
+        too), and code of no file."""
+        return no_source(path) or (not self.library and is_library(path))
+
     def own(self, frame):
         name = frame.f_code.co_filename
         return name == '<string>' or os.path.realpath(name) == _OWN or frame.f_globals is globals()
@@ -328,14 +345,14 @@ class Debugger(bdb.Bdb):
         # Asked to stop where an exception is raised, or to pause: the
         # user's every function traced (bdb leaves those of no breakpoint).
         if traced is None and (self.raised or self.pausing) and self.started and not self.quitting \
-                and not self.own(frame) and not is_library(frame.f_code.co_filename):
+                and not self.own(frame) and not self.skipped(frame.f_code.co_filename):
             return self.trace_dispatch
         return traced
 
     def dispatch_exception(self, frame, arg):
         kind, value, tb = arg
         if (self.raised and self.started and not self.post_mortem and tb is not None and tb.tb_next is None
-                and not is_library(frame.f_code.co_filename) and not self.own(frame)
+                and not self.skipped(frame.f_code.co_filename) and not self.own(frame)
                 and not issubclass(kind, (StopIteration, StopAsyncIteration, GeneratorExit, bdb.BdbQuit))):
             said = ''.join(traceback.format_exception_only(kind, value)).strip()
             self.interaction(frame, 'raised', exception=said)
@@ -373,7 +390,7 @@ class Debugger(bdb.Bdb):
         if not hit:
             if not stepping:
                 return   # (a breakpoint whose condition did not hold: on)
-            if is_library(frame.f_code.co_filename):
+            if self.skipped(frame.f_code.co_filename):
                 self.set_return(frame)   # (stepped over: on in the code that called it)
                 return
         reason = 'breakpoint' if hit else ('pause' if self.pausing else 'step')
@@ -386,7 +403,7 @@ class Debugger(bdb.Bdb):
         self._set_stopinfo(None, None)   # (not set_step(): not "not on this line again")
         frame = sys._current_frames().get(self.main_thread)
         while frame is not None:
-            if frame.f_trace is None and not self.own(frame) and not is_library(frame.f_code.co_filename):
+            if frame.f_trace is None and not self.own(frame) and not self.skipped(frame.f_code.co_filename):
                 frame.f_trace = self.trace_dispatch
             frame = frame.f_back
 
@@ -438,7 +455,8 @@ class Debugger(bdb.Bdb):
         if not self.frames:
             return
         self.handles = []
-        stack = [{'file': f.f_code.co_filename, 'line': line, 'function': f.f_code.co_name} for f, line in self.frames]
+        stack = [{'file': f.f_code.co_filename, 'line': line, 'function': f.f_code.co_name,
+                  'library': is_library(f.f_code.co_filename)} for f, line in self.frames]
         send({'event': 'stopped', 'reason': reason, 'exception': exception, 'stack': stack, 'frame': 0,
               'variables': self.variables(0)})
         while True:
@@ -554,6 +572,8 @@ def read_commands(debugger):
             debugger.set_breakpoints(c.get('file') or '', c.get('lines') or [])
         elif command == 'raised':
             debugger.raised = bool(c.get('on'))
+        elif command == 'library':
+            debugger.library = bool(c.get('on'))
         elif command == 'pause':
             debugger.pause()
         elif command == 'input':
@@ -583,6 +603,7 @@ def main():
     for path, specs in list(debugger.wanted.items()):
         debugger.set_breakpoints(path, specs)
     debugger.raised = bool(first.get('raised'))
+    debugger.library = bool(first.get('library'))
     if isinstance(first.get('run_to'), dict):
         debugger.run_to(first['run_to'].get('file') or '', int(first['run_to'].get('line') or 0))
     threading.Thread(target=read_commands, args=(debugger,), daemon=True).start()
@@ -598,6 +619,7 @@ def main():
     try:
         with io.open_code(script) as f:
             code = compile(f.read(), script, 'exec')
+        signal.signal(signal.SIGINT, signal.default_int_handler)   # (Interrupt: a KeyboardInterrupt in the script)
         debugger.run(code, main_module.__dict__)
     except bdb.BdbQuit:
         status = 1
