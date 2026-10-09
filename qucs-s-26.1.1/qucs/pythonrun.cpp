@@ -388,7 +388,7 @@ bool PythonRunConsole::start(const QString& interpreter, const QString& script, 
     a_interrupted = false;
     if (!plan.failure.isEmpty()) {
         note(plan.failure);
-        setStatus(tr("%1 was not run: its Run Settings (Simulation > Python > Run Settings...)").arg(info.fileName()));
+        setStatus(tr("%1 was not run: its Run Settings (Python > Run Settings...)").arg(info.fileName()));
         emit finished(-1);
         return false;
     }

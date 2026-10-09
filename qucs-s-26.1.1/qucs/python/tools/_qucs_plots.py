@@ -1,6 +1,6 @@
 """Matplotlib's figures in the Python Plots pane of Qucs-S, not windows of
 their own: the backend that Run, Debug and the Python Shell are given
-(MPLBACKEND=module://_qucs_plots) while Simulation > Python > Plots in Qucs-S
+(MPLBACKEND=module://_qucs_plots) while Python > Plots in Qucs-S
 is on.
 
 plt.show() writes each figure open as a picture into the folder QUCS_S_PLOTS

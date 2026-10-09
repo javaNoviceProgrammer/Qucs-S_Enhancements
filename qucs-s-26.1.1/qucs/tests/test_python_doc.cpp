@@ -17,6 +17,7 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QMenuBar>
 #include <QLineEdit>
 #include <QAbstractItemView>
 #include <QComboBox>
@@ -895,7 +896,7 @@ private slots:
     }
 
     // Ctrl+Space asks - after a single letter too, with Complete as You Type
-    // off -; so does Show Completions in Simulation > Python.
+    // off -; so does Show Completions in the Python menu.
     void askedForWithControlSpace()
     {
         if (python.isEmpty()) QSKIP("no python3 here");
@@ -980,29 +981,35 @@ private slots:
         closeAll();
     }
 
-    // Claude's: the actions in Simulation > Python, which trigger_action
-    // runs; a script read and edited as any text document.
+    // Claude's: the actions in the Python menu - a menu of its own, right
+    // of View -, which trigger_action runs; a script read and edited as any
+    // text document.
     void claudeRunsAndChecksAScript()
     {
         auto* control = app->findChild<QucsControl*>();
         QVERIFY(control != nullptr);
         const QString actions = QucsControl::textOf(control->callNow("list_actions", {}, 20000));
-        for (const char* path : {"Simulation > Python > Run", "Simulation > Python > Stop", "Simulation > Python > Run in Shell",
-                                 "Simulation > Python > Check", "Simulation > Python > Messages at Line Ends",
-                                 "Simulation > Python > Show Completions", "Simulation > Python > Complete as You Type",
-                                 "Simulation > Python > Debug", "Simulation > Python > Continue", "Simulation > Python > Step Over",
-                                 "Simulation > Python > Step Into", "Simulation > Python > Step Out",
-                                 "Simulation > Python > Toggle Breakpoint", "Simulation > Python > Run Selection or Line",
-                                 "Simulation > Python > Run Cell", "Simulation > Python > Run Cell and Advance",
-                                 "Simulation > Python > Format Document", "Simulation > Python > Fix Problems",
-                                 "Simulation > Python > Show Signature", "Simulation > Python > Go to Definition",
-                                 "Simulation > Python > Go Back"})
+        for (const char* path : {"Python > Run", "Python > Stop", "Python > Run in Shell",
+                                 "Python > Check", "Python > Messages at Line Ends",
+                                 "Python > Show Completions", "Python > Complete as You Type",
+                                 "Python > Debug", "Python > Continue", "Python > Step Over",
+                                 "Python > Step Into", "Python > Step Out",
+                                 "Python > Toggle Breakpoint", "Python > Run Selection or Line",
+                                 "Python > Run Cell", "Python > Run Cell and Advance",
+                                 "Python > Format Document", "Python > Fix Problems",
+                                 "Python > Show Signature", "Python > Go to Definition",
+                                 "Python > Go Back"})
             QVERIFY2(actions.contains(path), path);
+        QVERIFY(!actions.contains("Simulation > Python"));
+        QStringList bar;
+        for (QAction* a : app->menuBar()->actions())
+            if (!a->isSeparator()) bar << QString(a->text()).remove('&');
+        QVERIFY2(bar.indexOf("Python") > 0 && bar.indexOf("Python") == bar.indexOf("View") + 1, qPrintable(bar.join(", ")));
         if (python.isEmpty()) QSKIP("no python3 here: not run");
         PythonDoc* py = open(write("claude/c.py", "print('from claude')\n"));
         QVERIFY(py != nullptr);
         QSignalSpy done(app->pythonRunConsole(), &PythonRunConsole::finished);
-        QJsonObject r = control->callNow("trigger_action", {{"action", "Simulation > Python > Run"}}, 20000);
+        QJsonObject r = control->callNow("trigger_action", {{"action", "Python > Run"}}, 20000);
         QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
         QVERIFY(done.count() > 0 || done.wait(20000));
         QVERIFY(app->pythonRunConsole()->outputText().contains("from claude"));

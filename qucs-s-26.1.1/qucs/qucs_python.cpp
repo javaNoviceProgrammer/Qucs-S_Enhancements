@@ -37,6 +37,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMenu>
+#include <QMenuBar>
 #include <QStatusBar>
 #include <QTextBlock>
 #include <QDir>
@@ -434,9 +435,10 @@ void QucsApp::initPythonToolbar()
                      pythonQuickFixAction, pythonImportsAction, pythonFormatSelectionAction})
     a->setShortcutContext(Qt::WidgetShortcut);
 
-  // The same in Simulation > Python, above the simulators' settings: for
-  // the keyboard, and for Claude's trigger_action (it runs menu actions).
-  auto *pythonMenu = new QMenu(tr("&Python"), simMenu);
+  // The same in the Python menu, a menu of its own right of View: for the
+  // keyboard, and for Claude's trigger_action (it runs menu actions).
+  auto *pythonMenu = new QMenu(tr("P&ython"), this);
+  pythonMenu->setObjectName(QStringLiteral("pythonMenu"));
   pythonMenu->addAction(pythonRunAction);
   pythonMenu->addAction(pythonDebugAction);
   pythonMenu->addAction(pythonStopAction);
@@ -506,8 +508,10 @@ void QucsApp::initPythonToolbar()
     pythonMenu->addAction(toggle);
   }
   a_pythonMenu = pythonMenu;
-  simMenu->insertMenu(simSettings, pythonMenu);
-  simMenu->insertSeparator(simSettings);
+  const QList<QAction *> bar = menuBar()->actions();
+  const qsizetype view = bar.indexOf(viewMenu->menuAction());
+  if (view >= 0 && view + 1 < bar.size()) menuBar()->insertMenu(bar.at(view + 1), pythonMenu);
+  else menuBar()->addMenu(pythonMenu);
 
   // Hidden or shown from the Toolbars menu (or the toolbars' own menu):
   // kept, for the next Python script in front.
