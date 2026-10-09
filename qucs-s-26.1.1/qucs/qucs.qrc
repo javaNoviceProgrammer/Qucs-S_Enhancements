@@ -62,6 +62,16 @@
         <file>bitmaps/svg/python_shell.svg</file>
         <file>bitmaps/svg/python_check.svg</file>
         <file>bitmaps/svg/python_lineends.svg</file>
+        <file>bitmaps/svg/python_debug.svg</file>
+        <file>bitmaps/svg/python_continue.svg</file>
+        <file>bitmaps/svg/python_stepover.svg</file>
+        <file>bitmaps/svg/python_stepinto.svg</file>
+        <file>bitmaps/svg/python_stepout.svg</file>
+        <file alias="python/qucs.py">python/module/qucs.py</file>
+        <file alias="python/_qucs_shell.py">python/tools/_qucs_shell.py</file>
+        <file alias="python/completer.py">python/tools/completer.py</file>
+        <file alias="python/debugger.py">python/tools/debugger.py</file>
+        <file alias="python/formatter.py">python/tools/formatter.py</file>
         <file>bitmaps/svg/contour.svg</file>
         <file>bitmaps/svg/spectrogram.svg</file>
         <file>bitmaps/svg/tornado.svg</file>

@@ -623,12 +623,94 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
       own, and is started again when the script's Python changes. An
       answer that comes after the cursor has moved on to another word is
       not shown.
+  - **The call's signature.** Typing a call's bracket or a comma shows
+    the function's parameters above the call, with the one being written
+    in bold (a keyword argument's own) and the first paragraph of its
+    documentation. It follows the cursor in the call and goes when the
+    call is closed, or on Escape. *Show Signature* (Ctrl+Shift+Space)
+    asks for it anywhere in a call; *Complete as You Type* off leaves it
+    to that.
+  - **What a name is.** With the mouse on a name, a tooltip says what it
+    is - its signature, its kind - and its documentation, with the line's
+    errors and warnings when it has any.
+  - **Go to Definition** (F12, or Ctrl+click - ⌘-click on a Mac) goes to
+    where the name at the cursor is defined: in the script, in a module
+    beside it (opened there), or in Python's library or an installed
+    package, which opens read-only, says so, and is not checked. A name
+    built into Python is said to have no source. *Go Back* (Alt+Left,
+    ⌃- on a Mac) returns, again and again.
+    - Signatures, help and definitions come from the completer: from
+      jedi when the script's Python has it, otherwise from the script,
+      Python's builtins, the standard modules it imports and the modules
+      beside it, read without being run. Without jedi, a method called on
+      an object (`self.gain(`, `Amp().gain(`) is the one of that name
+      when exactly one of the script's classes has it.
+  - **An outline** above the text lists the script's classes and
+    functions, nested; the one the cursor is in is chosen, and choosing
+    another goes there.
+  - **Cells and lines in the Python Shell.** A line `# %%` (or `#%%`,
+    `# In[3]:`, `# <codecell>`) begins a cell, ruled off above it. *Run
+    Cell* (Ctrl+Return) runs the cell the cursor is in in the Python
+    Shell, in the shell's variables and the script's folder; *Run Cell and
+    Advance* (Alt+Return) then moves on to the next cell. *Run Selection
+    or Line* (Shift+Return) runs the lines selected - indented ones too -
+    or the cursor's line, and moves on to the next line. A traceback
+    names the script's lines, and when the last line is an expression its
+    value is shown, as the shell shows one. These keys act in a script
+    only, not in the shell's own line.
+  - **Format Document** (Shift+Alt+F) formats the script with ruff (or
+    black) installed for its Python, with the project's settings; **Fix
+    Problems** fixes what ruff can of what it finds, such as imports not
+    used. Each is one edit that Undo takes back; the status bar says what
+    was done, and a script that changed meanwhile is left as it is.
   - **Indented as Python is.** Return indents one level after a line
     ending in `:`, and one less after `return`, `pass`, `break`,
     `continue` or `raise`; one undo takes the new line back. Tab indents
     to the next level and Shift+Tab takes one away, on a line or on every
     line selected. A level is four spaces, or a tab in a file indented
     with tabs.
+  - **Breakpoints and the debugger.** A click in the line numbers'
+    margin (or *Toggle Breakpoint*, Ctrl+F9) sets a breakpoint, a red dot,
+    or takes it away; breakpoints move with the text and stay through a
+    reload. *Debug* (Ctrl+F2) saves the script and runs it under the
+    debugger, stopping at the breakpoints of every script open - one on a
+    line without code stops at the next line that has some - and where
+    an exception that nothing catches is raised, after its traceback.
+    Where it stopped is marked with an arrow and a yellow line, in the
+    script or in a module beside it (opened there). A panel beside the
+    *Python Run* output shows:
+    - the call stack, the innermost call first: choosing a frame shows
+      its variables and marks its line in green;
+    - the frame's variables, with their types and values (a module's
+      modules, functions and classes left out). A list, a dictionary, an
+      array or an object opens to show what is inside it;
+    - a line to evaluate an expression in the frame, or to run a
+      statement there (`x = 0`), the answer written in the output.
+
+    *Continue* (Ctrl+F2 while stopped) goes on to the next breakpoint,
+    *Step Over* (Ctrl+F10) to the next line, *Step Into* (Ctrl+F11) into
+    the call on the line - the script's code, not Python's library, which
+    is stepped over - and *Step Out* (Ctrl+Shift+F11) to the line that
+    called the function. Breakpoints set or taken away while it runs take
+    effect at once. *Stop* ends it.
+  - **Simulation results in Python: the `qucs` module.** A script run
+    from Qucs-S (Run, Debug, the Python Shell) can `import qucs`:
+    - `qucs.load('amp.sch')` reads the dataset a simulation of the
+      schematic left (the newest of ngspice's, Xyce's, SpiceOpus's and
+      Qucsator's, or the simulator's given), and `qucs.load('amp.dat.ngspice')`
+      a dataset itself, in text or binary. Each variable comes as a numpy
+      array (lists without numpy), complex where its values are;
+      `data.dependencies(name)` names its sweeps. A variable over two
+      sweeps has two axes, the outer sweep first, so `v[k]` is the inner
+      sweep at the k-th value of the outer one. `print(data)` lists the
+      variables, their sizes and sweeps.
+    - `qucs.save('gain.dat', {...}, independent=['frequency'])` writes a
+      dataset that a diagram of Qucs-S shows.
+    - `qucs.simulate('amp.sch')` simulates the schematic with ngspice (or
+      Xyce) as Qucs-S does, headless, and returns its dataset.
+
+    The module is plain Python 3 (numpy is used when it is there);
+    outside Qucs-S it is `share/qucs-s/python/qucs.py`.
   - **The Python toolbar**, shown while a script is in front (hidden from
     the Toolbars menu, it stays hidden), and the same in *Simulation →
     Python*:
@@ -641,9 +723,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
       then its exit code and how long it took. A traceback's
       `File "...", line N` is a link to that line. `input()` gets the end
       of the file rather than waiting.
+    - **Debug (Ctrl+F2):** the script run under the debugger (above).
     - **Stop:** ends the script that is running.
     - **Run in Shell:** runs the script in the Python Shell, in its
       folder, so its variables are still there afterwards.
+    - **Continue, Step Over, Step Into, Step Out:** the debugger's steps,
+      while it is stopped.
     - **Check:** checks the script now and brings up the Problems tab.
       Its tooltip says what checked it: the Python's version, and ruff's
       or pyflakes'.

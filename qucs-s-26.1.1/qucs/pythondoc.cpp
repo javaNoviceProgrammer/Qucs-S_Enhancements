@@ -11,20 +11,25 @@
  */
 #include "pythondoc.h"
 
+#include "config.h"
 #include "main.h"
 #include "qucs.h"
 #include "settings.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QComboBox>
 #include <QCompleter>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
@@ -46,17 +51,14 @@ namespace {
 
 QString tr(const char* text) { return QCoreApplication::translate("PythonDoc", text); }
 
-// What a check is run in: a folder of its own, empty - python -c puts the
-// folder it runs in first on sys.path, and a json.py or ast.py of the
-// script's folder would stand in for the modules the checker imports.
+} // namespace
+
 QString neutralFolder()
 {
     static std::unique_ptr<QTemporaryDir> folder;
     if (!folder || !folder->isValid()) folder = std::make_unique<QTemporaryDir>(QDir::tempPath() + QStringLiteral("/qucs-python-check-XXXXXX"));
     return folder->isValid() ? folder->path() : QDir::tempPath();
 }
-
-} // namespace
 
 const QString& checkerProgram()
 {
@@ -144,244 +146,99 @@ sys.stdout.write(json.dumps(out))
 
 const QString& completerProgram()
 {
-    static const QString program = QStringLiteral(R"PY(
-import sys, json, re, os, io, ast, keyword, builtins, inspect, importlib, pkgutil, tokenize
-try:
-    import jedi
-    ENGINE = ('jedi ' + str(getattr(jedi, '__version__', ''))).strip()
-except Exception:
-    jedi = None
-    ENGINE = ''
-STDLIB = set(getattr(sys, 'stdlib_module_names', ())) | set(sys.builtin_module_names)
-NEVER_IMPORTED = {'antigravity', 'this', '__hello__', '__phello__', 'idlelib', 'turtledemo'}
-MOST = 500
-
-def kind_of(value):
-    if inspect.ismodule(value):
-        return 'module'
-    if inspect.isclass(value):
-        return 'class'
-    if callable(value):
-        return 'function'
-    return 'instance'
-
-KEYWORDS = {k: 'keyword' for k in keyword.kwlist + list(getattr(keyword, 'softkwlist', []))}
-BUILTINS = {}
-for n in dir(builtins):
-    if not n.startswith('_'):
-        BUILTINS[n] = kind_of(getattr(builtins, n))
-for n in ('__name__', '__file__', '__doc__'):
-    BUILTINS[n] = 'instance'
-
-_modules = None
-def module_names(folders):
-    global _modules
-    if _modules is None:
-        found = set(sys.builtin_module_names)
-        try:
-            for m in pkgutil.iter_modules():
-                found.add(m.name)
-        except Exception:
-            pass
-        _modules = found
-    found = set(_modules)
-    for folder in folders:
-        try:
-            for m in pkgutil.iter_modules([folder]):
-                found.add(m.name)
-        except Exception:
-            pass
-    return {n: 'module' for n in found}
-
-def source_of(name, folders, path=True):
-    parts = name.split('.')
-    for base in list(folders) + ([p for p in sys.path if p] if path else []):
-        if not os.path.isdir(base):
-            continue
-        p = os.path.join(base, *parts)
-        if os.path.isfile(p + '.py'):
-            return p + '.py'
-        if os.path.isfile(os.path.join(p, '__init__.py')):
-            return os.path.join(p, '__init__.py')
-    return None
-
-def read_members(path):
-    with open(path, 'rb') as f:
-        tree = ast.parse(f.read())
-    out = {}
-    def visit(body):
-        for node in body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                out[node.name] = 'function'
-            elif isinstance(node, ast.ClassDef):
-                out[node.name] = 'class'
-            elif isinstance(node, ast.Import):
-                for a in node.names:
-                    out[a.asname or a.name.split('.')[0]] = 'module'
-            elif isinstance(node, ast.ImportFrom):
-                for a in node.names:
-                    if a.name != '*':
-                        out[a.asname or a.name] = 'instance'
-            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                for t in targets:
-                    for n in ast.walk(t):
-                        if isinstance(n, ast.Name):
-                            out.setdefault(n.id, 'statement')
-            elif isinstance(node, (ast.If, ast.Try, ast.With)):
-                visit(node.body)
-                visit(getattr(node, 'orelse', []))
-                visit(getattr(node, 'finalbody', []))
-                for h in getattr(node, 'handlers', []):
-                    visit(h.body)
-    visit(tree.body)
-    if os.path.basename(path) == '__init__.py':
-        for m in pkgutil.iter_modules([os.path.dirname(path)]):
-            out.setdefault(m.name, 'module')
-    return out
-
-_members = {}
-def module_members(name, folders):
-    key = (name, tuple(folders))
-    if key in _members:
-        return _members[key]
-    out = {}
-    root = name.split('.')[0]
-    try:
-        if root in STDLIB and root not in NEVER_IMPORTED and source_of(root, folders, path=False) is None:
-            module = importlib.import_module(name)
-            for n in dir(module):
-                try:
-                    out[n] = kind_of(getattr(module, n))
-                except Exception:
-                    out[n] = 'instance'
-            for m in pkgutil.iter_modules(getattr(module, '__path__', None) or []):
-                out.setdefault(m.name, 'module')
-        else:
-            path = source_of(name, folders)
-            if path:
-                out = read_members(path)
-    except Exception:
-        pass
-    _members[key] = out
-    return out
-
-def imports_of(source):
-    aliases = {}
-    try:
-        for node in ast.walk(ast.parse(source)):
-            if isinstance(node, ast.Import):
-                for a in node.names:
-                    aliases[a.asname or a.name.split('.')[0]] = a.name if a.asname else a.name.split('.')[0]
-            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-                for a in node.names:
-                    aliases.setdefault(a.asname or a.name, node.module + '.' + a.name)
-    except (SyntaxError, ValueError):
-        for m in re.finditer(r'^[ \t]*import[ \t]+([\w.]+)(?:[ \t]+as[ \t]+(\w+))?', source, re.M):
-            aliases[m.group(2) or m.group(1).split('.')[0]] = m.group(1) if m.group(2) else m.group(1).split('.')[0]
-        for m in re.finditer(r'^[ \t]*from[ \t]+([\w.]+)[ \t]+import[ \t]+(\w+)(?:[ \t]+as[ \t]+(\w+))?', source, re.M):
-            aliases.setdefault(m.group(3) or m.group(2), m.group(1) + '.' + m.group(2))
-    return aliases
-
-def script_names(text):
-    out = {}
-    for m in re.finditer(r'^[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)', text, re.M):
-        out[m.group(1)] = 'function'
-    for m in re.finditer(r'^[ \t]*class[ \t]+(\w+)', text, re.M):
-        out[m.group(1)] = 'class'
-    for m in re.finditer(r'^[ \t]*import[ \t]+([\w.]+)(?:[ \t]+as[ \t]+(\w+))?', text, re.M):
-        out[m.group(2) or m.group(1).split('.')[0]] = 'module'
-    whole = True
-    try:
-        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
-            if tok.type == tokenize.NAME:
-                out.setdefault(tok.string, 'statement')
-    except (tokenize.TokenError, IndentationError, SyntaxError):
-        whole = False
-    if not whole:
-        for m in re.finditer(r'\b[A-Za-z_]\w*', text):
-            out.setdefault(m.group(0), 'statement')
-    return out
-
-def own(source, line, column, path):
-    lines = source.split('\n')
-    before = lines[line - 1][:column] if 0 < line <= len(lines) else ''
-    word = re.search(r'\w*$', before).group(0)
-    start = sum(len(l) + 1 for l in lines[:line - 1]) + column - len(word)
-    rest = source[:start] + source[start + len(word):]   # the script without the word being typed
-    folders = [os.path.dirname(os.path.abspath(path))] if path else []
-    m = re.match(r'^\s*from\s+([\w.]+)\s+import\s+(?:.*,\s*)?\(?\s*(\w*)$', before)
-    if m:
-        return module_members(m.group(1), folders), m.group(2)
-    m = re.match(r'^\s*(?:import|from)\s+([\w.]*)$', before)
-    if m:
-        package, dot, prefix = m.group(1).rpartition('.')
-        if dot:
-            return {k: v for k, v in module_members(package, folders).items() if v == 'module'}, prefix
-        return module_names(folders), prefix
-    m = re.search(r'([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.(\w*)$', before)
-    if m:
-        base, prefix = m.group(1), m.group(2)
-        head, _, tail = base.partition('.')
-        aliases = imports_of(rest)
-        if head in aliases:
-            found = module_members(aliases[head] + ('.' + tail if tail else ''), folders)
-            if found:
-                return found, prefix
-        out = {}
-        for n in re.finditer(r'\b' + re.escape(base) + r'\.([A-Za-z_]\w*)', rest):
-            out[n.group(1)] = 'statement'
-        return out, prefix
-    if (word and word[0].isdigit()) or before[:len(before) - len(word)].endswith('.'):
-        return {}, word   # (a number's, or an attribute of what is no name)
-    names = dict(script_names(rest))
-    names.update(BUILTINS)
-    names.update(KEYWORDS)
-    return names, word
-
-def answer(request):
-    source, line, column, path = request.get('source', ''), int(request.get('line', 1)), int(request.get('column', 0)), request.get('path') or None
-    if jedi is not None:
-        try:
-            items = []
-            for c in jedi.Script(code=source, path=path).complete(line, column):
-                items.append({'name': c.name_with_symbols, 'type': c.type, 'description': c.description})
-                if len(items) >= MOST:
-                    break
-            return ENGINE, items
-        except Exception:
-            pass
-    names, prefix = own(source, line, column, path)
-    low = prefix.lower()
-    chosen = sorted((n for n in names if n.lower().startswith(low)), key=lambda n: (n.startswith('_'), n.lower(), n))
-    return '', [{'name': n, 'type': names[n], 'description': ''} for n in chosen[:MOST]]
-
-while True:
-    raw = sys.stdin.readline()
-    if not raw:
-        break
-    if not raw.strip():
-        continue
-    request = {}
-    try:
-        request = json.loads(raw)
-        engine, items = answer(request)
-        out = {'id': request.get('id', -1), 'engine': engine, 'items': items}
-    except Exception as e:
-        out = {'id': request.get('id', -1), 'engine': '', 'items': [], 'failure': str(e)}
-    sys.stdout.write(json.dumps(out) + '\n')
-    sys.stdout.flush()
-)PY");
+    static const QString program = programText(QStringLiteral("completer.py"));
     return program;
+}
+
+QString programText(const QString& name)
+{
+    QFile file(QStringLiteral(":/python/") + name);
+    return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
+}
+
+const QString& debuggerProgram()
+{
+    static const QString program = programText(QStringLiteral("debugger.py"));
+    return program;
+}
+
+const QString& formatterProgram()
+{
+    static const QString program = programText(QStringLiteral("formatter.py"));
+    return program;
+}
+
+QString moduleFolder()
+{
+    // Written once, for as long as the program runs: the module, and the
+    // Python Shell's runner (each read from the resources).
+    static std::unique_ptr<QTemporaryDir> folder;
+    if (folder && folder->isValid()) return folder->path();
+    folder = std::make_unique<QTemporaryDir>(QDir::tempPath() + QStringLiteral("/qucs-python-XXXXXX"));
+    if (!folder->isValid()) return {};
+    for (const QString& name : {QStringLiteral("qucs.py"), QStringLiteral("_qucs_shell.py")}) {
+        QFile out(folder->filePath(name));
+        if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) out.write(programText(name).toUtf8());
+    }
+    QDir(folder->path()).mkpath(QStringLiteral("jobs"));
+    return folder->path();
+}
+
+namespace {
+// The program qucs.simulate() runs: Qucs-S's own, when this is it (not a
+// test's program), unless one is set.
+QString simulatingProgram()
+{
+    if (qEnvironmentVariableIsSet("QUCS_S_EXECUTABLE")) return {};
+    const QString self = QCoreApplication::applicationFilePath();
+    return QFileInfo(self).baseName() == QLatin1String(QUCS_NAME) ? self : QString();
+}
+
+QString pythonPathWith(const QString& before)
+{
+    const QString folder = moduleFolder();
+    if (folder.isEmpty()) return before;
+    return before.isEmpty() ? folder : folder + QDir::listSeparator() + before;
+}
+} // namespace
+
+QProcessEnvironment scriptEnvironment()
+{
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
+    environment.insert(QStringLiteral("PYTHONPATH"), pythonPathWith(environment.value(QStringLiteral("PYTHONPATH"))));
+    if (const QString program = simulatingProgram(); !program.isEmpty())
+        environment.insert(QStringLiteral("QUCS_S_EXECUTABLE"), program);
+    return environment;
+}
+
+QStringList shellEnvironment()
+{
+    QStringList entries{QStringLiteral("PYTHONPATH=") + pythonPathWith(qEnvironmentVariable("PYTHONPATH"))};
+    if (const QString program = simulatingProgram(); !program.isEmpty())
+        entries << QStringLiteral("QUCS_S_EXECUTABLE=") + program;
+    return entries;
 }
 
 Completions readCompletions(const QByteArray& line)
 {
+    const Answer read = readAnswer(line);
     Completions answer;
+    if (read.kind != QLatin1String("complete")) return answer;
+    answer.id = read.id;
+    answer.engine = read.engine;
+    answer.items = read.items;
+    return answer;
+}
+
+Answer readAnswer(const QByteArray& line)
+{
+    Answer answer;
     const QJsonDocument doc = QJsonDocument::fromJson(line.trimmed());
     if (!doc.isObject()) return answer;
     const QJsonObject o = doc.object();
     answer.id = o.value(QStringLiteral("id")).toInt(-1);
+    answer.kind = o.value(QStringLiteral("kind")).toString(QStringLiteral("complete"));
     answer.engine = o.value(QStringLiteral("engine")).toString();
     for (const QJsonValue& v : o.value(QStringLiteral("items")).toArray()) {
         const QJsonObject item = v.toObject();
@@ -389,7 +246,105 @@ Completions readCompletions(const QByteArray& line)
         if (!name.isEmpty())
             answer.items.append({name, item.value(QStringLiteral("type")).toString(), item.value(QStringLiteral("description")).toString()});
     }
+    if (const QJsonObject sig = o.value(QStringLiteral("signature")).toObject(); !sig.isEmpty()) {
+        Signature& s = answer.signature;
+        s.valid = true;
+        s.name = sig.value(QStringLiteral("name")).toString();
+        for (const QJsonValue& v : sig.value(QStringLiteral("params")).toArray()) s.params << v.toString();
+        s.index = sig.value(QStringLiteral("index")).toInt(-1);
+        s.doc = sig.value(QStringLiteral("doc")).toString();
+        const QJsonArray open = sig.value(QStringLiteral("open")).toArray();
+        s.openLine = open.size() == 2 ? open.at(0).toInt() : 0;
+        s.openColumn = open.size() == 2 ? open.at(1).toInt() : 0;
+    }
+    if (const QJsonObject help = o.value(QStringLiteral("help")).toObject(); !help.isEmpty()) {
+        answer.help.valid = true;
+        answer.help.title = help.value(QStringLiteral("title")).toString();
+        answer.help.type = help.value(QStringLiteral("type")).toString();
+        answer.help.text = help.value(QStringLiteral("text")).toString();
+    }
+    if (const QJsonObject place = o.value(QStringLiteral("definition")).toObject(); !place.isEmpty()) {
+        Place& p = answer.place;
+        p.valid = true;
+        p.file = place.value(QStringLiteral("file")).toString();
+        p.line = place.value(QStringLiteral("line")).toInt();
+        p.column = std::max(0, place.value(QStringLiteral("column")).toInt());
+        p.name = place.value(QStringLiteral("name")).toString();
+        p.builtin = place.value(QStringLiteral("builtin")).toBool();
+        p.library = place.value(QStringLiteral("library")).toBool();
+    }
     return answer;
+}
+
+bool isCellMarker(const QString& line)
+{
+    static const QRegularExpression marker(QStringLiteral("^\\s*#\\s*(%%|In\\s*\\[[^\\]]*\\]\\s*:|<codecell>)"));
+    return marker.match(line).hasMatch();
+}
+
+std::pair<int, int> cellAround(const QString& text, int line)
+{
+    const QList<QStringView> lines = QStringView(text).split(QLatin1Char('\n'));
+    const int count = int(lines.size());
+    line = std::clamp(line, 1, std::max(1, count));
+    int first = 1;
+    for (int k = line; k >= 1; --k)
+        if (isCellMarker(lines.at(k - 1).toString())) {
+            first = k;
+            break;
+        }
+    int last = count;
+    for (int k = line + 1; k <= count; ++k)
+        if (isCellMarker(lines.at(k - 1).toString())) {
+            last = k - 1;
+            break;
+        }
+    // (A file's last line break is no line of its.)
+    while (last > first && lines.at(last - 1).trimmed().isEmpty() && last == count) --last;
+    return {first, last};
+}
+
+QList<OutlineEntry> outlineOf(const QString& text)
+{
+    static const QRegularExpression head(QStringLiteral("^([ \\t]*)(async[ \\t]+def|def|class)[ \\t]+([A-Za-z_]\\w*)"));
+    const QList<QStringView> lines = QStringView(text).split(QLatin1Char('\n'));
+    const auto indentOf = [](QStringView line) {
+        int n = 0;
+        for (const QChar c : line) {
+            if (c == QLatin1Char(' ')) ++n;
+            else if (c == QLatin1Char('\t')) n += 8 - n % 8;
+            else break;
+        }
+        return n;
+    };
+    QList<OutlineEntry> entries;
+    QList<std::pair<int, int>> open;   // the entries a line may be in: their index and indentation
+    int lastCode = 0;                  // the last line of code so far (from 1)
+    for (int k = 0; k < lines.size(); ++k) {
+        const QStringView line = lines.at(k);
+        const QStringView code = line.trimmed();
+        if (code.isEmpty() || code.startsWith(QLatin1Char('#'))) continue;
+        const int indent = indentOf(line);
+        // A line as far left as an entry's head, or further, ends its body:
+        // its last line is the last of code before.
+        while (!open.isEmpty() && indent <= open.last().second) {
+            entries[open.last().first].lastLine = std::max(entries[open.last().first].line, lastCode);
+            open.removeLast();
+        }
+        lastCode = k + 1;
+        const QRegularExpressionMatch m = head.matchView(line);
+        if (!m.hasMatch()) continue;
+        OutlineEntry e;
+        e.line = k + 1;
+        e.lastLine = k + 1;
+        e.depth = int(open.size());
+        e.kind = m.captured(2).endsWith(QLatin1String("def")) ? QStringLiteral("def") : QStringLiteral("class");
+        e.name = m.captured(3);
+        open.append({int(entries.size()), indent});
+        entries.append(e);
+    }
+    for (const auto& o : std::as_const(open)) entries[o.first].lastLine = std::max(entries[o.first].line, lastCode);
+    return entries;
 }
 
 namespace {
@@ -645,6 +600,67 @@ PythonDoc::PythonDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     a_completeDelay->setSingleShot(true);
     a_completeDelay->setInterval(kCompleteDelay);
     connect(a_completeDelay, &QTimer::timeout, this, [this] { complete(false); });
+
+    // The call the cursor is in, above it (asked again as the cursor moves
+    // in it).
+    a_signatureTip = new QLabel(this, Qt::ToolTip | Qt::FramelessWindowHint);
+    a_signatureTip->setObjectName(QStringLiteral("pythonSignature"));
+    a_signatureTip->setForegroundRole(QPalette::ToolTipText);
+    a_signatureTip->setBackgroundRole(QPalette::ToolTipBase);
+    a_signatureTip->setAutoFillBackground(true);
+    a_signatureTip->setFrameStyle(QFrame::Box | QFrame::Plain);
+    a_signatureTip->setMargin(4);
+    a_signatureTip->setTextFormat(Qt::RichText);
+    a_signatureTip->setWordWrap(true);
+    a_signatureTip->setMaximumWidth(640);
+    a_signatureDelay = new QTimer(this);
+    a_signatureDelay->setSingleShot(true);
+    a_signatureDelay->setInterval(kCompleteDelay);
+    connect(a_signatureDelay, &QTimer::timeout, this, [this] { showSignature(false); });
+    connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this] {
+        if (signatureShown()) a_signatureDelay->start();
+    });
+    connect(this, &QPlainTextEdit::updateRequest, this, [this](const QRect&, int dy) {
+        if (dy != 0 && signatureShown()) a_signatureTip->hide();   // (scrolled: no longer by its call)
+    });
+
+    // The outline above the text.
+    a_outlineBar = new QWidget(this);
+    a_outlineBar->setObjectName(QStringLiteral("pythonOutlineBar"));
+    a_outlineBar->setAutoFillBackground(true);
+    auto* row = new QHBoxLayout(a_outlineBar);
+    row->setContentsMargins(4, 2, 4, 2);
+    a_outline = new QComboBox(a_outlineBar);
+    a_outline->setObjectName(QStringLiteral("pythonOutline"));
+    a_outline->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    a_outline->setMinimumContentsLength(24);
+    a_outline->setMaxVisibleItems(24);
+    a_outline->setFocusPolicy(Qt::NoFocus);
+    a_outline->setToolTip(tr("The script's functions and classes: the one the cursor is in, and any other to go to"));
+    row->addWidget(a_outline);
+    row->addStretch(1);
+    connect(a_outline, &QComboBox::activated, this, [this](int index) {
+        const int line = a_outline->itemData(index).toInt();
+        if (line <= 0) return;
+        const QTextBlock block = document()->findBlockByNumber(line - 1);
+        QTextCursor at(block);
+        const QString text = block.text();
+        int indent = 0;
+        while (indent < text.size() && text.at(indent).isSpace()) ++indent;
+        at.setPosition(block.position() + indent);
+        setTextCursor(at);
+        centerCursor();
+        setFocus();
+    });
+    a_outlineDelay = new QTimer(this);
+    a_outlineDelay->setSingleShot(true);
+    a_outlineDelay->setInterval(300);
+    connect(a_outlineDelay, &QTimer::timeout, this, &PythonDoc::updateOutline);
+    connect(document(), &QTextDocument::contentsChanged, a_outlineDelay, qOverload<>(&QTimer::start));
+    connect(this, &QPlainTextEdit::cursorPositionChanged, this, &PythonDoc::chooseOutlineEntry);
+    updateMargins();
+    placeOutline();
+    updateOutline();
 }
 
 PythonDoc::~PythonDoc()
@@ -652,6 +668,11 @@ PythonDoc::~PythonDoc()
     openScripts().remove(this);
     stopCheck();
     stopCompleter();
+    if (a_formatProcess != nullptr) {
+        disconnect(a_formatProcess, nullptr, this, nullptr);
+        a_formatProcess->kill();
+        a_formatProcess->waitForFinished(1000);
+    }
     // TextDoc's destructor edits the text as it lets the highlighter go:
     // no check is scheduled by a PythonDoc that is no more.
     disconnect(document(), nullptr, this, nullptr);
@@ -660,7 +681,20 @@ PythonDoc::~PythonDoc()
 bool PythonDoc::load()
 {
     const bool loaded = TextDoc::load();
-    if (loaded) checkNow();
+    if (loaded) {
+        updateOutline();
+        checkNow();
+    }
+    return loaded;
+}
+
+bool PythonDoc::reload()
+{
+    // Read again: the breakpoints at the same lines (the text cleared
+    // first would take them all to its start).
+    const QList<int> kept = breakpoints();
+    const bool loaded = TextDoc::reload();
+    setBreakpoints(kept);
     return loaded;
 }
 
@@ -706,6 +740,7 @@ void PythonDoc::checkNow()
     a_delay->stop();
     stopCheck();
     a_scheduledRevision = a_checkedRevision = document()->revision();
+    if (a_library) return;   // (Python's own: not the user's to fix)
 
     a_process = new QProcess(this);
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
@@ -811,6 +846,10 @@ void PythonDoc::keyPressEvent(QKeyEvent* event)
             break;
         }
     }
+    if (key == Qt::Key_Escape && signatureShown()) {
+        a_signatureTip->hide();
+        return;
+    }
     if ((key == Qt::Key_Return || key == Qt::Key_Enter) && modifiers == Qt::NoModifier) {
         QTextCursor cursor = textCursor();
         QTextCursor start = cursor;   // (a selection's start: the selection goes)
@@ -897,6 +936,21 @@ bool PythonDoc::event(QEvent* event)
         event->accept();
         return true;
     }
+    if (event->type() == QEvent::ShortcutOverride) {
+        const auto* key = static_cast<const QKeyEvent*>(event);
+        // Escape closes the call's signature, not the window's.
+        if (key->key() == Qt::Key_Escape && signatureShown()) {
+            event->accept();
+            return true;
+        }
+        // Shift+Return runs the selection or the line (Simulation > Python):
+        // the action's, not a line break - which the text would take.
+        if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
+            && (key->modifiers() & ~Qt::KeypadModifier) == Qt::ShiftModifier) {
+            event->ignore();
+            return true;
+        }
+    }
     return TextDoc::event(event);
 }
 
@@ -948,6 +1002,10 @@ void PythonDoc::afterTyping(const QString& typed)
                                                  || typed.at(0) == QLatin1Char('.'));
     if (completeAsYouType() && nameOrDot) a_completeDelay->start();
     else a_completeDelay->stop();
+    // The call's signature: asked for at its bracket or a comma, and
+    // again as it is written (gone when the call is closed).
+    const bool call = typed == QLatin1String("(") || typed == QLatin1String(",");
+    if ((call && completeAsYouType()) || (signatureShown() && !typed.isEmpty())) a_signatureDelay->start();
 }
 
 void PythonDoc::complete(bool asked)
@@ -963,15 +1021,25 @@ void PythonDoc::complete(bool asked)
         const bool afterDot = word.isEmpty() && afterNameDot(before);
         if ((!afterDot && (word.size() < 2 || word.at(0).isDigit())) || qucs_s::python::inStringOrComment(before)) return;
     }
-    if (!startCompleter()) return;
+    const int id = ask(QStringLiteral("complete"), cursor.blockNumber() + 1, cursor.positionInBlock());
+    if (id == 0) return;
+    a_request = id;
     a_requestBlock = cursor.blockNumber();
     a_requestStart = qucs_s::python::wordStart(before);
-    const QJsonObject question{{QStringLiteral("id"), ++a_request},
+}
+
+int PythonDoc::ask(const QString& kind, int line, int column)
+{
+    if (!startCompleter()) return 0;
+    const int id = ++a_questions;
+    const QJsonObject question{{QStringLiteral("id"), id},
+                               {QStringLiteral("kind"), kind},
                                {QStringLiteral("source"), toPlainText()},
-                               {QStringLiteral("line"), cursor.blockNumber() + 1},
-                               {QStringLiteral("column"), cursor.positionInBlock()},
+                               {QStringLiteral("line"), line},
+                               {QStringLiteral("column"), column},
                                {QStringLiteral("path"), getDocName().isEmpty() ? QString() : QFileInfo(getDocName()).absoluteFilePath()}};
     a_completerProcess->write(QJsonDocument(question).toJson(QJsonDocument::Compact) + '\n');
+    return id;
 }
 
 bool PythonDoc::startCompleter()
@@ -981,8 +1049,7 @@ bool PythonDoc::startCompleter()
     if (a_completerProcess != nullptr && a_completerInterpreter == python) return true;
     stopCompleter();
     a_completerProcess = new QProcess(this);
-    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
-    environment.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
+    QProcessEnvironment environment = qucs_s::python::scriptEnvironment();   // (the qucs module completed too)
     environment.insert(QStringLiteral("PYTHONDONTWRITEBYTECODE"), QStringLiteral("1"));
     a_completerProcess->setProcessEnvironment(environment);
     a_completerProcess->setWorkingDirectory(qucs_s::python::neutralFolder());
@@ -1028,8 +1095,23 @@ void PythonDoc::readCompleter()
     while ((end = a_completerOutput.indexOf('\n')) >= 0) {
         const QByteArray line = a_completerOutput.left(end);
         a_completerOutput.remove(0, end + 1);
-        const qucs_s::python::Completions answer = qucs_s::python::readCompletions(line);
-        if (answer.id == a_request) showCompletions(answer);   // (an earlier one's: overtaken)
+        const qucs_s::python::Answer answer = qucs_s::python::readAnswer(line);
+        // (An earlier question's answer: overtaken.)
+        if (answer.kind == QLatin1String("complete") && answer.id == a_request) {
+            qucs_s::python::Completions completions;
+            completions.id = answer.id;
+            completions.engine = answer.engine;
+            completions.items = answer.items;
+            showCompletions(completions);
+        } else if (answer.kind == QLatin1String("signature") && answer.id == a_signatureRequest) {
+            answerSignature(answer);
+        } else if (answer.kind == QLatin1String("help") && answer.id == a_helpRequest) {
+            answerHelp(answer);
+        } else if (answer.kind == QLatin1String("definition") && answer.id == a_definitionRequest) {
+            if (!answer.engine.isEmpty()) a_completionEngine = answer.engine;
+            a_definition = answer.place;
+            emit definitionAnswered();
+        }
     }
 }
 

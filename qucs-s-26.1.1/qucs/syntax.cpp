@@ -341,7 +341,7 @@ QList<Language> build()
     table.append(net);
   }
   {
-    Language python{LANG_PYTHON, "python", QT_TRANSLATE_NOOP("SyntaxHighlighter", "Python"), {"py", "pyw"},
+    Language python{LANG_PYTHON, "python", QT_TRANSLATE_NOOP("SyntaxHighlighter", "Python"), {"py", "pyw", "pyi"},
                     {{Style::Keyword, nullptr},
                      {Style::Builtin, nullptr},
                      {Style::Element, QT_TRANSLATE_NOOP("SyntaxHighlighter", "Definition")},
