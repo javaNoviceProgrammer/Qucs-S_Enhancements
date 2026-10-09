@@ -17,6 +17,7 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QScopeGuard>
 #include <QDialog>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -133,7 +134,8 @@ private slots:
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
         Module::registerModules();
         python = QStandardPaths::findExecutable("python3");
-        // jedi hidden; a stand-in of ruff's: check (F401 with its fix, F821),
+        // jedi hidden; a stand-in of ruff's: check (F401 with its fix, F821,
+        // F632 - is with a literal - with its fix),
         // format (x=1 as x = 1, the lines of --range alone), the imports
         // sorted (check --select I --fix).
         write("tools/jedi/__init__.py", "raise ImportError('hidden for the test')\n");
@@ -167,6 +169,13 @@ private slots:
               "                    'location': {'row': n, 'column': 8}, 'end_location': {'row': n, 'column': 8 + len(m.group(1))},\n"
               "                    'fix': {'message': 'Remove unused import: `%s`' % m.group(1), 'applicability': 'safe',\n"
               "                            'edits': [{'content': '', 'location': {'row': n, 'column': 1}, 'end_location': {'row': n + 1, 'column': 1}}]}})\n"
+              "    m = re.search(r'\\bis (\\d+)', line)\n"
+              "    if m:\n"
+              "        out.append({'code': 'F632', 'message': 'Use `==` to compare constant literals',\n"
+              "                    'location': {'row': n, 'column': m.start() + 1}, 'end_location': {'row': n, 'column': m.end() + 1},\n"
+              "                    'fix': {'message': 'Replace `is` with `==`', 'applicability': 'safe',\n"
+              "                            'edits': [{'content': '==', 'location': {'row': n, 'column': m.start() + 1},\n"
+              "                                       'end_location': {'row': n, 'column': m.start() + 3}}]}})\n"
               "    for m in re.finditer(r'\\b(sqrt)\\(', line):\n"
               "        if 'import sqrt' not in src and 'def sqrt' not in src:\n"
               "            out.append({'code': 'F821', 'message': 'Undefined name `sqrt`', 'location': {'row': n, 'column': m.start() + 1},\n"
@@ -451,6 +460,66 @@ private slots:
         QVERIFY(!py->toggleLineComment());
         QCOMPARE(py->toPlainText(), QStringLiteral("    # \n"));
         py->setReadOnly(false);
+    }
+
+    // A warning the compiler gives and ruff or pyflakes gives too - "is"
+    // with a literal: said once, the checker's (its code, ruff's fix), not
+    // twice on the line. The compiler alone: its own.
+    void aWarningIsSaidOnce()
+    {
+        if (python.isEmpty()) QSKIP("no python3 here");
+        PythonDoc* py = open(write("once/w.py", "x = 1\nif x is 1:\n    pass\n"));
+        QVERIFY(py != nullptr);
+        if (!py->checked() || py->checking()) QVERIFY(checked(py));
+        QCOMPARE(py->lastCheck().checker, QStringLiteral("ruff 9.9.9-fake"));
+        const auto onLine = [py](int line) {
+            QList<qucs_s::python::Problem> found;
+            for (const qucs_s::python::Problem& p : py->lastCheck().problems)
+                if (p.line == line) found << p;
+            return found;
+        };
+        QCOMPARE(onLine(2).size(), 1);
+        QCOMPARE(onLine(2).first().code, QStringLiteral("F632"));
+        QCOMPARE(py->diagnostics().size(), 1);
+        py->quickFix(2);
+        QVERIFY2(!py->fixTitles().isEmpty() && py->fixTitles().first().contains("F632"), qPrintable(py->fixTitles().join(" | ")));
+        if (py->fixMenu() != nullptr) py->fixMenu()->close();
+        QVERIFY(py->applyFix(0));
+        QCOMPARE(lineText(py, 2), QStringLiteral("if x == 1:"));
+
+        // pyflakes, no ruff: its finding alone.
+        write("pyflakes_only/pyflakes/__init__.py", "__version__ = '9.9.9-fake'\n");
+        write("pyflakes_only/pyflakes/api.py",
+              "import re\n"
+              "class M:\n"
+              "    def __init__(self, lineno, col, message):\n"
+              "        self.lineno, self.col, self.message, self.message_args = lineno, col, message, ()\n"
+              "def check(src, name, reporter):\n"
+              "    for n, line in enumerate(src.split('\\n'), 1):\n"
+              "        m = re.search(r'\\bis (\\d+)', line)\n"
+              "        if m:\n"
+              "            reporter.flake(M(n, m.start(), 'use ==/!= to compare constant literals (str, bytes, int, float, tuple)'))\n"
+              "    return 0\n");
+        write("pyflakes_only/jedi/__init__.py", "raise ImportError('hidden for the test')\n");
+        qputenv("PYTHONPATH", QFile::encodeName(dir.filePath("pyflakes_only")));
+        const auto restore = qScopeGuard([this] { qputenv("PYTHONPATH", pythonPath); });
+        if (!QStandardPaths::findExecutable("ruff").isEmpty()) QSKIP("ruff on the PATH: no pyflakes check here");
+        py->selectAll();
+        py->insertPlainText(QStringLiteral("x = 1\nif x is 1:\n    pass\n"));
+        QVERIFY(checked(py));
+        QCOMPARE(py->lastCheck().checker, QStringLiteral("pyflakes 9.9.9-fake"));
+        QCOMPARE(onLine(2).size(), 1);
+        QVERIFY2(onLine(2).first().message.contains("compare constant literals"), qPrintable(onLine(2).first().message));
+
+        // The compiler alone: its warning.
+        write("compiler_only/jedi/__init__.py", "raise ImportError('hidden for the test')\n");
+        write("compiler_only/pyflakes/__init__.py", "raise ImportError('hidden for the test')\n");
+        qputenv("PYTHONPATH", QFile::encodeName(dir.filePath("compiler_only")));
+        py->insertPlainText(QStringLiteral("\n"));
+        QVERIFY(checked(py));
+        QVERIFY(py->lastCheck().checker.isEmpty());
+        QCOMPARE(onLine(2).size(), 1);
+        QVERIFY2(onLine(2).first().message.contains("\"is\" with"), qPrintable(onLine(2).first().message));
     }
 
     void quickFixesOfALine()
