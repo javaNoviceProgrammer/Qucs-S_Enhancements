@@ -31,6 +31,7 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 #include <QTextStream>
 #include <QPainter>
 #include <QHelpEvent>
+#include <QMouseEvent>
 #include <QToolTip>
 #include <QHash>
 #include <QTextLayout>
@@ -871,8 +872,23 @@ void TextDoc::highlightCurrentLine()
         }
         extraSelections.append(mark);
     }
+    extraSelections.append(moreSelections());
 
     setExtraSelections(extraSelections);
+}
+
+void TextDoc::refreshMarks()
+{
+    updateLineNumberAreaWidth(0);
+    highlightCurrentLine();
+    lineNumberArea->update();
+}
+
+void TextDoc::lineNumberAreaPressed(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton) return;
+    const QTextBlock block = cursorForPosition(QPoint(0, int(event->position().y()))).block();
+    if (block.isValid()) marginPressed(block);
 }
 
 void TextDoc::setDiagnostics(const QList<Diagnostic> &list)
@@ -1059,7 +1075,7 @@ int TextDoc::lineNumberAreaWidth() const
 
     int space = 3 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
     if (!a_diagnostics.isEmpty()) space += dotRoom(fontMetrics().height());   // their dots
-    return space;
+    return space + markRoom();
 }
 
 void TextDoc::updateLineNumberAreaWidth(int /* newBlockCount */)
@@ -1108,6 +1124,11 @@ void TextDoc::lineNumberAreaPaintEvent(QPaintEvent *event)
             painter.setPen(a_marginText);
             painter.drawText(0, top, lineNumberArea->width(), fontMetrics().height(),
                 Qt::AlignRight, number);
+            if (markRoom() > 0) {
+                painter.save();
+                paintMark(painter, block, QRect(0, top, markRoom(), fontMetrics().height()));
+                painter.restore();
+            }
             // A diagnostic's dot, at the left: red for an error, amber
             // for a warning (an error first).
             int found = 0;   // 0 none, 1 warning, 2 error
@@ -1120,7 +1141,7 @@ void TextDoc::lineNumberAreaPaintEvent(QPaintEvent *event)
                 painter.setRenderHint(QPainter::Antialiasing);
                 painter.setPen(Qt::NoPen);
                 painter.setBrush(found == 2 ? QColor(0xe0, 0x35, 0x2b) : QColor(0xe0, 0x9a, 0x1a));
-                painter.drawEllipse(QRectF(2, top + (h - d) / 2.0, d, d));
+                painter.drawEllipse(QRectF(markRoom() + 2, top + (h - d) / 2.0, d, d));
                 painter.restore();
             }
         }

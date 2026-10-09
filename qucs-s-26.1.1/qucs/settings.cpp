@@ -72,8 +72,13 @@ void settingsManager::initDefaults()
 #endif
 
     m_Defaults["XyceParExecutable"] = "mpirun -np %p /usr/local/Xyce-Release-6.8.0-OPENMPI-OPENSOURCE/bin/Xyce";
+    // (In a test's own cache when it names one, as misc::cacheDir() has it:
+    // a headless simulation of a test - qucs-s -n --run, qucs.simulate() -
+    // wrote its netlist into the user's.)
     m_Defaults["S4Q_workdir"] = QDir::toNativeSeparators(
-                                QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+                                (qEnvironmentVariableIsEmpty("QUCS_CACHE_DIR")
+                                     ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+                                     : qEnvironmentVariable("QUCS_CACHE_DIR"))
                                 + "/qucs-s");
     m_Defaults["Nprocs"] = 4;
     m_Defaults["SpiceOpusExecutable"] = "spiceopus";

@@ -400,7 +400,8 @@ public:
   static bool isPdfDocument(QWidget *);
   /// Whether a file is Markdown (.md, .markdown): opened in a MarkdownDoc.
   static bool isMarkdownFile(const QString &name);
-  /// Whether a file is a Python script (.py, .pyw): opened in a PythonDoc.
+  /// Whether a file is a Python script (.py, .pyw, a .pyi stub): opened in
+  /// a PythonDoc.
   static bool isPythonFile(const QString &name);
   /// The Python toolbar (qucs_python.cpp): the interpreter of the script
   /// in front, Run, Stop, Run in Shell, Check, Messages at Line Ends -
@@ -418,6 +419,14 @@ public:
   /// Runs \a doc - saved first - in the Python Shell, in its folder, its
   /// variables left there.
   bool runPythonInShell(PythonDoc *doc);
+  /// Runs \a code, lines of \a doc from \a firstLine, in the Python Shell
+  /// - in its variables, in the script's folder, a traceback at the
+  /// script's lines -, said there as \a what (Run Selection or Line, Run
+  /// Cell).
+  bool runPythonLines(PythonDoc *doc, int firstLine, const QString &code, const QString &what);
+  /// Runs \a doc - saved first - under the debugger, stopping at the
+  /// breakpoints of every script open.
+  bool debugPython(PythonDoc *doc);
   /// Shows \a line, \a column (1-based; column 0: the line's start) of
   /// the text document \a document - or, without one, of the file \a path,
   /// opened when it is not.
@@ -629,6 +638,15 @@ private slots:
   void slotPythonInterpreterChosen(int index);
   void slotPythonLineEnds(bool on);
   void slotPythonComplete();
+  void slotPythonSignature();
+  void slotPythonDebug();
+  void slotPythonRunSelection();
+  void slotPythonRunCell(bool advance);
+  void slotPythonToggleBreakpoint();
+  void slotPythonDefinition();
+  void slotPythonBack();
+  void slotPythonFormat();
+  void slotPythonFix();
   void slotAfterSimulation(int, SimMessage *);
   void slotDCbias();
   void slotChangePage(const QString &, const QString &);
@@ -778,10 +796,27 @@ private:
   QAction *pythonLineEndsAction = nullptr;
   QAction *pythonCompleteAction = nullptr;
   QAction *pythonAsYouTypeAction = nullptr;
+  QAction *pythonSignatureAction = nullptr;
+  QAction *pythonDebugAction = nullptr;
+  QAction *pythonContinueAction = nullptr;
+  QAction *pythonStepOverAction = nullptr;
+  QAction *pythonStepIntoAction = nullptr;
+  QAction *pythonStepOutAction = nullptr;
+  QAction *pythonBreakpointAction = nullptr;
+  QAction *pythonRunSelectionAction = nullptr;
+  QAction *pythonRunCellAction = nullptr;
+  QAction *pythonRunCellAdvanceAction = nullptr;
+  QAction *pythonDefinitionAction = nullptr;
+  QAction *pythonBackAction = nullptr;
+  QAction *pythonFormatAction = nullptr;
+  QAction *pythonFixAction = nullptr;
   QDockWidget *pythonRunDock = nullptr;
   PythonRunConsole *pythonRun = nullptr;
   bool a_pythonCheckRaises = false;   // Check: the next answer brings the Problems tab up
   bool a_pythonFailureSaid = false;   // no Python to check with: said once
+  int a_pythonJobs = 0;               // the Python Shell's runs of lines, numbered
+  // Go Back: the places Go to Definition left, the last last.
+  QList<QPair<QPointer<TextDoc>, int>> a_pythonBack;
   void initPythonToolbar();
   void initPythonConsole();
   /// The Python toolbar as the document in front says: shown for a Python
@@ -790,6 +825,12 @@ private:
   PythonDoc *currentPythonDoc() const;
   /// A check of \a doc answered: its problems on the Problems tab.
   void pythonChecked(PythonDoc *doc);
+  /// A PythonDoc made: its answers to the window (gotoPage()).
+  void connectPythonDoc(PythonDoc *doc);
+  /// Go to Definition answered for \a doc: there, or why not.
+  void pythonDefinitionFound(PythonDoc *doc);
+  /// The debugger's line: \a line of \a file (0: none anywhere).
+  void showPythonExecution(const QString &file, int line, bool top);
   QDockWidget *claudeDock = nullptr;
   QDockWidget *tunerDock = nullptr;
   ClaudeCodeTabs *claudeTabs = nullptr;

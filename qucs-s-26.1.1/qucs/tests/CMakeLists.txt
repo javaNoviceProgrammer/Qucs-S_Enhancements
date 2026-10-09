@@ -179,6 +179,11 @@ qucs_add_test(test_osdi_selection)
 qucs_add_test(test_number_format)
 qucs_add_test(test_component_symbols)
 qucs_add_test(test_python_doc)
+qucs_add_test(test_python_tools)
+# (qucs.simulate() runs the program itself; the sample schematic of python/.)
+target_compile_definitions(test_python_tools PRIVATE QUCS_BINARY="$<TARGET_FILE:${QUCS_NAME}>"
+  QUCS_PYTHON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/../python")
+add_dependencies(test_python_tools ${QUCS_NAME})
 target_compile_definitions(test_system_open PRIVATE QUCS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 if(APPLE)
   target_compile_definitions(test_system_open PRIVATE
