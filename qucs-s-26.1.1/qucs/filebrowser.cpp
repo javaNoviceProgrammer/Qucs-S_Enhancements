@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "filebrowser.h"
+#include "imagedoc.h"
 #include "namefilter.h"
 
 #include "apptheme.h"
@@ -1364,6 +1365,7 @@ void FileBrowser::buildViews()
     preview->setContentsMargins(10, 14, 10, 10);
     preview->setSpacing(6);
     a_previewIcon = new QLabel(a_preview);
+    a_previewIcon->setObjectName(QStringLiteral("fbPreviewIcon"));
     a_previewIcon->setAlignment(Qt::AlignHCenter);
     a_previewName = new QLabel(a_preview);
     a_previewName->setObjectName(QStringLiteral("fbPreviewName"));
@@ -1854,9 +1856,23 @@ void FileBrowser::fillPreview(const QModelIndex& index)
 {
     const QFileInfo info(pathOf(index));
     const int side = 64;
-    a_previewIcon->setPixmap(IconProvider::iconFor(kindOf(info)).pixmap(QSize(side, side), devicePixelRatioF()));
-    a_previewName->setText(info.fileName());
     QStringList facts{kindOf(info).name};
+    // A picture: itself, small, and its size (not one too large to be read
+    // at a glance).
+    QSize pixels;
+    const QImage picture = info.isFile() && info.size() <= (qint64(32) << 20) && qucs_s::image::isImageFile(info.fileName())
+                               ? qucs_s::image::thumbnail(info.absoluteFilePath(), int(std::ceil(128 * devicePixelRatioF())), &pixels)
+                               : QImage();
+    if (!picture.isNull()) {
+        // At most 128 points a side; a smaller one at its own size.
+        QPixmap small = QPixmap::fromImage(picture);
+        small.setDevicePixelRatio(std::clamp(std::max(picture.width(), picture.height()) / 128.0, 1.0, std::max(1.0, devicePixelRatioF())));
+        a_previewIcon->setPixmap(small);
+        facts << tr("%1 × %2 pixels").arg(pixels.width()).arg(pixels.height());
+    } else {
+        a_previewIcon->setPixmap(IconProvider::iconFor(kindOf(info)).pixmap(QSize(side, side), devicePixelRatioF()));
+    }
+    a_previewName->setText(info.fileName());
     if (info.isFile()) facts << sizeText(info.size());
     facts << tr("Modified %1").arg(QLocale().toString(info.lastModified(), QLocale::ShortFormat));
     a_previewFacts->setText(facts.join(QLatin1Char('\n')));
