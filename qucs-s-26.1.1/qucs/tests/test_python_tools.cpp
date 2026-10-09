@@ -143,6 +143,8 @@ private slots:
         python = QStandardPaths::findExecutable("python3");
         write("nojedi/jedi/__init__.py", "raise ImportError('hidden for the test')\n");
         noJedi = QFile::encodeName(dir.filePath("nojedi"));
+        // (Before what PYTHONPATH had - a stand-in that hides numpy, as on CI.)
+        if (const QByteArray had = qgetenv("PYTHONPATH"); !had.isEmpty()) noJedi += QDir::listSeparator().toLatin1() + had;
         qputenv("PYTHONPATH", noJedi);
         app = new QucsApp(false);
         QucsMain = app;
@@ -204,18 +206,24 @@ private slots:
             QString error;
             QVERIFY2(w.finish(&error), qPrintable(error));
         }
+        // (numpy's arrays when this Python has it - CI's has not -, else lists:
+        // the same values either way.)
+        const bool numpy = runPython("import numpy").isEmpty();
         const QString read = runPython(
-            "import json, qucs, numpy\n"
+            "import json, qucs\n"
             "d = qucs.load('data/sweep.dat')\n"
             "v = d['v']\n"
             "b = qucs.load('data/bin.dat.ngspice')\n"
-            "print(json.dumps({'names': list(d), 'shape': list(v.shape), 'complex': v.dtype.kind == 'c',\n"
-            "  'v10': [v[1][0].real, v[1][0].imag], 'v12': [v[1][2].real, v[1][2].imag], 'over': d.dependencies('v'),\n"
-            "  'g': list(d['g']), 'indep': d.independent, 'dep': d.dependent,\n"
-            "  'bnames': list(b), 'tran': list(b['tran.v(out)']), 'ac1': [b['ac.v(out)'][1].real, b['ac.v(out)'][1].imag],\n"
+            "print(json.dumps({'names': list(d), 'kind': type(v).__name__, 'shape': [len(v), len(v[0])],\n"
+            "  'complex': isinstance(v[1][0], complex),\n"
+            "  'v10': [float(v[1][0].real), float(v[1][0].imag)], 'v12': [float(v[1][2].real), float(v[1][2].imag)],\n"
+            "  'over': d.dependencies('v'), 'g': [float(x) for x in d['g']], 'indep': d.independent, 'dep': d.dependent,\n"
+            "  'bnames': list(b), 'tran': [float(x) for x in b['tran.v(out)']],\n"
+            "  'ac1': [float(b['ac.v(out)'][1].real), float(b['ac.v(out)'][1].imag)],\n"
             "  'bover': b.dependencies('ac.v(out)'), 'said': str(d).split(chr(10))[0]}))\n");
         const QJsonObject o = QJsonDocument::fromJson(read.toUtf8()).object();
         QVERIFY2(!o.isEmpty(), qPrintable(read));
+        QCOMPARE(o["kind"].toString(), numpy ? QString("ndarray") : QString("list"));
         QCOMPARE(o["names"].toArray(), (QJsonArray{"f", "C", "v", "g"}));
         QCOMPARE(o["shape"].toArray(), (QJsonArray{2, 3}));   // C (outer), f (inner: the first in the file)
         QVERIFY(o["complex"].toBool());
@@ -254,13 +262,19 @@ private slots:
 
         // Written: read by Qucs-S as it reads a simulator's, sweeps and all.
         const QString saved = runPython(
-            "import qucs, numpy as np\n"
-            "f = np.array([1.0, 2.0, 3.0]); c = np.array([10.0, 20.0])\n"
-            "v = np.array([[1+1j, 2, 3], [4, 5-5j, 6.5]])\n"
+            "import qucs\n"
+            "f = [1.0, 2.0, 3.0]; c = [10.0, 20.0]\n"
+            "v = [[1+1j, 2, 3], [4, 5-5j, 6.5]]\n"
+            "try:\n"
+            "    import numpy as np\n"
+            "    f, c, v = np.array(f), np.array(c), np.array(v)\n"
+            "except ImportError:\n"
+            "    pass\n"
             "qucs.save('data/out.dat', {'c': c, 'f': f, 'v': v, 'gain': [0.1, 0.2, 0.3]},\n"
             "          independent=['c', 'f'], dependencies={'gain': ['f']})\n"
             "r = qucs.load('data/out.dat')\n"
-            "print(bool((r['v'] == v).all()), r.dependencies('v'), r.dependencies('gain'))\n"
+            "rows = lambda m: [[complex(x) for x in row] for row in m]\n"
+            "print(rows(r['v']) == rows(v), r.dependencies('v'), r.dependencies('gain'))\n"
             "try:\n"
             "    qucs.save('data/bad.dat', {'f': f, 'w': [1, 2]}, independent=['f'])\n"
             "except ValueError as e:\n"
@@ -1139,19 +1153,23 @@ private slots:
         // it started.
         py->setBreakpoints({});
         lib->setBreakpoints({});
-        PythonDoc* loop = open(write("dbg/loop.py", "import time\nfor i in range(400):\n    time.sleep(0.02)\n    x = i\nprint('end')\n"));
+        // (It goes on until the test says - a file -, however slow the machine.)
+        QFile::remove(dir.filePath("dbg/done.flag"));
+        PythonDoc* loop = open(write("dbg/loop.py", "import os, time\nx = 0\nwhile not os.path.exists('done.flag'):\n"
+                                                    "    time.sleep(0.02)\n    x += 1\nprint('end', x > 0)\n"));
         QVERIFY(loop != nullptr);
         QVERIFY(app->debugPython(loop));
         QTest::qWait(400);
         QVERIFY(run->isDebugging() && !run->isPaused());
-        loop->toggleBreakpoint(4);
+        loop->toggleBreakpoint(5);
         QVERIFY(paused.wait(20000));
-        QCOMPARE(run->stack().first().line, 4);
-        QVERIFY(run->variableRows().first().startsWith("i: int = "));
-        loop->toggleBreakpoint(4);
+        QCOMPARE(run->stack().first().line, 5);
+        QVERIFY(run->variableRows().contains(QRegularExpression("^x: int = \\d+$")));
+        loop->toggleBreakpoint(5);
+        write("dbg/done.flag", "");
         run->continueRun();
         QVERIFY(finished.wait(30000));
-        QVERIFY(run->outputText().contains("end"));
+        QVERIFY(run->outputText().contains("end True"));
 
         // Stop while stopped; a run (F2) after it, as before.
         bad->toggleBreakpoint(2);
