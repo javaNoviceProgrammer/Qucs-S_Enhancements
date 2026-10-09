@@ -25,7 +25,9 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QKeyEvent>
 #include <QListWidget>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -87,6 +89,26 @@ PythonRunConsole::PythonRunConsole(QWidget* parent)
     row->addWidget(a_stop);
     row->addWidget(a_clear);
 
+    // What the script reads: a line typed, Return sends it.
+    a_input = new QLineEdit(this);
+    a_input->setObjectName(QStringLiteral("pythonRunInput"));
+    a_input->setPlaceholderText(tr("Input for the script: type a line, Return sends it (Ctrl+D: the end of its input)"));
+    a_input->setEnabled(false);
+    a_input->installEventFilter(this);
+    connect(a_input, &QLineEdit::returnPressed, this, [this] {
+        const QString text = a_input->text();
+        if (sendInput(text)) a_input->clear();
+    });
+    a_endInput = new QPushButton(tr("End Input"), this);
+    a_endInput->setObjectName(QStringLiteral("pythonRunEndInput"));
+    a_endInput->setToolTip(tr("The script's input ended (Ctrl+D): input() and sys.stdin.read() read the end of the file"));
+    a_endInput->setEnabled(false);
+    connect(a_endInput, &QPushButton::clicked, this, &PythonRunConsole::endInput);
+    auto* inputRow = new QHBoxLayout;
+    inputRow->setContentsMargins(4, 0, 4, 0);
+    inputRow->addWidget(a_input, 1);
+    inputRow->addWidget(a_endInput);
+
     // The debugger's panel, beside the output while a debug run goes: its
     // buttons, the call stack, the variables, a line to evaluate.
     a_debugPanel = new QWidget(this);
@@ -108,6 +130,8 @@ PythonRunConsole::PythonRunConsole(QWidget* parent)
     };
     button(a_continue, "pythonDebugContinue", tr("Continue"), tr("Continue (Ctrl+F2): on to the next breakpoint"),
            QStringLiteral(":/bitmaps/svg/python_continue.svg"), &PythonRunConsole::continueRun);
+    button(a_pause, "pythonDebugPause", tr("Pause"), tr("Pause (Ctrl+F2): stopped at the next line of the script's"),
+           QStringLiteral(":/bitmaps/svg/python_pause.svg"), &PythonRunConsole::pause);
     button(a_stepOver, "pythonDebugStepOver", tr("Step Over"), tr("Step Over (Ctrl+F10): to the next line, a call on this one made whole"),
            QStringLiteral(":/bitmaps/svg/python_stepover.svg"), &PythonRunConsole::stepOver);
     button(a_stepInto, "pythonDebugStepInto", tr("Step Into"), tr("Step Into (Ctrl+F11): into the call on the line"),
@@ -131,6 +155,24 @@ PythonRunConsole::PythonRunConsole(QWidget* parent)
         if (item->childCount() > 0 || handle < 0 || !a_paused) return;
         a_opening.insert(handle, item);
         command({{QStringLiteral("command"), QStringLiteral("children")}, {QStringLiteral("handle"), handle}});
+    });
+    // An array, a list, a DataFrame: View as Table (its menu, a double-click).
+    a_variables->setContextMenuPolicy(Qt::CustomContextMenu);
+    const auto asTable = [this](QTreeWidgetItem* item) {
+        if (item == nullptr || !item->data(1, Qt::UserRole).toBool() || !a_paused) return;
+        QString name = item->text(0);
+        for (QTreeWidgetItem* up = item->parent(); up != nullptr; up = up->parent()) name.prepend(up->text(0) + QLatin1Char(' '));
+        emit tableRequested(item->data(0, Qt::UserRole).toInt(), name);
+    };
+    connect(a_variables, &QTreeWidget::itemDoubleClicked, this, [asTable](QTreeWidgetItem* item) { asTable(item); });
+    connect(a_variables, &QTreeWidget::customContextMenuRequested, this, [this, asTable](const QPoint& at) {
+        QTreeWidgetItem* item = a_variables->itemAt(at);
+        if (item == nullptr) return;
+        QMenu menu(this);
+        QAction* table = menu.addAction(tr("View as Table"));
+        table->setObjectName(QStringLiteral("pythonDebugViewAsTable"));
+        table->setEnabled(item->data(1, Qt::UserRole).toBool() && a_paused);
+        if (menu.exec(a_variables->viewport()->mapToGlobal(at)) == table) asTable(item);
     });
     a_evaluate = new QLineEdit(a_debugPanel);
     a_evaluate->setObjectName(QStringLiteral("pythonDebugEvaluate"));
@@ -164,6 +206,7 @@ PythonRunConsole::PythonRunConsole(QWidget* parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
     layout->addWidget(a_split, 1);
+    layout->addLayout(inputRow);
     layout->addLayout(row);
 }
 
@@ -193,13 +236,35 @@ bool PythonRunConsole::run(const QString& interpreter, const QString& script)
 
 bool PythonRunConsole::debug(const QString& interpreter, const QString& script, const QHash<QString, QList<int>>& breakpoints)
 {
+    QHash<QString, QList<qucs_s::python::Breakpoint>> specs;
+    for (auto it = breakpoints.cbegin(); it != breakpoints.cend(); ++it)
+        for (const int line : it.value()) {
+            qucs_s::python::Breakpoint b;
+            b.line = line;
+            specs[it.key()].append(b);
+        }
+    return debug(interpreter, script, specs, false);
+}
+
+bool PythonRunConsole::debug(const QString& interpreter, const QString& script,
+                             const QHash<QString, QList<qucs_s::python::Breakpoint>>& breakpoints, bool raised,
+                             const std::pair<QString, int>& runTo)
+{
     if (!start(interpreter, script,
                {QStringLiteral("-u"), QStringLiteral("-c"), qucs_s::python::debuggerProgram(), QFileInfo(script).absoluteFilePath()}, true))
         return false;
     QJsonArray list;
     for (auto it = breakpoints.cbegin(); it != breakpoints.cend(); ++it)
-        for (const int line : it.value()) list.append(QJsonObject{{QStringLiteral("file"), it.key()}, {QStringLiteral("line"), line}});
-    command({{QStringLiteral("command"), QStringLiteral("start")}, {QStringLiteral("breakpoints"), list}});
+        for (const qucs_s::python::Breakpoint& b : it.value()) {
+            QJsonObject o = qucs_s::python::toJson(b);
+            o.insert(QStringLiteral("file"), it.key());
+            list.append(o);
+        }
+    QJsonObject first{{QStringLiteral("command"), QStringLiteral("start")}, {QStringLiteral("breakpoints"), list},
+                      {QStringLiteral("raised"), raised}};
+    if (!runTo.first.isEmpty())
+        first.insert(QStringLiteral("run_to"), QJsonObject{{QStringLiteral("file"), runTo.first}, {QStringLiteral("line"), runTo.second}});
+    command(first);
     return true;
 }
 
@@ -258,12 +323,13 @@ bool PythonRunConsole::start(const QString& interpreter, const QString& script, 
         emit finished(-1);
         return false;
     }
-    // input() reads the end of the file, not nothing for ever (debugged:
-    // the debugger gives it that, and reads its commands there).
-    if (!debugging) a_process->closeWriteChannel();
+    // Its input: typed below the output (debugged: the debugger's pipe,
+    // through its commands).
+    setInputOpen(true);
+    a_pausing = false;
     a_stop->setEnabled(true);
     a_debugging = debugging;
-    a_paused = false;
+    setPaused(false);
     a_debugPanel->setVisible(debugging);
     a_evaluate->setEnabled(false);
     setStatus(debugging ? tr("Debugging %1...").arg(info.fileName()) : tr("Running %1...").arg(info.fileName()));
@@ -327,6 +393,8 @@ void PythonRunConsole::runFinished()
         setStatus(tr("%1: exit code %2 after %3 s.").arg(name).arg(a_exitCode).arg(seconds));
     }
     a_stop->setEnabled(false);
+    setInputOpen(false);
+    a_pausing = false;
     const bool debugged = a_debugging;
     a_debugging = false;
     setPaused(false);
@@ -369,7 +437,85 @@ void PythonRunConsole::setPaused(bool paused)
 {
     a_paused = paused;
     for (QToolButton* b : {a_continue, a_stepOver, a_stepInto, a_stepOut}) b->setEnabled(paused);
+    a_pause->setEnabled(a_debugging && !paused && a_process != nullptr);
+    a_continue->setVisible(paused || !a_debugging);
+    a_pause->setVisible(!a_continue->isVisible());
     a_evaluate->setEnabled(paused);
+}
+
+void PythonRunConsole::setInputOpen(bool open)
+{
+    a_inputOpen = open;
+    a_input->setEnabled(open);
+    a_endInput->setEnabled(open);
+    if (!open) a_input->clear();
+}
+
+bool PythonRunConsole::sendInput(const QString& text)
+{
+    if (a_process == nullptr || !a_inputOpen) return false;
+    // Echoed after what it wrote last (its prompt), as a terminal has it.
+    QTextCursor cursor(a_output->document());
+    cursor.movePosition(QTextCursor::End);
+    QTextCharFormat typed;
+    typed.setFontWeight(QFont::Bold);
+    if (a_overwrite) a_overwrite = false;
+    cursor.insertText(text, typed);
+    a_lineOpen = true;
+    endLine();
+    a_output->verticalScrollBar()->setValue(a_output->verticalScrollBar()->maximum());
+    if (a_debugging) command({{QStringLiteral("command"), QStringLiteral("input")}, {QStringLiteral("text"), text + QLatin1Char('\n')}});
+    else a_process->write((text + QLatin1Char('\n')).toUtf8());
+    return true;
+}
+
+void PythonRunConsole::endInput()
+{
+    if (a_process == nullptr || !a_inputOpen) return;
+    if (a_debugging) command({{QStringLiteral("command"), QStringLiteral("eof")}});
+    else a_process->closeWriteChannel();
+    setInputOpen(false);
+    note(tr("(The end of its input.)"));
+}
+
+void PythonRunConsole::pause()
+{
+    if (!a_debugging || a_paused || a_process == nullptr) return;
+    a_pausing = true;
+    setStatus(tr("Pausing %1... (at its next line: one in a long call stops after it)").arg(QFileInfo(a_script).fileName()));
+    command({{QStringLiteral("command"), QStringLiteral("pause")}});
+}
+
+void PythonRunConsole::runTo(const QString& file, int line)
+{
+    if (!a_paused) return;
+    command({{QStringLiteral("command"), QStringLiteral("run_to")}, {QStringLiteral("file"), file}, {QStringLiteral("line"), line}});
+}
+
+void PythonRunConsole::setBreakOnRaised(bool on)
+{
+    command({{QStringLiteral("command"), QStringLiteral("raised")}, {QStringLiteral("on"), on}});
+}
+
+int PythonRunConsole::inspect(const QString& expression)
+{
+    if (!a_paused) return 0;
+    const int id = ++a_requests;
+    command({{QStringLiteral("command"), QStringLiteral("inspect")}, {QStringLiteral("expression"), expression},
+             {QStringLiteral("frame"), a_frame}, {QStringLiteral("id"), id}});
+    return id;
+}
+
+int PythonRunConsole::requestData(int handle, const QString& expression, int start, int count)
+{
+    if (!a_paused) return 0;
+    const int id = ++a_requests;
+    QJsonObject c{{QStringLiteral("command"), QStringLiteral("data")}, {QStringLiteral("frame"), a_frame},
+                  {QStringLiteral("start"), start}, {QStringLiteral("count"), count}, {QStringLiteral("id"), id}};
+    if (handle >= 0) c.insert(QStringLiteral("handle"), handle);
+    else c.insert(QStringLiteral("expression"), expression);
+    command(c);
+    return id;
 }
 
 void PythonRunConsole::handleEvent(const QJsonObject& event)
@@ -398,12 +544,14 @@ void PythonRunConsole::handleEvent(const QJsonObject& event)
         a_variables->clear();
         a_opening.clear();
         fillVariables(nullptr, event.value(QStringLiteral("variables")).toArray());
+        a_pausing = false;
         setPaused(true);
         if (!a_stack.isEmpty()) {
             const Frame& top = a_stack.first();
             const QString where = tr("%1, line %2").arg(QFileInfo(top.file).fileName()).arg(top.line);
             QString said = tr("Paused at %1.").arg(where);
             if (a_reason == QLatin1String("exception")) said = tr("Stopped by %1 at %2.").arg(a_exception, where);
+            else if (a_reason == QLatin1String("raised")) said = tr("%1 raised at %2 (Continue: on, as it goes).").arg(a_exception, where);
             else if (a_reason == QLatin1String("breakpoint")) said = tr("Paused at a breakpoint: %1.").arg(where);
             setStatus(said);
             emit locationShown(top.file, top.line, true);
@@ -444,6 +592,13 @@ void PythonRunConsole::handleEvent(const QJsonObject& event)
         note(QStringLiteral(">>> %1").arg(expression));
         append(a_lastEvaluated + QLatin1Char('\n'));
         emit evaluated();
+    } else if (kind == QLatin1String("inspected")) {
+        const QJsonObject value = event.value(QStringLiteral("value")).toObject();
+        emit inspected(event.value(QStringLiteral("id")).toInt(), event.value(QStringLiteral("expression")).toString(),
+                       value.isEmpty() ? QString() : value.value(QStringLiteral("value")).toString(),
+                       event.value(QStringLiteral("error")).toString());
+    } else if (kind == QLatin1String("data")) {
+        emit dataArrived(event.value(QStringLiteral("id")).toInt(), event);
     }
 }
 
@@ -459,6 +614,8 @@ void PythonRunConsole::fillVariables(QTreeWidgetItem* parent, const QJsonArray& 
         item->setToolTip(2, value);
         const int handle = o.value(QStringLiteral("handle")).toInt(-1);
         item->setData(0, Qt::UserRole, handle);
+        item->setData(1, Qt::UserRole, o.value(QStringLiteral("table")).toBool());   // (View as Table)
+        if (o.value(QStringLiteral("table")).toBool()) item->setToolTip(0, tr("Double-click: the value as a table"));
         if (handle >= 0) item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
     }
     if (parent != nullptr && parent->childCount() == 0) parent->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
@@ -518,6 +675,13 @@ void PythonRunConsole::setBreakpoints(const QString& file, const QList<int>& lin
 {
     QJsonArray list;
     for (const int line : lines) list.append(line);
+    command({{QStringLiteral("command"), QStringLiteral("breakpoints")}, {QStringLiteral("file"), file}, {QStringLiteral("lines"), list}});
+}
+
+void PythonRunConsole::setBreakpoints(const QString& file, const QList<qucs_s::python::Breakpoint>& breakpoints)
+{
+    QJsonArray list;
+    for (const qucs_s::python::Breakpoint& b : breakpoints) list.append(qucs_s::python::toJson(b));
     command({{QStringLiteral("command"), QStringLiteral("breakpoints")}, {QStringLiteral("file"), file}, {QStringLiteral("lines"), list}});
 }
 
@@ -603,6 +767,16 @@ void PythonRunConsole::setStatus(const QString& text)
 
 bool PythonRunConsole::eventFilter(QObject* watched, QEvent* event)
 {
+    // Ctrl+D in the input line: the end of the script's input (the line's,
+    // not the window's shortcut).
+    if (watched == a_input && (event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride)) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_D && (key->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))) {
+            if (event->type() == QEvent::ShortcutOverride) event->accept();
+            else endInput();
+            return true;
+        }
+    }
     if (watched == a_output->viewport()) {
         if (event->type() == QEvent::MouseMove) {
             const auto* mouse = static_cast<QMouseEvent*>(event);

@@ -7,6 +7,12 @@
 #                written, where its bracket is ("signature")
 #   help         what the name at the place is, and its documentation ("help")
 #   definition   where the name at the place is defined ("definition")
+#   references   where the name at the place is used, and defined
+#                ("references": [{"file" ("": the script), "line", "column",
+#                "end", "text", "definition"}, ...], "name", "scope")
+#   rename       the name at the place renamed "new_name" wherever it is the
+#                same name ("changes": [{"file", "text" (the file after)}],
+#                "name", "count") - or "refusal": why not
 # jedi answers when the interpreter has it; otherwise this program, from the
 # script, Python's builtins and keywords, the standard modules it imports
 # (imported) and the modules beside it (read, not run).
@@ -688,10 +694,327 @@ def jedi_definition(source, line, column, path):
     return {'file': '' if mine else file, 'line': n.line, 'column': n.column or 0, 'name': n.name,
             'library': False if mine else is_library(file)}
 
+# ----------------------------------------------------------------------
+# References and renaming: jedi's, else the script's own names, by Python's
+# rules of scope (a function's locals, a class body's, the module's).
+
+MOST_REFERENCES = 2000
+
+
+def char_column(text, byte_offset):
+    """ast's column (UTF-8 bytes) as characters."""
+    return len(text.encode('utf-8')[:byte_offset].decode('utf-8', 'replace'))
+
+
+class Scope:
+    def __init__(self, node, kind, parent):
+        self.node, self.kind, self.parent = node, kind, parent
+        self.bound, self.globals, self.nonlocals = set(), set(), set()
+
+
+def _targets(node):
+    """The names an assignment's target binds."""
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            yield n.id
+        elif isinstance(n, ast.Starred) and isinstance(n.value, ast.Name):
+            yield n.value.id
+
+
+class Names(ast.NodeVisitor):
+    """Each place of a name in a script, and the scope that binds it."""
+
+    def __init__(self, source):
+        self.lines = source.split('\n')
+        self.module = Scope(None, 'module', None)
+        self.scope = self.module
+        self.places = []      # (name, line, column, end, scope looked up in, is a definition)
+
+    # -- where
+    def text(self, line):
+        return self.lines[line - 1] if 0 < line <= len(self.lines) else ''
+
+    def add(self, name, line, column, definition=False):
+        self.places.append((name, line, column, column + len(name), self.scope, definition))
+
+    def add_word(self, name, line, after=0):
+        """\a name as a word on \a line, from character \a after on."""
+        m = re.compile(r'\b%s\b' % re.escape(name)).search(self.text(line), after)
+        if m:
+            self.add(name, line, m.start(), True)
+
+    # -- scopes
+    def enter(self, node, kind):
+        scope = Scope(node, kind, self.scope)
+        self.scope = scope
+        return scope
+
+    def leave(self, scope):
+        self.scope = scope.parent
+
+    def bind(self, name):
+        self.scope.bound.add(name)
+
+    def arguments(self, a):
+        for arg in list(getattr(a, 'posonlyargs', [])) + list(a.args) + list(a.kwonlyargs) + [a.vararg, a.kwarg]:
+            if arg is not None:
+                self.bind(arg.arg)
+                self.add(arg.arg, arg.lineno, char_column(self.text(arg.lineno), arg.col_offset), True)
+                if arg.annotation is not None:
+                    self.visit(arg.annotation)
+
+    def visit_FunctionDef(self, node):
+        for d in node.decorator_list:
+            self.visit(d)
+        for default in list(node.args.defaults) + [d for d in node.args.kw_defaults if d is not None]:
+            self.visit(default)
+        if node.returns is not None:
+            self.visit(node.returns)
+        self.bind(node.name)
+        line = node.lineno
+        while line < len(self.lines) and not re.match(r'\s*(async\s+)?def\b', self.text(line)):
+            line += 1   # (past its decorators)
+        m = re.match(r'\s*(?:async\s+)?def\s+', self.text(line))
+        if m:
+            self.add(node.name, line, m.end(), True)
+        scope = self.enter(node, 'function')
+        self.arguments(node.args)
+        for statement in node.body:
+            self.visit(statement)
+        self.leave(scope)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Lambda(self, node):
+        for default in list(node.args.defaults) + [d for d in node.args.kw_defaults if d is not None]:
+            self.visit(default)
+        scope = self.enter(node, 'function')
+        self.arguments(node.args)
+        self.visit(node.body)
+        self.leave(scope)
+
+    def visit_ClassDef(self, node):
+        for d in node.decorator_list:
+            self.visit(d)
+        for b in list(node.bases) + [k.value for k in node.keywords]:
+            self.visit(b)
+        self.bind(node.name)
+        line = node.lineno
+        while line < len(self.lines) and not re.match(r'\s*class\b', self.text(line)):
+            line += 1
+        m = re.match(r'\s*class\s+', self.text(line))
+        if m:
+            self.add(node.name, line, m.end(), True)
+        scope = self.enter(node, 'class')
+        for statement in node.body:
+            self.visit(statement)
+        self.leave(scope)
+
+    def comprehension(self, node, parts):
+        # (The first iterable is the enclosing scope's.)
+        self.visit(node.generators[0].iter)
+        scope = self.enter(node, 'comprehension')
+        for k, g in enumerate(node.generators):
+            for name in _targets(g.target):
+                self.bind(name)
+            self.visit(g.target)
+            if k > 0:
+                self.visit(g.iter)
+            for condition in g.ifs:
+                self.visit(condition)
+        for part in parts:
+            self.visit(part)
+        self.leave(scope)
+
+    def visit_ListComp(self, node):
+        self.comprehension(node, [node.elt])
+
+    visit_SetComp = visit_GeneratorExp = visit_ListComp
+
+    def visit_DictComp(self, node):
+        self.comprehension(node, [node.key, node.value])
+
+    def visit_Global(self, node):
+        for name in node.names:
+            self.scope.globals.add(name)
+            self.add_word(name, node.lineno, char_column(self.text(node.lineno), node.col_offset) + len('global'))
+
+    def visit_Nonlocal(self, node):
+        for name in node.names:
+            self.scope.nonlocals.add(name)
+            self.add_word(name, node.lineno, char_column(self.text(node.lineno), node.col_offset) + len('nonlocal'))
+
+    def visit_Name(self, node):
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.bind(node.id)
+        self.add(node.id, node.lineno, char_column(self.text(node.lineno), node.col_offset), isinstance(node.ctx, ast.Store))
+
+    def visit_NamedExpr(self, node):
+        # (A walrus binds in the scope around a comprehension.)
+        scope = self.scope
+        while scope.kind == 'comprehension':
+            scope = scope.parent
+        scope.bound.add(node.target.id)
+        self.places.append((node.target.id, node.target.lineno, char_column(self.text(node.target.lineno), node.target.col_offset),
+                            char_column(self.text(node.target.lineno), node.target.col_offset) + len(node.target.id), scope, True))
+        self.visit(node.value)
+
+    def visit_alias(self, node):
+        name = node.asname or node.name.split('.')[0]
+        if name == '*':
+            return
+        self.bind(name)
+        line = getattr(node, 'lineno', None)
+        if line is not None:
+            text = self.text(line)
+            start = char_column(text, node.col_offset)
+            if node.asname:
+                m = re.compile(r'\bas\s+(%s)\b' % re.escape(node.asname)).search(text, start)
+                if m:
+                    self.add(name, line, m.start(1), True)
+            else:
+                self.add(name, line, start, True)
+
+    def visit_ExceptHandler(self, node):
+        if node.type is not None:
+            self.visit(node.type)
+        if node.name:
+            self.bind(node.name)
+            m = re.compile(r'\bas\s+(%s)\b' % re.escape(node.name)).search(self.text(node.lineno))
+            if m:
+                self.add(node.name, node.lineno, m.start(1), True)
+        for statement in node.body:
+            self.visit(statement)
+
+    # -- which binding a place is of
+    def lookup(self, name, scope):
+        """The scope whose name it is (None: a builtin, or nowhere)."""
+        if name in scope.globals:
+            return self.module if name in self.module.bound else None
+        s, first = scope, True
+        while s is not None:
+            if name in s.nonlocals and s is scope:
+                s = s.parent
+                first = False
+                continue
+            if name in s.bound and (first or s.kind != 'class') and name not in s.globals:
+                return s
+            s = s.parent
+            first = False
+        return None
+
+
+def own_names(source):
+    tree = ast.parse(source)
+    names = Names(source)
+    names.visit(tree)
+    return names
+
+
+def own_references(source, line, column, path, folders, rename_to=None):
+    dotted, attribute = dotted_at(source, line, column) or (None, False)
+    if not dotted:
+        return None
+    name = dotted.split('.')[-1]
+    if name in KEYWORDS:
+        return None
+    try:
+        names = own_names(source)
+    except (SyntaxError, ValueError):
+        return {'refusal': 'The script has a syntax error: fix it first.'} if rename_to is not None else None
+    if attribute or '.' in dotted:
+        if rename_to is not None:
+            return {'refusal': 'Renaming an attribute (.%s) needs jedi, installed for this Python (pip install jedi).' % name}
+        # Every .name of the script, and the methods so named: what it may be.
+        found = []
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == name and getattr(node, 'end_lineno', None):
+                text = names.text(node.end_lineno)
+                end = char_column(text, node.end_col_offset)
+                found.append((node.end_lineno, end - len(name), end, isinstance(node.ctx, ast.Store)))
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+                found += [(n[1], n[2], n[3], True) for n in names.places if n[0] == name and n[5] and n[1] >= node.lineno][:1]
+        places = sorted(set(found))
+        return {'name': name, 'scope': 'attribute', 'references': [
+            {'file': '', 'line': l, 'column': c, 'end': e, 'text': names.text(l), 'definition': d} for l, c, e, d in places]}
+    # The place asked about, and the binding it is of.
+    at = [p for p in names.places if p[0] == name and p[1] == line and p[2] <= column <= p[3]]
+    if not at:
+        return None
+    scope = names.lookup(name, at[0][4])
+    if scope is None:
+        if rename_to is not None:
+            return {'refusal': '%s is built into Python, or not defined in the script.' % name}
+        same = [p for p in names.places if p[0] == name and names.lookup(name, p[4]) is None]
+    else:
+        same = [p for p in names.places if p[0] == name and names.lookup(name, p[4]) is scope]
+    places = sorted({(p[1], p[2], p[3], p[5]) for p in same})
+    kind = {'module': 'module', 'function': 'function', 'class': 'class', 'comprehension': 'comprehension'}[scope.kind] if scope else 'builtin'
+    out = {'name': name, 'scope': kind, 'references': [
+        {'file': '', 'line': l, 'column': c, 'end': e, 'text': names.text(l), 'definition': d} for l, c, e, d in places[:MOST_REFERENCES]]}
+    if rename_to is not None:
+        lines = source.split('\n')
+        for l, c, e, _ in sorted(places, reverse=True):
+            lines[l - 1] = lines[l - 1][:c] + rename_to + lines[l - 1][e:]
+        return {'name': name, 'count': len(places), 'changes': [{'file': '', 'text': '\n'.join(lines)}]}
+    return out
+
+
+def jedi_references(source, line, column, path):
+    script = jedi.Script(code=source, path=path)
+    found = script.get_references(line, column, include_builtins=False)
+    if not found:
+        return None
+    lines = source.split('\n')
+    out = []
+    for r in found[:MOST_REFERENCES]:
+        file = str(r.module_path) if r.module_path else ''
+        mine = not file or (path and os.path.abspath(file) == os.path.abspath(path))
+        if mine:
+            text = lines[r.line - 1] if 0 < r.line <= len(lines) else ''
+        else:
+            import linecache
+            text = linecache.getline(file, r.line).rstrip('\n')
+        out.append({'file': '' if mine else file, 'line': r.line, 'column': r.column, 'end': r.column + len(r.name),
+                    'text': text, 'definition': bool(r.is_definition())})
+    return {'name': found[0].name, 'scope': 'jedi', 'references': out}
+
+
+def jedi_rename(source, line, column, path, new_name):
+    script = jedi.Script(code=source, path=path)
+    names = script.get_references(line, column, include_builtins=False)
+    if not names:
+        return {'refusal': 'There is no name at the cursor to rename.'}
+    if any(n.in_builtin_module() for n in names):
+        return {'refusal': '%s is built into Python.' % names[0].name}
+    refactoring = script.rename(line, column, new_name=new_name)
+    changes = []
+    for file, changed in refactoring.get_changed_files().items():
+        file = str(file)
+        mine = not path or os.path.abspath(file) == os.path.abspath(path)
+        if not mine and is_library(file):
+            return {'refusal': '%s is in Python\'s library (%s): not renamed.' % (names[0].name, file)}
+        changes.append({'file': '' if mine else file, 'text': changed.get_new_code()})
+    return {'name': names[0].name, 'count': len(names), 'changes': changes}
+
+
 def answer(request):
     kind = request.get('kind') or 'complete'
     source, line, column, path = request.get('source', ''), int(request.get('line', 1)), int(request.get('column', 0)), request.get('path') or None
     folders = [os.path.dirname(os.path.abspath(path))] if path else []
+    if kind in ('references', 'rename'):
+        new_name = request.get('new_name') or ''
+        if kind == 'rename' and (not new_name.isidentifier() or keyword.iskeyword(new_name)):
+            return '', {'rename': {'refusal': '%r is no name Python takes.' % new_name}}
+        if jedi is not None:
+            try:
+                found = jedi_references(source, line, column, path) if kind == 'references' else \
+                    jedi_rename(source, line, column, path, new_name)
+                return ENGINE, {kind: found}
+            except Exception:
+                pass
+        return '', {kind: own_references(source, line, column, path, folders, new_name if kind == 'rename' else None)}
     if kind in ('signature', 'help', 'definition'):
         if jedi is not None:
             try:

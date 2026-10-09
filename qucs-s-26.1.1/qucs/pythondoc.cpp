@@ -168,21 +168,50 @@ const QString& formatterProgram()
     return program;
 }
 
+const QString& typeCheckProgram()
+{
+    static const QString program = programText(QStringLiteral("typecheck.py"));
+    return program;
+}
+
 QString moduleFolder()
 {
-    // Written once, for as long as the program runs: the module, and the
-    // Python Shell's runner (each read from the resources).
+    // Written once, for as long as the program runs: the module, the
+    // Python Shell's runner and start-up file, the matplotlib backend and
+    // the tables (each read from the resources) - and the folders scripts
+    // reach Qucs-S through.
     static std::unique_ptr<QTemporaryDir> folder;
     if (folder && folder->isValid()) return folder->path();
     folder = std::make_unique<QTemporaryDir>(QDir::tempPath() + QStringLiteral("/qucs-python-XXXXXX"));
     if (!folder->isValid()) return {};
-    for (const QString& name : {QStringLiteral("qucs.py"), QStringLiteral("_qucs_shell.py")}) {
+    for (const QString& name : {QStringLiteral("qucs.py"), QStringLiteral("_qucs_shell.py"), QStringLiteral("_qucs_startup.py"),
+                                QStringLiteral("_qucs_plots.py"), QStringLiteral("_qucs_data.py")}) {
         QFile out(folder->filePath(name));
         if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) out.write(programText(name).toUtf8());
     }
-    QDir(folder->path()).mkpath(QStringLiteral("jobs"));
+    for (const QString& sub : {QStringLiteral("jobs"), QStringLiteral("plots"), QStringLiteral("shell/requests"),
+                               QStringLiteral("shell/answers"), QStringLiteral("requests")})
+        QDir(folder->path()).mkpath(sub);
     return folder->path();
 }
+
+namespace {
+QString subfolder(const QString& name)
+{
+    const QString folder = moduleFolder();
+    return folder.isEmpty() ? QString() : QDir(folder).filePath(name);
+}
+} // namespace
+
+QString plotsFolder() { return subfolder(QStringLiteral("plots")); }
+
+QString shellFolder() { return subfolder(QStringLiteral("shell")); }
+
+QString requestsFolder() { return subfolder(QStringLiteral("requests")); }
+
+bool inlinePlots() { return _settings::Get().item<bool>("PythonInlinePlots"); }
+
+void setInlinePlots(bool on) { _settings::Get().setItem<bool>("PythonInlinePlots", on); }
 
 namespace {
 // The program qucs.simulate() runs: Qucs-S's own, when this is it (not a
@@ -202,6 +231,21 @@ QString pythonPathWith(const QString& before)
 }
 } // namespace
 
+namespace {
+// What a script is given to reach Qucs-S: the folders of its figures and its
+// requests - and matplotlib's backend, the pane's, while it shows them.
+QList<std::pair<QString, QString>> exchangeVariables()
+{
+    QList<std::pair<QString, QString>> list;
+    if (const QString plots = plotsFolder(); !plots.isEmpty()) {
+        list.append({QStringLiteral("QUCS_S_PLOTS"), plots});
+        if (inlinePlots()) list.append({QStringLiteral("MPLBACKEND"), QStringLiteral("module://_qucs_plots")});
+    }
+    if (const QString requests = requestsFolder(); !requests.isEmpty()) list.append({QStringLiteral("QUCS_S_REQUESTS"), requests});
+    return list;
+}
+} // namespace
+
 QProcessEnvironment scriptEnvironment()
 {
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
@@ -209,6 +253,7 @@ QProcessEnvironment scriptEnvironment()
     environment.insert(QStringLiteral("PYTHONPATH"), pythonPathWith(environment.value(QStringLiteral("PYTHONPATH"))));
     if (const QString program = simulatingProgram(); !program.isEmpty())
         environment.insert(QStringLiteral("QUCS_S_EXECUTABLE"), program);
+    for (const auto& [name, value] : exchangeVariables()) environment.insert(name, value);
     return environment;
 }
 
@@ -217,6 +262,13 @@ QStringList shellEnvironment()
     QStringList entries{QStringLiteral("PYTHONPATH=") + pythonPathWith(qEnvironmentVariable("PYTHONPATH"))};
     if (const QString program = simulatingProgram(); !program.isEmpty())
         entries << QStringLiteral("QUCS_S_EXECUTABLE=") + program;
+    for (const auto& [name, value] : exchangeVariables()) entries << name + QLatin1Char('=') + value;
+    // Its start-up file: its variables shown (the user's own after it).
+    if (const QString folder = moduleFolder(); !folder.isEmpty()) {
+        entries << QStringLiteral("PYTHONSTARTUP=") + QDir(folder).filePath(QStringLiteral("_qucs_startup.py"))
+                << QStringLiteral("QUCS_S_SHELL=") + shellFolder()
+                << QStringLiteral("QUCS_S_PYTHONSTARTUP=") + qEnvironmentVariable("PYTHONSTARTUP");
+    }
     return entries;
 }
 
@@ -262,6 +314,25 @@ Answer readAnswer(const QByteArray& line)
         answer.help.title = help.value(QStringLiteral("title")).toString();
         answer.help.type = help.value(QStringLiteral("type")).toString();
         answer.help.text = help.value(QStringLiteral("text")).toString();
+    }
+    for (const QString& kind : {QStringLiteral("references"), QStringLiteral("rename")}) {
+        const QJsonObject found = o.value(kind).toObject();
+        if (found.isEmpty()) continue;
+        answer.valid = true;
+        answer.name = found.value(QStringLiteral("name")).toString();
+        answer.scope = found.value(QStringLiteral("scope")).toString();
+        answer.refusal = found.value(QStringLiteral("refusal")).toString();
+        answer.count = found.value(QStringLiteral("count")).toInt();
+        for (const QJsonValue& v : found.value(QStringLiteral("references")).toArray()) {
+            const QJsonObject r = v.toObject();
+            answer.references.append({r.value(QStringLiteral("file")).toString(), r.value(QStringLiteral("line")).toInt(),
+                                      r.value(QStringLiteral("column")).toInt(), r.value(QStringLiteral("end")).toInt(),
+                                      r.value(QStringLiteral("text")).toString(), r.value(QStringLiteral("definition")).toBool()});
+        }
+        for (const QJsonValue& v : found.value(QStringLiteral("changes")).toArray()) {
+            const QJsonObject c = v.toObject();
+            answer.changes.append({c.value(QStringLiteral("file")).toString(), c.value(QStringLiteral("text")).toString()});
+        }
     }
     if (const QJsonObject place = o.value(QStringLiteral("definition")).toObject(); !place.isEmpty()) {
         Place& p = answer.place;
@@ -492,6 +563,229 @@ QString nextIndent(const QString& line, const QString& step)
     return indent.chopped(spaces);
 }
 
+QJsonObject toJson(const Breakpoint& b)
+{
+    return {{QStringLiteral("line"), b.line},
+            {QStringLiteral("condition"), b.condition.trimmed()},
+            {QStringLiteral("hit"), b.hit.trimmed()},
+            {QStringLiteral("log"), b.log},
+            {QStringLiteral("enabled"), b.enabled}};
+}
+
+QList<Symbol> symbolsOf(const QString& text)
+{
+    // The outline's functions and classes - methods with their class - and
+    // the module's variables: a name given a value at the top level (a, b =
+    // ...; for x in ...; x: int = ...), the first time.
+    QList<Symbol> symbols;
+    const QList<OutlineEntry> outline = outlineOf(text);
+    QList<std::pair<int, QString>> classes;   // the classes open: their depth and name
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    for (const OutlineEntry& e : outline) {
+        while (!classes.isEmpty() && classes.last().first >= e.depth) classes.removeLast();
+        const QString line = lines.value(e.line - 1);
+        const qsizetype at = line.indexOf(QRegularExpression(QStringLiteral("\\b%1\\b").arg(QRegularExpression::escape(e.name))),
+                                          line.indexOf(e.kind == QLatin1String("class") ? QLatin1String("class") : QLatin1String("def")));
+        Symbol s;
+        s.line = e.line;
+        s.column = int(std::max<qsizetype>(0, at));
+        s.kind = e.kind == QLatin1String("class") ? QStringLiteral("class") : QStringLiteral("function");
+        s.name = e.name;
+        s.container = classes.isEmpty() ? QString() : classes.last().second;
+        symbols.append(s);
+        if (e.kind == QLatin1String("class")) classes.append({e.depth, e.name});
+    }
+    static const QRegularExpression assigned(QStringLiteral("^(?:for\\s+([A-Za-z_]\\w*(?:\\s*,\\s*[A-Za-z_]\\w*)*)\\s+in\\b"
+                                                           "|([A-Za-z_]\\w*(?:\\s*,\\s*[A-Za-z_]\\w*)*)\\s*(?::[^=]*)?=(?!=))"));
+    QSet<QString> seen;
+    for (const Symbol& s : std::as_const(symbols))
+        if (s.container.isEmpty()) seen.insert(s.name);
+    QChar open;   // (a string left open across lines: a docstring)
+    for (int k = 0; k < lines.size(); ++k) {
+        const QString& line = lines.at(k);
+        const qsizetype triple = line.count(QLatin1String("\"\"\"")) + line.count(QLatin1String("'''"));
+        if (!open.isNull()) {
+            if (triple % 2 == 1) open = QChar();
+            continue;
+        }
+        if (triple % 2 == 1) {
+            open = QLatin1Char('"');
+            continue;
+        }
+        if (line.isEmpty() || line.front().isSpace()) continue;
+        const QRegularExpressionMatch m = assigned.match(line);
+        if (!m.hasMatch()) continue;
+        static const QSet<QString> keywords{
+            QStringLiteral("if"), QStringLiteral("elif"), QStringLiteral("else"), QStringLiteral("while"), QStringLiteral("try"),
+            QStringLiteral("except"), QStringLiteral("finally"), QStringLiteral("with"), QStringLiteral("lambda"),
+            QStringLiteral("return"), QStringLiteral("not"), QStringLiteral("and"), QStringLiteral("or"), QStringLiteral("in"),
+            QStringLiteral("is"), QStringLiteral("assert"), QStringLiteral("del"), QStringLiteral("global"),
+            QStringLiteral("nonlocal"), QStringLiteral("yield"), QStringLiteral("await"), QStringLiteral("case"),
+            QStringLiteral("match"), QStringLiteral("print")};
+        const QString names = m.captured(1).isEmpty() ? m.captured(2) : m.captured(1);
+        for (const QString& part : names.split(QLatin1Char(','))) {
+            const QString name = part.trimmed();
+            if (name.isEmpty() || seen.contains(name) || name == QLatin1String("_") || keywords.contains(name)) continue;
+            seen.insert(name);
+            Symbol s;
+            s.line = k + 1;
+            s.column = int(line.indexOf(name));
+            s.kind = QStringLiteral("variable");
+            s.name = name;
+            symbols.append(s);
+        }
+    }
+    std::stable_sort(symbols.begin(), symbols.end(), [](const Symbol& a, const Symbol& b) { return a.line < b.line; });
+    return symbols;
+}
+
+int symbolScore(const QString& name, const QString& pattern)
+{
+    // Its letters in order (any case): better at the start, together, and
+    // at the start of a word of the name (snake_case, CamelCase).
+    if (pattern.isEmpty()) return 0;
+    int score = 0;
+    qsizetype at = 0;
+    qsizetype last = -2;
+    for (const QChar c : pattern) {
+        const qsizetype found = name.indexOf(c, at, Qt::CaseInsensitive);
+        if (found < 0) return -1;
+        if (found == last + 1) score += 5;   // together
+        if (found == 0) score += 10;
+        else if (name.at(found - 1) == QLatin1Char('_') || (name.at(found).isUpper() && name.at(found - 1).isLower())) score += 6;
+        if (name.at(found) == c) score += 1;   // the same case
+        last = found;
+        at = found + 1;
+    }
+    if (name.startsWith(pattern, Qt::CaseInsensitive)) score += 20;
+    if (name.compare(pattern, Qt::CaseInsensitive) == 0) score += 30;
+    return score - int(name.size() - pattern.size()) / 4;
+}
+
+TypeCheck readTypeCheck(const QByteArray& output)
+{
+    TypeCheck check;
+    QJsonParseError error;
+    const QJsonDocument doc = QJsonDocument::fromJson(output.trimmed(), &error);
+    if (!doc.isObject()) {
+        check.failure = tr("The type check gave no answer it should (%1).").arg(error.errorString());
+        return check;
+    }
+    const QJsonObject o = doc.object();
+    check.failure = o.value(QStringLiteral("failure")).toString();
+    check.tool = o.value(QStringLiteral("tool")).toString();
+    for (const QJsonValue& v : o.value(QStringLiteral("problems")).toArray()) {
+        const QJsonObject p = v.toObject();
+        Problem problem;
+        problem.line = std::max(1, p.value(QStringLiteral("line")).toInt(1));
+        problem.column = std::max(0, p.value(QStringLiteral("column")).toInt());
+        problem.endLine = std::max(0, p.value(QStringLiteral("endLine")).toInt());
+        problem.endColumn = std::max(0, p.value(QStringLiteral("endColumn")).toInt());
+        problem.message = p.value(QStringLiteral("message")).toString();
+        problem.code = p.value(QStringLiteral("code")).toString();
+        check.problems.append(problem);
+    }
+    return check;
+}
+
+QHash<int, int> bracketPairs(const QString& text)
+{
+    QHash<int, int> pairs;
+    QList<std::pair<int, QChar>> open;
+    const auto closes = [](QChar o, QChar c) {
+        return (o == QLatin1Char('(') && c == QLatin1Char(')')) || (o == QLatin1Char('[') && c == QLatin1Char(']'))
+               || (o == QLatin1Char('{') && c == QLatin1Char('}'));
+    };
+    const qsizetype n = text.size();
+    for (qsizetype k = 0; k < n; ++k) {
+        const QChar c = text.at(k);
+        if (c == QLatin1Char('#')) {   // a comment: to the line's end
+            while (k < n && text.at(k) != QLatin1Char('\n')) ++k;
+            continue;
+        }
+        if (c == QLatin1Char('\'') || c == QLatin1Char('"')) {   // a string: past it
+            const bool triple = k + 2 < n && text.at(k + 1) == c && text.at(k + 2) == c;
+            qsizetype e = k + (triple ? 3 : 1);
+            while (e < n) {
+                const QChar d = text.at(e);
+                if (d == QLatin1Char('\\')) {
+                    e += 2;
+                    continue;
+                }
+                if (triple ? (d == c && e + 2 < n && text.at(e + 1) == c && text.at(e + 2) == c) : d == c) break;
+                if (!triple && d == QLatin1Char('\n')) break;   // (left open: it ends with its line)
+                ++e;
+            }
+            k = std::min(n, e + (triple ? 3 : 1)) - 1;
+            continue;
+        }
+        if (c == QLatin1Char('(') || c == QLatin1Char('[') || c == QLatin1Char('{')) {
+            open.append({int(k), c});
+        } else if (c == QLatin1Char(')') || c == QLatin1Char(']') || c == QLatin1Char('}')) {
+            if (!open.isEmpty() && closes(open.last().second, c)) {
+                pairs.insert(open.last().first, int(k));
+                pairs.insert(int(k), open.last().first);
+                open.removeLast();
+            } else {
+                pairs.insert(int(k), -1);   // (closes nothing - or another kind)
+            }
+        }
+    }
+    for (const auto& o : std::as_const(open)) pairs.insert(o.first, -1);
+    return pairs;
+}
+
+namespace {
+int indentWidth(QStringView line)
+{
+    int n = 0;
+    for (const QChar c : line) {
+        if (c == QLatin1Char(' ')) ++n;
+        else if (c == QLatin1Char('\t')) n += 8 - n % 8;
+        else break;
+    }
+    return n;
+}
+} // namespace
+
+std::pair<int, int> foldRange(const QStringList& lines, int line)
+{
+    if (line < 1 || line > lines.size()) return {0, 0};
+    const QString& head = lines.at(line - 1);
+    int last = line;
+    if (isCellMarker(head)) {   // a cell: to the line before the next one
+        for (int k = line + 1; k <= lines.size() && !isCellMarker(lines.at(k - 1)); ++k)
+            if (!lines.at(k - 1).trimmed().isEmpty()) last = k;
+        return last > line ? std::pair<int, int>{line + 1, last} : std::pair<int, int>{0, 0};
+    }
+    if (head.trimmed().isEmpty()) return {0, 0};
+    const int indent = indentWidth(head);
+    for (int k = line + 1; k <= lines.size(); ++k) {
+        const QString& text = lines.at(k - 1);
+        if (text.trimmed().isEmpty()) continue;
+        if (indentWidth(text) <= indent || isCellMarker(text)) break;
+        last = k;
+    }
+    return last > line ? std::pair<int, int>{line + 1, last} : std::pair<int, int>{0, 0};
+}
+
+std::pair<QString, int> dottedNameAt(const QString& text, int position)
+{
+    const auto nameCharacter = [](QChar c) { return c.isLetterOrNumber() || c == QLatin1Char('_'); };
+    int start = position, end = position;
+    while (start > 0 && nameCharacter(text.at(start - 1))) --start;
+    while (end < text.size() && nameCharacter(text.at(end))) ++end;
+    if (start == end || text.at(start).isDigit() || inStringOrComment(text.left(start))) return {};
+    // Back over what it is an attribute of: name.name.
+    while (start >= 2 && text.at(start - 1) == QLatin1Char('.') && nameCharacter(text.at(start - 2))) {
+        int before = start - 1;
+        while (before > 0 && nameCharacter(text.at(before - 1))) --before;
+        if (text.at(before).isDigit()) break;
+        start = before;
+    }
+    return {text.mid(start, end - start), start};
+}
+
 QIcon completionIcon(const QString& type)
 {
     static QHash<QString, QIcon> icons;
@@ -658,6 +952,29 @@ PythonDoc::PythonDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     connect(a_outlineDelay, &QTimer::timeout, this, &PythonDoc::updateOutline);
     connect(document(), &QTextDocument::contentsChanged, a_outlineDelay, qOverload<>(&QTimer::start));
     connect(this, &QPlainTextEdit::cursorPositionChanged, this, &PythonDoc::chooseOutlineEntry);
+
+    // The bracket at the cursor and its partner; the folds kept as the
+    // text changes, one the cursor goes into opened.
+    connect(this, &QPlainTextEdit::cursorPositionChanged, this, &PythonDoc::markBrackets);
+    connect(document(), &QTextDocument::contentsChanged, this, [this] {
+        if (!a_folds.isEmpty() && !a_applyingFolds) QTimer::singleShot(0, this, &PythonDoc::applyFolds);
+    });
+    connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this] {
+        if (a_folds.isEmpty() || a_applyingFolds || textCursor().block().isVisible()) return;
+        const int line = textCursor().blockNumber() + 1;
+        const QStringList lines = toPlainText().split(QLatin1Char('\n'));
+        a_folds.removeIf([&](const Fold& f) {
+            const auto [first, last] = qucs_s::python::foldRange(lines, f.at.blockNumber() + 1);
+            return first <= line && line <= last;
+        });
+        applyFolds();
+    });
+
+    // The type check: after the check, one at a time.
+    a_typeDelay = new QTimer(this);
+    a_typeDelay->setSingleShot(true);
+    a_typeDelay->setInterval(200);
+    connect(a_typeDelay, &QTimer::timeout, this, &PythonDoc::startTypeCheck);
     updateMargins();
     placeOutline();
     updateOutline();
@@ -668,10 +985,11 @@ PythonDoc::~PythonDoc()
     openScripts().remove(this);
     stopCheck();
     stopCompleter();
-    if (a_formatProcess != nullptr) {
-        disconnect(a_formatProcess, nullptr, this, nullptr);
-        a_formatProcess->kill();
-        a_formatProcess->waitForFinished(1000);
+    for (QProcess* process : {a_formatProcess, a_typeProcess}) {
+        if (process == nullptr) continue;
+        disconnect(process, nullptr, this, nullptr);
+        process->kill();
+        process->waitForFinished(1000);
     }
     // TextDoc's destructor edits the text as it lets the highlighter go:
     // no check is scheduled by a PythonDoc that is no more.
@@ -786,6 +1104,7 @@ void PythonDoc::finishCheck()
     a_hasCheck = true;
 
     QList<Diagnostic> marks;
+    bool errors = false;
     for (const qucs_s::python::Problem& p : std::as_const(check.problems)) {
         Diagnostic d;
         d.line = p.line;
@@ -795,9 +1114,27 @@ void PythonDoc::finishCheck()
         d.error = p.error;
         d.message = p.code.isEmpty() ? p.message : QStringLiteral("%1 (%2)").arg(p.message, p.code);
         marks.append(d);
+        errors = errors || p.error;
     }
-    setDiagnostics(marks);
+    // The type check's findings kept where they are now (they move with the
+    // text) until its next answer.
+    QList<Diagnostic> typed;
+    for (const Diagnostic& d : diagnostics())
+        if (!d.source.isEmpty()) typed.append(d);
+    showProblems(marks, typed);
     emit checkFinished();
+    // Typed when it compiles (a syntax error is the check's to say).
+    if (!errors && check.failure.isEmpty()) scheduleTypeCheck();
+}
+
+void PythonDoc::showProblems(const QList<TextDoc::Diagnostic>& basic, const QList<TextDoc::Diagnostic>& typed)
+{
+    QList<Diagnostic> all = basic;
+    all.append(typed);
+    std::stable_sort(all.begin(), all.end(), [](const Diagnostic& a, const Diagnostic& b) {
+        return a.line != b.line ? a.line < b.line : a.column < b.column;
+    });
+    setDiagnostics(all);
 }
 
 QString PythonDoc::checkedBy() const
@@ -806,16 +1143,27 @@ QString PythonDoc::checkedBy() const
     if (!a_hasCheck) return tr("Not checked yet.");
     if (!a_check.failure.isEmpty()) return a_check.failure;
     const QString python = tr("Python %1").arg(a_check.python);
-    if (a_check.checker.isEmpty())
-        return tr("%1's compiler alone: syntax errors and its warnings. With ruff or pyflakes installed for it, "
-                  "names not defined, imports not used and more.").arg(python);
-    return tr("%1 and %2").arg(python, a_check.checker);
+    QString said = a_check.checker.isEmpty()
+                       ? tr("%1's compiler alone: syntax errors and its warnings. With ruff or pyflakes installed for it, "
+                            "names not defined, imports not used and more.").arg(python)
+                       : tr("%1 and %2").arg(python, a_check.checker);
+    // The type check's word.
+    if (typeChecker() == QLatin1String("off")) return said;
+    if (!a_typeCheck.failure.isEmpty()) said += QLatin1Char('\n') + tr("The type check failed: %1").arg(a_typeCheck.failure);
+    else if (!a_typeCheck.tool.isEmpty()) said += QLatin1Char('\n') + tr("Types checked by %1.").arg(a_typeCheck.tool);
+    else if (typeChecked())
+        said += QLatin1Char('\n') + (typeChecker() == QLatin1String("auto")
+                                          ? tr("No type checker installed for it (mypy or pyright).")
+                                          : tr("No %1 installed for it.").arg(typeChecker()));
+    return said;
 }
 
 bool PythonDoc::messagesAtLineEnds()
 {
     return _settings::Get().item<bool>("PythonMessagesAtLineEnds");
 }
+
+QList<PythonDoc*> PythonDoc::openDocuments() { return openScripts().values(); }
 
 void PythonDoc::setMessagesAtLineEnds(bool on)
 {
@@ -876,6 +1224,10 @@ void PythonDoc::keyPressEvent(QKeyEvent* event)
     }
     if (key == Qt::Key_Backtab || (key == Qt::Key_Tab && modifiers == Qt::ShiftModifier)) {
         shiftLines(-1);
+        return;
+    }
+    if (autoClose() && closePair(event)) {
+        afterTyping(event->text());
         return;
     }
     TextDoc::keyPressEvent(event);
@@ -1111,6 +1463,18 @@ void PythonDoc::readCompleter()
             if (!answer.engine.isEmpty()) a_completionEngine = answer.engine;
             a_definition = answer.place;
             emit definitionAnswered();
+        } else if (answer.kind == QLatin1String("references") && answer.id == a_referencesRequest) {
+            a_references = answer;
+            emit referencesAnswered();
+        } else if (answer.kind == QLatin1String("rename") && answer.id == a_renameRequest) {
+            a_rename = answer;
+            // The script's own change made here - unless it changed since.
+            if (answer.valid && answer.refusal.isEmpty() && a_renameRevision != document()->revision())
+                a_rename.refusal = tr("The script changed while the name was being renamed: nothing done.");
+            else
+                for (const qucs_s::python::FileChange& c : std::as_const(answer.changes))
+                    if (c.file.isEmpty() && answer.refusal.isEmpty()) replaceText(c.text);
+            emit renameAnswered();
         }
     }
 }
