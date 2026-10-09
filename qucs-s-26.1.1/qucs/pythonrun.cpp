@@ -12,15 +12,18 @@
 #include "pythonrun.h"
 
 #include "main.h"
+#include "settings.h"
 #include "processconsole.h"
 #include "pythondoc.h"
 
 #include <QDir>
+#include <QCompleter>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFontInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -37,6 +40,8 @@
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QSplitter>
+#include <QStringListModel>
+#include <QTabWidget>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTimer>
@@ -158,42 +163,111 @@ PythonRunConsole::PythonRunConsole(QWidget* parent)
     connect(a_stackView, &QListWidget::currentRowChanged, this, [this](int row) {
         if (row >= 0 && row != a_frame) selectFrame(row);
     });
-    a_variables = new QTreeWidget(a_debugPanel);
-    a_variables->setObjectName(QStringLiteral("pythonDebugVariables"));
-    a_variables->setHeaderLabels({tr("Name"), tr("Type"), tr("Value")});
-    a_variables->setUniformRowHeights(true);
-    a_variables->header()->setStretchLastSection(true);
-    connect(a_variables, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) {
-        const int handle = item->data(0, Qt::UserRole).toInt();
-        if (item->childCount() > 0 || handle < 0 || !a_paused) return;
-        a_opening.insert(handle, item);
-        command({{QStringLiteral("command"), QStringLiteral("children")}, {QStringLiteral("handle"), handle}});
-    });
-    // An array, a list, a DataFrame: View as Table (its menu, a double-click).
-    a_variables->setContextMenuPolicy(Qt::CustomContextMenu);
-    const auto asTable = [this](QTreeWidgetItem* item) {
-        if (item == nullptr || !item->data(1, Qt::UserRole).toBool() || !a_paused) return;
-        QString name = item->text(0);
-        for (QTreeWidgetItem* up = item->parent(); up != nullptr; up = up->parent()) name.prepend(up->text(0) + QLatin1Char(' '));
-        emit tableRequested(item->data(0, Qt::UserRole).toInt(), name);
+    // The variables of the frame, and the watch list: a tab each, their
+    // values opened alike (a value's insides, View as Table, Show in a Data
+    // Display).
+    const auto valueTree = [this](QTreeWidget*& tree, const char* name, const QString& first) {
+        tree = new QTreeWidget(a_debugPanel);
+        tree->setObjectName(QLatin1String(name));
+        tree->setHeaderLabels({first, tr("Type"), tr("Value")});
+        tree->setUniformRowHeights(true);
+        tree->header()->setStretchLastSection(true);
+        connect(tree, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) {
+            const int handle = item->data(0, Qt::UserRole).toInt();
+            if (item->childCount() > 0 || handle < 0 || !a_paused) return;
+            a_opening.insert(handle, item);
+            command({{QStringLiteral("command"), QStringLiteral("children")}, {QStringLiteral("handle"), handle}});
+        });
+        tree->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(tree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int column) {
+            if (item->treeWidget() == a_watchView && column == 0 && item->parent() == nullptr) {
+                editWatch(a_watchView->indexOfTopLevelItem(item));
+                return;
+            }
+            viewAsTable(item);
+        });
+        connect(tree, &QTreeWidget::customContextMenuRequested, this, [this, tree](const QPoint& at) {
+            QTreeWidgetItem* item = tree->itemAt(at);
+            if (item == nullptr) return;
+            QMenu menu(this);
+            QAction* table = menu.addAction(tr("View as Table"));
+            table->setObjectName(QStringLiteral("pythonDebugViewAsTable"));
+            table->setEnabled(item->data(1, Qt::UserRole).toBool() && a_paused);
+            QAction* display = menu.addAction(tr("Show in a Data Display"));
+            display->setObjectName(QStringLiteral("pythonDebugShowInDisplay"));
+            display->setEnabled(item->data(1, Qt::UserRole).toBool() && a_paused);
+            QAction* edit = nullptr;
+            QAction* remove = nullptr;
+            if (tree == a_watchView && item->parent() == nullptr) {
+                menu.addSeparator();
+                edit = menu.addAction(tr("Edit Expression"));
+                remove = menu.addAction(tr("Remove Expression"));
+            }
+            QAction* chosen = menu.exec(tree->viewport()->mapToGlobal(at));
+            if (chosen == table) viewAsTable(item);
+            else if (chosen == display) showInDisplay(item);
+            else if (chosen != nullptr && chosen == edit) editWatch(a_watchView->indexOfTopLevelItem(item));
+            else if (chosen != nullptr && chosen == remove) removeWatch(a_watchView->indexOfTopLevelItem(item));
+        });
     };
-    connect(a_variables, &QTreeWidget::itemDoubleClicked, this, [asTable](QTreeWidgetItem* item) { asTable(item); });
-    connect(a_variables, &QTreeWidget::customContextMenuRequested, this, [this, asTable](const QPoint& at) {
-        QTreeWidgetItem* item = a_variables->itemAt(at);
-        if (item == nullptr) return;
-        QMenu menu(this);
-        QAction* table = menu.addAction(tr("View as Table"));
-        table->setObjectName(QStringLiteral("pythonDebugViewAsTable"));
-        table->setEnabled(item->data(1, Qt::UserRole).toBool() && a_paused);
-        if (menu.exec(a_variables->viewport()->mapToGlobal(at)) == table) asTable(item);
+    valueTree(a_variables, "pythonDebugVariables", tr("Name"));
+    valueTree(a_watchView, "pythonDebugWatch", tr("Expression"));
+    a_watchView->setToolTip(tr("Expressions evaluated in the frame each time it stops: one added below, edited with a "
+                               "double-click, removed with Delete"));
+    a_watchView->installEventFilter(this);
+    a_watchAdd = new QLineEdit(a_debugPanel);
+    a_watchAdd->setObjectName(QStringLiteral("pythonDebugWatchAdd"));
+    a_watchAdd->setPlaceholderText(tr("Add an expression to watch"));
+    connect(a_watchAdd, &QLineEdit::returnPressed, this, [this] {
+        const QString expression = a_watchAdd->text().trimmed();
+        if (expression.isEmpty()) return;
+        addWatch(expression);
+        a_watchAdd->clear();
     });
+    a_watches = _settings::Get().item<QStringList>("PythonWatches");
+    auto* watchPage = new QWidget(a_debugPanel);
+    auto* watchLayout = new QVBoxLayout(watchPage);
+    watchLayout->setContentsMargins(0, 0, 0, 0);
+    watchLayout->setSpacing(2);
+    watchLayout->addWidget(a_watchView, 1);
+    watchLayout->addWidget(a_watchAdd);
+    a_valueTabs = new QTabWidget(a_debugPanel);
+    a_valueTabs->setObjectName(QStringLiteral("pythonDebugValueTabs"));
+    a_valueTabs->addTab(a_variables, tr("Variables"));
+    a_valueTabs->addTab(watchPage, tr("Watch"));
+    showWatches({});
+
+    // The line to evaluate in: names completed from the frame, the earlier
+    // lines with Up and Down.
     a_evaluate = new QLineEdit(a_debugPanel);
     a_evaluate->setObjectName(QStringLiteral("pythonDebugEvaluate"));
-    a_evaluate->setPlaceholderText(tr("Evaluate in the frame: an expression, or a statement"));
+    a_evaluate->setPlaceholderText(tr("Evaluate in the frame: an expression, or a statement (Up: the one before)"));
     a_evaluate->setEnabled(false);
+    a_evaluate->installEventFilter(this);
+    a_completions = new QStringListModel(this);
+    a_evaluateCompleter = new QCompleter(a_completions, this);
+    a_evaluateCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    a_evaluateCompleter->setCaseSensitivity(Qt::CaseSensitive);
+    a_evaluateCompleter->setModelSorting(QCompleter::CaseSensitivelySortedModel);
+    a_evaluateCompleter->setMaxVisibleItems(12);
+    a_evaluateCompleter->popup()->setObjectName(QStringLiteral("pythonDebugCompletions"));
+    a_evaluate->setCompleter(a_evaluateCompleter);
+    a_completeDelay = new QTimer(this);
+    a_completeDelay->setSingleShot(true);
+    a_completeDelay->setInterval(120);
+    connect(a_completeDelay, &QTimer::timeout, this, [this] { askCompletions(); });
+    connect(a_evaluate, &QLineEdit::textEdited, this, [this](const QString& text) {
+        if (!text.isEmpty() && (text.back().isLetterOrNumber() || text.back() == QLatin1Char('_') || text.back() == QLatin1Char('.')))
+            a_completeDelay->start();
+    });
     connect(a_evaluate, &QLineEdit::returnPressed, this, [this] {
+        if (a_evaluateCompleter->popup()->isVisible()) return;
         const QString expression = a_evaluate->text().trimmed();
         if (expression.isEmpty()) return;
+        a_history.removeAll(expression);
+        a_history.append(expression);
+        while (a_history.size() > 100) a_history.removeFirst();
+        a_historyAt = int(a_history.size());
         evaluate(expression);
         a_evaluate->clear();
     });
@@ -203,8 +277,7 @@ PythonRunConsole::PythonRunConsole(QWidget* parent)
     panel->addLayout(buttons);
     panel->addWidget(new QLabel(tr("Call stack"), a_debugPanel));
     panel->addWidget(a_stackView, 1);
-    panel->addWidget(new QLabel(tr("Variables"), a_debugPanel));
-    panel->addWidget(a_variables, 3);
+    panel->addWidget(a_valueTabs, 3);
     panel->addWidget(a_evaluate);
     a_debugPanel->hide();
 
@@ -569,12 +642,14 @@ int PythonRunConsole::inspect(const QString& expression)
     return id;
 }
 
-int PythonRunConsole::requestData(int handle, const QString& expression, int start, int count)
+int PythonRunConsole::requestData(int handle, const QString& expression, const QJsonObject& view)
 {
     if (!a_paused) return 0;
     const int id = ++a_requests;
-    QJsonObject c{{QStringLiteral("command"), QStringLiteral("data")}, {QStringLiteral("frame"), a_frame},
-                  {QStringLiteral("start"), start}, {QStringLiteral("count"), count}, {QStringLiteral("id"), id}};
+    QJsonObject c = view;
+    c.insert(QStringLiteral("command"), QStringLiteral("data"));
+    c.insert(QStringLiteral("frame"), a_frame);
+    c.insert(QStringLiteral("id"), id);
     if (handle >= 0) c.insert(QStringLiteral("handle"), handle);
     else c.insert(QStringLiteral("expression"), expression);
     command(c);
@@ -590,7 +665,8 @@ void PythonRunConsole::handleEvent(const QJsonObject& event)
         for (const QJsonValue& v : event.value(QStringLiteral("stack")).toArray()) {
             const QJsonObject f = v.toObject();
             a_stack.append({f.value(QStringLiteral("file")).toString(), f.value(QStringLiteral("line")).toInt(),
-                            f.value(QStringLiteral("function")).toString(), f.value(QStringLiteral("library")).toBool()});
+                            f.value(QStringLiteral("function")).toString(), f.value(QStringLiteral("library")).toBool(),
+                            f.value(QStringLiteral("first")).toInt()});
         }
         a_frame = 0;
         a_reason = event.value(QStringLiteral("reason")).toString();
@@ -609,6 +685,7 @@ void PythonRunConsole::handleEvent(const QJsonObject& event)
         fillVariables(nullptr, event.value(QStringLiteral("variables")).toArray());
         a_pausing = false;
         setPaused(true);
+        refreshWatches();
         if (!a_stack.isEmpty()) {
             const Frame& top = a_stack.first();
             const QString where = tr("%1, line %2").arg(QFileInfo(top.file).fileName()).arg(top.line);
@@ -631,6 +708,8 @@ void PythonRunConsole::handleEvent(const QJsonObject& event)
         }
         a_variables->clear();
         a_opening.clear();
+        a_frameValues.clear();
+        showWatches({});
         setStatus(tr("Debugging %1...").arg(QFileInfo(a_script).fileName()));
         emit resumed();
         emit debuggingChanged();
@@ -639,6 +718,7 @@ void PythonRunConsole::handleEvent(const QJsonObject& event)
         a_variables->clear();
         a_opening.clear();
         fillVariables(nullptr, event.value(QStringLiteral("variables")).toArray());
+        refreshWatches();
         emit variablesShown();
     } else if (kind == QLatin1String("children")) {
         QTreeWidgetItem* item = a_opening.take(event.value(QStringLiteral("handle")).toInt());
@@ -662,11 +742,32 @@ void PythonRunConsole::handleEvent(const QJsonObject& event)
                        event.value(QStringLiteral("error")).toString());
     } else if (kind == QLatin1String("data")) {
         emit dataArrived(event.value(QStringLiteral("id")).toInt(), event);
+    } else if (kind == QLatin1String("watches")) {
+        if (event.value(QStringLiteral("frame")).toInt() != a_frame) return;
+        showWatches(event.value(QStringLiteral("values")).toArray());
+    } else if (kind == QLatin1String("completions")) {
+        if (event.value(QStringLiteral("id")).toInt() != a_completeRequest) return;   // (overtaken)
+        const QString text = a_evaluate->text();
+        const QString before = text.left(event.value(QStringLiteral("start")).toInt());
+        QStringList lines;
+        for (const QJsonValue& v : event.value(QStringLiteral("items")).toArray()) lines << before + v.toString();
+        lines.sort(Qt::CaseSensitive);
+        a_completions->setStringList(lines);
+        if (!lines.isEmpty() && a_evaluate->hasFocus()) {
+            a_evaluateCompleter->setCompletionPrefix(text);
+            if (a_evaluateCompleter->completionCount() > 0 && !(a_evaluateCompleter->completionCount() == 1 && a_evaluateCompleter->currentCompletion() == text))
+                a_evaluateCompleter->complete();
+        }
+        emit completionsShown();
+    } else if (kind == QLatin1String("displayed")) {
+        if (event.value(QStringLiteral("id")).toInt() != a_displayRequest) return;
+        emit displayed(event.value(QStringLiteral("path")).toString(), event.value(QStringLiteral("error")).toString());
     }
 }
 
 void PythonRunConsole::fillVariables(QTreeWidgetItem* parent, const QJsonArray& items)
 {
+    if (parent == nullptr) a_frameValues.clear();
     for (const QJsonValue& v : items) {
         const QJsonObject o = v.toObject();
         auto* item = parent != nullptr ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(a_variables);
@@ -677,11 +778,135 @@ void PythonRunConsole::fillVariables(QTreeWidgetItem* parent, const QJsonArray& 
         item->setToolTip(2, value);
         const int handle = o.value(QStringLiteral("handle")).toInt(-1);
         item->setData(0, Qt::UserRole, handle);
+        if (parent == nullptr) a_frameValues.insert(item->text(0), value);   // (inline values)
         item->setData(1, Qt::UserRole, o.value(QStringLiteral("table")).toBool());   // (View as Table)
         if (o.value(QStringLiteral("table")).toBool()) item->setToolTip(0, tr("Double-click: the value as a table"));
         if (handle >= 0) item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
     }
     if (parent != nullptr && parent->childCount() == 0) parent->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
+}
+
+void PythonRunConsole::viewAsTable(QTreeWidgetItem* item)
+{
+    if (item == nullptr || !item->data(1, Qt::UserRole).toBool() || !a_paused) return;
+    QString name = item->text(0);
+    for (QTreeWidgetItem* up = item->parent(); up != nullptr; up = up->parent()) name.prepend(up->text(0) + QLatin1Char(' '));
+    emit tableRequested(item->data(0, Qt::UserRole).toInt(), name);
+}
+
+void PythonRunConsole::showInDisplay(QTreeWidgetItem* item)
+{
+    if (item == nullptr || !a_paused) return;
+    const int handle = item->data(0, Qt::UserRole).toInt();
+    a_displayRequest = ++a_requests;
+    QJsonObject c{{QStringLiteral("command"), QStringLiteral("display")}, {QStringLiteral("frame"), a_frame},
+                  {QStringLiteral("name"), item->text(0)}, {QStringLiteral("id"), a_displayRequest}};
+    if (handle >= 0) c.insert(QStringLiteral("handle"), handle);
+    else c.insert(QStringLiteral("expression"), item->text(0));
+    command(c);
+}
+
+void PythonRunConsole::addWatch(const QString& expression)
+{
+    const QString e = expression.trimmed();
+    if (e.isEmpty() || a_watches.contains(e)) return;
+    a_watches.append(e);
+    saveWatches();
+    if (a_paused) refreshWatches();
+    else showWatches({});
+}
+
+void PythonRunConsole::removeWatch(int index)
+{
+    if (index < 0 || index >= a_watches.size()) return;
+    a_watches.removeAt(index);
+    saveWatches();
+    if (a_paused) refreshWatches();
+    else showWatches({});
+}
+
+void PythonRunConsole::editWatch(int index)
+{
+    if (index < 0 || index >= a_watches.size()) return;
+    bool ok = false;
+    const QString e = QInputDialog::getText(this, tr("Watch"), tr("Expression:"), QLineEdit::Normal, a_watches.at(index), &ok).trimmed();
+    if (!ok) return;
+    if (e.isEmpty()) {
+        removeWatch(index);
+        return;
+    }
+    a_watches[index] = e;
+    a_watches.removeDuplicates();
+    saveWatches();
+    if (a_paused) refreshWatches();
+    else showWatches({});
+}
+
+void PythonRunConsole::saveWatches()
+{
+    _settings::Get().setItem<QStringList>("PythonWatches", a_watches);
+}
+
+void PythonRunConsole::refreshWatches()
+{
+    if (!a_paused || a_watches.isEmpty()) {
+        showWatches({});
+        return;
+    }
+    command({{QStringLiteral("command"), QStringLiteral("watch")}, {QStringLiteral("expressions"), QJsonArray::fromStringList(a_watches)},
+             {QStringLiteral("frame"), a_frame}});
+}
+
+void PythonRunConsole::showWatches(const QJsonArray& values)
+{
+    a_watchView->clear();
+    for (int k = 0; k < a_watches.size(); ++k) {
+        const QJsonObject o = values.at(k).toObject();
+        auto* item = new QTreeWidgetItem(a_watchView);
+        item->setText(0, a_watches.at(k));
+        item->setData(0, Qt::UserRole, -1);
+        if (o.contains(QStringLiteral("error"))) {
+            item->setText(2, o.value(QStringLiteral("error")).toString());
+            item->setForeground(2, palette().placeholderText());
+            continue;
+        }
+        if (o.isEmpty()) continue;   // (not stopped: the expression alone)
+        const QString value = o.value(QStringLiteral("value")).toString();
+        item->setText(1, o.value(QStringLiteral("type")).toString());
+        item->setText(2, value);
+        item->setToolTip(2, value);
+        const int handle = o.value(QStringLiteral("handle")).toInt(-1);
+        item->setData(0, Qt::UserRole, handle);
+        item->setData(1, Qt::UserRole, o.value(QStringLiteral("table")).toBool());
+        if (handle >= 0) item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
+    }
+    a_valueTabs->setTabText(1, a_watches.isEmpty() ? tr("Watch") : tr("Watch (%1)").arg(a_watches.size()));
+    emit watchesShown();
+}
+
+QStringList PythonRunConsole::watchRows() const
+{
+    QStringList rows;
+    for (int k = 0; k < a_watchView->topLevelItemCount(); ++k) {
+        const QTreeWidgetItem* item = a_watchView->topLevelItem(k);
+        rows << (item->text(1).isEmpty() && !item->text(2).isEmpty()
+                     ? QStringLiteral("%1: %2").arg(item->text(0), item->text(2))
+                     : QStringLiteral("%1: %2 = %3").arg(item->text(0), item->text(1), item->text(2)));
+    }
+    return rows;
+}
+
+QStringList PythonRunConsole::evaluateCompletions() const
+{
+    return a_completions->stringList();
+}
+
+void PythonRunConsole::askCompletions()
+{
+    if (!a_paused) return;
+    a_completeRequest = ++a_requests;
+    command({{QStringLiteral("command"), QStringLiteral("complete")}, {QStringLiteral("text"), a_evaluate->text()},
+             {QStringLiteral("frame"), a_frame}, {QStringLiteral("id"), a_completeRequest}});
 }
 
 QStringList PythonRunConsole::variableRows() const
@@ -830,6 +1055,25 @@ void PythonRunConsole::setStatus(const QString& text)
 
 bool PythonRunConsole::eventFilter(QObject* watched, QEvent* event)
 {
+    // The evaluate line's history: Up, Down (its list of names not shown).
+    if (watched == a_evaluate && event->type() == QEvent::KeyPress && !a_evaluateCompleter->popup()->isVisible()) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        if ((key->key() == Qt::Key_Up || key->key() == Qt::Key_Down) && !a_history.isEmpty()) {
+            a_historyAt = std::clamp(a_historyAt + (key->key() == Qt::Key_Up ? -1 : 1), 0, int(a_history.size()));
+            a_evaluate->setText(a_historyAt < a_history.size() ? a_history.at(a_historyAt) : QString());
+            return true;
+        }
+    }
+    // Delete on a watch: it goes (the list's key, not the window's Delete).
+    if (watched == a_watchView && (event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride)) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        QTreeWidgetItem* item = a_watchView->currentItem();
+        if ((key->key() == Qt::Key_Delete || key->key() == Qt::Key_Backspace) && item != nullptr && item->parent() == nullptr) {
+            if (event->type() == QEvent::ShortcutOverride) event->accept();
+            else removeWatch(a_watchView->indexOfTopLevelItem(item));
+            return true;
+        }
+    }
     // Ctrl+D in the input line: the end of the script's input (the line's,
     // not the window's shortcut).
     if (watched == a_input && (event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride)) {

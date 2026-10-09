@@ -13,6 +13,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -34,6 +35,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -42,6 +44,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -272,6 +275,177 @@ void Exchange::scan()
             if (doc.isObject()) emit displayRequested(doc.object());
         }
     }
+}
+
+// ----------------------------------------------------------------------
+// A plot of a table's columns
+
+namespace {
+// Round steps (1, 2, 5 times a power of ten) from \a low to \a high.
+QVector<double> roundTicks(double low, double high, int most)
+{
+    QVector<double> ticks;
+    const double span = high - low;
+    if (!(span > 0) || !std::isfinite(span)) return ticks;
+    const double rough = span / std::max(1, most);
+    const double power = std::pow(10.0, std::floor(std::log10(rough)));
+    double step = power;
+    for (const double m : {1.0, 2.0, 5.0, 10.0})
+        if (m * power >= rough) {
+            step = m * power;
+            break;
+        }
+    for (double t = std::ceil(low / step) * step; t <= high + step * 1e-9; t += step) ticks << (std::fabs(t) < step * 1e-9 ? 0.0 : t);
+    return ticks;
+}
+} // namespace
+
+QImage plotImage(const QString& title, const QString& xName, const QVector<double>& x,
+                 const QList<std::pair<QString, QVector<double>>>& series, bool logX, qreal scale)
+{
+    const QSizeF size(820, 500);
+    QImage image((size * scale).toSize(), QImage::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(scale);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QFont font = painter.font();
+    font.setPixelSize(12);
+    painter.setFont(font);
+    const QFontMetricsF metrics(font);
+    const QRectF plot(78, 40, size.width() - 78 - 24, size.height() - 40 - 56);
+
+    // The ranges of what can be drawn.
+    const auto usableX = [logX](double v) { return std::isfinite(v) && (!logX || v > 0); };
+    double x0 = qInf(), x1 = -qInf(), y0 = qInf(), y1 = -qInf();
+    for (int k = 0; k < x.size(); ++k) {
+        if (!usableX(x.at(k))) continue;
+        for (const auto& s : series) {
+            if (k >= s.second.size() || !std::isfinite(s.second.at(k))) continue;
+            x0 = std::min(x0, x.at(k));
+            x1 = std::max(x1, x.at(k));
+            y0 = std::min(y0, s.second.at(k));
+            y1 = std::max(y1, s.second.at(k));
+        }
+    }
+    painter.setPen(QColor(0x22, 0x22, 0x22));
+    QFont bold = font;
+    bold.setPixelSize(14);
+    bold.setBold(true);
+    painter.setFont(bold);
+    painter.drawText(QRectF(0, 6, size.width(), 28), Qt::AlignCenter, title);
+    painter.setFont(font);
+    if (!std::isfinite(x0) || !std::isfinite(y0)) {
+        painter.drawText(plot, Qt::AlignCenter, QCoreApplication::translate("PythonViews", "No numbers to plot."));
+        return image;
+    }
+    if (x1 <= x0) {
+        x0 = logX ? x0 / 2 : x0 - 1;
+        x1 = logX ? x1 * 2 : x1 + 1;
+    }
+    if (y1 <= y0) {
+        y0 -= std::max(1.0, std::fabs(y0) * 0.1);
+        y1 += std::max(1.0, std::fabs(y1) * 0.1);
+    } else {
+        const double pad = (y1 - y0) * 0.05;
+        y0 -= pad;
+        y1 += pad;
+    }
+    const double l0 = logX ? std::log10(x0) : x0, l1 = logX ? std::log10(x1) : x1;
+    const auto px = [&](double v) { return plot.left() + ((logX ? std::log10(v) : v) - l0) / (l1 - l0) * plot.width(); };
+    const auto py = [&](double v) { return plot.bottom() - (v - y0) / (y1 - y0) * plot.height(); };
+
+    // The grid, and the numbers along the axes.
+    const QColor grid(0xe3, 0xe6, 0xea), minor(0xf1, 0xf3, 0xf5), ink(0x44, 0x48, 0x50);
+    const auto label = [](double v) { return QString::number(v, 'g', 4); };
+    for (const double t : roundTicks(y0, y1, 7)) {
+        painter.setPen(QPen(grid, 1));
+        painter.drawLine(QPointF(plot.left(), py(t)), QPointF(plot.right(), py(t)));
+        painter.setPen(ink);
+        painter.drawText(QRectF(0, py(t) - 8, plot.left() - 6, 16), Qt::AlignRight | Qt::AlignVCenter, label(t));
+    }
+    if (logX) {
+        for (int d = int(std::floor(l0)); d <= int(std::ceil(l1)); ++d)
+            for (int m = 1; m <= 9; ++m) {
+                const double v = m * std::pow(10.0, d);
+                if (v < x0 || v > x1) continue;
+                painter.setPen(QPen(m == 1 ? grid : minor, 1));
+                painter.drawLine(QPointF(px(v), plot.top()), QPointF(px(v), plot.bottom()));
+                if (m == 1) {
+                    painter.setPen(ink);
+                    painter.drawText(QRectF(px(v) - 40, plot.bottom() + 4, 80, 16), Qt::AlignCenter, label(v));
+                }
+            }
+    } else {
+        for (const double t : roundTicks(x0, x1, 8)) {
+            painter.setPen(QPen(grid, 1));
+            painter.drawLine(QPointF(px(t), plot.top()), QPointF(px(t), plot.bottom()));
+            painter.setPen(ink);
+            painter.drawText(QRectF(px(t) - 40, plot.bottom() + 4, 80, 16), Qt::AlignCenter, label(t));
+        }
+    }
+    painter.setPen(QPen(ink, 1));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(plot);
+    painter.drawText(QRectF(plot.left(), plot.bottom() + 24, plot.width(), 20), Qt::AlignCenter, xName + (logX ? QStringLiteral(" (log)") : QString()));
+    if (series.size() == 1) {
+        painter.save();
+        painter.translate(16, plot.center().y());
+        painter.rotate(-90);
+        painter.drawText(QRectF(-plot.height() / 2, -10, plot.height(), 20), Qt::AlignCenter, series.first().first);
+        painter.restore();
+    }
+
+    // The series: lines broken where there is no number; dots when few.
+    static const QList<QColor> colours{QColor(0x1f, 0x77, 0xb4), QColor(0xff, 0x7f, 0x0e), QColor(0x2c, 0xa0, 0x2c), QColor(0xd6, 0x27, 0x28),
+                                       QColor(0x94, 0x67, 0xbd), QColor(0x8c, 0x56, 0x4b), QColor(0xe3, 0x77, 0xc2), QColor(0x7f, 0x7f, 0x7f),
+                                       QColor(0xbc, 0xbd, 0x22), QColor(0x17, 0xbe, 0xcf)};
+    painter.save();
+    painter.setClipRect(plot.adjusted(-1, -1, 1, 1));
+    for (int s = 0; s < series.size(); ++s) {
+        const QColor colour = colours.at(s % colours.size());
+        QPainterPath path;
+        bool open = false;
+        int points = 0;
+        for (int k = 0; k < x.size() && k < series.at(s).second.size(); ++k) {
+            const double v = series.at(s).second.at(k);
+            if (!usableX(x.at(k)) || !std::isfinite(v)) {
+                open = false;
+                continue;
+            }
+            const QPointF at(px(x.at(k)), py(v));
+            if (open) path.lineTo(at);
+            else path.moveTo(at);
+            open = true;
+            ++points;
+        }
+        painter.setPen(QPen(colour, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawPath(path);
+        if (points <= 60) {
+            painter.setBrush(colour);
+            for (int k = 0; k < x.size() && k < series.at(s).second.size(); ++k)
+                if (usableX(x.at(k)) && std::isfinite(series.at(s).second.at(k)))
+                    painter.drawEllipse(QPointF(px(x.at(k)), py(series.at(s).second.at(k))), 2.6, 2.6);
+            painter.setBrush(Qt::NoBrush);
+        }
+    }
+    painter.restore();
+    if (series.size() > 1) {   // a legend, at the top right
+        qreal wide = 0;
+        for (const auto& s : series) wide = std::max(wide, metrics.horizontalAdvance(s.first));
+        const QRectF box(plot.right() - wide - 46, plot.top() + 8, wide + 38, 18.0 * series.size() + 8);
+        painter.setPen(QPen(grid, 1));
+        painter.setBrush(QColor(255, 255, 255, 230));
+        painter.drawRect(box);
+        for (int s = 0; s < series.size(); ++s) {
+            const qreal y = box.top() + 13 + 18.0 * s;
+            painter.setPen(QPen(colours.at(s % colours.size()), 2));
+            painter.drawLine(QPointF(box.left() + 6, y), QPointF(box.left() + 24, y));
+            painter.setPen(ink);
+            painter.drawText(QPointF(box.left() + 30, y + metrics.ascent() / 2 - 1), series.at(s).first);
+        }
+    }
+    return image;
 }
 
 } // namespace qucs_s::python
@@ -556,27 +730,42 @@ PythonVariablesPane::PythonVariablesPane(QWidget* parent) : QWidget(parent)
     a_view = new QTreeWidget(this);
     a_view->setObjectName(QStringLiteral("pythonVariables"));
     a_view->setHeaderLabels({tr("Name"), tr("Type"), tr("Size"), tr("Value")});
-    a_view->setRootIsDecorated(false);
     a_view->setUniformRowHeights(true);
     a_view->setAlternatingRowColors(true);
     a_view->header()->setStretchLastSection(true);
     a_view->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(a_view, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item) {
-        if (item->data(0, Qt::UserRole).toBool()) emit tableRequested(item->text(0));
+    const auto expression = [](const QTreeWidgetItem* item) { return item->data(0, Qt::UserRole + 1).toString(); };
+    connect(a_view, &QTreeWidget::itemDoubleClicked, this, [this, expression](QTreeWidgetItem* item) {
+        if (item->data(0, Qt::UserRole).toBool() && !expression(item).isEmpty()) emit tableRequested(expression(item));
     });
-    connect(a_view, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& at) {
+    // A value opened: its insides asked for (once; and again after a
+    // command, as it stays open).
+    connect(a_view, &QTreeWidget::itemExpanded, this, [this, expression](QTreeWidgetItem* item) {
+        const QString e = expression(item);
+        if (e.isEmpty()) return;
+        a_opened.insert(e);
+        if (item->childCount() == 0) emit childrenRequested(e);
+    });
+    connect(a_view, &QTreeWidget::itemCollapsed, this, [this, expression](QTreeWidgetItem* item) { a_opened.remove(expression(item)); });
+    connect(a_view, &QTreeWidget::customContextMenuRequested, this, [this, expression](const QPoint& at) {
         QTreeWidgetItem* item = a_view->itemAt(at);
         if (item == nullptr) return;
+        const bool table = item->data(0, Qt::UserRole).toBool() && !expression(item).isEmpty();
         QMenu menu(this);
-        QAction* table = menu.addAction(tr("View as Table"));
-        table->setEnabled(item->data(0, Qt::UserRole).toBool());
+        QAction* asTable = menu.addAction(tr("View as Table"));
+        asTable->setEnabled(table);
+        QAction* display = menu.addAction(tr("Show in a Data Display"));
+        display->setObjectName(QStringLiteral("pythonVariablesShowInDisplay"));
+        display->setEnabled(table);
         QAction* copy = menu.addAction(tr("Copy Value"));
         QAction* chosen = menu.exec(a_view->viewport()->mapToGlobal(at));
-        if (chosen == table) emit tableRequested(item->text(0));
+        if (chosen == asTable) emit tableRequested(expression(item));
+        else if (chosen == display) emit displayRequested(expression(item));
         else if (chosen == copy) QApplication::clipboard()->setText(item->text(3));
     });
     a_note = new QLabel(tr("The Python Shell's variables, after each command (modules, functions and classes aside). "
-                           "Double-click an array, a list, a dictionary or a DataFrame to see it as a table."),
+                           "Open one to see inside it; double-click an array, a list, a dictionary or a DataFrame to see "
+                           "it as a table; its menu shows it in a data display of Qucs-S."),
                         this);
     a_note->setWordWrap(true);
     a_note->setEnabled(false);
@@ -592,14 +781,11 @@ PythonVariablesPane::PythonVariablesPane(QWidget* parent) : QWidget(parent)
     layout->addWidget(a_note);
 }
 
-void PythonVariablesPane::setVariables(const QJsonArray& variables)
+void PythonVariablesPane::fill(QTreeWidgetItem* parent, const QJsonArray& variables)
 {
-    const QString chosen = a_view->currentItem() != nullptr ? a_view->currentItem()->text(0) : QString();
-    const int scrolled = a_view->verticalScrollBar()->value();
-    a_view->clear();
     for (const QJsonValue& v : variables) {
         const QJsonObject o = v.toObject();
-        auto* item = new QTreeWidgetItem(a_view);
+        auto* item = parent != nullptr ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(a_view);
         item->setText(0, o.value(QStringLiteral("name")).toString());
         item->setText(1, o.value(QStringLiteral("type")).toString());
         item->setText(2, o.value(QStringLiteral("size")).toString());
@@ -607,12 +793,45 @@ void PythonVariablesPane::setVariables(const QJsonArray& variables)
         item->setToolTip(3, o.value(QStringLiteral("value")).toString());
         const bool table = o.value(QStringLiteral("table")).toBool();
         item->setData(0, Qt::UserRole, table);
+        // Its expression: the name, or what the shell said it is.
+        const QString expression = parent == nullptr ? item->text(0) : o.value(QStringLiteral("expression")).toString();
+        item->setData(0, Qt::UserRole + 1, expression);
         if (table) item->setToolTip(0, tr("Double-click: the value as a table"));
-        if (item->text(0) == chosen) a_view->setCurrentItem(item);
+        if (o.value(QStringLiteral("inside")).toBool() && !expression.isEmpty()) {
+            item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
+            if (a_opened.contains(expression)) item->setExpanded(true);   // (asks for its insides again)
+        }
     }
+}
+
+void PythonVariablesPane::setVariables(const QJsonArray& variables)
+{
+    const QString chosen = a_view->currentItem() != nullptr ? a_view->currentItem()->text(0) : QString();
+    const int scrolled = a_view->verticalScrollBar()->value();
+    a_view->clear();
+    fill(nullptr, variables);
+    for (int k = 0; k < a_view->topLevelItemCount(); ++k)
+        if (a_view->topLevelItem(k)->text(0) == chosen) a_view->setCurrentItem(a_view->topLevelItem(k));
     for (int k = 0; k < 3; ++k) a_view->resizeColumnToContents(k);
     a_view->verticalScrollBar()->setValue(scrolled);
     filter();
+}
+
+QTreeWidgetItem* PythonVariablesPane::rowOf(const QString& expression) const
+{
+    for (QTreeWidgetItemIterator it(a_view); *it; ++it)
+        if ((*it)->data(0, Qt::UserRole + 1).toString() == expression) return *it;
+    return nullptr;
+}
+
+void PythonVariablesPane::showChildren(const QString& expression, const QJsonArray& items)
+{
+    QTreeWidgetItem* item = rowOf(expression);
+    if (item == nullptr) return;
+    qDeleteAll(item->takeChildren());
+    fill(item, items);
+    if (items.isEmpty()) item->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
+    a_view->resizeColumnToContents(0);   // (its names, set in, whole)
 }
 
 void PythonVariablesPane::filter()
@@ -628,10 +847,11 @@ void PythonVariablesPane::filter()
 QStringList PythonVariablesPane::rows() const
 {
     QStringList rows;
-    for (int k = 0; k < a_view->topLevelItemCount(); ++k) {
-        const QTreeWidgetItem* item = a_view->topLevelItem(k);
-        if (!item->isHidden())
-            rows << QStringLiteral("%1: %2 [%3] = %4").arg(item->text(0), item->text(1), item->text(2), item->text(3));
+    for (QTreeWidgetItemIterator it(a_view, QTreeWidgetItemIterator::NotHidden); *it; ++it) {
+        int depth = 0;
+        for (const QTreeWidgetItem* up = (*it)->parent(); up != nullptr; up = up->parent()) ++depth;
+        if ((*it)->parent() != nullptr && !(*it)->parent()->isExpanded()) continue;
+        rows << QStringLiteral("%1%2: %3 [%4] = %5").arg(QString(depth * 2, QLatin1Char(' ')), (*it)->text(0), (*it)->text(1), (*it)->text(2), (*it)->text(3));
     }
     return rows;
 }
@@ -639,12 +859,35 @@ QStringList PythonVariablesPane::rows() const
 // ----------------------------------------------------------------------
 // The Data Viewer
 
+void PythonTableModel::setView(int sort, bool descending, const QJsonObject& filters)
+{
+    a_sort = sort;
+    a_descending = descending;
+    a_filters = filters;
+    ++a_token;
+    beginResetModel();
+    a_rows = 0;
+    a_blocks.clear();
+    a_index.clear();
+    a_asked.clear();
+    endResetModel();
+    fetchFirst();
+}
+
+void PythonTableModel::setComplexMode(int mode)
+{
+    a_complex = mode;
+    if (a_rows > 0 && a_columns > 0) emit dataChanged(index(0, 0), index(a_rows - 1, a_columns - 1));
+}
+
 void PythonTableModel::answer(const QJsonObject& table)
 {
+    if (table.contains(QStringLiteral("token")) && table.value(QStringLiteral("token")).toInt(-1) != a_token) return;   // (of a view gone)
     const QJsonArray shape = table.value(QStringLiteral("shape")).toArray();
     const int rows = shape.size() == 2 ? shape.at(0).toInt() : 0;
     const int columns = shape.size() == 2 ? shape.at(1).toInt() : 0;
     const int start = table.value(QStringLiteral("start")).toInt();
+    a_total = table.value(QStringLiteral("total")).toInt(rows);
     if (rows != a_rows || columns != a_columns) {   // (the first answer - or the value changed: again from it)
         beginResetModel();
         a_rows = rows;
@@ -707,7 +950,61 @@ void PythonTableModel::ask(int block) const
 {
     if (a_asked.contains(block) || !a_fetch) return;
     a_asked.insert(block);
-    a_fetch(block * kBlock, kBlock);
+    QJsonObject request{{QStringLiteral("start"), block * kBlock}, {QStringLiteral("count"), kBlock}, {QStringLiteral("token"), a_token}};
+    if (a_sort >= 0) {
+        request.insert(QStringLiteral("sort"), a_sort);
+        request.insert(QStringLiteral("descending"), a_descending);
+    }
+    if (!a_filters.isEmpty()) request.insert(QStringLiteral("filters"), a_filters);
+    a_fetch(request);
+}
+
+namespace {
+// A complex number as _qucs_data writes one: 1.5+2.0j, -0.0-1e-05j.
+bool readComplex(const QString& text, double* re, double* im)
+{
+    static const QRegularExpression complex(QStringLiteral("^\\(?([-+]?(?:[0-9.]+(?:[eE][-+]?[0-9]+)?|nan|inf))"
+                                                           "([-+](?:[0-9.]+(?:[eE][-+]?[0-9]+)?|nan|inf))j\\)?$"));
+    const QRegularExpressionMatch m = complex.match(text);
+    if (!m.hasMatch()) return false;
+    bool a = false, b = false;
+    *re = m.captured(1).toDouble(&a);
+    *im = m.captured(2).toDouble(&b);
+    if (!a) *re = m.captured(1).contains(QLatin1String("nan")) ? qQNaN() : (m.captured(1).startsWith(QLatin1Char('-')) ? -qInf() : qInf());
+    if (!b) *im = m.captured(2).contains(QLatin1String("nan")) ? qQNaN() : (m.captured(2).startsWith(QLatin1Char('-')) ? -qInf() : qInf());
+    return true;
+}
+
+QString fullDigits(double v) { return QString::number(v, 'g', 17); }
+} // namespace
+
+QString PythonTableModel::rowLabel(int row) const
+{
+    const auto found = a_index.constFind(row / kBlock);
+    return found == a_index.constEnd() ? QString::number(row) : found->at(row % kBlock).toVariant().toString();
+}
+
+double PythonTableModel::number(int row, int column) const
+{
+    const auto found = a_blocks.constFind(row / kBlock);
+    if (found == a_blocks.constEnd()) return qQNaN();
+    const QJsonValue cell = found->at(row % kBlock).toArray().at(column);
+    if (cell.isDouble()) return cell.toDouble();
+    double re = 0, im = 0;
+    if (!readComplex(cell.toString(), &re, &im)) {
+        bool ok = false;
+        const double v = cell.toString().toDouble(&ok);
+        return ok ? v : qQNaN();
+    }
+    const double magnitude = std::hypot(re, im);
+    switch (a_complex) {
+    case Real: return re;
+    case Imaginary: return im;
+    case DbPhase:
+    case Decibel: return 20.0 * std::log10(magnitude);
+    case Phase: return std::atan2(im, re) * 180.0 / M_PI;
+    default: return magnitude;
+    }
 }
 
 int PythonTableModel::rowCount(const QModelIndex& parent) const { return parent.isValid() ? 0 : a_rows; }
@@ -725,6 +1022,22 @@ QString PythonTableModel::text(int row, int column) const
         return QString::number(v, 'g', 17);
     }
     if (cell.isNull() || cell.isUndefined()) return {};
+    // A complex number as the mode has it.
+    double re = 0, im = 0;
+    if (a_complex != AsIs && cell.isString() && readComplex(cell.toString(), &re, &im)) {
+        const double magnitude = std::hypot(re, im);
+        const double phase = std::atan2(im, re) * 180.0 / M_PI;
+        switch (a_complex) {
+        case MagnitudePhase: return QStringLiteral("%1 \u2220 %2\u00b0").arg(fullDigits(magnitude), fullDigits(phase));
+        case DbPhase: return QStringLiteral("%1 dB \u2220 %2\u00b0").arg(fullDigits(20.0 * std::log10(magnitude)), fullDigits(phase));
+        case Real: return fullDigits(re);
+        case Imaginary: return fullDigits(im);
+        case Magnitude: return fullDigits(magnitude);
+        case Decibel: return fullDigits(20.0 * std::log10(magnitude));
+        case Phase: return fullDigits(phase);
+        default: break;
+        }
+    }
     return cell.toVariant().toString();
 }
 
@@ -746,6 +1059,11 @@ QVariant PythonTableModel::data(const QModelIndex& index, int role) const
             if (std::floor(v) == v && std::fabs(v) < 1e15) return QString::number(qint64(v));
             return QString::number(v, 'g', 10);
         }
+        // (A complex part: ten digits as a float has them.)
+        double re = 0, im = 0;
+        if (a_complex != AsIs && a_complex != MagnitudePhase && a_complex != DbPhase && cell.isString()
+            && readComplex(cell.toString(), &re, &im))
+            return QString::number(number(index.row(), index.column()), 'g', 10);
         return text(index.row(), index.column());
     }
     if (role == Qt::ToolTipRole) return text(index.row(), index.column());
@@ -786,20 +1104,177 @@ PythonDataViewer::PythonDataViewer(const QString& name, PythonTableModel::Fetch 
     auto* save = new QPushButton(tr("Export as CSV..."), this);
     save->setToolTip(tr("Every row written to a CSV file"));
     connect(save, &QPushButton::clicked, this, &PythonDataViewer::exportAs);
+    auto* plot = new QPushButton(tr("Plot"), this);
+    plot->setObjectName(QStringLiteral("pythonDataPlot"));
+    plot->setToolTip(tr("The columns selected plotted in the Python Plots pane: the first the x of the rest when two or "
+                        "more are, else over the rows - complex values as they are shown"));
+    connect(plot, &QPushButton::clicked, this, &PythonDataViewer::plotSelected);
     auto* row = new QHBoxLayout;
     row->addWidget(a_about, 1);
+    row->addWidget(plot);
     row->addWidget(copy);
     row->addWidget(save);
+
+    // A column's filter, the complex numbers' form.
+    a_filterColumn = new QComboBox(this);
+    a_filterColumn->setObjectName(QStringLiteral("pythonDataFilterColumn"));
+    a_filterRule = new QLineEdit(this);
+    a_filterRule->setObjectName(QStringLiteral("pythonDataFilterRule"));
+    a_filterRule->setPlaceholderText(tr("Filter: > 5, <= 1e-3, != 0, or text it has - Return"));
+    a_filterRule->setClearButtonEnabled(true);
+    connect(a_filterRule, &QLineEdit::returnPressed, this, [this] {
+        setFilter(a_filterColumn->currentIndex(), a_filterRule->text());
+    });
+    connect(a_filterColumn, &QComboBox::activated, this, [this](int column) {
+        a_filterRule->setText(a_model->filters().value(QString::number(column)).toString());
+    });
+    auto* clear = new QPushButton(tr("Clear Filters"), this);
+    connect(clear, &QPushButton::clicked, this, [this] {
+        a_filterRule->clear();
+        a_model->setView(a_model->sortColumn(), a_model->descending(), {});
+        showFilters();
+    });
+    a_complexMode = new QComboBox(this);
+    a_complexMode->setObjectName(QStringLiteral("pythonDataComplex"));
+    a_complexMode->addItems({tr("a+bj"), tr("magnitude \u2220 phase"), tr("dB \u2220 phase"), tr("real part"), tr("imaginary part"),
+                             tr("magnitude"), tr("dB (20 log10)"), tr("phase (\u00b0)")});
+    a_complexMode->setToolTip(tr("How complex numbers are shown, copied, exported and plotted"));
+    connect(a_complexMode, &QComboBox::currentIndexChanged, this, [this](int mode) { a_model->setComplexMode(mode); });
+    a_filtersShown = new QLabel(this);
+    a_filtersShown->setObjectName(QStringLiteral("pythonDataFilters"));
+    a_filtersShown->setEnabled(false);
+    auto* filters = new QHBoxLayout;
+    filters->addWidget(a_filterColumn);
+    filters->addWidget(a_filterRule, 1);
+    filters->addWidget(clear);
+    filters->addWidget(new QLabel(tr("Complex:"), this));
+    filters->addWidget(a_complexMode);
+    connect(a_model, &PythonTableModel::shapeKnown, this, [this] {
+        // (The columns to filter, as the table has them.)
+        const int chosen = a_filterColumn->currentIndex();
+        a_filterColumn->clear();
+        for (int c = 0; c < a_model->columnCount(); ++c) a_filterColumn->addItem(a_model->headerData(c, Qt::Horizontal, Qt::DisplayRole).toString());
+        a_filterColumn->setCurrentIndex(std::max(0, std::min(chosen, a_filterColumn->count() - 1)));
+    });
+
+    // Sorted by a click on a column's header: up, down, as it was.
+    a_view->horizontalHeader()->setSectionsClickable(true);
+    a_view->horizontalHeader()->setSortIndicatorShown(false);
+    connect(a_view->horizontalHeader(), &QHeaderView::sectionClicked, this, [this](int column) {
+        if (a_model->sortColumn() != column) sortBy(column, false);
+        else if (!a_model->descending()) sortBy(column, true);
+        else sortBy(-1, false);
+    });
+
     auto* layout = new QVBoxLayout(this);
     layout->addLayout(row);
+    layout->addLayout(filters);
+    layout->addWidget(a_filtersShown);
     layout->addWidget(a_view, 1);
-    resize(720, 480);
+    resize(760, 520);
     connect(a_model, &PythonTableModel::allFetched, this, [this] {
+        if (!a_plotColumns.isEmpty()) {
+            const QList<int> columns = a_plotColumns;
+            a_plotColumns.clear();
+            plotColumns(columns);
+        }
         if (a_exportPath.isEmpty()) return;
         const QString path = a_exportPath;
         a_exportPath.clear();
         exportTo(path);
     });
+    showFilters();
+}
+
+void PythonDataViewer::setFilter(int column, const QString& rule)
+{
+    if (column < 0) return;
+    QJsonObject filters = a_model->filters();
+    if (rule.trimmed().isEmpty()) filters.remove(QString::number(column));
+    else filters.insert(QString::number(column), rule.trimmed());
+    a_model->setView(a_model->sortColumn(), a_model->descending(), filters);
+    showFilters();
+}
+
+void PythonDataViewer::sortBy(int column, bool descending)
+{
+    a_model->setView(column, descending, a_model->filters());
+    QHeaderView* header = a_view->horizontalHeader();
+    header->setSortIndicatorShown(column >= 0);
+    if (column >= 0) header->setSortIndicator(column, descending ? Qt::DescendingOrder : Qt::AscendingOrder);
+}
+
+void PythonDataViewer::showFilters()
+{
+    QStringList said;
+    const QJsonObject filters = a_model->filters();
+    for (auto it = filters.begin(); it != filters.end(); ++it) {
+        const int column = it.key().toInt();
+        const QString name = a_model->headerData(column, Qt::Horizontal, Qt::DisplayRole).toString();
+        said << QStringLiteral("%1: %2").arg(name.isEmpty() ? it.key() : name, it.value().toString());
+    }
+    a_filtersShown->setText(said.isEmpty() ? QString() : tr("Filtered - %1").arg(said.join(QStringLiteral("; "))));
+    a_filtersShown->setVisible(!said.isEmpty());
+}
+
+void PythonDataViewer::plotSelected()
+{
+    QList<int> columns;
+    if (a_view->selectionModel() != nullptr)
+        for (const QModelIndex& i : a_view->selectionModel()->selectedIndexes())
+            if (!columns.contains(i.column())) columns << i.column();
+    std::sort(columns.begin(), columns.end());
+    if (columns.isEmpty())   // (none chosen: every column, over the rows)
+        for (int c = 0; c < a_model->columnCount(); ++c) columns << c;
+    plotColumns(columns);
+}
+
+void PythonDataViewer::plotColumns(const QList<int>& columns)
+{
+    if (columns.isEmpty() || a_model->rowCount() == 0) return;
+    if (!a_model->complete()) {   // (every row first)
+        a_plotColumns = columns;
+        a_about->setText(tr("%1: reading every row to plot...").arg(a_name));
+        a_model->fetchAll();
+        return;
+    }
+    const int rows = a_model->rowCount();
+    const auto header = [this](int c) { return a_model->headerData(c, Qt::Horizontal, Qt::DisplayRole).toString(); };
+    QVector<double> x(rows);
+    QString xName;
+    QList<int> ys = columns;
+    if (columns.size() >= 2) {
+        xName = header(columns.first());
+        ys.removeFirst();
+        for (int r = 0; r < rows; ++r) x[r] = a_model->number(r, columns.first());
+    } else {
+        // Over the rows' labels when they are numbers, else their places.
+        bool labels = true;
+        for (int r = 0; r < rows && labels; ++r) a_model->rowLabel(r).toDouble(&labels);
+        xName = labels ? tr("index") : tr("row");
+        for (int r = 0; r < rows; ++r) x[r] = labels ? a_model->rowLabel(r).toDouble() : r;
+    }
+    QList<std::pair<QString, QVector<double>>> series;
+    for (const int c : std::as_const(ys)) {
+        QVector<double> y(rows);
+        for (int r = 0; r < rows; ++r) y[r] = a_model->number(r, c);
+        QString name = header(c);
+        if (a_model->complexMode() != PythonTableModel::AsIs) name += QStringLiteral(" (%1)").arg(a_complexMode->currentText());
+        series.append({name, y});
+    }
+    // A log x when it is positive over two decades or more (a frequency).
+    double lowest = qInf(), highest = -qInf();
+    bool positive = true;
+    for (const double v : std::as_const(x)) {
+        if (!std::isfinite(v)) continue;
+        positive = positive && v > 0;
+        lowest = std::min(lowest, v);
+        highest = std::max(highest, v);
+    }
+    const bool logX = positive && lowest > 0 && highest / lowest >= 100.0;
+    const QString title = ys.size() == 1 ? QStringLiteral("%1: %2").arg(a_name, series.first().first) : a_name;
+    emit plotted(qucs_s::python::plotImage(title, xName, x, series, logX), title);
+    a_about->setText(tr("%1: plotted in the Python Plots pane.").arg(a_name));
 }
 
 void PythonDataViewer::answer(const QJsonObject& table)
@@ -811,7 +1286,7 @@ void PythonDataViewer::answer(const QJsonObject& table)
     a_model->answer(table);
     const QJsonArray shape = table.value(QStringLiteral("shape")).toArray();
     QString said = tr("%1: %2, %3 rows x %4 columns").arg(a_name, table.value(QStringLiteral("type")).toString())
-                       .arg(shape.at(0).toInt()).arg(shape.at(1).toInt());
+                       .arg(table.value(QStringLiteral("total")).toInt(shape.at(0).toInt())).arg(shape.at(1).toInt());
     if (const QString note = table.value(QStringLiteral("note")).toString(); !note.isEmpty()) said += QStringLiteral(" - ") + note;
     a_about->setText(said);
 }

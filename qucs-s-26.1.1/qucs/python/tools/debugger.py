@@ -18,7 +18,13 @@ where the script stopped and what is there, a JSON object a line, out.
          {"command": "evaluate", "expression": e, "frame": k}
          {"command": "inspect", "expression": e, "frame": k, "id": i}
          {"command": "data", "handle": h | "expression": e, "frame": k,
-          "start": r, "count": n, "id": i}             a value's rows
+          "start": r, "count": n, "sort", "descending", "filters", "token",
+          "id": i}                                     a value's rows
+         {"command": "watch", "expressions": [e, ...], "frame": k}
+         {"command": "complete", "text": t, "frame": k, "id": i}   names that
+                                                       complete the text's last
+         {"command": "display", "handle": h | "expression": e, "frame": k,
+          "name": n, "id": i}                          in a data display
          {"command": "breakpoints", "file": f, "lines": [b, ...]}   at any time
          {"command": "raised", "on": bool}             stopped where one is raised
          {"command": "library", "on": bool}            Python's library stepped into too
@@ -27,8 +33,9 @@ where the script stopped and what is there, a JSON object a line, out.
          | "> 5" | "% 5" ..., "log": "x is {x}", "enabled": bool}
     out  {"event": "stopped", "reason": "breakpoint" | "step" | "pause" |
           "raised" | "exception", "exception": "ZeroDivisionError: ...",
-          "stack": [{"file", "line", "function", "library"}, ...] (the innermost
-          first; library: Python's own, or a package's),
+          "stack": [{"file", "line", "function", "library", "first"}, ...] (the
+          innermost first; library: Python's own, or a package's; first: its
+          code's first line),
           "frame": 0, "variables": [...]}
          {"event": "running"}
          {"event": "variables", "frame": k, "variables": [...]}
@@ -36,6 +43,11 @@ where the script stopped and what is there, a JSON object a line, out.
          {"event": "evaluated", "expression": e, "value": {...}} or "error": text
          {"event": "inspected", "id": i, "expression": e, "value": {...}} or "error"
          {"event": "data", "id": i, ... _qucs_data.table()'s} or "error"
+         {"event": "watches", "frame": k, "values": [{"expression", "type",
+          "value", "handle", "table"} or {"expression", "error"}, ...]}
+         {"event": "completions", "id": i, "start": where the word begins,
+          "items": [name, ...]}
+         {"event": "displayed", "id": i, "path": the display} or "error"
     a variable: {"name", "type", "value" (its repr, cut short), "handle" (-1:
     nothing inside), "table" (shown as one)}
 
@@ -456,7 +468,7 @@ class Debugger(bdb.Bdb):
             return
         self.handles = []
         stack = [{'file': f.f_code.co_filename, 'line': line, 'function': f.f_code.co_name,
-                  'library': is_library(f.f_code.co_filename)} for f, line in self.frames]
+                  'library': is_library(f.f_code.co_filename), 'first': f.f_code.co_firstlineno} for f, line in self.frames]
         send({'event': 'stopped', 'reason': reason, 'exception': exception, 'stack': stack, 'frame': 0,
               'variables': self.variables(0)})
         while True:
@@ -500,6 +512,12 @@ class Debugger(bdb.Bdb):
                 self.inspect(c)
             elif command == 'data':
                 self.data(c)
+            elif command == 'watch':
+                self.watch(c.get('expressions') or [], int(c.get('frame', 0)))
+            elif command == 'complete':
+                self.complete(c)
+            elif command == 'display':
+                self.display(c)
         send({'event': 'running'})
 
     def value_of(self, c):
@@ -534,8 +552,74 @@ class Debugger(bdb.Bdb):
             if _qucs_data is None:
                 raise RuntimeError('The tables of the Data Viewer are not on the path (_qucs_data).')
             value = self.value_of(c)
-            out.update(_qucs_data.table(value, c.get('start', 0), c.get('count', 1000)))
+            out.update(_qucs_data.table(value, c.get('start', 0), c.get('count', 1000), c.get('sort'), c.get('descending', False),
+                                        c.get('filters'), c.get('token')))
             out['type'] = _qucs_data.kind_of(value)
+        except Exception as e:
+            out['error'] = ''.join(traceback.format_exception_only(type(e), e)).strip()
+        send(out)
+
+    def watch(self, expressions, index):
+        """The watch list's expressions in frame index (each its value, or its
+        error)."""
+        values = []
+        frame = self.frames[index][0] if 0 <= index < len(self.frames) else None
+        for e in expressions[:100]:
+            if frame is None:
+                values.append({'expression': e, 'error': 'No frame.'})
+                continue
+            try:
+                value = eval(compile(e, '<watch>', 'eval'), frame.f_globals, frame.f_locals)
+                item = self.describe(e, value)
+                item['expression'] = e
+                values.append(item)
+            except Exception as error:
+                values.append({'expression': e, 'error': ''.join(traceback.format_exception_only(type(error), error)).strip()})
+        send({'event': 'watches', 'frame': index, 'values': values})
+
+    def complete(self, c):
+        """The names that complete the text's last word: the frame's, the
+        builtins and keywords - or after name. (a name, an attribute of one),
+        that value's attributes."""
+        text = c.get('text') or ''
+        index = int(c.get('frame', 0))
+        m = re.search(r'([A-Za-z_][\w]*(?:\.[A-Za-z_]\w*)*)?\.?(\w*)$', text)
+        token = text[m.start():] if m else ''
+        base, dot, prefix = token.rpartition('.')
+        start = len(text) - len(prefix)
+        names = set()
+        frame = self.frames[index][0] if 0 <= index < len(self.frames) else None
+        if frame is not None:
+            try:
+                if dot:
+                    if not re.match(r'^[A-Za-z_][\w.]*$', base):
+                        raise ValueError('no name')
+                    names = set(dir(eval(base, frame.f_globals, frame.f_locals)))
+                else:
+                    import builtins
+                    import keyword
+                    names = set(frame.f_locals) | set(frame.f_globals) | set(dir(builtins)) | set(keyword.kwlist)
+            except Exception:
+                names = set()
+        chosen = sorted((n for n in names if n.startswith(prefix) and (prefix.startswith('_') or not n.startswith('_'))),
+                        key=lambda n: (n.lower(), n))[:200]
+        send({'event': 'completions', 'id': c.get('id'), 'start': start, 'items': chosen})
+
+    def display(self, c):
+        """A value shown in a data display of Qucs-S (qucs.display()), beside
+        the script."""
+        out = {'event': 'displayed', 'id': c.get('id')}
+        try:
+            if _qucs_data is None:
+                raise RuntimeError('The tables of the Data Viewer are not on the path (_qucs_data).')
+            value = self.value_of(c)
+            import qucs
+            name = c.get('name') or c.get('expression') or 'value'
+            variables, x = _qucs_data.as_variables(value, name)
+            safe = _qucs_data._safe_name(name)
+            folder = os.path.dirname(self.script)
+            out['path'] = qucs.display(variables, x=x, name=safe, folder=folder) if x is not None else \
+                qucs.display(variables, name=safe, folder=folder)
         except Exception as e:
             out['error'] = ''.join(traceback.format_exception_only(type(e), e)).strip()
         send(out)

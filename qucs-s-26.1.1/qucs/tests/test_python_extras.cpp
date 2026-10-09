@@ -4,7 +4,10 @@
  * Run Settings - arguments, working folder, environment, .env file - for
  * Run and Debug; Interrupt; Debug Library Code; Quick Fix (the light bulb):
  * ruff's fix, an import, a problem ignored on its line; Organize Imports,
- * Format Selection, Format on Save.
+ * Format Selection, Format on Save; the debugger's watch list, its evaluate
+ * line's names and history, inline values; the Data Viewer sorted,
+ * filtered, its complex numbers' forms, a plot of its columns; Python
+ * Variables opened, a value shown in a data display.
  *
  * This file is part of Qucs-S.
  *
@@ -15,6 +18,8 @@
  */
 #include <QtTest>
 #include <QDialog>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
@@ -23,7 +28,13 @@
 #include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTextBlock>
+#include <QAbstractItemView>
+#include <QCompleter>
+#include <QComboBox>
+#include <QLabel>
+#include <QTableView>
 #include <QToolBar>
+#include <QTreeWidget>
 
 #include "config.h"
 #include "extsimkernels/spicecompat.h"
@@ -31,8 +42,13 @@
 #include "main.h"
 #include "misc.h"
 #include "module.h"
+#include "diagrams/diagram.h"
+#include "diagrams/graph.h"
+#include "processconsole.h"
 #include "pythondoc.h"
 #include "pythonrun.h"
+#include "pythonviews.h"
+#include "schematic.h"
 #include "qucs.h"
 #include "settings.h"
 
@@ -496,6 +512,311 @@ private slots:
         QCOMPARE(py->toPlainText(), QString("q = 2\n"));
         QVERIFY(app->statusBar()->currentMessage().contains("Formatted by ruff 9.9.9-fake and saved"));
         onSave->trigger();
+    }
+
+    // ------------------------------------------------------------------
+    // The watch list, the evaluate line, inline values
+
+    // Expressions watched: evaluated at each stop and in the frame looked at
+    // (an error said), opened as variables are, kept for the next run,
+    // removed with Delete; the evaluate line completes the frame's names
+    // and attributes, and gives the lines before with Up; the values a line
+    // uses written at its end - the frame's - gone as it goes on.
+    void watchesConsoleAndInlineValues()
+    {
+        if (python.isEmpty()) QSKIP("no python3 here");
+        PythonDoc* py = open(write("watch/w.py", "class Box:\n"                      // 1
+                                                 "    def __init__(self):\n"         // 2
+                                                 "        self.size = 42; self.x = 1\n"   // 3
+                                                 "box = Box()\n"                     // 4
+                                                 "by = 3; rows = [1, 2, by]\n"       // 5 (a by of the module's)
+                                                 "def scale(x, by=2):\n"             // 6
+                                                 "    y = x * by\n"                  // 7
+                                                 "    z = y + box.x\n"               // 8 (an x of box's: not the frame's)
+                                                 "    return z\n"                    // 9
+                                                 "total = scale(5)\n"                // 10
+                                                 "print('total', total)\n"));        // 11
+        QVERIFY(py != nullptr);
+        py->toggleBreakpoint(9);
+        PythonRunConsole* run = app->pythonRunConsole();
+        QSignalSpy paused(run, &PythonRunConsole::paused);
+        QSignalSpy watched(run, &PythonRunConsole::watchesShown);
+        // Added before it runs: the expression alone.
+        QTest::keyClicks(run->watchLine(), "y * 10");
+        QTest::keyClick(run->watchLine(), Qt::Key_Return);
+        run->addWatch("box.size");
+        run->addWatch("nope");
+        QCOMPARE(run->watches(), (QStringList{"y * 10", "box.size", "nope"}));
+        QCOMPARE(_settings::Get().item<QStringList>("PythonWatches"), run->watches());   // (kept)
+        QVERIFY(app->debugPython(py));
+        QVERIFY(paused.wait(20000));
+        QTRY_VERIFY_WITH_TIMEOUT(run->watchRows().value(0) == "y * 10: int = 100", 10000);
+        QCOMPARE(run->watchRows().value(1), QString("box.size: int = 42"));
+        QVERIFY2(run->watchRows().value(2).startsWith("nope: NameError"), qPrintable(run->watchRows().join(" | ")));
+        // Inline values: the function's lines, its frame's values.
+        QTRY_VERIFY_WITH_TIMEOUT(!py->inlineValues().isEmpty(), 10000);
+        QCOMPARE(py->inlineValues().value(6), QString("x = 5, by = 2"));
+        QCOMPARE(py->inlineValues().value(7), QString("y = 10, x = 5, by = 2"));
+        QCOMPARE(py->inlineValues().value(8), QString("z = 11, y = 10"));
+        QVERIFY(!py->inlineValues().contains(4));    // (before the function: not its)
+        QVERIFY(!py->inlineValues().contains(5));    // (its by is not the module's)
+        QVERIFY(!py->inlineValues().contains(10));   // (after the line it is at)
+        // The outer frame looked at: its watches, its values.
+        watched.clear();
+        run->selectFrame(1);
+        QTRY_VERIFY_WITH_TIMEOUT(run->watchRows().value(0).startsWith("y * 10: NameError"), 10000);
+        QVERIFY(run->watchRows().value(1) == "box.size: int = 42");
+        QTRY_VERIFY_WITH_TIMEOUT(py->inlineValues().value(5) == "by = 3, rows = [1, 2, 3]", 10000);
+        QVERIFY(py->inlineValues().value(4).startsWith("box = <"));
+        QVERIFY(!py->inlineValues().contains(7));
+        run->selectFrame(0);
+        QTRY_VERIFY_WITH_TIMEOUT(run->watchRows().value(0) == "y * 10: int = 100", 10000);
+        // Opened as a variable: rows' insides (its watch added while stopped).
+        run->addWatch("rows");
+        QTRY_VERIFY_WITH_TIMEOUT(run->watchRows().value(3) == "rows: list (3) = [1, 2, 3]", 10000);
+        QTreeWidgetItem* rowsRow = run->watchView()->topLevelItem(3);
+        QCOMPARE(rowsRow->childIndicatorPolicy(), QTreeWidgetItem::ShowIndicator);   // (it has insides: an arrow)
+        rowsRow->setExpanded(true);
+        QTRY_COMPARE_WITH_TIMEOUT(rowsRow->childCount(), 3, 10000);
+        QCOMPARE(rowsRow->child(2)->text(2), QString("3"));
+        run->removeWatch(3);
+        // Removed with Delete.
+        run->watchView()->setCurrentItem(run->watchView()->topLevelItem(2));
+        run->watchView()->setFocus();
+        QTest::keyClick(run->watchView(), Qt::Key_Delete);
+        QCOMPARE(run->watches(), (QStringList{"y * 10", "box.size"}));
+        // The evaluate line: names of the frame, attributes; its history.
+        QLineEdit* evaluate = run->evaluateLine();
+        evaluate->setFocus();
+        QSignalSpy offered(run, &PythonRunConsole::completionsShown);
+        QTest::keyClicks(evaluate, "b");
+        QVERIFY(offered.wait(10000));
+        QVERIFY2(run->evaluateCompletions().contains("by") && run->evaluateCompletions().contains("bool"),
+                 qPrintable(run->evaluateCompletions().join(" ")));
+        evaluate->clear();
+        run->selectFrame(1);
+        QTRY_VERIFY_WITH_TIMEOUT(run->frame() == 1, 5000);
+        evaluate->setFocus();
+        QTest::keyClicks(evaluate, "box.s");
+        QVERIFY(offered.wait(10000));
+        QCOMPARE(run->evaluateCompletions(), QStringList{"box.size"});
+        evaluate->clear();
+        evaluate->completer()->popup()->hide();   // (Return in its list takes a name)
+        QSignalSpy evaluated(run, &PythonRunConsole::evaluated);
+        for (const char* line : {"rows[0] + 1", "total_so_far = 3"}) {
+            evaluate->setText(line);
+            QTest::keyClick(evaluate, Qt::Key_Return);
+            QVERIFY(evaluated.wait(10000));
+        }
+        QTest::keyClick(evaluate, Qt::Key_Up);
+        QCOMPARE(evaluate->text(), QString("total_so_far = 3"));
+        QTest::keyClick(evaluate, Qt::Key_Up);
+        QCOMPARE(evaluate->text(), QString("rows[0] + 1"));
+        QTest::keyClick(evaluate, Qt::Key_Down);
+        QTest::keyClick(evaluate, Qt::Key_Down);
+        QVERIFY(evaluate->text().isEmpty());
+        // On: the values go; the end: the watch list stays, its values not.
+        QSignalSpy done(run, &PythonRunConsole::finished);
+        run->continueRun();
+        QVERIFY(done.wait(20000));
+        QVERIFY(py->inlineValues().isEmpty());
+        QCOMPARE(run->watchRows().value(1), QString("box.size:  = "));
+        // Off: none written.
+        QAction* inlineValues = pythonAction("pythonInlineValues");
+        QVERIFY(inlineValues != nullptr && inlineValues->isChecked());
+        inlineValues->trigger();
+        QVERIFY(app->debugPython(py));
+        QVERIFY(paused.wait(20000));
+        QTest::qWait(500);
+        QVERIFY(py->inlineValues().isEmpty());
+        inlineValues->trigger();
+        QTRY_VERIFY_WITH_TIMEOUT(!py->inlineValues().isEmpty(), 5000);   // (on again: at once)
+        run->stop();
+        QVERIFY(done.wait(20000));
+        run->removeWatch(1);
+        run->removeWatch(0);
+        QVERIFY(_settings::Get().item<QStringList>("PythonWatches").isEmpty());
+    }
+
+    // ------------------------------------------------------------------
+    // The Data Viewer, Python Variables
+
+    // A table sorted (a click on a header: up, down, as it was), filtered
+    // (numbers compared, text found), its complex numbers in another form,
+    // its columns plotted in the Python Plots pane.
+    void dataViewerSortsFiltersAndPlots()
+    {
+        {   // A view's rows asked for with its token; an answer of a view gone
+            // (it came last) left aside.
+            PythonTableModel model;
+            QList<QJsonObject> asked;
+            model.setFetch([&asked](const QJsonObject& request) { asked << request; });
+            model.fetchFirst();
+            model.setView(0, true, {});
+            QCOMPARE(asked.size(), 2);
+            QCOMPARE(asked.at(1).value("sort").toInt(), 0);
+            QVERIFY(asked.at(1).value("descending").toBool());
+            QVERIFY(asked.at(0).value("token") != asked.at(1).value("token"));
+            const auto answer = [](const QJsonValue& token, int first) {
+                return QJsonObject{{"shape", QJsonArray{2, 1}}, {"columns", QJsonArray{"v"}}, {"start", 0}, {"index", QJsonArray{0, 1}},
+                                   {"rows", QJsonArray{QJsonArray{first}, QJsonArray{first + 1}}}, {"token", token}};
+            };
+            model.answer(answer(asked.at(1).value("token"), 7));
+            model.answer(answer(asked.at(0).value("token"), 1));
+            QCOMPARE(model.rowCount(), 2);
+            QCOMPARE(model.text(0, 0), QString("7"));
+        }
+        if (python.isEmpty()) QSKIP("no python3 here");
+#ifdef Q_OS_WIN
+        QSKIP("the shell's console is a terminal's on Unix");
+#endif
+        ProcessConsole* shell = app->pythonConsole();
+        shell->sendLine("freq = [1e3, 1e4, 1e5, 1e6]; table = {'f': freq, 'name': ['a', 'bb', 'ab', 'C'], "
+                        "'s21': [complex(1, 0), complex(0, 2), complex(-3, 0), complex(0, -0.5)]}");
+        QTRY_VERIFY_WITH_TIMEOUT(app->pythonVariables()->rows().join(' ').contains("table: dict"), 30000);
+        PythonDataViewer* viewer = app->viewShellTable("table");
+        PythonTableModel* model = viewer->model();
+        QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), 4, 20000);
+        // Sorted by name: a click on its header, then again (down), again (as it was).
+        QHeaderView* header = viewer->view()->horizontalHeader();
+        emit header->sectionClicked(1);
+        QTRY_COMPARE_WITH_TIMEOUT(model->text(0, 1), QString("a"), 20000);
+        QTRY_COMPARE_WITH_TIMEOUT(model->text(1, 1), QString("ab"), 20000);
+        QCOMPARE(model->rowLabel(1), QString("2"));   // (its row as it was)
+        emit header->sectionClicked(1);
+        QTRY_COMPARE_WITH_TIMEOUT(model->text(0, 1), QString("C"), 20000);   // (any case: C after bb)
+        QCOMPARE(model->sortColumn(), 1);
+        QVERIFY(model->descending());
+        emit header->sectionClicked(1);
+        QTRY_COMPARE_WITH_TIMEOUT(model->text(0, 1), QString("a"), 20000);
+        QCOMPARE(model->text(1, 1), QString("bb"));
+        // Sorted by a complex column: by magnitude.
+        viewer->sortBy(2, false);
+        QTRY_COMPARE_WITH_TIMEOUT(model->text(0, 1), QString("C"), 20000);   // (0.5)
+        QCOMPARE(model->text(3, 1), QString("ab"));                           // (3)
+        viewer->sortBy(-1, false);
+        // Filtered: a number compared, text found - both kept.
+        viewer->setFilter(0, ">= 1e4");
+        QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), 3, 20000);
+        QCOMPARE(model->total(), 4);
+        viewer->setFilter(1, "B");
+        QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), 2, 20000);
+        QCOMPARE(model->text(0, 1), QString("bb"));
+        QCOMPARE(model->text(1, 1), QString("ab"));
+        QVERIFY(viewer->findChild<QLabel*>("pythonDataFilters")->text().contains("f: >= 1e4"));
+        viewer->setFilter(0, "");
+        viewer->setFilter(1, "");
+        QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), 4, 20000);
+        // Complex numbers: magnitude and phase, dB, a part.
+        QCOMPARE(model->text(1, 2), QString("0.0+2.0j"));
+        auto* forms = viewer->findChild<QComboBox*>("pythonDataComplex");
+        forms->setCurrentIndex(PythonTableModel::MagnitudePhase);
+        QCOMPARE(model->text(1, 2), QString("2 \u2220 90\u00b0"));
+        forms->setCurrentIndex(PythonTableModel::DbPhase);
+        QVERIFY2(model->text(1, 2).startsWith("6.0205999132796"), qPrintable(model->text(1, 2)));
+        forms->setCurrentIndex(PythonTableModel::Real);
+        QCOMPARE(model->text(2, 2), QString("-3"));
+        QCOMPARE(model->number(2, 2), -3.0);
+        forms->setCurrentIndex(PythonTableModel::Decibel);
+        // Plotted: f the x of |s21| in dB, a log axis (four decades).
+        PythonPlotsPane* plots = app->pythonPlots();
+        const int had = plots->count();
+        viewer->view()->selectionModel()->select(model->index(0, 0), QItemSelectionModel::Select | QItemSelectionModel::Columns);
+        viewer->view()->selectionModel()->select(model->index(0, 2), QItemSelectionModel::Select | QItemSelectionModel::Columns);
+        QSignalSpy plotted(viewer, &PythonDataViewer::plotted);
+        viewer->findChild<QPushButton*>("pythonDataPlot")->click();
+        QVERIFY(plotted.size() == 1 || plotted.wait(20000));
+        QCOMPARE(plots->count(), had + 1);
+        QVERIFY2(plots->title(had).startsWith("Data Viewer, figure"), qPrintable(plots->title(had)));
+        QVERIFY(plots->title(had).contains("table: s21 (dB (20 log10))"));
+        const QImage picture = plotted.first().at(0).value<QImage>();
+        QCOMPARE(picture.size(), QSize(1640, 1000));
+        QVERIFY(app->pythonPlotsDockWidget()->isVisible());
+        viewer->close();
+        // The renderer: a line of the series' colour, a log axis's decades.
+        const QImage line = qucs_s::python::plotImage("t", "x", {1, 10, 100, 1000}, {{"y", {0, 1, 2, 3}}}, true, 1);
+        int blue = 0;
+        for (int yy = 0; yy < line.height(); ++yy)
+            for (int xx = 0; xx < line.width(); ++xx) {
+                const QColor c = line.pixelColor(xx, yy);
+                if (c.blue() > 150 && c.red() < 80) ++blue;
+            }
+        QVERIFY2(blue > 200, qPrintable(QString::number(blue)));   // (the line)
+        const QImage nothing = qucs_s::python::plotImage("t", "x", {1, 2}, {{"y", {qQNaN(), qQNaN()}}}, false, 1);
+        QVERIFY(!nothing.isNull());
+    }
+
+    // Python Variables: a dictionary opened (its items, each its own
+    // expression), opened still after the next command, an item as a table;
+    // Show in a Data Display: the value in a .dpl of Qucs-S, from the shell
+    // and from the debugger.
+    void variablesOpenAndShowInADisplay()
+    {
+        if (python.isEmpty()) QSKIP("no python3 here");
+#ifdef Q_OS_WIN
+        QSKIP("the shell's console is a terminal's on Unix");
+#endif
+        ProcessConsole* shell = app->pythonConsole();
+        PythonVariablesPane* pane = app->pythonVariables();
+        QDir().mkpath(dir.filePath("vars"));
+        shell->sendLine(QStringLiteral("import os; os.chdir(%1); sweep = {'frequency': [1.0, 2.0, 3.0], 'gain': [1.0, 4.0, 9.0]}")
+                            .arg(ProcessConsole::quotedForPython(dir.filePath("vars"))));
+        shell->sendLine("class Amp: pass");
+        shell->sendLine("");
+        shell->sendLine("amp = Amp(); amp.gain = 3; amp.taps = [1, 2]");
+        QTRY_VERIFY_WITH_TIMEOUT(pane->rowOf("sweep") != nullptr && pane->rowOf("amp") != nullptr, 30000);
+        QTreeWidgetItem* sweep = pane->rowOf("sweep");
+        sweep->setExpanded(true);
+        QTRY_VERIFY_WITH_TIMEOUT(sweep->childCount() == 2, 20000);
+        QCOMPARE(sweep->child(0)->data(0, Qt::UserRole + 1).toString(), QString("sweep['frequency']"));
+        QTreeWidgetItem* amp = pane->rowOf("amp");
+        amp->setExpanded(true);
+        QTRY_VERIFY_WITH_TIMEOUT(amp->childCount() == 2, 20000);
+        QCOMPARE(amp->child(1)->data(0, Qt::UserRole + 1).toString(), QString("amp.taps"));
+        QVERIFY2(pane->rows().contains("  gain: int [] = 3"), qPrintable(pane->rows().join(" | ")));
+        // After a command: opened still, as they are now.
+        shell->sendLine("amp.gain = 5");
+        QTRY_VERIFY_WITH_TIMEOUT(pane->rows().contains("  gain: int [] = 5"), 30000);
+        // An item as a table.
+        PythonDataViewer* gain = app->viewShellTable("sweep['gain']");
+        QTRY_COMPARE_WITH_TIMEOUT(gain->model()->rowCount(), 3, 20000);
+        QCOMPARE(gain->model()->text(2, 0), QString("9"));
+        gain->close();
+        // Show in a Data Display: sweep.dat and sweep.dpl in the shell's
+        // folder, its diagram of gain over frequency.
+        emit pane->displayRequested("sweep");
+        Schematic* shown = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shown = qobject_cast<Schematic*>(app->DocumentTab->currentWidget())) != nullptr
+                                     && shown->getDocName().endsWith("sweep.dpl") && shown->a_DocDiags.size() == 1, 30000);
+        QCOMPARE(shown->a_DocDiags.front()->Graphs.first()->Var, QString("gain"));
+        QCOMPARE(int(shown->a_DocDiags.front()->Graphs.first()->count(0)), 3);
+        QVERIFY(QFileInfo(dir.filePath("vars/sweep.dat")).isFile());
+        // Not one: said.
+        emit pane->displayRequested("amp");
+        QTRY_VERIFY_WITH_TIMEOUT(app->statusBar()->currentMessage().contains("Show in a Data Display: ValueError"), 20000);
+
+        // From the debugger: a list of numbers over its index.
+        PythonDoc* py = open(write("vars/d.py", "levels = [0.5, 1.5, 2.5]\nprint('end')\n"));
+        py->toggleBreakpoint(2);
+        PythonRunConsole* run = app->pythonRunConsole();
+        QSignalSpy paused(run, &PythonRunConsole::paused);
+        QVERIFY(app->debugPython(py));
+        QVERIFY(paused.wait(20000));
+        QTreeWidgetItem* levels = nullptr;
+        for (int k = 0; k < run->variablesView()->topLevelItemCount(); ++k)
+            if (run->variablesView()->topLevelItem(k)->text(0) == "levels") levels = run->variablesView()->topLevelItem(k);
+        QVERIFY(levels != nullptr);
+        QSignalSpy displayed(run, &PythonRunConsole::displayed);
+        run->showInDisplay(levels);   // (its menu's Show in a Data Display)
+        QVERIFY(displayed.wait(20000));
+        QVERIFY2(displayed.first().at(1).toString().isEmpty(), qPrintable(displayed.first().at(1).toString()));
+        QVERIFY(displayed.first().at(0).toString().endsWith("levels.dpl"));
+        QTRY_VERIFY_WITH_TIMEOUT((shown = qobject_cast<Schematic*>(app->DocumentTab->currentWidget())) != nullptr
+                                     && shown->getDocName().endsWith("levels.dpl") && shown->a_DocDiags.size() == 1, 30000);
+        QCOMPARE(shown->a_DocDiags.front()->Graphs.first()->Var, QString("levels"));
+        QSignalSpy done(run, &PythonRunConsole::finished);
+        run->stop();
+        QVERIFY(done.wait(20000));
     }
 };
 

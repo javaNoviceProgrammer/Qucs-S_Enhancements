@@ -298,6 +298,32 @@ void PythonDoc::paintEvent(QPaintEvent* event)
         if (block.isVisible() && qucs_s::python::isCellMarker(block.text()))
             painter.drawLine(QPointF(0, box.top() + 0.5), QPointF(viewport()->width(), box.top() + 0.5));
     }
+    // While the debugger is stopped: the values a line uses, faintly after
+    // its text (not after one folded, nor one with its message there).
+    if (!a_inlineValues.isEmpty()) {
+        QFont italic = font();
+        italic.setItalic(true);
+        painter.save();
+        painter.setFont(italic);
+        const QFontMetrics metrics(italic);
+        const QColor link = palette().color(QPalette::Link);
+        painter.setPen(QColor(link.red(), link.green(), link.blue(), 170));
+        const int right = viewport()->width() - 4;
+        for (QTextBlock block = firstVisibleBlock(); block.isValid(); block = block.next()) {
+            const QRectF box = blockBoundingGeometry(block).translated(contentOffset());
+            if (box.top() > event->rect().bottom()) break;
+            const int line = block.blockNumber() + 1;
+            const auto found = a_inlineValues.constFind(line);
+            if (found == a_inlineValues.constEnd() || !block.isVisible() || block.layout() == nullptr || block.layout()->lineCount() == 0
+                || isFolded(line) || (diagnosticsAtLineEnds() && !diagnosticsAtY(int(box.center().y())).isEmpty()))
+                continue;
+            const QTextLine last = block.layout()->lineAt(block.layout()->lineCount() - 1);
+            const int x = qRound(box.left() + last.x() + last.naturalTextWidth()) + metrics.horizontalAdvance(QStringLiteral("    "));
+            if (x >= right) continue;
+            painter.drawText(QPointF(x, box.top() + last.y() + last.ascent()), metrics.elidedText(*found, Qt::ElideRight, right - x));
+        }
+        painter.restore();
+    }
     // A line folded: a box with three dots after its text.
     if (a_folds.isEmpty()) return;
     painter.setRenderHint(QPainter::Antialiasing);
@@ -937,6 +963,81 @@ void PythonDoc::showValue(const QString& expression, const QString& said)
         QToolTip::showText(a_helpAt, QStringLiteral("<p style='white-space:pre-wrap'><code>%1</code></p>").arg(escaped(said)), viewport(), a_helpRect);
     }
     emit valueShown();
+}
+
+// ----------------------------------------------------------------------
+// Inline values
+
+bool PythonDoc::inlineValuesShown() { return _settings::Get().item<bool>("PythonInlineValues"); }
+
+void PythonDoc::setInlineValuesShown(bool on)
+{
+    _settings::Get().setItem<bool>("PythonInlineValues", on);
+    if (!on)
+        for (PythonDoc* script : openDocuments()) script->clearInlineValues();
+}
+
+void PythonDoc::setInlineValues(int first, int line, const QHash<QString, QString>& values)
+{
+    a_inlineValues.clear();
+    if (inlineValuesShown() && line > 0) {
+        static const QSet<QString> keywords{
+            QStringLiteral("False"), QStringLiteral("None"), QStringLiteral("True"), QStringLiteral("and"), QStringLiteral("as"),
+            QStringLiteral("assert"), QStringLiteral("async"), QStringLiteral("await"), QStringLiteral("break"), QStringLiteral("class"),
+            QStringLiteral("continue"), QStringLiteral("def"), QStringLiteral("del"), QStringLiteral("elif"), QStringLiteral("else"),
+            QStringLiteral("except"), QStringLiteral("finally"), QStringLiteral("for"), QStringLiteral("from"), QStringLiteral("global"),
+            QStringLiteral("if"), QStringLiteral("import"), QStringLiteral("in"), QStringLiteral("is"), QStringLiteral("lambda"),
+            QStringLiteral("nonlocal"), QStringLiteral("not"), QStringLiteral("or"), QStringLiteral("pass"), QStringLiteral("raise"),
+            QStringLiteral("return"), QStringLiteral("try"), QStringLiteral("while"), QStringLiteral("with"), QStringLiteral("yield")};
+        const auto cut = [](const QString& text, int most) { return text.size() <= most ? text : text.left(most - 3) + QStringLiteral("..."); };
+        // (The functions and classes its code defines run in frames of their
+        // own: their lines not its.)
+        QSet<int> elsewhere;
+        for (const qucs_s::python::OutlineEntry& e : qucs_s::python::outlineOf(toPlainText()))
+            if (e.line > first && e.line <= line)
+                for (int k = e.line; k <= e.lastLine; ++k) elsewhere.insert(k);
+        for (int k = std::max({1, first, line - 200}); k <= line; ++k) {
+            if (elsewhere.contains(k)) continue;
+            const QString text = document()->findBlockByNumber(k - 1).text();
+            // The names the line uses (not in a string or a comment, not an
+            // attribute's), each once, in their order.
+            QStringList names;
+            QChar quote;
+            for (qsizetype c = 0; c < text.size(); ++c) {
+                const QChar ch = text.at(c);
+                if (!quote.isNull()) {
+                    if (ch == QLatin1Char('\\')) ++c;
+                    else if (ch == quote) quote = QChar();
+                    continue;
+                }
+                if (ch == QLatin1Char('#')) break;
+                if (ch == QLatin1Char('\'') || ch == QLatin1Char('"')) {
+                    quote = ch;
+                    continue;
+                }
+                if (!(ch.isLetter() || ch == QLatin1Char('_')) || (c > 0 && (text.at(c - 1).isLetterOrNumber() || text.at(c - 1) == QLatin1Char('_')))) continue;
+                qsizetype e = c;
+                while (e < text.size() && (text.at(e).isLetterOrNumber() || text.at(e) == QLatin1Char('_'))) ++e;
+                const QString name = text.mid(c, e - c);
+                qsizetype before = c - 1;
+                while (before >= 0 && text.at(before).isSpace()) --before;
+                const bool attribute = before >= 0 && text.at(before) == QLatin1Char('.');
+                if (!attribute && !keywords.contains(name) && values.contains(name) && !names.contains(name)) names << name;
+                c = e - 1;
+            }
+            QStringList said;
+            for (const QString& name : std::as_const(names)) said << name + QStringLiteral(" = ") + cut(values.value(name), 40);
+            if (!said.isEmpty()) a_inlineValues.insert(k, cut(said.join(QStringLiteral(", ")), 120));
+        }
+    }
+    viewport()->update();
+}
+
+void PythonDoc::clearInlineValues()
+{
+    if (a_inlineValues.isEmpty()) return;
+    a_inlineValues.clear();
+    viewport()->update();
 }
 
 // ----------------------------------------------------------------------

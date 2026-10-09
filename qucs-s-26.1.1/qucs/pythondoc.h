@@ -590,6 +590,18 @@ public:
     void setValueLookup(std::function<bool(const QString& expression)> lookup) { a_valueLookup = std::move(lookup); }
     void showValue(const QString& expression, const QString& said);
     QString lastValue() const { return a_lastValue; }
+    /// While the debugger is stopped in it: the values of the variables
+    /// each line uses, written faintly at its end - from the frame's code's
+    /// first line \a first (a function's def; 0: the module's) to the line
+    /// \a line it is at, the functions and classes it defines left out (they
+    /// run in frames of their own), \a values the frame's (by name) - a
+    /// setting (PythonInlineValues, on by default). Cleared as it goes on.
+    static bool inlineValuesShown();
+    static void setInlineValuesShown(bool on);
+    void setInlineValues(int first, int line, const QHash<QString, QString>& values);
+    void clearInlineValues();
+    /// Those written: a line's (from 1) text.
+    QHash<int, QString> inlineValues() const { return a_inlineValues; }
 
     /// Brackets and quotes closed as they are typed, a selection wrapped in
     /// them - a setting (PythonAutoClose; on by default).
@@ -795,6 +807,7 @@ private:
     int a_renameRevision = -1;          // the text it was asked about
     qucs_s::python::Answer a_rename;
 
+    QHash<int, QString> a_inlineValues;   // a line's (from 1) values written at its end
     std::function<bool(const QString&)> a_valueLookup;
     QString a_valueExpression;          // asked of the debugger, its answer awaited
     QPoint a_valueAt;                   // where the mouse rests (the viewport's): help there when it has no value

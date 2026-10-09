@@ -13,8 +13,11 @@ the shell shows one; the figures they leave open are shown (Python Plots).
 install() - the shell's start-up file runs it - writes the shell's variables
 into the folder QUCS_S_SHELL names (variables.json, a line about each:
 _qucs_data.summary()) before each prompt, and answers what is asked of them
-there: requests/<n>.json, {"kind": "table", "expression", "start", "count"}
-or {"kind": "variables"}, answered in answers/<n>.json.
+there: requests/<n>.json - {"kind": "table", "expression", "start", "count",
+"sort", "descending", "filters", "token"}, {"kind": "children", "expression"}
+(a value's insides), {"kind": "display", "expression"} (shown in a data
+display of Qucs-S: qucs.display()) or {"kind": "variables"} - answered in
+answers/<n>.json.
 """
 
 import ast
@@ -111,19 +114,15 @@ def _write(path, data):
 
 
 class _Prompt:
-    """sys.ps1: the variables written each time it is shown."""
+    """sys.ps1: the variables written each time it is shown - after each
+    command, though they look the same (what is inside them may not be)."""
 
     def __init__(self, text):
         self.text = str(text)
-        self.last = None
 
     def __str__(self):
         try:
-            listed = variables()
-            said = json.dumps(listed)
-            if said != self.last:
-                _write(os.path.join(FOLDER, 'variables.json'), {'time': time.time(), 'variables': listed})
-                self.last = said
+            _write(os.path.join(FOLDER, 'variables.json'), {'time': time.time(), 'variables': variables()})
         except Exception:
             pass
         return self.text
@@ -142,9 +141,26 @@ def _answer(request):
         except Exception as e:
             return {'kind': kind, 'expression': expression,
                     'error': ''.join(traceback.format_exception_only(type(e), e)).strip()}
-        found = _qucs_data.table(value, request.get('start', 0), request.get('count', 1000))
+        found = _qucs_data.table(value, request.get('start', 0), request.get('count', 1000), request.get('sort'),
+                                 request.get('descending', False), request.get('filters'), request.get('token'))
         found.update({'kind': kind, 'expression': expression, 'type': _qucs_data.kind_of(value)})
         return found
+    if kind in ('children', 'display'):
+        expression = request.get('expression') or ''
+        main = sys.modules.get('__main__')
+        try:
+            value = eval(compile(expression, '<variables>', 'eval'), vars(main) if main is not None else {})
+            if kind == 'children':
+                return {'kind': kind, 'expression': expression, 'items': _qucs_data.children(value, expression)}
+            import qucs
+            variables, x = _qucs_data.as_variables(value, expression)
+            name = _qucs_data._safe_name(expression)
+            path = qucs.display(variables, x=x, name=name, folder=os.getcwd()) if x is not None else \
+                qucs.display(variables, name=name, folder=os.getcwd())
+            return {'kind': kind, 'expression': expression, 'path': path}
+        except Exception as e:
+            return {'kind': kind, 'expression': expression,
+                    'error': ''.join(traceback.format_exception_only(type(e), e)).strip()}
     return {'kind': kind, 'error': 'Not a request: %r' % kind}
 
 
