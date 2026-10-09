@@ -93,7 +93,7 @@ private:
 } // namespace qucs_s::python
 
 /*!
- * \brief The figures scripts draw (matplotlib, Simulation > Python > Plots
+ * \brief The figures scripts draw (matplotlib, Python > Plots
  *        in Qucs-S): the one chosen, fitted to the pane or at its own size,
  *        a strip of them all below; saved as a picture, copied, removed.
  */

@@ -3607,7 +3607,7 @@ void QucsApp::slotChangeView()
     if(cursorLeft->isEnabled())
       switchSchematicDoc (false);
     // After a PDF, too - not for a Python script: it has no skeleton, and
-    // its Ctrl+Space is the completions' (Simulation > Python).
+    // its Ctrl+Space is the completions' (the Python menu).
     insEntity->setEnabled(qobject_cast<PythonDoc *>(w) == nullptr);
     buildModule->setEnabled(true);
   }

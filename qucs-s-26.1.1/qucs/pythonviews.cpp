@@ -491,7 +491,7 @@ PythonPlotsPane::PythonPlotsPane(QWidget* parent) : QWidget(parent)
     a_scroll->setWidgetResizable(true);
     a_scroll->setAlignment(Qt::AlignCenter);
     a_empty = new QLabel(tr("The figures of a script's matplotlib come here - plt.show() in a script run, debugged or "
-                            "run in the Python Shell (Simulation > Python > Plots in Qucs-S)."),
+                            "run in the Python Shell (Python > Plots in Qucs-S)."),
                          this);
     a_empty->setWordWrap(true);
     a_empty->setAlignment(Qt::AlignCenter);

@@ -416,6 +416,8 @@ public:
   /// shown while a Python script is in front, unless it was hidden from
   /// the Toolbars menu.
   QToolBar *pythonToolbarWidget() const { return pythonToolbar; }
+  /// The Python menu: a menu of its own, right of View.
+  QMenu *pythonMenu() const { return a_pythonMenu; }
   QComboBox *pythonInterpreterList() const { return pythonInterpreters; }
   /// The console of a script's run (Run, F2), and its dock.
   PythonRunConsole *pythonRunConsole() const { return pythonRun; }

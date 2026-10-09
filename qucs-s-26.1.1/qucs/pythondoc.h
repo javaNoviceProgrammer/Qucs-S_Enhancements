@@ -465,7 +465,7 @@ public:
 
     /// Asks for what completes the name at the cursor, shown in a list
     /// below it when it comes (Return or Tab takes one, Escape closes it,
-    /// typing narrows it). \a asked: Simulation > Python > Show Completions
+    /// typing narrows it). \a asked: Python > Show Completions
     /// (Ctrl+Space) - anywhere, after a single letter too; otherwise as one
     /// types (completeAsYouType()).
     void complete(bool asked);
@@ -487,7 +487,7 @@ public:
 
     /// Asks for the call the cursor is in, shown above it when it comes -
     /// asked again as the cursor moves in it, gone when it leaves it.
-    /// \a asked: Simulation > Python > Show Signature (Ctrl+Shift+Space);
+    /// \a asked: Python > Show Signature (Ctrl+Shift+Space);
     /// otherwise as one types a bracket or a comma (completeAsYouType()).
     void showSignature(bool asked);
     bool signatureShown() const;
