@@ -241,6 +241,9 @@ QString QucsControl::resourceVersion(const QString& uri) const
 
 QString QucsControl::askedEachTime(const QString& tool, const QJsonObject& a) const
 {
+    if ((tool == QLatin1String("git_remote") && a.value(QLatin1String("action")).toString() == QLatin1String("push"))
+        || (tool == QLatin1String("git_commit") && a.value(QLatin1String("push")).toBool()))
+        return tr("A push publishes the branch's commits on the remote, for everyone who can read it: asked about each time.");
     if (tool == QLatin1String("console") && (!a.value(QLatin1String("input")).toString().isEmpty() || a.value(QLatin1String("interrupt")).toBool()))
         return tr("What is typed into a console runs with your rights, outside Claude Code's own rules for commands: asked about each "
                   "time.");
@@ -251,6 +254,16 @@ bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
 {
     const auto exists = [this](const QString& path) { return !path.trimmed().isEmpty() && QFileInfo::exists(absolute(path.trimmed())); };
     if (tool == QLatin1String("clean_scratch") || tool == QLatin1String("trash_file")) return true;
+    // Git: changes thrown away, a branch's commits lost, a stash dropped,
+    // the work published - asked about each time.
+    if (tool == QLatin1String("git_discard")) return true;
+    if (tool == QLatin1String("git_commit_action"))
+        return a.value(QLatin1String("action")).toString() == QLatin1String("reset") && a.value(QLatin1String("mode")).toString() == QLatin1String("hard");
+    if (tool == QLatin1String("git_branch"))
+        return a.value(QLatin1String("action")).toString() == QLatin1String("delete") && a.value(QLatin1String("force")).toBool();
+    if (tool == QLatin1String("git_stash")) return a.value(QLatin1String("action")).toString() == QLatin1String("drop");
+    if (tool == QLatin1String("git_remote")) return a.value(QLatin1String("action")).toString() == QLatin1String("push");
+    if (tool == QLatin1String("git_commit")) return a.value(QLatin1String("push")).toBool();
     // Raw input, the last resort: what it clicks or types is anything the
     // window does.
     if (tool == QLatin1String("send_input")) return true;

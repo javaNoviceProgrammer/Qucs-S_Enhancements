@@ -12,6 +12,7 @@
  * (at your option) any later version.
  */
 #include "statusbar.h"
+#include "gitui.h"
 
 #include "apptheme.h"
 #include "autosave.h"
@@ -693,6 +694,7 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
     a_problems = makeChip(a_row, "statusProblems");
     a_run = makeChip(a_row, "statusRun");
     a_simulator = makeChip(a_row, "statusSimulator");
+    a_git = makeChip(a_row, "statusGit");
     a_saved = makeChip(a_row, "statusSaved");
     a_claude = makeChip(a_row, "statusClaude");
     // (It shows and hides the Claude Code panel, and says what Claude does:
@@ -712,6 +714,7 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
     a_row->add(a_problems, 1);
     a_row->add(a_run, 0);
     a_row->add(a_simulator, 6);
+    a_row->add(a_git, 5);
     a_row->add(a_saved, 7);
     a_row->add(a_claude, 1);
     a_row->add(a_theme, 9);
@@ -758,6 +761,17 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
         if (doc != nullptr && (doc->getDocChanged() || doc->getDocName().isEmpty())) a_app->fileSave->trigger();
         scheduleRefresh();
     });
+    // The repository of the document in front: what git can do with it.
+    connect(a_git, &QToolButton::clicked, this, [this] {
+        QucsDoc* doc = a_app->DocumentTab != nullptr && a_app->DocumentTab->count() > 0 ? a_app->getDoc() : nullptr;
+        if (doc == nullptr || doc->getDocName().isEmpty()) return;
+        auto* menu = new QMenu(a_git);
+        menu->setObjectName(QStringLiteral("statusGitMenu"));
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        qucs_s::git::Commands::instance()->fillFileMenu(menu, doc->getDocName());
+        popUp(a_git, menu);
+    });
+    connect(qucs_s::git::Tracker::instance(), &qucs_s::git::Tracker::changed, this, &StatusPanel::scheduleRefresh);
     connect(a_theme, &QToolButton::clicked, this, [this] {
         if (a_app->themeMenu != nullptr) popUp(a_theme, a_app->themeMenu);
     });
@@ -913,8 +927,46 @@ void StatusPanel::refresh()
     updateRun();
     updateSimulator();
     updateSaved();
+    updateGit();
     updateClaude();
     a_row->fit();
+}
+
+// ----------------------------------------------------------------------
+void StatusPanel::updateGit()
+{
+    using namespace qucs_s::git;
+    QucsDoc* doc = a_app->DocumentTab != nullptr && a_app->DocumentTab->count() > 0 ? a_app->getDoc() : nullptr;
+    const QString file = doc != nullptr ? doc->getDocName() : QString();
+    const Repository* repo = file.isEmpty() ? nullptr : Tracker::instance()->repositoryOf(file);
+    a_row->setWanted(a_git, repo != nullptr);
+    if (repo == nullptr) return;
+    bool inside = false;
+    const QString rel = relativePath(repo->root, file, &inside);
+    const Entry* e = inside ? repo->entryOf(rel) : nullptr;
+    QString text = QStringLiteral("\u2387 ") + repo->branchText();
+    Tone tone = Tone::None;
+    if (e != nullptr && !e->ignored) {
+        text += QStringLiteral("  \u00b7  ") + e->letter();
+        if (e->conflicted) tone = Tone::Error;
+    }
+    if (!repo->operation.isEmpty()) {
+        text += QStringLiteral("  \u00b7  ") + tr("%1 under way").arg(repo->operation);
+        if (tone == Tone::None) tone = Tone::Warn;
+    }
+    setChip(a_git, text, tone);
+    QStringList tip{tr("Git: %1").arg(QDir::toNativeSeparators(repo->root))};
+    QString branch = repo->branch.isEmpty() ? tr("none (HEAD detached at %1)").arg(repo->head) : repo->branch;
+    if (!repo->upstream.isEmpty())
+        branch += QStringLiteral(" (") + tr("upstream %1: %2 ahead, %3 behind").arg(repo->upstream).arg(repo->ahead).arg(repo->behind)
+                  + QLatin1Char(')');
+    tip << tr("Branch: %1").arg(branch);
+    tip << tr("This file: %1").arg(e == nullptr ? tr("as committed") : e->describe());
+    if (const int changed = repo->changedCount(); changed > 0)
+        tip << tr("Changes not committed: %1 (%2 staged)").arg(changed).arg(repo->stagedCount());
+    if (!repo->operation.isEmpty()) tip << tr("A %1 is under way").arg(repo->operation);
+    tip << tr("Click: what git can do with it");
+    a_git->setToolTip(tip.join(QLatin1Char('\n')));
 }
 
 void StatusPanel::themeChanged()
