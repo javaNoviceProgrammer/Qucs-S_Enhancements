@@ -762,8 +762,21 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     - the frame's variables, with their types and values (a module's
       modules, functions and classes left out). A list, a dictionary, an
       array or an object opens to show what is inside it;
+    - the **Watch** tab beside the variables: expressions (`abs(h)`,
+      `self.gain * 2`) evaluated in the frame each time it stops and when
+      another frame is chosen - an error said for one that fails there -,
+      opened as the variables are; added in its line below, edited with a
+      double-click, removed with Delete, and kept for the next run;
     - a line to evaluate an expression in the frame, or to run a
-      statement there (`x = 0`), the answer written in the output.
+      statement there (`x = 0`), the answer written in the output. It
+      completes the frame's names as they are typed - an object's
+      attributes after its name and a dot - and Up and Down bring back the
+      lines evaluated before.
+
+    **Inline values** (on by default): while it is stopped, the values of
+    the variables each line uses are written faintly at the line's end,
+    from the start of the function it is in down to its line - those of
+    the frame chosen in the call stack.
 
     *Continue* (Ctrl+F2 while stopped) goes on to the next breakpoint,
     *Step Over* (Ctrl+F10) to the next line, *Step Into* (Ctrl+F11) into
@@ -783,7 +796,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     While it is stopped, the mouse on a name (`total`, `self.gain`) shows
     its value in the frame looked at, and an array, a list, a dictionary
     of columns or a DataFrame among the variables opens in the *Data
-    Viewer* with a double-click (*View as Table*).
+    Viewer* with a double-click (*View as Table*); its menu's *Show in a
+    Data Display* shows it in a data display of Qucs-S beside the script,
+    as `qucs.display()` does.
   - **Simulation results in Python: the `qucs` module.** A script run
     from Qucs-S (Run, Debug, the Python Shell) can `import qucs`:
     - `qucs.load('amp.sch')` reads the dataset a simulation of the
@@ -860,14 +875,33 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   - **Python Variables.** The Python Shell's variables, with their types,
     sizes and values, updated after each command it runs (typed, a cell,
     a selection). Modules, functions, classes and names starting with `_`
-    are left out, and a filter narrows the list. A double-click on an
-    array, a list, a dictionary of columns, a DataFrame or a `qucs`
-    dataset opens it in the **Data Viewer**: a table with the column
-    names and row labels, rows fetched as you scroll to them (a million
-    rows open at once), arrays of more axes shown as rows of their last
-    axis, complex numbers and NaN as text. *Copy* copies the selected
-    cells - or all of them - tab-separated; *Export as CSV...* writes
-    every row.
+    are left out, and a filter narrows the list. A dictionary, a list, an
+    array, a DataFrame or an object opens to show what is in it, each item
+    its own row (an item of a dictionary is `name['key']`, an attribute
+    `name.attribute`), and stays open after the next command. Its menu's
+    *Show in a Data Display* shows an array, a list of numbers, a
+    dictionary of columns, a DataFrame or a `qucs` dataset in a data
+    display of Qucs-S (`qucs.display()`, in the shell's folder). A
+    double-click on one opens it in the **Data Viewer**: a table with the
+    column names and row labels, rows fetched as you scroll to them (a
+    million rows open at once), arrays of more axes shown as rows of their
+    last axis, complex numbers and NaN as text.
+    - A click on a column's header sorts by it - again, the other way;
+      again, as it was. Numbers before text, NaN and empty cells last;
+      complex numbers by magnitude. A filter keeps the rows a column's
+      cells pass: `> 5`, `<= 1e-3`, `!= 0`, or text they have (any case);
+      filters on several columns all hold. Both are done by Python, so a
+      million rows sort and filter at once.
+    - *Complex* shows complex numbers as `a+bj`, magnitude and phase, dB
+      (20 log10) and phase, or one part: the real or imaginary part, the
+      magnitude, dB or the phase in degrees.
+    - *Plot* draws the columns selected in the *Python Plots* pane - the
+      first the x of the others when two or more are, else over the rows -
+      complex values as *Complex* shows them, on a log x axis when x is
+      positive over two decades or more (a frequency sweep). No matplotlib
+      needed.
+    - *Copy* copies the selected cells - or all of them - tab-separated;
+      *Export as CSV...* writes every row (complex numbers as shown).
 - **Claude Code dock** (*View → Claude Code*, or the *Claude* chip in the
   status bar): a conversation with [Claude Code](https://claude.com/claude-code)
   beside the schematic. Claude works in the workspace folder (*Application

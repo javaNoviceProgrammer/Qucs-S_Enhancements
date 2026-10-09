@@ -108,6 +108,8 @@ void settingsManager::initDefaults()
     m_Defaults["PythonRunSettings"] = QString("{}");   // a script's arguments, folder, environment (qucs_s::python::RunSettings)
     m_Defaults["PythonDebugLibraryCode"] = false;    // the debugger steps into Python's library and packages too
     m_Defaults["PythonFormatOnSave"] = false;        // PythonDoc::formatOnSave()
+    m_Defaults["PythonWatches"] = QStringList();      // the debugger's watch list (PythonRunConsole::watches())
+    m_Defaults["PythonInlineValues"] = true;         // PythonDoc::inlineValuesShown(): values at line ends while stopped
     m_Defaults["PythonBreakOnRaised"] = false;       // the debugger stops where an exception is raised, caught or not
     m_Defaults["ShowPinNames"] = true;
     m_Defaults["ShowPinDirections"] = false;

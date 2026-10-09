@@ -24,6 +24,8 @@
 #include "settings.h"
 
 #include <QAction>
+#include <QDateTime>
+#include <QImage>
 #include <QActionGroup>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -174,6 +176,16 @@ void QucsApp::initPythonToolbar()
   connect(pythonLibraryAction, &QAction::toggled, this, [this](bool on) {
     _settings::Get().setItem<bool>("PythonDebugLibraryCode", on);
     if (pythonRun != nullptr) pythonRun->setDebugLibrary(on);
+  });
+  pythonInlineValuesAction = new QAction(tr("Inline Values"), this);
+  pythonInlineValuesAction->setObjectName(QStringLiteral("pythonInlineValues"));
+  pythonInlineValuesAction->setCheckable(true);
+  pythonInlineValuesAction->setChecked(PythonDoc::inlineValuesShown());
+  pythonInlineValuesAction->setToolTip(tr("While the debugger is stopped: the values of the variables each line uses "
+                                          "written at its end, from the function's start to the line it is at"));
+  connect(pythonInlineValuesAction, &QAction::toggled, this, [this](bool on) {
+    PythonDoc::setInlineValuesShown(on);
+    showPythonInlineValues();
   });
   pythonInterruptAction = new QAction(tr("Interrupt"), this);
   pythonInterruptAction->setObjectName(QStringLiteral("pythonInterrupt"));
@@ -446,6 +458,7 @@ void QucsApp::initPythonToolbar()
   pythonMenu->addAction(pythonEditBreakpointAction);
   pythonMenu->addAction(pythonRaisedAction);
   pythonMenu->addAction(pythonLibraryAction);
+  pythonMenu->addAction(pythonInlineValuesAction);
   pythonMenu->addSeparator();
   pythonMenu->addAction(pythonCheckAction);
   pythonMenu->addAction(pythonLineEndsAction);
@@ -560,6 +573,14 @@ void QucsApp::initPythonConsole()
       a_pythonVariables->setVariables(answer.value(QStringLiteral("variables")).toArray());
     } else if (kind == QLatin1String("table")) {
       if (PythonDataViewer *viewer = a_shellTables.take(answer.value(QStringLiteral("id")).toInt())) viewer->answer(answer);
+    } else if (kind == QLatin1String("children")) {
+      a_pythonVariables->showChildren(answer.value(QStringLiteral("expression")).toString(), answer.value(QStringLiteral("items")).toArray());
+    } else if (kind == QLatin1String("display")) {
+      const QString error = answer.value(QStringLiteral("error")).toString();
+      statusBar()->showMessage(error.isEmpty() ? tr("%1 shown in %2.").arg(answer.value(QStringLiteral("expression")).toString(),
+                                                                          QFileInfo(answer.value(QStringLiteral("path")).toString()).fileName())
+                                               : tr("Show in a Data Display: %1").arg(error),
+                               10000);
     }
   });
   connect(a_pythonExchange, &qucs_s::python::Exchange::displayRequested, this, [this](const QJsonObject &request) {
@@ -567,6 +588,13 @@ void QucsApp::initPythonConsole()
     if (!why.isEmpty()) statusBar()->showMessage(why, 10000);
   });
   connect(a_pythonVariables, &PythonVariablesPane::tableRequested, this, &QucsApp::viewShellTable);
+  connect(a_pythonVariables, &PythonVariablesPane::childrenRequested, this, [this](const QString &expression) {
+    a_pythonExchange->askShell({{QStringLiteral("kind"), QStringLiteral("children")}, {QStringLiteral("expression"), expression}});
+  });
+  connect(a_pythonVariables, &PythonVariablesPane::displayRequested, this, [this](const QString &expression) {
+    if (!pythonShell->isRunning()) return;
+    a_pythonExchange->askShell({{QStringLiteral("kind"), QStringLiteral("display")}, {QStringLiteral("expression"), expression}});
+  });
   connect(a_pythonVariables, &PythonVariablesPane::refreshRequested, this,
           [this] { a_pythonExchange->askShell({{QStringLiteral("kind"), QStringLiteral("variables")}}); });
   connect(pythonRun, &PythonRunConsole::finished, a_pythonExchange, &qucs_s::python::Exchange::scan);
@@ -576,22 +604,69 @@ void QucsApp::initPythonConsole()
   // The debugger's: a value as a table, a value under the mouse.
   connect(pythonRun, &PythonRunConsole::tableRequested, this, [this](int handle, const QString &name) {
     auto *viewer = new PythonDataViewer(name, nullptr, this);
-    viewer->model()->setFetch([this, handle, made = QPointer<PythonDataViewer>(viewer)](int start, int count) {
+    viewer->model()->setFetch([this, handle, made = QPointer<PythonDataViewer>(viewer)](const QJsonObject &request) {
       if (made.isNull()) return;
-      if (const int id = pythonRun->requestData(handle, QString(), start, count); id > 0) a_debugTables.insert(id, made);
+      if (const int id = pythonRun->requestData(handle, QString(), request); id > 0) a_debugTables.insert(id, made);
       else made->answer({{QStringLiteral("error"), tr("The script went on: its values are no longer there.")}});
     });
+    connect(viewer, &PythonDataViewer::plotted, this, &QucsApp::showPythonPlot);
     viewer->show();
     viewer->model()->fetchFirst();   // (the first rows - and its shape)
   });
   connect(pythonRun, &PythonRunConsole::dataArrived, this, [this](int id, const QJsonObject &table) {
     if (PythonDataViewer *viewer = a_debugTables.take(id)) viewer->answer(table);
   });
+  connect(pythonRun, &PythonRunConsole::displayed, this, [this](const QString &path, const QString &error) {
+    statusBar()->showMessage(error.isEmpty() ? tr("Shown in %1.").arg(QFileInfo(path).fileName()) : tr("Show in a Data Display: %1").arg(error), 10000);
+  });
+  // Inline values: the frame looked at's, in its script.
+  for (const auto signal : {&PythonRunConsole::variablesShown, &PythonRunConsole::resumed, &PythonRunConsole::debuggingChanged})
+    connect(pythonRun, signal, this, &QucsApp::showPythonInlineValues);
+  connect(pythonRun, &PythonRunConsole::finished, this, &QucsApp::showPythonInlineValues);
   connect(pythonRun, &PythonRunConsole::inspected, this,
           [this](int id, const QString &expression, const QString &value, const QString &error) {
             if (PythonDoc *py = a_pythonValues.take(id))
               py->showValue(expression, error.isEmpty() ? QStringLiteral("%1 = %2").arg(expression, value) : QString());
           });
+}
+
+void QucsApp::showPythonPlot(const QImage &picture, const QString &title)
+{
+  // (Written where the figures are: removed with them.)
+  const QString folder = qucs_s::python::plotsFolder();
+  if (folder.isEmpty()) return;
+  const QString image = QDir(folder).filePath(QStringLiteral("viewer-%1-%2.png").arg(QCoreApplication::applicationPid()).arg(++a_pythonJobs));
+  if (!picture.save(image)) return;
+  a_pythonPlots->addPlot(image, {{QStringLiteral("source"), tr("Data Viewer")},
+                                 {QStringLiteral("figure"), a_pythonJobs},
+                                 {QStringLiteral("title"), title},
+                                 {QStringLiteral("time"), double(QDateTime::currentMSecsSinceEpoch()) / 1000.0},
+                                 {QStringLiteral("scale"), picture.devicePixelRatio()}});
+  if (!a_pythonPlotsDock->isVisible()) a_pythonPlotsDock->show();
+  a_pythonPlotsDock->raise();
+}
+
+void QucsApp::showPythonInlineValues()
+{
+  // The frame looked at's values, in the script it is in - none elsewhere,
+  // nor while it runs.
+  PythonDoc *shown = nullptr;
+  if (pythonRun != nullptr && pythonRun->isPaused() && PythonDoc::inlineValuesShown()) {
+    const QList<PythonRunConsole::Frame> stack = pythonRun->stack();
+    if (pythonRun->frame() >= 0 && pythonRun->frame() < stack.size()) {
+      const PythonRunConsole::Frame &f = stack.at(pythonRun->frame());
+      for (QucsDoc *doc : allDocuments())
+        if (auto *script = dynamic_cast<PythonDoc *>(doc);
+            script != nullptr && QFileInfo(script->getDocName()).canonicalFilePath() == QFileInfo(f.file).canonicalFilePath()) {
+          // (A module's code: from its start, its functions' and classes' lines
+          // not its.)
+          script->setInlineValues(f.function == QLatin1String("<module>") ? 0 : f.first, f.line, pythonRun->frameValues());
+          shown = script;
+        }
+    }
+  }
+  for (QucsDoc *doc : allDocuments())
+    if (auto *script = dynamic_cast<PythonDoc *>(doc); script != nullptr && script != shown) script->clearInlineValues();
 }
 
 PythonDataViewer *QucsApp::viewShellTable(const QString &expression)
@@ -602,14 +677,15 @@ PythonDataViewer *QucsApp::viewShellTable(const QString &expression)
     viewer->show();
     return viewer;
   }
-  viewer->model()->setFetch([this, expression, made = QPointer<PythonDataViewer>(viewer)](int start, int count) {
+  viewer->model()->setFetch([this, expression, made = QPointer<PythonDataViewer>(viewer)](const QJsonObject &request) {
     if (made.isNull()) return;
-    const int id = a_pythonExchange->askShell({{QStringLiteral("kind"), QStringLiteral("table")},
-                                               {QStringLiteral("expression"), expression},
-                                               {QStringLiteral("start"), start},
-                                               {QStringLiteral("count"), count}});
+    QJsonObject ask = request;
+    ask.insert(QStringLiteral("kind"), QStringLiteral("table"));
+    ask.insert(QStringLiteral("expression"), expression);
+    const int id = a_pythonExchange->askShell(ask);
     if (id > 0) a_shellTables.insert(id, made);
   });
+  connect(viewer, &PythonDataViewer::plotted, this, &QucsApp::showPythonPlot);
   viewer->show();
   viewer->model()->fetchFirst();
   return viewer;
