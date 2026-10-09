@@ -1220,8 +1220,12 @@ PythonDoc::~PythonDoc()
         process->waitForFinished(1000);
     }
     // TextDoc's destructor edits the text as it lets the highlighter go:
-    // no check is scheduled by a PythonDoc that is no more.
+    // no check is scheduled by a PythonDoc that is no more - nor are its
+    // handlers of the editor's own signals called, which that sets off
+    // too (the view's update, the cursor's move).
     disconnect(document(), nullptr, this, nullptr);
+    disconnect(this, &QPlainTextEdit::cursorPositionChanged, this, nullptr);
+    disconnect(this, &QPlainTextEdit::updateRequest, this, nullptr);
 }
 
 bool PythonDoc::load()
