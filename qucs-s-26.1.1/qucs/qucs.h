@@ -628,6 +628,7 @@ private slots:
   void slotPythonCheck();
   void slotPythonInterpreterChosen(int index);
   void slotPythonLineEnds(bool on);
+  void slotPythonComplete();
   void slotAfterSimulation(int, SimMessage *);
   void slotDCbias();
   void slotChangePage(const QString &, const QString &);
@@ -775,6 +776,8 @@ private:
   QAction *pythonShellAction = nullptr;
   QAction *pythonCheckAction = nullptr;
   QAction *pythonLineEndsAction = nullptr;
+  QAction *pythonCompleteAction = nullptr;
+  QAction *pythonAsYouTypeAction = nullptr;
   QDockWidget *pythonRunDock = nullptr;
   PythonRunConsole *pythonRun = nullptr;
   bool a_pythonCheckRaises = false;   // Check: the next answer brings the Problems tab up

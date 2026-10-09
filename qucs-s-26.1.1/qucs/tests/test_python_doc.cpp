@@ -17,10 +17,15 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QAbstractItemView>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDockWidget>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QListWidget>
 #include <QPlainTextEdit>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -102,6 +107,42 @@ class TestPythonDoc : public QObject
         py->insertPlainText(text);
         return spy.wait(20000);
     }
+    // A key to the script - the list's keys to its list of completions
+    // while that is shown. (Characters to the text, which keeps the
+    // keyboard on a desktop while its list is shown; the offscreen
+    // platform activates the list's window instead, and the completer
+    // closes a list whose text lost the keyboard.)
+    static void press(PythonDoc* py, int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier)
+    {
+        static const QList<int> listKeys{Qt::Key_Return, Qt::Key_Enter, Qt::Key_Tab, Qt::Key_Escape, Qt::Key_Up, Qt::Key_Down};
+        QWidget* target = py->completing() && listKeys.contains(key) ? static_cast<QWidget*>(py->completer()->popup())
+                                                                       : static_cast<QWidget*>(py);
+        QTest::keyClick(target, Qt::Key(key), modifiers);
+    }
+    static void typeText(PythonDoc* py, const QString& text)
+    {
+        for (const QChar c : text) {
+            if (c == QLatin1Char('\n')) press(py, Qt::Key_Return);   // (no character keyClicks types)
+            else QTest::keyClicks(py, QString(c));
+        }
+    }
+    // The script in front, with the keyboard, its cursor at the end.
+    bool focused(PythonDoc* py)
+    {
+        app->showDocument(py);
+        app->activateWindow();
+        py->setFocus();
+        QTextCursor end(py->document());
+        end.movePosition(QTextCursor::End);
+        py->setTextCursor(end);
+        return QTest::qWaitFor([py] { return py->hasFocus(); }, 5000);
+    }
+    QAction* pythonAction(const QString& name) const
+    {
+        for (QAction* a : app->findChildren<QAction*>())
+            if (a->objectName() == name) return a;
+        return nullptr;
+    }
     QStringList problemRows() const
     {
         QStringList rows;
@@ -132,6 +173,14 @@ private slots:
         app->resize(1200, 800);
         app->show();
         QVERIFY(QTest::qWaitForWindowExposed(app));
+    }
+
+    // (A case that failed leaves no list open, nor its documents.)
+    void cleanup()
+    {
+        for (QucsDoc* doc : app->allDocuments())
+            if (auto* py = dynamic_cast<PythonDoc*>(doc)) py->completer()->popup()->hide();
+        closeAll();
     }
 
     void cleanupTestCase()
@@ -454,6 +503,8 @@ private slots:
     // keeps tabs.
     void indentsAsPythonDoes()
     {
+        PythonDoc::setCompleteAsYouType(false);   // (the keys to the text alone)
+        const auto asYouType = qScopeGuard([] { PythonDoc::setCompleteAsYouType(true); });
         PythonDoc* py = open(write("indent/i.py", ""));
         QVERIFY(py != nullptr);
         py->setFocus();
@@ -706,6 +757,207 @@ private slots:
         closeAll();
     }
 
+    // The completer by itself: Python's names, the script's, a module's
+    // members (a standard one's, one beside the script read), the modules
+    // after import, the names that follow a name and a dot elsewhere,
+    // nothing after a number's dot.
+    void theCompleterAnswers()
+    {
+        QCOMPARE(qucs_s::python::wordStart("x = math.sq"), 9);
+        QCOMPARE(qucs_s::python::wordStart("x = "), 4);
+        QVERIFY(qucs_s::python::inStringOrComment("s = 'pri"));
+        QVERIFY(qucs_s::python::inStringOrComment("x = 1  # pri"));
+        QVERIFY(!qucs_s::python::inStringOrComment("s = 'a#b' + pri"));
+        QVERIFY(!qucs_s::python::inStringOrComment("s = 'it\\'s' + pri"));
+        const qucs_s::python::Completions c = qucs_s::python::readCompletions(
+            R"js({"id": 7, "engine": "jedi 1.0", "items": [{"name": "sqrt", "type": "function", "description": "def sqrt(x)"}]})js");
+        QCOMPARE(c.id, 7);
+        QCOMPARE(c.engine, QString("jedi 1.0"));
+        QCOMPARE(c.items.size(), 1);
+        QCOMPARE(c.items.first().description, QString("def sqrt(x)"));
+        QCOMPARE(qucs_s::python::readCompletions("not json").id, -1);
+
+        if (python.isEmpty()) QSKIP("no python3 here");
+        write("complete/mymod.py", "def helper():\n    pass\n\nclass Thing:\n    pass\n");
+        const QString script = dir.filePath("complete/s.py");
+        QProcess p;
+        p.setWorkingDirectory(dir.path());
+        p.start(python, {"-u", "-c", qucs_s::python::completerProgram()});
+        QVERIFY(p.waitForStarted(10000));
+        int id = 0;
+        const auto ask = [&](const QString& source) {
+            const QStringList lines = source.split('\n');
+            p.write(QJsonDocument(QJsonObject{{"id", ++id}, {"source", source}, {"line", lines.size()}, {"column", lines.last().size()},
+                                              {"path", script}})
+                        .toJson(QJsonDocument::Compact) + '\n');
+            QByteArray line;
+            while (!line.endsWith('\n') && p.waitForReadyRead(20000)) line += p.readLine();
+            const qucs_s::python::Completions answer = qucs_s::python::readCompletions(line);
+            QStringList names;
+            for (const qucs_s::python::Completion& item : answer.items) names << item.name + ":" + item.type;
+            return answer.id == id ? names : QStringList{"(no answer)"};
+        };
+        QVERIFY(ask("pri").contains("print:function"));
+        QVERIFY(ask("wh").contains("while:keyword"));
+        QCOMPARE(ask("alpha_value = 1\nalp"), QStringList{"alpha_value:statement"});
+        QVERIFY(ask("import math\nmath.sq").contains("sqrt:function"));
+        QVERIFY(ask("import collections\ncollections.Ord").contains("OrderedDict:class"));
+        QVERIFY(ask("import ma").contains("math:module"));
+        QCOMPARE(ask("import mymod\nmymod.he"), QStringList{"helper:function"});
+        QCOMPARE(ask("from mymod import Th"), QStringList{"Thing:class"});
+        QCOMPARE(ask("x = obj.first\ny = obj.second\nobj."), (QStringList{"first:statement", "second:statement"}));
+        QCOMPARE(ask("1."), QStringList());
+        p.closeWriteChannel();
+        QVERIFY(p.waitForFinished(10000));
+    }
+
+    // As one types: the list after two letters of a name; Return takes the
+    // word chosen (no new line); a dot lists a module's members, typing
+    // narrows them, Tab takes one; Escape closes it, a character no name
+    // has closes it. Nothing in a string, a comment, after one letter, or
+    // after a number's dot.
+    void completesAsYouType()
+    {
+        if (python.isEmpty()) QSKIP("no python3 here");
+        QVERIFY(PythonDoc::completeAsYouType());
+        PythonDoc* py = open(write("complete/c.py", "alpha_value = 1\n"));
+        QVERIFY(py != nullptr);
+        QVERIFY(focused(py));
+        typeText(py, "alp");
+        QTRY_VERIFY_WITH_TIMEOUT(py->completing(), 15000);
+        QCOMPARE(py->completionNames(), QStringList{"alpha_value"});
+        QVERIFY(py->completer()->popup()->currentIndex().isValid());
+        press(py, Qt::Key_Return);
+        QVERIFY(!py->completing());
+        QCOMPARE(py->toPlainText(), QString("alpha_value = 1\nalpha_value"));
+        press(py, Qt::Key_Return);   // (the list closed: a new line)
+        QCOMPARE(py->toPlainText(), QString("alpha_value = 1\nalpha_value\n"));
+
+        typeText(py, "import math\nmath.");
+        QTRY_VERIFY_WITH_TIMEOUT(py->completing(), 15000);
+        QVERIFY(py->completionNames().contains("sqrt"));
+        const int tall = py->completer()->popup()->height();
+        typeText(py, "sq");
+        QVERIFY2(py->completionNames() == QStringList{"sqrt"}, qPrintable(py->completionNames().join(", ") + " | " + py->document()->lastBlock().text()));
+        QVERIFY(py->completer()->popup()->height() < tall);   // (as long as its words)
+        press(py, Qt::Key_Tab);
+        QVERIFY(py->document()->lastBlock().text() == "math.sqrt");
+
+        press(py, Qt::Key_Return);
+        typeText(py, "pr");
+        QTRY_VERIFY_WITH_TIMEOUT(py->completing(), 15000);
+        QVERIFY(py->completionNames().contains("print"));
+        press(py, Qt::Key_Escape);
+        QVERIFY(!py->completing());
+        QCOMPARE(py->document()->lastBlock().text(), QString("pr"));
+        typeText(py, "i");
+        QTRY_VERIFY_WITH_TIMEOUT(py->completing(), 15000);
+        typeText(py, "(");
+        QVERIFY(!py->completing());
+        QCOMPARE(py->document()->lastBlock().text(), QString("pri("));
+
+        // Nothing offered here.
+        QSignalSpy answers(py, &PythonDoc::completionsAnswered);
+        // ("pr" then Return before the moment is up: the line is new.)
+        for (const char* text : {"\ns = 'pri", "\n# pri", "\nw", "\nx = 1.", "\nx = 12", "\npr\n"}) {
+            typeText(py, text);
+            QTest::qWait(PythonDoc::kCompleteDelay + 400);
+            QVERIFY2(!py->completing(), text);
+        }
+        QCOMPARE(answers.count(), 0);   // (not asked)
+        // A word typed whole: nothing to add, no list.
+        typeText(py, "\nwhile");
+        QVERIFY(answers.wait(15000));
+        QVERIFY(!py->completing());
+        closeAll();
+    }
+
+    // Ctrl+Space asks - after a single letter too, with Complete as You Type
+    // off -; so does Show Completions in Simulation > Python.
+    void askedForWithControlSpace()
+    {
+        if (python.isEmpty()) QSKIP("no python3 here");
+        QAction* asYouType = pythonAction("pythonCompleteAsYouType");
+        QAction* show = pythonAction("pythonComplete");
+        QVERIFY(asYouType != nullptr && show != nullptr);
+        QVERIFY(asYouType->isChecked());
+        asYouType->trigger();
+        QVERIFY(!PythonDoc::completeAsYouType());
+        PythonDoc* py = open(write("complete/ask.py", ""));
+        QVERIFY(py != nullptr);
+        QVERIFY(focused(py));
+        typeText(py, "pri");
+        QTest::qWait(PythonDoc::kCompleteDelay + 400);
+        QVERIFY(!py->completing());
+        QTest::keyClick(py, Qt::Key_Space, Qt::ControlModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(py->completing(), 15000);
+        QVERIFY(py->completionNames().contains("print"));
+        press(py, Qt::Key_Escape);
+        typeText(py, "\nw");
+        show->trigger();
+        QTRY_VERIFY_WITH_TIMEOUT(py->completing(), 15000);
+        QVERIFY(py->completionNames().contains("while") && py->completionNames().contains("with"));
+        press(py, Qt::Key_Escape);
+        QVERIFY(py->completedBy().startsWith("Completed with the script's names"));
+        // Another Python: the completer is its (none at that path: no list).
+        py->setInterpreter(dir.filePath("complete/no-such-python"));
+        show->trigger();
+        QTest::qWait(1000);
+        QVERIFY(!py->completing());
+        py->setInterpreter(QString());
+        show->trigger();
+        QTRY_VERIFY_WITH_TIMEOUT(py->completing(), 15000);
+        press(py, Qt::Key_Escape);
+        asYouType->trigger();
+        QVERIFY(PythonDoc::completeAsYouType());
+        closeAll();
+    }
+
+    // jedi when the interpreter has it (a stand-in on PYTHONPATH): its
+    // words for the place asked about, said what completed it. An answer
+    // for a word left behind is not shown.
+    void jediWhenThere()
+    {
+        if (python.isEmpty()) QSKIP("no python3 here");
+        EnvironmentGuard pythonPath("PYTHONPATH");
+        write("jedi/jedi/__init__.py",
+              "import os, time\n"
+              "__version__ = '9.9.9'\n"
+              "class C:\n"
+              "    def __init__(self, name, type):\n"
+              "        self.name = self.name_with_symbols = name\n"
+              "        self.type, self.description = type, type + ' ' + name\n"
+              "class Script:\n"
+              "    def __init__(self, code=None, path=None):\n"
+              "        self.code, self.path = code, path\n"
+              "    def complete(self, line, column):\n"
+              "        if 'slow' in self.code:\n"
+              "            time.sleep(1.0)\n"
+              "        return [C('fa_L%dC%d' % (line, column), 'statement'), C('fake_from_jedi', 'function'),\n"
+              "                C('fa_' + os.path.basename(self.path or ''), 'module')]\n");
+        qputenv("PYTHONPATH", QFile::encodeName(dir.filePath("jedi")));
+        PythonDoc* py = open(write("complete/j.py", "x = 1\n"));
+        QVERIFY(py != nullptr);
+        QVERIFY(focused(py));
+        typeText(py, "fa");
+        QTRY_VERIFY_WITH_TIMEOUT(py->completing(), 15000);
+        QCOMPARE(py->completionNames(), (QStringList{"fa_L2C2", "fake_from_jedi", "fa_j.py"}));
+        QCOMPARE(py->completionEngine(), QString("jedi 9.9.9"));
+        QCOMPARE(py->completedBy(), QString("Completed by jedi 9.9.9."));
+        QCOMPARE(py->completer()->popup()->model()->index(1, 0).data(Qt::ToolTipRole).toString(), QString("function fake_from_jedi"));
+        press(py, Qt::Key_Escape);
+
+        // Slow: the cursor on another line before it answers.
+        py->insertPlainText("\nslow = 1\n");
+        QSignalSpy answered(py, &PythonDoc::completionsAnswered);
+        typeText(py, "fa");
+        QTest::qWait(PythonDoc::kCompleteDelay + 200);   // (asked)
+        press(py, Qt::Key_Return);
+        QVERIFY(answered.wait(10000));
+        QVERIFY(!py->completing());
+        closeAll();
+    }
+
     // Claude's: the actions in Simulation > Python, which trigger_action
     // runs; a script read and edited as any text document.
     void claudeRunsAndChecksAScript()
@@ -714,7 +966,8 @@ private slots:
         QVERIFY(control != nullptr);
         const QString actions = QucsControl::textOf(control->callNow("list_actions", {}, 20000));
         for (const char* path : {"Simulation > Python > Run", "Simulation > Python > Stop", "Simulation > Python > Run in Shell",
-                                 "Simulation > Python > Check", "Simulation > Python > Messages at Line Ends"})
+                                 "Simulation > Python > Check", "Simulation > Python > Messages at Line Ends",
+                                 "Simulation > Python > Show Completions", "Simulation > Python > Complete as You Type"})
             QVERIFY2(actions.contains(path), path);
         if (python.isEmpty()) QSKIP("no python3 here: not run");
         PythonDoc* py = open(write("claude/c.py", "print('from claude')\n"));
