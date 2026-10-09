@@ -640,6 +640,7 @@ private slots:
   void slotPythonComplete();
   void slotPythonSignature();
   void slotPythonDebug();
+  void slotPythonDebugStep();   // Continue, Step Over, Step Into, Step Out: the sender's
   void slotPythonRunSelection();
   void slotPythonRunCell(bool advance);
   void slotPythonToggleBreakpoint();
