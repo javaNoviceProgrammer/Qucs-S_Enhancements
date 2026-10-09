@@ -1568,6 +1568,30 @@ private slots:
         panel->pinDocument(QString());
         QVERIFY(panel->session()->document().isEmpty());
         open(dir.filePath("workspace/pinned_a2.sch"))->setChanged(false);
+
+        // Any document, not a schematic alone: a script in front pinned
+        // from the composer, listed in ⋯ > Pin to a File (and not with the
+        // schematics), its file given to the text tools.
+        QFile script(dir.filePath("workspace/pinned_notes.txt"));
+        QVERIFY(script.open(QIODevice::WriteOnly));
+        script.write("gain = 10\n");
+        script.close();
+        QVERIFY(!failed(call("open_document", {{"path", script.fileName()}})));
+        const QString notes = app->getDoc()->getDocName();
+        QVERIFY(notes.endsWith("pinned_notes.txt"));
+        QCOMPARE(panel->pinnableDocument(), notes);
+        panel->pinButton()->click();
+        QVERIFY(panel->isPinnedTo(notes));
+        emit panel->pinFileMenu()->aboutToShow();
+        QStringList files;
+        for (QAction* x : panel->pinFileMenu()->actions())
+            if (!x->isSeparator()) files << x->text() + (x->isChecked() ? "*" : "");
+        QVERIFY2(files.contains("pinned_notes.txt*"), qPrintable(files.join(", ")));
+        emit panel->pinMenu()->aboutToShow();
+        for (QAction* x : panel->pinMenu()->actions()) QVERIFY(!x->text().startsWith("pinned_notes"));
+        QCOMPARE(control->forDocument("get_text", {}, panel->pinnedDocument()).value("path").toString(), notes);
+        QVERIFY(text(call("get_text", control->forDocument("get_text", {}, panel->pinnedDocument()))).contains("gain = 10"));
+        panel->pinDocument(QString());
     }
 
     // Quick: several calls in one (batch) - in order, each change a step to

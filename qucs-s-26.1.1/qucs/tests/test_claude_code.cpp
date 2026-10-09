@@ -2724,6 +2724,120 @@ private slots:
         QVERIFY(panel->session()->document().isEmpty());
     }
 
+    // Any document, not a schematic alone: the pin by the composer pins a
+    // text or a script in front; ⋯ > Pin to a File lists the open documents
+    // that are not schematics (⋯ > Pin to a Schematic, the schematics, as
+    // before); pinned, the prompts name it; one closed is said to be, in
+    // its own menu; /pin pins the one in front; a Save As moves it.
+    void aConversationIsPinnedToAnyFile()
+    {
+        const QString work = fresh("pinfiles");
+        const QString a = work + "/amp.sch", t = work + "/notes.txt", py = work + "/fit.py";
+        for (const QString& f : {a, t, py}) {
+            QFile file(f);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+        }
+        QString front = t;
+        QStringList schematics{a}, files{t, py};
+        ClaudeCodeTabs tabs;
+        tabs.setDefaultDirectory(work);
+        tabs.setDocumentProvider([&front] { return front; });
+        tabs.setSchematicsProvider([&schematics] { return schematics; });
+        tabs.setFilesProvider([&files] { return files; });
+        tabs.resize(440, 700);
+        tabs.show();
+        ClaudeCodePanel* panel = tabs.current();
+        QToolButton* pin = panel->pinButton();
+
+        // A text document in front: pinned from the composer.
+        QVERIFY(pin->isEnabled());
+        QCOMPARE(panel->pinnableDocument(), t);
+        QVERIFY(pin->toolTip().contains("notes.txt"));
+        pin->click();
+        QVERIFY(panel->isPinnedTo(t));
+        QCOMPARE(panel->session()->document(), panel->pinnedDocument());
+        QCOMPARE(pin->text(), QStringLiteral("notes.txt"));
+        QVERIFY(!pin->toolTip().contains("not open"));
+        QVERIFY(tabs.tabWidget()->tabToolTip(0).contains("notes.txt"));
+
+        // The menus: the files in Pin to a File, the one pinned checked;
+        // the schematics alone in Pin to a Schematic.
+        const auto items = [](QMenu* menu) {
+            emit menu->aboutToShow();
+            QStringList shown;
+            for (QAction* x : menu->actions())
+                if (!x->isSeparator()) shown << x->text() + (x->isChecked() ? "*" : "") + (x->isEnabled() ? "" : " (off)");
+            return shown;
+        };
+        QMenu* fileMenu = panel->pinFileMenu();
+        QVERIFY(fileMenu != nullptr);
+        QCOMPARE(fileMenu->title(), QStringLiteral("Pin to a File"));
+        QCOMPARE(items(fileMenu), QStringList({"notes.txt*", "fit.py", "Unpin"}));
+        QCOMPARE(items(panel->pinMenu()), QStringList({"amp.sch", "Unpin"}));
+        // Another chosen from it; the schematic menu still pins a schematic.
+        for (QAction* x : fileMenu->actions())
+            if (x->text() == "fit.py") x->trigger();
+        QVERIFY(panel->isPinnedTo(py));
+        QCOMPARE(panel->session()->document(), panel->pinnedDocument());
+        for (QAction* x : panel->pinMenu()->actions())
+            if (x->text() == "amp.sch") x->trigger();
+        QVERIFY(panel->isPinnedTo(a));
+        panel->pinDocument(py);
+
+        // The prompts name it, whichever document is in front.
+#ifndef Q_OS_WIN   // (the fake claude is a shell script)
+        {
+            QFile::remove(dir.filePath("prompts"));
+            panel->session()->setProgram(script("writer", kWriter));
+            front = a;
+            panel->composer()->setPlainText("Fit the curve");
+            panel->sendComposer();
+            QTRY_VERIFY_WITH_TIMEOUT(read(dir.filePath("prompts")).contains("Fit the curve"), 10000);
+            const QString sent = read(dir.filePath("prompts"));
+            QVERIFY2(sent.contains("pinned to") && sent.contains("fit.py"), qPrintable(sent));
+            QVERIFY(!sent.contains("amp.sch"));
+            panel->session()->stop();
+        }
+#endif
+
+        // Closed: said so, in its own menu (not the schematics').
+        files = {t};
+        tabs.refreshDocument();
+        QVERIFY(pin->toolTip().contains("not open"));
+        QCOMPARE(items(fileMenu), QStringList({"notes.txt", "fit.py (not open)*", "Unpin"}));
+        QCOMPARE(items(panel->pinMenu()), QStringList({"amp.sch", "Unpin"}));
+        files = {};
+        panel->pinDocument(QString());
+        QCOMPARE(items(fileMenu), QStringList({"No other saved file is open (off)", "Unpin (off)"}));
+        files = {t, py};
+
+        // /pin: the document in front, whatever it is; none, said.
+        front = py;
+        tabs.refreshDocument();
+        QVERIFY(panel->runCommand("/pin"));
+        QVERIFY(panel->isPinnedTo(py));
+        panel->pinDocument(QString());
+        front = work + "/unsaved";   // (open nowhere: no file of a document)
+        tabs.refreshDocument();
+        QVERIFY(!pin->isEnabled());
+        QVERIFY(panel->runCommand("/pin"));
+        QVERIFY(panel->pinnedDocument().isEmpty());
+
+        // A Save As moves it.
+        panel->pinDocument(t);
+        const QString moved = work + "/notes2.txt";
+        QVERIFY(QFile::copy(t, moved));
+        tabs.documentRenamed(t, moved);
+        QVERIFY(panel->isPinnedTo(moved));
+        // A conversation opened later pins any document too.
+        ClaudeCodePanel* second = tabs.newConversation();
+        files = {moved, py};
+        front = py;
+        tabs.refreshDocument();
+        QCOMPARE(second->pinnableDocument(), py);
+        QCOMPARE(items(second->pinFileMenu()), QStringList({"notes2.txt", "fit.py", "Unpin (off)"}));
+    }
+
     // Kept on disk: saved, read back, listed the latest first, forgotten;
     // which are open; only the latest kept, not those open; ids that would
     // leave the folder refused.

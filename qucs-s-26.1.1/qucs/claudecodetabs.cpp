@@ -138,6 +138,7 @@ ClaudeCodePanel* ClaudeCodeTabs::addPanel(ClaudeCodePanel* like)
         panel->setWorkingDirectory(like->workingDirectory());
     if (a_document) panel->setDocumentProvider(a_document);
     if (a_schematics) panel->setSchematicsProvider(a_schematics);
+    if (a_files) panel->setFilesProvider(a_files);
     panel->session()->setToolHost(a_host);
 
     connect(panel, &ClaudeCodePanel::newConversationRequested, this, [this] { newConversation(); });
@@ -649,6 +650,12 @@ void ClaudeCodeTabs::setSchematicsProvider(std::function<QStringList()> provider
 {
     a_schematics = std::move(provider);
     for (ClaudeCodePanel* panel : panels()) panel->setSchematicsProvider(a_schematics);
+}
+
+void ClaudeCodeTabs::setFilesProvider(std::function<QStringList()> provider)
+{
+    a_files = std::move(provider);
+    for (ClaudeCodePanel* panel : panels()) panel->setFilesProvider(a_files);
 }
 
 void ClaudeCodeTabs::documentRenamed(const QString& from, const QString& to)

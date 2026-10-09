@@ -914,6 +914,14 @@ void QucsApp::initView()
       if (schematicIn(documentWidget(doc)) != nullptr && !doc->getDocName().isEmpty()) files << doc->getDocName();
     return files;
   });
+  // And any other document open with a file (text, a script, a data file):
+  // ⋯ > Pin to a File, and the pin by the composer when it is in front.
+  claudeTabs->setFilesProvider([this] {
+    QStringList files;
+    for (QucsDoc *doc : allDocuments())
+      if (schematicIn(documentWidget(doc)) == nullptr && !doc->getDocName().isEmpty()) files << doc->getDocName();
+    return files;
+  });
   claudeTabs->setToolHost(new QucsControl(this));
   // The conversations open when Qucs-S last closed, each going on where it
   // was (unless ⋯ > Reopen Conversations at Start is off).
