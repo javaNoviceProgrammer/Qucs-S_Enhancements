@@ -646,8 +646,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
       an object (`self.gain(`, `Amp().gain(`) is the one of that name
       when exactly one of the script's classes has it.
   - **An outline** above the text lists the script's classes and
-    functions, nested; the one the cursor is in is chosen, and choosing
-    another goes there.
+    functions, each with its letter as its completion has it (C a class,
+    f a function, m the top level) and set in by how deep it is; the one
+    the cursor is in is chosen, and choosing another goes there.
   - **Cells and lines in the Python Shell.** A line `# %%` (or `#%%`,
     `# In[3]:`, `# <codecell>`) begins a cell, ruled off above it. *Run
     Cell* (Ctrl+Return) runs the cell the cursor is in in the Python

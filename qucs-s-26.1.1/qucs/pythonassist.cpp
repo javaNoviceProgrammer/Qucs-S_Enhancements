@@ -28,6 +28,7 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPixmap>
 #include <QProcess>
 #include <QScreen>
 #include <QTextBlock>
@@ -39,6 +40,10 @@
 namespace {
 
 QString escaped(const QString& text) { return text.toHtmlEscaped(); }
+
+// The outline's letters: their size, and how far a level sets one in.
+constexpr int kOutlineBadge = 16;
+constexpr int kOutlineStep = 14;
 
 // The colours of the debugger's marks.
 const QColor kBreakpoint(0xd0, 0x38, 0x2b);
@@ -366,14 +371,36 @@ void PythonDoc::updateOutline()
 {
     a_outlineDelay->stop();
     a_outlineEntries = qucs_s::python::outlineOf(toPlainText());
+    // Each with its letter, as its completion has it (C a class, f a
+    // function; m the module, the top level), set in by how deep it is.
+    int deepest = 0;
+    for (const qucs_s::python::OutlineEntry& e : std::as_const(a_outlineEntries)) deepest = std::max(deepest, e.depth);
+    a_outline->setIconSize(QSize(kOutlineBadge + deepest * kOutlineStep, kOutlineBadge));
+    const auto icon = [deepest](const QString& kind, int depth) {
+        QIcon set;
+        for (const int scale : {1, 2}) {
+            QPixmap pixmap((kOutlineBadge + deepest * kOutlineStep) * scale, kOutlineBadge * scale);
+            pixmap.setDevicePixelRatio(scale);
+            pixmap.fill(Qt::transparent);
+            QPainter painter(&pixmap);
+            painter.drawPixmap(depth * kOutlineStep, 0,
+                               qucs_s::python::completionIcon(kind).pixmap(QSize(kOutlineBadge, kOutlineBadge), scale));
+            painter.end();
+            set.addPixmap(pixmap);
+        }
+        return set;
+    };
     {
         const QSignalBlocker block(a_outline);
         a_outline->clear();
-        a_outline->addItem(tr("(top level)"), 0);
+        a_outline->addItem(icon(QStringLiteral("module"), 0), tr("(top level)"), 0);
+        a_outline->setItemData(0, QStringLiteral("module"), kOutlineKindRole);
         for (const qucs_s::python::OutlineEntry& e : std::as_const(a_outlineEntries)) {
-            const QString text = QString(e.depth * 4, QLatin1Char(' ')) + (e.kind == QLatin1String("class") ? QStringLiteral("class ") : QStringLiteral("def ")) + e.name;
-            a_outline->addItem(text, e.line);
-            a_outline->setItemData(a_outline->count() - 1, tr("Line %1").arg(e.line), Qt::ToolTipRole);
+            const QString kind = e.kind == QLatin1String("class") ? QStringLiteral("class") : QStringLiteral("function");
+            a_outline->addItem(icon(kind, e.depth), e.name, e.line);
+            const int row = a_outline->count() - 1;
+            a_outline->setItemData(row, kind, kOutlineKindRole);
+            a_outline->setItemData(row, tr("%1 %2, line %3").arg(e.kind, e.name).arg(e.line), Qt::ToolTipRole);
         }
     }
     chooseOutlineEntry();
