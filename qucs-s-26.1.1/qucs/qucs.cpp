@@ -117,6 +117,8 @@
 #include "qucscontrol.h"
 #include "dialogs/tuner.h"
 #include "markdowndoc.h"
+#include "pythondoc.h"
+#include "pythonrun.h"
 #include "sheetdoc.h"
 #include "octave_window.h"
 #include "printerwriter.h"
@@ -885,6 +887,7 @@ void QucsApp::initView()
   tabifyDockWidget(terminalDock, pythonDock);
   pythonDock->hide();
   updateConsolePrograms();
+  initPythonConsole();   // a script's run (Run, F2), beside the shell
 
   // The Claude Code dock: on the right, hidden until asked for (the View
   // menu, the status bar); a conversation in each of its tabs. Claude
@@ -2899,6 +2902,13 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     i = addDocumentTab(zip, Info.fileName());
     is_pdf = true;   // (no word about simulating a read-only one)
   }
+  else if (isPythonFile(Name)) {
+    // Checked as it is typed, run from the Python toolbar (pythondoc.h).
+    auto *py = new PythonDoc(this, Name);
+    connect(py, &PythonDoc::checkFinished, this, [this, py] { pythonChecked(py); });
+    d = py;
+    i = addDocumentTab(py, Info.fileName());
+  }
   else if (isMarkdownFile(Name)) {
     // Its text and its rendering (markdowndoc.h).
     auto *md = new MarkdownDoc(this, Name);
@@ -3574,6 +3584,10 @@ void QucsApp::slotChangeView()
 {
   QWidget *w = DocumentTab->currentWidget();
   editText->setHidden (true); // disable text edit of component property
+  // The Python toolbar: shown for a script, and its problems listed.
+  updatePythonToolbar();
+  if (auto *py = qobject_cast<PythonDoc *>(w); py != nullptr && py->checked())
+    messageDock->showTextProblems(py, py->diagnostics(), py->checkedBy(), false, py->lastCheck().failure);
   QucsDoc * Doc = docIn(w);
   if(w==nullptr || Doc==nullptr)return;
   // for text documents
@@ -3644,6 +3658,11 @@ void QucsApp::slotFileSettings ()
 
   QWidget * w = DocumentTab->currentWidget ();
   if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)) return;   // nothing to set
+  if (qobject_cast<PythonDoc *> (w)) {
+    statusBar()->showMessage(tr("A Python script has no document settings: the Python toolbar chooses the Python it "
+                                "runs with."), 5000);
+    return;
+  }
   if (isTextDocument (w)) {
     QucsDoc * Doc = (QucsDoc *) ((TextDoc *) w);
     QString ext = Doc->fileSuffix ();
@@ -4541,6 +4560,11 @@ void QucsApp::slotSimulate(QWidget *w)
 
   if (w == nullptr)
       w = DocumentTab->currentWidget();
+  // A Python script is run (the Python toolbar's Run).
+  if (auto *py = qobject_cast<PythonDoc *>(w)) {
+      runPython(py);
+      return;
+  }
   if (w == nullptr || isPdfDocument(w)) {
       statusBar()->showMessage(tr("A PDF document is not simulated."), 3000);
       return;
@@ -4958,11 +4982,11 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
     return;
   }
 
-  // Spreadsheets (CSV files, Excel workbooks) and Markdown: in tabs of
-  // their own (sheetdoc.h, markdowndoc.h), whatever the text editor of
-  // the settings.
-  if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isArchiveFile(absolutePath)
-      || isLayoutFile(absolutePath)) {
+  // Spreadsheets (CSV files, Excel workbooks), Markdown and Python: in
+  // tabs of their own (sheetdoc.h, markdowndoc.h, pythondoc.h), whatever
+  // the text editor of the settings.
+  if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isPythonFile(absolutePath)
+      || isArchiveFile(absolutePath) || isLayoutFile(absolutePath)) {
     openTextOrSchematicTab(absolutePath);
     return;
   }

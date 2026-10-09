@@ -32,6 +32,8 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 #include <QPainter>
 #include <QHelpEvent>
 #include <QToolTip>
+#include <QHash>
+#include <QTextLayout>
 #include <algorithm>
 #include <qpalette.h>
 
@@ -854,13 +856,16 @@ void TextDoc::highlightCurrentLine()
     }
 
     // The diagnostics shown: a wavy line under each, from its column to
-    // its line's end.
+    // its end - or its line's end when it has none.
     for (const ShownDiagnostic &shown : std::as_const(a_diagnostics)) {
         QTextEdit::ExtraSelection mark;
         mark.format.setUnderlineStyle(QTextCharFormat::WaveUnderline);
         mark.format.setUnderlineColor(shown.diagnostic.error ? QColor(0xe0, 0x35, 0x2b) : QColor(0xe0, 0x9a, 0x1a));
         mark.cursor = shown.at;
-        mark.cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        if (!shown.end.isNull() && shown.end.position() > shown.at.position())
+            mark.cursor.setPosition(shown.end.position(), QTextCursor::KeepAnchor);
+        else
+            mark.cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
         if (!mark.cursor.hasSelection()) {   // at the line's end: its last character
             mark.cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
         }
@@ -878,7 +883,15 @@ void TextDoc::setDiagnostics(const QList<Diagnostic> &list)
         if (!block.isValid()) continue;
         QTextCursor at(block);
         if (d.column > 1) at.setPosition(block.position() + std::min(d.column - 1, std::max(0, block.length() - 1)));
-        a_diagnostics.append({at, d});
+        QTextCursor end;
+        if (d.endLine > 0 && d.column > 0) {
+            const QTextBlock last = document()->findBlockByNumber(d.endLine - 1);
+            if (last.isValid()) {
+                end = QTextCursor(last);
+                end.setPosition(last.position() + std::clamp(d.endColumn - 1, 0, std::max(0, last.length() - 1)));
+            }
+        }
+        a_diagnostics.append({at, end, d});
     }
     updateLineNumberAreaWidth(0);   // (the dots' room)
     highlightCurrentLine();
@@ -892,9 +905,56 @@ QList<TextDoc::Diagnostic> TextDoc::diagnostics() const
         Diagnostic d = shown.diagnostic;
         d.line = shown.at.blockNumber() + 1;
         d.column = shown.at.positionInBlock() + 1;
+        if (!shown.end.isNull()) {
+            d.endLine = shown.end.blockNumber() + 1;
+            d.endColumn = shown.end.positionInBlock() + 1;
+        }
         list.append(d);
     }
     return list;
+}
+
+void TextDoc::setDiagnosticsAtLineEnds(bool on)
+{
+    if (a_atLineEnds == on) return;
+    a_atLineEnds = on;
+    viewport()->update();
+}
+
+void TextDoc::paintEvent(QPaintEvent *event)
+{
+    QPlainTextEdit::paintEvent(event);
+    if (!a_atLineEnds || a_diagnostics.isEmpty()) return;
+    // Each line's first diagnostic (an error before a warning) after its
+    // text, faintly: the colour of its underline a little towards the
+    // paper, in italics.
+    QHash<int, const ShownDiagnostic *> first;
+    for (const ShownDiagnostic &shown : std::as_const(a_diagnostics)) {
+        const int line = shown.at.blockNumber();
+        const ShownDiagnostic *had = first.value(line, nullptr);
+        if (had == nullptr || (shown.diagnostic.error && !had->diagnostic.error)) first.insert(line, &shown);
+    }
+    QPainter painter(viewport());
+    QFont italic = font();
+    italic.setItalic(true);
+    painter.setFont(italic);
+    const QFontMetrics metrics(italic);
+    const int gap = metrics.horizontalAdvance(QStringLiteral("    "));
+    const int right = viewport()->width() - 4;
+    for (QTextBlock block = firstVisibleBlock(); block.isValid(); block = block.next()) {
+        const QRectF box = blockBoundingGeometry(block).translated(contentOffset());
+        if (box.top() > event->rect().bottom()) break;
+        const ShownDiagnostic *shown = first.value(block.blockNumber(), nullptr);
+        if (shown == nullptr || !block.isVisible() || block.layout() == nullptr || block.layout()->lineCount() == 0) continue;
+        const QTextLine last = block.layout()->lineAt(block.layout()->lineCount() - 1);
+        const int x = qRound(box.left() + last.x() + last.naturalTextWidth()) + gap;
+        if (x >= right) continue;
+        const QColor ink = shown->diagnostic.error ? QColor(0xe0, 0x35, 0x2b) : QColor(0xc8, 0x84, 0x10);
+        painter.setPen(QColor::fromRgbF(ink.redF() * 0.8 + a_paper.redF() * 0.2, ink.greenF() * 0.8 + a_paper.greenF() * 0.2,
+                                        ink.blueF() * 0.8 + a_paper.blueF() * 0.2));
+        const QString said = metrics.elidedText(shown->diagnostic.message.section(QLatin1Char('\n'), 0, 0), Qt::ElideRight, right - x);
+        painter.drawText(QPointF(x, box.top() + last.y() + last.ascent()), said);
+    }
 }
 
 QString TextDoc::diagnosticsAtY(int y) const

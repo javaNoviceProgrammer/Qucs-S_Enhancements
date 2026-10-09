@@ -69,21 +69,29 @@ public:
   /// Its file's lines end in CR LF (and are written back so).
   bool crlf() const { return a_crlf; }
 
-  /// A finding shown in the text (build_verilog_a's errors and warnings):
-  /// its line and column (1-based; column 0: the whole line), its message,
-  /// and whether it is an error (else a warning).
+  /// A finding shown in the text (build_verilog_a's errors and warnings,
+  /// a Python script's check): its line and column (1-based; column 0: the
+  /// whole line), where it ends (the line and column after its last
+  /// character; 0: at its line's end), its message, and whether it is an
+  /// error (else a warning).
   struct Diagnostic {
     int line = 0;
     int column = 0;
     QString message;
     bool error = true;
+    int endLine = 0;
+    int endColumn = 0;
   };
   /// Shows \a list in the text until the next list (an empty one takes
-  /// them away): a wavy underline from the column to the line's end - red
-  /// for an error, amber for a warning -, a dot in the line numbers'
-  /// margin, and the message as the line's tooltip. They move with the
-  /// text as it is edited.
+  /// them away): a wavy underline from the column to its end, or to the
+  /// line's end - red for an error, amber for a warning -, a dot in the
+  /// line numbers' margin, and the message as the line's tooltip. They
+  /// move with the text as it is edited.
   void setDiagnostics(const QList<Diagnostic>& list);
+  /// Each line's first diagnostic written after its text as well, faintly
+  /// (off by default).
+  void setDiagnosticsAtLineEnds(bool on);
+  bool diagnosticsAtLineEnds() const { return a_atLineEnds; }
   /// Those shown, at their lines now.
   QList<Diagnostic> diagnostics() const;
   /// The messages shown for the line at \a y (the margin's or the
@@ -134,9 +142,11 @@ public:
   int language;   // language_type (syntax.h): its highlighting, comments, skeletons
   int a_chosenLanguage = -1;   // chosen for it alone (it has no suffix), -1: its file's
   struct ShownDiagnostic {
-    QTextCursor at;   // where it is: moves with the text
+    QTextCursor at;    // where it is: moves with the text
+    QTextCursor end;   // where it ends (null: at its line's end)
     Diagnostic diagnostic;
   };
+  bool a_atLineEnds = false;   // setDiagnosticsAtLineEnds()
   QList<ShownDiagnostic> a_diagnostics;   // setDiagnostics()'s
 
   bool loadSettings (void);
@@ -145,7 +155,7 @@ public:
   /// Whether saving writes the settings file (name.cfg): always when the
   /// user wants it (QucsSettings.WriteTextDocSettings), else when the
   /// settings are not a new document's or were changed since the last save.
-  bool writesSettings () const;
+  virtual bool writesSettings () const;
   void refreshLanguage(void);
   void applyDocumentColors();
 
@@ -169,6 +179,8 @@ public slots:
 
 protected:
       void resizeEvent(QResizeEvent *event) override;
+      /// The text, and the diagnostics' messages at the lines' ends.
+      void paintEvent(QPaintEvent *event) override;
       /// A line's diagnostics as its tooltip.
       bool viewportEvent(QEvent *event) override;
       /// Room around the text beside the line numbers' (a subclass puts

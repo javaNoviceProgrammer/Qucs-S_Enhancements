@@ -319,6 +319,9 @@ void MessageDock::slotCursor()
 
 void MessageDock::showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& issues, bool raise, bool hierarchy)
 {
+    QObject::disconnect(a_problemsTextGone);
+    a_problemsText = nullptr;
+    a_textProblems.clear();
     a_problemsDoc = doc;
     a_problemsHierarchy = hierarchy;
     a_issues = issues;
@@ -340,9 +343,7 @@ void MessageDock::showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& 
                                          tr("No problems found."), problems);
         item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
     }
-    const int errors = qucs_s::erc::errorCount(issues);
-    builderTabs->setTabText(2, issues.isEmpty() ? tr("Problems") : tr("Problems (%1)").arg(issues.size()));
-    builderTabs->setTabIcon(2, errors > 0 ? error : (issues.isEmpty() ? QIcon() : warning));
+    titleProblems(qucs_s::erc::errorCount(issues), int(issues.size()));
     if (raise) {
         builderTabs->setCurrentWidget(problems);
         msgDock->show();
@@ -353,6 +354,65 @@ void MessageDock::showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& 
 Schematic* MessageDock::problemsDocument() const
 {
     return a_problemsDoc.data();
+}
+
+void MessageDock::titleProblems(int errors, int count)
+{
+    const QIcon error = style()->standardIcon(QStyle::SP_MessageBoxCritical);
+    const QIcon warning = style()->standardIcon(QStyle::SP_MessageBoxWarning);
+    builderTabs->setTabText(2, count == 0 ? tr("Problems") : tr("Problems (%1)").arg(count));
+    builderTabs->setTabIcon(2, errors > 0 ? error : (count == 0 ? QIcon() : warning));
+}
+
+void MessageDock::showTextProblems(TextDoc* doc, const QList<TextDoc::Diagnostic>& list, const QString& checkedBy, bool raise,
+                                   const QString& failure)
+{
+    a_problemsDoc = nullptr;
+    a_problemsHierarchy = false;
+    a_issues.clear();
+    if (a_problemsText.data() != doc) {
+        QObject::disconnect(a_problemsTextGone);
+        // The rows go with the document.
+        a_problemsTextGone = connect(doc, &QObject::destroyed, this, [this] {
+            a_problemsText = nullptr;
+            a_textProblems.clear();
+            problems->clear();
+            titleProblems(0, 0);
+        });
+    }
+    a_problemsText = doc;
+    a_textProblems = list;
+    problems->clear();
+    const QIcon error = style()->standardIcon(QStyle::SP_MessageBoxCritical);
+    const QIcon warning = style()->standardIcon(QStyle::SP_MessageBoxWarning);
+    const QString file = doc->getDocName().isEmpty() ? tr("untitled") : QFileInfo(doc->getDocName()).fileName();
+    int errors = 0;
+    for (const TextDoc::Diagnostic& d : list) {
+        errors += d.error ? 1 : 0;
+        auto* item = new QListWidgetItem(d.error ? error : warning, tr("%1, line %2: %3").arg(file).arg(d.line).arg(d.message), problems);
+        item->setToolTip((d.column > 0 ? tr("%1, line %2, column %3").arg(doc->getDocName()).arg(d.line).arg(d.column)
+                                        : tr("%1, line %2").arg(doc->getDocName()).arg(d.line))
+                         + QStringLiteral("\n") + checkedBy);
+    }
+    if (list.isEmpty()) {
+        auto* item = failure.isEmpty()
+                         ? new QListWidgetItem(style()->standardIcon(QStyle::SP_DialogApplyButton),
+                                               tr("No problems found in %1.").arg(file), problems)
+                         : new QListWidgetItem(warning, tr("%1 was not checked: %2").arg(file, failure), problems);
+        item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+        item->setToolTip(failure.isEmpty() ? checkedBy : failure);
+    }
+    titleProblems(errors, int(list.size()));
+    if (raise) {
+        builderTabs->setCurrentWidget(problems);
+        msgDock->show();
+        msgDock->raise();
+    }
+}
+
+TextDoc* MessageDock::textProblemsDocument() const
+{
+    return qobject_cast<TextDoc*>(a_problemsText.data());
 }
 
 namespace {
@@ -518,5 +578,10 @@ QString MessageDock::operatingPointText() const
 void MessageDock::slotProblemChosen()
 {
     const int row = problems->currentRow();
+    if (TextDoc* doc = textProblemsDocument()) {
+        if (row >= 0 && row < a_textProblems.size())
+            emit lineRequested(doc, a_textProblems.at(row).line, a_textProblems.at(row).column);
+        return;
+    }
     if (row >= 0 && row < a_issues.size()) emit locateRequested(row);
 }

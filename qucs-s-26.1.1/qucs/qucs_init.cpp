@@ -1288,6 +1288,11 @@ void QucsApp::initMenuBar() {
   viewPython->setStatusTip(tr("Shows/hides the Python Shell dock"));
   connect(viewPython, &QAction::triggered, this, [this](bool on) { if (on) pythonDock->raise(); });
   viewMenu->addAction(viewPython);
+  QAction *viewPythonRun = pythonRunDock->toggleViewAction();
+  viewPythonRun->setText(tr("Python &Run"));
+  viewPythonRun->setStatusTip(tr("Shows/hides the Python Run dock, the output of a script run from the Python toolbar"));
+  connect(viewPythonRun, &QAction::triggered, this, [this](bool on) { if (on) pythonRunDock->raise(); });
+  viewMenu->addAction(viewPythonRun);
   QAction *viewClaude = claudeDock->toggleViewAction();
   viewClaude->setText(tr("&Claude Code"));
   viewClaude->setStatusTip(tr("Shows/hides the Claude Code dock, a conversation with Claude Code"));
@@ -1488,6 +1493,9 @@ void QucsApp::initToolBar() {
   hierarchyToolbar->addAction(generateNetlist);
   hierarchyToolbar->addAction(save_netlist);
 
+  // Python, after them: shown while a Python script is in front.
+  initPythonToolbar();
+
   fileToolbar->setObjectName("fileToolbar");
   editToolbar->setObjectName("editToolbar");
   viewToolbar->setObjectName("viewToolbar");
@@ -1506,7 +1514,7 @@ bool QucsApp::toolbarsLocked() const {
 }
 
 QList<QToolBar *> QucsApp::toolbars() const {
-  return {fileToolbar, editToolbar, viewToolbar, workToolbar, simulateToolbar, hierarchyToolbar};
+  return {fileToolbar, editToolbar, viewToolbar, workToolbar, simulateToolbar, hierarchyToolbar, pythonToolbar};
 }
 
 void QucsApp::setToolbarsLocked(bool locked) {

@@ -23,6 +23,7 @@
 #include <QWidget>
 #include <QPointer>
 #include "erc.h"
+#include "textdoc.h"
 
 class QDockWidget;
 class QTabWidget;
@@ -60,6 +61,19 @@ public:
   /// those of \a doc and of every subcircuit it uses (Check Hierarchy).
   void showProblems(Schematic* doc, const QList<qucs_s::erc::Issue>& issues, bool raise, bool hierarchy = false);
   Schematic* problemsDocument() const;
+  /// Shows \a list - what a check found in the text document \a doc (a
+  /// Python script's) - on the Problems tab: a row each, its file, line
+  /// and message, \a checkedBy in the tooltips (an empty list says none
+  /// were found). A click on a row goes to its place (lineRequested()).
+  /// The rows go with the document.
+  /// \a failure: it could not be checked, and why (said in place of
+  /// "No problems found").
+  void showTextProblems(TextDoc* doc, const QList<TextDoc::Diagnostic>& list, const QString& checkedBy, bool raise,
+                        const QString& failure = QString());
+  /// The text document whose problems the tab shows; nullptr when it
+  /// shows a schematic's, or none.
+  TextDoc* textProblemsDocument() const;
+  const QList<TextDoc::Diagnostic>& textProblems() const { return a_textProblems; }
   bool problemsOfHierarchy() const { return a_problemsHierarchy; }
   const QList<qucs_s::erc::Issue>& issues() const { return a_issues; }
 
@@ -98,6 +112,9 @@ public:
 signals:
   /// A row of the Problems tab was chosen: issues()[index] is to be shown.
   void locateRequested(int index);
+  /// A row of a text document's problems was chosen: \a line and \a
+  /// column (1-based; 0: the line's start) of \a document are to be shown.
+  void lineRequested(QWidget *document, int line, int column);
   /// A row of the Operating Point tab was chosen: the component of that
   /// name in operatingPointDocument() is to be shown.
   void componentRequested(const QString &component);
@@ -121,6 +138,11 @@ private:
   QMetaObject::Connection a_operatingPointGone;
   int a_operatingPointTab = -1;
   QList<qucs_s::erc::Issue> a_issues;
+  QPointer<QObject> a_problemsText;   // textProblemsDocument()
+  QMetaObject::Connection a_problemsTextGone;
+  QList<TextDoc::Diagnostic> a_textProblems;
+  /// The Problems tab's title and icon for \a errors and \a count.
+  void titleProblems(int errors, int count);
 
 };
 

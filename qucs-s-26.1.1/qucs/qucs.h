@@ -51,6 +51,8 @@ class tunerElement;
 class SimulationRun;
 class SimulationConsole;
 class ProcessConsole;
+class PythonDoc;
+class PythonRunConsole;
 class ClaudeCodeTabs;
 class FileBrowser;
 class ZipDoc;
@@ -398,6 +400,28 @@ public:
   static bool isPdfDocument(QWidget *);
   /// Whether a file is Markdown (.md, .markdown): opened in a MarkdownDoc.
   static bool isMarkdownFile(const QString &name);
+  /// Whether a file is a Python script (.py, .pyw): opened in a PythonDoc.
+  static bool isPythonFile(const QString &name);
+  /// The Python toolbar (qucs_python.cpp): the interpreter of the script
+  /// in front, Run, Stop, Run in Shell, Check, Messages at Line Ends -
+  /// shown while a Python script is in front, unless it was hidden from
+  /// the Toolbars menu.
+  QToolBar *pythonToolbarWidget() const { return pythonToolbar; }
+  QComboBox *pythonInterpreterList() const { return pythonInterpreters; }
+  /// The console of a script's run (Run, F2), and its dock.
+  PythonRunConsole *pythonRunConsole() const { return pythonRun; }
+  QDockWidget *pythonRunDockWidget() const { return pythonRunDock; }
+  /// Runs \a doc - saved first - with its interpreter in its folder, its
+  /// output in the Python Run console; false when it was not saved or not
+  /// started.
+  bool runPython(PythonDoc *doc);
+  /// Runs \a doc - saved first - in the Python Shell, in its folder, its
+  /// variables left there.
+  bool runPythonInShell(PythonDoc *doc);
+  /// Shows \a line, \a column (1-based; column 0: the line's start) of
+  /// the text document \a document - or, without one, of the file \a path,
+  /// opened when it is not.
+  void showTextPlace(QWidget *document, const QString &path, int line, int column);
   /// Whether a tab holds a spreadsheet (sheetdoc.h).
   static bool isSheetDocument(QWidget *);
   /// Whether a file is a spreadsheet (.csv, .tsv, .xlsx, .xlsm, .xls):
@@ -598,6 +622,12 @@ private slots:
   void slotButtonProjOpen();
   void slotButtonProjDel();
   void slotChangeView();
+  void slotPythonRun();
+  void slotPythonStop();
+  void slotPythonRunInShell();
+  void slotPythonCheck();
+  void slotPythonInterpreterChosen(int index);
+  void slotPythonLineEnds(bool on);
   void slotAfterSimulation(int, SimMessage *);
   void slotDCbias();
   void slotChangePage(const QString &, const QString &);
@@ -737,6 +767,26 @@ private:
   ProcessConsole *terminal;
   QDockWidget *pythonDock;
   ProcessConsole *pythonShell;
+  // The Python toolbar and the console of a script's run (qucs_python.cpp).
+  QToolBar *pythonToolbar = nullptr;
+  QComboBox *pythonInterpreters = nullptr;
+  QAction *pythonRunAction = nullptr;
+  QAction *pythonStopAction = nullptr;
+  QAction *pythonShellAction = nullptr;
+  QAction *pythonCheckAction = nullptr;
+  QAction *pythonLineEndsAction = nullptr;
+  QDockWidget *pythonRunDock = nullptr;
+  PythonRunConsole *pythonRun = nullptr;
+  bool a_pythonCheckRaises = false;   // Check: the next answer brings the Problems tab up
+  bool a_pythonFailureSaid = false;   // no Python to check with: said once
+  void initPythonToolbar();
+  void initPythonConsole();
+  /// The Python toolbar as the document in front says: shown for a Python
+  /// script, its interpreters, Stop while a run goes.
+  void updatePythonToolbar();
+  PythonDoc *currentPythonDoc() const;
+  /// A check of \a doc answered: its problems on the Problems tab.
+  void pythonChecked(PythonDoc *doc);
   QDockWidget *claudeDock = nullptr;
   QDockWidget *tunerDock = nullptr;
   ClaudeCodeTabs *claudeTabs = nullptr;
