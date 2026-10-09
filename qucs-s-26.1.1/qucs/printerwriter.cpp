@@ -21,6 +21,7 @@
  */
 
 #include "printerwriter.h"
+#include "imagedoc.h"
 #include "schematic.h"
 #include "textdoc.h"
 #include "qucs.h"
@@ -107,8 +108,14 @@ PrinterWriter::print(QWidget *doc)
     }
   }
   else {
-    // A schematic lies on its side; a PDF document's pages are upright.
-    Printer->setPageOrientation(QucsApp::isPdfDocument(doc) ? QPageLayout::Portrait : QPageLayout::Landscape);
+    // A schematic lies on its side; a PDF document's pages are upright; a
+    // picture as it is shown.
+    QPageLayout::Orientation orientation = QucsApp::isPdfDocument(doc) ? QPageLayout::Portrait : QPageLayout::Landscape;
+    if (auto *image = qobject_cast<ImageDoc *>(doc)) {
+      const QSize shown = image->view()->shownSize();
+      orientation = shown.width() > shown.height() ? QPageLayout::Landscape : QPageLayout::Portrait;
+    }
+    Printer->setPageOrientation(orientation);
 
     if (dialog->exec() == QDialog::Accepted)
     {
